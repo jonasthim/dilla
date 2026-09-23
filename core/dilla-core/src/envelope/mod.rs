@@ -71,7 +71,10 @@ impl EnvelopeType {
 
 /// `blob_id` is the SHA-256 of the **ciphertext**; a receiver that fetches the blob must verify it
 /// (`E_BLOB_HASH`). `thumb` uses the same key with the nonce's last byte XORed with 0x01.
-#[derive(Clone, PartialEq, Eq, Debug)]
+///
+/// `key` and `nonce` are the AES-GCM material of the blob and `thumb` is decrypted media, so this
+/// does not derive `Debug` (see the hand-written impl below).
+#[derive(Clone, PartialEq, Eq)]
 pub struct Attachment {
     pub blob_id: [u8; 32],
     pub key: [u8; 32],
@@ -85,7 +88,9 @@ pub struct Attachment {
 }
 
 /// Sender-generated. A receiver MUST NOT fetch the remote resource.
-#[derive(Clone, PartialEq, Eq, Debug)]
+///
+/// Every field is plaintext taken from the message, so this does not derive `Debug` either.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Preview {
     pub url: String,
     pub title: String,
@@ -93,7 +98,10 @@ pub struct Preview {
     pub image: Option<Vec<u8>>,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// Carries the decrypted message (`body`, attachments, previews) and `k_f`, the per-message
+/// franking key, so it does not derive `Debug`: nothing printable may reproduce the plaintext of
+/// an end-to-end encrypted message or its key material.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Envelope {
     pub v: u64,
     pub msg_id: MsgId,
@@ -105,6 +113,80 @@ pub struct Envelope {
     pub previews: Vec<Preview>,
     /// The franking key, random per envelope and per edit.
     pub k_f: [u8; 32],
+}
+
+/// `Some(<n bytes>)` / `None` for an optional byte string: presence is protocol-visible, the bytes
+/// are not.
+fn debug_opt_bytes(v: Option<&Vec<u8>>) -> impl core::fmt::Display + '_ {
+    struct D<'a>(Option<&'a Vec<u8>>);
+    impl core::fmt::Display for D<'_> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self.0 {
+                Some(b) => write!(f, "Some(<{} bytes>)", b.len()),
+                None => f.write_str("None"),
+            }
+        }
+    }
+    D(v)
+}
+
+/// Hand-written so that no `{:?}`, `dbg!`, `tracing` field, `expect` message or failed
+/// `assert_eq!` can print the blob key, its nonce or the decrypted thumbnail. `blob_id` is a
+/// public ciphertext hash and `mime`/`size`/`w`/`h` are metadata the server sees anyway.
+impl core::fmt::Debug for Attachment {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Attachment")
+            .field("blob_id", &self.blob_id)
+            .field("key", &format_args!("<redacted>"))
+            .field("nonce", &format_args!("<redacted>"))
+            .field("size", &self.size)
+            .field("mime", &self.mime)
+            .field("w", &self.w)
+            .field("h", &self.h)
+            .field(
+                "thumb",
+                &format_args!("{}", debug_opt_bytes(self.thumb.as_ref())),
+            )
+            .finish()
+    }
+}
+
+/// Hand-written for the same reason: a preview is built from the plaintext message, so its url,
+/// title, description and image show their lengths and never their contents.
+impl core::fmt::Debug for Preview {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Preview")
+            .field("url", &format_args!("<{} bytes>", self.url.len()))
+            .field("title", &format_args!("<{} bytes>", self.title.len()))
+            .field(
+                "description",
+                &format_args!("<{} bytes>", self.description.len()),
+            )
+            .field(
+                "image",
+                &format_args!("{}", debug_opt_bytes(self.image.as_ref())),
+            )
+            .finish()
+    }
+}
+
+/// Hand-written so that the plaintext `body` and the franking key `k_f` cannot reach a log line,
+/// a panic message or a failed `assert_eq!`. The routing fields (ids, type, thread) are printed:
+/// they are what a diagnostic needs and the server already sees their ciphertext positions.
+impl core::fmt::Debug for Envelope {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Envelope")
+            .field("v", &self.v)
+            .field("msg_id", &self.msg_id)
+            .field("kind", &self.kind)
+            .field("thread_id", &self.thread_id)
+            .field("reply_to", &self.reply_to)
+            .field("body", &format_args!("<{} bytes>", self.body.len()))
+            .field("attachments", &self.attachments)
+            .field("previews", &self.previews)
+            .field("k_f", &format_args!("<redacted>"))
+            .finish()
+    }
 }
 
 impl Envelope {
@@ -168,6 +250,15 @@ impl Envelope {
         let body = d.text()?.to_owned();
 
         let n = d.array_len()?;
+        // `array_len` bounds `n` by the bytes that remain, never by the size of what those bytes
+        // decode into (its own doc: "a caller must not scale it into a larger allocation"): an
+        // `Attachment` in memory is ~168 bytes against the 87 its shortest encoding costs, so
+        // `Vec::with_capacity(n)` on an unchecked head turns a 1 MiB hostile blob into ~168 MiB of
+        // reservation. The limit is known here, so the lie is rejected before anything is
+        // reserved. Same ruling as `device_list::read_entries` and `pairing`.
+        if n > MAX_ATTACHMENTS {
+            return Err(LIMIT);
+        }
         let mut attachments = Vec::with_capacity(n);
         for _ in 0..n {
             d.array(8)?;
@@ -188,6 +279,11 @@ impl Envelope {
         }
 
         let n = d.array_len()?;
+        // Same reasoning: a `Preview` is ~96 bytes in memory against the 5 its shortest encoding
+        // costs, a ~96x amplification if the claimed count were reserved unchecked.
+        if n > MAX_PREVIEWS {
+            return Err(LIMIT);
+        }
         let mut previews = Vec::with_capacity(n);
         for _ in 0..n {
             d.array(4)?;
@@ -290,6 +386,12 @@ const TYPE: CborError = CborError::TypeMismatch {
     expected: "envelope type",
     offset: 0,
 };
+/// A limit that `read` can see before `validate` runs, so that an over-claiming array head is
+/// rejected at the head rather than after the elements have been reserved for.
+const LIMIT: CborError = CborError::TypeMismatch {
+    expected: "envelope limit",
+    offset: 0,
+};
 
 fn map_cbor(e: CborError) -> ProtocolError {
     match e {
@@ -297,6 +399,10 @@ fn map_cbor(e: CborError) -> ProtocolError {
             expected: "envelope type",
             ..
         } => ProtocolError::EnvelopeType,
+        CborError::TypeMismatch {
+            expected: "envelope limit",
+            ..
+        } => ProtocolError::EnvelopeLimit,
         _ => ProtocolError::EnvelopeShape,
     }
 }
@@ -539,6 +645,174 @@ mod tests {
             assert_eq!(t.body_limit(), 0);
         }
         assert_eq!(EnvelopeType::from_u64(7), Err(ProtocolError::EnvelopeType));
+    }
+
+    fn sample_attachment() -> Attachment {
+        Attachment {
+            blob_id: [0x03; 32],
+            key: [0x44; 32],
+            nonce: [0x55; 12],
+            size: 1,
+            mime: "image/jpeg".to_owned(),
+            w: None,
+            h: None,
+            thumb: None,
+        }
+    }
+
+    fn sample_preview() -> Preview {
+        Preview {
+            url: "https://example.invalid/".to_owned(),
+            title: "t".to_owned(),
+            description: "d".to_owned(),
+            image: None,
+        }
+    }
+
+    /// The `Some(bytes)` arm of `thumb` and `image` is not exercised by any vector: all four cases
+    /// in `envelope.json` carry `thumb: null` and `image: null`, so a decoder that silently threw
+    /// the bytes away would still pass the vector suite.
+    #[test]
+    fn round_trip_preserves_a_non_null_thumb_and_preview_image() {
+        let mut env = base();
+        let mut a = sample_attachment();
+        a.thumb = Some(vec![0xAB; 64]);
+        env.attachments = vec![a];
+        let mut p = sample_preview();
+        p.image = Some(vec![0xCD; 64]);
+        env.previews = vec![p];
+
+        let bytes = env.encode().unwrap();
+        let back = Envelope::decode(&bytes).unwrap();
+        assert_eq!(back, env, "round trip");
+        assert_eq!(
+            back.attachments[0].thumb.as_deref(),
+            Some(&[0xAB; 64][..]),
+            "the thumbnail bytes survived the decoder"
+        );
+        assert_eq!(
+            back.previews[0].image.as_deref(),
+            Some(&[0xCD; 64][..]),
+            "the preview image bytes survived the decoder"
+        );
+
+        // Both fields are inside the commitment preimage, so flipping either moves `C`.
+        let c = env.commitment().unwrap();
+        let mut other = env.clone();
+        other.attachments[0].thumb = Some(vec![0xAC; 64]);
+        assert_ne!(other.commitment().unwrap(), c, "thumb is committed to");
+        let mut other = env.clone();
+        other.previews[0].image = Some(vec![0xCE; 64]);
+        assert_ne!(other.commitment().unwrap(), c, "image is committed to");
+        assert_eq!(env.commitment().unwrap(), c, "commitment is stable");
+    }
+
+    /// Builds an envelope encoding by hand so the attachment and preview array heads can claim
+    /// more elements than follow them. `n` is the claimed attachment count, `m` the claimed
+    /// preview count; `filler` trailing bytes keep both claims under the bytes that remain, which
+    /// is the only bound `array_len` itself applies.
+    fn overclaiming(n: usize, m: usize, filler: usize) -> Vec<u8> {
+        let mut e = Encoder::with_capacity(256);
+        e.array(9)
+            .uint(1)
+            .bytes(&[0x01u8; 16])
+            .uint(0)
+            .null()
+            .null()
+            .text("");
+        e.array(n);
+        e.array(m);
+        e.bytes(&[0x06u8; 32]);
+        let mut bytes = e.into_vec();
+        bytes.extend(core::iter::repeat_n(0u8, filler));
+        bytes
+    }
+
+    /// `array_len` bounds the claimed element count by the bytes that remain, never by the size of
+    /// what those bytes decode into: an `Attachment` in memory is far wider than the 87 bytes its
+    /// shortest encoding costs, so a head claiming one element per remaining byte is a two-orders
+    /// -of-magnitude lie that the decoder must reject before it reserves anything.
+    #[test]
+    fn decode_rejects_an_attachment_array_head_that_overclaims() {
+        let bytes = overclaiming(1_000, 0, 1_024);
+        // 1 array head + 1 v + 17 msg_id + 1 type + 1 null + 1 null + 1 empty text = offset 23,
+        // and 1 000 is well under the bytes that follow, so `array_len` accepts the head.
+        assert_eq!(
+            bytes[23], 0x99,
+            "the attachments head is where this test thinks it is"
+        );
+        assert!(bytes.len() - 26 >= 1_000);
+        assert_eq!(Envelope::decode(&bytes), Err(ProtocolError::EnvelopeLimit));
+
+        // The honest maximum still decodes.
+        let mut env = base();
+        env.attachments = vec![sample_attachment(); MAX_ATTACHMENTS];
+        let ok = env.encode().unwrap();
+        assert_eq!(Envelope::decode(&ok).unwrap(), env);
+    }
+
+    /// Same lie, on the preview head: a `Preview` costs 5 bytes at its shortest and is far wider
+    /// than that in memory.
+    #[test]
+    fn decode_rejects_a_preview_array_head_that_overclaims() {
+        let bytes = overclaiming(0, 1_000, 1_024);
+        // the attachments head is a single `0x80` at offset 23, so the previews head starts at 24
+        assert_eq!(bytes[23], 0x80, "the attachments head is a 0-element array");
+        assert_eq!(
+            bytes[24], 0x99,
+            "the previews head is where this test thinks it is"
+        );
+        assert!(bytes.len() - 27 >= 1_000);
+        assert_eq!(Envelope::decode(&bytes), Err(ProtocolError::EnvelopeLimit));
+
+        let mut env = base();
+        env.previews = vec![sample_preview(); MAX_PREVIEWS];
+        let ok = env.encode().unwrap();
+        assert_eq!(Envelope::decode(&ok).unwrap(), env);
+    }
+
+    /// A derived `Debug` prints `k_f`, the attachment key and nonce, the thumbnail, the preview
+    /// image and the plaintext `body` in full into any `{:?}`, `dbg!`, `tracing` field, panic
+    /// message or failed `assert_eq!`. Same ruling as `PairingPayload` (commit 4c3bc90).
+    #[test]
+    fn debug_never_prints_plaintext_or_key_material() {
+        let mut env = base();
+        env.body = "the quick brown fox".to_owned();
+        let mut a = sample_attachment();
+        a.thumb = Some(vec![0x66; 8]);
+        env.attachments = vec![a];
+        let mut p = sample_preview();
+        p.image = Some(vec![0x77; 8]);
+        env.previews = vec![p];
+
+        let s = format!("{env:?}");
+        assert!(!s.contains("the quick brown fox"), "the body leaked: {s}");
+        assert!(s.contains("body: <19 bytes>"), "{s}");
+        assert!(s.contains("k_f: <redacted>"), "{s}");
+        assert!(!s.contains("6, 6"), "k_f leaked: {s}");
+        assert!(!s.contains("68, 68"), "the attachment key leaked: {s}");
+        assert!(!s.contains("85, 85"), "the attachment nonce leaked: {s}");
+        assert!(!s.contains("102, 102"), "the thumbnail leaked: {s}");
+        assert!(!s.contains("119, 119"), "the preview image leaked: {s}");
+        assert!(
+            !s.contains("https://example.invalid/"),
+            "the preview url leaked: {s}"
+        );
+
+        let a = format!("{:?}", env.attachments[0]);
+        assert!(a.contains("key: <redacted>"), "{a}");
+        assert!(a.contains("nonce: <redacted>"), "{a}");
+        assert!(a.contains("thumb: Some(<8 bytes>)"), "{a}");
+        assert!(a.contains("mime: \"image/jpeg\""), "{a}");
+
+        let p = format!("{:?}", env.previews[0]);
+        assert!(p.contains("image: Some(<8 bytes>)"), "{p}");
+
+        // absence is still shown as absence
+        let bare = base();
+        assert!(format!("{bare:?}").contains("body: <0 bytes>"));
+        assert!(format!("{:?}", sample_attachment()).contains("thumb: None"));
+        assert!(format!("{:?}", sample_preview()).contains("image: None"));
     }
 
     #[test]
