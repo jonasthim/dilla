@@ -19,9 +19,11 @@ describe('ChannelRow', () => {
   });
   it('shows the unread pill, the mention pill (which replaces unread), and the readable glyph', () => {
     render(<><ChannelRow name="general" kind="text" unread={3} onSelect={() => {}} /><ChannelRow name="screenshots" kind="text" unread={3} mentions={12} onSelect={() => {}} /><ChannelRow name="lfg" kind="text" readable onSelect={() => {}} /></>);
-    expect(screen.getByLabelText('3 unread')).toBeInTheDocument();
-    expect(screen.getByLabelText('12 mentions')).toBeInTheDocument();
-    expect(screen.queryAllByLabelText('3 unread')).toHaveLength(1);
+    // The count reaches assistive tech as part of the row's own name, not
+    // as a separate live region that interrupts.
+    expect(screen.getByRole('button', { name: 'general 3 unread' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'screenshots 12 mentions' })).toBeInTheDocument();
+    expect(screen.queryAllByRole('button', { name: /3 unread/ })).toHaveLength(1);
     expect(screen.getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
   });
   it('shows the lock on private voice channels and a muted state', () => {

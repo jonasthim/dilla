@@ -2,7 +2,10 @@ import type { ReactNode } from 'react';
 import './StatusBar.css';
 
 export function StatusBar({ position, label, children }: { position: 'top' | 'bottom'; label: string; children: ReactNode }) {
-  return <div className="d-statusbar" data-position={position} role="toolbar" aria-label={label}>{children}</div>;
+  // A region, not a toolbar: the bar is a strip of status facts with the
+  // occasional button, not a grouped control set with roving tab order and
+  // arrow-key navigation, which is what role="toolbar" promises.
+  return <div className="d-statusbar" data-position={position} role="region" aria-label={label}>{children}</div>;
 }
 
 /** Tone is never colour alone: a glyph carries it for sighted users… */

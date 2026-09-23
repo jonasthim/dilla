@@ -5,7 +5,7 @@ import { StatusBar, StatusChunk, Meter, BrandMark } from './StatusBar.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 describe('StatusBar', () => {
-  it('is a labelled toolbar with clickable and static chunks', async () => {
+  it('is a labelled region with clickable and static chunks', async () => {
     const onClick = vi.fn();
     render(
       <StatusBar position="bottom" label="Connection">
@@ -13,7 +13,10 @@ describe('StatusBar', () => {
         <StatusChunk label="voice" tone="ok" onClick={onClick}>OPUS 48kHz</StatusChunk>
       </StatusBar>,
     );
-    expect(screen.getByRole('toolbar', { name: 'Connection' })).toBeInTheDocument();
+    // A region, not a toolbar: the bar is a strip of facts with the odd
+    // button, not a set of grouped controls with arrow-key navigation.
+    expect(screen.getByRole('region', { name: 'Connection' })).toBeInTheDocument();
+    expect(screen.queryByRole('toolbar')).toBeNull();
     expect(screen.getByText('dilla.thim.dev').closest('button')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: /voice ok OPUS 48kHz/ }));
     expect(onClick).toHaveBeenCalled();
