@@ -1,0 +1,8 @@
+.d-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; width: var(--avatar-size); height: var(--avatar-size); border-radius: var(--r-avatar); background: hsl(var(--avatar-hue) 45% 42%); color: #fff; font-weight: 700; font-size: var(--text-xs); flex-shrink: 0; }
+.d-avatar[data-size="sm"] { width: 20px; height: 20px; font-size: 9px; }
+.d-avatar[data-size="lg"] { width: 64px; height: 64px; font-size: var(--text-lg); }
+.d-avatar__presence { position: absolute; right: -4px; bottom: -4px; width: 12px; height: 12px; border-radius: var(--r-pill); font-size: 8px; line-height: 12px; text-align: center; background: var(--bg-2); }
+.d-avatar__presence[data-presence="online"] { color: var(--ok); }
+.d-avatar__presence[data-presence="idle"] { color: var(--warn); }
+.d-avatar__presence[data-presence="dnd"] { color: var(--danger); }
+.d-avatar__presence[data-presence="offline"] { color: var(--fg-3); }

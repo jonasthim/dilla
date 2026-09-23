@@ -1,0 +1,11 @@
+import type { Meta, StoryObj } from '@storybook/react-vite';
+import { Avatar } from './Avatar.tsx';
+const meta = { title: 'Primitives/Avatar', component: Avatar, args: { name: 'jonas' } } satisfies Meta<typeof Avatar>;
+export default meta;
+type Story = StoryObj<typeof meta>;
+export const Online: Story = { args: { presence: 'online' } };
+export const Idle: Story = { args: { name: 'lina', presence: 'idle' } };
+export const DoNotDisturb: Story = { args: { name: 'erik', presence: 'dnd' } };
+export const Offline: Story = { args: { name: 'sven', presence: 'offline' } };
+export const Bot: Story = { args: { name: 'Skald', initials: 'SK', hue: 210 } };
+export const Large: Story = { args: { size: 'lg', presence: 'online' } };

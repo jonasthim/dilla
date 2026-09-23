@@ -6,3 +6,7 @@ export { Tag } from './Tag/Tag.tsx';
 export type { TagKind } from './Tag/Tag.tsx';
 export { KeyHint } from './KeyHint/KeyHint.tsx';
 export type { KeyHintProps } from './KeyHint/KeyHint.tsx';
+export { Avatar } from './Avatar/Avatar.tsx';
+export type { AvatarProps, Presence } from './Avatar/Avatar.tsx';
+export { ChannelRow } from './ChannelRow/ChannelRow.tsx';
+export type { ChannelRowProps } from './ChannelRow/ChannelRow.tsx';
