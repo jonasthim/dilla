@@ -120,6 +120,11 @@ blinking caret, `server · node · status`, a live clock, keybind hints ⌘K / `
 bottom bar (node, peers, lamport, latency, voice codec with a 12-bar meter, version). Command
 palette on ⌘K, search palette on `/`, settings modal 960×640 with a 220px nav.
 
+Both optional bars are `white-space: nowrap; overflow: hidden`, so at 200 % zoom or a narrow window
+they clip chunks off the right edge instead of wrapping and eating vertical space; this is allowed
+because the bars are optional and carry no information that is not also available elsewhere (the
+channel header, the voice dock, Settings → Diagnostics).
+
 ## Removed from the chrome
 
 Encryption is the default and says nothing. These Mesh elements are not built:
