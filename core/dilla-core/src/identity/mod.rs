@@ -11,6 +11,86 @@ use sha2::{Digest, Sha256};
 
 type HmacSha256 = Hmac<Sha256>;
 
+mod credential;
+mod device_list;
+mod pairing;
+mod recovery;
+mod safety;
+
+pub use credential::{CredentialIdentity, SskSigner, UmkSigner};
+pub use device_list::{DeviceEntry, DeviceList, DeviceListUnsigned};
+pub use pairing::{PairingPayload, PairingQr, Pin, fingerprint};
+pub use recovery::{k_backup, k_header, recovery_key_base32, recovery_key_from_base32};
+pub use safety::{decimal_digits, group_digits, safety_number, sas};
+
+// Domain separation strings (protocol/03-identity.md "Keys", protocol/06-backup-archive.md).
+// They are UTF-8 and are concatenated with the fields directly: no separators, no length prefix.
+
+/// `sig_umk_ssk` covers `DOMAIN_SSK || ssk_pub`.
+pub const DOMAIN_SSK: &[u8] = b"dilla ssk v1";
+/// `sig_ssk_dev` covers `DOMAIN_DSK || device_id || dsk_pub || kind || tier || signer_tier`.
+pub const DOMAIN_DSK: &[u8] = b"dilla dsk v1";
+/// The device list's `sig_ssk` covers `DOMAIN_DEVICES || CBOR(unsigned)`.
+pub const DOMAIN_DEVICES: &[u8] = b"dilla devices v1";
+/// Instance key rotation. Note the order: the key comes FIRST and the domain string AFTER,
+/// unlike every other domain in dilla (protocol/03 "Instance key rotation").
+pub const DOMAIN_INSTANCE_ROTATE: &[u8] = b"dilla instance rotate v1";
+/// The archive manifest's `sig_ssk` covers `DOMAIN_MANIFEST || CBOR([v, user_id, chunks])`.
+pub const DOMAIN_MANIFEST: &[u8] = b"dilla manifest v1";
+/// HKDF info for `K_header`.
+pub const INFO_HEADER: &[u8] = b"dilla header v1";
+/// HKDF info for `K_backup`.
+pub const INFO_ARCHIVE: &[u8] = b"dilla archive v1";
+/// Crockford base32, MSB-first. No `I`, `L`, `O` or `U`.
+pub const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// Whether a member is a person or a bot.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Kind {
+    User = 0,
+    Bot = 1,
+}
+
+/// Where a device keeps its keys: a native key store, or a browser.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Tier {
+    Native = 0,
+    Browser = 1,
+}
+
+/// The tier of the device (or one-shot recovery entry) that signed a device into existence.
+/// `Provisional` exists only inside a pairing group (protocol/03 "Pairing", R14).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum SignerTier {
+    Native = 0,
+    Browser = 1,
+    Provisional = 2,
+}
+
+macro_rules! small_enum {
+    ($name:ident { $($variant:ident = $value:expr),* $(,)? }) => {
+        impl $name {
+            pub const fn as_u8(self) -> u8 {
+                self as u8
+            }
+
+            pub fn from_u64(v: u64) -> Result<Self, ProtocolError> {
+                match v {
+                    $($value => Ok(Self::$variant),)*
+                    _ => Err(ProtocolError::Credential),
+                }
+            }
+        }
+    };
+}
+
+small_enum!(Kind { User = 0, Bot = 1 });
+small_enum!(Tier { Native = 0, Browser = 1 });
+small_enum!(SignerTier { Native = 0, Browser = 1, Provisional = 2 });
+
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let digest = Sha256::digest(data);
     let mut out = [0u8; 32];
