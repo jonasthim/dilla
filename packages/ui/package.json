@@ -1,0 +1,44 @@
+{
+  "name": "@dilla/ui",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./base.css": "./src/styles/base.css" },
+  "scripts": {
+    "test": "vitest run",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build",
+    "test:storybook": "test-storybook --ci"
+  },
+  "peerDependencies": { "react": "^19", "react-dom": "^19" },
+  "dependencies": {
+    "@dilla/design-tokens": "*",
+    "@fontsource-variable/jetbrains-mono": "^5",
+    "@fontsource/dm-serif-display": "^5"
+  },
+  "devDependencies": {
+    "@storybook/addon-a11y": "^9",
+    "@storybook/react-vite": "^9",
+    "@storybook/test-runner": "^0.22",
+    "@testing-library/jest-dom": "^6",
+    "@testing-library/react": "^16",
+    "@testing-library/user-event": "^14",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "axe-playwright": "^2",
+    "concurrently": "^9",
+    "http-server": "^14",
+    "jsdom": "^26",
+    "playwright": "^1.50",
+    "react": "^19",
+    "react-dom": "^19",
+    "storybook": "^9",
+    "typescript": "^5.6",
+    "vite": "^6",
+    "vitest": "^3",
+    "vitest-axe": "^0.1",
+    "wait-on": "^8"
+  }
+}

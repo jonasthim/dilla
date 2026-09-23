@@ -1,0 +1,18 @@
+@import '@dilla/design-tokens/tokens.css';
+@import '@fontsource-variable/jetbrains-mono';
+@import '@fontsource/dm-serif-display/400-italic.css';
+
+:where(.d-root, .d-root *) { box-sizing: border-box; }
+.d-root {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  font-weight: var(--weight-body);
+  line-height: var(--line-height);
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+.d-root :focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.d-label { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
+.d-root a { color: var(--fg-link); text-decoration-line: none; }
+[data-theme="high-contrast"] .d-root a, .d-root a[data-underline] { text-decoration-line: underline; }
