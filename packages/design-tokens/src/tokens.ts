@@ -59,6 +59,8 @@ export const structural = {
   weight: { display: '700', body: '420', label: '600' },
   labelTracking: '0.08em',
   radius: { sm: '0px', md: '2px', lg: '3px', pill: '999px', avatar: '2px' },
+  /** Dimming for de-emphasised (e.g. muted) rows. Chosen so fg-2 over bg-2 still clears 4.5:1 in every theme. */
+  opacity: { muted: '0.8' },
   shadow: { s1: '0 0 0 1px rgba(124,255,142,0.08)', s2: '0 0 0 1px rgba(124,255,142,0.18), 0 12px 30px rgba(0,0,0,0.6)' },
   layout: { railW: '60px', sidebarW: '240px', membersW: '232px', threadW: '380px', topbarH: '32px', bottombarH: '26px', channelHeaderH: '48px' },
   focusRing: '0 0 0 2px var(--bg), 0 0 0 4px var(--accent)',

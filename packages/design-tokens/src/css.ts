@@ -23,6 +23,7 @@ function structuralDecls(): string {
     ...Object.entries(s.weight).map(([k, v]) => `  --weight-${k}: ${v};`),
     `  --label-tracking: ${s.labelTracking};`,
     ...Object.entries(s.radius).map(([k, v]) => `  --r-${k}: ${v};`),
+    ...Object.entries(s.opacity).map(([k, v]) => `  --opacity-${k}: ${v};`),
     `  --shadow-1: ${s.shadow.s1};`, `  --shadow-2: ${s.shadow.s2};`,
     ...Object.entries(s.layout).map(([k, v]) => `  --${kebab(k)}: ${v};`),
     `  --focus-ring: ${s.focusRing};`,

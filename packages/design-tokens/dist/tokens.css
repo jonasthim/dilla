@@ -43,6 +43,7 @@
   --r-lg: 3px;
   --r-pill: 999px;
   --r-avatar: 2px;
+  --opacity-muted: 0.8;
   --shadow-1: 0 0 0 1px rgba(124,255,142,0.08);
   --shadow-2: 0 0 0 1px rgba(124,255,142,0.18), 0 12px 30px rgba(0,0,0,0.6);
   --rail-w: 60px;
