@@ -75,6 +75,12 @@ Radii: `--r-sm` 0, `--r-md` 2px, `--r-lg` 3px, `--r-pill` 999px (reactions, pres
 and mention pills only), `--r-avatar` 2px. Shadows: `--shadow-1` `0 0 0 1px rgba(124,255,142,0.08)`,
 `--shadow-2` `0 0 0 1px rgba(124,255,142,0.18), 0 12px 30px rgba(0,0,0,0.6)`. No blur anywhere.
 
+Opacity: `--opacity-muted` 0.8, applied to de-emphasised rows (e.g. a muted channel/member row) on
+top of their existing colour, never as the only signal of the muted state. Chosen over the Mesh
+reference's raw `0.55` because that value composited `--fg-2` text over `--bg-2` down to ~3.09:1;
+0.8 is the smallest round value that keeps `--fg-2` on `--bg-2` at or above 4.5:1 in all three
+themes (mesh 5.32:1, light 4.95:1, high-contrast 10.59:1).
+
 Density (`data-density`): compact row padding 4px 16px, gap 0, group gap 8px, avatar 28px;
 regular 6px 18px, 2px, 14px, 32px; cozy 10px 20px, 4px, 22px, 36px. Line height 1.4 / 1.5 / 1.55.
 
