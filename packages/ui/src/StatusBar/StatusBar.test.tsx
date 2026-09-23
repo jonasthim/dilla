@@ -1,0 +1,35 @@
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { describe, it, expect, vi } from 'vitest';
+import { StatusBar, StatusChunk, Meter, BrandMark } from './StatusBar.tsx';
+import { expectNoAxeViolations } from '../test/setup.ts';
+
+describe('StatusBar', () => {
+  it('is a labelled toolbar with clickable and static chunks', async () => {
+    const onClick = vi.fn();
+    render(
+      <StatusBar position="bottom" label="Connection">
+        <StatusChunk label="node">dilla.thim.dev</StatusChunk>
+        <StatusChunk label="voice" tone="ok" onClick={onClick}>OPUS 48kHz</StatusChunk>
+      </StatusBar>,
+    );
+    expect(screen.getByRole('toolbar', { name: 'Connection' })).toBeInTheDocument();
+    expect(screen.getByText('dilla.thim.dev').closest('button')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /voice OPUS 48kHz/ }));
+    expect(onClick).toHaveBeenCalled();
+  });
+  it('renders the brand mark with the product name readable once', () => {
+    render(<StatusBar position="top" label="Session"><BrandMark /></StatusBar>);
+    expect(screen.getByText('DILLA')).toBeInTheDocument();
+    expect(screen.queryByText('D')).toHaveAttribute('aria-hidden', 'true');
+  });
+  it('meter is decorative', () => {
+    const { container } = render(<Meter levels={[1, 3, 5, 2, 0, 4, 6, 2, 1, 3, 2, 1]} />);
+    expect(container.firstElementChild).toHaveAttribute('aria-hidden', 'true');
+    expect(container.querySelectorAll('i')).toHaveLength(12);
+  });
+  it('has no serious axe violations', async () => {
+    const { container } = render(<div className="d-root"><StatusBar position="top" label="Session"><BrandMark /><StatusChunk>server Midgard Crew</StatusChunk></StatusBar></div>);
+    await expectNoAxeViolations(container);
+  });
+});
