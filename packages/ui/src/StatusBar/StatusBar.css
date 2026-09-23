@@ -4,7 +4,7 @@
 .d-chunk { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border-right: 1px solid var(--hairline); font: inherit; color: inherit; background: transparent; }
 .d-chunk--clickable { cursor: pointer; border-top: 0; border-bottom: 0; border-left: 0; }
 .d-chunk--clickable:hover { color: var(--fg); background: var(--surface-2); }
-.d-chunk__k { color: var(--fg-4); }
+.d-chunk__k { color: var(--fg-3); }
 .d-chunk__v { color: var(--fg-2); font-weight: var(--weight-label); }
 .d-chunk__v[data-tone="ok"] { color: var(--ok); }
 .d-chunk__v[data-tone="warn"] { color: var(--warn); }
