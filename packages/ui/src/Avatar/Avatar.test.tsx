@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
-import { Avatar } from './Avatar.tsx';
+import { Avatar, AVATAR_HUES } from './Avatar.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { contrastRatio } from '@dilla/design-tokens';
 
@@ -51,9 +51,10 @@ describe('Avatar', () => {
     await expectNoAxeViolations(container);
   });
   it('maintains ≥4.5:1 contrast with white across all avatar hues', () => {
-    // The avatar background uses HSL(H 45% 42%) with white text (#fff)
-    // All hues in the curated palette must maintain >= 4.5:1 contrast
-    const AVATAR_HUES = [0, 20, 210, 230, 250, 270, 300, 330];
+    // The avatar background uses HSL(H 45% 42%) with white text (#fff).
+    // Every hue in the component's own palette must clear 4.5:1 — the
+    // constant is imported, not copied, so adding a hue to the palette
+    // without checking it fails here.
     const MIN_CONTRAST = 4.5;
 
     AVATAR_HUES.forEach(hue => {

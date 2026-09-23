@@ -1,9 +1,14 @@
 import './Avatar.css';
 export type Presence = 'online' | 'idle' | 'dnd' | 'offline';
-export type AvatarProps = { name: string; initials?: string; hue?: number; presence?: Presence; size?: 'sm' | 'md' | 'lg' };
 
-// Curated palette of hues verified ≥4.5:1 contrast with white at HSL(H 45% 42%)
-const AVATAR_HUES = [0, 20, 210, 230, 250, 270, 300, 330];
+/**
+ * Curated palette of hues, each verified ≥ 4.5:1 against white at
+ * HSL(H 45% 42%). Exported so the contrast guard in Avatar.test.tsx checks
+ * this palette rather than a copy of it that can drift.
+ */
+export const AVATAR_HUES = [0, 20, 210, 230, 250, 270, 300, 330] as const;
+
+export type AvatarProps = { name: string; initials?: string; hue?: (typeof AVATAR_HUES)[number]; presence?: Presence; size?: 'sm' | 'md' | 'lg' };
 
 function deriveInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
