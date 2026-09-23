@@ -17,6 +17,9 @@ the instance never holds; the instance is the MLS Delivery Service and an extern
   is plaintext to the instance; only channels joinable by public invite may be `readable`).
 - **User**: an account on one instance, identified by `user_id` (16 bytes) and a **UMK** (user
   master key, Ed25519).
+- **Member**: a user's participation in a community, with associated roles and permissions. A
+  community's members are the set of users who have joined it; roles determine their access to
+  channels and actions within that community.
 - **Device**: one installation of a client or bot, identified by `device_id` (16 bytes) and a
   **DSK** (device signing key, Ed25519). A device is one MLS **leaf** in every group it belongs to.
 - **Tier**: `native` (desktop or mobile app; bundled code; OS keystore) or `browser` (web app
