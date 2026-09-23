@@ -186,6 +186,36 @@
   }
 }
 
+@media (prefers-contrast: more) {
+  :root:not([data-theme]) {
+    --bg: #000000;
+    --bg-2: #000000;
+    --bg-3: #0A0A0A;
+    --surface: #000000;
+    --surface-2: #101010;
+    --surface-hi: #1C1C1C;
+    --hairline: #FFFFFF;
+    --hairline-2: #FFFFFF;
+    --edge: #FFFFFF;
+    --fg: #FFFFFF;
+    --fg-2: #E6E6E6;
+    --fg-3: #C8C8C8;
+    --fg-4: #8A8A8A;
+    --fg-link: #9BFFA8;
+    --accent: #9BFFA8;
+    --accent-2: #C4FFCC;
+    --accent-ink: #000000;
+    --accent-soft: rgba(155,255,168,0.2);
+    --danger: #FF9A9A;
+    --warn: #FFE08A;
+    --ok: #9BFFA8;
+    --mention: #FFE08A;
+    --mention-ink: #000000;
+    --link-underline: 1;
+    color-scheme: dark;
+  }
+}
+
 [data-density="compact"] {
   --row-pad-y: 4px;
   --row-pad-x: 16px;

@@ -20,6 +20,12 @@ describe('renderCss', () => {
   it('follows the OS light setting only when no theme is chosen', () => {
     expect(css).toMatch(/@media \(prefers-color-scheme: light\)\s*{\s*:root:not\(\[data-theme\]\)\s*{[^}]*--bg:\s*#F5F6F5;/);
   });
+  it('follows the OS contrast preference only when no theme is chosen', () => {
+    expect(css).toMatch(/@media \(prefers-contrast: more\)\s*{\s*:root:not\(\[data-theme\]\)\s*{[^}]*--bg:\s*#000000;/);
+    // and it comes after the colour-scheme block, so a user who asks for
+    // more contrast gets it even when the OS is set to light.
+    expect(css.indexOf('@media (prefers-contrast: more)')).toBeGreaterThan(css.indexOf('@media (prefers-color-scheme: light)'));
+  });
   it('emits densities and reduced motion', () => {
     expect(css).toMatch(/\[data-density="compact"\]\s*{[^}]*--avatar-size:\s*28px;/);
     expect(css).toMatch(/:root\s*{[^}]*--row-pad-y:\s*6px;/);

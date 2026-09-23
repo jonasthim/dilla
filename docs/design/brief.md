@@ -178,7 +178,9 @@ derived from the same structure with their own values (see `packages/design-toke
 theme is not a colour inversion but a re-pick that keeps the accent meaning (green = live/sealed,
 warn = attention, danger = destructive) at AA on light surfaces; the high-contrast theme uses pure
 black, white text, a brighter accent, 1px white hairlines and underlined links. The app follows
-the OS setting until the user chooses.
+the OS setting until the user chooses. Until then it also follows `prefers-contrast: more`, which
+selects the high-contrast theme even when the OS colour scheme is light; an explicit theme choice
+wins over both.
 
 ## Accessibility model
 

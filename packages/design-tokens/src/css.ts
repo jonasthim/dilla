@@ -43,6 +43,11 @@ export function renderCss(): string {
     `[data-theme="light"] {\n${colorDecls(themes.light)}\n  color-scheme: light;\n}`,
     `[data-theme="high-contrast"] {\n${colorDecls(themes['high-contrast'])}\n  color-scheme: dark;\n}`,
     `@media (prefers-color-scheme: light) {\n  :root:not([data-theme]) {\n${colorDecls(themes.light).replace(/^/gm, '  ')}\n    color-scheme: light;\n  }\n}`,
+    // After the colour-scheme block on purpose: a user who asks the OS for
+    // more contrast gets the high-contrast theme even when the OS is light.
+    // An explicit [data-theme] still wins over both, because these only
+    // apply when none is set.
+    `@media (prefers-contrast: more) {\n  :root:not([data-theme]) {\n${colorDecls(themes['high-contrast']).replace(/^/gm, '  ')}\n    color-scheme: dark;\n  }\n}`,
     `[data-density="compact"] {\n${densityDecls(densities.compact)}\n}`,
     `[data-density="regular"] {\n${densityDecls(densities.regular)}\n}`,
     `[data-density="cozy"] {\n${densityDecls(densities.cozy)}\n}`,
