@@ -18,6 +18,18 @@ use serde::{Serialize, de::DeserializeOwned};
 // — it would expand to `Rc<RefCell<rusqlite::Connection>>` and fail with
 // `error[E0433]: failed to resolve: use of undeclared crate or module rusqlite`. The whole SQLite
 // half of `mls` is compiled out on wasi; see `mls/mod.rs`.
+//
+// **Ownership invariant — read before cloning one of these.** A SQLite transaction is a property
+// of the *connection*, not of the statement that opened it, but `DillaStorage` takes and releases
+// the lock once per method call, not for the length of a transaction. So: exactly one
+// `DillaStorage` may use a given `ConnHandle`, and while that storage has a transaction open
+// (`DillaStorage::transaction`) nothing else may touch the handle. A second writer that slips in
+// between `BEGIN IMMEDIATE` and `COMMIT` has its writes silently enrolled in — and, if the
+// transaction fails, silently rolled back with — someone else's transaction. `DillaStorage` guards
+// against a second `transaction()` on *itself* (`TxError::AlreadyOpen`); it cannot see a second
+// `DillaStorage` built over a clone of the same handle, and that is the caller's job not to do.
+// `DillaProvider::new` takes the handle by value for this reason: hand the clone to the provider
+// and keep no copy.
 #[cfg(not(target_arch = "wasm32"))]
 pub type ConnHandle = std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -67,6 +79,11 @@ CREATE TABLE IF NOT EXISTS storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NU
 
 pub struct DillaStorage {
     conn: ConnHandle,
+    /// Set for the length of a `DillaStorage::transaction`, so a second (nested or concurrent)
+    /// `transaction()` on this storage is refused with `TxError::AlreadyOpen` instead of falling
+    /// through to SQLite's "cannot start a transaction within a transaction". See the ownership
+    /// invariant on `ConnHandle` for what this flag cannot see.
+    in_tx: core::sync::atomic::AtomicBool,
 }
 
 impl From<rusqlite::Error> for StorageError {
@@ -95,7 +112,24 @@ fn with_conn<T>(
 
 impl DillaStorage {
     pub fn new(conn: ConnHandle) -> Self {
-        Self { conn }
+        Self {
+            conn,
+            in_tx: core::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Claims this storage's transaction slot, or returns `false` if one is already open. Paired
+    /// with `leave_tx`, which `tx.rs`'s RAII guard calls on every exit path including an unwind.
+    pub(crate) fn try_enter_tx(&self) -> bool {
+        use core::sync::atomic::Ordering;
+        self.in_tx
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    pub(crate) fn leave_tx(&self) {
+        self.in_tx
+            .store(false, core::sync::atomic::Ordering::Release);
     }
 
     pub fn conn(&self) -> &ConnHandle {
