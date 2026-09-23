@@ -47,7 +47,12 @@ fn write_entries(e: &mut Encoder, entries: &[DeviceEntry]) {
 
 fn read_entries(d: &mut Decoder<'_>) -> Result<Vec<DeviceEntry>, CborError> {
     let n = d.array_len()?;
-    let mut entries = Vec::with_capacity(n);
+    // Deliberately not `Vec::with_capacity(n)`. `array_len` bounds `n` by the bytes that remain,
+    // but a `DeviceEntry` in memory is far wider than the 54 bytes its shortest encoding costs, so
+    // reserving one per claimed element scales an N-byte blob from an untrusted DS into ~80N bytes
+    // of heap (`cbor::Decoder::array_len`'s own doc: "a caller must not scale it into a larger
+    // allocation"). Geometric growth is bounded by the entries that actually parse.
+    let mut entries = Vec::new();
     for _ in 0..n {
         d.array(5)?;
         let device_id = DeviceId::from_bytes(d.bytes_exact::<16>()?);
@@ -145,7 +150,15 @@ impl DeviceList {
     }
 
     /// A verifier keeps the newest validated list per user and accepts a replacement only if the
-    /// version is strictly greater, the chain link matches and the signature verifies.
+    /// version is strictly greater, the chain link matches and the signature verifies
+    /// (protocol/03-identity.md, "Device list").
+    ///
+    /// With no previously validated list there is nothing for the version to be "not greater
+    /// than", so a first-sight list is trusted on its signature alone — the cross-user TOFU path,
+    /// where a client meeting another user fetches whatever version the DS is currently serving.
+    /// Only the genesis list can claim to chain from nothing, so `prev_hash` is pinned to 32 zero
+    /// bytes exactly when `version == 1`; `version == 0` is not a version at all (the document
+    /// numbers lists "monotonically increasing from 1").
     pub fn accept(
         &self,
         prev: Option<&DeviceList>,
@@ -161,7 +174,10 @@ impl DeviceList {
                 }
             }
             None => {
-                if self.unsigned.version != 1 || self.unsigned.prev_hash != [0u8; 32] {
+                if self.unsigned.version == 0 {
+                    return Err(ProtocolError::DeviceListStale);
+                }
+                if self.unsigned.version == 1 && self.unsigned.prev_hash != [0u8; 32] {
                     return Err(ProtocolError::DeviceListStale);
                 }
             }
@@ -309,8 +325,80 @@ mod tests {
         );
         let bumped = list(2, a.hash(), vec![entry(0x01, None)]);
         assert_ne!(a.hash(), bumped.hash(), "the version is inside the hash");
+        // protocol/03-identity.md:81-82 digests the *full 6-element* encoding, so `sig_ssk` is
+        // covered too. Every other list here is signed by the same key over different content, and
+        // Ed25519 is deterministic, so content and signature always move together: only a
+        // signature flipped under fixed content can tell `sha256(encode())` from
+        // `sha256(unsigned.encode())`.
+        let mut resigned = a.clone();
+        resigned.sig_ssk[0] ^= 0x01;
+        assert_ne!(
+            a.hash(),
+            resigned.hash(),
+            "the signature is inside the hash"
+        );
         assert_eq!(bumped.accept(Some(&a), &signer().public()), Ok(()));
         assert_ne!(a.hash(), [0u8; 32]);
+    }
+
+    /// protocol/03-identity.md:90-92 gives a verifier nothing to compare `version` against until
+    /// it has validated a list of its own, so first sight of a mid-chain list is a signature check,
+    /// not a replay of the whole chain from genesis.
+    #[test]
+    fn first_sight_of_a_mid_chain_list_is_accepted_on_its_signature() {
+        let key = signer().public();
+
+        let v5 = list(5, [0x77; 32], vec![entry(0x01, None)]);
+        assert_eq!(v5.accept(None, &key), Ok(()));
+
+        // ... and it is still only the signature that buys the trust
+        let mut tampered = v5.clone();
+        tampered.sig_ssk[0] ^= 0x01;
+        assert_eq!(tampered.accept(None, &key), Err(ProtocolError::Credential));
+
+        // a list accepted on first sight is a usable chain head
+        let v6 = list(6, v5.hash(), vec![entry(0x01, None), entry(0x02, None)]);
+        assert_eq!(v6.accept(Some(&v5), &key), Ok(()));
+
+        // version 0 is not a version
+        let zero = list(0, [0u8; 32], vec![entry(0x01, None)]);
+        assert_eq!(zero.accept(None, &key), Err(ProtocolError::DeviceListStale));
+    }
+
+    /// `array_len` bounds the claimed element count by the bytes that remain, never by the size of
+    /// what those bytes decode into: the shortest entry encoding is 54 bytes, so a head claiming
+    /// one entry per remaining byte is a ~20x lie that the decoder must not reserve memory on.
+    #[test]
+    fn decode_rejects_an_entry_array_head_that_overclaims() {
+        let e0 = entry(0x01, None);
+        let mut e = Encoder::with_capacity(256);
+        e.array(6)
+            .uint(1)
+            .bytes(UserId::from_bytes([0xd4; 16]).as_bytes())
+            .uint(1)
+            .bytes(&[0u8; 32]);
+        e.array(100); // claims 100 entries ...
+        for _ in 0..2 {
+            // ... and supplies two
+            e.array(5)
+                .bytes(e0.device_id.as_bytes())
+                .bytes(&e0.dsk_pub)
+                .uint(u64::from(Tier::Native.as_u8()))
+                .uint(e0.added_at)
+                .opt_uint(None);
+        }
+        e.bytes(&[0u8; 64]);
+        let bytes = e.into_vec();
+
+        // The entries head sits at offset 54 and costs two bytes, and 100 is well under the bytes
+        // that follow it, so `array_len`'s own bound accepts this input: the reservation policy is
+        // the only thing between the claim and the heap.
+        assert_eq!(
+            bytes[54], 0x98,
+            "the entries head is where this test thinks it is"
+        );
+        assert!(bytes.len() - 56 >= 100);
+        assert_eq!(DeviceList::decode(&bytes), Err(ProtocolError::Credential));
     }
 
     #[test]

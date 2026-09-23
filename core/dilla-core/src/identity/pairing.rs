@@ -6,6 +6,7 @@ use super::{CROCKFORD, sha256};
 use crate::cbor::{Encoder, decode_strict};
 use crate::error::ProtocolError;
 use crate::ids::{DeviceId, UserId};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// The 4-element array a new device shows as a QR code.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -76,14 +77,49 @@ pub struct Pin {
 
 /// The only application message a pairing group carries.
 /// For a browser device `ssk_priv` and `pins` are null, and `k_backup` is null unless opted in.
-#[derive(Clone, PartialEq, Eq, Debug)]
+///
+/// This is the one structure in the crate that carries `SSK_priv` — the key that signs every
+/// device credential and every device list — and `K_backup`, so it does not derive `Debug` (see
+/// the hand-written impl below) and it zeroizes both secrets on drop.
+///
+/// `PartialEq` is the derived, non-constant-time comparison: it exists for the round-trip tests
+/// and nothing compares two payloads on a decision path.
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct PairingPayload {
+    #[zeroize(skip)]
     pub v: u64,
     /// The SSK-signed credential identity CBOR of the new device.
     pub credential: Vec<u8>,
     pub ssk_priv: Option<[u8; 32]>,
     pub k_backup: Option<[u8; 32]>,
+    /// Public material: user ids, UMK public keys and a verified flag.
+    #[zeroize(skip)]
     pub pins: Option<Vec<Pin>>,
+}
+
+/// Hand-written so that no `{:?}`, `dbg!`, `tracing` field, `expect` message or failed
+/// `assert_eq!` can print `SSK_priv` or `K_backup`. Whether each secret is present is itself
+/// protocol-visible (a browser device gets neither), so presence is shown and the bytes are not.
+impl core::fmt::Debug for PairingPayload {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        fn redact(v: &Option<[u8; 32]>) -> &'static str {
+            if v.is_some() {
+                "Some(<redacted>)"
+            } else {
+                "None"
+            }
+        }
+        f.debug_struct("PairingPayload")
+            .field("v", &self.v)
+            .field(
+                "credential",
+                &format_args!("{} bytes", self.credential.len()),
+            )
+            .field("ssk_priv", &format_args!("{}", redact(&self.ssk_priv)))
+            .field("k_backup", &format_args!("{}", redact(&self.k_backup)))
+            .field("pins", &self.pins)
+            .finish()
+    }
 }
 
 impl PairingPayload {
@@ -123,7 +159,11 @@ impl PairingPayload {
                 None
             } else {
                 let n = d.array_len()?;
-                let mut pins = Vec::with_capacity(n);
+                // Not `Vec::with_capacity(n)`: `array_len` bounds `n` by the bytes that remain,
+                // and a `Pin` in memory is wider than the 53 bytes its shortest encoding costs, so
+                // reserving one per claimed element would scale an untrusted blob into a multiple
+                // of its own size. See the same note in `device_list::read_entries`.
+                let mut pins = Vec::new();
                 for _ in 0..n {
                     d.array(4)?;
                     pins.push(Pin {
@@ -187,6 +227,80 @@ mod tests {
         assert_eq!(f.len(), 12);
         assert!(f.chars().all(|c| CROCKFORD.contains(&(c as u8))), "{f}");
         assert_ne!(f, fingerprint(&[0x5b; 32]));
+    }
+
+    fn full_payload() -> PairingPayload {
+        PairingPayload {
+            v: 1,
+            credential: vec![0x8a, 0x01, 0x02],
+            ssk_priv: Some([0x32; 32]),
+            k_backup: Some([0x28; 32]),
+            pins: Some(vec![Pin {
+                user_id: UserId::from_bytes([0xd4; 16]),
+                umk_pub: [0xa1; 32],
+                first_seen: 1_758_659_640,
+                verified: 1,
+            }]),
+        }
+    }
+
+    /// A derived `Debug` prints `[50, 50, 50, ...]` for `ssk_priv: Some([0x32; 32])`, which is the
+    /// whole long-term signing key in any log line or panic message.
+    #[test]
+    fn pairing_payload_debug_never_prints_the_secrets() {
+        let p = full_payload();
+        let s = format!("{p:?}");
+        assert!(s.contains("ssk_priv: Some(<redacted>)"), "{s}");
+        assert!(s.contains("k_backup: Some(<redacted>)"), "{s}");
+        assert!(
+            !s.contains("50, 50"),
+            "the SSK bytes leaked into Debug: {s}"
+        );
+        assert!(!s.contains("40, 40"), "K_backup leaked into Debug: {s}");
+
+        let browser = PairingPayload {
+            v: 1,
+            credential: Vec::new(),
+            ssk_priv: None,
+            k_backup: None,
+            pins: None,
+        };
+        let s = format!("{browser:?}");
+        assert!(s.contains("ssk_priv: None"), "{s}");
+        assert!(s.contains("k_backup: None"), "{s}");
+    }
+
+    #[test]
+    fn pairing_payload_zeroizes_its_secrets() {
+        let mut p = full_payload();
+        p.zeroize();
+        assert_eq!(p.ssk_priv, None);
+        assert_eq!(p.k_backup, None);
+        assert!(p.credential.is_empty());
+    }
+
+    /// `array_len` bounds the claimed count by the bytes that remain, never by the size of what
+    /// those bytes decode into: the shortest `Pin` encoding is 53 bytes, so a head claiming one pin
+    /// per remaining byte must not buy one `Pin` of heap per remaining byte.
+    #[test]
+    fn decode_rejects_a_pin_array_head_that_overclaims() {
+        let mut e = Encoder::with_capacity(256);
+        e.array(5)
+            .uint(1)
+            .bytes(&[0x8a, 0x01, 0x02])
+            .opt_bytes(Some(&[0x32; 32][..]))
+            .opt_bytes(Some(&[0x28; 32][..]));
+        e.array(50); // claims 50 pins ...
+        e.array(4) // ... and supplies one
+            .bytes(&[0xd4; 16])
+            .bytes(&[0xa1; 32])
+            .uint(1_758_659_640)
+            .uint(1);
+        let bytes = e.into_vec();
+        assert_eq!(
+            PairingPayload::decode(&bytes),
+            Err(ProtocolError::Credential)
+        );
     }
 
     #[test]
