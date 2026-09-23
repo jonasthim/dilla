@@ -344,3 +344,38 @@ fn raw_splices_an_already_encoded_sub_item() {
     outer.array(2).uint(1).raw(inner.as_slice());
     assert_eq!(hex(outer.as_slice()), "8201820203");
 }
+
+#[test]
+fn rejects_an_array_count_the_remaining_input_cannot_satisfy() {
+    // Every array element costs at least one byte, so a count larger than the number of bytes
+    // left is truncation, not a valid head. Without the bound the natural
+    // `Vec::with_capacity(d.array_len()?)` a caller writes turns these 9 bytes into an OOM.
+    assert_eq!(
+        decode_strict(&unhex("9bffffffffffffffff"), |d| d.array_len()),
+        Err(CborError::Truncated)
+    );
+    assert_eq!(
+        decode_strict(&unhex("9b0000000100000000"), |d| d.array_len()),
+        Err(CborError::Truncated)
+    );
+    // The same head reached through the fixed-length reader.
+    assert_eq!(
+        decode_strict(&unhex("9bffffffffffffffff"), |d| d.array(3)),
+        Err(CborError::Truncated)
+    );
+    // The boundary in both directions: one byte per element is legal, one more is not.
+    let bytes = unhex("83010203");
+    let n = decode_strict(&bytes, |d| {
+        let n = d.array_len()?;
+        for _ in 0..n {
+            d.uint()?;
+        }
+        Ok(n)
+    })
+    .unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(
+        decode_strict(&unhex("830102"), |d| d.array_len()),
+        Err(CborError::Truncated)
+    );
+}

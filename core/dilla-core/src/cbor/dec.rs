@@ -109,6 +109,14 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
+    /// Reads an array head and returns its element count.
+    ///
+    /// The count is bounded by the input: every element costs at least one byte, so a head
+    /// claiming more elements than there are bytes left is `Err(Truncated)` rather than an
+    /// attacker-chosen `usize`. That keeps `Vec::with_capacity(d.array_len()?)` from turning
+    /// nine bytes of ciphertext into an out-of-memory abort. The count is still *input-derived*:
+    /// it bounds a pre-allocation only because it can never exceed the remaining input, so a
+    /// caller must not scale it into a larger allocation.
     pub fn array_len(&mut self) -> Result<usize, CborError> {
         let at = self.pos;
         let (major, arg) = self.head()?;
@@ -118,6 +126,9 @@ impl<'a> Decoder<'a> {
                 expected: "array",
                 offset: at,
             });
+        }
+        if arg > (self.input.len() - self.pos) as u64 {
+            return Err(CborError::Truncated);
         }
         usize::try_from(arg).map_err(|_| CborError::IntegerOverflow)
     }
