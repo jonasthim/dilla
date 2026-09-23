@@ -4,6 +4,8 @@
 //! (`dilla-core-wasm`, `dilla-core-wasi`) hold the target-specific glue.
 #![forbid(unsafe_code)]
 
+pub mod cbor;
+
 /// The crate version, reported over every binding.
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// `e2ee_version` as recorded in every `dilla_binding` (protocol/07-versioning.md).
