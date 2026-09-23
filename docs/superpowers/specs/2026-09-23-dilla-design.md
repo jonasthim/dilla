@@ -179,11 +179,12 @@ Before decomposition, the questions below have to be answered because they chang
   voice controller) + `dilla-web` (React) served as the lower-trust tier + `dilla-desktop`
   (Electron, bundles the same build, safeStorage KEK, pinned updater, capture, PTT, game detection via
   `detectables` CC0 data, Rich Presence local IPC). **Supersession (2026-09-23):** wherever Appendix A
-  puts trust badges in the chrome (per-channel mode badge, browser-tier badge, "bot can hear" copy,
-  E2EE labels in headers or status bars, call-code in the room frame), the design section below wins:
-  no encryption markers in the chrome; the readable-kanal glyph is the only exception; everything
-  else moves to Settings → Privacy / Devices, the profile popover, the ceremonies and overlays. The
-  underlying states, keys and protocol rules in Appendix A are unchanged.
+  puts encryption markers in the chrome (per-channel mode badge, E2EE labels in headers or status
+  bars, call-code in the room frame), the design section below wins: no encryption markers in the
+  chrome; the readable-channel glyph is the only exception; encryption details move to Settings →
+  Privacy, the ceremonies and overlays. The `web` tag on browser members and the bot "can hear" tag
+  in voice channels stay visible. The underlying states, keys and protocol rules in Appendix A are
+  unchanged.
 - **Bots**: users of kind `bot` as ordinary MLS leaves with tree-derived badges; `dilla-sdk-go` over
   wazero with media through server-sdk-go's FrameEncryptor; interaction groups (user's devices + bot)
   for slash commands; `dilla-music` (yt-dlp/ffmpeg → Opus → SFrame) as reference bot and CI test.
@@ -286,9 +287,10 @@ Mesh reskins, three full concepts from a judged panel) were rejected; the founde
 - **Where trust states live instead**: Settings → Privacy (safety number, verify contacts, devices
   with tier and verification state, encryption details), the onboarding "Keys" and "Safety" steps,
   the recovery-key ceremony as a modal (shown once), the SafetyCompare overlay on demand, the
-  IncomingCall overlay, and connection banners for degraded links. Bot badges: the member list's
-  existing tag style for `bot` (no "can hear" copy in the chrome; documented in the bot's profile
-  popover). Web-tier devices appear only in Settings → Devices and the profile popover.
+  IncomingCall overlay, and connection banners for degraded links. Two trust facts about people
+  stay visible in the chrome (decided at spec review): a small muted `web` tag on members signed in
+  from a browser, and the bot tag plus "can hear" on a bot present in a voice channel. They are
+  facts about who is present, not encryption markers.
 - **Design brief (W1 deliverable, `docs/design/brief.md`)**: the Mesh token table and layout spec
   transcribed from the handoff, the exclusion list above, the glyph for readable kanals, the mono
   brand mark rules (top bar uses the mono D-tile, never the SVG logo; branding SVGs for favicon,
@@ -329,11 +331,24 @@ Mesh reskins, three full concepts from a judged panel) were rejected; the founde
   surfaces; W4 voice UI; W5 community/permissions UI; W6 Electron chrome; W8 recovery/trust UX; W10
   polish from the group's first week; W12 accessibility pass. Sound set and logo by W9.
 
-### Items for Jonas to confirm at spec review
+### Items confirmed at spec review (2026-09-23)
 
-1. The persistent "browser session, lower trust" indicator accepted in the threat-model decision has been moved out of the chrome under "no encryption markers": it now lives in Settings → Devices and the profile popover only. Confirm, or name a placement.
-2. The "bot can hear this call" copy has been removed from the voice list and member list; a bot is shown with the member list's existing bot tag, and the hearing/reading scope is in its profile popover. Confirm.
-3. Sound set and logo: Mesh's mono D-tile in the top bar, dilla-chat's branding SVGs for favicon, splash and README, and an original short click/ping sound set. Confirm.
+1. The `web` tag on members signed in from a browser stays visible in the member list and message
+   header, as originally decided; encryption details stay out of the chrome.
+2. The bot tag plus "can hear" stays visible on a bot present in a voice channel.
+3. Brand and sound as proposed (see below).
+
+### Decisions taken at spec review (2026-09-23)
+
+- **Repository and module path:** `github.com/jonasthim/dilla`, public from day one. Go module
+  `github.com/jonasthim/dilla`; Rust crate `dilla-core`; npm packages under `@dilla/*`.
+- **UI vocabulary:** *server*, *channel*, *DMs*, *voice* (Discord's words; the Mesh handoff's
+  team/kanal/PMs labels are replaced in copy). Code, API and protocol keep *community* / *channel*.
+- **Brand and sound:** the Mesh mono D-tile with blinking caret in the top bar; dilla-chat's branding
+  SVGs for favicon, splash and README; an original short click/ping sound set. Confirmed.
+- **Working mode:** parallel agent cards in git worktrees, one pull request per wave, a second
+  read-only reviewer on every crypto, delivery-service, media and key-storage card, Jonas merges;
+  nothing lands on `main` without his go.
 
 ## Sub-project decomposition (spec order)
 
