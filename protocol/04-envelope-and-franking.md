@@ -22,9 +22,9 @@ Every application message in a `text` or `interaction` group is one **envelope**
 ```
 
 Limits: `body` ≤ 4 000 UTF-8 bytes for type 0/1; ≤ 32 bytes for type 3/4; at most 10 attachments;
-at most 5 previews; `image` in a preview ≤ 32 KiB. A receiver rejects an envelope over any limit
-(`E_ENVELOPE_LIMIT`), of the wrong length (`E_ENVELOPE_SHAPE`), or with an unknown `type`
-(`E_ENVELOPE_TYPE`); it MUST NOT render a partially valid envelope.
+at most 5 previews; `image` in a preview ≤ 32 KiB; `thumb` in an attachment ≤ 16 KiB. A receiver
+rejects an envelope over any limit (`E_ENVELOPE_LIMIT`), of the wrong length (`E_ENVELOPE_SHAPE`),
+or with an unknown `type` (`E_ENVELOPE_TYPE`); it MUST NOT render a partially valid envelope.
 
 Attachments are encrypted by the sender with AES-256-GCM under the per-attachment random `key`
 and `nonce`, uploaded as opaque blobs; `blob_id` is the SHA-256 of the ciphertext, and the
@@ -56,7 +56,10 @@ instance ever reading content and without the reporter being able to forge it.
 - **Receiver check.** Every receiver recomputes `C` from the decrypted envelope and hard-rejects a
   message whose `authenticated_data` differs (`E_FRANK_MISMATCH`).
 - **Tag**, computed by the instance on upload with its per-instance franking key `K_frank`
-  (32 random bytes, rotated yearly, old keys kept for verification):
+  (32 random bytes, rotated yearly, old keys kept for verification). The DS reads `C` directly from
+  the `PrivateMessage`'s `authenticated_data` — there is no separate `commitment` field on the
+  upload — and MUST reject an upload whose `authenticated_data` is not exactly 32 bytes
+  (`422 commitment_invalid`, `02-delivery-service.md`):
   `T = HMAC-SHA256(K_frank, "dilla frank tag v1" || group_id || epoch(8, big-endian) || seq(8) || uploader_device(16) || C || recv_ts(8))`.
   The instance stores `(seq, epoch, uploader_device, C, T, recv_ts)` with the ciphertext and returns
   `T` and `recv_ts` to the uploader.
@@ -68,10 +71,12 @@ instance ever reading content and without the reporter being able to forge it.
 
 ## Vectors
 
-`vectors/envelope.json` (four envelopes: CBOR bytes, length, padded length, commitment) and
-`vectors/franking.json` (three tags under a fixed instance key). An implementation conforms when it
-reproduces `cbor`, `commitment` and `tag` for every case and rejects the malformed inputs listed
-in `packages/protocol-vectors/src/envelope.test.ts`.
+`vectors/envelope.json` (four envelopes: CBOR bytes, length, commitment) and `vectors/franking.json`
+(three tags under a fixed instance key). An implementation conforms when it reproduces `cbor`,
+`commitment` and `tag` for every case, and rejects: the wrong element count; an unknown `type`;
+`msg_id` or `k_f` of the wrong length; non-minimal CBOR or trailing bytes; and any limit exceeded
+(`body` over 4 000 bytes for type 0/1 or over 32 bytes for type 3/4; more than 10 attachments; more
+than 5 previews; a preview `image` over 32 768 bytes; a `thumb` over 16 384 bytes).
 
 ## Error codes
 

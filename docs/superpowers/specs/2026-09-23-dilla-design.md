@@ -337,6 +337,9 @@ Mesh reskins, three full concepts from a judged panel) were rejected; the founde
    header, as originally decided; encryption details stay out of the chrome.
 2. The bot tag plus "can hear" stays visible on a bot present in a voice channel.
 3. Brand and sound as proposed (see below).
+4. 2026-09-23 final review: the backup manifest is SSK-signed and the header is split into an
+   immutable root and a mutable state object, because UMK_priv is never on a device after signup;
+   Appendix A's "UMK-signed manifest" is superseded by protocol/06-backup-archive.md.
 
 ### Decisions taken at spec review (2026-09-23)
 
@@ -434,7 +437,7 @@ dilla is one Go binary (`dillad`) and one Rust core (`dilla-core`) that every cl
 - **identity**: UMK/SSK/DSK, tiers, the SSK-signed device list (monotonic version, hash-chained), TOFU pin table, safety numbers, SAS derivation from `epoch_authenticator`.
 - **envelope**: deterministic encoding as fixed-position CBOR arrays (ciborium does not canonicalise map keys); franking `K_f`/`C`; receiver verification.
 - **sframe**: RFC 9605 literal (see Media), codec prefix parsers for Opus/VP8/VP9/H.264, RBSP escaping, CTR partition with refuse-on-wrap.
-- **backup**: `K_header`/`K_backup` = HKDF-SHA256(RK, "dilla header v1" / "dilla archive v1"); archive chunks, UMK-signed manifest, idempotent merge by `msg_id`.
+- **backup**: `K_header`/`K_backup` = HKDF-SHA256(RK, "dilla header v1" / "dilla archive v1"); archive chunks, SSK-signed manifest, idempotent merge by `msg_id`.
 - **store**: SQLite page-encrypted under a 256-bit device KEK (sqlite3mc / bundled-sqlcipher), tables for messages, attachments cache, membership cache; FTS5 index before public release, substring scan at daily use.
 - **sync**: per-group cursors; catch-up interleaves handshakes and application messages per epoch so a device offline longer than the past-epoch window still decrypts everything it can, and labels the rest "undecryptable (too old)" with a reason code.
 - **public_group** (wasi export only): `PublicGroup::from_external`, `process_message`, `merge_commit`, `export_ratchet_tree`, `ExternalProposal::new_remove/new_add` (all verified in 0.9.0).
@@ -478,7 +481,7 @@ dilla is one Go binary (`dillad`) and one Rust core (`dilla-core`) that every cl
 
 **Pairing.** Two-leaf `pairing` group without external senders. The new device shows a QR/fingerprint of its DSK; the old device refuses unless the tree has exactly two leaves and the peer DSK matches; SAS from `epoch_authenticator`; then the old device sends, to a native device, `SSK_priv`, `K_backup` and the pin table; to a browser device only its signed credential (`K_backup` only if the user enables "history in browser sessions").
 
-**Recovery.** 256-bit RK at signup (64 base32 or 24 words, forced acknowledgement). Header `{UMK_priv, SSK_priv, device list, pins}` under `K_header`; archive of decrypted messages under `K_backup` (per-device immutable chunks, UMK-signed manifest, merge by `msg_id`). Lost RK with no signed-in device = lost history, stated in onboarding.
+**Recovery.** 256-bit RK at signup (64 base32 or 24 words, forced acknowledgement). Header `{UMK_priv, SSK_priv, device list, pins}` under `K_header`; archive of decrypted messages under `K_backup` (per-device immutable chunks, SSK-signed manifest, merge by `msg_id`). Lost RK with no signed-in device = lost history, stated in onboarding.
 
 **Franking.** `K_f` (32 random bytes) inside the envelope; `C = HMAC-SHA256(K_f, envelope without K_f)` in `authenticated_data`; **recipients recompute C on decrypt and hard-reject mismatches**; each edit has its own `K_f`. A report reveals `(envelope, K_f)`; authorship is bound through the server's session-to-device record (operator attestation, deniable to third parties), stated as such.
 

@@ -12,9 +12,11 @@ the instance never holds; the instance is the MLS Delivery Service and an extern
   and an Ed25519 **instance signing key** used as the MLS external sender.
 - **Community**: a set of channels, roles and members on one instance, identified by
   `community_id` (16 bytes). DMs and group DMs have no community; their `community_id` is null.
-- **Channel**: a text or voice channel, identified by `channel_id` (16 bytes). A text channel has a
-  **mode**: `e2ee` (content is an MLS group; the instance sees ciphertext) or `readable` (content
-  is plaintext to the instance; only channels joinable by public invite may be `readable`).
+- **Channel**: a text or voice channel, identified by `channel_id` (16 bytes). A channel has a
+  **visibility**: `private` (membership by role or explicit grant), `invite` (joinable by anyone
+  holding a public invite link) or `discoverable`. A text channel has a **mode**: `e2ee` (content is
+  an MLS group; the instance sees ciphertext) or `readable` (content is plaintext to the instance).
+  `private` channels may be mode `e2ee`; `invite` and `discoverable` channels MUST be `readable`.
 - **User**: an account on one instance, identified by `user_id` (16 bytes) and a **UMK** (user
   master key, Ed25519).
 - **Member**: a user's participation in a community, with associated roles and permissions. A
@@ -61,7 +63,7 @@ surfaces the failure to the user.
   and the backup archive with random 96-bit nonces.
 - Randomness: the platform CSPRNG; 16 bytes for identifiers, 32 bytes for keys.
 - MLS ciphersuite: `0x0001` MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 is mandatory to
-  implement; a group's suite is fixed at creation and recorded in its `dilla_binding`.
+  implement; a group's suite is fixed at creation in the group's MLS GroupContext (`cipher_suite`).
 
 ## Encodings
 

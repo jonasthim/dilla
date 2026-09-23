@@ -26,7 +26,7 @@ encrypted, with H.264 RBSP emulation-prevention re-applied after encryption.
 | Opus | 0 bytes |
 | VP8 | 1 byte for inter frames; 10 bytes for key frames |
 | VP9 | 0 bytes |
-| H.264 | non-VCL NAL units in the clear; for VCL NAL units the 1-byte NAL header in the clear, the RBSP payload encrypted, then re-escaped (`00 00 0x` → `00 00 03 0x`) |
+| H.264 | non-VCL NAL units in the clear; for VCL NAL units the 1-byte NAL header in the clear. Emulation prevention (`00 00 0x` with `x` in `0x00`–`0x03` → `00 00 03 0x`) is re-applied to everything after the NAL header byte: the SFrame header, the ciphertext and the tag. |
 | AV1 | not supported at media_version 1; a client MUST NOT negotiate AV1 in a `call` group |
 
 ## Key schedule

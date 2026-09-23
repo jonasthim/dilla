@@ -23,18 +23,22 @@ bytes on the gateway. All endpoints require a device session (`03-identity.md`).
 
 | Method and path | Body | Success | Errors |
 |---|---|---|---|
-| `POST /v1/groups` | `{binding, group_info, ratchet_tree}` from the creator | `201 {group_id, seq}` | `400 binding_invalid`, `403 mode_readable` (text group for a readable channel), `409 group_exists` |
+| `POST /v1/groups` | `{binding, group_info, ratchet_tree}` from the creator | `201 {group_id, seq}` | `400 binding_invalid`, `403 mode_readable` (text group on an `invite` or `discoverable` channel, or a `readable`-mode channel), `409 group_exists` |
 | `GET /v1/groups/{id}/info` | — | `200 {epoch, group_info, tree_hash, seq}` | `404` |
 | `GET /v1/groups/{id}/tree` | — | `200 {epoch, ratchet_tree, tree_hash}` | `404` |
 | `GET /v1/groups/{id}/handshakes?from={seq}` | — | `200 {items:[{seq, epoch, kind, sender, blob}]}` | `404`, `410 pruned` |
 | `POST /v1/groups/{id}/commit` | `{epoch, commit, group_info, welcomes:[{device_id, blob}]}` | `200 {seq, epoch}` | `409 commit_conflict {winning_commit, proposals}`, `425 commit_required {proposals}`, `422 commit_invalid {reason}`, `403 leaf_not_current` |
 | `POST /v1/groups/{id}/proposal` | `{epoch, proposal}` (member Update or own-device Remove) | `200 {seq}` | `422`, `403` |
-| `POST /v1/groups/{id}/message` | `{epoch, private_message, commitment}` (`commitment` = franking `C`, 32 bytes) | `200 {seq, franking_tag, recv_ts}` | `425 commit_required`, `403 leaf_not_current`, `413 too_large` |
+| `POST /v1/groups/{id}/message` | `{epoch, private_message}` (the franking `C` travels only in `private_message.authenticated_data`, exactly 32 bytes) | `200 {seq, franking_tag, recv_ts}` | `425 commit_required`, `403 leaf_not_current`, `413 too_large`, `422 commitment_invalid` |
 | `POST /v1/groups/{id}/resync` | `{external_commit, group_info}` | `200 {seq, epoch}` | `425 commit_required`, `422` |
 | `POST /v1/groups/{id}/fork-report` | `{epoch, seq, reason}` | `202` | — |
 | `POST /v1/keypackages` | `{packages:[blob], last_resort: blob}` | `201 {count}` | `422` |
 | `GET /v1/devices/{device_id}/keypackage` | — | `200 {blob, last_resort: bool}` | `404` |
 | `GET /v1/groups/{id}/messages?from={seq}` | — | `200 {items:[{seq, epoch, uploader_device, blob, commitment, franking_tag, recv_ts}]}` | `410 pruned` |
+
+`commitment` in the `GET /v1/groups/{id}/messages` items is the stored value of `C`, read by the DS
+from `private_message.authenticated_data` at upload time; it is not a separate client-supplied
+field.
 
 Gateway frames (CBOR arrays `[type, group_id, payload]`):
 
@@ -43,7 +47,7 @@ Gateway frames (CBOR arrays `[type, group_id, payload]`):
 - `mls.commit_needed` — `{epoch, proposal_refs, deadline_ms}`: the DS asks one device to commit
   outstanding proposals (invariant 7).
 - `mls.epoch_changed` — `{epoch, seq}`: informational, after a commit.
-- `message.ct` — `{seq, epoch, uploader_device, blob, commitment, franking_tag, recv_ts}`.
+- `message.ct` — `{seq, epoch, uploader_device, blob, franking_tag, recv_ts}`.
 - `mls.welcome` — `{group_id, blob}`: delivered to the device a Welcome is addressed to.
 
 ## Invariants
@@ -51,8 +55,9 @@ Gateway frames (CBOR arrays `[type, group_id, payload]`):
 Each invariant has a chaos scenario in `dilla-testkit` named after it.
 
 1. **Registration.** A group is registered with its `dilla_binding`. The DS refuses a `text` group
-   for a channel whose mode is `readable` or whose visibility is `discoverable` (`403 mode_readable`).
-   `call` groups exist for every voice session regardless of the channel's text mode.
+   for a channel whose visibility is `invite` or `discoverable`, or whose mode is `readable`
+   (`403 mode_readable`). `call` groups exist for every voice session regardless of the channel's
+   text mode.
 2. **Tree service.** The DS keeps a `PublicGroup` per group. Committers upload a GroupInfo
    **without** the ratchet tree; the DS serves the tree from its own `PublicGroup`, and a joiner
    MUST verify `tree_hash` in the GroupInfo against the served tree before joining.
@@ -79,7 +84,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    first; other devices back off `300 ms + random(0..300 ms)`; a 2-second watchdog nudges the next
    candidate; after three lost rounds the failing device is removed by a DS Remove.
 8. **Current-leaf sends.** Application messages are accepted only from a device session whose
-   leaf is in the current `PublicGroup` (`403 leaf_not_current`).
+   leaf is in the current `PublicGroup` (`403 leaf_not_current`). The DS reads the franking
+   commitment `C` from `private_message.authenticated_data` and MUST reject an upload whose
+   `authenticated_data` is not exactly 32 bytes (`422 commitment_invalid`); it then computes and
+   stores the franking tag `T` over that value (`04-envelope-and-franking.md`, "Franking").
 9. **Fork handling.** A member that cannot process an accepted Commit reports it
    (`POST /fork-report`) and resyncs to the DS head by external commit. Three distinct reports
    against one Commit quarantine the committer: DS Remove of its leaf and a flag on the device.
@@ -101,6 +109,7 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
 | 422 | `commit_invalid` | structural or policy failure, `reason` names the rule | do not retry unchanged; resync if the local state is behind |
 | 403 | `leaf_not_current` | the sending device's leaf is not in the current tree | resync by external commit; show "you are no longer a member" if the resync is refused |
 | 403 | `mode_readable` | text groups are not allowed for this channel | none; the channel is server-readable |
+| 422 | `commitment_invalid` | `private_message.authenticated_data` on the upload is not exactly 32 bytes | do not retry unchanged; recompute `C` and resend |
 | 410 | `pruned` | requested `seq` is older than retention | resync by external commit; mark older messages "undecryptable (too old)" |
 | 413 | `too_large` | ciphertext exceeds the instance limit (default 64 KiB) | split or attach |
 

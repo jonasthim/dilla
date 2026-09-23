@@ -23,7 +23,8 @@ Group configuration:
 
 - `use_ratchet_tree_extension`: off. The DS serves the ratchet tree (`02-delivery-service.md`).
 - `required_capabilities`: extension types `[0xF001]`; proposal types `[]`; credential types
-  `[basic]`.
+  `[basic]`. `external_senders` is not listed in `extension_types` because RFC 9420 §7.2 forbids
+  listing default extension types in `required_capabilities`.
 - Past epoch secrets: a client keeps the message secrets of past epochs for 300 seconds in `text`
   groups, 10 seconds in `call` groups, and 0 seconds in `pairing` and `interaction` groups, then
   deletes them.
