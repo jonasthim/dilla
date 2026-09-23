@@ -63,7 +63,14 @@ export const structural = {
   opacity: { muted: '0.8' },
   shadow: { s1: '0 0 0 1px rgba(124,255,142,0.08)', s2: '0 0 0 1px rgba(124,255,142,0.18), 0 12px 30px rgba(0,0,0,0.6)' },
   layout: { railW: '60px', sidebarW: '240px', membersW: '232px', threadW: '380px', topbarH: '32px', bottombarH: '26px', channelHeaderH: '48px' },
-  focusRing: '0 0 0 2px var(--bg), 0 0 0 4px var(--accent)',
+  /**
+   * The focus ring, as an `outline` shorthand: `outline: var(--focus-ring)`
+   * with `outline-offset: 2px`. An outline, not a `box-shadow`, so a
+   * component's own `box-shadow` state cue (the active channel row's inset
+   * bar, a pressed toggle's underline) can never swallow the ring — and so
+   * the Windows forced-colors indicator survives.
+   */
+  focusRing: '2px solid var(--accent)',
   motion: { fast: '150ms', normal: '200ms', slow: '300ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;

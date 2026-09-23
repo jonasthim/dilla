@@ -12,7 +12,11 @@
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
 }
-.d-root :focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The ring is an outline, never a box-shadow: components use box-shadow for
+   state (the active channel row's inset bar, a pressed toggle's underline),
+   and a box-shadow ring would be swallowed by those. An outline also keeps
+   the Windows forced-colors focus indicator. Never set `outline: none`. */
+.d-root :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 .d-label { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
 .d-root a { color: var(--fg-link); text-decoration-line: none; }
 [data-theme="high-contrast"] .d-root a, .d-root a[data-underline] { text-decoration-line: underline; }

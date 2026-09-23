@@ -53,7 +53,7 @@
   --topbar-h: 32px;
   --bottombar-h: 26px;
   --channel-header-h: 48px;
-  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  --focus-ring: 2px solid var(--accent);
   --duration-fast: 150ms;
   --duration-normal: 200ms;
   --duration-slow: 300ms;

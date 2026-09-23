@@ -28,7 +28,7 @@ describe('renderCss', () => {
   it('emits structural tokens', () => {
     expect(css).toContain('--r-md: 2px;');
     expect(css).toContain('--rail-w: 60px;');
-    expect(css).toContain('--focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);');
+    expect(css).toContain('--focus-ring: 2px solid var(--accent);');
     expect(css).toContain('--font-mono: "JetBrains Mono Variable"');
   });
 });

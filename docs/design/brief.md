@@ -87,8 +87,11 @@ regular 6px 18px, 2px, 14px, 32px; cozy 10px 20px, 4px, 22px, 36px. Line height 
 Layout dimensions: `--rail-w` 60px, `--sidebar-w` 240px (resizable 200–360), `--members-w` 232px
 (180–340), `--thread-w` 380px, `--topbar-h` 32px, `--bottombar-h` 26px, `--channel-header-h` 48px.
 
-Focus: `--focus-ring` = `0 0 0 2px var(--bg), 0 0 0 4px var(--accent)` on every interactive element
-via `:focus-visible`. Motion: `--duration-fast` 150ms, `--duration-normal` 200ms, `--duration-slow`
+Focus: `--focus-ring` = `2px solid var(--accent)`, applied as `outline: var(--focus-ring)` with
+`outline-offset: 2px` on every interactive element via `:focus-visible`. The ring is an outline and
+never a `box-shadow`: `box-shadow` is reserved for component state (the active channel row's inset
+bar, a pressed toggle's underline), which must not be able to swallow the ring, and an outline keeps
+the Windows forced-colors indicator. Motion: `--duration-fast` 150ms, `--duration-normal` 200ms, `--duration-slow`
 300ms, `--ease-out` cubic-bezier(0.16,1,0.3,1); toast pop 220ms; speaking pulse 2s; caret blink 1s.
 Under `prefers-reduced-motion: reduce` every duration is 0ms and the caret and pulse are static.
 
@@ -174,7 +177,9 @@ the OS setting until the user chooses.
 
 - Full keyboard operation: every action in the chrome reachable by Tab and the documented keybinds
   (⌘K palette, `/` search, `?` keys, ⌘1–9 channel jumps, M mute, D deafen, Esc closes).
-- Visible focus everywhere (`--focus-ring`).
+- Visible focus everywhere: a 2px accent outline offset by 2px (`--focus-ring`), applied with
+  `outline`, never `box-shadow` — `box-shadow` is reserved for component state, so a state cue can
+  never swallow the ring. Nothing in the component library sets `outline: none`.
 - The message feed is a `log` region with a polite live region for new messages; the virtualised
   list keeps DOM order equal to reading order.
 - Presence and speaking are shown with a glyph or text as well as colour.
