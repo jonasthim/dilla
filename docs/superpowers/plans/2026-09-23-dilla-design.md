@@ -174,7 +174,8 @@ Colours, mesh theme (the default):
 | `--surface-2` | `#14171A` | hover, sub-surface, inputs |
 | `--surface-hi` | `#1A1E22` | active hover, selected row |
 | `--hairline` | `#1F2226` | dividers, borders |
-| `--hairline-2` | `#363B41` | stronger borders, kbd outlines |
+| `--hairline-2` | `#363B41` | stronger dividers (decorative; never the only boundary of a control) |
+| `--edge` | `#6B7370` | borders of interactive controls (buttons, inputs, kbd, tags): 4.1:1 on `--bg`, so a control is identifiable without hover |
 | `--fg` | `#E8ECE8` | primary text |
 | `--fg-2` | `#A0A6A0` | secondary text |
 | `--fg-3` | `#767C76` | muted text and labels (Mesh had `#5E635E`, 3.3:1; raised to pass 4.5:1) |
@@ -576,7 +577,7 @@ export type ThemeName = 'mesh' | 'light' | 'high-contrast';
 
 export type ColorTokens = {
   bg: string; bg2: string; bg3: string; surface: string; surface2: string; surfaceHi: string;
-  hairline: string; hairline2: string;
+  hairline: string; hairline2: string; edge: string;
   fg: string; fg2: string; fg3: string; fg4: string; fgLink: string;
   accent: string; accent2: string; accentInk: string; accentSoft: string;
   danger: string; warn: string; ok: string; mention: string; mentionInk: string;
@@ -586,7 +587,7 @@ export type ColorTokens = {
 export const themes: Record<ThemeName, ColorTokens> = {
   mesh: {
     bg: '#070809', bg2: '#0C0D0F', bg3: '#101214', surface: '#0C0D0F', surface2: '#14171A', surfaceHi: '#1A1E22',
-    hairline: '#1F2226', hairline2: '#363B41',
+    hairline: '#1F2226', hairline2: '#363B41', edge: '#6B7370',
     fg: '#E8ECE8', fg2: '#A0A6A0', fg3: '#767C76', fg4: '#5E635E', fgLink: '#7CFF8E',
     accent: '#7CFF8E', accent2: '#A8FFB6', accentInk: '#06150A', accentSoft: 'rgba(124,255,142,0.14)',
     danger: '#FF6E6E', warn: '#FFD16A', ok: '#7CFF8E', mention: '#FFD16A', mentionInk: '#1A1300',
@@ -594,15 +595,15 @@ export const themes: Record<ThemeName, ColorTokens> = {
   },
   light: {
     bg: '#F5F6F5', bg2: '#ECEEEC', bg3: '#E3E6E3', surface: '#FFFFFF', surface2: '#E6E9E6', surfaceHi: '#DDE1DD',
-    hairline: '#CBD0CB', hairline2: '#8F978F',
-    fg: '#14171A', fg2: '#3F453F', fg3: '#5C635C', fg4: '#A9B0A9', fgLink: '#1E7F3A',
-    accent: '#1E7F3A', accent2: '#2A9A4A', accentInk: '#FFFFFF', accentSoft: 'rgba(30,127,58,0.14)',
-    danger: '#B3261E', warn: '#8A5A00', ok: '#1E7F3A', mention: '#F2C14E', mentionInk: '#1A1300',
+    hairline: '#CBD0CB', hairline2: '#8F978F', edge: '#6F776F',
+    fg: '#14171A', fg2: '#3F453F', fg3: '#5C635C', fg4: '#A9B0A9', fgLink: '#1B7334',
+    accent: '#1B7334', accent2: '#238C41', accentInk: '#FFFFFF', accentSoft: 'rgba(27,115,52,0.14)',
+    danger: '#B3261E', warn: '#8A5A00', ok: '#1B7334', mention: '#F2C14E', mentionInk: '#1A1300',
     linkUnderline: 0,
   },
   'high-contrast': {
     bg: '#000000', bg2: '#000000', bg3: '#0A0A0A', surface: '#000000', surface2: '#101010', surfaceHi: '#1C1C1C',
-    hairline: '#FFFFFF', hairline2: '#FFFFFF',
+    hairline: '#FFFFFF', hairline2: '#FFFFFF', edge: '#FFFFFF',
     fg: '#FFFFFF', fg2: '#E6E6E6', fg3: '#C8C8C8', fg4: '#8A8A8A', fgLink: '#9BFFA8',
     accent: '#9BFFA8', accent2: '#C4FFCC', accentInk: '#000000', accentSoft: 'rgba(155,255,168,0.2)',
     danger: '#FF9A9A', warn: '#FFE08A', ok: '#9BFFA8', mention: '#FFE08A', mentionInk: '#000000',
@@ -621,7 +622,7 @@ export const TEXT_PAIRS: Array<[K, K]> = [
 ];
 /** UI component and large-text pairs (≥ 3:1). */
 export const UI_PAIRS: Array<[K, K]> = [
-  ['accent', 'bg'], ['accent', 'bg2'], ['hairline2', 'bg'], ['danger', 'surface2'], ['warn', 'surface2'], ['fg2', 'surfaceHi'],
+  ['accent', 'bg'], ['accent', 'bg2'], ['edge', 'bg'], ['edge', 'surface2'], ['danger', 'surface2'], ['warn', 'surface2'], ['fg2', 'surfaceHi'],
 ];
 
 export const structural = {
@@ -861,7 +862,7 @@ git commit -s -m "feat(design-tokens): CSS custom-property emitter with themes, 
   "devDependencies": {
     "@storybook/addon-a11y": "^9",
     "@storybook/react-vite": "^9",
-    "@storybook/test-runner": "^0.23",
+    "@storybook/test-runner": "^0.22",
     "@testing-library/jest-dom": "^6",
     "@testing-library/react": "^16",
     "@testing-library/user-event": "^14",
@@ -1026,7 +1027,7 @@ export function Button({ variant = 'default', size = 'md', keyHint, pressed, chi
   height: 28px; padding: 0 10px;
   font: inherit; font-size: var(--text-sm); font-weight: var(--weight-label);
   color: var(--fg); background: var(--surface-2);
-  border: 1px solid var(--hairline-2); border-radius: var(--r-md);
+  border: 1px solid var(--edge); border-radius: var(--r-md);
   cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast);
 }
 .d-btn[data-size="sm"] { height: 22px; padding: 0 7px; font-size: var(--text-xs); }
@@ -1161,7 +1162,7 @@ import { expectNoAxeViolations } from '../test/setup.ts';
 describe('KeyHint', () => {
   it('renders each key as kbd and the label as text', () => {
     render(<KeyHint keys={['⌘', 'K']} label="cmd" />);
-    expect(screen.getAllByRole('presentation')).toHaveLength(0);
+    expect(screen.queryAllByRole('presentation')).toHaveLength(0);
     expect(screen.getByText('⌘').tagName).toBe('KBD');
     expect(screen.getByText('K').tagName).toBe('KBD');
     expect(screen.getByText('cmd')).toBeInTheDocument();
@@ -1211,7 +1212,7 @@ export function Tag({ kind }: { kind: TagKind }) {
 
 `packages/ui/src/Tag/Tag.css`:
 ```css
-.d-tag { display: inline-block; font-size: 9px; font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; line-height: 14px; padding: 0 4px; border: 1px solid var(--hairline-2); border-radius: var(--r-md); color: var(--fg-3); vertical-align: 1px; }
+.d-tag { display: inline-block; font-size: 9px; font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; line-height: 14px; padding: 0 4px; border: 1px solid var(--edge); border-radius: var(--r-md); color: var(--fg-3); vertical-align: 1px; }
 .d-tag[data-kind="admin"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .d-tag[data-kind="canHear"] { color: var(--warn); border-color: var(--warn); }
 .d-tag--glyph { border: 0; padding: 0; font-size: var(--text-xs); line-height: 1; color: var(--fg-3); text-transform: none; letter-spacing: 0; }
@@ -1234,7 +1235,7 @@ export function KeyHint({ keys, label }: KeyHintProps) {
 `packages/ui/src/KeyHint/KeyHint.css`:
 ```css
 .d-keyhint { display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-micro); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
-.d-keyhint__kbd { font: inherit; padding: 0 5px; line-height: 16px; border: 1px solid var(--hairline-2); border-radius: var(--r-md); color: var(--fg-2); }
+.d-keyhint__kbd { font: inherit; padding: 0 5px; line-height: 16px; border: 1px solid var(--edge); border-radius: var(--r-md); color: var(--fg-2); }
 ```
 
 Add to `packages/ui/src/index.ts`:
@@ -1364,10 +1365,11 @@ describe('ChannelRow', () => {
     render(<ChannelRow name="loot" kind="text" active onSelect={() => {}} />);
     expect(screen.getByRole('button', { name: /^loot/ })).toHaveAttribute('aria-current', 'page');
   });
-  it('shows unread and mention pills and the readable glyph', () => {
-    render(<><ChannelRow name="screenshots" kind="text" unread={3} mentions={12} onSelect={() => {}} /><ChannelRow name="lfg" kind="text" readable onSelect={() => {}} /></>);
+  it('shows the unread pill, the mention pill (which replaces unread), and the readable glyph', () => {
+    render(<><ChannelRow name="general" kind="text" unread={3} onSelect={() => {}} /><ChannelRow name="screenshots" kind="text" unread={3} mentions={12} onSelect={() => {}} /><ChannelRow name="lfg" kind="text" readable onSelect={() => {}} /></>);
     expect(screen.getByLabelText('3 unread')).toBeInTheDocument();
     expect(screen.getByLabelText('12 mentions')).toBeInTheDocument();
+    expect(screen.queryAllByLabelText('3 unread')).toHaveLength(1);
     expect(screen.getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
   });
   it('shows the lock on private voice channels and a muted state', () => {
@@ -1679,13 +1681,14 @@ export function Dialog({ open, title, onClose, children, footer }: DialogProps) 
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const el = ref.current; if (!el) return;
-    if (open && !el.open) el.showModal();
+    if (open && !el.open) { el.showModal(); el.focus(); }
     if (!open && el.open) el.close();
   }, [open]);
   if (!open) return null;
   return (
-    <dialog ref={ref} className="d-dialog" aria-labelledby="d-dialog-title" aria-modal="true"
+    <dialog ref={ref} className="d-dialog" aria-labelledby="d-dialog-title" aria-modal="true" tabIndex={-1}
       onCancel={e => { e.preventDefault(); onClose(); }}
+      onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); onClose(); } }}
       onClick={e => { if (e.target === ref.current) onClose(); }}>
       <div className="d-dialog__panel" onClick={e => e.stopPropagation()}>
         <h2 id="d-dialog-title" className="d-dialog__title">{title}</h2>
@@ -1851,7 +1854,7 @@ Run:
 npm run build -w packages/design-tokens
 npx playwright install --with-deps chromium
 npm run build-storybook -w packages/ui
-npx --workspace packages/ui concurrently -k -s first -n SB,TEST \
+npx concurrently -k -s first -n SB,TEST \
   "npx http-server packages/ui/storybook-static --port 6006 --silent" \
   "npx wait-on tcp:127.0.0.1:6006 && npm run test:storybook -w packages/ui -- --url http://127.0.0.1:6006"
 ```
@@ -1878,7 +1881,7 @@ Append to `.github/workflows/ci.yml` under `jobs:`:
       - run: npm run build-storybook -w packages/ui
       - name: axe on every story
         run: |
-          npx --workspace packages/ui concurrently -k -s first -n SB,TEST \
+          npx concurrently -k -s first -n SB,TEST \
             "npx http-server packages/ui/storybook-static --port 6006 --silent" \
             "npx wait-on tcp:127.0.0.1:6006 && npm run test:storybook -w packages/ui -- --url http://127.0.0.1:6006"
 ```
