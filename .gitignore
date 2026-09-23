@@ -4,6 +4,7 @@
 /node_modules/
 **/node_modules/
 *.wasm
+packages/ui/storybook-static/
 # local state
 /.superpowers/
 /.playwright-mcp/

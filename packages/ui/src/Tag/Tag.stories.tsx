@@ -1,0 +1,10 @@
+import type { Meta, StoryObj } from '@storybook/react-vite';
+import { Tag } from './Tag.tsx';
+const meta = { title: 'Primitives/Tag', component: Tag } satisfies Meta<typeof Tag>;
+export default meta;
+type Story = StoryObj<typeof meta>;
+export const Bot: Story = { args: { kind: 'bot' } };
+export const Web: Story = { args: { kind: 'web' } };
+export const Admin: Story = { args: { kind: 'admin' } };
+export const CanHear: Story = { args: { kind: 'canHear' } };
+export const ReadableGlyph: Story = { args: { kind: 'readable' } };

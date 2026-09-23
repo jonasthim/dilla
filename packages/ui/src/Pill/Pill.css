@@ -1,0 +1,7 @@
+/* The box is rem because the digits inside it are: a px pill around rem text
+   overflows as soon as the browser's text size goes up. Every fixed height,
+   width and line height in this library is rem for the same reason; only the
+   radii and the user-resizable pane widths stay px. */
+.d-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 1.125rem /* 18px */; height: 1rem /* 16px */; padding: 0 5px; font-size: var(--text-micro); font-weight: 700; border-radius: var(--r-pill); }
+.d-pill[data-kind="unread"] { background: var(--accent); color: var(--accent-ink); }
+.d-pill[data-kind="mention"] { background: var(--mention); color: var(--mention-ink); }

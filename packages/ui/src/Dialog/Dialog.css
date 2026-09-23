@@ -1,0 +1,6 @@
+.d-dialog { padding: 0; border: 1px solid var(--accent); border-radius: var(--r-lg); background: var(--surface); color: var(--fg); box-shadow: var(--shadow-2); max-width: min(560px, calc(100vw - 32px)); }
+.d-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+.d-dialog__panel { padding: 16px 18px; font-family: var(--font-mono); }
+.d-dialog__title { margin: 0 0 10px; font-size: var(--text-lg); font-weight: var(--weight-display); letter-spacing: 0.02em; }
+.d-dialog__body { font-size: var(--text-base); color: var(--fg-2); }
+.d-dialog__footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
