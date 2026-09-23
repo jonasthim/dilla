@@ -64,6 +64,10 @@ openmls = { version = "0.9.0", default-features = false, features = ["js"] }
 [dev-dependencies]
 serde_json = "1.0.151"
 hex        = "0.4"
+# Deviation A1-13: interfaces section 3.1 lists only serde_json and hex. Plan section 6's task-9
+# test list requires a trybuild compile-fail test (tests/coherence.rs), which needs this crate.
+# Dev-only, host-only: tests/coherence.rs carries #![cfg(not(target_arch = "wasm32"))].
+trybuild   = "1.0"
 
 [lints]
 workspace = true

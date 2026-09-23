@@ -123,6 +123,8 @@ pub enum CoreError {
     Cbor(#[from] crate::cbor::CborError),
     #[error("crypto: {0}")]
     Crypto(String),
+    #[error(transparent)]
+    Storage(#[from] crate::mls::StorageError),
 }
 
 #[cfg(test)]

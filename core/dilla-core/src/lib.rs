@@ -9,6 +9,7 @@ pub mod envelope;
 pub mod error;
 pub mod identity;
 pub mod ids;
+pub mod mls;
 pub mod sframe;
 #[cfg(feature = "vectors")]
 pub mod vectors;
