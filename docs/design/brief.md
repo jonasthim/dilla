@@ -32,7 +32,7 @@ Code, API and protocol keep *community* and *channel*; only copy changes.
 ## Design system source
 
 `docs/design/reference/mesh-handoff/README.md` §Design Tokens and §Layout shell, `themes.js`
-(`meshTheme`), and the live prototype `Dilla Mesh.html`. The rendering to match is
+(`mesh`), and the live prototype `Dilla Mesh.html`. The rendering to match is
 `docs/design/reference/mesh-without-encryption-markers.jpeg`; the as-shipped handoff is
 `mesh-handoff-as-shipped.jpeg` for comparison only.
 
