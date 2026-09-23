@@ -17,3 +17,8 @@ packages/ui/storybook-static/
 .idea/
 .vscode/
 *.swp
+
+# rust / wasm
+!internal/mlswasi/testdata/*.wasm
+core/dilla-core-wasm/spike/pkg/
+core/dilla-core-wasm/spike/node_modules/

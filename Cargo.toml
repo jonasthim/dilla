@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = [
+    "core/dilla-core",
+    "core/dilla-core-wasm",
+    "core/dilla-core-wasi",
+    "testkit",
+]
+default-members = ["core/dilla-core", "testkit"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.98"
+repository = "https://github.com/jonasthim/dilla"
+
+[workspace.lints.rust]
+unsafe_code = "warn"          # dilla-core forbids it outright; the wasi crate opts back in
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

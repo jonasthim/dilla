@@ -1,0 +1,31 @@
+[package]
+name = "dilla-core-wasm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]      # wasm-pack requires cdylib on the crate it is given
+
+[dependencies]
+dilla-core = { path = "../dilla-core", features = ["vectors"] }
+wasm-bindgen         = "0.2.128"
+wasm-bindgen-futures = "0.4.54"
+js-sys               = "0.3.81"
+web-sys  = { version = "0.3.81", features = [
+  "StorageManager", "FileSystemSyncAccessHandle", "FileSystemDirectoryHandle",
+  "FileSystemGetDirectoryOptions", "FileSystemReadWriteOptions", "WorkerGlobalScope",
+  "WorkerNavigator", "FileSystemGetFileOptions", "FileSystemFileHandle",
+  "DedicatedWorkerGlobalScope", "Navigator", "Lock", "LockManager",
+] }
+serde_json = "1.0.151"
+console_error_panic_hook = "0.1"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.78"
+
+[lints]
+workspace = true

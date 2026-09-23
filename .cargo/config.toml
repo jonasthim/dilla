@@ -1,0 +1,14 @@
+# Pure-wasm unit tests run under Node (R6): no chromedriver on this box, and Playwright's
+# Chromium cannot drive wasm-bindgen-test.
+[target.wasm32-unknown-unknown]
+runner = "wasm-bindgen-test-runner"
+
+# NOTE: deliberately NO rustflags here.
+# getrandom >= 0.3.4 selects the Web Crypto backend from the `wasm_js` CRATE FEATURE alone;
+# `--cfg getrandom_backend="wasm_js"` is not an allowed value of that cfg in 0.4.x, so setting it
+# would be silently inert (gap-29). Also: a workflow-level `RUSTFLAGS` env var would override every
+# `target.*.rustflags` entry outright, not merge with it.
+#
+# NOTE: deliberately NO target table or runner for wasm32-wasip1. (Written without the literal
+# table header so that core/dilla-core/tests/workspace_policy.rs can assert its absence textually.)
+# The wasip1 vector check runs under wazero from Go (Plan B task 4, R7), not under wasmtime.
