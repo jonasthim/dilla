@@ -10,6 +10,6 @@
     "test": "npm run check:docs && npm test --workspaces --if-present",
     "check:docs": "node scripts/check-protocol-docs.mjs",
     "test:docs-check": "node --test scripts/check-protocol-docs.test.mjs",
-    "vectors": "[ -d packages/protocol-vectors ] && npm run vectors --workspace packages/protocol-vectors || true"
+    "vectors": "[ ! -d packages ] || npm run vectors --workspaces --if-present"
   }
 }

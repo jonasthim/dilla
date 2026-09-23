@@ -17,5 +17,5 @@ jobs:
       - run: npm test
       - name: vectors are up to date
         run: |
-          [ -d packages/protocol-vectors ] && npm run vectors || true
+          [ ! -d packages ] || npm run vectors --workspaces --if-present
           git diff --exit-code -- protocol/vectors
