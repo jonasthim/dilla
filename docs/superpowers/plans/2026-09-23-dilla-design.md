@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> Amended after the final review of 2026-09-23; see the PR body for rulings.
+
 **Goal:** Produce the written design brief, the Mesh design-token package with an automated WCAG contrast guard and three themes, the first eight UI primitives in a React component library with Storybook and axe checks, and the lint that keeps encryption markers and the old vocabulary out of the chrome.
 
 **Architecture:** `docs/design/brief.md` is the human-readable contract and is machine-checked for its required sections. `packages/design-tokens` holds the Mesh palette, the light and high-contrast derivations, density, radii, type, motion, focus and sound tokens as a TypeScript module, emits `dist/tokens.css` (CSS custom properties keyed by `data-theme` and `data-density`), and tests every text and UI colour pair against WCAG 2.2 AA. `packages/ui` is a React 19 library styled only with those custom properties; every component has a render test with `vitest-axe`, a keyboard test, and a Storybook story; the Storybook test-runner runs axe on every story in CI. A root script scans the UI package's copy for forbidden words.
@@ -157,7 +159,7 @@ Code, API and protocol keep *community* and *channel*; only copy changes.
 ## Design system source
 
 `docs/design/reference/mesh-handoff/README.md` §Design Tokens and §Layout shell, `themes.js`
-(`meshTheme`), and the live prototype `Dilla Mesh.html`. The rendering to match is
+(`mesh`), and the live prototype `Dilla Mesh.html`. The rendering to match is
 `docs/design/reference/mesh-without-encryption-markers.jpeg`; the as-shipped handoff is
 `mesh-handoff-as-shipped.jpeg` for comparison only.
 
@@ -509,7 +511,7 @@ git commit -s -m "feat(design-tokens): WCAG contrast utility with known-answer t
 
 **Interfaces:**
 - Consumes: `contrastRatio` (Task 2).
-- Produces: `type ThemeName = 'mesh' | 'light' | 'high-contrast'`; `themes: Record<ThemeName, ColorTokens>`; `ColorTokens` with the keys listed in the brief (`bg`, `bg2`, `bg3`, `surface`, `surface2`, `surfaceHi`, `hairline`, `hairline2`, `fg`, `fg2`, `fg3`, `fg4`, `fgLink`, `accent`, `accent2`, `accentInk`, `accentSoft`, `danger`, `warn`, `ok`, `mention`, `mentionInk`, `linkUnderline`); `structural` (type, radii, shadows, layout, focus, motion, sounds); `densities`; `TEXT_PAIRS` and `UI_PAIRS` (the pairs the guard checks).
+- Produces: `type ThemeName = 'mesh' | 'light' | 'high-contrast'`; `themes: Record<ThemeName, ColorTokens>`; `ColorTokens` with the keys listed in the brief (`bg`, `bg2`, `bg3`, `surface`, `surface2`, `surfaceHi`, `hairline`, `hairline2`, `edge`, `fg`, `fg2`, `fg3`, `fg4`, `fgLink`, `accent`, `accent2`, `accentInk`, `accentSoft`, `danger`, `warn`, `ok`, `mention`, `mentionInk`, `linkUnderline`); `structural` (type, radii, shadows, layout, focus, motion, sounds); `densities`; `TEXT_PAIRS` and `UI_PAIRS` (the pairs the guard checks).
 
 - [ ] **Step 1: Write the failing token tests**
 
@@ -630,13 +632,14 @@ export const structural = {
     mono: '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
     serifItalic: '"DM Serif Display", Georgia, serif',
   },
-  text: { micro: '10px', xs: '11px', sm: '12.5px', base: '13.5px', md: '14px', lg: '17px', xl: '22px' },
+  // rem at a 16px root, never px, so browser text size and 200 % zoom scale the chrome.
+  text: { micro: '0.625rem', xs: '0.6875rem', sm: '0.78125rem', base: '0.84375rem', md: '0.875rem', lg: '1.0625rem', xl: '1.375rem' }, // 10 / 11 / 12.5 / 13.5 / 14 / 17 / 22px
   weight: { display: '700', body: '420', label: '600' },
   labelTracking: '0.08em',
   radius: { sm: '0px', md: '2px', lg: '3px', pill: '999px', avatar: '2px' },
   shadow: { s1: '0 0 0 1px rgba(124,255,142,0.08)', s2: '0 0 0 1px rgba(124,255,142,0.18), 0 12px 30px rgba(0,0,0,0.6)' },
   layout: { railW: '60px', sidebarW: '240px', membersW: '232px', threadW: '380px', topbarH: '32px', bottombarH: '26px', channelHeaderH: '48px' },
-  focusRing: '0 0 0 2px var(--bg), 0 0 0 4px var(--accent)',
+  focusRing: '2px solid var(--accent)', // an outline shorthand: box-shadow is reserved for component state
   motion: { fast: '150ms', normal: '200ms', slow: '300ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
@@ -715,7 +718,7 @@ describe('renderCss', () => {
   it('emits structural tokens', () => {
     expect(css).toContain('--r-md: 2px;');
     expect(css).toContain('--rail-w: 60px;');
-    expect(css).toContain('--focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);');
+    expect(css).toContain('--focus-ring: 2px solid var(--accent);');
     expect(css).toContain('--font-mono: "JetBrains Mono Variable"');
   });
 });
@@ -939,7 +942,10 @@ export async function expectNoAxeViolations(container: Element) {
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
 }
-.d-root :focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* An outline, never a box-shadow: components use box-shadow for state cues
+   (active row bar, pressed toggle underline), which would swallow the ring.
+   Never set `outline: none`. */
+.d-root :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 .d-label { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
 .d-root a { color: var(--fg-link); text-decoration-line: none; }
 [data-theme="high-contrast"] .d-root a, .d-root a[data-underline] { text-decoration-line: underline; }
@@ -1188,7 +1194,14 @@ export type PillProps = { kind: 'unread' | 'mention'; count: number };
 export function Pill({ kind, count }: PillProps) {
   if (count <= 0) return null;
   const label = kind === 'unread' ? `${count} unread` : `${count} ${count === 1 ? 'mention' : 'mentions'}`;
-  return <span className="d-pill" data-kind={kind} aria-label={label} role="status">{count > 99 ? '99+' : count}</span>;
+  // No role="status": the count belongs to the row's accessible name, not
+  // to a live region that interrupts. Digits are the sighted half.
+  return (
+    <span className="d-pill" data-kind={kind}>
+      <span aria-hidden="true">{count > 99 ? '99+' : count}</span>
+      <span className="d-sr-only">{label}</span>
+    </span>
+  );
 }
 ```
 
@@ -1532,7 +1545,7 @@ git commit -s -m "feat(ui): Avatar with presence glyphs, ChannelRow with pills, 
 
 **Interfaces:**
 - Consumes: `KeyHint`.
-- Produces: `StatusBar({ position: 'top' | 'bottom'; label: string; children })` as `role="toolbar"`; `StatusChunk({ label?: string; children; onClick?; tone?: 'ok' | 'warn' | 'danger' })` rendering a `button` when clickable, else a `span`; `Meter({ levels: number[] })` twelve bars, `aria-hidden`; `BrandMark()`; `Dialog({ open, title, onClose, children, footer? })` on the native `<dialog>`.
+- Produces: `StatusBar({ position: 'top' | 'bottom'; label: string; children })` as `role="region"` with `aria-label={label}` (not `role="toolbar"`: there is no roving tab order); `StatusChunk({ label?: string; children; onClick?; tone?: 'ok' | 'warn' | 'danger' })` rendering a `button` when clickable, else a `span`; `Meter({ levels: number[] })` twelve bars, `aria-hidden`; `BrandMark()`; `Dialog({ open, title, onClose, children, footer? })` on the native `<dialog>`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1620,7 +1633,7 @@ import type { ReactNode } from 'react';
 import './StatusBar.css';
 
 export function StatusBar({ position, label, children }: { position: 'top' | 'bottom'; label: string; children: ReactNode }) {
-  return <div className="d-statusbar" data-position={position} role="toolbar" aria-label={label}>{children}</div>;
+  return <div className="d-statusbar" data-position={position} role="region" aria-label={label}>{children}</div>;
 }
 
 export function StatusChunk({ label, children, onClick, tone }: { label?: string; children: ReactNode; onClick?: () => void; tone?: 'ok' | 'warn' | 'danger' }) {
@@ -1671,7 +1684,7 @@ export function BrandMark() {
 
 `packages/ui/src/Dialog/Dialog.tsx`:
 ```tsx
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
 import './Dialog.css';
 
@@ -1679,25 +1692,35 @@ export type DialogProps = { open: boolean; title: string; onClose: () => void; c
 
 export function Dialog({ open, title, onClose, children, footer }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  // The <dialog> stays mounted for the component's lifetime: only close()
+  // makes the browser return focus to whatever opened it, so the element
+  // must never be unmounted out from under it.
   useEffect(() => {
     const el = ref.current; if (!el) return;
     if (open && !el.open) { el.showModal(); el.focus(); }
     if (!open && el.open) el.close();
   }, [open]);
-  if (!open) return null;
+  useEffect(() => {
+    const el = ref.current;
+    return () => { if (el?.open) el.close(); };
+  }, []);
   return (
-    <dialog ref={ref} className="d-dialog" aria-labelledby="d-dialog-title" aria-modal="true" tabIndex={-1}
+    <dialog ref={ref} className="d-dialog" aria-labelledby={titleId} aria-modal="true" tabIndex={-1}
       onCancel={e => { e.preventDefault(); onClose(); }}
       onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); onClose(); } }}
       onClick={e => { if (e.target === ref.current) onClose(); }}>
+      {/* Contents only while open: a closed dialog leaks no hidden text. */}
+      {open ? (
       <div className="d-dialog__panel" onClick={e => e.stopPropagation()}>
-        <h2 id="d-dialog-title" className="d-dialog__title">{title}</h2>
+        <h2 id={titleId} className="d-dialog__title">{title}</h2>
         <div className="d-dialog__body">{children}</div>
         <div className="d-dialog__footer">
           <Button variant="ghost" keyHint="esc" onClick={onClose}>Close</Button>
           {footer}
         </div>
       </div>
+      ) : null}
     </dialog>
   );
 }
