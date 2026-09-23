@@ -211,10 +211,27 @@ impl DillaPublicGroup {
     /// they are dropped with the queue. Without that the map would grow for the lifetime of the
     /// wazero instance - which R9 keeps alive for the whole dillad process - driven purely by
     /// remote input. That is a memory-exhaustion path, not a tidiness question.
+    ///
+    /// The cached `binding` is re-derived here. `PublicGroup::merge_commit` replaces the group
+    /// context wholesale (`merge_diff`, vendored `group/public_group/mod.rs:362-367`), so a
+    /// structurally valid GroupContextExtensions commit moves the real `dilla_binding` underneath
+    /// a cache that was only ever filled in `from_external`/`import_state`. The DS runs no
+    /// dilla-level commit policy - `DillaGroup::process_message` refuses such a commit, the public
+    /// view has no equivalent - so one really can arrive here, and `binding()` is exactly what
+    /// interfaces section 2.10 export 12 (`public_group_state`) hands to clients. A stale cache
+    /// would serve a binding that contradicts the DS's own stored state.
+    ///
+    /// The new value is derived from `staged.group_context()`, which is the post-commit context
+    /// (`group/mls_group/staged_commit.rs:1001-1006`), **before** the merge: a commit whose context
+    /// carries no valid `dilla_binding` is then refused with nothing written, rather than leaving a
+    /// merged group behind an error.
     pub fn merge_commit(&mut self, staged: StagedCommit) -> Result<(), PublicGroupError> {
+        let binding = DillaBinding::from_group_context(staged.group_context())?;
         self.group
             .merge_commit(&self.store, staged)
-            .map_err(openmls)
+            .map_err(openmls)?;
+        self.binding = binding;
+        Ok(())
     }
 
     pub fn add_proposal(&mut self, proposal: QueuedProposal) -> Result<Vec<u8>, PublicGroupError> {

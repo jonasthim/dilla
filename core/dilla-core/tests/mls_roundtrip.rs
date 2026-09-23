@@ -836,3 +836,77 @@ fn queue_proposal_keeps_the_mls_message_the_ds_received() {
     ds.remove_proposal(&queued[0].0).expect("remove_proposal");
     assert!(ds.queued_proposals().expect("queued_proposals").is_empty());
 }
+
+/// Fix round 1, finding 1. `binding()` is what interfaces section 2.10 export 12
+/// (`public_group_state`) serves to clients, so it must never contradict the group context the DS
+/// itself holds. A GroupContextExtensions commit rewrites that context: `PublicGroup::merge_commit`
+/// replaces it wholesale (`merge_diff`), and the DS runs no dilla-level commit policy - unlike
+/// `DillaGroup::process_message`, which refuses such a commit outright - so one really can reach
+/// `merge_commit` here. The cached binding must move with it.
+#[test]
+fn the_ds_view_re_derives_its_binding_when_a_commit_rewrites_the_group_context() {
+    let alice_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+
+    let group_id = GroupId::from_slice(&[0x44; 16]);
+    let b = binding(GroupKind::Text);
+    let alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        b.clone(),
+        None,
+    )
+    .expect("create");
+
+    let info_message = alice
+        .export_group_info(&alice_p, &alice_signer)
+        .expect("group info");
+    let verifiable = into_group_info(info_message);
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let (mut ds, _) =
+        DillaPublicGroup::from_external(&crypto, alice.export_ratchet_tree().into(), verifiable)
+            .expect("from_external");
+    assert_eq!(ds.binding(), &b);
+
+    // A member rewrites `dilla_binding`. `DillaGroup` exposes no such commit, so it is driven
+    // through the raw `MlsGroup` in Alice's storage - exactly what a patched client would do.
+    let mut raw = MlsGroup::load(alice_p.storage(), &group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let mut rewritten = b.clone();
+    rewritten.policy_version = 7;
+    let commit = raw
+        .update_group_context_extensions(
+            &alice_p,
+            group_context_extensions(&rewritten, None).expect("extensions"),
+            &alice_signer,
+        )
+        .expect("a member can build the commit")
+        .0;
+
+    let staged = match ds
+        .process_message(&crypto, into_protocol(commit))
+        .expect("process")
+    {
+        PublicProcessed::StagedCommit { staged, .. } => *staged,
+        other => panic!("expected a staged commit, got {other:?}"),
+    };
+    ds.merge_commit(staged).expect("merge_commit");
+
+    assert_eq!(
+        ds.binding(),
+        &rewritten,
+        "the merged group context is what the DS must serve"
+    );
+    // The same view rebuilt from the exported state derives the binding from scratch, so it is the
+    // arbiter of what the DS's own state actually says.
+    let reloaded = DillaPublicGroup::import_state(&ds.export_state(), &group_id).expect("import");
+    assert_eq!(
+        ds.binding(),
+        reloaded.binding(),
+        "the cached binding must not contradict the stored group context"
+    );
+}
