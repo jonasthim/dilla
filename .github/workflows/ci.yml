@@ -1,0 +1,22 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:docs-check
+      - run: npm test
+      - name: vectors are up to date
+        run: |
+          [ ! -d packages ] || npm run vectors --workspaces --if-present
+          git diff --exit-code -- protocol/vectors
+          test -z "$(git status --porcelain -- protocol/vectors)"

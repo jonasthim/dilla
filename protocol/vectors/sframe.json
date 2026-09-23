@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "suite": 4,
+  "description": "dilla-sframe/1 key schedule (05-media-frames.md): base_key = MLS-Exporter(\"SFrame 1.0 Base Key\", \"\", 16); key/salt per RFC 9605 §4.4.2; CTR = slot(8)|layer(4)|seq(52); nonce = salt XOR CTR; header per RFC 9605 §4.3.",
+  "base_key": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+  "cases": [
+    {
+      "leaf_index": 0,
+      "epoch": 41,
+      "kid": "41",
+      "key": "51ae004a688e28acc9b9f6833d310323",
+      "salt": "57333694ea2dbff471eddfaa",
+      "slot": 0,
+      "layer": 0,
+      "seq": 0,
+      "ctr": "0",
+      "nonce": "57333694ea2dbff471eddfaa",
+      "header": "8029"
+    },
+    {
+      "leaf_index": 3,
+      "epoch": 41,
+      "kid": "809",
+      "key": "3fe54e870b67caffa901a88054d2cb6f",
+      "salt": "f92a07e1770098f68ed24805",
+      "slot": 0,
+      "layer": 0,
+      "seq": 1,
+      "ctr": "1",
+      "nonce": "f92a07e1770098f68ed24804",
+      "header": "910329"
+    },
+    {
+      "leaf_index": 3,
+      "epoch": 297,
+      "kid": "809",
+      "key": "3fe54e870b67caffa901a88054d2cb6f",
+      "salt": "f92a07e1770098f68ed24805",
+      "slot": 1,
+      "layer": 2,
+      "seq": 1000,
+      "ctr": "81064793292669928",
+      "nonce": "f92a07e1762098f68ed24bed",
+      "header": "9f032901200000000003e8"
+    },
+    {
+      "leaf_index": 65535,
+      "epoch": 255,
+      "kid": "16777215",
+      "key": "15d6c82b3f5a46d76b2c56c5763d356d",
+      "salt": "aa28fe534dd94e42d71b0f5b",
+      "slot": 3,
+      "layer": 15,
+      "seq": 1073741824,
+      "ctr": "283726777598083072",
+      "nonce": "aa28fe534e294e42971b0f5b",
+      "header": "afffffff03f0000040000000"
+    }
+  ]
+}

@@ -337,6 +337,9 @@ Mesh reskins, three full concepts from a judged panel) were rejected; the founde
    header, as originally decided; encryption details stay out of the chrome.
 2. The bot tag plus "can hear" stays visible on a bot present in a voice channel.
 3. Brand and sound as proposed (see below).
+4. 2026-09-23 final review: the backup manifest is SSK-signed and the header is split into an
+   immutable root and a mutable state object, because UMK_priv is never on a device after signup;
+   Appendix A's "UMK-signed manifest" is superseded by protocol/06-backup-archive.md.
 
 ### Decisions taken at spec review (2026-09-23)
 
@@ -434,7 +437,7 @@ dilla is one Go binary (`dillad`) and one Rust core (`dilla-core`) that every cl
 - **identity**: UMK/SSK/DSK, tiers, the SSK-signed device list (monotonic version, hash-chained), TOFU pin table, safety numbers, SAS derivation from `epoch_authenticator`.
 - **envelope**: deterministic encoding as fixed-position CBOR arrays (ciborium does not canonicalise map keys); franking `K_f`/`C`; receiver verification.
 - **sframe**: RFC 9605 literal (see Media), codec prefix parsers for Opus/VP8/VP9/H.264, RBSP escaping, CTR partition with refuse-on-wrap.
-- **backup**: `K_header`/`K_backup` = HKDF-SHA256(RK, "dilla header v1" / "dilla archive v1"); archive chunks, UMK-signed manifest, idempotent merge by `msg_id`.
+- **backup**: `K_header`/`K_backup` = HKDF-SHA256(RK, "dilla header v1" / "dilla archive v1"); archive chunks, SSK-signed manifest, idempotent merge by `msg_id`.
 - **store**: SQLite page-encrypted under a 256-bit device KEK (sqlite3mc / bundled-sqlcipher), tables for messages, attachments cache, membership cache; FTS5 index before public release, substring scan at daily use.
 - **sync**: per-group cursors; catch-up interleaves handshakes and application messages per epoch so a device offline longer than the past-epoch window still decrypts everything it can, and labels the rest "undecryptable (too old)" with a reason code.
 - **public_group** (wasi export only): `PublicGroup::from_external`, `process_message`, `merge_commit`, `export_ratchet_tree`, `ExternalProposal::new_remove/new_add` (all verified in 0.9.0).
@@ -478,7 +481,7 @@ dilla is one Go binary (`dillad`) and one Rust core (`dilla-core`) that every cl
 
 **Pairing.** Two-leaf `pairing` group without external senders. The new device shows a QR/fingerprint of its DSK; the old device refuses unless the tree has exactly two leaves and the peer DSK matches; SAS from `epoch_authenticator`; then the old device sends, to a native device, `SSK_priv`, `K_backup` and the pin table; to a browser device only its signed credential (`K_backup` only if the user enables "history in browser sessions").
 
-**Recovery.** 256-bit RK at signup (64 base32 or 24 words, forced acknowledgement). Header `{UMK_priv, SSK_priv, device list, pins}` under `K_header`; archive of decrypted messages under `K_backup` (per-device immutable chunks, UMK-signed manifest, merge by `msg_id`). Lost RK with no signed-in device = lost history, stated in onboarding.
+**Recovery.** 256-bit RK at signup (52 Crockford base32 characters or 24 BIP-39 words, forced acknowledgement). Root `{UMK_priv, SSK_priv}` under `K_header` (written only at signup and recovery); state `{device list, pins}` under `K_backup` (rewritten by any native device on every change); archive of decrypted messages under `K_backup` (per-device immutable chunks, SSK-signed manifest, merge by `msg_id`). Lost RK with no signed-in device = lost history, stated in onboarding.
 
 **Franking.** `K_f` (32 random bytes) inside the envelope; `C = HMAC-SHA256(K_f, envelope without K_f)` in `authenticated_data`; **recipients recompute C on decrypt and hard-reject mismatches**; each edit has its own `K_f`. A report reveals `(envelope, K_f)`; authorship is bound through the server's session-to-device record (operator attestation, deniable to third parties), stated as such.
 
@@ -571,12 +574,12 @@ Under the hood: channel membership by DS Add proposal on install or external com
 - Structure: `communities(id, owner, name, icon_blob, policy_json)`; `channels(id, community_id nullable, kind text|voice|category|dm|group_dm, mode e2ee|readable, visibility, parent_id, position, settings_json, host_policy_version)`; `roles`, `member_roles`, `channel_overwrites(target role|user, allow, deny)`, `members`, `channel_members` (DMs, group DMs, materialised private-channel eligibility), `bans`, `invites`.
 - MLS: `mls_groups(group_id, binding_json, kind, ciphersuite, epoch, seq, group_info_blob, public_group_state blob, external_sender_key_id, e2ee_version, media_version, created, closed_at)`; `mls_handshakes(group_id, seq, epoch, kind proposal|commit|welcome, sender_device|external, blob, created)`; `mls_pending_proposals(group_id, epoch, ref, kind, target_leaf, origin, issued_at, ttl, void_at)`; `mls_welcomes(device_id, group_id, blob, delivered_at)`; `mls_members(group_id, leaf_index, user_id, device_id, added_epoch, removed_epoch)`; `device_cursors(device_id, group_id, last_seq, last_epoch)`.
 - Messages: `mls_app_messages(group_id, epoch, seq, uploader_device, blob, commitment_c, franking_tag, size, created, expires)`; `readable_messages(channel_id, seq, sender, envelope_json, franking_tag, edited, deleted)` + FTS; `read_state(user_id, channel_id, last_read_seq)`; `attachments(blob_id = SHA-256(ciphertext), channel_id, uploader_device, size, mime, storage_ref, created, expires)`.
-- Backups and ops: `backups(user_id, kind header|chunk, device_id, chunk_seq, blob_id, manifest_sig)`; `voice_sessions(call_id, channel_id, group_id, livekit_room, started, ended)`; `reports(id, reporter, message_ref, revealed_envelope, k_f, verification_result, status)`; `audit_log`; `push_registrations` (phase 2); `instance_settings`; `schema_migrations`.
+- Backups and ops: `backups(user_id, kind root|state|chunk, device_id, chunk_seq, blob_id, manifest_sig)`; `voice_sessions(call_id, channel_id, group_id, livekit_room, started, ended)`; `reports(id, reporter, message_ref, revealed_envelope, k_f, verification_result, status)`; `audit_log`; `push_registrations` (phase 2); `instance_settings`; `schema_migrations`.
 - In memory: presence, typing, voice states, gateway sessions, pending `commit_needed` timers.
 
 **Client (dilla-core encrypted SQLite, one file per instance).** OpenMLS provider tables (groups, epochs, key packages, signature and encryption keys, past epoch secrets); `identity(dsk_priv, ssk_priv nullable, k_backup nullable, tier)`; `device_list_cache`; `pinned_users(user_id, umk_pub, first_seen, verified, change_alerts)`; `messages(msg_id, group_id, channel_id, epoch, seq, sender_device, envelope, franking_tag, received_at, edited_by, deleted_by)` + FTS5; `handshake_tail(group_id, ring of 64)`; `attachments_cache`; `membership_cache`; `backup_state`; `settings`.
 
-**Envelope (fixed-position CBOR array):** `[v, msg_id(16), type, thread_id?, reply_to?, body, attachments[[blob_id, key32, nonce12, size, mime, w, h, thumb]], previews[], k_f(32)]`, padded to 256-byte buckets. **Archive chunk:** `[chunk_seq, device_id, msg_id_range, nonce, AES-256-GCM ciphertext]`; manifest `[header_version, chunks[], umk_signature]`.
+**Envelope (fixed-position CBOR array):** `[v, msg_id(16), type, thread_id?, reply_to?, body, attachments[[blob_id, key32, nonce12, size, mime, w, h, thumb]], previews[], k_f(32)]`, padded to 256-byte buckets. **Archive chunk:** `[v, device_id, chunk_seq, nonce, AES-256-GCM ciphertext]`; manifest `[header_version, chunks[], ssk_signature]`.
 
 **Versioning.** Every stored blob and wire message carries a version byte; wire, E2EE and media versions negotiate independently (N-2); `dilla_binding.e2ee_version/media_version` record the group's floor; incompatible groups are re-created, never migrated in place.
 

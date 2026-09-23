@@ -1,0 +1,15 @@
+{
+  "name": "dilla-monorepo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "dilla: self-hosted, end-to-end encrypted community chat, voice and video",
+  "license": "AGPL-3.0-or-later",
+  "engines": { "node": ">=24" },
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "npm run check:docs && npm test --workspaces --if-present",
+    "check:docs": "node scripts/check-protocol-docs.mjs",
+    "test:docs-check": "node --test scripts/check-protocol-docs.test.mjs",
+    "vectors": "[ ! -d packages ] || npm run vectors --workspaces --if-present"
+  }
+}

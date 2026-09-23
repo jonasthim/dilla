@@ -1,0 +1,17 @@
+{
+  "name": "@dilla/protocol-vectors",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "vitest run",
+    "vectors": "node --experimental-strip-types src/generate.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "typescript": "^5.6",
+    "vitest": "^3"
+  }
+}
