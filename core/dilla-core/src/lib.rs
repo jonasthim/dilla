@@ -10,6 +10,7 @@ pub mod error;
 pub mod identity;
 pub mod ids;
 pub mod mls;
+pub mod public_group;
 pub mod sframe;
 #[cfg(feature = "vectors")]
 pub mod vectors;

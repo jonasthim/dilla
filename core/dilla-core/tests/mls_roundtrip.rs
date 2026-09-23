@@ -10,6 +10,7 @@ use dilla_core::ProtocolError;
 use dilla_core::envelope::{Envelope, EnvelopeType};
 use dilla_core::ids::{DeviceId, InstanceId, MsgId, UserId};
 use dilla_core::mls::*;
+use dilla_core::public_group::*;
 // `VerifiableGroupInfo` is not re-exported by `openmls::prelude` in 0.9.0.
 use openmls::messages::group_info::VerifiableGroupInfo;
 use openmls::prelude::*;
@@ -578,4 +579,260 @@ fn a_member_commit_rewriting_the_group_context_extensions_is_refused_by_the_rece
         &b,
         "the refused commit must not have changed the binding Bob serves"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Task 11: the delivery service's structural view of the same group.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_ds_view_tracks_the_group_from_a_group_info_and_a_tree() {
+    let alice_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    let b = binding(GroupKind::Text);
+    let alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        GroupId::from_slice(&[0x44; 16]),
+        b.clone(),
+        None,
+    )
+    .expect("create");
+
+    let info_message = alice
+        .export_group_info(&alice_p, &alice_signer)
+        .expect("group info");
+    let verifiable = into_group_info(info_message);
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let (ds, _committer_info) =
+        DillaPublicGroup::from_external(&crypto, alice.export_ratchet_tree().into(), verifiable)
+            .expect("from_external");
+
+    assert_eq!(ds.epoch(), alice.epoch());
+    assert_eq!(ds.group_id(), alice.group_id());
+    assert_eq!(ds.binding(), &b);
+    assert_eq!(ds.members().len(), 1);
+    assert!(ds.required_capabilities().is_some());
+
+    // The tree hash the DS serves is the one in the group context it validated, and it is not
+    // empty: a joiner compares this against the GroupInfo before trusting the membership list.
+    assert!(!ds.tree_hash().is_empty());
+    assert_eq!(ds.tree_hash().len(), 32, "SHA-256 over the tree");
+}
+
+#[test]
+fn the_ds_view_processes_a_commit_merges_it_and_advances_the_epoch() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        GroupId::from_slice(&[0x44; 16]),
+        b.clone(),
+        None,
+    )
+    .expect("create");
+
+    let info_message = alice
+        .export_group_info(&alice_p, &alice_signer)
+        .expect("group info");
+    let verifiable = into_group_info(info_message);
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let (mut ds, _) =
+        DillaPublicGroup::from_external(&crypto, alice.export_ratchet_tree().into(), verifiable)
+            .expect("from_external");
+    let before = ds.export_state();
+
+    let bundle = alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+
+    let commit = into_protocol(bundle.commit);
+    let staged = match ds.process_message(&crypto, commit).expect("process") {
+        PublicProcessed::StagedCommit { staged, .. } => *staged,
+        other => panic!("expected a staged commit, got {other:?}"),
+    };
+    ds.merge_commit(staged).expect("merge_commit");
+
+    assert_eq!(ds.epoch(), alice.epoch());
+    assert_eq!(ds.members().len(), 2);
+    assert_ne!(
+        ds.export_state(),
+        before,
+        "merging must change the exported state"
+    );
+
+    // and the exported state reloads into an equivalent view
+    let reloaded =
+        DillaPublicGroup::import_state(&ds.export_state(), alice.group_id()).expect("import");
+    assert_eq!(reloaded.epoch(), ds.epoch());
+    assert_eq!(reloaded.tree_hash(), ds.tree_hash());
+}
+
+#[test]
+fn the_ds_view_refuses_an_application_message() {
+    let alice_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        GroupId::from_slice(&[0x44; 16]),
+        b,
+        None,
+    )
+    .expect("create");
+    let info_message = alice
+        .export_group_info(&alice_p, &alice_signer)
+        .expect("group info");
+    let verifiable = into_group_info(info_message);
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let (ds, _) =
+        DillaPublicGroup::from_external(&crypto, alice.export_ratchet_tree().into(), verifiable)
+            .expect("from_external");
+
+    let message = alice
+        .create_message(&alice_p, &alice_signer, &envelope("hello"))
+        .expect("create_message");
+    let protocol = into_protocol(message);
+    match ds.process_message(&crypto, protocol).expect("process") {
+        PublicProcessed::Rejected(_) => {}
+        other => panic!("the DS must never accept a PrivateMessage, got {other:?}"),
+    }
+}
+
+#[test]
+fn validate_key_package_requires_the_binding_capability() {
+    let bob_p = provider();
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+
+    let good = build_key_package(&bob_p, &bob_signer, bob_cred.clone(), false).expect("kp");
+    let good_in: KeyPackageIn = good.key_package().clone().into();
+    assert!(validate_key_package(&crypto, good_in).is_ok());
+
+    let plain = KeyPackage::builder()
+        .build(CIPHERSUITE, &bob_p, &bob_signer, bob_cred)
+        .expect("kp");
+    let plain_in: KeyPackageIn = plain.key_package().clone().into();
+    let err = validate_key_package(&crypto, plain_in).expect_err("0xF001 is mandatory");
+    assert!(
+        matches!(err, PublicGroupError::Protocol(ProtocolError::Binding)),
+        "{err:?}"
+    );
+}
+
+/// NV-4 and deviation A2-11, both settled by ruling: `queue_proposal` is the only route from a
+/// received proposal message to a queued proposal, and what `queued_proposals()` hands back is the
+/// **`MLSMessage` the DS received**, byte for byte - not a re-serialised bare `Proposal`, which has
+/// lost its `FramedContent` and its signature and which no client could process.
+///
+/// Ledger ruling A extends it: those bytes ride inside `export_state()`, so a dillad restart does
+/// not lose a pending proposal.
+#[test]
+fn queue_proposal_keeps_the_mls_message_the_ds_received() {
+    use tls_codec::{Deserialize as _, Serialize as _};
+
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+
+    // The instance key the DS signs external proposals with, installed as external sender 0 -
+    // without it `PublicGroup::process_message` has nothing to verify the proposal against.
+    let instance = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    let instance_id = InstanceId::from_bytes([0x11; 16]);
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        GroupId::from_slice(&[0x44; 16]),
+        b,
+        Some(external_senders(instance.public().into(), &instance_id)),
+    )
+    .expect("create");
+
+    // Bob joins, so leaf 1 exists and can be the target of the Remove.
+    let _bundle = alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+
+    let info_message = alice
+        .export_group_info(&alice_p, &alice_signer)
+        .expect("group info");
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let (mut ds, _) = DillaPublicGroup::from_external(
+        &crypto,
+        alice.export_ratchet_tree().into(),
+        into_group_info(info_message),
+    )
+    .expect("from_external");
+
+    // The DS proposes removing Bob, exactly as export 17 does, and then feeds its own message back
+    // in over the wire, exactly as export 13 op 0 does.
+    let out = external_propose_remove(
+        LeafNodeIndex::new(1),
+        alice.group_id().clone(),
+        GroupEpoch::from(ds.epoch()),
+        &instance,
+    )
+    .expect("external Remove proposal");
+    let wire = out.tls_serialize_detached().expect("serialize");
+
+    let received = MlsMessageIn::tls_deserialize_exact(&wire)
+        .expect("deserialize")
+        .try_into_protocol_message()
+        .expect("a proposal is a ProtocolMessage");
+    let reference = ds
+        .queue_proposal(&crypto, received)
+        .expect("queue_proposal");
+    assert!(
+        !reference.is_empty(),
+        "queue_proposal returns the new proposal's reference bytes"
+    );
+
+    let queued = ds.queued_proposals().expect("queued_proposals");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        queued[0].0.as_slice(),
+        reference.as_slice(),
+        "the reference is the queued one"
+    );
+    assert_eq!(
+        queued[0].1, wire,
+        "the DS must hand back the MLSMessage it received, byte for byte (deviation A2-11)"
+    );
+
+    // Ledger ruling A: the kept bytes are part of the exported state.
+    let reloaded =
+        DillaPublicGroup::import_state(&ds.export_state(), alice.group_id()).expect("import");
+    let after_restart = reloaded.queued_proposals().expect("queued_proposals");
+    assert_eq!(after_restart.len(), 1);
+    assert_eq!(
+        after_restart[0].1, wire,
+        "a pending proposal must survive a dillad restart (ledger ruling A)"
+    );
+
+    // Removing the proposal drops the kept bytes with it: the map is bounded by the queue.
+    ds.remove_proposal(&queued[0].0).expect("remove_proposal");
+    assert!(ds.queued_proposals().expect("queued_proposals").is_empty());
 }
