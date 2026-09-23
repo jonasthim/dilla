@@ -52,7 +52,18 @@ pub fn past_epoch_sweep(kind: GroupKind) -> Option<PastEpochDeletion> {
 /// - `Add`: accept only in pairing and interaction groups; reject in text and call groups.
 /// - An external commit's `Remove` must target only the joiner's own leaf
 ///   (`E_EXTERNAL_COMMIT_REMOVE`).
-/// - `GroupContextExtensions`, `ReInit` and `PreSharedKey` from a member: reject.
+/// - `PreSharedKey`: reject.
+/// - `GroupContextExtensions`: accept only from the instance's external sender
+///   (`Sender::External`); reject from a member, a joiner and an external add proposal. The
+///   proposal replaces the whole extension set, so a member who lands one rewrites
+///   `dilla_binding` and `required_capabilities` (`extension_change_verdict`).
+/// - `ReInit`: reject, from every sender. Dilla never re-initialises a group, and OpenMLS 0.9.0
+///   does not implement the proposal either (messages/external_proposals.rs:5).
+///
+/// The sender each rule is measured against is the **proposal's** sender
+/// (`QueuedProposal::sender()`, proposal_store.rs:187), not the committer's: a member may commit a
+/// proposal the instance made, and that is the rotation path `rotate_external_senders_extensions`
+/// exists for.
 ///
 /// **This function is not optional and is not advisory.** `DillaGroup::process_message` calls it on
 /// the `StagedCommitMessage` arm before handing the commit back, so a caller cannot merge a commit
@@ -100,6 +111,16 @@ pub fn validate_staged_commit(
     if staged.psk_proposals().next().is_some() {
         return Err(ProtocolError::MemberRemoveForbidden);
     }
+    // `StagedCommit` has no `group_context_ext_proposals()`/`reinit_proposals()` accessor in
+    // 0.9.0 - staged_commit.rs:888-926 lists add/remove/update/psk and the untyped
+    // `queued_proposals()` - so the two remaining rules are read off the proposal queue directly.
+    for queued in staged.queued_proposals() {
+        match queued.proposal() {
+            Proposal::GroupContextExtensions(_) => extension_change_verdict(queued.sender())?,
+            Proposal::ReInit(_) => return Err(ProtocolError::MemberRemoveForbidden),
+            _ => {}
+        }
+    }
     for remove in staged.remove_proposals() {
         let target = remove.remove_proposal().removed();
         let target_user = user_of_leaf(tree, target)?;
@@ -126,6 +147,31 @@ pub(crate) fn removal_verdict(
         // RFC 9420 §12.4.3.2 and protocol/01: an external commit may remove only the joiner's own
         // leaf, and the joiner is the committer.
         Err(ProtocolError::ExternalCommitRemove)
+    } else {
+        Err(ProtocolError::MemberRemoveForbidden)
+    }
+}
+
+/// Who may change the group context extensions.
+///
+/// A `GroupContextExtensions` proposal replaces the **whole** extension set (gap-4 section 4.1),
+/// so a member who lands one can drop or rewrite `dilla_binding` and `required_capabilities`,
+/// while `DillaGroup` keeps serving the binding it cached at load - the divergence would only
+/// surface on a later `DillaGroup::load`. Only the instance rotates the extension set, and it does
+/// so as the external sender at `instance_sender_index()` (`rotate_external_senders_extensions`);
+/// every other sender is refused.
+///
+/// Split out from `validate_staged_commit` so both branches are testable: OpenMLS keeps
+/// `GroupContextExtensionProposal::new` and `ReInitProposal`'s fields `pub(crate)`
+/// (openmls-0.9.0/src/messages/proposals.rs:700 and :562-567), so dilla cannot construct either
+/// proposal, and the member branch is driven end to end from `tests/mls_roundtrip.rs` instead.
+///
+/// Same NEEDS VERIFICATION item 24 as the `Add` and PSK rules: protocol/01-groups.md states the
+/// rule but assigns it no `E_*` code, so `MemberRemoveForbidden` is the placeholder the other two
+/// already use and settling it is a protocol/07-versioning.md change.
+pub(crate) fn extension_change_verdict(proposal_sender: &Sender) -> Result<(), ProtocolError> {
+    if matches!(proposal_sender, Sender::External(_)) {
+        Ok(())
     } else {
         Err(ProtocolError::MemberRemoveForbidden)
     }
@@ -202,6 +248,31 @@ mod tests {
         assert_eq!(
             removal_verdict(true, &alice, &bob),
             Err(ProtocolError::ExternalCommitRemove)
+        );
+    }
+
+    /// Fix round 1, finding 3: the doc comment promised this rule; the body did not enforce it.
+    #[test]
+    fn only_the_instance_may_change_the_group_context_extensions() {
+        // The instance is the one external sender, at index 0 (`instance_sender_index`).
+        assert_eq!(
+            extension_change_verdict(&Sender::External(SenderExtensionIndex::new(0))),
+            Ok(())
+        );
+        // Every other sender - a member, a joiner's external commit, an external add proposal -
+        // is refused: a `GroupContextExtensions` proposal replaces the whole extension set, so
+        // accepting one from a member would let it drop or rewrite `dilla_binding`.
+        assert_eq!(
+            extension_change_verdict(&Sender::Member(LeafNodeIndex::new(0))),
+            Err(ProtocolError::MemberRemoveForbidden)
+        );
+        assert_eq!(
+            extension_change_verdict(&Sender::NewMemberCommit),
+            Err(ProtocolError::MemberRemoveForbidden)
+        );
+        assert_eq!(
+            extension_change_verdict(&Sender::NewMemberProposal),
+            Err(ProtocolError::MemberRemoveForbidden)
         );
     }
 }

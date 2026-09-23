@@ -392,3 +392,190 @@ fn a_pairing_group_never_writes_a_past_epoch_secret() {
     g.sweep_past_epochs(&p)
         .expect("sweep is still callable and does nothing");
 }
+
+/// Regression (fix round 1, finding 1): `process_message` must not decode the *sender's*
+/// credential as a dilla `CredentialIdentity` before it knows what the message is.
+///
+/// For `Sender::External(_)` OpenMLS fills `ProcessedMessage::credential()` from the group's
+/// `ExternalSenders` extension (openmls-0.9.0/src/group/public_group/process.rs:93-97 and :302),
+/// i.e. with dilla's own instance credential, whose identity is the three-element CBOR array
+/// `[1, "instance", instance_id]`. `CredentialIdentity::decode` wants ten elements, so an
+/// unconditional decode turned every instance-sent proposal into
+/// `MlsError::Protocol(ProtocolError::Credential)` — precisely the inactivity-Remove path
+/// `INACTIVITY_REMOVE_DAYS` and `instance_sender_index()` exist for.
+#[test]
+fn an_external_remove_proposal_from_the_instance_is_accepted() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+
+    // The instance's signing key: the one external sender, at index 0.
+    let instance_signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    let instance_id = InstanceId::from_bytes([0x11; 16]);
+    let senders = external_senders(instance_signer.public().into(), &instance_id);
+
+    let group_id = GroupId::from_slice(&[0x44; 16]);
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        b.clone(),
+        Some(senders),
+    )
+    .expect("create");
+    let add = alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    let mut bob = DillaGroup::join_from_welcome(
+        &bob_p,
+        into_welcome(add.welcomes[0].1.clone()),
+        alice.export_ratchet_tree().into(),
+        &b,
+    )
+    .expect("join");
+
+    // R15: the instance proposes removing Bob's leaf for inactivity.
+    let proposal = ExternalProposal::new_remove::<DillaProvider>(
+        LeafNodeIndex::new(1),
+        group_id,
+        bob.epoch().into(),
+        &instance_signer,
+        instance_sender_index(),
+    )
+    .expect("external remove proposal");
+
+    match bob
+        .process_message(&bob_p, into_protocol(proposal))
+        .expect("the instance's own proposal must not be refused as a bad credential")
+    {
+        DillaProcessed::Proposal(_) => {}
+        other => panic!("expected a queued proposal, got {other:?}"),
+    }
+}
+
+/// Regression (fix round 1, finding 2): a database failure while `create_message` persists the
+/// secret tree must reach the caller as `MlsError::NeedsReload`.
+///
+/// In the default build `CreateMessageError` has no `StorageError` variant at all: OpenMLS
+/// flattens the `write_message_secrets` failure (mod.rs:834-838) into
+/// `LibraryError::custom("Malformed plaintext")` (application.rs:104-110). The transaction rolls
+/// back, but the in-memory `MlsGroup` has already ratcheted one application generation past the
+/// committed state, so the handle is stale — gap-7 section 4 item 1.
+#[test]
+fn a_storage_failure_while_framing_a_message_reports_needs_reload() {
+    let conn: ConnHandle = std::sync::Arc::new(Mutex::new(
+        rusqlite::Connection::open_in_memory().expect("sqlite"),
+    ));
+    let alice_p = DillaProvider::new(conn.clone());
+    alice_p.storage().migrate().expect("migrate");
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        GroupId::from_slice(&[0x44; 16]),
+        binding(GroupKind::Text),
+        None,
+    )
+    .expect("create");
+
+    // `message_secrets` is a row of `openmls_group_data`, written through an upsert, so both the
+    // insert and the update path have to be closed.
+    conn.lock()
+        .expect("lock")
+        .execute_batch(
+            "CREATE TRIGGER fail_secrets_insert BEFORE INSERT ON openmls_group_data
+             WHEN NEW.data_type = 'message_secrets'
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
+             CREATE TRIGGER fail_secrets_update BEFORE UPDATE ON openmls_group_data
+             WHEN NEW.data_type = 'message_secrets'
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .expect("install triggers");
+
+    let err = alice
+        .create_message(&alice_p, &alice_signer, &envelope("does not get out"))
+        .expect_err("the framing must fail");
+    assert!(matches!(err, MlsError::NeedsReload), "{err:?}");
+}
+
+/// protocol/01-groups.md: a `GroupContextExtensions` proposal replaces the **whole** extension set
+/// (gap-4 section 4.1), so a member who lands one can drop or rewrite `dilla_binding` and
+/// `required_capabilities`. Only the instance rotates the extension set, as an external sender.
+/// Here Alice is a plain member and rewrites the binding's `target_id`; Bob must refuse the commit
+/// rather than hand it back as mergeable.
+#[test]
+fn a_member_commit_rewriting_the_group_context_extensions_is_refused_by_the_receiver() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+
+    let group_id = GroupId::from_slice(&[0x44; 16]);
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        b.clone(),
+        None,
+    )
+    .expect("create");
+    let add = alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    let mut bob = DillaGroup::join_from_welcome(
+        &bob_p,
+        into_welcome(add.welcomes[0].1.clone()),
+        alice.export_ratchet_tree().into(),
+        &b,
+    )
+    .expect("join");
+
+    // `DillaGroup` deliberately exposes no such commit, so the hostile member is driven through
+    // the raw `MlsGroup` sitting in Alice's own storage - which is exactly what a patched client
+    // would do.
+    let mut raw = MlsGroup::load(alice_p.storage(), &group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let mut tampered = b.clone();
+    tampered.target_id = [0x99; 16];
+    let commit = raw
+        .update_group_context_extensions(
+            &alice_p,
+            group_context_extensions(&tampered, None).expect("extensions"),
+            &alice_signer,
+        )
+        .expect("a member can build the commit; the receiver is what must refuse it")
+        .0;
+
+    let err = bob
+        .process_message(&bob_p, into_protocol(commit))
+        .expect_err("a member GroupContextExtensions commit must be refused");
+    assert!(
+        matches!(
+            err,
+            MlsError::Protocol(ProtocolError::MemberRemoveForbidden)
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        bob.binding(),
+        &b,
+        "the refused commit must not have changed the binding Bob serves"
+    );
+}

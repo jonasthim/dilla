@@ -55,6 +55,16 @@ impl From<ProtocolError> for MlsError {
 /// reach the caller as itself; collapsing it into `NeedsReload` would hide every refusal behind
 /// "reload me". `mls_err` below is what puts a storage failure into `MlsError::Storage` so this
 /// can tell the two apart.
+///
+/// **Which call site is which, so the list stays auditable.** *Storage-typed* - the rollback
+/// reaches this impl already carrying `MlsError::Storage`, because `mls_err` could pull the
+/// provider's own error out of the OpenMLS enum: `create`, `join_from_welcome`,
+/// `join_by_external_commit`, `add_members`, `remove_members`, `self_update`,
+/// `merge_pending_commit`, `merge_staged_commit`, `process_message`, `sweep_past_epochs`, and
+/// `delete`/`clear_pending_commit`, which call the storage provider directly. *Rollback-fatal* -
+/// the OpenMLS error type has no storage variant to pull out, so the method does not use this
+/// impl and maps every `RolledBack(_)` to `NeedsReload` itself: `create_message` (see the note
+/// there). A new method belongs in one of those two lists before it is merged.
 impl From<TxError<MlsError>> for MlsError {
     fn from(e: TxError<MlsError>) -> Self {
         match e {
@@ -422,17 +432,28 @@ impl DillaGroup {
         let body = envelope.encode().map_err(MlsError::Protocol)?;
         let group = &mut self.group;
         // `transaction` returns `Result<T, TxError<MlsError>>`, not `Result<T, MlsError>`; every
-        // other call site here ends in `?`, which applies `impl From<TxError<E>> for MlsError`.
-        // Returning it directly would be a type error.
-        let out = provider.storage().transaction(|| {
+        // other call site here ends in `?`, which applies `impl From<TxError<MlsError>> for
+        // MlsError`. This one must not: see the `rollback-fatal` note on that impl. In the default
+        // (non-`virtual-clients-draft`) build `CreateMessageError` has **no** `StorageError`
+        // variant at all (group/mls_group/errors.rs:200-207) - `create_message_internal` flattens
+        // every `MessageEncryptionError`, the `StorageError` of `write_message_secrets`
+        // (mod.rs:834-838) included, into `LibraryError::custom("Malformed plaintext")`
+        // (application.rs:104-110). So `mls_err` cannot tell a database failure apart here, while
+        // the in-memory `MlsGroup` has already ratcheted one application generation past the
+        // committed state. Any rollback is therefore fatal to this handle.
+        let result = provider.storage().transaction(|| {
             // Verified in step 1: `MlsGroup::set_aad(&mut self, aad: Vec<u8>)`
             // (openmls-0.9.0/src/group/mls_group/mod.rs:329).
             group.set_aad(commitment.to_vec());
             group
                 .create_message(provider, signer, &body)
                 .map_err(openmls)
-        })?;
-        Ok(out)
+        });
+        match result {
+            Ok(out) => Ok(out),
+            Err(TxError::RolledBack(_)) => Err(MlsError::NeedsReload),
+            Err(other) => Err(MlsError::Tx(format!("{other:?}"))),
+        }
     }
 
     /// T7 receive. A `PublicMessage` writes nothing; a `PrivateMessage` writes the secret tree
@@ -448,9 +469,15 @@ impl DillaGroup {
             .transaction(|| group.process_message(provider, message).map_err(mls_err))?;
         let aad = processed.aad().to_vec();
         // Read before `into_content` consumes the message. `sender()` and `credential()` are
-        // verified accessors (facts-openmls section 4.10).
+        // verified accessors (facts-openmls section 4.10). The credential is only *cloned* here:
+        // decoding it as a dilla `CredentialIdentity` happens in the one arm that needs a dilla
+        // user, because for `Sender::External(_)` OpenMLS fills `credential` from the
+        // ExternalSenders extension (public_group/process.rs:93-97 and :302) - dilla's own
+        // instance credential, whose identity is the three-element array `[1, "instance", id]`,
+        // not the ten-element `CredentialIdentity`. Decoding unconditionally refused every
+        // instance-sent proposal, the inactivity-Remove path included.
         let sender = processed.sender().clone();
-        let committer_user = user_of_credential(processed.credential())?;
+        let credential = processed.credential().clone();
         Ok(match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(app) => {
                 let envelope = Envelope::decode(&app.into_bytes()).map_err(MlsError::Protocol)?;
@@ -464,6 +491,9 @@ impl DillaGroup {
                 DillaProcessed::ExternalJoinProposal(p)
             }
             ProcessedMessageContent::StagedCommitMessage(c) => {
+                // A commit's sender is always `Member` or `NewMemberCommit`, both of which carry a
+                // real dilla leaf credential, so this is the only arm that may decode it.
+                let committer_user = user_of_credential(&credential)?;
                 // The proposal policy of protocol/01-groups.md is enforced here, before the caller
                 // ever sees the commit: `merge_staged_commit` is a separate call, and a caller
                 // that skipped this check would install a commit the protocol forbids.
