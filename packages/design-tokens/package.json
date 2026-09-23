@@ -8,6 +8,7 @@
   "files": ["src", "dist"],
   "scripts": {
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "build": "node --experimental-strip-types src/build.ts"
   },
   "devDependencies": { "typescript": "^5.6", "vitest": "^3" }

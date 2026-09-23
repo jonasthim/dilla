@@ -35,6 +35,8 @@ jobs:
       - run: git diff --exit-code -- packages/design-tokens/dist
       - run: npm test -w packages/design-tokens
       - run: npm test -w packages/ui
+      - run: npm run typecheck -w packages/design-tokens
+      - run: npm run typecheck -w packages/ui
       - run: npx playwright install --with-deps chromium
       - run: npm run build-storybook -w packages/ui
       - name: axe on every story

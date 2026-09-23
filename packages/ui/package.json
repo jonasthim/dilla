@@ -7,6 +7,7 @@
   "exports": { ".": "./src/index.ts", "./base.css": "./src/styles/base.css" },
   "scripts": {
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
     "test:storybook": "test-storybook --ci"

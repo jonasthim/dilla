@@ -36,9 +36,10 @@ export const themes: Record<ThemeName, ColorTokens> = {
   },
 };
 
-type K = keyof ColorTokens;
+/** Every colour token that is a colour: `linkUnderline` is a 0/1 flag, not a colour. */
+export type ColorKey = Exclude<keyof ColorTokens, 'linkUnderline'>;
 /** Text pairs (≥ 4.5:1): [foreground, background]. */
-export const TEXT_PAIRS: Array<[K, K]> = [
+export const TEXT_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
   ['fg', 'bg'], ['fg', 'bg2'], ['fg', 'surface'], ['fg', 'surface2'], ['fg', 'surfaceHi'],
   ['fg2', 'bg'], ['fg2', 'bg2'], ['fg2', 'surface2'],
   ['fg3', 'bg'], ['fg3', 'bg2'], ['fg3', 'surface'],
@@ -46,7 +47,7 @@ export const TEXT_PAIRS: Array<[K, K]> = [
   ['accentInk', 'accent'], ['mentionInk', 'mention'],
 ];
 /** UI component and large-text pairs (≥ 3:1). */
-export const UI_PAIRS: Array<[K, K]> = [
+export const UI_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
   ['accent', 'bg'], ['accent', 'bg2'], ['edge', 'bg'], ['edge', 'surface2'], ['danger', 'surface2'], ['warn', 'surface2'], ['fg2', 'surfaceHi'],
 ];
 
