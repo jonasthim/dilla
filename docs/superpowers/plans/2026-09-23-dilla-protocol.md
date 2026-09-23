@@ -928,6 +928,7 @@ git commit -s -m "docs(protocol): identity keys, credentials, device lists, cust
     "vectors": "node --experimental-strip-types src/generate.ts"
   },
   "devDependencies": {
+    "@types/node": "^24",
     "typescript": "^5.6",
     "vitest": "^3"
   }
@@ -995,9 +996,9 @@ describe('CBOR decode', () => {
   for (const [value, expected] of cases) {
     it(`decodes ${expected}`, () => {
       const decoded = decode(fromHex(expected));
-      const norm = (v: unknown): unknown => typeof v === 'bigint' && v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v;
-      expect(JSON.stringify(decoded, (_, v) => typeof v === 'bigint' ? v.toString() : v instanceof Uint8Array ? hex(v) : v))
-        .toBe(JSON.stringify(value, (_, v) => typeof v === 'bigint' ? v.toString() : v instanceof Uint8Array ? hex(v) : norm(v)));
+      // Both sides: bigints that fit in a safe integer become numbers (decode returns numbers for those), larger ones become decimal strings.
+      const replacer = (_: string, v: unknown) => typeof v === 'bigint' ? (v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v.toString()) : v instanceof Uint8Array ? hex(v) : v;
+      expect(JSON.stringify(decoded, replacer)).toBe(JSON.stringify(value, replacer));
     });
   }
   it('rejects indefinite-length and non-minimal encodings', () => {
@@ -1255,7 +1256,10 @@ import { encode, decode, type CborValue } from './cbor.ts';
 import { hmacSha256 } from './hmac.ts';
 import { concat, utf8, be64 } from './bytes.ts';
 
-export enum EnvelopeType { Message = 0, Edit = 1, Delete = 2, ReactionAdd = 3, ReactionRemove = 4, Pin = 5, Unpin = 6 }
+// A const object, not a TypeScript enum: Node's type stripping (used by `npm run vectors`) cannot execute enums.
+export const EnvelopeType = { Message: 0, Edit: 1, Delete: 2, ReactionAdd: 3, ReactionRemove: 4, Pin: 5, Unpin: 6 } as const;
+export type EnvelopeType = (typeof EnvelopeType)[keyof typeof EnvelopeType];
+const ENVELOPE_TYPES = new Set<number>(Object.values(EnvelopeType));
 
 export type Attachment = { blobId: Uint8Array; key: Uint8Array; nonce: Uint8Array; size: number; mime: string; w: number | null; h: number | null; thumb: Uint8Array | null };
 export type Preview = { url: string; title: string; description: string; image: Uint8Array | null };
@@ -1292,10 +1296,10 @@ export function decodeEnvelope(bytes: Uint8Array): Envelope {
   if (!Array.isArray(a) || a.length !== 9) throw new Error('envelope: expected a 9-element array');
   const [v, msgId, type, threadId, replyTo, body, attachments, previews, kf] = a as [number, Uint8Array, number, Uint8Array | null, Uint8Array | null, string, CborValue[], CborValue[], Uint8Array];
   if (v !== 1) throw new Error(`envelope: unsupported version ${v}`);
-  if (!(type in EnvelopeType)) throw new Error(`envelope: unknown type ${type}`);
+  if (!ENVELOPE_TYPES.has(type)) throw new Error(`envelope: unknown type ${type}`);
   assertLen(msgId, 16, 'msg_id'); assertLen(kf, 32, 'k_f');
   return {
-    v: 1, msgId, type, threadId, replyTo, body,
+    v: 1, msgId, type: type as EnvelopeType, threadId, replyTo, body,
     attachments: attachments.map(x => { const [blobId, key, nonce, size, mime, w, h, thumb] = x as [Uint8Array, Uint8Array, Uint8Array, number, string, number | null, number | null, Uint8Array | null]; return { blobId, key, nonce, size, mime, w, h, thumb }; }),
     previews: previews.map(x => { const [url, title, description, image] = x as [string, string, string, Uint8Array | null]; return { url, title, description, image }; }),
     kf,
@@ -1610,19 +1614,41 @@ describe('counter partition and nonce', () => {
   });
 });
 
-describe('SFrame header (RFC 9605 §4.3)', () => {
-  it('encodes small KID and CTR in the config byte', () => {
-    // K=0 (KID fits in 3 bits), X=0 (CTR fits in 3 bits): config byte 0b0KKK0CCC
-    expect(hex(encodeSframeHeader(3n, 5n))).toBe('35');
+describe('SFrame header (RFC 9605 §4.3, vectors from Appendix A.1)', () => {
+  // Fill RFC_HEADER_VECTORS from RFC 9605 Appendix A.1 "Header Encoding/Decoding": copy every (kid, ctr, header) triple
+  // verbatim from https://www.rfc-editor.org/rfc/rfc9605.txt, as hex strings, with a comment naming the appendix.
+  // The header layout implemented in encodeSframeHeader MUST follow §4.3 of the RFC text, not memory.
+  const RFC_HEADER_VECTORS: Array<{ kid: string; ctr: string; header: string }> = [
+    // { kid: '...', ctr: '...', header: '...' },  // RFC 9605 Appendix A.1, first triple
+  ];
+  it('has at least three vectors copied from RFC 9605 Appendix A.1', () => {
+    expect(RFC_HEADER_VECTORS.length).toBeGreaterThanOrEqual(3);
   });
-  it('encodes extended KID and CTR lengths', () => {
-    // KID = 0x0329 needs 2 bytes → K=1, KLEN-1 = 1; CTR = 0x100000 needs 3 bytes → X=1, CLEN-1 = 2
-    expect(hex(encodeSframeHeader(0x0329n, 0x100000n))).toBe('4a' + '0329' + '100000');
+  for (const v of RFC_HEADER_VECTORS) {
+    it(`encodes kid ${v.kid} ctr ${v.ctr} as ${v.header}`, () => {
+      expect(hex(encodeSframeHeader(BigInt('0x' + v.kid), BigInt('0x' + v.ctr)))).toBe(v.header.toLowerCase());
+    });
+  }
+});
+
+describe('key derivation against RFC 9605 Appendix A.2/A.3 vectors', () => {
+  // Copy the AES_128_GCM_SHA256_128 (0x0004) vector from the RFC: base_key, and the derived sframe_key and sframe_salt
+  // for the KID the RFC uses. If the RFC's label strings or info layout differ from deriveFrameKeys, the RFC wins:
+  // change sframe.ts (and the labels quoted in protocol/05-media-frames.md) to match.
+  const RFC_KDF_VECTOR: { base_key: string; kid: string; sframe_key: string; sframe_salt: string } | null = null;
+  it('has the RFC 0x0004 derivation vector', () => { expect(RFC_KDF_VECTOR).not.toBeNull(); });
+  it('derives the RFC key and salt', async () => {
+    if (!RFC_KDF_VECTOR) return;
+    const got = await deriveFrameKeys(fromHex(RFC_KDF_VECTOR.base_key), BigInt('0x' + RFC_KDF_VECTOR.kid));
+    expect(hex(got.key)).toBe(RFC_KDF_VECTOR.sframe_key.toLowerCase());
+    expect(hex(got.salt)).toBe(RFC_KDF_VECTOR.sframe_salt.toLowerCase());
   });
 });
 ```
 
-- [ ] **Step 4: Run to verify failure, then write `sframe.ts`**
+- [ ] **Step 4: Fetch RFC 9605, fill the vectors, then write `sframe.ts`**
+
+Run: `curl -fsSL https://www.rfc-editor.org/rfc/rfc9605.txt -o /tmp/rfc9605.txt` and read §4.3 (header), §4.4.1 (key derivation) and Appendix A (test vectors). Copy at least three (kid, ctr, header) triples from Appendix A.1 into `RFC_HEADER_VECTORS`, and the 0x0004 suite's `base_key`, KID, `sframe_key` and `sframe_salt` into `RFC_KDF_VECTOR`, each with a comment naming the appendix section. Then:
 
 Run: `npm test --workspace packages/protocol-vectors -- sframe` → FAIL, module not found.
 
@@ -1669,19 +1695,23 @@ export function nonce(salt: Uint8Array, ctr: bigint): Uint8Array {
 function minBytes(v: bigint): number { let n = 1; while (v >= (1n << BigInt(8 * n))) n++; return n; }
 function beBytes(v: bigint, n: number): Uint8Array { const out = new Uint8Array(n); let c = v; for (let i = n - 1; i >= 0; i--) { out[i] = Number(c & 0xffn); c >>= 8n; } return out; }
 
-/** RFC 9605 §4.3 header: config byte [R=0][K][KLEN or KID][X][CLEN or CTR], then extended KID and CTR bytes. */
+/**
+ * RFC 9605 §4.3 SFrame header. Implement the config byte and the extended KID/CTR fields EXACTLY as the RFC text
+ * specifies (read §4.3 first; the bit positions below are a placeholder shape, and the Appendix A.1 vectors in the
+ * test decide). Keep minBytes/beBytes; change only the config-byte assembly to match the RFC.
+ */
 export function encodeSframeHeader(k: bigint, ctr: bigint): Uint8Array {
   const kExt = k > 7n, cExt = ctr > 7n;
   const kLen = kExt ? minBytes(k) : 0, cLen = cExt ? minBytes(ctr) : 0;
   if (kLen > 8 || cLen > 8) throw new Error('KID or CTR too large for the header');
   const kField = kExt ? (kLen - 1) : Number(k);
   const cField = cExt ? (cLen - 1) : Number(ctr);
-  const config = (kExt ? 0x40 : 0) | (kField << 3) | (cExt ? 0x08 : 0) | cField;
+  const config = (kExt ? 0x40 : 0) | (kField << 3) | (cExt ? 0x08 : 0) | cField; // adjust to RFC 9605 §4.3
   return concat(new Uint8Array([config]), kExt ? beBytes(k, kLen) : new Uint8Array(0), cExt ? beBytes(ctr, cLen) : new Uint8Array(0));
 }
 ```
 
-Run: `npm test --workspace packages/protocol-vectors -- sframe` → PASS (9 tests).
+Run: `npm test --workspace packages/protocol-vectors -- sframe` → PASS. If a header or KDF test fails, the RFC is right and the code is wrong: fix `encodeSframeHeader`'s config-byte assembly or the labels in `deriveFrameKeys` until the RFC vectors pass, and mirror any label change in Task 10's document.
 
 - [ ] **Step 5: Add the SFrame vectors to the generator**
 
