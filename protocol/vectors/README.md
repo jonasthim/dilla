@@ -8,7 +8,7 @@ committed files differ from the generator output.
 | `envelope.json` | `04-envelope-and-franking.md` | `cbor`, `length`, `commitment` per case |
 | `franking.json` | `04-envelope-and-franking.md` | `tag` per case from `instance_franking_key` |
 | `sframe.json` | `05-media-frames.md` | `kid`, `key`, `salt`, `ctr`, `nonce`, `header` per case |
-| `identity.json` | `03-identity.md` | `safety_number.digits`, `sas.digits`, `recovery_key.base32`, `k_header`, `k_backup`, `credential_identity.cbor` |
+| `identity.json` | `03-identity.md` | `safety_number.digits`, `sas.digits`, `recovery_key.base32`, `k_header`, `k_backup`, `credential_identity.cbor`, and both Ed25519 signatures |
 
 All byte strings are lowercase hex. Integers larger than 2^53 are decimal strings. `kid` and `ctr`
 in `sframe.json` are always decimal strings, even when the value is small enough to fit safely in a

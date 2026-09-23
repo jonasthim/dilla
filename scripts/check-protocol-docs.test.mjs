@@ -18,7 +18,7 @@ test('passes when every required document exists with its required headings and 
     '00-overview.md': '# Overview\n\n## Terminology\n\n## Precedence\n\n## Conformance language\n',
     '01-groups.md': '# Groups\n\n## Group kinds\n\n## dilla_binding\n\n## External senders\n\n## Joining\n\n## Cadence\n',
     '02-delivery-service.md': '# Delivery service\n\n## Roles\n\n## API\n\n## Invariants\n\n## Errors\n\n## Retention\n',
-    '03-identity.md': '# Identity\n\n## Keys\n\n## Credential\n\n## Device list\n\n## Custody by tier\n\n## Pairing\n\n## Recovery\n\n## Safety number\n',
+    '03-identity.md': '# Identity\n\n## Keys\n\n## Credential\n\n## Device list\n\n## Custody by tier\n\n## Pairing\n\n## Recovery\n\n## Safety number\n\n## Vectors\n',
     '04-envelope-and-franking.md': '# Envelope\n\n## Envelope\n\n## Deterministic CBOR\n\n## Franking\n\n## Vectors\n',
     '05-media-frames.md': '# Media\n\n## Frame format\n\n## Codec prefixes\n\n## Key schedule\n\n## Counter partition\n\n## Rotation\n',
     '06-backup-archive.md': '# Backup\n\n## Keys\n\n## Header\n\n## Archive\n\n## Restore\n',
@@ -50,7 +50,7 @@ test('recursively detects placeholders in all files under protocol/', () => {
     writeFileSync(join(protocolDir, '00-overview.md'), '# Overview\n\n## Terminology\n\n## Precedence\n\n## Conformance language\n');
     writeFileSync(join(protocolDir, '01-groups.md'), '# Groups\n\n## Group kinds\n\n## dilla_binding\n\n## External senders\n\n## Joining\n\n## Cadence\n');
     writeFileSync(join(protocolDir, '02-delivery-service.md'), '# Delivery service\n\n## Roles\n\n## API\n\n## Invariants\n\n## Errors\n\n## Retention\n');
-    writeFileSync(join(protocolDir, '03-identity.md'), '# Identity\n\n## Keys\n\n## Credential\n\n## Device list\n\n## Custody by tier\n\n## Pairing\n\n## Recovery\n\n## Safety number\n');
+    writeFileSync(join(protocolDir, '03-identity.md'), '# Identity\n\n## Keys\n\n## Credential\n\n## Device list\n\n## Custody by tier\n\n## Pairing\n\n## Recovery\n\n## Safety number\n\n## Vectors\n');
     writeFileSync(join(protocolDir, '04-envelope-and-franking.md'), '# Envelope\n\n## Envelope\n\n## Deterministic CBOR\n\n## Franking\n\n## Vectors\n');
     writeFileSync(join(protocolDir, '05-media-frames.md'), '# Media\n\n## Frame format\n\n## Codec prefixes\n\n## Key schedule\n\n## Counter partition\n\n## Rotation\n');
     writeFileSync(join(protocolDir, '06-backup-archive.md'), '# Backup\n\n## Keys\n\n## Header\n\n## Archive\n\n## Restore\n');

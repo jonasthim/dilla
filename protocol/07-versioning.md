@@ -34,3 +34,4 @@ explains why.
 | date | version | change |
 |---|---|---|
 | 2026-09-23 | e2ee 1, media 1, wire 1 | initial |
+| 2026-09-23 | e2ee 1, media 1, wire 1 | `identity.json` gains real Ed25519 credential signatures and the seeds that reproduce them; no format change, so no version bump |

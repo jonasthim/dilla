@@ -182,6 +182,19 @@ The **SAS** for pairing (and for optional call verification) is derived from the
 `epoch_authenticator` (32 bytes): `sas = the first 30 digits of decimal(epoch_authenticator)
 left-padded to 78 digits`, displayed as 6 groups of 5.
 
+## Vectors
+
+`vectors/identity.json`. An implementation conforms when it reproduces `safety_number.digits`,
+`sas.digits`, `recovery_key.base32`, `recovery_key.k_header`, `recovery_key.k_backup` and
+`credential_identity.cbor`, and when it verifies `credential_identity.fields.sig_umk_ssk` against
+`umk_pub` over `"dilla ssk v1" || ssk_pub`, and `sig_ssk_dev` against `ssk_pub` over
+`"dilla dsk v1" || device_id || dsk_pub || kind || tier || signer_tier`.
+
+`credential_identity` also carries `umk_priv`, `ssk_priv`, `dsk_priv` and `dsk_pub`. Those are
+Ed25519 seeds chosen so the file is reproducible from a fixed input; they are test material and
+protect nothing. `dsk_pub` is published because it is covered by `sig_ssk_dev` but is not itself a
+field of the credential array: a verifier takes it from the MLS leaf's `signature_key`.
+
 ## Error codes
 
 `E_CREDENTIAL`, `E_UMK_CHANGED`, `E_DEVICE_UNLISTED`, `E_DEVICE_LIST_STALE`, `E_PAIRING_LEAVES`,
