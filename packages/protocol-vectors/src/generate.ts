@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { hex } from './bytes.ts';
 import { encodeEnvelope, frankingCommitment, frankingTag, EnvelopeType, type Envelope } from './envelope.ts';
 import { kid, deriveFrameKeys, counter, nonce, encodeSframeHeader, SUITE } from './sframe.ts';
+import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity } from './identity.ts';
 
 export const VECTORS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'protocol', 'vectors');
 const fill = (n: number, b: number) => new Uint8Array(n).fill(b);
@@ -60,11 +61,27 @@ export async function sframeVectors() {
   return { version: 1, suite: SUITE, description: 'dilla-sframe/1 key schedule (05-media-frames.md): base_key = MLS-Exporter("SFrame 1.0 Base Key", "", 16); key/salt per RFC 9605 §4.4.2; CTR = slot(8)|layer(4)|seq(52); nonce = salt XOR CTR; header per RFC 9605 §4.3.', base_key: hex(baseKey), cases };
 }
 
+export async function identityVectors() {
+  const umkA = fill(32, 0xa1), umkB = fill(32, 0xb2);
+  const rk = fill(32, 0x0b);
+  const keys = await deriveRecoveryKeys(rk);
+  return {
+    version: 1,
+    description: 'safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR (03-identity.md)',
+    safety_number: { umk_a: hex(umkA), umk_b: hex(umkB), digits: await safetyNumber(umkA, umkB) },
+    sas: { epoch_authenticator: hex(fill(32, 0xc3)), digits: sas(fill(32, 0xc3)) },
+    recovery_key: { rk: hex(rk), base32: recoveryKeyBase32(rk), k_header: hex(keys.header), k_backup: hex(keys.archive) },
+    credential_identity: { fields: { umk_pub: hex(umkA), user_id: hex(fill(16, 0xd4)), device_id: hex(fill(16, 0xe5)), kind: 0, tier: 1, signer_tier: 0, ssk_pub: hex(fill(32, 0xf6)), sig_umk_ssk: hex(fill(64, 0x17)), sig_ssk_dev: hex(fill(64, 0x28)) },
+      cbor: hex(credentialIdentity({ umkPub: umkA, userId: fill(16, 0xd4), deviceId: fill(16, 0xe5), kind: 0, tier: 1, signerTier: 0, sskPub: fill(32, 0xf6), sigUmkSsk: fill(64, 0x17), sigSskDev: fill(64, 0x28) })) },
+  };
+}
+
 export async function main() {
   mkdirSync(VECTORS_DIR, { recursive: true });
   writeFileSync(join(VECTORS_DIR, 'envelope.json'), j(await envelopeVectors()));
   writeFileSync(join(VECTORS_DIR, 'franking.json'), j(await frankingVectors()));
   writeFileSync(join(VECTORS_DIR, 'sframe.json'), j(await sframeVectors()));
+  writeFileSync(join(VECTORS_DIR, 'identity.json'), j(await identityVectors()));
   console.log(`vectors written to ${VECTORS_DIR}`);
 }
 
