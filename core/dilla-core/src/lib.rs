@@ -5,6 +5,11 @@
 #![forbid(unsafe_code)]
 
 pub mod cbor;
+pub mod error;
+pub mod identity;
+pub mod ids;
+
+pub use error::{CoreError, ProtocolError};
 
 /// The crate version, reported over every binding.
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
