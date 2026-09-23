@@ -96,7 +96,10 @@ never a `box-shadow`: `box-shadow` is reserved for component state (the active c
 bar, a pressed toggle's underline), which must not be able to swallow the ring, and an outline keeps
 the Windows forced-colors indicator. Motion: `--duration-fast` 150ms, `--duration-normal` 200ms, `--duration-slow`
 300ms, `--ease-out` cubic-bezier(0.16,1,0.3,1); toast pop 220ms; speaking pulse 2s; caret blink 1s.
-Under `prefers-reduced-motion: reduce` every duration is 0ms and the caret and pulse are static.
+Under `prefers-reduced-motion: reduce` every decorative duration is 0ms and the caret and pulse are
+static. The audio level meter is the exception: it is data, not decoration — it is the only thing on
+screen that says whether a microphone is picking anything up — so it keeps updating at
+`--duration-meter` (120ms), which is why that token is not zeroed.
 
 Sound tokens (names; files come with the sound card): `join`, `leave`, `mention`, `mute`,
 `unmute`, `deafen`, `undeafen`, `ping`, `error`. Short, dry, mono-era clicks and one ping; no
@@ -165,7 +168,8 @@ event in Settings → Notifications and are off in the `browser` tier until the 
 Only these animations exist: toast pop-in 220 ms and shrink-out; splash fade 300 ms; drag-over
 flash 120 ms; speaking pulse 2 s; caret blink 1 s; message flash after a reply-reference click
 1.4 s; audio meter bars redraw every 120 ms. Hover and focus changes are 150 ms colour transitions.
-Everything else is instant. All of it is disabled under `prefers-reduced-motion: reduce`.
+Everything else is instant. All of it is disabled under `prefers-reduced-motion: reduce` except the
+meter, which carries information rather than decorating.
 
 ## Themes
 
