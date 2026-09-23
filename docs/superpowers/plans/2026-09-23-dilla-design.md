@@ -559,12 +559,12 @@ describe('structural tokens', () => {
   it('has the Mesh radii and layout dimensions', () => {
     expect(structural.radius.md).toBe('2px');
     expect(structural.radius.pill).toBe('999px');
-    expect(structural.layout.railW).toBe('60px');
-    expect(structural.layout.bottombarH).toBe('26px');
+    expect(structural.layout.railW).toBe('60px');       // a pane width the user drags: px
+    expect(structural.layout.bottombarH).toBe('1.625rem'); // a box around text: rem
   });
   it('has three densities', () => {
     expect(Object.keys(densities)).toEqual(['compact', 'regular', 'cozy']);
-    expect(densities.regular.avatar).toBe('32px');
+    expect(densities.regular.avatar).toBe('2rem');
   });
 });
 ```
@@ -638,16 +638,19 @@ export const structural = {
   labelTracking: '0.08em',
   radius: { sm: '0px', md: '2px', lg: '3px', pill: '999px', avatar: '2px' },
   shadow: { s1: '0 0 0 1px rgba(124,255,142,0.08)', s2: '0 0 0 1px rgba(124,255,142,0.18), 0 12px 30px rgba(0,0,0,0.6)' },
-  layout: { railW: '60px', sidebarW: '240px', membersW: '232px', threadW: '380px', topbarH: '32px', bottombarH: '26px', channelHeaderH: '48px' },
+  // Pane widths in px (the user drags them); heights in rem, because each one is a box around scale text.
+  layout: { railW: '60px', sidebarW: '240px', membersW: '232px', threadW: '380px', topbarH: '2rem', bottombarH: '1.625rem', channelHeaderH: '3rem' }, // 32 / 26 / 48px
   focusRing: '2px solid var(--accent)', // an outline shorthand: box-shadow is reserved for component state
   motion: { fast: '150ms', normal: '200ms', slow: '300ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 
+// Rem, so a row's padding, gaps and avatar grow with the text inside it; the line heights are
+// unitless, which already scales them against their own font size.
 export const densities = {
-  compact: { rowPadY: '4px', rowPadX: '16px', rowGap: '0px', groupGap: '8px', avatar: '28px', lineHeight: '1.4' },
-  regular: { rowPadY: '6px', rowPadX: '18px', rowGap: '2px', groupGap: '14px', avatar: '32px', lineHeight: '1.5' },
-  cozy: { rowPadY: '10px', rowPadX: '20px', rowGap: '4px', groupGap: '22px', avatar: '36px', lineHeight: '1.55' },
+  compact: { rowPadY: '0.25rem', rowPadX: '1rem', rowGap: '0rem', groupGap: '0.5rem', avatar: '1.75rem', lineHeight: '1.4' },      // 4 / 16 / 0 / 8 / 28px
+  regular: { rowPadY: '0.375rem', rowPadX: '1.125rem', rowGap: '0.125rem', groupGap: '0.875rem', avatar: '2rem', lineHeight: '1.5' }, // 6 / 18 / 2 / 14 / 32px
+  cozy: { rowPadY: '0.625rem', rowPadX: '1.25rem', rowGap: '0.25rem', groupGap: '1.375rem', avatar: '2.25rem', lineHeight: '1.55' },  // 10 / 20 / 4 / 22 / 36px
 } as const;
 ```
 
@@ -711,8 +714,8 @@ describe('renderCss', () => {
     expect(css).toMatch(/@media \(prefers-color-scheme: light\)\s*{\s*:root:not\(\[data-theme\]\)\s*{[^}]*--bg:\s*#F5F6F5;/);
   });
   it('emits densities and reduced motion', () => {
-    expect(css).toMatch(/\[data-density="compact"\]\s*{[^}]*--avatar-size:\s*28px;/);
-    expect(css).toMatch(/:root\s*{[^}]*--row-pad-y:\s*6px;/);
+    expect(css).toMatch(/\[data-density="compact"\]\s*{[^}]*--avatar-size:\s*1\.75rem;/);
+    expect(css).toMatch(/:root\s*{[^}]*--row-pad-y:\s*0\.375rem;/);
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*{\s*:root\s*{[^}]*--duration-fast:\s*0ms;/);
   });
   it('emits structural tokens', () => {
@@ -774,6 +777,10 @@ export function renderCss(): string {
     `[data-theme="light"] {\n${colorDecls(themes.light)}\n  color-scheme: light;\n}`,
     `[data-theme="high-contrast"] {\n${colorDecls(themes['high-contrast'])}\n  color-scheme: dark;\n}`,
     `@media (prefers-color-scheme: light) {\n  :root:not([data-theme]) {\n${colorDecls(themes.light).replace(/^/gm, '  ')}\n    color-scheme: light;\n  }\n}`,
+    // After the colour-scheme block on purpose: a user who asks the OS for more
+    // contrast gets the high-contrast theme even when the OS is light. An explicit
+    // [data-theme] still wins over both, because these only apply when none is set.
+    `@media (prefers-contrast: more) {\n  :root:not([data-theme]) {\n${colorDecls(themes['high-contrast']).replace(/^/gm, '  ')}\n    color-scheme: dark;\n  }\n}`,
     `[data-density="compact"] {\n${densityDecls(densities.compact)}\n}`,
     `[data-density="regular"] {\n${densityDecls(densities.regular)}\n}`,
     `[data-density="cozy"] {\n${densityDecls(densities.cozy)}\n}`,
@@ -946,6 +953,8 @@ export async function expectNoAxeViolations(container: Element) {
    (active row bar, pressed toggle underline), which would swallow the ring.
    Never set `outline: none`. */
 .d-root :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+/* Visually hidden, still read aloud: the text half of a non-colour cue. */
+.d-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .d-label { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
 .d-root a { color: var(--fg-link); text-decoration-line: none; }
 [data-theme="high-contrast"] .d-root a, .d-root a[data-underline] { text-decoration-line: underline; }
@@ -1030,13 +1039,13 @@ export function Button({ variant = 'default', size = 'md', keyHint, pressed, chi
 ```css
 .d-btn {
   display: inline-flex; align-items: center; gap: 8px;
-  height: 28px; padding: 0 10px;
+  height: 1.75rem /* 28px */; padding: 0 10px;
   font: inherit; font-size: var(--text-sm); font-weight: var(--weight-label);
   color: var(--fg); background: var(--surface-2);
   border: 1px solid var(--edge); border-radius: var(--r-md);
   cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast);
 }
-.d-btn[data-size="sm"] { height: 22px; padding: 0 7px; font-size: var(--text-xs); }
+.d-btn[data-size="sm"] { height: 1.375rem /* 22px */; padding: 0 7px; font-size: var(--text-xs); }
 .d-btn:hover { background: var(--surface-hi); border-color: var(--fg-3); }
 .d-btn[data-variant="accent"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .d-btn[data-variant="accent"]:hover { background: var(--accent-2); }
@@ -1044,8 +1053,15 @@ export function Button({ variant = 'default', size = 'md', keyHint, pressed, chi
 .d-btn[data-variant="danger"]:hover { background: color-mix(in srgb, var(--danger) 15%, transparent); }
 .d-btn[data-variant="ghost"] { background: transparent; border-color: transparent; color: var(--fg-2); }
 .d-btn[data-variant="ghost"]:hover { color: var(--fg); background: var(--surface-2); }
-.d-btn[aria-pressed="true"] { background: var(--danger); color: var(--accent-ink); border-color: var(--danger); }
+/* Pressed/toggle state: colour changes, and so does an inset underline bar
+   — plus the `[x]`/`[ ]` mark and (when callers pass `pressedLabel`) the
+   label text — so the state is never colour-only. */
+.d-btn[aria-pressed="true"] {
+  background: var(--danger); color: var(--accent-ink); border-color: var(--danger);
+  box-shadow: inset 0 -3px 0 0 currentColor;
+}
 .d-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.d-btn__pressed-mark { font: inherit; letter-spacing: -1px; opacity: 0.9; }
 .d-btn__kbd { font: inherit; font-size: var(--text-micro); padding: 0 4px; border: 1px solid currentColor; border-radius: var(--r-md); opacity: 0.8; }
 ```
 
@@ -1207,7 +1223,7 @@ export function Pill({ kind, count }: PillProps) {
 
 `packages/ui/src/Pill/Pill.css`:
 ```css
-.d-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 16px; padding: 0 5px; font-size: var(--text-micro); font-weight: 700; border-radius: var(--r-pill); }
+.d-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 1.125rem /* 18px */; height: 1rem /* 16px */; padding: 0 5px; font-size: var(--text-micro); font-weight: 700; border-radius: var(--r-pill); }
 .d-pill[data-kind="unread"] { background: var(--accent); color: var(--accent-ink); }
 .d-pill[data-kind="mention"] { background: var(--mention); color: var(--mention-ink); }
 ```
@@ -1225,7 +1241,7 @@ export function Tag({ kind }: { kind: TagKind }) {
 
 `packages/ui/src/Tag/Tag.css`:
 ```css
-.d-tag { display: inline-block; font-size: 9px; font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; line-height: 14px; padding: 0 4px; border: 1px solid var(--edge); border-radius: var(--r-md); color: var(--fg-3); vertical-align: 1px; }
+.d-tag { display: inline-block; font-size: 0.5625rem /* 9px */; font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; line-height: 0.875rem /* 14px */; padding: 0 4px; border: 1px solid var(--edge); border-radius: var(--r-md); color: var(--fg-3); vertical-align: 1px; }
 .d-tag[data-kind="admin"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .d-tag[data-kind="canHear"] { color: var(--warn); border-color: var(--warn); }
 .d-tag--glyph { border: 0; padding: 0; font-size: var(--text-xs); line-height: 1; color: var(--fg-3); text-transform: none; letter-spacing: 0; }
@@ -1248,7 +1264,7 @@ export function KeyHint({ keys, label }: KeyHintProps) {
 `packages/ui/src/KeyHint/KeyHint.css`:
 ```css
 .d-keyhint { display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-micro); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
-.d-keyhint__kbd { font: inherit; padding: 0 5px; line-height: 16px; border: 1px solid var(--edge); border-radius: var(--r-md); color: var(--fg-2); }
+.d-keyhint__kbd { font: inherit; padding: 0 5px; line-height: 1rem /* 16px */; border: 1px solid var(--edge); border-radius: var(--r-md); color: var(--fg-2); }
 ```
 
 Add to `packages/ui/src/index.ts`:
@@ -1432,9 +1448,9 @@ export function Avatar({ name, initials, hue, presence, size = 'md' }: AvatarPro
 `packages/ui/src/Avatar/Avatar.css`:
 ```css
 .d-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; width: var(--avatar-size); height: var(--avatar-size); border-radius: var(--r-avatar); background: hsl(var(--avatar-hue) 45% 42%); color: #fff; font-weight: 700; font-size: var(--text-xs); flex-shrink: 0; }
-.d-avatar[data-size="sm"] { width: 20px; height: 20px; font-size: 9px; }
-.d-avatar[data-size="lg"] { width: 64px; height: 64px; font-size: var(--text-lg); }
-.d-avatar__presence { position: absolute; right: -4px; bottom: -4px; width: 12px; height: 12px; border-radius: var(--r-pill); font-size: 8px; line-height: 12px; text-align: center; background: var(--bg-2); }
+.d-avatar[data-size="sm"] { width: 1.25rem /* 20px */; height: 1.25rem /* 20px */; font-size: 0.5625rem /* 9px */; }
+.d-avatar[data-size="lg"] { width: 4rem /* 64px */; height: 4rem /* 64px */; font-size: var(--text-lg); }
+.d-avatar__presence { position: absolute; right: -4px; bottom: -4px; width: 0.75rem /* 12px */; height: 0.75rem /* 12px */; border-radius: var(--r-pill); font-size: 0.5rem /* 8px */; line-height: 0.75rem /* 12px */; text-align: center; background: var(--bg-2); }
 .d-avatar__presence[data-presence="online"] { color: var(--ok); }
 .d-avatar__presence[data-presence="idle"] { color: var(--warn); }
 .d-avatar__presence[data-presence="dnd"] { color: var(--danger); }
@@ -1473,9 +1489,9 @@ export function ChannelRow({ name, kind, active, unread = 0, mentions = 0, muted
 .d-chrow:hover { background: var(--surface-2); color: var(--fg); }
 .d-chrow[aria-current="page"] { background: var(--surface-hi); color: var(--fg); box-shadow: inset 3px 0 0 var(--accent); }
 .d-chrow[data-unread="true"] { color: var(--fg); font-weight: 700; }
-.d-chrow[data-muted="true"] { opacity: 0.55; }
-.d-chrow__glyph { width: 12px; text-align: center; color: var(--fg-3); }
-.d-chrow__lock { font-size: 10px; filter: grayscale(1); opacity: 0.7; }
+.d-chrow[data-muted="true"] { opacity: var(--opacity-muted); }
+.d-chrow__glyph { width: 0.75rem /* 12px */; text-align: center; color: var(--fg-3); }
+.d-chrow__lock { font-size: var(--text-micro); filter: grayscale(1); opacity: 0.7; }
 .d-chrow__spacer { flex: 1; }
 ```
 
@@ -1636,8 +1652,21 @@ export function StatusBar({ position, label, children }: { position: 'top' | 'bo
   return <div className="d-statusbar" data-position={position} role="region" aria-label={label}>{children}</div>;
 }
 
+/** Tone is never colour alone: a glyph carries it for sighted users… */
+const TONE_GLYPH = { ok: '●', warn: '▲', danger: '✕' } as const;
+/** …and a visually hidden word carries it for assistive tech. */
+const TONE_TEXT = { ok: 'ok', warn: 'warning', danger: 'error' } as const;
+
 export function StatusChunk({ label, children, onClick, tone }: { label?: string; children: ReactNode; onClick?: () => void; tone?: 'ok' | 'warn' | 'danger' }) {
-  const inner = <>{label ? <span className="d-chunk__k">{label}</span> : null}<span className="d-chunk__v" data-tone={tone}>{children}</span></>;
+  const inner = (
+    <>
+      {label ? <span className="d-chunk__k">{label}</span> : null}
+      <span className="d-chunk__v" data-tone={tone}>
+        {tone ? <><span className="d-chunk__tone" aria-hidden="true">{TONE_GLYPH[tone]}</span><span className="d-sr-only">{TONE_TEXT[tone]}</span></> : null}
+        {children}
+      </span>
+    </>
+  );
   return onClick
     ? <button type="button" className="d-chunk d-chunk--clickable" onClick={onClick}>{inner}</button>
     : <span className="d-chunk">{inner}</span>;
@@ -1668,15 +1697,16 @@ export function BrandMark() {
 .d-chunk { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border-right: 1px solid var(--hairline); font: inherit; color: inherit; background: transparent; }
 .d-chunk--clickable { cursor: pointer; border-top: 0; border-bottom: 0; border-left: 0; }
 .d-chunk--clickable:hover { color: var(--fg); background: var(--surface-2); }
-.d-chunk__k { color: var(--fg-4); }
+.d-chunk__k { color: var(--fg-3); }
 .d-chunk__v { color: var(--fg-2); font-weight: var(--weight-label); }
+.d-chunk__tone { margin-right: 4px; }
 .d-chunk__v[data-tone="ok"] { color: var(--ok); }
 .d-chunk__v[data-tone="warn"] { color: var(--warn); }
 .d-chunk__v[data-tone="danger"] { color: var(--danger); }
 .d-meter { display: inline-flex; align-items: flex-end; gap: 1px; height: 11px; margin-left: 6px; }
 .d-meter i { display: block; width: 3px; background: var(--accent); }
 .d-brand { display: inline-flex; align-items: center; gap: 7px; padding: 0 12px; font-weight: 700; color: var(--fg); letter-spacing: 0.14em; }
-.d-brand__tile { width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; background: var(--accent); color: var(--accent-ink); border-radius: var(--r-md); font-size: var(--text-xs); letter-spacing: 0; }
+.d-brand__tile { width: 1.125rem /* 18px */; height: 1.125rem /* 18px */; display: inline-flex; align-items: center; justify-content: center; background: var(--accent); color: var(--accent-ink); border-radius: var(--r-md); font-size: var(--text-xs); letter-spacing: 0; }
 .d-brand__caret { width: 6px; height: 12px; background: var(--accent); animation: d-blink var(--duration-caret) steps(1) infinite; }
 @keyframes d-blink { 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .d-brand__caret { animation: none; } }
