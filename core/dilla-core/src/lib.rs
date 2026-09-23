@@ -10,6 +10,8 @@ pub mod error;
 pub mod identity;
 pub mod ids;
 pub mod sframe;
+#[cfg(feature = "vectors")]
+pub mod vectors;
 
 pub use error::{CoreError, ProtocolError};
 
