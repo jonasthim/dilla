@@ -14,7 +14,7 @@ Per device:
 
 - **DSK** (device signing key): Ed25519. It is the MLS leaf signature key. Generated on the device;
   the private key never leaves it. Stored in the OS keystore where one exists (Keychain, DPAPI,
-  libsecret or KWallet, Android Keystore, iOS Secure Enclave-backed keystore); in IndexedDB on the
+  libsecret or KWallet, Android Keystore, iOS Secure Enclave-backed keychain); in IndexedDB on the
   `browser` tier.
 
 Signature domains (the message signed is the domain string in UTF-8 followed by the fields, with
