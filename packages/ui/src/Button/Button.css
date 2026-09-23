@@ -14,12 +14,11 @@
 .d-btn[data-variant="danger"]:hover { background: color-mix(in srgb, var(--danger) 15%, transparent); }
 .d-btn[data-variant="ghost"] { background: transparent; border-color: transparent; color: var(--fg-2); }
 .d-btn[data-variant="ghost"]:hover { color: var(--fg); background: var(--surface-2); }
-/* Pressed/toggle state: colour changes, but so does the border style and an
-   inset underline bar — plus the `[x]`/`[ ]` mark and (when callers pass
-   `pressedLabel`) the label text — so the state is never colour-only. */
+/* Pressed/toggle state: colour changes, and so does an inset underline bar
+   — plus the `[x]`/`[ ]` mark and (when callers pass `pressedLabel`) the
+   label text — so the state is never colour-only. */
 .d-btn[aria-pressed="true"] {
   background: var(--danger); color: var(--accent-ink); border-color: var(--danger);
-  border-style: double;
   box-shadow: inset 0 -3px 0 0 currentColor;
 }
 .d-btn:disabled { opacity: 0.4; cursor: not-allowed; }
