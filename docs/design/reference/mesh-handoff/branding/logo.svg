@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 64" width="320" height="64">
+  <rect x="0" y="0" width="64" height="64" rx="12" fill="#0c1218"></rect>
+  <path d="M16 12h16c11 0 20 9 20 20s-9 20-20 20H16V12zm8 8v24h8c6.6 0 12-5.4 12-12s-5.4-12-12-12H24z" fill="#2e8b9a"></path>
+  <path d="M28 28c2.2 0 4 1.8 4 4s-1.8 4-4 4" fill="none" stroke="#e8b84b" stroke-width="2" stroke-linecap="round"></path>
+  <text x="80" y="44" font-family="&#39;DM Serif Display&#39;, Georgia, serif" font-size="42" fill="#e8b84b" letter-spacing="-1">dilla</text>
+</svg>

@@ -1,0 +1,18 @@
+# build outputs
+/target/
+/dist/
+/node_modules/
+**/node_modules/
+*.wasm
+# local state
+/.superpowers/
+/.playwright-mcp/
+/data/
+*.db
+*.sqlite
+.env
+.env.*
+# editors
+.idea/
+.vscode/
+*.swp

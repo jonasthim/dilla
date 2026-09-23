@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dilla · Mesh · refinement</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="chat.css">
+<link rel="stylesheet" href="mesh-chrome.css">
+<link rel="stylesheet" href="settings.css">
+<link rel="stylesheet" href="extras.css">
+
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #070809; }
+  body { font-family: 'JetBrains Mono', ui-monospace, monospace; color: #e8ece8; overflow: hidden; }
+  #root { width: 100vw; height: 100vh; }
+</style>
+</head>
+<body class="mesh-page" data-screen-label="01 Mesh — refined">
+
+<template id="__bundler_thumbnail">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+    <rect width="200" height="200" fill="#070809"/>
+    <g transform="translate(50,60)">
+      <rect x="0" y="0" width="40" height="40" rx="2" fill="#7CFF8E"/>
+      <text x="20" y="28" text-anchor="middle" font-family="ui-monospace,monospace" font-size="22" font-weight="700" fill="#06150A">D</text>
+    </g>
+    <text x="100" y="155" text-anchor="middle" font-family="ui-monospace,monospace" font-size="14" font-weight="700" letter-spacing="3" fill="#E8ECE8">DILLA</text>
+    <rect x="146" y="142" width="6" height="16" fill="#7CFF8E"/>
+  </svg>
+</template>
+
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script src="themes.js"></script>
+<script src="data.js"></script>
+
+<script type="text/babel" src="chat-icons.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="settings.jsx"></script>
+<script type="text/babel" src="extras.jsx"></script>
+<script type="text/babel" src="mesh-chrome.jsx"></script>
+<script type="text/babel" src="chat-app.jsx"></script>
+
+<script type="text/babel">
+  const { useState: useS, useEffect: useE, useRef: useR } = React;
+  const TWEAK_DEFAULTS_MESH = /*EDITMODE-BEGIN*/{
+    "density": "regular",
+    "sidebar": 274,
+    "members": 255,
+    "showTopBar": true,
+    "showBottomBar": true,
+    "accentHue": "green",
+    "uppercase": true,
+    "federated": false
+  }/*EDITMODE-END*/;
+
+  const ACCENT_OPTIONS = {
+    green:  { '--accent': '#7CFF8E', '--accent-2': '#A8FFB6', '--accent-ink': '#06150A', '--accent-soft': 'rgba(124,255,142,0.14)', '--fg-link': '#7CFF8E', '--ok': '#7CFF8E' },
+    amber:  { '--accent': '#FFD16A', '--accent-2': '#FFE2A0', '--accent-ink': '#16120A', '--accent-soft': 'rgba(255,209,106,0.14)', '--fg-link': '#FFD16A', '--ok': '#FFD16A' },
+    cyan:   { '--accent': '#5DD6FF', '--accent-2': '#9AE5FF', '--accent-ink': '#05121A', '--accent-soft': 'rgba(93,214,255,0.14)', '--fg-link': '#5DD6FF', '--ok': '#5DD6FF' },
+    magenta:{ '--accent': '#FF7EE0', '--accent-2': '#FFB0EC', '--accent-ink': '#1A0A18', '--accent-soft': 'rgba(255,126,224,0.14)', '--fg-link': '#FF7EE0', '--ok': '#FF7EE0' },
+  };
+
+  function MeshApp() {
+    const { MeshTopBar, MeshBottomBar, CommandPalette, SearchPalette } = window.MeshChrome;
+    const X = window.DillaExtras;
+    const [t, setTweak] = useTweaks(TWEAK_DEFAULTS_MESH);
+    const [cmdOpen, setCmdOpen] = useS(false);
+    const [srchOpen, setSrchOpen] = useS(false);
+    const [srchScope, setSrchScope] = useS(null);
+    const [splash, setSplash] = useS(true);
+    const [, setSplashFade] = useS(false);
+    const [ringCall, setRingCall] = useS(null);
+    const [safetyId, setSafetyId] = useS(null);
+    const [addPeerOpen, setAddPeerOpen] = useS(false);
+    const [degraded] = useS(false);
+    const controllerRef = useR({});
+
+    useE(() => {
+      function onRing(e)   { setRingCall(e.detail || { from: 'ada', kind: 'voice' }); }
+      function onSafety(e) { setSafetyId(e.detail || 'ada'); }
+      function onAddPeer() { setAddPeerOpen(true); }
+      window.addEventListener('dilla:incoming-call', onRing);
+      window.addEventListener('dilla:verify-safety', onSafety);
+      window.addEventListener('dilla:add-peer', onAddPeer);
+      return () => {
+        window.removeEventListener('dilla:incoming-call', onRing);
+        window.removeEventListener('dilla:verify-safety', onSafety);
+        window.removeEventListener('dilla:add-peer', onAddPeer);
+      };
+    }, []);
+
+    useE(() => {
+      if (X && X.notifyDemo) X.notifyDemo();
+    }, []);
+
+    // Patch the Mesh theme with the chosen accent.
+    const baseMesh = window.THEMES.mesh;
+    const accentVars = ACCENT_OPTIONS[t.accentHue] || ACCENT_OPTIONS.green;
+    const theme = { ...baseMesh, ...accentVars };
+
+    useE(() => {
+      function onKey(e) {
+        const inField = e.target.matches && e.target.matches('input, textarea, [contenteditable="true"]');
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          setCmdOpen(o => !o); setSrchOpen(false);
+        } else if (e.key === '/' && !inField && !cmdOpen && !srchOpen) {
+          e.preventDefault();
+          setSrchOpen(true);
+        } else if (e.key === 'Escape') {
+          setCmdOpen(false); setSrchOpen(false);
+        }
+      }
+      function onSrch(e) {
+        setSrchScope(e && e.detail ? e.detail : null);
+        setSrchOpen(true);
+      }
+      window.addEventListener('keydown', onKey);
+      window.addEventListener('dilla:open-search', onSrch);
+      return () => {
+        window.removeEventListener('keydown', onKey);
+        window.removeEventListener('dilla:open-search', onSrch);
+      };
+    }, [cmdOpen, srchOpen]);
+
+    const opts = {
+      density: t.density,
+      sidebar: t.sidebar,
+      members: t.members,
+      federated: t.federated,
+      onSidebarChange: (v) => setTweak('sidebar', v),
+      onMembersChange: (v) => setTweak('members', v),
+    };
+    const voiceConn = controllerRef.current.getVoiceConn ? controllerRef.current.getVoiceConn() : { channelId: 'voice' };
+
+    // Apply theme vars to the wrapper too, so the top/bottom bars and the
+    // command-palette overlay (all rendered outside .chat) can read them.
+    const wrapStyle = window.THEMES.themeVars(theme, opts);
+
+    return (
+      <div className="mesh-wrap" style={wrapStyle}>
+        {splash && <X.FirstRunSplash onDone={() => { setSplashFade(true); setTimeout(() => setSplash(false), 320); }} />}
+        {t.showTopBar && <MeshTopBar onCmdK={() => setCmdOpen(true)} onSearch={() => setSrchOpen(true)} onHelp={() => window.dispatchEvent(new CustomEvent('dilla:open-settings', { detail: { mode: 'user', tab: 'keys' } }))} federated={t.federated} degraded={degraded} />}
+        <ChatApp theme={theme} opts={opts} rich={true} controller={controllerRef.current} />
+        {t.showBottomBar && <MeshBottomBar voiceConnection={voiceConn} federated={t.federated} degraded={degraded} />}
+        <CommandPalette
+          open={cmdOpen}
+          onClose={() => setCmdOpen(false)}
+          onPickChannel={(id) => controllerRef.current.pickChannel && controllerRef.current.pickChannel(id)}
+        />
+        <SearchPalette
+          open={srchOpen}
+          scope={srchScope}
+          onClose={() => setSrchOpen(false)}
+          onPickChannel={(id) => controllerRef.current.pickChannel && controllerRef.current.pickChannel(id)}
+        />
+
+        <X.NotificationStack />
+        <X.ConnectionBanner />        <X.IncomingCall
+          call={ringCall}
+          onAccept={() => { setRingCall(null); controllerRef.current.pickChannel && controllerRef.current.pickChannel('voice'); }}
+          onDecline={() => setRingCall(null)}
+        />
+        <X.SafetyCompare
+          contactId={safetyId}
+          onClose={() => setSafetyId(null)}
+        />
+        <X.AddPeerWizard
+          open={addPeerOpen}
+          onClose={() => setAddPeerOpen(false)}
+        />
+
+        <TweaksPanel title="Tweaks · Mesh">
+          <TweakSection label="Layout" />
+          <TweakRadio label="Density" value={t.density}
+                      options={['compact','regular','cozy']}
+                      onChange={v => setTweak('density', v)} />
+          <TweakSlider label="Sidebar width" value={t.sidebar}
+                      min={200} max={360} step={4} unit="px"
+                      onChange={v => setTweak('sidebar', v)} />
+          <TweakSlider label="Members width" value={t.members}
+                      min={180} max={340} step={4} unit="px"
+                      onChange={v => setTweak('members', v)} />
+
+          <TweakSection label="Mesh chrome" />
+          <TweakToggle label="Federation (mesh)"
+                      value={t.federated}
+                      onChange={v => setTweak('federated', v)} />
+          <TweakToggle label="Top status bar"
+                      value={t.showTopBar}
+                      onChange={v => setTweak('showTopBar', v)} />
+          <TweakToggle label="Bottom status bar"
+                      value={t.showBottomBar}
+                      onChange={v => setTweak('showBottomBar', v)} />
+
+          <TweakSection label="Style" />
+          <TweakColor label="Accent"
+                      value={(ACCENT_OPTIONS[t.accentHue] || ACCENT_OPTIONS.green)['--accent']}
+                      options={['#7CFF8E','#FFD16A','#5DD6FF','#FF7EE0']}
+                      onChange={hex => {
+                        const k = Object.keys(ACCENT_OPTIONS).find(k => ACCENT_OPTIONS[k]['--accent'] === hex) || 'green';
+                        setTweak('accentHue', k);
+                      }} />
+
+          <TweakSection label="" />
+          <div style={{ fontSize: 10.5, color: 'rgba(232,236,232,.55)', lineHeight: 1.55, marginTop: -4, letterSpacing: '0.02em' }}>
+            <div style={{ marginBottom: 4 }}>⌘K command · / search</div>
+            <div>Click the search box in any channel header to find messages.</div>
+          </div>
+        </TweaksPanel>
+      </div>
+    );
+  }
+
+  function mount() {
+    if (window.ChatApp && window.TweaksPanel && window.MeshChrome && window.DillaExtras) {
+      ReactDOM.createRoot(document.getElementById('root')).render(<MeshApp />);
+    } else {
+      setTimeout(mount, 30);
+    }
+  }
+  mount();
+</script>
+
+</body>
+</html>

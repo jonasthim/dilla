@@ -1,0 +1,503 @@
+/* Mesh-specific extra chrome — top + bottom status bars, command palette,
+   audio meter, member node badges. Sits on top of chat.css and uses the same
+   --accent / --fg / --hairline tokens. */
+
+.mesh-wrap {
+  display: flex; flex-direction: column;
+  width: 100%; height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  position: relative;
+  overflow: hidden;
+}
+
+.mesh-wrap > .chat { flex: 1 1 auto; min-height: 0; }
+
+/* ───── Top bar ───── */
+.mesh-top {
+  flex: 0 0 32px;
+  display: flex; align-items: center;
+  gap: 24px;
+  padding: 0 14px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--hairline);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+}
+.mt-left, .mt-right { display: flex; align-items: center; gap: 10px; }
+.mt-center { flex: 1; text-align: center; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.mt-brand-link {
+  display: inline-flex; align-items: center;
+  text-decoration: none;
+  height: 100%;
+  margin-right: 4px;
+}
+.mt-brand-logo {
+  height: 20px;
+  width: auto;
+  display: block;
+  filter: brightness(1.1);
+}
+.mt-brand { color: var(--accent); font-weight: 700; letter-spacing: 0.12em; }
+.mt-sep { color: var(--fg-3); }
+.mt-dim { color: var(--fg-3); }
+.mt-ok { color: var(--ok); font-weight: 600; }
+.mt-key {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: transparent;
+  border: none;
+  color: var(--fg-2);
+  font: inherit;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+.mt-key:hover { background: var(--surface-hi); color: var(--accent); }
+.mt-kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 16px; padding: 0 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: 2px;
+  font-size: 10px;
+  color: var(--fg);
+}
+
+/* ───── Bottom status bar ───── */
+.mesh-bottom {
+  flex: 0 0 26px;
+  display: flex; align-items: center;
+  gap: 0;
+  padding: 0;
+  background: var(--bg-2);
+  border-top: 1px solid var(--hairline);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--fg-2);
+}
+.mb-chunk {
+  display: flex; align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 100%;
+  border-right: 1px solid var(--hairline);
+  white-space: nowrap;
+}
+.mb-chunk:last-child { border-right: none; }
+.mb-chunk.mb-grow { flex: 1; border-right: none; }
+.mb-chunk.mb-clickable { cursor: pointer; transition: background .12s, color .12s; }
+.mb-chunk.mb-clickable:hover { background: var(--surface-hi); color: var(--accent); }
+.mb-chunk.mb-clickable:hover .mb-k { color: var(--accent); }
+.mb-k { color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.06em; font-size: 9.5px; }
+.mb-ok { color: var(--ok); font-weight: 600; }
+.mb-voice { color: var(--accent); }
+
+/* Audio level meter */
+.audio-meter {
+  display: inline-flex; align-items: flex-end;
+  gap: 1px;
+  margin-left: 6px;
+  height: 12px;
+}
+.am-bar {
+  display: inline-block;
+  width: 2px;
+  background: var(--accent);
+  transition: height 0.08s linear, opacity 0.08s linear;
+}
+
+/* ───── Command palette ───── */
+.cmdk-overlay {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklab, var(--bg) 70%, transparent);
+  z-index: 50;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 80px;
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+}
+.cmdk {
+  width: min(560px, 90%);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 24px 50px rgba(0,0,0,0.5);
+  border-radius: var(--r-md);
+  display: flex; flex-direction: column;
+  max-height: 60vh;
+  overflow: hidden;
+  font-family: var(--font-mono);
+}
+.cmdk-head {
+  display: flex; align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--bg);
+}
+.cmdk-prompt {
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 14px;
+}
+.cmdk-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+.cmdk-input::placeholder { color: var(--fg-3); }
+.srch-scope {
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  color: var(--fg-2);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+.srch-scope.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.cmdk-hint {
+  color: var(--fg-3);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.cmdk-list {
+  flex: 1; overflow-y: auto;
+  padding: 6px 0;
+}
+.cmdk-sec {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--fg-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 10px 14px 4px;
+}
+.cmdk-row {
+  display: flex; align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  cursor: pointer;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  border-left: 2px solid transparent;
+}
+.cmdk-row.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-left-color: var(--accent);
+}
+.cmdk-cmd::before {
+  content: '>';
+  color: var(--fg-3);
+  margin-right: 8px;
+}
+.cmdk-row.selected .cmdk-cmd::before { color: var(--accent); }
+.cmdk-kbd {
+  font-size: 10px;
+  color: var(--fg-3);
+  letter-spacing: 0.04em;
+}
+.cmdk-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-3);
+  font-size: 12px;
+}
+
+/* Search variant of cmdk */
+.cmdk.srch { width: min(640px, 92%); max-height: 70vh; }
+.srch-tip { padding: 8px 0; }
+.srch-tip-row {
+  padding: 4px 14px 10px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.srch-tip-row kbd {
+  font: inherit;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  padding: 0 4px;
+  margin: 0 2px;
+  border-radius: 2px;
+  color: var(--accent);
+}
+.srch-row {
+  padding: 8px 14px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  display: flex; flex-direction: column;
+  gap: 3px;
+}
+.srch-row.selected {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+}
+.srch-meta {
+  display: flex; align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--fg-3);
+  letter-spacing: 0.02em;
+}
+.srch-ch { color: var(--accent); font-weight: 600; }
+.srch-row.selected .srch-ch { color: var(--accent-2); }
+.srch-sep { color: var(--fg-3); }
+.srch-author { font-weight: 500; }
+.srch-time { font-variant-numeric: tabular-nums; }
+.srch-snippet {
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.srch-snippet mark {
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 0 2px;
+  border-radius: 1px;
+}
+
+/* ───── Member node-origin badges (only in mesh) ───── */
+.chat[data-style="mesh"] .member {
+  padding: 6px 6px 6px 10px;
+  border-left: 1px solid transparent;
+}
+.chat[data-style="mesh"] .member:hover { border-left-color: var(--accent); background: transparent; }
+.chat[data-style="mesh"] .member-status {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.chat[data-style="mesh"] .member-name { font-weight: 500; }
+.member .node-tag {
+  font-size: 9.5px;
+  color: var(--fg-3);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 2px;
+  padding: 1px 5px;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  cursor: help;
+}
+.member .node-tag.fed {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 35%, transparent);
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+}
+.member-fingerprint {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: 0;
+  margin-left: 10px;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  padding: 6px 8px;
+  font-size: 10px;
+  color: var(--fg-2);
+  letter-spacing: 0.04em;
+  z-index: 10;
+  white-space: nowrap;
+}
+.member { position: relative; }
+.chat[data-style="mesh"] .member:hover .member-fingerprint { display: block; }
+
+/* ───── Mesh summary header ───── */
+.mesh-summary {
+  margin: -4px 0 8px;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  font-size: 10.5px;
+  color: var(--fg-2);
+  cursor: help;
+}
+.mesh-summary .ms-row {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-3);
+  margin-bottom: 6px;
+}
+.mesh-summary .ms-label { color: var(--accent); }
+.mesh-summary .ms-sep { color: var(--fg-3); }
+.mesh-summary .ms-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent);
+  animation: pulse 2s infinite;
+}
+.mesh-summary .ms-nodes {
+  display: flex; flex-direction: column;
+  gap: 4px;
+}
+.mesh-summary .ms-node {
+  display: flex; flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 4px 7px;
+  background: var(--bg);
+  border: 1px solid var(--hairline);
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-2);
+  min-width: 0;
+  overflow: hidden;
+}
+.mesh-summary .ms-node > span:first-child {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mesh-summary .ms-node:first-child { color: var(--fg); border-left: 2px solid var(--accent); }
+.mesh-summary .ms-node-sub {
+  color: var(--fg-3);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+/* Solo (single-node) variant */
+.mesh-summary.solo .ms-dot {
+  background: var(--fg-3);
+  animation: none;
+  box-shadow: none;
+}
+.mesh-summary.solo .ms-label { color: var(--fg-2); }
+.ms-cta {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px dashed color-mix(in oklab, var(--accent) 40%, transparent);
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background .12s;
+}
+.ms-cta:hover {
+  background: color-mix(in oklab, var(--accent) 20%, transparent);
+}
+
+/* ───── Tabs (Kanals / PMs) — make selected state legible in mesh ───── */
+.chat[data-style="mesh"] .tabs {
+  padding: 8px 12px 0;
+  gap: 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.chat[data-style="mesh"] .tab {
+  background: transparent;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  color: var(--fg-3);
+  padding: 9px 10px;
+  font-weight: 500;
+}
+.chat[data-style="mesh"] .tab:hover { background: transparent; color: var(--fg); }
+.chat[data-style="mesh"] .tab.active {
+  background: transparent;
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  box-shadow: none;
+}
+
+/* ───── Channel header lamport ───── */
+.chat[data-style="mesh"] .main-head .ch-title::before {
+  content: '[ ';
+  color: var(--fg-3);
+  font-weight: 400;
+}
+.chat[data-style="mesh"] .main-head .ch-title::after {
+  content: ' ]';
+  color: var(--fg-3);
+  font-weight: 400;
+}
+.chat[data-style="mesh"] .channel-row.active::before {
+  background: var(--accent);
+  width: 2px;
+}
+
+/* Composer cursor blink for mesh */
+.chat[data-style="mesh"] .composer-input textarea {
+  caret-color: var(--accent);
+}
+.chat[data-style="mesh"] .composer { border-color: var(--hairline-2); }
+.chat[data-style="mesh"] .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+/* Voice-card extras for mesh */
+.chat[data-style="mesh"] .voice-card {
+  position: relative;
+  border-color: var(--hairline);
+}
+.chat[data-style="mesh"] .voice-card::before,
+.chat[data-style="mesh"] .voice-card::after {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--fg-3);
+  letter-spacing: 0.04em;
+}
+.chat[data-style="mesh"] .voice-card::before {
+  content: 'NODE: ' attr(data-node);
+  top: 8px; left: 10px;
+}
+.chat[data-style="mesh"] .voice-card::after {
+  content: attr(data-bitrate);
+  bottom: 8px; right: 10px;
+}
+.chat[data-style="mesh"] .voice-card.speaking::before { color: var(--accent); }
+
+/* Tweaks panel — when used in mesh page, give it a darker glassmorphism */
+.mesh-page .twk-panel {
+  background: color-mix(in oklab, #0c0d0f 86%, transparent);
+  color: #e8ece8;
+  border: 1px solid rgba(124,255,142,0.25);
+  box-shadow: 0 0 0 1px rgba(124,255,142,0.10), 0 16px 40px rgba(0,0,0,0.6);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+.mesh-page .twk-hd b { color: #7CFF8E; letter-spacing: 0.08em; text-transform: uppercase; }
+.mesh-page .twk-x { color: rgba(232,236,232,.5); }
+.mesh-page .twk-x:hover { background: rgba(124,255,142,.1); color: #7CFF8E; }
+.mesh-page .twk-lbl { color: rgba(232,236,232,.7); }
+.mesh-page .twk-val { color: rgba(232,236,232,.5); }
+.mesh-page .twk-sect { color: rgba(124,255,142,.6); }
+.mesh-page .twk-field { background: rgba(0,0,0,.4); border-color: rgba(124,255,142,.2); color: #e8ece8; }
+.mesh-page .twk-seg { background: rgba(0,0,0,.4); }
+.mesh-page .twk-seg-thumb { background: rgba(124,255,142,.18); box-shadow: 0 0 0 1px rgba(124,255,142,.4); }
+.mesh-page .twk-slider { background: rgba(124,255,142,.15); }
+.mesh-page .twk-slider::-webkit-slider-thumb { background: #7CFF8E; border: 0; box-shadow: 0 0 8px rgba(124,255,142,.6); }
+.mesh-page .twk-toggle { background: rgba(255,255,255,.1); }
+.mesh-page .twk-toggle[data-on="1"] { background: #7CFF8E; }
+.mesh-page .twk-num { background: rgba(0,0,0,.4); border-color: rgba(124,255,142,.2); }
