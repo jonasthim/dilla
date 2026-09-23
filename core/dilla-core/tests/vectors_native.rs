@@ -3,7 +3,9 @@
 //! (Plan B task 4); all three drive this same module.
 
 use dilla_core::cbor::decode_strict;
-use dilla_core::vectors::{run_all, run_envelope, run_franking, run_identity, run_rejects, run_sframe};
+use dilla_core::vectors::{
+    run_all, run_envelope, run_franking, run_identity, run_rejects, run_sframe,
+};
 
 #[test]
 fn every_suite_passes() {
@@ -24,9 +26,19 @@ fn each_suite_reports_the_expected_number_of_cases() {
     assert_eq!(run_sframe().cases.len(), 24);
     assert_eq!(run_identity().cases.len(), 8);
     assert!(run_rejects().cases.len() >= 25);
-    for suite in [run_envelope(), run_franking(), run_sframe(), run_identity(), run_rejects()] {
+    for suite in [
+        run_envelope(),
+        run_franking(),
+        run_sframe(),
+        run_identity(),
+        run_rejects(),
+    ] {
         for case in &suite.cases {
-            assert!(case.ok, "{}: {} expected {} got {}", suite.name, case.case, case.expected, case.actual);
+            assert!(
+                case.ok,
+                "{}: {} expected {} got {}",
+                suite.name, case.case, case.expected, case.actual
+            );
         }
     }
 }
@@ -61,7 +73,10 @@ fn the_report_encodes_as_deterministic_cbor_and_decodes_back() {
 
     assert_eq!(decoded.0, u64::from(report.passed));
     assert_eq!(decoded.1, u64::from(report.failed));
-    assert_eq!(decoded.2, vec!["envelope", "franking", "sframe", "identity", "rejects"]);
+    assert_eq!(
+        decoded.2,
+        vec!["envelope", "franking", "sframe", "identity", "rejects"]
+    );
 }
 
 #[test]

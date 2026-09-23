@@ -21,7 +21,13 @@ impl CaseReport {
         actual: impl Into<String>,
     ) -> Self {
         let (expected, actual) = (expected.into(), actual.into());
-        Self { case: case.into(), field, ok: expected == actual, expected, actual }
+        Self {
+            case: case.into(),
+            field,
+            ok: expected == actual,
+            expected,
+            actual,
+        }
     }
 }
 
@@ -51,7 +57,11 @@ impl VectorReport {
                 }
             }
         }
-        Self { suites, passed, failed }
+        Self {
+            suites,
+            passed,
+            failed,
+        }
     }
 
     pub fn is_ok(&self) -> bool {
@@ -83,7 +93,9 @@ impl VectorReport {
     /// with `ok` as 0 or 1. This is the body of the wasi `vectors_check` response.
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Encoder::with_capacity(4096);
-        e.array(3).uint(u64::from(self.passed)).uint(u64::from(self.failed));
+        e.array(3)
+            .uint(u64::from(self.passed))
+            .uint(u64::from(self.failed));
         e.array(self.suites.len());
         for suite in &self.suites {
             e.array(2).text(suite.name);

@@ -11,14 +11,14 @@ pub use report::{CaseReport, SuiteReport, VectorReport};
 
 use crate::cbor::decode_strict;
 use crate::envelope::{
-    franking_tag, Attachment, Envelope, EnvelopeType, FrankingTagInput, Preview,
+    Attachment, Envelope, EnvelopeType, FrankingTagInput, Preview, franking_tag,
 };
 use crate::identity::{
-    k_backup, k_header, recovery_key_base32, safety_number, sas, CredentialIdentity, Kind,
-    SignerTier, Tier,
+    CredentialIdentity, Kind, SignerTier, Tier, k_backup, k_header, recovery_key_base32,
+    safety_number, sas,
 };
 use crate::ids::{DeviceId, MsgId, UserId};
-use crate::sframe::{derive_keys, encode_header, nonce, Ctr, Kid, NK};
+use crate::sframe::{Ctr, Kid, NK, derive_keys, encode_header, nonce};
 use serde_json::Value;
 
 pub const ENVELOPE_JSON: &str = include_str!("../../../../protocol/vectors/envelope.json");
@@ -85,7 +85,10 @@ fn expect_int(v: &Value) -> String {
 fn ed25519_verifies(public: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
     use ed25519_dalek::{Signature, VerifyingKey};
     VerifyingKey::from_bytes(public)
-        .map(|k| k.verify_strict(message, &Signature::from_bytes(signature)).is_ok())
+        .map(|k| {
+            k.verify_strict(message, &Signature::from_bytes(signature))
+                .is_ok()
+        })
         .unwrap_or(false)
 }
 
@@ -161,14 +164,22 @@ pub fn run_envelope() -> SuiteReport {
             hex(&env.commitment().unwrap_or_default()),
         ));
     }
-    SuiteReport { name: "envelope", cases }
+    SuiteReport {
+        name: "envelope",
+        cases,
+    }
 }
 
 pub fn run_franking() -> SuiteReport {
     let mut cases = Vec::new();
     let doc: Value = serde_json::from_str(FRANKING_JSON).unwrap_or(Value::Null);
     let k_frank = unhex_n::<32>(doc["instance_franking_key"].as_str().unwrap_or(""));
-    for (i, case) in doc["cases"].as_array().unwrap_or(&Vec::new()).iter().enumerate() {
+    for (i, case) in doc["cases"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .enumerate()
+    {
         let input = FrankingTagInput {
             group_id: unhex_n::<16>(case["group_id"].as_str().unwrap_or("")),
             epoch: int(&case["epoch"]),
@@ -186,7 +197,10 @@ pub fn run_franking() -> SuiteReport {
             hex(&franking_tag(&k_frank, &input)),
         ));
     }
-    SuiteReport { name: "franking", cases }
+    SuiteReport {
+        name: "franking",
+        cases,
+    }
 }
 
 pub fn run_sframe() -> SuiteReport {
@@ -242,7 +256,10 @@ pub fn run_sframe() -> SuiteReport {
             hex(&encode_header(kid, ctr)),
         ));
     }
-    SuiteReport { name: "sframe", cases }
+    SuiteReport {
+        name: "sframe",
+        cases,
+    }
 }
 
 pub fn run_identity() -> SuiteReport {
@@ -265,7 +282,9 @@ pub fn run_identity() -> SuiteReport {
         "sas",
         "digits",
         expect_str(&s["digits"]),
-        sas(&unhex_n::<32>(s["epoch_authenticator"].as_str().unwrap_or(""))),
+        sas(&unhex_n::<32>(
+            s["epoch_authenticator"].as_str().unwrap_or(""),
+        )),
     ));
 
     let r = &doc["recovery_key"];
@@ -355,7 +374,10 @@ pub fn run_identity() -> SuiteReport {
         cases[cases.len() - 2].ok && cases[cases.len() - 1].ok
     );
 
-    SuiteReport { name: "identity", cases }
+    SuiteReport {
+        name: "identity",
+        cases,
+    }
 }
 
 /// Every input protocol/04 says a receiver must reject, plus the deterministic-CBOR reject corpus.
@@ -447,7 +469,11 @@ pub fn run_rejects() -> SuiteReport {
         "envelope body over 4000 bytes",
         "validate",
         "rejected",
-        if over_limit.validate().is_err() { "rejected" } else { "accepted" },
+        if over_limit.validate().is_err() {
+            "rejected"
+        } else {
+            "accepted"
+        },
     ));
 
     let mut short_body = env.clone();
@@ -457,7 +483,11 @@ pub fn run_rejects() -> SuiteReport {
         "reaction body over 32 bytes",
         "validate",
         "rejected",
-        if short_body.validate().is_err() { "rejected" } else { "accepted" },
+        if short_body.validate().is_err() {
+            "rejected"
+        } else {
+            "accepted"
+        },
     ));
 
     let mut bad_aad = env;
@@ -466,10 +496,17 @@ pub fn run_rejects() -> SuiteReport {
         "authenticated_data not 32 bytes",
         "verify_commitment",
         "rejected",
-        if bad_aad.verify_commitment(&[0u8; 31]).is_err() { "rejected" } else { "accepted" },
+        if bad_aad.verify_commitment(&[0u8; 31]).is_err() {
+            "rejected"
+        } else {
+            "accepted"
+        },
     ));
 
-    SuiteReport { name: "rejects", cases }
+    SuiteReport {
+        name: "rejects",
+        cases,
+    }
 }
 
 pub fn run_all() -> VectorReport {
