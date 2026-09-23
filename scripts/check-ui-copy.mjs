@@ -13,7 +13,16 @@ export const FORBIDDEN = [
 /** Pull string literals ('…', "…", `…`) and JSX text nodes out of a TSX source. Approximate by design. */
 export function extractCopy(source) {
   const out = [];
-  for (const m of source.matchAll(/'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`((?:[^`\\]|\\.)*)`/g)) out.push(m[1] ?? m[2] ?? m[3]);
+  for (const m of source.matchAll(/'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`((?:[^`\\]|\\.)*)`/g)) {
+    if (m[3] === undefined) { out.push(m[1] ?? m[2]); continue; }
+    // A template literal's `${…}` holds identifiers, not copy. Split them
+    // out the same way the JSX branch below does, so `${kanal} unread`
+    // lints as "unread" and not as the variable's name.
+    for (const part of m[3].split(/\$\{[^}]*\}/)) {
+      const t = part.trim();
+      if (t) out.push(t);
+    }
+  }
   for (const m of source.matchAll(/>([^<>]*)</g)) {
     const text = m[1];
     // Remove {...} interpolations, split by them, and extract remaining text
