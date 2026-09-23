@@ -198,4 +198,20 @@ mod tests {
         ];
         assert_eq!(sframe_secret(&base_key), expected);
     }
+
+    /// The third-party anchor for the whole schedule: Extract *and* Expand, against a vector this
+    /// repository did not produce. RFC 9605 appendix C.3 "SFrame Encryption/Decryption", the
+    /// `cipher_suite: 0x0004` (AES_128_GCM_SHA256_128) case, copied verbatim; the same four
+    /// constants are pinned on the TypeScript side at
+    /// `packages/protocol-vectors/src/sframe.test.ts:78-90`, so both targets are checked against
+    /// the RFC rather than against each other.
+    ///
+    /// `protocol/05-media-frames.md:38` names this vector as the check for the key schedule.
+    #[test]
+    fn derive_keys_reproduces_the_rfc_9605_c3_suite_0x0004_vector() {
+        let base_key = unhex_n::<NK>("000102030405060708090a0b0c0d0e0f");
+        let keys = derive_keys(&base_key, Kid::from_raw(0x123));
+        assert_eq!(hex_of(&keys.key), "d34f547f4ca4f9a7447006fe7fcbf768");
+        assert_eq!(hex_of(&keys.salt), "75234edefe07819026751816");
+    }
 }
