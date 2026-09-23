@@ -1,7 +1,7 @@
 import { hkdfSha256 } from './hkdf.ts';
 import { concat, utf8, be64, be16 } from './bytes.ts';
 
-/** SFrame cipher suite AES_128_GCM_SHA256_128 (RFC 9605 §4.4). */
+/** SFrame cipher suite AES_128_GCM_SHA256_128 (RFC 9605 §4.5 cipher-suite table). */
 export const SUITE = 0x0004;
 const NK = 16, NN = 12;
 

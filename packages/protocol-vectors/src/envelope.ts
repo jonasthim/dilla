@@ -19,6 +19,16 @@ const TAG_DOMAIN = utf8('dilla frank tag v1');
 
 function assertLen(b: Uint8Array, n: number, what: string) { if (b.length !== n) throw new Error(`${what}: expected ${n} bytes, got ${b.length}`); }
 
+// Limits (04-envelope-and-franking.md, "Envelope").
+const MAX_BODY_LONG = 4000; // type 0/1, UTF-8 bytes
+const MAX_BODY_SHORT = 32; // type 3/4, UTF-8 bytes
+const MAX_ATTACHMENTS = 10;
+const MAX_PREVIEWS = 5;
+const MAX_PREVIEW_IMAGE = 32768;
+const MAX_THUMB = 16384;
+
+function assertLimit(cond: boolean, what: string) { if (!cond) throw new Error(`envelope: limit exceeded: ${what}`); }
+
 function toArray(e: Envelope, kf: Uint8Array): CborValue {
   assertLen(e.msgId, 16, 'msg_id');
   if (e.threadId) assertLen(e.threadId, 16, 'thread_id');
@@ -44,15 +54,28 @@ export function decodeEnvelope(bytes: Uint8Array): Envelope {
   if (v !== 1) throw new Error(`envelope: unsupported version ${v}`);
   if (!ENVELOPE_TYPES.has(type)) throw new Error(`envelope: unknown type ${type}`);
   assertLen(msgId, 16, 'msg_id'); assertLen(kf, 32, 'k_f');
+
+  const bodyLen = utf8(body).length;
+  if (type === EnvelopeType.Message || type === EnvelopeType.Edit) assertLimit(bodyLen <= MAX_BODY_LONG, 'body over 4000 bytes for type 0/1');
+  if (type === EnvelopeType.ReactionAdd || type === EnvelopeType.ReactionRemove) assertLimit(bodyLen <= MAX_BODY_SHORT, 'body over 32 bytes for type 3/4');
+  assertLimit(attachments.length <= MAX_ATTACHMENTS, 'more than 10 attachments');
+  assertLimit(previews.length <= MAX_PREVIEWS, 'more than 5 previews');
+
   return {
     v: 1, msgId, type: type as EnvelopeType, threadId, replyTo, body,
-    attachments: attachments.map(x => { const [blobId, key, nonce, size, mime, w, h, thumb] = x as [Uint8Array, Uint8Array, Uint8Array, number, string, number | null, number | null, Uint8Array | null]; return { blobId, key, nonce, size, mime, w, h, thumb }; }),
-    previews: previews.map(x => { const [url, title, description, image] = x as [string, string, string, Uint8Array | null]; return { url, title, description, image }; }),
+    attachments: attachments.map(x => {
+      const [blobId, key, nonce, size, mime, w, h, thumb] = x as [Uint8Array, Uint8Array, Uint8Array, number, string, number | null, number | null, Uint8Array | null];
+      if (thumb) assertLimit(thumb.length <= MAX_THUMB, 'thumb over 16384 bytes');
+      return { blobId, key, nonce, size, mime, w, h, thumb };
+    }),
+    previews: previews.map(x => {
+      const [url, title, description, image] = x as [string, string, string, Uint8Array | null];
+      if (image) assertLimit(image.length <= MAX_PREVIEW_IMAGE, 'preview image over 32768 bytes');
+      return { url, title, description, image };
+    }),
     kf,
   };
 }
-
-export function paddedLength(n: number): number { return Math.ceil(n / 256) * 256; }
 
 /** C = HMAC-SHA256(K_f, "dilla frank v1" || CBOR(envelope with k_f = empty bstr)) */
 export async function frankingCommitment(e: Envelope): Promise<Uint8Array> {

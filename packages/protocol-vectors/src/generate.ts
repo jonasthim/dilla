@@ -32,7 +32,7 @@ export async function envelopeVectors() {
   const out = [];
   for (const c of cases) {
     const bytes = encodeEnvelope(c.envelope);
-    out.push({ name: c.name, envelope: c.envelope, cbor: hex(bytes), length: bytes.length, padded_length: Math.ceil(bytes.length / 256) * 256, commitment: hex(await frankingCommitment(c.envelope)) });
+    out.push({ name: c.name, envelope: c.envelope, cbor: hex(bytes), length: bytes.length, commitment: hex(await frankingCommitment(c.envelope)) });
   }
   return { version: 1, description: 'dilla envelope encodings (04-envelope-and-franking.md). cbor = deterministic CBOR of the 9-element array; commitment = HMAC-SHA256(k_f, "dilla frank v1" || CBOR with k_f blanked).', cases: out };
 }

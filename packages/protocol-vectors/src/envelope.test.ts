@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { encodeEnvelope, decodeEnvelope, frankingCommitment, frankingTag, paddedLength, EnvelopeType, type Envelope } from './envelope.ts';
-import { decode } from './cbor.ts';
+import { encodeEnvelope, decodeEnvelope, frankingCommitment, frankingTag, EnvelopeType, type Envelope } from './envelope.ts';
+import { encode, decode, type CborValue } from './cbor.ts';
 import { hex, fromHex } from './bytes.ts';
 
 const id = (n: number) => new Uint8Array(16).fill(n);
@@ -11,6 +11,11 @@ const sample: Envelope = {
   previews: [],
   kf: new Uint8Array(32).fill(6),
 };
+
+/** Encodes a raw 9-element array as CBOR, bypassing envelope field validation, for malformed-input tests. */
+function encodeRaw(elements: CborValue[]): Uint8Array {
+  return encode(elements);
+}
 
 describe('envelope', () => {
   it('encodes as a fixed-position 9-element array', () => {
@@ -28,10 +33,58 @@ describe('envelope', () => {
   it('rejects the wrong element count', () => {
     expect(() => decodeEnvelope(fromHex('8801' + '50' + '00'.repeat(16)))).toThrow();
   });
-  it('pads to 256-byte buckets', () => {
-    expect(paddedLength(1)).toBe(256);
-    expect(paddedLength(256)).toBe(256);
-    expect(paddedLength(257)).toBe(512);
+  it('rejects an unknown type', () => {
+    const raw = [1, id(1), 99, null, null, '', [], [], new Uint8Array(32)];
+    expect(() => decodeEnvelope(encodeRaw(raw))).toThrow();
+  });
+  it('rejects a msg_id of the wrong length', () => {
+    const raw = [1, new Uint8Array(15), 0, null, null, '', [], [], new Uint8Array(32)];
+    expect(() => decodeEnvelope(encodeRaw(raw))).toThrow();
+  });
+  it('rejects a k_f of the wrong length', () => {
+    const raw = [1, id(1), 0, null, null, '', [], [], new Uint8Array(31)];
+    expect(() => decodeEnvelope(encodeRaw(raw))).toThrow();
+  });
+  it('rejects non-minimal CBOR', () => {
+    // A minimal 9-element envelope array, but `v` is encoded as the 1-byte-follows form (0x18 0x01)
+    // instead of the minimal single-byte form (0x01).
+    const nonMinimal = fromHex('89' + '1801' + '50' + '01'.repeat(16) + '00' + 'f6' + 'f6' + '60' + '80' + '80' + '5820' + '00'.repeat(32));
+    expect(() => decodeEnvelope(nonMinimal)).toThrow();
+  });
+  it('rejects trailing bytes', () => {
+    const bytes = encodeEnvelope(sample);
+    const withTrailer = new Uint8Array(bytes.length + 1);
+    withTrailer.set(bytes);
+    withTrailer[bytes.length] = 0x00;
+    expect(() => decodeEnvelope(withTrailer)).toThrow();
+  });
+  it('rejects a body over the 4000-byte limit for type 0/1', () => {
+    const long: Envelope = { ...sample, body: 'a'.repeat(4001) };
+    expect(() => decodeEnvelope(encodeEnvelope(long))).toThrow();
+  });
+  it('rejects a body over the 32-byte limit for type 3/4', () => {
+    const reaction: Envelope = { ...sample, type: EnvelopeType.ReactionAdd, body: 'a'.repeat(33), attachments: [] };
+    expect(() => decodeEnvelope(encodeEnvelope(reaction))).toThrow();
+  });
+  it('rejects more than 10 attachments', () => {
+    const a = sample.attachments[0];
+    const many: Envelope = { ...sample, attachments: Array.from({ length: 11 }, () => a) };
+    expect(() => decodeEnvelope(encodeEnvelope(many))).toThrow();
+  });
+  it('rejects more than 5 previews', () => {
+    const p = { url: 'https://example.com', title: 't', description: 'd', image: null };
+    const many: Envelope = { ...sample, attachments: [], previews: Array.from({ length: 6 }, () => p) };
+    expect(() => decodeEnvelope(encodeEnvelope(many))).toThrow();
+  });
+  it('rejects a preview image over 32768 bytes', () => {
+    const p = { url: 'https://example.com', title: 't', description: 'd', image: new Uint8Array(32769) };
+    const withPreview: Envelope = { ...sample, attachments: [], previews: [p] };
+    expect(() => decodeEnvelope(encodeEnvelope(withPreview))).toThrow();
+  });
+  it('rejects a thumb over 16384 bytes', () => {
+    const a = { ...sample.attachments[0], thumb: new Uint8Array(16385) };
+    const withThumb: Envelope = { ...sample, attachments: [a] };
+    expect(() => decodeEnvelope(encodeEnvelope(withThumb))).toThrow();
   });
   it('commitment changes when the body changes and is independent of k_f placement', async () => {
     const c1 = await frankingCommitment(sample);
