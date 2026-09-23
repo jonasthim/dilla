@@ -9,5 +9,10 @@ export const Default: Story = {};
 export const Accent: Story = { args: { variant: 'accent', keyHint: '⌘↵' } };
 export const Danger: Story = { args: { variant: 'danger', children: 'Leave voice', keyHint: 'X' } };
 export const Ghost: Story = { args: { variant: 'ghost', children: 'Cancel', keyHint: 'esc' } };
-export const Pressed: Story = { args: { pressed: true, children: 'Mute', keyHint: 'M' } };
+// Pressed state must never be colour-only: the label swaps ("Mute" ->
+// "Unmute") via `pressedLabel`, and a `[x]`/`[ ]` mark plus a border-style
+// change accompany the colour change. Two stories show both states so the
+// non-colour cues are visible side by side.
+export const Unpressed: Story = { args: { pressed: false, pressedLabel: 'Unmute', children: 'Mute', keyHint: 'M' } };
+export const Pressed: Story = { args: { pressed: true, pressedLabel: 'Unmute', children: 'Mute', keyHint: 'M' } };
 export const Small: Story = { args: { size: 'sm', children: 'Verify' } };
