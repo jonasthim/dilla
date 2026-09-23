@@ -15,6 +15,13 @@
 //! here, and task 10's `DillaBinding`, `GroupKind` and the policy tables are what `dilla-core-wasi`
 //! validates against.
 
+mod binding;
+mod policy;
+
+#[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
+mod config;
+#[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
+mod group;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 mod provider;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
@@ -22,6 +29,23 @@ mod storage;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 mod tx;
 
+pub use binding::{
+    DILLA_BINDING, DILLA_BINDING_ID, DillaBinding, GroupKind, external_senders,
+    instance_credential, instance_credential_identity, instance_sender_index,
+};
+pub use policy::{
+    CALL_SWEEP, PAST_EPOCHS_CALL, PAST_EPOCHS_TEXT, TEXT_SWEEP, past_epoch_policy,
+    past_epoch_sweep, validate_staged_commit,
+};
+
+#[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
+pub use config::{
+    CIPHERSUITE, INACTIVITY_REMOVE_DAYS, KEY_PACKAGE_LIFETIME_DAYS, MAX_ADDS_PER_COMMIT,
+    PADDING_SIZE, build_key_package, create_config, group_context_extensions, join_config,
+    leaf_capabilities, rotate_external_senders_extensions,
+};
+#[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
+pub use group::{CommitBundle, DillaGroup, DillaProcessed, MlsError};
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 pub use provider::DillaProvider;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]

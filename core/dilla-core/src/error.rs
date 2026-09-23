@@ -125,6 +125,9 @@ pub enum CoreError {
     Crypto(String),
     #[error(transparent)]
     Storage(#[from] crate::mls::StorageError),
+    #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
+    #[error(transparent)]
+    Mls(#[from] crate::mls::MlsError),
 }
 
 #[cfg(test)]
