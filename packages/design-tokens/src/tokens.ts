@@ -56,7 +56,21 @@ export const structural = {
     mono: '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
     serifItalic: '"DM Serif Display", Georgia, serif',
   },
-  text: { micro: '10px', xs: '11px', sm: '12.5px', base: '13.5px', md: '14px', lg: '17px', xl: '22px' },
+  /**
+   * The type scale in rem at a 16px root, never px: a user who raises the
+   * browser's default text size, or zooms to 200 %, must scale the chrome
+   * with it (WCAG 1.4.4). The px equivalent of each step is kept as a
+   * comment so the Mesh reference stays checkable.
+   */
+  text: {
+    micro: '0.625rem',    // 10px
+    xs: '0.6875rem',      // 11px
+    sm: '0.78125rem',     // 12.5px
+    base: '0.84375rem',   // 13.5px
+    md: '0.875rem',       // 14px
+    lg: '1.0625rem',      // 17px
+    xl: '1.375rem',       // 22px
+  },
   weight: { display: '700', body: '420', label: '600' },
   labelTracking: '0.08em',
   radius: { sm: '0px', md: '2px', lg: '3px', pill: '999px', avatar: '2px' },

@@ -67,8 +67,11 @@ Colours, mesh theme (the default):
 
 Type: `--font-mono` = "JetBrains Mono Variable", ui-monospace, monospace (everything);
 `--font-serif-italic` = "DM Serif Display", serif, italic (only the server name in the sidebar
-header). Sizes: `--text-micro` 10px, `--text-xs` 11px, `--text-sm` 12.5px, `--text-base` 13.5px,
-`--text-md` 14px, `--text-lg` 17px, `--text-xl` 22px. Weights: `--weight-display` 700,
+header). Sizes are rem, never px, so the browser's text-size setting and 200 % zoom scale the whole
+chrome; the px equivalent at the 16px default root is given in parentheses: `--text-micro`
+0.625rem (10px), `--text-xs` 0.6875rem (11px), `--text-sm` 0.78125rem (12.5px), `--text-base`
+0.84375rem (13.5px), `--text-md` 0.875rem (14px), `--text-lg` 1.0625rem (17px), `--text-xl`
+1.375rem (22px). Weights: `--weight-display` 700,
 `--weight-body` 420, `--weight-label` 600. Labels in chrome: uppercase, `letter-spacing: 0.08em`.
 
 Radii: `--r-sm` 0, `--r-md` 2px, `--r-lg` 3px, `--r-pill` 999px (reactions, presence dots, unread

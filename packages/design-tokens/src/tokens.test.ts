@@ -43,6 +43,15 @@ describe('structural tokens', () => {
     expect(structural.layout.railW).toBe('60px');
     expect(structural.layout.bottombarH).toBe('26px');
   });
+  it('states the type scale in rem at a 16px root, never px', () => {
+    expect(structural.text).toEqual({
+      micro: '0.625rem', xs: '0.6875rem', sm: '0.78125rem', base: '0.84375rem',
+      md: '0.875rem', lg: '1.0625rem', xl: '1.375rem',
+    });
+    for (const [step, size] of Object.entries(structural.text)) {
+      expect(size, `--text-${step} must be rem so browser text size and 200 % zoom scale it`).toMatch(/rem$/);
+    }
+  });
   it('has three densities', () => {
     expect(Object.keys(densities)).toEqual(['compact', 'regular', 'cozy']);
     expect(densities.regular.avatar).toBe('32px');

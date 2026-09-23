@@ -31,6 +31,12 @@ describe('renderCss', () => {
     expect(css).toContain('--focus-ring: 2px solid var(--accent);');
     expect(css).toContain('--font-mono: "JetBrains Mono Variable"');
   });
+  it('emits the type scale in rem, never px', () => {
+    expect(css).toContain('--text-micro: 0.625rem;');
+    expect(css).toContain('--text-base: 0.84375rem;');
+    expect(css).toContain('--text-xl: 1.375rem;');
+    expect(css).not.toMatch(/--text-[a-z]+:\s*[\d.]+px;/);
+  });
 });
 
 import { readFileSync } from 'node:fs';
