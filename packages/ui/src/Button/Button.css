@@ -1,12 +1,12 @@
 .d-btn {
   display: inline-flex; align-items: center; gap: 8px;
-  height: 28px; padding: 0 10px;
+  height: 1.75rem /* 28px */; padding: 0 10px;
   font: inherit; font-size: var(--text-sm); font-weight: var(--weight-label);
   color: var(--fg); background: var(--surface-2);
   border: 1px solid var(--edge); border-radius: var(--r-md);
   cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast);
 }
-.d-btn[data-size="sm"] { height: 22px; padding: 0 7px; font-size: var(--text-xs); }
+.d-btn[data-size="sm"] { height: 1.375rem /* 22px */; padding: 0 7px; font-size: var(--text-xs); }
 .d-btn:hover { background: var(--surface-hi); border-color: var(--fg-3); }
 .d-btn[data-variant="accent"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .d-btn[data-variant="accent"]:hover { background: var(--accent-2); }

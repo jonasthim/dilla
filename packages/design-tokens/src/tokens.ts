@@ -77,7 +77,18 @@ export const structural = {
   /** Dimming for de-emphasised (e.g. muted) rows. Chosen so fg-2 over bg-2 still clears 4.5:1 in every theme. */
   opacity: { muted: '0.8' },
   shadow: { s1: '0 0 0 1px rgba(124,255,142,0.08)', s2: '0 0 0 1px rgba(124,255,142,0.18), 0 12px 30px rgba(0,0,0,0.6)' },
-  layout: { railW: '60px', sidebarW: '240px', membersW: '232px', threadW: '380px', topbarH: '32px', bottombarH: '26px', channelHeaderH: '48px' },
+  /**
+   * Pane widths stay px: they are furniture the user drags, and a rail or a
+   * sidebar that grew with the text size would eat the message pane. The
+   * heights are rem, because each one is a box around scale text — a px bar
+   * around rem text clips it the moment the browser's text size goes up.
+   */
+  layout: {
+    railW: '60px', sidebarW: '240px', membersW: '232px', threadW: '380px',
+    topbarH: '2rem',          // 32px
+    bottombarH: '1.625rem',   // 26px
+    channelHeaderH: '3rem',   // 48px
+  },
   /**
    * The focus ring, as an `outline` shorthand: `outline: var(--focus-ring)`
    * with `outline-offset: 2px`. An outline, not a `box-shadow`, so a
@@ -90,8 +101,15 @@ export const structural = {
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 
+/**
+ * Row rhythm, in rem at a 16px root with the px equivalent as a comment. A
+ * row is a box around text: its padding, its gaps and the avatar beside the
+ * text all scale with the text, so raising the browser's text size moves the
+ * whole row apart instead of squeezing the text inside a fixed one. The line
+ * heights are unitless, which already scales them against their font size.
+ */
 export const densities = {
-  compact: { rowPadY: '4px', rowPadX: '16px', rowGap: '0px', groupGap: '8px', avatar: '28px', lineHeight: '1.4' },
-  regular: { rowPadY: '6px', rowPadX: '18px', rowGap: '2px', groupGap: '14px', avatar: '32px', lineHeight: '1.5' },
-  cozy: { rowPadY: '10px', rowPadX: '20px', rowGap: '4px', groupGap: '22px', avatar: '36px', lineHeight: '1.55' },
+  compact: { rowPadY: '0.25rem' /* 4px */, rowPadX: '1rem' /* 16px */, rowGap: '0rem' /* 0px */, groupGap: '0.5rem' /* 8px */, avatar: '1.75rem' /* 28px */, lineHeight: '1.4' },
+  regular: { rowPadY: '0.375rem' /* 6px */, rowPadX: '1.125rem' /* 18px */, rowGap: '0.125rem' /* 2px */, groupGap: '0.875rem' /* 14px */, avatar: '2rem' /* 32px */, lineHeight: '1.5' },
+  cozy: { rowPadY: '0.625rem' /* 10px */, rowPadX: '1.25rem' /* 20px */, rowGap: '0.25rem' /* 4px */, groupGap: '1.375rem' /* 22px */, avatar: '2.25rem' /* 36px */, lineHeight: '1.55' },
 } as const;

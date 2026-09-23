@@ -67,8 +67,11 @@ Colours, mesh theme (the default):
 
 Type: `--font-mono` = "JetBrains Mono Variable", ui-monospace, monospace (everything);
 `--font-serif-italic` = "DM Serif Display", serif, italic (only the server name in the sidebar
-header). Sizes are rem, never px, so the browser's text-size setting and 200 % zoom scale the whole
-chrome; the px equivalent at the 16px default root is given in parentheses: `--text-micro`
+header). The type scale, the control and bar heights, the row padding and the avatar sizes are rem,
+never px, so the browser's text-size setting and 200 % zoom scale the text and the boxes around it
+together; the pane widths (rail, sidebar, member list, thread panel) stay px, because they are
+furniture the user drags rather than boxes around text. The px equivalent at the 16px default root
+is given in parentheses: `--text-micro`
 0.625rem (10px), `--text-xs` 0.6875rem (11px), `--text-sm` 0.78125rem (12.5px), `--text-base`
 0.84375rem (13.5px), `--text-md` 0.875rem (14px), `--text-lg` 1.0625rem (17px), `--text-xl`
 1.375rem (22px). Weights: `--weight-display` 700,
@@ -84,11 +87,17 @@ reference's raw `0.55` because that value composited `--fg-2` text over `--bg-2`
 0.8 is the smallest round value that keeps `--fg-2` on `--bg-2` at or above 4.5:1 in all three
 themes (mesh 5.32:1, light 4.95:1, high-contrast 10.59:1).
 
-Density (`data-density`): compact row padding 4px 16px, gap 0, group gap 8px, avatar 28px;
-regular 6px 18px, 2px, 14px, 32px; cozy 10px 20px, 4px, 22px, 36px. Line height 1.4 / 1.5 / 1.55.
+Density (`data-density`), rem with the px equivalent in parentheses: compact row padding 0.25rem
+1rem (4px 16px), gap 0, group gap 0.5rem (8px), avatar 1.75rem (28px); regular 0.375rem 1.125rem
+(6px 18px), 0.125rem (2px), 0.875rem (14px), 2rem (32px); cozy 0.625rem 1.25rem (10px 20px),
+0.25rem (4px), 1.375rem (22px), 2.25rem (36px). Line height 1.4 / 1.5 / 1.55, unitless, so it
+already scales with its own font size.
 
-Layout dimensions: `--rail-w` 60px, `--sidebar-w` 240px (resizable 200–360), `--members-w` 232px
-(180–340), `--thread-w` 380px, `--topbar-h` 32px, `--bottombar-h` 26px, `--channel-header-h` 48px.
+Layout dimensions. Pane widths in px, because the user drags them and a rail that grew with the
+text size would eat the message pane: `--rail-w` 60px, `--sidebar-w` 240px (resizable 200–360),
+`--members-w` 232px (180–340), `--thread-w` 380px. Bar and header heights in rem, because each one
+is a box around text: `--topbar-h` 2rem (32px), `--bottombar-h` 1.625rem (26px),
+`--channel-header-h` 3rem (48px).
 
 Focus: `--focus-ring` = `2px solid var(--accent)`, applied as `outline: var(--focus-ring)` with
 `outline-offset: 2px` on every interactive element via `:focus-visible`. The ring is an outline and
@@ -120,8 +129,10 @@ blinking caret, `server · node · status`, a live clock, keybind hints ⌘K / `
 bottom bar (node, peers, lamport, latency, voice codec with a 12-bar meter, version). Command
 palette on ⌘K, search palette on `/`, settings modal 960×640 with a 220px nav.
 
-Both optional bars are `white-space: nowrap; overflow: hidden`, so at 200 % zoom or a narrow window
-they clip chunks off the right edge instead of wrapping and eating vertical space; this is allowed
+Both optional bars are `white-space: nowrap; overflow: hidden`, so at 200 % zoom, at a raised
+browser text size, or in a narrow window they clip chunks off the right edge instead of wrapping
+and eating vertical space. They clip horizontally, never vertically: the bar heights are rem, so
+the text inside keeps its room however large the reader sets it. The horizontal clipping is allowed
 because the bars are optional and carry no information that is not also available elsewhere (the
 channel header, the voice dock, Settings → Diagnostics).
 
@@ -156,7 +167,8 @@ chrome; the mode is set and explained in channel settings.
 
 ## Brand mark
 
-Top bar: the mono D-tile (18×18, accent background, `--accent-ink` "D", 2px radius) followed by
+Top bar: the mono D-tile (1.125rem square, 18×18 at the default root, accent background,
+`--accent-ink` "D", 2px radius) followed by
 "DILLA" in 11px uppercase mono at 700 and a 6×12px accent caret that blinks at 1 Hz (static under
 reduced motion). The SVGs in `docs/design/reference/mesh-handoff/branding/` (teal D, amber
 wordmark) are used only for the favicon, the first-run splash and the README, never in the app
@@ -197,7 +209,8 @@ wins over both.
 - The message feed is a `log` region with a polite live region for new messages; the virtualised
   list keeps DOM order equal to reading order.
 - Presence and speaking are shown with a glyph or text as well as colour.
-- 200 % zoom without loss; font sizes in rem; no `min-width` wider than the viewport.
+- 200 % zoom without loss; font sizes and the boxes around them in rem, so a raised browser text
+  size grows both together; no `min-width` wider than the viewport.
 - Dialogs use the native `<dialog>` element: focus trap, Esc, focus return.
 - Ceremonies (recovery key, safety number, pairing) are readable as text, copyable as text where
   allowed, and operable by keyboard alone.

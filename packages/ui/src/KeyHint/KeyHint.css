@@ -1,2 +1,2 @@
 .d-keyhint { display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-micro); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
-.d-keyhint__kbd { font: inherit; padding: 0 5px; line-height: 16px; border: 1px solid var(--edge); border-radius: var(--r-md); color: var(--fg-2); }
+.d-keyhint__kbd { font: inherit; padding: 0 5px; line-height: 1rem /* 16px */; border: 1px solid var(--edge); border-radius: var(--r-md); color: var(--fg-2); }

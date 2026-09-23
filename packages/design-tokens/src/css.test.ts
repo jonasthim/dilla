@@ -27,8 +27,8 @@ describe('renderCss', () => {
     expect(css.indexOf('@media (prefers-contrast: more)')).toBeGreaterThan(css.indexOf('@media (prefers-color-scheme: light)'));
   });
   it('emits densities and reduced motion', () => {
-    expect(css).toMatch(/\[data-density="compact"\]\s*{[^}]*--avatar-size:\s*28px;/);
-    expect(css).toMatch(/:root\s*{[^}]*--row-pad-y:\s*6px;/);
+    expect(css).toMatch(/\[data-density="compact"\]\s*{[^}]*--avatar-size:\s*1\.75rem;/);
+    expect(css).toMatch(/:root\s*{[^}]*--row-pad-y:\s*0\.375rem;/);
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*{\s*:root\s*{[^}]*--duration-fast:\s*0ms;/);
   });
   it('emits structural tokens', () => {
@@ -42,6 +42,15 @@ describe('renderCss', () => {
     expect(css).toContain('--text-base: 0.84375rem;');
     expect(css).toContain('--text-xl: 1.375rem;');
     expect(css).not.toMatch(/--text-[a-z]+:\s*[\d.]+px;/);
+  });
+  it('emits the boxes around that text in rem, and the resizable panes in px', () => {
+    expect(css).toContain('--topbar-h: 2rem;');
+    expect(css).toContain('--bottombar-h: 1.625rem;');
+    expect(css).toContain('--channel-header-h: 3rem;');
+    expect(css).toMatch(/\[data-density="cozy"\]\s*{[^}]*--avatar-size:\s*2\.25rem;/);
+    expect(css).toContain('--sidebar-w: 240px;');
+    expect(css).toContain('--thread-w: 380px;');
+    expect(css).not.toMatch(/--(topbar-h|bottombar-h|channel-header-h|row-pad-[xy]|row-gap|group-gap|avatar-size):\s*[\d.]+px;/);
   });
 });
 

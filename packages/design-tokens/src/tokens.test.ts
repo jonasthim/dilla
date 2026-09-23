@@ -41,7 +41,6 @@ describe('structural tokens', () => {
     expect(structural.radius.md).toBe('2px');
     expect(structural.radius.pill).toBe('999px');
     expect(structural.layout.railW).toBe('60px');
-    expect(structural.layout.bottombarH).toBe('26px');
   });
   it('states the type scale in rem at a 16px root, never px', () => {
     expect(structural.text).toEqual({
@@ -52,8 +51,27 @@ describe('structural tokens', () => {
       expect(size, `--text-${step} must be rem so browser text size and 200 % zoom scale it`).toMatch(/rem$/);
     }
   });
-  it('has three densities', () => {
+  it('sizes the boxes that bound text in rem, and only the resizable panes in px', () => {
+    // A box that bounds scale text has to grow with the text (WCAG 1.4.4):
+    // a px bar around rem text clips it. The pane widths are furniture the
+    // user drags, not text boxes, so they stay px.
+    expect(structural.layout.topbarH).toBe('2rem');
+    expect(structural.layout.bottombarH).toBe('1.625rem');
+    expect(structural.layout.channelHeaderH).toBe('3rem');
+    expect(structural.layout.railW).toBe('60px');
+    expect(structural.layout.sidebarW).toBe('240px');
+    expect(structural.layout.membersW).toBe('232px');
+    expect(structural.layout.threadW).toBe('380px');
+  });
+  it('has three densities, every length in rem', () => {
     expect(Object.keys(densities)).toEqual(['compact', 'regular', 'cozy']);
-    expect(densities.regular.avatar).toBe('32px');
+    expect(densities.regular.avatar).toBe('2rem');
+    for (const [name, d] of Object.entries(densities)) {
+      for (const key of ['rowPadY', 'rowPadX', 'rowGap', 'groupGap', 'avatar'] as const) {
+        expect(d[key], `densities.${name}.${key} must be rem so a raised text size keeps fitting`).toMatch(/rem$/);
+      }
+      // Unitless on purpose: a line height already scales with its font size.
+      expect(d.lineHeight).toMatch(/^[\d.]+$/);
+    }
   });
 });
