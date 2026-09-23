@@ -1848,6 +1848,9 @@ mod tests {
         assert!(UserId::from_hex("00112233445566778899aabbccddeeffaa").is_err()); // 17 bytes
         assert!(UserId::from_hex("00112233445566778899aabbccddeegg").is_err()); // not hex
         assert!(UserId::from_hex("00112233445566778899AABBCCDDEEFF").is_err()); // uppercase
+        // 32 *bytes* but only 30 chars: a '\u{20ac}' whose UTF-8 boundary falls inside the
+        // second digit pair. Must reject, not panic — this is a parser for wire-supplied text.
+        assert!(UserId::from_hex("\u{20ac}0112233445566778899aabbccddee").is_err());
     }
 }
 ```
@@ -2020,16 +2023,26 @@ macro_rules! id16 {
             /// documents and the vectors are lowercase without a prefix, and accepting both
             /// spellings would make two different strings name the same identifier.
             pub fn from_hex(s: &str) -> Result<Self, ProtocolError> {
-                if s.len() != 32 {
+                let bytes = s.as_bytes();
+                if bytes.len() != 32 {
                     return Err(ProtocolError::Credential);
                 }
+                // Decode straight from the bytes, never by slicing the `&str`: the guard above
+                // counts bytes, and a 32-byte string may hold a multi-byte character whose
+                // boundary falls inside a digit pair, where slicing panics. This is a parser for
+                // caller- and wire-supplied text, so every malformed input must return `Err`.
                 let mut out = [0u8; 16];
-                for (i, byte) in out.iter_mut().enumerate() {
-                    let pair = &s[2 * i..2 * i + 2];
-                    if pair.bytes().any(|c| !matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
-                        return Err(ProtocolError::Credential);
+                for (byte, pair) in out.iter_mut().zip(bytes.chunks_exact(2)) {
+                    let mut value = 0u8;
+                    for &c in pair {
+                        let digit = match c {
+                            b'0'..=b'9' => c - b'0',
+                            b'a'..=b'f' => c - b'a' + 10,
+                            _ => return Err(ProtocolError::Credential),
+                        };
+                        value = (value << 4) | digit;
                     }
-                    *byte = u8::from_str_radix(pair, 16).map_err(|_| ProtocolError::Credential)?;
+                    *byte = value;
                 }
                 Ok(Self(out))
             }
