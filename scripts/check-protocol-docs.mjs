@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -29,6 +29,31 @@ export function checkDocs(root) {
     const bad = text.split('\n').findIndex(line => PLACEHOLDER.test(line));
     if (bad >= 0) problems.push(`${name}: placeholder on line ${bad + 1}`);
   }
+
+  // Recursively walk protocol/ and check all files for placeholders
+  const protocolDir = join(root, 'protocol');
+  if (existsSync(protocolDir)) {
+    const walkDir = (currentDir, prefix) => {
+      const entries = readdirSync(currentDir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = join(currentDir, entry.name);
+        const relPath = prefix ? join(prefix, entry.name) : entry.name;
+        if (entry.isFile()) {
+          try {
+            const text = readFileSync(fullPath, 'utf8');
+            const bad = text.split('\n').findIndex(line => PLACEHOLDER.test(line));
+            if (bad >= 0) problems.push(`${relPath}: placeholder on line ${bad + 1}`);
+          } catch (e) {
+            // Skip files that can't be read
+          }
+        } else if (entry.isDirectory()) {
+          walkDir(fullPath, relPath);
+        }
+      }
+    };
+    walkDir(protocolDir, '');
+  }
+
   return problems;
 }
 
