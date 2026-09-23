@@ -131,6 +131,33 @@ mod tests {
         }
     }
 
+    /// Pins the short-form/extended boundary in exact bytes, which no round-trip test can: decode
+    /// is symmetric, so an encoder that spilled 7 into a 2-byte extended field would still round
+    /// trip. 7 is the largest value the 3-bit config field holds, so kid = ctr = 7 MUST be one
+    /// byte, and 8 MUST be the config byte plus one extension byte each. The TypeScript reference
+    /// draws the line in the same place (`packages/protocol-vectors/src/sframe.ts:53`, `k > 7n` /
+    /// `ctr > 7n`), and the later cross-target conformance runner compares these bytes directly.
+    #[test]
+    fn the_short_form_boundary_is_seven() {
+        assert_eq!(
+            hex_of(&encode_header(Kid::from_raw(7), Ctr::from_raw(7))),
+            "77"
+        );
+        assert_eq!(
+            hex_of(&encode_header(Kid::from_raw(8), Ctr::from_raw(8))),
+            "880808"
+        );
+        // Either field alone at the boundary, so a one-sided mutation cannot hide.
+        assert_eq!(
+            hex_of(&encode_header(Kid::from_raw(7), Ctr::from_raw(8))),
+            "7808"
+        );
+        assert_eq!(
+            hex_of(&encode_header(Kid::from_raw(8), Ctr::from_raw(7))),
+            "8708"
+        );
+    }
+
     #[test]
     fn every_header_round_trips() {
         for kid in [0u64, 1, 7, 8, 0xff, 0x100, 0xffff, 0xff_ffff, u64::MAX] {
