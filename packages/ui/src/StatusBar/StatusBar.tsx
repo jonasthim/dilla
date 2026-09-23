@@ -5,8 +5,21 @@ export function StatusBar({ position, label, children }: { position: 'top' | 'bo
   return <div className="d-statusbar" data-position={position} role="toolbar" aria-label={label}>{children}</div>;
 }
 
+/** Tone is never colour alone: a glyph carries it for sighted users… */
+const TONE_GLYPH = { ok: '●', warn: '▲', danger: '✕' } as const;
+/** …and a visually hidden word carries it for assistive tech. */
+const TONE_TEXT = { ok: 'ok', warn: 'warning', danger: 'error' } as const;
+
 export function StatusChunk({ label, children, onClick, tone }: { label?: string; children: ReactNode; onClick?: () => void; tone?: 'ok' | 'warn' | 'danger' }) {
-  const inner = <>{label ? <span className="d-chunk__k">{label}</span> : null}<span className="d-chunk__v" data-tone={tone}>{children}</span></>;
+  const inner = (
+    <>
+      {label ? <span className="d-chunk__k">{label}</span> : null}
+      <span className="d-chunk__v" data-tone={tone}>
+        {tone ? <><span className="d-chunk__tone" aria-hidden="true">{TONE_GLYPH[tone]}</span><span className="d-sr-only">{TONE_TEXT[tone]}</span></> : null}
+        {children}
+      </span>
+    </>
+  );
   return onClick
     ? <button type="button" className="d-chunk d-chunk--clickable" onClick={onClick}>{inner}</button>
     : <span className="d-chunk">{inner}</span>;

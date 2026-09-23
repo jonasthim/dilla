@@ -10,7 +10,7 @@ export const Top: Story = {
       <BrandMark />
       <StatusChunk>server Midgard Crew</StatusChunk>
       <StatusChunk>node home-1</StatusChunk>
-      <StatusChunk tone="ok">● ready</StatusChunk>
+      <StatusChunk tone="ok">ready</StatusChunk>
     </StatusBar>
   ),
 };
@@ -19,7 +19,8 @@ export const Bottom: Story = {
   render: args => (
     <StatusBar {...args}>
       <StatusChunk label="node">dilla.thim.dev</StatusChunk>
-      <StatusChunk label="latency">14ms p50</StatusChunk>
+      <StatusChunk label="latency" tone="warn">210ms p50</StatusChunk>
+      <StatusChunk label="sync" tone="danger">stalled</StatusChunk>
       <StatusChunk label="voice" tone="ok" onClick={() => {}}>OPUS 48kHz @ 96kbps<Meter levels={[1, 3, 5, 2, 0, 4, 6, 2, 1, 3, 2, 1]} /></StatusChunk>
       <StatusChunk label="v">0.1.0-dev</StatusChunk>
     </StatusBar>

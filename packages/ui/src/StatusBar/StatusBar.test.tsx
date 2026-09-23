@@ -15,8 +15,22 @@ describe('StatusBar', () => {
     );
     expect(screen.getByRole('toolbar', { name: 'Connection' })).toBeInTheDocument();
     expect(screen.getByText('dilla.thim.dev').closest('button')).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: /voice OPUS 48kHz/ }));
+    await userEvent.click(screen.getByRole('button', { name: /voice ok OPUS 48kHz/ }));
     expect(onClick).toHaveBeenCalled();
+  });
+  it('backs a chunk tone with a glyph and a word, never colour alone', () => {
+    render(
+      <StatusBar position="bottom" label="Connection">
+        <StatusChunk label="sync" tone="danger">stalled</StatusChunk>
+        <StatusChunk label="node">dilla.thim.dev</StatusChunk>
+      </StatusBar>,
+    );
+    const toned = screen.getByText('stalled').closest('.d-chunk') as HTMLElement;
+    expect(toned).toHaveTextContent(/error/);
+    expect(screen.getByText('✕')).toHaveAttribute('aria-hidden', 'true');
+    const plain = screen.getByText('dilla.thim.dev').closest('.d-chunk') as HTMLElement;
+    expect(plain).not.toHaveTextContent(/error|ok|warning/);
+    expect(plain.querySelector('[aria-hidden="true"]')).toBeNull();
   });
   it('renders the brand mark with the product name readable once', () => {
     render(<StatusBar position="top" label="Session"><BrandMark /></StatusBar>);
