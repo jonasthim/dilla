@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { relativeLuminance, contrastRatio, parseColor, composite } from './contrast.ts';
+import { contrastRatio as contrastRatioFromRoot } from '../src/index.ts';
 
 describe('parseColor', () => {
   it('parses hex and rgba', () => {
@@ -35,5 +36,11 @@ describe('composite', () => {
   it('returns the background for alpha 0 and the foreground for alpha 1', () => {
     expect(composite('rgba(255,0,0,0)', '#070809')).toBe('#070809');
     expect(composite('rgba(255,0,0,1)', '#070809')).toBe('#ff0000');
+  });
+});
+
+describe('package root export', () => {
+  it('exports functions from the package entry point', () => {
+    expect(contrastRatioFromRoot('#FFFFFF', '#000000')).toBeCloseTo(21, 2);
   });
 });

@@ -1,1 +1,1 @@
-export * from './contrast.js';
+export * from './contrast.ts';
