@@ -9,6 +9,7 @@ pub mod envelope;
 pub mod error;
 pub mod identity;
 pub mod ids;
+pub mod sframe;
 
 pub use error::{CoreError, ProtocolError};
 
