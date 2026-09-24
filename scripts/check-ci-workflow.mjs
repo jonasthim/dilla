@@ -2,8 +2,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Every job the workflow must carry (interfaces §5). `go` is Plan B task 8's, so it is not *required*
- * here — but if it exists, `checkGoOrdering` below insists on its `needs: rust-wasi` edge.
+ * Every job the workflow must carry (interfaces §5). Ruling L added the two Go jobs: they landed with
+ * Plan B task 8, and leaving them merely "checked if present" meant deleting them was the one way to
+ * make the Go half of the tree ungated without this gate saying a word. The `go` job additionally has
+ * to declare its `needs: rust-wasi` edge (see below).
  */
 export const REQUIRED_JOBS = [
   'node',
@@ -14,6 +16,8 @@ export const REQUIRED_JOBS = [
   'vectors',
   'browser-spike',
   'deny',
+  'go',
+  'go-fts5-arm64',
 ];
 
 /**
@@ -64,6 +68,23 @@ const REQUIRED_STEPS = {
     'npm run test:e2e:matrix -w @dilla/e2e',
   ],
   deny: ['cargo deny --all-features check advisories bans licenses sources'],
+  // Ruling M. The first two lines are the hand-off from `rust-wasi`: without the download, or with it
+  // landing anywhere but `internal/mlswasi/testdata`, the wazero tests skip themselves and the job is
+  // green having proved nothing. The third is the only compile of the pinned LiveKit/wazero/sqlite
+  // graph — `internal/deps` sits behind the `dillapins` tag precisely so no ordinary build pulls the
+  // SFU in, which also means no other step in this workflow would notice that graph breaking. The
+  // fourth is the race-detector run itself; it needs cgo, so it must never be reduced to a plain
+  // `go test`.
+  go: [
+    'actions/download-artifact@v8',
+    'path: internal/mlswasi/testdata',
+    'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
+    'go test -race -shuffle=on -timeout 15m ./...',
+  ],
+  // modernc.org/sqlite carries one generated translation unit per GOOS/GOARCH, so the FTS5
+  // assertion is only actually *executed* on arm64 by a native arm64 runner (deviation B9): moved to
+  // ubuntu-latest this job would silently re-run what the `go` job already ran.
+  'go-fts5-arm64': ['runs-on: ubuntu-24.04-arm', 'go test ./internal/store/sqlite/...'],
 };
 
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
@@ -121,7 +142,8 @@ export function checkWorkflow(root) {
   // Plan B task 8 owns the `go` job; this plan owns `rust-wasi`. `actions/download-artifact@v8`
   // fetches from the same workflow run, so GitHub schedules `go` after `rust-wasi` only if a `needs:`
   // says so, and whichever plan lands second has to add the edge. Nobody owned that rule, so it lives
-  // here: the moment a `go` job exists, it must declare the dependency.
+  // here. The job is required above; the guard keeps this block from piling a second, confusing
+  // complaint on top of the plain "missing job" one.
   if ('go' in jobs) {
     if (!/^\s*needs:.*rust-wasi/m.test(jobs.go)) {
       problems.push('ci.yml: job "go" downloads the rust-wasi artifact but has no "needs: rust-wasi"');

@@ -138,11 +138,30 @@ func TestShortAPISecretIsRejectedBeforeTheSFUStarts(t *testing.T) {
 	}
 }
 
+// A job-level `env:` member sits at six spaces (`    env:` then the key); a
+// step-level one at ten (`        env:` then the key). Only the first applies to
+// every step of the job, so only the first can disarm `go test -race`.
+var jobLevelCGOEnabled = regexp.MustCompile(`(?m)^ {6}CGO_ENABLED: `)
+
 func TestCIWorkflowHasTheGoJob(t *testing.T) {
 	wf := readRepoFile(t, ".github/workflows/ci.yml")
 
+	// Slice the job out first: every assertion below is about the `go` job, and
+	// some of these strings appear elsewhere in the file. `name: dilla-core-wasi`
+	// is rust-wasi's upload name too, so checking it against the whole workflow
+	// would pass on a `go` job that downloads nothing at all. Fail cleanly if
+	// the job is absent: slicing at a -1 index panics with "slice bounds out of
+	// range".
+	idx := strings.Index(wf, "\n  go:\n")
+	if idx < 0 {
+		t.Fatal("ci.yml has no `go:` job, so its steps cannot be checked")
+	}
+	goJob := wf[idx:]
+	if end := strings.Index(goJob[1:], "\n  go-fts5-arm64:"); end >= 0 {
+		goJob = goJob[:end+1] // end is relative to goJob[1:]
+	}
+
 	for _, want := range []string{
-		"\n  go:\n",
 		// Without this the artifact does not exist yet: GitHub starts jobs with
 		// no `needs:` immediately and in parallel, and download-artifact only
 		// sees artifacts already uploaded in the same run (gap-31 §3.2's
@@ -156,12 +175,17 @@ func TestCIWorkflowHasTheGoJob(t *testing.T) {
 		"path: internal/mlswasi/testdata",
 		"run: go mod verify",
 		"run: go vet ./...",
+		// Ruling M: `internal/deps` sits behind the `dillapins` tag so no
+		// ordinary build drags the LiveKit SFU in, which also means this is the
+		// only place in CI where the pinned module graph — the three pion
+		// `replace` directives included — is compiled at all.
+		"CGO_ENABLED=0 go build -tags dillapins ./internal/deps",
 		"go test -race -shuffle=on -timeout 15m ./...",
 		"GORACE: halt_on_error=1",
 		"CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad",
 	} {
-		if !strings.Contains(wf, want) {
-			t.Errorf("ci.yml is missing %q", want)
+		if !strings.Contains(goJob, want) {
+			t.Errorf("the go job in ci.yml is missing %q", want)
 		}
 	}
 
@@ -173,19 +197,12 @@ func TestCIWorkflowHasTheGoJob(t *testing.T) {
 	}
 
 	// The race detector needs cgo and a C toolchain, so CGO_ENABLED=0 must
-	// never be set job-wide. Find the job block first and fail cleanly if it is
-	// absent: slicing at a -1 index panics with "slice bounds out of range".
-	idx := strings.Index(wf, "\n  go:\n")
-	if idx < 0 {
-		t.Fatal("ci.yml has no `go:` job, so its steps cannot be checked")
-	}
-	goJob := wf[idx:]
-	if end := strings.Index(goJob[1:], "\n  go-fts5-arm64:"); end >= 0 {
-		goJob = goJob[:end+1] // end is relative to goJob[1:]
-	}
-	if strings.Contains(goJob, "CGO_ENABLED: ") {
+	// never be set job-wide. On a single build step it is not only harmless but
+	// required — that is how the static release build and the dillapins build
+	// are spelled — so the rule is the scope, not the string.
+	if jobLevelCGOEnabled.MatchString(goJob) {
 		t.Error("the go job sets CGO_ENABLED at job level; go test -race needs cgo, " +
-			"so it may only be set on the build step")
+			"so it may only be set on a build step")
 	}
 }
 

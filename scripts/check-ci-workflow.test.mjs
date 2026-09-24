@@ -63,6 +63,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: cargo deny --all-features check advisories bans licenses sources
+  go:
+    runs-on: ubuntu-latest
+    needs: [rust-wasi]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: go vet ./...
+      - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
+      - run: go test -race -shuffle=on -timeout 15m ./...
+      - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
+
+  go-fts5-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - run: go test ./internal/store/sqlite/...
 `;
 
 function fixture(body) {
@@ -139,25 +156,17 @@ test('a rust-wasi job that lost the artifact path is reported', () => {
 });
 
 test('a go job without needs: rust-wasi is reported', () => {
-  const withGo = `${GOOD}  go:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v8
-      - run: go test ./...
-`;
-  const problems = checkWorkflow(fixture(withGo));
+  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-wasi]\n', '')));
   assert.ok(problems.some((p) => p.includes('needs: rust-wasi')), problems.join('\n'));
 });
 
-test('a go job with needs: rust-wasi passes', () => {
-  const withGo = `${GOOD}  go:
-    runs-on: ubuntu-latest
-    needs: rust-wasi
-    steps:
-      - uses: actions/download-artifact@v8
-      - run: go test ./...
-`;
-  assert.deepEqual(checkWorkflow(fixture(withGo)), []);
+// Both spellings are the same dependency edge to GitHub, so the ordering rule must accept the
+// scalar one as well as the list the real workflow uses.
+test('a go job whose needs: is the scalar spelling passes', () => {
+  assert.deepEqual(
+    checkWorkflow(fixture(GOOD.replace('    needs: [rust-wasi]\n', '    needs: rust-wasi\n'))),
+    [],
+  );
 });
 
 test('a node job that stopped running the checker\'s own tests is reported', () => {
@@ -170,15 +179,41 @@ test('a node job that stopped running the checker\'s own tests is reported', () 
 // deviation B15 text) is the untested combination B15 existed to prevent. The checker owns the
 // cross-plan ordering rule already, so it must own this half of the hand-off too.
 test('a go job with download-artifact@v4 instead of v8 is reported', () => {
-  const withGo = `${GOOD}  go:
-    runs-on: ubuntu-latest
-    needs: rust-wasi
-    steps:
-      - uses: actions/download-artifact@v4
-      - run: go test ./...
-`;
-  const problems = checkWorkflow(fixture(withGo));
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('actions/download-artifact@v8', 'actions/download-artifact@v4')),
+  );
   assert.ok(problems.some((p) => p.includes('download-artifact@v8')), problems.join('\n'));
+});
+
+// Ruling L: the Go half of the tree is gated by this checker too, so a workflow that simply never
+// declares the `go` job — the state this repository was in before Plan B task 8 — must be reported
+// rather than silently accepted. Before this rule the checker passed such a workflow.
+test('a workflow with no go job at all is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/  go:[\s\S]*$/, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "go"')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('missing job "go-fts5-arm64"')), problems.join('\n'));
+});
+
+// Ruling M: `internal/deps` is the only thing that compiles the pinned LiveKit/wazero/sqlite graph
+// with the three pion `replace` directives, and it is behind the `dillapins` tag, so no other step
+// in the workflow would notice the graph breaking.
+test('a go job that lost the pinned-module-graph build is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps\n', '')),
+  );
+  assert.ok(problems.some((p) => p.includes('dillapins')), problems.join('\n'));
+});
+
+test('a go job that stopped running the race-detector tests is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 15m ./...\n', '')),
+  );
+  assert.ok(problems.some((p) => p.includes('-race')), problems.join('\n'));
+});
+
+test('a go-fts5-arm64 job that stopped running on arm is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('    runs-on: ubuntu-24.04-arm\n', '    runs-on: ubuntu-latest\n')));
+  assert.ok(problems.some((p) => p.includes('ubuntu-24.04-arm')), problems.join('\n'));
 });
 
 // The CLI entry point at the bottom of check-ci-workflow.mjs, not `checkWorkflow` itself: this must

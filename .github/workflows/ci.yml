@@ -180,12 +180,15 @@ jobs:
           path: internal/mlswasi/testdata
       - run: go mod verify
       - run: go vet ./...
+      - name: The pinned module graph still compiles cgo-free
+        run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
       - name: Unit tests with the race detector (cgo required, do not set CGO_ENABLED=0 here)
         run: go test -race -shuffle=on -timeout 15m ./...
         env:
           GORACE: halt_on_error=1
       - name: Static release build
         run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
+
   go-fts5-arm64:
     runs-on: ubuntu-24.04-arm
     steps:
