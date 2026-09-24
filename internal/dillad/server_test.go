@@ -24,11 +24,13 @@ import (
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
 	"github.com/pressly/goose/v3"
+	"github.com/prometheus/client_golang/prometheus"
 	_ "modernc.org/sqlite"
 )
 
@@ -473,5 +475,68 @@ func TestTheReleaseBinaryDoesNotLinkTheTestHelpers(t *testing.T) {
 	}
 	if strings.Contains(string(out), "dilladtest") {
 		t.Fatal("cmd/dillad depends on internal/dillad/dilladtest; the seeding helpers must never ship")
+	}
+}
+
+// server.RequestLog logs and calls observe AFTER next.ServeHTTP returns, with
+// no defer, so whichever middleware sits INSIDE it is the one whose panics it
+// can still account for. With Recover as the outermost wrapper the unwinding
+// skips both: a panicking request produces no msg=http access-log line and no
+// dilla_http_requests_total / dilla_http_request_duration_seconds sample, so
+// handler panics never reach the 5xx rate an operator alerts on. Wiring the
+// middlewares is this package's one job, so the order is asserted here.
+func TestAPanickingHandlerIsStillLoggedAndCounted(t *testing.T) {
+	cfg := testConfig(t)
+	var logs bytes.Buffer
+	reg := prometheus.NewRegistry()
+	srv, err := dillad.New(context.Background(), dillad.Options{
+		Config: cfg, Clock: clock.System(),
+		Log:         obs.NewLogger(cfg.Log, &logs),
+		Metrics:     obs.NewMetrics(reg, reg),
+		ScrapeToken: "scrape-me",
+		Extra: []func(*server.Mux){func(m *server.Mux) {
+			m.HandleFunc("GET /v1/panic", func(http.ResponseWriter, *http.Request) {
+				panic("boom")
+			})
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+	h := srv.Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/panic", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("GET /v1/panic = %d, want 500 from server.Recover", rec.Code)
+	}
+
+	var access string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, `"msg":"http"`) && strings.Contains(line, `"route":"GET /v1/panic"`) {
+			access = line
+		}
+	}
+	if access == "" {
+		t.Fatalf("the panicking request produced no msg=http access-log line; the log held:\n%s", logs.String())
+	}
+	if !strings.Contains(access, `"status":500`) {
+		t.Fatalf("the access-log line records the wrong status: %s", access)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, cfg.Metrics.Path, nil)
+	req.Header.Set("Authorization", "Bearer scrape-me")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s with the scrape token = %d", cfg.Metrics.Path, rec.Code)
+	}
+	want := `dilla_http_requests_total{code="5xx",method="GET",route="GET /v1/panic"} 1`
+	if !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("the panicking request was never counted; %q is absent from the scrape", want)
+	}
+	if !strings.Contains(rec.Body.String(), `dilla_http_request_duration_seconds_count{route="GET /v1/panic"} 1`) {
+		t.Fatal("the panicking request contributed no duration sample")
 	}
 }

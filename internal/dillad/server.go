@@ -103,8 +103,15 @@ func New(ctx context.Context, o Options) (*Server, error) {
 
 	var h http.Handler = mux
 	h = generationHeader(h, instance.Generation)
-	h = server.RequestLog(o.Log, o.Clock, o.Metrics.ObserveHTTP)(h)
+	// Recover sits INSIDE RequestLog, not outside it. server.RequestLog logs
+	// and calls observe after next.ServeHTTP returns, with no defer, so a panic
+	// unwinding past it skips both: the outer-Recover order produced no
+	// msg=http line and no dilla_http_requests_total sample for a panicking
+	// request, and handler panics never reached the 5xx rate an operator
+	// alerts on. This way Recover writes its 500 through RequestLog's
+	// statusWriter, so the request is logged and counted as the 5xx it is.
 	h = server.Recover(o.Log)(h)
+	h = server.RequestLog(o.Log, o.Clock, o.Metrics.ObserveHTTP)(h)
 
 	s := &Server{o: o, mux: mux, handler: h, sessions: sessions, instance: instance}
 	s.httpSrv = &http.Server{
