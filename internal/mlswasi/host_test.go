@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
@@ -271,41 +272,38 @@ func TestCallCopiesTheResponseOutOfLinearMemory(t *testing.T) {
 		t.Fatal("dilla_abi returned an empty response")
 	}
 
-	// Deterministic check 1. api.Memory.Read hands back buf[offset:offset+n], a
-	// two-index slice whose capacity runs to the end of linear memory; a copy made
-	// with make([]byte, n) has cap == len. Comparing them tells the two apart
-	// without depending on whether memory happened to grow.
-	if cap(first) != len(first) {
-		t.Errorf("Call returned len=%d cap=%d; api.Memory.Read's view has a capacity running to "+
-			"the end of linear memory, so cap != len means the response was not copied out",
-			len(first), cap(first))
+	// The guard: `first` must not alias linear memory at all. Compare the backing
+	// arrays themselves, which needs nothing from wazero's slice headers and
+	// nothing from the guest allocator.
+	//
+	// Two earlier framings of this check were inert and are gone. A cap()/len()
+	// comparison cannot work: wazero v1.12.0's MemoryInstance.Read returns
+	// `m.Buffer[offset : offset+byteCount : offset+byteCount]`
+	// (internal/wasm/memory.go:165), a three-index slice, so a view has cap == len
+	// exactly like a copy does. Scribbling over the block dilla_free just released
+	// cannot work either: Call's deferred free of the *request* buffer runs after
+	// the response is freed and reshuffles dlmalloc's free list, so the next
+	// same-sized dilla_alloc does not hand the response block back.
+	//
+	// The copy is load-bearing rather than defensive: MemoryInstance.Grow
+	// reassigns `m.Buffer` (memory.go:260), so a view Call leaked would point into
+	// a stale array as soon as the guest grew memory. Take the whole-memory view
+	// now, before any call that could move it.
+	whole, ok := inst.mod.Memory().Read(0, inst.mod.Memory().Size())
+	if !ok {
+		t.Fatalf("reading the whole %d-byte linear memory failed", inst.mod.Memory().Size())
+	}
+	memBase := uintptr(unsafe.Pointer(unsafe.SliceData(whole)))
+	respBase := uintptr(unsafe.Pointer(unsafe.SliceData(first)))
+	if respBase >= memBase && respBase < memBase+uintptr(len(whole)) {
+		t.Fatalf("Call returned a slice backed by wazero's linear memory at offset %d of %d bytes: "+
+			"the response was not copied out", respBase-memBase, len(whole))
 	}
 
-	// Deterministic check 2. Call freed the response buffer with dilla_free before
-	// returning, so the next dilla_alloc of the same size normally gets that exact
-	// region back. Scribble over it: if Call had returned a view, the scribble
-	// would appear inside `first`.
-	out, err := inst.invoke(ctx, "dilla_alloc", inst.alloc, uint64(len(first)))
-	if err != nil {
-		t.Fatalf("dilla_alloc: %v", err)
-	}
-	scratch := uint32(out[0])
-	scribble := bytes.Repeat([]byte{0xa5}, len(first))
-	if !inst.mod.Memory().Write(scratch, scribble) {
-		t.Fatalf("writing %d bytes at %d exceeds the %d-byte memory", len(scribble), scratch, inst.mod.Memory().Size())
-	}
-	if bytes.Equal(first, scribble) {
-		t.Fatal("the response aliased the region dilla_free handed back to the allocator: " +
-			"Call returned a view into linear memory, not a copy")
-	}
-	if _, err := inst.invoke(ctx, "dilla_free", inst.free, uint64(scratch), uint64(len(first))); err != nil {
-		t.Fatalf("dilla_free: %v", err)
-	}
-
-	// Check 3, kept as a cheap extra rather than as the guard: force the guest to
-	// allocate roughly a megabyte and very likely grow memory. wazero's compiler
-	// grows inside an mmap'd reservation, so an aliasing slice often survives this
-	// unchanged — which is exactly why checks 1 and 2 exist.
+	// A cheap extra rather than the guard: force the guest to allocate roughly a
+	// megabyte and very likely grow memory. wazero's compiler grows inside an
+	// mmap'd reservation, so an aliasing slice often survives this unchanged —
+	// which is exactly why the pointer-identity guard above exists.
 	snapshot := bytes.Clone(first)
 	g, err := inst.PublicGroupFromExternal(ctx, f.ratchetTree, f.groupInfo)
 	if err != nil {
