@@ -25,6 +25,12 @@ func RealIP(r *http.Request, trusted []netip.Prefix) netip.Addr {
 		if err != nil {
 			continue
 		}
+		// Unmap before anything looks at the address. A proxy is free to write
+		// an IPv4 client as ::ffff:a.b.c.d, and netip.Prefix.Contains is false
+		// across address families: without this, a trusted hop spelled
+		// ::ffff:127.0.0.1 reads as the client, and the address handed back is
+		// keyed as IPv6 by RateKey.
+		addr = addr.Unmap()
 		if inAny(addr, trusted) {
 			continue // another hop of our own proxy chain
 		}
@@ -61,6 +67,11 @@ func RateKey(a netip.Addr) string {
 	if !a.IsValid() {
 		return "invalid"
 	}
+	// ::ffff:a.b.c.d is an IPv4 client wearing an IPv6 spelling. Unmapped, it
+	// keys as itself; left mapped, its /64 is "::/64" for EVERY IPv4 address on
+	// earth, and one abusive client would share — and empty — a single bucket
+	// per class with every other IPv4 client of the instance.
+	a = a.Unmap()
 	if a.Is4() {
 		return a.String()
 	}
