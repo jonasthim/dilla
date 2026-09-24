@@ -1,4 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Every test in this file needs a working OPFS boot, a leader and an encrypted store. Firefox in
 // private browsing and WebKit in an ephemeral context both boot in `memory` mode by design, so these
@@ -158,4 +161,89 @@ test('resigning closes the connection, pauses the VFS and releases the lock in t
   const successor = await context.newPage();
   await boot(successor, id);
   await expect(successor.getByTestId('role')).toHaveText('leader', { timeout: 30_000 });
+});
+
+const HANDOVERS = 10;
+
+test('leadership passes to the follower within the 6-attempt budget when the leader tab is closed', async ({
+  context,
+}) => {
+  const id = instance('handover');
+  const samples: Array<{ attempts: number; elapsedMs: number; grantMs: number }> = [];
+
+  let leader = await context.newPage();
+  await boot(leader, id);
+  await expect(leader.getByTestId('role')).toHaveText('leader');
+
+  for (let i = 0; i < HANDOVERS; i += 1) {
+    const follower = await context.newPage();
+    await boot(follower, id);
+    await expect(follower.getByTestId('role')).toHaveText('follower');
+
+    // interfaces §6 task 20 asks for the **lock-release latency after a leader kill**, which is the
+    // interval between closing the leader and the successor being elected. `elapsedMs` is measured
+    // inside openWithRetry, which starts only after the lock has already been granted, so it is the
+    // reopen time and not that latency. Both are recorded; task 20 reports them under their own names.
+    const killedAt = Date.now();
+    await leader.close();
+
+    // The Web Lock is released on agent teardown, with no lease and no TTL; the successor's first
+    // install() is also what evicts a BFCached predecessor, so one retry is expected and healthy
+    // (gap-14 §0, §3).
+    await expect(follower.getByTestId('role')).toHaveText('leader', { timeout: 30_000 });
+    const grantMs = Date.now() - killedAt;
+    const attempts = Number(await follower.getByTestId('attempts').textContent());
+    const elapsedMs = Number(await follower.getByTestId('elapsed').textContent());
+
+    expect(attempts).toBeGreaterThanOrEqual(1);
+    expect(attempts).toBeLessThanOrEqual(2);
+    expect(elapsedMs).toBeLessThan(4500);
+    samples.push({ attempts, elapsedMs, grantMs });
+
+    leader = follower;
+  }
+
+  const sorted = [...samples].sort((a, b) => a.elapsedMs - b.elapsedMs);
+  const sortedGrant = [...samples].sort((a, b) => a.grantMs - b.grantMs);
+  const metrics = {
+    handovers: HANDOVERS,
+    attempts: {
+      min: Math.min(...samples.map((s) => s.attempts)),
+      max: Math.max(...samples.map((s) => s.attempts)),
+    },
+    // Time from `leader.close()` to the successor showing `role = leader`: the OPFS/Web-Locks
+    // release latency task 20 must publish. No vendor documents a bound (gap-14 §0).
+    grantMs: {
+      min: sortedGrant[0].grantMs,
+      p50: sortedGrant[Math.floor(sortedGrant.length / 2)].grantMs,
+      max: sortedGrant[sortedGrant.length - 1].grantMs,
+    },
+    // Time inside `openWithRetry`, i.e. how long reopening the encrypted store took once the lock
+    // was already held.
+    elapsedMs: {
+      min: sorted[0].elapsedMs,
+      p50: sorted[Math.floor(sorted.length / 2)].elapsedMs,
+      max: sorted[sorted.length - 1].elapsedMs,
+    },
+    samples,
+  };
+  const out = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'test-results');
+  mkdirSync(out, { recursive: true });
+  writeFileSync(resolve(out, 'opfs-leader-metrics.json'), `${JSON.stringify(metrics, null, 2)}\n`);
+});
+
+test('the new leader reads the rows the old leader wrote', async ({ context }) => {
+  const id = instance('handover-data');
+  const first = await context.newPage();
+  await boot(first, id);
+  await first.getByTestId('append').click();
+  await expect(first.getByTestId('rows')).toHaveText('2');
+
+  const second = await context.newPage();
+  await boot(second, id);
+  await expect(second.getByTestId('role')).toHaveText('follower');
+  await first.close();
+
+  await expect(second.getByTestId('role')).toHaveText('leader', { timeout: 30_000 });
+  await expect(second.getByTestId('rows')).toHaveText('2');
 });

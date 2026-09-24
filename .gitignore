@@ -22,3 +22,4 @@ packages/ui/storybook-static/
 !internal/mlswasi/testdata/*.wasm
 core/dilla-core-wasm/spike/pkg/
 core/dilla-core-wasm/spike/node_modules/
+e2e/test-results/

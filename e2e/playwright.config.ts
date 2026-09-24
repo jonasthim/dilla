@@ -21,6 +21,19 @@ export default defineConfig({
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'], channel: 'chromium' } },
+    {
+      name: 'firefox',
+      use: {
+        ...devices['Desktop Firefox'],
+        // The same pref Mozilla's own dom/fs/test/mochitest-private.toml uses. Without it a
+        // Playwright Firefox context is a fresh profile, privateBrowsingId 0, and reports "opfs" —
+        // the test would pass for the wrong reason (gap-15 AC-1).
+        launchOptions: { firefoxUserPrefs: { 'browser.privatebrowsing.autostart': true } },
+      },
+    },
+    // A default WebKit context is already ephemeral; Playwright documents OPFS as unsupported
+    // there, which is exactly the case under test (gap-15 AC-2).
+    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
   ],
   webServer: {
     command: 'npm run dev -w @dilla/core-wasm-spike -- --port 5178 --strictPort --host 127.0.0.1',
