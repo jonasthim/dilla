@@ -490,6 +490,25 @@ pub fn run_rejects() -> SuiteReport {
         },
     ));
 
+    // The reject cases `envelope.json` itself carries (protocol/04 "Vectors"): well-formed
+    // deterministic CBOR that a conforming decoder must still refuse, each naming the error code
+    // it must refuse it with. Driving them from the file rather than from a literal here is what
+    // makes the TypeScript reference and this decoder answer the same question.
+    for case in doc["rejects"].as_array().unwrap_or(&Vec::new()) {
+        let name = case["name"].as_str().unwrap_or("?").to_owned();
+        let bytes = unhex(case["cbor"].as_str().unwrap_or(""));
+        let actual = match Envelope::decode(&bytes) {
+            Ok(_) => "accepted",
+            Err(e) => e.code(),
+        };
+        cases.push(CaseReport::compare(
+            format!("envelope reject: {name}"),
+            "decode",
+            expect_str(&case["error"]),
+            actual,
+        ));
+    }
+
     let mut bad_aad = env;
     bad_aad.k_f = [0x00; 32];
     cases.push(CaseReport::compare(

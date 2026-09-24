@@ -35,7 +35,16 @@ export async function envelopeVectors() {
     const bytes = encodeEnvelope(c.envelope);
     out.push({ name: c.name, envelope: c.envelope, cbor: hex(bytes), length: bytes.length, commitment: hex(await frankingCommitment(c.envelope)) });
   }
-  return { version: 1, description: 'dilla envelope encodings (04-envelope-and-franking.md). cbor = deterministic CBOR of the 9-element array; commitment = HMAC-SHA256(k_f, "dilla frank v1" || CBOR with k_f blanked).', cases: out };
+  // Inputs a conforming decoder must REFUSE, with the error code 04-envelope-and-franking.md
+  // names for each. `encodeEnvelope` does not apply the limits, so it can produce the well-formed
+  // deterministic CBOR of an envelope that is nonetheless invalid — which is exactly what an
+  // implementation under test has to be handed.
+  const rejects = [
+    { name: 'delete tombstone with a non-empty body', error: 'E_ENVELOPE_LIMIT', cbor: hex(encodeEnvelope({
+      v: 1, msgId: fill(16, 0x21), type: EnvelopeType.Delete, threadId: null, replyTo: fill(16, 0x01),
+      body: 'deleted because', attachments: [], previews: [], kf: fill(32, 0x26) })) },
+  ];
+  return { version: 1, description: 'dilla envelope encodings (04-envelope-and-franking.md). cbor = deterministic CBOR of the 9-element array; commitment = HMAC-SHA256(k_f, "dilla frank v1" || CBOR with k_f blanked). rejects = well-formed CBOR that a conforming decoder must still refuse with the named error code.', cases: out, rejects };
 }
 
 export async function frankingVectors() {

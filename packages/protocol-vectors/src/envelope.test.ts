@@ -66,6 +66,16 @@ describe('envelope', () => {
     const reaction: Envelope = { ...sample, type: EnvelopeType.ReactionAdd, body: 'a'.repeat(33), attachments: [] };
     expect(() => decodeEnvelope(encodeEnvelope(reaction))).toThrow();
   });
+  it('rejects any body on a tombstone, pin or unpin (type 2/5/6)', () => {
+    // 04-envelope-and-franking.md: `body` is empty for type 2/5/6, limit 0. A body there means
+    // nothing to a client and would be a covert channel inside an otherwise contentless envelope.
+    for (const type of [EnvelopeType.Delete, EnvelopeType.Pin, EnvelopeType.Unpin] as const) {
+      const tombstone: Envelope = { ...sample, type, body: 'x', attachments: [], previews: [] };
+      expect(() => decodeEnvelope(encodeEnvelope(tombstone))).toThrow();
+      // and the empty body those types do carry still decodes
+      expect(() => decodeEnvelope(encodeEnvelope({ ...tombstone, body: '' }))).not.toThrow();
+    }
+  });
   it('rejects more than 10 attachments', () => {
     const a = sample.attachments[0];
     const many: Envelope = { ...sample, attachments: Array.from({ length: 11 }, () => a) };
