@@ -98,6 +98,16 @@ test('if: always() is reported', () => {
   assert.ok(problems.some((p) => p.includes('always()')), problems.join('\n'));
 });
 
+// Fix round 1, finding 1 (important): the explicit-expression spelling `if: ${{ always() }}` is just
+// as valid as `if: always()` and just as capable of making a job non-blocking, so the R22 gate must
+// catch it too.
+test('if: ${{ always() }} is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - run: npm test\n', '      - if: ${{ always() }}\n        run: npm test\n')),
+  );
+  assert.ok(problems.some((p) => p.includes('always()')), problems.join('\n'));
+});
+
 test('a job that lost a required step is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace('      - run: cargo fmt --all --check\n', '')));
   assert.ok(problems.some((p) => p.includes('cargo fmt')), problems.join('\n'));
@@ -150,4 +160,20 @@ test('a go job with needs: rust-wasi passes', () => {
 test('a node job that stopped running the checker\'s own tests is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace('      - run: npm run test:ci-check\n', '')));
   assert.ok(problems.some((p) => p.includes('test:ci-check')), problems.join('\n'));
+});
+
+// Fix round 1, finding 3 (important): gap-31 §4 item 2 / NV-14 resolved the pairing as
+// `upload-artifact@v7` with `download-artifact@v8` — pairing v7 with v4 (facts/plan-B.md's now-stale
+// deviation B15 text) is the untested combination B15 existed to prevent. The checker owns the
+// cross-plan ordering rule already, so it must own this half of the hand-off too.
+test('a go job with download-artifact@v4 instead of v8 is reported', () => {
+  const withGo = `${GOOD}  go:
+    runs-on: ubuntu-latest
+    needs: rust-wasi
+    steps:
+      - uses: actions/download-artifact@v4
+      - run: go test ./...
+`;
+  const problems = checkWorkflow(fixture(withGo));
+  assert.ok(problems.some((p) => p.includes('download-artifact@v8')), problems.join('\n'));
 });

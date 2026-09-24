@@ -16,11 +16,16 @@ export const REQUIRED_JOBS = [
   'deny',
 ];
 
-/** R22: no escape hatch anywhere in the workflow. */
+/**
+ * R22: no escape hatch anywhere in the workflow. Both `always()` spellings are equally valid GitHub
+ * Actions syntax and equally able to make a step run (and so a job pass) regardless of an earlier
+ * failure, so the gate matches `always()` anywhere on an `if:` line rather than only the bare
+ * `if: always()` form — `if: ${{ always() }}` is the more common of the two in practice.
+ */
 const FORBIDDEN = [
   { re: /\|\|\s*true/, what: '|| true' },
   { re: /continue-on-error/, what: 'continue-on-error' },
-  { re: /if:\s*always\(\)/, what: 'if: always()' },
+  { re: /if:.*always\(\)/, what: 'if: always()' },
 ];
 
 /** One load-bearing command per job, so a silently gutted job is caught. */
@@ -117,8 +122,21 @@ export function checkWorkflow(root) {
   // fetches from the same workflow run, so GitHub schedules `go` after `rust-wasi` only if a `needs:`
   // says so, and whichever plan lands second has to add the edge. Nobody owned that rule, so it lives
   // here: the moment a `go` job exists, it must declare the dependency.
-  if ('go' in jobs && !/^\s*needs:.*rust-wasi/m.test(jobs.go)) {
-    problems.push('ci.yml: job "go" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
+  if ('go' in jobs) {
+    if (!/^\s*needs:.*rust-wasi/m.test(jobs.go)) {
+      problems.push('ci.yml: job "go" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
+    }
+    // gap-31 §4 item 2 / NV-14 (resolved): the current majors deliberately pair
+    // `actions/upload-artifact@v7` (this file's `rust-wasi` job) with `actions/download-artifact@v8`.
+    // Nobody else owns this half of the hand-off either — a `go` job written from facts/plan-B.md's
+    // now-stale deviation B15 text (`download-artifact@v4`) would pair v7 with v4, the untested
+    // combination B15 was created to avoid, and neither this checker nor Plan B's own Go test would
+    // catch it unless this rule lives here.
+    if (!jobs.go.includes('actions/download-artifact@v8')) {
+      problems.push(
+        'ci.yml: job "go" must use actions/download-artifact@v8 to pair with rust-wasi\'s actions/upload-artifact@v7 (gap-31 §4 item 2)',
+      );
+    }
   }
 
   return problems;
