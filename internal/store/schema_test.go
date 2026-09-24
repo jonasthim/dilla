@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jonasthim/dilla/internal/id"
 	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
 	"github.com/jonasthim/dilla/internal/store/postgres/pgdb"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
@@ -357,5 +359,115 @@ func TestRpIDIsAStringInTheGeneratedModels(t *testing.T) {
 		if f.Type.Kind() != reflect.String {
 			t.Errorf("%s: rp_id is %s, want string", tc.name, f.Type)
 		}
+	}
+}
+
+// Every other test in this file inspects the generated code with reflect, reads
+// the query files as text, or talks to the database through hand-written SQL —
+// so an override that types a column wrongly passes them all, in both engines
+// at once, and only fails when a real row is written (the rp_id mistype did
+// exactly that). This test drives the generated Querier end to end against a
+// migrated SQLite database instead: it writes and reads back the accounts and
+// WebAuthn paths, which between them cover an id.ID primary key, an id.ID
+// foreign key, a TEXT `*_id` column, a variable-length cred_id and a 64-byte
+// handle. A future override mistake fails here, locally, on `go test`.
+func TestGeneratedQueriesRoundTripOnSQLite(t *testing.T) {
+	db := openSQLite(t)
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, sqlitemigrations.FS)
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := p.Up(ctx); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	q := sqlitedb.New(db)
+
+	uid := id.New()
+	const rpID = "dilla.example"
+	handle := bytes.Repeat([]byte{0xa7}, 64)
+	credID := bytes.Repeat([]byte{0x5c}, 200) // WebAuthn credential ids run 16-1023 bytes.
+
+	if err := q.CreateUser(ctx, sqlitedb.CreateUserParams{
+		ID:        uid,
+		Username:  "jonas",
+		Display:   "Jonas",
+		Kind:      0,
+		UmkPub:    bytes.Repeat([]byte{1}, 32),
+		SskPub:    bytes.Repeat([]byte{2}, 32),
+		SigUmkSsk: bytes.Repeat([]byte{3}, 64),
+		Created:   1000,
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	user, err := q.GetUser(ctx, sqlitedb.GetUserParams{ID: uid})
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if user.ID != uid || user.Username != "jonas" {
+		t.Fatalf("GetUser = %v/%q, want %v/%q", user.ID, user.Username, uid, "jonas")
+	}
+
+	if err := q.PutWebauthnUser(ctx, sqlitedb.PutWebauthnUserParams{
+		RpID:       rpID,
+		UserID:     uid,
+		UserHandle: handle,
+		Created:    1001,
+	}); err != nil {
+		t.Fatalf("PutWebauthnUser: %v", err)
+	}
+	gotHandle, err := q.GetWebauthnUserHandle(ctx, sqlitedb.GetWebauthnUserHandleParams{RpID: rpID, UserID: uid})
+	if err != nil {
+		t.Fatalf("GetWebauthnUserHandle: %v", err)
+	}
+	if !bytes.Equal(gotHandle, handle) {
+		t.Fatalf("GetWebauthnUserHandle = %x, want %x", gotHandle, handle)
+	}
+	gotUser, err := q.GetWebauthnUserByHandle(ctx, sqlitedb.GetWebauthnUserByHandleParams{RpID: rpID, UserHandle: handle})
+	if err != nil {
+		t.Fatalf("GetWebauthnUserByHandle: %v", err)
+	}
+	if gotUser != uid {
+		t.Fatalf("GetWebauthnUserByHandle = %v, want %v", gotUser, uid)
+	}
+
+	if err := q.PutWebauthnCredential(ctx, sqlitedb.PutWebauthnCredentialParams{
+		CredID:         credID,
+		RpID:           rpID,
+		UserID:         uid,
+		PublicKey:      bytes.Repeat([]byte{4}, 77),
+		SignCount:      0,
+		Flags:          []byte{0x01},
+		ExtensionsJson: "{}",
+		Name:           "yubikey",
+		Created:        1002,
+	}); err != nil {
+		t.Fatalf("PutWebauthnCredential: %v", err)
+	}
+	creds, err := q.ListWebauthnCredentials(ctx, sqlitedb.ListWebauthnCredentialsParams{RpID: rpID, UserID: uid})
+	if err != nil {
+		t.Fatalf("ListWebauthnCredentials: %v", err)
+	}
+	if len(creds) != 1 {
+		t.Fatalf("ListWebauthnCredentials = %d rows, want 1", len(creds))
+	}
+	if !bytes.Equal(creds[0].CredID, credID) {
+		t.Fatalf("cred_id = %x, want %x", creds[0].CredID, credID)
+	}
+	if creds[0].RpID != rpID {
+		t.Fatalf("rp_id = %q, want %q", creds[0].RpID, rpID)
+	}
+	if creds[0].UserID != uid {
+		t.Fatalf("user_id = %v, want %v", creds[0].UserID, uid)
+	}
+
+	// The empty case must come back as an empty slice, not nil: emit_empty_slices
+	// is on so repo.go can hand it straight to a CBOR encoder.
+	none, err := q.ListWebauthnCredentials(ctx, sqlitedb.ListWebauthnCredentialsParams{RpID: rpID, UserID: id.New()})
+	if err != nil {
+		t.Fatalf("ListWebauthnCredentials (empty): %v", err)
+	}
+	if none == nil || len(none) != 0 {
+		t.Fatalf("ListWebauthnCredentials (empty) = %#v, want an empty non-nil slice", none)
 	}
 }
