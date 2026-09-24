@@ -366,11 +366,12 @@ mod tests {
     const VECTOR_ENVELOPE_CBOR: &str = "89015011111111111111111111111111111111035012121212121212121212121212121212501313131313131313131313131313131363e29b8f808058201616161616161616161616161616161616161616161616161616161616161616";
     const VECTOR_ENVELOPE_COMMITMENT: &str =
         "ab2930d97f3c839758c035d9b2ace3b85676e65a37807b66370ffb2885a23148";
-    /// `protocol/vectors/identity.json`, `credential_identity.cbor`, verbatim. Asserting the whole
-    /// 218-byte encoding is the point: a ten-byte prefix check would pass with a wrong `user_id`, a
-    /// wrong `device_id`, swapped `kind`/`tier`/`signer_tier` bytes or truncated signatures, on the one
-    /// function that encodes identity material.
-    const VECTOR_CREDENTIAL_CBOR: &str = "8a015820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a150d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d450e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e50001005820f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6584017171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717584028282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828";
+    /// `protocol/vectors/identity.json`, `credential_identity.cbor`, verbatim — the committed
+    /// vector task 7 regenerated from real Ed25519 material, not a placeholder pair. Asserting the
+    /// whole 218-byte encoding is the point: a ten-byte prefix check would pass with a wrong
+    /// `user_id`, a wrong `device_id`, swapped `kind`/`tier`/`signer_tier` bytes or truncated
+    /// signatures, on the one function that encodes identity material.
+    const VECTOR_CREDENTIAL_CBOR: &str = "8a015820db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d50d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d450e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e500010058202152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db125840203a5d3b052bb587cc453ae05f171f75687e338847942acd50f9b44f7fee8a4a08d4bf56587f98d2701231e6af6668b03619b79d1ec5bb956a3ca78f8380ea035840caad6f3308aa16d76dea6eb86becc934651a88490c8de4b4236cc7cb9ae0e45377d0a573f1332c9519c707b87834e9937c5be53f1877fbe5284e37096375800e";
 
     fn unhex(s: &str) -> Vec<u8> {
         (0..s.len())
@@ -452,19 +453,22 @@ mod tests {
     }
 
     /// `protocol/vectors/identity.json`, `credential_identity`. The JSON below is
-    /// `credential_identity.fields` verbatim and the constant is `credential_identity.cbor` verbatim:
-    /// both signatures are **64 bytes = 128 hex characters**, which is what `fixed::<64>` accepts.
-    /// A 130-character literal fails with `E_ENVELOPE_SHAPE: expected 64 bytes, got 65`.
+    /// `credential_identity.fields` verbatim and the constant is `credential_identity.cbor` verbatim,
+    /// both as committed — the keys are the real Ed25519 pair task 7 generated, and the signatures
+    /// are the real signatures over them, so this pins the wasm entry point to the same bytes
+    /// `dilla_core::vectors::run_identity` pins the core to. Both signatures are **64 bytes = 128 hex
+    /// characters**, which is what `fixed::<64>` accepts. A 130-character literal fails with
+    /// `E_ENVELOPE_SHAPE: expected 64 bytes, got 65`.
     #[test]
     fn credential_identity_cbor_reproduces_the_vector() {
         let json = r#"{
-            "umk_pub": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            "umk_pub": "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
             "user_id": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
             "device_id": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
             "kind": 0, "tier": 1, "signer_tier": 0,
-            "ssk_pub": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
-            "sig_umk_ssk": "17171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717",
-            "sig_ssk_dev": "28282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828282828"
+            "ssk_pub": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+            "sig_umk_ssk": "203a5d3b052bb587cc453ae05f171f75687e338847942acd50f9b44f7fee8a4a08d4bf56587f98d2701231e6af6668b03619b79d1ec5bb956a3ca78f8380ea03",
+            "sig_ssk_dev": "caad6f3308aa16d76dea6eb86becc934651a88490c8de4b4236cc7cb9ae0e45377d0a573f1332c9519c707b87834e9937c5be53f1877fbe5284e37096375800e"
         }"#;
         assert_eq!(
             hexed(&credential_identity_cbor(json).unwrap()),
