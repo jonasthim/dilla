@@ -630,6 +630,25 @@ impl DsStub {
         core::mem::take(&mut entry.queue)
     }
 
+    /// Pops **only** the first `mls.welcome` frame for this group out of the device's queue and
+    /// leaves every other frame where it is, in order. A joiner is added to `members` by
+    /// `accept_commit` before the fan-out, so handshakes, epoch notices and application ciphertext
+    /// can already be queued behind the Welcome when the joiner fetches it; `drain` would destroy
+    /// them. An offline device is served nothing, exactly as `drain` serves it nothing.
+    pub fn take_welcome(&mut self, device: &DeviceId, group_id: &[u8]) -> Option<Vec<u8>> {
+        let entry = self.device(device);
+        if !entry.online {
+            return None;
+        }
+        let at = entry.queue.iter().position(
+            |f| matches!(f, Frame::MlsWelcome { group_id: g, .. } if g.as_slice() == group_id),
+        )?;
+        match entry.queue.remove(at) {
+            Frame::MlsWelcome { blob, .. } => Some(blob),
+            other => unreachable!("position() matched a Welcome, got {other:?}"),
+        }
+    }
+
     pub fn public_group(&self, group_id: &[u8]) -> Option<&DillaPublicGroup> {
         self.groups.get(group_id).and_then(|g| g.public.as_ref())
     }

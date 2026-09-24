@@ -247,13 +247,11 @@ impl TestClient {
             .binding(group_id)
             .cloned()
             .ok_or_else(|| TestkitError::Scenario("unknown group".into()))?;
+        // `take_welcome`, not `drain`: everything else queued for this device - a handshake, an
+        // epoch notice, application ciphertext sent between the Add commit and this call - stays in
+        // the queue, in order, for the next `sync`.
         let welcome_blob = ds
-            .drain(&self.device_id)
-            .into_iter()
-            .find_map(|f| match f {
-                Frame::MlsWelcome { group_id: g, blob } if g == group_id => Some(blob),
-                _ => None,
-            })
+            .take_welcome(&self.device_id, group_id)
             .ok_or_else(|| TestkitError::Assertion("no welcome for this device".into()))?;
         let tree = ds.ratchet_tree(group_id)?;
         let welcome = deserialize_welcome(&welcome_blob)?;
