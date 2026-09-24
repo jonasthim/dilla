@@ -69,5 +69,11 @@ hex        = "0.4"
 # Dev-only, host-only: tests/coherence.rs carries #![cfg(not(target_arch = "wasm32"))].
 trybuild   = "1.0"
 
+# `tests/vectors_wasm.rs` only. Same 0.3.78 the `dilla-core-wasm` crate pins (the pair for
+# wasm-bindgen 0.2.128, gap-30 section 1.1), and target-gated for the same reason every other wasm
+# entry in this manifest is: the native and wasip1 test builds must not acquire it.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "0.3.78"
+
 [lints]
 workspace = true

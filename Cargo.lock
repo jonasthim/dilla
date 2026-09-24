@@ -646,6 +646,7 @@ dependencies = [
  "thiserror",
  "tls_codec",
  "trybuild",
+ "wasm-bindgen-test",
  "zeroize",
 ]
 
