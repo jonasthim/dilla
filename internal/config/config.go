@@ -289,7 +289,15 @@ type OIDC struct {
 	ClientSecretFile string   `toml:"client_secret_file"`
 	RedirectURL      string   `toml:"redirect_url"`
 	Scopes           []string `toml:"scopes"`
-	AutoCreate       bool     `toml:"auto_create"`
+	// AutoCreate is RESERVED and creates nothing today (deviation ID19,
+	// ruling 40). An OIDC login whose subject maps to no account is
+	// 403 E_FORBIDDEN whatever this says, because users.umk_pub,
+	// users.ssk_pub and users.sig_umk_ssk are NOT NULL client-held key
+	// material the server cannot invent. Setting it true changes only the
+	// refusal's detail and what is logged, until a client-completed
+	// registration leg (a one-time OIDC ticket POST /v1/accounts accepts in
+	// place of an invite code) exists.
+	AutoCreate bool `toml:"auto_create"`
 }
 
 type Session struct {

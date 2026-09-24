@@ -358,7 +358,10 @@ func TestAnOIDCCallbackWhoseStateDoesNotMatchTheCookieIsRefused(t *testing.T) {
 // E_FORBIDDEN, and it is E_FORBIDDEN whatever `auth.oidc.auto_create` says:
 // users.umk_pub, ssk_pub and sig_umk_ssk are NOT NULL and are key material only
 // the client can generate, so no route can conjure an account from an id_token.
-// auto_create changes the detail and what is logged, nothing else.
+// auto_create changes the detail and what is logged, nothing else. Deviation
+// ID19 and ruling 40 record that as the shipped behaviour and the key as
+// reserved; if the registration leg they name is ever built, this is the test
+// that must be rewritten with it.
 func TestAnOIDCLoginWithNoMappedAccountIsForbidden(t *testing.T) {
 	for _, autoCreate := range []bool{false, true} {
 		t.Run(fmt.Sprintf("auto_create=%v", autoCreate), func(t *testing.T) {

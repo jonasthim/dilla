@@ -1012,7 +1012,9 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 		// refusal is E_FORBIDDEN either way, and auto_create changes only the
 		// detail and what is logged: turning it on says the operator wants
 		// these logins to become accounts, and the client-completed
-		// registration leg that spends one is not in this task's surface.
+		// registration leg that spends one does not exist yet. The key is
+		// therefore reserved: deviation ID19 and ruling 40 record that, and
+		// config.OIDC.AutoCreate says so where an operator reads it.
 		if !d.Config.Auth.OIDC.AutoCreate {
 			server.WriteError(w, server.Errorf(server.CodeForbidden,
 				"this instance does not create accounts from the identity provider"))
