@@ -7,13 +7,15 @@
   "engines": { "node": ">=24" },
   "workspaces": ["packages/*", "core/dilla-core-wasm/spike", "e2e"],
   "scripts": {
-    "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm test --workspaces --if-present",
+    "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm run check:ci && npm test --workspaces --if-present",
     "check:docs": "node scripts/check-protocol-docs.mjs",
     "test:docs-check": "node --test scripts/check-protocol-docs.test.mjs",
     "check:brief": "node scripts/check-design-brief.mjs",
     "test:brief-check": "node --test scripts/check-design-brief.test.mjs",
     "check:copy": "node scripts/check-ui-copy.mjs",
     "test:copy-check": "node --test scripts/check-ui-copy.test.mjs",
+    "check:ci": "node scripts/check-ci-workflow.mjs",
+    "test:ci-check": "node --test scripts/check-ci-workflow.test.mjs",
     "vectors": "[ ! -d packages ] || npm run vectors --workspaces --if-present",
     "test:e2e": "npm run test:e2e -w @dilla/e2e"
   }
