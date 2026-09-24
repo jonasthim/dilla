@@ -22,6 +22,12 @@ pub mod handles;
 /// the ABI's premise anyway, since the host addresses this memory with 32-bit offsets.
 #[cfg(target_family = "wasm")]
 mod shims {
+    // The one place in the workspace that may write `unsafe`: the plan's Global Constraints allow
+    // `core/dilla-core-wasi` to opt back out of the workspace's `unsafe_code = "warn"` "for its
+    // `extern "C"` exports", and this module is those exports. The attribute is deliberately inside
+    // the module, not at the crate root, so `abi`, `handles` and `exports` stay covered.
+    #![allow(unsafe_code)]
+
     use core::mem::MaybeUninit;
 
     use crate::abi::pack;
@@ -97,4 +103,49 @@ mod shims {
     abi_export!(validate_key_package);
     abi_export!(external_propose_add);
     abi_export!(external_propose_remove);
+}
+
+/// The plan's Global Constraints say `dilla-core` is `#![forbid(unsafe_code)]` and that "only
+/// `core/dilla-core-wasi` opts back in, for its `extern "C"` exports". Both halves of that are
+/// manifest-and-source policy no compiler states on its own: the workspace's
+/// `unsafe_code = "warn"` only reaches this crate if the manifest joins `[lints] workspace = true`,
+/// and the opt-out is only *confined* if it sits inside `shims` rather than at the crate root.
+#[cfg(test)]
+mod lint_policy {
+    const MANIFEST: &str = include_str!("../Cargo.toml");
+    const SOURCE: &str = include_str!("lib.rs");
+
+    #[test]
+    fn the_manifest_joins_the_workspace_lint_table() {
+        let code: Vec<&str> = MANIFEST
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+        assert!(
+            code.windows(2)
+                .any(|pair| pair[0] == "[lints]" && pair[1] == "workspace = true"),
+            "core/dilla-core-wasi/Cargo.toml must carry `[lints]` + `workspace = true`: without it \
+             the workspace's `unsafe_code = \"warn\"` is inert in the one crate that writes `unsafe`"
+        );
+    }
+
+    #[test]
+    fn the_unsafe_opt_in_is_confined_to_the_shims_module() {
+        // Spelled in two pieces so the needle never matches this test's own source text.
+        let opt_in = concat!("#!", "[allow(unsafe_code)]");
+        assert_eq!(
+            SOURCE.matches(opt_in).count(),
+            1,
+            "exactly one `unsafe_code` opt-in belongs in this crate"
+        );
+        let shims = SOURCE.find("mod shims {").expect("the shims module");
+        let allow = SOURCE
+            .find(opt_in)
+            .expect("`mod shims` must opt back into unsafe_code explicitly");
+        assert!(
+            allow > shims,
+            "the opt-in must sit inside `mod shims`, not at the crate root"
+        );
+    }
 }

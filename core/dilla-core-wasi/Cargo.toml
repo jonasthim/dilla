@@ -22,3 +22,10 @@ openmls                  = { version = "0.9.0", default-features = false }
 openmls_rust_crypto      = "0.6.0"
 openmls_basic_credential = "0.6.0"
 tls_codec                = { version = "0.5.0", features = ["derive", "serde", "mls"] }
+
+# The workspace declares `unsafe_code = "warn"`; joining the table is what makes the plan's Global
+# Constraint ("only core/dilla-core-wasi opts back in, for its extern \"C\" exports") mean anything
+# here. `mod shims` carries the single `#![allow(unsafe_code)]`, so any `unsafe` written anywhere
+# else in this crate is a warning — and an error under `clippy -- -D warnings`.
+[lints]
+workspace = true
