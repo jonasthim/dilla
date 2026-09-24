@@ -1,0 +1,88 @@
+envelope	delete tombstone	cbor
+envelope	delete tombstone	commitment
+envelope	delete tombstone	length
+envelope	message with a sender-generated link preview	cbor
+envelope	message with a sender-generated link preview	commitment
+envelope	message with a sender-generated link preview	length
+envelope	reaction add in a thread	cbor
+envelope	reaction add in a thread	commitment
+envelope	reaction add in a thread	length
+envelope	text message with a reply and one attachment	cbor
+envelope	text message with a reply and one attachment	commitment
+envelope	text message with a reply and one attachment	length
+franking	case 0	tag
+franking	case 1	tag
+franking	case 2	tag
+franking	envelope_cbor	commitment
+identity	credential_identity	cbor
+identity	credential_identity	sig_ssk_dev
+identity	credential_identity	sig_umk_ssk
+identity	recovery_key	base32
+identity	recovery_key	k_backup
+identity	recovery_key	k_header
+identity	safety_number	digits
+identity	sas	digits
+rejects	authenticated_data not 32 bytes	verify_commitment
+rejects	envelope body over 4000 bytes	validate
+rejects	envelope reject: delete tombstone with a non-empty body	decode
+rejects	envelope trailing bytes	decode
+rejects	envelope unknown type	decode
+rejects	envelope wrong element count	decode
+rejects	float16 (f93c00)	cbor
+rejects	float64 (fb3ff0000000000000)	cbor
+rejects	indefinite array (9f01ff)	cbor
+rejects	indefinite bstr (5f41014102ff)	cbor
+rejects	indefinite map (bf0101ff)	cbor
+rejects	indefinite text (7f6161ff)	cbor
+rejects	invalid utf-8 (6263c3)	cbor
+rejects	map (a0)	cbor
+rejects	map (a10102)	cbor
+rejects	negative (20)	cbor
+rejects	non-minimal length (5800)	cbor
+rejects	non-minimal length (7800)	cbor
+rejects	non-minimal length (9800)	cbor
+rejects	non-minimal length (990003010203)	cbor
+rejects	non-minimal null (f816)	cbor
+rejects	non-minimal uint (1801)	cbor
+rejects	non-minimal uint (1817)	cbor
+rejects	non-minimal uint (190017)	cbor
+rejects	non-minimal uint (1900ff)	cbor
+rejects	non-minimal uint (1a00000017)	cbor
+rejects	non-minimal uint (1b0000000000000017)	cbor
+rejects	reaction body over 32 bytes	validate
+rejects	reserved ai (1c)	cbor
+rejects	reserved ai (1d)	cbor
+rejects	reserved ai (1e)	cbor
+rejects	tag (c001)	cbor
+rejects	tag (c11a514b67b0)	cbor
+rejects	tag (d8ff01)	cbor
+rejects	trailing bytes (0101)	cbor
+rejects	trailing bytes (01a0)	cbor
+rejects	trailing bytes (83010203ff)	cbor
+rejects	trailing bytes (83010203ffffffff)	cbor
+rejects	truncated bstr (5820)	cbor
+rejects	undefined (f7)	cbor
+sframe	leaf 0 epoch 41	ctr
+sframe	leaf 0 epoch 41	header
+sframe	leaf 0 epoch 41	key
+sframe	leaf 0 epoch 41	kid
+sframe	leaf 0 epoch 41	nonce
+sframe	leaf 0 epoch 41	salt
+sframe	leaf 3 epoch 297	ctr
+sframe	leaf 3 epoch 297	header
+sframe	leaf 3 epoch 297	key
+sframe	leaf 3 epoch 297	kid
+sframe	leaf 3 epoch 297	nonce
+sframe	leaf 3 epoch 297	salt
+sframe	leaf 3 epoch 41	ctr
+sframe	leaf 3 epoch 41	header
+sframe	leaf 3 epoch 41	key
+sframe	leaf 3 epoch 41	kid
+sframe	leaf 3 epoch 41	nonce
+sframe	leaf 3 epoch 41	salt
+sframe	leaf 65535 epoch 255	ctr
+sframe	leaf 65535 epoch 255	header
+sframe	leaf 65535 epoch 255	key
+sframe	leaf 65535 epoch 255	kid
+sframe	leaf 65535 epoch 255	nonce
+sframe	leaf 65535 epoch 255	salt
