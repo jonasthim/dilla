@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -133,11 +134,13 @@ type assertionRequest struct {
 // PasswordLogin is POST /v1/auth/password/login →
 // [assertion(tstr), needs_totp(uint)].
 //
-// Every refusal on this route is the same E_UNAUTHENTICATED with an empty
-// detail. An unknown handle, a handle that fails normalisation, an account with
-// no password credential and a wrong password are four different server-side
-// facts and one client-visible answer, and the Hasher burns a dummy Argon2id
-// hash for the first three so they cost the same wall time as the fourth.
+// An unknown handle, a handle that fails normalisation, an account with no
+// password credential and a wrong password are four different server-side facts
+// and one client-visible answer. The Hasher burns a dummy Argon2id hash for the
+// first three so they cost the same wall time as the fourth, and loginLedger
+// gives the first three a failure ledger of their own so they accrue, and are
+// refused by, the same lockout a real account does: a 429 that only real
+// accounts can earn is an enumeration oracle on the status line.
 func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	if d.Throttle == nil || d.Assertions == nil || d.Hasher == nil || d.Config == nil {
 		d.logf(r, "api: the password login route is not wired")
@@ -183,7 +186,9 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	// account that exists and one that does not are metered identically and the
 	// bucket is not itself an enumeration oracle.
 	handle, herr := auth.NormalizeHandle(req.Username)
+	spelling := req.Username
 	if herr == nil {
+		spelling = handle
 		if ok, wait := d.Throttle.Allow(classLogin, "handle\x00"+handle); !ok {
 			server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
 			return
@@ -212,6 +217,18 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The standing lockout gate, before the credential is looked at. Reporting
+	// a lockout on the way out of a failed verify does not enforce it: the
+	// attacker whose sixth guess happens to be CORRECT while the account is
+	// nominally locked would be logged in and handed an assertion. The ledger
+	// key is the same shape whether the account exists or not, so this refusal
+	// says nothing about which.
+	ledger := loginLedger(user, found, spelling)
+	if locked := d.Throttle.LockedFor(ledger); locked > 0 {
+		server.WriteError(w, server.RateLimited(uint64(locked.Milliseconds())))
+		return
+	}
+
 	ok, _, err := d.Hasher.Verify(ctx, req.Password, phc)
 	if err != nil {
 		// The only error a bounded Hasher returns is E_RATE_LIMITED, which the
@@ -221,7 +238,7 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok || !found {
 		d.recordAttempt(r, user, found, addrKey, methodPassword, false)
-		server.WriteError(w, d.failure(user, found, ip))
+		server.WriteError(w, d.failure(ledger, ip))
 		return
 	}
 
@@ -243,19 +260,38 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(user.ID, needsTOTP == 1), needsTOTP})
 }
 
-// failure is the one refusal every wrong credential gets. When the account's
-// ledger has crossed free_attempts the refusal carries the lockout as
-// retry_after_ms — which tells a legitimate user how long to wait and tells an
-// attacker only what the growing delay already told them.
+// loginLedger is the key a login attempt's failures are counted under. A found
+// account uses its own id; a handle with no account behind it uses a
+// deterministic pseudo-id derived from the spelling that was tried, so an
+// unknown handle accrues — and is refused by — exactly the same lockout a real
+// one does.
 //
-// A failure against an account that does not exist is still recorded, under the
-// all-zero id: the account half of the ledger is meaningless there, and is never
-// read back because the refusal below ignores it, but the ADDRESS half is
-// exactly what must count — an attacker guessing a thousand handles from one
-// address is the case the login_failed bucket exists for.
-func (d Deps) failure(user store.UserRow, found bool, ip netip.Addr) error {
-	locked := d.Throttle.RecordFailure(user.ID, ip)
-	if found && locked > 0 {
+// That symmetry is the point. Keying only real accounts and answering plain
+// E_UNAUTHENTICATED for the rest makes the fifth wrong password a 429 with a
+// retry_after_ms for a handle that exists and a 401 with a null one for a handle
+// that does not, on the status line and in the body, which hands an enumerator
+// the whole user list four attempts in and wastes the dummy-hash equaliser.
+//
+// A pseudo-id colliding with a real user id is a 128-bit coincidence, and would
+// cost a shared failure ledger rather than anything authenticating.
+func loginLedger(user store.UserRow, found bool, spelling string) id.ID {
+	if found {
+		return user.ID
+	}
+	sum := sha256.Sum256([]byte("dilla/login-ledger\x00" + spelling))
+	var v id.ID
+	copy(v[:], sum[:])
+	return v
+}
+
+// failure is the one refusal every wrong credential gets. When the ledger has
+// crossed free_attempts the refusal carries the lockout as retry_after_ms —
+// which tells a legitimate user how long to wait and tells an attacker only
+// what the growing delay already told them. The ADDRESS half of the same call
+// is what counts an attacker guessing a thousand handles from one address; it
+// is the one writer of the login_failed bucket PasswordLogin peeks at.
+func (d Deps) failure(ledger id.ID, ip netip.Addr) error {
+	if locked := d.Throttle.RecordFailure(ledger, ip); locked > 0 {
 		return server.RateLimited(uint64(locked.Milliseconds()))
 	}
 	return server.Errorf(server.CodeUnauthenticated, "")
@@ -560,9 +596,8 @@ func (d Deps) verifySecondFactor(w http.ResponseWriter, r *http.Request, method 
 			server.WriteError(w, d.storeError(r, err))
 			return
 		}
-		user := store.UserRow{ID: userID}
-		d.recordAttempt(r, user, true, addrKey, method, false)
-		server.WriteError(w, d.failure(user, true, ip))
+		d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, method, false)
+		server.WriteError(w, d.failure(userID, ip))
 		return
 	}
 	d.Throttle.Clear(userID)

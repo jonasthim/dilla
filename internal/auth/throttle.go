@@ -68,10 +68,12 @@ func (t *Throttle) Peek(class string, key string) (bool, time.Duration) {
 func (t *Throttle) limiterConfig() config.Rate { return t.limiter.Config() }
 
 // RecordFailure records one failed authentication and returns how long the
-// account is locked. The first free_attempts cost nothing; after that the
-// lockout doubles from first_lockout up to lockout_ceiling; at hard_ceiling
-// consecutive failures the account is locked for the ceiling indefinitely,
-// which is NIST SP 800-63B Rev. 4's "no more than 100" SHALL.
+// account is locked from this moment. The first free_attempts cost nothing;
+// after that the lockout doubles from first_lockout up to lockout_ceiling; at
+// hard_ceiling consecutive failures the account is locked for the ceiling
+// indefinitely, which is NIST SP 800-63B Rev. 4's "no more than 100" SHALL.
+//
+// This is the WRITER. LockedFor is the gate that enforces what it returns.
 func (t *Throttle) RecordFailure(userID id.ID, ip netip.Addr) time.Duration {
 	now := t.clk.Now()
 	window := t.lockout.ObservationWindow.Value()
@@ -85,7 +87,48 @@ func (t *Throttle) RecordFailure(userID id.ID, ip netip.Addr) time.Duration {
 	// fifty accounts from one address still throttle that address.
 	t.limiter.Allow(Classes(t.limiterConfig())["login_failed"], key)
 
-	n := len(t.byUser[userID])
+	return t.curve(len(t.byUser[userID]))
+}
+
+// LockedFor is the standing gate RecordFailure's return value only describes:
+// how long this account is locked RIGHT NOW, measured from its last failure,
+// asked without adding a failure of its own. A handler calls it before it
+// checks the credential, because a lockout that is only reported after the
+// credential has been verified lets the attacker whose next guess happens to be
+// correct straight through it.
+//
+// It prunes the account's expired failures while it holds the lock, which is
+// Sweep's work done early and changes no answer.
+func (t *Throttle) LockedFor(userID id.ID) time.Duration {
+	now := t.clk.Now()
+	window := t.lockout.ObservationWindow.Value()
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ts := within(t.byUser[userID], now, window)
+	if len(ts) == 0 {
+		delete(t.byUser, userID)
+		return 0
+	}
+	t.byUser[userID] = ts
+	d := t.curve(len(ts))
+	if d == 0 {
+		return 0
+	}
+	// From the LAST failure, not from the first: a lockout that only lifts when
+	// the whole observation window rolls over would never let the curve double,
+	// and would hold a legitimate owner out for fifteen minutes on a thirty
+	// second penalty.
+	if remaining := ts[len(ts)-1].Add(d).Sub(now); remaining > 0 {
+		return remaining
+	}
+	return 0
+}
+
+// curve maps a count of failures inside the observation window to the lockout
+// it earns: the first free_attempts cost nothing, then first_lockout doubling
+// up to lockout_ceiling, and the ceiling flat from hard_ceiling on.
+func (t *Throttle) curve(n int) time.Duration {
 	if n <= t.lockout.FreeAttempts {
 		return 0
 	}

@@ -40,6 +40,46 @@ func TestLockoutScheduleFollowsTheConfiguredCurve(t *testing.T) {
 	}
 }
 
+// RecordFailure REPORTS a lockout; LockedFor is how a handler ENFORCES one,
+// before it checks the credential and without adding a failure of its own.
+func TestLockedForReportsTheStandingLockoutWithoutRecordingAFailure(t *testing.T) {
+	c := config.Default()
+	clk := clock.NewFake(time.Unix(1_700_000_000, 0))
+	th := auth.NewThrottle(c.Limits.Rate, c.Auth.Lockout, clk)
+	user := id.New()
+	ip := netip.MustParseAddr("203.0.113.9")
+
+	if d := th.LockedFor(user); d != 0 {
+		t.Fatalf("an account that has never failed a login is locked for %s", d)
+	}
+	for i := 0; i < c.Auth.Lockout.FreeAttempts; i++ {
+		th.RecordFailure(user, ip)
+	}
+	if d := th.LockedFor(user); d != 0 {
+		t.Fatalf("locked for %s inside the %d free attempts", d, c.Auth.Lockout.FreeAttempts)
+	}
+	want := th.RecordFailure(user, ip)
+	if want == 0 {
+		t.Fatal("the attempt past free_attempts reported no lockout")
+	}
+	if got := th.LockedFor(user); got != want {
+		t.Fatalf("LockedFor = %s, but RecordFailure reported %s", got, want)
+	}
+	// A hundred gated requests must not themselves be failures, or the gate
+	// would escalate the lockout of an account nobody is even guessing at.
+	for i := 0; i < 100; i++ {
+		th.LockedFor(user)
+	}
+	if got := th.LockedFor(user); got != want {
+		t.Fatalf("LockedFor = %s after a hundred peeks, want %s: the gate is recording failures", got, want)
+	}
+	// The lockout runs from the last failure, so it lifts.
+	clk.Advance(want + time.Second)
+	if d := th.LockedFor(user); d != 0 {
+		t.Fatalf("the lockout did not lift once it expired: %s", d)
+	}
+}
+
 func TestFailuresAreCountedPerAccountAndPerAddress(t *testing.T) {
 	c := config.Default()
 	clk := clock.NewFake(time.Unix(1_700_000_000, 0))

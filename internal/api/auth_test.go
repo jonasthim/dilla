@@ -1,8 +1,10 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -148,19 +150,88 @@ func TestPasswordLoginReturnsAnAssertionAndNeedsTOTP(t *testing.T) {
 	}
 }
 
+// loginRaw is login without the decode, for the tests that compare two whole
+// responses byte for byte.
+func loginRaw(h http.Handler, username, pw string) *httptest.ResponseRecorder {
+	body, err := cborx.Marshal([]any{username, pw})
+	if err != nil {
+		panic("marshal login body: " + err.Error())
+	}
+	return postCBOR(h, "/v1/auth/password/login", body)
+}
+
+// One attempt against each proves indistinguishability only for the FREE
+// attempts, which were never the hard part. The divergence this route has to
+// not have appears once one of the two crosses free_attempts: if the lockout is
+// reported for handles that exist and not for handles that do not, the fifth
+// wrong password answers 429 with a retry_after_ms for a real account and 401
+// with a null one for an imaginary one — on the status line AND in the body —
+// and the dummy-hash timing equaliser two layers down is paid for nothing.
 func TestAWrongPasswordAndAnUnknownAccountAreTheSameRefusal(t *testing.T) {
-	h, deps := newTestAPI(t)
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) {
+		// Both buckets out of the way: they refuse identically for the two
+		// handles, so leaving them in would hide the divergence under a 429
+		// that has nothing to do with the lockout.
+		c.Limits.Rate.LoginBurst = 100
+		c.Limits.Rate.LoginFailedBurst = 100
+	})
 	u, _, _ := seedAPISession(t, deps)
 	seedPassword(t, deps, u, "correct horse battery staple")
 
-	wrong, _ := login(t, h, u.Username, "not the password")
-	if wrong != http.StatusUnauthorized {
-		t.Fatalf("a wrong password answered %d, want 401", wrong)
+	locked := false
+	for i := 1; i <= deps.Config.Auth.Lockout.FreeAttempts+2; i++ {
+		known := loginRaw(h, u.Username, "not the password")
+		unknown := loginRaw(h, "nosuchaccount", "not the password")
+		if known.Code != unknown.Code {
+			t.Fatalf("attempt %d: a wrong password answered %d and an unknown handle %d",
+				i, known.Code, unknown.Code)
+		}
+		if !bytes.Equal(known.Body.Bytes(), unknown.Body.Bytes()) {
+			t.Fatalf("attempt %d: the two refusals carry different bodies: %x and %x",
+				i, known.Body.Bytes(), unknown.Body.Bytes())
+		}
+		if a, b := known.Header().Get("Retry-After"), unknown.Header().Get("Retry-After"); a != b {
+			t.Fatalf("attempt %d: Retry-After = %q for a real handle and %q for an unknown one", i, a, b)
+		}
+		if known.Code == http.StatusTooManyRequests {
+			locked = true
+		} else if known.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status = %d, want 401 or 429", i, known.Code)
+		}
 	}
-	unknown, _ := login(t, h, "nosuchaccount", "not the password")
-	if unknown != wrong {
-		t.Fatalf("an unknown account answered %d and a wrong password %d; the two must not be distinguishable",
-			unknown, wrong)
+	// Without this the loop above would prove only that seven identical 401s
+	// are identical, which is what the one-attempt version of this test proved.
+	if !locked {
+		t.Fatalf("%d wrong passwords never produced a lockout; the loop proved nothing about the 429",
+			deps.Config.Auth.Lockout.FreeAttempts+2)
+	}
+}
+
+// Reporting a lockout is not enforcing one. The gate has to stand BEFORE the
+// credential is checked, or the attacker whose sixth guess happens to be right
+// walks through the lockout holding an assertion.
+func TestACorrectPasswordIsRefusedWhileTheAccountIsLockedOut(t *testing.T) {
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) {
+		c.Limits.Rate.LoginBurst = 100
+		c.Limits.Rate.LoginFailedBurst = 100
+	})
+	u, _, _ := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+
+	for i := 0; i <= deps.Config.Auth.Lockout.FreeAttempts; i++ {
+		if status, _ := login(t, h, u.Username, "not the password"); status == http.StatusOK {
+			t.Fatalf("wrong password %d logged in", i+1)
+		}
+	}
+	if status, _ := login(t, h, u.Username, pw); status != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: the CORRECT password must not walk through a locked account", status)
+	}
+
+	// The lockout runs from the LAST failure, so waiting it out reopens the
+	// account: one that never reopens is a denial of service on its owner.
+	advance(t, deps, deps.Config.Auth.Lockout.FirstLockout.Value()+time.Second)
+	if status, _ := login(t, h, u.Username, pw); status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 once the lockout expired", status)
 	}
 }
 
