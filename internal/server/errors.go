@@ -172,7 +172,16 @@ func WriteError(w http.ResponseWriter, err error) {
 	if !errors.As(err, &e) {
 		e = &Error{Code: CodeInternal, Detail: ""}
 	}
-	body := []any{string(e.Code), e.Detail, nil}
+	// protocol/02 § Errors: E_INTERNAL is "an unexpected server fault; the
+	// detail is always empty". Enforced here rather than at every call site,
+	// because server.Errorf(CodeInternal, "sql: %v", err) is the natural
+	// spelling and would otherwise put a path, a query or a row on the wire.
+	// The caller's *Error is left intact so the server can still log the cause.
+	detail := e.Detail
+	if e.Code == CodeInternal {
+		detail = ""
+	}
+	body := []any{string(e.Code), detail, nil}
 	if e.RetryAfterMS != nil {
 		body[2] = *e.RetryAfterMS
 	}

@@ -101,3 +101,33 @@ func TestUnknownErrorBecomesFiveHundredWithoutLeakingIt(t *testing.T) {
 		t.Fatal("the internal error text reached the client")
 	}
 }
+
+// protocol/02 § Errors is normative that E_INTERNAL's detail is ALWAYS empty.
+// That has to hold for a *server.Error too, not only for the anonymous error
+// above: server.Errorf(server.CodeInternal, "sql: %v", err) is the natural
+// spelling for a handler in parts 1b and 2, and WriteError is the one place the
+// whole plan funnels refusals through, so the invariant is enforced here rather
+// than policed at every call site.
+func TestInternalDetailIsAlwaysEmptyEvenForAServerError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	err := server.Errorf(server.CodeInternal, "sql: no such table users (db at /var/lib/dilla/dilla.db)")
+	server.WriteError(rec, err)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if bytesContains(rec.Body.Bytes(), []byte("/var/lib/dilla")) {
+		t.Fatal("the internal error text reached the client")
+	}
+	var arr []any
+	if decErr := cborx.Unmarshal(rec.Body.Bytes(), &arr); decErr != nil {
+		t.Fatalf("decode: %v", decErr)
+	}
+	if arr[1] != "" {
+		t.Fatalf("detail = %q, want the empty string for E_INTERNAL", arr[1])
+	}
+	// The caller's own error value is untouched: WriteError redacts the wire
+	// body, it does not erase the text the server still wants to log.
+	if err.Detail == "" {
+		t.Fatal("WriteError blanked the caller's *Error; the log line loses its cause")
+	}
+}
