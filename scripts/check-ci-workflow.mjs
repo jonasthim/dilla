@@ -143,7 +143,7 @@ export function checkWorkflow(root) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const problems = checkWorkflow(process.cwd());
+  const problems = checkWorkflow(process.argv[2] ?? process.cwd());
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

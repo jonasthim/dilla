@@ -2,9 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkWorkflow } from './check-ci-workflow.mjs';
+
+const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 
 const GOOD = `name: ci
 on:
@@ -176,4 +179,27 @@ test('a go job with download-artifact@v4 instead of v8 is reported', () => {
 `;
   const problems = checkWorkflow(fixture(withGo));
   assert.ok(problems.some((p) => p.includes('download-artifact@v8')), problems.join('\n'));
+});
+
+// The CLI entry point at the bottom of check-ci-workflow.mjs, not `checkWorkflow` itself: this must
+// be run as a subprocess from a cwd that is NOT the fixture root and has no .github/workflows of its
+// own, so a script that silently fell back to process.cwd() (ignoring argv[2]) cannot pass by
+// accident — it would fail to find ci.yml at all rather than happening to validate the right file.
+function runCli(root, cwd) {
+  return spawnSync(process.execPath, [SCRIPT_PATH, root], { cwd, encoding: 'utf8' });
+}
+
+test('the CLI honours a root argument passed from a different cwd', () => {
+  const root = fixture(GOOD);
+  const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
+  const result = runCli(root, cwd);
+  assert.equal(result.status, 0, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+});
+
+test('the CLI reports problems in a workflow at the given root, run from elsewhere', () => {
+  const root = fixture(GOOD.replace(/  deny:[\s\S]*$/, ''));
+  const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
+  const result = runCli(root, cwd);
+  assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+  assert.match(result.stderr, /deny/);
 });
