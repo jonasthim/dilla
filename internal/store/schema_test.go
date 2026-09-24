@@ -329,3 +329,33 @@ func TestMigrationCarriesEverySchemaFileVerbatim(t *testing.T) {
 		})
 	}
 }
+
+// The WebAuthn Relying-Party id is a domain name, `rp_id TEXT NOT NULL` in both
+// schemas (interfaces.md §4.3), and NOT a 16-byte identifier — but its name
+// matches sqlc's `*.*_id` wildcard, which would type it id.ID and make every
+// WebAuthn write fail with `cannot store BLOB value in TEXT column` and every
+// read fail with `id: not 16 bytes`. gap-65 §4.1 warned that the columns that
+// are 16-byte ids and the columns that merely end in `_id` are different sets;
+// this pins the enumeration for the two tables that hold the odd one out.
+func TestRpIDIsAStringInTheGeneratedModels(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		model any
+	}{
+		{"sqlite webauthn_users", sqlitedb.WebauthnUsers{}},
+		{"sqlite webauthn_credentials", sqlitedb.WebauthnCredentials{}},
+		{"pg webauthn_users", pgdb.WebauthnUsers{}},
+		{"pg webauthn_credentials", pgdb.WebauthnCredentials{}},
+	} {
+		f, ok := reflect.TypeOf(tc.model).FieldByName("RpID")
+		if !ok {
+			f, ok = reflect.TypeOf(tc.model).FieldByName("RpId")
+		}
+		if !ok {
+			t.Fatalf("%s: generated model has no rp_id field", tc.name)
+		}
+		if f.Type.Kind() != reflect.String {
+			t.Errorf("%s: rp_id is %s, want string", tc.name, f.Type)
+		}
+	}
+}

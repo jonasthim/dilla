@@ -233,7 +233,7 @@ SELECT user_id FROM webauthn_users WHERE rp_id = ? AND user_handle = ?
 `
 
 type GetWebauthnUserByHandleParams struct {
-	RpID       id.ID
+	RpID       string
 	UserHandle []byte
 }
 
@@ -249,7 +249,7 @@ SELECT user_handle FROM webauthn_users WHERE rp_id = ? AND user_id = ?
 `
 
 type GetWebauthnUserHandleParams struct {
-	RpID   id.ID
+	RpID   string
 	UserID id.ID
 }
 
@@ -265,7 +265,7 @@ SELECT cred_id, rp_id, user_id, public_key, sign_count, attestation_type, attest
 `
 
 type ListWebauthnCredentialsParams struct {
-	RpID   id.ID
+	RpID   string
 	UserID id.ID
 }
 
@@ -441,7 +441,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
 type PutWebauthnCredentialParams struct {
 	CredID            []byte
-	RpID              id.ID
+	RpID              string
 	UserID            id.ID
 	PublicKey         []byte
 	SignCount         int64
@@ -480,7 +480,7 @@ ON CONFLICT (rp_id, user_id) DO NOTHING
 `
 
 type PutWebauthnUserParams struct {
-	RpID       id.ID
+	RpID       string
 	UserID     id.ID
 	UserHandle []byte
 	Created    int64

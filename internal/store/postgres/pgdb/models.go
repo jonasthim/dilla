@@ -162,7 +162,7 @@ type WebauthnCeremonies struct {
 
 type WebauthnCredentials struct {
 	CredID            []byte
-	RpID              id.ID
+	RpID              string
 	UserID            id.ID
 	PublicKey         []byte
 	SignCount         int64
@@ -177,7 +177,7 @@ type WebauthnCredentials struct {
 }
 
 type WebauthnUsers struct {
-	RpID       id.ID
+	RpID       string
 	UserID     id.ID
 	UserHandle []byte
 	Created    int64
