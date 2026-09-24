@@ -32,6 +32,18 @@ func registerInstance(m *server.Mux, d Deps) {
 // It is NOT named Instance: Deps already carries the instance ROW under that
 // name, and a struct cannot hold a field and a method with one identifier.
 func (d Deps) InstanceDocument(w http.ResponseWriter, r *http.Request) {
+	// Fail CLOSED on a missing Config, the way DELETE /v1/accounts/me does:
+	// registerInstance itself admits a nil Config (it decides the route's auth
+	// from it), so this handler can be reached without one, and both the
+	// domain and the whole auth_methods enumeration come from it. Publishing a
+	// discovery document with an empty domain and no methods would be worse
+	// than refusing, and dereferencing it is a panic that only production's
+	// server.Recover turns into a 500.
+	if d.Config == nil {
+		d.logf(r, "api: instance route without a config")
+		server.WriteError(w, server.Errorf(server.CodeInternal, ""))
+		return
+	}
 	methods := make([]uint64, 0, len(d.Config.Auth.Methods))
 	for _, m := range d.Config.Auth.Methods {
 		switch m {
@@ -77,6 +89,12 @@ func (d Deps) InstanceDocument(w http.ResponseWriter, r *http.Request) {
 // InstanceLimits serves GET /v1/instance/limits: eleven unsigned integers, in
 // the order protocol/09-http-api.md § Instance fixes.
 func (d Deps) InstanceLimits(w http.ResponseWriter, r *http.Request) {
+	// Every one of the eleven numbers is a config value; see InstanceDocument.
+	if d.Config == nil {
+		d.logf(r, "api: instance route without a config")
+		server.WriteError(w, server.Errorf(server.CodeInternal, ""))
+		return
+	}
 	c := d.Config
 	limits := []uint64{
 		uint64(c.Limits.MaxCiphertextBytes),
