@@ -11,7 +11,7 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
-	"strings"
+	"net/url"
 
 	_ "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -25,8 +25,16 @@ var _ = [1]struct{}{}[1-sqlite3.SQLITE_ENABLE_FTS5]
 // Open opens (and creates, if absent) the database at path in WAL mode with
 // foreign keys on, and verifies the connection before returning. The caller owns
 // the returned pool and closes it.
+//
+// The path is percent-encoded into the DSN. The DSN is a URI — modernc's newConn
+// splits it at the first '?' and SQLite is opened with SQLITE_OPEN_URI — so a
+// path containing '?' silently truncates the filename and turns the rest of the
+// path into query parameters, losing the three pragmas below and opening a
+// different file from the one asked for. url.PathEscape also escapes '/', which
+// is correct here: SQLite decodes %HH in the path component before using it as a
+// filename, so the separators come back.
 func Open(path string) (*sql.DB, error) {
-	dsn := "file:" + path + "?_pragma=journal_mode(wal)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	dsn := "file:" + url.PathEscape(path) + "?_pragma=journal_mode(wal)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open %s: %w", path, err)
@@ -61,13 +69,19 @@ func CompileOptions(db *sql.DB) ([]string, error) {
 }
 
 // HasFTS5 reports whether the library was built with FTS5.
+//
+// The match is exact. SQLite's ctime.c prints boolean compile options bare and
+// only options that carry a value as `NAME=value`; `SQLITE_ENABLE_FTS5` is in the
+// boolean list, and the transpiled library this package links holds the string
+// "ENABLE_FTS5" once and "ENABLE_FTS5=" not at all. A prefix arm for the `=`
+// spelling matched nothing and only made the rule look conditional.
 func HasFTS5(db *sql.DB) (bool, error) {
 	opts, err := CompileOptions(db)
 	if err != nil {
 		return false, err
 	}
 	for _, opt := range opts {
-		if opt == "ENABLE_FTS5" || strings.HasPrefix(opt, "ENABLE_FTS5=") {
+		if opt == "ENABLE_FTS5" {
 			return true, nil
 		}
 	}

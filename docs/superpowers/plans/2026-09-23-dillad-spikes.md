@@ -108,9 +108,10 @@ Tasks 1, 2, 6 and 7 are independent of Plan A and can be executed at any time.
 
 ## Follow-up cards (not in this plan)
 
-Nine items the two week-1 plans produce or expose and deliberately do **not** do. The list is the same
-in `docs/superpowers/plans/2026-09-23-dilla-core.md`, so a reader of either file sees the whole set. Each
-names why it exists and which plan owns it. None blocks a task in this plan.
+Fourteen items the two week-1 plans produce or expose and deliberately do **not** do. (a)–(i) are the
+shared set, carried verbatim in `docs/superpowers/plans/2026-09-23-dilla-core.md`, which owns (j)–(p) of
+its own; (q)–(u) were added by this plan's final fix wave. Each names why it exists and which plan owns
+it. None blocks a task in this plan.
 
 - **(a) Regenerate `testkit/fixtures/ds-1500/` before its KeyPackages expire, around 2026-12-22.** Plan A
   task 13 commits real `.mls` binaries whose 1,500 leaves each carry a 90-day KeyPackage lifetime, and the
@@ -158,6 +159,34 @@ names why it exists and which plan owns it. None blocks a task in this plan.
   names neither, so Plan A task 10 returns `E_MEMBER_REMOVE_FORBIDDEN` at both call sites. The
   **rejections** are what week 1 relies on; only the codes are open. **Owner: dilla-protocol**, as
   `protocol/07-versioning.md` change-process items.
+- **(q) Decide vendoring or a tag for the two LiveKit pseudo-version pins before W10.**
+  `github.com/livekit/server-sdk-go/v2 v2.18.2-0.20260922130803-2088dabd3442` and
+  `github.com/livekit/protocol v1.51.1-0.20260910121219-271d9cde3897` are unreleased commits pinned by
+  hash (deviation B13): the newest *tag*, v2.18.1, does not compile once MVS lifts protocol to what
+  `livekit-server v1.13.7` requires. A hash pin is reproducible but unsupported — nobody upstream has
+  promised that commit keeps working, and `go.sum` is the only thing standing between the build and a
+  force-pushed branch. Either a compatible `v2.18.2+` tag appears and this moves to it, or the dependency
+  is vendored. **Owner: the dillad plan**, before W10 ships anything that depends on the SFU.
+- **(r) Exercise `ExternalProposeAdd` and `ValidateKeyPackage` on wasm32-wasip1.** Both need a real
+  `KeyPackage` and `testkit/fixtures/ds-1500/` contains none (NV9), so task 5's wasi spike covers neither
+  and `docs/spikes/2026-09-wazero.md` says so. They are covered natively by Plan A task 11 only. Once Plan
+  A task 13 adds a `key_package.mls` to the fixture, add the two smoke tests to `internal/mlswasi` and
+  update the report paragraph. **Owner: dilla-core** for the fixture, the dillad plan for the tests.
+- **(s) Give `Instance.Release` a metric or a log when it shrinks the pool.** If `newInstance` fails while
+  replacing a poisoned instance, Release returns without re-filling the pool: the pool shrinks rather than
+  deadlocking, which is the right trade, but it is silent. A long-running dillad could drift to a pool of
+  one and only show it as latency. `mlswasi` has no logger and no metrics registry today, so this waits
+  for the dillad skeleton (card g). **Owner: the dillad plan**, before dillad depends on the pool.
+- **(t) `internal/sfu` binds fixed ports 7880 and 7882.** `sfu.Config`'s defaults are the LiveKit ones and
+  the tests boot a real server on them, so two SFU-booting jobs on one runner collide and the loser fails
+  on a bind error that looks like a code failure. Never put `./internal/sfu/...` in a parallel CI matrix
+  that also boots an SFU elsewhere, and make the ports configurable per test before anything needs to.
+  **Owner: the dillad plan.**
+- **(u) A CI check that fails 14 days before the fixture's `not_after`.** Card (a) records the expiry;
+  this is the mechanism. `testkit/fixtures/ds-1500/manifest.json` carries `not_after` (1797986391,
+  2026-12-23) and `loadDS1500` already fails loudly on it — but only *after* the fixture has expired, at
+  which point tasks 3, 4 and 5 are red for a reason that takes a regeneration run to clear. A check that
+  goes red two weeks early turns a silent expiry into a warning with slack. **Owner: the dillad plan.**
 
 ---
 

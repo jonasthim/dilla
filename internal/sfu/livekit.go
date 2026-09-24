@@ -31,6 +31,17 @@ type Server struct {
 
 // Start boots the SFU. LivekitServer.Start blocks on <-s.doneChan, so it runs in
 // its own goroutine and Start returns once the HTTP port accepts a connection.
+//
+// Start is not repeatable within one process as far as metrics are concerned.
+// prometheus.Init is idempotent by design — its first statement is
+// `if initialized.Swap(true) { return nil }` (livekit-server v1.13.7
+// pkg/telemetry/prometheus/node.go:51) — so a second Start in the same process
+// returns nil from it without re-creating a single collector. The node_id and
+// node_type ConstLabels baked into every LiveKit metric therefore remain the
+// *first* node's, whatever node the second Start was given. Nothing here can fix
+// that: the vectors are package-level in livekit-server and registered on the
+// global default registry. Run one SFU per process, or read the metrics knowing
+// whose labels they carry.
 func Start(ctx context.Context, c Config) (*Server, error) {
 	yaml, err := c.YAML()
 	if err != nil {

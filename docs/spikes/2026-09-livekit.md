@@ -1,6 +1,7 @@
 # LiveKit v1.13.7 in-process spike
 
-Date: 2026-09-23. Host: dev box, linux/amd64, Go 1.27.0.
+Date: 2026-09-24 (the LiveKit measurements below were taken on 2026-09-23; the
+binary size was re-measured on 2026-09-24). Host: dev box, linux/amd64, Go 1.27.0.
 Pins: `github.com/livekit/livekit-server v1.13.7`,
 `github.com/livekit/protocol v1.51.1-0.20260910121219-271d9cde3897`,
 `github.com/livekit/server-sdk-go/v2 v2.18.2-0.20260922130803-2088dabd3442`
@@ -16,7 +17,7 @@ participants exchange a reliable data message over loopback.
 |---|---|
 | Startup, `sfu.Start` return | 102.362996 ms (`SPIKE startup=102.362996ms`; 102–153 ms across four runs) |
 | First data packet delivered after | 1.060521859 s in the whole-suite run (`SPIKE data_delivered_after=1.060521859s`); 30.419929 ms when `TestTwoParticipantsExchangeADataMessage` runs alone. The publish loop retries every 250 ms until the data channel is open, so the high figure is four retries, not four seconds of latency. |
-| Static binary, `CGO_ENABLED=0 go build -trimpath -ldflags=-s ./cmd/dillad` | 52,404,384 bytes (49.98 MiB) |
+| Static binary, `CGO_ENABLED=0 go build -trimpath -ldflags=-s ./cmd/dillad` | 52,408,480 bytes (49.98 MiB), measured at commit `cfb69c7`. The figure first published here, 52,404,384 B, was taken earlier in the plan, before the last tasks landed; the 4,096-byte difference is recorded, not explained — nothing in this spike depends on it, and the number to quote is the one from the tip. |
 | Statically linked | yes — `ELF 64-bit LSB executable, x86-64 … statically linked … stripped` |
 
 Reproduce by hand:

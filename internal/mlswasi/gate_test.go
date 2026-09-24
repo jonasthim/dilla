@@ -2,6 +2,7 @@ package mlswasi
 
 import (
 	"context"
+	"math"
 	"os"
 	"runtime"
 	"slices"
@@ -61,12 +62,61 @@ func residentBytes(tb testing.TB) uint64 {
 	return pages * uint64(os.Getpagesize())
 }
 
+// percentile is the nearest-rank definition: the p-th percentile of n sorted
+// samples is the one at rank ceil(p*n), counting from 1.
+//
+// The earlier `int(p * float64(len(sorted)-1))` is the *index* half of linear
+// interpolation with the interpolation dropped and the remainder truncated
+// towards zero, so for n = 50 it returned the 49th sample as p99 — the second
+// largest. A p99 that can never be the largest sample under-reports precisely the
+// tail the gate exists to watch. p50 is unaffected at n = 50: both spellings give
+// the 25th.
 func percentile(sorted []time.Duration, p float64) time.Duration {
 	if len(sorted) == 0 {
 		return 0
 	}
-	idx := int(p * float64(len(sorted)-1))
-	return sorted[idx]
+	rank := int(math.Ceil(p * float64(len(sorted))))
+	if rank < 1 {
+		rank = 1
+	}
+	if rank > len(sorted) {
+		rank = len(sorted)
+	}
+	return sorted[rank-1]
+}
+
+// Arithmetic only, so it runs in CI: the gate tests it feeds are DILLA_GATE-only,
+// which would otherwise leave the definition unasserted everywhere.
+func TestPercentileIsNearestRank(t *testing.T) {
+	samples := make([]time.Duration, 50)
+	for i := range samples {
+		samples[i] = time.Duration(i+1) * time.Millisecond // 1ms .. 50ms, sorted
+	}
+
+	for _, tc := range []struct {
+		name string
+		p    float64
+		want time.Duration
+	}{
+		// ceil(0.99*50) = 50, i.e. the largest sample. The old index gave 49ms.
+		{"p99 of 50 samples is the 50th", 0.99, 50 * time.Millisecond},
+		{"p50 of 50 samples is the 25th", 0.50, 25 * time.Millisecond},
+		{"p100 is the last", 1.0, 50 * time.Millisecond},
+		{"p0 is the first", 0, 1 * time.Millisecond},
+	} {
+		if got := percentile(samples, tc.p); got != tc.want {
+			t.Errorf("%s: percentile(50 samples, %v) = %s, want %s", tc.name, tc.p, got, tc.want)
+		}
+	}
+
+	// One sample is its own every percentile, and no percentile may index past the
+	// slice: the gate calls this with whatever the run produced.
+	if got := percentile([]time.Duration{7 * time.Millisecond}, 0.99); got != 7*time.Millisecond {
+		t.Errorf("percentile(1 sample, 0.99) = %s, want 7ms", got)
+	}
+	if got := percentile(nil, 0.99); got != 0 {
+		t.Errorf("percentile(nil, 0.99) = %s, want 0", got)
+	}
 }
 
 // TestGoNoGoTreeImport measures PublicGroupFromExternal on the 1,500-leaf tree.

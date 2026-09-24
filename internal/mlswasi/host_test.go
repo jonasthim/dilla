@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/tetratelabs/wazero"
@@ -486,6 +487,69 @@ func TestTrapPoisonsTheInstance(t *testing.T) {
 	}
 	if _, err := again.Call(ctx, "dilla_abi", req); err != nil {
 		t.Fatalf("replacement instance is not usable: %v", err)
+	}
+}
+
+// Releasing twice must put one instance back, not two. Before Release was made
+// idempotent the second call queued the same *Instance again, so the pool would
+// hand one module to two callers at once — one linear memory, one guest
+// allocator, and api.Function.Call is not goroutine-safe — and the corruption
+// would surface in some unrelated call. Both instances of a two-instance pool are
+// taken out first, so that the second, erroneous send has a free slot and the
+// mistake shows up as an over-full pool rather than as a blocked goroutine.
+func TestADoubleReleaseDoesNotQueueTheInstanceTwice(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRuntime(t, Options{PoolSize: 2})
+
+	inst, err := r.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	other, err := r.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire (second): %v", err)
+	}
+	defer other.Release()
+
+	inst.Release()
+	inst.Release() // the mistake under test
+
+	held, err := r.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire after the double Release: %v", err)
+	}
+	defer held.Release()
+
+	// One instance went back, and the other is still held: the pool is empty, so
+	// a bounded Acquire can only end in its deadline. An instance here is the
+	// double-queued one.
+	short, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	extra, err := r.Acquire(short)
+	if err == nil {
+		if extra.mod == held.mod {
+			t.Fatal("the double Release queued the instance twice: one module, two callers")
+		}
+		extra.Release()
+		t.Fatal("the pool grew a third instance from a double Release")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Acquire on an empty pool returned %v, want context.DeadlineExceeded", err)
+	}
+
+	// The released handle is spent, and says so rather than dereferencing the
+	// module the pool has since handed to someone else.
+	req, err := encodeRequest()
+	if err != nil {
+		t.Fatalf("encodeRequest: %v", err)
+	}
+	if _, err := inst.Call(ctx, "dilla_abi", req); !errors.Is(err, ErrReleased) {
+		t.Errorf("Call on a released instance returned %v, want ErrReleased", err)
+	}
+
+	// The instance that went back into circulation is unharmed.
+	if _, err := held.Call(ctx, "dilla_abi", req); err != nil {
+		t.Errorf("the pooled instance is not usable: %v", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 # modernc.org/sqlite FTS5 check
 
-Date: 2026-09-23. Pin: `modernc.org/sqlite v1.59.0` (SQLite 3.53.4), pure Go,
+Date: 2026-09-24 (the measurements below were taken on 2026-09-23).
+Pin: `modernc.org/sqlite v1.59.0` (SQLite 3.53.4), pure Go,
 `CGO_ENABLED=0`. Host: dev box, linux/amd64, Go 1.27.0.
 
 ## Result

@@ -13,6 +13,11 @@ import (
 // (gap-17 6 item 2). Release does that automatically.
 var ErrTrap = errors.New("mlswasi: guest trapped")
 
+// ErrReleased is returned by Call on an instance that has already been Released.
+// The module behind it belongs to the pool again — or is closed — so using this
+// handle would race whoever holds it now.
+var ErrReleased = errors.New("mlswasi: instance already released")
+
 // Instance is one module instance. It is not safe for concurrent use: hold it
 // for the duration of a call sequence and Release it afterwards.
 type Instance struct {
@@ -43,7 +48,22 @@ func (r *Runtime) Acquire(ctx context.Context) (*Instance, error) {
 
 // Release returns the instance to the pool. A poisoned instance is closed and
 // replaced instead.
+//
+// Release is idempotent. It clears this handle's module first, so a second call
+// is ignored rather than acted on: a double Release of a healthy instance would
+// otherwise queue it twice, the pool would hand one module to two callers at
+// once — one linear memory, one guest allocator, and api.Function.Call is not
+// goroutine-safe — and the damage would appear somewhere else entirely, as a
+// corrupt response to an unrelated call. The pool receives a fresh handle over
+// the same module rather than this one, because this one is now spent in the
+// caller's hands; Call says so instead of dereferencing a nil module.
 func (i *Instance) Release() {
+	mod := i.mod
+	if mod == nil {
+		return // already released
+	}
+	i.mod = nil
+
 	r := i.rt
 	r.mu.Lock()
 	closed := r.closed
@@ -51,14 +71,14 @@ func (i *Instance) Release() {
 
 	ctx := context.Background()
 	if closed {
-		_ = i.mod.Close(ctx)
+		_ = mod.Close(ctx)
 		return
 	}
 	if !i.poisoned {
-		r.pool <- i
+		r.pool <- &Instance{rt: r, mod: mod, alloc: i.alloc, free: i.free}
 		return
 	}
-	_ = i.mod.Close(ctx)
+	_ = mod.Close(ctx)
 	replacement, err := r.newInstance(ctx)
 	if err != nil {
 		// The pool shrinks rather than deadlocking; New already proved the
@@ -87,6 +107,9 @@ func (i *Instance) invoke(ctx context.Context, name string, fn api.Function, par
 // response out of linear memory and frees both buffers. The returned slice is
 // owned by the caller and survives later guest calls.
 func (i *Instance) Call(ctx context.Context, export string, req []byte) ([]byte, error) {
+	if i.mod == nil {
+		return nil, ErrReleased
+	}
 	fn := i.mod.ExportedFunction(export)
 	if fn == nil {
 		return nil, fmt.Errorf("mlswasi: no export %q", export)
