@@ -96,11 +96,15 @@ const maxCBORBody = 64 << 10
 // here rather than a forgotten wiring in a composition root.
 func Register(m *server.Mux, d Deps) {
 	// Unauthenticated. The invite landing page and the two registration routes
-	// are the only /v1 surface a caller reaches without a bearer token, so they
-	// carry their own buckets (§5.3) rather than the session-keyed ones.
-	m.HandleFunc("GET /i/{code}", d.InviteLanding)
-	m.HandleFunc("POST /v1/invites/redeem", d.RedeemInvite)
-	m.HandleFunc("POST /v1/accounts", d.CreateAccount)
+	// are the only /v1 surface a caller reaches without a bearer token, so each
+	// is metered here on its own §5.3 bucket, keyed by the client address,
+	// rather than on the session-keyed ones every route below uses. The third
+	// unauthenticated bucket §5.3 names, `unauth`, is deliberately not applied:
+	// no route this task owns is on it, and the next unauthenticated surface —
+	// task 12's session challenge — meters itself.
+	m.Handle("GET /i/{code}", d.metered(classInvite, d.InviteLanding, d.landingRefusal))
+	m.Handle("POST /v1/invites/redeem", d.metered(classInvite, d.RedeemInvite, refuseCBOR))
+	m.Handle("POST /v1/accounts", d.metered(classRegister, d.CreateAccount, refuseCBOR))
 
 	// Accounts. Every one of these is an enrolled session.
 	m.Handle("GET /v1/accounts/me", d.enrolled(d.GetMe))
@@ -115,6 +119,65 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("PUT /v1/users/{user_id}/device-list", d.enrolled(d.PutDeviceList))
 	m.Handle("GET /v1/users/{user_id}/device-list", d.enrolled(d.GetDeviceList))
 }
+
+// The two §5.3 buckets this task's routes are on. The names are config's own
+// spelling (internal/config/validate.go's rateBuckets), so the knob an operator
+// writes in dilla.toml and the class a route is metered on are one string.
+const (
+	classRegister = "register"
+	classInvite   = "invite"
+)
+
+// metered wraps an unauthenticated handler in the named token bucket, keyed by
+// the client address (IPv6 by /64 — server.RateKey). refuse writes the refusal
+// in the shape that route answers in: CBOR for a /v1 route, and content
+// negotiation for the landing page, which a browser renders.
+func (d Deps) metered(class string, h http.HandlerFunc, refuse func(http.ResponseWriter, *http.Request, error)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := d.meter(class, r); err != nil {
+			refuse(w, r, err)
+			return
+		}
+		h(w, r)
+	})
+}
+
+// meter takes one token from class's bucket for this caller and returns the
+// refusal when there is none. The refusal carries the bucket's own deficit as
+// retry_after_ms; server.WriteError turns that into the Retry-After header.
+//
+// It fails CLOSED. A nil Limiter or a nil Config is a composition-root bug, and
+// the outcome of treating it as "no limit configured" is precisely what these
+// buckets exist to prevent: an unmetered registration route. Every handler
+// below this line is behind a session; these three are not.
+func (d Deps) meter(class string, r *http.Request) error {
+	if d.Limiter == nil || d.Config == nil {
+		return server.Errorf(server.CodeInternal, "the %s rate bucket is not wired", class)
+	}
+	c, err := rateClass(d.Config.Limits.Rate, class)
+	if err != nil {
+		return err
+	}
+	key := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
+	if ok, wait := d.Limiter.Allow(c, key); !ok {
+		return server.RateLimited(uint64(wait.Milliseconds()))
+	}
+	return nil
+}
+
+// rateClass reads one (per_second, burst) pair out of the configured limits.
+func rateClass(r config.Rate, name string) (server.Class, error) {
+	switch name {
+	case classRegister:
+		return server.Class{Name: classRegister, PerSecond: r.RegisterPerSecond, Burst: r.RegisterBurst}, nil
+	case classInvite:
+		return server.Class{Name: classInvite, PerSecond: r.InvitePerSecond, Burst: r.InviteBurst}, nil
+	}
+	return server.Class{}, server.Errorf(server.CodeInternal, "no rate bucket named %q", name)
+}
+
+// refuseCBOR is the refusal writer of every route whose body is CBOR.
+func refuseCBOR(w http.ResponseWriter, _ *http.Request, err error) { server.WriteError(w, err) }
 
 func (d Deps) enrolled(h http.HandlerFunc) http.Handler {
 	return d.scoped(h, auth.ScopeEnrolled)
