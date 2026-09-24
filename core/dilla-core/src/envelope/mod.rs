@@ -904,7 +904,10 @@ mod tests {
                 "E_ENVELOPE_LIMIT",
                 "every reject is a limit case"
             );
-            assert_eq!(format!("{err:?}").contains("Limit"), true, "refused as a limit: {err:?}");
+            assert!(
+                format!("{err:?}").contains("Limit"),
+                "refused as a limit: {err:?}"
+            );
         }
     }
 
