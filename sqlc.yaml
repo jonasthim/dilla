@@ -1,0 +1,104 @@
+version: "2"
+sql:
+  - engine: "sqlite"
+    schema: "internal/store/sqlite/schema"
+    queries: "internal/store/sqlite/queries"
+    gen:
+      go:
+        package: "sqlitedb"
+        out: "internal/store/sqlite/sqlitedb"
+        sql_package: "database/sql"
+        emit_interface: true
+        emit_exact_table_names: true
+        emit_empty_slices: true
+        query_parameter_limit: 0
+        overrides:
+          # 1. exclusions, BEFORE the wildcards: sqlc matches a `column:` override
+          #    by NAME ONLY, regardless of the SQL type (gap-65 §2.3, §4.1), and a
+          #    later rule never overrides an earlier one. Without these five,
+          #    `*.id` types the two AUTOINCREMENT surrogate keys as id.ID and
+          #    `*.*_id` types a 16-1023-byte WebAuthn credential id as id.ID, both
+          #    of which fail at scan time with `id: want 16 bytes, got N`
+          #    (deviation ID7).
+          - { column: "audit_log.id",       go_type: { type: "int64" } }
+          - { column: "login_attempts.id",  go_type: { type: "int64" } }
+          - { column: "*.cred_id",     go_type: { type: "byte", slice: true } }
+          - { column: "*.blob_id",     go_type: { type: "byte", slice: true } }
+          - { column: "*.code_hash",   go_type: { type: "byte", slice: true } }
+          - { column: "*.token_hash",  go_type: { type: "byte", slice: true } }
+          - { column: "*.blob_sha256", go_type: { type: "byte", slice: true } }
+          # 2. nullable ids: a `column` override IGNORES nullability, so each is
+          #    named explicitly with pointer: true, BEFORE the wildcards.
+          - { column: "invites.community_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "invites.created_by",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "webauthn_ceremonies.user_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "login_attempts.user_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "audit_log.actor",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          # 3. the NOT NULL wildcards.
+          - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.*_id",            go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.uploader_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.reporter_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.by_user",         go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.owner",           go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.sender",          go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.reporter",        go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+  - engine: "postgresql"
+    schema: "internal/store/postgres/schema"
+    queries: "internal/store/postgres/queries"
+    gen:
+      go:
+        package: "pgdb"
+        out: "internal/store/postgres/pgdb"
+        sql_package: "database/sql"
+        emit_interface: true
+        emit_exact_table_names: true
+        emit_empty_slices: true
+        query_parameter_limit: 0
+        overrides:
+          - { column: "audit_log.id",       go_type: { type: "int64" } }
+          - { column: "login_attempts.id",  go_type: { type: "int64" } }
+          - { column: "*.cred_id",     go_type: { type: "byte", slice: true } }
+          - { column: "*.blob_id",     go_type: { type: "byte", slice: true } }
+          - { column: "*.code_hash",   go_type: { type: "byte", slice: true } }
+          - { column: "*.token_hash",  go_type: { type: "byte", slice: true } }
+          - { column: "*.blob_sha256", go_type: { type: "byte", slice: true } }
+          # 1b. the SMALLINT enum columns. §4.2 spells every enum SMALLINT on
+          #     Postgres, which sqlc types int16, while the same column is
+          #     INTEGER (int64) on SQLite — so the two Querier interfaces would
+          #     diverge field-for-field and internal/store/schema_test.go's
+          #     TestQuerierInterfacesAreIdentical fails. These rows keep the DDL
+          #     as §4.2 writes it and pull the Go side back to int64;
+          #     database/sql widens the driver's int16 on scan. SQLite needs no
+          #     counterpart: its INTEGER is already int64.
+          - { column: "users.kind",                go_type: { type: "int64" } }
+          - { column: "devices.tier",              go_type: { type: "int64" } }
+          - { column: "devices.signer_tier",       go_type: { type: "int64" } }
+          - { column: "sessions.scope",            go_type: { type: "int64" } }
+          - { column: "sessions.tier",             go_type: { type: "int64" } }
+          - { column: "webauthn_ceremonies.kind",  go_type: { type: "int64" } }
+          - { column: "login_attempts.ok",         go_type: { type: "int64" } }
+          - { column: "invites.grants_admin",      go_type: { type: "int64" } }
+          - { column: "invites.community_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "invites.created_by",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "webauthn_ceremonies.user_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "login_attempts.user_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "audit_log.actor",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.*_id",            go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.uploader_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.reporter_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.by_user",         go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.owner",           go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.sender",          go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.reporter",        go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }

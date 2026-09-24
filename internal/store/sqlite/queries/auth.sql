@@ -1,0 +1,87 @@
+-- name: PutPasswordCredential :exec
+INSERT INTO password_credentials (user_id, phc, updated) VALUES (?, ?, ?)
+ON CONFLICT (user_id) DO UPDATE SET phc = excluded.phc, updated = excluded.updated;
+
+-- name: GetPasswordCredential :one
+SELECT phc FROM password_credentials WHERE user_id = ?;
+
+-- name: PutTOTP :exec
+INSERT INTO totp_secrets (user_id, secret, digits, period, algorithm, confirmed_at, last_counter, created)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (user_id) DO UPDATE SET secret = excluded.secret, digits = excluded.digits,
+  period = excluded.period, algorithm = excluded.algorithm, confirmed_at = excluded.confirmed_at,
+  last_counter = excluded.last_counter;
+
+-- name: GetTOTP :one
+SELECT * FROM totp_secrets WHERE user_id = ?;
+
+-- name: ConsumeTOTPCounter :execrows
+UPDATE totp_secrets SET last_counter = ? WHERE user_id = ? AND last_counter < ?;
+
+-- name: DeleteRecoveryCodes :exec
+DELETE FROM recovery_codes WHERE user_id = ?;
+
+-- name: PutRecoveryCode :exec
+INSERT INTO recovery_codes (user_id, code_hash, created, used_at) VALUES (?, ?, ?, NULL);
+
+-- name: ConsumeRecoveryCode :execrows
+UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL;
+
+-- name: CountRecoveryCodes :one
+SELECT count(*) FROM recovery_codes WHERE user_id = ? AND used_at IS NULL;
+
+-- name: PutWebauthnUser :exec
+-- DO NOTHING, not DO UPDATE: a user handle is minted once and never rotated.
+-- The authenticator stores the handle it saw at registration, so overwriting it
+-- on a later ceremony makes GetWebauthnUserByHandle miss and permanently breaks
+-- discoverable login for that account (deviation ID11).
+INSERT INTO webauthn_users (rp_id, user_id, user_handle, created) VALUES (?, ?, ?, ?)
+ON CONFLICT (rp_id, user_id) DO NOTHING;
+
+-- name: GetWebauthnUserHandle :one
+SELECT user_handle FROM webauthn_users WHERE rp_id = ? AND user_id = ?;
+
+-- name: GetWebauthnUserByHandle :one
+SELECT user_id FROM webauthn_users WHERE rp_id = ? AND user_handle = ?;
+
+-- name: PutWebauthnCredential :exec
+INSERT INTO webauthn_credentials (cred_id, rp_id, user_id, public_key, sign_count, attestation_type, attestation_format, transports, flags, extensions_json, name, created, last_used)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: ListWebauthnCredentials :many
+SELECT * FROM webauthn_credentials WHERE rp_id = ? AND user_id = ? ORDER BY created;
+
+-- name: GetWebauthnCredential :one
+SELECT * FROM webauthn_credentials WHERE cred_id = ?;
+
+-- name: UpdateWebauthnCredential :exec
+UPDATE webauthn_credentials SET sign_count = ?, flags = ?, last_used = ? WHERE cred_id = ?;
+
+-- name: PutCeremony :exec
+INSERT INTO webauthn_ceremonies (id, kind, user_id, session_json, created, expires)
+VALUES (?, ?, ?, ?, ?, ?);
+
+-- name: GetCeremony :one
+SELECT * FROM webauthn_ceremonies WHERE id = ? AND expires > ?;
+
+-- name: DeleteCeremony :execrows
+DELETE FROM webauthn_ceremonies WHERE id = ?;
+
+-- name: PruneCeremonies :execrows
+DELETE FROM webauthn_ceremonies WHERE expires <= ?;
+
+-- name: PutOIDCIdentity :exec
+INSERT INTO oidc_identities (issuer, subject, user_id, created) VALUES (?, ?, ?, ?)
+ON CONFLICT (issuer, subject) DO NOTHING;
+
+-- name: GetOIDCIdentity :one
+SELECT user_id FROM oidc_identities WHERE issuer = ? AND subject = ?;
+
+-- name: RecordLoginAttempt :exec
+INSERT INTO login_attempts (user_id, ip, method, ok, at) VALUES (?, ?, ?, ?, ?);
+
+-- name: CountLoginFailures :one
+SELECT count(*) FROM login_attempts WHERE user_id = ? AND ok = 0 AND at >= ?;
+
+-- name: ClearLoginFailures :exec
+DELETE FROM login_attempts WHERE user_id = ? AND ok = 0;

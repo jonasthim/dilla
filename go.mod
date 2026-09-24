@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/fxamacker/cbor/v2 v2.9.4
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/livekit/livekit-server v1.13.7
 	// B13: interfaces.md §3.5 pins protocol v1.51.1-0.20260905133529-a4f4b5c0c23f
 	// and server-sdk-go v2.18.1. That pair does not compile — v2.18.1 requires
@@ -13,6 +14,7 @@ require (
 	github.com/livekit/protocol v1.51.1-0.20260910121219-271d9cde3897
 	github.com/livekit/server-sdk-go/v2 v2.18.2-0.20260922130803-2088dabd3442
 	github.com/pion/turn/v5 v5.0.13
+	github.com/pressly/goose/v3 v3.28.0
 	github.com/tetratelabs/wazero v1.12.0
 	modernc.org/sqlite v1.59.0
 )
@@ -49,6 +51,9 @@ require (
 	github.com/hashicorp/go-version v1.9.0 // indirect
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jellydator/ttlcache/v3 v3.4.1 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/jxskiss/base62 v1.1.0 // indirect
@@ -63,6 +68,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect
 	github.com/mdlayher/socket v0.6.1 // indirect
+	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nats-io/nats.go v1.53.1 // indirect
@@ -96,6 +102,7 @@ require (
 	github.com/redis/go-redis/v9 v9.22.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rs/cors v1.11.1 // indirect
+	github.com/sethvargo/go-retry v0.4.0 // indirect
 	github.com/thoas/go-funk v0.9.3 // indirect
 	github.com/tomnomnom/linkheader v0.0.0-20250811210735-e5fe3b51442e // indirect
 	github.com/twitchtv/twirp v8.1.3+incompatible // indirect
