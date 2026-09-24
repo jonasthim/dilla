@@ -164,24 +164,43 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 
 	// A second SIGINT/SIGTERM exits immediately rather than waiting out the
 	// shutdown grace: NotifyContext only relays the first occurrence to runCtx.
+	//
+	// The registration and the goroutine last exactly as long as this run.
+	// Left behind, they would make a later signal in the same process exit it
+	// through a run that is already over — which is how an in-process test
+	// that drives runServe twice loses its whole binary to the first run's
+	// watcher.
 	forceExit := make(chan os.Signal, 1)
 	signal.Notify(forceExit, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(forceExit)
+	runOver := make(chan struct{})
+	defer close(runOver)
 	go func() {
-		<-runCtx.Done()
+		select {
+		case <-runCtx.Done():
+		case <-runOver:
+			return
+		}
 		// The signal that cancelled runCtx was also delivered here; drain it
 		// before waiting for a genuinely second one.
 		select {
 		case <-forceExit:
 		default:
 		}
-		<-forceExit
+		select {
+		case <-forceExit:
+		case <-runOver:
+			return
+		}
 		fmt.Fprintln(stderr, "dillad: second signal received, exiting immediately")
 		os.Exit(int(exit.Fail))
 	}()
 
 	notifyReady()
 
+	drained := make(chan struct{})
 	go func() {
+		defer close(drained)
 		<-runCtx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.Value())
 		defer cancel()
@@ -192,6 +211,18 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// Serve returns nil on the graceful close the goroutine above triggers.
 	if err := srv.Serve(runCtx, ln); err != nil {
 		return fmt.Errorf("serve: %w: %w", err, exit.Unavailable)
+	}
+	// Shutdown closes the LISTENER first, so Serve returns ErrServerClosed —
+	// and therefore nil — the instant the drain STARTS, not when it finishes.
+	// Returning here would run `defer repo.Close()` on a database the requests
+	// still in flight are reading, and exit the process inside shutdown_grace.
+	// Waiting for the goroutine is what makes the grace real.
+	select {
+	case <-runCtx.Done():
+		<-drained
+	default:
+		// Serve returned for a reason other than a signal; no drain was
+		// started and the goroutine is still parked on runCtx.
 	}
 	return nil
 }
