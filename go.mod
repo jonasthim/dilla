@@ -17,6 +17,7 @@ require (
 	github.com/pion/turn/v5 v5.0.13
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/tetratelabs/wazero v1.12.0
+	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.59.0
 )
 
@@ -129,7 +130,6 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260831171406-18b4a7587f8a // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a // indirect
 	google.golang.org/grpc v1.83.2 // indirect
