@@ -667,11 +667,15 @@ dependencies = [
  "console_error_panic_hook",
  "dilla-core",
  "js-sys",
+ "rusqlite",
  "serde_json",
+ "sqlite-wasm-rs",
+ "sqlite-wasm-vfs",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+ "zeroize",
 ]
 
 [[package]]

@@ -23,6 +23,20 @@ web-sys  = { version = "0.3.81", features = [
 ] }
 serde_json = "1.0.151"
 console_error_panic_hook = "0.1"
+# Deviation A2-14: StoreHandle keeps the 256-bit device KEK for the lifetime of the handle so that
+# resume() can replay PRAGMA key, and builds a pragma string containing it on every open and resume.
+# Zeroizing is what keeps both out of freed wasm linear memory.
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# Deviation A2-2. Pins copied verbatim from interfaces §3.1's wasm block. rusqlite keeps its default
+# features: dropping them removes the `ffi-sqlite-wasm-rs` backend entirely (gap-12 T1). The direct
+# `sqlite3mc` feature on sqlite-wasm-rs is what unifies encryption into rusqlite's single copy; drop
+# this dependency and encryption silently disappears (gap-11 §9 item 2). sqlite-wasm-vfs 0.2.0 has
+# NO [features] table — never write features = ["sahpool"].
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+rusqlite        = { version = "0.40.2" }
+sqlite-wasm-rs  = { version = "0.5.5", default-features = false, features = ["sqlite3mc"] }
+sqlite-wasm-vfs = "0.2.0"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3.78"
