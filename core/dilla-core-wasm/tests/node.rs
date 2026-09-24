@@ -4,7 +4,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use dilla_core::cbor::{decode_strict, CborError, Decoder, Encoder};
+use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
 use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
     abi_version, core_version, credential_identity_cbor, envelope_commitment, envelope_decode_json,
@@ -18,7 +18,10 @@ use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_node_experimental);
 
 fn unhex(s: &str) -> Vec<u8> {
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 fn hex(b: &[u8]) -> String {
@@ -26,7 +29,8 @@ fn hex(b: &[u8]) -> String {
 }
 
 const VECTOR_ENVELOPE_CBOR: &str = "89015011111111111111111111111111111111035012121212121212121212121212121212501313131313131313131313131313131363e29b8f808058201616161616161616161616161616161616161616161616161616161616161616";
-const VECTOR_ENVELOPE_COMMITMENT: &str = "ab2930d97f3c839758c035d9b2ace3b85676e65a37807b66370ffb2885a23148";
+const VECTOR_ENVELOPE_COMMITMENT: &str =
+    "ab2930d97f3c839758c035d9b2ace3b85676e65a37807b66370ffb2885a23148";
 
 /// The committed golden of suite names, in order, from `dilla_core::vectors`' five runners
 /// (Plan A task 11 writes `SuiteReport { name: "envelope" | "franking" | "sframe" | "identity" |
@@ -51,7 +55,10 @@ fn every_case_of_every_suite_holds_on_wasm() {
     let json = vectors_check_json();
 
     let names: Vec<&str> = report.suites.iter().map(|s| s.name).collect();
-    assert_eq!(names, EXPECTED_SUITES, "the wasm build must run all five suites, in order");
+    assert_eq!(
+        names, EXPECTED_SUITES,
+        "the wasm build must run all five suites, in order"
+    );
 
     // Every CaseReport is one (case, field) check, so the two counters and the case rows must agree.
     // A suite dropped between `run_all()` and the counters would break this even if the names held.
@@ -63,7 +70,11 @@ fn every_case_of_every_suite_holds_on_wasm() {
     );
 
     for suite in &report.suites {
-        assert!(json.contains(&format!("\"name\":\"{}\"", suite.name)), "missing suite {}", suite.name);
+        assert!(
+            json.contains(&format!("\"name\":\"{}\"", suite.name)),
+            "missing suite {}",
+            suite.name
+        );
         assert!(!suite.cases.is_empty(), "suite {} has no cases", suite.name);
         for case in &suite.cases {
             assert!(
@@ -99,7 +110,10 @@ fn the_cbor_reject_corpus_behaves_identically_on_wasm() {
             d.skip()?;
             Ok(())
         });
-        assert!(out.is_err(), "{what} ({hexed}) must be rejected on wasm too");
+        assert!(
+            out.is_err(),
+            "{what} ({hexed}) must be rejected on wasm too"
+        );
     }
     let trailing = unhex("0101");
     assert!(matches!(
@@ -154,11 +168,17 @@ fn the_wasm_bindgen_surface_reproduces_the_sframe_and_identity_vectors() {
         "097797588879462191319159221653839944788022939511249052334637"
     );
     assert_eq!(
-        sas(&unhex("c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3")).unwrap(),
+        sas(&unhex(
+            "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+        ))
+        .unwrap(),
         "088546891769712384735671929712"
     );
     assert_eq!(
-        recovery_key_base32(&unhex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")).unwrap(),
+        recovery_key_base32(&unhex(
+            "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+        ))
+        .unwrap(),
         "1C5GP2RB1C5GP2RB1C5GP2RB1C5GP2RB1C5GP2RB1C5GP2RB1C5G"
     );
 }
@@ -168,11 +188,20 @@ fn the_wasm_bindgen_surface_reproduces_the_sframe_and_identity_vectors() {
 /// panics, so these assertions can only be made where the intrinsics are real (NV-12).
 #[wasm_bindgen_test]
 fn errors_cross_the_boundary_as_values_not_panics() {
-    assert!(envelope_decode_json(&unhex("a0")).is_err(), "a CBOR map is not an envelope");
+    assert!(
+        envelope_decode_json(&unhex("a0")).is_err(),
+        "a CBOR map is not an envelope"
+    );
     let mut trailing = unhex(VECTOR_ENVELOPE_CBOR);
     trailing.push(0x01);
-    assert!(envelope_decode_json(&trailing).is_err(), "trailing bytes must not decode");
-    assert!(sframe_derive(&[0u8; 15], 0, 0).is_err(), "a 15-byte base key is not NK");
+    assert!(
+        envelope_decode_json(&trailing).is_err(),
+        "trailing bytes must not decode"
+    );
+    assert!(
+        sframe_derive(&[0u8; 15], 0, 0).is_err(),
+        "a 15-byte base key is not NK"
+    );
     assert!(credential_identity_cbor("{}").is_err());
     assert!(
         franking_tag(&[0u8; 32], &[0u8; 16], 1, 1, &[0u8; 16], &[0u8; 31], 0).is_err(),
