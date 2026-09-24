@@ -1,8 +1,26 @@
 //! `dilla-core-wasi` — the wasm32-wasip1 binding of `dilla-core` (interfaces §2.10, R8, R9).
 //!
-//! `_initialize` is NOT declared here: it comes from `crt1-reactor.o` and traps if called twice
-//! (gap-19 §0 items 6-8). The host calls it exactly once through
-//! `wazero.NewModuleConfig().WithStartFunctions("_initialize")`.
+//! **This module exports no `_initialize`, and needs none.** facts-wazero §3.1, gap-19 §0 items 6-8
+//! and interfaces §2.10 all say a `cdylib` for `wasm32-wasip1` is linked with `crt1-reactor.o` and
+//! therefore exports `_initialize`; measured on rustc 1.98.1 that is false. rustc passes `--no-entry`
+//! for a `cdylib` and links no crt object, so the built module's export section holds exactly the 17
+//! dilla exports plus `memory` (18 entries), there is no start section, and `__wasm_call_ctors` does
+//! not appear in the module at all. Nothing is lost: `_initialize`'s only job is `__wasm_call_ctors`,
+//! and this graph registers no constructors (gap-19 §2.1), so there is no startup hook to run.
+//!
+//! Reproduce with `wasm-tools objdump --section export target/wasm32-wasip1/release/dilla_core_wasi.wasm`,
+//! or on a box with no wasm-tools by reading section id 7 of the file directly; a
+//! `strings -a … | grep -cE '^_initialize$'` over the release module answers `0`.
+//!
+//! Consequences for the host, which Plan B task 3 owns: `WithStartFunctions("_initialize")` names a
+//! function that does not exist, and wazero *silently skips* a missing start function, so the call is
+//! a no-op rather than an error — harmless here, but gap-19 item 8's "wrong target" guard
+//! (`CompiledModule.ExportedFunctions()` must contain `_initialize`) would reject this correct
+//! artifact, and an export-section assertion must expect 17 names plus `memory`, not plus
+//! `_initialize`. Getting a reactor entry back would mean linking `crt1-reactor.o` by hand
+//! (`-C link-arg=<sysroot>/lib/rustlib/wasm32-wasip1/lib/self-contained/crt1-reactor.o`, verified to
+//! work), which needs a toolchain-absolute path in `[target.wasm32-wasip1] rustflags` — exactly what
+//! `core/dilla-core/tests/workspace_policy.rs` forbids (D6, R7).
 //!
 //! `handles` is declared in step 8, `exports` in step 10 and `shims` in step 13 — each alongside the
 //! file it names, so the crate compiles after every step except the two deliberate red ones.
