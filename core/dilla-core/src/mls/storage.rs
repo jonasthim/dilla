@@ -136,15 +136,50 @@ impl DillaStorage {
         &self.conn
     }
 
-    /// Creates every table if absent and seeds `storage_meta`. Idempotent.
+    /// The `storage_provider_version` this build writes and can read.
+    pub const PROVIDER_VERSION: &'static str = "1";
+    /// The serde codec this build's `StorageProvider` blobs are encoded with (`CborCodec`).
+    pub const CODEC: &'static str = "cbor";
+
+    /// Creates every table if absent, seeds `storage_meta`, and then **checks it**. Idempotent.
+    ///
+    /// The seed is `INSERT OR IGNORE`, so a file written by another build keeps its own
+    /// `storage_provider_version` and `codec` and the seed says nothing. Reading the values back
+    /// afterwards is what turns that into a refusal: every `openmls_*` blob is shaped by the
+    /// provider version and encoded by the codec, so continuing would decode another build's
+    /// bytes with this build's expectations - which a self-describing codec reports as a `Codec`
+    /// error somewhere deep in a later reload (gap-6 section 2.3), or, worse, does not report at
+    /// all. `openmls_version` is deliberately *not* checked: it is a provenance note, and OpenMLS
+    /// patch releases do not change the blob layout the way this provider's own version would.
     pub fn migrate(&self) -> Result<(), StorageError> {
         with_conn(&self.conn, |c| {
             c.execute_batch(SCHEMA)?;
             let mut stmt =
                 c.prepare("INSERT OR IGNORE INTO storage_meta (key, value) VALUES (?1, ?2)")?;
             stmt.execute(rusqlite::params!["openmls_version", "0.9.0"])?;
-            stmt.execute(rusqlite::params!["storage_provider_version", "1"])?;
-            stmt.execute(rusqlite::params!["codec", "cbor"])?;
+            stmt.execute(rusqlite::params![
+                "storage_provider_version",
+                Self::PROVIDER_VERSION
+            ])?;
+            stmt.execute(rusqlite::params!["codec", Self::CODEC])?;
+            drop(stmt);
+
+            let mut read = c.prepare("SELECT value FROM storage_meta WHERE key = ?1")?;
+            let mut get = |key: &str| -> Result<String, StorageError> {
+                let mut rows = read.query(rusqlite::params![key])?;
+                match rows.next()? {
+                    // An absent row cannot happen right after the seed above, but it is a
+                    // mismatch rather than a default: the alternative is treating a file whose
+                    // meta row someone deleted as if it were ours.
+                    None => Ok(String::new()),
+                    Some(row) => Ok(row.get::<_, String>(0)?),
+                }
+            };
+            let version = get("storage_provider_version")?;
+            let codec = get("codec")?;
+            if version != Self::PROVIDER_VERSION || codec != Self::CODEC {
+                return Err(StorageError::UnsupportedStorage { version, codec });
+            }
             Ok(())
         })
     }
@@ -884,6 +919,58 @@ mod tests {
         assert!(s.storage_meta("nothing").unwrap().is_none());
         s.migrate().expect("second migrate");
         assert_eq!(s.storage_meta("codec").unwrap().as_deref(), Some("cbor"));
+    }
+
+    /// `storage_meta` is written on the first `migrate()` and thereafter only read, so a file
+    /// written by a future build kept its own `storage_provider_version` and `codec` while
+    /// `INSERT OR IGNORE` quietly left them alone. Every blob in that file is then decoded with
+    /// *this* build's layout and codec: a self-describing codec turns the mismatch into a
+    /// `Codec` error somewhere deep in a later reload (gap-6 section 2.3), or worse, decodes into
+    /// something structurally valid and wrong. Refusing at open is the only honest answer.
+    #[test]
+    fn migrate_refuses_a_file_written_by_another_provider_version_or_codec() {
+        fn seeded(version: &str, codec: &str) -> DillaStorage {
+            let conn = rusqlite::Connection::open_in_memory().expect("open");
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+            )
+            .expect("meta table");
+            let mut stmt = conn
+                .prepare("INSERT INTO storage_meta (key, value) VALUES (?1, ?2)")
+                .expect("prepare");
+            stmt.execute(rusqlite::params!["storage_provider_version", version])
+                .expect("seed version");
+            stmt.execute(rusqlite::params!["codec", codec])
+                .expect("seed codec");
+            drop(stmt);
+            DillaStorage::new(Arc::new(Mutex::new(conn)))
+        }
+
+        let future = seeded("2", "cbor");
+        assert!(
+            matches!(
+                future.migrate(),
+                Err(StorageError::UnsupportedStorage { ref version, ref codec })
+                    if version == "2" && codec == "cbor"
+            ),
+            "{:?}",
+            future.migrate()
+        );
+
+        let other_codec = seeded("1", "postcard");
+        assert!(
+            matches!(
+                other_codec.migrate(),
+                Err(StorageError::UnsupportedStorage { ref version, ref codec })
+                    if version == "1" && codec == "postcard"
+            ),
+            "{:?}",
+            other_codec.migrate()
+        );
+
+        // A fresh file still opens, and re-opening the one this build wrote stays idempotent.
+        let fresh = memory();
+        fresh.migrate().expect("a file this build wrote reopens");
     }
 
     /// The self-describing-codec failure mode is invisible until a reload (gap-6 section 2.3), so

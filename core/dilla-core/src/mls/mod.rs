@@ -65,6 +65,14 @@ pub enum StorageError {
     Codec(String),
     #[error("lock poisoned")]
     Poisoned,
+    /// The file was written by a build whose `StorageProvider` layout or serde codec is not this
+    /// one's. Returned by `DillaStorage::migrate` before anything is read through it: every blob
+    /// in `openmls_*` is shaped by the provider version and encoded by the codec, so opening such
+    /// a file would decode another build's bytes with this build's expectations.
+    #[error(
+        "storage written by provider version {version} with codec {codec}; this build writes version 1 with codec cbor"
+    )]
+    UnsupportedStorage { version: String, codec: String },
 }
 
 /// The serde codec the `StorageProvider` blobs use.
