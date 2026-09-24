@@ -1,9 +1,13 @@
 package sqlite
 
 import (
+	"context"
+	"database/sql"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // The DSN is a URI: everything after the first `?` is query parameters, to both
@@ -74,5 +78,89 @@ func TestOpenStillOpensAnOrdinaryPath(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("no database at the requested path: %v", err)
+	}
+}
+
+// SQLite permits exactly one writer, so the write pool is one connection: a
+// second would only queue inside the driver and turn a clean wait into
+// SQLITE_BUSY.
+func TestOpenWriteIsASingleConnection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pool.db")
+	db, err := OpenWrite(path)
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	defer db.Close()
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1", got)
+	}
+}
+
+func TestVerifyPragmasReadsTheValuesBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pragma.db")
+	db, err := OpenWrite(path)
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	defer db.Close()
+	want := map[string]string{"journal_mode": "wal", "foreign_keys": "1", "busy_timeout": "5000", "synchronous": "1"}
+	if err := VerifyPragmas(context.Background(), db, want); err != nil {
+		t.Fatalf("VerifyPragmas: %v", err)
+	}
+	if err := VerifyPragmas(context.Background(), db, map[string]string{"journal_mode": "delete"}); err == nil {
+		t.Fatal("VerifyPragmas accepted a value the database does not have")
+	}
+}
+
+func TestMistypedDSNKeyIsCaught(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "typo.db")
+	// modernc silently ignores an unknown _pragma name, so the only way a typo
+	// surfaces is the read-back (facts-storage §2.3).
+	db, err := sql.Open("sqlite", "file:"+url.PathEscape(path)+"?_pragma=journal_mod(WAL)")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	if err := VerifyPragmas(context.Background(), db, map[string]string{"journal_mode": "wal"}); err == nil {
+		t.Fatal("a mistyped pragma key went unnoticed")
+	}
+}
+
+func TestSecondWriterBlocksThenReturnsBusy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "busy.db")
+	a, err := OpenWrite(path)
+	if err != nil {
+		t.Fatalf("OpenWrite a: %v", err)
+	}
+	defer a.Close()
+	if _, err := a.Exec(`CREATE TABLE t (v INTEGER NOT NULL) STRICT`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	b, err := OpenWrite(path)
+	if err != nil {
+		t.Fatalf("OpenWrite b: %v", err)
+	}
+	defer b.Close()
+	tx, err := a.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO t (v) VALUES (1)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	start := time.Now()
+	_, err = b.Exec(`INSERT INTO t (v) VALUES (2)`)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("the second writer succeeded while the first transaction was open")
+	}
+	if elapsed < 4*time.Second {
+		t.Fatalf("the second writer gave up after %s; busy_timeout(5000) means it waits ~5s", elapsed)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
 	}
 }

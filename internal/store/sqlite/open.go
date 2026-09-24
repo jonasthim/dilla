@@ -9,9 +9,13 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
+	"runtime"
+	"sort"
+	"strings"
 
 	_ "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -22,28 +26,91 @@ import (
 // test job.
 var _ = [1]struct{}{}[1-sqlite3.SQLITE_ENABLE_FTS5]
 
-// Open opens (and creates, if absent) the database at path in WAL mode with
-// foreign keys on, and verifies the connection before returning. The caller owns
-// the returned pool and closes it.
-//
-// The path is percent-encoded into the DSN. The DSN is a URI — modernc's newConn
-// splits it at the first '?' and SQLite is opened with SQLITE_OPEN_URI — so a
-// path containing '?' silently truncates the filename and turns the rest of the
-// path into query parameters, losing the three pragmas below and opening a
+// The path is percent-encoded into both DSNs. The DSN is a URI — modernc's
+// newConn splits it at the first '?' and SQLite is opened with SQLITE_OPEN_URI —
+// so a path containing '?' silently truncates the filename and turns the rest of
+// the path into query parameters, losing the pragmas below and opening a
 // different file from the one asked for. url.PathEscape also escapes '/', which
 // is correct here: SQLite decodes %HH in the path component before using it as a
 // filename, so the separators come back.
-func Open(path string) (*sql.DB, error) {
-	dsn := "file:" + url.PathEscape(path) + "?_pragma=journal_mode(wal)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	db, err := sql.Open("sqlite", dsn)
+const (
+	writeDSNSuffix = "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)&_txlock=immediate"
+	readDSNSuffix  = "?mode=ro&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)"
+)
+
+// WantPragmas is what VerifyPragmas is called with after either Open. The
+// values are the strings SQLite reports, not the strings the DSN sets:
+// synchronous(NORMAL) reads back as 1.
+var WantPragmas = map[string]string{
+	"journal_mode": "wal",
+	"busy_timeout": "5000",
+	"foreign_keys": "1",
+	"synchronous":  "1",
+}
+
+// OpenWrite opens the single-writer pool. SQLite permits one writer, so the pool
+// is one connection: two would only queue inside the driver and turn a clean
+// wait into SQLITE_BUSY. _txlock=immediate takes the write lock at BEGIN rather
+// than at the first write, which is what makes busy_timeout actually apply.
+func OpenWrite(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", "file:"+url.PathEscape(path)+writeDSNSuffix)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: open %s: %w", path, err)
+		return nil, fmt.Errorf("sqlite: open write %s: %w", path, err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
 	if err := db.Ping(); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("sqlite: ping %s: %w", path, err)
+		return nil, fmt.Errorf("sqlite: ping write %s: %w", path, err)
 	}
 	return db, nil
+}
+
+// OpenRead opens the read pool: WAL readers do not block the writer, so the pool
+// is as wide as the machine.
+func OpenRead(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", "file:"+url.PathEscape(path)+readDSNSuffix)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: open read %s: %w", path, err)
+	}
+	db.SetMaxOpenConns(runtime.NumCPU())
+	db.SetMaxIdleConns(runtime.NumCPU())
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("sqlite: ping read %s: %w", path, err)
+	}
+	return db, nil
+}
+
+// VerifyPragmas reads every wanted pragma back. modernc silently ignores an
+// unknown DSN key and an unknown pragma name (facts-storage §2.3), so a typo in
+// the DSN is invisible without this call.
+func VerifyPragmas(ctx context.Context, db *sql.DB, want map[string]string) error {
+	names := make([]string, 0, len(want))
+	for name := range want {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		var got string
+		if err := db.QueryRowContext(ctx, "PRAGMA "+name).Scan(&got); err != nil {
+			return fmt.Errorf("sqlite: read pragma %s: %w", name, err)
+		}
+		if !strings.EqualFold(got, want[name]) {
+			return fmt.Errorf("sqlite: pragma %s is %q, want %q", name, got, want[name])
+		}
+	}
+	return nil
+}
+
+// Open opens (and creates, if absent) the database at path.
+//
+// Deprecated: Open is the week-1 single-pool entry point, kept so the FTS5
+// assertions keep compiling. dillad opens OpenWrite and OpenRead instead and
+// hands both to sqlite.New.
+func Open(path string) (*sql.DB, error) {
+	return OpenWrite(path)
 }
 
 // CompileOptions returns the library's compile-time options.
