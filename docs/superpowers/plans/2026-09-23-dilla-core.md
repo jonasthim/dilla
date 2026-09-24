@@ -199,7 +199,7 @@ These depart from `scratchpad/planning/core/interfaces.md`. Everything not liste
 | A2-12 | §6 task 18 requires "in memory mode a reload produces a fresh client that **rejoins by external commit** and never reads an epoch from storage" (gap-15 AC-4) | task 18 asserts only the second half — the order log stops at `memory-boot`, `install` never appears, and no row survives the reload | the week-1 spike is store-only: it has no MLS group, no delivery service and no wire, so "exactly one external commit on the wire" cannot be observed by it at all. The external-commit half is carried by Plan A task 13's testkit scenarios and by the first browser-client task (W2), which is the first place an MLS client exists in the browser tier. |
 | A2-13 | §2.10 field note: "`binding` is the 8-element `dilla_binding` CBOR, **spliced verbatim**" | element 5 of `public_group_state` is a CBOR **byte string** wrapping the 8-element binding array (`e.bytes(&binding)`), exactly as the same section's export table types it (`binding(bstr)`) | the field note and the table contradict each other. The table wins: splicing a bare array where the table promises a `bstr` would make §2.13's `mlswasi` decoder read a major-4 head where it expects major 2. The Go side decodes the `bstr`, then decodes the binding array out of those bytes. |
 | A2-14 | §3.2 `core/dilla-core-wasm/Cargo.toml` has no `zeroize` | adds `zeroize = { version = "1", features = ["zeroize_derive"] }` (the §3.1 pin) to the crate's plain `[dependencies]` | `StoreHandle` has to keep the 256-bit device KEK for the lifetime of the handle so `resume()` can replay `PRAGMA key`, and it builds a pragma string containing that key on every open and resume. Holding both in `Zeroizing` is the only thing that keeps the KEK from lingering in freed wasm linear memory. |
-| A2-15 | §1's `.gitignore` list (`!internal/mlswasi/testdata/*.wasm`, `core/dilla-core-wasm/spike/pkg/`, `core/dilla-core-wasm/spike/node_modules/`) | task 18 also adds `e2e/test-results/` | Playwright writes its report directory and `opfs-leader-metrics.json` there; task 20 transcribes those numbers into the spike report, so the directory is a local artefact, never a committed one. |
+| A2-15 | §1's `.gitignore` list (`!internal/mlswasi/testdata/*.wasm`, `core/dilla-core-wasm/spike/pkg/`, `core/dilla-core-wasm/spike/node_modules/`) | task 18 also adds `e2e/test-results/`; the `!internal/mlswasi/testdata/*.wasm` negation was later removed under Plan B's Ruling K (deviation B16: the artefact is never committed), and task 1 step 7 no longer appends it | Playwright writes its report directory and `opfs-leader-metrics.json` there; task 20 transcribes those numbers into the spike report, so the directory is a local artefact, never a committed one. |
 | A2-16 | the spec's memory-mode wording "no persistence in this browser" | the banner reads "Messages in this window won't be saved on this device." | gap-15 AC-7: the copy must name the **effect**, never the browser mode or the storage technology — the identical `SecurityError` fires in a normal Firefox window with site storage blocked, so "in this browser" would be wrong there. The exact string is asserted by task 18. |
 
 ---
@@ -855,10 +855,13 @@ Append to `.gitignore` (the root file already ignores `/target/`, `*.wasm`, `*.d
 
 ```
 # rust / wasm
-!internal/mlswasi/testdata/*.wasm
 core/dilla-core-wasm/spike/pkg/
 core/dilla-core-wasm/spike/node_modules/
 ```
+
+(An earlier revision of this step also appended `!internal/mlswasi/testdata/*.wasm`; Plan B's
+review removed that negation under Ruling K, because deviation B16 decides the wazero test
+artefact is never committed, so the root `*.wasm` rule must keep ignoring it. Do not re-add it.)
 
 Append to `.editorconfig` (rustfmt's default is 4 spaces, which fights the file's 2-space `[*]` rule):
 

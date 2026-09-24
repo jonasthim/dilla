@@ -22,3 +22,6 @@ packages/ui/storybook-static/
 core/dilla-core-wasm/spike/pkg/
 core/dilla-core-wasm/spike/node_modules/
 e2e/test-results/
+
+# go build output when run from the repository root (CI builds it in a runner)
+/dillad
