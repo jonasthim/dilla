@@ -88,7 +88,7 @@ belongs to `docs/superpowers/plans/2026-09-23-dilla-core.md` and is only consume
 | `docs/spikes/2026-09-wazero.md` | the go/no-go decision and the numbers it rests on | 5 |
 | `docs/spikes/2026-09-livekit.md` | the LiveKit in-process result, the four calls, the silent-failure setting and the binary size | 6 |
 | `docs/spikes/2026-09-sqlite-fts5.md` | the FTS5 result on amd64 and arm64 | 7 |
-| `.gitignore` | one appended line, the `!internal/mlswasi/testdata/*.wasm` exception (B14) | 1 |
+| `.gitignore` | untouched: the `!internal/mlswasi/testdata/*.wasm` exception was dropped (B14, ruling K) | 1 |
 | `.github/workflows/ci.yml` | the `go` job (with `needs: [rust-wasi]`) and `go-fts5-arm64` (B9, B10) | 8 |
 
 ## Out of scope, recorded on purpose
@@ -180,7 +180,7 @@ Everything below deviates from `scratchpad/planning/core/interfaces.md`; each li
 | B11 | §2.13 `sfu.Config` has no validation entry point | **`Config.YAML()` rejects an API secret shorter than 32 characters.** | `Config.YAML()` already returns `(string, error)` in §2.13 with no stated error condition. gap-20 §4b verified LiveKit only *logs* a short secret, so the ≥ 32-character rule the task's tests require has to be dilla's own check, and `YAML()` is the only place §2.13 offers. |
 | B12 | — | **Withdrawn.** An earlier draft had `sqlite.Open` return a `*DBHandle{DB, Path}`. The contract signature `Open(path string) (*sql.DB, error)` stands: interfaces.md §0.1 makes the published signature binding, no facts or gap file supports changing it, and `VACUUM INTO ?` takes the *destination* path as a bound parameter, so nothing in task 7 needs the source path back. The number is left in place rather than renumbered so earlier references stay resolvable. |
 | B13 | §3.5 pins `github.com/livekit/server-sdk-go/v2 v2.18.1` and `github.com/livekit/protocol v1.51.1-0.20260905133529-a4f4b5c0c23f` | **`server-sdk-go/v2 v2.18.2-0.20260922130803-2088dabd3442`** (the module's `main` head at 2026-09-22) and **`protocol v1.51.1-0.20260910121219-271d9cde3897`** (what MVS then resolves). `livekit-server v1.13.7` and `pion/turn/v5 v5.0.13` are unchanged (R18). | **The §3.5 pin does not compile.** Reproduced on the dev box on 2026-09-23 with go1.27.0 against the real module cache: `# github.com/livekit/server-sdk-go/v2` → `…/server-sdk-go/v2@v2.18.1/sipclient.go:354:9: cannot use 1st function result (value of type *livekit.TransferSIPParticipantResponse) as *emptypb.Empty value in return statement`. Cause: `server-sdk-go v2.18.1`'s `go.mod` line 13 requires `protocol v1.49.0`, `livekit-server v1.13.7`'s line 24 requires the v1.51.1 pseudo-version, MVS lifts protocol to v1.51.1, and `TransferSIPParticipant`'s return type changed in between. This is precisely the MVS interaction gap-21 §6 recorded as "not verified", so a measurement settles it rather than overriding a fact. Two other resolutions were tried and rejected on the box: `replace github.com/livekit/protocol => v1.49.0` fails with `module …@v1.49.0 … does not contain package github.com/livekit/protocol/datatrack` (livekit-server v1.13.7 needs it), and there is no released `server-sdk-go/v2` tag above v2.18.1 (`go list -m -versions` ends there). The pseudo-version above is `go list -m github.com/livekit/server-sdk-go/v2@main` and **was verified to build**: `go build ./...` over blank imports of `livekit-server/pkg/{config,routing,service,telemetry/prometheus}`, `protocol/auth` and `server-sdk-go/v2` exits 0 with the three pion `replace` directives in place. |
-| B14 | §6 task 1 scopes Plan B's `.gitignore` edit to "the `!internal/mlswasi/testdata/*.wasm` exception" | **Task 1 adds that one line and nothing else.** The two `core/dilla-core-wasm/spike/*` lines an earlier draft also appended belong to Plan A task 1 (`plan-A1.md` step 7 appends all three verbatim, and `plan-A2.md` task 15 appends the spike pair a third time). | Same reasoning as B10: two plans writing the same lines into the same region of the same file conflict on merge, and `**/node_modules/` at `.gitignore:5` already covers one of them. Task 1's append is written idempotent so it is a no-op when Plan A landed first. |
+| B14 | §6 task 1 scopes Plan B's `.gitignore` edit to "the `!internal/mlswasi/testdata/*.wasm` exception" | **Task 1 makes no `.gitignore` edit at all; the artefact stays ignored by `*.wasm`.** The exception was removed on review (ruling K): B16 forbids committing the artefact, so the exception only made an accidental `git add .` possible. The two `core/dilla-core-wasm/spike/*` lines an earlier draft also appended belong to Plan A task 1 (`plan-A1.md` step 7 appends them, and `plan-A2.md` task 15 appends the spike pair again). | The original reasoning — two plans writing the same lines into the same region of the same file conflict on merge, and `**/node_modules/` at `.gitignore:5` already covers one of them — still holds for the spike lines. The exception itself was the contradiction: **B16** says the `.wasm` is never committed and `loadWasm` fails loudly when it is absent, so nothing needs the path tracked, while re-including it left a 2 MB build product one `git add .` away from the history. `TestTheWasiTestdataArtifactIsIgnored` now asserts the opposite of what task 1's original test did, via `git check-ignore`. |
 | B15 | §5 / §3.5 name `actions/download-artifact@v4` | **`actions/download-artifact@v8`** — applied together with Plan A task 19. | gap-31 §4 item 2 corrects facts-ci §8 (which self-labels the ref "from memory, **unverified** this session") from the GitHub release pages: the current majors are `upload-artifact@v7.0.1` and `download-artifact@v8.0.1`, deliberately out of step, and "`upload@v7` pairs with `download@v8`". Moving only one half would pair `upload@v4` with `download@v8`, a combination nobody has tried — so the pair moves in **one** change that touches both plans: Plan A task 19 writes `actions/upload-artifact@v7` in the `rust-wasi` job, in `REQUIRED_STEPS['rust-wasi']` and in its `check-ci-workflow.test.mjs` fixtures, and this plan's task 8 writes `actions/download-artifact@v8` in the `go` job and in the `TestCIWorkflowHasTheGoJob` assertion. The `with:` input names are unchanged across both bumps (`name`, `path`, `if-no-files-found` on upload; `name`, `path` on download), which is why gap-31 §3.2's reference job spells them exactly as both jobs do. This closes Plan A's NV-14. |
 | B16 | §6 task 3 Files list `internal/mlswasi/testdata/dilla_core_wasi.wasm` as a file task 3 creates | **The `.wasm` is not committed.** Task 3 puts it in place locally and task 3's commit does not stage it; CI's `go` job downloads it from the `dilla-core-wasi` artifact. The `.gitignore` exception of §6 task 1 stays exactly as specified. | Committing it *and* overwriting it in CI gives two different binaries under one path with nothing checking they agree: a stale local `.wasm` would make every `go test ./internal/mlswasi/` — the D6/R7 conformance leg included — pass against the wrong core, silently, while CI tested another. A checked-in sha256 does not fix it either, because CI's freshly built artefact legitimately differs byte-for-byte. `loadWasm` already fails loudly (never skips) and names both ways to obtain the file, which is the behaviour §6 task 4 actually requires. |
 | B17 | §2.13 declares only `ErrTrap` among `mlswasi`'s package-level identifiers | **Adds `ABIVersion`, `RequiredExports`, `ABIError` and `ErrClosed`.** | `ABIVersion` is §2.10's "every request carries the version as its first element"; `RequiredExports` is the guard §6 task 3 demands, because `WithStartFunctions` silently skips a missing start function (gap-19 §0 item 8); `ABIError` is §2.10's `[1, code, detail]` frame, which callers must be able to match on with `errors.As` (task 3 asserts `E_ABI_HANDLE` and `E_ABI_VERSION`); `ErrClosed` is what `Acquire` returns after `Close`, a case §2.13's `Acquire` signature allows for but does not name. Same class of surface addition as B4 and B11. |
@@ -200,7 +200,7 @@ Everything below deviates from `scratchpad/planning/core/interfaces.md`; each li
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: Go module `github.com/jonasthim/dilla` at `go 1.27.0`; the three LiveKit `replace` directives; the pinned requires `github.com/fxamacker/cbor/v2 v2.9.4`, `github.com/livekit/livekit-server v1.13.7`, `github.com/livekit/protocol v1.51.1-0.20260910121219-271d9cde3897`, `github.com/livekit/server-sdk-go/v2 v2.18.2-0.20260922130803-2088dabd3442`, `github.com/pion/turn/v5 v5.0.13`, `github.com/tetratelabs/wazero v1.12.0`, `modernc.org/sqlite v1.59.0` (the two LiveKit pseudo-versions are deviation **B13**: §3.5's `server-sdk-go v2.18.1` + `protocol v1.51.1-0.20260905…` pair does not compile); `main.versionLine() string`; the `.gitignore` exception `!internal/mlswasi/testdata/*.wasm`.
+- Produces: Go module `github.com/jonasthim/dilla` at `go 1.27.0`; the three LiveKit `replace` directives; the pinned requires `github.com/fxamacker/cbor/v2 v2.9.4`, `github.com/livekit/livekit-server v1.13.7`, `github.com/livekit/protocol v1.51.1-0.20260910121219-271d9cde3897`, `github.com/livekit/server-sdk-go/v2 v2.18.2-0.20260922130803-2088dabd3442`, `github.com/pion/turn/v5 v5.0.13`, `github.com/tetratelabs/wazero v1.12.0`, `modernc.org/sqlite v1.59.0` (the two LiveKit pseudo-versions are deviation **B13**: §3.5's `server-sdk-go v2.18.1` + `protocol v1.51.1-0.20260905…` pair does not compile); `main.versionLine() string`. No `.gitignore` change: the `!internal/mlswasi/testdata/*.wasm` exception was dropped (B14, ruling K).
 
 - [ ] **Step 1: Create the bare module manifest (scaffolding — nothing can be tested without it)**
 
@@ -223,7 +223,9 @@ Create `cmd/dillad/main_test.go`:
 package main
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
@@ -294,11 +296,23 @@ func TestGoModDeclaresGo1270(t *testing.T) {
 	}
 }
 
-func TestGitignoreKeepsTheWasiTestdataArtifact(t *testing.T) {
-	ignore := readRepoFile(t, ".gitignore")
-	if !strings.Contains(ignore, "!internal/mlswasi/testdata/*.wasm") {
-		t.Error(".gitignore must re-include internal/mlswasi/testdata/*.wasm; the root ignores *.wasm")
+// B14 as reconciled on review (ruling K): B16 forbids committing the artefact,
+// so the path must stay ignored. `git check-ignore` applies the whole ignore
+// stack, which grepping .gitignore for one line cannot do.
+func TestTheWasiTestdataArtifactIsIgnored(t *testing.T) {
+	cmd := exec.Command("git", "check-ignore", "-q", "internal/mlswasi/testdata/dilla_core_wasi.wasm")
+	cmd.Dir = "../.."
+	err := cmd.Run()
+	if err == nil {
+		return // exit 0: the path is ignored, which is the whole requirement
 	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		t.Error("internal/mlswasi/testdata/dilla_core_wasi.wasm is not ignored by .gitignore; " +
+			"deviation B16 says the artefact is never committed, so `git add .` must not be able to stage it")
+		return
+	}
+	t.Skipf("git check-ignore could not run: %v", err)
 }
 
 func TestVersionLineNamesTheBinaryAndThePlatform(t *testing.T) {
@@ -355,7 +369,7 @@ func main() {
 Run: `/home/thim/.local/go/bin/go -C /home/thim/Repositories/dilla/.claude/worktrees/sdd-dilla-protocol test ./cmd/dillad/`
 Expected: FAIL — `TestVersionLineNamesTheBinaryAndThePlatform` passes, but `TestGoModCarriesTheLiveKitReplaceDirectives` and `TestGoModPinsTheVerifiedVersions` fail.
 
-`TestGitignoreKeepsTheWasiTestdataArtifact` fails **only if Plan A task 1 has not landed yet**: that task appends the same `!internal/mlswasi/testdata/*.wasm` line (`plan-A1.md` task 1 step 7). Either outcome is correct here — Step 8 below is written to be a no-op when the line is already present.
+`TestTheWasiTestdataArtifactIsIgnored` passes from the start: `*.wasm` at `.gitignore:6` predates both plans. It fails only if some earlier run left the `!internal/mlswasi/testdata/*.wasm` negation behind, which Step 8 below removes (B14, ruling K).
 
 - [ ] **Step 6: Write the full module manifest**
 
@@ -429,28 +443,17 @@ import (
 )
 ```
 
-- [ ] **Step 8: Add the `.gitignore` exception**
+- [ ] **Step 8: Leave `.gitignore` alone — the artefact stays ignored**
 
-Plan B owns exactly one line here (interfaces.md §6 task 1). The two `core/dilla-core-wasm/spike/*`
-entries belong to Plan A task 1 (`plan-A1.md` step 7) — do **not** add them from this plan, or the
-two plans conflict on the same region of the same file (deviation **B14**, the same reasoning as B10).
-`**/node_modules/` at `.gitignore:5` already covers one of them in any case.
+Make **no** edit here. Deviation **B14** as reconciled on review (ruling K): the
+`!internal/mlswasi/testdata/*.wasm` exception is not added, and if a re-run finds it present it is
+removed. B16 forbids committing the artefact at all, so re-including the path bought nothing and only
+made an accidental `git add .` able to stage a build product. The two `core/dilla-core-wasm/spike/*`
+entries were never Plan B's either (Plan A task 1, `plan-A1.md` step 7); `**/node_modules/` at
+`.gitignore:5` already covers one of them.
 
-Insert immediately after the existing `*.wasm` line in the `# build outputs` block (currently
-`.gitignore:6`), so the negation follows the pattern it negates:
-
-```
-# the wasm32-wasip1 core is a local/CI-supplied test fixture, not a committed one (B16);
-# the exception exists so a developer can drop it in without git hiding it
-!internal/mlswasi/testdata/*.wasm
-```
-
-**The edit is idempotent.** If Plan A task 1 landed first, that line is already there — leave the file
-alone and move on; `TestGitignoreKeepsTheWasiTestdataArtifact` still gates it either way. Check before
-editing:
-
-Run: `grep -c -F '!internal/mlswasi/testdata/*.wasm' /home/thim/Repositories/dilla/.claude/worktrees/sdd-dilla-protocol/.gitignore`
-Expected: `1` after this step (and either `0` or `1` before it; if it is already `1`, make no edit).
+Run: `git -C /home/thim/Repositories/dilla/.claude/worktrees/sdd-dilla-protocol check-ignore -q internal/mlswasi/testdata/dilla_core_wasi.wasm`
+Expected: exit 0 — `*.wasm` at `.gitignore:6` ignores it, which is what `TestTheWasiTestdataArtifactIsIgnored` asserts.
 
 - [ ] **Step 9: Resolve the module graph**
 

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
@@ -75,11 +77,32 @@ func TestGoModDeclaresGo1270(t *testing.T) {
 	}
 }
 
-func TestGitignoreKeepsTheWasiTestdataArtifact(t *testing.T) {
-	ignore := readRepoFile(t, ".gitignore")
-	if !strings.Contains(ignore, "!internal/mlswasi/testdata/*.wasm") {
-		t.Error(".gitignore must re-include internal/mlswasi/testdata/*.wasm; the root ignores *.wasm")
+// Ruling K. Deviation B16 is that the wasi artifact is never committed: CI
+// downloads it from the rust-wasi job and a developer builds it locally. The
+// root `.gitignore` ignores `*.wasm`, and a negation used to re-include this one
+// path — which bought nothing (nobody needs the file tracked) and made a stray
+// `git add .` able to commit a 2 MB build product. The negation is gone, so what
+// has to hold is the opposite of the old assertion.
+//
+// `git check-ignore` is the authority, not a grep for a line: it applies the
+// whole ignore stack in order, so it also catches a future rule elsewhere that
+// un-ignores the path again.
+func TestTheWasiTestdataArtifactIsIgnored(t *testing.T) {
+	cmd := exec.Command("git", "check-ignore", "-q", "internal/mlswasi/testdata/dilla_core_wasi.wasm")
+	cmd.Dir = "../.."
+	err := cmd.Run()
+	if err == nil {
+		return // exit 0: the path is ignored, which is the whole requirement
 	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		t.Error("internal/mlswasi/testdata/dilla_core_wasi.wasm is not ignored by .gitignore; " +
+			"deviation B16 says the artifact is never committed, so `git add .` must not be able to stage it")
+		return
+	}
+	// Exit 128 or a missing binary: there is no repository to ask (a source
+	// tarball, say). That is not the failure this test exists to catch.
+	t.Skipf("git check-ignore could not run: %v", err)
 }
 
 func TestVersionLineNamesTheBinaryAndThePlatform(t *testing.T) {
