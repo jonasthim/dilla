@@ -1,11 +1,14 @@
 package main
 
 import (
+	"io"
 	"os"
 	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jonasthim/dilla/internal/sfu"
 )
 
 // readRepoFile reads a file relative to the repository root. Tests run with the
@@ -89,5 +92,48 @@ func TestVersionLineNamesTheBinaryAndThePlatform(t *testing.T) {
 	want := runtime.GOOS + "/" + runtime.GOARCH
 	if !strings.Contains(got, want) {
 		t.Errorf("versionLine() = %q, want it to name the platform %q", got, want)
+	}
+}
+
+// Assert the flags parse, not how they are spelled in the source: a grep for
+// `flag.Bool("sfu"` passes on a file where the flag is registered and never read,
+// and fails on a correct refactor to a FlagSet.
+func TestSFUFlagsParse(t *testing.T) {
+	fs, opts := newFlagSet()
+	secret := strings.Repeat("x", 32)
+	if err := fs.Parse([]string{"-sfu", "-api-secret", secret}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !opts.runSFU {
+		t.Error("-sfu did not set runSFU")
+	}
+	if opts.apiSecret != secret {
+		t.Errorf("-api-secret = %q, want %q", opts.apiSecret, secret)
+	}
+
+	// The defaults are the ones an ordinary `dillad` run gets: no SFU, no secret.
+	fs, opts = newFlagSet()
+	if err := fs.Parse(nil); err != nil {
+		t.Fatalf("Parse(nil): %v", err)
+	}
+	if opts.runSFU || opts.apiSecret != "" {
+		t.Errorf("defaults are runSFU=%v apiSecret=%q, want false and empty", opts.runSFU, opts.apiSecret)
+	}
+
+	// An unknown flag is an error, not a silent ignore.
+	fs, _ = newFlagSet()
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse([]string{"-not-a-flag"}); err == nil {
+		t.Error("an unknown flag was accepted")
+	}
+}
+
+// The flag must reach the SFU: a secret shorter than 32 characters is what
+// sfu.Config.YAML refuses, and dillad must surface that rather than boot.
+func TestShortAPISecretIsRejectedBeforeTheSFUStarts(t *testing.T) {
+	cfg := sfu.DefaultConfig()
+	cfg.APISecret = "short"
+	if _, err := cfg.YAML(); err == nil {
+		t.Fatal("sfu.Config.YAML accepted a 5-character secret; dillad -sfu would then boot with it")
 	}
 }
