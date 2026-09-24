@@ -65,15 +65,19 @@ type Deps struct {
 	Throttle   *auth.Throttle
 	Assertions *Assertions
 
-	// Still to come, each with the task that declares its type and fills it:
+	// Passkeys runs the four WebAuthn ceremonies. It is nil when `passkey` is
+	// not in auth.methods — go-webauthn refuses a config with no RPOrigins, so
+	// an instance that never configured a relying party has no Passkeys to
+	// hand over — and the four routes answer 501 rather than panicking.
+	Passkeys *auth.Passkeys
+
+	// Still to come, with the task that declares its type and fills it:
 	//
-	//	Passkeys   *auth.Passkeys   // task 10 — WebAuthn ceremonies
 	//	OIDC       *auth.OIDC       // task 11 — nil unless auth.oidc.enabled
 	//
-	// They are NOT declared yet because Go cannot name a type that does not
-	// exist: internal/auth gains Passkeys and OIDC in tasks 10-11. Each of
-	// those tasks adds its one field here, with the spelling above, and
-	// nothing else.
+	// It is NOT declared yet because Go cannot name a type that does not
+	// exist: internal/auth gains OIDC in task 11, which adds its one field
+	// here, with the spelling above, and nothing else.
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -123,6 +127,15 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("POST /v1/auth/password", d.enrolled(d.ChangePassword))
 	m.Handle("POST /v1/auth/totp/enroll", d.enrolled(d.EnrollTOTP))
 	m.Handle("POST /v1/auth/totp/confirm", d.enrolled(d.ConfirmTOTP))
+
+	// Passkeys. The two register legs are enrolled sessions adding a credential
+	// to an account that already exists; the two login legs are unauthenticated
+	// and meter themselves on the `login` bucket inside the handler, exactly as
+	// the password and second-factor ceremonies above do.
+	m.Handle("POST /v1/auth/passkey/register/begin", d.enrolled(d.BeginPasskeyRegistration))
+	m.Handle("POST /v1/auth/passkey/register/finish", d.enrolled(d.FinishPasskeyRegistration))
+	m.Handle("POST /v1/auth/passkey/login/begin", http.HandlerFunc(d.BeginPasskeyLogin))
+	m.Handle("POST /v1/auth/passkey/login/finish", http.HandlerFunc(d.FinishPasskeyLogin))
 
 	// Accounts. Every one of these is an enrolled session.
 	m.Handle("GET /v1/accounts/me", d.enrolled(d.GetMe))

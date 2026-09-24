@@ -620,3 +620,188 @@ func (d Deps) verifySecondFactor(w http.ResponseWriter, r *http.Request, method 
 	d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, method, true)
 	d.write(w, r, http.StatusOK, []any{d.Assertions.Upgrade(userID)})
 }
+
+// Passkeys (protocol/09-http-api.md § Auth ceremonies).
+//
+// internal/auth owns the ceremonies; the four handlers below are the CBOR skin
+// over them. `options` and `response` cross the wire as opaque `tstr`: they are
+// the WebAuthn JSON navigator.credentials produces and consumes, and dillad
+// neither re-encodes nor inspects them.
+
+// ceremonyRequest is the body both finish routes share:
+// [ceremony_id(bstr16), response(tstr)].
+type ceremonyRequest struct {
+	_          struct{} `cbor:",toarray"`
+	CeremonyID id.ID
+	Response   string
+}
+
+// methodPasskey is the login_attempts.method value of a passkey assertion. It
+// follows recovery because this file is the only writer of that column and the
+// three values above it are already spent; it is NOT the instance document's
+// `auth_methods` numbering, which is a different enumeration in a different
+// message and where 2, not 3, is the passkey.
+const methodPasskey uint8 = 3
+
+// passkeyFailureLedger is the account ledger a failed discoverable login is
+// charged to. A discoverable ceremony never names an account, so there is no
+// per-account lockout to earn and no handle to enumerate; the entry exists only
+// because RecordFailure is also what charges the ADDRESS, which is the budget
+// every unauthenticated ceremony in this file peeks at and the one an attacker
+// spraying assertions empties. Nothing gates on this key.
+var passkeyFailureLedger = loginLedger(store.UserRow{}, false, "\x00passkey")
+
+// passkeys returns the ceremony runner, or the refusal a route answers when the
+// instance has none. A nil Passkeys is not a composition bug: `passkey` may
+// simply be absent from auth.methods, and go-webauthn refuses to build at all
+// without an RPOrigins, so an instance that configured no relying party
+// legitimately has nothing here.
+func (d Deps) passkeys() (*auth.Passkeys, error) {
+	if d.Passkeys == nil {
+		return nil, notImplemented("passkeys are not enabled on this instance")
+	}
+	return d.Passkeys, nil
+}
+
+// BeginPasskeyRegistration is POST /v1/auth/passkey/register/begin:
+// [] → [ceremony_id(bstr16), options(tstr)].
+func (d Deps) BeginPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
+	sess, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	p, err := d.passkeys()
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ceremonyID, options, err := p.BeginRegistration(r.Context(), sess.UserID)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.write(w, r, http.StatusOK, []any{ceremonyID, string(options)})
+}
+
+// FinishPasskeyRegistration is POST /v1/auth/passkey/register/finish:
+// [ceremony_id(bstr16), response(tstr)] → [cred_id(bstr)].
+//
+// The ceremony row carries the user id the registration began for and
+// auth.Passkeys files the credential against THAT id, never against this
+// request's session: a ceremony begun by one account and finished from another
+// account's session still stores the credential where it was begun, and the
+// library's own challenge check refuses the response long before that.
+func (d Deps) FinishPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
+	if _, ok := session(r); !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	p, err := d.passkeys()
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	var req ceremonyRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	credID, err := p.FinishRegistration(r.Context(), req.CeremonyID, []byte(req.Response))
+	if err != nil {
+		// One answer for an unknown ceremony, an expired one, a replayed one and
+		// a response the authenticator got wrong: none of them is something a
+		// client can act on but "start the ceremony again".
+		d.logf(r, "api: finish passkey registration", "err", err)
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
+			"the registration response was not accepted"))
+		return
+	}
+	d.write(w, r, http.StatusOK, []any{credID})
+}
+
+// BeginPasskeyLogin is POST /v1/auth/passkey/login/begin:
+// [] → [ceremony_id(bstr16), options(tstr)].
+//
+// It is unauthenticated and discoverable — no username is presented and none is
+// revealed — so it meters itself on the `login` bucket by address, exactly as
+// the password and second-factor ceremonies above do.
+func (d Deps) BeginPasskeyLogin(w http.ResponseWriter, r *http.Request) {
+	if d.Throttle == nil || d.Config == nil {
+		d.logf(r, "api: the passkey login route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the passkey login route is not wired"))
+		return
+	}
+	p, err := d.passkeys()
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
+	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
+		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		return
+	}
+	ceremonyID, options, err := p.BeginLogin(r.Context())
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.write(w, r, http.StatusOK, []any{ceremonyID, string(options)})
+}
+
+// FinishPasskeyLogin is POST /v1/auth/passkey/login/finish:
+// [ceremony_id(bstr16), response(tstr)] → [assertion(tstr)].
+//
+// The assertion is issued with no outstanding second factor, and the shape of
+// the response — one element, no `needs_totp` — is protocol/09 saying so. A
+// discoverable passkey is a possession factor and, at
+// auth.webauthn.user_verification = "required", a verification factor too, so
+// the ceremony that produced this response is the whole login. The ceremony row
+// is single-use in the store, so a replayed body finds no row and is refused
+// before a signature is looked at.
+func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
+	if d.Throttle == nil || d.Assertions == nil || d.Config == nil {
+		d.logf(r, "api: the passkey login route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the passkey login route is not wired"))
+		return
+	}
+	p, err := d.passkeys()
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	var req ceremonyRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ctx := r.Context()
+	ip := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
+	addrKey := server.RateKey(ip)
+	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
+		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		return
+	}
+	// The address's FAILURE budget, peeked rather than spent, for the same
+	// reason PasswordLogin peeks it: taking a token here would meter every
+	// successful login on the failure bucket.
+	if ok, wait := d.Throttle.Peek(classLoginFailed, addrKey); !ok {
+		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		return
+	}
+	userID, err := p.FinishLogin(ctx, req.CeremonyID, []byte(req.Response))
+	if err != nil {
+		d.logf(r, "api: finish passkey login", "err", err)
+		d.recordAttempt(r, store.UserRow{}, false, addrKey, methodPasskey, false)
+		d.Throttle.RecordFailure(passkeyFailureLedger, ip)
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	d.Throttle.Clear(userID)
+	if cerr := d.Repo.ClearLoginFailures(ctx, userID); cerr != nil {
+		d.logf(r, "api: ClearLoginFailures", "err", cerr)
+	}
+	d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, methodPasskey, true)
+	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(userID, false)})
+}

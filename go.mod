@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/fxamacker/cbor/v2 v2.9.4
+	github.com/go-webauthn/webauthn v0.18.2
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/livekit/livekit-server v1.13.7
 	// B13: interfaces.md §3.5 pins protocol v1.51.1-0.20260905133529-a4f4b5c0c23f
@@ -48,8 +49,11 @@ require (
 	github.com/gammazero/workerpool v1.2.1 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
+	github.com/go-webauthn/x v0.3.1 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/google/wire v0.7.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
@@ -84,6 +88,7 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/nyaruka/phonenumbers v1.8.1 // indirect
 	github.com/petermattis/goid v0.0.0-20260820044319-269ab09b5261 // indirect
+	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pion/datachannel v1.6.2 // indirect
 	github.com/pion/dtls/v3 v3.1.8 // indirect
 	github.com/pion/ice/v4 v4.4.0 // indirect
@@ -110,6 +115,7 @@ require (
 	github.com/rs/cors v1.11.1 // indirect
 	github.com/sethvargo/go-retry v0.4.0 // indirect
 	github.com/thoas/go-funk v0.9.3 // indirect
+	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/tomnomnom/linkheader v0.0.0-20250811210735-e5fe3b51442e // indirect
 	github.com/twitchtv/twirp v8.1.3+incompatible // indirect
 	github.com/ua-parser/uap-go v0.0.0-20260529044130-17c35e68e58c // indirect
