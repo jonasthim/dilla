@@ -503,6 +503,34 @@ mod tests {
         assert!(src.contains("E_STORE_KEY: {e}"));
     }
 
+    /// Deviation A2-14, applied to deviation A2-10's two exports. `unencrypted_vfs_probe` and
+    /// `wrong_key_probe` both run
+    /// `PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:<64-hex device KEK>';`, and task 17's worker
+    /// calls the first of them with the **real** store key and publishes the returned string on the
+    /// page. Rendering a rusqlite error with `Display` on those two arms is the same hole the test
+    /// above closes for `E_STORE_CIPHER`, on functions that are crate surface rather than
+    /// spike-local helpers. Both arms must go through `store::redacted_sqlite_message`, which keeps
+    /// only SQLite's own primary message; `tests/node.rs` asserts what that helper actually does.
+    #[test]
+    fn the_probe_errors_never_render_the_pragma_statement() {
+        let src = include_str!("store.rs");
+        assert!(
+            !src.contains("Err(e) => Ok(e.to_string())"),
+            "unencrypted_vfs_probe must not Display the rusqlite error: the statement it ran \
+             carries the caller's KEK"
+        );
+        assert!(
+            !src.contains("proves nothing: {e}"),
+            "wrong_key_probe's pragma arm must not Display the rusqlite error: same statement, \
+             same KEK"
+        );
+        assert_eq!(
+            src.matches("redacted_sqlite_message(&e)").count(),
+            2,
+            "both probe arms must render their rusqlite error through the redacting helper"
+        );
+    }
+
     #[test]
     fn the_vector_report_is_green_and_serialises_as_json() {
         assert!(vectors_check_ok());

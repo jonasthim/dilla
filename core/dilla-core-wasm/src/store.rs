@@ -228,10 +228,40 @@ impl StoreHandle {
     }
 }
 
+/// Deviation A2-14. The fixed stand-in for a rusqlite error raised by a statement that carries key
+/// material and whose `Display` is not known to be key-free.
+const E_STORE_PROBE_REDACTED: &str =
+    "E_STORE_PROBE: the keyed pragma batch failed (detail withheld: it can carry the statement)";
+
+/// Deviation A2-14, for deviation A2-10's two probes. The only rendering of a rusqlite error that
+/// either of them may hand back, because the statement they ran is
+/// `PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:<KEK>';` and the caller passes a real device KEK.
+///
+/// Keeps SQLite's own primary message (`sqlite3_errmsg`, e.g. "Setting key failed. Encryption is
+/// not supported by the VFS." — the string the spike asserts on) and withholds every other
+/// variant's `Display`, several of which embed text the caller handed to SQLite.
+/// `rusqlite::Error::SqlInputError` is the worst of them: it renders as
+/// `"{msg} in {sql} at offset {offset}"` — the whole statement — and `execute_batch` produces it
+/// for a prepare-time failure whose result code maps to `ErrorCode::Unknown` (which is what
+/// SQLITE_ERROR, the code sqlite3mc raises here, does) whenever `sqlite3_error_offset` is
+/// non-negative (rusqlite-0.40.2/src/error.rs:346-351 and :502-509). That variant is
+/// `#[cfg(feature = "modern_sqlite")]` and this crate's feature set leaves it off, so today the
+/// leak is not reachable — exactly as it was not reachable for `E_STORE_CIPHER`. The guard does not
+/// depend on that staying true.
+pub fn redacted_sqlite_message(e: &rusqlite::Error) -> String {
+    match e {
+        rusqlite::Error::SqliteFailure(_, Some(msg)) => msg.clone(),
+        rusqlite::Error::SqliteFailure(code, None) => code.to_string(),
+        _ => E_STORE_PROBE_REDACTED.to_owned(),
+    }
+}
+
 /// Deviation A2-10. Proves gap-13 §3's trap is real and stays real: a connection opened on the
-/// pool's **plain** VFS name cannot be keyed. Returns SQLite's error text, and errors if the open
-/// unexpectedly succeeds — that would mean the encrypting wrapper is no longer needed and the
-/// store's VFS choice must be revisited. Call only after `store_open` has installed the pool.
+/// pool's **plain** VFS name cannot be keyed. Returns SQLite's primary error message (through
+/// [`redacted_sqlite_message`] — deviation A2-14: the statement this runs carries the caller's
+/// KEK), and errors if the open unexpectedly succeeds — that would mean the encrypting wrapper is
+/// no longer needed and the store's VFS choice must be revisited. Call only after `store_open` has
+/// installed the pool.
 #[wasm_bindgen]
 pub fn unencrypted_vfs_probe(db_name: &str, kek_hex: &str) -> Result<String, JsError> {
     let conn = Connection::open_with_flags_and_vfs(db_name, OpenFlags::default(), POOL_VFS)
@@ -243,7 +273,7 @@ pub fn unencrypted_vfs_probe(db_name: &str, kek_hex: &str) -> Result<String, JsE
         Ok(()) => Err(JsError::new(
             "E_STORE_PROBE: the plain VFS accepted a key; gap-13 §3 no longer holds",
         )),
-        Err(e) => Ok(e.to_string()),
+        Err(e) => Ok(redacted_sqlite_message(&e)),
     }
 }
 
@@ -267,9 +297,12 @@ pub async fn wrong_key_probe(db_name: &str, kek_hex: &str) -> Result<String, JsE
     let pragmas = Zeroizing::new(format!(
         "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{kek_hex}';"
     ));
+    // Deviation A2-14: the rusqlite error is rendered through the redacting helper, never with
+    // `Display` — this statement carries the key the caller passed.
     conn.execute_batch(&pragmas).map_err(|e| {
         JsError::new(&format!(
-            "E_STORE_PROBE: the pragmas rejected the wrong key, so this probe proves nothing: {e}"
+            "E_STORE_PROBE: the pragmas rejected the wrong key, so this probe proves nothing: {}",
+            redacted_sqlite_message(&e)
         ))
     })?;
     drop(pragmas);

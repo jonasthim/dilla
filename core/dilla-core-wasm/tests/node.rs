@@ -5,6 +5,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use dilla_core::cbor::{decode_strict, CborError, Decoder, Encoder};
+use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
     abi_version, core_version, credential_identity_cbor, envelope_commitment, envelope_decode_json,
     envelope_encode, franking_tag, recovery_key_base32, safety_number, sas, sframe_derive,
@@ -176,6 +177,51 @@ fn errors_cross_the_boundary_as_values_not_panics() {
     assert!(
         franking_tag(&[0u8; 32], &[0u8; 16], 1, 1, &[0u8; 16], &[0u8; 31], 0).is_err(),
         "a 31-byte commitment is not a 32-byte one"
+    );
+}
+
+/// Deviation A2-14 applied to deviation A2-10's probes. `unencrypted_vfs_probe` and
+/// `wrong_key_probe` render the failure of
+/// `PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:<64-hex device KEK>';`, and task 17's worker calls
+/// the first of them with the real store key and publishes the result on the page, so whatever the
+/// helper returns is readable by anything running in that page. `redacted_sqlite_message` is the
+/// only renderer either probe may use: it keeps SQLite's own primary message — the string the spike
+/// asserts on — and withholds every other variant's `Display`, several of which embed text the
+/// caller handed to SQLite. `Error::SqlInputError` is the worst of them (it renders as
+/// `"{msg} in {sql} at offset {offset}"`, i.e. the whole statement — rusqlite-0.40.2/src/error.rs
+/// lines 346-351, produced by `error_with_offset` at lines 502-509); this build cannot construct it,
+/// because `modern_sqlite` is off under the `ffi-sqlite-wasm-rs` backend and the variant is
+/// `#[cfg(feature = "modern_sqlite")]`, so `InvalidParameterName` stands in for the whole class.
+#[wasm_bindgen_test]
+fn a_redacted_probe_message_never_carries_the_statement() {
+    const KEK: &str = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
+    let statement = format!("PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{KEK}';");
+
+    // The arm the spike depends on: SQLite's primary message, kept verbatim. This is exactly the
+    // string task 17's plain-VFS probe asserts on, so redaction must not blunt it.
+    let primary = rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(1),
+        Some("Setting key failed. Encryption is not supported by the VFS.".to_owned()),
+    );
+    assert_eq!(
+        redacted_sqlite_message(&primary),
+        "Setting key failed. Encryption is not supported by the VFS."
+    );
+
+    // Any variant whose Display embeds text handed to SQLite is withheld whole.
+    let leaky = rusqlite::Error::InvalidParameterName(statement);
+    assert!(
+        leaky.to_string().contains(KEK),
+        "premise of this test: this variant's Display does carry the statement"
+    );
+    let rendered = redacted_sqlite_message(&leaky);
+    assert!(
+        !rendered.contains(KEK),
+        "the redacted message leaked the KEK: {rendered}"
+    );
+    assert!(
+        !rendered.contains("PRAGMA"),
+        "the redacted message leaked the statement: {rendered}"
     );
 }
 
