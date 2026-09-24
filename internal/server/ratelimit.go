@@ -78,13 +78,17 @@ func (l *RateLimiter) Allow(class Class, key string) (bool, time.Duration) {
 	if b.lim.AllowN(now, 1) {
 		return true, 0
 	}
-	// §5.3: retry_after_ms is computed from the bucket's DEFICIT and rounded up,
-	// not from the constant 1/rate. The deficit is how far short of one token
-	// the bucket is right now: a caller refused the instant the bucket emptied
-	// waits a full 1/rate, one refused 90% of the way back waits a tenth of it,
-	// and telling both the same number sends the second one away for nine times
-	// longer than it needed to.
-	deficit := 1 - b.lim.TokensAt(now)
+	return false, l.retryAfter(b.lim.TokensAt(now), class)
+}
+
+// retryAfter is §5.3's number: computed from the bucket's DEFICIT and rounded
+// up, not from the constant 1/rate. The deficit is how far short of one token
+// the bucket is right now: a caller refused the instant the bucket emptied
+// waits a full 1/rate, one refused 90% of the way back waits a tenth of it, and
+// telling both the same number sends the second one away for nine times longer
+// than it needed to.
+func (l *RateLimiter) retryAfter(tokens float64, class Class) time.Duration {
+	deficit := 1 - tokens
 	if deficit < 0 {
 		deficit = 0
 	}
@@ -96,7 +100,35 @@ func (l *RateLimiter) Allow(class Class, key string) (bool, time.Duration) {
 	if l.maxWait > 0 && wait > l.maxWait {
 		wait = l.maxWait
 	}
-	return false, wait
+	return wait
+}
+
+// Tokens reports how much of (class, key)'s bucket is left WITHOUT spending any
+// of it, so a caller may gate on a bucket some other code path is the writer of.
+// A key with no bucket yet, and every key while rate limiting is disabled, has
+// its full burst.
+func (l *RateLimiter) Tokens(class Class, key string) float64 {
+	if !l.cfg.Enabled {
+		return float64(class.Burst)
+	}
+	l.mu.Lock()
+	b, ok := l.buckets[class.Name+"\x00"+key]
+	l.mu.Unlock()
+	if !ok {
+		return float64(class.Burst)
+	}
+	return b.lim.TokensAt(l.clk.Now())
+}
+
+// Peek is Allow's answer without Allow's token: the same (allowed, retry-after)
+// pair, computed from Tokens. It creates no bucket and mutates nothing, so
+// peeking a hundred times reads the same as peeking once.
+func (l *RateLimiter) Peek(class Class, key string) (bool, time.Duration) {
+	tokens := l.Tokens(class, key)
+	if tokens >= 1 {
+		return true, 0
+	}
+	return false, l.retryAfter(tokens, class)
 }
 
 // Sweep drops every bucket that is full, which is behaviour-preserving: a full

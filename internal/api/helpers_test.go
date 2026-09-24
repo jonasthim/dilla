@@ -53,6 +53,16 @@ func (testHasher) Verify(_ context.Context, pw, phc string) (bool, bool, error) 
 // requests go through the real mux.
 func newTestAPI(t *testing.T) (http.Handler, api.Deps) {
 	t.Helper()
+	return newTestAPIWithConfig(t, nil)
+}
+
+// newTestAPIWithConfig is newTestAPI with one hook into the configuration the
+// harness is built from, called after config.Default() and before anything
+// reads it. A throttling test has to be able to move one limit out of the way
+// so the limit it is actually about is the one that fires; every other test
+// keeps the defaults.
+func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler, api.Deps) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "api.db")
 	write, err := sqlite.OpenWrite(path)
 	if err != nil {
@@ -75,6 +85,9 @@ func newTestAPI(t *testing.T) (http.Handler, api.Deps) {
 	clk := clock.NewFake(time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC))
 	cfg := config.Default()
 	cfg.Instance.Domain = "dilla.test"
+	if tune != nil {
+		tune(cfg)
+	}
 	instance := store.InstanceRow{
 		InstanceID: id.New(), ExternalSenderKeyID: id.New(), KeyHistory: []byte{1},
 		FrankingKeyID: id.New(), Generation: 7, PolicyVersion: 1, Created: clk.Now().Unix(),

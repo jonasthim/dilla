@@ -109,6 +109,10 @@ const (
 // password step is not refused the TOTP step that must follow it.
 const classLogin = "login"
 
+// classLoginFailed is the per-address FAILURE budget. RecordFailure is its one
+// writer; PasswordLogin only peeks at it.
+const classLoginFailed = "login_failed"
+
 func secondFactorKey(addr string) string { return "2fa\x00" + addr }
 
 // passwordLoginRequest is [username(tstr), password(tstr)].
@@ -157,6 +161,20 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	// on people who typed their password correctly. Failures reach it through
 	// Throttle.RecordFailure, which is the one writer of that bucket.
 	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
+		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		return
+	}
+
+	// And the address's FAILURE budget, PEEKED rather than spent. This is the
+	// gate that makes "fifty failures across fifty accounts from one address
+	// still throttle that address" true: the `login` bucket above is keyed by
+	// address and by handle spelling, so an attacker spreading guesses over
+	// many handles empties no handle's bucket, and the per-account lockout
+	// below never sees two failures on the same account either. Only the
+	// address-wide failure ledger counts that attacker, and Peek is how a
+	// bucket whose one writer is Throttle.RecordFailure can be read here
+	// without charging a correct password for someone else's guesses.
+	if ok, wait := d.Throttle.Peek(classLoginFailed, addrKey); !ok {
 		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
 		return
 	}

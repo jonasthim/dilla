@@ -53,6 +53,18 @@ func (t *Throttle) Allow(class string, key string) (bool, time.Duration) {
 	return t.limiter.Allow(c, key)
 }
 
+// Peek asks a bucket's state without spending a token. It exists for
+// `login_failed`, whose only writer is RecordFailure: a route that gated on it
+// with Allow would meter every SUCCESSFUL login on the failure bucket, so the
+// route reads it with Peek instead and the failures alone fill it.
+func (t *Throttle) Peek(class string, key string) (bool, time.Duration) {
+	c, ok := Classes(t.limiterConfig())[class]
+	if !ok {
+		return true, 0
+	}
+	return t.limiter.Peek(c, key)
+}
+
 func (t *Throttle) limiterConfig() config.Rate { return t.limiter.Config() }
 
 // RecordFailure records one failed authentication and returns how long the

@@ -9,6 +9,7 @@ import (
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/pquerna/otp/totp"
 )
@@ -310,5 +311,44 @@ func TestPasswordChangeNeedsTheOldPasswordAndReplacesTheCredential(t *testing.T)
 	}
 	if status, _ := login(t, h, u.Username, "a brand new password"); status != http.StatusOK {
 		t.Fatalf("the new password does not log in: %d", status)
+	}
+}
+
+// The `login_failed` bucket is the per-ADDRESS half of throttling, and the
+// reason it exists is the attacker who spreads guesses over many handles: the
+// `login` bucket is keyed by address AND by handle spelling, so a thousand
+// guesses against a thousand handles never empties a single handle's bucket.
+// RecordFailure is the one writer of login_failed; this route only PEEKS at it,
+// so a correct password never spends the failure budget — but it is refused
+// while the budget an attacker sharing the address burnt is still empty.
+func TestFailuresFromOneAddressThrottleEveryAccountBehindIt(t *testing.T) {
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) {
+		// Take the per-attempt `login` bucket out of the picture: what is under
+		// test is the failure budget, not the arrival rate.
+		c.Limits.Rate.LoginBurst = 100
+	})
+	victim, _, _ := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, victim, "correct horse battery staple")
+
+	// Spend the address's whole failure budget on OTHER accounts. Each one is a
+	// single failure, well inside free_attempts, so no per-account lockout fires.
+	for i := 0; i < deps.Config.Limits.Rate.LoginFailedBurst; i++ {
+		other, _, _ := seedAPISession(t, deps)
+		seedPassword(t, deps, other, "correct horse battery staple")
+		if status, _ := login(t, h, other.Username, "not the password"); status != http.StatusUnauthorized {
+			t.Fatalf("failure %d against a fresh account answered %d, want 401", i+1, status)
+		}
+	}
+
+	if status, _ := login(t, h, victim.Username, pw); status != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: this address spent its whole login_failed budget on %d other accounts",
+			status, deps.Config.Limits.Rate.LoginFailedBurst)
+	}
+
+	// One token's worth of refill later the same request is allowed, which is
+	// what proves the refusal was the failure bucket and not something durable.
+	advance(t, deps, time.Duration(float64(time.Second)/deps.Config.Limits.Rate.LoginFailedPerSecond)+time.Second)
+	if status, _ := login(t, h, victim.Username, pw); status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 once the failure budget refilled", status)
 	}
 }

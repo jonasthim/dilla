@@ -9,6 +9,7 @@ import (
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/server"
 )
 
 func TestLockoutScheduleFollowsTheConfiguredCurve(t *testing.T) {
@@ -48,8 +49,20 @@ func TestFailuresAreCountedPerAccountAndPerAddress(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		th.RecordFailure(id.New(), attacker) // fifty different accounts, one address
 	}
-	if ok, _ := th.Allow("login_failed", attacker.String()); ok {
+	// Peek, not Allow: the route reads this bucket without spending it, so the
+	// assertion has to be the same non-consuming question the route asks.
+	if ok, wait := th.Peek("login_failed", server.RateKey(attacker)); ok {
 		t.Fatal("an address that failed fifty logins across fifty accounts is still allowed")
+	} else if wait <= 0 {
+		t.Fatal("a refused peek reported no retry-after")
+	}
+	// And peeking twice answers the same, which is what "non-consuming" means.
+	if ok, _ := th.Peek("login_failed", server.RateKey(attacker)); ok {
+		t.Fatal("the second peek at an empty bucket was allowed; Peek is spending tokens")
+	}
+	// An unrelated address has its full budget.
+	if ok, _ := th.Peek("login_failed", server.RateKey(netip.MustParseAddr("198.51.100.4"))); !ok {
+		t.Fatal("an address that has never failed a login is already throttled")
 	}
 	// The victim's own account is untouched by someone else's address.
 	if d := th.RecordFailure(victim, netip.MustParseAddr("198.51.100.4")); d != 0 {
