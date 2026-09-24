@@ -1,9 +1,15 @@
 //! dilla-testkit v0: N headless native `dilla-core` clients against an in-memory delivery service,
 //! driven by a line-oriented scenario language.
 //!
-//! The stub enforces the four week-1 DS invariants (registration with the binding, tree service,
-//! one commit per epoch, the KeyPackage directory) and nothing else. Invariants 5-11 belong to the
-//! dillad plan; the methods that would enforce them here succeed without checking.
+//! The stub covers R20's week-1 subset of `protocol/02-delivery-service.md`: registration with the
+//! `dilla_binding` (invariant 1, minus the `mode_readable` channel check), the tree service
+//! (invariant 2), one commit per epoch (invariant 3), the KeyPackage directory (Role 1, not an
+//! invariant) and the *structural* clause of invariant 4 — what the `PublicGroup` validates.
+//! Invariant 4's remaining commit-validity rules (the ACL and device-list check on every `Add`, no
+//! `Update` from the committer, member-originated `Remove`s confined to the committer's own user,
+//! every outstanding non-void DS proposal referenced, the uploaded GroupInfo at epoch `n + 1`) and
+//! invariants 5-11 belong to the dillad plan; the methods that would enforce them here succeed
+//! without checking.
 
 mod client;
 mod ds;

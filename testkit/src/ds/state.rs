@@ -299,7 +299,7 @@ impl DsStub {
         }
     }
 
-    /// Invariant 4.
+    /// Role 1, the KeyPackage directory (protocol/02 line 60) — not one of the eleven invariants.
     pub fn publish_key_packages(
         &mut self,
         device: DeviceId,
@@ -313,8 +313,9 @@ impl DsStub {
         Ok(count)
     }
 
-    /// Invariant 4: ordinary packages are consumed; the last-resort package is served but never
-    /// consumed. The bool says which was returned, so the caller knows it owes an `Update`.
+    /// Role 1, the KeyPackage directory: ordinary packages are consumed; the last-resort package is
+    /// served but never consumed. The bool says which was returned, so the caller knows it owes an
+    /// `Update`.
     pub fn take_key_package(&mut self, device: &DeviceId) -> Result<(Vec<u8>, bool), DsError> {
         let entry = self
             .devices

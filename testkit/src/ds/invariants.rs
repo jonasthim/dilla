@@ -58,7 +58,8 @@ mod tests {
         assert!(matches!(err, DsError::BindingInvalid));
     }
 
-    /// Invariant 4: the KeyPackage directory consumes ordinary packages and never the last resort.
+    /// Role 1 (the KeyPackage directory, protocol/02 line 60): the directory consumes ordinary
+    /// packages and never the last resort.
     #[test]
     fn take_key_package_never_consumes_the_last_resort_until_the_others_are_gone() {
         use dilla_core::ids::DeviceId;
