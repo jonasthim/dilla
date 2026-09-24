@@ -272,8 +272,8 @@ impl DillaGroup {
         ratchet_tree: RatchetTreeIn,
         expected: &DillaBinding,
     ) -> Result<(Self, MlsMessageOut, Option<GroupInfo>), MlsError> {
-        let (group, commit, info) = provider.storage().transaction(|| {
-            MlsGroup::join_by_external_commit(
+        let (group, binding, commit, info) = provider.storage().transaction(|| {
+            let (group, commit, info) = MlsGroup::join_by_external_commit(
                 provider,
                 signer,
                 Some(ratchet_tree),
@@ -284,11 +284,17 @@ impl DillaGroup {
                 &[],
                 credential,
             )
-            .map_err(mls_err)
+            .map_err(mls_err)?;
+            // Inside the closure, exactly where `join_from_welcome` puts it: the call above has
+            // already written the joiner's whole group state through the provider, so a check made
+            // after the transaction has committed refuses the join but leaves the group row
+            // behind, and the next `DillaGroup::load` hands back a group this client rejected.
+            // Failing here rolls every one of those writes back.
+            let binding = DillaBinding::from_group_context(group.public_group().group_context())
+                .map_err(MlsError::Protocol)?;
+            binding.matches(expected).map_err(MlsError::Protocol)?;
+            Ok((group, binding, commit, info))
         })?;
-        let binding = DillaBinding::from_group_context(group.public_group().group_context())
-            .map_err(MlsError::Protocol)?;
-        binding.matches(expected).map_err(MlsError::Protocol)?;
         Ok((Self { group, binding }, commit, info))
     }
 

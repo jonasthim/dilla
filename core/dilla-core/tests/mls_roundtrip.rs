@@ -213,6 +213,61 @@ fn a_welcome_whose_binding_mismatches_is_refused_before_anything_is_stored() {
     );
 }
 
+/// The external-join twin of the Welcome test above. `MlsGroup::join_by_external_commit` writes
+/// the joiner's whole group state through the provider before it returns, so the `dilla_binding`
+/// check has to run **inside** the same transaction: made after the closure has committed, it
+/// rejects the join but leaves the group row behind, and the next `DillaGroup::load` hands the
+/// caller a group it refused to join.
+#[test]
+fn an_external_commit_whose_binding_mismatches_is_refused_before_anything_is_stored() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+
+    let group_id = GroupId::from_slice(&[0x44; 16]);
+    let alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        binding(GroupKind::Text),
+        None,
+    )
+    .expect("create");
+
+    // What the DS serves an external joiner: a GroupInfo without the tree, plus the tree.
+    let verifiable = into_group_info(
+        alice
+            .export_group_info(&alice_p, &alice_signer)
+            .expect("group info"),
+    );
+    let tree = alice.export_ratchet_tree();
+
+    // Bob expects a DIFFERENT channel than the one the served GroupInfo is bound to.
+    let mut wrong = binding(GroupKind::Text);
+    wrong.target_id = [0x99; 16];
+    let err = DillaGroup::join_by_external_commit(
+        &bob_p,
+        &bob_signer,
+        bob_cred,
+        verifiable,
+        tree.into(),
+        &wrong,
+    )
+    .expect_err("the binding must be checked before the transaction commits");
+    assert!(
+        matches!(err, MlsError::Protocol(ProtocolError::Binding)),
+        "{err:?}"
+    );
+    assert!(
+        DillaGroup::load(&bob_p, &group_id).expect("load").is_none(),
+        "a refused external commit must leave no group behind"
+    );
+}
+
 #[test]
 fn a_key_package_without_the_binding_capability_cannot_be_added() {
     let alice_p = provider();
