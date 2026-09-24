@@ -17863,10 +17863,12 @@ git -C /home/thim/Repositories/dilla/.claude/worktrees/sdd-dilla-protocol add do
 
 Sixteen items that this plan's execution produces or exposes but deliberately does **not** do. Each
 names why it exists and which plan owns it. None of them blocks a task in this plan; they are here so
-that no task invents one of them on the way past. The same list appears in
-`docs/superpowers/plans/2026-09-23-dillad-spikes.md`, so a reader of either file sees the whole set.
-Cards (j) through (p) below were added from this worktree only (Plan B's mirror worktree is off-limits
-to these sessions); whoever next has write access to both files should copy them across.
+that no task invents one of them on the way past. Cards (a) through (i) are shared with
+`docs/superpowers/plans/2026-09-23-dillad-spikes.md`; cards (j) through (p) belong to this plan only;
+Plan B's own cards (q) through (u) — the LiveKit pseudo-version vendoring decision, the `key_package.mls`
+fixture for the wasip1 `ExternalProposeAdd` / `ValidateKeyPackage` legs, the pool-shrink metric for
+`Instance.Release`, the fixed SFU ports 7880/7882 that must never share a parallel CI matrix with
+another SFU, and the fixture-expiry CI check — live in that file. Read both files for the whole set.
 
 - **(a) Regenerate `testkit/fixtures/ds-1500/` before its KeyPackages expire, around 2026-12-22.** Task 13
   commits real `.mls` binaries whose 1,500 leaves each carry the 90-day `KEY_PACKAGE_LIFETIME_DAYS`
