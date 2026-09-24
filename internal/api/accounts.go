@@ -261,6 +261,10 @@ func (d Deps) GetMe(w http.ResponseWriter, r *http.Request) {
 // store method here would rename a contract another task owns; answering 204
 // and discarding the change would be worse than refusing. The route lands when
 // the store gains the method.
+//
+// protocol/09-http-api.md § Accounts and devices records the same refusal, so
+// the document and this binary say one thing; that paragraph goes when the 204
+// lands.
 func (d Deps) PatchMe(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		_         struct{} `cbor:",toarray"`
@@ -295,7 +299,9 @@ func (d Deps) PatchMe(w http.ResponseWriter, r *http.Request) {
 // removing the user from every MLS group (task 19 onward) and purging the
 // credential rows (store.Auth declares no delete for a password, a TOTP secret,
 // a recovery code or a passkey). The tombstone disables the account, so every
-// one of those credentials stops authenticating immediately.
+// one of those credentials stops authenticating immediately, but the rows stay
+// on disk — which is why protocol/09-http-api.md § Accounts and devices now
+// says so too, rather than promising a purge no instance performs.
 func (d Deps) DeleteMe(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {

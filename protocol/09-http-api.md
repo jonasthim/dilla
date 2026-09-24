@@ -54,6 +54,20 @@ column below uses four scopes:
 and its first session in the same transaction, because the device's key is the one being
 registered and there is no prior key to prove possession of.
 
+Two rows above describe more than any released instance does. They are recorded here so a client
+plans against what an instance answers, not against what the table would otherwise promise:
+
+- `PATCH /v1/accounts/me` answers `501` with `E_INTERNAL` at wire 1. The body is still validated, so
+  a client learns immediately that its display name is refused, but there is nowhere to put the
+  result: the repository contract declares no profile update and `users` has no status column. The
+  `204` lands when the store gains the method, and a client must not expect it before then.
+- `DELETE /v1/accounts/me` tombstones the account keeping its `username`, disables it, and deletes
+  every session of every device with their sockets closed. It does **not** yet purge the credential
+  rows (password PHC, TOTP secret, recovery-code hashes, WebAuthn credentials, OIDC identity) or
+  remove the user from its MLS groups. The tombstone stops every one of those credentials
+  authenticating immediately; the stored secrets survive until the credential deletes and the
+  group-removal path land, and this paragraph goes when they do.
+
 ## Sessions endpoints
 
 | Method and path | Auth | Request | Response |
