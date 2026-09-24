@@ -88,3 +88,33 @@ func TestSweepEvictsFullBucketsAndMaxKeysCaps(t *testing.T) {
 		t.Fatalf("Sweep left %d full buckets behind", l.Len())
 	}
 }
+
+// A max_keys of 0 or less must never mean "no limiting". Taken literally,
+// len(buckets) >= 0 is true for every arrival, so every key evicts the one
+// resident bucket and is handed a brand-new full one: alternating two keys is
+// then allowed for ever. config.Validate refuses a zero per_second and a burst
+// below 1, but it says nothing about max_keys, so an operator who writes
+// max_keys = 0 meaning "no cap on keys" would ship an instance with no login,
+// register or invite throttling at all. The limiter clamps it to the documented
+// default instead.
+func TestNonPositiveMaxKeysStillLimits(t *testing.T) {
+	for _, maxKeys := range []int{0, -1} {
+		l, _ := newLimiter(t, maxKeys)
+		class := server.Class{Name: "login", PerSecond: 1, Burst: 1}
+		if ok, _ := l.Allow(class, "a"); !ok {
+			t.Fatalf("max_keys = %d: first call for a refused", maxKeys)
+		}
+		if ok, _ := l.Allow(class, "b"); !ok {
+			t.Fatalf("max_keys = %d: first call for b refused", maxKeys)
+		}
+		if ok, _ := l.Allow(class, "a"); ok {
+			t.Fatalf("max_keys = %d: a's second call allowed; its bucket was evicted by b, so the limiter is off", maxKeys)
+		}
+		if ok, _ := l.Allow(class, "b"); ok {
+			t.Fatalf("max_keys = %d: b's second call allowed; the limiter is off", maxKeys)
+		}
+		if l.Len() != 2 {
+			t.Fatalf("max_keys = %d: limiter holds %d keys, want both buckets resident", maxKeys, l.Len())
+		}
+	}
+}

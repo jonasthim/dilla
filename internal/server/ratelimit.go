@@ -32,7 +32,20 @@ type RateLimiter struct {
 	maxWait time.Duration
 }
 
+// defaultMaxKeys is config's documented limits.rate.max_keys default, repeated
+// here as the clamp for a non-positive value.
+const defaultMaxKeys = 100000
+
 func NewRateLimiter(c config.Rate, clk clock.Clock) *RateLimiter {
+	// A max_keys of 0 or less would read as "every arrival is over the cap":
+	// each new key evicts the one resident bucket and gets a full new one, so
+	// alternating keys are never refused and rate limiting is silently OFF.
+	// config.Validate refuses a zero per_second and a burst below 1 but says
+	// nothing about max_keys, so an operator writing max_keys = 0 to mean "no
+	// cap on keys" must not disarm login, register and invite throttling.
+	if c.MaxKeys < 1 {
+		c.MaxKeys = defaultMaxKeys
+	}
 	return &RateLimiter{buckets: make(map[string]*bucket), cfg: c, clk: clk, maxWait: c.MaxRetryAfter.Value()}
 }
 
