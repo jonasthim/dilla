@@ -93,7 +93,9 @@ func newTestAPI(t *testing.T) (http.Handler, api.Deps) {
 		Registration: cfg.Registration,
 		Sessions: auth.NewSessions(repo, clk, cfg.Auth.Session, instance.InstanceID,
 			instance.Generation),
-		Hasher: testHasher{},
+		Hasher:     testHasher{},
+		Throttle:   auth.NewThrottle(cfg.Limits.Rate, cfg.Auth.Lockout, clk),
+		Assertions: api.NewAssertions(clk, api.AssertionTTL),
 	}
 	m := server.NewMux()
 	api.Register(m, deps)

@@ -112,6 +112,10 @@ func (l *RateLimiter) Sweep() {
 	}
 }
 
+// Config returns the rate configuration this limiter was built with, so a
+// caller can look its own class up without carrying the config twice.
+func (l *RateLimiter) Config() config.Rate { return l.cfg }
+
 func (l *RateLimiter) Len() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()

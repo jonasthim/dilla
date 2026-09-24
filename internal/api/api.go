@@ -57,17 +57,23 @@ type Deps struct {
 	// answers 501 while this is nil.
 	Tickets GatewayTickets
 
+	// Throttle is the login-attempt bucket and the account lockout ledger, and
+	// Assertions holds the one-time enrolment assertions the three
+	// unauthenticated ceremonies mint and POST /v1/devices/{device_id}/sessions
+	// spends. Both are task 9's. Every route in auth.go refuses with
+	// E_INTERNAL while either is nil rather than running unmetered.
+	Throttle   *auth.Throttle
+	Assertions *Assertions
+
 	// Still to come, each with the task that declares its type and fills it:
 	//
-	//	Throttle   *auth.Throttle   // task 9 — login throttle and lockout
-	//	Assertions *Assertions      // task 9 — the one-time enrolment assertion
 	//	Passkeys   *auth.Passkeys   // task 10 — WebAuthn ceremonies
 	//	OIDC       *auth.OIDC       // task 11 — nil unless auth.oidc.enabled
 	//
 	// They are NOT declared yet because Go cannot name a type that does not
-	// exist: internal/auth gains Hasher, Throttle, Passkeys and OIDC in tasks
-	// 9-11 and internal/api gains Assertions in task 9. Each of those tasks
-	// adds its one field here, with the spelling above, and nothing else.
+	// exist: internal/auth gains Passkeys and OIDC in tasks 10-11. Each of
+	// those tasks adds its one field here, with the spelling above, and
+	// nothing else.
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -105,6 +111,18 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("GET /i/{code}", d.metered(classInvite, d.InviteLanding, d.landingRefusal))
 	m.Handle("POST /v1/invites/redeem", d.metered(classInvite, d.RedeemInvite, refuseCBOR))
 	m.Handle("POST /v1/accounts", d.metered(classRegister, d.CreateAccount, refuseCBOR))
+
+	// Auth ceremonies (protocol/09 § Auth ceremonies). The three
+	// unauthenticated ones meter themselves on the `login` and `login_failed`
+	// buckets inside the handler — they need the client address for the
+	// lockout ledger anyway, so metering them here as well would take two
+	// tokens per attempt.
+	m.Handle("POST /v1/auth/password/login", http.HandlerFunc(d.PasswordLogin))
+	m.Handle("POST /v1/auth/totp/verify", http.HandlerFunc(d.VerifyTOTP))
+	m.Handle("POST /v1/auth/recovery/verify", http.HandlerFunc(d.VerifyRecovery))
+	m.Handle("POST /v1/auth/password", d.enrolled(d.ChangePassword))
+	m.Handle("POST /v1/auth/totp/enroll", d.enrolled(d.EnrollTOTP))
+	m.Handle("POST /v1/auth/totp/confirm", d.enrolled(d.ConfirmTOTP))
 
 	// Accounts. Every one of these is an enrolled session.
 	m.Handle("GET /v1/accounts/me", d.enrolled(d.GetMe))
