@@ -140,7 +140,16 @@ func NewHasher(p PasswordParams, concurrency int) *Hasher {
 	if concurrency <= 0 {
 		concurrency = runtime.NumCPU()
 	}
-	dummy, _ := HashPassword("dilla timing equaliser", p)
+	// Loudly, not silently. A swallowed error here leaves dummy empty, Verify's
+	// unknown-account branch falls straight out of decodePHC without hashing
+	// anything, and the timing oracle this Hasher exists to close is open for
+	// the life of the process with nothing to show for it. The only way to get
+	// here is t = 0, p = 0 or a CSPRNG failure, none of which a running server
+	// may paper over.
+	dummy, err := HashPassword("dilla timing equaliser", p)
+	if err != nil {
+		panic("auth: NewHasher cannot build the timing-equaliser hash: " + err.Error())
+	}
 	return &Hasher{params: p, slots: make(chan struct{}, concurrency), dummy: dummy}
 }
 

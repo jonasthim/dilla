@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/config"
@@ -100,4 +101,54 @@ func TestHasherRefusesOverConcurrencyInsteadOfQueueing(t *testing.T) {
 	if refused == 0 {
 		t.Fatal("eight concurrent hashes at concurrency 1 all succeeded; the semaphore queued instead of refusing")
 	}
+}
+
+// The phc == "" branch of Hasher.Verify is the whole timing-oracle defence for
+// "no such account", and nothing else in the module executes it: internal/api
+// substitutes a sha256 stub for the hasher, so its unknown-account path never
+// reaches this code. handle@host makes handles semi-public, which is exactly
+// why the absence of an account must not be cheaper than a wrong password.
+func TestVerifyBurnsTheDummyHashForAnAccountThatDoesNotExist(t *testing.T) {
+	h := auth.NewHasher(testParams(), 4)
+	ctx := context.Background()
+	phc, err := auth.HashPassword("correct horse battery staple", testParams())
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+
+	start := time.Now()
+	ok, rehash, err := h.Verify(ctx, "correct horse battery staple", "")
+	unknown := time.Since(start)
+	if ok || rehash || err != nil {
+		t.Fatalf(`Verify(pw, "") = %v, %v, %v; want false, false, nil`, ok, rehash, err)
+	}
+
+	start = time.Now()
+	if ok, _, err := h.Verify(ctx, "correct horse battery staple", phc); !ok || err != nil {
+		t.Fatalf("Verify against a real hash = %v, %v", ok, err)
+	}
+	known := time.Since(start)
+
+	// Deliberately generous: the claim is only that the unknown-account path
+	// does Argon2id work at all. An early return, or an empty dummy that errors
+	// out of decodePHC, is microseconds against tens of milliseconds.
+	if unknown < known/5 {
+		t.Fatalf("an unknown account cost %s against %s for a real verify; the dummy hash is not being burnt",
+			unknown, known)
+	}
+}
+
+// NewHasher used to swallow HashPassword's error and keep an empty dummy, which
+// would disarm the burn above for the whole life of the process, silently, at
+// startup. Parameters argon2 cannot hash are a programming or configuration
+// error and must be loud.
+func TestNewHasherRefusesParametersItCannotHash(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewHasher accepted t=0 and kept an empty timing-equaliser dummy")
+		}
+	}()
+	bad := testParams()
+	bad.Iterations = 0
+	auth.NewHasher(bad, 1)
 }
