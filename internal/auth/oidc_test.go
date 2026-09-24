@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -56,6 +57,21 @@ func newAuthRepo(t *testing.T) store.Repository {
 // form value, so one server serves the good case and the three refusals.
 func fakeIdP(t *testing.T) *httptest.Server {
 	t.Helper()
+	srv, _ := fakeIdPCounted(t)
+	return srv
+}
+
+// idpHits counts what the provider was actually asked for. Laziness cannot be
+// asserted by timing: an issuer that refuses the connection returns instantly,
+// so an EAGER constructor also finishes inside any deadline a test can set.
+// Counting the discovery request is the only assertion that tells the two
+// apart.
+type idpHits struct{ discovery, token atomic.Int64 }
+
+// fakeIdPCounted is fakeIdP with those counters.
+func fakeIdPCounted(t *testing.T) (*httptest.Server, *idpHits) {
+	t.Helper()
+	hits := &idpHits{}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
@@ -94,6 +110,7 @@ func fakeIdP(t *testing.T) *httptest.Server {
 	}
 
 	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		hits.discovery.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q,`+
 			`"id_token_signing_alg_values_supported":["RS256"]}`,
@@ -109,6 +126,7 @@ func fakeIdP(t *testing.T) *httptest.Server {
 		}
 	})
 	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		hits.token.Add(1)
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "bad form", http.StatusBadRequest)
 			return
@@ -130,7 +148,7 @@ func fakeIdP(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"access_token":"at","token_type":"Bearer","expires_in":3600,"id_token":%q}`, idToken)
 	})
-	return srv
+	return srv, hits
 }
 
 func TestPKCEIsAlwaysS256AndTheVerifierIsSingleUse(t *testing.T) {
@@ -241,18 +259,114 @@ func TestMappingIsBySubjectSoAChangedEmailDoesNotRemap(t *testing.T) {
 }
 
 func TestDiscoveryIsLazySoADownIdPDoesNotBlockStartUp(t *testing.T) {
+	// The assertion is a COUNT, not a deadline. `https://127.0.0.1:1/...` refuses
+	// the connection instantly, so an eager NewOIDC returns far inside any
+	// timeout and a timing test passes against the very constructor it exists
+	// to catch. What LAZY means is that NewOIDC asks the identity provider
+	// nothing at all.
+	idp, hits := fakeIdPCounted(t)
 	c := config.Default().Auth.OIDC
 	c.Enabled = true
-	c.Issuer = "https://127.0.0.1:1/does-not-exist"
+	c.Issuer = idp.URL
 	c.ClientID = "dilla"
+	c.RedirectURL = "https://chat.example/v1/auth/oidc/callback"
+	ctx := context.Background()
+
+	o := auth.NewOIDC(c, "secret", clock.System())
+	if n := hits.discovery.Load(); n != 0 {
+		t.Fatalf("NewOIDC fetched the discovery document %d times; construction must touch no network", n)
+	}
+	if _, err := o.AuthURL(ctx, "state", "nonce", "verifier"); err != nil {
+		t.Fatalf("AuthURL: %v", err)
+	}
+	if n := hits.discovery.Load(); n != 1 {
+		t.Fatalf("discovery ran %d times on first use, want exactly 1", n)
+	}
+	// And once for the life of the provider, not once per call: the sync.Once
+	// is the other half of the same property.
+	if _, _, _, err := o.Exchange(ctx, "code-good", "verifier", "nonce"); err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+	if n := hits.discovery.Load(); n != 1 {
+		t.Fatalf("discovery ran %d times across two calls, want exactly 1", n)
+	}
+
+	// The original shape of this test, kept: an issuer nothing answers on must
+	// not hold the constructor either.
+	down := c
+	down.Issuer = "https://127.0.0.1:1/does-not-exist"
 	done := make(chan struct{})
 	go func() {
-		auth.NewOIDC(c, "secret", clock.System())
+		auth.NewOIDC(down, "secret", clock.System())
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("NewOIDC blocked on discovery; it must be lazy")
+	}
+}
+
+// The pending-login table is what the callback's anti-replay property rests on:
+// the row is spent once, it is deleted BEFORE its expiry is examined, and an
+// expired row cannot be told from one that was never there.
+func TestAPendingLoginIsSpentOnceAndExpires(t *testing.T) {
+	const ttl = 5 * time.Minute
+	clk := clock.NewFake(time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC))
+	c := config.Default().Auth.OIDC
+	c.Enabled = true
+	c.Issuer = "https://idp.example/app"
+	c.ClientID = "dilla"
+	o := auth.NewOIDC(c, "secret", clk)
+
+	o.Stash("state-a", auth.Pending{Nonce: "n-a", Verifier: "v-a"}, ttl)
+	got, ok := o.Spend("state-a")
+	if !ok || got.Nonce != "n-a" || got.Verifier != "v-a" {
+		t.Fatalf("Spend(state-a) = %+v, %v; want the stashed nonce and verifier", got, ok)
+	}
+	if n := o.PendingLenForTest(); n != 0 {
+		t.Fatalf("%d rows left after the login was spent, want 0", n)
+	}
+	// The replay. A callback that arrives twice must find nothing the second
+	// time, which is what keeps a captured authorization code from being
+	// exchanged again.
+	if got, ok := o.Spend("state-a"); ok {
+		t.Fatalf("a replayed state was spent a second time: %+v", got)
+	}
+	if _, ok := o.Spend("never-stashed"); ok {
+		t.Fatal("a state that was never stashed was spent")
+	}
+
+	// The expiry, and the delete that precedes it. Winding the clock back is
+	// not something a caller can do, but it is the only way to SEE that the
+	// expired row was removed rather than merely refused: if Spend checked the
+	// expiry before deleting, the row would still be filed and would come back
+	// to life the moment the deadline moved.
+	o.Stash("state-b", auth.Pending{Nonce: "n-b", Verifier: "v-b"}, ttl)
+	clk.Advance(ttl + time.Second)
+	if _, ok := o.Spend("state-b"); ok {
+		t.Fatal("an expired pending login was spent")
+	}
+	if n := o.PendingLenForTest(); n != 0 {
+		t.Fatalf("%d rows left after an expired login was refused, want 0", n)
+	}
+	clk.Advance(-(ttl + time.Second))
+	if _, ok := o.Spend("state-b"); ok {
+		t.Fatal("an expired pending login survived the Spend that refused it")
+	}
+
+	// And the sweep: a login nobody ever came back for is not kept for the life
+	// of the process, it goes on the next Stash.
+	o.Stash("state-c", auth.Pending{Nonce: "n-c", Verifier: "v-c"}, ttl)
+	clk.Advance(ttl + time.Second)
+	o.Stash("state-d", auth.Pending{Nonce: "n-d", Verifier: "v-d"}, ttl)
+	if n := o.PendingLenForTest(); n != 1 {
+		t.Fatalf("%d rows filed, want 1: the abandoned login was not swept", n)
+	}
+	if _, ok := o.Spend("state-c"); ok {
+		t.Fatal("the swept login was still spendable")
+	}
+	if got, ok := o.Spend("state-d"); !ok || got.Nonce != "n-d" {
+		t.Fatalf("the sweep took the live login too: %+v, %v", got, ok)
 	}
 }

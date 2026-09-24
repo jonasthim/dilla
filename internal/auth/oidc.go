@@ -76,6 +76,17 @@ func (o *OIDC) Spend(state string) (Pending, bool) {
 	return row.p, true
 }
 
+// PendingLenForTest reports how many in-flight logins are filed. It exists for
+// the same reason Passkeys.CredentialsForTest does: the table is unexported
+// state, and "the row was DELETED, not merely refused" and "the sweep dropped
+// the abandoned login" are the two properties a test cannot otherwise see —
+// both Spend paths answer false either way.
+func (o *OIDC) PendingLenForTest() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.pending)
+}
+
 func (o *OIDC) sweepLocked() {
 	now := o.clk.Now()
 	for k, v := range o.pending {
