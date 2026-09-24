@@ -17847,10 +17847,12 @@ git -C /home/thim/Repositories/dilla/.claude/worktrees/sdd-dilla-protocol add do
 
 ## Follow-up cards (not in this plan)
 
-Nine items that this plan's execution produces or exposes but deliberately does **not** do. Each names
+Ten items that this plan's execution produces or exposes but deliberately does **not** do. Each names
 why it exists and which plan owns it. None of them blocks a task in this plan; they are here so that no
 task invents one of them on the way past. The same list appears in
 `docs/superpowers/plans/2026-09-23-dillad-spikes.md`, so a reader of either file sees the whole set.
+Card (j) below was added from this worktree only (Plan B's mirror worktree is off-limits to this
+session); whoever next has write access to both files should copy it across.
 
 - **(a) Regenerate `testkit/fixtures/ds-1500/` before its KeyPackages expire, around 2026-12-22.** Task 13
   commits real `.mls` binaries whose 1,500 leaves each carry the 90-day `KEY_PACKAGE_LIFETIME_DAYS`
@@ -17901,6 +17903,17 @@ task invents one of them on the way past. The same list appears in
   strings names neither, so task 10 returns `E_MEMBER_REMOVE_FORBIDDEN` and says so at both call sites. The
   **rejections** are what week 1 relies on; only the codes are open. **Owner: dilla-protocol**, as
   `protocol/07-versioning.md` change-process items.
+- **(j) Reformat `core/dilla-core-wasm/tests/node.rs` so `cargo fmt --all --check` passes.** Task 16
+  committed this file (`a05f7b2`) already fmt-dirty relative to the `cargo fmt --all --check` step that
+  task 19's `rust-native` CI job requires. Task 19's own fix rounds
+  (`task-19-fix-r1-report.md`, `task-19-fix-r2-report.md`) independently re-verified the failure twice —
+  confined to this one file, real and reproducible both times — and confirmed via
+  `git merge-base --is-ancestor a05f7b2 0b53624` that the drift predates task 19's BASE, so it is outside
+  task 19's file list and not task 19's or its fixers' commit to make. The fix is one command,
+  `/home/thim/.cargo/bin/cargo fmt -p dilla-core-wasm`, committed with no behaviour change. Until it
+  lands, `rust-native` fails on the first real CI run of this branch. **Owner: dilla-core**, whoever next
+  touches `core/dilla-core-wasm` or closes out this plan — land it before this branch's CI is expected to
+  go green.
 
 ## Needs verification (part A1)
 
