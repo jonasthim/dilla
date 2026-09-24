@@ -137,3 +137,98 @@ func TestShortAPISecretIsRejectedBeforeTheSFUStarts(t *testing.T) {
 		t.Fatal("sfu.Config.YAML accepted a 5-character secret; dillad -sfu would then boot with it")
 	}
 }
+
+func TestCIWorkflowHasTheGoJob(t *testing.T) {
+	wf := readRepoFile(t, ".github/workflows/ci.yml")
+
+	for _, want := range []string{
+		"\n  go:\n",
+		// Without this the artifact does not exist yet: GitHub starts jobs with
+		// no `needs:` immediately and in parallel, and download-artifact only
+		// sees artifacts already uploaded in the same run (gap-31 §3.2's
+		// reference job carries it).
+		"needs: [rust-wasi]",
+		"uses: actions/setup-go@v7",
+		"go-version-file: go.mod",
+		"cache-dependency-path: go.sum",
+		"uses: actions/download-artifact@v8",
+		"name: dilla-core-wasi",
+		"path: internal/mlswasi/testdata",
+		"run: go mod verify",
+		"run: go vet ./...",
+		"go test -race -shuffle=on -timeout 15m ./...",
+		"GORACE: halt_on_error=1",
+		"CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad",
+	} {
+		if !strings.Contains(wf, want) {
+			t.Errorf("ci.yml is missing %q", want)
+		}
+	}
+
+	// A `needs:` naming a job that does not exist is a workflow-validation
+	// error, so the job it points at has to be in the same file.
+	if !strings.Contains(wf, "\n  rust-wasi:\n") {
+		t.Error("the go job needs rust-wasi, but ci.yml declares no rust-wasi job; " +
+			"land Plan A's CI task first (it owns that job and uploads the dilla-core-wasi artifact)")
+	}
+
+	// The race detector needs cgo and a C toolchain, so CGO_ENABLED=0 must
+	// never be set job-wide. Find the job block first and fail cleanly if it is
+	// absent: slicing at a -1 index panics with "slice bounds out of range".
+	idx := strings.Index(wf, "\n  go:\n")
+	if idx < 0 {
+		t.Fatal("ci.yml has no `go:` job, so its steps cannot be checked")
+	}
+	goJob := wf[idx:]
+	if end := strings.Index(goJob[1:], "\n  go-fts5-arm64:"); end >= 0 {
+		goJob = goJob[:end+1] // end is relative to goJob[1:]
+	}
+	if strings.Contains(goJob, "CGO_ENABLED: ") {
+		t.Error("the go job sets CGO_ENABLED at job level; go test -race needs cgo, " +
+			"so it may only be set on the build step")
+	}
+}
+
+func TestCIWorkflowRunsFTS5OnArm64(t *testing.T) {
+	wf := readRepoFile(t, ".github/workflows/ci.yml")
+	for _, want := range []string{
+		"\n  go-fts5-arm64:\n",
+		"runs-on: ubuntu-24.04-arm",
+		"go test ./internal/store/sqlite/...",
+	} {
+		if !strings.Contains(wf, want) {
+			t.Errorf("ci.yml is missing %q", want)
+		}
+	}
+}
+
+// R22: no step may swallow a failure. The rule is "no `|| true`, no
+// `continue-on-error`, no `if: always()` **on a gate**" — `if: always()` on an
+// artifact or coverage upload after a failing step is normal and correct, and
+// Plan A owns six more jobs in this file, so banning the string outright would
+// turn this test red the first time someone adds such an upload.
+func TestCIWorkflowIsFailClosed(t *testing.T) {
+	wf := readRepoFile(t, ".github/workflows/ci.yml")
+	for _, forbidden := range []string{"|| true", "continue-on-error"} {
+		if strings.Contains(wf, forbidden) {
+			t.Errorf("ci.yml contains %q; CI is fail-closed (R22)", forbidden)
+		}
+	}
+
+	// `if: always()` is only a problem on a step that runs a gate command. Walk
+	// the steps and flag the combination, not the string.
+	gateCommands := []string{"go test", "go vet", "go mod verify", "cargo ", "npm test",
+		"npm run", "git diff --exit-code", "git status --porcelain"}
+	for _, step := range strings.Split(wf, "\n      - ") {
+		if !strings.Contains(step, "if: always()") {
+			continue
+		}
+		for _, gate := range gateCommands {
+			if strings.Contains(step, gate) {
+				t.Errorf("a step carrying `if: always()` runs the gate command %q; a gate must "+
+					"not run unconditionally (R22). Step:\n%s", gate, step)
+				break
+			}
+		}
+	}
+}
