@@ -53,10 +53,11 @@ pub fn past_epoch_sweep(kind: GroupKind) -> Option<PastEpochDeletion> {
 /// - An external commit's `Remove` must target only the joiner's own leaf
 ///   (`E_EXTERNAL_COMMIT_REMOVE`).
 /// - `PreSharedKey`: reject.
-/// - `GroupContextExtensions`: accept only from the instance's external sender
-///   (`Sender::External`); reject from a member, a joiner and an external add proposal. The
-///   proposal replaces the whole extension set, so a member who lands one rewrites
-///   `dilla_binding` and `required_capabilities` (`extension_change_verdict`).
+/// - `GroupContextExtensions`: reject, from every sender including the instance's external sender.
+///   The proposal replaces the whole extension set, so whoever lands one rewrites `dilla_binding`
+///   and `required_capabilities`; the one case protocol/01 allows (an instance key rotation)
+///   cannot be verified until protocol/03 says where its signature travels
+///   (`extension_change_verdict`).
 /// - `ReInit`: reject, from every sender. Dilla never re-initialises a group, and OpenMLS 0.9.0
 ///   does not implement the proposal either (messages/external_proposals.rs:5).
 ///
@@ -152,16 +153,37 @@ pub(crate) fn removal_verdict(
     }
 }
 
-/// Who may change the group context extensions.
+/// Who may change the group context extensions. **Nobody, on this branch.**
 ///
 /// A `GroupContextExtensions` proposal replaces the **whole** extension set (gap-4 section 4.1),
-/// so a member who lands one can drop or rewrite `dilla_binding` and `required_capabilities`,
-/// while `DillaGroup` keeps serving the binding it cached at load - the divergence would only
-/// surface on a later `DillaGroup::load`. Only the instance rotates the extension set, and it does
-/// so as the external sender at `instance_sender_index()` (`rotate_external_senders_extensions`);
-/// every other sender is refused.
+/// so whoever lands one can drop or rewrite `dilla_binding` and `required_capabilities`, while
+/// `DillaGroup` keeps serving the binding it cached at load - the divergence would only surface on
+/// a later `DillaGroup::load`. protocol/01-groups.md's external-sender table allows exactly one
+/// such proposal: from the instance, "only if the sole change is to `external_senders` and the new
+/// instance key is signed by the old one (`03-identity.md`, 'Instance key rotation')". Until this
+/// commit the check was only the sender: **any** `Sender::External(_)` proposal was accepted, so
+/// the one sender dilla trusts for Adds and inactivity Removes could also silently rewrite
+/// `dilla_binding`, which rule 3 of protocol/01 "dilla_binding" calls immutable for the life of
+/// the group.
 ///
-/// Split out from `validate_staged_commit` so both branches are testable: OpenMLS keeps
+/// The conditional accept cannot be implemented here yet. protocol/03-identity.md defines the
+/// rotation *preimage* - `sig_old(new_pub || "dilla instance rotate v1")`, the domain constant
+/// `identity::DOMAIN_INSTANCE_ROTATE` - but no document in `protocol/` says **where that signature
+/// travels**: not as a companion GroupContext extension, not in the proposal's
+/// `authenticated_data`, nowhere. A verifier cannot check a signature it cannot locate, and
+/// inventing a carrier here would freeze a wire format by accident. Per the final-fix brief's
+/// item 5 STOP condition this is recorded as blocked and the safe default is taken instead:
+/// **every** `GroupContextExtensions` proposal is refused, from every sender. The consequence is
+/// that instance key rotation is not possible in a live group on this branch; a rotation needs a
+/// new group until protocol/03 says where the signature rides.
+///
+/// What the eventual accept must check, once that is settled: (i) every extension other than
+/// `external_senders` is byte-identical to the current group context's (`required_capabilities`,
+/// `dilla_binding` 0xF001, and anything else present), (ii) `external_senders` still has exactly
+/// one entry, and (iii) the new instance key is signed by the old one over the protocol/03
+/// preimage.
+///
+/// Split out from `validate_staged_commit` so it is testable: OpenMLS keeps
 /// `GroupContextExtensionProposal::new` and `ReInitProposal`'s fields `pub(crate)`
 /// (openmls-0.9.0/src/messages/proposals.rs:700 and :562-567), so dilla cannot construct either
 /// proposal, and the member branch is driven end to end from `tests/mls_roundtrip.rs` instead.
@@ -169,12 +191,8 @@ pub(crate) fn removal_verdict(
 /// Same NEEDS VERIFICATION item 24 as the `Add` and PSK rules: protocol/01-groups.md states the
 /// rule but assigns it no `E_*` code, so `MemberRemoveForbidden` is the placeholder the other two
 /// already use and settling it is a protocol/07-versioning.md change.
-pub(crate) fn extension_change_verdict(proposal_sender: &Sender) -> Result<(), ProtocolError> {
-    if matches!(proposal_sender, Sender::External(_)) {
-        Ok(())
-    } else {
-        Err(ProtocolError::MemberRemoveForbidden)
-    }
+pub(crate) fn extension_change_verdict(_proposal_sender: &Sender) -> Result<(), ProtocolError> {
+    Err(ProtocolError::MemberRemoveForbidden)
 }
 
 /// The user a leaf belongs to, read from the group's own pre-merge tree.
@@ -252,16 +270,21 @@ mod tests {
     }
 
     /// Fix round 1, finding 3: the doc comment promised this rule; the body did not enforce it.
+    /// Final-fix item 5: the body enforced only *who* sent it, so the instance's external sender
+    /// could rewrite `dilla_binding` - immutable for the life of the group by protocol/01 rule 3 -
+    /// under the name of an `external_senders` rotation. The conditional accept protocol/01
+    /// describes cannot be verified while protocol/03 does not say where the rotation signature
+    /// travels, so every sender is refused until it does.
     #[test]
-    fn only_the_instance_may_change_the_group_context_extensions() {
-        // The instance is the one external sender, at index 0 (`instance_sender_index`).
+    fn no_sender_may_change_the_group_context_extensions() {
+        // The instance is the one external sender, at index 0 (`instance_sender_index`). It is
+        // refused here too: nothing in this build can check the rotation signature protocol/01
+        // conditions the accept on.
         assert_eq!(
             extension_change_verdict(&Sender::External(SenderExtensionIndex::new(0))),
-            Ok(())
+            Err(ProtocolError::MemberRemoveForbidden)
         );
-        // Every other sender - a member, a joiner's external commit, an external add proposal -
-        // is refused: a `GroupContextExtensions` proposal replaces the whole extension set, so
-        // accepting one from a member would let it drop or rewrite `dilla_binding`.
+        // And every other sender - a member, a joiner's external commit, an external add proposal.
         assert_eq!(
             extension_change_verdict(&Sender::Member(LeafNodeIndex::new(0))),
             Err(ProtocolError::MemberRemoveForbidden)

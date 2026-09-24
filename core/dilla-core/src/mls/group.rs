@@ -7,7 +7,7 @@
 
 use super::{
     DillaBinding, DillaProvider, GroupKind, StorageError, TxError, create_config, join_config,
-    past_epoch_sweep, validate_staged_commit,
+    past_epoch_sweep, policy::extension_change_verdict, validate_staged_commit,
 };
 use crate::envelope::Envelope;
 use crate::error::ProtocolError;
@@ -492,7 +492,20 @@ impl DillaGroup {
                     .map_err(MlsError::Protocol)?;
                 DillaProcessed::Application(envelope)
             }
-            ProcessedMessageContent::ProposalMessage(p) => DillaProcessed::Proposal(p),
+            ProcessedMessageContent::ProposalMessage(p) => {
+                // The policy table is enforced on a standalone proposal too, not only on the
+                // commit that carries it: a proposal handed back here is what the caller queues,
+                // and a rule checked only in `validate_staged_commit` lets a forbidden proposal
+                // sit in the queue until some other client commits it. `GroupContextExtensions`
+                // is the one proposal type whose sender rule dilla can evaluate on its own -
+                // Add/Remove need the role snapshot and the leaf credential, which
+                // `validate_staged_commit` reads off the staged commit. The sender is the
+                // proposal's own, as everywhere else in this policy.
+                if matches!(p.proposal(), Proposal::GroupContextExtensions(_)) {
+                    extension_change_verdict(p.sender()).map_err(MlsError::Protocol)?;
+                }
+                DillaProcessed::Proposal(p)
+            }
             ProcessedMessageContent::ExternalJoinProposalMessage(p) => {
                 DillaProcessed::ExternalJoinProposal(p)
             }

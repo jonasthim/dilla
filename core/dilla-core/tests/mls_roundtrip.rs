@@ -636,6 +636,75 @@ fn a_member_commit_rewriting_the_group_context_extensions_is_refused_by_the_rece
     );
 }
 
+/// Final-fix item 5. The policy table was enforced only on a commit, so a **standalone**
+/// `GroupContextExtensions` proposal came back from `process_message` as an ordinary queued
+/// proposal: nothing stopped a caller queueing it, and the next commit anyone builds carries it.
+/// The proposal path now runs the same verdict.
+#[test]
+fn a_standalone_group_context_extensions_proposal_is_refused_rather_than_queued() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+
+    let group_id = GroupId::from_slice(&[0x44; 16]);
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        b.clone(),
+        None,
+    )
+    .expect("create");
+    let add = alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    let mut bob = DillaGroup::join_from_welcome(
+        &bob_p,
+        into_welcome(add.welcomes[0].1.clone()),
+        alice.export_ratchet_tree().into(),
+        &b,
+    )
+    .expect("join");
+
+    // Same shape as the commit test above: `DillaGroup` exposes no such proposal, so the hostile
+    // member drives the raw `MlsGroup` in its own storage - what a patched client would do.
+    let mut raw = MlsGroup::load(alice_p.storage(), &group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let mut tampered = b.clone();
+    tampered.target_id = [0x99; 16];
+    let (proposal, _) = raw
+        .propose_group_context_extensions(
+            &alice_p,
+            group_context_extensions(&tampered, None).expect("extensions"),
+            &alice_signer,
+        )
+        .expect("a member can build the proposal; the receiver is what must refuse it");
+
+    let err = bob
+        .process_message(&bob_p, into_protocol(proposal))
+        .expect_err("a GroupContextExtensions proposal must not be handed back for queueing");
+    assert!(
+        matches!(
+            err,
+            MlsError::Protocol(ProtocolError::MemberRemoveForbidden)
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        bob.binding(),
+        &b,
+        "the refused proposal must not have changed the binding Bob serves"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Task 11: the delivery service's structural view of the same group.
 // ---------------------------------------------------------------------------------------------
