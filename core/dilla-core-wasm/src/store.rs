@@ -227,3 +227,60 @@ impl StoreHandle {
         drop(self.conn.borrow_mut().take());
     }
 }
+
+/// Deviation A2-10. Proves gap-13 §3's trap is real and stays real: a connection opened on the
+/// pool's **plain** VFS name cannot be keyed. Returns SQLite's error text, and errors if the open
+/// unexpectedly succeeds — that would mean the encrypting wrapper is no longer needed and the
+/// store's VFS choice must be revisited. Call only after `store_open` has installed the pool.
+#[wasm_bindgen]
+pub fn unencrypted_vfs_probe(db_name: &str, kek_hex: &str) -> Result<String, JsError> {
+    let conn = Connection::open_with_flags_and_vfs(db_name, OpenFlags::default(), POOL_VFS)
+        .map_err(|e| JsError::new(&format!("E_STORE_OPEN: {e}")))?;
+    let pragmas = Zeroizing::new(format!(
+        "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{kek_hex}';"
+    ));
+    match conn.execute_batch(&pragmas) {
+        Ok(()) => Err(JsError::new(
+            "E_STORE_PROBE: the plain VFS accepted a key; gap-13 §3 no longer holds",
+        )),
+        Err(e) => Ok(e.to_string()),
+    }
+}
+
+/// Deviation A2-10. Opens an **existing, written** database on the encrypting VFS with the wrong key
+/// and returns the text of the failure, so the spike can assert where it happened. gap-13 §2.2: the
+/// `PRAGMA key` statement always reports ok, so the only evidence the store is really encrypted is
+/// that the first real read fails. Returns an error if the wrong key is accepted all the way through
+/// the SELECT — that would mean the database is not encrypted at all.
+///
+/// Call only after `store_open` has installed the pool **and** something has been written: on an
+/// empty database there is no page to decrypt and any key succeeds.
+#[wasm_bindgen]
+pub async fn wrong_key_probe(db_name: &str, kek_hex: &str) -> Result<String, JsError> {
+    if kek_hex.len() != 64 || !kek_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(JsError::new(
+            "E_STORE_KEK: kek_hex must be 64 hex characters",
+        ));
+    }
+    let conn = Connection::open_with_flags_and_vfs(db_name, OpenFlags::default(), ENCRYPTED_VFS)
+        .map_err(|e| JsError::new(&format!("E_STORE_OPEN: {e}")))?;
+    let pragmas = Zeroizing::new(format!(
+        "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{kek_hex}';"
+    ));
+    conn.execute_batch(&pragmas).map_err(|e| {
+        JsError::new(&format!(
+            "E_STORE_PROBE: the pragmas rejected the wrong key, so this probe proves nothing: {e}"
+        ))
+    })?;
+    drop(pragmas);
+    match conn.query_row("SELECT count(*) FROM sqlite_schema", [], |r| {
+        r.get::<_, i64>(0)
+    }) {
+        Ok(_) => Err(JsError::new(
+            "E_STORE_PROBE: a wrong key read sqlite_schema; the database is not encrypted",
+        )),
+        Err(e) => Ok(format!(
+            "E_STORE_KEY: SELECT count(*) FROM sqlite_schema: {e}"
+        )),
+    }
+}

@@ -5,7 +5,7 @@
   "description": "dilla: self-hosted, end-to-end encrypted community chat, voice and video",
   "license": "AGPL-3.0-or-later",
   "engines": { "node": ">=24" },
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/*", "core/dilla-core-wasm/spike", "e2e"],
   "scripts": {
     "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm test --workspaces --if-present",
     "check:docs": "node scripts/check-protocol-docs.mjs",
@@ -14,6 +14,7 @@
     "test:brief-check": "node --test scripts/check-design-brief.test.mjs",
     "check:copy": "node scripts/check-ui-copy.mjs",
     "test:copy-check": "node --test scripts/check-ui-copy.test.mjs",
-    "vectors": "[ ! -d packages ] || npm run vectors --workspaces --if-present"
+    "vectors": "[ ! -d packages ] || npm run vectors --workspaces --if-present",
+    "test:e2e": "npm run test:e2e -w @dilla/e2e"
   }
 }
