@@ -654,6 +654,10 @@ name = "dilla-core-wasi"
 version = "0.1.0"
 dependencies = [
  "dilla-core",
+ "openmls",
+ "openmls_basic_credential",
+ "openmls_rust_crypto",
+ "tls_codec",
 ]
 
 [[package]]
