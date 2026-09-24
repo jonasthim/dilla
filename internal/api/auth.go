@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -250,14 +251,37 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	d.recordAttempt(r, user, true, addrKey, methodPassword, true)
 
-	needsTOTP := uint64(0)
-	if row, terr := d.Repo.GetTOTP(ctx, user.ID); terr == nil && row.ConfirmedAt != nil {
-		needsTOTP = 1
-	} else if terr != nil && !errors.Is(terr, store.ErrNotFound) {
+	pending, terr := d.secondFactorPending(ctx, user.ID)
+	if terr != nil {
 		server.WriteError(w, d.storeError(r, terr))
 		return
 	}
-	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(user.ID, needsTOTP == 1), needsTOTP})
+	needsTOTP := uint64(0)
+	if pending {
+		needsTOTP = 1
+	}
+	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(user.ID, pending), needsTOTP})
+}
+
+// secondFactorPending reports whether the account owes a second factor before
+// its assertion is complete: it has a TOTP enrolment and that enrolment is
+// CONFIRMED. An unconfirmed row is a half-finished enrolment that no client can
+// satisfy — /v1/auth/totp/verify refuses it — so it must not gate a login.
+//
+// It is one function because every route that ends a login has to make the same
+// decision. PasswordLogin is not the only way into an account: a passkey ends a
+// login too, and one that answered this question differently would be a way
+// around the factor the other enforces.
+func (d Deps) secondFactorPending(ctx context.Context, userID id.ID) (bool, error) {
+	row, err := d.Repo.GetTOTP(ctx, userID)
+	switch {
+	case err == nil:
+		return row.ConfirmedAt != nil, nil
+	case errors.Is(err, store.ErrNotFound):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 // loginLedger is the key a login attempt's failures are counted under. A found
@@ -753,13 +777,24 @@ func (d Deps) BeginPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 // FinishPasskeyLogin is POST /v1/auth/passkey/login/finish:
 // [ceremony_id(bstr16), response(tstr)] → [assertion(tstr)].
 //
-// The assertion is issued with no outstanding second factor, and the shape of
-// the response — one element, no `needs_totp` — is protocol/09 saying so. A
-// discoverable passkey is a possession factor and, at
-// auth.webauthn.user_verification = "required", a verification factor too, so
-// the ceremony that produced this response is the whole login. The ceremony row
-// is single-use in the store, so a replayed body finds no row and is refused
-// before a signature is looked at.
+// The response shape is protocol/09's: one element, no `needs_totp`. What the
+// assertion is WORTH is decided here, by the same secondFactorPending the
+// password path uses, and for the reason facts-auth.md §3.6 gives: a passkey is
+// two factors only when user verification actually happened, and
+// auth.webauthn.user_verification defaults to "preferred", so `validateLogin`'s
+// shouldVerifyUser is false and a ceremony that proves possession alone is
+// accepted. Issuing a complete assertion from one would let a passkey walk past
+// the confirmed TOTP the password path is forced through, which is a downgrade
+// of the account's own second factor, not a property of the credential.
+//
+// So an account with a confirmed TOTP gets an assertion that still owes it, and
+// the client spends that on /v1/auth/totp/verify exactly as it does after a
+// password — a route that already takes [assertion, code] and answers
+// [assertion], so nothing on the wire changes shape. An account with no second
+// factor gets a complete assertion, because the passkey IS the whole login.
+//
+// The ceremony row is single-use in the store, so a replayed body finds no row
+// and is refused before a signature is looked at.
 func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	if d.Throttle == nil || d.Assertions == nil || d.Config == nil {
 		d.logf(r, "api: the passkey login route is not wired")
@@ -803,5 +838,10 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		d.logf(r, "api: ClearLoginFailures", "err", cerr)
 	}
 	d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, methodPasskey, true)
-	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(userID, false)})
+	pending, terr := d.secondFactorPending(ctx, userID)
+	if terr != nil {
+		server.WriteError(w, d.storeError(r, terr))
+		return
+	}
+	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(userID, pending)})
 }
