@@ -25,13 +25,13 @@ import (
 // source's rows and its goose version, so `dillad restore` needs no special
 // case for it.
 //
-// The copy is opened with OpenWrite, not OpenRead: VACUUM INTO writes the copy
-// in SQLite's default journal mode rather than the source's WAL, and the read
-// DSN that interfaces.md §4.7 fixes asks a read-only connection to switch the
-// file to WAL, which fails on a file no writer has touched. That is recorded as
-// an open concern of task 3 (fix round 1, finding 2); the copy's journal mode
-// is logged below so the controller deciding §4.7 has the evidence in the test
-// output rather than in a report.
+// The copy is opened with OpenRead, on purpose. VACUUM INTO writes the copy in
+// SQLite's default rollback-journal mode rather than the source's WAL, so this
+// is the exact file shape that the read DSN's `_pragma=journal_mode(WAL)` used
+// to refuse with `attempt to write a readonly database (8)` — `dillad doctor`
+// and `dillad restore` open such a file before any writer has touched it. The
+// pragma is gone from the read DSN (§4.7 as amended by task 3 fix round 2), and
+// the copy's journal mode is still logged so the evidence is in the test output.
 func TestVacuumIntoProducesAReadableCopy(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -81,12 +81,15 @@ func TestVacuumIntoProducesAReadableCopy(t *testing.T) {
 	probe.Close()
 	t.Logf("the VACUUM INTO copy is in journal_mode=%s (the source is wal)", mode)
 
-	copyWrite, err := sqlite.OpenWrite(copyPath)
+	copyRead, err := sqlite.OpenRead(copyPath)
 	if err != nil {
-		t.Fatalf("OpenWrite on the vacuumed copy: %v", err)
+		t.Fatalf("OpenRead on the vacuumed copy: %v", err)
 	}
-	t.Cleanup(func() { copyWrite.Close() })
-	copyRepo := sqlite.New(copyWrite, copyWrite)
+	t.Cleanup(func() { copyRead.Close() })
+	if err := sqlite.VerifyPragmas(ctx, copyRead, sqlite.WantReadPragmas); err != nil {
+		t.Fatalf("VerifyPragmas on the vacuumed copy's read pool: %v", err)
+	}
+	copyRepo := sqlite.New(copyRead, copyRead)
 	got, err := copyRepo.GetUser(ctx, u.ID)
 	if err != nil {
 		t.Fatalf("GetUser from the vacuumed copy: %v", err)

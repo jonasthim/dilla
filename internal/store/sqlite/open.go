@@ -33,16 +33,39 @@ var _ = [1]struct{}{}[1-sqlite3.SQLITE_ENABLE_FTS5]
 // different file from the one asked for. url.PathEscape also escapes '/', which
 // is correct here: SQLite decodes %HH in the path component before using it as a
 // filename, so the separators come back.
+//
+// AMENDED (task 3, fix round 2 — interfaces.md §4.7): the read DSN no longer
+// carries `_pragma=journal_mode(WAL)`. `journal_mode` is a property of the file,
+// not of the connection (facts-storage §2.3 claim 1), so on a `mode=ro`
+// connection that pragma is a write: SQLite refuses it with `attempt to write a
+// readonly database (8)` and OpenRead fails outright for every file no writer
+// has yet put into WAL — a `VACUUM INTO` copy (§4.6's pre-migration backup) and
+// a restored backup are both in the default rollback-journal mode, and `dillad
+// doctor` and `dillad restore` open exactly those. The writer still sets WAL,
+// which is where the setting belongs, and the pool that reads it back is the
+// write pool (WantPragmas); the read pool checks WantReadPragmas.
 const (
 	writeDSNSuffix = "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)&_txlock=immediate"
-	readDSNSuffix  = "?mode=ro&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)"
+	readDSNSuffix  = "?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)"
 )
 
-// WantPragmas is what VerifyPragmas is called with after either Open. The
-// values are the strings SQLite reports, not the strings the DSN sets:
+// WantPragmas is what VerifyPragmas is called with after OpenWrite. The values
+// are the strings SQLite reports, not the strings the DSN sets:
 // synchronous(NORMAL) reads back as 1.
 var WantPragmas = map[string]string{
 	"journal_mode": "wal",
+	"busy_timeout": "5000",
+	"foreign_keys": "1",
+	"synchronous":  "1",
+}
+
+// WantReadPragmas is what VerifyPragmas is called with after OpenRead. It is
+// WantPragmas without journal_mode: the journal mode is a property of the FILE,
+// not of the connection (facts-storage §2.3 claim 1), the writer owns it, and a
+// mode=ro connection can neither set it nor be held to it — a `VACUUM INTO`
+// copy and a freshly restored backup are both in the default rollback-journal
+// mode until a writer opens them.
+var WantReadPragmas = map[string]string{
 	"busy_timeout": "5000",
 	"foreign_keys": "1",
 	"synchronous":  "1",
@@ -68,7 +91,9 @@ func OpenWrite(path string) (*sql.DB, error) {
 }
 
 // OpenRead opens the read pool: WAL readers do not block the writer, so the pool
-// is as wide as the machine.
+// is as wide as the machine. It does not set the journal mode — see the DSN
+// amendment above — so it opens a file in any journal mode, and the mode it
+// reads back is whatever the writer left. Verify it with WantReadPragmas.
 func OpenRead(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", "file:"+url.PathEscape(path)+readDSNSuffix)
 	if err != nil {
