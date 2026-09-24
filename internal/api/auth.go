@@ -312,18 +312,26 @@ func (d Deps) recordAttempt(r *http.Request, user store.UserRow, found bool, add
 
 // ChangePassword is POST /v1/auth/password: [old(tstr|null), new(tstr)] → 204.
 //
-// The step-up this route needs is the old password itself, and it is required
-// whenever the account has a credential: a stolen session token must not be
-// enough to lock the owner out of their own account. An account with no
-// password yet (registered through a passkey or OIDC) may set one with a null
-// old.
+// protocol/09-http-api.md marks this route "E (step-up)", and it has two kinds
+// of account to step up. Where the account HAS a credential the old password is
+// the step-up, and it is required: a stolen session token must not be enough to
+// lock the owner out of their own account. Where it has none — registered
+// through a passkey or OIDC — there is no credential to re-present, so the
+// step-up falls back to the session's own freshness, exactly as DELETE
+// /v1/accounts/me does. An enrolled session alone must NOT be enough there
+// either: planting a password on a passkey-only account creates a second,
+// persistent login path that survives revoking the passkey.
 func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
-	if d.Hasher == nil || d.Throttle == nil {
+	// Config carries the step-up window, so a nil one fails CLOSED for the same
+	// reason DeleteMe's does: skipping the only gate a branch has because the
+	// dependency that holds it is missing is fail-open, and a handler test built
+	// without a Config would exercise no gate at all.
+	if d.Hasher == nil || d.Throttle == nil || d.Config == nil {
 		d.logf(r, "api: the password change route is not wired")
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the password change route is not wired"))
 		return
@@ -358,12 +366,20 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !valid {
-			ip := netip.Addr{}
-			if d.Config != nil {
-				ip = server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
-			}
-			d.Throttle.RecordFailure(sess.UserID, ip)
+			d.Throttle.RecordFailure(sess.UserID, server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
 			server.WriteError(w, server.Errorf(server.CodeForbidden, "the old password is wrong"))
+			return
+		}
+	} else {
+		now := d.Clock.Now().Unix()
+		row, serr := d.Repo.GetSessionByHash(ctx, sess.TokenHash, now)
+		if serr != nil {
+			server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+			return
+		}
+		if window := int64(d.Config.Auth.Session.ReauthWindow.Value().Seconds()); now-row.Created > window {
+			server.WriteError(w, server.Errorf(server.CodeForbidden,
+				"setting a first password needs a session established in the last %d seconds", window))
 			return
 		}
 	}

@@ -385,6 +385,39 @@ func TestPasswordChangeNeedsTheOldPasswordAndReplacesTheCredential(t *testing.T)
 	}
 }
 
+// protocol/09-http-api.md marks POST /v1/auth/password "E (step-up)". With a
+// credential on the account the old password IS the step-up; on an account
+// registered through a passkey or OIDC there is no credential to re-present, so
+// the step-up falls back to the session's own freshness — the same one DELETE
+// /v1/accounts/me enforces. Without it a stolen session token plants a password
+// credential, which is a second login path that outlives revoking the passkey.
+func TestSettingAFirstPasswordNeedsAFreshSession(t *testing.T) {
+	h, deps := newTestAPI(t)
+	stale, _, staleToken := seedAPISession(t, deps)
+	advance(t, deps, deps.Config.Auth.Session.ReauthWindow.Value()+time.Second)
+
+	body, err := cborx.Marshal([]any{nil, "a brand new password"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if res := postCBORAuth(h, "/v1/auth/password", body, staleToken); res.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: a stale session must not set a first password", res.Code)
+	}
+	if status, _ := login(t, h, stale.Username, "a brand new password"); status == http.StatusOK {
+		t.Fatal("the refused request planted a credential anyway")
+	}
+
+	// A session established inside the window may.
+	fresh, _, freshToken := seedAPISession(t, deps)
+	if res := postCBORAuth(h, "/v1/auth/password", body, freshToken); res.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204: a fresh session may set a first password (body %x)",
+			res.Code, res.Body.Bytes())
+	}
+	if status, _ := login(t, h, fresh.Username, "a brand new password"); status != http.StatusOK {
+		t.Fatalf("the password a fresh session set does not log in: %d", status)
+	}
+}
+
 // The `login_failed` bucket is the per-ADDRESS half of throttling, and the
 // reason it exists is the attacker who spreads guesses over many handles: the
 // `login` bucket is keyed by address AND by handle spelling, so a thousand
