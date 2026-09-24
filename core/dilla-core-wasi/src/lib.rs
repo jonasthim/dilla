@@ -85,13 +85,29 @@ mod shims {
         pack(ptr, len)
     }
 
+    /// Borrows the host's request bytes, or `None` if `(ptr, len)` does not name a region inside
+    /// this module's linear memory.
+    ///
+    /// The bound is not decoration. `ptr + len` can wrap the 32-bit address space, and the pair
+    /// can name bytes past the end of the memory the module has grown; either one builds a slice
+    /// over addresses the module does not own, which is undefined behaviour before any dilla code
+    /// has read a byte. `memory_size(0)` is the current size in 64 KiB pages, so the limit is
+    /// computed in `u64` — a 65 536-page (4 GiB) memory would overflow the `usize` the pages are
+    /// counted in.
+    ///
     /// # Safety
-    /// `ptr`/`len` must address a readable region the host wrote with `dilla_alloc`.
-    unsafe fn request<'a>(ptr: u32, len: u32) -> &'a [u8] {
+    /// `ptr`/`len` must address a readable region the host wrote with `dilla_alloc`. This function
+    /// checks that the region is inside linear memory; it cannot check that the host initialised
+    /// it or that it is not concurrently freed.
+    unsafe fn request<'a>(ptr: u32, len: u32) -> Option<&'a [u8]> {
         if len == 0 {
-            return &[];
+            return Some(&[]);
         }
-        unsafe { core::slice::from_raw_parts(ptr as usize as *const u8, len as usize) }
+        let memory_bytes = core::arch::wasm32::memory_size(0) as u64 * 65536;
+        if !crate::abi::request_in_range(ptr, len, memory_bytes) {
+            return None;
+        }
+        Some(unsafe { core::slice::from_raw_parts(ptr as usize as *const u8, len as usize) })
     }
 
     macro_rules! abi_export {
@@ -100,8 +116,15 @@ mod shims {
             /// See [`request`]; the response must be released with `dilla_free`.
             #[unsafe(export_name = stringify!($name))]
             pub unsafe extern "C" fn $name(ptr: u32, len: u32) -> u64 {
-                let req = unsafe { request(ptr, len) };
-                emit(dispatch(stringify!($name), req))
+                match unsafe { request(ptr, len) } {
+                    Some(req) => emit(dispatch(stringify!($name), req)),
+                    // An ordinary failure frame, not a trap: a host that miscomputed a pointer
+                    // gets an answer it can log and recover from, and the module stays usable.
+                    // The detail names the pair, which is host-supplied and not a secret.
+                    None => emit(crate::abi::error_response(&crate::abi::AbiError::shape(
+                        format!("request ({ptr}, {len}) is outside linear memory"),
+                    ))),
+                }
             }
         };
     }

@@ -53,9 +53,23 @@ pub fn sas(epoch_authenticator: &[u8; 32]) -> String {
     digits
 }
 
+/// The group size protocol/03-identity.md displays both numbers in: the safety number as 12 groups
+/// of 5, the SAS as 6 groups of 5. Named so a caller of [`group_digits`] does not have to build a
+/// `NonZeroUsize` for the only value the protocol uses.
+pub const DISPLAY_GROUP: core::num::NonZeroUsize = match core::num::NonZeroUsize::new(5) {
+    Some(n) => n,
+    None => unreachable!(),
+};
+
 /// Display helper: split into fixed-size groups joined by single spaces.
-pub fn group_digits(digits: &str, per_group: usize) -> String {
-    assert!(per_group > 0, "group size must be positive");
+///
+/// `per_group` is a `NonZeroUsize` rather than a `usize` with an `assert!`: zero is the one value
+/// this cannot answer for (`chunks(0)` panics inside `core`), and a display helper has no business
+/// aborting the process over a caller's argument. Making it unrepresentable is cheaper than
+/// returning a `Result` nobody would have an error type for — and every caller in the protocol
+/// wants [`DISPLAY_GROUP`] anyway.
+pub fn group_digits(digits: &str, per_group: core::num::NonZeroUsize) -> String {
+    let per_group = per_group.get();
     let bytes = digits.as_bytes();
     let mut out = String::with_capacity(digits.len() + digits.len() / per_group);
     for (i, chunk) in bytes.chunks(per_group).enumerate() {
@@ -105,9 +119,16 @@ mod tests {
 
     #[test]
     fn group_digits_joins_fixed_size_groups_with_single_spaces() {
-        assert_eq!(group_digits("1234567890", 5), "12345 67890");
-        assert_eq!(group_digits("123456789", 5), "12345 6789");
-        assert_eq!(group_digits(&"0".repeat(60), 5).split(' ').count(), 12);
-        assert_eq!(group_digits(&"0".repeat(30), 5).split(' ').count(), 6);
+        let five = DISPLAY_GROUP;
+        assert_eq!(five.get(), 5, "protocol/03 displays both numbers in fives");
+        assert_eq!(group_digits("1234567890", five), "12345 67890");
+        assert_eq!(group_digits("123456789", five), "12345 6789");
+        assert_eq!(group_digits(&"0".repeat(60), five).split(' ').count(), 12);
+        assert_eq!(group_digits(&"0".repeat(30), five).split(' ').count(), 6);
+        // A group wider than the input is one group, not a panic and not padding.
+        let wide = core::num::NonZeroUsize::new(100).expect("nonzero");
+        assert_eq!(group_digits("123", wide), "123");
+        // The empty string has no groups at all.
+        assert_eq!(group_digits("", five), "");
     }
 }

@@ -174,6 +174,29 @@ pub fn run_franking() -> SuiteReport {
     let mut cases = Vec::new();
     let doc: Value = serde_json::from_str(FRANKING_JSON).unwrap_or(Value::Null);
     let k_frank = unhex_n::<32>(doc["instance_franking_key"].as_str().unwrap_or(""));
+
+    // `envelope_cbor` is the file's own copy of the envelope every tag below is computed over, and
+    // the `commitment` each case carries is derived from it. Decoding it and recomputing the
+    // commitment is what ties the two halves of the file together: without this the tags are
+    // checked against a commitment nothing in this suite ever produced, so an implementation that
+    // got `frank_commitment` wrong but copied the file's `commitment` verbatim would pass. It also
+    // gives the wasm and wasi legs a commitment case of their own, which the envelope suite only
+    // exercises through `Envelope::commitment` on the envelope vectors.
+    let envelope_cbor = unhex(doc["envelope_cbor"].as_str().unwrap_or(""));
+    let expected_commitment = doc["cases"]
+        .as_array()
+        .and_then(|c| c.first())
+        .map(|c| expect_str(&c["commitment"]))
+        .unwrap_or(MISSING);
+    cases.push(CaseReport::compare(
+        "envelope_cbor",
+        "commitment",
+        expected_commitment,
+        Envelope::decode(&envelope_cbor)
+            .and_then(|e| e.commitment())
+            .map(|c| hex(&c))
+            .unwrap_or_else(|e| format!("<{}>", e.code())),
+    ));
     for (i, case) in doc["cases"]
         .as_array()
         .unwrap_or(&Vec::new())

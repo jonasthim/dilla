@@ -9,7 +9,12 @@ unmaintained = "workspace"
 ignore = []
 
 [licenses]
-allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0",
+# Every entry here must be a licence the resolved graph actually carries: cargo-deny reports an
+# unused allowance as `license-not-encountered`, and a run that prints warnings is a run whose
+# warnings stop being read. `ISC` was dropped for exactly that reason (nothing in the graph over
+# the four targets in [graph] carries it); `BlueOak-1.0.0` went the same way with minicbor
+# (deviation A1-3). Add one back when the dependency that needs it arrives, not before.
+allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "Unicode-3.0",
          "Zlib", "MPL-2.0"]
 confidence-threshold = 0.9
 

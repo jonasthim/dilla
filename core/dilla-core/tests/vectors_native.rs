@@ -18,11 +18,12 @@ fn every_suite_passes() {
 
 #[test]
 fn each_suite_reports_the_expected_number_of_cases() {
-    // 4 envelope cases x 3 fields; 3 franking cases x 1 field; 4 sframe cases x 6 fields;
-    // 8 identity cases (5 identity fields, the credential CBOR, and the two credential signatures
-    // checked separately - interfaces.md section 2.9); the reject corpus.
+    // 4 envelope cases x 3 fields; the franking file's own `envelope_cbor` -> commitment, plus
+    // 3 franking cases x 1 field; 4 sframe cases x 6 fields; 8 identity cases (5 identity fields,
+    // the credential CBOR, and the two credential signatures checked separately - interfaces.md
+    // section 2.9); the reject corpus.
     assert_eq!(run_envelope().cases.len(), 12);
-    assert_eq!(run_franking().cases.len(), 3);
+    assert_eq!(run_franking().cases.len(), 4);
     assert_eq!(run_sframe().cases.len(), 24);
     assert_eq!(run_identity().cases.len(), 8);
     // The reject suite is pinned exactly, not `>=`: 33 deterministic-CBOR corpus inputs, 3

@@ -155,6 +155,33 @@ pub fn error_response(err: &AbiError) -> Vec<u8> {
     e.into_vec()
 }
 
+/// Whether the `(ptr, len)` pair a host handed an export addresses bytes that are actually inside
+/// this module's linear memory.
+///
+/// The exports take the pair on trust and turn it into a `&[u8]`. Two things can go wrong and
+/// neither is caught by the type system: `ptr + len` can wrap the 32-bit address space, and the
+/// pair can name a region past the end of the memory the module has grown. Either builds a slice
+/// over addresses the module does not own, which is undefined behaviour before any dilla code has
+/// looked at a single byte.
+///
+/// Split out of `shims::request` so it is testable natively: `shims` is `cfg(target_family =
+/// "wasm")` and its only caller is an `extern "C"` export, so nothing on the host can reach the
+/// arithmetic otherwise. `memory_bytes` is the caller's `memory_size(0) * 65536`.
+pub fn request_in_range(ptr: u32, len: u32, memory_bytes: u64) -> bool {
+    // An empty request never dereferences its pointer, so the pointer is not checked: `request`
+    // hands back `&[]` without touching it, and a host that passes a stale `ptr` with `len == 0`
+    // is doing nothing wrong.
+    if len == 0 {
+        return true;
+    }
+    match ptr.checked_add(len) {
+        // Wraps the address space: `ptr as usize + len as usize` would silently produce a shorter
+        // region starting at a high address.
+        None => false,
+        Some(end) => u64::from(end) <= memory_bytes,
+    }
+}
+
 /// Reads a `u32` handle out of a request, rejecting anything that does not fit.
 pub fn read_handle(d: &mut Decoder<'_>) -> Result<u32, AbiError> {
     let v = d.uint()?;
@@ -250,6 +277,29 @@ mod tests {
         assert_eq!(unpack(pack(u32::MAX, u32::MAX)), (u32::MAX, u32::MAX));
         assert_eq!(pack(1, 2), (1u64 << 32) | 2);
         assert_eq!(unpack(0), (0, 0));
+    }
+
+    /// One 64 KiB page is the smallest memory a module can have; the bound is `<=` because a
+    /// request may end exactly at the last byte.
+    #[test]
+    fn a_request_outside_linear_memory_is_refused() {
+        const PAGE: u64 = 65536;
+
+        assert!(request_in_range(0, 0, PAGE));
+        assert!(request_in_range(0, 65536, PAGE), "may end at the last byte");
+        assert!(request_in_range(65535, 1, PAGE));
+        assert!(!request_in_range(0, 65537, PAGE), "one byte past the end");
+        assert!(!request_in_range(65536, 1, PAGE));
+        assert!(!request_in_range(65535, 2, PAGE));
+
+        // Wrap-around: `ptr + len` overflows u32, so the pair names no region at all. Both halves
+        // are individually plausible, which is exactly why the addition has to be checked.
+        assert!(!request_in_range(u32::MAX, 1, u64::from(u32::MAX) + 1));
+        assert!(!request_in_range(0xffff_0000, 0x0001_0001, u64::MAX));
+
+        // A zero-length request is always in range, whatever the pointer: `request` returns the
+        // empty slice without dereferencing it.
+        assert!(request_in_range(0xdead_beef, 0, 0));
     }
 
     #[test]

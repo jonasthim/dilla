@@ -18,10 +18,10 @@ dilla-core = { path = "../dilla-core", features = ["vectors"] }
 # absent: no step here names a trait from it, and the `&impl OpenMlsCrypto` bounds take a concrete
 # RustCrypto. tls_codec's feature list is copied verbatim from interfaces §3.1 — trimming `derive`
 # would de-unify the feature set with dilla-core and move the lock, which A2-1 promises it will not.
-openmls                  = { version = "0.9.0", default-features = false }
-openmls_rust_crypto      = "0.6.0"
-openmls_basic_credential = "0.6.0"
-tls_codec                = { version = "0.5.0", features = ["derive", "serde", "mls"] }
+openmls                  = { version = "=0.9.0", default-features = false }
+openmls_rust_crypto      = "=0.6.0"
+openmls_basic_credential = "=0.6.0"
+tls_codec                = { version = "=0.5.0", features = ["derive", "serde", "mls"] }
 
 # The workspace declares `unsafe_code = "warn"`; joining the table is what makes the plan's Global
 # Constraint ("only core/dilla-core-wasi opts back in, for its extern \"C\" exports") mean anything
