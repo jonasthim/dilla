@@ -7,7 +7,7 @@ import init, {
   StoreOpenConfig,
   type StoreHandle,
 } from '../pkg/dilla_core_wasm.js';
-import { channelName, elect, type LeaderMessage } from './leader.js';
+import { channelName, elect, type LeaderMessage, type LeaderSession } from './leader.js';
 import { probePersistence } from './probe.js';
 
 /** SQLite upstream's own schedule for this exact contention (gap-14 §5): 6 tries over ~4.5 s. */
@@ -29,6 +29,30 @@ const scope = self as unknown as DedicatedWorkerGlobalScope;
 const order: string[] = [];
 let handle: StoreHandle | undefined;
 
+/** The commands the page can send once the store is open. */
+type Command = { type: 'append' } | { type: 'resign' };
+
+/**
+ * Ruling J. `append` used to be handled by a listener installed *inside* the elected-leader callback,
+ * i.e. only after `store_open`, `reserve_capacity` and both probes had finished. The page rendered
+ * `mode` from the probe long before that, so a click in the window between the two was delivered to a
+ * worker with no listener for it and was dropped on the floor — CI run 35969515418 failed exactly
+ * there, with `rows` still reading 1. The listener is now installed once, at module scope, and a
+ * command that arrives early waits here instead of vanishing. `main.ts` also keeps the control
+ * disabled until `ready`, so the two halves are belt and braces: the queue makes an early command
+ * late rather than lost, and the disabled control means there is normally nothing to queue.
+ */
+const pending: Command[] = [];
+let ready = false;
+let leaderSession: LeaderSession | undefined;
+let instanceName = '';
+let bootstrapped = false;
+/**
+ * Appends within the same millisecond would otherwise collide on `row-<Date.now()>` and be swallowed
+ * by `INSERT OR REPLACE`, leaving the row count unchanged for a write that did happen.
+ */
+let appendSeq = 0;
+
 function post(message: Record<string, unknown>): void {
   scope.postMessage({ ...message, order: [...order] });
 }
@@ -43,6 +67,44 @@ interface Opened {
   handle: StoreHandle;
   attempts: number;
   elapsedMs: number;
+}
+
+/**
+ * Runs one command against the open store. `exec` and `query_scalar_i64` are synchronous, so the
+ * worker's own event loop is what serialises commands: one runs to completion — write *and* the
+ * re-read of the row count — before the next message is taken off the queue. The count is read back
+ * after every append rather than incremented in the page, so what the page renders is what the store
+ * holds.
+ */
+function runCommand(command: Command): void {
+  if (handle === undefined || leaderSession === undefined) return;
+  if (command.type === 'append') {
+    appendSeq += 1;
+    handle.exec(
+      `INSERT OR REPLACE INTO spike_meta (key, value) VALUES ('row-${Date.now()}-${appendSeq}', 'x');`,
+    );
+    post({ type: 'append-done', rows: handle.query_scalar_i64('SELECT count(*) FROM spike_meta') });
+    return;
+  }
+  // The order below is the contract: connection closed, VFS paused, message posted, lock released.
+  // pause_vfs() errors while any file handle is open (gap-11 §9 item 5). `lock-released` is NOT
+  // pushed here: `resign()` only resolves the `held` promise, and the browser releases the lock
+  // later, when the locks.request callback's promise settles. It is recorded in `elect`'s
+  // `onReleased`, which runs from a `.finally()` on that promise.
+  ready = false; // the store is about to close: no further command may run against it
+  order.push('resign-start');
+  handle.pause();
+  order.push('pause');
+  leaderSession.channel.postMessage({ type: 'leader-resigned', instance: instanceName });
+  order.push('leader-resigned');
+  leaderSession.resign();
+  post({ type: 'resigned' });
+}
+
+function drain(): void {
+  while (ready && pending.length > 0) {
+    runCommand(pending.shift() as Command);
+  }
 }
 
 /**
@@ -162,29 +224,13 @@ async function run(instance: string, badKek: boolean): Promise<void> {
         }
       });
 
-      scope.addEventListener('message', (event: MessageEvent) => {
-        const data = event.data as { type: string };
-        if (data.type === 'append' && handle !== undefined) {
-          handle.exec(
-            `INSERT OR REPLACE INTO spike_meta (key, value) VALUES ('row-${Date.now()}', 'x');`,
-          );
-          post({ type: 'rows', rows: handle.query_scalar_i64('SELECT count(*) FROM spike_meta') });
-        }
-        if (data.type === 'resign' && handle !== undefined) {
-          // The order below is the contract: connection closed, VFS paused, message posted, lock
-          // released. pause_vfs() errors while any file handle is open (gap-11 §9 item 5).
-          // `lock-released` is NOT pushed here: `resign()` only resolves the `held` promise, and the
-          // browser releases the lock later, when the locks.request callback's promise settles. It is
-          // recorded in `elect`'s `onReleased`, which runs from a `.finally()` on that promise.
-          order.push('resign-start');
-          handle.pause();
-          order.push('pause');
-          session.channel.postMessage({ type: 'leader-resigned', instance });
-          order.push('leader-resigned');
-          session.resign();
-          post({ type: 'resigned' });
-        }
-      });
+      // Everything the store needs is in place: the connection is open, capacity is reserved, both
+      // probes have run and the boot marker is written. Only now is the page allowed to send
+      // commands, and only now does anything queued while that was happening get to run.
+      leaderSession = session;
+      ready = true;
+      post({ type: 'ready' });
+      drain();
     },
     () => {
       order.push('follower');
@@ -208,11 +254,22 @@ async function run(instance: string, badKek: boolean): Promise<void> {
   );
 }
 
-scope.addEventListener('message', function bootstrap(event: MessageEvent) {
+// One listener for the worker's whole life. Removing it after `start` — which is what this used to
+// do — is what left the append click with nowhere to land until the leader callback installed a
+// second one (ruling J).
+scope.addEventListener('message', (event: MessageEvent) => {
   const data = event.data as { type: string; instance?: string; badKek?: boolean };
-  if (data.type !== 'start' || data.instance === undefined) return;
-  scope.removeEventListener('message', bootstrap);
-  void run(data.instance, data.badKek === true).catch((err: unknown) => {
-    post({ type: 'error', message: String(err) });
-  });
+  if (data.type === 'start') {
+    if (bootstrapped || data.instance === undefined) return;
+    bootstrapped = true;
+    instanceName = data.instance;
+    void run(data.instance, data.badKek === true).catch((err: unknown) => {
+      post({ type: 'error', message: String(err) });
+    });
+    return;
+  }
+  if (data.type === 'append' || data.type === 'resign') {
+    pending.push({ type: data.type });
+    drain();
+  }
 });

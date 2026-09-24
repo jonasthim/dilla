@@ -16,7 +16,9 @@
       <dt>rows</dt><dd data-testid="rows" id="rows">-</dd>
       <dt>boot marker</dt><dd data-testid="marker" id="marker">-</dd>
     </dl>
-    <button data-testid="append" id="append">append a row</button>
+    <!-- Inert until the worker reports the store open (ruling J): a click before that reached a
+         worker with no listener for it and was lost, leaving the row count behind. -->
+    <button data-testid="append" id="append" disabled>append a row</button>
     <button data-testid="resign" id="resign">resign leadership</button>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -11,7 +11,9 @@ test.describe('@matrix persistence across engines', () => {
     await page.goto(`/?instance=${id}`);
     await expect(page.getByTestId('mode')).toHaveText('opfs', { timeout: 60_000 });
     await page.getByTestId('append').click();
-    await expect(page.getByTestId('rows')).toHaveText('2');
+    // The same 60 s the assertions around it carry: CI runs three engines in parallel on a 4-vCPU
+    // runner, and the click lands only once the store is open, which is later than `mode` (ruling J).
+    await expect(page.getByTestId('rows')).toHaveText('2', { timeout: 60_000 });
     await page.reload();
     await expect(page.getByTestId('rows')).toHaveText('2', { timeout: 60_000 });
   });

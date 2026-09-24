@@ -38,6 +38,28 @@ const state: Record<string, unknown> = { order: [], instance };
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 
+const appendButton = document.getElementById('append') as HTMLButtonElement | null;
+
+/**
+ * Ruling J. The control ships `disabled` in the markup and is enabled only when the worker reports
+ * `ready`, i.e. the store is open and no request is in flight. `mode` is rendered from the
+ * persistence probe, which happens much earlier — an append clicked in between used to be posted to
+ * a worker that had no listener for it yet, and was simply lost (CI run 35969515418: `rows` stuck at
+ * 1 after the click). Disabling it again while a request is in flight is what serialises the
+ * requests; the worker queues anything that still slips through.
+ */
+let inFlight = 0;
+
+function setAppendEnabled(enabled: boolean): void {
+  if (appendButton !== null) appendButton.disabled = !enabled;
+  state.appendEnabled = enabled;
+}
+
+// The markup already carries `disabled`, so the control is inert before this module even runs; this
+// makes the same fact true of the exposed state, and keeps the page correct if the attribute is ever
+// dropped from index.html.
+setAppendEnabled(false);
+
 worker.addEventListener('message', (event: MessageEvent<WorkerReport>) => {
   const report = event.data;
   if (report.order !== undefined) state.order = report.order;
@@ -81,15 +103,33 @@ worker.addEventListener('message', (event: MessageEvent<WorkerReport>) => {
       }
       break;
     }
+    case 'ready':
+      // The store is open and idle: appending is now something the worker can actually do.
+      setAppendEnabled(true);
+      break;
     case 'rows':
+      // The follower's answer from the leader over the BroadcastChannel; it opened no store of its
+      // own, so this must not enable its control.
       text('rows', String(report.rows ?? ''));
+      break;
+    case 'append-done':
+      // Re-read from the store by the worker after the write, never counted up here.
+      text('rows', String(report.rows ?? ''));
+      inFlight -= 1;
+      if (inFlight <= 0) {
+        inFlight = 0;
+        setAppendEnabled(true);
+      }
       break;
     case 'resigned':
       text('role', 'resigned');
+      // The connection is closed and the VFS paused: there is nothing left to append to.
+      setAppendEnabled(false);
       break;
     case 'error':
       text('role', 'error');
       state.errorMessage = report.message;
+      setAppendEnabled(false);
       banner(`Store error: ${report.message ?? 'unknown'}`);
       break;
     default:
@@ -97,7 +137,9 @@ worker.addEventListener('message', (event: MessageEvent<WorkerReport>) => {
   }
 });
 
-document.getElementById('append')?.addEventListener('click', () => {
+appendButton?.addEventListener('click', () => {
+  inFlight += 1;
+  setAppendEnabled(false);
   worker.postMessage({ type: 'append' });
 });
 document.getElementById('resign')?.addEventListener('click', () => {

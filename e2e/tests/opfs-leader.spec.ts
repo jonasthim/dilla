@@ -33,6 +33,38 @@ test('a lone tab probes opfs, becomes leader on the first attempt and opens the 
   await expect(page.getByTestId('rows')).toHaveText('1');
 });
 
+// Ruling J. The page renders `mode` from the persistence probe, which finishes long before the
+// elected leader has opened the store. The append control used to be live from the first byte, so a
+// click in that window was posted to a worker whose only listener for it was installed later, inside
+// the leader callback — the message was dropped and the row count never moved. That is CI run
+// 35969515418: `mode` read `opfs`, `append` was clicked, `rows` stayed at 1.
+test('the append control is inert until the worker reports the store open', async ({ page }) => {
+  const id = instance('append-gate');
+  // `commit` rather than the default `load`, so the snapshot below is taken as early as the document
+  // allows; waiting for the element to be attached is what makes it evaluable at all.
+  await page.goto(`/?instance=${id}`, { waitUntil: 'commit' });
+  await page.locator('[data-testid="append"]').waitFor({ state: 'attached' });
+
+  // One evaluation, so the two facts come from the same task and cannot straddle a state change:
+  // while the probe has not reported a mode, the control is already unclickable. The page ships it
+  // `disabled` in the markup, so this is true from the moment the element exists.
+  const before = await page.evaluate(() => ({
+    mode: document.getElementById('mode')?.textContent ?? null,
+    disabled: (document.getElementById('append') as HTMLButtonElement).disabled,
+  }));
+  expect(before.mode).toBe('');
+  expect(before.disabled).toBe(true);
+
+  // ...and clickable once the store is open, which is strictly later than the mode.
+  await expect(page.getByTestId('mode')).toHaveText('opfs', { timeout: 60_000 });
+  await expect(page.getByTestId('append')).toBeEnabled({ timeout: 60_000 });
+  await expect(page.getByTestId('role')).toHaveText('leader');
+
+  // The whole point of the gate: a click that the control accepts is one the store actually takes.
+  await page.getByTestId('append').click();
+  await expect(page.getByTestId('rows')).toHaveText('2', { timeout: 60_000 });
+});
+
 test('the probe runs before install, and install creates the pool directory only in opfs mode', async ({ page }) => {
   const id = instance('probe-order');
   await boot(page, id);
