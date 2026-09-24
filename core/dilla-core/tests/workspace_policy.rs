@@ -33,6 +33,9 @@ fn version_constants_are_the_wire_values() {
     assert_eq!(dilla_core::E2EE_VERSION, 1);
     assert_eq!(dilla_core::MEDIA_VERSION, 1);
     assert_eq!(dilla_core::WIRE_VERSION, 1);
-    assert_eq!(dilla_core::ABI_VERSION, 1);
+    // 2 since 2026-09-24: `public_group_process` grew the applied-proposal list and
+    // `committer_updated`, and `validate_key_package` grows `kp_ref`. The wasi ABI is internal to
+    // dillad's host, so it moves on a response-shape change while the wire versions stay at 1.
+    assert_eq!(dilla_core::ABI_VERSION, 2);
     assert_eq!(dilla_core::CORE_VERSION, "0.1.0");
 }

@@ -76,6 +76,16 @@ impl Table {
         id
     }
 
+    /// Reads a staged commit **without** consuming it. `public_group_process` needs this between
+    /// staging and merging: the applied-proposal list of ABI v2 §3.1 is derived from the
+    /// `StagedCommit` the same call just inserted, and `take_staged` is reserved for
+    /// `public_group_merge`, which is the one call allowed to consume it.
+    pub fn staged(&self, handle: u32) -> Result<&PublicProcessed, AbiError> {
+        self.staged
+            .get(&handle)
+            .ok_or_else(|| AbiError::handle(format!("no staged commit for handle {handle}")))
+    }
+
     pub fn take_staged(&mut self, handle: u32) -> Result<PublicProcessed, AbiError> {
         self.staged
             .remove(&handle)
@@ -159,5 +169,37 @@ mod tests {
         let mut t = Table::new();
         assert_eq!(t.next_id(), 1);
         assert_eq!(t.group(0).unwrap_err().code, crate::abi::E_ABI_HANDLE);
+    }
+
+    /// ABI v2 §3.1: the applied list is read off the staged commit **by reference**, between
+    /// `process` and `merge`, so the handle must be readable without being consumed.
+    #[test]
+    fn a_staged_handle_is_readable_by_reference_and_still_taken_exactly_once() {
+        let mut t = Table::new();
+        let h = t.insert_staged(PublicProcessed::Rejected(
+            dilla_core::ProtocolError::Binding,
+        ));
+        assert!(matches!(t.staged(h), Ok(PublicProcessed::Rejected(_))));
+        assert!(
+            matches!(t.staged(h), Ok(PublicProcessed::Rejected(_))),
+            "reading by reference must not consume the handle"
+        );
+        assert_eq!(t.staged_count(), 1);
+        assert!(t.take_staged(h).is_ok());
+        assert_eq!(t.staged(h).unwrap_err().code, crate::abi::E_ABI_HANDLE);
+    }
+
+    /// The name says what the body does: `g + 1` was never issued by this table, so it is an
+    /// unknown handle, not a group handle. The cross-class case (a staged id is never a group id)
+    /// is already covered by `ids_are_shared_between_the_two_classes_so_a_staged_id_is_never_a_group_id`
+    /// in this same module.
+    #[test]
+    fn staged_by_reference_rejects_an_unknown_handle() {
+        let mut t = Table::new();
+        let g = t.insert_staged(PublicProcessed::Rejected(
+            dilla_core::ProtocolError::Binding,
+        ));
+        assert!(t.staged(g).is_ok());
+        assert_eq!(t.staged(g + 1).unwrap_err().code, crate::abi::E_ABI_HANDLE);
     }
 }

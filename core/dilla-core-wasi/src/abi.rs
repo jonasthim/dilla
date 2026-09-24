@@ -326,8 +326,14 @@ mod tests {
 
     #[test]
     fn open_accepts_the_current_version_and_leaves_the_cursor_after_it() {
-        // [1, 9]
-        let req = [0x82u8, 0x01, 0x09];
+        // [ABI_VERSION, 9]. Built through the encoder rather than hand-written bytes so the ABI
+        // bump of 2026-09-24 (v1 → v2) and every later one leave this test asserting `open`'s
+        // behaviour instead of a stale literal.
+        let req = {
+            let mut e = dilla_core::cbor::Encoder::new();
+            e.array(2).uint(dilla_core::ABI_VERSION).uint(9);
+            e.into_vec()
+        };
         let mut d = open(&req, 2).unwrap();
         assert_eq!(d.uint().unwrap(), 9);
         d.finish().unwrap();

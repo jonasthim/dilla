@@ -25,5 +25,10 @@ pub const E2EE_VERSION: u64 = 1;
 pub const MEDIA_VERSION: u64 = 1;
 /// The HTTP `/v1` and gateway frame version (protocol/07-versioning.md).
 pub const WIRE_VERSION: u64 = 1;
-/// The wasi ABI version carried in every request and response envelope.
-pub const ABI_VERSION: u64 = 1;
+/// The wasi ABI version every request carries as element 0.
+///
+/// **2** since 2026-09-24: `public_group_process`'s response grew from 6 to 8 elements (the
+/// applied-proposal list and `committer_updated`) and `validate_key_package`'s from 5 to 6
+/// (`kp_ref`). Both are response-shape changes, and dillad's host is the only consumer, so the
+/// version moves instead of a compatibility shim being written (R27, interfaces §3).
+pub const ABI_VERSION: u64 = 2;

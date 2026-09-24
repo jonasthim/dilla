@@ -16,6 +16,10 @@ use dilla_core::public_group::{
 // 0.9.0 (`messages::proposals` imports it privately) — the same finding `public_group::state`
 // records.
 use openmls::ciphersuite::hash_ref::ProposalRef;
+// Named explicitly so the two types this file's ABI v2 code leans on are visible at the top of
+// the file rather than arriving through the glob.
+use openmls::group::StagedCommit;
+use openmls::messages::proposals::Proposal;
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::RustCrypto;
@@ -37,6 +41,7 @@ pub fn dispatch(export: &str, req: &[u8]) -> Vec<u8> {
         "public_group_close" => public_group_close(req, t),
         "public_group_process" => public_group_process(req, t),
         "public_group_merge" => public_group_merge(req, t),
+        "public_group_staged_discard" => public_group_staged_discard(req, t),
         "public_group_tree" => public_group_tree(req, t),
         "public_group_state" => public_group_state(req, t),
         "public_group_proposal_put" => public_group_proposal_put(req, t),
@@ -192,12 +197,85 @@ fn public_group_process(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> 
         PublicProcessed::Rejected(_) => (3, None, None, None),
     };
 
+    // ABI v2: the applied list and the committer-update flag. Both elements are always present;
+    // for anything but a commit they are the empty array and 0. The staged commit is read back
+    // **by reference** (`Table::staged`), never taken: `public_group_merge` is the one consumer.
+    let (applied, committer_updated) = match staged {
+        Some(h) => match t.staged(h)? {
+            PublicProcessed::StagedCommit { staged, .. } => (
+                applied_proposals(staged)?,
+                u64::from(staged.update_path_leaf_node().is_some()),
+            ),
+            _ => (Vec::new(), 0),
+        },
+        None => (Vec::new(), 0),
+    };
+
     let mut e = Encoder::new();
-    e.array(6).uint(0).uint(kind).uint(epoch);
+    e.array(8).uint(0).uint(kind).uint(epoch);
     e.opt_uint(sender_leaf.map(u64::from));
     e.opt_uint(staged.map(u64::from));
     e.opt_bytes(proposal_ref.as_deref());
+    e.array(applied.len());
+    for item in &applied {
+        e.array(5).bytes(&item.proposal_ref).uint(item.kind);
+        e.opt_uint(item.sender_leaf.map(u64::from));
+        e.opt_uint(item.target_leaf.map(u64::from));
+        e.opt_bytes(item.credential_identity.as_deref());
+    }
+    e.uint(committer_updated);
     Ok(e.into_vec())
+}
+
+/// One entry of ABI v2 §3.1's `applied` array.
+struct Applied {
+    proposal_ref: Vec<u8>,
+    kind: u64,
+    sender_leaf: Option<u32>,
+    target_leaf: Option<u32>,
+    credential_identity: Option<Vec<u8>>,
+}
+
+/// Every proposal the commit resolved, in the order `StagedCommit` reports them.
+///
+/// `kind` is the RFC 9420 proposal type as `protocol/02-delivery-service.md` numbers it —
+/// 1 add, 2 update, 3 remove, 4 psk, 5 reinit, 6 external_init, 7 group_context_extensions.
+/// Anything else (openmls 0.9.0 also has `SelfRemove`, `Custom` and the two `extensions-draft`
+/// variants) is a shape failure rather than a silently dropped item: invariant 4 clause 1 is a
+/// **set** comparison against the DS's outstanding proposals, and an item the DS cannot name is
+/// exactly the case where discarding it would let an unreferenced proposal through.
+fn applied_proposals(staged: &StagedCommit) -> Result<Vec<Applied>, AbiError> {
+    let mut out = Vec::new();
+    for queued in staged.queued_proposals() {
+        let sender_leaf = match queued.sender() {
+            Sender::Member(index) => Some(index.u32()),
+            _ => None,
+        };
+        let proposal_ref = queued.proposal_reference_ref().as_slice().to_vec();
+        let (kind, target_leaf, credential_identity) = match queued.proposal() {
+            Proposal::Add(add) => (1u64, None, Some(leaf_credential_bytes(add.key_package())?)),
+            Proposal::Update(_) => (2, None, None),
+            Proposal::Remove(remove) => (3, Some(remove.removed().u32()), None),
+            Proposal::PreSharedKey(_) => (4, None, None),
+            Proposal::ReInit(_) => (5, None, None),
+            Proposal::ExternalInit(_) => (6, None, None),
+            Proposal::GroupContextExtensions(_) => (7, None, None),
+            other => {
+                return Err(AbiError::shape(format!(
+                    "commit applies an unsupported proposal type {:?}",
+                    other.proposal_type()
+                )));
+            }
+        };
+        out.push(Applied {
+            proposal_ref,
+            kind,
+            sender_leaf,
+            target_leaf,
+            credential_identity,
+        });
+    }
+    Ok(out)
 }
 
 fn public_group_merge(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
@@ -221,6 +299,27 @@ fn public_group_merge(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
 
     let mut e = Encoder::new();
     e.array(2).uint(0).uint(epoch);
+    Ok(e.into_vec())
+}
+
+/// Releases a staged commit the DS decided not to merge. `public_group_process` inserts the
+/// `StagedCommit` before the delivery service has checked invariant 4, and every refusal path
+/// (an omitted outstanding proposal, a committer Update, a cross-user Remove, a GroupInfo whose
+/// epoch or signature is wrong) leaves that handle behind. `public_group_merge` consumes a handle
+/// but also advances the group, which is exactly what a refusal must not do — so the ABI needs a
+/// second, non-advancing consumer. Discarding an unknown handle is `E_ABI_HANDLE`, so a double
+/// discard is a clean error rather than a silent success.
+fn public_group_staged_discard(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
+    let mut d = abi::open(req, 3)?;
+    let handle = abi::read_handle(&mut d)?;
+    let staged = abi::read_handle(&mut d)?;
+    d.finish()?;
+    // The group handle is validated so a discard against the wrong group is refused rather than
+    // silently dropping another group's staged commit.
+    let _ = t.group(handle)?;
+    t.take_staged(staged)?;
+    let mut e = Encoder::new();
+    e.array(1).uint(0);
     Ok(e.into_vec())
 }
 
@@ -800,5 +899,302 @@ mod tests {
         );
         crate::abi::tls::mls_message_in(&message)
             .expect("the output must be a well-formed MLSMessage");
+    }
+
+    // The fixture's own commits are the only committed multi-thousand-leaf MLS messages in the
+    // tree, and all ten are alternatives at the same base epoch, so each applies cleanly to a
+    // freshly created fixture group. `testkit/src/fixtures.rs:158-215` fixes which is which:
+    //   commits/00..07 - `DillaGroup::add_members` over MAX_ADDS_PER_COMMIT (256) KeyPackages
+    //   commits/08     - `DillaGroup::remove_members(&[LeafNodeIndex::new(1)])`
+    //   commits/09     - `DillaGroup::self_update`
+    // Naming the generator line in each constant is deliberate: a fixture regeneration that
+    // reorders the ten commits must fail these tests loudly rather than silently assert nothing.
+
+    /// `testkit/src/fixtures.rs:158-181` - 256 inline Add proposals, one per KeyPackage.
+    const FIXTURE_COMMIT_ADD: &[u8] =
+        include_bytes!("../../../testkit/fixtures/ds-1500/commits/00.mls");
+    /// `testkit/src/fixtures.rs:189-199` - one Remove of leaf 1.
+    const FIXTURE_COMMIT_REMOVE: &[u8] =
+        include_bytes!("../../../testkit/fixtures/ds-1500/commits/08.mls");
+    /// `testkit/src/fixtures.rs:207-215` - a self-update: no proposals at all.
+    const FIXTURE_COMMIT_SELF_UPDATE: &[u8] =
+        include_bytes!("../../../testkit/fixtures/ds-1500/commits/09.mls");
+
+    /// Decodes the ABI v2 `public_group_process` response and returns
+    /// `(kind, epoch, sender_leaf, staged, applied, committer_updated)`.
+    #[allow(clippy::type_complexity)]
+    fn process(
+        handle: u64,
+        message: &[u8],
+    ) -> (u64, u64, Option<u64>, Option<u64>, Vec<AppliedItem>, u64) {
+        let r = req(|e| {
+            e.array(3)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .bytes(message);
+        });
+        let out = dispatch("public_group_process", &r);
+        decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(8)?;
+            assert_eq!(
+                d.uint()?,
+                0,
+                "public_group_process must accept the fixture commit"
+            );
+            let kind = d.uint()?;
+            let epoch = d.uint()?;
+            let sender_leaf = d.opt_uint()?;
+            let staged = d.opt_uint()?;
+            d.skip()?; // proposal_ref
+            let n = d.array_len()?;
+            let mut applied = Vec::with_capacity(n);
+            for _ in 0..n {
+                d.array(5)?;
+                let proposal_ref = d.bytes()?.to_vec();
+                let kind = d.uint()?;
+                let sender_leaf = d.opt_uint()?;
+                let target_leaf = d.opt_uint()?;
+                let credential_identity = d.opt_bytes()?.map(<[u8]>::to_vec);
+                applied.push(AppliedItem {
+                    proposal_ref,
+                    kind,
+                    sender_leaf,
+                    target_leaf,
+                    credential_identity,
+                });
+            }
+            let committer_updated = d.uint()?;
+            Ok((kind, epoch, sender_leaf, staged, applied, committer_updated))
+        })
+        .expect("the process response is deterministic CBOR")
+    }
+
+    #[derive(Debug)]
+    struct AppliedItem {
+        proposal_ref: Vec<u8>,
+        kind: u64,
+        sender_leaf: Option<u64>,
+        target_leaf: Option<u64>,
+        credential_identity: Option<Vec<u8>>,
+    }
+
+    /// interfaces §3: the response-shape change forces `abi_version = 2`.
+    #[test]
+    fn dilla_abi_reports_version_two() {
+        let out = dispatch("dilla_abi", &version_only());
+        let abi = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(6)?;
+            assert_eq!(d.uint()?, 0);
+            let abi = d.uint()?;
+            // `decode_strict` insists the whole frame is consumed, so the four elements this test
+            // does not assert (core_version, e2ee_version, media_version, ciphersuites) are
+            // skipped rather than left as trailing bytes.
+            d.skip()?; // core_version
+            d.skip()?; // e2ee_version
+            d.skip()?; // media_version
+            d.skip()?; // the ciphersuite array
+            Ok(abi)
+        })
+        .unwrap();
+        assert_eq!(
+            abi, 2,
+            "ABI v2: the process and validate_key_package responses grew"
+        );
+        assert_eq!(dilla_core::ABI_VERSION, 2);
+    }
+
+    /// An ABI v1 request must now be refused outright — there is no compatibility shim (§3).
+    #[test]
+    fn an_abi_version_one_request_is_refused() {
+        let r = req(|e| {
+            e.array(1).uint(1);
+        });
+        let (code, detail) = failure(&dispatch("dilla_abi", &r));
+        assert_eq!(code, crate::abi::E_ABI_VERSION);
+        assert!(
+            detail.contains('1') && detail.contains('2'),
+            "detail: {detail}"
+        );
+    }
+
+    /// Kind 1. `DillaGroup::add_members` builds one inline Add proposal per KeyPackage and
+    /// `StagedCommit::queued_proposals()` iterates the whole staged queue, inline proposals
+    /// included (openmls-0.9.0 `staged_commit.rs:926`), so `applied` has exactly
+    /// `MAX_ADDS_PER_COMMIT` items. `add_members` passes `force_self_update(true)` to the commit
+    /// builder (openmls-0.9.0 `src/group/mls_group/membership.rs:59,165`), so the UpdatePath is
+    /// present and `committer_updated` is 1.
+    #[test]
+    fn an_add_commit_reports_one_applied_item_per_key_package() {
+        let (handle, epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (kind, got_epoch, sender_leaf, staged, applied, committer_updated) =
+            process(handle, FIXTURE_COMMIT_ADD);
+        assert_eq!(kind, 1, "a commit");
+        assert_eq!(got_epoch, epoch, "process reports the pre-merge epoch");
+        assert!(sender_leaf.is_some(), "a member commit names its leaf");
+        assert!(staged.is_some(), "a commit yields a staged handle");
+        assert_eq!(
+            applied.len(),
+            dilla_core::mls::MAX_ADDS_PER_COMMIT,
+            "commits/00.mls carries one inline Add per KeyPackage"
+        );
+        for item in &applied {
+            assert_eq!(item.kind, 1, "every item is an Add");
+            assert_eq!(
+                item.sender_leaf, sender_leaf,
+                "an inline proposal is attributed to the committer's own leaf"
+            );
+            assert!(item.target_leaf.is_none(), "an Add names no leaf");
+            assert!(!item.proposal_ref.is_empty(), "every item carries its ref");
+            let identity = item
+                .credential_identity
+                .as_ref()
+                .expect("an Add carries the joiner's credential identity");
+            dilla_core::identity::CredentialIdentity::decode(identity)
+                .expect("the credential identity is the core's 10-element CBOR array");
+        }
+        assert_eq!(committer_updated, 1, "add_members forces a self-update");
+    }
+
+    /// Kind 3, with `target_leaf` set and no credential identity.
+    #[test]
+    fn a_remove_commit_reports_the_removed_leaf() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (kind, _got_epoch, _sender_leaf, staged, applied, committer_updated) =
+            process(handle, FIXTURE_COMMIT_REMOVE);
+        assert_eq!(kind, 1, "a commit");
+        assert!(staged.is_some());
+        assert_eq!(
+            applied.len(),
+            1,
+            "commits/08.mls removes exactly one leaf: {applied:?}"
+        );
+        assert_eq!(applied[0].kind, 3, "a Remove");
+        assert_eq!(
+            applied[0].target_leaf,
+            Some(1),
+            "leaf 1, per fixtures.rs:195"
+        );
+        assert!(
+            applied[0].credential_identity.is_none(),
+            "a Remove carries no credential"
+        );
+        assert_eq!(
+            committer_updated, 1,
+            "a Remove requires an UpdatePath (RFC 9420 §17.4)"
+        );
+    }
+
+    /// The zero-proposal arm: a self-update commit stages, applies nothing, and sets the flag.
+    #[test]
+    fn a_self_update_commit_reports_no_proposals_and_the_committer_update_flag() {
+        let (handle, epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (kind, got_epoch, sender_leaf, staged, applied, committer_updated) =
+            process(handle, FIXTURE_COMMIT_SELF_UPDATE);
+        assert_eq!(kind, 1, "a commit");
+        assert_eq!(got_epoch, epoch, "process reports the pre-merge epoch");
+        assert!(sender_leaf.is_some(), "a member commit names its leaf");
+        assert!(staged.is_some(), "a commit yields a staged handle");
+        assert!(
+            applied.is_empty(),
+            "commits/09.mls references no proposals: {applied:?}"
+        );
+        assert_eq!(
+            committer_updated, 1,
+            "a self-update always carries an UpdatePath"
+        );
+    }
+
+    /// The staged handle survives the applied read and is consumed exactly once by merge.
+    #[test]
+    fn the_staged_handle_from_a_v2_process_still_merges_exactly_once() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (_kind, _epoch, _sender, staged, _applied, _updated) =
+            process(handle, FIXTURE_COMMIT_SELF_UPDATE);
+        let staged = staged.expect("a commit stages");
+        let merge = req(|e| {
+            e.array(3)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .uint(staged);
+        });
+        let epoch = decode_strict(
+            &dispatch("public_group_merge", &merge),
+            |d: &mut Decoder<'_>| {
+                d.array(2)?;
+                assert_eq!(d.uint()?, 0);
+                d.uint()
+            },
+        )
+        .unwrap();
+        assert!(epoch > 0);
+        let (code, _) = failure(&dispatch("public_group_merge", &merge));
+        assert_eq!(
+            code,
+            crate::abi::E_ABI_HANDLE,
+            "the staged handle is consumed by merge"
+        );
+    }
+
+    /// A refused commit must not leak its staged handle. `public_group_process` inserts the
+    /// `StagedCommit` before the DS has run invariant 4, and the DS refuses commits routinely
+    /// (an omitted outstanding proposal, a committer Update, a cross-user Remove, a wrong
+    /// GroupInfo). `public_group_merge` is the only other consumer, so without a discard a
+    /// client that retries a refused commit in a loop grows the handle table without bound.
+    #[test]
+    fn a_staged_handle_can_be_discarded_without_merging() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (_kind, _epoch, _sender, staged, _applied, _updated) =
+            process(handle, FIXTURE_COMMIT_SELF_UPDATE);
+        let staged = staged.expect("a commit stages");
+        let discard = req(|e| {
+            e.array(3)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .uint(staged);
+        });
+        decode_strict(
+            &dispatch("public_group_staged_discard", &discard),
+            |d: &mut Decoder<'_>| {
+                d.array(1)?;
+                assert_eq!(d.uint()?, 0);
+                Ok(())
+            },
+        )
+        .expect("discard answers [0]");
+        let (code, _) = failure(&dispatch("public_group_staged_discard", &discard));
+        assert_eq!(
+            code,
+            crate::abi::E_ABI_HANDLE,
+            "the handle is gone after one discard"
+        );
+        let (code, _) = failure(&dispatch("public_group_merge", &discard));
+        assert_eq!(
+            code,
+            crate::abi::E_ABI_HANDLE,
+            "and merge cannot resurrect it"
+        );
+    }
+
+    /// A proposal, not a commit: `applied` is empty and `committer_updated` is 0 even though the
+    /// two elements are always present (fixed positions, §3.1).
+    #[test]
+    fn a_non_commit_still_carries_the_two_new_elements() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        // A truncated message is rejected by the TLS decoder, which is an error frame, so the
+        // shape assertion uses the fixture commit's own staged response instead: both new
+        // elements are present for every accepted message, and `a_commit_with_an_update_path…`
+        // above covers the commit arm. This test pins the *rejected* arm's shape.
+        let r = req(|e| {
+            e.array(3)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .bytes(&[]);
+        });
+        let (code, _detail) = failure(&dispatch("public_group_process", &r));
+        assert_eq!(
+            code,
+            crate::abi::E_ABI_SHAPE,
+            "an empty message is a shape failure, never a trap"
+        );
     }
 }

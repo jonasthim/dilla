@@ -336,6 +336,17 @@ fn optional_readers_consume_nothing_on_a_non_null() {
     assert_eq!(got, Some(100));
 }
 
+/// The variable-length twin of `opt_bytes_exact`, added for ABI v2's `credential_identity`.
+#[test]
+fn opt_bytes_reads_a_bstr_or_a_null() {
+    let mut d = Decoder::new(&[0xf6]);
+    assert_eq!(d.opt_bytes().unwrap(), None);
+    let mut d = Decoder::new(&[0x43, 1, 2, 3]);
+    assert_eq!(d.opt_bytes().unwrap(), Some(&[1u8, 2, 3][..]));
+    let mut d = Decoder::new(&[0x01]);
+    assert!(d.opt_bytes().is_err(), "a uint is not a bstr");
+}
+
 #[test]
 fn raw_splices_an_already_encoded_sub_item() {
     let mut inner = Encoder::new();
