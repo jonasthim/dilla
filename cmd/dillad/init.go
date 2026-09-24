@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/exit"
@@ -22,16 +23,6 @@ import (
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
 	"github.com/pressly/goose/v3"
 )
-
-// newInviteCode mints a bootstrap invite code and its SHA-256. It is a local
-// copy on purpose: internal/auth does not exist until task 8, and task 8 step 1
-// deletes this function and points the call below at auth.NewInviteCode. The
-// body is auth.NewInviteCode's, so the two can never disagree while both exist.
-func newInviteCode() (string, []byte) {
-	code := rand.Text()
-	sum := sha256.Sum256([]byte(code))
-	return code, sum[:]
-}
 
 // writeSecret writes n CSPRNG bytes as lowercase hex at mode 0600 and returns
 // the path. init generates every secret file its own config references, because
@@ -158,7 +149,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		InstanceID: id.New(), ExternalSenderKeyID: externalSenderKeyID, KeyHistory: keyHistory,
 		FrankingKeyID: frankingKeyID, Generation: 1, PolicyVersion: 1, Created: now,
 	}
-	code, hash := newInviteCode()
+	code, hash := auth.NewInviteCode()
 	invite := store.InviteRow{
 		ID: id.New(), CodeHash: hash, GrantsAdmin: 1, MaxUses: 1,
 		Created: now, ExpiresAt: now + int64(24*time.Hour/time.Second),

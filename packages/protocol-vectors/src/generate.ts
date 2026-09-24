@@ -1,10 +1,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hex } from './bytes.ts';
+import { fromHex, hex } from './bytes.ts';
 import { encodeEnvelope, frankingCommitment, frankingTag, EnvelopeType, type Envelope, type Attachment, type Preview } from './envelope.ts';
 import { kid, deriveFrameKeys, counter, nonce, encodeSframeHeader, SUITE } from './sframe.ts';
-import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity, sskMessage, dskMessage } from './identity.ts';
+import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity, sskMessage, dskMessage, sessionPreimage } from './identity.ts';
 import { keyFromSeed, sign } from './ed25519.ts';
 
 export const VECTORS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'protocol', 'vectors');
@@ -109,9 +109,16 @@ export async function identityVectors() {
   const sigUmkSsk = await sign(umk.privateKey, sskMessage(ssk.publicKey));
   const sigSskDev = await sign(ssk.privateKey, dskMessage(deviceId, dsk.publicKey, kind, tier, signerTier));
 
+  // The device-session signature preimage (02-delivery-service.md "Device sessions"). The inputs
+  // are fixed, not random, so a client in any language can check its own 81 bytes against the
+  // instance's without running a handshake.
+  const sessionInstanceId = fromHex('00112233445566778899aabbccddeeff');
+  const sessionDeviceId = fromHex('0102030405060708090a0b0c0d0e0f10');
+  const sessionNonce = fill(32, 0xab);
+
   return {
     version: 1,
-    description: 'safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR with real Ed25519 signatures (03-identity.md)',
+    description: 'safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR with real Ed25519 signatures, and the 81-byte device-session signature preimage (03-identity.md, 02-delivery-service.md)',
     safety_number: { umk_a: hex(umkA), umk_b: hex(umkB), digits: await safetyNumber(umkA, umkB) },
     sas: { epoch_authenticator: hex(fill(32, 0xc3)), digits: sas(fill(32, 0xc3)) },
     recovery_key: { rk: hex(rk), base32: recoveryKeyBase32(rk), k_header: hex(keys.header), k_backup: hex(keys.archive) },
@@ -129,6 +136,13 @@ export async function identityVectors() {
         umkPub: umk.publicKey, userId, deviceId, kind, tier, signerTier,
         sskPub: ssk.publicKey, sigUmkSsk, sigSskDev,
       })),
+    },
+    session_preimage: {
+      instance_id: hex(sessionInstanceId),
+      device_id: hex(sessionDeviceId),
+      nonce: hex(sessionNonce),
+      purpose: 0,
+      preimage: hex(sessionPreimage(sessionInstanceId, sessionDeviceId, sessionNonce, 0)),
     },
   };
 }
