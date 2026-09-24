@@ -133,6 +133,18 @@ impl DeviceList {
             })
         })
         .map_err(|_| ProtocolError::Credential)
+        // protocol/03-identity.md writes `v ; uint, = 1`. Without this a future version decodes
+        // as if it were version 1, and every rule below — the version/`prev_hash` chain and the
+        // `revoked_at` check that is dilla's only cryptographic revocation — is then applied to a
+        // structure this build does not understand. (`E_UNSUPPORTED_VERSION` per the final-fix
+        // brief's item 4 ruling.)
+        .and_then(|l| {
+            if l.unsigned.v == 1 {
+                Ok(l)
+            } else {
+                Err(ProtocolError::UnsupportedVersion)
+            }
+        })
     }
 
     /// SHA-256 of the full 6-element encoding. This is what the next version's `prev_hash` carries.
@@ -261,6 +273,22 @@ mod tests {
         let mut msg = b"dilla devices v1".to_vec();
         msg.extend_from_slice(&l.unsigned.encode());
         assert_eq!(l.unsigned.signing_message(), msg);
+    }
+
+    /// protocol/03-identity.md writes `v ; uint, = 1` for the device list as it does for the
+    /// credential and the two pairing payloads. Without the guard a `v = 2` list decoded as if it
+    /// were version 1, and the revocation rules — which are the only cryptographic revocation
+    /// dilla has — were applied to a structure this build does not understand.
+    #[test]
+    fn device_list_decode_rejects_an_unknown_version() {
+        let mut future = list(1, [0u8; 32], vec![entry(0x01, None)]);
+        future.unsigned.v = 2;
+        assert_eq!(
+            DeviceList::decode(&future.encode()),
+            Err(ProtocolError::UnsupportedVersion)
+        );
+        let ok = list(1, [0u8; 32], vec![entry(0x01, None)]);
+        assert!(DeviceList::decode(&ok.encode()).is_ok());
     }
 
     #[test]

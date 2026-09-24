@@ -184,6 +184,17 @@ impl PairingPayload {
             })
         })
         .map_err(|_| ProtocolError::Credential)
+        // protocol/03-identity.md writes `v ; uint, = 1` here too. This payload hands the new
+        // device the SSK, the archive key and the pin table, so decoding an unknown version as if
+        // it were version 1 installs long-term secrets from a structure this build cannot read.
+        // (`E_UNSUPPORTED_VERSION` per the final-fix brief's item 4 ruling.)
+        .and_then(|p| {
+            if p.v == 1 {
+                Ok(p)
+            } else {
+                Err(ProtocolError::UnsupportedVersion)
+            }
+        })
     }
 }
 
@@ -301,6 +312,20 @@ mod tests {
             PairingPayload::decode(&bytes),
             Err(ProtocolError::Credential)
         );
+    }
+
+    /// protocol/03-identity.md writes `v ; uint, = 1` for the pairing payload as it does for the
+    /// credential, the QR payload and the device list. Without the guard a `v = 2` blob decoded
+    /// as if it were version 1 and the caller installed the SSK and pin table it carried.
+    #[test]
+    fn pairing_payload_decode_rejects_an_unknown_version() {
+        let mut future = full_payload();
+        future.v = 2;
+        assert_eq!(
+            PairingPayload::decode(&future.encode()),
+            Err(ProtocolError::UnsupportedVersion)
+        );
+        assert!(PairingPayload::decode(&full_payload().encode()).is_ok());
     }
 
     #[test]
