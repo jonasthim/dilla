@@ -75,7 +75,10 @@ export function checkErrorVocabulary(root) {
     // until then — task 0 runs before task 6.
     goExists = false;
   }
-  const inDoc = new Set([...doc.matchAll(/`(E_[A-Z_]+)`/g)].map(m => m[1]));
+  // Scoped to the "## Errors" status table's rows, not every backticked `E_*` token in the file:
+  // sections like "## Gateway frames" also mention `E_*` codes in prose (e.g. `E_FRAME_TYPE`) that
+  // are not HTTP error codes and have no row in the table, so Go has nothing to declare for them.
+  const inDoc = new Set([...doc.matchAll(/^\|\s*\d{3}\s*\|\s*`(E_[A-Z_]+)`/gm)].map(m => m[1]));
   const inRust = new Set([...rust.matchAll(/"(E_[A-Z_]+)"/g)].map(m => m[1]));
   const inGo = new Set([...go.matchAll(/Code\s*=\s*"(E_[A-Z_]+)"/g)].map(m => m[1]));
   for (const code of inRust) {

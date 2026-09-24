@@ -85,3 +85,51 @@ test('checkErrorVocabulary reports a code present in state.rs but absent from 02
   assert.ok(problems.some(p => p.includes('E_TOO_LARGE')));
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('checkErrorVocabulary scopes doc codes to the Errors status table, not every backticked E_* token in the file', () => {
+  // 02 also has a "## Gateway frames" section that mentions E_FRAME_* codes in prose, never as a
+  // status-table row. Those are not HTTP error codes and Go has nothing to declare for them.
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-vocab-'));
+  mkdirSync(join(dir, 'protocol'), { recursive: true });
+  mkdirSync(join(dir, 'testkit', 'src', 'ds'), { recursive: true });
+  mkdirSync(join(dir, 'internal', 'server'), { recursive: true });
+  writeFileSync(join(dir, 'protocol', '02-delivery-service.md'),
+    '## Gateway frames\n\n' +
+    'An opcode outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored.\n' +
+    'A frame of the wrong element count for its opcode is `E_FRAME_SHAPE`.\n\n' +
+    '## Errors\n\n' +
+    '| HTTP | code | meaning |\n|---|---|---|\n| 404 | `E_NOT_FOUND` | x |\n');
+  writeFileSync(join(dir, 'testkit', 'src', 'ds', 'state.rs'), '"E_NOT_FOUND"\n');
+  writeFileSync(join(dir, 'internal', 'server', 'errors.go'), 'const CodeNotFound Code = "E_NOT_FOUND"\n');
+  const problems = checkErrorVocabulary(dir);
+  assert.deepEqual(problems.filter(p => p.includes('E_FRAME_')), [],
+    'gateway-frame codes are not status-table rows and must not be demanded of internal/server/errors.go');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('checkErrorVocabulary reports a code present in errors.go but absent from 02\'s Errors table (the Go direction)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-vocab-'));
+  mkdirSync(join(dir, 'protocol'), { recursive: true });
+  mkdirSync(join(dir, 'testkit', 'src', 'ds'), { recursive: true });
+  mkdirSync(join(dir, 'internal', 'server'), { recursive: true });
+  writeFileSync(join(dir, 'protocol', '02-delivery-service.md'),
+    '## Errors\n\n| HTTP | code | meaning |\n|---|---|---|\n| 404 | `E_NOT_FOUND` | x |\n');
+  writeFileSync(join(dir, 'testkit', 'src', 'ds', 'state.rs'), '"E_NOT_FOUND"\n');
+  writeFileSync(join(dir, 'internal', 'server', 'errors.go'),
+    'const CodeNotFound Code = "E_NOT_FOUND"\nconst CodeMystery Code = "E_MYSTERY"\n');
+  const problems = checkErrorVocabulary(dir);
+  assert.ok(problems.includes('02-delivery-service.md: missing code E_MYSTERY present in internal/server/errors.go'));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('checkErrorVocabulary skips both Go legs entirely when internal/server/errors.go does not exist yet', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-vocab-'));
+  mkdirSync(join(dir, 'protocol'), { recursive: true });
+  mkdirSync(join(dir, 'testkit', 'src', 'ds'), { recursive: true });
+  writeFileSync(join(dir, 'protocol', '02-delivery-service.md'),
+    '## Errors\n\n| HTTP | code | meaning |\n|---|---|---|\n| 404 | `E_NOT_FOUND` | x |\n');
+  writeFileSync(join(dir, 'testkit', 'src', 'ds', 'state.rs'), '"E_NOT_FOUND"\n');
+  const problems = checkErrorVocabulary(dir);
+  assert.deepEqual(problems.filter(p => p.includes('errors.go')), []);
+  rmSync(dir, { recursive: true, force: true });
+});
