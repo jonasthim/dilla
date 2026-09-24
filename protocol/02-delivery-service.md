@@ -209,21 +209,21 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
 
 1. **Registration.** A group is registered with its `dilla_binding`. The DS refuses a `text` group
    for a channel whose visibility is `invite` or `discoverable`, or whose mode is `readable`
-   (`403 mode_readable`). `call` groups exist for every voice session regardless of the channel's
+   (`403 E_MODE_READABLE`). `call` groups exist for every voice session regardless of the channel's
    text mode.
 2. **Tree service.** The DS keeps a `PublicGroup` per group. Committers upload a GroupInfo
    **without** the ratchet tree; the DS serves the tree from its own `PublicGroup`, and a joiner
    MUST verify `tree_hash` in the GroupInfo against the served tree before joining.
 3. **One commit per epoch.** The first valid Commit for epoch `n` wins; a later one for the same
-   epoch gets `409 commit_conflict` with the winning commit and the current outstanding proposals.
+   epoch gets `409 E_COMMIT_CONFLICT` with the winning commit and the current outstanding proposals.
 4. **Commit validity.** A Commit is accepted only if: it is signed by a current leaf or is a valid
    external commit; it references every outstanding non-void DS proposal (invariant 6); it
    contains no `Update` from the committer; every member-originated `Remove` targets the
    committer's own user; every `Add` carries a credential whose user is eligible under the channel's
    ACL and whose DSK is in the newest signed device list the DS holds; the `PublicGroup` validates
-   it structurally; and the uploaded GroupInfo's epoch is `n + 1`. Otherwise `422 commit_invalid`.
+   it structurally; and the uploaded GroupInfo's epoch is `n + 1`. Otherwise `422 E_COMMIT_INVALID`.
 5. **Freeze.** While any DS proposal is outstanding for a group, application messages get
-   `425 commit_required`, and external commits get `425 commit_required` too — **unless no member
+   `425 E_COMMIT_REQUIRED`, and external commits get `425 E_COMMIT_REQUIRED` too — **unless no member
    device is online**, in which case the external commit is accepted, the outstanding proposals are
    re-issued for the new epoch, and `mls.commit_needed` goes to the joiner. After any commit that
    omitted DS proposals (only possible via this exception), non-void ones are re-issued and the
@@ -250,9 +250,9 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    connection's writer is not an acknowledgement. Three acknowledged-and-lost rounds remove the
    device; unacknowledged rounds only advance the election.
 8. **Current-leaf sends.** Application messages are accepted only from a device session whose
-   leaf is in the current `PublicGroup` (`403 leaf_not_current`). The DS reads the franking
+   leaf is in the current `PublicGroup` (`403 E_LEAF_NOT_CURRENT`). The DS reads the franking
    commitment `C` from `private_message.authenticated_data` and MUST reject an upload whose
-   `authenticated_data` is not exactly 32 bytes (`422 commitment_invalid`); it then computes and
+   `authenticated_data` is not exactly 32 bytes (`422 E_COMMITMENT_INVALID`); it then computes and
    stores the franking tag `T` over that value (`04-envelope-and-franking.md`, "Franking").
 9. **Fork handling.** A member that cannot process an accepted Commit reports it
    (`POST /fork-report`) and resyncs to the DS head by external commit. Three distinct reports

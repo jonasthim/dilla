@@ -61,7 +61,7 @@ instance ever reading content and without the reporter being able to forge it.
   (32 random bytes, rotated yearly, old keys kept for verification). The DS reads `C` directly from
   the `PrivateMessage`'s `authenticated_data` — there is no separate `commitment` field on the
   upload — and MUST reject an upload whose `authenticated_data` is not exactly 32 bytes
-  (`422 commitment_invalid`, `02-delivery-service.md`):
+  (`422 E_COMMITMENT_INVALID`, `02-delivery-service.md`):
   `T = HMAC-SHA256(K_frank, "dilla frank tag v1" || group_id || epoch(8, big-endian) || seq(8) || uploader_device(16) || C || recv_ts(8))`.
   The instance stores `(seq, epoch, uploader_device, C, T, recv_ts)` with the ciphertext and returns
   `T` and `recv_ts` to the uploader.
