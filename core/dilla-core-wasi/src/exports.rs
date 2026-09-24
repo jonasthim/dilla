@@ -1,4 +1,5 @@
-//! The fifteen `(ptr, len) -> u64` handlers of interfaces §2.10, written as pure functions over
+//! The `(ptr, len) -> u64` handlers of interfaces §2.10 — the fifteen shipped at ABI v1 plus ABI
+//! v2's `public_group_staged_discard` — written as pure functions over
 //! `&[u8]` so the native test build drives exactly the same encoders the wasm build does.
 
 // `Decoder` is deliberately absent: nothing outside the `#[cfg(test)]` module (which has its own
@@ -200,14 +201,17 @@ fn public_group_process(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> 
     // ABI v2: the applied list and the committer-update flag. Both elements are always present;
     // for anything but a commit they are the empty array and 0. The staged commit is read back
     // **by reference** (`Table::staged`), never taken: `public_group_merge` is the one consumer.
+    // Building the list can fail on input a remote member controls, and the handle is already in
+    // the table by then, so it goes through `with_staged_or_release`: see that function for why an
+    // error must take the entry with it.
     let (applied, committer_updated) = match staged {
-        Some(h) => match t.staged(h)? {
-            PublicProcessed::StagedCommit { staged, .. } => (
+        Some(h) => with_staged_or_release(t, h, |p| match p {
+            PublicProcessed::StagedCommit { staged, .. } => Ok((
                 applied_proposals(staged)?,
                 u64::from(staged.update_path_leaf_node().is_some()),
-            ),
-            _ => (Vec::new(), 0),
-        },
+            )),
+            _ => Ok((Vec::new(), 0)),
+        })?,
         None => (Vec::new(), 0),
     };
 
@@ -225,6 +229,34 @@ fn public_group_process(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> 
     }
     e.uint(committer_updated);
     Ok(e.into_vec())
+}
+
+/// Reads the staged commit at `handle` by reference, and releases it if `f` fails.
+///
+/// `public_group_process` inserts the `StagedCommit` before it can know whether the applied list
+/// will build, and `applied_proposals` has two failure modes a remote member controls: a proposal
+/// type outside the seven `protocol/02-delivery-service.md` numbers (openmls 0.9.0 carries
+/// `SelfRemove` and `Custom` unconditionally) and an Add whose credential is not a
+/// `BasicCredential` (`E_CREDENTIAL`). An error frame carries no handle number, and `take_staged`
+/// is the only remover, so an entry left behind on that path can never be reached again by
+/// `public_group_merge` or `public_group_staged_discard` — for a 1500-leaf group that is the
+/// unbounded growth the discard export exists to prevent, on a message the DS did not choose to
+/// accept. So the handle is released before the error leaves this module.
+fn with_staged_or_release<T>(
+    t: &mut Table,
+    handle: u32,
+    f: impl FnOnce(&PublicProcessed) -> Result<T, AbiError>,
+) -> Result<T, AbiError> {
+    // An unknown handle is E_ABI_HANDLE and removes nothing: `f` never runs, so the release arm
+    // below is not reached and no live entry is touched.
+    let staged = t.staged(handle)?;
+    match f(staged) {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            let _ = t.take_staged(handle);
+            Err(err)
+        }
+    }
 }
 
 /// One entry of ABI v2 §3.1's `applied` array.
@@ -314,8 +346,12 @@ fn public_group_staged_discard(req: &[u8], t: &mut Table) -> Result<Vec<u8>, Abi
     let handle = abi::read_handle(&mut d)?;
     let staged = abi::read_handle(&mut d)?;
     d.finish()?;
-    // The group handle is validated so a discard against the wrong group is refused rather than
-    // silently dropping another group's staged commit.
+    // `handle` is validated and nothing more: it proves the caller named a *live group*, not that
+    // this group is the one `public_group_process` staged `staged` against. The two handle classes
+    // share one id space (`handles.rs`) but not an ownership link, so pairing group A's handle with
+    // group B's staged handle still discards B's commit. That pairing is the host's to get right —
+    // interfaces §2.10 defines `staged` as a flat per-instance handle, exactly as
+    // `public_group_merge` takes it, and dillad issues both from the same call site.
     let _ = t.group(handle)?;
     t.take_staged(staged)?;
     let mut e = Encoder::new();
@@ -1196,5 +1232,61 @@ mod tests {
             crate::abi::E_ABI_SHAPE,
             "an empty message is a shape failure, never a trap"
         );
+    }
+
+    /// `public_group_process` inserts the `StagedCommit` and *then* builds the applied list, and
+    /// building it can fail on input a remote member controls: a proposal type outside the seven
+    /// numbered ones (openmls 0.9.0 has `SelfRemove` and `Custom` unconditionally), or an Add whose
+    /// credential is not a `BasicCredential`. The error frame carries no handle number and
+    /// `take_staged` is the only remover, so an entry left behind is unreachable for ever — the
+    /// unbounded growth `public_group_staged_discard` exists to prevent, reached without a discard
+    /// ever being callable. The failure is injected here rather than driven through a fixture
+    /// because no committed fixture carries an unsupported proposal; what is under test is the
+    /// handle accounting, which is the half that leaks.
+    #[test]
+    fn a_staged_handle_is_released_when_the_applied_list_fails_to_build() {
+        let mut t = Table::new();
+        let h = t.insert_staged(PublicProcessed::Rejected(
+            dilla_core::ProtocolError::Binding,
+        ));
+        assert_eq!(t.staged_count(), 1);
+        let err = with_staged_or_release(&mut t, h, |_| {
+            Err::<(), _>(AbiError::shape(
+                "commit applies an unsupported proposal type SelfRemove",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(err.code, crate::abi::E_ABI_SHAPE);
+        assert_eq!(
+            t.staged_count(),
+            0,
+            "a process call that fails after staging must not strand the handle"
+        );
+    }
+
+    /// The other half: the success path must leave the handle for `public_group_merge` (or
+    /// `public_group_staged_discard`), which is why the applied list is read by reference at all.
+    #[test]
+    fn a_staged_handle_survives_an_applied_list_that_builds() {
+        let mut t = Table::new();
+        let h = t.insert_staged(PublicProcessed::Rejected(
+            dilla_core::ProtocolError::Binding,
+        ));
+        assert_eq!(with_staged_or_release(&mut t, h, |_| Ok(7u64)).unwrap(), 7);
+        assert_eq!(t.staged_count(), 1);
+        assert!(t.take_staged(h).is_ok(), "merge can still consume it");
+    }
+
+    /// An unknown staged handle is `E_ABI_HANDLE` and removes nothing — the release path must not
+    /// turn a bad handle into a second, silent removal.
+    #[test]
+    fn with_staged_or_release_rejects_an_unknown_handle() {
+        let mut t = Table::new();
+        let h = t.insert_staged(PublicProcessed::Rejected(
+            dilla_core::ProtocolError::Binding,
+        ));
+        let err = with_staged_or_release(&mut t, h + 1, |_| Ok(())).unwrap_err();
+        assert_eq!(err.code, crate::abi::E_ABI_HANDLE);
+        assert_eq!(t.staged_count(), 1, "the live handle is untouched");
     }
 }
