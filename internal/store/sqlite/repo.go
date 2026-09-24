@@ -49,6 +49,17 @@ func (r *Repo) Tx(ctx context.Context, fn func(store.Repository) error) error {
 	if err != nil {
 		return fmt.Errorf("store: begin: %w", err)
 	}
+	// A panic inside fn must not abandon the transaction. The write pool is one
+	// connection, so an *sql.Tx that is never rolled back holds it for the life
+	// of the process and every later write blocks on the pool rather than on
+	// busy_timeout. database/sql's awaitDone goroutine rescues only a caller
+	// that passed a cancellable context; a CLI verb passes context.Background().
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
 	q := sqlitedb.New(tx)
 	sub := &Repo{write: r.write, read: r.read, w: q, r: q, inTx: true, rawRead: r.rawRead}
 	if err := fn(sub); err != nil {

@@ -351,3 +351,57 @@ func TestOneInviteWinsUnderConcurrency(t *testing.T) {
 		})
 	}
 }
+
+// TestTxRollsBackOnPanic pins the one thing a deferred rollback buys that an
+// explicit one does not: a panic inside fn must still close the transaction.
+// On SQLite the write pool is a single connection, so an abandoned *sql.Tx
+// holds it forever and every later write in the process blocks on the pool
+// rather than on SQLite's busy_timeout. database/sql's awaitDone goroutine
+// rescues only a caller that passed a cancellable context; this test passes
+// context.Background(), which is what every CLI verb does.
+func TestTxRollsBackOnPanic(t *testing.T) {
+	ctx := context.Background()
+	for name, repo := range engines(t) {
+		t.Run(name, func(t *testing.T) {
+			u := store.UserRow{ID: id.New(), Username: "panic" + id.New().String()[:8],
+				Display: "x", UMKPub: make([]byte, 32), SSKPub: make([]byte, 32),
+				SigUMKSSK: make([]byte, 64), Created: 1}
+
+			var recovered any
+			func() {
+				defer func() { recovered = recover() }()
+				_ = repo.Tx(ctx, func(tx store.Repository) error {
+					if err := tx.CreateUser(ctx, u); err != nil {
+						t.Errorf("CreateUser inside Tx: %v", err)
+					}
+					panic("boom")
+				})
+			}()
+			if recovered != "boom" {
+				t.Fatalf("the panic did not propagate out of Tx: %v", recovered)
+			}
+
+			if _, err := repo.GetUser(ctx, u.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("the panicking transaction was not rolled back: GetUser = %v", err)
+			}
+
+			// The pool must still take a write. Without the deferred rollback
+			// this blocks forever on SQLite.
+			done := make(chan error, 1)
+			go func() {
+				done <- repo.CreateUser(context.Background(), store.UserRow{
+					ID: id.New(), Username: "after" + id.New().String()[:8],
+					Display: "x", UMKPub: make([]byte, 32), SSKPub: make([]byte, 32),
+					SigUMKSSK: make([]byte, 64), Created: 2})
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("a write after a panicking Tx: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the write pool is still held by the panicking transaction")
+			}
+		})
+	}
+}

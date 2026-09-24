@@ -46,6 +46,16 @@ func (r *Repo) Tx(ctx context.Context, fn func(store.Repository) error) error {
 	if err != nil {
 		return fmt.Errorf("store: begin: %w", err)
 	}
+	// A panic inside fn must not abandon the transaction: the connection it
+	// holds is never returned to the pool and the transaction stays open on the
+	// server, keeping its locks and its snapshot. database/sql's awaitDone
+	// goroutine rescues only a caller that passed a cancellable context.
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
 	q := pgdb.New(tx)
 	sub := &Repo{db: r.db, w: q, r: q, inTx: true, rawRead: r.rawRead}
 	if err := fn(sub); err != nil {
