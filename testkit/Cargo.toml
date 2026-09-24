@@ -22,6 +22,9 @@ hex         = "0.4"
 # RatchetTree, MlsMessage) on their way through the stub's byte-oriented API.
 tls_codec   = { version = "0.5.0", features = ["derive", "serde", "mls"] }
 rand_chacha = "0.3"     # deterministic seeding; matches openmls_rust_crypto's major
+# The seeded MLS signature keypair: `SignatureKeyPair::new` draws from the OS RNG, so the testkit
+# derives the Ed25519 key itself. Same pin and same features as dilla-core, so no second major.
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
 clap        = { version = "4", features = ["derive"] }
 
 [[bin]]

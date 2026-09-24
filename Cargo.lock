@@ -676,6 +676,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dilla-core",
+ "ed25519-dalek",
  "hex",
  "openmls",
  "openmls_basic_credential",

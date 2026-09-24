@@ -15,6 +15,8 @@ use dilla_core::public_group::DillaPublicGroup;
 use openmls::messages::group_info::VerifiableGroupInfo;
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
+use rand_chacha::ChaCha20Rng;
+use rand_chacha::rand_core::{RngCore, SeedableRng};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -38,7 +40,11 @@ pub struct TestClient {
 }
 
 impl TestClient {
-    /// `seed` makes every key deterministic, so a failing scenario reproduces exactly.
+    /// `seed` fixes this client's identity material: the device id, the UMK, the SSK and the MLS
+    /// signature keypair are all derived from it, so the same seed always yields the same
+    /// credential. It does **not** make a run byte-for-byte reproducible: everything the OpenMLS
+    /// provider draws from the OS RNG (HPKE init keys, leaf secrets, nonces) is still random, so
+    /// commits, GroupInfos and ciphertext differ run to run. Reproduction is structural.
     pub fn new(
         name: &str,
         user_id: UserId,
@@ -60,8 +66,21 @@ impl TestClient {
         let provider = DillaProvider::new(Arc::new(Mutex::new(conn)));
         provider.storage().migrate()?;
 
-        let signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm())
-            .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
+        // Deterministic, which `SignatureKeyPair::new` is not: it draws the key from the OS RNG.
+        // The seed stream is `rand_chacha`, which is what testkit/Cargo.toml declares it for.
+        if CIPHERSUITE.signature_algorithm() != SignatureScheme::ED25519 {
+            return Err(TestkitError::Scenario(
+                "the seeded signature keypair assumes an Ed25519 ciphersuite".into(),
+            ));
+        }
+        let mut dsk_seed = [0u8; 32];
+        ChaCha20Rng::from_seed(material).fill_bytes(&mut dsk_seed);
+        let dsk = ed25519_dalek::SigningKey::from_bytes(&dsk_seed);
+        let signer = SignatureKeyPair::from_raw(
+            CIPHERSUITE.signature_algorithm(),
+            dsk.to_bytes().to_vec(),
+            dsk.verifying_key().to_bytes().to_vec(),
+        );
         signer.store(provider.storage())?;
 
         let umk = UmkSigner::from_bytes(&material);

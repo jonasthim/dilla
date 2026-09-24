@@ -16,6 +16,10 @@ enum Command {
     /// Run one scenario file.
     Run {
         path: std::path::PathBuf,
+        /// Fixes every client's identity material and MLS signature keypair, so a failing
+        /// scenario replays with the same structure. The OpenMLS provider still draws its HPKE
+        /// keys, leaf secrets and nonces from the OS RNG, so the bytes on the wire differ run to
+        /// run: reproduction is structural, not byte-for-byte.
         #[arg(long, default_value_t = 0x5eed)]
         seed: u64,
     },
