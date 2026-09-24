@@ -1,0 +1,12 @@
+# Two clients, one text channel: create, add by Welcome, send, decrypt.
+instance dilla
+client alice tier=native kind=user
+client bob tier=native kind=user
+group chat kind=text target=33333333333333333333333333333333 community=none creator=alice
+join bob chat via=welcome
+send alice chat On my way. Grab the wolf capes from the chest by the portal.
+sync bob
+expect_decrypts bob chat On my way. Grab the wolf capes from the chest by the portal.
+send bob chat Bringing the silver.
+sync alice
+expect_decrypts alice chat Bringing the silver.
