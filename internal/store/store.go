@@ -119,6 +119,144 @@ type Invites interface {
 	ListInvites(ctx context.Context, communityID *id.ID) ([]InviteRow, error)
 }
 
+// MLS is the delivery service's own table set (004_mls.sql), implemented from
+// task 19 onward. Declared here by deviation ID1: the method names are fixed
+// once, so no later task invents one.
+type MLS interface {
+	CreateGroup(ctx context.Context, g GroupRow) error
+	GetGroup(ctx context.Context, groupID id.ID) (GroupRow, error)
+	ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]GroupRow, error)
+	CloseGroup(ctx context.Context, groupID id.ID, at int64) error
+	NextSeq(ctx context.Context, groupID id.ID) (uint64, error) // one space, both streams
+	PutGroupState(ctx context.Context, groupID id.ID, epoch uint64, state, groupInfo, treeHash []byte) error
+	AppendHandshake(ctx context.Context, h HandshakeRow) error
+	ListHandshakes(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]HandshakeRow, error)
+	OldestHandshakeSeq(ctx context.Context, groupID id.ID) (uint64, error)
+	PruneHandshakes(ctx context.Context, before int64) (int64, error)
+	PutProposal(ctx context.Context, p ProposalRow) error
+	ListProposals(ctx context.Context, groupID id.ID, epoch uint64, includeVoid bool) ([]ProposalRow, error)
+	VoidProposal(ctx context.Context, groupID id.ID, ref []byte, at int64) error
+	DeleteProposals(ctx context.Context, groupID id.ID, refs [][]byte) error
+	ReissueProposal(ctx context.Context, oldRef []byte, p ProposalRow) error // keeps action_id
+	ReplaceMembers(ctx context.Context, groupID id.ID, epoch uint64, m []MemberRow) error
+	ListMembers(ctx context.Context, groupID id.ID) ([]MemberRow, error)
+	GroupsForDevice(ctx context.Context, deviceID id.ID) ([]id.ID, error)
+	PutKeyPackages(ctx context.Context, deviceID id.ID, kps []KeyPackageRow) error
+	TakeKeyPackage(ctx context.Context, deviceID id.ID, now int64) (KeyPackageRow, error)
+	CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) (int64, error)
+	PurgeKeyPackages(ctx context.Context, keepLastResort bool) (int64, error)
+	PutWelcomePayload(ctx context.Context, w WelcomePayloadRow) error
+	PutEpochTree(ctx context.Context, t EpochTreeRow) error
+	PutWelcomes(ctx context.Context, w []WelcomeRow) error
+	ListWelcomes(ctx context.Context, deviceID id.ID, afterID int64, limit int32) ([]WelcomeFull, error)
+	DeleteWelcome(ctx context.Context, deviceID id.ID, welcomeID int64, at int64) error
+	PruneWelcomes(ctx context.Context, before int64) (int64, error)
+	PutForkReport(ctx context.Context, f ForkReportRow) error
+	CountForkReporters(ctx context.Context, groupID id.ID, seq uint64) (int64, error)
+	QuarantineDevice(ctx context.Context, deviceID id.ID, at int64, reason string) error
+}
+
+// Messages is 005_messages.sql, implemented from task 23 onward.
+type Messages interface {
+	PutAppMessage(ctx context.Context, m AppMessageRow) error
+	ListAppMessages(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]AppMessageRow, error)
+	GetAppMessage(ctx context.Context, groupID id.ID, seq uint64) (AppMessageRow, error)
+	TombstoneAppMessage(ctx context.Context, groupID id.ID, seq uint64, at int64) error
+	PruneAppMessages(ctx context.Context, groupID id.ID, belowSeq uint64, before int64) (int64, error)
+}
+
+// Cursors is `device_cursors`, implemented from task 23 onward.
+type Cursors interface {
+	PutCursor(ctx context.Context, deviceID, groupID id.ID, lastSeq, lastEpoch uint64, at int64) error
+	GetCursor(ctx context.Context, deviceID, groupID id.ID) (CursorRow, error)
+	MinCursor(ctx context.Context, groupID id.ID, activeSince int64) (uint64, error) // eligible devices only
+}
+
+// Structure is 006_structure.sql, implemented from Plan 2 task 1 onward.
+type Structure interface {
+	CreateCommunity(ctx context.Context, c CommunityRow) error
+	GetCommunity(ctx context.Context, communityID id.ID) (CommunityRow, error)
+	UpdateCommunityPolicy(ctx context.Context, communityID id.ID, policy []byte, version int64) error
+	PutMember(ctx context.Context, m MemberOfCommunityRow) error
+	DeleteMember(ctx context.Context, communityID, userID id.ID) error
+	ListMembersOfCommunity(ctx context.Context, communityID, after id.ID, limit int32) ([]MemberOfCommunityRow, error)
+	CreateChannel(ctx context.Context, c ChannelRow) error
+	GetChannel(ctx context.Context, channelID id.ID) (ChannelRow, error)
+	ListChannels(ctx context.Context, communityID id.ID) ([]ChannelRow, error)
+	UpdateChannel(ctx context.Context, c ChannelRow) error
+	DeleteChannel(ctx context.Context, channelID id.ID, at int64) error
+	PutRole(ctx context.Context, r RoleRow) error
+	ListRoles(ctx context.Context, communityID id.ID) ([]RoleRow, error)
+	PutMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
+	DeleteMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
+	// ListMemberRoles is Plan 2's P2-D7b: GET /v1/communities/{id}/members must
+	// list each member's roles and the permission resolver needs the set a user
+	// holds, which deriving from ListRoles would make a full scan per member.
+	ListMemberRoles(ctx context.Context, communityID, userID id.ID) ([]id.ID, error)
+	PutOverwrite(ctx context.Context, o OverwriteRow) error
+	ListOverwrites(ctx context.Context, channelID id.ID) ([]OverwriteRow, error)
+	PutChannelMember(ctx context.Context, channelID, userID id.ID, at int64) error
+	DeleteChannelMember(ctx context.Context, channelID, userID id.ID) error
+	ListChannelMembers(ctx context.Context, channelID id.ID) ([]id.ID, error)
+	PutBan(ctx context.Context, b BanRow) error
+	GetBan(ctx context.Context, communityID, userID id.ID) (BanRow, error)
+	DeleteBan(ctx context.Context, communityID, userID id.ID) error
+	PutVoiceSession(ctx context.Context, v VoiceSessionRow) error
+	EndVoiceSession(ctx context.Context, callID id.ID, at int64) error
+}
+
+// Readable is 007_readable.sql, implemented from Plan 2 task 8 onward.
+type Readable interface {
+	PutReadableMessage(ctx context.Context, m ReadableMessageRow) (int64, error)
+	ListReadableMessages(ctx context.Context, channelID id.ID, fromSeq uint64, limit int32) ([]ReadableMessageRow, error)
+	EditReadableMessage(ctx context.Context, channelID id.ID, seq uint64, envelope []byte, at int64) error
+	DeleteReadableMessage(ctx context.Context, channelID id.ID, seq uint64, at int64) error
+	PutReadState(ctx context.Context, userID, channelID id.ID, lastReadSeq uint64) error
+	GetReadState(ctx context.Context, userID, channelID id.ID) (uint64, error)
+	ReadableSearch
+}
+
+// ReadableSearch is hand-written database/sql per engine: sqlc can generate
+// neither side, for opposite reasons (gap-69 claims 18 and 19).
+type ReadableSearch interface {
+	SearchReadable(ctx context.Context, q ReadableSearchQuery) ([]ReadableSearchHit, error)
+}
+
+// ReadableSearchQuery is one search. ChannelIDs is pre-filtered by the
+// permission resolver and is never empty.
+type ReadableSearchQuery struct {
+	ChannelIDs []id.ID
+	Query      ParsedQuery
+	Limit      int32
+	BeforeSeq  uint64
+}
+
+// ReadableSearchHit is one result row, snippet and score included, so the two
+// engines' ts_headline and FTS5 snippet answers reach the API identically.
+type ReadableSearchHit struct {
+	ChannelID id.ID
+	Seq       uint64
+	Sender    id.ID
+	Snippet   string
+	Score     float32
+	Created   int64
+}
+
+// Blobs is 008_blobs.sql, implemented from Plan 2 task 10 onward.
+type Blobs interface {
+	PutBlob(ctx context.Context, b BlobRow) error
+	GetBlob(ctx context.Context, blobID []byte) (BlobRow, error)
+	PutBlobRef(ctx context.Context, blobID []byte, channelID, uploaderDevice id.ID, mime string, created int64) error
+	DeleteBlobRef(ctx context.Context, blobID []byte, channelID id.ID) error
+	CountBlobRefs(ctx context.Context, blobID []byte) (int64, error)
+	MarkBlobUnreferenced(ctx context.Context, blobID []byte, at int64) error
+	ListCollectableBlobs(ctx context.Context, before int64, limit int32) ([]BlobRow, error)
+	DeleteBlob(ctx context.Context, blobID []byte) error
+	PutBlobTombstone(ctx context.Context, blobID []byte, reason string, by id.ID, at int64) error
+	GetBlobTombstone(ctx context.Context, blobID []byte) (bool, error)
+	UserBlobBytes(ctx context.Context, userID id.ID) (int64, error)
+}
+
 type Ops interface {
 	PutReport(ctx context.Context, r ReportRow) error
 	GetReport(ctx context.Context, reportID id.ID) (ReportRow, error)
@@ -135,14 +273,14 @@ type OpsBackups interface {
 	ListBackups(ctx context.Context, userID id.ID, kind int32) ([]BackupRow, error)
 }
 
-// The remaining six sub-interfaces of §4.1 — MLS, Messages, Cursors, Structure,
-// Readable (with ReadableSearch, ReadableSearchQuery and ReadableSearchHit) and
-// Blobs — are declared by the task that ships their tables and their Row types,
-// in this same file: task 19 (MLS), task 23 (Messages, Cursors) and Plan 2's
-// tasks 1, 8 and 10 (Structure, Readable, Blobs). Declaring them here is not
-// possible: each names Row types this plan's schema does not yet define, and
-// ReadableSearchQuery additionally names ParsedQuery, a type Plan 2's search
-// task introduces — so a verbatim declaration now would not compile, and ID1's
-// own rule is that `go build ./...` is green at the end of every task. The
-// method names are fixed by interfaces.md §4.1 either way, so no later task
-// invents one.
+// All thirteen sub-interfaces of §4.1 are declared above, as deviation ID1
+// requires, and `Repository` embeds only the seven whose tables part 1a ships.
+// Fix round 2 resolved the contradiction that left the last six undeclared: the
+// same task must declare their Row types, because a Go interface method cannot
+// name a type that does not exist. Those types are in rows.go, mirrored from
+// §4.3, and `ParsedQuery`/`Term` — §6.7's engine-neutral parse, which
+// `ReadableSearchQuery` names — are declared there too, without the parser
+// functions Plan 2 task 8 brings. Each later task that satisfies one of the six
+// edits only the embed list: task 19 (MLS), task 23 (Messages, Cursors) and Plan
+// 2's tasks 1, 8 and 10 (Structure, Readable, Blobs with OpsBackups).
+// contract_test.go holds §4.1 as an assertion so a rename is a test failure.
