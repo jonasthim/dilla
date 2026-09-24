@@ -309,12 +309,20 @@ func (d Deps) DeleteMe(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
-	if d.Config != nil {
-		if window := int64(d.Config.Auth.Session.ReauthWindow.Value().Seconds()); now-row.Created > window {
-			server.WriteError(w, server.Errorf(server.CodeForbidden,
-				"deleting an account needs a session established in the last %d seconds", window))
-			return
-		}
+	// Fail CLOSED on a missing Config. Skipping the freshness check because the
+	// dependency that carries the window is nil would let any live enrolled
+	// session, however old, tombstone the account and revoke every device —
+	// and a handler test that built Deps without a Config would pass while
+	// exercising no gate at all.
+	if d.Config == nil {
+		d.logf(r, "api: DELETE /v1/accounts/me has no config, so no step-up window")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the step-up window is not wired"))
+		return
+	}
+	if window := int64(d.Config.Auth.Session.ReauthWindow.Value().Seconds()); now-row.Created > window {
+		server.WriteError(w, server.Errorf(server.CodeForbidden,
+			"deleting an account needs a session established in the last %d seconds", window))
+		return
 	}
 	if err := d.Repo.Tx(ctx, func(tx store.Repository) error {
 		return tx.TombstoneUser(ctx, sess.UserID, now)
