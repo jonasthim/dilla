@@ -17,8 +17,10 @@ import (
 // tokenTTL matches the spec's one-hour, leaf-gated JWT.
 const tokenTTL = time.Hour
 
-// startTimeout bounds how long Start waits for the HTTP listener.
-const startTimeout = 15 * time.Second
+// startTimeout bounds how long Start waits for the HTTP listener. It is a var,
+// not a const, only so livekit_test.go can shorten it and exercise the
+// deadline-expired abort path without waiting 15 s.
+var startTimeout = 15 * time.Second
 
 // Server is a running in-process LiveKit SFU.
 type Server struct {
@@ -71,8 +73,7 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 		case err := <-s.errCh:
 			return nil, fmt.Errorf("sfu: server exited during startup: %w", err)
 		case <-ctx.Done():
-			s.server.Stop(true)
-			return nil, ctx.Err()
+			return nil, s.abort(ctx.Err())
 		default:
 		}
 		if s.server.IsRunning() {
@@ -83,11 +84,55 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 			}
 		}
 		if time.Now().After(deadline) {
-			s.server.Stop(true)
-			return nil, fmt.Errorf("sfu: %s did not accept a connection within %s", addr, startTimeout)
+			return nil, s.abort(fmt.Errorf("sfu: %s did not accept a connection within %s", addr, startTimeout))
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// abortPollInterval and abortPollLimit bound the wait inside abort:
+// 100 × 50 ms = 5 s, far past LiveKit's deliberate 100 ms sleep.
+const (
+	abortPollInterval = 50 * time.Millisecond
+	abortPollLimit    = 100
+)
+
+// abort tears down a server that Start is giving up on, and returns the error
+// Start should report.
+//
+// It cannot simply call Stop: LivekitServer.Stop begins `if !s.running.Swap(false)
+// { return }` (server.go:373), so it is a no-op while the running flag is still
+// false — and the flag is only set at server.go:333, after a deliberate 100 ms
+// sleep, while the TCP listeners were already bound at server.go:246. Stopping
+// inside that window does nothing: the boot finishes, the goroutine parks on
+// <-doneChan forever, the ports stay bound, and because Start returns no *Server
+// on its error paths, nothing can ever stop it.
+//
+// So wait for the flag — or for the boot goroutine to fail, which frees the
+// listeners by itself — before stopping. If neither happens within the bound,
+// say so in the returned error instead of leaking silently.
+func (s *Server) abort(cause error) error {
+	for i := 0; i < abortPollLimit && !s.server.IsRunning(); i++ {
+		select {
+		case err := <-s.errCh:
+			// Start has already returned: there is nothing left to stop.
+			if err != nil {
+				return errors.Join(cause, fmt.Errorf("sfu: server exited during startup: %w", err))
+			}
+			return cause
+		default:
+		}
+		time.Sleep(abortPollInterval)
+	}
+	running := s.server.IsRunning()
+	s.server.Stop(true)
+	if !running {
+		return errors.Join(cause, fmt.Errorf(
+			"sfu: server was still not running after %s, so Stop could not take effect; "+
+				"the boot goroutine and ports %d/%d may be leaked",
+			time.Duration(abortPollLimit)*abortPollInterval, s.cfg.Port, s.cfg.UDPPort))
+	}
+	return cause
 }
 
 // URL is the signalling endpoint participants connect to.

@@ -2,6 +2,9 @@ package sfu
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -273,4 +276,76 @@ func TestTwoParticipantsExchangeADataMessage(t *testing.T) {
 		case <-tick.C:
 		}
 	}
+}
+
+// nothingListensOn fails the test if addr accepts a TCP connection at any point
+// during window. The window has to outlast the boot the aborted Start left
+// running: returning before the listeners are even bound is not success, it is
+// the leak one moment earlier.
+//
+// An aborted Start must leave no listener behind: LiveKit binds
+// its listeners (server.go:246) a deliberate 100 ms before it sets the running
+// flag (server.go:333), and Stop returns immediately while that flag is false
+// (server.go:373, `if !s.running.Swap(false) { return }`). A Stop issued inside
+// that window does nothing, so the boot finishes, the goroutine parks on
+// <-doneChan forever, and the port stays bound with the *Server handle already
+// discarded — nothing can ever stop it.
+func nothingListensOn(t *testing.T, addr string, window time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 250*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			t.Fatalf("%s accepted a connection after Start aborted: the server was stopped "+
+				"while its running flag was false, so Stop did nothing and the boot goroutine "+
+				"leaked with the port bound", addr)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// Abort path 1: the caller's context is already cancelled. cmd/dillad passes a
+// signal.NotifyContext, so this is the SIGINT-during-boot case.
+func TestStartAbortedByAContextCancelLeavesNothingListening(t *testing.T) {
+	c := testConfig()
+	c.Port = 7890
+	c.UDPPort = 7892
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	srv, err := Start(ctx, c)
+	if err == nil {
+		_ = srv.Stop(context.Background())
+		t.Fatal("Start returned no error for an already-cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Start error = %v, want it to wrap context.Canceled", err)
+	}
+	if srv != nil {
+		t.Error("Start returned a non-nil *Server together with an error")
+	}
+	nothingListensOn(t, net.JoinHostPort(c.BindAddress, fmt.Sprint(c.Port)), 3*time.Second)
+}
+
+// Abort path 2: the startup deadline expires. Same window, same no-op Stop.
+func TestStartAbortedByTheDeadlineLeavesNothingListening(t *testing.T) {
+	restore := startTimeout
+	startTimeout = time.Millisecond
+	defer func() { startTimeout = restore }()
+
+	c := testConfig()
+	c.Port = 7894
+	c.UDPPort = 7896
+
+	srv, err := Start(context.Background(), c)
+	if err == nil {
+		_ = srv.Stop(context.Background())
+		t.Fatal("Start returned no error although the startup deadline was 1ms")
+	}
+	if !strings.Contains(err.Error(), "did not accept a connection") {
+		t.Errorf("Start error = %v, want the startup-deadline error", err)
+	}
+	nothingListensOn(t, net.JoinHostPort(c.BindAddress, fmt.Sprint(c.Port)), 3*time.Second)
 }

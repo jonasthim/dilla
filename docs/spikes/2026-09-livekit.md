@@ -59,6 +59,18 @@ CGO_ENABLED=0 go build -trimpath -ldflags=-s -o dillad ./cmd/dillad
   does. `internal/sfu/livekit_test.go` asserts the source order.
 - `LivekitServer.Start()` blocks on `<-s.doneChan`, so it runs in a goroutine and
   `Stop(true)` closes that channel.
+- `Stop` is a **no-op until the server is running**: it begins
+  `if !s.running.Swap(false) { return }` (`server.go:373`), and the flag is only
+  set at `server.go:333`, after a deliberate 100 ms sleep — while the TCP
+  listeners were bound back at `server.go:246`. Aborting a boot inside that
+  window (context cancelled, or the startup deadline expired) would stop nothing:
+  the boot would finish, the goroutine would park on `<-doneChan` for good, and
+  ports 7880/7882 would stay bound with no handle left to stop them. `sfu.Start`
+  therefore never calls `Stop` directly on its error paths; `(*Server).abort`
+  waits for `IsRunning()` — or for the boot goroutine to fail, which releases the
+  listeners by itself — for up to 5 s first, and reports in the returned error if
+  neither happened. `internal/sfu/livekit_test.go` covers both abort paths by
+  asserting that the port accepts nothing afterwards.
 
 ## The setting that fails silently
 
