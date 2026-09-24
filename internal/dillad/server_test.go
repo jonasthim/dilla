@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +150,17 @@ func newInstance(t *testing.T) (*dillad.Server, http.Handler, string) {
 
 func newInstanceWith(t *testing.T, tune func(*config.Config)) (*dillad.Server, http.Handler, string) {
 	t.Helper()
+	srv, h, code, _ := newInstanceTuned(t, tune)
+	return srv, h, code
+}
+
+// newInstanceTuned is newInstanceWith plus the config the instance was built
+// from, which is what the instance document and the limits array are asserted
+// against: every one of their elements is either a config value or a constant
+// of protocol/09-http-api.md, and a test that only counts the elements would
+// pass on a transposed array or an inverted enum.
+func newInstanceTuned(t *testing.T, tune func(*config.Config)) (*dillad.Server, http.Handler, string, *config.Config) {
+	t.Helper()
 	cfg, code := testConfigInvite(t)
 	if tune != nil {
 		tune(cfg)
@@ -157,7 +169,27 @@ func newInstanceWith(t *testing.T, tune func(*config.Config)) (*dillad.Server, h
 	if err != nil {
 		t.Fatalf("dillad.New: %v", err)
 	}
-	return srv, srv.Handler(), code
+	return srv, srv.Handler(), code, cfg
+}
+
+// uints reads a decoded CBOR array of unsigned integers. cborx decodes a
+// nested array into []any, so the enum elements need converting before they can
+// be compared.
+func uints(t *testing.T, v any, what string) []uint64 {
+	t.Helper()
+	raw, ok := v.([]any)
+	if !ok {
+		t.Fatalf("%s is %T, not an array", what, v)
+	}
+	out := make([]uint64, 0, len(raw))
+	for i, e := range raw {
+		n, ok := e.(uint64)
+		if !ok {
+			t.Fatalf("%s[%d] is %T, not an unsigned integer", what, i, e)
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // testDevice is one client device's identity: the 16-byte id the registration
@@ -224,7 +256,13 @@ func establishSession(t *testing.T, h http.Handler, srv *dillad.Server, dev test
 }
 
 func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
-	srv, h, code := newInstance(t) // migrated SQLite, one bootstrap invite
+	// migrated SQLite, one bootstrap invite. The two retention windows both
+	// default to 30 days, so a transposed pair would be invisible in the limits
+	// array; they are given distinct values here.
+	srv, h, code, cfg := newInstanceTuned(t, func(c *config.Config) {
+		c.Retention.HandshakeDays = 14
+		c.Retention.CiphertextDays = 90
+	})
 	defer srv.Shutdown(context.Background())
 
 	// 1. redeem the invite and create the account, which also mints the first
@@ -257,6 +295,42 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	if len(doc) != 9 {
 		t.Fatalf("the instance document has %d elements, want 9", len(doc))
 	}
+	// Every element, in the ORDER protocol/09-http-api.md § Instance fixes: a
+	// transposed pair or an inverted enum passes a length check.
+	for i, want := range [][]uint64{{1}, {1}, {1}} {
+		names := []string{"wire_versions", "e2ee_versions", "media_versions"}
+		if got := uints(t, doc[i], names[i]); !slices.Equal(got, want) {
+			t.Fatalf("%s = %v, want %v", names[i], got, want)
+		}
+	}
+	wantID := srv.Sessions().InstanceID()
+	gotID, ok := doc[3].([]byte)
+	if !ok {
+		t.Fatalf("instance_id is %T, not a byte string", doc[3])
+	}
+	if !bytes.Equal(gotID, wantID[:]) {
+		t.Fatalf("instance_id = %x, want the seeded row's %x", gotID, wantID[:])
+	}
+	if doc[4] != uint64(1) {
+		t.Fatalf("generation = %v, want 1 on a fresh instance", doc[4])
+	}
+	if doc[5] != cfg.Instance.Domain {
+		t.Fatalf("domain = %v, want %q", doc[5], cfg.Instance.Domain)
+	}
+	// registration_mode: 0 invite-only, 1 open, 2 closed. The default is
+	// registration.mode = "invite", so it is the 0 whose meaning the document
+	// fixes and not a zero value that happens to be there.
+	if doc[6] != uint64(0) {
+		t.Fatalf("registration_mode = %v with registration.mode = %q, want 0", doc[6], cfg.Registration.Mode)
+	}
+	// auth_methods: 0 password, 1 totp, 2 passkey, 3 oidc, ascending and with
+	// no duplicates. The default auth.methods is password, totp, passkey.
+	if got := uints(t, doc[7], "auth_methods"); !slices.Equal(got, []uint64{0, 1, 2}) {
+		t.Fatalf("auth_methods = %v with auth.methods = %v, want [0 1 2]", got, cfg.Auth.Methods)
+	}
+	if doc[8] != uint64(1) {
+		t.Fatalf("policy_version = %v, want the seeded row's 1", doc[8])
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/instance/limits", nil))
@@ -270,6 +344,32 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	if len(limits) != 11 {
 		t.Fatalf("the limits document has %d elements, want 11", len(limits))
 	}
+	// All eleven, in order, each against the config value or protocol constant
+	// it comes from: heartbeat_ms, the two retention windows and max_blob_bytes
+	// could otherwise be in any order.
+	for _, want := range []struct {
+		i    int
+		name string
+		want uint64
+	}{
+		{0, "max_ciphertext_bytes", uint64(cfg.Limits.MaxCiphertextBytes)},
+		{1, "max_blob_bytes", uint64(cfg.Blobs.MaxBlobBytes)},
+		{2, "max_attachments", 4},
+		{3, "max_previews", 2},
+		{4, "max_keypackages_per_device", uint64(cfg.Limits.MaxKeypackagesPerDevice)},
+		{5, "keypackage_refill_threshold", uint64(cfg.Limits.KeypackageRefillThreshold)},
+		{6, "quota_bytes_per_user", uint64(cfg.Blobs.QuotaBytesPerUser)},
+		{7, "heartbeat_ms", uint64(cfg.Gateway.HeartbeatInterval.Value() / time.Millisecond)},
+		{8, "max_frame_bytes", cfg.MaxFrameBytes()},
+		{9, "retention_handshake_days", uint64(cfg.Retention.HandshakeDays)},
+		{10, "retention_ciphertext_days", uint64(cfg.Retention.CiphertextDays)},
+	} {
+		if limits[want.i] != want.want {
+			t.Fatalf("limits[%d] (%s) = %d, want %d", want.i, want.name, limits[want.i], want.want)
+		}
+	}
+	// The wave-wide ciphertext cap and the derived frame size, spelled out so
+	// a config default that drifts is caught here and not in a client.
 	if limits[0] != 131072 {
 		t.Fatalf("max_ciphertext_bytes = %d, want 131072", limits[0])
 	}
@@ -310,6 +410,29 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /v1/accounts/me = %d", rec.Code)
+	}
+}
+
+// protocol/09-http-api.md § Instance requires auth_methods "ascending, no
+// duplicates", and config.Validate constrains neither the order an operator
+// writes auth.methods in nor a repeated entry, so the document does the sorting
+// and the de-duplication itself.
+func TestAuthMethodsAreSortedAndDeduplicated(t *testing.T) {
+	srv, h, _, _ := newInstanceTuned(t, func(c *config.Config) {
+		c.Auth.Methods = []string{"passkey", "password", "passkey"}
+	})
+	defer srv.Shutdown(context.Background())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/instance", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/instance = %d", rec.Code)
+	}
+	var doc []any
+	if err := cborx.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decode instance: %v", err)
+	}
+	if got := uints(t, doc[7], "auth_methods"); !slices.Equal(got, []uint64{0, 2}) {
+		t.Fatalf("auth_methods = %v for [passkey password passkey], want [0 2]", got)
 	}
 }
 
