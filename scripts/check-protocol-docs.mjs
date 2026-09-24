@@ -7,7 +7,7 @@ export const REQUIRED = {
   '00-overview.md': ['## Terminology', '## Precedence', '## Conformance language'],
   '01-groups.md': ['## Group kinds', '## dilla_binding', '## External senders', '## Joining', '## Cadence'],
   '02-delivery-service.md': ['## Roles', '## API', '## Invariants', '## Errors', '## Retention'],
-  '03-identity.md': ['## Keys', '## Credential', '## Device list', '## Custody by tier', '## Pairing', '## Recovery', '## Safety number'],
+  '03-identity.md': ['## Keys', '## Credential', '## Device list', '## Custody by tier', '## Pairing', '## Recovery', '## Safety number', '## Vectors'],
   '04-envelope-and-franking.md': ['## Envelope', '## Deterministic CBOR', '## Franking', '## Vectors'],
   '05-media-frames.md': ['## Frame format', '## Codec prefixes', '## Key schedule', '## Counter partition', '## Rotation'],
   '06-backup-archive.md': ['## Keys', '## Header', '## Archive', '## Restore'],

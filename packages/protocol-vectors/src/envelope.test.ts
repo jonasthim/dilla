@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { encodeEnvelope, decodeEnvelope, frankingCommitment, frankingTag, EnvelopeType, type Envelope } from './envelope.ts';
 import { encode, decode, type CborValue } from './cbor.ts';
 import { hex, fromHex } from './bytes.ts';
+import { VECTORS_DIR } from './generate.ts';
 
 const id = (n: number) => new Uint8Array(16).fill(n);
 const sample: Envelope = {
@@ -66,6 +69,16 @@ describe('envelope', () => {
     const reaction: Envelope = { ...sample, type: EnvelopeType.ReactionAdd, body: 'a'.repeat(33), attachments: [] };
     expect(() => decodeEnvelope(encodeEnvelope(reaction))).toThrow();
   });
+  it('rejects any body on a tombstone, pin or unpin (type 2/5/6)', () => {
+    // 04-envelope-and-franking.md: `body` is empty for type 2/5/6, limit 0. A body there means
+    // nothing to a client and would be a covert channel inside an otherwise contentless envelope.
+    for (const type of [EnvelopeType.Delete, EnvelopeType.Pin, EnvelopeType.Unpin] as const) {
+      const tombstone: Envelope = { ...sample, type, body: 'x', attachments: [], previews: [] };
+      expect(() => decodeEnvelope(encodeEnvelope(tombstone))).toThrow();
+      // and the empty body those types do carry still decodes
+      expect(() => decodeEnvelope(encodeEnvelope({ ...tombstone, body: '' }))).not.toThrow();
+    }
+  });
   it('rejects more than 10 attachments', () => {
     const a = sample.attachments[0];
     const many: Envelope = { ...sample, attachments: Array.from({ length: 11 }, () => a) };
@@ -103,4 +116,37 @@ describe('envelope', () => {
     expect(t1.length).toBe(32);
     expect(hex(t1)).not.toBe(hex(t2));
   });
+});
+
+/**
+ * 04-envelope-and-franking.md: `vectors/envelope.json`'s `rejects` array is well-formed
+ * deterministic CBOR that a conforming decoder must nevertheless refuse, each entry naming the
+ * `error` code (from the "Error codes" list) it must be refused with. `vectors::run_rejects`
+ * drives this same array through `Envelope::decode` on the Rust side; this drives it through
+ * `decodeEnvelope` so the reference decoder exercises the committed vector too, rather than only
+ * the ad hoc case above.
+ */
+describe('envelope rejects (protocol/vectors/envelope.json)', () => {
+  type RejectCase = { name: string; error: string; cbor: string };
+  const file = JSON.parse(readFileSync(join(VECTORS_DIR, 'envelope.json'), 'utf8')) as { rejects: RejectCase[] };
+
+  // decodeEnvelope throws a plain `Error` with a human-readable message, not a tagged error code,
+  // so this maps each protocol error code a reject vector can carry to a fragment of that
+  // message. A case whose `error` is not in this table fails loudly (see below) instead of
+  // silently passing on an unchecked `toThrow()`.
+  const MESSAGE_FRAGMENT: Record<string, string> = {
+    E_ENVELOPE_LIMIT: 'limit exceeded',
+  };
+
+  it('has at least one reject case to drive', () => {
+    expect(file.rejects.length).toBeGreaterThan(0);
+  });
+
+  for (const c of file.rejects) {
+    it(`rejects "${c.name}" with ${c.error}`, () => {
+      const fragment = MESSAGE_FRAGMENT[c.error];
+      expect(fragment, `no decodeEnvelope message fragment mapped for ${c.error} — add one to MESSAGE_FRAGMENT`).toBeDefined();
+      expect(() => decodeEnvelope(fromHex(c.cbor))).toThrowError(new RegExp(fragment));
+    });
+  }
 });

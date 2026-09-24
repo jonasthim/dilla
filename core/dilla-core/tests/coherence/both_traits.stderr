@@ -1,0 +1,9 @@
+error[E0119]: conflicting implementations of trait `PublicStorageProvider<1>` for type `Both`
+  --> tests/coherence/both_traits.rs:32:1
+   |
+32 | impl PublicStorageProvider<CURRENT_VERSION> for Both {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: conflicting implementation in crate `openmls_traits`:
+           - impl<T, VERSION> PublicStorageProvider<VERSION> for T
+             where the constant `VERSION` has type `u16`, T: StorageProvider<VERSION>;

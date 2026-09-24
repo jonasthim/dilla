@@ -1,0 +1,13 @@
+# Invariant 2: the joiner verifies tree_hash against the DS-served tree, then joins by external
+# commit without a Welcome.
+instance dilla
+client alice tier=native kind=user
+client bob tier=native kind=user
+group chat kind=text target=44444444444444444444444444444444 community=none creator=alice
+external_join bob chat
+# Bob's external commit moved the group to epoch 1. Alice must merge it before she sends, or she
+# frames the message at epoch 0 and Bob - who holds no epoch-0 secrets - cannot decrypt it.
+sync alice
+send alice chat The portal is open.
+sync bob
+expect_decrypts bob chat The portal is open.

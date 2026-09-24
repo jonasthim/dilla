@@ -3,6 +3,11 @@ on:
   push:
     branches: [main]
   pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
 jobs:
   node:
     runs-on: ubuntu-latest
@@ -16,6 +21,7 @@ jobs:
       - run: npm run test:docs-check
       - run: npm run test:brief-check
       - run: npm run test:copy-check
+      - run: npm run test:ci-check
       - run: npm test
       - name: vectors are up to date
         run: |
@@ -44,3 +50,152 @@ jobs:
           npx concurrently -k -s first -n SB,TEST \
             "npx http-server packages/ui/storybook-static --port 6006 --silent" \
             "npx wait-on tcp:127.0.0.1:6006 && npm run test:storybook -w packages/ui -- --url http://127.0.0.1:6006"
+  rust-wasm-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-wasm32-unknown-unknown
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.128,wasm-pack@0.15.0
+      - name: wasm-bindgen-cli must equal the Cargo.lock crate version
+        run: |
+          want=$(cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.name=="wasm-bindgen") | .version')
+          have=$(wasm-bindgen --version | awk '{print $2}')
+          test "$want" = "$have" || { echo "wasm-bindgen-cli $have != crate $want"; exit 1; }
+      - run: cargo test -p dilla-core --target wasm32-unknown-unknown --locked --features vectors
+      - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
+
+  rust-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-native
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+
+  rust-wasi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-wasm32-wasip1
+      - run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dilla-core-wasi
+          path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
+          if-no-files-found: error
+
+  vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run vectors
+      - run: git diff --exit-code -- protocol/vectors
+      - run: test -z "$(git status --porcelain -- protocol/vectors)"
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-native
+      - run: cargo run -p dilla-testkit --bin dilla-testkit --locked -- vectors
+
+  browser-spike:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-wasm32-unknown-unknown
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
+      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir spike/pkg
+      - run: npm ci
+      # Deviation A2-6: the persistence matrix asserts Firefox private-browsing and WebKit
+      # ephemeral behaviour, so those engines must be installed too.
+      - run: npx playwright install --with-deps chromium firefox webkit
+      # Only the matrix script: it already runs the chromium project, so adding `test:e2e` here would
+      # execute the 10-hand-over test twice per run and rewrite opfs-leader-metrics.json for nothing.
+      - run: npm run test:e2e:matrix -w @dilla/e2e
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --all-features check advisories bans licenses sources
+
+  go:
+    runs-on: ubuntu-latest
+    # rust-wasi (Plan A's CI task) builds and uploads the dilla-core-wasi
+    # artifact this job downloads. Without `needs:` GitHub starts both jobs in
+    # parallel, download-artifact finds nothing in the run, and the job is red on
+    # every push (gap-31 §3.2's reference job carries it).
+    needs: [rust-wasi]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: go mod verify
+      - run: go vet ./...
+      - name: The pinned module graph still compiles cgo-free
+        run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
+      - name: Unit tests with the race detector (cgo required, do not set CGO_ENABLED=0 here)
+        run: go test -race -shuffle=on -timeout 15m ./...
+        env:
+          GORACE: halt_on_error=1
+      - name: Static release build
+        run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
+
+  go-fts5-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: FTS5 on native linux/arm64
+        run: go test ./internal/store/sqlite/...

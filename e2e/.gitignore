@@ -1,0 +1,5 @@
+# Playwright run artifacts: traces (trace: 'retain-on-failure'), the HTML report and the
+# `.last-run.json` marker are per-run local state, never repository content.
+test-results/
+playwright-report/
+blob-report/

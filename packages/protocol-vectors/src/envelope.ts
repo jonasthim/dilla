@@ -22,6 +22,7 @@ function assertLen(b: Uint8Array, n: number, what: string) { if (b.length !== n)
 // Limits (04-envelope-and-franking.md, "Envelope").
 const MAX_BODY_LONG = 4000; // type 0/1, UTF-8 bytes
 const MAX_BODY_SHORT = 32; // type 3/4, UTF-8 bytes
+const MAX_BODY_NONE = 0; // type 2/5/6: a tombstone, pin or unpin carries no body at all
 const MAX_ATTACHMENTS = 10;
 const MAX_PREVIEWS = 5;
 const MAX_PREVIEW_IMAGE = 32768;
@@ -58,6 +59,9 @@ export function decodeEnvelope(bytes: Uint8Array): Envelope {
   const bodyLen = utf8(body).length;
   if (type === EnvelopeType.Message || type === EnvelopeType.Edit) assertLimit(bodyLen <= MAX_BODY_LONG, 'body over 4000 bytes for type 0/1');
   if (type === EnvelopeType.ReactionAdd || type === EnvelopeType.ReactionRemove) assertLimit(bodyLen <= MAX_BODY_SHORT, 'body over 32 bytes for type 3/4');
+  // A delete, pin or unpin is contentless: any body there is unrenderable by a conforming client
+  // and is a covert channel, so the limit is 0 and the envelope is rejected rather than trimmed.
+  if (type === EnvelopeType.Delete || type === EnvelopeType.Pin || type === EnvelopeType.Unpin) assertLimit(bodyLen <= MAX_BODY_NONE, 'body on type 2/5/6');
   assertLimit(attachments.length <= MAX_ATTACHMENTS, 'more than 10 attachments');
   assertLimit(previews.length <= MAX_PREVIEWS, 'more than 5 previews');
 

@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { hex } from './bytes.ts';
 import { encodeEnvelope, frankingCommitment, frankingTag, EnvelopeType, type Envelope } from './envelope.ts';
 import { kid, deriveFrameKeys, counter, nonce, encodeSframeHeader, SUITE } from './sframe.ts';
-import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity } from './identity.ts';
+import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity, sskMessage, dskMessage } from './identity.ts';
+import { keyFromSeed, sign } from './ed25519.ts';
 
 export const VECTORS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'protocol', 'vectors');
 const fill = (n: number, b: number) => new Uint8Array(n).fill(b);
@@ -34,7 +35,16 @@ export async function envelopeVectors() {
     const bytes = encodeEnvelope(c.envelope);
     out.push({ name: c.name, envelope: c.envelope, cbor: hex(bytes), length: bytes.length, commitment: hex(await frankingCommitment(c.envelope)) });
   }
-  return { version: 1, description: 'dilla envelope encodings (04-envelope-and-franking.md). cbor = deterministic CBOR of the 9-element array; commitment = HMAC-SHA256(k_f, "dilla frank v1" || CBOR with k_f blanked).', cases: out };
+  // Inputs a conforming decoder must REFUSE, with the error code 04-envelope-and-franking.md
+  // names for each. `encodeEnvelope` does not apply the limits, so it can produce the well-formed
+  // deterministic CBOR of an envelope that is nonetheless invalid — which is exactly what an
+  // implementation under test has to be handed.
+  const rejects = [
+    { name: 'delete tombstone with a non-empty body', error: 'E_ENVELOPE_LIMIT', cbor: hex(encodeEnvelope({
+      v: 1, msgId: fill(16, 0x21), type: EnvelopeType.Delete, threadId: null, replyTo: fill(16, 0x01),
+      body: 'deleted because', attachments: [], previews: [], kf: fill(32, 0x26) })) },
+  ];
+  return { version: 1, description: 'dilla envelope encodings (04-envelope-and-franking.md). cbor = deterministic CBOR of the 9-element array; commitment = HMAC-SHA256(k_f, "dilla frank v1" || CBOR with k_f blanked). rejects = well-formed CBOR that a conforming decoder must still refuse with the named error code.', cases: out, rejects };
 }
 
 export async function frankingVectors() {
@@ -65,14 +75,42 @@ export async function identityVectors() {
   const umkA = fill(32, 0xa1), umkB = fill(32, 0xb2);
   const rk = fill(32, 0x0b);
   const keys = await deriveRecoveryKeys(rk);
+
+  // Deterministic seeds. They are published in the vector file so any implementation can
+  // reproduce both signatures; they are test material and protect nothing.
+  const umkSeed = fill(32, 0x41);
+  const sskSeed = fill(32, 0x42);
+  const dskSeed = fill(32, 0x43);
+  const umk = await keyFromSeed(umkSeed);
+  const ssk = await keyFromSeed(sskSeed);
+  const dsk = await keyFromSeed(dskSeed);
+
+  const userId = fill(16, 0xd4), deviceId = fill(16, 0xe5);
+  const kind = 0, tier = 1, signerTier = 0;
+  const sigUmkSsk = await sign(umk.privateKey, sskMessage(ssk.publicKey));
+  const sigSskDev = await sign(ssk.privateKey, dskMessage(deviceId, dsk.publicKey, kind, tier, signerTier));
+
   return {
     version: 1,
-    description: 'safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR (03-identity.md)',
+    description: 'safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR with real Ed25519 signatures (03-identity.md)',
     safety_number: { umk_a: hex(umkA), umk_b: hex(umkB), digits: await safetyNumber(umkA, umkB) },
     sas: { epoch_authenticator: hex(fill(32, 0xc3)), digits: sas(fill(32, 0xc3)) },
     recovery_key: { rk: hex(rk), base32: recoveryKeyBase32(rk), k_header: hex(keys.header), k_backup: hex(keys.archive) },
-    credential_identity: { fields: { umk_pub: hex(umkA), user_id: hex(fill(16, 0xd4)), device_id: hex(fill(16, 0xe5)), kind: 0, tier: 1, signer_tier: 0, ssk_pub: hex(fill(32, 0xf6)), sig_umk_ssk: hex(fill(64, 0x17)), sig_ssk_dev: hex(fill(64, 0x28)) },
-      cbor: hex(credentialIdentity({ umkPub: umkA, userId: fill(16, 0xd4), deviceId: fill(16, 0xe5), kind: 0, tier: 1, signerTier: 0, sskPub: fill(32, 0xf6), sigUmkSsk: fill(64, 0x17), sigSskDev: fill(64, 0x28) })) },
+    credential_identity: {
+      umk_priv: hex(umkSeed),
+      ssk_priv: hex(sskSeed),
+      dsk_priv: hex(dskSeed),
+      dsk_pub: hex(dsk.publicKey),
+      fields: {
+        umk_pub: hex(umk.publicKey), user_id: hex(userId), device_id: hex(deviceId),
+        kind, tier, signer_tier: signerTier, ssk_pub: hex(ssk.publicKey),
+        sig_umk_ssk: hex(sigUmkSsk), sig_ssk_dev: hex(sigSskDev),
+      },
+      cbor: hex(credentialIdentity({
+        umkPub: umk.publicKey, userId, deviceId, kind, tier, signerTier,
+        sskPub: ssk.publicKey, sigUmkSsk, sigSskDev,
+      })),
+    },
   };
 }
 

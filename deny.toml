@@ -1,0 +1,140 @@
+[graph]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
+           "wasm32-unknown-unknown", "wasm32-wasip1"]
+all-features = true
+
+[advisories]
+yanked = "deny"
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+# Every entry here must be a licence the resolved graph actually carries: cargo-deny reports an
+# unused allowance as `license-not-encountered`, and a run that prints warnings is a run whose
+# warnings stop being read. `ISC` was dropped for exactly that reason (nothing in the graph over
+# the four targets in [graph] carries it); `BlueOak-1.0.0` went the same way with minicbor
+# (deviation A1-3). Add one back when the dependency that needs it arrives, not before.
+allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "Unicode-3.0",
+         "Zlib", "MPL-2.0"]
+confidence-threshold = 0.9
+
+[licenses.private]
+ignore = true                      # every dilla crate is publish = false
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+# The four dilla crates depend on each other by `path` with no version requirement, which the
+# wildcards check reports. That is only a hazard for a crate that is published; every dilla crate
+# is `publish = false`, which is exactly the case this key exempts.
+allow-wildcard-paths = true
+
+[[bans.skip]]
+crate = "sha2"
+reason = "ed25519-dalek 2.2 needs sha2 0.10; openmls_rust_crypto needs 0.11. Collapses when openmls_rust_crypto adopts ed25519-dalek 3."
+
+[[bans.skip]]
+crate = "digest"
+reason = "sha2 0.10 pulls digest 0.10 while sha2 0.11 pulls digest 0.11. Collapses with the sha2 entry."
+
+[[bans.skip]]
+crate = "crypto-common"
+reason = "digest 0.10 and digest 0.11 each pin their own crypto-common major. Collapses with the digest entry."
+
+[[bans.skip]]
+crate = "signature"
+reason = "ed25519-dalek 2.2 pins signature 2.x while the 0.11 digest stack pins signature 3.x. Collapses when ed25519-dalek 3 ships."
+
+[[bans.skip]]
+crate = "rand_core"
+reason = "openmls_rust_crypto 0.6.0 carries both rand_core 0.6.4 (ed25519-dalek 2.2) and 0.10.1 (the 0.11 digest stack). Collapses when ed25519-dalek 3 ships."
+
+[[bans.skip]]
+crate = "rand_chacha"
+reason = "rand_chacha follows rand_core's two majors. Collapses with the rand_core entry."
+
+[[bans.skip]]
+crate = "getrandom"
+reason = "getrandom 0.2.17 serves rand_core 0.6 and 0.4.3 serves rand_core 0.10; both are required while openmls_rust_crypto 0.6.0 is pinned. Not fixable by dilla (gap-10 section 2)."
+
+# gap-10 section 2 enumerated the seven duplicates above from crates.io requirements alone, with no
+# lockfile ("no cargo tree was run"). The resolved graph - all-features, four targets, dev-deps
+# included - carries eighteen more. Every one is forced by openmls_rust_crypto 0.6.0's own tree,
+# by rusqlite 0.40.2's, or by a proc-macro stack dilla never calls; none is dilla's to collapse.
+# Each entry names the upstream condition that removes it.
+
+[[bans.skip]]
+crate = "block-buffer"
+reason = "0.10.4 belongs to the digest 0.10 stack, 0.12.1 to digest 0.11. Collapses with the digest entry."
+
+[[bans.skip]]
+crate = "cpufeatures"
+reason = "0.2.17 via aes/chacha20/curve25519-dalek 4/sha2 0.10; 0.3.1 via curve25519-dalek 5 (x-wing) and keccak. Collapses when the old-generation RustCrypto stack goes."
+
+[[bans.skip]]
+crate = "curve25519-dalek"
+reason = "4.1.3 via ed25519-dalek 2.2 and x25519-dalek 2.0.1; 5.0.0 via x25519-dalek 3.0.0 (x-wing, in hpke-rs-rust-crypto 0.7.0). Collapses when ed25519-dalek 3 ships and hpke-rs settles on one x25519-dalek."
+
+[[bans.skip]]
+crate = "x25519-dalek"
+reason = "hpke-rs-rust-crypto 0.7.0 depends on x25519-dalek 2.0.1 directly and on 3.0.0 through x-wing 0.1.0. Collapses when hpke-rs-rust-crypto unifies them."
+
+[[bans.skip]]
+crate = "hmac"
+reason = "0.12.1 via hkdf 0.12 and rfc6979 (ecdsa 0.16, i.e. p256/p384); 0.13.0 is dilla-core's and openmls_rust_crypto's. Collapses when the elliptic-curve 0.13 line adopts digest 0.11."
+
+[[bans.skip]]
+crate = "hkdf"
+reason = "0.12.4 via elliptic-curve 0.13.8 (p256/p384/k256); 0.13.0 is dilla-core's and openmls_rust_crypto's. Collapses with the hmac entry."
+
+[[bans.skip]]
+crate = "sha3"
+reason = "ml-kem 0.3.2 pins sha3 0.11 while x-wing 0.1.0 pins 0.12; both are pulled by hpke-rs-rust-crypto 0.7.0. Collapses when x-wing and ml-kem agree."
+
+[[bans.skip]]
+crate = "const-oid"
+reason = "0.9.6 via der 0.7 (elliptic-curve 0.13 stack); 0.10.2 via der 0.8 (pkcs8 0.11, ml-dsa 0.1.1). Collapses when p256/p384/k256 move to the der 0.8 generation."
+
+[[bans.skip]]
+crate = "der"
+reason = "0.7.10 under pkcs8 0.10.2 (elliptic-curve 0.13); 0.8.2 under pkcs8 0.11.0 (ml-dsa 0.1.1). Collapses with the const-oid entry."
+
+[[bans.skip]]
+crate = "pkcs8"
+reason = "0.10.2 via sec1/elliptic-curve 0.13.8; 0.11.0 via ml-dsa 0.1.1 (openmls_rust_crypto 0.6.0). Collapses with the const-oid entry."
+
+[[bans.skip]]
+crate = "spki"
+reason = "0.7.3 under pkcs8 0.10.2, 0.8.0 under pkcs8 0.11.0. Collapses with the pkcs8 entry."
+
+[[bans.skip]]
+crate = "hashbrown"
+reason = "rusqlite 0.40.2 pulls 0.17.1 through hashlink 0.12.2, and 0.16.1 through rsqlite-vfs 0.1.1 (the sqlite-wasm-rs path). Collapses when rsqlite-vfs bumps hashbrown."
+
+[[bans.skip]]
+crate = "syn"
+reason = "2.0.119 is what nearly every proc macro still uses; wasm-bindgen-test-macro 0.3.78 has moved to 3.0.6. Build-time only; collapses as the ecosystem finishes the syn 3 migration."
+
+[[bans.skip]]
+crate = "macroific"
+reason = "indexed_db_futures 0.6.4 pulls macroific 2.0.0 (via indexed_db_futures_macros_internal) and 3.1.0 (via fancy_constructor). Build-time only; collapses when indexed_db_futures unifies its macro stack."
+
+[[bans.skip]]
+crate = "macroific_macro"
+reason = "follows macroific's two majors. Collapses with the macroific entry."
+
+[[bans.skip]]
+crate = "macroific_core"
+reason = "follows macroific's two majors. Collapses with the macroific entry."
+
+[[bans.skip]]
+crate = "macroific_attr_parse"
+reason = "follows macroific's two majors. Collapses with the macroific entry."
+
+[[bans.skip]]
+crate = "sealed"
+reason = "0.6.0 under macroific_core 2.0.0 and 0.7.0 under macroific_core 3.1.0. Collapses with the macroific entry."
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

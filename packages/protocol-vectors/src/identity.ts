@@ -41,7 +41,20 @@ export async function deriveRecoveryKeys(rk: Uint8Array): Promise<{ header: Uint
   return { header: await hkdfSha256(none, rk, utf8('dilla header v1'), 32), archive: await hkdfSha256(none, rk, utf8('dilla archive v1'), 32) };
 }
 
-export type CredentialFields = { umkPub: Uint8Array; userId: Uint8Array; deviceId: Uint8Array; kind: 0 | 1; tier: 0 | 1; signerTier: 0 | 1; sskPub: Uint8Array; sigUmkSsk: Uint8Array; sigSskDev: Uint8Array };
+export type CredentialFields = { umkPub: Uint8Array; userId: Uint8Array; deviceId: Uint8Array; kind: 0 | 1; tier: 0 | 1; signerTier: 0 | 1 | 2; sskPub: Uint8Array; sigUmkSsk: Uint8Array; sigSskDev: Uint8Array };
 export function credentialIdentity(f: CredentialFields): Uint8Array {
   return encode([1, f.umkPub, f.userId, f.deviceId, f.kind, f.tier, f.signerTier, f.sskPub, f.sigUmkSsk, f.sigSskDev]);
+}
+
+/** `"dilla ssk v1" || ssk_pub` - the message UMK_priv signs (03-identity.md "Keys"). */
+export function sskMessage(sskPub: Uint8Array): Uint8Array {
+  return concat(utf8('dilla ssk v1'), sskPub);
+}
+
+/**
+ * `"dilla dsk v1" || device_id || dsk_pub || kind || tier || signer_tier` - the message SSK_priv
+ * signs. The three trailing fields are one byte each, not CBOR.
+ */
+export function dskMessage(deviceId: Uint8Array, dskPub: Uint8Array, kind: number, tier: number, signerTier: number): Uint8Array {
+  return concat(utf8('dilla dsk v1'), deviceId, dskPub, new Uint8Array([kind, tier, signerTier]));
 }

@@ -1,0 +1,38 @@
+[package]
+name = "dilla-testkit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-or-later"
+repository.workspace = true
+publish = false
+
+[dependencies]
+dilla-core = { path = "../core/dilla-core", features = ["vectors"] }
+openmls                  = "0.9.0"
+openmls_traits           = "0.6.0"
+openmls_rust_crypto      = "0.6.0"
+openmls_basic_credential = "0.6.0"
+rusqlite    = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1.0.151"
+thiserror   = "2.0"
+hex         = "0.4"
+# `testkit/src/fixtures.rs` hashes every file it writes; a library dependency (not dev-only)
+# because `gen_public_group` is exported, not just exercised by a test binary.
+sha2        = "0.11"
+# The test client serialises and deserialises real MLS objects (KeyPackage, Welcome, GroupInfo,
+# RatchetTree, MlsMessage) on their way through the stub's byte-oriented API.
+tls_codec   = { version = "0.5.0", features = ["derive", "serde", "mls"] }
+rand_chacha = "0.3"     # deterministic seeding; matches openmls_rust_crypto's major
+# The seeded MLS signature keypair: `SignatureKeyPair::new` draws from the OS RNG, so the testkit
+# derives the Ed25519 key itself. Same pin and same features as dilla-core, so no second major.
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
+clap        = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "dilla-testkit"
+path = "src/bin/dilla-testkit.rs"
+
+[lints]
+workspace = true

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>dilla core-wasm spike</title>
+  </head>
+  <body>
+    <h1>dilla browser store spike</h1>
+    <p id="banner" data-testid="banner" hidden></p>
+    <dl>
+      <dt>persistence</dt><dd data-testid="mode" id="mode"></dd>
+      <dt>reason</dt><dd data-testid="reason" id="reason"></dd>
+      <dt>role</dt><dd data-testid="role" id="role"></dd>
+      <dt>open attempts</dt><dd data-testid="attempts" id="attempts">-</dd>
+      <dt>open elapsed (ms)</dt><dd data-testid="elapsed" id="elapsed">-</dd>
+      <dt>rows</dt><dd data-testid="rows" id="rows">-</dd>
+      <dt>boot marker</dt><dd data-testid="marker" id="marker">-</dd>
+    </dl>
+    <!-- Inert until the worker reports the store open (ruling J): a click before that reached a
+         worker with no listener for it and was lost, leaving the row count behind. -->
+    <button data-testid="append" id="append" disabled>append a row</button>
+    <button data-testid="resign" id="resign">resign leadership</button>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

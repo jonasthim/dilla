@@ -1,0 +1,17 @@
+# Invariant 3: one commit per epoch. Bob joins at epoch 1, goes offline so he never sees the commit
+# that admits Carol, and his own commit for epoch 1 is refused with commit_conflict.
+#
+# The removal target is Alice, not Carol: Bob commits from his own epoch-1 view, where the members
+# are Alice and himself. Carol's leaf does not exist there, so `remove bob chat carol` would fail
+# inside OpenMLS with an unknown-member error and the scenario would pass for the wrong reason. The
+# DS checks the epoch conflict before it validates anything else, so this asserts exactly
+# invariant 3.
+instance dilla
+client alice tier=native kind=user
+client bob tier=native kind=user
+client carol tier=native kind=user
+group chat kind=text target=55555555555555555555555555555555 community=none creator=alice
+join bob chat via=welcome
+go_offline bob
+join carol chat via=welcome
+expect_reject commit_conflict remove bob chat alice

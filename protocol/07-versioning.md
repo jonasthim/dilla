@@ -34,3 +34,5 @@ explains why.
 | date | version | change |
 |---|---|---|
 | 2026-09-23 | e2ee 1, media 1, wire 1 | initial |
+| 2026-09-23 | e2ee 1, media 1, wire 1 | `identity.json` gains real Ed25519 credential signatures and the seeds that reproduce them; no format change, so no version bump |
+| 2026-09-24 | e2ee 1, media 1, wire 1 | `body` limit stated as 0 for envelope types 2/5/6 (delete, pin, unpin), matching the "empty for 2/5/6" already in the array comment; `envelope.json` gains a `rejects` array with that case. The envelope format is unfrozen until the end of W4 and no field, order or length changed, so no version bump |

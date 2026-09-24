@@ -21,10 +21,13 @@ Every application message in a `text` or `interaction` group is one **envelope**
 ]
 ```
 
-Limits: `body` ≤ 4 000 UTF-8 bytes for type 0/1; ≤ 32 bytes for type 3/4; at most 10 attachments;
-at most 5 previews; `image` in a preview ≤ 32 KiB; `thumb` in an attachment ≤ 16 KiB. A receiver
-rejects an envelope over any limit (`E_ENVELOPE_LIMIT`), of the wrong length (`E_ENVELOPE_SHAPE`),
-or with an unknown `type` (`E_ENVELOPE_TYPE`); it MUST NOT render a partially valid envelope.
+Limits: `body` ≤ 4 000 UTF-8 bytes for type 0/1; ≤ 32 bytes for type 3/4; **0 bytes for type 2/5/6**
+— a delete, pin or unpin carries no body, and a receiver rejects one that does rather than ignoring
+it, because a conforming client has nowhere to render those bytes and they would otherwise be a
+covert channel; at most 10 attachments; at most 5 previews; `image` in a preview ≤ 32 KiB; `thumb`
+in an attachment ≤ 16 KiB. A receiver rejects an envelope over any limit (`E_ENVELOPE_LIMIT`), of
+the wrong length (`E_ENVELOPE_SHAPE`), or with an unknown `type` (`E_ENVELOPE_TYPE`); it MUST NOT
+render a partially valid envelope.
 
 Attachments are encrypted by the sender with AES-256-GCM under the per-attachment random `key`
 and `nonce`, uploaded as opaque blobs; `blob_id` is the SHA-256 of the ciphertext, and the
@@ -75,8 +78,14 @@ instance ever reading content and without the reporter being able to forge it.
 (three tags under a fixed instance key). An implementation conforms when it reproduces `cbor`,
 `commitment` and `tag` for every case, and rejects: the wrong element count; an unknown `type`;
 `msg_id` or `k_f` of the wrong length; non-minimal CBOR or trailing bytes; and any limit exceeded
-(`body` over 4 000 bytes for type 0/1 or over 32 bytes for type 3/4; more than 10 attachments; more
-than 5 previews; a preview `image` over 32 768 bytes; a `thumb` over 16 384 bytes).
+(`body` over 4 000 bytes for type 0/1, over 32 bytes for type 3/4, or non-empty for type 2/5/6;
+more than 10 attachments; more than 5 previews; a preview `image` over 32 768 bytes; a `thumb` over
+16 384 bytes).
+
+`vectors/envelope.json` also carries a `rejects` array: each entry is well-formed deterministic
+CBOR that a conforming decoder must nevertheless refuse, with the `error` code it must refuse it
+with. It holds one case today — a delete tombstone with a non-empty body, refused with
+`E_ENVELOPE_LIMIT`.
 
 ## Error codes
 

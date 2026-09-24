@@ -1,0 +1,240 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { checkWorkflow } from './check-ci-workflow.mjs';
+
+const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
+
+const GOOD = `name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: \${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm test
+      - run: npm run test:ci-check
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm test -w packages/ui
+  rust-native:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+  rust-wasm-node:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
+  rust-wasi:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dilla-core-wasi
+          path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
+          if-no-files-found: error
+  vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm run vectors
+      - run: git diff --exit-code -- protocol/vectors
+      - run: cargo run -p dilla-testkit --bin dilla-testkit --locked -- vectors
+  browser-spike:
+    runs-on: ubuntu-latest
+    steps:
+      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir spike/pkg
+      - run: npm run test:e2e:matrix -w @dilla/e2e
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo deny --all-features check advisories bans licenses sources
+  go:
+    runs-on: ubuntu-latest
+    needs: [rust-wasi]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: go vet ./...
+      - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
+      - run: go test -race -shuffle=on -timeout 15m ./...
+      - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
+
+  go-fts5-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - run: go test ./internal/store/sqlite/...
+`;
+
+function fixture(body) {
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-ci-'));
+  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), body);
+  return dir;
+}
+
+test('the real workflow passes every rule', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  assert.deepEqual(checkWorkflow(root), []);
+});
+
+test('a well-formed workflow passes', () => {
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
+});
+
+test('a missing job is reported by name', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/  deny:[\s\S]*$/, '')));
+  assert.ok(problems.some((p) => p.includes('deny')), problems.join('\n'));
+});
+
+test('|| true is reported with its line number', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('- run: npm test\n', '- run: npm test || true\n')));
+  assert.ok(problems.some((p) => /\|\| true/.test(p)), problems.join('\n'));
+});
+
+test('continue-on-error is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('  deny:\n', '  deny:\n    continue-on-error: true\n')));
+  assert.ok(problems.some((p) => p.includes('continue-on-error')), problems.join('\n'));
+});
+
+test('if: always() is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('      - run: npm test\n', '      - if: always()\n        run: npm test\n')));
+  assert.ok(problems.some((p) => p.includes('always()')), problems.join('\n'));
+});
+
+// Fix round 1, finding 1 (important): the explicit-expression spelling `if: ${{ always() }}` is just
+// as valid as `if: always()` and just as capable of making a job non-blocking, so the R22 gate must
+// catch it too.
+test('if: ${{ always() }} is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - run: npm test\n', '      - if: ${{ always() }}\n        run: npm test\n')),
+  );
+  assert.ok(problems.some((p) => p.includes('always()')), problems.join('\n'));
+});
+
+test('a job that lost a required step is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('      - run: cargo fmt --all --check\n', '')));
+  assert.ok(problems.some((p) => p.includes('cargo fmt')), problems.join('\n'));
+});
+
+test('a missing concurrency block is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/concurrency:[\s\S]*?cancel-in-progress: true\n/, '')));
+  assert.ok(problems.some((p) => p.includes('concurrency')), problems.join('\n'));
+});
+
+test('a workflow-level RUSTFLAGS is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('  CARGO_TERM_COLOR: always\n', '  CARGO_TERM_COLOR: always\n  RUSTFLAGS: -D warnings\n')));
+  assert.ok(problems.some((p) => p.includes('RUSTFLAGS')), problems.join('\n'));
+});
+
+test('a rust-wasi job that lost if-no-files-found is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('          if-no-files-found: error\n', '')));
+  assert.ok(problems.some((p) => p.includes('if-no-files-found')), problems.join('\n'));
+});
+
+test('a rust-wasi job that lost the artifact path is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('          path: target/wasm32-wasip1/release/dilla_core_wasi.wasm\n', '')),
+  );
+  assert.ok(problems.some((p) => p.includes('dilla_core_wasi.wasm')), problems.join('\n'));
+});
+
+test('a go job without needs: rust-wasi is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-wasi]\n', '')));
+  assert.ok(problems.some((p) => p.includes('needs: rust-wasi')), problems.join('\n'));
+});
+
+// Both spellings are the same dependency edge to GitHub, so the ordering rule must accept the
+// scalar one as well as the list the real workflow uses.
+test('a go job whose needs: is the scalar spelling passes', () => {
+  assert.deepEqual(
+    checkWorkflow(fixture(GOOD.replace('    needs: [rust-wasi]\n', '    needs: rust-wasi\n'))),
+    [],
+  );
+});
+
+test('a node job that stopped running the checker\'s own tests is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('      - run: npm run test:ci-check\n', '')));
+  assert.ok(problems.some((p) => p.includes('test:ci-check')), problems.join('\n'));
+});
+
+// Fix round 1, finding 3 (important): gap-31 §4 item 2 / NV-14 resolved the pairing as
+// `upload-artifact@v7` with `download-artifact@v8` — pairing v7 with v4 (facts/plan-B.md's now-stale
+// deviation B15 text) is the untested combination B15 existed to prevent. The checker owns the
+// cross-plan ordering rule already, so it must own this half of the hand-off too.
+test('a go job with download-artifact@v4 instead of v8 is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('actions/download-artifact@v8', 'actions/download-artifact@v4')),
+  );
+  assert.ok(problems.some((p) => p.includes('download-artifact@v8')), problems.join('\n'));
+});
+
+// Ruling L: the Go half of the tree is gated by this checker too, so a workflow that simply never
+// declares the `go` job — the state this repository was in before Plan B task 8 — must be reported
+// rather than silently accepted. Before this rule the checker passed such a workflow.
+test('a workflow with no go job at all is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/  go:[\s\S]*$/, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "go"')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('missing job "go-fts5-arm64"')), problems.join('\n'));
+});
+
+// Ruling M: `internal/deps` is the only thing that compiles the pinned LiveKit/wazero/sqlite graph
+// with the three pion `replace` directives, and it is behind the `dillapins` tag, so no other step
+// in the workflow would notice the graph breaking.
+test('a go job that lost the pinned-module-graph build is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps\n', '')),
+  );
+  assert.ok(problems.some((p) => p.includes('dillapins')), problems.join('\n'));
+});
+
+test('a go job that stopped running the race-detector tests is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 15m ./...\n', '')),
+  );
+  assert.ok(problems.some((p) => p.includes('-race')), problems.join('\n'));
+});
+
+test('a go-fts5-arm64 job that stopped running on arm is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('    runs-on: ubuntu-24.04-arm\n', '    runs-on: ubuntu-latest\n')));
+  assert.ok(problems.some((p) => p.includes('ubuntu-24.04-arm')), problems.join('\n'));
+});
+
+// The CLI entry point at the bottom of check-ci-workflow.mjs, not `checkWorkflow` itself: this must
+// be run as a subprocess from a cwd that is NOT the fixture root and has no .github/workflows of its
+// own, so a script that silently fell back to process.cwd() (ignoring argv[2]) cannot pass by
+// accident — it would fail to find ci.yml at all rather than happening to validate the right file.
+function runCli(root, cwd) {
+  return spawnSync(process.execPath, [SCRIPT_PATH, root], { cwd, encoding: 'utf8' });
+}
+
+test('the CLI honours a root argument passed from a different cwd', () => {
+  const root = fixture(GOOD);
+  const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
+  const result = runCli(root, cwd);
+  assert.equal(result.status, 0, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+});
+
+test('the CLI reports problems in a workflow at the given root, run from elsewhere', () => {
+  const root = fixture(GOOD.replace(/  deny:[\s\S]*$/, ''));
+  const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
+  const result = runCli(root, cwd);
+  assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+  assert.match(result.stderr, /deny/);
+});

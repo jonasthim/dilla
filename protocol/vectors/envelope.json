@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "dilla envelope encodings (04-envelope-and-franking.md). cbor = deterministic CBOR of the 9-element array; commitment = HMAC-SHA256(k_f, \"dilla frank v1\" || CBOR with k_f blanked).",
+  "description": "dilla envelope encodings (04-envelope-and-franking.md). cbor = deterministic CBOR of the 9-element array; commitment = HMAC-SHA256(k_f, \"dilla frank v1\" || CBOR with k_f blanked). rejects = well-formed CBOR that a conforming decoder must still refuse with the named error code.",
   "cases": [
     {
       "name": "text message with a reply and one attachment",
@@ -87,6 +87,13 @@
       "cbor": "8901503131313131313131313131313131313100f6f6782668747470733a2f2f76616c6865696d2e66616e646f6d2e636f6d2f77696b692f53696c766572808184782668747470733a2f2f76616c6865696d2e66616e646f6d2e636f6d2f77696b692f53696c7665726653696c766572782953696c7665722069732061206d6574616c20666f756e6420696e20746865204d6f756e7461696e732ef658203636363636363636363636363636363636363636363636363636363636363636",
       "length": 190,
       "commitment": "a0017527f61c58117d59a8cbc46fff3167e7994a08e7f9d3e65f398255a82695"
+    }
+  ],
+  "rejects": [
+    {
+      "name": "delete tombstone with a non-empty body",
+      "error": "E_ENVELOPE_LIMIT",
+      "cbor": "8901502121212121212121212121212121212102f650010101010101010101010101010101016f64656c657465642062656361757365808058202626262626262626262626262626262626262626262626262626262626262626"
     }
   ]
 }
