@@ -102,6 +102,17 @@ pub fn build_key_package(
 /// re-state required_capabilities and the unchanged binding alongside the new senders. Dropping
 /// the binding silently erases it from the group context; dropping required_capabilities makes the
 /// commit invalid (gap-4 section 4.1). At most one such proposal per commit.
+///
+/// **This builder has no reachable consumer on this branch.** `extension_change_verdict`
+/// (`mls/policy.rs`) rejects **every** `GroupContextExtensions` proposal, external sender included,
+/// because `protocol/03-identity.md` defines the rotation preimage but names nowhere for the
+/// signature over it to travel — no companion GroupContext extension, no `authenticated_data`,
+/// nothing. A verifier cannot check a signature it cannot locate, so the safe default refuses the
+/// proposal outright rather than accepting one nothing can authenticate. The extension set this
+/// function builds is therefore never handed to a receiver that would accept it. See follow-up
+/// card (p) in `docs/superpowers/plans/2026-09-23-dilla-core.md`: once protocol/03 names the
+/// carrier, `extension_change_verdict` can accept a rotation whose other extensions are
+/// byte-identical to the current group context's and whose signature verifies.
 pub fn rotate_external_senders_extensions(
     binding: &DillaBinding,
     new_senders: ExternalSendersExtension,

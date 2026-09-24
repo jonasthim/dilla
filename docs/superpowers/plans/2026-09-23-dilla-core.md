@@ -17858,11 +17858,11 @@ git -C /home/thim/Repositories/dilla/.claude/worktrees/sdd-dilla-protocol add do
 
 ## Follow-up cards (not in this plan)
 
-Fifteen items that this plan's execution produces or exposes but deliberately does **not** do. Each
+Sixteen items that this plan's execution produces or exposes but deliberately does **not** do. Each
 names why it exists and which plan owns it. None of them blocks a task in this plan; they are here so
 that no task invents one of them on the way past. The same list appears in
 `docs/superpowers/plans/2026-09-23-dillad-spikes.md`, so a reader of either file sees the whole set.
-Cards (j) through (o) below were added from this worktree only (Plan B's mirror worktree is off-limits
+Cards (j) through (p) below were added from this worktree only (Plan B's mirror worktree is off-limits
 to these sessions); whoever next has write access to both files should copy them across.
 
 - **(a) Regenerate `testkit/fixtures/ds-1500/` before its KeyPackages expire, around 2026-12-22.** Task 13
@@ -17959,6 +17959,15 @@ to these sessions); whoever next has write access to both files should copy them
   (never calling the release export) eventually exhausts the space, and the module's response to that
   is not an `E_*` frame the host can act on. A long-running dillad is exactly the host that would hit
   it. **Owner: dilla-core**, with Plan B task 4/5 as the place it would first show.
+- **(p) Instance key rotation in a live group.** `protocol/03-identity.md` defines the rotation
+  preimage — `sig_old(new_pub || DOMAIN_INSTANCE_ROTATE)` — but names no carrier for that signature:
+  not a companion GroupContext extension, not the proposal's `authenticated_data`, nothing. Until
+  protocol/03 names one (a `protocol/07-versioning.md` change-process item), `extension_change_verdict`
+  (`mls/policy.rs`) refuses every external `GroupContextExtensions` proposal and
+  `rotate_external_senders_extensions` (`mls/config.rs`) has no reachable consumer. Once the carrier
+  is named, `extension_change_verdict` can accept a rotation whose other extensions are byte-identical
+  to the current group context's and whose signature verifies. **Owner: dilla-protocol**, then
+  **dilla-core**.
 
 ## Needs verification (part A1)
 
