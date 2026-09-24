@@ -187,12 +187,13 @@ impl PairingPayload {
         // protocol/03-identity.md writes `v ; uint, = 1` here too. This payload hands the new
         // device the SSK, the archive key and the pin table, so decoding an unknown version as if
         // it were version 1 installs long-term secrets from a structure this build cannot read.
-        // (`E_UNSUPPORTED_VERSION` per the final-fix brief's item 4 ruling.)
+        // `E_UNSUPPORTED_VERSION` is not in protocol/03-identity.md's "Error codes" list, so an
+        // unknown version answers with `E_CREDENTIAL`, the same as the sibling decoders.
         .and_then(|p| {
             if p.v == 1 {
                 Ok(p)
             } else {
-                Err(ProtocolError::UnsupportedVersion)
+                Err(ProtocolError::Credential)
             }
         })
     }
@@ -323,7 +324,7 @@ mod tests {
         future.v = 2;
         assert_eq!(
             PairingPayload::decode(&future.encode()),
-            Err(ProtocolError::UnsupportedVersion)
+            Err(ProtocolError::Credential)
         );
         assert!(PairingPayload::decode(&full_payload().encode()).is_ok());
     }

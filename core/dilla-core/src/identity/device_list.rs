@@ -136,13 +136,14 @@ impl DeviceList {
         // protocol/03-identity.md writes `v ; uint, = 1`. Without this a future version decodes
         // as if it were version 1, and every rule below — the version/`prev_hash` chain and the
         // `revoked_at` check that is dilla's only cryptographic revocation — is then applied to a
-        // structure this build does not understand. (`E_UNSUPPORTED_VERSION` per the final-fix
-        // brief's item 4 ruling.)
+        // structure this build does not understand. `E_UNSUPPORTED_VERSION` is not in
+        // protocol/03-identity.md's "Error codes" list, so an unknown version answers with
+        // `E_CREDENTIAL`, the same as the sibling decoders in this module.
         .and_then(|l| {
             if l.unsigned.v == 1 {
                 Ok(l)
             } else {
-                Err(ProtocolError::UnsupportedVersion)
+                Err(ProtocolError::Credential)
             }
         })
     }
@@ -285,7 +286,7 @@ mod tests {
         future.unsigned.v = 2;
         assert_eq!(
             DeviceList::decode(&future.encode()),
-            Err(ProtocolError::UnsupportedVersion)
+            Err(ProtocolError::Credential)
         );
         let ok = list(1, [0u8; 32], vec![entry(0x01, None)]);
         assert!(DeviceList::decode(&ok.encode()).is_ok());
