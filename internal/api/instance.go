@@ -1,0 +1,102 @@
+package api
+
+import (
+	"net/http"
+	"slices"
+	"time"
+
+	"github.com/jonasthim/dilla/internal/server"
+)
+
+// registerInstance mounts the two discovery routes. GET /v1/instance is
+// unauthenticated unless instance.discovery = "session", which is the one knob
+// protocol/09-http-api.md § Instance puts on that row's Auth column; the limits
+// array has no such knob and is always open, because a client needs
+// max_ciphertext_bytes before it has a session to ask with.
+func registerInstance(m *server.Mux, d Deps) {
+	if d.Config != nil && d.Config.Instance.Discovery == "session" {
+		m.Handle("GET /v1/instance", d.enrolled(d.InstanceDocument))
+	} else {
+		m.Handle("GET /v1/instance", http.HandlerFunc(d.InstanceDocument))
+	}
+	m.Handle("GET /v1/instance/limits", http.HandlerFunc(d.InstanceLimits))
+}
+
+// InstanceDocument serves GET /v1/instance: the nine-element discovery document of
+// protocol/09-http-api.md § Instance. It is unauthenticated unless
+// instance.discovery = "session"; Register decides which by wrapping this
+// handler. registration_mode is 0 invite-only, 1 open, 2 closed; auth_methods
+// are 0 password, 1 totp, 2 passkey, 3 oidc — both enumerations are fixed by
+// that section, including the meaning of 0.
+//
+// It is NOT named Instance: Deps already carries the instance ROW under that
+// name, and a struct cannot hold a field and a method with one identifier.
+func (d Deps) InstanceDocument(w http.ResponseWriter, r *http.Request) {
+	methods := make([]uint64, 0, len(d.Config.Auth.Methods))
+	for _, m := range d.Config.Auth.Methods {
+		switch m {
+		case "password":
+			methods = append(methods, 0)
+		case "totp":
+			methods = append(methods, 1)
+		case "passkey":
+			methods = append(methods, 2)
+		case "oidc":
+			methods = append(methods, 3)
+		}
+	}
+	// "ascending, no duplicates" is the document's wording, and config.Validate
+	// constrains neither the order an operator writes auth.methods in nor a
+	// repeated entry.
+	slices.Sort(methods)
+	methods = slices.Compact(methods)
+	mode := uint64(0)
+	switch d.Registration.Mode {
+	case "open":
+		mode = 1
+	case "closed":
+		mode = 2
+	}
+	doc := []any{
+		[]uint64{1}, // wire_versions
+		[]uint64{1}, // e2ee_versions
+		[]uint64{1}, // media_versions
+		d.Instance.InstanceID,
+		d.Instance.Generation,
+		d.Config.Instance.Domain,
+		mode,
+		methods,
+		d.Instance.PolicyVersion,
+	}
+	d.generation(w)
+	if err := server.EncodeBody(w, http.StatusOK, doc); err != nil {
+		d.logf(r, "api: encode instance document", "err", err)
+	}
+}
+
+// InstanceLimits serves GET /v1/instance/limits: eleven unsigned integers, in
+// the order protocol/09-http-api.md § Instance fixes.
+func (d Deps) InstanceLimits(w http.ResponseWriter, r *http.Request) {
+	c := d.Config
+	limits := []uint64{
+		uint64(c.Limits.MaxCiphertextBytes),
+		uint64(c.Blobs.MaxBlobBytes),
+		4, // max_attachments (protocol/04, tightened by R6/R32)
+		2, // max_previews
+		uint64(c.Limits.MaxKeypackagesPerDevice),
+		uint64(c.Limits.KeypackageRefillThreshold),
+		uint64(c.Blobs.QuotaBytesPerUser),
+		uint64(c.Gateway.HeartbeatInterval.Value() / time.Millisecond),
+		// max_frame_bytes is derived once, in config.Derive, and part 1b's
+		// gateway.Options.MaxFrameBytes reads the same accessor: an operator who
+		// changes limits.max_ciphertext_bytes must move both this element and
+		// the gateway's hello frame, not one of them.
+		c.MaxFrameBytes(),
+		uint64(c.Retention.HandshakeDays),
+		uint64(c.Retention.CiphertextDays),
+	}
+	d.generation(w)
+	if err := server.EncodeBody(w, http.StatusOK, limits); err != nil {
+		d.logf(r, "api: encode limits document", "err", err)
+	}
+}

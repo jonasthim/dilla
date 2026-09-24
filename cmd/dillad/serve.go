@@ -3,25 +3,37 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
+	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/exit"
+	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/postgres"
 	postgresmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
 	"github.com/pressly/goose/v3"
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+// metricsTokenEnv carries the bearer token /metrics is guarded with when
+// metrics.require_admin is set. It is an environment variable and not a
+// dilla.toml key because dilla.toml is configuration an operator diffs and
+// copies around, while this is a credential: systemd's EnvironmentFile= is
+// where the unit already keeps them. An unset variable is not a way in —
+// dillad.New substitutes an unguessable random token and logs that no scrape
+// will succeed.
+const metricsTokenEnv = "DILLA_METRICS_TOKEN"
 
 // openRepository opens the configured storage engine's pool(s) and wraps them
 // in a store.Repository. The *sql.DB it also returns is the pool migrations,
@@ -78,8 +90,10 @@ func migrationProvider(c *config.Config, db *sql.DB) (*goose.Provider, error) {
 // runServe loads the config, opens the repository, migrates it (when
 // db.auto_migrate, after a VACUUM INTO backup when db.pre_migration_backup),
 // refuses to start when the database's schema is newer than this binary's
-// highest migration, and serves a health endpoint until an interrupt drains
-// it. Task 13 replaces the handler with dillad.New(...).Handler().
+// highest migration, and then serves internal/dillad's composition root until
+// an interrupt drains it. Everything above the composition root is start-up
+// order; every route, middleware and timeout lives in dillad.New, so the
+// binary's surface and an end-to-end test's surface are one thing.
 func runServe(args []string, stdout, stderr io.Writer) error {
 	fs, cfgPath := newFlagSet("serve", stderr)
 	if err := parse(fs, args, stdout); err != nil {
@@ -121,18 +135,28 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "ok")
-	})
+	log := obs.NewLogger(cfg.Log, stderr)
+	reg := prometheus.NewRegistry()
+	metrics := obs.NewMetrics(reg, reg)
+	health := obs.NewHealth(clock.System())
 
-	srv := &http.Server{
-		Addr:              cfg.Server.Listen,
-		Handler:           mux,
-		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Value(),
-		IdleTimeout:       cfg.Server.IdleTimeout.Value(),
-		// No WriteTimeout: the gateway's WebSocket connections are long-lived.
+	srv, err := dillad.New(ctx, dillad.Options{
+		Config: cfg, Repo: repo, Clock: clock.System(), Log: log,
+		Metrics: metrics, Health: health, ScrapeToken: os.Getenv(metricsTokenEnv),
+	})
+	if err != nil {
+		return fmt.Errorf("serve: %w: %w", err, exit.Software)
+	}
+
+	listenAddr := cfg.Server.Listen
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("serve: listen %s: %w: %w", listenAddr, err, exit.Unavailable)
+	}
+	// An operator (or a test) who asked the kernel for a port learns which one
+	// it got; there is nowhere else to read it from.
+	if strings.HasSuffix(listenAddr, ":0") {
+		fmt.Fprintln(stdout, ln.Addr().String())
 	}
 
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -155,30 +179,19 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		os.Exit(int(exit.Fail))
 	}()
 
-	serveErr := make(chan error, 1)
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- err
-			return
-		}
-		serveErr <- nil
-	}()
-
 	notifyReady()
 
-	select {
-	case err := <-serveErr:
-		if err != nil {
-			return fmt.Errorf("serve: listen: %w: %w", err, exit.NoPerm)
+	go func() {
+		<-runCtx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.Value())
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Error("shutdown", "err", err)
 		}
-		return nil
-	case <-runCtx.Done():
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.Value())
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("serve: shutdown: %w: %w", err, exit.Fail)
+	}()
+	// Serve returns nil on the graceful close the goroutine above triggers.
+	if err := srv.Serve(runCtx, ln); err != nil {
+		return fmt.Errorf("serve: %w: %w", err, exit.Unavailable)
 	}
 	return nil
 }

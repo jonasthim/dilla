@@ -102,6 +102,9 @@ const maxCBORBody = 64 << 10
 // route that exists in the document and not in the binary is a missing line
 // here rather than a forgotten wiring in a composition root.
 func Register(m *server.Mux, d Deps) {
+	// Discovery. The two routes a client reads before it has anything else.
+	registerInstance(m, d)
+
 	// Unauthenticated. The invite landing page and the two registration routes
 	// are the only /v1 surface a caller reaches without a bearer token, so each
 	// is metered here on its own §5.3 bucket, keyed by the client address,
