@@ -170,22 +170,26 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// through a run that is already over — which is how an in-process test
 	// that drives runServe twice loses its whole binary to the first run's
 	// watcher.
-	forceExit := make(chan os.Signal, 1)
+	// The two signals are counted on this channel alone. Waiting on runCtx and
+	// then draining forceExit with a non-blocking receive would be a race:
+	// signal delivery to NotifyContext's channel and to this one is
+	// independent, so the drain often runs before the FIRST signal has arrived
+	// here, takes the default branch, and the blocking receive that follows
+	// then treats that same first signal as the second and exits the process
+	// in the middle of a perfectly ordinary drain. The buffer is 2 so a second
+	// signal sent between the two receives is not dropped.
+	forceExit := make(chan os.Signal, 2)
 	signal.Notify(forceExit, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(forceExit)
 	runOver := make(chan struct{})
 	defer close(runOver)
 	go func() {
-		select {
-		case <-runCtx.Done():
-		case <-runOver:
-			return
-		}
-		// The signal that cancelled runCtx was also delivered here; drain it
-		// before waiting for a genuinely second one.
+		// The first signal is the one NotifyContext also relays to runCtx; it
+		// starts the drain.
 		select {
 		case <-forceExit:
-		default:
+		case <-runOver:
+			return
 		}
 		select {
 		case <-forceExit:
