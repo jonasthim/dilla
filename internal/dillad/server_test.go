@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"go/build"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -435,11 +436,37 @@ func TestMetricsIsNotOpenWhenNoScrapeTokenWasSupplied(t *testing.T) {
 	}
 }
 
+// goToolPath resolves the `go` command to shell out to. It must NOT be a
+// literal absolute path: the toolchain lives at /home/thim/.local/go on the
+// development box and under /opt/hostedtoolcache/go/<version>/x64 on the CI
+// runner actions/setup-go provisions, so a hard-coded path makes exec.Command
+// fail to start in CI ("fork/exec …: no such file or directory") and turns the
+// fail-closed `go` gate red on a machine where nothing is actually wrong.
+//
+// build.Default.GOROOT is $GOROOT when it is set and otherwise the GOROOT of
+// the toolchain that built this test binary — the one whose `go list` already
+// agrees with go.mod's `go 1.27.0`, so it is preferred over PATH, which may
+// hold an older go that would try to download a toolchain instead.
+func goToolPath(t *testing.T) string {
+	t.Helper()
+	if root := build.Default.GOROOT; root != "" {
+		p := filepath.Join(root, "bin", "go")
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
+		}
+	}
+	p, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("no go toolchain: GOROOT %q holds no bin/go and PATH has none: %v", build.Default.GOROOT, err)
+	}
+	return p
+}
+
 func TestTheReleaseBinaryDoesNotLinkTheTestHelpers(t *testing.T) {
 	// The MODULE path, not "./cmd/dillad": the test's working directory is
 	// internal/dillad, where that relative path does not exist and go list exits
 	// non-zero on every run.
-	out, err := exec.Command("/home/thim/.local/go/bin/go", "list", "-deps",
+	out, err := exec.Command(goToolPath(t), "list", "-deps",
 		"github.com/jonasthim/dilla/cmd/dillad").Output()
 	if err != nil {
 		t.Fatalf("go list: %v", err)
