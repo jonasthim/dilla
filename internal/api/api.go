@@ -152,6 +152,18 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("DELETE /v1/devices/{device_id}", d.enrolled(d.DeleteDevice))
 	m.Handle("PUT /v1/users/{user_id}/device-list", d.enrolled(d.PutDeviceList))
 	m.Handle("GET /v1/users/{user_id}/device-list", d.enrolled(d.GetDeviceList))
+
+	// Sessions. The challenge and establish routes carry NO session middleware:
+	// they are how a session is obtained, so requiring one would be circular.
+	// The challenge route meters itself on its own two keys inside the handler.
+	m.Handle("POST /v1/devices/{device_id}/sessions/challenge", http.HandlerFunc(d.SessionChallenge))
+	m.Handle("POST /v1/devices/{device_id}/sessions", http.HandlerFunc(d.SessionEstablish))
+	m.Handle("DELETE /v1/devices/{device_id}/sessions", d.enrolled(d.SessionDelete))
+
+	// The gateway ticket. The route is mounted here and answers 501 until part
+	// 1b task 17 fills Deps.Tickets, so the document and the binary agree on
+	// which paths exist.
+	m.Handle("POST /v1/gateway/ticket", d.enrolled(d.GatewayTicket))
 }
 
 // The two §5.3 buckets this task's routes are on. The names are config's own
