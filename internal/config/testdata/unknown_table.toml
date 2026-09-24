@@ -1,0 +1,6 @@
+[instance]
+domain    = "chat.example"
+public_ip = "203.0.113.7"
+
+[gatewy]
+heartbeat_interval = "30s"

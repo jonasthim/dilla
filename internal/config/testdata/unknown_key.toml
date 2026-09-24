@@ -1,0 +1,4 @@
+[instance]
+domain     = "chat.example"
+public_ip  = "203.0.113.7"
+data_dirr  = "/var/lib/dilla"

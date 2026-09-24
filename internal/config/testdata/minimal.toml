@@ -1,0 +1,13 @@
+[instance]
+domain    = "chat.example"
+public_ip = "203.0.113.7"
+
+[tls]
+agreed = true
+
+[turn]
+shared_secret_file = "turn.secret"
+relay_ip           = "203.0.113.7"
+
+[livekit]
+api_secret_file = "livekit.secret"

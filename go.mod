@@ -13,6 +13,7 @@ require (
 	// pseudo-versions below are the pair verified to build on 2026-09-23.
 	github.com/livekit/protocol v1.51.1-0.20260910121219-271d9cde3897
 	github.com/livekit/server-sdk-go/v2 v2.18.2-0.20260922130803-2088dabd3442
+	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/pion/turn/v5 v5.0.13
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/tetratelabs/wazero v1.12.0
