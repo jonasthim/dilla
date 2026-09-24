@@ -44,3 +44,27 @@ jobs:
           npx concurrently -k -s first -n SB,TEST \
             "npx http-server packages/ui/storybook-static --port 6006 --silent" \
             "npx wait-on tcp:127.0.0.1:6006 && npm run test:storybook -w packages/ui -- --url http://127.0.0.1:6006"
+  rust-wasm-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-wasm32-unknown-unknown
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.128,wasm-pack@0.15.0
+      - name: wasm-bindgen-cli must equal the Cargo.lock crate version
+        run: |
+          want=$(cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.name=="wasm-bindgen") | .version')
+          have=$(wasm-bindgen --version | awk '{print $2}')
+          test "$want" = "$have" || { echo "wasm-bindgen-cli $have != crate $want"; exit 1; }
+      - run: cargo test -p dilla-core --target wasm32-unknown-unknown --locked --features vectors
+      - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
