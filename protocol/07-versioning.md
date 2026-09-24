@@ -29,10 +29,18 @@ explains why.
 1. Open a pull request that changes the document and bumps the affected version in this file.
 2. Regenerate the vectors (`npm run vectors`) and explain every diff.
 3. Add a row to the table below.
-4. Two maintainers approve; one of them must not be the author.
+4. The maintainer approves and one independent recorded review exists. Once a second maintainer
+   exists, that second maintainer's approval is required instead. Before the first public release,
+   the founder's approval plus a recorded independent review — an agent's whole-branch review
+   counts — satisfies this step.
 
 | date | version | change |
 |---|---|---|
 | 2026-09-23 | e2ee 1, media 1, wire 1 | initial |
 | 2026-09-23 | e2ee 1, media 1, wire 1 | `identity.json` gains real Ed25519 credential signatures and the seeds that reproduce them; no format change, so no version bump |
 | 2026-09-24 | e2ee 1, media 1, wire 1 | `body` limit stated as 0 for envelope types 2/5/6 (delete, pin, unpin), matching the "empty for 2/5/6" already in the array comment; `envelope.json` gains a `rejects` array with that case. The envelope format is unfrozen until the end of W4 and no field, order or length changed, so no version bump |
+| 2026-09-24 | e2ee 1, media 1, wire 1 | `02` gains one `E_*` error vocabulary with a CBOR error body and a status table, a "Device sessions" section, a four-element gateway frame catalogue with uint opcodes, the `kind`/`sender` enumerations, heal/resync/welcome/delete/cursor/proposals endpoints, the two-half retention wording and a 128 KiB ciphertext cap. The DS API is unfrozen until the end of W5 and no client exists, so no version bump |
+| 2026-09-24 | e2ee 1, media 1, wire 1 | `04` tightens the per-field envelope limits (4 attachments, 2 previews, `mime` ≤ 255, `url` ≤ 2048, `title` ≤ 256, `description` ≤ 1024, `thumb` ≤ 8 KiB, preview `image` ≤ 16 KiB) so the worst case fits the `02` ciphertext cap; `envelope.json`'s `rejects` array gains one case per limit. No field, order or length changed and the envelope is unfrozen until the end of W4, so no version bump |
+| 2026-09-24 | e2ee 1, media 1, wire 1 | `07` step 4 restated for a one-maintainer project with a recorded independent review |
+| 2026-09-24 | e2ee 1, media 1, wire 1 | `09-http-api.md` added: the non-DS `/v1` surface: the instance document and limits, accounts, devices, sessions, invites, auth ceremonies, rate limits and the `users.flags` bit layout. It does not freeze with "DS API v1" at the end of W5 |
+| 2026-09-24 | e2ee 1, media 1, wire 1 | `03-identity.md` gains an "Instance keys" subsection fixing the `instances.key_history` layout for the external-sender signing key and the franking key; no field, order or length in an existing wire structure changed, so no version bump |

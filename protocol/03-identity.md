@@ -32,6 +32,37 @@ Instance key rotation: a new instance signing key is announced with
 `sig_old(new_pub || "dilla instance rotate v1")`; clients accept the `GroupContextExtensions`
 proposal that replaces `external_senders` only when that signature verifies under the previous key.
 
+### Instance keys
+
+An instance holds two long-lived secrets: the **external-sender signing key**, an Ed25519 keypair
+whose public half is the `external_senders` GroupContext extension of every `text` and `call` group,
+and the **franking key** `K_frank`, 32 bytes used as the HMAC-SHA256 key of `04-envelope-and-franking.md`
+§ Franking. Both are generated once by `dillad init` from the platform CSPRNG and are stored, with
+every key they have replaced, in `instances.key_history` as deterministic CBOR:
+
+```
+key_history = [
+  v,             ; uint, = 1
+  entries        ; [+ entry], oldest first
+]
+
+entry = [
+  kind,          ; uint: 0 external-sender Ed25519 signing key, 1 franking key
+  key_id,        ; bstr 16
+  public,        ; bstr: the 32-byte Ed25519 public key for kind 0, an empty bstr for kind 1
+  secret,        ; bstr 32: the Ed25519 seed for kind 0, K_frank for kind 1
+  created,       ; uint, unix seconds
+  retired        ; uint or null: unix seconds, null while the entry is current
+]
+```
+
+`instances.external_sender_key_id` and `instances.franking_key_id` name the one entry of each kind
+whose `retired` is null. Rotation appends an entry and sets the previous entry's `retired`; a
+retired franking key is kept so that a report franked under it can still be verified, and a retired
+signing key is kept so that the rotation signature of this section verifies under it. The history is
+instance secret material: it is in a backup (`06-backup-archive.md`, "the instance keys") and it is
+never served over `/v1`.
+
 ## Credential
 
 Every leaf uses an MLS `basic` credential whose `identity` is the deterministic CBOR encoding of:

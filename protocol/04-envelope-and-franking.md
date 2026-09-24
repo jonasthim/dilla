@@ -15,19 +15,18 @@ Every application message in a `text` or `interaction` group is one **envelope**
   body,          ; tstr: markdown for type 0/1; the emoji for 3/4; empty for 2/5/6
   attachments,   ; array of [blob_id (bstr 32, SHA-256 of the ciphertext), key (bstr 32), nonce (bstr 12),
                  ;           size (uint, plaintext bytes), mime (tstr), w (uint|null), h (uint|null),
-                 ;           thumb (bstr|null: a ≤ 16 KiB encrypted thumbnail, same key, nonce = nonce with last byte XOR 0x01)]
+                 ;           thumb (bstr|null: a ≤ 8 KiB encrypted thumbnail, same key, nonce = nonce with last byte XOR 0x01)]
   previews,      ; array of [url (tstr), title (tstr), description (tstr), image (bstr|null)]
   k_f            ; bstr, 32: the franking key, random per envelope (also per edit)
 ]
 ```
 
-Limits: `body` ≤ 4 000 UTF-8 bytes for type 0/1; ≤ 32 bytes for type 3/4; **0 bytes for type 2/5/6**
-— a delete, pin or unpin carries no body, and a receiver rejects one that does rather than ignoring
-it, because a conforming client has nowhere to render those bytes and they would otherwise be a
-covert channel; at most 10 attachments; at most 5 previews; `image` in a preview ≤ 32 KiB; `thumb`
-in an attachment ≤ 16 KiB. A receiver rejects an envelope over any limit (`E_ENVELOPE_LIMIT`), of
-the wrong length (`E_ENVELOPE_SHAPE`), or with an unknown `type` (`E_ENVELOPE_TYPE`); it MUST NOT
-render a partially valid envelope.
+Limits: `body` ≤ 4 000 UTF-8 bytes for type 0/1; ≤ 32 bytes for type 3/4; **0 bytes for type
+2/5/6**. At most **4** attachments; at most **2** previews. In an attachment: `mime` ≤ **255**
+bytes, `thumb` ≤ **8 192** bytes. In a preview: `url` ≤ **2 048** bytes, `title` ≤ **256** bytes,
+`description` ≤ **1 024** bytes, `image` ≤ **16 384** bytes. A receiver rejects an envelope over any
+limit (`E_ENVELOPE_LIMIT`), of the wrong length (`E_ENVELOPE_SHAPE`), or with an unknown `type`
+(`E_ENVELOPE_TYPE`); it MUST NOT render a partially valid envelope.
 
 Attachments are encrypted by the sender with AES-256-GCM under the per-attachment random `key`
 and `nonce`, uploaded as opaque blobs; `blob_id` is the SHA-256 of the ciphertext, and the
@@ -79,13 +78,15 @@ instance ever reading content and without the reporter being able to forge it.
 `commitment` and `tag` for every case, and rejects: the wrong element count; an unknown `type`;
 `msg_id` or `k_f` of the wrong length; non-minimal CBOR or trailing bytes; and any limit exceeded
 (`body` over 4 000 bytes for type 0/1, over 32 bytes for type 3/4, or non-empty for type 2/5/6;
-more than 10 attachments; more than 5 previews; a preview `image` over 32 768 bytes; a `thumb` over
-16 384 bytes).
+more than 4 attachments; more than 2 previews; `mime` over 255 bytes; `url` over 2 048 bytes; `title`
+over 256 bytes; `description` over 1 024 bytes; a preview `image` over 16 384 bytes; a `thumb` over
+8 192 bytes).
 
 `vectors/envelope.json` also carries a `rejects` array: each entry is well-formed deterministic
 CBOR that a conforming decoder must nevertheless refuse, with the `error` code it must refuse it
-with. It holds one case today — a delete tombstone with a non-empty body, refused with
-`E_ENVELOPE_LIMIT`.
+with. It holds nine cases: a delete tombstone with a non-empty body, `mime` at 256, `thumb` at
+8 193, five attachments, three previews, a preview `url` at 2 049, `title` at 257, `description` at
+1 025 and a preview `image` at 16 385 — each refused with `E_ENVELOPE_LIMIT`.
 
 ## Error codes
 

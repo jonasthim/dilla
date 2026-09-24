@@ -13,6 +13,7 @@ export const REQUIRED = {
   '06-backup-archive.md': ['## Keys', '## Header', '## Archive', '## Restore'],
   '07-versioning.md': ['## Versions', '## Negotiation', '## Change process'],
   '08-threat-model.md': ['## Adversaries', '## Guarantees', '## Residual trust', '## Out of scope'],
+  '09-http-api.md': ['## Scope', '## Encoding', '## Identifiers', '## Sessions', '## Accounts and devices', '## Auth ceremonies', '## Instance', '## Rate limits', '## Flags'],
 };
 
 const PLACEHOLDER = /\b(TBD|TODO|FIXME|XXX)\b|lorem ipsum|fill in later/i;
@@ -57,9 +58,49 @@ export function checkDocs(root) {
   return problems;
 }
 
+/// Checks that the `E_*` vocabulary in `02`, the Rust `DsError` and the Go `server.Code` constants
+/// all agree. Three sources, not two: the Go constants are where `E_INTERNAL`, `E_VERSION` and
+/// `E_PROVISIONAL_OUTSIDE_PAIRING` live, and a check that never reads them is how those three went
+/// missing from the document in the first place (ID12).
+export function checkErrorVocabulary(root) {
+  const problems = [];
+  const doc = readFileSync(join(root, 'protocol', '02-delivery-service.md'), 'utf8');
+  const rust = readFileSync(join(root, 'testkit', 'src', 'ds', 'state.rs'), 'utf8');
+  let go = '';
+  let goExists = true;
+  try {
+    go = readFileSync(join(root, 'internal', 'server', 'errors.go'), 'utf8');
+  } catch {
+    // `internal/server/errors.go` does not exist until task 6: this leg is skipped, not failed,
+    // until then — task 0 runs before task 6.
+    goExists = false;
+  }
+  const inDoc = new Set([...doc.matchAll(/`(E_[A-Z_]+)`/g)].map(m => m[1]));
+  const inRust = new Set([...rust.matchAll(/"(E_[A-Z_]+)"/g)].map(m => m[1]));
+  const inGo = new Set([...go.matchAll(/Code\s*=\s*"(E_[A-Z_]+)"/g)].map(m => m[1]));
+  for (const code of inRust) {
+    if (!inDoc.has(code)) problems.push(`02-delivery-service.md: missing code ${code} present in state.rs`);
+  }
+  if (goExists) {
+    for (const code of inGo) {
+      if (!inDoc.has(code)) problems.push(`02-delivery-service.md: missing code ${code} present in internal/server/errors.go`);
+    }
+    for (const code of inDoc) {
+      if (!inGo.has(code)) problems.push(`internal/server/errors.go: missing code ${code} listed in 02-delivery-service.md`);
+    }
+  }
+  const dsOnly = new Set(['E_COMMIT_CONFLICT', 'E_COMMIT_REQUIRED', 'E_COMMIT_INVALID', 'E_BINDING_INVALID',
+    'E_MODE_READABLE', 'E_LEAF_NOT_CURRENT', 'E_COMMITMENT_INVALID', 'E_TOO_LARGE', 'E_PRUNED',
+    'E_GROUP_EXISTS', 'E_NOT_FOUND', 'E_RATE_LIMITED']);
+  for (const code of dsOnly) {
+    if (!inRust.has(code)) problems.push(`state.rs: missing DS code ${code} listed in 02-delivery-service.md`);
+  }
+  return problems;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = checkDocs(root);
+  const problems = [...checkDocs(root), ...checkErrorVocabulary(root)];
   if (problems.length) { console.error(problems.join('\n')); process.exit(1); }
   console.log('protocol docs: ok');
 }

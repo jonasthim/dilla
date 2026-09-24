@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hex } from './bytes.ts';
-import { encodeEnvelope, frankingCommitment, frankingTag, EnvelopeType, type Envelope } from './envelope.ts';
+import { encodeEnvelope, frankingCommitment, frankingTag, EnvelopeType, type Envelope, type Attachment, type Preview } from './envelope.ts';
 import { kid, deriveFrameKeys, counter, nonce, encodeSframeHeader, SUITE } from './sframe.ts';
 import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity, sskMessage, dskMessage } from './identity.ts';
 import { keyFromSeed, sign } from './ed25519.ts';
@@ -39,10 +39,29 @@ export async function envelopeVectors() {
   // names for each. `encodeEnvelope` does not apply the limits, so it can produce the well-formed
   // deterministic CBOR of an envelope that is nonetheless invalid — which is exactly what an
   // implementation under test has to be handed.
+  //
+  // interfaces.md §2.8: nine cases, not one — a count case per collection (5 attachments, 3
+  // previews) plus one case per tightened scalar bound, beside the pre-existing tombstone case.
+  const sampleAttachment = (): Attachment => ({ blobId: fill(32, 0x03), key: fill(32, 0x04), nonce: fill(12, 0x05), size: 2100000, mime: 'image/jpeg', w: 1600, h: 900, thumb: null });
+  const samplePreview = (): Preview => ({ url: 'https://example.invalid/', title: 't', description: 'd', image: null });
+  const rejectBase = { v: 1 as const, msgId: fill(16, 0x21), type: EnvelopeType.Message, threadId: null, replyTo: null, kf: fill(32, 0x26) };
+  const withAttachment = (patch: Partial<Attachment>): Envelope => ({
+    ...rejectBase, body: '', attachments: [{ ...sampleAttachment(), ...patch }], previews: [],
+  });
+  const withPreview = (patch: Partial<Preview>): Envelope => ({
+    ...rejectBase, body: '', attachments: [], previews: [{ ...samplePreview(), ...patch }],
+  });
+  const rejectCase = (name: string, envelope: Envelope) => ({ name, error: 'E_ENVELOPE_LIMIT', cbor: hex(encodeEnvelope(envelope)) });
   const rejects = [
-    { name: 'delete tombstone with a non-empty body', error: 'E_ENVELOPE_LIMIT', cbor: hex(encodeEnvelope({
-      v: 1, msgId: fill(16, 0x21), type: EnvelopeType.Delete, threadId: null, replyTo: fill(16, 0x01),
-      body: 'deleted because', attachments: [], previews: [], kf: fill(32, 0x26) })) },
+    rejectCase('delete tombstone with a non-empty body', { ...rejectBase, type: EnvelopeType.Delete, replyTo: fill(16, 0x01), body: 'deleted because', attachments: [], previews: [] }),
+    rejectCase('mime one byte over 255', withAttachment({ mime: 'a'.repeat(256) })),
+    rejectCase('thumb one byte over 8192', withAttachment({ thumb: new Uint8Array(8193) })),
+    rejectCase('five attachments', { ...rejectBase, body: '', attachments: Array.from({ length: 5 }, sampleAttachment), previews: [] }),
+    rejectCase('three previews', { ...rejectBase, body: '', attachments: [], previews: Array.from({ length: 3 }, samplePreview) }),
+    rejectCase('preview url one byte over 2048', withPreview({ url: 'u'.repeat(2049) })),
+    rejectCase('preview title one byte over 256', withPreview({ title: 't'.repeat(257) })),
+    rejectCase('preview description one byte over 1024', withPreview({ description: 'd'.repeat(1025) })),
+    rejectCase('preview image one byte over 16384', withPreview({ image: new Uint8Array(16385) })),
   ];
   return { version: 1, description: 'dilla envelope encodings (04-envelope-and-franking.md). cbor = deterministic CBOR of the 9-element array; commitment = HMAC-SHA256(k_f, "dilla frank v1" || CBOR with k_f blanked). rejects = well-formed CBOR that a conforming decoder must still refuse with the named error code.', cases: out, rejects };
 }

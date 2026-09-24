@@ -28,10 +28,11 @@ fn each_suite_reports_the_expected_number_of_cases() {
     assert_eq!(run_identity().cases.len(), 8);
     // The reject suite is pinned exactly, not `>=`: 33 deterministic-CBOR corpus inputs, 3
     // envelope decode refusals, 2 body-limit refusals, every `rejects` entry of envelope.json
-    // (1 today: the delete tombstone with a non-empty body), and the short `authenticated_data`.
+    // (9 today: interfaces.md §2.8's tightened per-field limits, one case per bound plus the
+    // pre-existing delete tombstone with a non-empty body), and the short `authenticated_data`.
     // A `>=` here would let a vector-file reject case silently stop being run.
     let rejects = run_rejects();
-    assert_eq!(rejects.cases.len(), 40);
+    assert_eq!(rejects.cases.len(), 48);
     assert!(
         rejects
             .cases

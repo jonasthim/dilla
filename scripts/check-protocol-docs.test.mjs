@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkDocs } from './check-protocol-docs.mjs';
+import { checkDocs, checkErrorVocabulary } from './check-protocol-docs.mjs';
 
 function fixture(files) {
   const dir = mkdtempSync(join(tmpdir(), 'dilla-docs-'));
@@ -24,6 +24,7 @@ test('passes when every required document exists with its required headings and 
     '06-backup-archive.md': '# Backup\n\n## Keys\n\n## Header\n\n## Archive\n\n## Restore\n',
     '07-versioning.md': '# Versioning\n\n## Versions\n\n## Negotiation\n\n## Change process\n',
     '08-threat-model.md': '# Threat model\n\n## Adversaries\n\n## Guarantees\n\n## Residual trust\n\n## Out of scope\n',
+    '09-http-api.md': '# HTTP API\n\n## Scope\n\n## Encoding\n\n## Identifiers\n\n## Sessions\n\n## Accounts and devices\n\n## Auth ceremonies\n\n## Instance\n\n## Rate limits\n\n## Flags\n',
   });
   assert.deepEqual(checkDocs(dir), []);
 });
@@ -56,6 +57,7 @@ test('recursively detects placeholders in all files under protocol/', () => {
     writeFileSync(join(protocolDir, '06-backup-archive.md'), '# Backup\n\n## Keys\n\n## Header\n\n## Archive\n\n## Restore\n');
     writeFileSync(join(protocolDir, '07-versioning.md'), '# Versioning\n\n## Versions\n\n## Negotiation\n\n## Change process\n');
     writeFileSync(join(protocolDir, '08-threat-model.md'), '# Threat model\n\n## Adversaries\n\n## Guarantees\n\n## Residual trust\n\n## Out of scope\n');
+    writeFileSync(join(protocolDir, '09-http-api.md'), '# HTTP API\n\n## Scope\n\n## Encoding\n\n## Identifiers\n\n## Sessions\n\n## Accounts and devices\n\n## Auth ceremonies\n\n## Instance\n\n## Rate limits\n\n## Flags\n');
 
     // Create extra files with placeholders in nested directories
     mkdirSync(join(protocolDir, 'vectors'), { recursive: true });
@@ -71,4 +73,15 @@ test('recursively detects placeholders in all files under protocol/', () => {
   } finally {
     rmSync(tmpDir, { recursive: true });
   }
+});
+
+test('checkErrorVocabulary reports a code present in state.rs but absent from 02', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-vocab-'));
+  mkdirSync(join(dir, 'protocol'), { recursive: true });
+  mkdirSync(join(dir, 'testkit', 'src', 'ds'), { recursive: true });
+  writeFileSync(join(dir, 'protocol', '02-delivery-service.md'), '| 404 | `E_NOT_FOUND` | x | y |\n');
+  writeFileSync(join(dir, 'testkit', 'src', 'ds', 'state.rs'), '"E_NOT_FOUND" "E_TOO_LARGE"\n');
+  const problems = checkErrorVocabulary(dir);
+  assert.ok(problems.some(p => p.includes('E_TOO_LARGE')));
+  rmSync(dir, { recursive: true, force: true });
 });

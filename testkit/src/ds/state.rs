@@ -36,51 +36,54 @@ pub struct InstanceConfig {
     pub k_frank: [u8; 32],
 }
 
-/// Exactly the codes protocol/02 "Errors" publishes.
-#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
-#[non_exhaustive]
+/// Every delivery-service refusal. `code()` is the stable `E_*` string a client
+/// switches on (protocol/02 § Errors); `http_status()` is the row's HTTP status.
+#[derive(Debug, thiserror::Error)]
 pub enum DsError {
-    #[error("binding_invalid")]
+    #[error("E_BINDING_INVALID")]
     BindingInvalid,
-    #[error("mode_readable")]
+    #[error("E_MODE_READABLE")]
     ModeReadable,
-    #[error("group_exists")]
+    #[error("E_GROUP_EXISTS")]
     GroupExists,
-    #[error("not_found")]
+    #[error("E_NOT_FOUND")]
     NotFound,
-    #[error("leaf_not_current")]
+    #[error("E_LEAF_NOT_CURRENT")]
     LeafNotCurrent,
-    #[error("commitment_invalid")]
+    #[error("E_COMMITMENT_INVALID")]
     CommitmentInvalid,
-    #[error("too_large")]
+    #[error("E_TOO_LARGE")]
     TooLarge,
-    #[error("pruned")]
+    #[error("E_PRUNED")]
     Pruned,
-    #[error("commit_conflict")]
+    #[error("E_RATE_LIMITED")]
+    RateLimited { retry_after_ms: u64 },
+    #[error("E_COMMIT_CONFLICT")]
     CommitConflict {
         winning_commit: Vec<u8>,
         proposals: Vec<Vec<u8>>,
     },
-    #[error("commit_required")]
+    #[error("E_COMMIT_REQUIRED")]
     CommitRequired { proposals: Vec<Vec<u8>> },
-    #[error("commit_invalid")]
+    #[error("E_COMMIT_INVALID")]
     CommitInvalid { reason: String },
 }
 
 impl DsError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::BindingInvalid => "binding_invalid",
-            Self::ModeReadable => "mode_readable",
-            Self::GroupExists => "group_exists",
-            Self::NotFound => "not_found",
-            Self::LeafNotCurrent => "leaf_not_current",
-            Self::CommitmentInvalid => "commitment_invalid",
-            Self::TooLarge => "too_large",
-            Self::Pruned => "pruned",
-            Self::CommitConflict { .. } => "commit_conflict",
-            Self::CommitRequired { .. } => "commit_required",
-            Self::CommitInvalid { .. } => "commit_invalid",
+            Self::BindingInvalid => "E_BINDING_INVALID",
+            Self::ModeReadable => "E_MODE_READABLE",
+            Self::GroupExists => "E_GROUP_EXISTS",
+            Self::NotFound => "E_NOT_FOUND",
+            Self::LeafNotCurrent => "E_LEAF_NOT_CURRENT",
+            Self::CommitmentInvalid => "E_COMMITMENT_INVALID",
+            Self::TooLarge => "E_TOO_LARGE",
+            Self::Pruned => "E_PRUNED",
+            Self::RateLimited { .. } => "E_RATE_LIMITED",
+            Self::CommitConflict { .. } => "E_COMMIT_CONFLICT",
+            Self::CommitRequired { .. } => "E_COMMIT_REQUIRED",
+            Self::CommitInvalid { .. } => "E_COMMIT_INVALID",
         }
     }
 
@@ -94,6 +97,17 @@ impl DsError {
             Self::TooLarge => 413,
             Self::CommitmentInvalid | Self::CommitInvalid { .. } => 422,
             Self::CommitRequired { .. } => 425,
+            Self::RateLimited { .. } => 429,
+        }
+    }
+
+    /// `retry_after_ms` is element 2 of the CBOR error array; it is present only
+    /// for E_RATE_LIMITED and E_COMMIT_REQUIRED (protocol/02 § Errors).
+    pub fn retry_after_ms(&self) -> Option<u64> {
+        match self {
+            Self::RateLimited { retry_after_ms } => Some(*retry_after_ms),
+            Self::CommitRequired { .. } => Some(0),
+            _ => None,
         }
     }
 }

@@ -17,10 +17,18 @@ use crate::ids::MsgId;
 pub const MAX_BODY_LONG: usize = 4_000;
 /// `body` limit in UTF-8 bytes for types 3 and 4 (the emoji).
 pub const MAX_BODY_SHORT: usize = 32;
-pub const MAX_ATTACHMENTS: usize = 10;
-pub const MAX_PREVIEWS: usize = 5;
-pub const MAX_PREVIEW_IMAGE: usize = 32_768;
-pub const MAX_THUMB: usize = 16_384;
+/// interfaces.md §2.8 (R6, R32): the tightened envelope limits. The worst case
+/// is 4 × (32+32+12+8+255+8192) + 2 × (2048+256+1024+16384) + 4000 ≈ 74 KiB plus
+/// CBOR heads, which fits the 128 KiB ciphertext cap of protocol/02 with padding
+/// to 256-byte buckets.
+pub const MAX_ATTACHMENTS: usize = 4;
+pub const MAX_PREVIEWS: usize = 2;
+pub const MAX_THUMB: usize = 8_192;
+pub const MAX_PREVIEW_IMAGE: usize = 16_384;
+pub const MAX_MIME: usize = 255;
+pub const MAX_URL: usize = 2_048;
+pub const MAX_TITLE: usize = 256;
+pub const MAX_DESCRIPTION: usize = 1_024;
 /// The `PrivateMessage` carrying an envelope is padded so its ciphertext length is a multiple of
 /// this (RFC 9420 section 6.3.1).
 pub const PADDING_MULTIPLE: usize = 256;
@@ -262,19 +270,34 @@ impl Envelope {
         let mut attachments = Vec::with_capacity(n);
         for _ in 0..n {
             d.array(8)?;
+            let blob_id = d.bytes_exact::<32>()?;
+            let key = d.bytes_exact::<32>()?;
+            let nonce = d.bytes_exact::<12>()?;
+            let size = d.uint()?;
+            let mime = d.text()?.to_owned();
+            if mime.len() > MAX_MIME {
+                return Err(LIMIT);
+            }
+            let w = d.opt_uint()?;
+            let h = d.opt_uint()?;
+            let thumb = if d.try_null()? {
+                None
+            } else {
+                let t = d.bytes()?.to_vec();
+                if t.len() > MAX_THUMB {
+                    return Err(LIMIT);
+                }
+                Some(t)
+            };
             attachments.push(Attachment {
-                blob_id: d.bytes_exact::<32>()?,
-                key: d.bytes_exact::<32>()?,
-                nonce: d.bytes_exact::<12>()?,
-                size: d.uint()?,
-                mime: d.text()?.to_owned(),
-                w: d.opt_uint()?,
-                h: d.opt_uint()?,
-                thumb: if d.try_null()? {
-                    None
-                } else {
-                    Some(d.bytes()?.to_vec())
-                },
+                blob_id,
+                key,
+                nonce,
+                size,
+                mime,
+                w,
+                h,
+                thumb,
             });
         }
 
@@ -287,15 +310,32 @@ impl Envelope {
         let mut previews = Vec::with_capacity(n);
         for _ in 0..n {
             d.array(4)?;
+            let url = d.text()?.to_owned();
+            if url.len() > MAX_URL {
+                return Err(LIMIT);
+            }
+            let title = d.text()?.to_owned();
+            if title.len() > MAX_TITLE {
+                return Err(LIMIT);
+            }
+            let description = d.text()?.to_owned();
+            if description.len() > MAX_DESCRIPTION {
+                return Err(LIMIT);
+            }
+            let image = if d.try_null()? {
+                None
+            } else {
+                let i = d.bytes()?.to_vec();
+                if i.len() > MAX_PREVIEW_IMAGE {
+                    return Err(LIMIT);
+                }
+                Some(i)
+            };
             previews.push(Preview {
-                url: d.text()?.to_owned(),
-                title: d.text()?.to_owned(),
-                description: d.text()?.to_owned(),
-                image: if d.try_null()? {
-                    None
-                } else {
-                    Some(d.bytes()?.to_vec())
-                },
+                url,
+                title,
+                description,
+                image,
             });
         }
 
@@ -326,11 +366,17 @@ impl Envelope {
             return Err(ProtocolError::EnvelopeLimit);
         }
         for a in &self.attachments {
+            if a.mime.len() > MAX_MIME {
+                return Err(ProtocolError::EnvelopeLimit);
+            }
             if a.thumb.as_ref().is_some_and(|t| t.len() > MAX_THUMB) {
                 return Err(ProtocolError::EnvelopeLimit);
             }
         }
         for p in &self.previews {
+            if p.url.len() > MAX_URL || p.title.len() > MAX_TITLE || p.description.len() > MAX_DESCRIPTION {
+                return Err(ProtocolError::EnvelopeLimit);
+            }
             if p.image
                 .as_ref()
                 .is_some_and(|i| i.len() > MAX_PREVIEW_IMAGE)
@@ -769,6 +815,97 @@ mod tests {
         env.previews = vec![sample_preview(); MAX_PREVIEWS];
         let ok = env.encode().unwrap();
         assert_eq!(Envelope::decode(&ok).unwrap(), env);
+    }
+
+    /// interfaces.md §2.8 / protocol/04 "Limits": the tightened per-field bounds.
+    #[test]
+    fn tightened_limits_have_the_r6_values() {
+        assert_eq!(MAX_ATTACHMENTS, 4);
+        assert_eq!(MAX_PREVIEWS, 2);
+        assert_eq!(MAX_THUMB, 8_192);
+        assert_eq!(MAX_PREVIEW_IMAGE, 16_384);
+        assert_eq!(MAX_MIME, 255);
+        assert_eq!(MAX_URL, 2_048);
+        assert_eq!(MAX_TITLE, 256);
+        assert_eq!(MAX_DESCRIPTION, 1_024);
+    }
+
+    /// Each new bound refuses at exactly one byte over, and accepts at the bound.
+    #[test]
+    fn each_new_limit_refuses_one_byte_over() {
+        // The existing test module's envelope constructor is `base()`
+        // (core/dilla-core/src/envelope/mod.rs:525); `sample_attachment()` (:650)
+        // and `sample_preview()` (:663) are the other two helpers. There is no
+        // `sample_envelope()`.
+        let mut env = base();
+        let mut a = sample_attachment();
+        a.mime = "a".repeat(MAX_MIME);
+        env.attachments = vec![a.clone()];
+        assert!(env.validate().is_ok());
+        a.mime = "a".repeat(MAX_MIME + 1);
+        env.attachments = vec![a.clone()];
+        assert!(env.validate().is_err());
+
+        a.mime = "image/png".into();
+        a.thumb = Some(vec![0u8; MAX_THUMB]);
+        env.attachments = vec![a.clone()];
+        assert!(env.validate().is_ok());
+        a.thumb = Some(vec![0u8; MAX_THUMB + 1]);
+        env.attachments = vec![a];
+        assert!(env.validate().is_err());
+
+        env.attachments = vec![sample_attachment(); MAX_ATTACHMENTS];
+        assert!(env.validate().is_ok());
+        env.attachments = vec![sample_attachment(); MAX_ATTACHMENTS + 1];
+        assert!(env.validate().is_err());
+        env.attachments = vec![];
+
+        let mut p = sample_preview();
+        p.url = "u".repeat(MAX_URL);
+        env.previews = vec![p.clone()];
+        assert!(env.validate().is_ok());
+        p.url = "u".repeat(MAX_URL + 1);
+        env.previews = vec![p.clone()];
+        assert!(env.validate().is_err());
+
+        p.url = "https://example".into();
+        p.title = "t".repeat(MAX_TITLE + 1);
+        env.previews = vec![p.clone()];
+        assert!(env.validate().is_err());
+
+        p.title = "t".into();
+        p.description = "d".repeat(MAX_DESCRIPTION + 1);
+        env.previews = vec![p.clone()];
+        assert!(env.validate().is_err());
+
+        p.description = "d".into();
+        p.image = Some(vec![0u8; MAX_PREVIEW_IMAGE + 1]);
+        env.previews = vec![p];
+        assert!(env.validate().is_err());
+
+        env.previews = vec![sample_preview(); MAX_PREVIEWS + 1];
+        assert!(env.validate().is_err());
+    }
+
+    /// interfaces.md §2.8: envelope.json's rejects array grows to nine cases and
+    /// every one is refused with E_ENVELOPE_LIMIT. Nine, not eight: §2.8 lists
+    /// both a count case per collection (5 attachments, 3 previews) and one case
+    /// per scalar bound, beside the pre-existing tombstone case.
+    #[test]
+    fn vector_rejects_cover_every_new_limit() {
+        let doc: serde_json::Value = serde_json::from_str(ENVELOPE_JSON).expect("envelope.json");
+        let rejects = doc["rejects"].as_array().expect("rejects array");
+        assert_eq!(rejects.len(), 9, "one reject per tightened limit plus the type-2 body case");
+        for case in rejects {
+            let bytes = unhex(case["cbor"].as_str().expect("cbor"));
+            let err = Envelope::decode(&bytes).expect_err("must be refused");
+            assert_eq!(
+                case["error"].as_str().expect("error"),
+                "E_ENVELOPE_LIMIT",
+                "every reject is a limit case"
+            );
+            assert_eq!(format!("{err:?}").contains("Limit"), true, "refused as a limit: {err:?}");
+        }
     }
 
     /// A derived `Debug` prints `k_f`, the attachment key and nonce, the thumbnail, the preview
