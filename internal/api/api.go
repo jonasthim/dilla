@@ -71,13 +71,10 @@ type Deps struct {
 	// hand over — and the four routes answer 501 rather than panicking.
 	Passkeys *auth.Passkeys
 
-	// Still to come, with the task that declares its type and fills it:
-	//
-	//	OIDC       *auth.OIDC       // task 11 — nil unless auth.oidc.enabled
-	//
-	// It is NOT declared yet because Go cannot name a type that does not
-	// exist: internal/auth gains OIDC in task 11, which adds its one field
-	// here, with the spelling above, and nothing else.
+	// OIDC runs the optional host-login path and holds the pending-login table
+	// the start and callback legs share. It is nil unless auth.oidc.enabled,
+	// and the two routes answer 501 rather than panicking.
+	OIDC *auth.OIDC
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -136,6 +133,12 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("POST /v1/auth/passkey/register/finish", d.enrolled(d.FinishPasskeyRegistration))
 	m.Handle("POST /v1/auth/passkey/login/begin", http.HandlerFunc(d.BeginPasskeyLogin))
 	m.Handle("POST /v1/auth/passkey/login/finish", http.HandlerFunc(d.FinishPasskeyLogin))
+
+	// OIDC. Both legs are browser navigations rather than CBOR calls, and both
+	// are unauthenticated, so they meter themselves on the `login` bucket
+	// inside the handler exactly as the ceremonies above do.
+	m.Handle("GET /v1/auth/oidc/start", http.HandlerFunc(d.StartOIDC))
+	m.Handle("GET /v1/auth/oidc/callback", http.HandlerFunc(d.CallbackOIDC))
 
 	// Accounts. Every one of these is an enrolled session.
 	m.Handle("GET /v1/accounts/me", d.enrolled(d.GetMe))

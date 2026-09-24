@@ -3,7 +3,9 @@ module github.com/jonasthim/dilla
 go 1.27.0
 
 require (
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/fxamacker/cbor/v2 v2.9.4
+	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/livekit/livekit-server v1.13.7
@@ -21,6 +23,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/crypto v0.57.0
+	golang.org/x/oauth2 v0.37.0
 	golang.org/x/text v0.42.0
 	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.59.0

@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"sync"
 	"time"
 
@@ -844,4 +846,202 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(userID, pending)})
+}
+
+// OIDC (protocol/09-http-api.md § Auth ceremonies).
+//
+// These two routes are the only ones in this package a BROWSER drives rather
+// than a CBOR client: they are top-level navigations, so they answer 302 and
+// carry their state in a cookie. internal/auth owns discovery, PKCE, the
+// id_token verification and the pending-login table; the pair below is the
+// HTTP skin over it.
+
+// oidcStateCookie is the cookie protocol/09 names. Deviation ID10 explains why
+// the prefix is __Secure- and not __Host-; auth.StateCookie sets the flags.
+const oidcStateCookie = "__Secure-dilla-oidc"
+
+// oidcStateTTL is how long a started login may take to come back. It matches
+// AssertionTTL for the same reason: a login leg nobody finished promptly is a
+// login nobody is waiting on.
+const oidcStateTTL = 5 * time.Minute
+
+// methodOIDC is the login_attempts.method value of an OIDC assertion. It
+// follows methodPasskey because this file is the only writer of that column; it
+// is NOT the instance document's `auth_methods` numbering, where oidc is 3.
+const methodOIDC uint8 = 4
+
+// oidcFailureLedger is the account ledger a failed callback is charged to. The
+// callback never names an account before the exchange succeeds, so there is no
+// per-account lockout to earn; the entry exists only because RecordFailure is
+// also what charges the ADDRESS. Nothing gates on this key.
+var oidcFailureLedger = loginLedger(store.UserRow{}, false, "\x00oidc")
+
+// oidc returns the login runner, or the refusal both routes answer when the
+// instance has none. A nil OIDC is not a composition bug: auth.oidc.enabled
+// defaults to false and most instances never configure an identity provider.
+func (d Deps) oidc() (*auth.OIDC, error) {
+	if d.OIDC == nil {
+		return nil, notImplemented("oidc is not enabled on this instance")
+	}
+	return d.OIDC, nil
+}
+
+// oidcReturnURL is where a finished callback sends the browser. The assertion
+// travels in the FRAGMENT, never the query: a fragment is never sent to a
+// server, never reaches a Referer header and never lands in an access log, and
+// this one-time token is the whole login.
+func (d Deps) oidcReturnURL(assertion string) string {
+	return (&url.URL{Scheme: "https", Host: d.Domain, Path: "/",
+		Fragment: "assertion=" + assertion}).String()
+}
+
+// StartOIDC is GET /v1/auth/oidc/start: 302 to the identity provider, PKCE
+// S256, state cookie.
+//
+// The state, the nonce and the verifier are minted here and the last two are
+// kept server-side under the first, so the browser holds nothing but an opaque
+// value it cannot use anywhere else. Discovery happens on this path — lazily,
+// on first use — so an IdP that is down costs a refusal on this one route
+// rather than a server that will not start.
+func (d Deps) StartOIDC(w http.ResponseWriter, r *http.Request) {
+	if d.Throttle == nil || d.Config == nil {
+		d.logf(r, "api: the oidc start route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the oidc start route is not wired"))
+		return
+	}
+	o, err := d.oidc()
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
+	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
+		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		return
+	}
+	state, nonce, verifier := auth.NewVerifierAndState()
+	target, err := o.AuthURL(r.Context(), state, nonce, verifier)
+	if err != nil {
+		d.logf(r, "api: oidc authorization url", "err", err)
+		server.WriteError(w, server.Errorf(server.CodeInternal, "oidc discovery failed"))
+		return
+	}
+	o.Stash(state, auth.Pending{Nonce: nonce, Verifier: verifier}, oidcStateTTL)
+	http.SetCookie(w, auth.StateCookie(oidcStateCookie, state, int(oidcStateTTL/time.Second)))
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// CallbackOIDC is GET /v1/auth/oidc/callback: 302 back to the client with a
+// one-time assertion.
+//
+// The order is the security property. The cookie is cleared first, whatever
+// happens next, so a failed callback leaves nothing a browser will replay. The
+// state parameter is compared against the cookie in constant time, and the
+// pending row is DELETED BEFORE the authorization code is spent, so a replayed
+// callback finds no verifier and never reaches the token endpoint at all.
+//
+// The account is looked up by (issuer, subject), never by email: an address is
+// something an identity provider lets a user change, and mapping on it would
+// hand somebody else's account to whoever claimed a freed address.
+func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
+	if d.Throttle == nil || d.Assertions == nil || d.Config == nil {
+		d.logf(r, "api: the oidc callback route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the oidc callback route is not wired"))
+		return
+	}
+	o, err := d.oidc()
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ctx := r.Context()
+	ip := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
+	addrKey := server.RateKey(ip)
+	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
+		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		return
+	}
+	// Peeked rather than spent, for the same reason every other ceremony in
+	// this file peeks it: taking a token here would meter every successful
+	// login on the failure bucket.
+	if ok, wait := d.Throttle.Peek(classLoginFailed, addrKey); !ok {
+		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		return
+	}
+	http.SetCookie(w, auth.StateCookie(oidcStateCookie, "", -1))
+
+	// One answer for a cancelled consent, a forged state, a replayed callback
+	// and an id_token that did not verify: none of them is something a client
+	// can act on but "start the login again".
+	refuse := func(msg string, args ...any) {
+		d.logf(r, msg, args...)
+		d.recordAttempt(r, store.UserRow{}, false, addrKey, methodOIDC, false)
+		d.Throttle.RecordFailure(oidcFailureLedger, ip)
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+	}
+	q := r.URL.Query()
+	if e := q.Get("error"); e != "" {
+		refuse("api: oidc callback carried an error", "error", e)
+		return
+	}
+	cookie, cerr := r.Cookie(oidcStateCookie)
+	state := q.Get("state")
+	if cerr != nil || state == "" ||
+		subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(state)) != 1 {
+		refuse("api: oidc callback state does not match the cookie")
+		return
+	}
+	pend, ok := o.Spend(state)
+	if !ok {
+		refuse("api: oidc callback has no pending login")
+		return
+	}
+	issuer, subject, email, err := o.Exchange(ctx, q.Get("code"), pend.Verifier, pend.Nonce)
+	if err != nil {
+		refuse("api: oidc exchange", "err", err)
+		return
+	}
+	userID, err := d.Repo.GetOIDCIdentity(ctx, issuer, subject)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		// No account is mapped to this subject. Creating one here is not
+		// something this route can do on its own: users.umk_pub, ssk_pub and
+		// sig_umk_ssk are NOT NULL and are the account's own key material,
+		// which only the client holds — a server that invented them would be
+		// inventing the identity the whole protocol is keyed on. So the
+		// refusal is E_FORBIDDEN either way, and auto_create changes only the
+		// detail and what is logged: turning it on says the operator wants
+		// these logins to become accounts, and the client-completed
+		// registration leg that spends one is not in this task's surface.
+		if !d.Config.Auth.OIDC.AutoCreate {
+			server.WriteError(w, server.Errorf(server.CodeForbidden,
+				"this instance does not create accounts from the identity provider"))
+			return
+		}
+		d.logf(r, "api: oidc login has no account and auto_create needs a client-completed registration",
+			"issuer", issuer, "subject", subject, "email", email)
+		server.WriteError(w, server.Errorf(server.CodeForbidden,
+			"register first: an account carries key material only the client can generate"))
+		return
+	case err != nil:
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.Throttle.Clear(userID)
+	if clearErr := d.Repo.ClearLoginFailures(ctx, userID); clearErr != nil {
+		d.logf(r, "api: ClearLoginFailures", "err", clearErr)
+	}
+	d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, methodOIDC, true)
+	// An OIDC login is exactly as strong as the identity provider made it, and
+	// dillad cannot tell from an id_token whether a second factor was involved.
+	// So an account with a confirmed TOTP still owes it, for the same reason a
+	// passkey login does: a login path that walked past the account's own
+	// second factor would be a downgrade of that factor, not a property of the
+	// provider.
+	pending2FA, terr := d.secondFactorPending(ctx, userID)
+	if terr != nil {
+		server.WriteError(w, d.storeError(r, terr))
+		return
+	}
+	http.Redirect(w, r, d.oidcReturnURL(d.Assertions.Issue(userID, pending2FA)), http.StatusFound)
 }
