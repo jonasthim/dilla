@@ -56,7 +56,7 @@ the fact wins and the row appears in "Deviations from the spec (verified)" above
 | # | Ruling, as it binds this plan | Where it lands |
 |---|---|---|
 | R1 | Identifiers are real and carry no codename: Go module `github.com/jonasthim/dilla`, Rust crate `dilla-core`, package scope `@dilla/*`. | every `Cargo.toml`, task 1 |
-| R2 | Polyglot root: a root `Cargo.toml` workspace with members `core/dilla-core` (library, target-agnostic, **no `js` feature**), `core/dilla-core-wasm` (wasm-bindgen cdylib, enables `openmls/js` and the getrandom `js`/`wasm_js` features), `core/dilla-core-wasi` (wasm32-wasip1 cdylib exposing the `public_group` exports, no `js` feature) and `testkit/`. Edition 2024 (`#[unsafe(no_mangle)]`), `rust-toolchain.toml` pinning the verified current stable with targets `wasm32-unknown-unknown` and `wasm32-wasip1` and components `rustfmt`, `clippy`. | tasks 0, 1, 14, 15 |
+| R2 | Polyglot root: a root `Cargo.toml` workspace with members `core/dilla-core` (library, target-agnostic; it does enable `openmls/js` in its two wasm32 target tables, which `openmls 0.9.0` makes a compile-time requirement on that architecture — deviation A1-17), `core/dilla-core-wasm` (wasm-bindgen cdylib, enables `openmls/js` and the getrandom `js`/`wasm_js` features), `core/dilla-core-wasi` (wasm32-wasip1 cdylib exposing the `public_group` exports, no `js` feature) and `testkit/`. Edition 2024 (`#[unsafe(no_mangle)]`), `rust-toolchain.toml` pinning the verified current stable with targets `wasm32-unknown-unknown` and `wasm32-wasip1` and components `rustfmt`, `clippy`. | tasks 0, 1, 14, 15 |
 | R3 | Licences: `core/*` Apache-2.0; `testkit/` AGPL-3.0-or-later. Every crate `publish = false`, every crate a `LICENSE` file. | task 1 |
 | R4 | The local toolchain bootstrap is a **plan task, not a prerequisite**: the dev box has Arch `rust` 1.98.1 without rustup, no wasm targets and no sudo. Task 0 installs rustup user-scoped (official installer, `--no-modify-path --default-toolchain none`), lets `rust-toolchain.toml` pull the toolchain and targets, and ships `scripts/doctor-rust.sh` that prints what is missing and exits non-zero. `wasm-bindgen-cli` is installed at the exact version the workspace resolves, which is only knowable once `Cargo.lock` exists — so it lands in task 1 (deviation A1-6). Every later command invokes `/home/thim/.cargo/bin/cargo` explicitly. The Arch package stays untouched. | tasks 0, 1 |
 | R5 | No `--cfg getrandom_backend` RUSTFLAGS anywhere; features only (`getrandom 0.2` feature `js`, `getrandom 0.4` feature `wasm_js`), selected per binding crate. | tasks 1, 15, 19 |
@@ -177,6 +177,7 @@ Recorded per the drafting contract. Everything not listed here follows
 | A1-14 | §3.3 `[profile.release]` inside `core/dilla-core-wasi/Cargo.toml` | **removed**; the workspace-root `[profile.release]` governs the wasi artefact | Cargo ignores profile tables outside the workspace root and warns "profiles for the non root package will be ignored", so the block never applied. `panic = "abort"` is already the wasip1 default and cannot be set per package. Task 1 step 5 records this, so the size numbers Plan B measures are taken against the profile that is actually in force. |
 | A1-15 | §0.2 D12's seven DSL verbs | the grammar also carries `instance`, `client`, `group`, `sync` and `join … via=welcome\|external` | Not a widening of R20: §2.12's own EBNF defines these as "structural — not in R20's list, but required to make a scenario runnable", and `external_join x g` stays exactly `join x g via=external`. Recorded here so a reviewer comparing against D12 alone can see it is deliberate. |
 | A1-16 | §2.12 `Scenario` (fields unspecified) | `Scenario { name, stmts, lines }` — a parallel `Vec<usize>` of source line numbers | `StepResult { line, .. }` must report the **source** line; the parser skips comments and blank lines, so the statement's index in `stmts` is not it, and every committed `.scn` file opens with a comment. |
+| A1-17 | R2 and §3.1: `core/dilla-core` is target-agnostic with **no `js` feature** | `core/dilla-core/Cargo.toml` enables `openmls/js` in **both** of its wasm32 target tables — `cfg(all(target_arch = "wasm32", target_os = "unknown"))` and `cfg(all(target_arch = "wasm32", target_os = "wasi"))` | Forced, and verified by building (commit `59b4a7c`). `openmls 0.9.0` gates `use web_time::SystemTime` on `target_arch = "wasm32"` while declaring `web-time` as an **optional, un-target-gated** dependency that only the `js` feature turns on, so a wasm32 build without `js` fails with `E0432` in four files — gap-2-openmls.md §2 correction 2, which supersedes facts-wazero.md item 8. The feature is therefore a *compile-time* requirement, not a runtime one: `web-time` is cfg `all(target_family = "wasm", target_os = "unknown")`, so on wasip1 it re-exports `std::time` and the clock stays the real WASI `clock_time_get` that wazero serves; `js` also turns on `getrandom/wasm_js`, whose backend is cfg-gated to target_os unknown/none, so on wasi getrandom keeps its `random_get` backend. R2's "no `js` feature" still holds for `core/dilla-core-wasi`'s own manifest, which declares none. |
 
 ## Interface deviations (part A2)
 
@@ -727,9 +728,19 @@ will be ignored, specify profiles at the workspace root`, so `opt-level = "s"` /
 is already the wasip1 default and is not settable per package. Plan B task 5 benchmarks the artefact
 this profile produces, so the two must not disagree.
 
-No `js` feature, no `wasm-bindgen`, no `getrandom` feature: on wasip1 randomness resolves to WASI
-`random_get` and time to `clock_time_get`, both served by wazero's `ModuleConfig`. This crate does not
-inherit `[lints] workspace = true`, because it re-enables `unsafe_code` for the `extern "C"` exports
+No `js` feature, no `wasm-bindgen`, no `getrandom` feature **in this manifest**: on wasip1 randomness
+resolves to WASI `random_get` and time to `clock_time_get`, both served by wazero's `ModuleConfig`.
+That is a statement about this crate's own dependency table only — `core/dilla-core` does enable
+`openmls/js` for `target_os = "wasi"`, because `openmls 0.9.0` will not compile on `target_arch =
+"wasm32"` without it, and the feature changes nothing at runtime on wasi (deviation A1-17, gap-2
+§2 correction 2, commit `59b4a7c`).
+
+This crate **does** join `[lints] workspace = true` (commit `a81d3cb`). The earlier text here said it
+did not, on the grounds that it re-enables `unsafe_code` for the `extern "C"` exports — but staying
+out of the table makes the workspace's `unsafe_code = "warn"` inert in the one crate that actually
+writes `unsafe`, which is backwards. The manifest joins the table and `mod shims` carries a single
+`#![allow(unsafe_code)]`, so every `unsafe` outside that module is a warning, and `-D warnings` makes
+it an error; `core/dilla-core-wasi/src/lib.rs` asserts textually that exactly one opt-in exists
 (task 14).
 
 `testkit/Cargo.toml`:
@@ -17847,12 +17858,12 @@ git -C /home/thim/Repositories/dilla/.claude/worktrees/sdd-dilla-protocol add do
 
 ## Follow-up cards (not in this plan)
 
-Ten items that this plan's execution produces or exposes but deliberately does **not** do. Each names
-why it exists and which plan owns it. None of them blocks a task in this plan; they are here so that no
-task invents one of them on the way past. The same list appears in
+Fifteen items that this plan's execution produces or exposes but deliberately does **not** do. Each
+names why it exists and which plan owns it. None of them blocks a task in this plan; they are here so
+that no task invents one of them on the way past. The same list appears in
 `docs/superpowers/plans/2026-09-23-dillad-spikes.md`, so a reader of either file sees the whole set.
-Card (j) below was added from this worktree only (Plan B's mirror worktree is off-limits to this
-session); whoever next has write access to both files should copy it across.
+Cards (j) through (o) below were added from this worktree only (Plan B's mirror worktree is off-limits
+to these sessions); whoever next has write access to both files should copy them across.
 
 - **(a) Regenerate `testkit/fixtures/ds-1500/` before its KeyPackages expire, around 2026-12-22.** Task 13
   commits real `.mls` binaries whose 1,500 leaves each carry the 90-day `KEY_PACKAGE_LIFETIME_DAYS`
@@ -17914,6 +17925,40 @@ session); whoever next has write access to both files should copy it across.
   lands, `rust-native` fails on the first real CI run of this branch. **Owner: dilla-core**, whoever next
   touches `core/dilla-core-wasm` or closes out this plan — land it before this branch's CI is expected to
   go green.
+- **(k) Wire the leaf-acceptance rules into `DillaGroup`'s Add/commit path.** `identity` already
+  implements protocol/03's rules 3 and 5 — `DeviceList::check_leaf` returns `E_DEVICE_UNLISTED` for an
+  absent, revoked or key-mismatched device and `E_TIER_MISMATCH` for a tier that disagrees with the
+  list — alongside `DeviceList::accept`'s version/`prev_hash`/signature chain, and all of it is
+  unit-tested. Nothing in the group wrapper calls any of it: `DillaGroup::add_members` and
+  `validate_staged_commit` check the binding, the capability and the removal rule, and then accept a
+  leaf those functions would refuse. Rule 2's `E_UMK_CHANGED` has the `Pin` row type and the error
+  code but no comparison yet, because the pin table is client state nothing in week 1 keeps. This is
+  therefore wiring plus the state a client holds (the pin table and the newest device list per user),
+  which is why it is **W2 client work** and not a week-1 gap in `dilla-core`. **Owner: the web-client /
+  dillad client plan**, with the call sites in `dilla-core`'s `mls::group`.
+- **(l) Widen `Zeroizing` to `Envelope.k_f` and the recovery-derived keys.** `PairingPayload` zeroizes
+  `ssk_priv`, `k_backup` and the credential, and the browser `StoreHandle` zeroizes the device KEK, but
+  the franking key `Envelope.k_f` (32 bytes, per envelope) and the keys `k_header` / `k_backup` derive
+  from a recovery key are plain arrays that stay in freed memory. Neither is a long-term secret the way
+  the SSK is, and `k_f` is disclosed deliberately in a franking report — but "not long-term" is not
+  "harmless", and the treatment should be uniform. **Owner: dilla-core**, a small follow-up.
+- **(m) Bound and sanitise the OpenMLS `Debug` strings that cross the wasi ABI as `E_ABI_STATE`
+  detail.** `MlsError::OpenMls(format!("{e:?}"))` renders whatever OpenMLS's own `Debug` prints, and
+  `core/dilla-core-wasi` puts that string in the error frame the host reads. The strings are
+  unbounded in length and their content is upstream's to change; a host that logs them is logging text
+  dilla does not control. Cap the length and pass through a known-safe rendering instead. **Owner:
+  dilla-core**, with Plan B as the consumer.
+- **(n) Real byte offsets in the enum-range `CborError::TypeMismatch` reports.** `identity`'s enum
+  conversions (`Kind`, `Tier`, `SignerTier`, and the `v != 1` check) report failure as
+  `CborError::TypeMismatch { expected: "enum", offset: 0 }` — the offset is a placeholder, not the
+  position of the byte that failed, because the conversion happens after the decoder has moved past it.
+  Every caller maps this to `E_CREDENTIAL` and none reads the offset today, so nothing is wrong on the
+  wire; a diagnostic that prints it would be lying. **Owner: dilla-core.**
+- **(o) wasi handle-space exhaustion returns an error frame instead of trapping.**
+  `core/dilla-core-wasi/src/handles.rs` allocates handles from a counter; a host that leaks them
+  (never calling the release export) eventually exhausts the space, and the module's response to that
+  is not an `E_*` frame the host can act on. A long-running dillad is exactly the host that would hit
+  it. **Owner: dilla-core**, with Plan B task 4/5 as the place it would first show.
 
 ## Needs verification (part A1)
 
