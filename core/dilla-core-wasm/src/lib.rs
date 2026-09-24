@@ -476,6 +476,33 @@ mod tests {
         );
     }
 
+    /// Deviation A2-14. `open_encrypted`'s pragma batch is
+    /// `PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:<64-hex device KEK>';`, and rusqlite 0.40.2's
+    /// `Error::SqlInputError` Displays as `"{msg} in {sql} at offset {offset}"` — the whole
+    /// statement text (`rusqlite-0.40.2/src/error.rs:346-351`). Formatting that error into the
+    /// message `store_open` hands JavaScript would put the raw device KEK into a JS `Error` the
+    /// worker logs, which is exactly what A2-14 exists to prevent. `store.rs` compiles only on
+    /// `wasm32-unknown-unknown` and `store_open` needs a dedicated worker in a secure context
+    /// (gap-11 §8), so the error cannot be provoked from a native test or from a
+    /// `wasm-bindgen-test` here; the guard is asserted on the module's source text, which is what a
+    /// regression would change.
+    #[test]
+    fn the_cipher_error_never_carries_the_pragma_statement() {
+        let src = include_str!("store.rs");
+        assert!(
+            !src.contains("E_STORE_CIPHER: {e}"),
+            "the E_STORE_CIPHER arm must not format the rusqlite error into its message: that \
+             error's Display can carry the pragma statement, and the statement carries the KEK"
+        );
+        assert!(
+            src.contains("E_STORE_CIPHER: setting the cipher or key failed"),
+            "the E_STORE_CIPHER arm must hand back the fixed, key-free message"
+        );
+        // The two arms whose statements carry no key material keep their rusqlite detail.
+        assert!(src.contains("E_STORE_OPEN: {e}"));
+        assert!(src.contains("E_STORE_KEY: {e}"));
+    }
+
     #[test]
     fn the_vector_report_is_green_and_serialises_as_json() {
         assert!(vectors_check_ok());

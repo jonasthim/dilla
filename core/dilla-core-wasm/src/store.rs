@@ -21,6 +21,9 @@ const POOL_VFS: &str = "opfs-sahpool";
 const ENCRYPTED_VFS: &str = "multipleciphers-opfs-sahpool";
 /// Slots include journals; 12 leaves room for one database plus its `-journal` and `-wal`.
 const INITIAL_CAPACITY: u32 = 12;
+/// Deviation A2-14: the message for a failure of the keyed-pragma batch. Fixed, because the only
+/// detail rusqlite could add is built from the statement text, and that statement contains the KEK.
+const E_STORE_CIPHER: &str = "E_STORE_CIPHER: setting the cipher or key failed";
 
 #[wasm_bindgen]
 #[derive(Clone)]
@@ -111,8 +114,13 @@ fn open_encrypted(db_name: &str, kek_hex: &str) -> Result<Connection, JsValue> {
     let pragmas = Zeroizing::new(format!(
         "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{kek_hex}';"
     ));
+    // Deviation A2-14. The rusqlite error is deliberately dropped instead of being formatted into
+    // the message: `Error::SqlInputError` Displays as "{msg} in {sql} at offset {offset}" — the
+    // whole statement text — and this statement carries the raw device KEK, which `store_open`
+    // would then hand to JavaScript as an Error the worker logs. Only the SQLite result code is
+    // safe to keep, and it adds nothing a caller can act on here, so the message is fixed.
     conn.execute_batch(&pragmas)
-        .map_err(|e| JsValue::from(js_sys::Error::new(&format!("E_STORE_CIPHER: {e}"))))?;
+        .map_err(|_| JsValue::from(js_sys::Error::new(E_STORE_CIPHER)))?;
     drop(pragmas);
     conn.query_row("SELECT count(*) FROM sqlite_schema", [], |r| {
         r.get::<_, i64>(0)
@@ -206,8 +214,9 @@ impl StoreHandle {
             .unpause_vfs()
             .await
             .map_err(|e| JsError::new(&format!("E_STORE_RESUME: {e}")))?;
-        // The JsValue is deliberately not formatted into the message: it can carry SQLite text
-        // built from the pragma statement, and that statement contains the KEK.
+        // `open_encrypted` already redacts the one arm whose statement carries the KEK (A2-14).
+        // The JsValue is still dropped rather than re-wrapped here, so a future arm added over
+        // there cannot leak through this path either.
         let conn = open_encrypted(&self.db_name, &self.kek_hex)
             .map_err(|_| JsError::new("E_STORE_RESUME: reopening the keyed connection failed"))?;
         *self.conn.borrow_mut() = Some(conn);
