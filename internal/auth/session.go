@@ -450,6 +450,26 @@ func (s *Sessions) RevokeDevice(ctx context.Context, deviceID id.ID) error {
 	return nil
 }
 
+// DeleteDeviceSessions drops every session row of one device and closes its
+// gateway connections, WITHOUT revoking the device: it is "log this device
+// out", where RevokeDevice is "this device is no longer trusted". It returns
+// how many session rows went.
+//
+// It exists so the two logout paths cannot drift. protocol/02 § Device sessions
+// item 6 ties deleting session rows to closing the sockets those rows
+// authenticated; a caller that reached store.DeleteSessionsByDevice directly
+// would remove the HTTP credential and leave the gateway connection open.
+func (s *Sessions) DeleteDeviceSessions(ctx context.Context, deviceID id.ID) (int64, error) {
+	n, err := s.repo.DeleteSessionsByDevice(ctx, deviceID)
+	if err != nil {
+		return 0, err
+	}
+	if s.OnRevoke != nil {
+		s.OnRevoke(deviceID)
+	}
+	return n, nil
+}
+
 func (s *Sessions) RevokeUser(ctx context.Context, userID id.ID) error {
 	devices, err := s.repo.ListDevicesByUser(ctx, userID)
 	if err != nil {
