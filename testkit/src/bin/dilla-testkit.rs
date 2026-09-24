@@ -25,6 +25,15 @@ enum Command {
     },
     /// Check the committed protocol vectors and print the report.
     Vectors,
+    /// Generate the committed PublicGroup benchmark fixture.
+    GenPublicGroup {
+        #[arg(long, default_value_t = 1500)]
+        leaves: usize,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        #[arg(long, default_value_t = 0x5eed)]
+        seed: u64,
+    },
 }
 
 fn main() -> std::process::ExitCode {
@@ -72,6 +81,26 @@ fn main() -> std::process::ExitCode {
                 std::process::ExitCode::SUCCESS
             } else {
                 std::process::ExitCode::FAILURE
+            }
+        }
+        Command::GenPublicGroup { leaves, out, seed } => {
+            match dilla_testkit::gen_public_group(&dilla_testkit::FixtureSpec { leaves, out, seed })
+            {
+                Ok(manifest) => {
+                    println!(
+                        "{} leaves, epoch {}, tree_hash {}, {} files, not_after {}",
+                        manifest.leaves,
+                        manifest.epoch,
+                        manifest.tree_hash_hex,
+                        manifest.files.len(),
+                        manifest.not_after
+                    );
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::ExitCode::FAILURE
+                }
             }
         }
     }

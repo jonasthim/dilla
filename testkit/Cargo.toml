@@ -18,6 +18,9 @@ serde       = { version = "1", features = ["derive"] }
 serde_json  = "1.0.151"
 thiserror   = "2.0"
 hex         = "0.4"
+# `testkit/src/fixtures.rs` hashes every file it writes; a library dependency (not dev-only)
+# because `gen_public_group` is exported, not just exercised by a test binary.
+sha2        = "0.11"
 # The test client serialises and deserialises real MLS objects (KeyPackage, Welcome, GroupInfo,
 # RatchetTree, MlsMessage) on their way through the stub's byte-oriented API.
 tls_codec   = { version = "0.5.0", features = ["derive", "serde", "mls"] }

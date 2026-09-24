@@ -13,6 +13,7 @@
 
 mod client;
 mod ds;
+mod fixtures;
 mod scenario;
 
 pub use client::{Received, TestClient};
@@ -20,6 +21,7 @@ pub use ds::{
     CommitAccepted, CommitUpload, DsError, DsStub, Frame, GroupInfoResponse, GroupRegistered,
     HandshakeItem, InstanceConfig, MessageAccepted, MessageItem, RegisterGroup, TreeResponse,
 };
+pub use fixtures::{FixtureFile, FixtureManifest, FixtureSpec, gen_public_group};
 pub use scenario::{ParseError, RunReport, Runner, Scenario, StepResult, Stmt, parse};
 
 #[derive(Debug, thiserror::Error)]

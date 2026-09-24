@@ -151,6 +151,14 @@ impl TestClient {
         self.credential.clone()
     }
 
+    pub fn provider(&self) -> &DillaProvider {
+        &self.provider
+    }
+
+    pub fn signer(&self) -> &SignatureKeyPair {
+        &self.signer
+    }
+
     pub fn publish_key_packages(&mut self, ds: &mut DsStub, n: usize) -> Result<(), TestkitError> {
         let mut packages = Vec::with_capacity(n);
         for _ in 0..n {

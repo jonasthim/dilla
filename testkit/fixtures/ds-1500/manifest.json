@@ -1,0 +1,75 @@
+{
+  "leaves": 1500,
+  "epoch": 6,
+  "group_id_hex": "66666666666666666666666666666666",
+  "tree_hash_hex": "ae24195d28cee64e9a45277a85a6f32351d2b9f700ed8b185b233e60bdb0963e",
+  "not_after": 1797986391,
+  "openmls_version": "0.9.0",
+  "files": [
+    {
+      "path": "group_info.mls",
+      "sha256_hex": "528e58bb590ba963b3517d235786572beb50e465fde49048982b60ac462775ce",
+      "bytes": 294
+    },
+    {
+      "path": "ratchet_tree.mls",
+      "sha256_hex": "9e40c4b39797a09d65e2ff1b6f8bdb9e4c2eee8dc6a16905e9ec623221b096ab",
+      "bytes": 620236
+    },
+    {
+      "path": "public_group_state.bin",
+      "sha256_hex": "c8a148b8790af42d1a21563305e14ccb73485039cfa06241b7fa1ed60e205097",
+      "bytes": 1575537
+    },
+    {
+      "path": "commits/00.mls",
+      "sha256_hex": "4f0ed840a344620d68003d107fb638f815be0ba6ffb2534bf409574ecc0aedec",
+      "bytes": 256265
+    },
+    {
+      "path": "commits/01.mls",
+      "sha256_hex": "89d489917f231d23641c0980d939044b9f60a4399bc0c27c72cb612160320158",
+      "bytes": 256265
+    },
+    {
+      "path": "commits/02.mls",
+      "sha256_hex": "c825ca723c2316db79fb9dd8955ff2298bb685215bb2a929d98dd01898256b51",
+      "bytes": 256265
+    },
+    {
+      "path": "commits/03.mls",
+      "sha256_hex": "2137eec237cfbba58724db71ca2623673da77b3dbdbb3ed5e5ed8e8529990be3",
+      "bytes": 256265
+    },
+    {
+      "path": "commits/04.mls",
+      "sha256_hex": "9836215f021e5748c380575ab171a2a3b653734a78b9a331e758b4d6bf973b30",
+      "bytes": 256265
+    },
+    {
+      "path": "commits/05.mls",
+      "sha256_hex": "8763bd966b69c6d09a167dba8d8bda3c886aa0a1ff3b97df6aa7ff8fccfb3bef",
+      "bytes": 256265
+    },
+    {
+      "path": "commits/06.mls",
+      "sha256_hex": "91103f2d659fb31b5f22fd8a2b931673bc2de5e001b53aca926f1e816f0bf41c",
+      "bytes": 256265
+    },
+    {
+      "path": "commits/07.mls",
+      "sha256_hex": "b9275342cb2c704ea868f7f06d106cf4259e091c07f33ad2365f9485af57e689",
+      "bytes": 256265
+    },
+    {
+      "path": "commits/08.mls",
+      "sha256_hex": "0428abd2cd53e63f581692b95d2465e583615f3b7ec87e97a99ad37a22c82ddc",
+      "bytes": 123800
+    },
+    {
+      "path": "commits/09.mls",
+      "sha256_hex": "cd78cd41dd1d3c53a6d44e5ee61745e63eb17ef7d423fbcd936635ca0894c0cb",
+      "bytes": 123910
+    }
+  ]
+}
