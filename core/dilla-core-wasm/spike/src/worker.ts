@@ -19,6 +19,11 @@ const SPIKE_KEK_HEX = '0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0
 /** A different 64-hex KEK, used once against the already-written database to prove the SELECT is the
  *  key check and `PRAGMA key` is not (gap-13 §2.2, interfaces §6 task 17). */
 const WRONG_KEK_HEX = '0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c';
+/** Not 64 hex characters, so `store_open` rejects it before it touches SQLite (`E_STORE_KEK`) and
+ *  `is_sah_contention` classifies the rejection as false — a permanent failure, which is the branch
+ *  the e2e negative test needs and the only one the spike can provoke on demand. Reached only via
+ *  `?badkek=1`; no key material ever crosses the URL. */
+const INVALID_KEK_HEX = 'not-a-key';
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 const order: string[] = [];
@@ -66,7 +71,7 @@ async function openWithRetry(directory: string, dbName: string, kekHex: string):
   throw new Error('unreachable: the loop returns or throws');
 }
 
-async function run(instance: string): Promise<void> {
+async function run(instance: string, badKek: boolean): Promise<void> {
   await init();
 
   order.push('probe');
@@ -95,7 +100,11 @@ async function run(instance: string): Promise<void> {
     instance,
     async (session) => {
       order.push('install');
-      const opened = await openWithRetry(`dilla/${instance}`, 'dilla.db', SPIKE_KEK_HEX);
+      const opened = await openWithRetry(
+        `dilla/${instance}`,
+        'dilla.db',
+        badKek ? INVALID_KEK_HEX : SPIKE_KEK_HEX,
+      );
       handle = opened.handle;
       // NV-13's exported async method, exercised once so it is never shipped untested.
       await handle.reserve_capacity(16);
@@ -189,14 +198,21 @@ async function run(instance: string): Promise<void> {
       order.push('lock-released');
       post({ type: 'lock-released' });
     },
+    (err: unknown) => {
+      // The elected-leader path failed. `run()` returned the moment `elect` did, so this is the only
+      // place that can see it; without it the rejection is swallowed by the worker and the page sits
+      // on an empty role forever. main.ts already renders this branch.
+      order.push('leader-failed');
+      post({ type: 'error', message: String(err) });
+    },
   );
 }
 
 scope.addEventListener('message', function bootstrap(event: MessageEvent) {
-  const data = event.data as { type: string; instance?: string };
+  const data = event.data as { type: string; instance?: string; badKek?: boolean };
   if (data.type !== 'start' || data.instance === undefined) return;
   scope.removeEventListener('message', bootstrap);
-  void run(data.instance).catch((err: unknown) => {
+  void run(data.instance, data.badKek === true).catch((err: unknown) => {
     post({ type: 'error', message: String(err) });
   });
 });

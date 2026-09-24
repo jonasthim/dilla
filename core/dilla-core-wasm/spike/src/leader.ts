@@ -32,20 +32,32 @@ export function channelName(instance: string): string {
  * `resign()` merely resolves `held`; recording "lock-released" on the line after `resign()` would
  * record intent, and would still pass if the lock were never released at all — the one failure that
  * wedges every subsequent leader.
+ *
+ * `onError` is not optional, and neither is the `.catch` it backs. `elect` returns before `onElected`
+ * has run, so the caller's own `catch` on `elect`'s caller is already out of scope by then: anything
+ * `onElected` throws — a permanent `ConfigurationMismatch`/`NotSupported`/`NoCapacity`, an exhausted
+ * retry budget, a failing `reserve_capacity` or `exec` — would otherwise be an unhandled rejection
+ * inside the worker, with the page left showing an empty role and the failure invisible to everything
+ * downstream. This is the NV-10 negative branch, so it has to be reported, not swallowed.
  */
 export function elect(
   instance: string,
   onElected: (session: LeaderSession) => Promise<void>,
   onContended: () => void,
   onReleased: () => void,
+  onError: (err: unknown) => void,
 ): void {
   const name = channelName(instance);
   const channel = new BroadcastChannel(name);
 
   // ifAvailable tells us, without waiting, whether somebody already holds it.
-  void navigator.locks.request(name, { ifAvailable: true }, async (probe) => {
-    if (probe === null) onContended();
-  });
+  void navigator.locks
+    .request(name, { ifAvailable: true }, async (probe) => {
+      if (probe === null) onContended();
+    })
+    .catch((err: unknown) => {
+      onError(err);
+    });
 
   void navigator.locks
     .request(name, { mode: 'exclusive' }, async () => {
@@ -55,6 +67,11 @@ export function elect(
       });
       await onElected({ channel, resign: release });
       await held;
+    })
+    // Before the `.finally`, so `onReleased` still runs on the failure path: the browser releases
+    // the lock as soon as the callback's promise settles, rejection included.
+    .catch((err: unknown) => {
+      onError(err);
     })
     .finally(() => {
       onReleased();

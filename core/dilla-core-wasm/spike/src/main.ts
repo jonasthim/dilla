@@ -16,6 +16,9 @@ interface WorkerReport {
 
 const params = new URLSearchParams(location.search);
 const instance = params.get('instance') ?? 'default';
+// The e2e negative test's only lever: it makes the worker open the store with a KEK `store_open`
+// rejects on sight, so the elected-leader path fails permanently. No key material crosses the URL.
+const badKek = params.get('badkek') === '1';
 const visitedKey = `dilla:visited:${instance}`;
 
 function text(id: string, value: string): void {
@@ -86,6 +89,7 @@ worker.addEventListener('message', (event: MessageEvent<WorkerReport>) => {
       break;
     case 'error':
       text('role', 'error');
+      state.errorMessage = report.message;
       banner(`Store error: ${report.message ?? 'unknown'}`);
       break;
     default:
@@ -100,4 +104,4 @@ document.getElementById('resign')?.addEventListener('click', () => {
   worker.postMessage({ type: 'resign' });
 });
 
-worker.postMessage({ type: 'start', instance });
+worker.postMessage({ type: 'start', instance, badKek });

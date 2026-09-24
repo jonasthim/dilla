@@ -12,8 +12,8 @@ function instance(name: string): string {
   return `spike-${name}-${Date.now().toString(36)}`;
 }
 
-async function boot(page: Page, id: string): Promise<void> {
-  await page.goto(`/?instance=${id}`);
+async function boot(page: Page, id: string, extraQuery = ''): Promise<void> {
+  await page.goto(`/?instance=${id}${extraQuery}`);
   await expect(page.getByTestId('mode')).not.toHaveText('', { timeout: 60_000 });
   await expect(page.getByTestId('role')).not.toHaveText('', { timeout: 60_000 });
 }
@@ -96,6 +96,32 @@ test('the encrypted database survives a reload in the same context', async ({ pa
   await expect(page.getByTestId('rows')).toHaveText('2');
   // Second visit, marker still present: storage was not cleared.
   await expect(page.getByTestId('marker')).toHaveText('kept');
+});
+
+test('a leader whose store fails to open reports the error instead of hanging', async ({ page }) => {
+  const id = instance('store-error');
+
+  // `badkek=1` is the worker's only lever for this branch: it opens the store with a KEK that
+  // `store_open` rejects on sight, so the failure is permanent and never contention — the gap-14 §5
+  // retry budget is not spent and the rejection reaches `navigator.locks.request` immediately.
+  //
+  // This is the NV-10 negative branch, and it cannot be reached any other way: the plain-VFS probe
+  // runs only *after* `store_open` has succeeded. Without a reporting `.catch` on the lock request
+  // the rejection is an unhandled rejection inside the worker — `run()` has already returned, so
+  // worker.ts's own `.catch` cannot see it either — the page renders an empty `role`, and the only
+  // symptom is this test timing out in `boot` with no message anywhere. Task 18's hand-over test
+  // consumes the same contract.
+  await boot(page, id, '&badkek=1');
+
+  await expect(page.getByTestId('role')).toHaveText('error');
+  await expect(page.getByTestId('banner')).toContainText('E_STORE_KEK');
+
+  // The failure happened inside the elected-leader callback, not before the election: the tab did
+  // win the lock, and `install` is on the trail that leads to `leader-failed`.
+  const order: string[] = await page.evaluate(() => (globalThis as any).__dilla.order);
+  expect(order).toContain('install');
+  expect(order).toContain('leader-failed');
+  expect(order).not.toContain('leader-elected');
 });
 
 test('opening the pool under its plain VFS name fails with the exact sqlite3mc message', async ({ page }) => {
