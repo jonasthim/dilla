@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // Invariant 8: the DS reads C from private_message.authenticated_data and refuses an upload whose
@@ -150,6 +152,89 @@ func TestDeleteIsUploaderOnlyAndKeepsTheTombstoneFields(t *testing.T) {
 	}
 	if row.Seq != out.Seq || row.Epoch == 0 || len(row.FrankingTag) != 32 || len(row.CommitmentC) != 32 {
 		t.Error("a tombstone keeps seq, epoch, uploader_device, commitment_c, franking_tag and recv_ts")
+	}
+}
+
+// interfaces.md §5.1 row 12 lists E_PRUNED as GET /v1/groups/{id}/messages' error, and the sibling
+// handshake path already enforces it. Without it a client whose cursor is below the floor gets a
+// silently short list starting at the floor and cannot tell "these are gone, resync" from
+// "nothing new" — the precise failure the 410 exists to prevent.
+func TestACatchUpBelowTheMessageRetentionFloorIsPruned(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	ctx := context.Background()
+	first, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	second, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	rows, err := h.ds.Messages(ctx, g.id, g.session, 0, 10)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("before the sweep: %d rows, %v — want both messages", len(rows), err)
+	}
+
+	// Age the group past MessageRetention and run the sweep task 26 owns: everything below the
+	// second message really goes.
+	h.clk.Advance(31 * 24 * time.Hour)
+	n, err := h.repo.PruneAppMessages(ctx, g.id, second.Seq, h.clk.Now().Unix())
+	if err != nil {
+		t.Fatalf("PruneAppMessages: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("the sweep deleted %d rows, want the one at seq %d", n, first.Seq)
+	}
+
+	_, err = h.ds.Messages(ctx, g.id, g.session, 0, 10)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_PRUNED" {
+		t.Fatalf("a cursor below the floor: got %v, want E_PRUNED", err)
+	}
+	if dsErr.Status != 410 {
+		t.Errorf("status = %d, want 410", dsErr.Status)
+	}
+
+	// A cursor contiguous with the floor has no hole and is served.
+	rows, err = h.ds.Messages(ctx, g.id, g.session, first.Seq, 10)
+	if err != nil {
+		t.Fatalf("a cursor at the floor - 1 must be served: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Seq != second.Seq {
+		t.Fatalf("got %d rows, want the surviving message at seq %d", len(rows), second.Seq)
+	}
+}
+
+// The other half of the same predicate, and the reason it is not the floor alone: `from` is a
+// cursor in the ONE seq space handshakes and application messages share, so a group whose early
+// seqs carry handshakes is below its message floor with nothing ever deleted. protocol/02's error
+// table makes E_PRUNED mean "resync by external commit", so refusing that would send a healthy
+// member through a full rejoin.
+func TestAGroupWhoseEarlySeqsAreNotMessagesIsServed(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	ctx := context.Background()
+	// Burn seq 1 the way a handshake does: the seq space is the group's, not the table's.
+	if err := h.repo.Tx(ctx, func(tx store.Repository) error {
+		_, err := tx.NextSeq(ctx, g.id)
+		return err
+	}); err != nil {
+		t.Fatalf("NextSeq: %v", err)
+	}
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if out.Seq != 2 {
+		t.Fatalf("the message took seq %d, want 2", out.Seq)
+	}
+	rows, err := h.ds.Messages(ctx, g.id, g.session, 0, 10)
+	if err != nil {
+		t.Fatalf("a group younger than MessageRetention has lost nothing: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want the one message", len(rows))
 	}
 }
 

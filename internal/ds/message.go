@@ -129,11 +129,66 @@ func (d *DS) Messages(ctx context.Context, groupID id.ID, session Session, from 
 	if limit <= 0 || limit > 256 {
 		limit = 256
 	}
+	// interfaces.md §5.1 row 12 gives this endpoint E_PRUNED, for the same reason the handshake
+	// catch-up has it: below the floor the answer would be a silently short list starting at the
+	// floor, and the client cannot tell "these are gone, resync" from "nothing new".
+	floor, err := d.oldestAppMessageSeq(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	// `from` is the first seq the caller still wants, so a cursor at floor-1 is contiguous with
+	// the log. Below that a message MAY be gone — MAY, because `from` is a cursor in the ONE seq
+	// space handshakes and application messages share, so a group whose early seqs are handshakes
+	// sits below its message floor with nothing ever deleted. Refusing that would send a healthy
+	// member through a full rejoin, which is what protocol/02 makes E_PRUNED mean. The predicate
+	// below has to agree that a message CAN already be gone.
+	if floor > 0 && from+1 < floor {
+		gone, err := d.mayHavePrunedMessages(ctx, groupID)
+		if err != nil {
+			return nil, err
+		}
+		if gone {
+			return nil, errPruned(from, floor)
+		}
+	}
 	rows, err := d.opts.Store.ListAppMessages(ctx, groupID, from, limit)
 	if err != nil {
 		return nil, err
 	}
 	return rows, nil
+}
+
+// oldestAppMessageSeq is the lowest surviving seq of the group's application messages, or 0 when
+// it has none. `ListAppMessages` is ordered by seq, so one row from 0 is the MIN(seq) query
+// without a tenth method on `store.Messages` — ID1 fixes that method set.
+func (d *DS) oldestAppMessageSeq(ctx context.Context, groupID id.ID) (uint64, error) {
+	rows, err := d.opts.Store.ListAppMessages(ctx, groupID, 0, 1)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return rows[0].Seq, nil
+}
+
+// mayHavePrunedMessages answers whether ANY application message of this group can already have
+// been deleted. It is the twin of mayHavePrunedHandshakes and one-directional for the same reason
+// (ruling 41, deviation B20): the sweep's only deletion rule is `DELETE FROM mls_app_messages
+// WHERE seq < floor AND created < now - MessageRetention`, every row of a group is younger than
+// the group itself, and the cutoff only moves forward with the clock — so a group younger than
+// the retention window has provably lost nothing, and the predicate never says "nothing is gone"
+// about a group that has lost something.
+//
+// A tombstone is not a loss: TombstoneAppMessage keeps the row, so the seq stays in the answer
+// with `deleted = 1` and the floor does not move.
+func (d *DS) mayHavePrunedMessages(ctx context.Context, groupID id.ID) (bool, error) {
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if err != nil {
+		return false, err
+	}
+	cutoff := d.opts.Clock.Now().Add(-d.opts.Policy.MessageRetention).Unix()
+	return row.Created < cutoff, nil
 }
 
 // DeleteMessage tombstones one message. At v1 only the uploading user may delete, from any of
