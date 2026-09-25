@@ -7,9 +7,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -76,6 +79,60 @@ func TestARestartImportsTheStateBlobLazilyAndNeverRebuildsFromTheTree(t *testing
 	}
 	if got := h.wasmCalls("public_group_import_state"); got != 1 {
 		t.Fatalf("a cached group was re-imported: %d imports, want 1", got)
+	}
+}
+
+// The state cache reserves a group's slot BEFORE it leaves its own mutex, so a burst of first
+// touches of one uncached group imports it once and holds one instance.
+//
+// Without the reservation, making room and acquiring an instance are two separate steps: every
+// goroutine passes the room check while the cache is below capacity, every one of them calls
+// Runtime.Acquire, and the pool — PoolSize instances, GOMAXPROCS in production and 2 here — is
+// drained for the length of the burst while the guest does the same import N times. Acquire
+// returns only an instance or a cancelled context (internal/mlswasi/pool.go:33-46), and the DS
+// releases an instance only through this cache, so the same window across N DISTINCT groups is
+// what turns a burst into ctx-deadline failures. The import count is the visible half of that
+// invariant, and it is the half one committed fixture can express.
+//
+// It calls the cache without the per-group DS lock the public read paths take: that lock already
+// serialises Tree against Tree, so the cache's own concurrency has to be driven directly.
+func TestConcurrentFirstTouchesOfOneGroupImportItOnce(t *testing.T) {
+	h := newDSHarness(t)
+	reg, _ := h.mustRegister(t)
+	h.restartDS() // drops the cache; the next touch is a cold import
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	const n = 8
+	start := make(chan struct{})
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- ds.WithGroupForTest(h.ds, ctx, reg.GroupID, func(g *mlswasi.PublicGroup) error {
+				_, _, _, err := g.Tree(ctx)
+				return err
+			})
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("a concurrent first touch failed: %v", err)
+		}
+	}
+	if got := h.wasmCalls("public_group_import_state"); got != 1 {
+		t.Fatalf("%d concurrent first touches imported the group %d times, want 1", n, got)
+	}
+	if got := h.wasmCalls("public_group_create"); got != 1 {
+		t.Fatalf("public_group_create ran %d times, want the registration's one: the DS must "+
+			"never rebuild a group from its tree", got)
 	}
 }
 
