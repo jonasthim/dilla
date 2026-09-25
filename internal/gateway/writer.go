@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -50,12 +51,21 @@ type writer struct {
 	done   chan struct{}
 	// finished is closed by run's defer, so drain can wait for the outstanding frames.
 	finished chan struct{}
+	// log is where a dropped frame is recorded. It is set once, before run starts, and never
+	// written again; nil means the process default logger.
+	log *slog.Logger
 
 	mu          sync.Mutex
 	queuedBytes int
 }
 
+// newWriter starts a writer whose dropped frames go to the process default logger. The Gateway
+// passes its own logger through newWriterWithLogger instead.
 func newWriter(s sink, l writerLimits, clk clock.Clock) *writer {
+	return newWriterWithLogger(s, l, clk, nil)
+}
+
+func newWriterWithLogger(s sink, l writerLimits, clk clock.Clock, log *slog.Logger) *writer {
 	w := &writer{
 		sink:     s,
 		limits:   l,
@@ -63,6 +73,7 @@ func newWriter(s sink, l writerLimits, clk clock.Clock) *writer {
 		queue:    make(chan queued, l.Frames),
 		done:     make(chan struct{}),
 		finished: make(chan struct{}),
+		log:      log,
 	}
 	go w.run()
 	return w
@@ -124,7 +135,8 @@ func (w *writer) writeOne(q queued) bool {
 		if err != nil {
 			// The frame is DROPPED, not sent with its stale deadline: a client that acts on a
 			// deadline the instance has already passed will be re-elected against, and a silently
-			// swallowed error here is how that becomes invisible.
+			// swallowed error here is how that becomes invisible. The connection survives the
+			// drop — logDropped logs it — so `return true` is the writer carrying on.
 			w.logDropped(frame, err)
 			return true
 		}
@@ -145,11 +157,29 @@ func (w *writer) writeOne(q queued) bool {
 	return true
 }
 
-// logDropped records a frame the writer refused to send. It is a method so `writer` needs no
-// logger field on the hot path: the sink carries one.
+// logDropped records a frame the writer refused to send and LEAVES THE CONNECTION UP: one
+// malformed mls.commit_needed payload is a delivery-service bug, not a reason to disconnect a
+// client that has done nothing wrong, and writeOne goes on serving the queue. The brief's body
+// closed the sink here and still returned true, so the writer kept writing into a socket it had
+// just closed and the connection ended on the next failed write's reason instead of this one.
 func (w *writer) logDropped(f Frame, err error) {
-	w.sink.close(CloseUnknown, "commit_needed deadline: "+err.Error())
-	_ = f
+	attrs := []any{
+		slog.Int("op", int(f.Op)),
+		slog.String("err", err.Error()),
+	}
+	if f.GroupID != nil {
+		attrs = append(attrs, slog.String("group_id", f.GroupID.String()))
+	}
+	w.logger().Warn("gateway: frame dropped by the writer", attrs...)
+}
+
+// logger is the writer's logger, or the process default when the Gateway passed none. Keeping it
+// behind an accessor is what lets newWriter stay a three-parameter call.
+func (w *writer) logger() *slog.Logger {
+	if w.log != nil {
+		return w.log
+	}
+	return slog.Default()
 }
 
 func (w *writer) stop() {

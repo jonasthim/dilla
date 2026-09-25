@@ -1,8 +1,11 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/id"
 )
 
 // recordingSink is the transport double. Its stall gate is a mutex-guarded bool plus a
@@ -163,5 +167,76 @@ func TestTheFirstHeartbeatIsJitteredIntoTheInterval(t *testing.T) {
 			t.Errorf("bucket %d (%ds-%ds) is empty; the first beat is not jittered across the interval",
 				i, i*5, (i+1)*5)
 		}
+	}
+}
+
+// syncBuffer is a log destination two goroutines touch: the writer goroutine through the
+// slog.Handler, the test goroutine when it reads back what was written.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A malformed mls.commit_needed payload is a delivery-service bug, not a reason to disconnect a
+// client that has done nothing wrong: the frame is logged and dropped, the connection stays up and
+// the writer keeps serving the queue. Before this test logDropped closed the sink and returned
+// true, so the writer went on writing into a socket it had just closed and the connection ended on
+// whatever the next failed write reported rather than on the stated reason.
+func TestAMalformedCommitNeededIsLoggedAndDroppedWithTheConnectionUp(t *testing.T) {
+	sink := newRecordingSink(4, false)
+	clk := clock.NewFake(time.Unix(1_700_000_000, 0))
+	var logs syncBuffer
+	w := newWriterWithLogger(sink, writerLimits{Frames: 4, Bytes: 1 << 20, Deadline: time.Second},
+		clk, slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(w.stop)
+
+	// Three elements, not four: rebaseDeadline refuses it with E_FRAME_SHAPE.
+	bad, err := cborx.Marshal([]any{uint64(7), [][]byte{}, uint64(3000)})
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	gid := id.ID{1, 2, 3}
+	w.enqueue(Frame{Op: OpMLSCommitNeeded, GroupID: &gid, Payload: cbor.RawMessage(bad)}, 0)
+
+	// The next frame proves the writer is still serving the queue and the sink is still open.
+	w.enqueue(Frame{Op: OpPresence, Payload: cbor.RawMessage{0x80}}, 0)
+	select {
+	case b := <-sink.frames:
+		if len(b) == 0 {
+			t.Fatal("empty frame")
+		}
+	case code := <-sink.closed:
+		t.Fatalf("one malformed commit_needed payload closed the connection with %d", code)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the writer stopped after dropping a frame")
+	}
+
+	select {
+	case code := <-sink.closed:
+		t.Fatalf("the connection was closed with %d after a dropped frame", code)
+	default:
+	}
+
+	line := logs.String()
+	if !strings.Contains(line, "E_FRAME_SHAPE") {
+		t.Errorf("the drop was not logged with its error: %q", line)
+	}
+	if !strings.Contains(line, `"op":17`) {
+		t.Errorf("the drop was not logged with its opcode: %q", line)
+	}
+	if !strings.Contains(line, gid.String()) {
+		t.Errorf("the drop was not logged with its group: %q", line)
 	}
 }
