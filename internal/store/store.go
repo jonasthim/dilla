@@ -133,6 +133,15 @@ type MLS interface {
 	AppendHandshake(ctx context.Context, h HandshakeRow) error
 	ListHandshakes(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]HandshakeRow, error)
 	OldestHandshakeSeq(ctx context.Context, groupID id.ID) (uint64, error)
+	// GetCommitAtEpoch is the ONE handshake that carried a group into `epoch`:
+	// the lowest-seq row of kind 1 (commit) or 2 (external_commit) at that
+	// epoch, over `mls_handshakes_by_epoch`. Deviation B13 adds it because
+	// `E_COMMIT_CONFLICT` must name the winning commit, and paging the log from
+	// seq 0 misses it on any group with more than one page of live handshakes —
+	// which would put a null where protocol/02 declares a `bstr` and break the
+	// conflict-recovery loop invariant 3 exists for. ErrNotFound means the
+	// epoch's handshake has been pruned, not that the epoch never happened.
+	GetCommitAtEpoch(ctx context.Context, groupID id.ID, epoch uint64) (HandshakeRow, error)
 	PruneHandshakes(ctx context.Context, before int64) (int64, error)
 	PutProposal(ctx context.Context, p ProposalRow) error
 	ListProposals(ctx context.Context, groupID id.ID, epoch uint64, includeVoid bool) ([]ProposalRow, error)

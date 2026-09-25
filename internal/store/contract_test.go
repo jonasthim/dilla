@@ -57,7 +57,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		}},
 		{"MLS", reflect.TypeOf((*store.MLS)(nil)).Elem(), []string{
 			"AppendHandshake", "CloseGroup", "CountForkReporters", "CountKeyPackages",
-			"CreateGroup", "DeleteProposals", "DeleteWelcome", "GetGroup", "GroupsForDevice",
+			"CreateGroup", "DeleteProposals", "DeleteWelcome", "GetCommitAtEpoch", "GetGroup",
+			"GroupsForDevice",
 			"ListHandshakes", "ListMembers", "ListOpenGroups", "ListProposals", "ListWelcomes",
 			"NextSeq", "OldestHandshakeSeq", "PruneHandshakes", "PruneWelcomes",
 			"PurgeKeyPackages", "PutEpochTree", "PutForkReport", "PutGroupState",

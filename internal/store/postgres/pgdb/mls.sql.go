@@ -203,6 +203,33 @@ func (q *Queries) DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) er
 	return err
 }
 
+const getCommitAtEpoch = `-- name: GetCommitAtEpoch :one
+SELECT group_id, seq, epoch, kind, sender_leaf, sender_device, blob, created FROM mls_handshakes
+WHERE group_id = $1 AND epoch = $2 AND kind IN (1, 2)
+ORDER BY seq LIMIT 1
+`
+
+type GetCommitAtEpochParams struct {
+	GroupID id.ID
+	Epoch   int64
+}
+
+func (q *Queries) GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error) {
+	row := q.db.QueryRowContext(ctx, getCommitAtEpoch, arg.GroupID, arg.Epoch)
+	var i MlsHandshakes
+	err := row.Scan(
+		&i.GroupID,
+		&i.Seq,
+		&i.Epoch,
+		&i.Kind,
+		&i.SenderLeaf,
+		&i.SenderDevice,
+		&i.Blob,
+		&i.Created,
+	)
+	return i, err
+}
+
 const getGroup = `-- name: GetGroup :one
 SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at FROM mls_groups WHERE group_id = $1
 `

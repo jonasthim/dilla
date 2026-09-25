@@ -1017,6 +1017,34 @@ func (r *Repo) ListHandshakes(ctx context.Context, groupID id.ID, fromSeq uint64
 	return out, nil
 }
 
+// GetCommitAtEpoch is the handshake that carried the group into `epoch`: the
+// lowest-seq commit or external commit recorded at it, read over
+// `mls_handshakes_by_epoch`. `E_COMMIT_CONFLICT` names that blob, and a scan of
+// the log from seq 0 would miss it on any group with more than one page of live
+// handshakes (deviation B13).
+func (r *Repo) GetCommitAtEpoch(ctx context.Context, groupID id.ID, epoch uint64) (store.HandshakeRow, error) {
+	m, err := r.r.GetCommitAtEpoch(ctx, sqlitedb.GetCommitAtEpochParams{
+		GroupID: groupID, Epoch: int64(epoch),
+	})
+	if err != nil {
+		return store.HandshakeRow{}, wrap(err)
+	}
+	device, err := idPtr(m.SenderDevice)
+	if err != nil {
+		return store.HandshakeRow{}, err
+	}
+	return store.HandshakeRow{
+		GroupID:      m.GroupID,
+		Seq:          uint64(m.Seq),
+		Epoch:        uint64(m.Epoch),
+		Kind:         uint8(m.Kind),
+		SenderLeaf:   ptrUint32(m.SenderLeaf),
+		SenderDevice: device,
+		Blob:         m.Blob,
+		Created:      m.Created,
+	}, nil
+}
+
 // OldestHandshakeSeq is the retention floor a resync is refused below. An empty
 // log has no floor, which is 0 and not ErrNotFound: a group with nothing to
 // replay refuses nothing.

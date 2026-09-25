@@ -37,6 +37,11 @@ ORDER BY seq LIMIT sqlc.arg(max_rows);
 -- name: OldestHandshakeSeq :one
 SELECT seq FROM mls_handshakes WHERE group_id = ? ORDER BY seq LIMIT 1;
 
+-- name: GetCommitAtEpoch :one
+SELECT * FROM mls_handshakes
+WHERE group_id = ? AND epoch = ? AND kind IN (1, 2)
+ORDER BY seq LIMIT 1;
+
 -- name: PruneHandshakes :execrows
 DELETE FROM mls_handshakes WHERE created < ?;
 

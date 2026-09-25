@@ -39,6 +39,7 @@ type Querier interface {
 	DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsByUserParams) (int64, error)
 	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
+	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
 	GetDevice(ctx context.Context, arg GetDeviceParams) (Devices, error)
 	GetDeviceList(ctx context.Context, arg GetDeviceListParams) (DeviceLists, error)
 	GetGroup(ctx context.Context, arg GetGroupParams) (MlsGroups, error)
