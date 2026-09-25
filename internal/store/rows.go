@@ -283,11 +283,21 @@ type WelcomeRow struct {
 }
 
 // WelcomeFull is what `MLS.ListWelcomes` returns: one `mls_welcomes` row joined
-// to the `mls_welcome_payloads` body it names. The two tables are D4's split, so
-// nothing else carries both halves.
+// to the `mls_welcome_payloads` body it names AND to the `mls_epoch_trees` row
+// of its own epoch. The three tables are D4's split, so nothing else carries
+// every half.
+//
+// RatchetTree and TreeHash are the tree of the WELCOMING epoch, not the live
+// one: a dilla Welcome carries no ratchet tree and the group has moved on by
+// the time a joiner collects, so protocol/02 row 15 puts the tree of the epoch
+// that issued the Welcome in the response. They are empty only when the epoch
+// tree has been pruned out from under the row, which is a torn state rather
+// than a shape a joiner can act on.
 type WelcomeFull struct {
 	WelcomeRow
-	Blob []byte
+	Blob        []byte
+	RatchetTree []byte
+	TreeHash    []byte
 }
 
 // ForkReportRow mirrors `fork_reports`.

@@ -1,0 +1,162 @@
+package ds
+
+// keypackage.go is the delivery service's KeyPackage directory: protocol/02's role 4, endpoints 10
+// (`POST /v1/keypackages`) and 11 (`GET /v1/devices/{device_id}/keypackage`).
+//
+// Two rules make the directory what it is. Every published package is validated INSIDE THE GUEST —
+// the leaf must advertise 0xF001, the credential identity must decode and name the publishing
+// device, and the lifetime must not have passed — so a package the delivery service would later
+// hand a joiner is never one it has not checked. And the LAST-RESORT package is never consumed:
+// once the ordinary ones are gone it is served for ever, which is what keeps a device that has run
+// out of packages addable rather than unreachable.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
+)
+
+// KeyPackage is one served package. KPRef is the RFC 9420 KeyPackageRef the GUEST computed, which
+// is also the row's primary key: a client that publishes the same package twice writes one row.
+type KeyPackage struct {
+	Blob       []byte
+	LastResort bool
+	KPRef      []byte
+}
+
+// maxKeyPackagesPerDevice bounds one device's directory. It is not a literal here: the value is
+// Policy's, which the composition root fills from `config.Default().Limits
+// .MaxKeypackagesPerDevice`, so one number governs this refusal and the
+// `limits.max_keypackages_per_device` element of `GET /v1/instance/limits`.
+func (d *DS) maxKeyPackagesPerDevice() int { return d.opts.Policy.MaxKeyPackagesPerDevice }
+
+// errTooManyKeyPackages is E_TOO_LARGE counted in PACKAGES. `errTooLarge` counts bytes of
+// ciphertext and says so in its detail, which would be a lie on this route.
+func errTooManyKeyPackages(n, limit int) *Error {
+	return &Error{
+		Code:   "E_TOO_LARGE",
+		Detail: fmt.Sprintf("%d key packages in one publish, limit %d", n, limit),
+		Status: http.StatusRequestEntityTooLarge,
+	}
+}
+
+// PublishKeyPackages validates every package inside the guest and stores it with the guest's own
+// kp_ref. It returns how many rows the publish covers; republishing a package the directory
+// already holds is not an error and writes no second row.
+func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byte, lastResort []byte) (int, error) {
+	// A provisional session exists to bring ONE device into ONE pairing group, so it may publish
+	// the single KeyPackage that group's Welcome will consume and nothing more. The route accepts
+	// a provisional session (interfaces §5.1 row 10); this is what makes that safe. It is checked
+	// FIRST, before the cap and before the guest, because it is the cheapest refusal and the one
+	// an unenrolled caller is most likely to reach for.
+	if s.Scope == auth.ScopeProvisional {
+		if s.PairingGroup == nil {
+			return 0, errProvisionalOutsidePairing("this provisional session is bound to no pairing group")
+		}
+		if len(packages) > 1 || lastResort != nil {
+			return 0, errProvisionalOutsidePairing(
+				"a provisional session may publish exactly one pairing KeyPackage and no last-resort package")
+		}
+	}
+	// The cap is checked BEFORE the guest is asked for anything. A caller that cannot exceed it
+	// can still make the instance run one RFC 9420 validation per submitted blob by trying, and
+	// validation is the expensive half of this route.
+	if len(packages) > d.maxKeyPackagesPerDevice() {
+		return 0, errTooManyKeyPackages(len(packages), d.maxKeyPackagesPerDevice())
+	}
+	if len(packages) == 0 && lastResort == nil {
+		return 0, nil
+	}
+
+	inst, err := d.opts.Wasm.Acquire(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer inst.Release()
+
+	rows := make([]store.KeyPackageRow, 0, len(packages)+1)
+	add := func(blob []byte, last bool) error {
+		info, err := inst.ValidateKeyPackage(ctx, blob)
+		if err != nil {
+			return errCommitInvalid("key_package", err.Error())
+		}
+		if string(info.DeviceID) != string(s.DeviceID[:]) {
+			return errForbidden("a device may only publish KeyPackages for itself")
+		}
+		if info.LastResort != last {
+			return errCommitInvalid("key_package",
+				"the package's last_resort extension disagrees with where it was published")
+		}
+		var lr uint8
+		if last {
+			lr = 1
+		}
+		rows = append(rows, store.KeyPackageRow{
+			DeviceID:   s.DeviceID,
+			KPRef:      info.KPRef,
+			Blob:       blob,
+			LastResort: lr,
+			Expires:    int64(info.NotAfter),
+			Created:    d.now(),
+		})
+		return nil
+	}
+	// Nothing is written until every package has passed: a publish is all or nothing, so a client
+	// that sent one bad blob in a batch of thirty-two is not left guessing which of them landed.
+	for _, blob := range packages {
+		if err := add(blob, false); err != nil {
+			return 0, err
+		}
+	}
+	if lastResort != nil {
+		if err := add(lastResort, true); err != nil {
+			return 0, err
+		}
+	}
+	if err := d.opts.Store.PutKeyPackages(ctx, s.DeviceID, rows); err != nil {
+		return 0, err
+	}
+	return len(rows), nil
+}
+
+// TakeKeyPackage serves one package for a target device: an unconsumed, unexpired ORDINARY one if
+// there is any, otherwise the last-resort package, which is served repeatedly and never consumed.
+//
+// The choice is the store's, not this function's: the SQL orders by `last_resort ASC, expires` and
+// marks `consumed_at` only on an ordinary row, and a Go-side "take one, and if it is the
+// last-resort put it back" would race every concurrent joiner.
+func (d *DS) TakeKeyPackage(ctx context.Context, s Session, target id.ID) (KeyPackage, error) {
+	// Row 11 is enrolled-only. A provisional session is a device that is not yet a member of
+	// anything; handing it the directory of an arbitrary device would let it learn which devices
+	// exist and burn their packages.
+	if s.Scope != auth.ScopeEnrolled {
+		return KeyPackage{}, errForbidden("taking a KeyPackage needs an enrolled session")
+	}
+	row, err := d.opts.Store.TakeKeyPackage(ctx, target, d.now())
+	if errors.Is(err, store.ErrNotFound) {
+		return KeyPackage{}, errNotFound("key package")
+	}
+	if err != nil {
+		return KeyPackage{}, err
+	}
+	return KeyPackage{Blob: row.Blob, LastResort: row.LastResort == 1, KPRef: row.KPRef}, nil
+}
+
+// KeyPackagesRemaining is what the gateway's `ready` frame reports so a client knows to refill. It
+// counts the ORDINARY packages only: the last-resort one is the fallback, not a package a client
+// should stop refilling because of.
+func (d *DS) KeyPackagesRemaining(ctx context.Context, deviceID id.ID) (uint64, error) {
+	n, err := d.opts.Store.CountKeyPackages(ctx, deviceID, d.now())
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, nil
+	}
+	return uint64(n), nil
+}

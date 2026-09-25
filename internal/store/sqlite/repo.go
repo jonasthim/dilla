@@ -1329,6 +1329,14 @@ func (r *Repo) ListWelcomes(ctx context.Context, deviceID id.ID, afterID int64, 
 				DeliveredAt: ptrInt64(m.DeliveredAt),
 			},
 			Blob: m.Blob,
+			// The tree of the WELCOMING epoch, from the LEFT JOIN on
+			// `mls_epoch_trees`: a dilla Welcome carries no ratchet tree and
+			// the live one has moved on (protocol/02 row 15). The join is
+			// LEFT so a Welcome whose epoch tree has been pruned still
+			// reaches its device — with an empty tree it can act on rather
+			// than vanishing from the queue.
+			RatchetTree: m.RatchetTree,
+			TreeHash:    m.TreeHash,
 		})
 	}
 	return out, nil

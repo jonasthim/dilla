@@ -584,9 +584,12 @@ func (q *Queries) ListOpenGroups(ctx context.Context, arg ListOpenGroupsParams) 
 const listWelcomes = `-- name: ListWelcomes :many
 SELECT mls_welcomes.welcome_id, mls_welcomes.device_id, mls_welcomes.group_id, mls_welcomes.epoch,
        mls_welcomes.commit_seq, mls_welcomes.blob_sha256, mls_welcomes.created,
-       mls_welcomes.expires, mls_welcomes.delivered_at, mls_welcome_payloads.blob
+       mls_welcomes.expires, mls_welcomes.delivered_at, mls_welcome_payloads.blob,
+       mls_epoch_trees.ratchet_tree, mls_epoch_trees.tree_hash
 FROM mls_welcomes
 JOIN mls_welcome_payloads ON mls_welcome_payloads.blob_sha256 = mls_welcomes.blob_sha256
+LEFT JOIN mls_epoch_trees ON mls_epoch_trees.group_id = mls_welcomes.group_id
+                         AND mls_epoch_trees.epoch = mls_welcomes.epoch
 WHERE mls_welcomes.device_id = $1 AND mls_welcomes.delivered_at IS NULL
       AND mls_welcomes.welcome_id > $2
 ORDER BY mls_welcomes.welcome_id LIMIT $3::bigint
@@ -609,6 +612,8 @@ type ListWelcomesRow struct {
 	Expires     int64
 	DeliveredAt sql.NullInt64
 	Blob        []byte
+	RatchetTree []byte
+	TreeHash    []byte
 }
 
 func (q *Queries) ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error) {
@@ -631,6 +636,8 @@ func (q *Queries) ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]L
 			&i.Expires,
 			&i.DeliveredAt,
 			&i.Blob,
+			&i.RatchetTree,
+			&i.TreeHash,
 		); err != nil {
 			return nil, err
 		}
@@ -983,7 +990,8 @@ WHERE key_packages.device_id = $2 AND key_packages.kp_ref = (
   SELECT kp.kp_ref FROM key_packages kp
   WHERE kp.device_id = $2 AND kp.consumed_at IS NULL AND kp.last_resort = 0
         AND kp.expires > $1
-  ORDER BY kp.expires, kp.kp_ref LIMIT 1)
+  ORDER BY kp.expires, kp.kp_ref LIMIT 1
+  FOR UPDATE SKIP LOCKED)
 RETURNING device_id, kp_ref, blob, last_resort, expires, created, consumed_at
 `
 
@@ -992,6 +1000,8 @@ type TakeKeyPackageParams struct {
 	DeviceID id.ID
 }
 
+// FOR UPDATE SKIP LOCKED is the one difference from the SQLite form: on Postgres two concurrent
+// takes for one device read the same snapshot, and a join storm makes that routine.
 func (q *Queries) TakeKeyPackage(ctx context.Context, arg TakeKeyPackageParams) (KeyPackages, error) {
 	row := q.db.QueryRowContext(ctx, takeKeyPackage, arg.Now, arg.DeviceID)
 	var i KeyPackages

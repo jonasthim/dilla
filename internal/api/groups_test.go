@@ -358,6 +358,11 @@ func newGroupsAPI(t *testing.T) *groupsAPI {
 	msgs := &api.Messages{DS: d, MaxCiphertextBytes: 131072, MaxBody: 1 << 16}
 	msgs.Register(mux, deps.Sessions)
 
+	// Task 24's four directory routes ride on the same mux, sessions and delivery service. They are
+	// mounted from the same `*api.Groups` value, so the body cap set above is theirs too — a
+	// KeyPackage refill and a Welcome list are both far over §5.3's 64 KiB.
+	groups.RegisterDirectory(mux, deps.Sessions)
+
 	_, _, token := seedAPISession(t, deps)
 	return &groupsAPI{
 		mux: mux, deps: deps, ds: d, groupID: f.groupID, fixture: f, session: token, clk: clk,

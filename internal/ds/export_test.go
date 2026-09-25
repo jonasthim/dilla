@@ -6,6 +6,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // export_test.go exposes three unexported decoders and one unexported rule to the external test
@@ -127,4 +128,30 @@ func PendingJoinsForTest(d *DS, groupID id.ID) int {
 	d.pendingMu.Lock()
 	defer d.pendingMu.Unlock()
 	return len(d.pending[groupID])
+}
+
+// ------------------------------------------------------------------- task 24
+
+// StoreWelcomesForTest is storeWelcomesTx, run in a transaction of its own over the same group
+// handle the commit's transaction holds.
+//
+// It is exported because NO commit can be ACCEPTED against the committed fixture: the fixture
+// holds one GroupInfo, at epoch 6, and invariant 4's sixth clause wants epoch n+1
+// (commit_test.go's header; task 20's report names the fixture work that closes it). `Commit`
+// therefore refuses before it ever reaches the Welcome writer, and every rule the writer carries —
+// one payload row per distinct blob, one welcome row per addressed device, the ratchet tree of the
+// welcoming epoch — would be untested until that fixture work lands.
+func StoreWelcomesForTest(d *DS, ctx context.Context, groupID id.ID, epoch, commitSeq uint64, welcomes []WelcomeFor) error {
+	return d.withGroup(ctx, groupID, func(g *mlswasi.PublicGroup) error {
+		return d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+			return d.storeWelcomesTx(ctx, tx, groupID, epoch, commitSeq, g, welcomes)
+		})
+	})
+}
+
+// FanOutWelcomesForTest is fanOutWelcomes, the addressed half of the commit's fan-out. Same
+// reason: `fanOutCommit` runs only after a commit the fixture cannot make succeed, and a joiner
+// that is online when the commit lands must not have to poll row 15 to discover its Welcome.
+func FanOutWelcomesForTest(d *DS, ctx context.Context, groupID id.ID, epoch uint64, welcomes []WelcomeFor) {
+	d.fanOutWelcomes(ctx, groupID, epoch, welcomes)
 }

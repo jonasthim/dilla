@@ -219,6 +219,8 @@ var dsFrameNames = map[gateway.Op]string{
 	// Task 23's fan-out: R30 sends message.ct to every online member, the uploader included.
 	gateway.OpMessageCT:      "message.ct",
 	gateway.OpMessageDeleted: "message.deleted",
+	// Task 24's addressed fan-out: one mls.welcome per joiner of a commit.
+	gateway.OpMLSWelcome: "mls.welcome",
 }
 
 func dsFrameName(op gateway.Op) string {

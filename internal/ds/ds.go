@@ -86,6 +86,22 @@ type Policy struct {
 
 	MaxCiphertextBytes int // 131072
 	MaxAddsPerCommit   int // 256
+
+	// MaxKeyPackagesPerDevice bounds one device's KeyPackage directory: the number of packages
+	// `POST /v1/keypackages` will store for a device in one call, refused with E_TOO_LARGE above
+	// it.
+	//
+	// It is NOT a literal invented here. The value is `config.Default().Limits
+	// .MaxKeypackagesPerDevice`, which 1a task 4 already fixes at 32 beside the refill threshold
+	// of 8, and it is carried on Policy so ONE number governs the refusal here and the
+	// `limits.max_keypackages_per_device` element of `GET /v1/instance/limits`. The task brief's
+	// NV-B7 proposed 128 for want of a resolution; the shipped config default supersedes it, and
+	// nothing else depends on the number — the refusal is a cap, not a protocol constant.
+	//
+	// internal/config is NOT imported here: it imports nothing of internal/ds, and the reverse
+	// would make the delivery service depend on the file format. The composition root copies the
+	// configured value across, exactly as it does for MaxCiphertextBytes.
+	MaxKeyPackagesPerDevice int // 32
 }
 
 // DefaultPolicy is every value interfaces.md §6.2 fixes.
@@ -106,6 +122,9 @@ func DefaultPolicy() Policy {
 		FreezeMax:          30 * 24 * time.Hour,
 		MaxCiphertextBytes: 131072,
 		MaxAddsPerCommit:   256,
+		// config.Default().Limits.MaxKeypackagesPerDevice, kept in step by
+		// TestPublishRefusesMoreThanThePolicyCap rather than by a comment.
+		MaxKeyPackagesPerDevice: 32,
 	}
 }
 
@@ -147,6 +166,7 @@ func normalisePolicy(p Policy) Policy {
 	fill(&p.FreezeMax, d.FreezeMax)
 	fillInt(&p.MaxCiphertextBytes, d.MaxCiphertextBytes)
 	fillInt(&p.MaxAddsPerCommit, d.MaxAddsPerCommit)
+	fillInt(&p.MaxKeyPackagesPerDevice, d.MaxKeyPackagesPerDevice)
 	return p
 }
 

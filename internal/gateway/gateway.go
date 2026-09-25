@@ -398,6 +398,15 @@ func (g *Gateway) SetGroupLeaves(groupID id.ID, leaves map[id.ID]uint32) {
 // SetBotDevices marks devices that go first in the election (protocol/02 invariant 7).
 func (g *Gateway) SetBotDevices(devices []id.ID) { g.reg.setBots(devices) }
 
+// MaxFrameBytes is the frame budget this gateway advertises in `hello` (§2.3 element 4). A
+// producer whose payload would not fit must not enqueue it: a client sizes its own websocket read
+// limit from this number, so an oversize frame does not merely fail to arrive — it takes the
+// connection down with it, and the client comes back to be sent the same frame again.
+//
+// It is exported for the delivery service's addressed `mls.welcome`, whose ratchet tree is the one
+// payload in the protocol with no bound of its own: a 1,500-leaf tree is 620 KiB.
+func (g *Gateway) MaxFrameBytes() uint64 { return g.opts.MaxFrameBytes }
+
 // Online is the single source for invariants 5, 6 and 7. A device is online while it holds a
 // connection in state ready whose last liveness mark — ready, resumed or a heartbeat frame — is
 // newer than session_idle_close. A device whose only session is inside the resume grace window

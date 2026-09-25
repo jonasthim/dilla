@@ -115,6 +115,8 @@ type Querier interface {
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
 	SetGroupHealing(ctx context.Context, arg SetGroupHealingParams) error
 	SetUserDisabled(ctx context.Context, arg SetUserDisabledParams) error
+	// FOR UPDATE SKIP LOCKED is the one difference from the SQLite form: on Postgres two concurrent
+	// takes for one device read the same snapshot, and a join storm makes that routine.
 	TakeKeyPackage(ctx context.Context, arg TakeKeyPackageParams) (KeyPackages, error)
 	TombstoneAppMessage(ctx context.Context, arg TombstoneAppMessageParams) error
 	TombstoneUser(ctx context.Context, arg TombstoneUserParams) error

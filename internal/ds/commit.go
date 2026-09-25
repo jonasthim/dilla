@@ -273,8 +273,12 @@ func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 			if err := tx.DeleteProposals(ctx, groupID, refs); err != nil {
 				return err
 			}
-			// Task 24 stores the addressed Welcomes here, in this same transaction: a Welcome row
-			// that outlives a rolled-back commit addresses an epoch that never happened.
+			// The addressed Welcomes are stored HERE, in this same transaction: a Welcome row
+			// that outlives a rolled-back commit addresses an epoch that never happened. `g` has
+			// already merged, so the epoch tree it writes beside them is the welcoming epoch's.
+			if err := d.storeWelcomesTx(ctx, tx, groupID, epoch, seq, g, c.Welcomes); err != nil {
+				return err
+			}
 			result = CommitResult{Seq: seq, Epoch: epoch}
 			return nil
 		})
@@ -296,7 +300,7 @@ func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 			d.opts.Gateway.SetGroupMembers(groupID, members.devices)
 			d.opts.Gateway.SetGroupLeaves(groupID, members.leaves)
 		}
-		d.fanOutCommit(groupID, result, processed, c, handshakeKind)
+		d.fanOutCommit(ctx, groupID, result, processed, c, handshakeKind)
 		return nil
 	})
 	if d.takeStaleAfterFailedMerge(groupID) {
@@ -508,9 +512,9 @@ func (d *DS) checkAddedMember(ctx context.Context, groupID id.ID, a mlswasi.Appl
 // the gateway and kind 2 in GET /v1/groups/{id}/handshakes — a contradiction for any client that
 // reconciles the two streams, and a violation of protocol/02's "Handshake records".
 //
-// Task 24 appends the addressed mls.welcome fan-out after the two frames below; protocol/02 fixes
-// that order, so the Welcome must not precede the epoch change.
-func (d *DS) fanOutCommit(groupID id.ID, r CommitResult, p mlswasi.Processed, c CommitRequest, kind uint8) {
+// The addressed mls.welcome fan-out comes AFTER the two frames below; protocol/02 fixes that
+// order, so a Welcome never precedes the epoch change that produced it.
+func (d *DS) fanOutCommit(ctx context.Context, groupID id.ID, r CommitResult, p mlswasi.Processed, c CommitRequest, kind uint8) {
 	if d.opts.Gateway == nil {
 		return
 	}
@@ -528,6 +532,7 @@ func (d *DS) fanOutCommit(groupID id.ID, r CommitResult, p mlswasi.Processed, c 
 	d.opts.Gateway.DeliverGroup(groupID, gateway.Frame{
 		Op: gateway.OpMLSEpochChanged, GroupID: &groupID, Payload: ec, Replay: true,
 	})
+	d.fanOutWelcomes(ctx, groupID, r.Epoch, c.Welcomes)
 }
 
 // Proposal accepts a member's own proposal. Only two shapes are allowed: an Update, and a Remove

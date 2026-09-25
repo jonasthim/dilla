@@ -88,12 +88,15 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (device_id, kp_ref) DO NOTHING;
 
 -- name: TakeKeyPackage :one
+-- FOR UPDATE SKIP LOCKED is the one difference from the SQLite form: on Postgres two concurrent
+-- takes for one device read the same snapshot, and a join storm makes that routine.
 UPDATE key_packages SET consumed_at = sqlc.arg(now)
 WHERE key_packages.device_id = sqlc.arg(device_id) AND key_packages.kp_ref = (
   SELECT kp.kp_ref FROM key_packages kp
   WHERE kp.device_id = sqlc.arg(device_id) AND kp.consumed_at IS NULL AND kp.last_resort = 0
         AND kp.expires > sqlc.arg(now)
-  ORDER BY kp.expires, kp.kp_ref LIMIT 1)
+  ORDER BY kp.expires, kp.kp_ref LIMIT 1
+  FOR UPDATE SKIP LOCKED)
 RETURNING *;
 
 -- name: GetLastResortKeyPackage :one
@@ -130,9 +133,12 @@ ON CONFLICT (device_id, blob_sha256) DO NOTHING;
 -- name: ListWelcomes :many
 SELECT mls_welcomes.welcome_id, mls_welcomes.device_id, mls_welcomes.group_id, mls_welcomes.epoch,
        mls_welcomes.commit_seq, mls_welcomes.blob_sha256, mls_welcomes.created,
-       mls_welcomes.expires, mls_welcomes.delivered_at, mls_welcome_payloads.blob
+       mls_welcomes.expires, mls_welcomes.delivered_at, mls_welcome_payloads.blob,
+       mls_epoch_trees.ratchet_tree, mls_epoch_trees.tree_hash
 FROM mls_welcomes
 JOIN mls_welcome_payloads ON mls_welcome_payloads.blob_sha256 = mls_welcomes.blob_sha256
+LEFT JOIN mls_epoch_trees ON mls_epoch_trees.group_id = mls_welcomes.group_id
+                         AND mls_epoch_trees.epoch = mls_welcomes.epoch
 WHERE mls_welcomes.device_id = $1 AND mls_welcomes.delivered_at IS NULL
       AND mls_welcomes.welcome_id > $2
 ORDER BY mls_welcomes.welcome_id LIMIT sqlc.arg(max_rows)::bigint;

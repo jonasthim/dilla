@@ -112,8 +112,17 @@ type Session struct {
 	// PairingGroup is the one group a ScopeProvisional session may act on; it is nil for every
 	// other scope (deviation B9). Without it nothing enforces E_PROVISIONAL_OUTSIDE_PAIRING and a
 	// provisional session can harvest the Welcomes of every group its device was ever added to —
-	// the escalation interfaces.md §2.2 point 4 forbids. The `sessions.pairing_group` column it
-	// is read from, and the writer that sets it, are task 24's.
+	// the escalation interfaces.md §2.2 point 4 forbids.
+	//
+	// TASK 24 ENFORCED THE RULE AND DID NOT ADD THE COLUMN. `DS.PublishKeyPackages`, `DS.Welcomes`
+	// and `DS.AckWelcome` refuse a provisional session that reaches outside this field, and refuse
+	// outright when it is nil — so the surface the three "E or V" routes open is closed from the
+	// day they exist. What is still missing is the `sessions.pairing_group` column this would be
+	// read from and the writer that sets it, which needs a migration on both engines and a pairing
+	// flow to set it from; neither is in task 24's file list, and Plan 1 mints no provisional
+	// session that names a group, so the field is nil for every session today and the delivery
+	// service refuses accordingly. That is the FAIL-CLOSED end of the gap: a paired device cannot
+	// yet collect its Welcome with a provisional session, and must be enrolled first.
 	PairingGroup *id.ID
 	Expires      int64
 	IdleExpires  int64
