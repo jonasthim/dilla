@@ -293,3 +293,51 @@ func TestAProvisionalSessionMayPublishOnlyItsOnePairingKeyPackage(t *testing.T) 
 		t.Fatalf("got %v, want E_PROVISIONAL_OUTSIDE_PAIRING for a session bound to no group", err)
 	}
 }
+
+// The cap bounds what the DIRECTORY HOLDS, not what one request carries. A per-request bound is no
+// bound at all: an enrolled device publishes `limit` valid packages per call in a loop and
+// `key_packages` grows without end — every row a full KeyPackage blob, unconsumed for its 90-day
+// lifetime — and the same framing lets a provisional session, which may publish one package per
+// call, stock a whole directory one call at a time.
+//
+// The refusal is still counted in PACKAGES and still costs the guest nothing: the directory is
+// counted with one SQL statement BEFORE any blob reaches the guest.
+func TestThePolicyCapBoundsTheDirectoryNotOneRequest(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	device, session, blob, _ := h.keyPackageOwner(t)
+	limit := ds.PolicyForTest(h.ds).MaxKeyPackagesPerDevice
+
+	// One package short of the cap, and the publish that fills it exactly is accepted.
+	h.seedKeyPackages(t, device, limit-1, keyPackageLifetime)
+	if _, err := h.ds.PublishKeyPackages(ctx, session, [][]byte{blob}, nil); err != nil {
+		t.Fatalf("the publish that fills the directory exactly must be accepted: %v", err)
+	}
+	if left := h.ordinaryKeyPackagesLeft(t, device); left != int64(limit) {
+		t.Fatalf("the directory holds %d packages, want the cap's %d", left, limit)
+	}
+
+	// The next one is refused although it is a single package in a single request: the directory
+	// is full.
+	before := h.wasmCalls("validate_key_package")
+	_, err := h.ds.PublishKeyPackages(ctx, session, [][]byte{blob}, nil)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_TOO_LARGE" {
+		t.Fatalf("got %v, want E_TOO_LARGE once the directory is at the cap", err)
+	}
+	if got := h.wasmCalls("validate_key_package") - before; got != 0 {
+		t.Fatalf("the guest validated %d packages for a publish over the cap, want 0", got)
+	}
+	if total := h.countRows(t, "key_packages"); total != int64(limit) {
+		t.Fatalf("%d rows after the refused publish, want the cap's %d", total, limit)
+	}
+
+	// And the bound really is on what the directory HOLDS: one take consumes a row, and the same
+	// publish then fits.
+	if _, err := h.ds.TakeKeyPackage(ctx, session, device); err != nil {
+		t.Fatalf("TakeKeyPackage: %v", err)
+	}
+	if _, err := h.ds.PublishKeyPackages(ctx, session, [][]byte{blob}, nil); err != nil {
+		t.Fatalf("a consumed package must make room for a new one: %v", err)
+	}
+}

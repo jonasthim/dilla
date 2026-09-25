@@ -45,6 +45,18 @@ func errTooManyKeyPackages(n, limit int) *Error {
 	}
 }
 
+// errKeyPackageDirectoryFull is the same E_TOO_LARGE for the bound that actually matters: what the
+// DIRECTORY holds. The detail names both numbers, because a client that gets "limit 32" back for a
+// one-package publish has no way to tell otherwise that the request was fine and the shelf is full.
+func errKeyPackageDirectoryFull(held int64, adding, limit int) *Error {
+	return &Error{
+		Code: "E_TOO_LARGE",
+		Detail: fmt.Sprintf("the directory holds %d key packages and this publish adds %d, limit %d",
+			held, adding, limit),
+		Status: http.StatusRequestEntityTooLarge,
+	}
+}
+
 // PublishKeyPackages validates every package inside the guest and stores it with the guest's own
 // kp_ref. It returns how many rows the publish covers; republishing a package the directory
 // already holds is not an error and writes no second row.
@@ -71,6 +83,26 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 	}
 	if len(packages) == 0 && lastResort == nil {
 		return 0, nil
+	}
+	// And the cap is a bound on the DIRECTORY, not on one request. A per-request bound is no bound:
+	// nothing consumes an ordinary package except an Add, so a device that publishes the cap in a
+	// loop grows `key_packages` without end, each row a full KeyPackage blob held for its 90-day
+	// lifetime — and a provisional session, limited to one package per call, stocks the same
+	// directory one call at a time. `CountKeyPackages` is the same count `ready` reports: the
+	// UNCONSUMED, UNEXPIRED ordinary rows, so a consumed or expired package makes room again.
+	//
+	// The count is deliberately taken before validation and before any dedupe: a republish of a
+	// package the directory already holds writes no row, but the delivery service cannot know that
+	// without validating the blob first, and the conservative refusal costs a full client only a
+	// take away from the boundary.
+	if len(packages) > 0 {
+		held, err := d.opts.Store.CountKeyPackages(ctx, s.DeviceID, d.now())
+		if err != nil {
+			return 0, err
+		}
+		if held+int64(len(packages)) > int64(d.maxKeyPackagesPerDevice()) {
+			return 0, errKeyPackageDirectoryFull(held, len(packages), d.maxKeyPackagesPerDevice())
+		}
 	}
 
 	inst, err := d.opts.Wasm.Acquire(ctx)
