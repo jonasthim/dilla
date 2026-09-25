@@ -47,13 +47,18 @@ const maxWelcomeScanPages = 16
 //
 // `g` is the PublicGroup AFTER the merge, so `g.Tree` is the tree of the epoch this commit created
 // — the welcoming epoch, which is the one fact 2 above requires.
-func (d *DS) storeWelcomesTx(ctx context.Context, tx store.Repository, groupID id.ID, epoch, commitSeq uint64, g *mlswasi.PublicGroup, welcomes []WelcomeFor) error {
+//
+// It RETURNS that tree and its hash: the fan-out needs both, they are the same two values for
+// every joiner of this commit, and exporting the tree a second time — or reading one copy of it
+// back per joiner through the Welcome queue's join — is the expensive way to learn what this
+// function already holds.
+func (d *DS) storeWelcomesTx(ctx context.Context, tx store.Repository, groupID id.ID, epoch, commitSeq uint64, g *mlswasi.PublicGroup, welcomes []WelcomeFor) (tree, treeHash []byte, err error) {
 	if len(welcomes) == 0 {
-		return nil
+		return nil, nil, nil
 	}
-	tree, treeHash, _, err := g.Tree(ctx)
+	tree, treeHash, _, err = g.Tree(ctx)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if err := tx.PutEpochTree(ctx, store.EpochTreeRow{
 		GroupID:     groupID,
@@ -62,7 +67,7 @@ func (d *DS) storeWelcomesTx(ctx context.Context, tx store.Repository, groupID i
 		TreeHash:    treeHash,
 		Created:     d.now(),
 	}); err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	expires := d.now() + welcomeRetentionDays*24*60*60
@@ -79,7 +84,7 @@ func (d *DS) storeWelcomesTx(ctx context.Context, tx store.Repository, groupID i
 				Blob:       wf.Blob,
 				Created:    d.now(),
 			}); err != nil {
-				return err
+				return nil, nil, err
 			}
 		}
 		rows = append(rows, store.WelcomeRow{
@@ -92,7 +97,10 @@ func (d *DS) storeWelcomesTx(ctx context.Context, tx store.Repository, groupID i
 			Expires:    expires,
 		})
 	}
-	return tx.PutWelcomes(ctx, rows)
+	if err := tx.PutWelcomes(ctx, rows); err != nil {
+		return nil, nil, err
+	}
+	return tree, treeHash, nil
 }
 
 // fanOutWelcomes sends one `mls.welcome` per addressed device, AFTER the commit's transaction and
@@ -105,38 +113,65 @@ func (d *DS) storeWelcomesTx(ctx context.Context, tx store.Repository, groupID i
 // has not acknowledged an earlier Welcome, still has that older row at the head of its queue — and
 // would be re-sent it with the wrong welcome_id, group_id, epoch and blob, and never told about
 // the new one.
-func (d *DS) fanOutWelcomes(ctx context.Context, groupID id.ID, epoch uint64, welcomes []WelcomeFor) {
+// `tree` and `treeHash` are the welcoming epoch's, as `storeWelcomesTx` wrote them: one pair for
+// the whole commit. They are ARGUMENTS rather than something each iteration reads back, because
+// the frame budget can then be judged before anything is paid for — see the budget comment below.
+func (d *DS) fanOutWelcomes(ctx context.Context, groupID id.ID, epoch uint64, tree, treeHash []byte, welcomes []WelcomeFor) {
 	if d.opts.Gateway == nil || len(welcomes) == 0 {
 		return
 	}
+	// The ratchet tree is the one payload in the protocol with no bound of its own — a 1,500-leaf
+	// tree is 620 KiB against a frame budget of 131 584 — and a client sizes its websocket read
+	// limit from the `max_frame_bytes` this same gateway advertised in `hello`. Sending an oversize
+	// frame therefore does not merely fail to arrive: it closes the joiner's connection, and the
+	// joiner comes back to be closed by it again.
+	//
+	// The Welcome is durably queued either way, so the frame is a NOTIFICATION and the queue is the
+	// delivery: a joiner that is not told collects the same row from `GET /v1/welcomes`, whose body
+	// cap is the delivery service's 2 MiB, not the gateway's.
+	//
+	// The tree is the same for every joiner of this commit, so the verdict is reached ONCE, here,
+	// before a single Welcome row is read or a single payload encoded. It used to be reached per
+	// joiner, after both: at Policy.MaxAddsPerCommit = 256 that is ~256 reads of a 620 KiB tree
+	// through the queue's join and ~256 encodings of the same bytes, every one of them discarded
+	// one line later — and all of it inside the group lock `commit` still holds.
+	//
+	// DEVIATION B25 (plan §C), carried from this task's report as C1: protocol/02's frame 20 fixes
+	// the six elements with `ratchet_tree(bstr)` and names no size rule, so for any group whose
+	// tree is over the budget — which is most of them — the addressed fan-out does not happen and
+	// the joiner MUST poll row 15. Closing that needs an amendment (a tree-less notification, or a
+	// chunked tree) and a controller ruling, not a number.
 	budget := d.opts.Gateway.MaxFrameBytes()
+	if budget > 0 && uint64(len(tree)) >= budget {
+		d.log().Warn("the welcoming epoch's ratchet tree is larger than the gateway's frame budget; "+
+			"every joiner of this commit must collect its Welcome from GET /v1/welcomes",
+			"group", groupID, "epoch", epoch, "joiners", len(welcomes),
+			"tree_bytes", len(tree), "budget", budget)
+		return
+	}
 	for _, wf := range welcomes {
+		// The blob is per joiner in shape even though one commit's Welcome is one blob, so its
+		// share of the budget is judged before the row is read, for the same reason the tree's is.
+		if budget > 0 && uint64(len(tree)+len(wf.Blob)) >= budget {
+			d.log().Warn("an mls.welcome is larger than the gateway's frame budget; "+
+				"the joiner must collect it from GET /v1/welcomes",
+				"group", groupID, "device", wf.DeviceID,
+				"bytes", len(tree)+len(wf.Blob), "budget", budget)
+			continue
+		}
 		sum := sha256.Sum256(wf.Blob)
 		row, ok := d.findWelcome(ctx, wf.DeviceID, groupID, epoch, sum[:])
 		if !ok {
 			continue
 		}
 		payload, err := gateway.WelcomePayload(uint64(row.WelcomeID), row.Epoch, row.CommitSeq,
-			row.Blob, row.RatchetTree, row.TreeHash)
+			row.Blob, tree, treeHash)
 		if err != nil {
 			d.log().Error("encoding an mls.welcome failed", "group", groupID, "err", err)
 			continue
 		}
-		// The ratchet tree is the one payload in the protocol with no bound of its own — a
-		// 1,500-leaf tree is 620 KiB against a frame budget of 131 584 — and a client sizes its
-		// websocket read limit from the `max_frame_bytes` this same gateway advertised in `hello`.
-		// Sending an oversize frame therefore does not merely fail to arrive: it closes the
-		// joiner's connection, and the joiner comes back to be closed by it again.
-		//
-		// The Welcome is durably queued either way, so the frame is a NOTIFICATION and the queue
-		// is the delivery: a joiner that is not told collects the same row from
-		// `GET /v1/welcomes`, whose body cap is the delivery service's 2 MiB, not the gateway's.
-		//
-		// CONCERN, recorded in this task's report: protocol/02's frame 20 fixes the six elements
-		// with `ratchet_tree(bstr)` and names no size rule, so for any group whose tree is over
-		// the budget — which is most of them — the addressed fan-out silently does not happen.
-		// Closing that needs an amendment (a tree-less notification, or a chunked tree), not a
-		// number.
+		// The exact size, now that the payload exists: the two checks above are on its parts and
+		// this one is the frame the gateway would actually write.
 		if budget > 0 && uint64(len(payload)) > budget {
 			d.log().Warn("an mls.welcome is larger than the gateway's frame budget; "+
 				"the joiner must collect it from GET /v1/welcomes",

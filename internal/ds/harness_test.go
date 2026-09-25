@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,7 +79,7 @@ func newDSHarness(t *testing.T) *dsHarness {
 	// vanishes with its first connection.
 	path := filepath.Join(t.TempDir(), "dilla.db")
 	base := openMigratedSQLite(t, path)
-	repo := &failingRepo{Repository: base}
+	repo := &failingRepo{Repository: base, welcomeReads: &atomic.Int64{}}
 
 	h := &dsHarness{t: t, path: path, clk: clk, repo: repo, calls: map[string]int64{}}
 
@@ -280,6 +281,12 @@ type failingRepo struct {
 	// the loop writing the row was running inside a batch's election window — without a double
 	// for the store.
 	onPut func(store.ProposalRow)
+	// welcomeReads counts `ListWelcomes` round trips. The Welcome queue is the one read a commit
+	// makes PER JOINER, and every row of it carries that epoch's whole ratchet tree, so "the
+	// fan-out does not read the queue at all when the frame cannot be carried" is a claim about
+	// this number and about nothing visible on the wire. It is a pointer so the sub-repository Tx
+	// builds counts into the same total.
+	welcomeReads *atomic.Int64
 }
 
 var errInjected = errors.New("injected failure")
@@ -313,6 +320,16 @@ func (r *failingRepo) snapshotOnPut() func(store.ProposalRow) {
 	return r.onPut
 }
 
+func (r *failingRepo) ListWelcomes(ctx context.Context, deviceID id.ID, afterID int64, limit int32) ([]store.WelcomeFull, error) {
+	if r.welcomeReads != nil {
+		r.welcomeReads.Add(1)
+	}
+	return r.Repository.ListWelcomes(ctx, deviceID, afterID, limit)
+}
+
+// welcomeQueueReads is how many `ListWelcomes` round trips the store has served so far.
+func (h *dsHarness) welcomeQueueReads() int64 { return h.repo.welcomeReads.Load() }
+
 func (r *failingRepo) PutProposal(ctx context.Context, row store.ProposalRow) error {
 	if fn := r.snapshotOnPut(); fn != nil {
 		fn(row)
@@ -322,7 +339,10 @@ func (r *failingRepo) PutProposal(ctx context.Context, row store.ProposalRow) er
 
 func (r *failingRepo) Tx(ctx context.Context, fn func(store.Repository) error) error {
 	return r.Repository.Tx(ctx, func(tx store.Repository) error {
-		sub := &failingRepo{Repository: tx, failOn: r.snapshotFailOn(), onPut: r.snapshotOnPut()}
+		sub := &failingRepo{
+			Repository: tx, failOn: r.snapshotFailOn(), onPut: r.snapshotOnPut(),
+			welcomeReads: r.welcomeReads,
+		}
 		err := fn(sub)
 		// The sub-repository owns the injection for the duration of the transaction; whatever it
 		// did not consume goes back, so failNextTx("X") before a call that never reaches X does

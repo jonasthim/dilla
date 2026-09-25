@@ -144,7 +144,8 @@ func PendingJoinsForTest(d *DS, groupID id.ID) int {
 func StoreWelcomesForTest(d *DS, ctx context.Context, groupID id.ID, epoch, commitSeq uint64, welcomes []WelcomeFor) error {
 	return d.withGroup(ctx, groupID, func(g *mlswasi.PublicGroup) error {
 		return d.opts.Store.Tx(ctx, func(tx store.Repository) error {
-			return d.storeWelcomesTx(ctx, tx, groupID, epoch, commitSeq, g, welcomes)
+			_, _, err := d.storeWelcomesTx(ctx, tx, groupID, epoch, commitSeq, g, welcomes)
+			return err
 		})
 	})
 }
@@ -152,6 +153,8 @@ func StoreWelcomesForTest(d *DS, ctx context.Context, groupID id.ID, epoch, comm
 // FanOutWelcomesForTest is fanOutWelcomes, the addressed half of the commit's fan-out. Same
 // reason: `fanOutCommit` runs only after a commit the fixture cannot make succeed, and a joiner
 // that is online when the commit lands must not have to poll row 15 to discover its Welcome.
-func FanOutWelcomesForTest(d *DS, ctx context.Context, groupID id.ID, epoch uint64, welcomes []WelcomeFor) {
-	d.fanOutWelcomes(ctx, groupID, epoch, welcomes)
+// `tree` and `treeHash` are the welcoming epoch's, which the commit's own transaction hands the
+// fan-out; a test supplies the pair `storeWelcomesTx` or `putWelcomeRow` stored for that epoch.
+func FanOutWelcomesForTest(d *DS, ctx context.Context, groupID id.ID, epoch uint64, tree, treeHash []byte, welcomes []WelcomeFor) {
+	d.fanOutWelcomes(ctx, groupID, epoch, tree, treeHash, welcomes)
 }

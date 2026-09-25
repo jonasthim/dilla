@@ -330,7 +330,10 @@ func TestEveryJoinerIsSentItsOwnWelcomeFrame(t *testing.T) {
 		h.putWelcomeRow(t, j, groupID, 3, blob)
 		welcomes = append(welcomes, ds.WelcomeFor{DeviceID: j, Blob: blob})
 	}
-	ds.FanOutWelcomesForTest(h.ds, ctx, groupID, 3, welcomes)
+	// The tree and its hash are the welcoming epoch's, handed to the fan-out by the commit that
+	// wrote them rather than read back once per joiner; `putWelcomeRow` stored these two.
+	ds.FanOutWelcomesForTest(h.ds, ctx, groupID, 3,
+		welcomeBlob(0xEE, 64), bytes.Repeat([]byte{0xAB}, 32), welcomes)
 
 	for _, j := range joiners {
 		f := h.waitDeviceFrame(t, j, "mls.welcome")
@@ -376,7 +379,12 @@ func TestAWelcomeTooLargeForTheFrameBudgetIsLeftToTheQueue(t *testing.T) {
 
 	blob := welcomeBlob(0x49, 96)
 	h.storeWelcomes(t, g.id, g.epoch, 9, blob, joiner)
-	ds.FanOutWelcomesForTest(h.ds, ctx, g.id, g.epoch, []ds.WelcomeFor{{DeviceID: joiner, Blob: blob}})
+	live, err := h.ds.Tree(ctx, g.id, g.session)
+	if err != nil {
+		t.Fatalf("Tree: %v", err)
+	}
+	ds.FanOutWelcomesForTest(h.ds, ctx, g.id, g.epoch, live.RatchetTree, live.TreeHash,
+		[]ds.WelcomeFor{{DeviceID: joiner, Blob: blob}})
 
 	// No frame, and the connection is still up: the oversize frame was never enqueued.
 	h.expectNoWelcomeFrame(t, joiner)
@@ -392,5 +400,51 @@ func TestAWelcomeTooLargeForTheFrameBudgetIsLeftToTheQueue(t *testing.T) {
 	if len(rows[0].RatchetTree) <= 131584 {
 		t.Fatalf("the fixture's tree is %d bytes; this test needs one over the frame budget",
 			len(rows[0].RatchetTree))
+	}
+}
+
+// And it is skipped BEFORE it is paid for. The epoch tree is the same for every joiner of one
+// commit, so the size is knowable once; the fan-out used to read the Welcome queue (up to 16 pages
+// of 64 rows, every row carrying that 620 KiB tree through the join) and encode the whole payload
+// for EACH joiner before comparing the result with the frame budget and dropping it. At
+// Policy.MaxAddsPerCommit = 256 that is hundreds of megabytes read and allocated per commit and
+// then thrown away — all of it inside the group lock `commit` still holds, with every other commit
+// on that group waiting behind it.
+func TestAnOversizeEpochTreeSkipsTheFanOutWithoutReadingTheQueue(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	g := h.group(t)
+	if h.sessions == nil {
+		h.sessions = map[id.ID]auth.Session{}
+	}
+	joiners := make([]id.ID, 4)
+	for i := range joiners {
+		joiners[i] = h.device(t)
+		h.sessions[joiners[i]] = h.sessionOf(t, joiners[i])
+	}
+	h.online(joiners...)
+
+	blob := welcomeBlob(0x4A, 96)
+	h.storeWelcomes(t, g.id, g.epoch, 11, blob, joiners...)
+	live, err := h.ds.Tree(ctx, g.id, g.session)
+	if err != nil {
+		t.Fatalf("Tree: %v", err)
+	}
+	if len(live.RatchetTree) <= 131584 {
+		t.Fatalf("the fixture's tree is %d bytes; this test needs one over the frame budget",
+			len(live.RatchetTree))
+	}
+	welcomes := make([]ds.WelcomeFor, 0, len(joiners))
+	for _, j := range joiners {
+		welcomes = append(welcomes, ds.WelcomeFor{DeviceID: j, Blob: blob})
+	}
+
+	before := h.welcomeQueueReads()
+	ds.FanOutWelcomesForTest(h.ds, ctx, g.id, g.epoch, live.RatchetTree, live.TreeHash, welcomes)
+	if reads := h.welcomeQueueReads() - before; reads != 0 {
+		t.Fatalf("the fan-out made %d Welcome-queue reads for a tree no frame can carry, want 0", reads)
+	}
+	for _, j := range joiners {
+		h.expectNoWelcomeFrame(t, j)
 	}
 }
