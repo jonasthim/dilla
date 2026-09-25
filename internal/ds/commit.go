@@ -188,6 +188,11 @@ func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 			return err
 		}
 
+		// (5a) every addressed Welcome names a device THIS commit adds.
+		if err := checkAddressedWelcomes(processed.Applied, c.Welcomes); err != nil {
+			return err
+		}
+
 		// (6) the GroupInfo: epoch n+1, signed by the committer.
 		//
 		// The signer is the committer's own leaf, and leaf 0 is not a safe default for a commit
@@ -448,6 +453,46 @@ func (d *DS) checkAppliedProposals(ctx context.Context, groupID id.ID, row store
 		// the clause has no reachable caller yet and is not stubbed out permissively.
 		return errCommitInvalid("external_commit_scope",
 			"external commits are not accepted by this instance yet")
+	}
+	return nil
+}
+
+// checkAddressedWelcomes is the clause that keeps `CommitRequest.Welcomes` inside the commit that
+// carries it: every addressed device must be one this commit's applied Add proposals name.
+//
+// Without it `storeWelcomesTx` writes whatever the committer addressed, so any enrolled member can
+// queue an opaque blob to an arbitrary device id at that group's epoch. The recipient cannot open
+// it — the blob is no Welcome for its key material — but it learns the group_id and the epoch of a
+// group it was never added to, and its Welcome queue holds that row for the 30-day retention;
+// `mls_welcomes` is unique only on (device_id, blob_sha256), so varying the blob defeats the
+// dedupe and the queue grows one row per request.
+//
+// protocol/02 does not state the clause and task 24's brief did not ask for it; it is added here
+// because the material is already in hand (invariant 4's Add clause decodes the same credentials)
+// and because an unvalidated addressed Welcome left unstated in the code is the worst of the
+// options. Recorded as deviation B26 in the plan.
+func checkAddressedWelcomes(applied []mlswasi.AppliedProposal, welcomes []WelcomeFor) error {
+	if len(welcomes) == 0 {
+		return nil
+	}
+	added := make(map[id.ID]struct{}, len(applied))
+	for _, a := range applied {
+		if a.Kind != mlswasi.ProposalAdd {
+			continue
+		}
+		deviceID, _, err := decodeCredentialIdentity(a.CredentialIdentity)
+		if err != nil {
+			// The same refusal invariant 4's Add clause gives an undecodable credential; reaching
+			// this line means that clause has already passed it, so it is belt and braces.
+			return errCommitInvalid("add_key_package", "undecodable credential identity")
+		}
+		added[deviceID] = struct{}{}
+	}
+	for _, wf := range welcomes {
+		if _, ok := added[wf.DeviceID]; !ok {
+			return errCommitInvalid("welcome_addressee",
+				fmt.Sprintf("the commit addresses a Welcome to device %s, which it does not add", wf.DeviceID))
+		}
 	}
 	return nil
 }

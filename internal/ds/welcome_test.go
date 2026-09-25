@@ -19,6 +19,7 @@ import (
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -447,4 +448,63 @@ func TestAnOversizeEpochTreeSkipsTheFanOutWithoutReadingTheQueue(t *testing.T) {
 	for _, j := range joiners {
 		h.expectNoWelcomeFrame(t, j)
 	}
+}
+
+// A commit may address a Welcome ONLY to a device it ADDS.
+//
+// `storeWelcomesTx` writes whatever `CommitRequest.Welcomes` names, so without this clause any
+// enrolled committer can queue an opaque blob to an arbitrary device id at that group's epoch: the
+// recipient cannot open it, but it learns the group_id and epoch of a group it was never added to
+// and its Welcome queue is filled for the 30-day retention — and `mls_welcomes` being unique only
+// on (device_id, blob_sha256) means varying the blob defeats the dedupe. The material for the
+// check is already in hand: invariant 4's Add clause decodes exactly these credentials.
+func TestACommitMayOnlyAddressAWelcomeToADeviceItAdds(t *testing.T) {
+	joiner := id.New()
+	stranger := id.New()
+	applied := []mlswasi.AppliedProposal{
+		{Kind: mlswasi.ProposalAdd, CredentialIdentity: credentialIdentity(t, id.New(), joiner)},
+		{Kind: mlswasi.ProposalRemove},
+	}
+
+	if err := ds.CheckAddressedWelcomesForTest(applied,
+		[]ds.WelcomeFor{{DeviceID: joiner, Blob: welcomeBlob(0x4B, 96)}}); err != nil {
+		t.Fatalf("the Welcome of a device this commit adds must be accepted: %v", err)
+	}
+
+	var dsErr *ds.Error
+	err := ds.CheckAddressedWelcomesForTest(applied, []ds.WelcomeFor{
+		{DeviceID: joiner, Blob: welcomeBlob(0x4B, 96)},
+		{DeviceID: stranger, Blob: welcomeBlob(0x4C, 96)},
+	})
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" {
+		t.Fatalf("got %v, want E_COMMIT_INVALID for a Welcome addressed outside the commit's Adds", err)
+	}
+
+	// A commit that adds nobody carries no Welcome at all.
+	err = ds.CheckAddressedWelcomesForTest(nil, []ds.WelcomeFor{{DeviceID: joiner}})
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" {
+		t.Fatalf("got %v, want E_COMMIT_INVALID for a Welcome on a commit with no Adds", err)
+	}
+
+	// And the ordinary commit — no Adds, no Welcomes — is untouched.
+	if err := ds.CheckAddressedWelcomesForTest(nil, nil); err != nil {
+		t.Fatalf("a commit with no Welcomes must be accepted: %v", err)
+	}
+}
+
+// credentialIdentity is the ten-element `dilla_identity` array with the user at element 2 and the
+// device at element 3, which is the layout `protocol/vectors/identity.json` pins and
+// `decodeCredentialIdentity` reads (state_test.go's TestCredentialIdentityDecodesTheCommittedVector
+// holds the decoder to that vector). It is built here because no fixture can mint an Add for a
+// device this test invents.
+func credentialIdentity(t *testing.T, userID, deviceID id.ID) []byte {
+	t.Helper()
+	b, err := cborx.Marshal([]any{
+		uint64(1), uint64(0), userID, deviceID,
+		uint64(0), uint64(0), uint64(0), uint64(0), uint64(0), uint64(0),
+	})
+	if err != nil {
+		t.Fatalf("encode a credential identity: %v", err)
+	}
+	return b
 }

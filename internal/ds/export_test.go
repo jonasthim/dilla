@@ -150,6 +150,15 @@ func StoreWelcomesForTest(d *DS, ctx context.Context, groupID id.ID, epoch, comm
 	})
 }
 
+// CheckAddressedWelcomesForTest is checkAddressedWelcomes: the clause that keeps a commit's
+// addressed Welcomes inside the set of devices that commit ADDS. It is exported for the reason
+// StoreWelcomesForTest is — no commit can be accepted against the committed fixture, so the clause
+// has no reachable path through `Commit` — and because the Adds it is defined over cannot be minted
+// for devices a test invents.
+func CheckAddressedWelcomesForTest(applied []mlswasi.AppliedProposal, welcomes []WelcomeFor) error {
+	return checkAddressedWelcomes(applied, welcomes)
+}
+
 // FanOutWelcomesForTest is fanOutWelcomes, the addressed half of the commit's fan-out. Same
 // reason: `fanOutCommit` runs only after a commit the fixture cannot make succeed, and a joiner
 // that is online when the commit lands must not have to poll row 15 to discover its Welcome.
