@@ -2,6 +2,7 @@ package ds
 
 import (
 	"context"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -83,6 +84,13 @@ func RequireNoFreezeForTest(d *DS, ctx context.Context, groupID id.ID, epoch uin
 func SweepProposalsForTest(d *DS, ctx context.Context) (int, error) {
 	return d.sweepProposals(ctx)
 }
+
+// ProposalTTLForTest is proposalTTL: the map from a group's kind to invariant 6's TTL. It is
+// exported because no committed fixture registers a CALL group — `Register` takes the kind from
+// the binding the fixture's group context carries, and that fixture is text — so the 30 s arm is
+// unreachable through any public entry point in this package, and a test that writes the TTL into
+// the proposal row itself asserts only the sweep's arithmetic against a number it supplied.
+func ProposalTTLForTest(d *DS, groupKind uint8) time.Duration { return d.proposalTTL(groupKind) }
 
 // PendingJoinsForTest is how many devices of a join storm are waiting for the next commit.
 func PendingJoinsForTest(d *DS, groupID id.ID) int {

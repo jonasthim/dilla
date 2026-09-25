@@ -80,6 +80,30 @@ func TestTheFreezeBackstopsAreTwentyFourHoursAndThirtyDays(t *testing.T) {
 		t.Errorf("FreezeMax %v != HandshakeRetention %v: gap-21-ds §5.3 defines the close AS the retention horizon",
 			p.FreezeMax, p.HandshakeRetention)
 	}
+	// Invariant 6's two TTLs, by value. `TestDefaultPolicyLeavesNoFieldUnset` only asks that they
+	// are non-zero, and no test in the tree pins the call group's 30 s: the sweep tests write a
+	// TTL into the proposal row themselves, so a drift of ProposalTTLCall to any non-zero value
+	// would pass everything else.
+	if p.ProposalTTLText != 24*time.Hour {
+		t.Errorf("ProposalTTLText = %v, want 24h (protocol/02 invariant 6)", p.ProposalTTLText)
+	}
+	if p.ProposalTTLCall != 30*time.Second {
+		t.Errorf("ProposalTTLCall = %v, want 30s (protocol/02 invariant 6)", p.ProposalTTLCall)
+	}
+}
+
+// …and the map from a group's kind to its TTL, which is the half the sweep tests cannot reach: no
+// committed fixture registers a CALL group, so `d.proposalTTL(row.Kind)` is only ever called with
+// kind 0 through a public entry point. A swapped pair — 30 s on text, 24 h on calls — would void
+// every text proposal half a minute after it was issued, and nothing else here would notice.
+func TestTheProposalTTLIsTwentyFourHoursForTextAndThirtySecondsForCalls(t *testing.T) {
+	h := newDSHarness(t)
+	if got := ds.ProposalTTLForTest(h.ds, 0); got != 24*time.Hour {
+		t.Errorf("proposalTTL(0 text) = %v, want 24h", got)
+	}
+	if got := ds.ProposalTTLForTest(h.ds, 1); got != 30*time.Second {
+		t.Errorf("proposalTTL(1 call) = %v, want 30s", got)
+	}
 }
 
 // ------------------------------------------------------------- invariant 5
