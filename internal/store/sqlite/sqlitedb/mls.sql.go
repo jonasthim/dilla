@@ -246,7 +246,7 @@ func (q *Queries) GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochPara
 }
 
 const getGroup = `-- name: GetGroup :one
-SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at FROM mls_groups WHERE group_id = ?
+SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below FROM mls_groups WHERE group_id = ?
 `
 
 type GetGroupParams struct {
@@ -277,6 +277,7 @@ func (q *Queries) GetGroup(ctx context.Context, arg GetGroupParams) (MlsGroups, 
 		&i.HealDeadline,
 		&i.Created,
 		&i.ClosedAt,
+		&i.PrunedBelow,
 	)
 	return i, err
 }
@@ -415,7 +416,7 @@ func (q *Queries) ListAllProposals(ctx context.Context, arg ListAllProposalsPara
 }
 
 const listGroupsForRetention = `-- name: ListGroupsForRetention :many
-SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at FROM mls_groups WHERE group_id > ?
+SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below FROM mls_groups WHERE group_id > ?
 ORDER BY group_id LIMIT ?2
 `
 
@@ -460,6 +461,7 @@ func (q *Queries) ListGroupsForRetention(ctx context.Context, arg ListGroupsForR
 			&i.HealDeadline,
 			&i.Created,
 			&i.ClosedAt,
+			&i.PrunedBelow,
 		); err != nil {
 			return nil, err
 		}
@@ -603,7 +605,7 @@ func (q *Queries) ListMembers(ctx context.Context, arg ListMembersParams) ([]Mls
 }
 
 const listOpenGroups = `-- name: ListOpenGroups :many
-SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at FROM mls_groups WHERE closed_at IS NULL AND group_id > ?
+SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below FROM mls_groups WHERE closed_at IS NULL AND group_id > ?
 ORDER BY group_id LIMIT ?2
 `
 
@@ -642,6 +644,7 @@ func (q *Queries) ListOpenGroups(ctx context.Context, arg ListOpenGroupsParams) 
 			&i.HealDeadline,
 			&i.Created,
 			&i.ClosedAt,
+			&i.PrunedBelow,
 		); err != nil {
 			return nil, err
 		}

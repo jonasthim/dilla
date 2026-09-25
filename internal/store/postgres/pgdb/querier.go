@@ -136,6 +136,15 @@ type Querier interface {
 	PutWelcome(ctx context.Context, arg PutWelcomeParams) error
 	PutWelcomePayload(ctx context.Context, arg PutWelcomePayloadParams) error
 	QuarantineDevice(ctx context.Context, arg QuarantineDeviceParams) error
+	// The record of what the DELIVERY-CURSOR trigger above actually deleted at, kept on the group
+	// because nothing can recompute it afterwards: `MinCursor` aggregates rows that move, and a device
+	// has no cursor row at all until its first POST /cursor. The catch-up predicate reads this column,
+	// never a freshly recomputed floor.
+	//
+	// MONOTONE by the `<`: a later sweep whose eligible cursors have gone (every one revoked, disabled
+	// or 90 days idle, so the floor falls back to 0) must not walk the high-water back down and
+	// un-say a deletion that happened.
+	RaisePrunedBelow(ctx context.Context, arg RaisePrunedBelowParams) error
 	RecordLoginAttempt(ctx context.Context, arg RecordLoginAttemptParams) error
 	RedeemInvite(ctx context.Context, arg RedeemInviteParams) (Invites, error)
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error

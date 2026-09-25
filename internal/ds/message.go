@@ -188,10 +188,20 @@ func (d *DS) oldestAppMessageSeq(ctx context.Context, groupID id.ID) (uint64, er
 //     explain the hole: the answer is yes.
 //  2. The delivery CURSOR floor, which is bounded by no age at all: the sweep deletes every
 //     message at or below the lowest ELIGIBLE cursor, whenever that happens, in a group of any
-//     age. So a hole can be real in a young group — but only at or below that floor. Above it,
-//     and when the floor is 0 (no eligible device has acknowledged anything, which the sweep's
-//     own `cursor_floor > 0` guard turns into "delete nothing"), the young group has lost
-//     nothing.
+//     age. So a hole can be real in a young group — but only at or below the floor the sweep
+//     ACTUALLY deleted at, which is `mls_groups.pruned_below`, the monotone high-water the sweep
+//     writes at the moment it deletes. Above it, and while it is still 0 (no cursor-floor prune
+//     has ever run here), the young group has lost nothing to this trigger.
+//
+// The floor is READ BACK, never recomputed, and that is the whole point of the column. `MinCursor`
+// evaluated here would be an aggregate over the cursor rows as they are NOW, and they move: a
+// device has no `device_cursors` row at all until its FIRST AdvanceCursor call, so a member quiet
+// since genesis is absent from the aggregate while the sweep deletes ciphertext it was entitled
+// to, and then drags the aggregate down to its own low seq the moment it speaks — an ordinary
+// idempotent `AdvanceCursor(0)` is enough, and a returning 90-day-idle device does the same when
+// `updated` moves back inside the horizon. A window clamped to that live number answers "nothing
+// is gone" about rows deleted minutes earlier, which is exactly the silently short list
+// protocol/02's E_PRUNED exists to prevent.
 //
 // What is left is the part of the hole the cursor half could have reached, and that part is NOT
 // evidence on its own: `from` is a cursor in the ONE seq space handshakes and application messages
@@ -212,17 +222,11 @@ func (d *DS) mayHavePrunedMessages(ctx context.Context, groupID id.ID, lo, hi ui
 	if err != nil {
 		return false, err
 	}
-	now := d.opts.Clock.Now()
-	if row.Created < now.Add(-d.opts.Policy.MessageRetention).Unix() {
+	if row.Created < d.opts.Clock.Now().Add(-d.opts.Policy.MessageRetention).Unix() {
 		return true, nil
 	}
-	floor, err := d.opts.Store.MinCursor(ctx, groupID,
-		now.Add(-d.opts.Policy.InactivityRemove).Unix())
-	if err != nil {
-		return false, err
-	}
-	if floor < hi {
-		hi = floor
+	if row.PrunedBelow < hi {
+		hi = row.PrunedBelow
 	}
 	if lo < 1 {
 		lo = 1

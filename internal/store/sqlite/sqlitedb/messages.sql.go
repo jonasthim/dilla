@@ -242,6 +242,31 @@ func (q *Queries) PutCursor(ctx context.Context, arg PutCursorParams) error {
 	return err
 }
 
+const raisePrunedBelow = `-- name: RaisePrunedBelow :exec
+UPDATE mls_groups
+   SET pruned_below = CAST(?1 AS INTEGER)
+ WHERE group_id = ?2
+   AND pruned_below < CAST(?1 AS INTEGER)
+`
+
+type RaisePrunedBelowParams struct {
+	PrunedBelow int64
+	GroupID     id.ID
+}
+
+// The record of what the DELIVERY-CURSOR trigger above actually deleted at, kept on the group
+// because nothing can recompute it afterwards: `MinCursor` aggregates rows that move, and a device
+// has no cursor row at all until its first POST /cursor. The catch-up predicate reads this column,
+// never a freshly recomputed floor.
+//
+// MONOTONE by the `<`: a later sweep whose eligible cursors have gone (every one revoked, disabled
+// or 90 days idle, so the floor falls back to 0) must not walk the high-water back down and
+// un-say a deletion that happened.
+func (q *Queries) RaisePrunedBelow(ctx context.Context, arg RaisePrunedBelowParams) error {
+	_, err := q.db.ExecContext(ctx, raisePrunedBelow, arg.PrunedBelow, arg.GroupID)
+	return err
+}
+
 const tombstoneAppMessage = `-- name: TombstoneAppMessage :exec
 UPDATE mls_app_messages SET blob = NULL, deleted_at = ?
 WHERE group_id = ? AND seq = ? AND deleted_at IS NULL

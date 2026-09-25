@@ -151,6 +151,7 @@ type MlsGroups struct {
 	HealDeadline        sql.NullInt64
 	Created             int64
 	ClosedAt            sql.NullInt64
+	PrunedBelow         int64
 }
 
 type MlsHandshakes struct {

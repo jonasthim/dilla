@@ -367,15 +367,214 @@ func TestAClosedGroupStillHasItsCiphertextPruned(t *testing.T) {
 	}
 }
 
+// A device has no `device_cursors` row until its FIRST `AdvanceCursor` call, so a member that has
+// been quiet since the group's genesis is ABSENT from `MinCursor` rather than sitting in it at
+// zero: it does not hold the prune floor, and a cursor-floor sweep deletes ciphertext it never
+// received. When it finally speaks — an ordinary presence `AdvanceCursor(0)`, which the endpoint
+// keeps idempotent for retried and reordered posts — the floor recomputed at that moment is a
+// different number from the floor the sweep actually deleted at, and it is lower. Its catch-up
+// must still answer E_PRUNED: a silently short list, with no error and no resync, is the one thing
+// this predicate exists to prevent.
+func TestAQuietMemberIsToldItsCiphertextIsGoneRatherThanServedAShortList(t *testing.T) {
+	ctx := context.Background()
+	h := newDSHarness(t)
+	g := h.group(t)
+	quiet := h.silentMember(t, g) // a genesis member with NO device_cursors row at all
+
+	var last ds.UploadResult
+	for range 5 {
+		out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+		if err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		last = out
+	}
+	// Only the uploader acknowledges, and it is the only cursor ON FILE: the floor the sweep
+	// deletes at is its own, and the quiet member is not in the aggregate at all.
+	if err := h.ds.AdvanceCursor(ctx, g.session, g.id, last.Seq, last.Epoch); err != nil {
+		t.Fatalf("AdvanceCursor: %v", err)
+	}
+	report, err := h.ds.Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if report.MessagesPruned != 5 {
+		t.Fatalf("the sweep deleted %d messages, want the 5 uploaded so far: "+
+			"the loss the quiet member has to be told about must be real", report.MessagesPruned)
+	}
+	survivor, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload after the sweep: %v", err)
+	}
+
+	// The quiet member's FIRST cursor write, at zero. It acknowledges nothing; it only makes the
+	// row exist, which is enough to drag a freshly recomputed MinCursor down to 0.
+	quietSession := h.sessions[quiet]
+	if err := h.ds.AdvanceCursor(ctx, quietSession, g.id, 0, g.Epoch()); err != nil {
+		t.Fatalf("the quiet member's first AdvanceCursor: %v", err)
+	}
+	_, err = h.ds.Messages(ctx, g.id, quietSession, 0, 10)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_PRUNED" {
+		t.Fatalf("the quiet member's catch-up from 0: got %v, want E_PRUNED — "+
+			"5 application messages it was entitled to were deleted", err)
+	}
+	if dsErr.Status != 410 {
+		t.Errorf("status = %d, want 410", dsErr.Status)
+	}
+	// A cursor contiguous with the surviving floor is still served, so the refusal above is the
+	// hole talking and not a group-wide refusal.
+	rows, err := h.ds.Messages(ctx, g.id, quietSession, survivor.Seq-1, 10)
+	if err != nil {
+		t.Fatalf("a cursor at the floor - 1 must be served: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Seq != survivor.Seq {
+		t.Fatalf("got %d rows, want the survivor at seq %d", len(rows), survivor.Seq)
+	}
+}
+
+// The same divergence through the other gap, and the reason the answer is a recorded high-water
+// rather than a member-shaped `MinCursor`: a device unseen for 90 days is INELIGIBLE, so it does
+// not hold the floor and the sweep deletes past it — and then it comes back. Its first
+// acknowledgement moves `updated` inside the horizon again, so a floor recomputed at that moment
+// has it in the aggregate at the low seq it left off at. What the sweep deleted does not un-happen,
+// and the returning device must be told so.
+func TestAReturningIdleDeviceIsToldItsCiphertextIsGone(t *testing.T) {
+	ctx := context.Background()
+	h := newDSHarness(t)
+	g := h.group(t)
+	idle := h.laggardMember(t, g)
+	h.ageCursor(t, g, idle, 91*24*time.Hour) // on file, but last touched outside the horizon
+
+	var last ds.UploadResult
+	for range 3 {
+		out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+		if err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		last = out
+	}
+	if err := h.ds.AdvanceCursor(ctx, g.session, g.id, last.Seq, last.Epoch); err != nil {
+		t.Fatalf("AdvanceCursor: %v", err)
+	}
+	report, err := h.ds.Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if report.MessagesPruned != 3 {
+		t.Fatalf("the sweep deleted %d messages, want the 3 the idle device did not hold",
+			report.MessagesPruned)
+	}
+	survivor, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload after the sweep: %v", err)
+	}
+
+	idleSession := h.sessions[idle]
+	if err := h.ds.AdvanceCursor(ctx, idleSession, g.id, 0, g.Epoch()); err != nil {
+		t.Fatalf("the returning device's AdvanceCursor: %v", err)
+	}
+	_, err = h.ds.Messages(ctx, g.id, idleSession, 0, 10)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_PRUNED" {
+		t.Fatalf("the returning device's catch-up from 0: got %v, want E_PRUNED — "+
+			"3 application messages were deleted while it was away", err)
+	}
+	rows, err := h.ds.Messages(ctx, g.id, idleSession, survivor.Seq-1, 10)
+	if err != nil {
+		t.Fatalf("a cursor at the floor - 1 must be served: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Seq != survivor.Seq {
+		t.Fatalf("got %d rows, want the survivor at seq %d", len(rows), survivor.Seq)
+	}
+}
+
+// The high-water only ever rises. The sweep's floor is a MINIMUM over eligible cursors, so it
+// falls whenever a device behind the stream becomes eligible — and a later, lower floor must not
+// un-say what an earlier, higher one deleted. Seqs 1-2 here are handshakes and 3-5 messages, so a
+// high-water walked back to 2 would find the window fully covered by the handshake log and serve a
+// silently short list.
+func TestTheRetentionHighWaterNeverWalksBack(t *testing.T) {
+	ctx := context.Background()
+	h := newDSHarness(t)
+	g := h.group(t)
+	behind := h.laggardMember(t, g)
+
+	// Seqs 1-2 are handshakes, burned on the group's counter exactly as Commit burns them.
+	for seq := uint64(1); seq <= 2; seq++ {
+		if err := h.repo.Tx(ctx, func(tx store.Repository) error {
+			_, err := tx.NextSeq(ctx, g.id)
+			return err
+		}); err != nil {
+			t.Fatalf("NextSeq: %v", err)
+		}
+		h.appendHandshake(t, g.id, seq, g.Epoch(), 1, []byte("commit"))
+	}
+	var last ds.UploadResult
+	for range 3 {
+		out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+		if err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		last = out
+	}
+	if last.Seq != 5 {
+		t.Fatalf("the last message took seq %d, want 5", last.Seq)
+	}
+	// The device behind the stream is not eligible yet, so the first sweep deletes at seq 5.
+	if err := h.repo.PutCursor(ctx, behind, g.id, 0, g.Epoch(),
+		h.clk.Now().Add(-91*24*time.Hour).Unix()); err != nil {
+		t.Fatalf("PutCursor: %v", err)
+	}
+	if err := h.ds.AdvanceCursor(ctx, g.session, g.id, last.Seq, last.Epoch); err != nil {
+		t.Fatalf("AdvanceCursor: %v", err)
+	}
+	report, err := h.ds.Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if report.MessagesPruned != 3 {
+		t.Fatalf("the first sweep deleted %d messages, want 3", report.MessagesPruned)
+	}
+	survivor, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload after the sweep: %v", err)
+	}
+
+	// It comes back and acknowledges the two handshakes, which puts the NEXT sweep's floor at 2 —
+	// below the 5 the first one deleted at.
+	if err := h.ds.AdvanceCursor(ctx, h.sessions[behind], g.id, 2, g.Epoch()); err != nil {
+		t.Fatalf("the returning device's AdvanceCursor: %v", err)
+	}
+	if _, err := h.ds.Sweep(ctx); err != nil {
+		t.Fatalf("second Sweep: %v", err)
+	}
+
+	_, err = h.ds.Messages(ctx, g.id, h.sessions[behind], 0, 10)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_PRUNED" {
+		t.Fatalf("a catch-up from 0 after the lower second floor: got %v, want E_PRUNED — "+
+			"the three messages the first sweep deleted are still gone", err)
+	}
+	rows, err := h.ds.Messages(ctx, g.id, h.sessions[behind], survivor.Seq-1, 10)
+	if err != nil {
+		t.Fatalf("a cursor at the floor - 1 must be served: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Seq != survivor.Seq {
+		t.Fatalf("got %d rows, want the survivor at seq %d", len(rows), survivor.Seq)
+	}
+}
+
 // ---------------------------------------------------------------- retention harness
 
-// laggardMember is a SECOND current member device of the fixture group, of a different user from
-// the uploader, with the `users` and `devices` rows the eligibility joins read and a live cursor
-// that has acknowledged nothing. It is what "one device is behind the stream" looks like in SQL.
+// silentMember is a SECOND current member device of the fixture group, of a different user from
+// the uploader, with the `users` and `devices` rows the eligibility joins read and — the point —
+// NO `device_cursors` row at all. That is what every member looks like before its first
+// POST /cursor: absent from the `MinCursor` aggregate rather than sitting in it at zero.
 //
 // The user must differ from the uploader's: the disabled-user case disables the whole account, and
 // a shared user would take the uploader's own cursor out of the floor with it.
-func (h *dsHarness) laggardMember(t *testing.T, g *dsMessageGroup) id.ID {
+func (h *dsHarness) silentMember(t *testing.T, g *dsMessageGroup) id.ID {
 	t.Helper()
 	ctx := context.Background()
 	members, err := h.repo.ListMembers(ctx, g.id)
@@ -387,9 +586,6 @@ func (h *dsHarness) laggardMember(t *testing.T, g *dsMessageGroup) id.ID {
 			continue
 		}
 		h.account(t, m.UserID, m.DeviceID)
-		if err := h.repo.PutCursor(ctx, m.DeviceID, g.id, 0, g.Epoch(), h.clk.Now().Unix()); err != nil {
-			t.Fatalf("PutCursor: %v", err)
-		}
 		if h.sessions == nil {
 			h.sessions = map[id.ID]auth.Session{}
 		}
@@ -400,6 +596,20 @@ func (h *dsHarness) laggardMember(t *testing.T, g *dsMessageGroup) id.ID {
 	}
 	t.Fatal("the fixture has no second member of another user")
 	return id.ID{}
+}
+
+// laggardMember is `silentMember` that HAS spoken: the same second member with a live cursor that
+// has acknowledged nothing. It is what "one device is behind the stream" looks like in SQL, and
+// the difference from silentMember — a row at zero versus no row — is exactly what decides whether
+// the device holds the prune floor.
+func (h *dsHarness) laggardMember(t *testing.T, g *dsMessageGroup) id.ID {
+	t.Helper()
+	device := h.silentMember(t, g)
+	if err := h.repo.PutCursor(context.Background(), device, g.id, 0, g.Epoch(),
+		h.clk.Now().Unix()); err != nil {
+		t.Fatalf("PutCursor: %v", err)
+	}
+	return device
 }
 
 // revokeDevice is the first ineligibility: the device's credential is gone, so nothing will ever

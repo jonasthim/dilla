@@ -33,6 +33,20 @@ DELETE FROM mls_app_messages
         OR created < CAST(sqlc.arg(delivery_floor) AS INTEGER)
         OR (expires IS NOT NULL AND expires <= CAST(sqlc.arg(now) AS INTEGER)));
 
+-- name: RaisePrunedBelow :exec
+-- The record of what the DELIVERY-CURSOR trigger above actually deleted at, kept on the group
+-- because nothing can recompute it afterwards: `MinCursor` aggregates rows that move, and a device
+-- has no cursor row at all until its first POST /cursor. The catch-up predicate reads this column,
+-- never a freshly recomputed floor.
+--
+-- MONOTONE by the `<`: a later sweep whose eligible cursors have gone (every one revoked, disabled
+-- or 90 days idle, so the floor falls back to 0) must not walk the high-water back down and
+-- un-say a deletion that happened.
+UPDATE mls_groups
+   SET pruned_below = CAST(sqlc.arg(pruned_below) AS INTEGER)
+ WHERE group_id = sqlc.arg(group_id)
+   AND pruned_below < CAST(sqlc.arg(pruned_below) AS INTEGER);
+
 -- name: PutCursor :exec
 INSERT INTO device_cursors (device_id, group_id, last_seq, last_epoch, updated)
 VALUES (?, ?, ?, ?, ?)

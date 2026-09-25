@@ -189,6 +189,16 @@ type Messages interface {
 	// retained indefinitely). Deviation D14: three parameters, not two, and `now` is not the
 	// delivery floor.
 	PruneAppMessages(ctx context.Context, groupID id.ID, cursorFloor uint64, deliveryFloor, now int64) (int64, error)
+	// RaisePrunedBelow records the cursor floor `PruneAppMessages` was just called with, as a
+	// MONOTONE high-water on the group (`mls_groups.pruned_below`): the highest seq at or below
+	// which application ciphertext may already be gone. A lower value is ignored.
+	//
+	// The catch-up predicate needs the floor that was IN FORCE WHEN THE ROWS WENT, and that is not
+	// `MinCursor` read again later: a device has no `device_cursors` row until its first cursor
+	// write, so a member quiet during the sweep is absent from the aggregate and pulls it back
+	// down the moment it speaks -- and a returning 90-day-idle device does the same. Recomputing
+	// would answer "nothing is gone" about messages deleted minutes earlier.
+	RaisePrunedBelow(ctx context.Context, groupID id.ID, below uint64) error
 }
 
 // Cursors is `device_cursors`, implemented from task 23 onward.

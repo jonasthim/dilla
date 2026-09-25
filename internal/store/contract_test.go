@@ -73,6 +73,13 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		}},
 		{"Messages", reflect.TypeOf((*store.Messages)(nil)).Elem(), []string{
 			"GetAppMessage", "ListAppMessages", "PruneAppMessages", "PutAppMessage",
+			// RaisePrunedBelow is §4.1 plus one (deviation ID1, task 26 fix round 2):
+			// `PruneAppMessages` deletes at a cursor floor that nothing can reconstruct
+			// afterwards -- a device has no `device_cursors` row until its first cursor
+			// write, and an idle one re-enters `MinCursor` at the low seq it left off at --
+			// so the floor is recorded on the group as it is used. Without it the catch-up
+			// predicate answers "nothing is gone" about rows deleted minutes earlier.
+			"RaisePrunedBelow",
 			"TombstoneAppMessage",
 		}},
 		{"Cursors", reflect.TypeOf((*store.Cursors)(nil)).Elem(), []string{

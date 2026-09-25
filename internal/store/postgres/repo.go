@@ -898,6 +898,7 @@ func mlsGroupRow(m pgdb.MlsGroups) store.GroupRow {
 		HealDeadline:        ptrInt64(m.HealDeadline),
 		Created:             m.Created,
 		ClosedAt:            ptrInt64(m.ClosedAt),
+		PrunedBelow:         uint64(m.PrunedBelow),
 	}
 }
 
@@ -1527,6 +1528,13 @@ func (r *Repo) PruneAppMessages(ctx context.Context, groupID id.ID,
 		Now:           now,
 	})
 	return n, wrap(err)
+}
+
+func (r *Repo) RaisePrunedBelow(ctx context.Context, groupID id.ID, below uint64) error {
+	return wrap(r.w.RaisePrunedBelow(ctx, pgdb.RaisePrunedBelowParams{
+		GroupID:     groupID,
+		PrunedBelow: int64(below),
+	}))
 }
 
 // ---------------------------------------------------------------- Cursors
