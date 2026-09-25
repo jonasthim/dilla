@@ -47,6 +47,9 @@ pub fn dispatch(export: &str, req: &[u8]) -> Vec<u8> {
         "public_group_state" => public_group_state(req, t),
         "public_group_proposal_put" => public_group_proposal_put(req, t),
         "public_group_proposal_list" => public_group_proposal_list(req, t),
+        "public_group_group_info_validate" => public_group_group_info_validate(req, t),
+        "public_group_proposal_inspect" => public_group_proposal_inspect(req, t),
+        "private_message_aad" => private_message_aad(req, t),
         "validate_key_package" => validate_key_package_export(req, t),
         "external_propose_add" => external_propose_add_export(req, t),
         "external_propose_remove" => external_propose_remove_export(req, t),
@@ -475,6 +478,92 @@ fn public_group_proposal_list(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiE
     Ok(e.into_vec())
 }
 
+/// ABI v2 §3.2. A signature mismatch is `signature_ok = 0`, not an error frame; a signer leaf that
+/// is not in the tree is `E_ABI_STATE`, because there is no key to check against.
+///
+/// The caller names the signer leaf because `VerifiableGroupInfo::signer()` is `pub(crate)` in
+/// openmls 0.9.0 (`src/messages/group_info.rs:100`), so the DS cannot read it off the GroupInfo
+/// itself; it knows it from the commit it is validating.
+fn public_group_group_info_validate(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
+    let mut d = abi::open(req, 4)?;
+    let handle = abi::read_handle(&mut d)?;
+    let group_info = d.bytes()?;
+    let signer_leaf = abi::read_handle(&mut d)?;
+    d.finish()?;
+
+    let crypto = RustCrypto::default();
+    let verifiable = tls::verifiable_group_info(group_info)?;
+    let group = t.group(handle)?;
+    let key = group
+        .signature_key_of_leaf(LeafNodeIndex::new(signer_leaf))
+        .ok_or_else(|| AbiError::state(format!("leaf {signer_leaf} is not in the tree")))?;
+    let signature_ok = verifiable.verify_no_out(&crypto, &key).is_ok();
+    let context = verifiable.group_context();
+
+    let mut e = Encoder::new();
+    e.array(6)
+        .uint(0)
+        .uint(verifiable.epoch().as_u64())
+        .bytes(verifiable.group_id().as_slice())
+        .bytes(context.tree_hash())
+        .bytes(context.confirmed_transcript_hash())
+        .uint(u64::from(signature_ok));
+    Ok(e.into_vec())
+}
+
+/// ABI v2 §3.3. Called on `POST /v1/groups/{id}/proposal` only: for its own proposals the instance
+/// knows kind and target by construction.
+///
+/// The detail comes from `DillaPublicGroup::queued_proposal_detail`, which reads the
+/// `QueuedProposal` the group already holds. The message is **not** re-processed here: the
+/// proposal is queued by the time this is called, and `process_message` on an already-queued
+/// proposal is a validation failure, not a read.
+fn public_group_proposal_inspect(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
+    let mut d = abi::open(req, 3)?;
+    let handle = abi::read_handle(&mut d)?;
+    // Deviation from the brief: `ProposalRef::from_slice` is `#[cfg(any(feature = "test-utils",
+    // test))]` in openmls 0.9.0 (`src/ciphersuite/hash_ref.rs:120`), so the reference travels as
+    // the opaque bytes it already is and `queued_proposal_detail` compares slices.
+    let wanted = d.bytes()?;
+    d.finish()?;
+
+    let group = t.group(handle)?;
+    let (kind, sender_leaf, target_leaf, credential_identity) = group
+        .queued_proposal_detail(wanted)?
+        .ok_or_else(|| AbiError::state("no queued proposal for that reference".to_owned()))?;
+
+    let mut e = Encoder::new();
+    e.array(5).uint(0).uint(kind);
+    e.opt_uint(sender_leaf.map(u64::from));
+    e.opt_uint(target_leaf.map(u64::from));
+    e.opt_bytes(credential_identity.as_deref());
+    Ok(e.into_vec())
+}
+
+/// ABI v2 §3.4: the 32-byte franking commitment and the epoch, without a Go TLS parser and without
+/// decrypting anything.
+fn private_message_aad(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, AbiError> {
+    let mut d = abi::open(req, 2)?;
+    let bytes = d.bytes()?;
+    d.finish()?;
+
+    let header = crate::private_message::parse(bytes)?;
+    if header.authenticated_data.len() != 32 {
+        return Err(AbiError::shape(format!(
+            "authenticated_data is {} bytes, want exactly 32",
+            header.authenticated_data.len()
+        )));
+    }
+
+    let mut e = Encoder::new();
+    e.array(4)
+        .uint(0)
+        .bytes(&header.authenticated_data)
+        .uint(header.epoch)
+        .uint(u64::from(header.content_type));
+    Ok(e.into_vec())
+}
+
 fn validate_key_package_export(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, AbiError> {
     let mut d = abi::open(req, 2)?;
     let bytes = d.bytes()?;
@@ -484,13 +573,20 @@ fn validate_key_package_export(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, Ab
     let kp = validate_key_package(&crypto, tls::key_package_in(bytes)?)?;
     let identity = CredentialIdentity::decode(&leaf_credential_bytes(&kp)?)?;
 
+    // ABI v2 §3.5: the DS keys its KeyPackage table by the RFC 9420 `KeyPackageRef`, so the module
+    // computes it here rather than leaving the Go side to re-serialise and hash an MLS object.
+    let kp_ref = kp
+        .hash_ref(&crypto)
+        .map_err(|e| AbiError::state(format!("key package ref: {e}")))?;
+
     let mut e = Encoder::new();
-    e.array(5)
+    e.array(6)
         .uint(0)
         .bytes(identity.device_id.as_bytes())
         .bytes(identity.user_id.as_bytes())
         .uint(u64::from(is_last_resort(&kp)))
-        .uint(lifetime_not_after(&kp));
+        .uint(lifetime_not_after(&kp))
+        .bytes(kp_ref.as_slice());
     Ok(e.into_vec())
 }
 
@@ -1288,5 +1384,280 @@ mod tests {
         let err = with_staged_or_release(&mut t, h + 1, |_| Ok(())).unwrap_err();
         assert_eq!(err.code, crate::abi::E_ABI_HANDLE);
         assert_eq!(t.staged_count(), 1, "the live handle is untouched");
+    }
+
+    /// §3.2: the fixture's own GroupInfo verifies against the leaf that signed it, and the
+    /// response carries the epoch, group id, tree hash and confirmed transcript hash.
+    #[test]
+    fn a_group_info_signed_by_the_named_leaf_verifies() {
+        let (handle, epoch, group_id, tree_hash) = create_fixture_group();
+        let signer = fixture_group_info_signer();
+        let r = req(|e| {
+            e.array(4)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .bytes(FIXTURE_GROUP_INFO)
+                .uint(u64::from(signer));
+        });
+        let out = dispatch("public_group_group_info_validate", &r);
+        let (got_epoch, got_group_id, got_tree_hash, transcript, ok) =
+            decode_strict(&out, |d: &mut Decoder<'_>| {
+                d.array(6)?;
+                assert_eq!(d.uint()?, 0, "validation must not be an error frame");
+                Ok((
+                    d.uint()?,
+                    d.bytes()?.to_vec(),
+                    d.bytes()?.to_vec(),
+                    d.bytes()?.to_vec(),
+                    d.uint()?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(got_epoch, epoch);
+        assert_eq!(got_group_id, group_id);
+        assert_eq!(got_tree_hash, tree_hash);
+        assert_eq!(transcript.len(), 32);
+        assert_eq!(
+            ok, 1,
+            "the fixture GroupInfo is signed by its own committer"
+        );
+    }
+
+    /// A signature mismatch is `signature_ok = 0`, never an error frame: dillad turns it into
+    /// `422 E_COMMIT_INVALID` with `rule = "group_info_signature"` (§3.2).
+    #[test]
+    fn a_group_info_checked_against_another_leaf_reports_signature_ok_zero() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let wrong = fixture_group_info_signer() + 1;
+        let r = req(|e| {
+            e.array(4)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .bytes(FIXTURE_GROUP_INFO)
+                .uint(u64::from(wrong));
+        });
+        let ok = decode_strict(
+            &dispatch("public_group_group_info_validate", &r),
+            |d: &mut Decoder<'_>| {
+                d.array(6)?;
+                assert_eq!(d.uint()?, 0);
+                d.skip()?;
+                d.skip()?;
+                d.skip()?;
+                d.skip()?;
+                d.uint()
+            },
+        )
+        .unwrap();
+        assert_eq!(ok, 0, "a mismatch is reported, not raised");
+    }
+
+    /// A leaf that is not in the tree at all is an error frame — there is no key to check against.
+    #[test]
+    fn a_signer_leaf_outside_the_tree_is_an_error_frame() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let r = req(|e| {
+            e.array(4)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .bytes(FIXTURE_GROUP_INFO)
+                .uint(1_000_000);
+        });
+        let (code, _detail) = failure(&dispatch("public_group_group_info_validate", &r));
+        assert_eq!(code, crate::abi::E_ABI_STATE);
+    }
+
+    /// §3.5: `validate_key_package` grew to six elements and the sixth is the RFC 9420
+    /// KeyPackageRef.
+    #[test]
+    fn validate_key_package_returns_the_key_package_ref() {
+        let out = dispatch(
+            "validate_key_package",
+            &req(|e| {
+                e.array(2)
+                    .uint(dilla_core::ABI_VERSION)
+                    .bytes(FIXTURE_KEY_PACKAGE);
+            }),
+        );
+        let (device_id, user_id, last_resort, not_after, kp_ref) =
+            decode_strict(&out, |d: &mut Decoder<'_>| {
+                d.array(6)?;
+                assert_eq!(
+                    d.uint()?,
+                    0,
+                    "the committed KeyPackage fixture must validate"
+                );
+                Ok((
+                    d.bytes()?.to_vec(),
+                    d.bytes()?.to_vec(),
+                    d.uint()?,
+                    d.uint()?,
+                    d.bytes()?.to_vec(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(device_id.len(), 16);
+        assert_eq!(user_id.len(), 16);
+        assert!(last_resort <= 1);
+        assert!(not_after > 0);
+        assert_eq!(kp_ref.len(), 32, "the ciphersuite's hash is SHA-256");
+        assert_eq!(
+            kp_ref,
+            hex_bytes(&fixture_manifest_field("key_package_ref_hex")),
+            "kp_ref must equal KeyPackage::hash_ref computed natively for the same fixture"
+        );
+    }
+
+    /// §3.4: exactly 32 bytes of `authenticated_data` is the franking commitment; anything else
+    /// is E_ABI_SHAPE, which dillad maps to 422 E_COMMITMENT_INVALID.
+    #[test]
+    fn private_message_aad_reports_thirty_two_bytes_and_refuses_anything_else() {
+        for len in [31usize, 32, 33] {
+            let message = crate::private_message::tests_support::message(&vec![5u8; len], 7, 1);
+            let out = dispatch(
+                "private_message_aad",
+                &req(|e| {
+                    e.array(2).uint(dilla_core::ABI_VERSION).bytes(&message);
+                }),
+            );
+            if len == 32 {
+                let (aad, epoch, content_type) = decode_strict(&out, |d: &mut Decoder<'_>| {
+                    d.array(4)?;
+                    assert_eq!(d.uint()?, 0);
+                    Ok((d.bytes()?.to_vec(), d.uint()?, d.uint()?))
+                })
+                .unwrap();
+                assert_eq!(aad, vec![5u8; 32]);
+                assert_eq!(epoch, 7);
+                assert_eq!(content_type, 1);
+            } else {
+                let (code, detail) = failure(&out);
+                assert_eq!(code, crate::abi::E_ABI_SHAPE, "len {len}");
+                assert!(
+                    detail.contains("32"),
+                    "detail must name the required length: {detail}"
+                );
+            }
+        }
+    }
+
+    /// §3.3: an inspected proposal is distinguished by kind and target. The fixture group carries
+    /// an `ExternalSenders` extension naming the instance at `instance_sender_index()`, which is
+    /// what makes the committed external Remove queueable at all.
+    #[test]
+    fn proposal_inspect_names_the_kind_and_target_of_a_queued_remove() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let proposal_ref = queue_fixture_remove_proposal(handle);
+        let out = dispatch(
+            "public_group_proposal_inspect",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .bytes(&proposal_ref);
+            }),
+        );
+        let (kind, _sender, target, _identity) = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(5)?;
+            assert_eq!(d.uint()?, 0);
+            Ok((
+                d.uint()?,
+                d.opt_uint()?,
+                d.opt_uint()?,
+                d.opt_bytes()?.map(<[u8]>::to_vec),
+            ))
+        })
+        .unwrap();
+        assert_eq!(kind, 3, "a Remove");
+        assert_eq!(target, Some(0), "the fixture Remove targets leaf 0");
+    }
+
+    /// An unknown ref is an error frame, never an empty success.
+    #[test]
+    fn proposal_inspect_refuses_an_unknown_ref() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (code, _detail) = failure(&dispatch(
+            "public_group_proposal_inspect",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .bytes(&[0u8; 32]);
+            }),
+        ));
+        assert_eq!(code, crate::abi::E_ABI_STATE);
+    }
+
+    /// The 1,500-leaf fixture's GroupInfo is signed by the leaf the manifest records.
+    fn fixture_group_info_signer() -> u32 {
+        fixture_manifest_field("group_info_signer_leaf")
+            .parse()
+            .expect("the manifest's signer leaf is a decimal u32")
+    }
+
+    /// Reads one scalar out of `testkit/fixtures/ds-1500/manifest.json` without a JSON dependency:
+    /// the file is generated by `dilla-testkit gen-public-group` with one key per line.
+    fn fixture_manifest_field(key: &str) -> String {
+        const MANIFEST: &str = include_str!("../../../testkit/fixtures/ds-1500/manifest.json");
+        let needle = format!("\"{key}\"");
+        let line = MANIFEST
+            .lines()
+            .find(|l| l.contains(&needle))
+            .unwrap_or_else(|| {
+                panic!(
+                    "manifest.json carries no {key}; regenerate the fixture with \
+                     `cargo run -p dilla-testkit -- gen-public-group --out testkit/fixtures/ds-1500`"
+                )
+            });
+        let value = line
+            .split_once(':')
+            .expect("a manifest line is \"key\": value")
+            .1
+            .trim()
+            .trim_end_matches(',')
+            .trim_matches('"');
+        value.to_owned()
+    }
+
+    fn hex_bytes(s: &str) -> Vec<u8> {
+        assert!(
+            s.len().is_multiple_of(2),
+            "hex must have an even length: {s}"
+        );
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    /// Every committed fixture file lives under `testkit/fixtures/ds-1500/`, which is what
+    /// `gen-public-group --out …/testkit/fixtures/ds-1500` writes. Nothing is written to
+    /// `testkit/fixtures/` itself, so no reader may point there.
+    const FIXTURE_KEY_PACKAGE: &[u8] =
+        include_bytes!("../../../testkit/fixtures/ds-1500/key_package.mls");
+
+    /// Queues the fixture's committed Remove proposal against the handle and returns its ref.
+    ///
+    /// `public_group_proposal_put` op 0 answers `[0, bstr]` — the reference is a plain byte
+    /// string, not an optional one (`exports.rs`'s op-0 arm writes `.bytes(&proposal_ref)`), so it
+    /// is read back with `bytes()`.
+    fn queue_fixture_remove_proposal(handle: u64) -> Vec<u8> {
+        const REMOVE: &[u8] = include_bytes!("../../../testkit/fixtures/ds-1500/remove_leaf0.mls");
+        let out = dispatch(
+            "public_group_proposal_put",
+            &req(|e| {
+                e.array(4)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .uint(0)
+                    .bytes(REMOVE);
+            }),
+        );
+        decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(2)?;
+            assert_eq!(d.uint()?, 0, "queueing the fixture Remove must succeed");
+            Ok(d.bytes()?.to_vec())
+        })
+        .unwrap()
     }
 }

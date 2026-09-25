@@ -73,9 +73,18 @@ fn the_committed_manifest_lists_every_file_with_a_matching_digest() {
     let files = m["files"].as_array().expect("files");
     assert_eq!(
         files.len(),
-        13,
-        "group_info, ratchet_tree, state and ten commits"
+        15,
+        "group_info, ratchet_tree, key_package, remove_leaf0, state and ten commits"
     );
+    // ABI v2's `validate_key_package` and `public_group_proposal_inspect` `include_bytes!` these
+    // two by name, so a regeneration that stopped writing one would break the wasi crate's tests
+    // at compile time rather than here. Naming them keeps the failure in the fixture's own test.
+    for expected in ["key_package.mls", "remove_leaf0.mls"] {
+        assert!(
+            files.iter().any(|f| f["path"].as_str() == Some(expected)),
+            "the manifest must list {expected}"
+        );
+    }
     for file in files {
         let rel = file["path"].as_str().expect("path");
         let path = std::path::Path::new(FIXTURE_DIR).join(rel);

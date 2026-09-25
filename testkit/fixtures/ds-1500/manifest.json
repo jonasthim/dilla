@@ -2,73 +2,85 @@
   "leaves": 1500,
   "epoch": 6,
   "group_id_hex": "66666666666666666666666666666666",
-  "tree_hash_hex": "ae24195d28cee64e9a45277a85a6f32351d2b9f700ed8b185b233e60bdb0963e",
-  "not_after": 1797986391,
+  "tree_hash_hex": "2c6d2154aa63d80b1e87a4ccf72db3b64f2c03f396e9bc52c6cc241067386c98",
+  "group_info_signer_leaf": 0,
+  "key_package_ref_hex": "ebb7bdb7e8f5f4399340d0158789bb080b06350ac1eed39679ad65852e807125",
+  "not_after": 1798070917,
   "openmls_version": "0.9.0",
   "files": [
     {
       "path": "group_info.mls",
-      "sha256_hex": "528e58bb590ba963b3517d235786572beb50e465fde49048982b60ac462775ce",
-      "bytes": 294
+      "sha256_hex": "6e155439de2443da7aacbcc0ba8b205f00d2ed13d93088c83d2d436e5d846fdc",
+      "bytes": 365
     },
     {
       "path": "ratchet_tree.mls",
-      "sha256_hex": "9e40c4b39797a09d65e2ff1b6f8bdb9e4c2eee8dc6a16905e9ec623221b096ab",
+      "sha256_hex": "d062611da9f34c0b0c9b977481c9fb6f2aad4ca34d21f26bb2f96c6b1cacd475",
       "bytes": 620236
     },
     {
+      "path": "key_package.mls",
+      "sha256_hex": "2423978cb87a2793b8f026c1a131a9192fa75b200d83216f425924ac7e4301db",
+      "bytes": 518
+    },
+    {
+      "path": "remove_leaf0.mls",
+      "sha256_hex": "c259e03cd97f20416b6fe5487ef92bdd7825eeb55e44bc8241a293e6ec25fe63",
+      "bytes": 108
+    },
+    {
       "path": "public_group_state.bin",
-      "sha256_hex": "c8a148b8790af42d1a21563305e14ccb73485039cfa06241b7fa1ed60e205097",
-      "bytes": 1575537
+      "sha256_hex": "470e5aef7a66f0c1310469fea7fca33d8caaff930a92e88c1b46209c171242bb",
+      "bytes": 1575662
     },
     {
       "path": "commits/00.mls",
-      "sha256_hex": "4f0ed840a344620d68003d107fb638f815be0ba6ffb2534bf409574ecc0aedec",
+      "sha256_hex": "375d4af15a35e9f527f39587b69be5543bf8b36d8a8145454469295918408b34",
       "bytes": 256265
     },
     {
       "path": "commits/01.mls",
-      "sha256_hex": "89d489917f231d23641c0980d939044b9f60a4399bc0c27c72cb612160320158",
+      "sha256_hex": "2a2654c633f65ed33c323a9a36437da77d51d904d75951f7862e0c87a5a4045d",
       "bytes": 256265
     },
     {
       "path": "commits/02.mls",
-      "sha256_hex": "c825ca723c2316db79fb9dd8955ff2298bb685215bb2a929d98dd01898256b51",
+      "sha256_hex": "cd7552361531a0d910f7fd3b925721d93b3d4130d9027fdcd133fcb9e40b0455",
       "bytes": 256265
     },
     {
       "path": "commits/03.mls",
-      "sha256_hex": "2137eec237cfbba58724db71ca2623673da77b3dbdbb3ed5e5ed8e8529990be3",
+      "sha256_hex": "3e7d556050466de16d89ba6b4d9e3ac5f042f663d73bc0e4a78c8b4fa91f762b",
       "bytes": 256265
     },
     {
       "path": "commits/04.mls",
-      "sha256_hex": "9836215f021e5748c380575ab171a2a3b653734a78b9a331e758b4d6bf973b30",
+      "sha256_hex": "33a712c4609daf6c0e4a668d66bb9ed78eff0c3238e22dfa59d0ae6c52394ded",
       "bytes": 256265
     },
     {
       "path": "commits/05.mls",
-      "sha256_hex": "8763bd966b69c6d09a167dba8d8bda3c886aa0a1ff3b97df6aa7ff8fccfb3bef",
+      "sha256_hex": "685569ae1f42b77f9d4e210caf7b3a39e7e84bfec505c44191083fabecc5ccd5",
       "bytes": 256265
     },
     {
       "path": "commits/06.mls",
-      "sha256_hex": "91103f2d659fb31b5f22fd8a2b931673bc2de5e001b53aca926f1e816f0bf41c",
+      "sha256_hex": "1d1e3231b1c1f61b7f84791c21821e4ab516baf69fc7b3993a098be591958b50",
       "bytes": 256265
     },
     {
       "path": "commits/07.mls",
-      "sha256_hex": "b9275342cb2c704ea868f7f06d106cf4259e091c07f33ad2365f9485af57e689",
+      "sha256_hex": "74fea4eb8a793770182d1778bcddea8ebd80c263e869d28dacfb42fb23ba9cf2",
       "bytes": 256265
     },
     {
       "path": "commits/08.mls",
-      "sha256_hex": "0428abd2cd53e63f581692b95d2465e583615f3b7ec87e97a99ad37a22c82ddc",
+      "sha256_hex": "25e6ec486f3c725512a26b9d3428a7dab95c9e15ac863900e1668b2b0ee8d083",
       "bytes": 123800
     },
     {
       "path": "commits/09.mls",
-      "sha256_hex": "cd78cd41dd1d3c53a6d44e5ee61745e63eb17ef7d423fbcd936635ca0894c0cb",
+      "sha256_hex": "97b6ce314992e8549d7aafe32e6c96519e956a12743431be5a7832a295ff887d",
       "bytes": 123910
     }
   ]

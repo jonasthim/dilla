@@ -31,6 +31,7 @@
 pub mod abi;
 pub mod exports;
 pub mod handles;
+mod private_message;
 
 /// The C-shaped exports. Only built for wasm: the ABI's `u32` pointers are the linear-memory
 /// addresses of a 32-bit target and have no meaning on a 64-bit host. Native `cargo test` drives
@@ -145,6 +146,9 @@ mod shims {
     abi_export!(public_group_state);
     abi_export!(public_group_proposal_put);
     abi_export!(public_group_proposal_list);
+    abi_export!(public_group_group_info_validate);
+    abi_export!(public_group_proposal_inspect);
+    abi_export!(private_message_aad);
     abi_export!(validate_key_package);
     abi_export!(external_propose_add);
     abi_export!(external_propose_remove);

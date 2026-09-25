@@ -5,9 +5,9 @@ use crate::{TestClient, TestkitError};
 use dilla_core::identity::{Kind, Tier};
 use dilla_core::ids::{InstanceId, UserId};
 use dilla_core::mls::{
-    DillaBinding, DillaGroup, GroupKind, MAX_ADDS_PER_COMMIT, build_key_package,
+    DillaBinding, DillaGroup, GroupKind, MAX_ADDS_PER_COMMIT, build_key_package, external_senders,
 };
-use dilla_core::public_group::DillaPublicGroup;
+use dilla_core::public_group::{DillaPublicGroup, external_propose_remove};
 use openmls::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -32,6 +32,12 @@ pub struct FixtureManifest {
     pub epoch: u64,
     pub group_id_hex: String,
     pub tree_hash_hex: String,
+    /// The leaf whose signature key the committed `group_info.mls` is signed under. ABI v2's
+    /// `public_group_group_info_validate` takes the signer leaf as an argument, because
+    /// `VerifiableGroupInfo::signer()` is `pub(crate)` in openmls 0.9.0 (interfaces §0.1 D17).
+    pub group_info_signer_leaf: u32,
+    /// `KeyPackage::hash_ref` of `key_package.mls`, computed natively with `RustCrypto`.
+    pub key_package_ref_hex: String,
     /// Seconds since the Unix epoch. Every leaf carries a KeyPackage lifetime and
     /// `PublicGroup::from_external` validates all of them, so the fixture stops working here.
     pub not_after: u64,
@@ -90,13 +96,33 @@ pub fn gen_public_group(spec: &FixtureSpec) -> Result<FixtureManifest, TestkitEr
         media_version: 0,
     };
     let group_id = GroupId::from_slice(&binding.target_id);
+    // The instance's external-sender keypair. `TestClient::new` is the crate's one deterministic
+    // signer factory (`testkit/src/client.rs:48-90`: the seed drives a ChaCha20 stream into
+    // `ed25519_dalek::SigningKey`), so the instance reuses it rather than duplicating that code.
+    // Only `signer()` is used; the client never joins the group.
+    let instance = TestClient::new(
+        "instance",
+        UserId::from_bytes([0x11; 16]),
+        Tier::Native,
+        Kind::User,
+        spec.seed ^ 0x0d15_0d15,
+    )?;
+    let instance_signer = instance.signer();
+    // `GroupKind::Text.has_external_sender()` is true (`core/dilla-core/src/mls/binding.rs:42`),
+    // so `create_config` accepts the extension for this binding. Without it the committed
+    // `remove_leaf0.mls` below could not be queued against the fixture at all: a
+    // `DillaPublicGroup` resolves an external proposal's sender through `external_senders`.
+    let ext_senders = external_senders(
+        SignaturePublicKey::from(instance_signer.public()),
+        &binding.instance_id,
+    );
     let mut group = DillaGroup::create(
         creator.provider(),
         creator.signer(),
         creator.credential(),
         group_id.clone(),
-        binding,
-        None,
+        binding.clone(),
+        Some(ext_senders),
     )?;
 
     // Fill the tree.
@@ -208,6 +234,43 @@ pub fn gen_public_group(spec: &FixtureSpec) -> Result<FixtureManifest, TestkitEr
     std::fs::create_dir_all(&spec.out).map_err(|e| TestkitError::Scenario(e.to_string()))?;
     write_file(spec, "group_info.mls", &group_info, &mut files)?;
     write_file(spec, "ratchet_tree.mls", &ratchet_tree, &mut files)?;
+
+    // ABI v2 needs two more committed inputs, both produced by the same real clients that built
+    // the tree: a KeyPackage for `validate_key_package` and an external Remove of leaf 0 for
+    // `public_group_proposal_inspect`.
+    let joiner = TestClient::new(
+        "kp-fixture",
+        UserId::from_bytes([0x77; 16]),
+        Tier::Native,
+        Kind::User,
+        spec.seed.wrapping_add(9_000_000),
+    )?;
+    let joiner_kp = build_key_package(
+        joiner.provider(),
+        joiner.signer(),
+        joiner.credential(),
+        false,
+    )?;
+    // Deviation from the brief, forced by the ABI: the brief wrote
+    // `serialize(joiner_kp.key_package())`, a **bare** KeyPackage. Every KeyPackage crossing the
+    // wasi ABI is read by `abi::tls::key_package_in`, which deserialises an `MLSMessage` and then
+    // matches `MlsMessageBodyIn::KeyPackage` — a bare KeyPackage is refused there with
+    // `E_ABI_SHAPE`. `impl From<KeyPackage> for MlsMessageOut`
+    // (`openmls-0.9.0/src/framing/message_out.rs:94`) is the public route to that framing, and it
+    // is the same framing `group_info.mls` already uses. The `KeyPackageRef` below is unaffected:
+    // `KeyPackage::hash_ref` hashes the KeyPackage's own TLS encoding, not the envelope.
+    let key_package_bytes = serialize(&MlsMessageOut::from(joiner_kp.key_package().clone()))?;
+    write_file(spec, "key_package.mls", &key_package_bytes, &mut files)?;
+
+    let remove = external_propose_remove(
+        LeafNodeIndex::new(0),
+        group_id.clone(),
+        GroupEpoch::from(base_epoch),
+        instance_signer,
+    )
+    .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
+    write_file(spec, "remove_leaf0.mls", &serialize(&remove)?, &mut files)?;
+
     write_file(spec, "public_group_state.bin", &base_state, &mut files)?;
     for (i, commit) in commits.iter().enumerate() {
         write_file(spec, &format!("commits/{i:02}.mls"), commit, &mut files)?;
@@ -223,11 +286,22 @@ pub fn gen_public_group(spec: &FixtureSpec) -> Result<FixtureManifest, TestkitEr
     // gap-18's 84 keeps the manifest honest: an under-reported expiry makes the benchmark cry
     // "fixture expired" six days early.
     let lifetime_secs = dilla_core::mls::KEY_PACKAGE_LIFETIME_DAYS * 24 * 60 * 60;
+    // `group_info.mls` is exported with `creator.signer()`, so its signer is the creator's own
+    // leaf. Reading it off the group rather than writing `0` keeps the manifest honest if a
+    // future generator ever moves the creator.
+    let group_info_signer_leaf = group.own_leaf_index().u32();
+    let key_package_ref_hex = hex(joiner_kp
+        .key_package()
+        .hash_ref(&crypto)
+        .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?
+        .as_slice());
     let manifest = FixtureManifest {
         leaves: spec.leaves,
         epoch: base_epoch,
         group_id_hex: hex(group_id.as_slice()),
         tree_hash_hex: hex(&tree_hash),
+        group_info_signer_leaf,
+        key_package_ref_hex,
         not_after: now + lifetime_secs,
         openmls_version: "0.9.0".to_owned(),
         files,
