@@ -19,6 +19,7 @@ import (
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
 	"golang.org/x/crypto/chacha20"
 )
@@ -328,6 +329,65 @@ func TestProposeRemoveIssuesAnExternalRemoveThatFreezesTheGroup(t *testing.T) {
 
 	if frozen, _ := h.ds.Frozen(ctx, reg.GroupID); !frozen {
 		t.Error("issuing an instance proposal freezes the group while a member is online")
+	}
+}
+
+// R12's "SQL is the record", on the instance path. `ProposalPut` necessarily runs BEFORE the
+// transaction — the SQL row is keyed on the ref the guest's queue hands back — so every failure
+// after the put has to take the proposal out of the queue again. Without that guard a refused
+// ProposeRemove leaves the cached PublicGroup one proposal ahead of SQL; worse, the NEXT
+// successful proposal writes that divergence into the durable state blob through `persistState`
+// inside its own transaction, so it survives a restart and is cleared only by the next merge.
+//
+// Task 20's `queueMemberProposal` guards its own put exactly this way
+// (TestARefusedMemberProposalIsTakenBackOutOfTheGuestsQueue); this is the same guard on the
+// instance path, and the same fault injector proves it.
+func TestARefusedInstanceProposalIsTakenBackOutOfTheGuestsQueue(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+
+	queued := func(t *testing.T) int {
+		t.Helper()
+		n := 0
+		if err := ds.WithGroupForTest(h.ds, ctx, reg.GroupID, func(g *mlswasi.PublicGroup) error {
+			list, err := g.ProposalList(ctx)
+			if err != nil {
+				return err
+			}
+			n = len(list)
+			return nil
+		}); err != nil {
+			t.Fatalf("withGroup: %v", err)
+		}
+		return n
+	}
+
+	h.failNextTx("AppendHandshake")
+	if err := h.ds.ProposeRemove(ctx, reg.GroupID, 1, id.New()); err == nil {
+		t.Fatal("ProposeRemove must fail when the handshake append inside its transaction does")
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, true); len(rows) != 0 {
+		t.Fatalf("%d proposal rows after a failed transaction, want 0", len(rows))
+	}
+	if got := queued(t); got != 0 {
+		t.Fatalf("the guest holds %d queued proposals SQL does not have, want 0", got)
+	}
+
+	// And the successful one after it leaves exactly one proposal on BOTH sides — the assertion
+	// that catches the divergence being written into the state blob rather than merely held.
+	if err := h.ds.ProposeRemove(ctx, reg.GroupID, 1, id.New()); err != nil {
+		t.Fatalf("ProposeRemove: %v", err)
+	}
+	rows, err := h.repo.ListProposals(ctx, reg.GroupID, 6, true)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("%d proposal rows, want 1", len(rows))
+	}
+	if got := queued(t); got != 1 {
+		t.Fatalf("the guest holds %d queued proposals for 1 SQL row", got)
 	}
 }
 

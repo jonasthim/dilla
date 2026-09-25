@@ -221,6 +221,14 @@ func (d *DS) drainPendingJoins(ctx context.Context, groupID id.ID) {
 }
 
 // storeInstanceProposal appends the handshake, stores the pending row and fans the proposal out.
+//
+// The put into the guest's queue necessarily precedes the transaction: the SQL row is keyed on the
+// ref `ProposalPut` hands back. So, exactly as `queueMemberProposal` does for a member's proposal,
+// every failure after the put takes the proposal back OUT of the queue. A proposal left behind is
+// one the cached PublicGroup holds and SQL does not — R12's "SQL is the record", inverted — and it
+// is not merely held in memory: the next SUCCESSFUL proposal's `persistState` runs inside its own
+// transaction and writes the divergence into the durable state blob, where it survives a restart
+// and is cleared only by the next merge.
 func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store.GroupRow, blob []byte, p store.ProposalRow) error {
 	var seq uint64
 	err := d.withGroup(ctx, groupID, func(g *mlswasi.PublicGroup) error {
@@ -228,7 +236,13 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 		if err != nil {
 			return err
 		}
-		return d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		accepted := false
+		defer func() {
+			if !accepted {
+				d.unqueueProposal(ctx, g, groupID, ref)
+			}
+		}()
+		if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
 			seq, err = nextSeq(ctx, tx, groupID)
 			if err != nil {
 				return err
@@ -254,7 +268,11 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 				return err
 			}
 			return persistState(ctx, tx, groupID, g, row.GroupInfoBlob)
-		})
+		}); err != nil {
+			return err
+		}
+		accepted = true
+		return nil
 	})
 	if err != nil {
 		return err
