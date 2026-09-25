@@ -73,13 +73,19 @@ fn the_committed_manifest_lists_every_file_with_a_matching_digest() {
     let files = m["files"].as_array().expect("files");
     assert_eq!(
         files.len(),
-        15,
-        "group_info, ratchet_tree, key_package, remove_leaf0, state and ten commits"
+        16,
+        "group_info, ratchet_tree, key_package, remove_leaf0, application_message, state \
+         and ten commits"
     );
-    // ABI v2's `validate_key_package` and `public_group_proposal_inspect` `include_bytes!` these
-    // two by name, so a regeneration that stopped writing one would break the wasi crate's tests
-    // at compile time rather than here. Naming them keeps the failure in the fixture's own test.
-    for expected in ["key_package.mls", "remove_leaf0.mls"] {
+    // ABI v2's `validate_key_package`, `public_group_proposal_inspect` and `private_message_aad`
+    // `include_bytes!` these three by name, so a regeneration that stopped writing one would break
+    // the wasi crate's tests at compile time rather than here. Naming them keeps the failure in
+    // the fixture's own test.
+    for expected in [
+        "key_package.mls",
+        "remove_leaf0.mls",
+        "application_message.mls",
+    ] {
         assert!(
             files.iter().any(|f| f["path"].as_str() == Some(expected)),
             "the manifest must list {expected}"

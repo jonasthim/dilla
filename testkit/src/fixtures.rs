@@ -2,8 +2,9 @@
 //! alternative commits valid at its base epoch (R10).
 
 use crate::{TestClient, TestkitError};
+use dilla_core::envelope::{Envelope, EnvelopeType};
 use dilla_core::identity::{Kind, Tier};
-use dilla_core::ids::{InstanceId, UserId};
+use dilla_core::ids::{InstanceId, MsgId, UserId};
 use dilla_core::mls::{
     DillaBinding, DillaGroup, GroupKind, MAX_ADDS_PER_COMMIT, build_key_package, external_senders,
 };
@@ -38,6 +39,13 @@ pub struct FixtureManifest {
     pub group_info_signer_leaf: u32,
     /// `KeyPackage::hash_ref` of `key_package.mls`, computed natively with `RustCrypto`.
     pub key_package_ref_hex: String,
+    /// The 32-byte franking commitment openmls framed into `application_message.mls` as the MLS
+    /// `authenticated_data`, computed natively from the envelope by `Envelope::commitment`. It is
+    /// what `private_message_aad`'s hand-written RFC 9420 §6.3.2 decode must read back.
+    pub application_message_commitment_hex: String,
+    /// The epoch `application_message.mls` was framed at. Recorded separately from `epoch` above
+    /// so the reader need not assume the sender was still at the frozen base epoch.
+    pub application_message_epoch: u64,
     /// Seconds since the Unix epoch. Every leaf carries a KeyPackage lifetime and
     /// `PublicGroup::from_external` validates all of them, so the fixture stops working here.
     pub not_after: u64,
@@ -271,6 +279,45 @@ pub fn gen_public_group(spec: &FixtureSpec) -> Result<FixtureManifest, TestkitEr
     .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
     write_file(spec, "remove_leaf0.mls", &serialize(&remove)?, &mut files)?;
 
+    // A third ABI v2 input, and the only one openmls frames as a `PrivateMessage`: the wasi
+    // crate's `private_message_aad` decodes RFC 9420 §6.3.2 by hand (controller ruling B2), so its
+    // tests need one message a real encoder produced rather than only the ones its own
+    // `tests_support::message` writes — a framing mistake shared by that encoder and the decoder
+    // would otherwise be symmetric and invisible. `DillaGroup::create_message` sets the MLS
+    // `authenticated_data` to the envelope's 32-byte franking commitment
+    // (`core/dilla-core/src/mls/group.rs`, `group.set_aad(commitment.to_vec())`), which is exactly
+    // the field the DS reads and which the manifest records below.
+    let application_envelope = Envelope {
+        v: 1,
+        msg_id: MsgId::from_bytes([0x5c; 16]),
+        kind: EnvelopeType::Message,
+        thread_id: None,
+        reply_to: None,
+        body: "fixture application message".to_owned(),
+        attachments: Vec::new(),
+        previews: Vec::new(),
+        k_f: [0x0f; 32],
+    };
+    let application_message_commitment_hex = hex(&application_envelope
+        .commitment()
+        .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?);
+    // Sent from the creator's own in-memory handle, which is still at the frozen base epoch: each
+    // of the ten alternative commits above was staged on a fresh `load` and cleared, never merged.
+    // This is the last thing the creator's handle does, so the application generation it ratchets
+    // here cannot disturb anything above.
+    let application_message = serialize(&group.create_message(
+        creator.provider(),
+        creator.signer(),
+        &application_envelope,
+    )?)?;
+    let application_message_epoch = group.epoch();
+    write_file(
+        spec,
+        "application_message.mls",
+        &application_message,
+        &mut files,
+    )?;
+
     write_file(spec, "public_group_state.bin", &base_state, &mut files)?;
     for (i, commit) in commits.iter().enumerate() {
         write_file(spec, &format!("commits/{i:02}.mls"), commit, &mut files)?;
@@ -302,6 +349,8 @@ pub fn gen_public_group(spec: &FixtureSpec) -> Result<FixtureManifest, TestkitEr
         tree_hash_hex: hex(&tree_hash),
         group_info_signer_leaf,
         key_package_ref_hex,
+        application_message_commitment_hex,
+        application_message_epoch,
         not_after: now + lifetime_secs,
         openmls_version: "0.9.0".to_owned(),
         files,

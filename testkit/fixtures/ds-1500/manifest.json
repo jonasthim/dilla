@@ -2,25 +2,27 @@
   "leaves": 1500,
   "epoch": 6,
   "group_id_hex": "66666666666666666666666666666666",
-  "tree_hash_hex": "2c6d2154aa63d80b1e87a4ccf72db3b64f2c03f396e9bc52c6cc241067386c98",
+  "tree_hash_hex": "be041042a336952c46e73fa38c8139e4a032834f79511e1c251a50f2082f04aa",
   "group_info_signer_leaf": 0,
-  "key_package_ref_hex": "ebb7bdb7e8f5f4399340d0158789bb080b06350ac1eed39679ad65852e807125",
-  "not_after": 1798070917,
+  "key_package_ref_hex": "bf543c2428fdbdbcdc3ef9278bab1845e9a6090948f68184439ad5724c11999e",
+  "application_message_commitment_hex": "e6437259f480be3ca7da3068c6a0668c4239154c2dd5fc43ed7f62f40f2166ce",
+  "application_message_epoch": 6,
+  "not_after": 1798072547,
   "openmls_version": "0.9.0",
   "files": [
     {
       "path": "group_info.mls",
-      "sha256_hex": "6e155439de2443da7aacbcc0ba8b205f00d2ed13d93088c83d2d436e5d846fdc",
+      "sha256_hex": "997c74de9d64f7148c56a8b367542be820cec13d692f5ceed4a39055da7fc7b3",
       "bytes": 365
     },
     {
       "path": "ratchet_tree.mls",
-      "sha256_hex": "d062611da9f34c0b0c9b977481c9fb6f2aad4ca34d21f26bb2f96c6b1cacd475",
+      "sha256_hex": "18f0cb94924f10c9fd0623b3f5f942a7321e068949d880598b100b0ffbd863d1",
       "bytes": 620236
     },
     {
       "path": "key_package.mls",
-      "sha256_hex": "2423978cb87a2793b8f026c1a131a9192fa75b200d83216f425924ac7e4301db",
+      "sha256_hex": "7f0bbad128543a7514aa0760661366478e50235e8feca142a397aa050db97496",
       "bytes": 518
     },
     {
@@ -29,58 +31,63 @@
       "bytes": 108
     },
     {
+      "path": "application_message.mls",
+      "sha256_hex": "614b525abcfa220abb6a97f074ac22597edc89d58e1b474864f6f1a13f40ebd2",
+      "bytes": 350
+    },
+    {
       "path": "public_group_state.bin",
-      "sha256_hex": "470e5aef7a66f0c1310469fea7fca33d8caaff930a92e88c1b46209c171242bb",
-      "bytes": 1575662
+      "sha256_hex": "693319caf6f3fce479460a3a5b3ceb572e5dd82b786f4347962ff1d935dbe06c",
+      "bytes": 1575549
     },
     {
       "path": "commits/00.mls",
-      "sha256_hex": "375d4af15a35e9f527f39587b69be5543bf8b36d8a8145454469295918408b34",
+      "sha256_hex": "955368b1be8c2d81279a19ba5d69632f7bb8fc35575f8f36ed03c8b010a14cde",
       "bytes": 256265
     },
     {
       "path": "commits/01.mls",
-      "sha256_hex": "2a2654c633f65ed33c323a9a36437da77d51d904d75951f7862e0c87a5a4045d",
+      "sha256_hex": "415826f83b7b4b2dd1cccc60c0e8e313de58a531c584eaeda27568906fd49cf2",
       "bytes": 256265
     },
     {
       "path": "commits/02.mls",
-      "sha256_hex": "cd7552361531a0d910f7fd3b925721d93b3d4130d9027fdcd133fcb9e40b0455",
+      "sha256_hex": "98aba8b90fe686d24396dda11af4deb9a53fad7e7be927a616a70f9d26005d4a",
       "bytes": 256265
     },
     {
       "path": "commits/03.mls",
-      "sha256_hex": "3e7d556050466de16d89ba6b4d9e3ac5f042f663d73bc0e4a78c8b4fa91f762b",
+      "sha256_hex": "e86856a30244235565d75455344f186c32c57ce828433e4730d1805e0883f659",
       "bytes": 256265
     },
     {
       "path": "commits/04.mls",
-      "sha256_hex": "33a712c4609daf6c0e4a668d66bb9ed78eff0c3238e22dfa59d0ae6c52394ded",
+      "sha256_hex": "6d11e9993a3352aa1b23b75389631790b06b793fff720dda419a9e97f06b0282",
       "bytes": 256265
     },
     {
       "path": "commits/05.mls",
-      "sha256_hex": "685569ae1f42b77f9d4e210caf7b3a39e7e84bfec505c44191083fabecc5ccd5",
+      "sha256_hex": "3240a83385b9dbe0f0e725c0cdfd1a6bd0a25fb4718d80afee5a29c0371d3a99",
       "bytes": 256265
     },
     {
       "path": "commits/06.mls",
-      "sha256_hex": "1d1e3231b1c1f61b7f84791c21821e4ab516baf69fc7b3993a098be591958b50",
+      "sha256_hex": "eae06f8889d251d1bfbda81d4e27bf2a4e7c762d6aaef95344fc6eb7aeaae993",
       "bytes": 256265
     },
     {
       "path": "commits/07.mls",
-      "sha256_hex": "74fea4eb8a793770182d1778bcddea8ebd80c263e869d28dacfb42fb23ba9cf2",
+      "sha256_hex": "abb066009986dbca4516e7e353d48080f2153010112d49de98f07efe8aa2c30f",
       "bytes": 256265
     },
     {
       "path": "commits/08.mls",
-      "sha256_hex": "25e6ec486f3c725512a26b9d3428a7dab95c9e15ac863900e1668b2b0ee8d083",
+      "sha256_hex": "382f7c9c9686dcbb3d6817ec65ef3c226e73c9291042791e7ed1e2bb28de8cf5",
       "bytes": 123800
     },
     {
       "path": "commits/09.mls",
-      "sha256_hex": "97b6ce314992e8549d7aafe32e6c96519e956a12743431be5a7832a295ff887d",
+      "sha256_hex": "4501613927b6b47c234a3cb382fb800f1d6580dbbf883a00b3f3bf594d33272b",
       "bytes": 123910
     }
   ]

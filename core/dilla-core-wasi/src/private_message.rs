@@ -153,6 +153,17 @@ pub mod tests_support {
 
     /// Builds the MLSMessage framing by hand so the test does not depend on a committed fixture:
     /// `aad` is what the DS will read back.
+    ///
+    /// **This encoder is not evidence that the framing is right.** It is written from the same
+    /// reading of RFC 9420 §6.3.2 as [`parse`], so a mistake in that reading — a field in the
+    /// wrong order, a `<V>` header taken for a fixed-width length, a `uint16` in the wrong endian
+    /// — would be symmetric and every test in this module would still pass. It buys the negative
+    /// cases (wrong wire format, trailing bytes, every truncation), which need bytes that no real
+    /// encoder produces. The positive case is pinned in `exports.rs` by
+    /// `private_message_aad_reads_a_message_openmls_framed`, which parses
+    /// `testkit/fixtures/ds-1500/application_message.mls` — a message openmls' own
+    /// `TlsSerialize` derives wrote — and checks the AAD against the commitment the fixture
+    /// manifest records. Keep that test alive; this one cannot replace it.
     pub fn message(aad: &[u8], epoch: u64, content_type: u8) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&MLS_PROTOCOL_VERSION_10.to_be_bytes());

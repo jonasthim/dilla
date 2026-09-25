@@ -1541,6 +1541,52 @@ mod tests {
         }
     }
 
+    /// §3.4 against a `PrivateMessage` **openmls itself framed**, not one this crate encoded.
+    ///
+    /// `private_message_aad_reports_thirty_two_bytes_and_refuses_anything_else` above feeds the
+    /// parser bytes from `private_message::tests_support::message`, an encoder written in the same
+    /// module from the same reading of RFC 9420 §6.3.2 as the decoder: a symmetric framing mistake
+    /// — a field in the wrong order, a `<V>` header read as a fixed-width length, a `uint16`
+    /// written little-endian — would satisfy both sides and be invisible. Since this decode is
+    /// hand-written by controller ruling B2, runs on unauthenticated remote input and is the DS's
+    /// only reader of the franking commitment, it is checked here against a real encoder:
+    /// `testkit/fixtures/ds-1500/application_message.mls` is what `DillaGroup::create_message`
+    /// produced through openmls' own `TlsSerialize` derives, with the MLS `authenticated_data` set
+    /// to the envelope's 32-byte franking commitment (`mls/group.rs`'s `set_aad`). The manifest
+    /// records that commitment and the epoch the message was sent at, both computed natively.
+    #[test]
+    fn private_message_aad_reads_a_message_openmls_framed() {
+        const MESSAGE: &[u8] =
+            include_bytes!("../../../testkit/fixtures/ds-1500/application_message.mls");
+        let out = dispatch(
+            "private_message_aad",
+            &req(|e| {
+                e.array(2).uint(dilla_core::ABI_VERSION).bytes(MESSAGE);
+            }),
+        );
+        let (aad, epoch, content_type) = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(4)?;
+            assert_eq!(d.uint()?, 0, "a real application message must parse");
+            Ok((d.bytes()?.to_vec(), d.uint()?, d.uint()?))
+        })
+        .unwrap();
+        assert_eq!(
+            aad,
+            hex_bytes(&fixture_manifest_field(
+                "application_message_commitment_hex"
+            )),
+            "the AAD must be the envelope's 32-byte franking commitment"
+        );
+        assert_eq!(
+            epoch,
+            fixture_manifest_field("application_message_epoch")
+                .parse::<u64>()
+                .expect("the manifest's message epoch is a decimal u64"),
+            "the epoch must be the one the message was framed at"
+        );
+        assert_eq!(content_type, 1, "ContentType::Application");
+    }
+
     /// §3.3: an inspected proposal is distinguished by kind and target. The fixture group carries
     /// an `ExternalSenders` extension naming the instance at `instance_sender_index()`, which is
     /// what makes the committed external Remove queueable at all.
