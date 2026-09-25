@@ -15,7 +15,19 @@ UPDATE mls_app_messages SET blob = NULL, deleted_at = $1
 WHERE group_id = $2 AND seq = $3 AND deleted_at IS NULL;
 
 -- name: PruneAppMessages :execrows
-DELETE FROM mls_app_messages WHERE group_id = $1 AND seq < $2 AND created < $3;
+-- Invariant 10 has TWO independent deletion triggers (R28/D14); a row goes when EITHER fires.
+--   (1) DELIVERY retention: every ELIGIBLE cursor has passed the row (cursor_floor), or the row
+--       is older than MessageRetention (delivery_floor). cursor_floor = 0 means "no eligible
+--       device has acknowledged anything in this group", which must delete NOTHING rather than
+--       everything -- hence the guard.
+--   (2) ARCHIVAL retention: `expires` is a wall-clock deadline compared against NOW, never
+--       against the delivery floor. NULL -- the value Upload writes -- means retained
+--       indefinitely, and this half never touches such a row.
+DELETE FROM mls_app_messages
+ WHERE group_id = sqlc.arg(group_id)
+   AND ((sqlc.arg(cursor_floor)::bigint > 0 AND seq <= sqlc.arg(cursor_floor)::bigint)
+        OR created < sqlc.arg(delivery_floor)::bigint
+        OR (expires IS NOT NULL AND expires <= sqlc.arg(now)::bigint));
 
 -- name: PutCursor :exec
 INSERT INTO device_cursors (device_id, group_id, last_seq, last_epoch, updated)
@@ -27,5 +39,18 @@ SET last_seq = excluded.last_seq, last_epoch = excluded.last_epoch, updated = ex
 SELECT * FROM device_cursors WHERE device_id = $1 AND group_id = $2;
 
 -- name: MinCursor :one
-SELECT COALESCE(MIN(last_seq), 0)::bigint AS min_seq FROM device_cursors
-WHERE group_id = $1 AND updated >= $2;
+-- The retention floor: the lowest seq an ELIGIBLE device has acknowledged in this group, or 0
+-- when no eligible cursor exists. A device is ineligible when it is revoked, when its user is
+-- disabled, or when its cursor has not moved since `updated` (the 90-day inactivity horizon) --
+-- one abandoned phone must not pin a community's storage forever.
+--
+-- The two joins are LEFT joins on purpose: a cursor whose `devices` or `users` row is missing
+-- counts as eligible and so HOLDS the floor, which is the conservative direction. Holding costs
+-- storage; dropping costs ciphertext a device never received.
+SELECT COALESCE(MIN(c.last_seq), 0)::bigint AS min_seq
+FROM device_cursors c
+LEFT JOIN devices d ON d.id = c.device_id
+LEFT JOIN users u ON u.id = d.user_id
+WHERE c.group_id = $1 AND c.updated >= $2
+  AND d.revoked_at IS NULL
+  AND u.disabled_at IS NULL;

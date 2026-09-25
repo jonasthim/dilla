@@ -1502,9 +1502,13 @@ func (r *Repo) TombstoneAppMessage(ctx context.Context, groupID id.ID, seq uint6
 	}))
 }
 
-func (r *Repo) PruneAppMessages(ctx context.Context, groupID id.ID, belowSeq uint64, before int64) (int64, error) {
+func (r *Repo) PruneAppMessages(ctx context.Context, groupID id.ID,
+	cursorFloor uint64, deliveryFloor, now int64) (int64, error) {
 	n, err := r.w.PruneAppMessages(ctx, sqlitedb.PruneAppMessagesParams{
-		GroupID: groupID, Seq: int64(belowSeq), Created: before,
+		GroupID:       groupID,
+		CursorFloor:   int64(cursorFloor),
+		DeliveryFloor: deliveryFloor,
+		Now:           now,
 	})
 	return n, wrap(err)
 }

@@ -174,7 +174,13 @@ type Messages interface {
 	ListAppMessages(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]AppMessageRow, error)
 	GetAppMessage(ctx context.Context, groupID id.ID, seq uint64) (AppMessageRow, error)
 	TombstoneAppMessage(ctx context.Context, groupID id.ID, seq uint64, at int64) error
-	PruneAppMessages(ctx context.Context, groupID id.ID, belowSeq uint64, before int64) (int64, error)
+	// PruneAppMessages applies invariant 10's TWO independent deletion triggers (R28/D14) in one
+	// statement: delivery retention (`cursorFloor`, the lowest seq every ELIGIBLE device has
+	// passed -- 0 meaning no eligible cursor exists and so no deletion -- or `deliveryFloor`,
+	// now - MessageRetention) and archival retention (`expires` against `now`, where NULL means
+	// retained indefinitely). Deviation D14: three parameters, not two, and `now` is not the
+	// delivery floor.
+	PruneAppMessages(ctx context.Context, groupID id.ID, cursorFloor uint64, deliveryFloor, now int64) (int64, error)
 }
 
 // Cursors is `device_cursors`, implemented from task 23 onward.

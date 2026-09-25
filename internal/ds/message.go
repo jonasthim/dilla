@@ -174,11 +174,22 @@ func (d *DS) oldestAppMessageSeq(ctx context.Context, groupID id.ID) (uint64, er
 
 // mayHavePrunedMessages answers whether ANY application message of this group can already have
 // been deleted. It is the twin of mayHavePrunedHandshakes and one-directional for the same reason
-// (ruling 41, deviation B20): the sweep's only deletion rule is `DELETE FROM mls_app_messages
-// WHERE seq < floor AND created < now - MessageRetention`, every row of a group is younger than
-// the group itself, and the cutoff only moves forward with the clock — so a group younger than
-// the retention window has provably lost nothing, and the predicate never says "nothing is gone"
-// about a group that has lost something.
+// (ruling 41, deviation B20): it may over-refuse — an unnecessary rejoin costs bandwidth — but it
+// must never say "nothing is gone" about a group that has lost something.
+//
+// It has TWO clauses because task 26's sweep has more than one deletion trigger (D14/R28):
+//
+//  1. Age. Every row of a group is younger than the group itself and the delivery cutoff only
+//     moves forward with the clock, so a group younger than MessageRetention has provably lost
+//     nothing to `created < now - MessageRetention`.
+//  2. The delivery CURSOR floor, which is bounded by no age at all: the sweep deletes everything
+//     every eligible cursor has passed, whenever that happens. A floor above zero means that half
+//     can already have fired, in a group of any age. Zero means no eligible device has
+//     acknowledged anything, and the sweep's own `cursor_floor > 0` guard then deletes nothing.
+//
+// The third trigger, archival `expires`, cannot fire in this wave: `Upload` writes NULL and no
+// Plan-1 path fills the column (Plan 2's community policy does). When it does, a group that has
+// ever set an expiry joins this predicate too.
 //
 // A tombstone is not a loss: TombstoneAppMessage keeps the row, so the seq stays in the answer
 // with `deleted = 1` and the floor does not move.
@@ -187,8 +198,16 @@ func (d *DS) mayHavePrunedMessages(ctx context.Context, groupID id.ID) (bool, er
 	if err != nil {
 		return false, err
 	}
-	cutoff := d.opts.Clock.Now().Add(-d.opts.Policy.MessageRetention).Unix()
-	return row.Created < cutoff, nil
+	now := d.opts.Clock.Now()
+	if row.Created < now.Add(-d.opts.Policy.MessageRetention).Unix() {
+		return true, nil
+	}
+	floor, err := d.opts.Store.MinCursor(ctx, groupID,
+		now.Add(-d.opts.Policy.InactivityRemove).Unix())
+	if err != nil {
+		return false, err
+	}
+	return floor > 0, nil
 }
 
 // DeleteMessage tombstones one message. At v1 only the uploading user may delete, from any of

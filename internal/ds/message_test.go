@@ -167,6 +167,9 @@ func TestACatchUpBelowTheMessageRetentionFloorIsPruned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
+	// Thirty-one days pass between the two uploads, so exactly one of them is older than
+	// MessageRetention when the sweep runs.
+	h.clk.Advance(31 * 24 * time.Hour)
 	second, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -176,10 +179,11 @@ func TestACatchUpBelowTheMessageRetentionFloorIsPruned(t *testing.T) {
 		t.Fatalf("before the sweep: %d rows, %v — want both messages", len(rows), err)
 	}
 
-	// Age the group past MessageRetention and run the sweep task 26 owns: everything below the
-	// second message really goes.
-	h.clk.Advance(31 * 24 * time.Hour)
-	n, err := h.repo.PruneAppMessages(ctx, g.id, second.Seq, h.clk.Now().Unix())
+	// The sweep task 26 owns, with its three retention parameters (D14): no eligible cursor has
+	// acknowledged anything, so only the DELIVERY floor — now - MessageRetention — deletes, and
+	// it takes exactly the message below it.
+	n, err := h.repo.PruneAppMessages(ctx, g.id, 0,
+		h.clk.Now().Add(-ds.DefaultPolicy().MessageRetention).Unix(), h.clk.Now().Unix())
 	if err != nil {
 		t.Fatalf("PruneAppMessages: %v", err)
 	}

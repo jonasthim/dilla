@@ -155,10 +155,9 @@ func (d *DS) resetLost(groupID, deviceID id.ID) {
 // at decision points, so one minute of granularity is enough and a test can call the sweep
 // directly.
 //
-// DEVIATION from the task brief, which writes `d.Sweep(ctx)`: there is no `Sweep`. Invariant 6's
-// TTL sweep is `sweepProposals`, landed by task 21 and exported to the tests as
-// `SweepProposalsForTest`; retention pruning is task 26's and joins this tick when it lands. The
-// brief's name is the one task 26 introduces, not one this tree holds.
+// Task 26 replaced the bare `sweepProposals` call with `Sweep`, which runs invariant 6's TTL sweep
+// and then both halves of invariant 10's retention on the same tick. A test drives it by calling
+// `Sweep` against a clock.Fake rather than by waiting on this wall-clock ticker.
 func (d *DS) runSweeper(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -169,7 +168,7 @@ func (d *DS) runSweeper(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := d.sweepProposals(ctx); err != nil {
+			if _, err := d.Sweep(ctx); err != nil {
 				d.log().Error("sweep failed", "err", err)
 			}
 		}
