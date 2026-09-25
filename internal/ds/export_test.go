@@ -92,6 +92,13 @@ func SweepProposalsForTest(d *DS, ctx context.Context) (int, error) {
 // the proposal row itself asserts only the sweep's arithmetic against a number it supplied.
 func ProposalTTLForTest(d *DS, groupKind uint8) time.Duration { return d.proposalTTL(groupKind) }
 
+// ------------------------------------------------------------------- task 22
+
+// ArmedElectionsForTest is how many groups hold a live committer election. Invariant 7's "a group
+// with nobody online arms no timer" is a statement about the delivery service's own memory, and
+// nothing on the wire shows it: the frame that is not sent leaves no trace.
+func ArmedElectionsForTest(d *DS) int { return d.armedElections() }
+
 // PendingJoinsForTest is how many devices of a join storm are waiting for the next commit.
 func PendingJoinsForTest(d *DS, groupID id.ID) int {
 	d.pendingMu.Lock()

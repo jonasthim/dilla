@@ -131,7 +131,7 @@ func TestTheFreezeHoldsWhileSomebodyIsOnlineAndLiftsWhenNobodyIs(t *testing.T) {
 	}
 
 	// The member at leaf 0 opens a real gateway connection and reaches ready.
-	h.online(t, session)
+	h.onlineSession(t, session)
 	frozen, refs, err = ds.FreezeStateForTest(h.ds, ctx, reg.GroupID, 6)
 	if err != nil {
 		t.Fatalf("freezeState: %v", err)
@@ -204,7 +204,7 @@ func TestAProposalPastItsTTLIsVoidAndTheFreezeLifts(t *testing.T) {
 			h := newDSHarness(t)
 			ctx := context.Background()
 			reg, session := h.mustRegister(t)
-			h.online(t, session)
+			h.onlineSession(t, session)
 			ref := h.putDSProposalWithTTL(t, reg.GroupID, 6, uint64(c.ttl.Seconds()))
 
 			if frozen, _ := h.ds.Frozen(ctx, reg.GroupID); !frozen {
@@ -302,7 +302,7 @@ func TestProposeRemoveIssuesAnExternalRemoveThatFreezesTheGroup(t *testing.T) {
 	h := newDSHarness(t)
 	ctx := context.Background()
 	reg, session := h.mustRegister(t)
-	h.online(t, session)
+	h.onlineSession(t, session)
 
 	action := id.New()
 	if err := h.ds.ProposeRemove(ctx, reg.GroupID, 1, action); err != nil {
@@ -760,11 +760,16 @@ func (h *dsHarness) dropMember(t *testing.T, groupID id.ID, leaf uint32) {
 	}
 }
 
-// online puts the session's device on a REAL gateway connection: hello, identify, ready, over a
-// real WebSocket against the real handler. `Gateway.Online` is the single source invariant 5 reads
-// and it is defined over a connection in state ready, so a test that faked it would be asserting
-// the fake.
-func (h *dsHarness) online(t *testing.T, session auth.Session) {
+// onlineSession puts the session's device on a REAL gateway connection: hello, identify, ready,
+// over a real WebSocket against the real handler. `Gateway.Online` is the single source invariant
+// 5 reads and it is defined over a connection in state ready, so a test that faked it would be
+// asserting the fake.
+//
+// It was `online` until task 22, which needs that name for the variadic device-id form its own
+// tests are written against (`h.online(g.members[0], g.members[1])`). Go has no overloading, so
+// the session form is spelled out here; the two differ in what they take, not in what they do —
+// task 22's form records the frames the connection receives, this one does not.
+func (h *dsHarness) onlineSession(t *testing.T, session auth.Session) {
 	t.Helper()
 	h.auth.add(session)
 

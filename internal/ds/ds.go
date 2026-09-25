@@ -161,6 +161,11 @@ type DS struct {
 	pendingMu sync.Mutex
 	pending   map[id.ID][]id.ID
 
+	// elections is invariant 7's in-flight committer round, one per group. It is in memory on
+	// purpose: an election decided while everybody was away is stale by definition, and the
+	// instance re-elects on the first device that reaches READY.
+	elections elections
+
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
@@ -194,18 +199,34 @@ func New(o Options) (*DS, error) {
 	if o.DeviceLists == nil {
 		o.DeviceLists = NewDeviceLists(o.Store, o.Wasm)
 	}
-	return &DS{
+	ds := &DS{
 		opts:   o,
 		states: newStateCache(o.Wasm),
 		stop:   make(chan struct{}),
-	}, nil
+	}
+	ds.elections.m = map[id.ID]*election{}
+	return ds, nil
 }
 
-// Start runs the delivery service's background work. It starts nothing yet: the election watchdog
-// is task 21's and the retention sweeper task 26's, and each adds its goroutine here beside the
-// loop it owns. The method exists now so the composition root and every test call one lifecycle
-// pair — Start and Shutdown — from the first task that builds a DS.
-func (d *DS) Start(_ context.Context) error { return nil }
+// Start runs the delivery service's background work: invariant 7's 2-second election watchdog and
+// the one-minute sweeper that voids proposals past invariant 6's TTL. Task 26 extends the sweeper
+// with retention pruning, on the same tick.
+//
+// Both loops end on Shutdown, which closes d.stop and waits on d.wg. A test that drives the
+// watchdog deterministically calls RunWatchdogOnce against a clock.Fake instead of starting it —
+// these tickers are wall-clock, because a fake clock in production would be a stopped one.
+func (d *DS) Start(ctx context.Context) error {
+	d.wg.Add(2)
+	go func() {
+		defer d.wg.Done()
+		d.runWatchdog(ctx)
+	}()
+	go func() {
+		defer d.wg.Done()
+		d.runSweeper(ctx)
+	}()
+	return nil
+}
 
 func (d *DS) Shutdown(ctx context.Context) error {
 	d.stopOnce.Do(func() { close(d.stop) })

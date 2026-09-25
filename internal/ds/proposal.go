@@ -301,9 +301,17 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 		// otherwise the "outstanding" gauge only ever rises.
 		d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(p.Kind)).Inc()
 	}
-	// A fresh instance proposal is what invariant 7's election exists to get committed. Task 22
-	// owns `RequestCommit` and calls it from here; until it lands the committer learns of the
-	// proposal from the mls.handshake frame above and from GET /v1/groups/{id}/proposals.
+	// A fresh instance proposal is what invariant 7's election exists to get committed, so the
+	// election is held here, the moment the proposal is durable.
+	//
+	// Its error is LOGGED, not returned: the proposal is already written, fanned out and counted,
+	// and answering the caller an error now would say the proposal failed when it did not. A
+	// failed election is not lost either — the watchdog re-elects on its own tick, and so does the
+	// next proposal.
+	if err := d.RequestCommit(ctx, groupID); err != nil {
+		d.log().Error("electing a committer for a fresh instance proposal failed",
+			"group", groupID.String()[:8], "err", err)
+	}
 	return nil
 }
 

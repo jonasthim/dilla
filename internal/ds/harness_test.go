@@ -52,6 +52,15 @@ type dsHarness struct {
 	// than a claim.
 	callsMu sync.Mutex
 	calls   map[string]int64
+
+	// sessions, conns and hello belong to task 22's election harness, whose helpers are in
+	// election_harness_test.go: the session of every member device the fixture exposed, the live
+	// gateway connection of every device a test put online, and the hello frame the last of them
+	// was greeted with. They are fields here because `dsHarness` is one type; a test that never
+	// elects a committer leaves all three nil.
+	sessions map[id.ID]auth.Session
+	conns    map[id.ID]*deviceConn
+	hello    recordedFrame
 }
 
 func newDSHarness(t *testing.T) *dsHarness {
