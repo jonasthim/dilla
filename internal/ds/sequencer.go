@@ -67,13 +67,19 @@ func (d *DS) Handshakes(ctx context.Context, groupID id.ID, session Session, fro
 // this one would keep.
 //
 // It is deliberately one-directional: it can say "a handshake MAY be gone" for a group that has
-// in fact lost nothing (an old group whose first handshake is recent and whose earlier seqs are
+// in fact lost nothing (an OLD group whose first handshake is recent and whose earlier seqs are
 // all messages), and it never says "nothing is gone" about a group that has lost something. An
-// unnecessary rejoin is expensive; serving a log with a silent hole in it forks the client. The
-// remaining over-refusal closes in task 23, where `min(OldestHandshakeSeq, oldest live
-// app-message seq)` becomes computable because `mls_app_messages` exists; the interface contract
-// (ID1) fixes the store's method set, so nothing here invents a `PrunedThroughSeq` to get there
-// sooner.
+// unnecessary rejoin is expensive; serving a log with a silent hole in it forks the client.
+//
+// That residual over-refusal is a KNOWN, ACCEPTED deviation for this wave — ruling 41, plan
+// deviation B20 — not an oversight. The exact test is `min(OldestHandshakeSeq, oldest live
+// app-message seq)`, which needs `mls_app_messages`: that table and `store.Messages` are TASK
+// 23's, and task 23 owes both the replacement of this predicate and the flip of
+// `TestAnOldGroupWithNothingSweptIsStillRefusedUntilTask23` from asserting the refusal to
+// asserting the rows. A `pruned_through_seq` high-water column instead would have to be added to
+// task 19's migration and written by task 26's sweep, so until task 26 it would read 0 on every
+// group and this predicate would serve a silently holed log — the one failure this exists to
+// prevent. The interface contract (ID1) fixes the store's method set for the same reason.
 //
 // The one case this cannot see is an operator LENGTHENING HandshakeRetention after a sweep has
 // already run under a shorter one; protocol/02 fixes the window at 30 days and the DS has no
