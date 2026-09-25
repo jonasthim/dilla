@@ -493,6 +493,107 @@ func TestARefusedMemberProposalIsTakenBackOutOfTheGuestsQueue(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------- endpoint 19
+
+// Endpoint 19's row is `[ref, kind, target_leaf|null, blob, void]`, and `mls_pending_proposals`
+// has no blob column: the bytes are the ones the guest queued, so the answer is a join of the SQL
+// row onto `PublicGroup::queued_proposals`. A row with no queued blob is still a row — the
+// committer needs the ref to know what the instance is waiting for.
+func TestProposalsJoinsTheSqlRowToTheGuestsQueuedBlob(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+	blob := fixtureFile(t, "remove_leaf0.mls")
+
+	// Queue the fixture's proposal in the guest and put its ref in SQL, which is what the DS
+	// proposal path does inside one transaction.
+	var ref []byte
+	if err := ds.WithGroupForTest(h.ds, ctx, reg.GroupID, func(g *mlswasi.PublicGroup) error {
+		var err error
+		ref, err = g.ProposalPut(ctx, 0, blob)
+		return err
+	}); err != nil {
+		t.Fatalf("queue the fixture proposal: %v", err)
+	}
+	target := uint32(0)
+	if err := h.repo.PutProposal(ctx, store.ProposalRow{
+		GroupID: reg.GroupID, Ref: ref, Epoch: 6, Kind: 3, TargetLeaf: &target,
+		Origin: 0, ActionID: id.New(), IssuedAt: h.clk.Now().Unix(), TTL: 86400,
+	}); err != nil {
+		t.Fatalf("PutProposal: %v", err)
+	}
+	voided := h.putDSProposal(t, reg.GroupID, 6, true)
+	h.putDSProposal(t, reg.GroupID, 5, false) // another epoch: not this answer's business
+
+	rows, err := h.ds.Proposals(ctx, reg.GroupID, session)
+	if err != nil {
+		t.Fatalf("Proposals: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("Proposals returned %d rows, want the two of epoch 6 (the void one included)", len(rows))
+	}
+	byRef := map[string]ds.Proposal{}
+	for _, p := range rows {
+		byRef[string(p.Row.Ref)] = p
+	}
+	live, ok := byRef[string(ref)]
+	if !ok {
+		t.Fatal("the queued proposal is missing from the answer")
+	}
+	if !bytes.Equal(live.Blob, blob) {
+		t.Errorf("blob is %d bytes, want the %d the guest queued", len(live.Blob), len(blob))
+	}
+	if live.Row.TargetLeaf == nil || *live.Row.TargetLeaf != 0 {
+		t.Errorf("target_leaf = %v, want 0", live.Row.TargetLeaf)
+	}
+	if live.Row.VoidAt != nil {
+		t.Error("the live proposal is flagged void")
+	}
+	dead, ok := byRef[string(voided)]
+	if !ok {
+		t.Fatal("the void proposal is missing: endpoint 19 lists void rows and flags them, so a " +
+			"client can tell a withdrawn proposal from one it has not seen")
+	}
+	if dead.Row.VoidAt == nil {
+		t.Error("the void proposal is not flagged void")
+	}
+	if len(dead.Blob) != 0 {
+		t.Errorf("a row the guest never queued carried %d bytes of blob", len(dead.Blob))
+	}
+
+	// Member-only, and a non-member is E_NOT_FOUND rather than E_FORBIDDEN, for the same reason
+	// Info, Tree and Handshakes are: the list names leaves and the devices behind them.
+	stranger := auth.Session{UserID: id.New(), DeviceID: id.New(), Scope: auth.ScopeEnrolled}
+	_, err = h.ds.Proposals(ctx, reg.GroupID, stranger)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+		t.Fatalf("a non-member: got %v, want E_NOT_FOUND", err)
+	}
+}
+
+// ------------------------------------------------------ the gaps, named in code
+
+// The brief's step 1 names this test. It cannot be written yet: it needs `DS.Upload` and
+// `DS.Messages`, which are task 23's, and an ACCEPTED commit, which needs a GroupInfo at epoch 7.
+func TestOneSeqSpaceNumbersHandshakesAndMessages(t *testing.T) {
+	t.Skip("needs DS.Upload and DS.Messages (task 23) and an accepted commit, which needs a " +
+		"GroupInfo at epoch 7: testkit/fixtures/ds-1500 ships exactly one GroupInfo " +
+		"(group_info.mls, epoch 6, signer leaf 0), so invariant 4's epoch-n+1 clause cannot be " +
+		"satisfied by any committed material")
+}
+
+// The brief's step 1 names this test too. The whole accepted path — Merge, nextSeq,
+// AppendHandshake, persistState, replaceMembersTx, DeleteProposals, fanOutCommit and both
+// DSCommits counters — is unexecuted until the fixture exports a merged GroupInfo beside one of
+// the commits. That is a blocking prerequisite for task 23, not a recommendation.
+func TestAnAcceptedCommitFansOutHandshakeEpochChangedAndWelcomes(t *testing.T) {
+	t.Skip("no commit in this repository can be accepted: the fixture holds one GroupInfo, at " +
+		"epoch 6, and invariant 4 wants epoch n+1. Exporting a merged group_info beside " +
+		"commits/09.mls (the self-update, which adds nobody and so needs no device list) is the " +
+		"one fixture change that makes the accepted path, the seq space, the fan-out and the " +
+		"stale-eviction path testable. The Welcome half is task 24's regardless")
+}
+
 // ---------------------------------------------------------------- the helpers
 
 // fixtureFile reads one file of the committed 1,500-leaf fixture. tb may be nil, which the table

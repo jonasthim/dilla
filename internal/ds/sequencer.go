@@ -35,6 +35,16 @@ func (d *DS) Handshakes(ctx context.Context, groupID id.ID, session Session, fro
 	}
 	// `from` is the first seq the caller still wants. A cursor at floor-1 is contiguous with the
 	// log; anything below it has a hole the instance cannot fill, which is a resync, not a retry.
+	//
+	// OPEN (needs a controller ruling before task 23 consumes the cursor semantics): `floor` is
+	// the oldest surviving HANDSHAKE, but `from` is a cursor in the ONE seq space handshakes and
+	// application messages share. A group whose seqs 1-5 are application messages and whose first
+	// handshake is at seq 6 therefore answers E_PRUNED to a client catching up from 0, even though
+	// nothing was ever pruned — and protocol/02's error table makes E_PRUNED mean "resync by
+	// external commit", so a healthy member is sent through a full rejoin. The rule below is the
+	// task-20 brief's verbatim and is kept as written; the fix is either a recorded prune
+	// high-water mark or min(OldestHandshakeSeq, oldest live app-message seq) once task 23 lands
+	// `mls_app_messages`, and both change what a cursor means, which is not this task's to decide.
 	if floor > 0 && from+1 < floor {
 		return nil, errPruned(from, floor)
 	}

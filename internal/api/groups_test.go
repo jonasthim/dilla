@@ -166,6 +166,136 @@ func TestAMalformedGroupIdIsRefusedBeforeTheDeliveryService(t *testing.T) {
 	}
 }
 
+// Endpoint 4 over the wire: the catch-up stream is a CBOR array of
+// [seq, epoch, kind, sender_leaf|null, blob] rows over the group's ONE seq space, and a cursor
+// below the retention floor is 410 E_PRUNED — the answer that tells a client to resync instead of
+// retrying. Both shapes are what a client decodes, so both are asserted here rather than only at
+// the delivery service's own boundary.
+func TestTheHandshakeStreamIsServedAsRowsAndPrunesBelowItsFloor(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	member := h.memberToken(t)
+	ctx := context.Background()
+
+	// Seqs 10 and 20, with the space between them belonging to application messages: one cursor
+	// numbers both streams, so the handshake run a client sees is sparse.
+	leaf := uint32(0)
+	now := h.deps.Clock.Now().Unix()
+	for _, row := range []store.HandshakeRow{
+		{GroupID: h.groupID, Seq: 10, Epoch: 6, Kind: 1, SenderLeaf: &leaf, Blob: []byte("commit"), Created: now},
+		{GroupID: h.groupID, Seq: 20, Epoch: 7, Kind: 0, Blob: []byte("proposal"), Created: now},
+	} {
+		if err := h.deps.Repo.AppendHandshake(ctx, row); err != nil {
+			t.Fatalf("AppendHandshake: %v", err)
+		}
+	}
+
+	res := h.do(t, http.MethodGet,
+		"/v1/groups/"+h.groupID.String()+"/handshakes?from=9&limit=100", member, nil)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", res.Code, res.Body.String())
+	}
+	var rows []struct {
+		_      struct{} `cbor:",toarray"`
+		Seq    uint64
+		Epoch  uint64
+		Kind   uint8
+		Sender *uint32
+		Blob   []byte
+	}
+	if err := cborx.Unmarshal(res.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode the handshake array: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want the two at seq 10 and 20", len(rows))
+	}
+	if rows[0].Seq != 10 || rows[0].Epoch != 6 || rows[0].Kind != 1 {
+		t.Errorf("row 0 = [%d %d %d], want [10 6 1]", rows[0].Seq, rows[0].Epoch, rows[0].Kind)
+	}
+	if rows[0].Sender == nil || *rows[0].Sender != 0 {
+		t.Errorf("row 0 sender = %v, want leaf 0", rows[0].Sender)
+	}
+	if !bytes.Equal(rows[0].Blob, []byte("commit")) {
+		t.Errorf("row 0 blob = %q", rows[0].Blob)
+	}
+	if rows[1].Seq != 20 || rows[1].Sender != nil {
+		t.Errorf("row 1 = seq %d sender %v, want seq 20 and a null sender", rows[1].Seq, rows[1].Sender)
+	}
+
+	// A cursor two or more below the oldest surviving handshake has a hole the instance cannot
+	// fill: 410, not 200 with a short answer.
+	res = h.do(t, http.MethodGet,
+		"/v1/groups/"+h.groupID.String()+"/handshakes?from=0", member, nil)
+	if res.Code != http.StatusGone {
+		t.Fatalf("status = %d, want 410: %s", res.Code, res.Body.String())
+	}
+	if got := errorCode(t, res); got != string(server.CodePruned) {
+		t.Fatalf("code = %s, want %s", got, server.CodePruned)
+	}
+}
+
+// Endpoint 5's refusal for invariant 3, over the wire. E_COMMIT_CONFLICT is one of the four codes
+// that carry extra elements, so the body is the FIVE-element array
+// [code, detail, retry_after_ms, winning_commit, proposals] — the loser processes the winner and
+// re-commits over the outstanding refs, and a body that stops at three leaves it nothing to act
+// on.
+func TestACommitForADecidedEpochIsFourZeroNineCarryingTheWinnerAndTheProposals(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	member := h.memberToken(t)
+	ctx := context.Background()
+
+	// The group sits at the fixture's epoch 6; the handshake that carried it there is the winner.
+	winner := apiFixtureFile(t, "commits/09.mls")
+	if err := h.deps.Repo.AppendHandshake(ctx, store.HandshakeRow{
+		GroupID: h.groupID, Seq: 1, Epoch: 6, Kind: 1, Blob: winner,
+		Created: h.deps.Clock.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("AppendHandshake: %v", err)
+	}
+	ref := id.New()
+	if err := h.deps.Repo.PutProposal(ctx, store.ProposalRow{
+		GroupID: h.groupID, Ref: ref[:], Epoch: 6, Kind: 3, Origin: 0, ActionID: id.New(),
+		IssuedAt: h.deps.Clock.Now().Unix(), TTL: 86400,
+	}); err != nil {
+		t.Fatalf("PutProposal: %v", err)
+	}
+
+	body := mustCBOR(t, []any{uint64(5), winner, h.fixture.groupInfo, []any{}, nil})
+	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/commit", member, body)
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", res.Code, res.Body.String())
+	}
+	var out []any
+	if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode the error body: %v", err)
+	}
+	if len(out) != 5 {
+		t.Fatalf("the conflict body has %d elements, want 5: "+
+			"[code, detail, retry_after_ms, winning_commit, proposals]", len(out))
+	}
+	if out[0] != string(server.CodeCommitConflict) {
+		t.Fatalf("code = %v, want %s", out[0], server.CodeCommitConflict)
+	}
+	if out[2] != nil {
+		t.Errorf("retry_after_ms = %v, want null: a conflict is not retried after a delay", out[2])
+	}
+	got, ok := out[3].([]byte)
+	if !ok {
+		t.Fatalf("winning_commit is %T, want a bstr", out[3])
+	}
+	if !bytes.Equal(got, winner) {
+		t.Errorf("winning_commit is %d bytes, want the %d-byte winner", len(got), len(winner))
+	}
+	refs, ok := out[4].([]any)
+	if !ok || len(refs) != 1 {
+		t.Fatalf("proposals = %v, want the one outstanding ref", out[4])
+	}
+	if first, ok := refs[0].([]byte); !ok || !bytes.Equal(first, ref[:]) {
+		t.Errorf("proposals[0] = %x, want %x", refs[0], ref[:])
+	}
+}
+
 // ------------------------------------------------------------------ harness
 
 type groupsAPI struct {
@@ -391,6 +521,16 @@ func loadAPIFixture() (apiFixture, error) {
 		return apiFixture{}, err
 	}
 	return out, nil
+}
+
+// apiFixtureFile reads one file of the committed 1,500-leaf fixture.
+func apiFixtureFile(t *testing.T, rel string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(apiFixtureDir, rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	return raw
 }
 
 // apiWasmCacheDir compiles the large OpenMLS module once per `go test` run rather than once per
