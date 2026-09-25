@@ -168,6 +168,14 @@ func (h *dsHarness) messageWithAAD(t *testing.T, g *dsMessageGroup, n int) []byt
 	return privateMessage(t, n, g.epoch, 64)
 }
 
+// messageOfContentType frames a message whose MLS content_type byte is `ct` — 1 application,
+// 2 proposal, 3 commit. Everything else is well formed: a 32-byte commitment, the group's own
+// epoch, an ordinary ciphertext. Only the one byte invariant 8's parse reads differs.
+func (h *dsHarness) messageOfContentType(t *testing.T, g *dsMessageGroup, ct byte) []byte {
+	t.Helper()
+	return privateMessageOfContentType(t, 32, g.epoch, 64, ct)
+}
+
 // messageOfSize is a well-formed message whose SERIALISED length is exactly `total` bytes, which
 // is the number the 131072-byte cap is measured against.
 func (h *dsHarness) messageOfSize(t *testing.T, g *dsMessageGroup, total int) []byte {
@@ -189,12 +197,24 @@ func (h *dsHarness) messageOfSize(t *testing.T, g *dsMessageGroup, total int) []
 // possible here (the delivery service holds no group secrets, by design).
 func privateMessage(t *testing.T, aadLen int, epoch uint64, ctLen int) []byte {
 	t.Helper()
+	return privateMessageOfContentType(t, aadLen, epoch, ctLen, contentTypeApplication)
+}
+
+// contentTypeApplication is the one content_type endpoint 7 accepts. 2 is proposal and 3 is
+// commit; both are handshakes, which reach the instance through endpoints 5 and 6 and nowhere
+// else.
+const contentTypeApplication = 1
+
+// privateMessageOfContentType is privateMessage with the content_type byte chosen by the caller,
+// so a test can frame the handshake an upload must refuse.
+func privateMessageOfContentType(t *testing.T, aadLen int, epoch uint64, ctLen int, contentType byte) []byte {
+	t.Helper()
 	var out []byte
 	out = binary.BigEndian.AppendUint16(out, 1) // protocol_version: MLS 1.0
 	out = binary.BigEndian.AppendUint16(out, 2) // wire_format: PrivateMessage
 	out = appendVLBytes(t, out, []byte("group-id"))
 	out = binary.BigEndian.AppendUint64(out, epoch)
-	out = append(out, 1) // content_type: application
+	out = append(out, contentType)
 	out = appendVLBytes(t, out, bytes.Repeat([]byte{5}, aadLen))
 	out = appendVLBytes(t, out, bytes.Repeat([]byte{7}, 16))
 	out = appendVLBytes(t, out, bytes.Repeat([]byte{9}, ctLen))

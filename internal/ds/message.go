@@ -9,6 +9,11 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 )
 
+// contentTypeApplication is RFC 9420's ContentType `application`, the only one endpoint 7
+// accepts. `proposal` (2) and `commit` (3) are handshakes and reach the instance through
+// endpoints 5 and 6, which sequence them into `mls_handshakes`.
+const contentTypeApplication = 1
+
 // UploadResult carries Epoch as well as the endpoint's three response elements. The endpoint's
 // body is [seq, franking_tag, recv_ts] (§5.1 row 7) and does NOT carry the epoch; the Go value
 // does, because every in-process caller — AdvanceCursor, the retention tests, the testkit host —
@@ -57,6 +62,16 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 	}
 	if len(meta.AuthenticatedData) != 32 {
 		return UploadResult{}, errCommitmentInvalid(len(meta.AuthenticatedData))
+	}
+	// facts-ds-contract.md §1.2's parse ends "u8 content_type (must be 1)". 2 is a Proposal and 3
+	// a Commit, and both are handshakes: the instance is the sole sequencer for them (invariants
+	// 1-5), so one accepted here would reach every member as `message.ct` with a seq out of the
+	// group's one shared seq space and no `mls_handshakes` row behind it — the fork invariant 9
+	// exists to detect. The guest reports the byte without decrypting; only this layer can refuse
+	// on it.
+	if meta.ContentType != contentTypeApplication {
+		return UploadResult{}, errCommitInvalid("content_type",
+			"only application messages may be uploaded here")
 	}
 	if meta.Epoch != row.Epoch {
 		return UploadResult{}, errCommitInvalid("epoch", "the message's epoch is not the group's")

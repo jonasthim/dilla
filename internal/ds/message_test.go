@@ -28,6 +28,43 @@ func TestAnUploadWithTheWrongCommitmentLengthIsRefused(t *testing.T) {
 	}
 }
 
+// facts-ds-contract.md §1.2 fixes endpoint 7's parse: "strip u16 version + u16 wire format
+// (must be 2), then read opaque<V> group_id, uint64 epoch, u8 content_type (MUST BE 1), then
+// opaque<V> authenticated_data". The guest reports the byte; only the delivery service can refuse
+// on it.
+//
+// It is not a formality. The instance is the SOLE SEQUENCER for handshakes (invariants 1-5): a
+// Commit or a Proposal accepted here would reach every member as `message.ct`, carrying a seq out
+// of the group's one shared seq space with no `mls_handshakes` row behind it — precisely the fork
+// invariant 9 exists to detect.
+func TestOnlyAnApplicationMessageMayBeUploaded(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	// 2 is proposal, 3 is commit. Both are well formed in every other respect: the group's own
+	// epoch, a 32-byte commitment, an ordinary ciphertext.
+	for _, ct := range []byte{2, 3} {
+		_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfContentType(t, g, ct))
+		var dsErr *ds.Error
+		if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" {
+			t.Fatalf("content_type %d: got %v, want E_COMMIT_INVALID", ct, err)
+		}
+		if dsErr.Rule != "content_type" {
+			t.Errorf("content_type %d: rule = %q, want content_type", ct, dsErr.Rule)
+		}
+	}
+	// Nothing was sequenced, stored or franked by either refusal.
+	rows, err := h.ds.Messages(context.Background(), g.id, g.session, 0, 10)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("a refused handshake left %d rows in mls_app_messages", len(rows))
+	}
+	if _, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfContentType(t, g, 1)); err != nil {
+		t.Fatalf("content_type 1 must be accepted: %v", err)
+	}
+}
+
 func TestAnUploadFromADeviceWhoseLeafIsGoneIsRefused(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
