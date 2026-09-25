@@ -22,7 +22,20 @@ import (
 // test names, so that TestTheWatchdogNudgesTheNextCandidate — which calls RequestCommit without
 // proposing anything — has something to elect for too; see the helper.
 //
-// TWO TESTS OF THE BRIEF ARE NOT HERE, and neither is silently dropped:
+// TWO TESTS OF THE BRIEF ARE NOT HERE. Both are now ASSIGNED, in the plan's part-1b deviation
+// table and in the SDD workspace rulings, so the task that inherits each one reads it where it
+// works rather than in task 22's report:
+//
+//   - TestTheBackoffWindowIsAdvertisedInHello -> TASK 27a (deviation B23, ruling 44), carried
+//     verbatim, together with the `hello` 7 -> 9 amendment and the `Backoff`/`BackoffJitter`
+//     fields on `gateway.Options` that let `ds.Policy` reach the gateway at all. The comment on
+//     `Policy.Backoff` (internal/ds/ds.go) states the five places that move together.
+//   - TestACommitThatReissuesAnOmittedRemoveDoesNotDeadlock -> TASK 25 (deviation B24, ruling 45),
+//     in the same commit that exempts `checkAppliedProposals`' clause 1 for
+//     `o.external && !frozen` (B21) and beside the merged GroupInfo the fixture owes. The comment
+//     on `reissueOmitted` (internal/ds/freeze.go) states the property it guards.
+//
+// Why neither could be written here:
 //
 //   - TestTheBackoffWindowIsAdvertisedInHello asserts backoff_ms and backoff_jitter_ms as two new
 //     elements of the `hello` payload. `hello` is a SEVEN-element frame in protocol/02 §2.3 (line

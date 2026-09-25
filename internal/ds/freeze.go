@@ -101,6 +101,15 @@ func (d *DS) requireNoFreeze(ctx context.Context, groupID id.ID, epoch uint64) e
 // again to queue the re-signed proposal in the guest, and the handle lock withGroup takes is a
 // plain sync.Mutex. Calling it from inside the commit's own withGroup closure would deadlock that
 // group's request goroutine for the life of the process.
+//
+// THE REGRESSION GUARD FOR THAT DEADLOCK IS CARRIED TO TASK 25 (deviation B24, ruling 45). Task
+// 22's `TestACommitThatReissuesAnOmittedRemoveDoesNotDeadlock` — the timeout is its assertion —
+// cannot be written until a commit can be ACCEPTED here, which is the same blocker as B21's. The
+// property holds today (`ProposeRemove` is a thin locking wrapper over `proposeRemoveLocked`,
+// `reissue` calls only the lock-free form, and `RequestCommit`, which task 22 added to this path,
+// takes `elections.mu`, the store and the gateway — never `d.lock(groupID)`), but nothing FAILS if
+// a later task makes anything reachable from `storeInstanceProposal` take the group lock. Task 25
+// must land that test in the same commit that exempts clause 1.
 func (d *DS) reissueOmitted(ctx context.Context, groupID id.ID, oldEpoch uint64, applied []mlswasi.AppliedProposal) error {
 	rows, err := d.opts.Store.ListProposals(ctx, groupID, oldEpoch, false)
 	if err != nil {
