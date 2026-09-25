@@ -167,10 +167,19 @@ func (d *DS) ProposeAddBatch(ctx context.Context, groupID id.ID, devices []id.ID
 // table (task 19's schema)". Neither the methods nor the table exist — `store.MLS` (deviation B13)
 // names the pair but task 3 did not declare it and `00002_mls.sql` creates no such table — and
 // adding a migration, two sqlc query sets and two adapters is well outside a task whose Files are
-// three new files in `internal/ds`. The queue therefore lives in this process. That is strictly
-// better than dropping the tail and strictly worse than the table: a restart between the batch and
-// the next commit loses the waiting devices, and they are re-queued only by the next
-// ProposeAddBatch. The durable form is a follow-up the task that adds `pending_joins` owns.
+// three new files in `internal/ds`. The queue therefore lives in this process.
+//
+// THE LOSS IS SILENT, and that is the cost to weigh. A restart between a 1,000-device
+// `ProposeAddBatch` and the next commit drops every device still waiting: nothing logs it, nothing
+// retries it, no row records that they were ever queued, and they are proposed again only if some
+// caller happens to issue another `ProposeAddBatch` for the same devices. The chaos scenario
+// `join_storm_256_batched` therefore cannot be satisfied durably, and Plan 2's materialised
+// private channel — which consumes `ds.ProposeAddBatch` — inherits it. This is an unassigned
+// prerequisite, not a design choice: deviation B13 already names `QueuePendingJoins` /
+// `TakePendingJoins` for `store.MLS`; the migration, the two sqlc query sets and the two adapters
+// are owned by TASK 23 (deviation B22, ruling 43), the last task in this plan that lands a
+// migration pair. These two functions are deliberately the single seam, so that swap is a
+// two-function change with no other caller to touch.
 func (d *DS) queuePendingJoins(groupID id.ID, devices []id.ID) {
 	d.pendingMu.Lock()
 	defer d.pendingMu.Unlock()

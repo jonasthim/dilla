@@ -370,6 +370,19 @@ func (d *DS) checkAppliedProposals(ctx context.Context, groupID id.ID, row store
 		applied[string(a.ProposalRef)] = struct{}{}
 	}
 	// Clause 1: every outstanding non-void DS proposal is referenced.
+	//
+	// TASK 25 OWES THIS CLAUSE ONE EXEMPTION (deviation B21, ruling 42). Invariant 5's
+	// nobody-online case requires the EXTERNAL commit to be ACCEPTED while instance proposals are
+	// outstanding, and the omitted ones to be re-issued for the new epoch afterwards — which is
+	// what `reissueOmitted` (freeze.go) exists to do at commit step (9). As written, clause 1
+	// refuses ANY commit that omits a non-void origin-0 row at the current epoch, external or not,
+	// so step (9) is never reached on the one path that needs it and `reissueOmitted` cannot fire.
+	// The exemption task 25 must add here is: skip origin-0 rows when `o.external && !frozen`,
+	// i.e. when the commit is external AND the freeze has lifted because nobody is online
+	// (`freezeState`'s own answer — never an unconditional external carve-out, which would let an
+	// outsider commit straight through a live freeze). Task 21 could not add it: nothing sets
+	// `commitOptions.external` until task 24/25, and no fixture in this repository can produce an
+	// acceptable commit, so the exemption would have shipped untested and unexercised.
 	for _, pending := range outstanding {
 		if pending.Origin != 0 || pending.VoidAt != nil {
 			continue

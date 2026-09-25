@@ -91,6 +91,12 @@ func (d *DS) requireNoFreeze(ctx context.Context, groupID id.ID, epoch uint64) e
 // new epoch, and keeps the freeze. A proposal can only be omitted through invariant 5's
 // nobody-online exception, so this runs exactly on that path.
 //
+// IT CANNOT FIRE UNTIL TASK 25 (deviation B21, ruling 42). It is wired at commit step (9), and
+// `checkAppliedProposals`' clause 1 — step (4) — already refuses every commit that omits a
+// non-void origin-0 proposal at the current epoch, with no exemption for the external commit
+// invariant 5 accepts when nobody is online. Task 25 owes clause 1 that exemption as well as the
+// `commitOptions.external` flag; the comment at clause 1 in commit.go states the exact shape.
+//
 // It runs with the group lock held but OUTSIDE withGroup: everything it reaches calls withGroup
 // again to queue the re-signed proposal in the guest, and the handle lock withGroup takes is a
 // plain sync.Mutex. Calling it from inside the commit's own withGroup closure would deadlock that
