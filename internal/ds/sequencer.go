@@ -34,21 +34,57 @@ func (d *DS) Handshakes(ctx context.Context, groupID id.ID, session Session, fro
 		return nil, err
 	}
 	// `from` is the first seq the caller still wants. A cursor at floor-1 is contiguous with the
-	// log; anything below it has a hole the instance cannot fill, which is a resync, not a retry.
+	// log; below that the log MAY have a hole the instance cannot fill, which is a resync, not a
+	// retry.
 	//
-	// OPEN (needs a controller ruling before task 23 consumes the cursor semantics): `floor` is
-	// the oldest surviving HANDSHAKE, but `from` is a cursor in the ONE seq space handshakes and
-	// application messages share. A group whose seqs 1-5 are application messages and whose first
-	// handshake is at seq 6 therefore answers E_PRUNED to a client catching up from 0, even though
-	// nothing was ever pruned — and protocol/02's error table makes E_PRUNED mean "resync by
-	// external commit", so a healthy member is sent through a full rejoin. The rule below is the
-	// task-20 brief's verbatim and is kept as written; the fix is either a recorded prune
-	// high-water mark or min(OldestHandshakeSeq, oldest live app-message seq) once task 23 lands
-	// `mls_app_messages`, and both change what a cursor means, which is not this task's to decide.
+	// MAY, because `floor` is the oldest surviving HANDSHAKE while `from` is a cursor in the ONE
+	// seq space handshakes and application messages share: a group whose seqs 1-19 carry messages
+	// and whose first handshake sits at 20 is below its floor from seq 0 with nothing ever
+	// deleted. Refusing that is not a harmless over-refusal — protocol/02's error table makes
+	// E_PRUNED mean "resync by external commit", so it sends a healthy member through a full
+	// rejoin. So the floor alone does not refuse: `mayHavePrunedHandshakes` has to agree that a
+	// handshake CAN already be gone.
 	if floor > 0 && from+1 < floor {
-		return nil, errPruned(from, floor)
+		gone, err := d.mayHavePrunedHandshakes(ctx, groupID)
+		if err != nil {
+			return nil, err
+		}
+		if gone {
+			return nil, errPruned(from, floor)
+		}
 	}
 	return d.opts.Store.ListHandshakes(ctx, groupID, from, limit)
+}
+
+// mayHavePrunedHandshakes answers whether ANY handshake of this group can already have been
+// deleted.
+//
+// The retention sweep has exactly one deletion rule for handshakes — `DELETE FROM mls_handshakes
+// WHERE created < now - HandshakeRetention` — and every row of a group is younger than the group
+// itself. A group younger than the retention window has therefore lost nothing, whatever its
+// floor looks like, and the gap below the floor belongs to the other stream in the shared space.
+// The cutoff only ever moves forward with the clock, so an earlier sweep cannot have deleted what
+// this one would keep.
+//
+// It is deliberately one-directional: it can say "a handshake MAY be gone" for a group that has
+// in fact lost nothing (an old group whose first handshake is recent and whose earlier seqs are
+// all messages), and it never says "nothing is gone" about a group that has lost something. An
+// unnecessary rejoin is expensive; serving a log with a silent hole in it forks the client. The
+// remaining over-refusal closes in task 23, where `min(OldestHandshakeSeq, oldest live
+// app-message seq)` becomes computable because `mls_app_messages` exists; the interface contract
+// (ID1) fixes the store's method set, so nothing here invents a `PrunedThroughSeq` to get there
+// sooner.
+//
+// The one case this cannot see is an operator LENGTHENING HandshakeRetention after a sweep has
+// already run under a shorter one; protocol/02 fixes the window at 30 days and the DS has no
+// knob for it.
+func (d *DS) mayHavePrunedHandshakes(ctx context.Context, groupID id.ID) (bool, error) {
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if err != nil {
+		return false, err
+	}
+	cutoff := d.opts.Clock.Now().Add(-d.opts.Policy.HandshakeRetention).Unix()
+	return row.Created < cutoff, nil
 }
 
 // Outstanding is every non-void proposal of the group's current epoch. It is the list both

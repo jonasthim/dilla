@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -359,11 +360,14 @@ func TestTheHandshakeStreamIsMemberOnlyAndSparseOverTheOneSeqSpace(t *testing.T)
 }
 
 // A `from` below the retention floor is E_PRUNED, which tells the client to resync rather than to
-// retry. The floor is the oldest handshake still in the log.
+// retry. The floor is the oldest handshake still in the log, and the group is old enough for the
+// sweep to have reached it: the test below pins the other half of the rule, that a younger group's
+// gap below the floor is the message stream's and not a hole.
 func TestACatchUpBelowTheRetentionFloorIsPruned(t *testing.T) {
 	h := newDSHarness(t)
 	ctx := context.Background()
 	reg, session := h.mustRegister(t)
+	h.clk.Advance(31 * 24 * time.Hour) // past HandshakeRetention: this group can have been swept
 	h.appendHandshake(t, reg.GroupID, 20, 6, 1, []byte("commit"))
 
 	if _, err := h.ds.Handshakes(ctx, reg.GroupID, session, 19, 100); err != nil {
@@ -376,6 +380,30 @@ func TestACatchUpBelowTheRetentionFloorIsPruned(t *testing.T) {
 	}
 	if dsErr.Status != 410 {
 		t.Errorf("status = %d, want 410", dsErr.Status)
+	}
+}
+
+// The floor is about PRUNING, not about the shape of the seq space. Handshakes and application
+// messages share ONE seq space, so a group whose early seqs carry messages has its first handshake
+// well above 1 with nothing ever deleted — and a healthy member catching up from 0 must then be
+// SERVED, not sent through the full external-commit rejoin protocol/02's error table makes
+// E_PRUNED mean. Nothing can have been pruned from a group younger than HandshakeRetention: the
+// sweep deletes handshakes by `created`, and every row of a group is younger than the group.
+func TestAFirstHandshakeAboveSeqOneIsNotAPrunedLog(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+
+	// Seqs 1-19 belong to the message stream (task 23 uploads them); seq 20 is this group's FIRST
+	// handshake, and no sweep has ever run.
+	h.appendHandshake(t, reg.GroupID, 20, 6, 1, []byte("commit"))
+
+	rows, err := h.ds.Handshakes(ctx, reg.GroupID, session, 0, 100)
+	if err != nil {
+		t.Fatalf("catching up from 0 on a group that has pruned nothing: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Seq != 20 {
+		t.Fatalf("handshakes = %v, want the one row at seq 20", rows)
 	}
 }
 

@@ -222,8 +222,11 @@ func TestTheHandshakeStreamIsServedAsRowsAndPrunesBelowItsFloor(t *testing.T) {
 		t.Errorf("row 1 = seq %d sender %v, want seq 20 and a null sender", rows[1].Seq, rows[1].Sender)
 	}
 
-	// A cursor two or more below the oldest surviving handshake has a hole the instance cannot
-	// fill: 410, not 200 with a short answer.
+	// A cursor two or more below the oldest surviving handshake of a group the sweep can already
+	// have reached has a hole the instance cannot fill: 410, not 200 with a short answer. The
+	// group must be older than HandshakeRetention for that to be true — below the window the same
+	// gap is the message stream's, which internal/ds pins.
+	h.clk.Advance(31 * 24 * time.Hour)
 	res = h.do(t, http.MethodGet,
 		"/v1/groups/"+h.groupID.String()+"/handshakes?from=0", member, nil)
 	if res.Code != http.StatusGone {
@@ -304,6 +307,10 @@ type groupsAPI struct {
 	groupID id.ID
 	fixture apiFixture
 	session string // an enrolled session that is NOT one of the group's leaves
+	// clk is the DELIVERY SERVICE's clock, which is not deps.Clock: the guest validates the
+	// fixture's KeyPackage lifetimes against it, and a test that needs a group old enough to have
+	// been swept advances this one and leaves the session clock alone.
+	clk *clock.Fake
 }
 
 // newGroupsAPI mounts the delivery-service routes on the same mux, repository and sessions the
@@ -346,7 +353,7 @@ func newGroupsAPI(t *testing.T) *groupsAPI {
 	groups.RegisterSequencer(mux, deps.Sessions)
 
 	_, _, token := seedAPISession(t, deps)
-	return &groupsAPI{mux: mux, deps: deps, groupID: f.groupID, fixture: f, session: token}
+	return &groupsAPI{mux: mux, deps: deps, groupID: f.groupID, fixture: f, session: token, clk: clk}
 }
 
 func (h *groupsAPI) createBody(t *testing.T) []byte {
