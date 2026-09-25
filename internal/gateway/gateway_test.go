@@ -198,10 +198,12 @@ func TestResumeReplaysTheMissedFramesAndRotatesTheToken(t *testing.T) {
 	h.suspend(c)
 
 	s := newRecordingSink(16, false)
-	go h.gw.serve(context.Background(), s, "bearer")
+	go h.gw.serve(context.Background(), s, h.tokenFor(c.deviceID))
 	h.readFrom(t, s) // hello
 
-	p, err := payload("bearer", before, h.generation, uint64(1))
+	// Element 0 is the session token, and it is resolved: a resume is not authenticated by the
+	// resume token alone.
+	p, err := payload(h.tokenFor(c.deviceID), before, h.generation, uint64(1))
 	if err != nil {
 		t.Fatalf("payload: %v", err)
 	}

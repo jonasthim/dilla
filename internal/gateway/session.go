@@ -39,12 +39,16 @@ type conn struct {
 	pairingGroup *id.ID // ScopeProvisional only; see interfaces §2.2 point 4
 	tokenHash    []byte
 	resume       []byte // 32 CSPRNG bytes, rotated on every resumed
-	n            uint64
-	groups       map[id.ID]struct{}
-	lastLive     time.Time
-	ready        time.Time
-	suspendedAt  time.Time
-	pingAt       time.Time
+	// noResume is set when this connection was closed with a code protocol/02 marks as NOT
+	// resumable (4004 session_revoked, 4009 session_timeout). suspend refuses to park such a
+	// connection in the resume window, so its token dies with the socket.
+	noResume    bool
+	n           uint64
+	groups      map[id.ID]struct{}
+	lastLive    time.Time
+	ready       time.Time
+	suspendedAt time.Time
+	pingAt      time.Time
 	// The versions this connection negotiated at identify, echoed in ready.
 	wire, e2ee, media uint64
 
@@ -53,15 +57,12 @@ type conn struct {
 	gw     *Gateway
 }
 
-// nextN allocates this connection's replay sequence. Non-replayable frames never consume one.
-func (c *conn) nextN(replay bool) uint64 {
-	if !replay {
-		return 0
-	}
+// denyResume marks the connection dead for resume purposes. It is called before the socket is
+// closed with a non-resumable code, and it is what suspend and CloseDevice read.
+func (c *conn) denyResume() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.n++
-	return c.n
+	c.noResume = true
+	c.mu.Unlock()
 }
 
 // currentWriter reads the connection's writer under the lock. The writer is REPLACED on a resume —
@@ -74,14 +75,28 @@ func (c *conn) currentWriter() *writer {
 }
 
 // send stamps, rings and queues one frame.
+//
+// Allocating n, ringing the frame and handing it to the writer is ONE critical section. Two
+// producers delivering to the same connection concurrently — DeliverGroup for two groups that
+// share a device, or a Welcome racing a group fan-out — would otherwise be stamped n = k and
+// n = k+1 and then enqueued in the opposite order, so the client sees n go backwards and answers
+// with close 4007. `go test -race` cannot see that: it is an ordering bug, not a data race.
+// The writer's own enqueue is non-blocking, so the lock is never held across I/O.
 func (c *conn) send(f Frame) {
-	n := c.nextN(f.Replay)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var n uint64
 	if f.Replay {
+		c.n++
+		n = c.n
 		if b, err := Encode(f, n); err == nil {
 			c.ring.add(n, b)
 		}
 	}
-	c.currentWriter().enqueue(f, n)
+	if c.writer == nil {
+		return
+	}
+	c.writer.enqueue(f, n)
 }
 
 // mark records a liveness signal: ready, resumed or a heartbeat frame. Online is defined over
@@ -354,9 +369,15 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 	return c, true
 }
 
-// resumeConnection handles op 2: [bearer, resume_token, generation, last_n]. On success it sends
-// `resumed` [replayed_from, replayed_to], replays the ring, and rotates the resume token — which
-// is what makes §6.1's "rotated on every resumed" true end to end rather than only in a unit test.
+// resumeConnection handles op 2: [session_token, resume_token, generation, last_n]. On success it
+// sends `resumed` [replayed_from, replayed_to], replays the ring, and rotates the resume token —
+// which is what makes §6.1's "rotated on every resumed" true end to end rather than only in a
+// unit test.
+//
+// Element 0 is a CREDENTIAL, not decoration. A resume that is authenticated by possession of the
+// resume token alone would let a device whose sessions were just revoked back into the live
+// registry for the whole ResumeWindow, so the session token is resolved through Options.Auth and
+// the session it names must be the connection's own device.
 func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*conn, bool) {
 	refuse := func(reason string) (*conn, bool) {
 		if p, err := InvalidSessionPayload(false, reason); err == nil {
@@ -367,6 +388,10 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 			}
 		}
 		return nil, false
+	}
+	bearer, err := rawText(in.Payload[0])
+	if err != nil {
+		return refuse("malformed session token")
 	}
 	token, err := rawBytes(in.Payload[1])
 	if err != nil {
@@ -388,6 +413,18 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	if !ok {
 		return refuse("unknown resume token")
 	}
+	// The credential may have travelled on the HTTP upgrade instead of in the payload, exactly as
+	// identify allows.
+	if bearer == "" {
+		bearer = tokenFromHandshake(in)
+	}
+	session, err := g.identify(ctx, bearer)
+	if err != nil {
+		return refuse("unauthenticated")
+	}
+	if session.DeviceID != c.deviceID {
+		return refuse("resume token does not belong to this session")
+	}
 	out, err := c.tryResume(token, generation, lastN, g.opts.Generation)
 	if err != nil {
 		g.suspended.Delete(string(token))
@@ -407,7 +444,6 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	}, g.opts.Clock, g.opts.Log)
 	w := c.writer
 	c.mu.Unlock()
-	g.reg.add(c)
 
 	// The token rotates BEFORE `resumed` reaches the writer, not after the replay: the writer runs
 	// on its own goroutine, so rotating afterwards would leave the new token racing the frames
@@ -426,6 +462,10 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	for _, frame := range out.frames {
 		w.enqueueRaw(frame)
 	}
+	// Only now does the connection go back into the live registry. Publishing it before `resumed`
+	// and the replay are on the writer lets a concurrent fan-out land ahead of `resumed` or in
+	// among the replayed frames — the non-monotonic n a client answers with close 4007.
+	g.addLive(c)
 	return c, true
 }
 

@@ -220,16 +220,48 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 	// after a restart do not synchronise onto one second (task 17's firstDelay, which nothing
 	// else calls).
 	c.pingAt = now.Add(g.beat.firstDelay())
+	if err := g.sendReady(ctx, c); err != nil {
+		c.currentWriter().stop()
+		return nil, err
+	}
+	// The connection joins the live registry only once `ready` is on its writer. reg.add before
+	// sendReady publishes the connection while sendReady is still doing three store round-trips,
+	// so a DeliverGroup landing in that window takes n = 1 and `ready` then carries n = 2 —
+	// against protocol/02's "n ... the per-session replay sequence, starting at 1" and against
+	// the hello/identify/ready handshake order a client is written to.
+	g.addLive(c)
+	return c, nil
+}
+
+// addLive publishes a connection to the live registry and counts it. Every path that takes a
+// connection back out goes through removeLive, so dilla_gateway_connections is the number of OPEN
+// connections and not the number ever opened.
+func (g *Gateway) addLive(c *conn) {
 	g.reg.add(c)
 	if g.opts.Metrics != nil {
 		g.opts.Metrics.GatewayConnections.Inc()
 	}
-	if err := g.sendReady(ctx, c); err != nil {
-		g.reg.remove(c)
-		c.currentWriter().stop()
-		return nil, err
+}
+
+// removeLive takes a connection out of the live registry, decrementing the gauge only if this
+// call is the one that removed it.
+func (g *Gateway) removeLive(c *conn) {
+	if g.reg.remove(c) && g.opts.Metrics != nil {
+		g.opts.Metrics.GatewayConnections.Dec()
 	}
-	return c, nil
+}
+
+// closeConn closes one connection's socket with a code, and records on the connection whether the
+// code leaves it resumable. protocol/02's close-code table is the authority: 4004 session_revoked
+// and 4009 session_timeout are NOT resumable, and a connection closed with one of those must not
+// come back through the resume window with the token it already holds.
+func (g *Gateway) closeConn(c *conn, code CloseCode, reason string) *writer {
+	if !code.Resumable() {
+		c.denyResume()
+	}
+	w := c.currentWriter()
+	w.sink.close(code, reason)
+	return w
 }
 
 // suspend moves a connection out of the live registry into the resume window. Its ring survives
@@ -246,9 +278,16 @@ func (g *Gateway) suspend(c *conn) {
 	c.suspendedAt = now
 	token := string(c.resume)
 	w := c.writer
+	resumable := !c.noResume
 	c.mu.Unlock()
-	g.reg.remove(c)
-	g.suspended.Store(token, c)
+	g.removeLive(c)
+	// A connection closed with a non-resumable code (4004 session_revoked, 4009 session_timeout)
+	// is NOT parked in the resume window. readLoop's `defer g.suspend(c)` fires after the close,
+	// so without this gate a device whose sessions were just revoked could reconnect inside
+	// ResumeWindow with nothing but its old resume token.
+	if resumable {
+		g.suspended.Store(token, c)
+	}
 	if w != nil {
 		w.stop()
 	}
@@ -320,11 +359,25 @@ func (g *Gateway) countFrame(f Frame) {
 // sessions (protocol/02, "Device sessions", rule 6).
 func (g *Gateway) CloseDevice(deviceID id.ID, code CloseCode, reason string) {
 	for _, c := range g.reg.connsOfDevice(deviceID) {
-		w := c.currentWriter()
-		w.sink.close(code, reason)
-		g.reg.remove(c)
+		w := g.closeConn(c, code, reason)
+		g.removeLive(c)
 		w.stop()
 	}
+	if code.Resumable() {
+		return
+	}
+	// A connection SUSPENDED before the revoke is still sitting in the resume window holding a
+	// live token, and it is not in the registry the loop above walked. Revoking a device has to
+	// take those with it, or the revocation only closes the sockets that happened to be open.
+	g.suspended.Range(func(k, v any) bool {
+		c, ok := v.(*conn)
+		if !ok || c.deviceID != deviceID {
+			return true
+		}
+		c.denyResume()
+		g.suspended.Delete(k)
+		return true
+	})
 }
 
 // SetGroupMembers is written by the delivery service after every merge: it is the fan-out list and
@@ -368,7 +421,9 @@ func (g *Gateway) sweepLiveness() {
 		overdue := now.Sub(c.lastLive) > g.beat.grace
 		c.mu.Unlock()
 		if overdue {
-			c.currentWriter().sink.close(CloseSessionTimeout, "heartbeat overdue")
+			// 4009 session_timeout is not resumable, so closeConn marks the connection before
+			// suspend looks: the client re-identifies rather than replaying a dead session.
+			g.closeConn(c, CloseSessionTimeout, "heartbeat overdue")
 			g.suspend(c)
 		}
 	}
@@ -404,7 +459,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		w := c.currentWriter()
 		w.drain(ctx)
 		w.sink.close(CloseGoingAway, "going away")
-		g.reg.remove(c)
+		g.removeLive(c)
 	}
 	return nil
 }

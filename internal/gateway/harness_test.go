@@ -16,24 +16,69 @@ import (
 
 type harness struct {
 	gw         *Gateway
-	clk        *clock.Fake
+	clk        *hookClock
 	generation uint64
 
 	mu          sync.Mutex
 	sinks       map[*conn]*recordingSink
-	groups      map[id.ID][]id.ID // device -> its groups, what GroupsForDevice answers
-	outstanding map[id.ID]uint64  // group -> proposals_outstanding
+	groups      map[id.ID][]id.ID       // device -> its groups, what GroupsForDevice answers
+	outstanding map[id.ID]uint64        // group -> proposals_outstanding
+	tokens      map[string]auth.Session // session token -> the session it resolves to
+}
+
+// hookClock is the harness clock. It is a clock.Fake with one extra power: a test can arm a
+// callback to fire on the Nth Clock.Now() call from that moment, which is the only deterministic
+// way to reach INSIDE a gateway operation from the test goroutine. Ordering bugs — a frame that
+// reaches a connection before its handshake frame, or two producers stamping n in one order and
+// enqueueing in the other — are invisible to `go test -race`, because they are not data races.
+type hookClock struct {
+	*clock.Fake
+
+	mu   sync.Mutex
+	left int
+	fn   func()
+}
+
+func (c *hookClock) Now() time.Time {
+	c.mu.Lock()
+	var fire func()
+	if c.fn != nil {
+		c.left--
+		if c.left <= 0 {
+			fire, c.fn = c.fn, nil
+		}
+	}
+	c.mu.Unlock()
+	if fire != nil {
+		fire()
+	}
+	return c.Fake.Now()
+}
+
+// armNth fires fn once, on the nth Now() call after this returns. The hook clears itself first,
+// so fn may call Now() as much as it likes.
+func (c *hookClock) armNth(n int, fn func()) {
+	c.mu.Lock()
+	c.left, c.fn = n, fn
+	c.mu.Unlock()
+}
+
+func (c *hookClock) disarm() {
+	c.mu.Lock()
+	c.fn = nil
+	c.mu.Unlock()
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	clk := clock.NewFake(time.Unix(1_700_000_000, 0))
+	clk := &hookClock{Fake: clock.NewFake(time.Unix(1_700_000_000, 0))}
 	h := &harness{
 		clk:         clk,
 		generation:  1,
 		sinks:       map[*conn]*recordingSink{},
 		groups:      map[id.ID][]id.ID{},
 		outstanding: map[id.ID]uint64{},
+		tokens:      map[string]auth.Session{},
 	}
 	h.gw = New(Options{
 		Clock:      clk,
@@ -46,9 +91,19 @@ func newHarness(t *testing.T) *harness {
 			return h.outstanding[g]
 		},
 	})
-	t.Cleanup(func() { _ = h.gw.Shutdown(context.Background()) })
+	t.Cleanup(func() {
+		// The clock hook must be disarmed before the cleanup Shutdown: a hook still armed would
+		// fire from inside Shutdown's own send and reach for locks the test no longer holds.
+		clk.disarm()
+		_ = h.gw.Shutdown(context.Background())
+	})
 	return h
 }
+
+// tokenFor is the session token that resolves to this device. connect mints one per device, so a
+// resume can be authenticated the way protocol/02 line 135 requires: element 0 of a resume frame
+// is a session_token, and the session it names must be the connection's own.
+func (h *harness) tokenFor(device id.ID) string { return "session-" + device.String() }
 
 func (h *harness) setGroupsForDevice(device id.ID, groups ...id.ID) {
 	h.mu.Lock()
@@ -67,8 +122,11 @@ func (h *harness) setOutstanding(group id.ID, n uint64) {
 func (h *harness) connect(t *testing.T, device id.ID) *conn {
 	t.Helper()
 	sink := newRecordingSink(1024, false)
-	c, err := h.gw.register(context.Background(),
-		auth.Session{DeviceID: device, UserID: id.New(), Scope: auth.ScopeEnrolled}, sink)
+	session := auth.Session{DeviceID: device, UserID: id.New(), Scope: auth.ScopeEnrolled}
+	h.mu.Lock()
+	h.tokens[h.tokenFor(device)] = session
+	h.mu.Unlock()
+	c, err := h.gw.register(context.Background(), session, sink)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -76,6 +134,15 @@ func (h *harness) connect(t *testing.T, device id.ID) *conn {
 	h.sinks[c] = sink
 	h.mu.Unlock()
 	return c
+}
+
+// drainReady reads the `ready` frame connect's registration put on the wire, so a test that cares
+// about the next frame starts from an empty sink.
+func (h *harness) drainReady(t *testing.T, c *conn) {
+	t.Helper()
+	if in := h.waitFrame(t, c.deviceID); in.Op != OpReady {
+		t.Fatalf("first frame op %d, want ready", in.Op)
+	}
 }
 
 // stall and release drive the sink's own mutex-guarded gate. The gate is NEVER a channel field
@@ -193,11 +260,48 @@ func (h *harness) CountKeyPackages(_ context.Context, _ id.ID, _ int64) (int64, 
 	return 32, nil
 }
 
-// Resolve accepts any non-empty token and mints an enrolled session, which is what the frame-level
-// tests need; auth's own refusals are internal/auth's tests, not the gateway's.
+// Resolve answers a token connect minted with that device's own session, and any other non-empty
+// token with a fresh enrolled session — which is what the identify-level tests need; auth's own
+// refusals are internal/auth's tests, not the gateway's.
 func (h *harness) Resolve(_ context.Context, bearer string) (auth.Session, error) {
 	if bearer == "" {
 		return auth.Session{}, errors.New("no token")
 	}
+	h.mu.Lock()
+	session, ok := h.tokens[bearer]
+	h.mu.Unlock()
+	if ok {
+		return session, nil
+	}
 	return auth.Session{UserID: id.New(), DeviceID: id.New(), Scope: auth.ScopeEnrolled}, nil
+}
+
+// session is the enrolled session of one device, the shape register takes.
+func session(device id.ID) auth.Session {
+	return auth.Session{DeviceID: device, UserID: id.New(), Scope: auth.ScopeEnrolled}
+}
+
+// failingStore is the Store that answers every call with an error, for the registration paths
+// that have to roll back cleanly.
+type failingStore struct{}
+
+var errStore = errors.New("store is down")
+
+func (failingStore) GroupsForDevice(context.Context, id.ID) ([]id.ID, error) { return nil, errStore }
+
+func (failingStore) GetCursor(context.Context, id.ID, id.ID) (store.CursorRow, error) {
+	return store.CursorRow{}, errStore
+}
+
+func (failingStore) CountKeyPackages(context.Context, id.ID, int64) (int64, error) {
+	return 0, errStore
+}
+
+// revoke is what auth.Sessions.OnRevoke does in production: the sessions are gone, so the token
+// stops resolving and the gateway is told to close the device.
+func (h *harness) revoke(device id.ID) {
+	h.mu.Lock()
+	delete(h.tokens, h.tokenFor(device))
+	h.mu.Unlock()
+	h.gw.CloseDevice(device, CloseSessionRevoked, "session revoked")
 }

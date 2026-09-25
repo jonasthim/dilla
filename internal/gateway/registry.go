@@ -39,10 +39,16 @@ func (r *registry) add(c *conn) {
 	r.byUser[c.userID] = append(r.byUser[c.userID], c)
 }
 
-func (r *registry) remove(c *conn) {
+// remove reports whether the connection WAS in the index. The answer is what keeps the
+// dilla_gateway_connections gauge honest: suspend, CloseDevice and Shutdown all remove, and
+// readLoop's deferred suspend runs after CloseDevice has already taken the same connection out,
+// so a Dec() that is not conditioned on this would drive the gauge negative.
+func (r *registry) remove(c *conn) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	before := len(r.byDevice[c.deviceID])
 	r.byDevice[c.deviceID] = removeConn(r.byDevice[c.deviceID], c)
+	removed := len(r.byDevice[c.deviceID]) != before
 	if len(r.byDevice[c.deviceID]) == 0 {
 		delete(r.byDevice, c.deviceID)
 	}
@@ -50,6 +56,7 @@ func (r *registry) remove(c *conn) {
 	if len(r.byUser[c.userID]) == 0 {
 		delete(r.byUser, c.userID)
 	}
+	return removed
 }
 
 func removeConn(list []*conn, c *conn) []*conn {
