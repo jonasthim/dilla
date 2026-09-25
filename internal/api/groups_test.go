@@ -304,6 +304,7 @@ func TestACommitForADecidedEpochIsFourZeroNineCarryingTheWinnerAndTheProposals(t
 type groupsAPI struct {
 	mux     *server.Mux
 	deps    api.Deps
+	ds      *ds.DS // the same delivery service the mounted routes hold
 	groupID id.ID
 	fixture apiFixture
 	session string // an enrolled session that is NOT one of the group's leaves
@@ -352,8 +353,15 @@ func newGroupsAPI(t *testing.T) *groupsAPI {
 	groups.Register(mux, deps.Sessions)
 	groups.RegisterSequencer(mux, deps.Sessions)
 
+	// Endpoints 7, 12, 17 and 18 ride on the same mux, sessions and delivery service; the caps are
+	// left at their zero values on purpose in one test of messages_test.go, so they are set here.
+	msgs := &api.Messages{DS: d, MaxCiphertextBytes: 131072, MaxBody: 1 << 16}
+	msgs.Register(mux, deps.Sessions)
+
 	_, _, token := seedAPISession(t, deps)
-	return &groupsAPI{mux: mux, deps: deps, groupID: f.groupID, fixture: f, session: token, clk: clk}
+	return &groupsAPI{
+		mux: mux, deps: deps, ds: d, groupID: f.groupID, fixture: f, session: token, clk: clk,
+	}
 }
 
 func (h *groupsAPI) createBody(t *testing.T) []byte {
