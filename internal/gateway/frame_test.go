@@ -148,6 +148,27 @@ func TestTheCatalogueAndTheCorpusAgreeOnWhichServerFramesAreReplayable(t *testin
 	}
 }
 
+// The same rule for the payload's shape. `Decode` only ever checks `spec.elements` on a CLIENT
+// frame, so nothing else in this package notices when a server frame's catalogue entry and the
+// committed corpus drift apart — and the corpus is what a second implementation is written
+// against. `resumed` gaining its third element (the rotated resume_token) is exactly the change
+// that would have slipped through in one language only.
+func TestTheCatalogueAndTheCorpusAgreeOnEveryPayloadElementCount(t *testing.T) {
+	v := loadFrameVectors(t)
+	for _, c := range v.Cases {
+		t.Run(c.Name, func(t *testing.T) {
+			var elems []cbor.RawMessage
+			if err := cborx.Unmarshal(mustHex(t, c.Payload), &elems); err != nil {
+				t.Fatalf("payload: %v", err)
+			}
+			if want := opSpecs[Op(c.Op)].elements; len(elems) != want {
+				t.Fatalf("corpus payload has %d elements but opSpecs[%d].elements = %d",
+					len(elems), c.Op, want)
+			}
+		})
+	}
+}
+
 // Every client-to-server case decodes back to the same opcode, correlation id and group.
 func TestClientFramesDecodeBackToTheirFields(t *testing.T) {
 	v := loadFrameVectors(t)

@@ -445,15 +445,14 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	w := c.writer
 	c.mu.Unlock()
 
-	// The token rotates BEFORE `resumed` reaches the writer, not after the replay: the writer runs
-	// on its own goroutine, so rotating afterwards would leave the new token racing the frames
-	// that announce the resume, and a client (or a test) that has seen `resumed` could still read
-	// the spent one.
+	// The token rotates BEFORE `resumed` is built, not after the replay: `resumed` carries the
+	// rotated value as element 2, and it is the only frame that does — the client's next resume
+	// answers what it reads here, so a stale read would leave it holding the spent token.
 	if err := g.rotateResume(c); err != nil {
 		s.close(CloseUnknown, "rotate")
 		return nil, false
 	}
-	p, err := ResumedPayload(out.from, out.to)
+	p, err := ResumedPayload(out.from, out.to, c.resumeToken())
 	if err != nil {
 		s.close(CloseUnknown, "resumed")
 		return nil, false

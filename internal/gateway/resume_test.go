@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -150,25 +151,43 @@ func TestResumeIsRefusedWithoutAnyCredential(t *testing.T) {
 	}
 }
 
-// Two resumes in a row over two fresh sinks. The server half of the rotation is sound — the
-// rotated token is accepted the second time — and this test isolates the remaining gap to the
-// WIRE: `resumed` is [replayed_from, replayed_to] and carries no token, so a real client cannot
-// learn the rotated value and the test has to read it off the connection. The controller ruling
-// this needs is recorded in the task-18 fix report; when it lands, the `c.resumeToken()` read
-// below becomes a read of the frame and this test stops being a white-box one.
+// Two resumes in a row over two fresh sinks, driven the way a real client drives them: the token
+// answered on the second resume is the one the FIRST `resumed` frame carried, never a read of the
+// instance's private state. `resume_token` rotates on every `resumed`
+// (facts-gateway-design.md §1.3), so a `resumed` that did not carry the rotated value would cap
+// every client at one resume per identify — its second reconnect would answer a token the
+// instance has already discarded. protocol/02's control catalogue op 4 is therefore
+// `[replayed_from(uint), replayed_to(uint), resume_token(bstr 32)]`.
 func TestAResumedConnectionCanResumeAgain(t *testing.T) {
 	h := newHarness(t)
 	c := h.connect(t, id.New())
-	first := c.resumeToken()
+	first := h.readyResumeToken(t, c)
 	second := h.resumeOnce(t, c, first)
-	if string(first) == string(second) {
+	if bytes.Equal(first, second) {
 		t.Fatal("the resume token must rotate on every resumed")
 	}
-	h.resumeOnce(t, c, second)
+	third := h.resumeOnce(t, c, second)
+	if bytes.Equal(second, third) {
+		t.Fatal("the second resumed must rotate the token too")
+	}
+}
+
+// readyResumeToken is the client's first sight of its resume token: element 3 of `ready`.
+func (h *harness) readyResumeToken(t *testing.T, c *conn) []byte {
+	t.Helper()
+	in := h.waitFrame(t, c.deviceID)
+	if in.Op != OpReady {
+		t.Fatalf("first frame op %d, want ready", in.Op)
+	}
+	token, err := rawBytes(in.Payload[3])
+	if err != nil {
+		t.Fatalf("ready resume_token: %v", err)
+	}
+	return token
 }
 
 // resumeOnce suspends the connection, resumes it over a brand-new sink, insists the first frame
-// is `resumed`, and answers the rotated token.
+// is `resumed`, and answers the rotated token that frame itself carries.
 func (h *harness) resumeOnce(t *testing.T, c *conn, token []byte) []byte {
 	t.Helper()
 	h.gw.suspend(c)
@@ -181,8 +200,23 @@ func (h *harness) resumeOnce(t *testing.T, c *conn, token []byte) []byte {
 		t.Fatalf("payload: %v", err)
 	}
 	s.feed(mustEncode(t, Frame{Op: OpResume, Payload: p, Replay: true}, 2))
-	if in := h.readFrom(t, s); in.Op != OpResumed {
+	in := h.readFrom(t, s)
+	if in.Op != OpResumed {
 		t.Fatalf("op %d, want resumed", in.Op)
 	}
-	return c.resumeToken()
+	if len(in.Payload) != 3 {
+		t.Fatalf("resumed carries %d elements, want 3: element 2 is the rotated resume_token, "+
+			"without which a client can resume at most once", len(in.Payload))
+	}
+	next, err := rawBytes(in.Payload[2])
+	if err != nil {
+		t.Fatalf("resumed resume_token: %v", err)
+	}
+	if len(next) != 32 {
+		t.Fatalf("resumed resume_token is %d bytes, want 32", len(next))
+	}
+	if !bytes.Equal(next, c.resumeToken()) {
+		t.Fatal("the token on the wire is not the one the instance kept")
+	}
+	return next
 }

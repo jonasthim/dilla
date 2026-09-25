@@ -35,7 +35,9 @@ export function frameVectors() {
     frame('identify', 1, 1, null, ['tok', 1, 1, 1, 0]),
     frame('resume', 2, 2, null, ['tok', TOKEN, 1, 41]),
     frame('ready', 3, 1, null, [DEVICE, USER, 1, TOKEN, 1, 1, 1, 32, [[GROUP, 6, 4127, 0]]]),
-    frame('resumed', 4, 2, null, [42, 47]),
+    // `resumed` carries the ROTATED resume token as element 2: the instance discards the token the
+    // client just spent, so without it on the wire a client could resume exactly once per identify.
+    frame('resumed', 4, 2, null, [42, 47, TOKEN]),
     frame('invalid_session', 5, 0, null, [0, 'unknown resume token']),
     frame('heartbeat', 6, 3, null, [47, 1]),
     frame('heartbeat_ack', 7, 0, null, [1758659640]),

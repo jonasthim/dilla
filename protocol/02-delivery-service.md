@@ -134,7 +134,7 @@ does.
 | 1 | `identify` | C→S | `[session_token(tstr), wire_version(uint), e2ee_version(uint), media_version(uint), caps(uint)]` |
 | 2 | `resume` | C→S | `[session_token(tstr), resume_token(bstr 32), generation(uint), last_n(uint)]` |
 | 3 | `ready` | S→C | `[device_id(bstr 16), user_id(bstr 16), generation(uint), resume_token(bstr 32), wire_version(uint), e2ee_version(uint), media_version(uint), keypackages_remaining(uint), groups([[group_id(bstr 16), epoch(uint), last_seq(uint), proposals_outstanding(uint)]])]` |
-| 4 | `resumed` | S→C | `[replayed_from(uint), replayed_to(uint)]` |
+| 4 | `resumed` | S→C | `[replayed_from(uint), replayed_to(uint), resume_token(bstr 32)]` — the token rotates on every `resumed`, so the frame that announces a resume also issues the credential for the next one; a client that keeps the token from `ready` after resuming is refused |
 | 5 | `invalid_session` | S→C | `[resumable(uint), reason(tstr)]` |
 | 6 | `heartbeat` | C→S | `[last_n(uint), active(uint)]` |
 | 7 | `heartbeat_ack` | S→C | `[server_ts(uint)]` |

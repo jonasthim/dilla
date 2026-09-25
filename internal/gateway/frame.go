@@ -97,8 +97,11 @@ var opSpecs = map[Op]opSpec{
 	// `resumed` are the two control frames a client must be able to replay — a resumed connection
 	// whose `resumed` frame was dropped has no record of the replay window it was given. They are
 	// the only two exceptions.
-	OpReady:          {elements: 9, replayable: true},
-	OpResumed:        {elements: 2, replayable: true},
+	OpReady: {elements: 9, replayable: true},
+	// `resumed` is [replayed_from, replayed_to, resume_token]: the token rotates on every resume
+	// (facts-gateway-design.md §1.3), so the frame that announces one also issues the credential
+	// for the next. A two-element `resumed` would cap a client at one resume per identify.
+	OpResumed:        {elements: 3, replayable: true},
 	OpInvalidSession: {elements: 2},
 	OpHeartbeat:      {elements: 2, fromClient: true},
 	OpHeartbeatAck:   {elements: 1},

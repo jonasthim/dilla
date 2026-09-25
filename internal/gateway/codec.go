@@ -37,7 +37,12 @@ func ReadyPayload(deviceID, userID id.ID, generation uint64, resumeToken []byte,
 	return payload(deviceID, userID, generation, resumeToken, wire, e2ee, media, keypackagesRemaining, rows)
 }
 
-func ResumedPayload(from, to uint64) (cbor.RawMessage, error) { return payload(from, to) }
+// ResumedPayload answers a resume. resumeToken is the ROTATED token, not the one the client just
+// spent: the instance discards a token the moment it is used, so this frame is the only place a
+// client learns the credential its next resume must carry.
+func ResumedPayload(from, to uint64, resumeToken []byte) (cbor.RawMessage, error) {
+	return payload(from, to, resumeToken)
+}
 
 func InvalidSessionPayload(resumable bool, reason string) (cbor.RawMessage, error) {
 	return payload(boolUint(resumable), reason)
