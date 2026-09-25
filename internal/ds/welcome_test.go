@@ -185,6 +185,68 @@ func TestAWelcomeIsGoneAfterItsExpiry(t *testing.T) {
 	}
 }
 
+// Row 15 is a CURSOR api: a client advances `after` by the last welcome_id it was handed and stops
+// on an empty page. So a filter applied AFTER the SQL LIMIT strands it: if the first `limit`
+// undelivered rows are all expired, the call answers an empty page while live rows sit behind
+// them, and the client can never advance past them — the ids it would need for `after` are exactly
+// the ones that were dropped. The read therefore keeps paging until it has `limit` live rows or
+// the queue is exhausted.
+func TestWelcomesPagesPastExpiredRowsInsteadOfStrandingTheCursor(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	joiner := h.device(t)
+	groupID := id.New()
+
+	// A full page of Welcomes the joiner never acknowledged, which then pass their 30-day
+	// retention, and three live ones queued behind them.
+	for i := range 64 {
+		h.putWelcomeRow(t, joiner, groupID, uint64(i+1), welcomeBlob(byte(i+1), 96))
+	}
+	h.clk.Advance(31 * 24 * time.Hour)
+	for i := range 3 {
+		h.putWelcomeRow(t, joiner, groupID, uint64(200+i), welcomeBlob(byte(200+i), 96))
+	}
+
+	got, err := h.ds.Welcomes(ctx, h.sessionOf(t, joiner), 0, 16)
+	if err != nil {
+		t.Fatalf("Welcomes: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d welcomes, want the 3 live ones behind a page of expired rows", len(got))
+	}
+	for _, row := range got {
+		if row.Expires <= h.clk.Now().Unix() {
+			t.Fatal("an expired Welcome was served")
+		}
+	}
+}
+
+// The same stranding, on the other filter: a provisional session sees only its pairing group's
+// Welcome, and that row can sit behind a whole page of Welcomes for other groups.
+func TestWelcomesPagesPastOtherGroupsForAProvisionalSession(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	joiner := h.device(t)
+	other := id.New()
+	pairing := id.New()
+
+	for i := range 64 {
+		h.putWelcomeRow(t, joiner, other, uint64(i+1), welcomeBlob(byte(i+1), 96))
+	}
+	h.putWelcomeRow(t, joiner, pairing, 1, welcomeBlob(0xF1, 96))
+
+	rows, err := h.ds.Welcomes(ctx, h.provisionalSessionOf(t, joiner, pairing), 0, 16)
+	if err != nil {
+		t.Fatalf("Welcomes: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("a provisional session saw %d Welcomes, want its pairing group's one", len(rows))
+	}
+	if rows[0].GroupID != pairing {
+		t.Fatalf("the served Welcome is group %s, want the pairing group %s", rows[0].GroupID, pairing)
+	}
+}
+
 // Rows 15 and 16 accept a provisional session, and the restriction that makes that safe is
 // enforced, not assumed: a provisional session is bound to ONE pairing group and collects that
 // group's Welcome, nothing else. Without the check a session issued before enrolment can harvest

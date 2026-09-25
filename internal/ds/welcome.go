@@ -35,6 +35,12 @@ const welcomeRetentionDays = 30
 // the fan-out walks with.
 const maxWelcomesPerPage = 64
 
+// maxWelcomeScanPages bounds the walk `Welcomes` makes past rows its two filters drop — expired
+// ones, and, for a provisional session, the ones outside its pairing group. It is the same class
+// of bound as `findWelcome`'s: a device that has that many undeliverable Welcomes queued ahead of
+// a live one has a problem no single read can fix.
+const maxWelcomeScanPages = 16
+
 // storeWelcomesTx writes one payload row per distinct blob, one welcome row per addressed device,
 // and the epoch tree the joiners need — ALL INSIDE THE COMMIT'S OWN TRANSACTION. A Welcome row
 // that outlived a rolled-back commit would address an epoch that never happened.
@@ -193,23 +199,49 @@ func (d *DS) Welcomes(ctx context.Context, s Session, after int64, limit int32) 
 	if after < 0 {
 		after = 0
 	}
-	rows, err := d.opts.Store.ListWelcomes(ctx, s.DeviceID, after, limit)
-	if err != nil {
-		return nil, err
-	}
 	now := d.now()
-	out := make([]store.WelcomeFull, 0, len(rows))
-	for _, row := range rows {
-		// Past its 30-day delivery retention a Welcome is gone, whether or not the retention
-		// sweep has reached it yet: `expires` is on the row, and serving an expired Welcome would
-		// hand a joiner key material the group has long since rotated past.
-		if row.Expires <= now {
-			continue
+	out := make([]store.WelcomeFull, 0, limit)
+	// Both filters below are applied in Go, AFTER the SQL LIMIT, so the read must keep paging: row
+	// 15 is a cursor API — the client advances `after` by the last welcome_id it was handed and
+	// stops on an empty page — and a page whose rows are all dropped would answer "nothing left"
+	// while live rows sit behind it, with the ids the client needs for `after` among the dropped
+	// ones. So the queue is walked until `limit` rows are collected or it is exhausted.
+	//
+	// The first read is the caller's own page size, which is what an unfiltered queue costs today;
+	// only once a page has been filtered does the walk take bigger strides, because every row
+	// carries its epoch's ratchet tree and reading 64 of those to serve one is not free either.
+	// The walk is bounded: a device with more than maxWelcomeScanPages pages of expired or
+	// out-of-group Welcomes ahead of a live one has a queue no single read should try to drain.
+	cursor := after
+	pageSize := limit
+	for range maxWelcomeScanPages {
+		rows, err := d.opts.Store.ListWelcomes(ctx, s.DeviceID, cursor, pageSize)
+		if err != nil {
+			return nil, err
 		}
-		if provisional && row.GroupID != *s.PairingGroup {
-			continue
+		if len(rows) == 0 {
+			break
 		}
-		out = append(out, row)
+		cursor = rows[len(rows)-1].WelcomeID
+		for _, row := range rows {
+			// Past its 30-day delivery retention a Welcome is gone, whether or not the retention
+			// sweep has reached it yet: `expires` is on the row, and serving an expired Welcome
+			// would hand a joiner key material the group has long since rotated past.
+			if row.Expires <= now {
+				continue
+			}
+			if provisional && row.GroupID != *s.PairingGroup {
+				continue
+			}
+			out = append(out, row)
+			if int32(len(out)) == limit {
+				return out, nil
+			}
+		}
+		if int32(len(rows)) < pageSize {
+			break // a short page is the end of the queue
+		}
+		pageSize = maxWelcomesPerPage
 	}
 	return out, nil
 }
