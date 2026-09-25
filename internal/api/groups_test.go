@@ -142,6 +142,10 @@ func TestEveryDeliveryServiceRouteRequiresADeviceSession(t *testing.T) {
 		{http.MethodPost, "/v1/groups"},
 		{http.MethodGet, "/v1/groups/" + h.groupID.String() + "/info"},
 		{http.MethodGet, "/v1/groups/" + h.groupID.String() + "/tree"},
+		{http.MethodGet, "/v1/groups/" + h.groupID.String() + "/handshakes"},
+		{http.MethodPost, "/v1/groups/" + h.groupID.String() + "/commit"},
+		{http.MethodPost, "/v1/groups/" + h.groupID.String() + "/proposal"},
+		{http.MethodGet, "/v1/groups/" + h.groupID.String() + "/proposals"},
 	} {
 		res := h.do(t, c.method, c.path, "", nil)
 		if res.Code != http.StatusUnauthorized {
@@ -207,7 +211,9 @@ func newGroupsAPI(t *testing.T) *groupsAPI {
 	}
 	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
 
-	(&api.Groups{DS: d, MaxBody: 1 << 21}).Register(mux, deps.Sessions)
+	groups := &api.Groups{DS: d, MaxBody: 1 << 21}
+	groups.Register(mux, deps.Sessions)
+	groups.RegisterSequencer(mux, deps.Sessions)
 
 	_, _, token := seedAPISession(t, deps)
 	return &groupsAPI{mux: mux, deps: deps, groupID: f.groupID, fixture: f, session: token}

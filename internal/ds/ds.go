@@ -135,6 +135,14 @@ type DS struct {
 
 	states *stateCache
 
+	// stale carries one bit out of withGroup's handle lock: a commit whose Merge succeeded and
+	// whose transaction then failed has a cached PublicGroup one epoch ahead of SQL, and R12's
+	// "SQL is the record" makes that handle unusable. Evicting it from inside withGroup would
+	// wait on the very lock withGroup holds, so the group is marked here and evicted by the
+	// caller once withGroup has returned.
+	staleMu sync.Mutex
+	stale   map[id.ID]struct{}
+
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup

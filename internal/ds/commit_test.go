@@ -1,0 +1,485 @@
+package ds_test
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
+)
+
+// The commit path is exercised against the committed 1,500-leaf fixture, which is the only real
+// MLS material this repository holds. What it gives and what it withholds shapes every test here:
+//
+//   - commits/00..07 are 256-Add batches, commits/08 a Remove of leaf 1, commits/09 a self-update
+//     with no proposals at all. All ten are alternatives at the fixture's base epoch 6.
+//   - group_info.mls is the GroupInfo of epoch 6, signed by leaf 0.
+//
+// There is NO GroupInfo at epoch 7, so no commit in this repository can be accepted: invariant 4's
+// sixth clause wants epoch n+1 and the fixture stops at n. Every clause that fires BEFORE the
+// merge is therefore assertable here and the accepted path is not; task 20's report records the
+// gap and names the fixture work that closes it. The two clauses with no committed material at all
+// — the committer's own Update, and a GroupInfo signed by another leaf — are skipped by name
+// rather than dropped, so the hole is visible in the test output instead of only in prose.
+
+// ---------------------------------------------------------------- invariant 3
+
+// Invariant 3: one commit per epoch. The commit that took epoch n+1 wins, and a later commit for
+// epoch n is refused with the winner and the outstanding proposals, so the loser can process the
+// winner and re-commit rather than guess.
+func TestACommitForAnAlreadyDecidedEpochIsAConflictCarryingTheWinner(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+
+	// The group sits at the fixture's epoch 6; the handshake that carried it there is the winner.
+	winner := fixtureFile(t, "commits/09.mls")
+	h.appendHandshake(t, reg.GroupID, 1, 6, 1, winner)
+	ref := h.putDSProposal(t, reg.GroupID, 6, false)
+
+	_, err := h.ds.Commit(ctx, session, reg.GroupID, ds.CommitRequest{
+		Epoch:     5,
+		Commit:    fixtureFile(t, "commits/09.mls"),
+		GroupInfo: dsFixture(t).groupInfo,
+	})
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_CONFLICT" {
+		t.Fatalf("got %v, want E_COMMIT_CONFLICT", err)
+	}
+	if dsErr.Status != 409 {
+		t.Errorf("status = %d, want 409", dsErr.Status)
+	}
+	if !bytes.Equal(dsErr.WinningCommit, winner) {
+		t.Error("the conflict must carry the winning commit so the loser can process it")
+	}
+	if len(dsErr.Proposals) != 1 || !bytes.Equal(dsErr.Proposals[0], ref) {
+		t.Errorf("proposals = %x, want the one outstanding ref %x", dsErr.Proposals, ref)
+	}
+}
+
+// A client AHEAD of the instance is a structural error, not a conflict: there is no winner to hand
+// back for an epoch that has not happened, and a conflict body with a null winner is one the
+// client cannot act on.
+func TestACommitForAnEpochTheInstanceHasNotReachedIsNotAConflict(t *testing.T) {
+	h := newDSHarness(t)
+	reg, session := h.mustRegister(t)
+
+	_, err := h.ds.Commit(context.Background(), session, reg.GroupID, ds.CommitRequest{
+		Epoch:     7,
+		Commit:    fixtureFile(t, "commits/09.mls"),
+		GroupInfo: dsFixture(t).groupInfo,
+	})
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" {
+		t.Fatalf("got %v, want E_COMMIT_INVALID", err)
+	}
+	if dsErr.Rule != "epoch_ahead" {
+		t.Fatalf("rule = %q, want %q", dsErr.Rule, "epoch_ahead")
+	}
+}
+
+// Deviation B13's reason, as an assertion: the winner is found by epoch over
+// `mls_handshakes_by_epoch`, not by paging the log from seq 0. A group with more than one page of
+// live handshakes above the retention floor — the ordinary case for any long-lived channel —
+// would otherwise answer E_COMMIT_CONFLICT with a null `winning_commit`, and protocol/02 declares
+// that element a bstr the losing client processes.
+func TestTheConflictWinnerIsFoundByEpochNotByPagingTheLog(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+
+	// 600 proposal handshakes at the previous epoch, then the winning commit last. 600 is past
+	// the 512-row page `Handshakes` serves, so a paging implementation reads none of it.
+	for seq := uint64(1); seq <= 600; seq++ {
+		h.appendHandshake(t, reg.GroupID, seq, 5, 0, []byte{byte(seq), byte(seq >> 8)})
+	}
+	winner := fixtureFile(t, "commits/08.mls")
+	h.appendHandshake(t, reg.GroupID, 601, 6, 1, winner)
+
+	_, err := h.ds.Commit(ctx, session, reg.GroupID, ds.CommitRequest{
+		Epoch:     5,
+		Commit:    fixtureFile(t, "commits/09.mls"),
+		GroupInfo: dsFixture(t).groupInfo,
+	})
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_CONFLICT" {
+		t.Fatalf("got %v, want E_COMMIT_CONFLICT", err)
+	}
+	if !bytes.Equal(dsErr.WinningCommit, winner) {
+		t.Fatalf("winning_commit is %d bytes, want the %d-byte commit at seq 601",
+			len(dsErr.WinningCommit), len(winner))
+	}
+}
+
+// ---------------------------------------------------------------- invariant 4
+
+// Invariant 4, clause by clause. Each case names the `rule` the refusal must carry, so a future
+// change that collapses two clauses into one generic message fails here.
+func TestEachCommitValidityClauseHasItsOwnRule(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		rule string
+		skip string
+		mut  func(t *testing.T, h *dsHarness, g id.ID, s *auth.Session, req *ds.CommitRequest)
+	}{
+		{
+			name: "a message that is not a commit at all",
+			rule: "structural",
+			mut: func(_ *testing.T, _ *dsHarness, _ id.ID, _ *auth.Session, req *ds.CommitRequest) {
+				req.Commit = []byte{0x01, 0x02, 0x03}
+			},
+		},
+		{
+			name: "a commit that omits an outstanding DS proposal",
+			rule: "outstanding_proposals",
+			mut: func(t *testing.T, h *dsHarness, g id.ID, _ *auth.Session, _ *ds.CommitRequest) {
+				h.putDSProposal(t, g, 6, false)
+			},
+		},
+		{
+			name: "an Add whose device this instance has never seen",
+			rule: "add_key_package",
+			mut: func(_ *testing.T, _ *dsHarness, _ id.ID, _ *auth.Session, req *ds.CommitRequest) {
+				req.Commit = fixtureFile(nil, "commits/00.mls")
+			},
+		},
+		{
+			name: "a member Remove targeting another user",
+			rule: "member_remove_scope",
+			mut: func(t *testing.T, h *dsHarness, g id.ID, s *auth.Session, req *ds.CommitRequest) {
+				// commits/08 removes leaf 1. The clause is written against the COMMITTING
+				// session's user, so the committer here is a member of another user.
+				req.Commit = fixtureFile(t, "commits/08.mls")
+				*s = h.memberSessionOfAnotherUser(t, g, 1)
+			},
+		},
+		{
+			name: "a GroupInfo at epoch n rather than n+1",
+			rule: "group_info_epoch",
+			mut:  func(*testing.T, *dsHarness, id.ID, *auth.Session, *ds.CommitRequest) {},
+		},
+		{
+			name: "a commit carrying the committer's own Update",
+			rule: "committer_update",
+			skip: "no committed fixture carries an Update proposal from the committer's own leaf: " +
+				"commits/09.mls is a self-update, whose applied list is empty by construction",
+			mut: func(*testing.T, *dsHarness, id.ID, *auth.Session, *ds.CommitRequest) {},
+		},
+		{
+			name: "a GroupInfo signed by a leaf other than the committer",
+			rule: "group_info_signature",
+			skip: "the fixture holds one GroupInfo, signed by leaf 0 at epoch 6; a second signer " +
+				"needs a generator change",
+			mut: func(*testing.T, *dsHarness, id.ID, *auth.Session, *ds.CommitRequest) {},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.skip != "" {
+				t.Skip(c.skip)
+			}
+			h := newDSHarness(t)
+			reg, session := h.mustRegister(t)
+			// The base request is a well-formed self-update at the group's own epoch with the
+			// fixture's GroupInfo, so each case's mutation is the only thing that can refuse it.
+			req := ds.CommitRequest{
+				Epoch:     6,
+				Commit:    fixtureFile(t, "commits/09.mls"),
+				GroupInfo: dsFixture(t).groupInfo,
+			}
+			c.mut(t, h, reg.GroupID, &session, &req)
+
+			_, err := h.ds.Commit(context.Background(), session, reg.GroupID, req)
+			var dsErr *ds.Error
+			if !errors.As(err, &dsErr) {
+				t.Fatalf("got %v, want a *ds.Error", err)
+			}
+			if dsErr.Code != "E_COMMIT_INVALID" {
+				t.Fatalf("code = %s, want E_COMMIT_INVALID (%v)", dsErr.Code, err)
+			}
+			if dsErr.Rule != c.rule {
+				t.Fatalf("rule = %q, want %q (%v)", dsErr.Rule, c.rule, err)
+			}
+			if dsErr.Status != 422 {
+				t.Errorf("status = %d, want 422", dsErr.Status)
+			}
+		})
+	}
+}
+
+// Every refusal after public_group_process must release the staged commit. Merge is the only other
+// consumer of a staged handle, so without the discard a client retrying a malformed commit in a
+// loop grows the guest's handle table until the module runs out of linear memory.
+func TestARefusedCommitReleasesItsStagedHandle(t *testing.T) {
+	h := newDSHarness(t)
+	reg, session := h.mustRegister(t)
+	before := h.wasmCalls("public_group_staged_discard")
+
+	for i := 0; i < 3; i++ {
+		_, err := h.ds.Commit(context.Background(), session, reg.GroupID, ds.CommitRequest{
+			Epoch:     6,
+			Commit:    fixtureFile(t, "commits/09.mls"),
+			GroupInfo: dsFixture(t).groupInfo,
+		})
+		if err == nil {
+			t.Fatal("a GroupInfo at epoch n must not be accepted")
+		}
+	}
+	if got := h.wasmCalls("public_group_staged_discard") - before; got != 3 {
+		t.Fatalf("public_group_staged_discard called %d times for 3 refused commits, want 3", got)
+	}
+}
+
+// Invariant 2: the delivery service serves the ratchet tree from its own PublicGroup, so a
+// committer never uploads one. Accepting and ignoring the field would leave the one route a client
+// could smuggle a tree through unguarded and untested.
+func TestACommitMayNotUploadARatchetTree(t *testing.T) {
+	h := newDSHarness(t)
+	reg, session := h.mustRegister(t)
+
+	_, err := h.ds.Commit(context.Background(), session, reg.GroupID, ds.CommitRequest{
+		Epoch:       6,
+		Commit:      fixtureFile(t, "commits/09.mls"),
+		GroupInfo:   dsFixture(t).groupInfo,
+		RatchetTree: dsFixture(t).ratchetTree,
+	})
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_INVALID_REQUEST" {
+		t.Fatalf("got %v, want E_INVALID_REQUEST", err)
+	}
+}
+
+// A commit needs an enrolled session whose device is a CURRENT leaf of the group (invariant 8's
+// "current leaf" check). A provisional session and a stranger's device are refused before the
+// guest is asked to parse anything.
+func TestOnlyAnEnrolledMemberDeviceMayCommit(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+	req := ds.CommitRequest{
+		Epoch:     6,
+		Commit:    fixtureFile(t, "commits/09.mls"),
+		GroupInfo: dsFixture(t).groupInfo,
+	}
+
+	provisional := session
+	provisional.Scope = auth.ScopeProvisional
+	_, err := h.ds.Commit(ctx, provisional, reg.GroupID, req)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+		t.Fatalf("provisional session: got %v, want E_FORBIDDEN", err)
+	}
+
+	stranger := auth.Session{UserID: id.New(), DeviceID: id.New(), Scope: auth.ScopeEnrolled}
+	_, err = h.ds.Commit(ctx, stranger, reg.GroupID, req)
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_LEAF_NOT_CURRENT" {
+		t.Fatalf("a device that is not a leaf: got %v, want E_LEAF_NOT_CURRENT", err)
+	}
+
+	_, err = h.ds.Commit(ctx, session, id.New(), req)
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+		t.Fatalf("an unknown group: got %v, want E_NOT_FOUND", err)
+	}
+}
+
+// ------------------------------------------------------------ member proposals
+
+// A member proposal is only an Update or an own-device Remove, and it must be signed by the
+// sending device's own leaf. The fixture's one proposal is the instance's external Remove of leaf
+// 0, which is exactly what this endpoint must NOT take: an external sender has no leaf, so the
+// leaf check refuses it before ProposalInspect is reached.
+func TestAMemberProposalMustBeSignedByTheSendingDevicesOwnLeaf(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+
+	_, err := h.ds.Proposal(ctx, session, reg.GroupID, 6, fixtureFile(t, "remove_leaf0.mls"))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+		t.Fatalf("an external-sender proposal on the member endpoint: got %v, want E_FORBIDDEN", err)
+	}
+
+	// A commit is not a proposal, and the endpoint says so structurally rather than queueing it.
+	_, err = h.ds.Proposal(ctx, session, reg.GroupID, 6, fixtureFile(t, "commits/09.mls"))
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" || dsErr.Rule != "structural" {
+		t.Fatalf("a commit on the proposal endpoint: got %v, want E_COMMIT_INVALID/structural", err)
+	}
+
+	// A proposal for another epoch is refused before the guest is asked to parse it.
+	_, err = h.ds.Proposal(ctx, session, reg.GroupID, 5, fixtureFile(t, "remove_leaf0.mls"))
+	if !errors.As(err, &dsErr) || dsErr.Rule != "epoch" {
+		t.Fatalf("a proposal for another epoch: got %v, want rule \"epoch\"", err)
+	}
+}
+
+// The two accepted member shapes — an Update, and a Remove of one of the sender's own devices —
+// need a member-authored proposal, which no committed fixture holds.
+func TestAMemberProposalIsOnlyAnUpdateOrAnOwnDeviceRemove(t *testing.T) {
+	t.Skip("no committed fixture holds a member-authored Update or Remove: testkit/fixtures/ds-1500 " +
+		"ships one external-sender Remove and ten commits, and generating a member proposal needs " +
+		"the creator's signing key, which the fixture deliberately does not publish")
+}
+
+// ------------------------------------------------------------- the seq space
+
+// The handshake log names every leaf that ever committed and every epoch transition of the group,
+// so it is member-only and a non-member is E_NOT_FOUND, never E_FORBIDDEN: a 403 would tell any
+// authenticated device on the instance which group ids are live.
+func TestTheHandshakeStreamIsMemberOnlyAndSparseOverTheOneSeqSpace(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+
+	// Two handshakes at seq 1 and seq 6: the space between them belongs to application messages,
+	// which is what makes one cursor enough for both streams.
+	h.appendHandshake(t, reg.GroupID, 1, 6, 1, []byte("commit"))
+	h.appendHandshake(t, reg.GroupID, 6, 7, 0, []byte("proposal"))
+
+	rows, err := h.ds.Handshakes(ctx, reg.GroupID, session, 0, 100)
+	if err != nil {
+		t.Fatalf("Handshakes: %v", err)
+	}
+	if len(rows) != 2 || rows[0].Seq != 1 || rows[1].Seq != 6 {
+		t.Fatalf("handshakes = %v, want the two rows at seq 1 and 6", rows)
+	}
+
+	stranger := auth.Session{UserID: id.New(), DeviceID: id.New(), Scope: auth.ScopeEnrolled}
+	_, err = h.ds.Handshakes(ctx, reg.GroupID, stranger, 0, 100)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+		t.Fatalf("a non-member: got %v, want E_NOT_FOUND", err)
+	}
+}
+
+// A `from` below the retention floor is E_PRUNED, which tells the client to resync rather than to
+// retry. The floor is the oldest handshake still in the log.
+func TestACatchUpBelowTheRetentionFloorIsPruned(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+	h.appendHandshake(t, reg.GroupID, 20, 6, 1, []byte("commit"))
+
+	if _, err := h.ds.Handshakes(ctx, reg.GroupID, session, 19, 100); err != nil {
+		t.Fatalf("a cursor one below the floor is still contiguous: %v", err)
+	}
+	_, err := h.ds.Handshakes(ctx, reg.GroupID, session, 5, 100)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_PRUNED" {
+		t.Fatalf("got %v, want E_PRUNED", err)
+	}
+	if dsErr.Status != 410 {
+		t.Errorf("status = %d, want 410", dsErr.Status)
+	}
+}
+
+// Outstanding is every NON-VOID proposal of the group's CURRENT epoch: it is what the two conflict
+// bodies carry, and a void or stale ref in there would send a client to commit something the
+// instance has already withdrawn.
+func TestOutstandingIsEveryNonVoidProposalOfTheCurrentEpoch(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+
+	live := h.putDSProposal(t, reg.GroupID, 6, false)
+	h.putDSProposal(t, reg.GroupID, 6, true) // voided
+	h.putDSProposal(t, reg.GroupID, 5, false)
+
+	rows, err := h.ds.Outstanding(ctx, reg.GroupID)
+	if err != nil {
+		t.Fatalf("Outstanding: %v", err)
+	}
+	if len(rows) != 1 || !bytes.Equal(rows[0].Ref, live) {
+		t.Fatalf("outstanding = %d rows, want the one live proposal of epoch 6", len(rows))
+	}
+}
+
+// ---------------------------------------------------------------- the helpers
+
+// fixtureFile reads one file of the committed 1,500-leaf fixture. tb may be nil, which the table
+// above uses from a closure that has no *testing.T of its own.
+func fixtureFile(tb testing.TB, rel string) []byte {
+	if tb != nil {
+		tb.Helper()
+	}
+	raw, err := os.ReadFile(filepath.Join(dsFixtureDir, rel))
+	if err != nil {
+		if tb == nil {
+			panic(err)
+		}
+		tb.Fatalf("read %s: %v", rel, err)
+	}
+	return raw
+}
+
+// appendHandshake writes one row of the group's handshake log directly. Registration produces no
+// handshake — the group is created from an uploaded tree, not from a commit — and no committed
+// fixture can carry a commit all the way to a merge, so the log the sequencer serves and the
+// winner the conflict names are seeded here.
+func (h *dsHarness) appendHandshake(t *testing.T, groupID id.ID, seq, epoch uint64, kind uint8, blob []byte) {
+	t.Helper()
+	if err := h.repo.AppendHandshake(context.Background(), store.HandshakeRow{
+		GroupID: groupID, Seq: seq, Epoch: epoch, Kind: kind, Blob: blob, Created: h.clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("AppendHandshake: %v", err)
+	}
+}
+
+// putDSProposal queues one instance-originated (origin 0) Remove proposal and returns its ref.
+// Task 21 owns the endpoint that issues these; invariant 4's first clause and the two conflict
+// bodies are defined over the rows, so the rows are what these tests need.
+func (h *dsHarness) putDSProposal(t *testing.T, groupID id.ID, epoch uint64, void bool) []byte {
+	t.Helper()
+	ref := id.New()
+	row := store.ProposalRow{
+		GroupID:  groupID,
+		Ref:      ref[:],
+		Epoch:    epoch,
+		Kind:     3, // Remove
+		Origin:   0, // the instance
+		ActionID: id.New(),
+		IssuedAt: h.clk.Now().Unix(),
+		TTL:      86400,
+	}
+	if void {
+		at := h.clk.Now().Unix()
+		row.VoidAt = &at
+	}
+	if err := h.repo.PutProposal(context.Background(), row); err != nil {
+		t.Fatalf("PutProposal: %v", err)
+	}
+	return row.Ref
+}
+
+// memberSessionOfAnotherUser is a session for some current member whose user is NOT the user at
+// `leaf`. The fixture gives 1,500 leaves across a handful of synthetic users, so the search is
+// over real credentials rather than over invented identities.
+func (h *dsHarness) memberSessionOfAnotherUser(t *testing.T, groupID id.ID, leaf uint32) auth.Session {
+	t.Helper()
+	members, err := h.repo.ListMembers(context.Background(), groupID)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	var target id.ID
+	found := false
+	for _, m := range members {
+		if m.LeafIndex == leaf {
+			target, found = m.UserID, true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no member at leaf %d", leaf)
+	}
+	for _, m := range members {
+		if m.UserID != target && m.RemovedEpoch == nil {
+			return auth.Session{UserID: m.UserID, DeviceID: m.DeviceID, Scope: auth.ScopeEnrolled}
+		}
+	}
+	t.Fatalf("every member of %s belongs to the user at leaf %d", groupID, leaf)
+	return auth.Session{}
+}

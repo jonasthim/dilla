@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -56,6 +57,21 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 	mux.Handle("POST /v1/groups", enrolled(h.create))
 	mux.Handle("GET /v1/groups/{id}/info", enrolled(h.info))
 	mux.Handle("GET /v1/groups/{id}/tree", enrolled(h.tree))
+}
+
+// RegisterSequencer mounts the four routes of the sequencer and the commit path: endpoints 4
+// (handshake catch-up), 5 (commit), 6 (member proposal) and 19 (outstanding proposals). It is a
+// second method rather than four more lines in Register so the delivery service's surface grows
+// one named group per task, and so a composition root that wants the registry without the
+// sequencer — there is none yet, but task 27a decides that, not this file — has the choice.
+func (h *Groups) RegisterSequencer(mux *server.Mux, sessions *auth.Sessions) {
+	enrolled := func(f http.HandlerFunc) http.Handler {
+		return sessions.Middleware(f, auth.ScopeEnrolled)
+	}
+	mux.Handle("GET /v1/groups/{id}/handshakes", enrolled(h.handshakes))
+	mux.Handle("POST /v1/groups/{id}/commit", enrolled(h.commit))
+	mux.Handle("POST /v1/groups/{id}/proposal", enrolled(h.proposal))
+	mux.Handle("GET /v1/groups/{id}/proposals", enrolled(h.proposals))
 }
 
 // sessionOf is the one place this file reads the request's session. It is a helper in package api,
@@ -201,5 +217,196 @@ func dsError(err error) error {
 		return server.RateLimited(ms)
 	default:
 		return server.Errorf(server.Code(e.Code), "%s", e.Detail)
+	}
+}
+
+// queryUint reads a decimal query parameter, falling back to def when it is absent or malformed.
+// It is a helper in package api: plan-1a's internal/server declares no such function, and part 1b
+// does not invent names in a package it does not own (deviation B12).
+func queryUint(r *http.Request, name string, def uint64) uint64 {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+type handshakeItem struct {
+	_      struct{} `cbor:",toarray"`
+	Seq    uint64
+	Epoch  uint64
+	Kind   uint8
+	Sender *uint32
+	Blob   []byte
+}
+
+// handshakes is endpoint 4: the catch-up stream over the group's one seq space.
+func (h *Groups) handshakes(w http.ResponseWriter, r *http.Request) {
+	groupID, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	session, err := sessionOf(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	from := queryUint(r, "from", 0)
+	limit := int32(queryUint(r, "limit", 256))
+	// The whole handshake log of a group is member-only: it names every leaf that ever committed
+	// and every epoch transition. Handshakes takes the session and answers E_NOT_FOUND to a
+	// non-member, exactly as Info and Tree do.
+	rows, err := h.DS.Handshakes(r.Context(), groupID, session, from, limit)
+	if err != nil {
+		server.WriteError(w, dsError(err))
+		return
+	}
+	out := make([]handshakeItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, handshakeItem{
+			Seq: row.Seq, Epoch: row.Epoch, Kind: row.Kind, Sender: row.SenderLeaf, Blob: row.Blob,
+		})
+	}
+	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
+		server.WriteError(w, err)
+	}
+}
+
+type commitRequestBody struct {
+	_           struct{} `cbor:",toarray"`
+	Epoch       uint64
+	Commit      []byte
+	GroupInfo   []byte
+	Welcomes    []welcomeForBody
+	RatchetTree []byte
+}
+
+type welcomeForBody struct {
+	_        struct{} `cbor:",toarray"`
+	DeviceID id.ID
+	Blob     []byte
+}
+
+type seqEpochResponse struct {
+	_     struct{} `cbor:",toarray"`
+	Seq   uint64
+	Epoch uint64
+}
+
+// commit is endpoint 5: body [epoch, commit, group_info, welcomes, ratchet_tree] -> [seq, epoch].
+func (h *Groups) commit(w http.ResponseWriter, r *http.Request) {
+	groupID, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	var body commitRequestBody
+	if err := server.DecodeBody(w, r, h.max(), &body); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	session, err := sessionOf(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	welcomes := make([]ds.WelcomeFor, 0, len(body.Welcomes))
+	for _, wf := range body.Welcomes {
+		welcomes = append(welcomes, ds.WelcomeFor{DeviceID: wf.DeviceID, Blob: wf.Blob})
+	}
+	out, err := h.DS.Commit(r.Context(), session, groupID, ds.CommitRequest{
+		Epoch: body.Epoch, Commit: body.Commit, GroupInfo: body.GroupInfo,
+		Welcomes: welcomes, RatchetTree: body.RatchetTree,
+	})
+	if err != nil {
+		server.WriteError(w, dsError(err))
+		return
+	}
+	if err := server.EncodeBody(w, http.StatusOK,
+		seqEpochResponse{Seq: out.Seq, Epoch: out.Epoch}); err != nil {
+		server.WriteError(w, err)
+	}
+}
+
+// proposal is endpoint 6: body [epoch, proposal] -> [seq].
+func (h *Groups) proposal(w http.ResponseWriter, r *http.Request) {
+	groupID, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	var body struct {
+		_        struct{} `cbor:",toarray"`
+		Epoch    uint64
+		Proposal []byte
+	}
+	if err := server.DecodeBody(w, r, h.max(), &body); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	session, err := sessionOf(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	seq, err := h.DS.Proposal(r.Context(), session, groupID, body.Epoch, body.Proposal)
+	if err != nil {
+		server.WriteError(w, dsError(err))
+		return
+	}
+	if err := server.EncodeBody(w, http.StatusOK, struct {
+		_   struct{} `cbor:",toarray"`
+		Seq uint64
+	}{Seq: seq}); err != nil {
+		server.WriteError(w, err)
+	}
+}
+
+type proposalItem struct {
+	_          struct{} `cbor:",toarray"`
+	Ref        []byte
+	Kind       uint8
+	TargetLeaf *uint32
+	Blob       []byte
+	Void       uint8
+}
+
+// proposals is endpoint 19: the outstanding proposals of the group's current epoch. protocol/02
+// fixes the row as [ref, kind, target_leaf|null, blob, void], and the blob is the guest's own
+// queued proposal — `mls_pending_proposals` has no blob column, because the bytes a committer
+// includes by reference are the ones the PublicGroup stored.
+func (h *Groups) proposals(w http.ResponseWriter, r *http.Request) {
+	groupID, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	session, err := sessionOf(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	rows, err := h.DS.Proposals(r.Context(), groupID, session)
+	if err != nil {
+		server.WriteError(w, dsError(err))
+		return
+	}
+	out := make([]proposalItem, 0, len(rows))
+	for _, p := range rows {
+		var void uint8
+		if p.Row.VoidAt != nil {
+			void = 1
+		}
+		out = append(out, proposalItem{
+			Ref: p.Row.Ref, Kind: p.Row.Kind, TargetLeaf: p.Row.TargetLeaf, Blob: p.Blob, Void: void,
+		})
+	}
+	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
+		server.WriteError(w, err)
 	}
 }
