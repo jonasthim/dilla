@@ -34,20 +34,26 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // `each_suite_reports_the_expected_number_of_cases`: 4 envelope cases x 3 fields,
 // 3 franking cases x 1 field plus the franking file's own envelope_cbor ->
 // commitment case, 4 sframe cases x 6 fields, 5 identity fields plus the
-// credential CBOR and the two credential signatures, and the 40-input reject
+// credential CBOR and the two credential signatures, and the 48-input reject
 // corpus. interfaces.md §6 task 4 requires "the same per-suite case counts as
-// the native and Node runs", which is exactly this table — 88 assertions.
+// the native and Node runs", which is exactly this table — 96 assertions.
+//
+// The reject corpus went from 40 to 48 in commit 39ab8fa, which tightened the envelope limits of
+// interfaces.md §2.8 and grew envelope.json's `rejects` array from one case to nine. That commit
+// moved `core/dilla-core/tests/vectors_native.rs`'s own assertion to 48 and left this table and
+// `testdata/vectors_suites.golden` behind, so both have been failing since; the module itself
+// reports 96 passed and 0 failed, so nothing but the pins was stale.
 var wantSuiteCases = map[string]int{
 	"envelope": 12,
 	"franking": 4,
 	"sframe":   24,
 	"identity": 8,
-	"rejects":  40,
+	"rejects":  48,
 }
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 88
+const wantTotalCases = 96
 
 // The four case names run_identity emits, one per sub-object of identity.json.
 var wantIdentityCases = []string{"credential_identity", "recovery_key", "safety_number", "sas"}
