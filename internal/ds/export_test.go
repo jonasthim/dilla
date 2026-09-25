@@ -42,6 +42,14 @@ func WithGroupForTest(d *DS, ctx context.Context, groupID id.ID, fn func(*mlswas
 	return d.withGroup(ctx, groupID, fn)
 }
 
+// EvictStateForTest drops one group's cached handle. Task 27's reseed test rewrites
+// `public_group_state` behind the delivery service's back, which is exactly what a restore from a
+// backup that predates the group does to SQL — and the cached handle, which R12 says SQL is the
+// record for, has to go with it.
+func EvictStateForTest(d *DS, ctx context.Context, groupID id.ID) error {
+	return d.states.evict(ctx, groupID)
+}
+
 // CommitExternalForTest is `commit` on the EXTERNAL path — the one tasks 24 and 25 turn on. No
 // caller sets commitOptions.external in task 20, so the two branches that separate a member commit
 // from an external one (the structural sender check, and the staged-handle release that has to

@@ -71,6 +71,19 @@ func (q *Queries) CloseGroup(ctx context.Context, arg CloseGroupParams) error {
 	return err
 }
 
+const clearEpochUnknown = `-- name: ClearEpochUnknown :exec
+UPDATE mls_groups SET epoch_unknown = 0, heal_deadline = NULL WHERE group_id = ?
+`
+
+type ClearEpochUnknownParams struct {
+	GroupID id.ID
+}
+
+func (q *Queries) ClearEpochUnknown(ctx context.Context, arg ClearEpochUnknownParams) error {
+	_, err := q.db.ExecContext(ctx, clearEpochUnknown, arg.GroupID)
+	return err
+}
+
 const countForkReporters = `-- name: CountForkReporters :one
 SELECT count(*) FROM fork_reports WHERE group_id = ? AND seq = ?
 `
@@ -215,6 +228,20 @@ type DeleteWelcomeParams struct {
 
 func (q *Queries) DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error {
 	_, err := q.db.ExecContext(ctx, deleteWelcome, arg.DeliveredAt, arg.DeviceID, arg.WelcomeID)
+	return err
+}
+
+const endAllVoiceSessions = `-- name: EndAllVoiceSessions :exec
+UPDATE mls_groups SET closed_at = ?1
+WHERE call_id IS NOT NULL AND closed_at IS NULL
+`
+
+type EndAllVoiceSessionsParams struct {
+	At int64
+}
+
+func (q *Queries) EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error {
+	_, err := q.db.ExecContext(ctx, endAllVoiceSessions, arg.At)
 	return err
 }
 
@@ -728,6 +755,20 @@ func (q *Queries) ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]L
 		return nil, err
 	}
 	return items, nil
+}
+
+const markAllGroupsEpochUnknown = `-- name: MarkAllGroupsEpochUnknown :exec
+UPDATE mls_groups SET epoch_unknown = 1, heal_deadline = ?1
+WHERE closed_at IS NULL
+`
+
+type MarkAllGroupsEpochUnknownParams struct {
+	HealDeadline int64
+}
+
+func (q *Queries) MarkAllGroupsEpochUnknown(ctx context.Context, arg MarkAllGroupsEpochUnknownParams) error {
+	_, err := q.db.ExecContext(ctx, markAllGroupsEpochUnknown, arg.HealDeadline)
+	return err
 }
 
 const oldestHandshakeSeq = `-- name: OldestHandshakeSeq :one

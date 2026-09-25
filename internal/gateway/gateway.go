@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -154,6 +155,18 @@ type Gateway struct {
 	beat      heartbeatPolicy
 	suspended sync.Map // resume token string -> *conn, inside the resume window
 
+	// generation is the instance generation every `hello`, every `ready` and every resume check
+	// reads. It is an atomic and NOT `opts.Generation` because invariant 11 moves it while
+	// connections are live: `dillad restore` bumps it, and the whole point of the bump is that
+	// outstanding resume tokens stop being accepted from that moment. Reading the immutable
+	// Options field would mean a restored instance kept honouring pre-restore resume tokens for
+	// the life of the process — replaying, to a client that never learned the database changed
+	// underneath it, a ring of frames about epochs the instance no longer holds.
+	//
+	// Options.Generation is still the value the gateway STARTS at; SetGeneration is how the
+	// delivery service publishes a later one.
+	generation atomic.Uint64
+
 	mu       sync.Mutex
 	draining bool
 }
@@ -166,12 +179,36 @@ func New(o Options) *Gateway {
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
-	return &Gateway{
+	g := &Gateway{
 		opts:     o,
 		reg:      newRegistry(),
 		tickets:  NewTickets(o.Clock),
 		presence: newPresence(o.Clock),
 		beat:     newHeartbeatPolicy(time.Duration(o.HeartbeatMS) * time.Millisecond),
+	}
+	g.generation.Store(o.Generation)
+	return g
+}
+
+// Generation is the instance generation the gateway is currently advertising.
+func (g *Gateway) Generation() uint64 { return g.generation.Load() }
+
+// SetGeneration publishes a new instance generation, which is what invariant 11's restore does.
+// Every later `hello` and `ready` carries it, and every resume that presents the old one is
+// refused — which is the whole mechanism by which a restore tells a client "what you remember
+// about this instance is no longer true".
+//
+// It is MONOTONE, like the column behind it: a caller that named an older generation would
+// otherwise revive exactly the tokens the last restore invalidated.
+func (g *Gateway) SetGeneration(generation uint64) {
+	for {
+		current := g.generation.Load()
+		if generation <= current {
+			return
+		}
+		if g.generation.CompareAndSwap(current, generation) {
+			return
+		}
 	}
 }
 

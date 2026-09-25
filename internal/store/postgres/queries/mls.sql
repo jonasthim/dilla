@@ -36,6 +36,27 @@ WHERE group_id = $5;
 -- name: SetGroupHealing :exec
 UPDATE mls_groups SET epoch_unknown = $1, heal_deadline = $2 WHERE group_id = $3;
 
+-- name: MarkAllGroupsEpochUnknown :exec
+-- Invariant 11's first half, as ONE statement rather than a paged loop: a restore runs once and
+-- correctness, not latency, governs it, while a loop that stopped at a fixed batch would leave
+-- every group past the batch serving state the restored database no longer matches. Closed groups
+-- are skipped -- a closed group has nothing left to heal.
+UPDATE mls_groups SET epoch_unknown = 1, heal_deadline = sqlc.arg(heal_deadline)::bigint
+WHERE closed_at IS NULL;
+
+-- name: ClearEpochUnknown :exec
+-- An adopted heal. The deadline goes with the flag: closeUnhealedGroups reads the pair, and a
+-- healed group that kept its deadline would be one restart away from looking overdue again.
+UPDATE mls_groups SET epoch_unknown = 0, heal_deadline = NULL WHERE group_id = $1;
+
+-- name: EndAllVoiceSessions :exec
+-- Invariant 11's "Live calls end." A live call IS its call group (R9 puts the call id in the
+-- companion column), and `voice_sessions` is Plan 2's table -- so on a Plan-1 database the whole
+-- of "end every live call" is closing the call groups. Plan 2 task 1 extends the same statement
+-- to `voice_sessions` rather than declaring a second method (deviation B13, P2-D19).
+UPDATE mls_groups SET closed_at = sqlc.arg(at)::bigint
+WHERE call_id IS NOT NULL AND closed_at IS NULL;
+
 -- name: AppendHandshake :exec
 INSERT INTO mls_handshakes (group_id, seq, epoch, kind, sender_leaf, sender_device, blob, created)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8);

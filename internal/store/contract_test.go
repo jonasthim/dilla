@@ -29,6 +29,10 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 	}{
 		{"Instance", reflect.TypeOf((*store.Instance)(nil)).Elem(), []string{
 			"BumpGeneration", "CreateInstance", "GetInstance", "GetSetting", "PutSetting",
+			// SetGeneration is §4.1 plus one (deviation ID1, task 27): invariant 11's
+			// `dillad restore` names the generation it read out of the backup's
+			// manifest, and a blind `BumpGeneration` would silently disregard it.
+			"SetGeneration",
 		}},
 		{"Accounts", reflect.TypeOf((*store.Accounts)(nil)).Elem(), []string{
 			"CreateUser", "GetUser", "GetUserByUsername", "ListUsers", "SetUserDisabled",
@@ -56,9 +60,17 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"CreateInvite", "GetInviteByHash", "ListInvites", "RedeemInvite", "RevokeInvite",
 		}},
 		{"MLS", reflect.TypeOf((*store.MLS)(nil)).Elem(), []string{
-			"AppendHandshake", "CloseGroup", "CountForkReporters", "CountKeyPackages",
-			"CreateGroup", "DeleteProposals", "DeleteWelcome", "GetCommitAtEpoch", "GetGroup",
+			"AppendHandshake",
+			// ClearEpochUnknown, EndAllVoiceSessions and MarkAllGroupsEpochUnknown are
+			// §4.1 plus three (deviation ID1 with B13, task 27): invariant 11's restore
+			// and heal. Plan 2 records the marking and the call-ending as P2-D19 for the
+			// same work, so both plans name ONE method set rather than two.
+			"ClearEpochUnknown",
+			"CloseGroup", "CountForkReporters", "CountKeyPackages",
+			"CreateGroup", "DeleteProposals", "DeleteWelcome", "EndAllVoiceSessions",
+			"GetCommitAtEpoch", "GetGroup",
 			"GroupsForDevice",
+			"MarkAllGroupsEpochUnknown",
 			// ListGroupsForRetention is §4.1 plus one (deviation ID1, task 26 fix round 1):
 			// invariant 10's sweep must reach CLOSED groups too, and `ListOpenGroups` --
 			// the walk §4.1 names -- filters exactly those out, so a closed group's

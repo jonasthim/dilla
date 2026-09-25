@@ -32,10 +32,11 @@ type SweepReport struct {
 // swept — on an instance with more groups than the batch, the tail's ciphertext never prunes, and
 // nothing else does that work.
 //
-// DEVIATION from the task brief, which ends the loop with `d.closeUnhealedGroups(ctx)`. Invariant
-// 11's close-and-recreate is task 27's (`internal/ds/heal.go`); no such method exists in this
-// tree, and inventing one here would put the terminal path of a group's life inside the retention
-// task. Task 27 adds the call on this tick.
+// The loop ends with `d.closeUnhealedGroups(ctx)`, invariant 11's terminal path: a group nobody
+// healed inside the 24-hour window is closed and re-created by the channel owner's device. Task 26
+// recorded the call as owed to task 27 (`internal/ds/heal.go`), which now owns the method; it runs
+// AFTER both retention passes so a group closed on this tick has already had its ciphertext swept
+// by the same run.
 func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 	var report SweepReport
 
@@ -114,6 +115,9 @@ func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 		if len(groups) < sweepPage {
 			break
 		}
+	}
+	if err := d.closeUnhealedGroups(ctx); err != nil {
+		return report, err
 	}
 	return report, nil
 }

@@ -202,6 +202,15 @@ type deviceConn struct {
 	stall    *stallConn
 	frames   chan recordedFrame
 	closed   chan struct{}
+
+	// url and bearer are what a RECONNECT needs: task 27's restore test drops this socket and
+	// dials the same gateway again with the resume token below, which is the only way to observe
+	// from outside the package that the new generation refused it.
+	url    string
+	bearer string
+	// ready is the `ready` frame this connection was greeted with. Its elements 2 and 3 are the
+	// generation and the resume token — the two values a `resume` frame must carry back.
+	ready recordedFrame
 }
 
 // recordedFrame is one decoded S->C frame: [op, n, group_id, payload].
@@ -309,6 +318,8 @@ func (h *dsHarness) connect(device id.ID) *deviceConn {
 		stall:    listener.accepted(t),
 		frames:   make(chan recordedFrame, 256),
 		closed:   make(chan struct{}),
+		url:      srv.URL,
+		bearer:   h.auth.token(session),
 	}
 	hello := readRecordedFrame(t, dialCtx, ws)
 	if hello.op != gateway.OpHello {
@@ -328,9 +339,11 @@ func (h *dsHarness) connect(device id.ID) *deviceConn {
 	if err := ws.Write(dialCtx, websocket.MessageBinary, frame); err != nil {
 		t.Fatalf("write identify: %v", err)
 	}
-	if ready := readRecordedFrame(t, dialCtx, ws); ready.op != gateway.OpReady {
+	ready := readRecordedFrame(t, dialCtx, ws)
+	if ready.op != gateway.OpReady {
 		t.Fatalf("the second frame is %s, want ready", ready.name)
 	}
+	c.ready = ready
 	if !h.gw.Online(device) {
 		t.Fatal("a device that reached ready is not online")
 	}

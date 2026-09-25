@@ -100,3 +100,16 @@ func (q *Queries) PutSetting(ctx context.Context, arg PutSettingParams) error {
 	_, err := q.db.ExecContext(ctx, putSetting, arg.Key, arg.Value, arg.Updated)
 	return err
 }
+
+const setGeneration = `-- name: SetGeneration :exec
+UPDATE instances SET generation = MAX(generation, ?1)
+`
+
+type SetGenerationParams struct {
+	Generation int64
+}
+
+func (q *Queries) SetGeneration(ctx context.Context, arg SetGenerationParams) error {
+	_, err := q.db.ExecContext(ctx, setGeneration, arg.Generation)
+	return err
+}

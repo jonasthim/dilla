@@ -255,7 +255,7 @@ func decodeAny(b []byte) (Inbound, error) {
 func (g *Gateway) serve(ctx context.Context, s sink, token string) {
 	wire, e2ee, media := g.advertised()
 	hello, err := HelloPayload(wire, e2ee, media,
-		g.opts.HeartbeatMS, g.opts.MaxFrameBytes, g.opts.InstanceID, g.opts.Generation)
+		g.opts.HeartbeatMS, g.opts.MaxFrameBytes, g.opts.InstanceID, g.Generation())
 	if err != nil {
 		s.close(CloseUnknown, "hello")
 		return
@@ -425,7 +425,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	if session.DeviceID != c.deviceID {
 		return refuse("resume token does not belong to this session")
 	}
-	out, err := c.tryResume(token, generation, lastN, g.opts.Generation)
+	out, err := c.tryResume(token, generation, lastN, g.Generation())
 	if err != nil {
 		g.suspended.Delete(string(token))
 		return refuse("resume window elapsed or n below the ring floor")
@@ -525,7 +525,7 @@ func (g *Gateway) sendReady(ctx context.Context, c *conn) error {
 	if err != nil {
 		return err
 	}
-	p, err := ReadyPayload(c.deviceID, c.userID, g.opts.Generation, c.resume,
+	p, err := ReadyPayload(c.deviceID, c.userID, g.Generation(), c.resume,
 		c.wire, c.e2ee, c.media, uint64(remaining), digests)
 	if err != nil {
 		return err

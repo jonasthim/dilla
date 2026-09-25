@@ -144,6 +144,14 @@ func (r *Repo) BumpGeneration(ctx context.Context) (uint64, error) {
 	return uint64(gen), nil
 }
 
+// SetGeneration is monotone in SQL (`MAX(generation, ?)`), so a manifest older
+// than the instance's own generation is a no-op rather than a step backwards.
+func (r *Repo) SetGeneration(ctx context.Context, generation uint64) error {
+	return wrap(r.w.SetGeneration(ctx, sqlitedb.SetGenerationParams{
+		Generation: int64(generation),
+	}))
+}
+
 func (r *Repo) GetSetting(ctx context.Context, key string) ([]byte, error) {
 	v, err := r.r.GetSetting(ctx, sqlitedb.GetSettingParams{Key: key})
 	return v, wrap(err)
@@ -968,6 +976,22 @@ func (r *Repo) CloseGroup(ctx context.Context, groupID id.ID, at int64) error {
 		ClosedAt: sql.NullInt64{Int64: at, Valid: true},
 		GroupID:  groupID,
 	}))
+}
+
+// MarkAllGroupsEpochUnknown, ClearEpochUnknown and EndAllVoiceSessions are
+// invariant 11's three statements (deviation B13).
+func (r *Repo) MarkAllGroupsEpochUnknown(ctx context.Context, healDeadline int64) error {
+	return wrap(r.w.MarkAllGroupsEpochUnknown(ctx, sqlitedb.MarkAllGroupsEpochUnknownParams{
+		HealDeadline: healDeadline,
+	}))
+}
+
+func (r *Repo) ClearEpochUnknown(ctx context.Context, groupID id.ID) error {
+	return wrap(r.w.ClearEpochUnknown(ctx, sqlitedb.ClearEpochUnknownParams{GroupID: groupID}))
+}
+
+func (r *Repo) EndAllVoiceSessions(ctx context.Context, at int64) error {
+	return wrap(r.w.EndAllVoiceSessions(ctx, sqlitedb.EndAllVoiceSessionsParams{At: at}))
 }
 
 // NextSeq allocates the next number in the group's ONE sequence space, shared by

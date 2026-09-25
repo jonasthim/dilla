@@ -14,6 +14,9 @@ type Querier interface {
 	AppendHandshake(ctx context.Context, arg AppendHandshakeParams) error
 	BumpGeneration(ctx context.Context) (int64, error)
 	BumpGroupSeq(ctx context.Context, arg BumpGroupSeqParams) (int64, error)
+	// An adopted heal. The deadline goes with the flag: closeUnhealedGroups reads the pair, and a
+	// healed group that kept its deadline would be one restart away from looking overdue again.
+	ClearEpochUnknown(ctx context.Context, arg ClearEpochUnknownParams) error
 	ClearLoginFailures(ctx context.Context, arg ClearLoginFailuresParams) error
 	CloseGroup(ctx context.Context, arg CloseGroupParams) error
 	ConsumeRecoveryCode(ctx context.Context, arg ConsumeRecoveryCodeParams) (int64, error)
@@ -39,6 +42,11 @@ type Querier interface {
 	DeleteSessionsByDevice(ctx context.Context, arg DeleteSessionsByDeviceParams) (int64, error)
 	DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsByUserParams) (int64, error)
 	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
+	// Invariant 11's "Live calls end." A live call IS its call group (R9 puts the call id in the
+	// companion column), and `voice_sessions` is Plan 2's table -- so on a Plan-1 database the whole
+	// of "end every live call" is closing the call groups. Plan 2 task 1 extends the same statement
+	// to `voice_sessions` rather than declaring a second method (deviation B13, P2-D19).
+	EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
@@ -83,6 +91,11 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
 	ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error)
+	// Invariant 11's first half, as ONE statement rather than a paged loop: a restore runs once and
+	// correctness, not latency, governs it, while a loop that stopped at a fixed batch would leave
+	// every group past the batch serving state the restored database no longer matches. Closed groups
+	// are skipped -- a closed group has nothing left to heal.
+	MarkAllGroupsEpochUnknown(ctx context.Context, arg MarkAllGroupsEpochUnknownParams) error
 	// The retention floor: the lowest seq an ELIGIBLE device has acknowledged in this group, or 0
 	// when no eligible cursor exists. A device is ineligible when it is revoked, when its user is
 	// disabled, or when its cursor has not moved since `updated` (the 90-day inactivity horizon) --
@@ -149,6 +162,12 @@ type Querier interface {
 	RedeemInvite(ctx context.Context, arg RedeemInviteParams) (Invites, error)
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
+	// Invariant 11's restore half, and MONOTONE. `dillad restore` names the generation it read out of
+	// the backup's manifest; a backup taken before an earlier restore would otherwise walk the number
+	// BACKWARDS, and the generation is exactly what invalidates outstanding resume tokens, so a
+	// backwards step would revive every token the last restore killed. MAX() keeps the one promise
+	// every client depends on: the generation only ever grows.
+	SetGeneration(ctx context.Context, arg SetGenerationParams) error
 	SetGroupHealing(ctx context.Context, arg SetGroupHealingParams) error
 	SetUserDisabled(ctx context.Context, arg SetUserDisabledParams) error
 	TakeKeyPackage(ctx context.Context, arg TakeKeyPackageParams) (KeyPackages, error)

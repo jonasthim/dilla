@@ -83,6 +83,22 @@ func newDSHarness(t *testing.T) *dsHarness {
 
 	h := &dsHarness{t: t, path: path, clk: clk, repo: repo, calls: map[string]int64{}}
 
+	// The `instances` row, which task 27 made load-bearing: invariant 11's generation lives in it,
+	// and `HealStatus` and `OnRestore` both read it. Registration never writes one — `dillad init`
+	// does, at first boot — so a harness without it is a database no shipped instance ever has.
+	keys := testInstanceKeys(t)
+	if err := repo.CreateInstance(ctx, store.InstanceRow{
+		InstanceID:          keys.InstanceID,
+		ExternalSenderKeyID: keys.ExternalSenderKeyID,
+		KeyHistory:          []byte{0x80},
+		FrankingKeyID:       keys.FrankingKeyID,
+		Generation:          1,
+		PolicyVersion:       1,
+		Created:             clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+
 	wasm, err := mlswasi.New(ctx, loadWasmForDS(t), mlswasi.Options{
 		PoolSize: 2,
 		CacheDir: sharedWasmCacheDir(t),

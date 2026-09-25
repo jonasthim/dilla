@@ -43,6 +43,15 @@ type Instance interface {
 	GetInstance(ctx context.Context) (InstanceRow, error)
 	CreateInstance(ctx context.Context, in InstanceRow) error
 	BumpGeneration(ctx context.Context) (uint64, error)
+	// SetGeneration is invariant 11's restore half (deviation B13). `dillad
+	// restore` reads the generation out of the backup's manifest and names it,
+	// rather than blind-bumping, so an operator who restores twice from the same
+	// manifest lands on the same number both times. It is MONOTONE: a manifest
+	// older than the instance's current generation cannot walk the number
+	// backwards, because the generation is exactly what invalidates outstanding
+	// resume tokens and a backwards step would revive the ones the last restore
+	// killed.
+	SetGeneration(ctx context.Context, generation uint64) error
 	GetSetting(ctx context.Context, key string) ([]byte, error)
 	// PutSetting carries its own timestamp: instance_settings.updated is
 	// NOT NULL, and a repository with no clock has nothing to write there
@@ -138,6 +147,26 @@ type MLS interface {
 	// the method set once, so it is declared here rather than invented per caller.
 	ListGroupsForRetention(ctx context.Context, after id.ID, limit int32) ([]GroupRow, error)
 	CloseGroup(ctx context.Context, groupID id.ID, at int64) error
+	// The three statements invariant 11 runs, added by deviation B13. Plan 2
+	// records the first two as P2-D19 for the same work, so they are declared
+	// ONCE, here, rather than twice with two spellings.
+	//
+	// MarkAllGroupsEpochUnknown is `dillad restore`'s "every group becomes
+	// epoch-unknown", with the heal deadline the window gives it, as ONE
+	// statement over every open group: a paged loop that stopped at a fixed
+	// batch would leave every group past the batch serving state the restored
+	// database no longer matches.
+	MarkAllGroupsEpochUnknown(ctx context.Context, healDeadline int64) error
+	// ClearEpochUnknown is an adopted heal. It clears the deadline with the
+	// flag: a healed group that kept its deadline would look overdue to the
+	// next sweep that read the pair.
+	ClearEpochUnknown(ctx context.Context, groupID id.ID) error
+	// EndAllVoiceSessions is invariant 11's "Live calls end." On a Plan-1
+	// database a live call IS its call group -- R9 puts the call id in the
+	// companion column and `voice_sessions` is Plan 2's table -- so this closes
+	// every open call group. Plan 2 task 1 widens the same method rather than
+	// declaring a second one.
+	EndAllVoiceSessions(ctx context.Context, at int64) error
 	NextSeq(ctx context.Context, groupID id.ID) (uint64, error) // one space, both streams
 	PutGroupState(ctx context.Context, groupID id.ID, epoch uint64, state, groupInfo, treeHash []byte) error
 	AppendHandshake(ctx context.Context, h HandshakeRow) error

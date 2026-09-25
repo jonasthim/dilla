@@ -364,6 +364,8 @@ func newGroupsAPI(t *testing.T) *groupsAPI {
 	// mounted from the same `*api.Groups` value, so the body cap set above is theirs too — a
 	// KeyPackage refill and a Welcome list are both far over §5.3's 64 KiB.
 	groups.RegisterDirectory(mux, deps.Sessions)
+	// Task 27's two heal routes, endpoints 13 and 14.
+	groups.RegisterHeal(mux, deps.Sessions)
 
 	_, _, token := seedAPISession(t, deps)
 	return &groupsAPI{
