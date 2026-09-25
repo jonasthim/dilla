@@ -4,7 +4,7 @@
 
 use dilla_core::cbor::decode_strict;
 use dilla_core::vectors::{
-    run_all, run_envelope, run_franking, run_identity, run_rejects, run_sframe,
+    run_all, run_envelope, run_frames, run_franking, run_identity, run_rejects, run_sframe,
 };
 
 #[test]
@@ -13,7 +13,7 @@ fn every_suite_passes() {
     assert!(report.is_ok(), "{}", report.to_text());
     assert_eq!(report.failed, 0);
     assert!(report.passed > 0);
-    assert_eq!(report.suites.len(), 5);
+    assert_eq!(report.suites.len(), 6);
 }
 
 #[test]
@@ -26,6 +26,10 @@ fn each_suite_reports_the_expected_number_of_cases() {
     assert_eq!(run_franking().cases.len(), 4);
     assert_eq!(run_sframe().cases.len(), 24);
     assert_eq!(run_identity().cases.len(), 8);
+    // The gateway frame corpus: one case per opcode of protocol/02's catalogue plus the second
+    // `mls.handshake` (instance-sent, `sender = null`), checked as one `frame` field each. Pinned
+    // exactly, for the same reason the reject suite is.
+    assert_eq!(run_frames().cases.len(), 25);
     // The reject suite is pinned exactly, not `>=`: 33 deterministic-CBOR corpus inputs, 3
     // envelope decode refusals, 2 body-limit refusals, every `rejects` entry of envelope.json
     // (9 today: interfaces.md §2.8's tightened per-field limits, one case per bound plus the
@@ -45,6 +49,7 @@ fn each_suite_reports_the_expected_number_of_cases() {
         run_franking(),
         run_sframe(),
         run_identity(),
+        run_frames(),
         run_rejects(),
     ] {
         for case in &suite.cases {
@@ -89,7 +94,9 @@ fn the_report_encodes_as_deterministic_cbor_and_decodes_back() {
     assert_eq!(decoded.1, u64::from(report.failed));
     assert_eq!(
         decoded.2,
-        vec!["envelope", "franking", "sframe", "identity", "rejects"]
+        vec![
+            "envelope", "franking", "sframe", "identity", "frames", "rejects"
+        ]
     );
 }
 
@@ -107,7 +114,9 @@ fn a_corrupted_case_makes_the_report_fail() {
 #[test]
 fn to_text_names_every_suite() {
     let text = run_all().to_text();
-    for name in ["envelope", "franking", "sframe", "identity", "rejects"] {
+    for name in [
+        "envelope", "franking", "sframe", "identity", "frames", "rejects",
+    ] {
         assert!(text.contains(name), "{text}");
     }
 }

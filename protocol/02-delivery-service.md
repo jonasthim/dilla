@@ -122,6 +122,12 @@ and only in element 1.
 
 ### Control (0–15) — `group_id = null`, `n = 0`
 
+Two exceptions to the heading, and only two. `ready` (3) and `resumed` (4) are replayable and
+carry `n ≠ 0`: a resumed connection whose `resumed` frame was dropped has no record of the replay
+window it was given, and `ready`'s per-group digest is what a client with a refused resume heals
+from. `commit_ack` (12) is group-scoped and carries a `group_id`; it is the one client opcode that
+does.
+
 | op | label | dir | payload |
 |---|---|---|---|
 | 0 | `hello` | S→C | `[wire_versions([uint]), e2ee_versions([uint]), media_versions([uint]), heartbeat_ms(uint), max_frame_bytes(uint), instance_id(bstr 16), generation(uint)]` |
@@ -136,6 +142,7 @@ and only in element 1.
 | 9 | `error` | S→C | `[cid(uint), code(tstr), detail(tstr)]` |
 | 10 | `subscribe` | C→S | `[group_ids([bstr 16])]` |
 | 11 | `unsubscribe` | C→S | `[group_ids([bstr 16])]` |
+| 12 | `commit_ack` | C→S | `[round(uint)]`, `group_id` set — the acknowledgement invariant 7 counts lost rounds against |
 
 ### Delivery service (16–31) — `group_id` set
 
@@ -174,7 +181,10 @@ was away is stale by definition, and the instance re-elects.
 Opcodes 64–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
 outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored. A frame of
 the wrong element count for its opcode is `E_FRAME_SHAPE`; a frame that fails the deterministic
-decoder is `E_FRAME_CBOR`; a frame over `max_frame_bytes` is `E_FRAME_LIMIT`.
+decoder is `E_FRAME_CBOR`; a frame over `max_frame_bytes` is `E_FRAME_LIMIT`. A client frame whose
+opcode is not group-scoped but that carries a non-null `group_id` is `E_FRAME_SHAPE`, and so is a
+group-scoped client frame whose `group_id` is null — the second rule is what stops `commit_ack`
+being silently dropped rather than refused.
 
 ### Close codes (RFC 6455 private range)
 
@@ -247,8 +257,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    first; other devices back off `300 ms + random(0..300 ms)`; a 2-second watchdog nudges the next
    candidate; after three lost rounds the failing device is removed by a DS Remove. A lost round
    counts against a device only if that device acknowledged the task — the frame reaching the
-   connection's writer is not an acknowledgement. Three acknowledged-and-lost rounds remove the
-   device; unacknowledged rounds only advance the election.
+   connection's writer is not an acknowledgement. The acknowledgement is the `commit_ack` frame
+   (opcode 12), group-scoped, whose payload echoes the `round` of the `mls.commit_needed` it
+   answers. Three acknowledged-and-lost rounds remove the device; unacknowledged rounds only
+   advance the election.
 8. **Current-leaf sends.** Application messages are accepted only from a device session whose
    leaf is in the current `PublicGroup` (`403 E_LEAF_NOT_CURRENT`). The DS reads the franking
    commitment `C` from `private_message.authenticated_data` and MUST reject an upload whose

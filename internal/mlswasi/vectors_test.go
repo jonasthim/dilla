@@ -43,17 +43,21 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // moved `core/dilla-core/tests/vectors_native.rs`'s own assertion to 48 and left this table and
 // `testdata/vectors_suites.golden` behind, so both have been failing since; the module itself
 // reports 96 passed and 0 failed, so nothing but the pins was stale.
+//
+// Plan B task 17 added the sixth suite: protocol/vectors/frames.json's 25 gateway-frame accept
+// cases, one `frame` field each, re-encoded by the core's own deterministic-CBOR writer.
 var wantSuiteCases = map[string]int{
 	"envelope": 12,
 	"franking": 4,
 	"sframe":   24,
 	"identity": 8,
+	"frames":   25,
 	"rejects":  48,
 }
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 96
+const wantTotalCases = 121
 
 // The four case names run_identity emits, one per sub-object of identity.json.
 var wantIdentityCases = []string{"credential_identity", "recovery_key", "safety_number", "sas"}
@@ -120,9 +124,10 @@ func TestSuiteCaseCountsMatchTheNativeAndNodeRuns(t *testing.T) {
 	for suite, want := range wantSuiteCases {
 		got, ok := counts[suite]
 		if !ok {
-			t.Errorf("vectors_check reported no suite named %q; interfaces.md 2.9 names the five "+
-				"suites envelope, franking, sframe, identity and rejects, and the Rust "+
-				"SuiteReport.name values must be exactly those strings (NV2)", suite)
+			t.Errorf("vectors_check reported no suite named %q; interfaces.md 2.9 names the "+
+				"suites envelope, franking, sframe, identity and rejects, Plan B task 17 adds "+
+				"frames, and the Rust SuiteReport.name values must be exactly those strings "+
+				"(NV2)", suite)
 			continue
 		}
 		if got != want {
@@ -131,8 +136,8 @@ func TestSuiteCaseCountsMatchTheNativeAndNodeRuns(t *testing.T) {
 				suite, got, want)
 		}
 	}
-	if len(report.Suites) != 5 {
-		t.Errorf("vectors_check reported %d suites, want 5", len(report.Suites))
+	if len(report.Suites) != 6 {
+		t.Errorf("vectors_check reported %d suites, want 6", len(report.Suites))
 	}
 	if total != wantTotalCases {
 		t.Errorf("vectors_check reported %d cases in total, want %d", total, wantTotalCases)

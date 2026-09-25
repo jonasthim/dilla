@@ -6,6 +6,7 @@ import { encodeEnvelope, frankingCommitment, frankingTag, EnvelopeType, type Env
 import { kid, deriveFrameKeys, counter, nonce, encodeSframeHeader, SUITE } from './sframe.ts';
 import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity, sskMessage, dskMessage, sessionPreimage } from './identity.ts';
 import { keyFromSeed, sign } from './ed25519.ts';
+import { frameVectors } from './frames.ts';
 
 export const VECTORS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'protocol', 'vectors');
 const fill = (n: number, b: number) => new Uint8Array(n).fill(b);
@@ -153,6 +154,7 @@ export async function main() {
   writeFileSync(join(VECTORS_DIR, 'franking.json'), j(await frankingVectors()));
   writeFileSync(join(VECTORS_DIR, 'sframe.json'), j(await sframeVectors()));
   writeFileSync(join(VECTORS_DIR, 'identity.json'), j(await identityVectors()));
+  writeFileSync(join(VECTORS_DIR, 'frames.json'), j(frameVectors()));
   console.log(`vectors written to ${VECTORS_DIR}`);
 }
 

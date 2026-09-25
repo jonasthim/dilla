@@ -10,6 +10,31 @@ envelope	reaction add in a thread	length
 envelope	text message with a reply and one attachment	cbor
 envelope	text message with a reply and one attachment	commitment
 envelope	text message with a reply and one attachment	length
+frames	commit_ack	frame
+frames	error	frame
+frames	heartbeat	frame
+frames	heartbeat_ack	frame
+frames	hello	frame
+frames	identify	frame
+frames	interaction	frame
+frames	invalid_session	frame
+frames	message.ct	frame
+frames	message.deleted	frame
+frames	message.plain	frame
+frames	mls.commit_needed	frame
+frames	mls.epoch_changed	frame
+frames	mls.handshake	frame
+frames	mls.handshake from the instance	frame
+frames	mls.welcome	frame
+frames	presence	frame
+frames	ready	frame
+frames	reconnect	frame
+frames	resume	frame
+frames	resumed	frame
+frames	subscribe	frame
+frames	typing	frame
+frames	unsubscribe	frame
+frames	voice_state	frame
 franking	case 0	tag
 franking	case 1	tag
 franking	case 2	tag
