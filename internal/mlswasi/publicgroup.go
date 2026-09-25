@@ -3,6 +3,8 @@ package mlswasi
 import (
 	"context"
 	"fmt"
+
+	"github.com/fxamacker/cbor/v2"
 )
 
 // ProcessedKind is the `kind` field of a public_group_process response.
@@ -15,13 +17,64 @@ const (
 	KindRejected     ProcessedKind = 3
 )
 
+// ProposalKind is the RFC 9420 proposal type as protocol/02-delivery-service.md numbers it.
+type ProposalKind uint8
+
+const (
+	ProposalAdd                    ProposalKind = 1
+	ProposalUpdate                 ProposalKind = 2
+	ProposalRemove                 ProposalKind = 3
+	ProposalPSK                    ProposalKind = 4
+	ProposalReInit                 ProposalKind = 5
+	ProposalExternalInit           ProposalKind = 6
+	ProposalGroupContextExtensions ProposalKind = 7
+)
+
+// AppliedProposal is one proposal a commit resolved. TargetLeaf is set for Remove only;
+// CredentialIdentity is the added leaf's credential identity, for Add only.
+type AppliedProposal struct {
+	ProposalRef        []byte
+	Kind               ProposalKind
+	SenderLeaf         *uint32
+	TargetLeaf         *uint32
+	CredentialIdentity []byte
+}
+
 // Processed is one processed handshake message.
 type Processed struct {
-	Kind        ProcessedKind
-	Epoch       uint64
-	SenderLeaf  *uint32
-	Staged      *uint32
-	ProposalRef []byte
+	Kind             ProcessedKind
+	Epoch            uint64
+	SenderLeaf       *uint32
+	Staged           *uint32
+	ProposalRef      []byte
+	Applied          []AppliedProposal // empty unless Kind == KindCommit
+	CommitterUpdated bool              // the commit carries an UpdatePath
+}
+
+// GroupInfoCheck is the public_group_group_info_validate response. SignatureOK false is a
+// verification failure, not a transport error: dillad answers 422 E_COMMIT_INVALID with
+// rule = "group_info_signature".
+type GroupInfoCheck struct {
+	Epoch                   uint64
+	GroupID                 []byte
+	TreeHash                []byte
+	ConfirmedTranscriptHash []byte
+	SignatureOK             bool
+}
+
+// ProposalDetail is the public_group_proposal_inspect response.
+type ProposalDetail struct {
+	Kind               ProposalKind
+	SenderLeaf         *uint32
+	TargetLeaf         *uint32
+	CredentialIdentity []byte
+}
+
+// PrivateMessageMeta is the private_message_aad response.
+type PrivateMessageMeta struct {
+	AuthenticatedData []byte
+	Epoch             uint64
+	ContentType       uint8
 }
 
 // Member is one leaf of the public tree.
@@ -46,6 +99,53 @@ type KeyPackageInfo struct {
 	UserID     []byte
 	LastResort bool
 	NotAfter   uint64
+	KPRef      []byte // the RFC 9420 KeyPackageRef, the key_packages primary key
+}
+
+func rawProposalKind(raw cbor.RawMessage) (ProposalKind, error) {
+	v, err := rawUint(raw)
+	if err != nil {
+		return 0, err
+	}
+	if v < uint64(ProposalAdd) || v > uint64(ProposalGroupContextExtensions) {
+		return 0, fmt.Errorf("mlswasi: proposal kind %d is outside 1..7", v)
+	}
+	return ProposalKind(v), nil
+}
+
+func decodeApplied(raw cbor.RawMessage) ([]AppliedProposal, error) {
+	items, err := rawArray(raw)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AppliedProposal, 0, len(items))
+	for _, item := range items {
+		fields, err := rawArray(item)
+		if err != nil {
+			return nil, err
+		}
+		if err := expectLen(fields, 5, "applied proposal"); err != nil {
+			return nil, err
+		}
+		var a AppliedProposal
+		if a.ProposalRef, err = rawBytes(fields[0]); err != nil {
+			return nil, err
+		}
+		if a.Kind, err = rawProposalKind(fields[1]); err != nil {
+			return nil, err
+		}
+		if a.SenderLeaf, err = rawOptUint32(fields[2]); err != nil {
+			return nil, err
+		}
+		if a.TargetLeaf, err = rawOptUint32(fields[3]); err != nil {
+			return nil, err
+		}
+		if a.CredentialIdentity, err = rawOptBytes(fields[4]); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 // PublicGroup is a handle into one instance's module memory. It is valid only
@@ -117,7 +217,7 @@ func (g *PublicGroup) Process(ctx context.Context, mlsMessage []byte) (Processed
 	if err != nil {
 		return Processed{}, err
 	}
-	if err := expectLen(elems, 6, "public_group_process"); err != nil {
+	if err := expectLen(elems, 8, "public_group_process"); err != nil {
 		return Processed{}, err
 	}
 	kind, err := rawUint(elems[1])
@@ -138,6 +238,12 @@ func (g *PublicGroup) Process(ctx context.Context, mlsMessage []byte) (Processed
 		return Processed{}, err
 	}
 	if p.ProposalRef, err = rawOptBytes(elems[5]); err != nil {
+		return Processed{}, err
+	}
+	if p.Applied, err = decodeApplied(elems[6]); err != nil {
+		return Processed{}, err
+	}
+	if p.CommitterUpdated, err = rawBool(elems[7]); err != nil {
 		return Processed{}, err
 	}
 	return p, nil
@@ -284,7 +390,7 @@ func (i *Instance) ValidateKeyPackage(ctx context.Context, keyPackage []byte) (K
 	if err != nil {
 		return KeyPackageInfo{}, err
 	}
-	if err := expectLen(elems, 5, "validate_key_package"); err != nil {
+	if err := expectLen(elems, 6, "validate_key_package"); err != nil {
 		return KeyPackageInfo{}, err
 	}
 	var info KeyPackageInfo
@@ -298,6 +404,9 @@ func (i *Instance) ValidateKeyPackage(ctx context.Context, keyPackage []byte) (K
 		return KeyPackageInfo{}, err
 	}
 	if info.NotAfter, err = rawUint(elems[4]); err != nil {
+		return KeyPackageInfo{}, err
+	}
+	if info.KPRef, err = rawBytes(elems[5]); err != nil {
 		return KeyPackageInfo{}, err
 	}
 	return info, nil
@@ -325,4 +434,108 @@ func (i *Instance) ExternalProposeRemove(ctx context.Context, groupID []byte, ep
 		return nil, err
 	}
 	return rawBytes(elems[1])
+}
+
+// ValidateGroupInfo verifies an uploaded GroupInfo against the signature key the DS already holds
+// for signerLeaf. The caller names the leaf because VerifiableGroupInfo::signer() is pub(crate) in
+// OpenMLS 0.9.0; dillad always has it, from the public_group_process that returned it for the
+// commit this GroupInfo accompanies (interfaces.md §0.1 D17).
+func (g *PublicGroup) ValidateGroupInfo(ctx context.Context, groupInfo []byte, signerLeaf uint32) (GroupInfoCheck, error) {
+	elems, err := g.inst.call(ctx, "public_group_group_info_validate",
+		uint64(g.handle), groupInfo, uint64(signerLeaf))
+	if err != nil {
+		return GroupInfoCheck{}, err
+	}
+	if err := expectLen(elems, 6, "public_group_group_info_validate"); err != nil {
+		return GroupInfoCheck{}, err
+	}
+	var c GroupInfoCheck
+	if c.Epoch, err = rawUint(elems[1]); err != nil {
+		return GroupInfoCheck{}, err
+	}
+	if c.GroupID, err = rawBytes(elems[2]); err != nil {
+		return GroupInfoCheck{}, err
+	}
+	if c.TreeHash, err = rawBytes(elems[3]); err != nil {
+		return GroupInfoCheck{}, err
+	}
+	if c.ConfirmedTranscriptHash, err = rawBytes(elems[4]); err != nil {
+		return GroupInfoCheck{}, err
+	}
+	if c.SignatureOK, err = rawBool(elems[5]); err != nil {
+		return GroupInfoCheck{}, err
+	}
+	return c, nil
+}
+
+// ProposalInspect reports the kind and target of one queued proposal. The DS calls it on
+// POST /v1/groups/{id}/proposal only: for its own proposals it knows both by construction.
+func (g *PublicGroup) ProposalInspect(ctx context.Context, proposalRef []byte) (ProposalDetail, error) {
+	elems, err := g.inst.call(ctx, "public_group_proposal_inspect", uint64(g.handle), proposalRef)
+	if err != nil {
+		return ProposalDetail{}, err
+	}
+	if err := expectLen(elems, 5, "public_group_proposal_inspect"); err != nil {
+		return ProposalDetail{}, err
+	}
+	var d ProposalDetail
+	if d.Kind, err = rawProposalKind(elems[1]); err != nil {
+		return ProposalDetail{}, err
+	}
+	if d.SenderLeaf, err = rawOptUint32(elems[2]); err != nil {
+		return ProposalDetail{}, err
+	}
+	if d.TargetLeaf, err = rawOptUint32(elems[3]); err != nil {
+		return ProposalDetail{}, err
+	}
+	if d.CredentialIdentity, err = rawOptBytes(elems[4]); err != nil {
+		return ProposalDetail{}, err
+	}
+	return d, nil
+}
+
+// Discard releases a staged commit the caller decided not to merge. Every DS refusal path after
+// Process must call it — Merge is the only other consumer of a staged handle, and merging is
+// exactly what a refusal must not do, so without Discard a client that retries a malformed commit
+// in a loop grows the guest's handle table without bound. Discarding an unknown handle is an
+// *ABIError with code E_ABI_HANDLE.
+func (g *PublicGroup) Discard(ctx context.Context, staged uint32) error {
+	elems, err := g.inst.call(ctx, "public_group_staged_discard", uint64(g.handle), uint64(staged))
+	if err != nil {
+		return err
+	}
+	return expectLen(elems, 1, "public_group_staged_discard")
+}
+
+// PoolSize is how many instances Acquire can hand out at once. It is read by internal/ds, whose
+// live-group cache must stay strictly below it or Acquire blocks forever.
+func (r *Runtime) PoolSize() int { return r.poolSize }
+
+// PrivateMessageAAD reads the 32-byte franking commitment and the epoch out of a PrivateMessage
+// without decrypting it. A message whose authenticated_data is not exactly 32 bytes comes back as
+// an *ABIError with code E_ABI_SHAPE, which the DS maps to 422 E_COMMITMENT_INVALID.
+func (i *Instance) PrivateMessageAAD(ctx context.Context, privateMessage []byte) (PrivateMessageMeta, error) {
+	elems, err := i.call(ctx, "private_message_aad", privateMessage)
+	if err != nil {
+		return PrivateMessageMeta{}, err
+	}
+	if err := expectLen(elems, 4, "private_message_aad"); err != nil {
+		return PrivateMessageMeta{}, err
+	}
+	var m PrivateMessageMeta
+	if m.AuthenticatedData, err = rawBytes(elems[1]); err != nil {
+		return PrivateMessageMeta{}, err
+	}
+	if m.Epoch, err = rawUint(elems[2]); err != nil {
+		return PrivateMessageMeta{}, err
+	}
+	contentType, err := rawUint(elems[3])
+	if err != nil {
+		return PrivateMessageMeta{}, err
+	}
+	if contentType > 3 {
+		return PrivateMessageMeta{}, fmt.Errorf("mlswasi: content_type %d is outside 1..3", contentType)
+	}
+	m.ContentType = uint8(contentType)
+	return m, nil
 }
