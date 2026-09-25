@@ -153,6 +153,66 @@ func TestDeleteIsUploaderOnlyAndKeepsTheTombstoneFields(t *testing.T) {
 	}
 }
 
+// A cursor is a group-scoped write, so it carries the same authorisation as every group-scoped
+// read: a device with no leaf in the group is E_NOT_FOUND, never E_FORBIDDEN and never 204.
+//
+// Two things ride on it. `device_cursors` feeds `store.Cursors.MinCursor`, which task 26 makes the
+// retention floor, so a stranger's row would let any enrolled device that knows a group id pin
+// that group's messages at floor 0 forever; and answering 204 where a member gets 204 but an
+// unknown group gets 404 is the group-existence oracle requireMember's own comment refuses to
+// give.
+func TestACursorFromANonMemberIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	stranger := h.sessionOfAnotherUser(t, g)
+
+	err := h.ds.AdvanceCursor(context.Background(), stranger, g.id, 0, g.Epoch())
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+		t.Fatalf("a non-member's cursor: got %v, want E_NOT_FOUND", err)
+	}
+	if dsErr.Status != 404 {
+		t.Errorf("status = %d, want 404", dsErr.Status)
+	}
+	if got := h.cursorOf(t, stranger.DeviceID, g.id); got != 0 {
+		t.Fatalf("a non-member wrote a cursor: last_seq = %d", got)
+	}
+}
+
+// The floor task 26 builds on MinCursor must only ever move forward, and an acknowledgement can
+// only name something the instance actually sequenced.
+func TestACursorNeverPassesTheHighWaterAndNeverRewinds(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	ctx := context.Background()
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	// Above the group's high-water there is nothing to acknowledge.
+	err = h.ds.AdvanceCursor(ctx, g.session, g.id, out.Seq+1, out.Epoch)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_INVALID_REQUEST" {
+		t.Fatalf("a cursor above the high-water: got %v, want E_INVALID_REQUEST", err)
+	}
+	if got := h.cursorOf(t, g.device, g.id); got != 0 {
+		t.Fatalf("the refused cursor was written anyway: last_seq = %d", got)
+	}
+
+	if err := h.ds.AdvanceCursor(ctx, g.session, g.id, out.Seq, out.Epoch); err != nil {
+		t.Fatalf("AdvanceCursor: %v", err)
+	}
+	// A rewind is idempotent, not an error — a retried or reordered acknowledgement is ordinary —
+	// but it must not move the retention floor backwards.
+	if err := h.ds.AdvanceCursor(ctx, g.session, g.id, 0, out.Epoch); err != nil {
+		t.Fatalf("a rewind must be accepted and ignored, not refused: %v", err)
+	}
+	if got := h.cursorOf(t, g.device, g.id); got != out.Seq {
+		t.Fatalf("cursor = %d after a rewind, want %d", got, out.Seq)
+	}
+}
+
 // A cursor advances only on the explicit POST /cursor, never on fan-out.
 func TestACursorAdvancesOnlyOnAnExplicitAcknowledgement(t *testing.T) {
 	h := newDSHarness(t)

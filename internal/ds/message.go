@@ -3,6 +3,7 @@ package ds
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -168,11 +169,44 @@ func (d *DS) DeleteMessage(ctx context.Context, s Session, groupID id.ID, seq ui
 
 // AdvanceCursor is the only thing that moves a device's cursor. A frame put on a writer queue is
 // not a delivery (protocol/02's retention wording, as amended).
+//
+// It is a group-scoped write and carries the same three guards: the caller must be a current
+// member, the seq must be one the instance actually allocated, and the cursor only ever moves
+// forward. All three exist because `device_cursors` is not a private scratch pad — it feeds
+// `store.Cursors.MinCursor`, which task 26 makes the retention floor of the whole group.
 func (d *DS) AdvanceCursor(ctx context.Context, s Session, groupID id.ID, seq, epoch uint64) error {
-	if _, err := d.opts.Store.GetGroup(ctx, groupID); errors.Is(err, store.ErrNotFound) {
+	// The read-modify-write below is only monotone if one goroutine at a time runs it; the
+	// per-group lock is the same one Upload allocates seqs under.
+	unlock := d.lock(groupID)
+	defer unlock()
+
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
 		return errNotFound("group")
 	} else if err != nil {
 		return err
+	}
+	// Member-only, and E_NOT_FOUND rather than E_FORBIDDEN for the reason requireMember states: a
+	// 403 here would tell any authenticated device on the instance which group ids are live. A
+	// stranger's row would also sit in MinCursor forever, pinning the group's messages at floor 0.
+	if err := d.requireMember(ctx, groupID, s); err != nil {
+		return err
+	}
+	// `row.Seq` is the group's high-water in the one seq space; there is nothing above it to
+	// acknowledge, and a cursor there would hold the floor above every message the group has.
+	if seq > row.Seq {
+		return errInvalid(fmt.Sprintf(
+			"last_seq %d is above the group's high-water %d", seq, row.Seq))
+	}
+	cur, err := d.opts.Store.GetCursor(ctx, s.DeviceID, groupID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	// Monotone. Re-reading is done with `?from=`, not by rewinding the acknowledgement, so a lower
+	// seq is a no-op rather than a refusal: a retried or reordered POST /cursor is ordinary and
+	// the endpoint stays idempotent. What it must never do is move the retention floor backwards.
+	if seq < cur.LastSeq {
+		return nil
 	}
 	return d.opts.Store.PutCursor(ctx, s.DeviceID, groupID, seq, epoch, d.now())
 }
