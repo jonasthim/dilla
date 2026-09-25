@@ -95,6 +95,14 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 	// package the directory already holds writes no row, but the delivery service cannot know that
 	// without validating the blob first, and the conservative refusal costs a full client only a
 	// take away from the boundary.
+	//
+	// It covers the ORDINARY half only, and that is the whole of what it must cover: a last-resort
+	// publish writes no ordinary row, and the last-resort half is bounded at ONE row per device by
+	// the store, which drops the previous fallback package when a new one is written (protocol/01
+	// § Joining: "32 ordinary KeyPackages plus 1 last-resort KeyPackage"; the adapters' comment on
+	// `PutKeyPackages` and internal/store's TestANewLastResortKeyPackageReplacesTheOldOne). Without
+	// that rule this `len(packages) > 0` gate would be a hole in the bound, since a publish shaped
+	// `{packages: [], last_resort: <fresh blob>}` reaches SQL without ever being counted.
 	if len(packages) > 0 {
 		held, err := d.opts.Store.CountKeyPackages(ctx, s.DeviceID, d.now())
 		if err != nil {

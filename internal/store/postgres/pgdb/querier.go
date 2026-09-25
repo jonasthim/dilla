@@ -32,6 +32,7 @@ type Querier interface {
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
 	DeleteMembers(ctx context.Context, arg DeleteMembersParams) error
 	DeleteOldestSessionForDevice(ctx context.Context, arg DeleteOldestSessionForDeviceParams) error
+	DeleteOtherLastResortKeyPackages(ctx context.Context, arg DeleteOtherLastResortKeyPackagesParams) error
 	DeleteProposal(ctx context.Context, arg DeleteProposalParams) error
 	DeleteRecoveryCodes(ctx context.Context, arg DeleteRecoveryCodesParams) error
 	DeleteSession(ctx context.Context, arg DeleteSessionParams) error

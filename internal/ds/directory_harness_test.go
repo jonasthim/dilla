@@ -118,25 +118,45 @@ func (h *dsHarness) keyPackageOwner(t *testing.T) (id.ID, auth.Session, []byte, 
 // test's, because the fixture holds one package and the primary key is (device_id, kp_ref).
 func (h *dsHarness) seedKeyPackages(t *testing.T, device id.ID, n int, lifetime time.Duration) {
 	t.Helper()
-	h.seedKeyPackageRows(t, device, n, lifetime, 0)
+	h.seedKeyPackageRows(t, device, n, lifetime, 0, 0)
 }
 
 // seedLastResort writes the device's ONE last-resort package. It is the package the directory
 // serves for ever once the ordinary ones are gone, and `TakeKeyPackage` never consumes it.
 func (h *dsHarness) seedLastResort(t *testing.T, device id.ID, lifetime time.Duration) {
 	t.Helper()
-	h.seedKeyPackageRows(t, device, 1, lifetime, 1)
+	h.seedKeyPackageRows(t, device, 1, lifetime, 1, 0)
 }
 
-func (h *dsHarness) seedKeyPackageRows(t *testing.T, device id.ID, n int, lifetime time.Duration, lastResort uint8) {
+// republishLastResort writes n DISTINCT last-resort packages, each in its own store call: the
+// shape a device that mints a fresh fallback package and publishes it over and over produces.
+//
+// It goes through the store rather than through `PublishKeyPackages` for the reason this file's
+// header gives: the committed fixture ships ONE KeyPackage and it carries no `last_resort`
+// extension, so the publish path — which validates every blob inside the guest — refuses it as the
+// contradiction it is (`TestPublishRefusesAPackageWhoseLastResortExtensionDisagrees`), and no
+// generator in this repository can mint a second package. What is under test is what the
+// DIRECTORY ends up holding, and that rule is the store's wherever the row came from.
+func (h *dsHarness) republishLastResort(t *testing.T, device id.ID, n int, lifetime time.Duration) {
+	t.Helper()
+	for i := range n {
+		h.seedKeyPackageRows(t, device, 1, lifetime, 1, byte(i+1))
+	}
+}
+
+func (h *dsHarness) seedKeyPackageRows(t *testing.T, device id.ID, n int, lifetime time.Duration,
+	lastResort, generation uint8,
+) {
 	t.Helper()
 	blob := fixtureFile(t, "key_package.mls")
 	now := h.clk.Now().Unix()
 	rows := make([]store.KeyPackageRow, 0, n)
 	for i := range n {
-		// A 32-byte ref, as RFC 9420's KeyPackageRef is, derived from the device and the index so
-		// two seeded packages never collide on the primary key.
-		ref := sha256.Sum256(append(append([]byte{lastResort, byte(i), byte(i >> 8)}, device[:]...), blob...))
+		// A 32-byte ref, as RFC 9420's KeyPackageRef is, derived from the device, the index and the
+		// generation so that two seeded packages never collide on the primary key — and so that a
+		// package seeded by a later call is a DIFFERENT package, not the same row rewritten.
+		ref := sha256.Sum256(append(append([]byte{lastResort, generation, byte(i), byte(i >> 8)},
+			device[:]...), blob...))
 		rows = append(rows, store.KeyPackageRow{
 			DeviceID:   device,
 			KPRef:      ref[:],

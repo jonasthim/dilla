@@ -87,6 +87,10 @@ INSERT INTO key_packages (device_id, kp_ref, blob, last_resort, expires, created
 VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (device_id, kp_ref) DO NOTHING;
 
+-- name: DeleteOtherLastResortKeyPackages :exec
+DELETE FROM key_packages
+WHERE device_id = ? AND last_resort = 1 AND kp_ref <> ?;
+
 -- name: TakeKeyPackage :one
 UPDATE key_packages SET consumed_at = sqlc.arg(now)
 WHERE key_packages.device_id = sqlc.arg(device_id) AND key_packages.kp_ref = (

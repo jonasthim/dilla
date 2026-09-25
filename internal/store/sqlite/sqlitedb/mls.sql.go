@@ -174,6 +174,21 @@ func (q *Queries) DeleteMembers(ctx context.Context, arg DeleteMembersParams) er
 	return err
 }
 
+const deleteOtherLastResortKeyPackages = `-- name: DeleteOtherLastResortKeyPackages :exec
+DELETE FROM key_packages
+WHERE device_id = ? AND last_resort = 1 AND kp_ref <> ?
+`
+
+type DeleteOtherLastResortKeyPackagesParams struct {
+	DeviceID id.ID
+	KpRef    []byte
+}
+
+func (q *Queries) DeleteOtherLastResortKeyPackages(ctx context.Context, arg DeleteOtherLastResortKeyPackagesParams) error {
+	_, err := q.db.ExecContext(ctx, deleteOtherLastResortKeyPackages, arg.DeviceID, arg.KpRef)
+	return err
+}
+
 const deleteProposal = `-- name: DeleteProposal :exec
 DELETE FROM mls_pending_proposals WHERE group_id = ? AND ref = ?
 `

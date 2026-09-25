@@ -1210,7 +1210,31 @@ func (r *Repo) GroupsForDevice(ctx context.Context, deviceID id.ID) ([]id.ID, er
 	return rows, wrap(err)
 }
 
+// PutKeyPackages writes a device's published packages, and holds the directory's one structural
+// invariant: a device has AT MOST ONE last-resort package, so a new one REPLACES the old. That is
+// protocol/01 § Joining in SQL — "each device keeps 32 ordinary KeyPackages plus 1 last-resort
+// KeyPackage on the DS" — and nothing else in the stack enforces the second half of that sentence.
+//
+// The rule is here rather than in the delivery service because nothing above can see the rows it
+// bounds. `key_packages` is unique only on `(device_id, kp_ref)`, and `CountKeyPackages` — the
+// count the publish cap is taken against — filters `last_resort = 0` by contract, because the
+// number it reports is what a client refills against and the fallback package is not one a client
+// refills. Without this, a device that mints a fresh valid last-resort package and publishes it in
+// a loop adds one unbounded row per call, each a full KeyPackage blob held for its 90-day
+// lifetime. Dropping the older row is also what the package MEANS: one reusable fallback per
+// device, and RFC 9420 gives a joiner no way to choose between two.
+//
+// Insert first, then delete the others, and both inside ONE transaction: the order keeps the
+// device addressable at every instant (a delete-then-insert leaves a window with no fallback at
+// all), and the transaction keeps two concurrent republishes from each deleting the other's row.
 func (r *Repo) PutKeyPackages(ctx context.Context, deviceID id.ID, kps []store.KeyPackageRow) error {
+	// Only a publish that carries a last-resort package needs the transaction; the ordinary path,
+	// which is the hot one, pays nothing.
+	if !r.inTx && holdsLastResort(kps) {
+		return r.Tx(ctx, func(s store.Repository) error {
+			return s.PutKeyPackages(ctx, deviceID, kps)
+		})
+	}
 	for _, kp := range kps {
 		if err := r.w.PutKeyPackage(ctx, sqlitedb.PutKeyPackageParams{
 			DeviceID:   deviceID,
@@ -1223,8 +1247,29 @@ func (r *Repo) PutKeyPackages(ctx context.Context, deviceID id.ID, kps []store.K
 		}); err != nil {
 			return wrap(err)
 		}
+		if kp.LastResort == 0 {
+			continue
+		}
+		if err := r.w.DeleteOtherLastResortKeyPackages(ctx, sqlitedb.DeleteOtherLastResortKeyPackagesParams{
+			DeviceID: deviceID,
+			KpRef:    kp.KPRef,
+		}); err != nil {
+			return wrap(err)
+		}
 	}
 	return nil
+}
+
+// holdsLastResort reports whether the batch carries a last-resort package. A batch with more than
+// one is not rejected: each insert drops the ones before it, so the last one written is the one
+// that survives, and the invariant holds however the caller batched its rows.
+func holdsLastResort(kps []store.KeyPackageRow) bool {
+	for _, kp := range kps {
+		if kp.LastResort != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // TakeKeyPackage consumes one ordinary KeyPackage, and falls back to the

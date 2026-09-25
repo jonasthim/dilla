@@ -341,3 +341,50 @@ func TestThePolicyCapBoundsTheDirectoryNotOneRequest(t *testing.T) {
 		t.Fatalf("a consumed package must make room for a new one: %v", err)
 	}
 }
+
+// The LAST-RESORT half of the directory is bounded too — at one row per device.
+//
+// The cap above cannot see it: `CountKeyPackages` filters `last_resort = 0` by contract, because
+// the number it reports is what a client refills against and the fallback package is not one a
+// client refills. So without a rule of its own the last-resort column is the hole in the bound: a
+// device mints a fresh, valid last-resort package — distinct `kp_ref`, so distinct row under
+// `key_packages`' only unique key — and publishes it with no ordinary packages beside it, over and
+// over, growing the table by one full KeyPackage blob a call for each blob's 90-day lifetime.
+//
+// The rule that closes it is the store's ("a new last-resort package REPLACES the old", pinned per
+// engine by internal/store's TestANewLastResortKeyPackageReplacesTheOldOne), and this is the
+// delivery service seeing its effect: the directory of a device that republished sixteen times
+// holds one fallback row, and the device is still addressable through it.
+func TestRepublishingTheLastResortPackageDoesNotGrowTheDirectory(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	device := h.device(t)
+	session := h.sessionOf(t, device)
+	const ordinary = 4
+
+	h.seedKeyPackages(t, device, ordinary, keyPackageLifetime)
+	h.republishLastResort(t, device, 16, keyPackageLifetime)
+
+	if total := h.countRows(t, "key_packages"); total != ordinary+1 {
+		t.Fatalf("%d rows in key_packages after 16 last-resort publishes, want the %d ordinary ones "+
+			"and ONE fallback", total, ordinary)
+	}
+	if left := h.ordinaryKeyPackagesLeft(t, device); left != ordinary {
+		t.Fatalf("%d ordinary packages remain, want the %d seeded — the rule must not touch them",
+			left, ordinary)
+	}
+	// The one row that survived is a working fallback: with the ordinary packages consumed the
+	// directory still answers, which is the whole point of keeping one rather than none.
+	for i := range ordinary {
+		if _, err := h.ds.TakeKeyPackage(ctx, session, device); err != nil {
+			t.Fatalf("take %d: %v", i, err)
+		}
+	}
+	got, err := h.ds.TakeKeyPackage(ctx, session, device)
+	if err != nil {
+		t.Fatalf("take after exhaustion: %v", err)
+	}
+	if !got.LastResort {
+		t.Fatal("the surviving row must be the last-resort package")
+	}
+}
