@@ -159,7 +159,10 @@ type PruneAppMessagesParams struct {
 //	(1) DELIVERY retention: every ELIGIBLE cursor has passed the row (cursor_floor), or the row
 //	    is older than MessageRetention (delivery_floor). cursor_floor = 0 means "no eligible
 //	    device has acknowledged anything in this group", which must delete NOTHING rather than
-//	    everything -- hence the guard.
+//	    everything -- hence the guard. `seq` is 1-based, so `seq <= 0` already matches nothing
+//	    and the guard is belt-and-braces: it is kept because it states the rule where the rule
+//	    is enforced, and because it stops a future 0-based or signed cursor from emptying a
+//	    group silently.
 //	(2) ARCHIVAL retention: `expires` is a wall-clock deadline compared against NOW, never
 //	    against the delivery floor. NULL -- the value Upload writes -- means retained
 //	    indefinitely, and this half never touches such a row.

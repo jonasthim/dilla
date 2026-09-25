@@ -59,6 +59,11 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"AppendHandshake", "CloseGroup", "CountForkReporters", "CountKeyPackages",
 			"CreateGroup", "DeleteProposals", "DeleteWelcome", "GetCommitAtEpoch", "GetGroup",
 			"GroupsForDevice",
+			// ListGroupsForRetention is §4.1 plus one (deviation ID1, task 26 fix round 1):
+			// invariant 10's sweep must reach CLOSED groups too, and `ListOpenGroups` --
+			// the walk §4.1 names -- filters exactly those out, so a closed group's
+			// ciphertext would never be swept by either half of retention again.
+			"ListGroupsForRetention",
 			"ListHandshakes", "ListMembers", "ListOpenGroups", "ListProposals", "ListWelcomes",
 			"NextSeq", "OldestHandshakeSeq", "PruneHandshakes", "PruneWelcomes",
 			"PurgeKeyPackages", "PutEpochTree", "PutForkReport", "PutGroupState",

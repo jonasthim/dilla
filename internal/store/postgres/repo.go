@@ -946,6 +946,21 @@ func (r *Repo) ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]
 	return out, nil
 }
 
+// ListGroupsForRetention is ListOpenGroups without the `closed_at IS NULL`
+// filter: retention applies to every group, closed ones included, because a
+// closed group's ciphertext is still ciphertext.
+func (r *Repo) ListGroupsForRetention(ctx context.Context, after id.ID, limit int32) ([]store.GroupRow, error) {
+	rows, err := r.r.ListGroupsForRetention(ctx, pgdb.ListGroupsForRetentionParams{GroupID: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.GroupRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, mlsGroupRow(row))
+	}
+	return out, nil
+}
+
 func (r *Repo) CloseGroup(ctx context.Context, groupID id.ID, at int64) error {
 	return wrap(r.w.CloseGroup(ctx, pgdb.CloseGroupParams{
 		ClosedAt: sql.NullInt64{Int64: at, Valid: true},

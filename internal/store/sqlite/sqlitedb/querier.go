@@ -67,6 +67,13 @@ type Querier interface {
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
+	// The retention walk, and deliberately NOT `ListOpenGroups`: invariant 10 caps application
+	// ciphertext at thirty days for every group, and a group invariant 11 closed is still ciphertext
+	// on the disk. Filtering on `closed_at IS NULL` here would mean a closed group's blobs are never
+	// swept again by either half of retention -- neither the delivery floor nor archival `expires` --
+	// and no other path reclaims them, so the promise inverts into "kept forever" at exactly the
+	// moment the group stops being useful.
+	ListGroupsForRetention(ctx context.Context, arg ListGroupsForRetentionParams) ([]MlsGroups, error)
 	ListHandshakes(ctx context.Context, arg ListHandshakesParams) ([]MlsHandshakes, error)
 	ListInvites(ctx context.Context) ([]Invites, error)
 	ListInvitesByCommunity(ctx context.Context, arg ListInvitesByCommunityParams) ([]Invites, error)
@@ -90,7 +97,10 @@ type Querier interface {
 	//   (1) DELIVERY retention: every ELIGIBLE cursor has passed the row (cursor_floor), or the row
 	//       is older than MessageRetention (delivery_floor). cursor_floor = 0 means "no eligible
 	//       device has acknowledged anything in this group", which must delete NOTHING rather than
-	//       everything -- hence the guard.
+	//       everything -- hence the guard. `seq` is 1-based, so `seq <= 0` already matches nothing
+	//       and the guard is belt-and-braces: it is kept because it states the rule where the rule
+	//       is enforced, and because it stops a future 0-based or signed cursor from emptying a
+	//       group silently.
 	//   (2) ARCHIVAL retention: `expires` is a wall-clock deadline compared against NOW, never
 	//       against the delivery floor. NULL -- the value Upload writes -- means retained
 	//       indefinitely, and this half never touches such a row.

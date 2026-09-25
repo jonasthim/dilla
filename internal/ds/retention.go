@@ -67,9 +67,14 @@ func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 	// 90 days does not hold the floor. MinCursor applies all three, which is why it takes the
 	// timestamp rather than the DS filtering rows afterwards.
 	activeSince := now.Add(-d.opts.Policy.InactivityRemove).Unix()
+	// The walk is over EVERY group, not only the open ones (`ListGroupsForRetention`, not
+	// `ListOpenGroups`). Invariant 10 caps application ciphertext at thirty days, and a group
+	// invariant 11 closed is still ciphertext on the disk: skipping closed groups would mean
+	// neither half of retention ever touches their blobs again, and nothing else reclaims them,
+	// so the invariant would invert into "kept forever" exactly when a group stops being useful.
 	after := id.ID{}
 	for {
-		groups, err := d.opts.Store.ListOpenGroups(ctx, after, sweepPage)
+		groups, err := d.opts.Store.ListGroupsForRetention(ctx, after, sweepPage)
 		if err != nil {
 			return report, err
 		}

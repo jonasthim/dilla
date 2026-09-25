@@ -129,6 +129,14 @@ type MLS interface {
 	CreateGroup(ctx context.Context, g GroupRow) error
 	GetGroup(ctx context.Context, groupID id.ID) (GroupRow, error)
 	ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]GroupRow, error)
+	// ListGroupsForRetention is the same paged walk WITHOUT the `closed_at IS NULL`
+	// filter. Invariant 10 caps application ciphertext at thirty days for every
+	// group, and a group invariant 11 closed is still ciphertext on the disk: a
+	// sweep over open groups alone would leave a closed group's blobs unswept by
+	// both halves of retention forever, which inverts the invariant into "kept
+	// indefinitely" at the moment a group stops being useful. Deviation ID1 fixes
+	// the method set once, so it is declared here rather than invented per caller.
+	ListGroupsForRetention(ctx context.Context, after id.ID, limit int32) ([]GroupRow, error)
 	CloseGroup(ctx context.Context, groupID id.ID, at int64) error
 	NextSeq(ctx context.Context, groupID id.ID) (uint64, error) // one space, both streams
 	PutGroupState(ctx context.Context, groupID id.ID, epoch uint64, state, groupInfo, treeHash []byte) error

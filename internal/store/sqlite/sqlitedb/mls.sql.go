@@ -414,6 +414,66 @@ func (q *Queries) ListAllProposals(ctx context.Context, arg ListAllProposalsPara
 	return items, nil
 }
 
+const listGroupsForRetention = `-- name: ListGroupsForRetention :many
+SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at FROM mls_groups WHERE group_id > ?
+ORDER BY group_id LIMIT ?2
+`
+
+type ListGroupsForRetentionParams struct {
+	GroupID id.ID
+	MaxRows int64
+}
+
+// The retention walk, and deliberately NOT `ListOpenGroups`: invariant 10 caps application
+// ciphertext at thirty days for every group, and a group invariant 11 closed is still ciphertext
+// on the disk. Filtering on `closed_at IS NULL` here would mean a closed group's blobs are never
+// swept again by either half of retention -- neither the delivery floor nor archival `expires` --
+// and no other path reclaims them, so the promise inverts into "kept forever" at exactly the
+// moment the group stops being useful.
+func (q *Queries) ListGroupsForRetention(ctx context.Context, arg ListGroupsForRetentionParams) ([]MlsGroups, error) {
+	rows, err := q.db.QueryContext(ctx, listGroupsForRetention, arg.GroupID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MlsGroups{}
+	for rows.Next() {
+		var i MlsGroups
+		if err := rows.Scan(
+			&i.GroupID,
+			&i.Binding,
+			&i.Kind,
+			&i.CommunityID,
+			&i.TargetID,
+			&i.CallID,
+			&i.Ciphersuite,
+			&i.Epoch,
+			&i.Seq,
+			&i.GroupInfoBlob,
+			&i.TreeHash,
+			&i.PublicGroupState,
+			&i.ExternalSenderKeyID,
+			&i.E2eeVersion,
+			&i.MediaVersion,
+			&i.PolicyVersion,
+			&i.EpochUnknown,
+			&i.HealDeadline,
+			&i.Created,
+			&i.ClosedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listHandshakes = `-- name: ListHandshakes :many
 SELECT group_id, seq, epoch, kind, sender_leaf, sender_device, blob, created FROM mls_handshakes WHERE group_id = ? AND seq >= ?
 ORDER BY seq LIMIT ?3

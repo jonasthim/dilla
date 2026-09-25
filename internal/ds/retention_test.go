@@ -17,6 +17,7 @@ import (
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
 
@@ -206,6 +207,163 @@ func TestTheSweeperIsIdempotentAndBounded(t *testing.T) {
 	}
 	if first.MessagesPruned == 0 {
 		t.Fatal("the first sweep pruned nothing")
+	}
+}
+
+// The delivery-cursor half of the sweep deletes whenever every eligible cursor has passed, in a
+// group of any age, so `mayHavePrunedMessages` has to see it. What it must NOT do is read "some
+// cursor has moved" as "a message is gone": `from` is a cursor in the ONE seq space handshakes and
+// application messages share, so the gap between a member's cursor and the oldest surviving
+// message is routinely handshakes. A group whose early seqs are handshakes has lost nothing, and
+// protocol/02 makes E_PRUNED mean "resync by external commit" — a full rejoin for a healthy
+// member.
+func TestAnAdvancedCursorOverHandshakeSeqsDoesNotForceAResync(t *testing.T) {
+	ctx := context.Background()
+	h := newDSHarness(t)
+	g := h.group(t)
+
+	// Seqs 1-3 are handshakes: the seq space is the group's, not the table's, so each one is
+	// burned on `mls_groups.seq` and recorded in the handshake log, exactly as Commit does it.
+	for seq := uint64(1); seq <= 3; seq++ {
+		if err := h.repo.Tx(ctx, func(tx store.Repository) error {
+			_, err := tx.NextSeq(ctx, g.id)
+			return err
+		}); err != nil {
+			t.Fatalf("NextSeq: %v", err)
+		}
+		h.appendHandshake(t, g.id, seq, g.Epoch(), 1, []byte("commit"))
+	}
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if out.Seq != 4 {
+		t.Fatalf("the message took seq %d, want 4", out.Seq)
+	}
+	// The member has acknowledged the three handshakes and nothing else. Its cursor is above zero
+	// and below the message floor — the shape every healthy catch-up has.
+	if err := h.ds.AdvanceCursor(ctx, g.session, g.id, 3, g.Epoch()); err != nil {
+		t.Fatalf("AdvanceCursor: %v", err)
+	}
+
+	rows, err := h.ds.Messages(ctx, g.id, g.session, 0, 10)
+	if err != nil {
+		t.Fatalf("nothing has been deleted in this group; the catch-up must be served: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Seq != out.Seq {
+		t.Fatalf("got %d rows, want the one message at seq %d", len(rows), out.Seq)
+	}
+}
+
+// The hole the clause above must still catch: a cursor-floor prune is bounded by no age at all, so
+// a group younger than MessageRetention CAN have lost a message. Below that floor the answer must
+// be E_PRUNED, not a silently short list.
+func TestACatchUpBelowACursorFloorPruneIsEPrunedInAYoungGroup(t *testing.T) {
+	ctx := context.Background()
+	h := newDSHarness(t)
+	g := h.group(t)
+	first, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	second, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("second Upload: %v", err)
+	}
+	// Every eligible cursor has passed the first message and only the first: delivery retention is
+	// satisfied for it while the group is minutes old.
+	if err := h.ds.AdvanceCursor(ctx, g.session, g.id, first.Seq, first.Epoch); err != nil {
+		t.Fatalf("AdvanceCursor: %v", err)
+	}
+	report, err := h.ds.Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if report.MessagesPruned != 1 {
+		t.Fatalf("the sweep deleted %d messages, want the one at seq %d", report.MessagesPruned, first.Seq)
+	}
+
+	_, err = h.ds.Messages(ctx, g.id, g.session, 0, 10)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_PRUNED" {
+		t.Fatalf("a catch-up below the cursor-floor prune: got %v, want E_PRUNED", err)
+	}
+	if dsErr.Status != 410 {
+		t.Errorf("status = %d, want 410", dsErr.Status)
+	}
+	rows, err := h.ds.Messages(ctx, g.id, g.session, first.Seq, 10)
+	if err != nil {
+		t.Fatalf("a cursor contiguous with the floor must be served: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Seq != second.Seq {
+		t.Fatalf("got %d rows, want the survivor at seq %d", len(rows), second.Seq)
+	}
+}
+
+// `MinCursor` returning 0 means NO ELIGIBLE DEVICE EXISTS, which must delete nothing rather than
+// everything. The three ineligibility rules are what make that reachable while cursors are on
+// file: here both cursors have passed the message and both are outside the 90-day horizon, so the
+// floor is 0 and the young ciphertext stays.
+func TestAGroupWithOnlyIneligibleCursorsKeepsItsCiphertext(t *testing.T) {
+	ctx := context.Background()
+	h := newDSHarness(t)
+	g := h.group(t)
+	laggard := h.laggardMember(t, g)
+
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	// Both cursors sit ON the message, so an eligibility rule that did not fire would put the
+	// floor at out.Seq and delete it. Both were last touched 91 days ago, so none is eligible.
+	stale := h.clk.Now().Add(-91 * 24 * time.Hour).Unix()
+	for _, device := range []id.ID{g.device, laggard} {
+		if err := h.repo.PutCursor(ctx, device, g.id, out.Seq, out.Epoch, stale); err != nil {
+			t.Fatalf("PutCursor: %v", err)
+		}
+	}
+
+	report, err := h.ds.Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if report.MessagesPruned != 0 {
+		t.Fatalf("the sweep deleted %d messages; no ELIGIBLE cursor has passed anything, "+
+			"so delivery retention deletes nothing", report.MessagesPruned)
+	}
+	rows, err := h.ds.Messages(ctx, g.id, g.session, 0, 10)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Seq != out.Seq {
+		t.Fatalf("got %d rows, want the message the sweep must not have touched", len(rows))
+	}
+}
+
+// Invariant 10 caps ciphertext at thirty days, and a group that invariant 11 closed is still
+// ciphertext on the disk. `ListOpenGroups` is the wrong walk for retention: a closed group would
+// never be swept again by either half, so its blobs would outlive the promise forever and no other
+// path would ever reclaim them.
+func TestAClosedGroupStillHasItsCiphertextPruned(t *testing.T) {
+	ctx := context.Background()
+	h := newDSHarness(t)
+	g := h.group(t)
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if err := h.ds.AdvanceCursor(ctx, g.session, g.id, out.Seq, out.Epoch); err != nil {
+		t.Fatalf("AdvanceCursor: %v", err)
+	}
+	if err := h.repo.CloseGroup(ctx, g.id, h.clk.Now().Unix()); err != nil {
+		t.Fatalf("CloseGroup: %v", err)
+	}
+
+	if _, err := h.ds.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if n := h.countRows(t, "mls_app_messages"); n != 0 {
+		t.Fatalf("a closed group kept %d ciphertext rows; retention does not stop at close", n)
 	}
 }
 

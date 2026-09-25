@@ -12,6 +12,16 @@ SELECT * FROM mls_groups WHERE group_id = $1;
 SELECT * FROM mls_groups WHERE closed_at IS NULL AND group_id > $1
 ORDER BY group_id LIMIT sqlc.arg(max_rows)::bigint;
 
+-- name: ListGroupsForRetention :many
+-- The retention walk, and deliberately NOT `ListOpenGroups`: invariant 10 caps application
+-- ciphertext at thirty days for every group, and a group invariant 11 closed is still ciphertext
+-- on the disk. Filtering on `closed_at IS NULL` here would mean a closed group's blobs are never
+-- swept again by either half of retention -- neither the delivery floor nor archival `expires` --
+-- and no other path reclaims them, so the promise inverts into "kept forever" at exactly the
+-- moment the group stops being useful.
+SELECT * FROM mls_groups WHERE group_id > $1
+ORDER BY group_id LIMIT sqlc.arg(max_rows)::bigint;
+
 -- name: CloseGroup :exec
 UPDATE mls_groups SET closed_at = $1 WHERE group_id = $2;
 
