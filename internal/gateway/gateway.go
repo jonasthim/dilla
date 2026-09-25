@@ -1,0 +1,452 @@
+package gateway
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/jonasthim/dilla/internal/store"
+)
+
+// Options configures a Gateway. Every duration and byte count has a default; withDefaults fills
+// them and enforces the ring-vs-queue contract.
+type Options struct {
+	// Store is deliberately narrow: the gateway calls exactly three storage methods, and holding
+	// store.Repository here would make every gateway test build a database.
+	Store   Store
+	Clock   clock.Clock
+	Log     *slog.Logger
+	Metrics *obs.Metrics
+	// Auth is an interface declared in this package, NOT *auth.Sessions: importing internal/auth
+	// here closes the cycle auth -> ds -> gateway -> auth (deviation B9). *auth.Sessions satisfies
+	// it structurally.
+	Auth Authenticator
+
+	// Outstanding reports a group's non-void instance proposals, for ready's per-group digest.
+	// The delivery service sets it in task 21; nil reads as 0.
+	Outstanding func(ctx context.Context, groupID id.ID) uint64
+	// CommitAck is invariant 7's acknowledgement handler, set by the delivery service in task 22.
+	// Nil makes opcode 12 a no-op, which is what the codec-only tests want.
+	CommitAck func(ctx context.Context, groupID, deviceID id.ID, round uint64)
+
+	// Advertised is what `hello` offers and what `identify` is validated against. Empty means
+	// {1} for all three, the only versions this wave ships.
+	WireVersions  []uint64
+	E2EEVersions  []uint64
+	MediaVersions []uint64
+
+	// InstanceID and Generation are elements 5 and 6 of the hello payload (§2.3); TrustedOrigins
+	// is http.trusted_origins (§6.1's transport paragraph). All three are additions to §6.1's
+	// Options, recorded as deviation B10.
+	InstanceID id.ID
+	Generation uint64
+
+	HeartbeatMS   uint64
+	IdleClose     time.Duration
+	ReadLimit     int64
+	MaxFrameBytes uint64
+	QueueFrames   int
+	QueueBytes    int
+	RingFrames    int
+	RingBytes     int
+	RingTTL       time.Duration
+	ResumeWindow  time.Duration
+	WriteDeadline time.Duration
+
+	TrustedOrigins []string
+}
+
+// withDefaults fills zero values and enforces the ring-vs-queue contract. The ring must be at
+// least as large as the writer queue on both axes: a 4008 close is resumable, so whatever the
+// queue dropped has to still be in the ring when the client comes back.
+func (o Options) withDefaults() Options {
+	if o.HeartbeatMS == 0 {
+		o.HeartbeatMS = 30000
+	}
+	if o.IdleClose == 0 {
+		o.IdleClose = 90 * time.Second
+	}
+	if o.ReadLimit == 0 {
+		o.ReadLimit = 16384
+	}
+	if o.MaxFrameBytes == 0 {
+		o.MaxFrameBytes = 131584
+	}
+	if o.QueueFrames == 0 {
+		o.QueueFrames = 256
+	}
+	if o.QueueBytes == 0 {
+		o.QueueBytes = 1 << 20
+	}
+	if o.RingFrames == 0 {
+		o.RingFrames = 512
+	}
+	if o.RingBytes == 0 {
+		o.RingBytes = 1 << 20
+	}
+	if o.RingTTL == 0 {
+		o.RingTTL = 120 * time.Second
+	}
+	if o.ResumeWindow == 0 {
+		o.ResumeWindow = 120 * time.Second
+	}
+	if o.WriteDeadline == 0 {
+		o.WriteDeadline = 10 * time.Second
+	}
+	if o.RingFrames < o.QueueFrames {
+		o.RingFrames = o.QueueFrames
+	}
+	if o.RingBytes < o.QueueBytes {
+		o.RingBytes = o.QueueBytes
+	}
+	return o
+}
+
+func defaultOptions() Options { return Options{}.withDefaults() }
+
+// Store is the storage surface the gateway uses. store.Repository satisfies it.
+type Store interface {
+	GroupsForDevice(ctx context.Context, deviceID id.ID) ([]id.ID, error)
+	GetCursor(ctx context.Context, deviceID, groupID id.ID) (store.CursorRow, error)
+	CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) (int64, error)
+}
+
+// Authenticator resolves a bearer token to a device session. The gateway declares the interface
+// rather than holding a *auth.Sessions so that the gateway's own tests need no session store;
+// *auth.Sessions satisfies it structurally. See deviation B9.
+type Authenticator interface {
+	Resolve(ctx context.Context, bearer string) (auth.Session, error)
+}
+
+// Compile-time proof of the claim deviation B9 rests on: *auth.Sessions satisfies Authenticator
+// without the gateway ever holding one. The gateway's own tests use a double, so without this the
+// first thing to find out would be task 27a's wiring.
+//
+// There is deliberately no matching `var _ Store = (store.Repository)(nil)`: GroupsForDevice and
+// CountKeyPackages live in store.MLS and GetCursor in store.Cursors, and Repository does not embed
+// either until tasks 19 and 23 add them. The assertion belongs in the task that closes that gap.
+var _ Authenticator = (*auth.Sessions)(nil)
+
+// OnlineDevice is one candidate for invariant 7's committer election.
+type OnlineDevice struct {
+	DeviceID  id.ID
+	LeafIndex uint32
+	IsBot     bool
+	ReadyAt   time.Time
+}
+
+type Gateway struct {
+	opts      Options
+	reg       *registry
+	tickets   *Tickets
+	presence  *presence
+	beat      heartbeatPolicy
+	suspended sync.Map // resume token string -> *conn, inside the resume window
+
+	mu       sync.Mutex
+	draining bool
+}
+
+func New(o Options) *Gateway {
+	o = o.withDefaults()
+	if o.Clock == nil {
+		o.Clock = clock.System()
+	}
+	if o.Log == nil {
+		o.Log = slog.Default()
+	}
+	return &Gateway{
+		opts:     o,
+		reg:      newRegistry(),
+		tickets:  NewTickets(o.Clock),
+		presence: newPresence(o.Clock),
+		beat:     newHeartbeatPolicy(time.Duration(o.HeartbeatMS) * time.Millisecond),
+	}
+}
+
+// Tickets exposes the ticket store to the HTTP layer's POST /v1/gateway/ticket handler.
+func (g *Gateway) Tickets() *Tickets { return g.tickets }
+
+// register builds a ready connection over a transport sink and sends its `ready` frame, with the
+// instance's own first advertised version on each of the three axes. The tests call it directly;
+// the upgrade handler goes through registerVersions, because `ready` echoes what the client chose
+// and the echo is built inside sendReady.
+func (g *Gateway) register(ctx context.Context, session auth.Session, s sink) (*conn, error) {
+	wire, e2ee, media := g.advertised()
+	return g.registerVersions(ctx, session, s, [3]uint64{wire[0], e2ee[0], media[0]})
+}
+
+// registerVersions is register with the versions identify negotiated. They are set on the
+// connection BEFORE ready is built: ready's elements 4, 5 and 6 are the echo, and a connection
+// that learned its versions after sendReady would echo three zeros.
+func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s sink, chosen [3]uint64) (*conn, error) {
+	token, err := newResumeToken()
+	if err != nil {
+		return nil, err
+	}
+	now := g.opts.Clock.Now()
+	c := &conn{
+		state:        stateReady,
+		userID:       session.UserID,
+		deviceID:     session.DeviceID,
+		scope:        session.Scope,
+		pairingGroup: session.PairingGroup,
+		tokenHash:    session.TokenHash,
+		resume:       token,
+		groups:       map[id.ID]struct{}{},
+		lastLive:     now,
+		ready:        now,
+		gw:           g,
+		ring: newRing(ringLimits{
+			Frames: g.opts.RingFrames,
+			Bytes:  g.opts.RingBytes,
+			TTL:    g.opts.RingTTL,
+		}, g.opts.Clock),
+	}
+	c.wire, c.e2ee, c.media = chosen[0], chosen[1], chosen[2]
+	c.writer = newWriterWithLogger(s, writerLimits{
+		Frames:   g.opts.QueueFrames,
+		Bytes:    g.opts.QueueBytes,
+		Deadline: g.opts.WriteDeadline,
+	}, g.opts.Clock, g.opts.Log)
+	// The server's own ping ticker starts at a jittered offset so 1,500 clients reconnecting
+	// after a restart do not synchronise onto one second (task 17's firstDelay, which nothing
+	// else calls).
+	c.pingAt = now.Add(g.beat.firstDelay())
+	g.reg.add(c)
+	if g.opts.Metrics != nil {
+		g.opts.Metrics.GatewayConnections.Inc()
+	}
+	if err := g.sendReady(ctx, c); err != nil {
+		g.reg.remove(c)
+		c.currentWriter().stop()
+		return nil, err
+	}
+	return c, nil
+}
+
+// suspend moves a connection out of the live registry into the resume window. Its ring survives
+// for ResumeWindow so a reconnecting client can replay; it is NOT online while suspended.
+//
+// The expiry is swept against g.opts.Clock, not time.AfterFunc: every other deadline in the
+// gateway (the ring TTL, liveness, tickets) is driven by the injected clock, and a wall-clock
+// timer here would make the resume window the one behaviour no test can drive — under clock.Fake
+// it would never fire, and `suspended` would grow without bound for the life of the test binary.
+func (g *Gateway) suspend(c *conn) {
+	now := g.opts.Clock.Now()
+	c.mu.Lock()
+	c.state = stateClosed
+	c.suspendedAt = now
+	token := string(c.resume)
+	w := c.writer
+	c.mu.Unlock()
+	g.reg.remove(c)
+	g.suspended.Store(token, c)
+	if w != nil {
+		w.stop()
+	}
+}
+
+// sweepSuspended drops suspended connections past the resume window. sweepLiveness calls it on
+// every tick, so it shares that ticker.
+func (g *Gateway) sweepSuspended() {
+	now := g.opts.Clock.Now()
+	g.suspended.Range(func(k, v any) bool {
+		c, ok := v.(*conn)
+		if !ok {
+			g.suspended.Delete(k)
+			return true
+		}
+		c.mu.Lock()
+		expired := now.Sub(c.suspendedAt) > g.opts.ResumeWindow
+		c.mu.Unlock()
+		if expired {
+			g.suspended.Delete(k)
+		}
+		return true
+	})
+}
+
+// rotateResume issues a fresh resume token, which happens on every resumed frame.
+func (g *Gateway) rotateResume(c *conn) error {
+	token, err := newResumeToken()
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.resume = token
+	c.mu.Unlock()
+	return nil
+}
+
+// DeliverGroup fans one frame out to every connection of every member device of a group,
+// including the uploader's own (R30). The payload is encoded once by the caller.
+func (g *Gateway) DeliverGroup(groupID id.ID, f Frame) {
+	for _, c := range g.reg.connsOfGroup(groupID) {
+		c.send(f)
+	}
+	g.countFrame(f)
+}
+
+func (g *Gateway) DeliverDevice(deviceID id.ID, f Frame) {
+	for _, c := range g.reg.connsOfDevice(deviceID) {
+		c.send(f)
+	}
+	g.countFrame(f)
+}
+
+func (g *Gateway) DeliverUser(userID id.ID, f Frame) {
+	for _, c := range g.reg.connsOfUser(userID) {
+		c.send(f)
+	}
+	g.countFrame(f)
+}
+
+func (g *Gateway) countFrame(f Frame) {
+	if g.opts.Metrics != nil {
+		g.opts.Metrics.GatewayFrames.WithLabelValues(opLabel(f.Op), "out").Inc()
+	}
+}
+
+// CloseDevice ends every connection of one device. Accepting a signed device list that revokes a
+// device, or disabling a user, closes its sockets in the same transaction that deletes its
+// sessions (protocol/02, "Device sessions", rule 6).
+func (g *Gateway) CloseDevice(deviceID id.ID, code CloseCode, reason string) {
+	for _, c := range g.reg.connsOfDevice(deviceID) {
+		w := c.currentWriter()
+		w.sink.close(code, reason)
+		g.reg.remove(c)
+		w.stop()
+	}
+}
+
+// SetGroupMembers is written by the delivery service after every merge: it is the fan-out list and
+// the input to the online predicate, and it is deliberately the DS's own view rather than a query.
+func (g *Gateway) SetGroupMembers(groupID id.ID, devices []id.ID) {
+	g.reg.setMembers(groupID, devices)
+}
+
+// SetGroupLeaves records each member device's leaf index, which invariant 7's election orders by.
+func (g *Gateway) SetGroupLeaves(groupID id.ID, leaves map[id.ID]uint32) {
+	g.reg.setLeaves(groupID, leaves)
+}
+
+// SetBotDevices marks devices that go first in the election (protocol/02 invariant 7).
+func (g *Gateway) SetBotDevices(devices []id.ID) { g.reg.setBots(devices) }
+
+// Online is the single source for invariants 5, 6 and 7. A device is online while it holds a
+// connection in state ready whose last liveness mark — ready, resumed or a heartbeat frame — is
+// newer than session_idle_close. A device whose only session is inside the resume grace window
+// has no connection and is therefore not online.
+func (g *Gateway) Online(deviceID id.ID) bool {
+	now := g.opts.Clock.Now()
+	for _, c := range g.reg.connsOfDevice(deviceID) {
+		if c.online(now, g.opts.IdleClose) {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *Gateway) OnlineIn(groupID id.ID) []OnlineDevice {
+	return g.reg.onlineIn(groupID, g.opts.Clock.Now(), g.opts.IdleClose)
+}
+
+// sweepLiveness closes every connection whose heartbeat is overdue. It runs on the gateway's own
+// ticker in production and is called directly by tests driving a clock.Fake.
+func (g *Gateway) sweepLiveness() {
+	now := g.opts.Clock.Now()
+	for _, c := range g.reg.all() {
+		c.mu.Lock()
+		overdue := now.Sub(c.lastLive) > g.beat.grace
+		c.mu.Unlock()
+		if overdue {
+			c.currentWriter().sink.close(CloseSessionTimeout, "heartbeat overdue")
+			g.suspend(c)
+		}
+	}
+	g.sweepSuspended()
+}
+
+// Shutdown tells every client to reconnect, waits for that frame to reach the wire, then closes
+// 4010 (resumable).
+//
+// The drain is load-bearing, not politeness: `writer.run` selects between `done` and `queue`, and
+// Go picks at random when both are ready, so closing the sink and stopping the writer immediately
+// after enqueueing `reconnect` drops that frame about half the time —
+// TestShutdownSendsReconnectThenClosesGoingAway would be flaky by construction. `ctx` bounds the
+// wait; on expiry the writer is stopped and the socket closed regardless.
+func (g *Gateway) Shutdown(ctx context.Context) error {
+	g.mu.Lock()
+	if g.draining {
+		g.mu.Unlock()
+		return nil
+	}
+	g.draining = true
+	g.mu.Unlock()
+
+	conns := g.reg.all()
+	p, err := ReconnectPayload("going away", 2500)
+	if err != nil {
+		return err
+	}
+	for _, c := range conns {
+		c.send(Frame{Op: OpReconnect, Payload: p})
+	}
+	for _, c := range conns {
+		w := c.currentWriter()
+		w.drain(ctx)
+		w.sink.close(CloseGoingAway, "going away")
+		g.reg.remove(c)
+	}
+	return nil
+}
+
+// Handler serves the /gateway upgrade over HTTP/1.1 only: a WebSocket needs Hijacker, so
+// http2xconnect is never set (R19, facts-http-gateway §6).
+func (g *Gateway) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Accept echoes a subprotocol only if it is listed here, and a browser that cannot set an
+		// Authorization header offers `dilla.v1` alongside `dilla.ticket.<t>`. Listing `dilla.v1`
+		// first makes it the negotiated one; the ticket value is read off the raw header by
+		// bearerOrTicket and is never echoed, which is what keeps the credential out of the
+		// response.
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			OriginPatterns:     g.opts.TrustedOrigins,
+			Subprotocols:       []string{"dilla.v1"},
+			CompressionMode:    websocket.CompressionDisabled,
+			InsecureSkipVerify: false,
+		})
+		if err != nil {
+			return
+		}
+		c.SetReadLimit(g.opts.ReadLimit)
+		g.serve(r.Context(), newWSSink(c), bearerOrTicket(r, g.tickets))
+	})
+}
+
+func opLabel(op Op) string {
+	if name, ok := opNames[op]; ok {
+		return name
+	}
+	return "unknown"
+}
+
+var opNames = map[Op]string{
+	OpHello: "hello", OpIdentify: "identify", OpResume: "resume", OpReady: "ready",
+	OpResumed: "resumed", OpInvalidSession: "invalid_session", OpHeartbeat: "heartbeat",
+	OpHeartbeatAck: "heartbeat_ack", OpReconnect: "reconnect", OpError: "error",
+	OpSubscribe: "subscribe", OpUnsubscribe: "unsubscribe", OpCommitAck: "commit_ack",
+	OpMLSHandshake: "mls.handshake", OpMLSCommitNeeded: "mls.commit_needed",
+	OpMLSEpochChanged: "mls.epoch_changed", OpMessageCT: "message.ct",
+	OpMLSWelcome: "mls.welcome", OpMessageDeleted: "message.deleted",
+	OpMessagePlain: "message.plain", OpInteraction: "interaction",
+	OpPresence: "presence", OpTyping: "typing", OpVoiceState: "voice_state",
+}

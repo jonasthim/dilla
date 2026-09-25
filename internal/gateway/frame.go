@@ -161,6 +161,11 @@ type Inbound struct {
 	CID     uint64
 	GroupID *id.ID
 	Payload []cbor.RawMessage
+	// handshakeToken is the Authorization bearer or the spent ticket from the HTTP upgrade, set by
+	// serve before it dispatches the first frame: an identify whose token travelled on the
+	// handshake carries an empty one in its payload and must still resolve. It is unexported
+	// because it never comes off the wire.
+	handshakeToken string
 }
 
 // Decode parses one inbound frame. maxBytes is gateway.read_limit_bytes; a longer frame is

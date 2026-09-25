@@ -460,6 +460,23 @@ func TestAPendingSessionRequiresASpentAssertion(t *testing.T) {
 	}
 }
 
+func TestAProvisionalSessionActsOnlyInItsPairingGroup(t *testing.T) {
+	pairing, other := id.New(), id.New()
+	s := auth.Session{Scope: auth.ScopeProvisional, PairingGroup: &pairing}
+	if !s.InPairingGroup(pairing) {
+		t.Error("a provisional session must act in its own pairing group")
+	}
+	if s.InPairingGroup(other) {
+		t.Error("a provisional session must not act outside its pairing group")
+	}
+	if (auth.Session{Scope: auth.ScopeProvisional}).InPairingGroup(pairing) {
+		t.Error("a provisional session with no pairing group may act on nothing")
+	}
+	if !(auth.Session{Scope: auth.ScopeEnrolled}).InPairingGroup(other) {
+		t.Error("an enrolled session is unrestricted")
+	}
+}
+
 func signed(t *testing.T, s *auth.Sessions, device id.ID, nonce []byte, p auth.Purpose, priv ed25519.PrivateKey) auth.EstablishRequest {
 	t.Helper()
 	pre := auth.SessionPreimage(s.InstanceID(), device, nonce, p)

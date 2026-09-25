@@ -6,14 +6,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/jonasthim/dilla/internal/clock"
 )
 
-// sink is the transport half a writer drives. The real implementation wraps a
-// *websocket.Conn; the tests use a recording double, because what is under test is the queueing
-// discipline, not the library.
+// sink is the transport half a connection drives: the writer owns its write end, `serve` and
+// `readLoop` own its read end. The real implementation wraps a *websocket.Conn; the tests use a
+// recording double, because what is under test is the queueing discipline, not the library.
 type sink interface {
 	write(ctx context.Context, b []byte) error
+	read(ctx context.Context) (websocket.MessageType, []byte, error)
 	close(code CloseCode, reason string)
 }
 
@@ -25,9 +27,12 @@ type writerLimits struct {
 
 type queued struct {
 	frame Frame
-	n     uint64
-	at    time.Time
-	size  int
+	// raw is an already-encoded frame, set only by enqueueRaw for the resume replay. When it is
+	// non-nil writeOne writes it verbatim: a replayed frame carries the n it was first sent with.
+	raw  []byte
+	n    uint64
+	at   time.Time
+	size int
 }
 
 // frameOverhead is what Encode adds around a payload: the four-element array head, the opcode,
@@ -101,6 +106,27 @@ func (w *writer) enqueue(f Frame, n uint64) {
 	}
 }
 
+// enqueueRaw queues an already-encoded frame. Resume replay is its only caller: a replayed frame
+// carries the n it was first sent with, so passing it back through Encode would re-stamp it.
+func (w *writer) enqueueRaw(b []byte) {
+	w.mu.Lock()
+	if w.queuedBytes+len(b) > w.limits.Bytes {
+		w.mu.Unlock()
+		w.sink.close(CloseRateLimited, "writer queue byte bound")
+		return
+	}
+	w.queuedBytes += len(b)
+	w.mu.Unlock()
+	select {
+	case w.queue <- queued{raw: b, at: w.clk.Now(), size: len(b)}:
+	default:
+		w.mu.Lock()
+		w.queuedBytes -= len(b)
+		w.mu.Unlock()
+		w.sink.close(CloseRateLimited, "writer queue overflow")
+	}
+}
+
 func (w *writer) run() {
 	defer close(w.finished)
 	for {
@@ -123,6 +149,16 @@ func (w *writer) writeOne(q queued) bool {
 		w.queuedBytes -= q.size
 		w.mu.Unlock()
 	}()
+	if q.raw != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), w.limits.Deadline)
+		err := w.sink.write(ctx, q.raw)
+		cancel()
+		if err != nil {
+			w.sink.close(CloseUnknown, "write")
+			return false
+		}
+		return true
+	}
 	frame := q.frame
 	// R31/D11: mls.commit_needed's deadline is relative to the moment the frame reaches
 	// the writer, so it is re-based here and nowhere else.
@@ -203,9 +239,12 @@ func (w *writer) drain(ctx context.Context) {
 			w.stop()
 			return
 		}
-		// clock.Clock has no After (internal/clock/clock.go declares Now, Since, NewTimer and
-		// Sleep only), so the one-millisecond poll is a timer the loop stops on every path.
-		t := w.clk.NewTimer(time.Millisecond)
+		// The one-millisecond poll is a backoff between two reads of queuedBytes, not a deadline
+		// the gateway's behaviour is defined over, so it is REAL time and not w.clk: a
+		// clock.Fake only advances when a test advances it, and drain is called from inside
+		// Shutdown on the test's own goroutine, so a fake timer here would never fire and
+		// Shutdown would never return. It is a timer the loop stops on every path.
+		t := time.NewTimer(time.Millisecond)
 		select {
 		case <-ctx.Done():
 			t.Stop()
@@ -215,7 +254,7 @@ func (w *writer) drain(ctx context.Context) {
 		case <-w.finished:
 			t.Stop()
 			return
-		case <-t.C():
+		case <-t.C:
 		}
 	}
 }

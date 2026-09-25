@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -23,6 +25,7 @@ import (
 type recordingSink struct {
 	frames chan []byte
 	closed chan CloseCode
+	reads  chan []byte
 
 	mu      sync.Mutex
 	cond    *sync.Cond
@@ -34,11 +37,28 @@ func newRecordingSink(depth int, stalled bool) *recordingSink {
 	s := &recordingSink{
 		frames:  make(chan []byte, depth),
 		closed:  make(chan CloseCode, 1),
+		reads:   make(chan []byte, 16),
 		stalled: stalled,
 	}
 	s.cond = sync.NewCond(&s.mu)
 	return s
 }
+
+// reads is what the test hands the read loop. A closed sink returns io.EOF, which ends readLoop.
+func (s *recordingSink) read(ctx context.Context) (websocket.MessageType, []byte, error) {
+	select {
+	case b, ok := <-s.reads:
+		if !ok {
+			return 0, nil, io.EOF
+		}
+		return websocket.MessageBinary, b, nil
+	case <-ctx.Done():
+		return 0, nil, ctx.Err()
+	}
+}
+
+// feed queues one inbound frame for the read loop.
+func (s *recordingSink) feed(b []byte) { s.reads <- b }
 
 func (s *recordingSink) write(_ context.Context, b []byte) error {
 	s.mu.Lock()

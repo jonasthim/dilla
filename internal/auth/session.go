@@ -105,12 +105,28 @@ type AssertionSpender interface {
 
 // Session is a resolved bearer token.
 type Session struct {
-	UserID      id.ID
-	DeviceID    id.ID
-	Scope       Scope
-	TokenHash   []byte
-	Expires     int64
-	IdleExpires int64
+	UserID    id.ID
+	DeviceID  id.ID
+	Scope     Scope
+	TokenHash []byte
+	// PairingGroup is the one group a ScopeProvisional session may act on; it is nil for every
+	// other scope (deviation B9). Without it nothing enforces E_PROVISIONAL_OUTSIDE_PAIRING and a
+	// provisional session can harvest the Welcomes of every group its device was ever added to —
+	// the escalation interfaces.md §2.2 point 4 forbids. The `sessions.pairing_group` column it
+	// is read from, and the writer that sets it, are task 24's.
+	PairingGroup *id.ID
+	Expires      int64
+	IdleExpires  int64
+}
+
+// InPairingGroup reports whether this session may act on a group. An enrolled or admin session is
+// unrestricted; a provisional session may act only inside the one group it was paired for, and a
+// provisional session with no pairing group may act on nothing.
+func (s Session) InPairingGroup(group id.ID) bool {
+	if s.Scope != ScopeProvisional {
+		return true
+	}
+	return s.PairingGroup != nil && *s.PairingGroup == group
 }
 
 type nonceEntry struct {
