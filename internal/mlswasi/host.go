@@ -107,6 +107,13 @@ type Options struct {
 	// pool — which is what makes OpenMLS's KeyPackage lifetime check testable (gap-33 §4.3).
 	// Nil keeps WithSysWalltime(), the production setting.
 	Now func() time.Time
+	// OnCall, when set, is called with the name of every guest export the host invokes, before
+	// the call. It is observation only — nothing about the call changes — and it exists because
+	// "the delivery service imports a group's state blob lazily, and never rebuilds it from the
+	// tree" is a statement about WHICH guest export ran, which nothing else on this API reports
+	// (task 19). It runs on the caller's goroutine, so an implementation must be cheap and safe
+	// for concurrent use.
+	OnCall func(export string)
 }
 
 // Runtime owns one wazero runtime, one compiled module and a fixed pool of
@@ -117,6 +124,7 @@ type Runtime struct {
 	pool     chan *Instance
 	poolSize int
 	now      func() time.Time
+	onCall   func(export string)
 
 	mu     sync.Mutex
 	closed bool
@@ -165,7 +173,7 @@ func New(ctx context.Context, wasmBinary []byte, opts Options) (*Runtime, error)
 	if size <= 0 {
 		size = runtime.GOMAXPROCS(0)
 	}
-	r := &Runtime{rt: rt, compiled: compiled, pool: make(chan *Instance, size), poolSize: size, now: opts.Now}
+	r := &Runtime{rt: rt, compiled: compiled, pool: make(chan *Instance, size), poolSize: size, now: opts.Now, onCall: opts.OnCall}
 	for range size {
 		inst, err := r.newInstance(ctx)
 		if err != nil {

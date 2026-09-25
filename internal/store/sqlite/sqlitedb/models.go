@@ -19,6 +19,14 @@ type AuditLog struct {
 	At     int64
 }
 
+type DeviceCursors struct {
+	DeviceID  id.ID
+	GroupID   id.ID
+	LastSeq   int64
+	LastEpoch int64
+	Updated   int64
+}
+
 type DeviceLists struct {
 	UserID       id.ID
 	Version      int64
@@ -41,6 +49,15 @@ type Devices struct {
 	QuarantineReason string
 	LastSeen         int64
 	Created          int64
+}
+
+type ForkReports struct {
+	GroupID        id.ID
+	Seq            int64
+	ReporterDevice id.ID
+	Epoch          int64
+	Reason         string
+	Created        int64
 }
 
 type InstanceSettings struct {
@@ -72,6 +89,16 @@ type Invites struct {
 	RevokedAt   sql.NullInt64
 }
 
+type KeyPackages struct {
+	DeviceID   id.ID
+	KpRef      []byte
+	Blob       []byte
+	LastResort int64
+	Expires    int64
+	Created    int64
+	ConsumedAt sql.NullInt64
+}
+
 type LoginAttempts struct {
 	ID     int64
 	UserID *id.ID
@@ -79,6 +106,93 @@ type LoginAttempts struct {
 	Method int64
 	Ok     int64
 	At     int64
+}
+
+type MlsEpochTrees struct {
+	GroupID     id.ID
+	Epoch       int64
+	RatchetTree []byte
+	TreeHash    []byte
+	Created     int64
+}
+
+type MlsGroups struct {
+	GroupID             id.ID
+	Binding             []byte
+	Kind                int64
+	CommunityID         *id.ID
+	TargetID            id.ID
+	CallID              *id.ID
+	Ciphersuite         int64
+	Epoch               int64
+	Seq                 int64
+	GroupInfoBlob       []byte
+	TreeHash            []byte
+	PublicGroupState    []byte
+	ExternalSenderKeyID id.ID
+	E2eeVersion         int64
+	MediaVersion        int64
+	PolicyVersion       int64
+	EpochUnknown        int64
+	HealDeadline        sql.NullInt64
+	Created             int64
+	ClosedAt            sql.NullInt64
+}
+
+type MlsHandshakes struct {
+	GroupID      id.ID
+	Seq          int64
+	Epoch        int64
+	Kind         int64
+	SenderLeaf   sql.NullInt64
+	SenderDevice []byte
+	Blob         []byte
+	Created      int64
+}
+
+type MlsMembers struct {
+	GroupID      id.ID
+	LeafIndex    int64
+	UserID       id.ID
+	DeviceID     id.ID
+	SignatureKey []byte
+	AddedEpoch   int64
+	RemovedEpoch sql.NullInt64
+}
+
+type MlsPendingProposals struct {
+	GroupID      id.ID
+	Ref          []byte
+	Epoch        int64
+	Kind         int64
+	TargetLeaf   sql.NullInt64
+	TargetDevice []byte
+	KeyPackage   []byte
+	Origin       int64
+	ActionID     id.ID
+	IssuedAt     int64
+	Ttl          int64
+	VoidAt       sql.NullInt64
+}
+
+type MlsWelcomePayloads struct {
+	BlobSha256 []byte
+	GroupID    id.ID
+	Epoch      int64
+	Blob       []byte
+	Created    int64
+}
+
+type MlsWelcomes struct {
+	WelcomeID   int64
+	DeviceID    id.ID
+	GroupID     id.ID
+	Epoch       int64
+	CommitSeq   int64
+	BlobSha256  []byte
+	Created     int64
+	Expires     int64
+	DeliveredAt sql.NullInt64
 }
 
 type OidcIdentities struct {

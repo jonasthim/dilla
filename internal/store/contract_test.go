@@ -141,6 +141,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.Auth)(nil)).Elem(),
 		reflect.TypeOf((*store.Invites)(nil)).Elem(),
 		reflect.TypeOf((*store.Ops)(nil)).Elem(),
+		// Task 19 step 1a: MLS joins the embed list with 00002_mls.sql.
+		reflect.TypeOf((*store.MLS)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

@@ -28,6 +28,9 @@ sql:
           #    per schema file; rp_id is the only offender in 001/002/003/009.
           - { column: "audit_log.id",       go_type: { type: "int64" } }
           - { column: "login_attempts.id",  go_type: { type: "int64" } }
+          # `mls_welcomes.welcome_id` is the third surrogate key (004_mls.sql) and
+          # matches `*.*_id`, which would type it id.ID and break every scan.
+          - { column: "mls_welcomes.welcome_id", go_type: { type: "int64" } }
           - { column: "*.cred_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.blob_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.code_hash",   go_type: { type: "byte", slice: true } }
@@ -45,6 +48,10 @@ sql:
           - { column: "login_attempts.user_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "audit_log.actor",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "mls_groups.community_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "mls_groups.call_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           # 3. the NOT NULL wildcards.
           - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
@@ -70,6 +77,9 @@ sql:
         overrides:
           - { column: "audit_log.id",       go_type: { type: "int64" } }
           - { column: "login_attempts.id",  go_type: { type: "int64" } }
+          # `mls_welcomes.welcome_id` is the third surrogate key (004_mls.sql) and
+          # matches `*.*_id`, which would type it id.ID and break every scan.
+          - { column: "mls_welcomes.welcome_id", go_type: { type: "int64" } }
           - { column: "*.cred_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.blob_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.code_hash",   go_type: { type: "byte", slice: true } }
@@ -92,6 +102,12 @@ sql:
           - { column: "webauthn_ceremonies.kind",  go_type: { type: "int64" } }
           - { column: "login_attempts.ok",         go_type: { type: "int64" } }
           - { column: "invites.grants_admin",      go_type: { type: "int64" } }
+          - { column: "mls_groups.kind",                   go_type: { type: "int64" } }
+          - { column: "mls_groups.epoch_unknown",          go_type: { type: "int64" } }
+          - { column: "mls_handshakes.kind",               go_type: { type: "int64" } }
+          - { column: "mls_pending_proposals.kind",        go_type: { type: "int64" } }
+          - { column: "mls_pending_proposals.origin",      go_type: { type: "int64" } }
+          - { column: "key_packages.last_resort",          go_type: { type: "int64" } }
           - { column: "invites.community_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "invites.created_by",
@@ -101,6 +117,10 @@ sql:
           - { column: "login_attempts.user_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "audit_log.actor",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "mls_groups.community_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "mls_groups.call_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
           - { column: "*.*_id",            go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }

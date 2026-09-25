@@ -1,0 +1,136 @@
+package ds
+
+import (
+	"fmt"
+	"net/http"
+)
+
+// Error is one refusal from the delivery service, carrying exactly what protocol/02's error table
+// says the body carries. The HTTP layer turns it into the CBOR array
+// [code, detail, retry_after_ms, …extras] with the status below.
+type Error struct {
+	Code   string
+	Detail string
+	Rule   string // E_COMMIT_INVALID only: the invariant-4 clause that refused it
+	Status int
+
+	WinningCommit []byte   // E_COMMIT_CONFLICT
+	Proposals     [][]byte // E_COMMIT_CONFLICT, E_COMMIT_REQUIRED
+	RetryAfterMS  *uint64  // E_RATE_LIMITED, E_COMMIT_REQUIRED
+}
+
+func (e *Error) Error() string {
+	if e.Rule != "" {
+		return fmt.Sprintf("%s (%s): %s", e.Code, e.Rule, e.Detail)
+	}
+	return e.Code + ": " + e.Detail
+}
+
+func errNotFound(what string) *Error {
+	return &Error{Code: "E_NOT_FOUND", Detail: what, Status: http.StatusNotFound}
+}
+
+func errForbidden(detail string) *Error {
+	return &Error{Code: "E_FORBIDDEN", Detail: detail, Status: http.StatusForbidden}
+}
+
+func errInvalid(detail string) *Error {
+	return &Error{Code: "E_INVALID_REQUEST", Detail: detail, Status: http.StatusBadRequest}
+}
+
+func errBinding(detail string) *Error {
+	return &Error{Code: "E_BINDING_INVALID", Detail: detail, Status: http.StatusBadRequest}
+}
+
+// errProvisionalOutsidePairing is §2.2 point 4's refusal: a provisional session reached beyond the
+// one pairing group it was issued for.
+func errProvisionalOutsidePairing(detail string) *Error {
+	return &Error{
+		Code:   "E_PROVISIONAL_OUTSIDE_PAIRING",
+		Detail: detail,
+		Status: http.StatusForbidden,
+	}
+}
+
+func errModeReadable() *Error {
+	return &Error{
+		Code:   "E_MODE_READABLE",
+		Detail: "text groups are not allowed for this channel",
+		Status: http.StatusForbidden,
+	}
+}
+
+func errGroupExists(detail string) *Error {
+	return &Error{Code: "E_GROUP_EXISTS", Detail: detail, Status: http.StatusConflict}
+}
+
+// errCommitInvalid names the clause that refused the commit. `rule` is a stable string a client
+// may log but must not branch on beyond the code.
+func errCommitInvalid(rule, detail string) *Error {
+	return &Error{
+		Code:   "E_COMMIT_INVALID",
+		Detail: detail,
+		Rule:   rule,
+		Status: http.StatusUnprocessableEntity,
+	}
+}
+
+func errCommitConflict(winning []byte, proposals [][]byte) *Error {
+	return &Error{
+		Code:          "E_COMMIT_CONFLICT",
+		Detail:        "another commit won this epoch",
+		Status:        http.StatusConflict,
+		WinningCommit: winning,
+		Proposals:     proposals,
+	}
+}
+
+func errCommitRequired(proposals [][]byte, retryAfterMS uint64) *Error {
+	return &Error{
+		Code:         "E_COMMIT_REQUIRED",
+		Detail:       "outstanding delivery-service proposals must be committed first",
+		Status:       http.StatusTooEarly,
+		Proposals:    proposals,
+		RetryAfterMS: &retryAfterMS,
+	}
+}
+
+func errLeafNotCurrent() *Error {
+	return &Error{
+		Code:   "E_LEAF_NOT_CURRENT",
+		Detail: "this device's leaf is not in the current tree",
+		Status: http.StatusForbidden,
+	}
+}
+
+func errCommitmentInvalid(n int) *Error {
+	return &Error{
+		Code:   "E_COMMITMENT_INVALID",
+		Detail: fmt.Sprintf("authenticated_data is %d bytes, want exactly 32", n),
+		Status: http.StatusUnprocessableEntity,
+	}
+}
+
+func errTooLarge(n, limit int) *Error {
+	return &Error{
+		Code:   "E_TOO_LARGE",
+		Detail: fmt.Sprintf("%d bytes of ciphertext, limit %d", n, limit),
+		Status: http.StatusRequestEntityTooLarge,
+	}
+}
+
+func errPruned(from, floor uint64) *Error {
+	return &Error{
+		Code:   "E_PRUNED",
+		Detail: fmt.Sprintf("seq %d is older than the retention floor %d", from, floor),
+		Status: http.StatusGone,
+	}
+}
+
+func errNotUploader() *Error {
+	return &Error{
+		Code:   "E_NOT_UPLOADER",
+		Detail: "only the uploading user may delete this message",
+		Status: http.StatusForbidden,
+	}
+}

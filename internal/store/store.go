@@ -34,6 +34,7 @@ type Repository interface {
 	Auth
 	Invites
 	Ops
+	MLS // added HERE — ID1; its tables are 00002_mls.sql, written by task 19 step 1
 }
 
 type Instance interface {

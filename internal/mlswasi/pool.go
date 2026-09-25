@@ -114,6 +114,9 @@ func (i *Instance) Call(ctx context.Context, export string, req []byte) ([]byte,
 	if fn == nil {
 		return nil, fmt.Errorf("mlswasi: no export %q", export)
 	}
+	if i.rt != nil && i.rt.onCall != nil {
+		i.rt.onCall(export)
+	}
 	reqLen := uint32(len(req))
 
 	allocated, err := i.invoke(ctx, "dilla_alloc", i.alloc, uint64(reqLen))

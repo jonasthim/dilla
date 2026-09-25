@@ -11,31 +11,43 @@ import (
 )
 
 type Querier interface {
+	AppendHandshake(ctx context.Context, arg AppendHandshakeParams) error
 	BumpGeneration(ctx context.Context) (int64, error)
+	BumpGroupSeq(ctx context.Context, arg BumpGroupSeqParams) (int64, error)
 	ClearLoginFailures(ctx context.Context, arg ClearLoginFailuresParams) error
+	CloseGroup(ctx context.Context, arg CloseGroupParams) error
 	ConsumeRecoveryCode(ctx context.Context, arg ConsumeRecoveryCodeParams) (int64, error)
 	ConsumeTOTPCounter(ctx context.Context, arg ConsumeTOTPCounterParams) (int64, error)
+	CountForkReporters(ctx context.Context, arg CountForkReportersParams) (int64, error)
+	CountKeyPackages(ctx context.Context, arg CountKeyPackagesParams) (int64, error)
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
 	CountSessionsByDevice(ctx context.Context, arg CountSessionsByDeviceParams) (int64, error)
 	CreateDevice(ctx context.Context, arg CreateDeviceParams) error
+	CreateGroup(ctx context.Context, arg CreateGroupParams) error
 	CreateInstance(ctx context.Context, arg CreateInstanceParams) error
 	CreateInvite(ctx context.Context, arg CreateInviteParams) error
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
+	DeleteMembers(ctx context.Context, arg DeleteMembersParams) error
 	DeleteOldestSessionForDevice(ctx context.Context, arg DeleteOldestSessionForDeviceParams) error
+	DeleteProposal(ctx context.Context, arg DeleteProposalParams) error
 	DeleteRecoveryCodes(ctx context.Context, arg DeleteRecoveryCodesParams) error
 	DeleteSession(ctx context.Context, arg DeleteSessionParams) error
 	DeleteSessionsByDevice(ctx context.Context, arg DeleteSessionsByDeviceParams) (int64, error)
 	DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsByUserParams) (int64, error)
+	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
 	GetDevice(ctx context.Context, arg GetDeviceParams) (Devices, error)
 	GetDeviceList(ctx context.Context, arg GetDeviceListParams) (DeviceLists, error)
+	GetGroup(ctx context.Context, arg GetGroupParams) (MlsGroups, error)
 	GetInstance(ctx context.Context) (Instances, error)
 	GetInviteByHash(ctx context.Context, arg GetInviteByHashParams) (Invites, error)
+	GetLastResortKeyPackage(ctx context.Context, arg GetLastResortKeyPackageParams) (KeyPackages, error)
 	GetOIDCIdentity(ctx context.Context, arg GetOIDCIdentityParams) (id.ID, error)
 	GetPasswordCredential(ctx context.Context, arg GetPasswordCredentialParams) (string, error)
+	GetProposal(ctx context.Context, arg GetProposalParams) (MlsPendingProposals, error)
 	GetReport(ctx context.Context, arg GetReportParams) (Reports, error)
 	GetSessionByHash(ctx context.Context, arg GetSessionByHashParams) (Sessions, error)
 	GetSetting(ctx context.Context, arg GetSettingParams) ([]byte, error)
@@ -45,19 +57,37 @@ type Querier interface {
 	GetWebauthnCredential(ctx context.Context, arg GetWebauthnCredentialParams) (WebauthnCredentials, error)
 	GetWebauthnUserByHandle(ctx context.Context, arg GetWebauthnUserByHandleParams) (id.ID, error)
 	GetWebauthnUserHandle(ctx context.Context, arg GetWebauthnUserHandleParams) ([]byte, error)
+	GroupsForDevice(ctx context.Context, arg GroupsForDeviceParams) ([]id.ID, error)
 	InsertAudit(ctx context.Context, arg InsertAuditParams) error
+	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
+	ListHandshakes(ctx context.Context, arg ListHandshakesParams) ([]MlsHandshakes, error)
 	ListInvites(ctx context.Context) ([]Invites, error)
 	ListInvitesByCommunity(ctx context.Context, arg ListInvitesByCommunityParams) ([]Invites, error)
+	ListLiveProposals(ctx context.Context, arg ListLiveProposalsParams) ([]MlsPendingProposals, error)
+	ListMembers(ctx context.Context, arg ListMembersParams) ([]MlsMembers, error)
+	ListOpenGroups(ctx context.Context, arg ListOpenGroupsParams) ([]MlsGroups, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
+	ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error)
+	OldestHandshakeSeq(ctx context.Context, arg OldestHandshakeSeqParams) (int64, error)
 	PruneCeremonies(ctx context.Context, arg PruneCeremoniesParams) (int64, error)
+	PruneHandshakes(ctx context.Context, arg PruneHandshakesParams) (int64, error)
 	PruneSessions(ctx context.Context, arg PruneSessionsParams) (int64, error)
+	PruneWelcomes(ctx context.Context, arg PruneWelcomesParams) (int64, error)
+	PurgeAllKeyPackages(ctx context.Context) (int64, error)
+	PurgeKeyPackagesKeepingLastResort(ctx context.Context) (int64, error)
 	PutCeremony(ctx context.Context, arg PutCeremonyParams) error
 	PutDeviceList(ctx context.Context, arg PutDeviceListParams) error
+	PutEpochTree(ctx context.Context, arg PutEpochTreeParams) error
+	PutForkReport(ctx context.Context, arg PutForkReportParams) error
+	PutGroupState(ctx context.Context, arg PutGroupStateParams) error
+	PutKeyPackage(ctx context.Context, arg PutKeyPackageParams) error
+	PutMemberLeaf(ctx context.Context, arg PutMemberLeafParams) error
 	PutOIDCIdentity(ctx context.Context, arg PutOIDCIdentityParams) error
 	PutPasswordCredential(ctx context.Context, arg PutPasswordCredentialParams) error
+	PutProposal(ctx context.Context, arg PutProposalParams) error
 	PutRecoveryCode(ctx context.Context, arg PutRecoveryCodeParams) error
 	PutReport(ctx context.Context, arg PutReportParams) error
 	PutSetting(ctx context.Context, arg PutSettingParams) error
@@ -68,16 +98,22 @@ type Querier interface {
 	// on a later ceremony makes GetWebauthnUserByHandle miss and permanently breaks
 	// discoverable login for that account (deviation ID11).
 	PutWebauthnUser(ctx context.Context, arg PutWebauthnUserParams) error
+	PutWelcome(ctx context.Context, arg PutWelcomeParams) error
+	PutWelcomePayload(ctx context.Context, arg PutWelcomePayloadParams) error
+	QuarantineDevice(ctx context.Context, arg QuarantineDeviceParams) error
 	RecordLoginAttempt(ctx context.Context, arg RecordLoginAttemptParams) error
 	RedeemInvite(ctx context.Context, arg RedeemInviteParams) (Invites, error)
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
+	SetGroupHealing(ctx context.Context, arg SetGroupHealingParams) error
 	SetUserDisabled(ctx context.Context, arg SetUserDisabledParams) error
+	TakeKeyPackage(ctx context.Context, arg TakeKeyPackageParams) (KeyPackages, error)
 	TombstoneUser(ctx context.Context, arg TombstoneUserParams) error
 	TouchDevice(ctx context.Context, arg TouchDeviceParams) error
 	TouchSession(ctx context.Context, arg TouchSessionParams) error
 	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error
 	UpdateWebauthnCredential(ctx context.Context, arg UpdateWebauthnCredentialParams) error
+	VoidProposal(ctx context.Context, arg VoidProposalParams) error
 }
 
 var _ Querier = (*Queries)(nil)

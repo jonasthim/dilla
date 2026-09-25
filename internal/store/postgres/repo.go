@@ -869,4 +869,543 @@ func (r *Repo) SchemaVersion(ctx context.Context) (int64, error) {
 	return v.Int64, nil
 }
 
+// ------------------------------------------------------------------- MLS
+//
+// 004_mls.sql's table set. Deviation ID1: `store.Repository` embeds `MLS` from
+// this task onward, so these methods and the embed land in one commit.
+
+// mlsGroupRow maps `mls_groups` onto store.GroupRow. `epoch_unknown` is the
+// column's 0/1 integer and the Row's bool (deviation B13).
+func mlsGroupRow(m pgdb.MlsGroups) store.GroupRow {
+	return store.GroupRow{
+		GroupID:             m.GroupID,
+		Binding:             m.Binding,
+		Kind:                uint8(m.Kind),
+		CommunityID:         m.CommunityID,
+		TargetID:            m.TargetID,
+		CallID:              m.CallID,
+		Ciphersuite:         uint64(m.Ciphersuite),
+		Epoch:               uint64(m.Epoch),
+		Seq:                 uint64(m.Seq),
+		GroupInfoBlob:       m.GroupInfoBlob,
+		TreeHash:            m.TreeHash,
+		PublicGroupState:    m.PublicGroupState,
+		ExternalSenderKeyID: m.ExternalSenderKeyID,
+		E2EEVersion:         uint64(m.E2eeVersion),
+		MediaVersion:        uint64(m.MediaVersion),
+		PolicyVersion:       uint64(m.PolicyVersion),
+		EpochUnknown:        m.EpochUnknown != 0,
+		HealDeadline:        ptrInt64(m.HealDeadline),
+		Created:             m.Created,
+		ClosedAt:            ptrInt64(m.ClosedAt),
+	}
+}
+
+func (r *Repo) CreateGroup(ctx context.Context, g store.GroupRow) error {
+	return wrap(r.w.CreateGroup(ctx, pgdb.CreateGroupParams{
+		GroupID:             g.GroupID,
+		Binding:             g.Binding,
+		Kind:                int64(g.Kind),
+		CommunityID:         g.CommunityID,
+		TargetID:            g.TargetID,
+		CallID:              g.CallID,
+		Ciphersuite:         int64(g.Ciphersuite),
+		Epoch:               int64(g.Epoch),
+		Seq:                 int64(g.Seq),
+		GroupInfoBlob:       g.GroupInfoBlob,
+		TreeHash:            g.TreeHash,
+		PublicGroupState:    g.PublicGroupState,
+		ExternalSenderKeyID: g.ExternalSenderKeyID,
+		E2eeVersion:         int64(g.E2EEVersion),
+		MediaVersion:        int64(g.MediaVersion),
+		PolicyVersion:       int64(g.PolicyVersion),
+		EpochUnknown:        boolInt64(g.EpochUnknown),
+		HealDeadline:        nullInt64(g.HealDeadline),
+		Created:             g.Created,
+		ClosedAt:            nullInt64(g.ClosedAt),
+	}))
+}
+
+func (r *Repo) GetGroup(ctx context.Context, groupID id.ID) (store.GroupRow, error) {
+	row, err := r.r.GetGroup(ctx, pgdb.GetGroupParams{GroupID: groupID})
+	if err != nil {
+		return store.GroupRow{}, wrap(err)
+	}
+	return mlsGroupRow(row), nil
+}
+
+func (r *Repo) ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]store.GroupRow, error) {
+	rows, err := r.r.ListOpenGroups(ctx, pgdb.ListOpenGroupsParams{GroupID: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.GroupRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, mlsGroupRow(row))
+	}
+	return out, nil
+}
+
+func (r *Repo) CloseGroup(ctx context.Context, groupID id.ID, at int64) error {
+	return wrap(r.w.CloseGroup(ctx, pgdb.CloseGroupParams{
+		ClosedAt: sql.NullInt64{Int64: at, Valid: true},
+		GroupID:  groupID,
+	}))
+}
+
+// NextSeq allocates the next number in the group's ONE sequence space, shared by
+// the handshake and application streams. The allocation is the UPDATE itself, so
+// two concurrent callers never see the same value.
+func (r *Repo) NextSeq(ctx context.Context, groupID id.ID) (uint64, error) {
+	seq, err := r.w.BumpGroupSeq(ctx, pgdb.BumpGroupSeqParams{GroupID: groupID})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return uint64(seq), nil
+}
+
+// PutGroupState writes the PublicGroup blob and the three columns derived from
+// it. It clears `epoch_unknown`: a state blob is by definition a known epoch.
+func (r *Repo) PutGroupState(ctx context.Context, groupID id.ID, epoch uint64, state, groupInfo, treeHash []byte) error {
+	return wrap(r.w.PutGroupState(ctx, pgdb.PutGroupStateParams{
+		Epoch:            int64(epoch),
+		PublicGroupState: state,
+		GroupInfoBlob:    groupInfo,
+		TreeHash:         treeHash,
+		GroupID:          groupID,
+	}))
+}
+
+func (r *Repo) AppendHandshake(ctx context.Context, h store.HandshakeRow) error {
+	return wrap(r.w.AppendHandshake(ctx, pgdb.AppendHandshakeParams{
+		GroupID:      h.GroupID,
+		Seq:          int64(h.Seq),
+		Epoch:        int64(h.Epoch),
+		Kind:         int64(h.Kind),
+		SenderLeaf:   nullUint32(h.SenderLeaf),
+		SenderDevice: idBytes(h.SenderDevice),
+		Blob:         h.Blob,
+		Created:      h.Created,
+	}))
+}
+
+func (r *Repo) ListHandshakes(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]store.HandshakeRow, error) {
+	rows, err := r.r.ListHandshakes(ctx, pgdb.ListHandshakesParams{
+		GroupID: groupID, Seq: int64(fromSeq), MaxRows: int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.HandshakeRow, 0, len(rows))
+	for _, m := range rows {
+		device, err := idPtr(m.SenderDevice)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, store.HandshakeRow{
+			GroupID:      m.GroupID,
+			Seq:          uint64(m.Seq),
+			Epoch:        uint64(m.Epoch),
+			Kind:         uint8(m.Kind),
+			SenderLeaf:   ptrUint32(m.SenderLeaf),
+			SenderDevice: device,
+			Blob:         m.Blob,
+			Created:      m.Created,
+		})
+	}
+	return out, nil
+}
+
+// OldestHandshakeSeq is the retention floor a resync is refused below. An empty
+// log has no floor, which is 0 and not ErrNotFound: a group with nothing to
+// replay refuses nothing.
+func (r *Repo) OldestHandshakeSeq(ctx context.Context, groupID id.ID) (uint64, error) {
+	seq, err := r.r.OldestHandshakeSeq(ctx, pgdb.OldestHandshakeSeqParams{GroupID: groupID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return uint64(seq), nil
+}
+
+func (r *Repo) PruneHandshakes(ctx context.Context, before int64) (int64, error) {
+	n, err := r.w.PruneHandshakes(ctx, pgdb.PruneHandshakesParams{Created: before})
+	return n, wrap(err)
+}
+
+func (r *Repo) PutProposal(ctx context.Context, p store.ProposalRow) error {
+	return wrap(r.w.PutProposal(ctx, proposalParams(p)))
+}
+
+func proposalParams(p store.ProposalRow) pgdb.PutProposalParams {
+	return pgdb.PutProposalParams{
+		GroupID:      p.GroupID,
+		Ref:          p.Ref,
+		Epoch:        int64(p.Epoch),
+		Kind:         int64(p.Kind),
+		TargetLeaf:   nullUint32(p.TargetLeaf),
+		TargetDevice: idBytes(p.TargetDevice),
+		KeyPackage:   p.KeyPackage,
+		Origin:       int64(p.Origin),
+		ActionID:     p.ActionID,
+		IssuedAt:     p.IssuedAt,
+		Ttl:          int64(p.TTL),
+		VoidAt:       nullInt64(p.VoidAt),
+	}
+}
+
+func mlsProposalRow(m pgdb.MlsPendingProposals) (store.ProposalRow, error) {
+	device, err := idPtr(m.TargetDevice)
+	if err != nil {
+		return store.ProposalRow{}, err
+	}
+	return store.ProposalRow{
+		GroupID:      m.GroupID,
+		Ref:          m.Ref,
+		Epoch:        uint64(m.Epoch),
+		Kind:         uint8(m.Kind),
+		TargetLeaf:   ptrUint32(m.TargetLeaf),
+		TargetDevice: device,
+		KeyPackage:   m.KeyPackage,
+		Origin:       uint8(m.Origin),
+		ActionID:     m.ActionID,
+		IssuedAt:     m.IssuedAt,
+		TTL:          uint64(m.Ttl),
+		VoidAt:       ptrInt64(m.VoidAt),
+	}, nil
+}
+
+func (r *Repo) ListProposals(ctx context.Context, groupID id.ID, epoch uint64, includeVoid bool) ([]store.ProposalRow, error) {
+	var rows []pgdb.MlsPendingProposals
+	var err error
+	if includeVoid {
+		rows, err = r.r.ListAllProposals(ctx, pgdb.ListAllProposalsParams{GroupID: groupID, Epoch: int64(epoch)})
+	} else {
+		rows, err = r.r.ListLiveProposals(ctx, pgdb.ListLiveProposalsParams{GroupID: groupID, Epoch: int64(epoch)})
+	}
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ProposalRow, 0, len(rows))
+	for _, m := range rows {
+		p, err := mlsProposalRow(m)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (r *Repo) VoidProposal(ctx context.Context, groupID id.ID, ref []byte, at int64) error {
+	return wrap(r.w.VoidProposal(ctx, pgdb.VoidProposalParams{
+		VoidAt: sql.NullInt64{Int64: at, Valid: true}, GroupID: groupID, Ref: ref,
+	}))
+}
+
+func (r *Repo) DeleteProposals(ctx context.Context, groupID id.ID, refs [][]byte) error {
+	for _, ref := range refs {
+		if err := r.w.DeleteProposal(ctx, pgdb.DeleteProposalParams{GroupID: groupID, Ref: ref}); err != nil {
+			return wrap(err)
+		}
+	}
+	return nil
+}
+
+// ReissueProposal replaces one outstanding row with a fresh one and KEEPS the
+// old row's action_id: the logical action survives a re-issue with a new
+// KeyPackage, which is what lets the DS tell a retry from a second request.
+func (r *Repo) ReissueProposal(ctx context.Context, oldRef []byte, p store.ProposalRow) error {
+	old, err := r.w.GetProposal(ctx, pgdb.GetProposalParams{GroupID: p.GroupID, Ref: oldRef})
+	switch {
+	case err == nil:
+		p.ActionID = old.ActionID
+		if err := r.w.DeleteProposal(ctx, pgdb.DeleteProposalParams{GroupID: p.GroupID, Ref: oldRef}); err != nil {
+			return wrap(err)
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		// Nothing to supersede; the re-issue is an ordinary insert.
+	default:
+		return wrap(err)
+	}
+	return wrap(r.w.PutProposal(ctx, proposalParams(p)))
+}
+
+// ReplaceMembers rewrites one group's leaves. Its two statements belong to the
+// caller's transaction: every delivery-service caller runs it inside the same Tx
+// as the handshake row that changed the tree (R12).
+func (r *Repo) ReplaceMembers(ctx context.Context, groupID id.ID, epoch uint64, m []store.MemberRow) error {
+	if err := r.w.DeleteMembers(ctx, pgdb.DeleteMembersParams{GroupID: groupID}); err != nil {
+		return wrap(err)
+	}
+	for _, row := range m {
+		if err := r.w.PutMemberLeaf(ctx, pgdb.PutMemberLeafParams{
+			GroupID:      groupID,
+			LeafIndex:    int64(row.LeafIndex),
+			UserID:       row.UserID,
+			DeviceID:     row.DeviceID,
+			SignatureKey: row.SignatureKey,
+			AddedEpoch:   int64(row.AddedEpoch),
+			RemovedEpoch: nullUint64(row.RemovedEpoch),
+		}); err != nil {
+			return wrap(err)
+		}
+	}
+	return nil
+}
+
+func (r *Repo) ListMembers(ctx context.Context, groupID id.ID) ([]store.MemberRow, error) {
+	rows, err := r.r.ListMembers(ctx, pgdb.ListMembersParams{GroupID: groupID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.MemberRow, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, store.MemberRow{
+			GroupID:      m.GroupID,
+			LeafIndex:    uint32(m.LeafIndex),
+			UserID:       m.UserID,
+			DeviceID:     m.DeviceID,
+			SignatureKey: m.SignatureKey,
+			AddedEpoch:   uint64(m.AddedEpoch),
+			RemovedEpoch: ptrUint64(m.RemovedEpoch),
+		})
+	}
+	return out, nil
+}
+
+func (r *Repo) GroupsForDevice(ctx context.Context, deviceID id.ID) ([]id.ID, error) {
+	rows, err := r.r.GroupsForDevice(ctx, pgdb.GroupsForDeviceParams{DeviceID: deviceID})
+	return rows, wrap(err)
+}
+
+func (r *Repo) PutKeyPackages(ctx context.Context, deviceID id.ID, kps []store.KeyPackageRow) error {
+	for _, kp := range kps {
+		if err := r.w.PutKeyPackage(ctx, pgdb.PutKeyPackageParams{
+			DeviceID:   deviceID,
+			KpRef:      kp.KPRef,
+			Blob:       kp.Blob,
+			LastResort: int64(kp.LastResort),
+			Expires:    kp.Expires,
+			Created:    kp.Created,
+			ConsumedAt: nullInt64(kp.ConsumedAt),
+		}); err != nil {
+			return wrap(err)
+		}
+	}
+	return nil
+}
+
+// TakeKeyPackage consumes one ordinary KeyPackage, and falls back to the
+// device's last-resort package WITHOUT consuming it: a last-resort package is
+// reusable by construction, and consuming it would leave the device unaddable.
+func (r *Repo) TakeKeyPackage(ctx context.Context, deviceID id.ID, now int64) (store.KeyPackageRow, error) {
+	kp, err := r.w.TakeKeyPackage(ctx, pgdb.TakeKeyPackageParams{
+		Now: sql.NullInt64{Int64: now, Valid: true}, DeviceID: deviceID,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		kp, err = r.r.GetLastResortKeyPackage(ctx, pgdb.GetLastResortKeyPackageParams{
+			DeviceID: deviceID, Expires: now,
+		})
+	}
+	if err != nil {
+		return store.KeyPackageRow{}, wrap(err)
+	}
+	return store.KeyPackageRow{
+		DeviceID:   kp.DeviceID,
+		KPRef:      kp.KpRef,
+		Blob:       kp.Blob,
+		LastResort: uint8(kp.LastResort),
+		Expires:    kp.Expires,
+		Created:    kp.Created,
+		ConsumedAt: ptrInt64(kp.ConsumedAt),
+	}, nil
+}
+
+// CountKeyPackages counts the ORDINARY packages still available: the last-resort
+// one is never the answer to "is this device running low".
+func (r *Repo) CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) (int64, error) {
+	n, err := r.r.CountKeyPackages(ctx, pgdb.CountKeyPackagesParams{DeviceID: deviceID, Expires: now})
+	return n, wrap(err)
+}
+
+func (r *Repo) PurgeKeyPackages(ctx context.Context, keepLastResort bool) (int64, error) {
+	if keepLastResort {
+		n, err := r.w.PurgeKeyPackagesKeepingLastResort(ctx)
+		return n, wrap(err)
+	}
+	n, err := r.w.PurgeAllKeyPackages(ctx)
+	return n, wrap(err)
+}
+
+func (r *Repo) PutWelcomePayload(ctx context.Context, w store.WelcomePayloadRow) error {
+	return wrap(r.w.PutWelcomePayload(ctx, pgdb.PutWelcomePayloadParams{
+		BlobSha256: w.BlobSHA256,
+		GroupID:    w.GroupID,
+		Epoch:      int64(w.Epoch),
+		Blob:       w.Blob,
+		Created:    w.Created,
+	}))
+}
+
+func (r *Repo) PutEpochTree(ctx context.Context, t store.EpochTreeRow) error {
+	return wrap(r.w.PutEpochTree(ctx, pgdb.PutEpochTreeParams{
+		GroupID:     t.GroupID,
+		Epoch:       int64(t.Epoch),
+		RatchetTree: t.RatchetTree,
+		TreeHash:    t.TreeHash,
+		Created:     t.Created,
+	}))
+}
+
+func (r *Repo) PutWelcomes(ctx context.Context, ws []store.WelcomeRow) error {
+	for _, w := range ws {
+		if err := r.w.PutWelcome(ctx, pgdb.PutWelcomeParams{
+			DeviceID:    w.DeviceID,
+			GroupID:     w.GroupID,
+			Epoch:       int64(w.Epoch),
+			CommitSeq:   int64(w.CommitSeq),
+			BlobSha256:  w.BlobSHA256,
+			Created:     w.Created,
+			Expires:     w.Expires,
+			DeliveredAt: nullInt64(w.DeliveredAt),
+		}); err != nil {
+			return wrap(err)
+		}
+	}
+	return nil
+}
+
+func (r *Repo) ListWelcomes(ctx context.Context, deviceID id.ID, afterID int64, limit int32) ([]store.WelcomeFull, error) {
+	rows, err := r.r.ListWelcomes(ctx, pgdb.ListWelcomesParams{
+		DeviceID: deviceID, WelcomeID: afterID, MaxRows: int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.WelcomeFull, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, store.WelcomeFull{
+			WelcomeRow: store.WelcomeRow{
+				WelcomeID:   m.WelcomeID,
+				DeviceID:    m.DeviceID,
+				GroupID:     m.GroupID,
+				Epoch:       uint64(m.Epoch),
+				CommitSeq:   uint64(m.CommitSeq),
+				BlobSHA256:  m.BlobSha256,
+				Created:     m.Created,
+				Expires:     m.Expires,
+				DeliveredAt: ptrInt64(m.DeliveredAt),
+			},
+			Blob: m.Blob,
+		})
+	}
+	return out, nil
+}
+
+// DeleteWelcome marks one queued Welcome delivered. The row survives so the
+// unique index keeps the same payload from being queued to the same device
+// twice.
+func (r *Repo) DeleteWelcome(ctx context.Context, deviceID id.ID, welcomeID int64, at int64) error {
+	return wrap(r.w.DeleteWelcome(ctx, pgdb.DeleteWelcomeParams{
+		DeliveredAt: sql.NullInt64{Int64: at, Valid: true},
+		DeviceID:    deviceID,
+		WelcomeID:   welcomeID,
+	}))
+}
+
+func (r *Repo) PruneWelcomes(ctx context.Context, before int64) (int64, error) {
+	n, err := r.w.PruneWelcomes(ctx, pgdb.PruneWelcomesParams{Expires: before})
+	return n, wrap(err)
+}
+
+func (r *Repo) PutForkReport(ctx context.Context, f store.ForkReportRow) error {
+	return wrap(r.w.PutForkReport(ctx, pgdb.PutForkReportParams{
+		GroupID:        f.GroupID,
+		Seq:            int64(f.Seq),
+		ReporterDevice: f.ReporterDevice,
+		Epoch:          int64(f.Epoch),
+		Reason:         f.Reason,
+		Created:        f.Created,
+	}))
+}
+
+// CountForkReporters counts DISTINCT reporters without saying so: the primary
+// key is (group_id, seq, reporter_device), so one device contributes one row.
+func (r *Repo) CountForkReporters(ctx context.Context, groupID id.ID, seq uint64) (int64, error) {
+	n, err := r.r.CountForkReporters(ctx, pgdb.CountForkReportersParams{GroupID: groupID, Seq: int64(seq)})
+	return n, wrap(err)
+}
+
+func (r *Repo) QuarantineDevice(ctx context.Context, deviceID id.ID, at int64, reason string) error {
+	return wrap(r.w.QuarantineDevice(ctx, pgdb.QuarantineDeviceParams{
+		QuarantinedAt:    sql.NullInt64{Int64: at, Valid: true},
+		QuarantineReason: reason,
+		ID:               deviceID,
+	}))
+}
+
+// boolInt64, nullUint32/ptrUint32, nullUint64/ptrUint64 and idBytes/idPtr are
+// 004_mls.sql's conversions: a 0/1 integer column, a uint32 leaf index in a
+// nullable INTEGER, a uint64 epoch in one, and a nullable 16-byte identifier
+// column that no sqlc override types as id.ID because its name does not end in
+// `_id`.
+func boolInt64(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func nullUint32(v *uint32) sql.NullInt64 {
+	if v == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(*v), Valid: true}
+}
+
+func ptrUint32(v sql.NullInt64) *uint32 {
+	if !v.Valid {
+		return nil
+	}
+	n := uint32(v.Int64)
+	return &n
+}
+
+func nullUint64(v *uint64) sql.NullInt64 {
+	if v == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(*v), Valid: true}
+}
+
+func ptrUint64(v sql.NullInt64) *uint64 {
+	if !v.Valid {
+		return nil
+	}
+	n := uint64(v.Int64)
+	return &n
+}
+
+func idBytes(v *id.ID) []byte {
+	if v == nil {
+		return nil
+	}
+	return append([]byte(nil), v[:]...)
+}
+
+func idPtr(b []byte) (*id.ID, error) {
+	if len(b) == 0 {
+		return nil, nil
+	}
+	if len(b) != id.Size {
+		return nil, fmt.Errorf("store: identifier column is %d bytes, want %d", len(b), id.Size)
+	}
+	var out id.ID
+	copy(out[:], b)
+	return &out, nil
+}
+
 var _ store.Repository = (*Repo)(nil)

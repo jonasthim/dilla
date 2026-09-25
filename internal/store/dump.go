@@ -44,6 +44,12 @@ var DumpTables = []string{
 	"password_credentials", "totp_secrets", "recovery_codes", "webauthn_users",
 	"webauthn_credentials", "webauthn_ceremonies", "oidc_identities", "login_attempts",
 	"invites", "reports", "audit_log",
+	// 004_mls.sql, appended by task 19, parents before children: a group before
+	// its handshakes, proposals and leaves, and a Welcome payload before the
+	// per-device rows that reference it.
+	"mls_groups", "mls_handshakes", "mls_pending_proposals", "mls_members",
+	"mls_welcome_payloads", "mls_epoch_trees", "mls_welcomes", "key_packages",
+	"device_cursors", "fork_reports",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

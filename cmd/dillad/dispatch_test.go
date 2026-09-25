@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,8 +14,29 @@ import (
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/exit"
+	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
 	_ "modernc.org/sqlite"
 )
+
+// countMigrations is the goose version a fully migrated database reports: one per embedded
+// migration file.
+func countMigrations(t *testing.T) int {
+	t.Helper()
+	entries, err := sqlitemigrations.FS.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	n := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatal("no embedded migrations at all")
+	}
+	return n
+}
 
 func run(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
@@ -101,8 +123,12 @@ func TestInitBootstrapsAndRefusesASecondRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrate status: %v", err)
 	}
-	if !strings.Contains(statusOut, "1") {
-		t.Fatalf("migrate status did not report the goose version: %q", statusOut)
+	// One version per embedded migration, derived rather than written down: task 19 added
+	// 00002_mls.sql and the literal "1" this used to look for would still have matched the
+	// "current 2, target 2" line by accident for another eight migrations.
+	want := fmt.Sprintf("current %d, target %d", countMigrations(t), countMigrations(t))
+	if !strings.Contains(statusOut, want) {
+		t.Fatalf("migrate status = %q, want it to report %q", statusOut, want)
 	}
 	if _, _, err := run(t, "init", "--agree-tos", "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err == nil {
 		t.Fatal("a second init overwrote an initialised data directory")

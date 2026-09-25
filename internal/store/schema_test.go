@@ -104,6 +104,28 @@ func TestQueryHeadersAreByteIdenticalAcrossEngines(t *testing.T) {
 	}
 }
 
+// wantSchemaVersion is the goose version a fully migrated database reports: one
+// per embedded migration file, derived rather than written down so that the task
+// which adds a migration does not also have to edit two unrelated assertions.
+// Task 19's 00002_mls.sql was the first to make the number move off 1.
+func wantSchemaVersion(t *testing.T) int64 {
+	t.Helper()
+	entries, err := sqlitemigrations.FS.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	var n int64
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatal("no embedded migrations at all")
+	}
+	return n
+}
+
 func openSQLite(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "schema.db")+"?_pragma=foreign_keys(ON)")
@@ -204,20 +226,23 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 	}
 	sort.Strings(names)
 	if !reflect.DeepEqual(names, wantTables) {
-		t.Fatalf("tables = %v, want the seventeen 001/002/003/009 declare: %v", names, wantTables)
+		t.Fatalf("tables = %v, want the set 001/002/003/004/009 declare: %v", names, wantTables)
 	}
 	if seen != len(wantTables) {
-		t.Fatalf("%d dilla tables found; 001/002/003/009 declare %d", seen, len(wantTables))
+		t.Fatalf("%d dilla tables found; 001/002/003/004/009 declare %d", seen, len(wantTables))
 	}
 }
 
-// wantTables is the exact set 001/002/003/009 declare, sorted, so that a
-// dropped or renamed table is caught and not just a change in the count.
+// wantTables is the exact set 001/002/003/004/009 declare, sorted, so that a
+// dropped or renamed table is caught and not just a change in the count. Task 19
+// added 004_mls.sql's twelve.
 var wantTables = []string{
-	"audit_log", "device_lists", "devices", "instance_settings", "instances", "invites",
-	"login_attempts", "oidc_identities", "password_credentials", "recovery_codes", "reports",
-	"sessions", "totp_secrets", "users", "webauthn_ceremonies", "webauthn_credentials",
-	"webauthn_users",
+	"audit_log", "device_cursors", "device_lists", "devices", "fork_reports",
+	"instance_settings", "instances", "invites", "key_packages", "login_attempts",
+	"mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
+	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "oidc_identities",
+	"password_credentials", "recovery_codes", "reports", "sessions", "totp_secrets", "users",
+	"webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
 }
 
 // The two AUTOINCREMENT surrogate keys must survive sqlc's `*.id` wildcard as
@@ -308,12 +333,28 @@ func TestIdentifierColumnsRejectFifteenBytes(t *testing.T) {
 func TestMigrationCarriesEverySchemaFileVerbatim(t *testing.T) {
 	for _, dir := range []string{"sqlite", "postgres"} {
 		t.Run(dir, func(t *testing.T) {
-			mig, err := os.ReadFile(filepath.Join("..", "store", dir, "migrations", "00001_init.sql"))
+			// Every migration file concatenated: a schema file may land in any of
+			// them — 001/002/003/009 in 00001_init.sql, 004_mls.sql in
+			// 00002_mls.sql (task 19 step 1, deviation B19's one sequence) — and
+			// what matters is that goose and sqlc see the same DDL, not which
+			// file carries it.
+			migEntries, err := os.ReadDir(filepath.Join(dir, "migrations"))
 			if err != nil {
-				mig, err = os.ReadFile(filepath.Join(dir, "migrations", "00001_init.sql"))
+				t.Fatalf("read %s/migrations: %v", dir, err)
 			}
-			if err != nil {
-				t.Fatalf("read migration: %v", err)
+			var mig []byte
+			for _, e := range migEntries {
+				if !strings.HasSuffix(e.Name(), ".sql") {
+					continue
+				}
+				body, err := os.ReadFile(filepath.Join(dir, "migrations", e.Name()))
+				if err != nil {
+					t.Fatalf("read %s: %v", e.Name(), err)
+				}
+				mig = append(mig, body...)
+			}
+			if len(mig) == 0 {
+				t.Fatalf("%s/migrations holds no .sql file", dir)
 			}
 			entries, err := os.ReadDir(filepath.Join(dir, "schema"))
 			if err != nil {
@@ -325,7 +366,7 @@ func TestMigrationCarriesEverySchemaFileVerbatim(t *testing.T) {
 					t.Fatalf("read %s: %v", e.Name(), err)
 				}
 				if !strings.Contains(string(mig), strings.TrimSpace(string(body))) {
-					t.Fatalf("%s/migrations/00001_init.sql does not contain %s verbatim; sqlc and goose would see different schemas", dir, e.Name())
+					t.Fatalf("no migration in %s/migrations contains %s verbatim; sqlc and goose would see different schemas", dir, e.Name())
 				}
 			}
 		})

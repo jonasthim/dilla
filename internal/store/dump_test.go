@@ -101,8 +101,8 @@ func TestVacuumIntoProducesAReadableCopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion on the vacuumed copy: %v", err)
 	}
-	if v != 1 {
-		t.Fatalf("copied schema version = %d, want 1", v)
+	if want := wantSchemaVersion(t); v != want {
+		t.Fatalf("copied schema version = %d, want %d", v, want)
 	}
 }
 
