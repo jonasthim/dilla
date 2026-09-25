@@ -1,11 +1,13 @@
 package ds_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
 	"testing"
 
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -93,14 +95,55 @@ func TestRegisterRefusesADuplicateGroupID(t *testing.T) {
 }
 
 // The body's binding must equal extension 0xF001 inside the uploaded GroupInfo's group context.
+//
+// Two separate refusals share that sentence and they are pinned separately, because a single
+// case cannot pin both: mutating the encoding takes the decoder's branch and never reaches the
+// equality check. The fixture's last byte is `media_version`'s 0x00 and 0x00^0xff is 0xff, CBOR's
+// break byte, so the "flip a byte" case alone would still pass with the equality check deleted.
 func TestRegisterRefusesABindingThatDoesNotMatchTheGroupInfo(t *testing.T) {
-	h := newDSHarness(t)
-	req := h.registerRequest(t, h.channel(t, 0, 0))
-	req.Binding = append([]byte(nil), req.Binding...)
-	req.Binding[len(req.Binding)-1] ^= 0xff
+	// A WELL-FORMED eight-element binding that differs from the signed one in exactly one field.
+	// This is the case the byte-for-byte equality check in Register exists for: a client that
+	// signs one binding into the group context and declares another in the body.
+	t.Run("a well formed binding that differs in one field", func(t *testing.T) {
+		h := newDSHarness(t)
+		req := h.registerRequest(t, h.channel(t, 0, 0))
+		altered := dsFixture(t).binding
+		altered.PolicyVersion = 99 // the fixture signs policy_version = 1
+		encoded, err := cborx.Marshal(altered)
+		if err != nil {
+			t.Fatalf("encode the altered binding: %v", err)
+		}
+		if bytes.Equal(encoded, req.Binding) {
+			t.Fatal("the altered binding encodes to the fixture's own bytes; the case proves nothing")
+		}
+		if _, err := ds.DecodeBindingForTest(encoded); err != nil {
+			t.Fatalf("the altered binding must stay decodable, or the decode branch refuses it: %v", err)
+		}
+		req.Binding = encoded
+		mustRefuseWithBindingInvalid(t, h, req)
+	})
+
+	// And the decode branch: bytes that are not a dilla_binding at all.
+	t.Run("undecodable binding bytes", func(t *testing.T) {
+		h := newDSHarness(t)
+		req := h.registerRequest(t, h.channel(t, 0, 0))
+		req.Binding = append([]byte(nil), req.Binding...)
+		req.Binding[len(req.Binding)-1] ^= 0xff
+		if _, err := ds.DecodeBindingForTest(req.Binding); err == nil {
+			t.Fatal("the mutated bytes still decode; this case no longer pins the decode branch")
+		}
+		mustRefuseWithBindingInvalid(t, h, req)
+	})
+}
+
+func mustRefuseWithBindingInvalid(t *testing.T, h *dsHarness, req ds.RegisterRequest) {
+	t.Helper()
 	var dsErr *ds.Error
 	if _, err := h.ds.Register(context.Background(), req); !errors.As(err, &dsErr) || dsErr.Code != "E_BINDING_INVALID" {
 		t.Fatalf("got %v, want E_BINDING_INVALID", err)
+	}
+	if dsErr.Status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", dsErr.Status)
 	}
 }
 
