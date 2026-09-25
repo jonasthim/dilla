@@ -24,6 +24,13 @@ func CheckChannelModeForTest(d *DS, ctx context.Context, b Binding) error {
 	return d.checkChannelMode(ctx, b)
 }
 
+// ACLForTest and DeviceListsForTest are the seams New defaulted, which is the only way to see
+// that a DS built without them is built with the conservative Plan-1 stubs rather than with
+// nothing at all.
+func ACLForTest(d *DS) ACL { return d.opts.ACL }
+
+func DeviceListsForTest(d *DS) DeviceLists { return d.opts.DeviceLists }
+
 // WithGroupForTest is withGroup WITHOUT the per-group lock every public read path takes first.
 // Tree and Register serialise one group's work through d.lock, so the state cache's own
 // concurrency — the reservation that keeps two first touches of one group from importing it

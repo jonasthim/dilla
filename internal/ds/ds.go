@@ -106,15 +106,23 @@ type Options struct {
 	Keys    InstanceKeys
 	Policy  Policy
 
+	// The three injected seams interfaces.md §6.2 names. Each has a Plan-1 default, and each
+	// default is the conservative one: the rule runs, against a source that cannot yet answer.
+	//
 	// Channels is invariant 1's channel-mode source. nil means PermissiveChannels{}: the channels
 	// table arrives with Plan 2 task 2 (NV-B5).
-	//
-	// The other two injected seams interfaces.md §6.2 names — ACL (invariant 4's eligibility,
-	// NV-B6) and DeviceLists (its DSK clause, NV-B8) — are NOT declared here yet. Neither has a
-	// call site before tasks 21 and 24, and declaring an interface whose method set nothing
-	// exercises would fix the wrong shape in the one file both plans read. Each arrives with the
-	// task that first calls it; adding a named field to this struct breaks no existing literal.
 	Channels Channels
+	// ACL is invariant 4's eligibility source. nil means DenyUnlessMember{Store}: the permission
+	// resolver arrives with Plan 2 task 3 (NV-B6).
+	ACL ACL
+	// DeviceLists decodes and verifies a user's signed device list for invariant 4's DSK clause.
+	// nil means NewDeviceLists(Store, Wasm), which fails closed until the ABI export exists
+	// (NV-B8).
+	//
+	// ACL and DeviceLists have no call site before tasks 20-24 — checkAddedMember is the first —
+	// but they are declared now, with Options, because Options is the one shape both plans read
+	// and tasks 21 and 24 are written against all three fields.
+	DeviceLists DeviceLists
 }
 
 type DS struct {
@@ -153,6 +161,12 @@ func New(o Options) (*DS, error) {
 	}
 	if o.Channels == nil {
 		o.Channels = PermissiveChannels{}
+	}
+	if o.ACL == nil {
+		o.ACL = DenyUnlessMember{Store: o.Store}
+	}
+	if o.DeviceLists == nil {
+		o.DeviceLists = NewDeviceLists(o.Store, o.Wasm)
 	}
 	return &DS{
 		opts:   o,
