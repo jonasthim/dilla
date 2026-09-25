@@ -58,15 +58,15 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 	if err != nil {
 		return CommitResult{}, err
 	}
-	// Guard 2's second half: whatever was outstanding is re-issued for the epoch the resync
-	// created, and RequestCommit elects somebody to commit it.
+	// R25's tail: whatever was outstanding is re-issued for the epoch the resync created, and a
+	// committer is elected for it.
 	//
 	// `commitLocked` step (9) already ran `reissueOmitted` for the same epoch — every external
-	// commit does — so on the ordinary path this finds nothing left to re-issue and its work is
-	// the RequestCommit at the end. It is still called, because `reissueOmitted` is keyed on what
-	// the commit REFERENCED and this is keyed on what is still outstanding: a proposal that
-	// survived both is one a freeze would hold on to, and R25's promise is that a resync leaves
-	// the freeze intact rather than that it leaves it exactly as it found it.
+	// commit does — and each of ITS re-issues elects a committer of its own, so on the ordinary
+	// path this call finds nothing and does nothing. It is still made, because `reissueOmitted` is
+	// keyed on what the commit REFERENCED while this is keyed on what is still outstanding, and
+	// because step (9) only LOGS its error: a proposal that survived both is one a freeze would
+	// hold on to, and R25's promise is that a resync leaves the freeze intact.
 	if err := d.reissueAll(ctx, groupID, out.Epoch); err != nil {
 		return CommitResult{}, err
 	}
@@ -117,7 +117,18 @@ func (d *DS) checkExternalCommitScope(ctx context.Context, groupID id.ID, s Sess
 }
 
 // reissueAll re-issues every non-void instance proposal still outstanding at the epoch the resync
-// replaced, for the new one, and elects a committer for them.
+// replaced, for the new one, and elects a committer for what it re-issued.
+//
+// It is the belt-and-braces half of R25's tail. `commitLocked` step (9) already ran
+// `reissueOmitted` over the same rows, and every re-issue there goes through
+// `storeInstanceProposal`, which ends in `RequestCommit` — so on the ordinary path this loop finds
+// nothing, and its only remaining job is to catch the case where step (9) logged an error instead
+// of finishing.
+//
+// THE ELECTION IS CONDITIONAL ON THE LOOP, and that is not a micro-optimisation. `RequestCommit`
+// -> `beginRound` ADVANCES the round and picks the next untried candidate, so calling it for work
+// nobody re-issued fires one extra round that skips past the lowest-index online device invariant
+// 7 names, and invalidates the round the candidate step (9) just elected was told to ack.
 func (d *DS) reissueAll(ctx context.Context, groupID id.ID, epoch uint64) error {
 	if epoch == 0 {
 		return nil
@@ -126,6 +137,7 @@ func (d *DS) reissueAll(ctx context.Context, groupID id.ID, epoch uint64) error 
 	if err != nil {
 		return err
 	}
+	reissued := false
 	for _, r := range rows {
 		if r.Origin != 0 || r.VoidAt != nil {
 			continue
@@ -133,6 +145,10 @@ func (d *DS) reissueAll(ctx context.Context, groupID id.ID, epoch uint64) error 
 		if err := d.reissue(ctx, groupID, r); err != nil {
 			return err
 		}
+		reissued = true
+	}
+	if !reissued {
+		return nil
 	}
 	return d.RequestCommit(ctx, groupID)
 }

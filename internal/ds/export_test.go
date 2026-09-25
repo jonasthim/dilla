@@ -189,3 +189,14 @@ func ReissueOmittedUnderLockForTest(d *DS, ctx context.Context, groupID id.ID, o
 	defer unlock()
 	return d.reissueOmitted(ctx, groupID, oldEpoch, applied)
 }
+
+// ReissueAllUnderLockForTest runs `reissueAll` exactly as `resyncLocked` runs it, with the group
+// lock HELD. It is a seam for the same reason ReissueOmittedUnderLockForTest is: `Resync` cannot
+// reach its own tail, because no external commit in this repository can be accepted (task 25's
+// report §C1), so the one live question about `reissueAll` — whether it fires an election round
+// for work it did not re-issue — has no other entry point.
+func ReissueAllUnderLockForTest(d *DS, ctx context.Context, groupID id.ID, epoch uint64) error {
+	unlock := d.lock(groupID)
+	defer unlock()
+	return d.reissueAll(ctx, groupID, epoch)
+}

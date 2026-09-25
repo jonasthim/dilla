@@ -137,6 +137,57 @@ func TestAnExternalCommitRemovingTheJoinersOwnLeafIsAccepted(t *testing.T) {
 	}
 }
 
+// `reissueAll` elects a committer only when it actually re-issued something.
+//
+// On the resync path `commitLocked` step (9) has already run `reissueOmitted`, which replaces the
+// outstanding rows at the NEW epoch and whose every re-issue goes through `storeInstanceProposal`
+// -> `RequestCommit`. `reissueAll` then lists at `epoch-1`, finds nothing — and an unconditional
+// `RequestCommit` at that point is not a no-op: `beginRound` ADVANCES the round and picks the next
+// untried candidate, so the resync fires one extra election round that skips past the lowest-index
+// online device invariant 7 names and invalidates the round the just-elected candidate was told to
+// ack.
+func TestAResyncsReissueDoesNotFireAnElectionRoundForWorkItDidNotReissue(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 2)
+	h.online(g.members[0], g.members[1])
+	if err := h.ds.ProposeRemove(context.Background(), g.id, g.leafOf(1), id.New()); err != nil {
+		t.Fatalf("ProposeRemove: %v", err)
+	}
+	round := h.ds.CurrentRound(g.id)
+	if round == 0 {
+		t.Fatal("the instance Remove must have armed an election for this test to mean anything")
+	}
+
+	// The epoch BELOW the group's own holds no outstanding proposal, which is the shape step (9)
+	// leaves behind on every ordinary resync.
+	if err := ds.ReissueAllUnderLockForTest(h.ds, context.Background(), g.id, g.epoch(t)); err != nil {
+		t.Fatalf("reissueAll: %v", err)
+	}
+	if got := h.ds.CurrentRound(g.id); got != round {
+		t.Fatalf("round = %d after re-issuing nothing, want %d: the resync fired a spurious election round", got, round)
+	}
+}
+
+// …and when it DOES re-issue, the new epoch's work gets a committer: the belt-and-braces half of
+// the loop is still wired to an election.
+func TestAResyncsReissueElectsACommitterForWhatItReissued(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 2)
+	h.online(g.members[0], g.members[1])
+	if err := h.ds.ProposeRemove(context.Background(), g.id, g.leafOf(1), id.New()); err != nil {
+		t.Fatalf("ProposeRemove: %v", err)
+	}
+	round := h.ds.CurrentRound(g.id)
+
+	// One epoch ABOVE the group's own, so the list at `epoch-1` is the outstanding work itself.
+	if err := ds.ReissueAllUnderLockForTest(h.ds, context.Background(), g.id, g.epoch(t)+1); err != nil {
+		t.Fatalf("reissueAll: %v", err)
+	}
+	if got := h.ds.CurrentRound(g.id); got <= round {
+		t.Fatalf("round = %d after re-issuing, want above %d", got, round)
+	}
+}
+
 // Deviation B24 / ruling 45, carried here from task 22: `reissueOmitted` runs with the group lock
 // HELD and outside `withGroup`, and everything it reaches must therefore be lock-free. The timeout
 // is the assertion — if any path from `reissue` through `storeInstanceProposal` to
