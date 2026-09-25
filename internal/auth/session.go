@@ -123,6 +123,10 @@ type Session struct {
 	// session that names a group, so the field is nil for every session today and the delivery
 	// service refuses accordingly. That is the FAIL-CLOSED end of the gap: a paired device cannot
 	// yet collect its Welcome with a provisional session, and must be enrolled first.
+	//
+	// The column, the sqlc regeneration, `mint`/`Resolve` carrying the value and the pairing flow
+	// that sets it are owed by an explicit task, recorded as plan deviation B27; until it lands,
+	// rows 10, 15 and 16 are enrolled-only in practice.
 	PairingGroup *id.ID
 	Expires      int64
 	IdleExpires  int64
