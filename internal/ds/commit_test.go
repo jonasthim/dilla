@@ -6,11 +6,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -395,6 +397,99 @@ func TestOutstandingIsEveryNonVoidProposalOfTheCurrentEpoch(t *testing.T) {
 	}
 	if len(rows) != 1 || !bytes.Equal(rows[0].Ref, live) {
 		t.Fatalf("outstanding = %d rows, want the one live proposal of epoch 6", len(rows))
+	}
+}
+
+// ------------------------------------------------- the external path's refusals
+
+// An external commit is recognised by its SENDER, not by its kind. `public_group_process` answers
+// KindCommit (1) with a staged handle for every StagedCommitMessage, and an external commit is
+// exactly that — `Sender::NewMemberCommit` maps to no sender leaf. KindExternalJoin (2) is the
+// external-join PROPOSAL arm, which carries no staged commit at all, so expecting it on the
+// external path would refuse every real external commit the moment task 24 or 25 turns the flag
+// on, and would accept a proposal in its place.
+func TestTheExternalPathTellsAnExternalCommitApartByItsSenderNotItsKind(t *testing.T) {
+	h := newDSHarness(t)
+	reg, session := h.mustRegister(t)
+
+	// A MEMBER commit on the external path: it is KindCommit, it stages, and it names a leaf —
+	// which is the one thing an external commit cannot do.
+	_, err := ds.CommitExternalForTest(h.ds, context.Background(), session, reg.GroupID, ds.CommitRequest{
+		Epoch:     6,
+		Commit:    fixtureFile(t, "commits/09.mls"),
+		GroupInfo: dsFixture(t).groupInfo,
+	})
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" || dsErr.Rule != "structural" {
+		t.Fatalf("got %v, want E_COMMIT_INVALID/structural", err)
+	}
+	if !strings.Contains(dsErr.Detail, "leaf") {
+		t.Fatalf("detail = %q, want the refusal to be about the SENDER; a kind check here would "+
+			"refuse every genuine external commit, which arrives as KindCommit with no leaf",
+			dsErr.Detail)
+	}
+}
+
+// Every refusal after `public_group_process` must release the staged commit, on BOTH paths. The
+// external path is where it bites: a staged handle is inserted for every StagedCommitMessage, and
+// an enrolled device can post external commits in a loop until the guest's handle table exhausts
+// the module's linear memory.
+func TestAnExternalCommitRefusedForItsShapeReleasesItsStagedHandle(t *testing.T) {
+	h := newDSHarness(t)
+	reg, session := h.mustRegister(t)
+	before := h.wasmCalls("public_group_staged_discard")
+
+	for i := 0; i < 3; i++ {
+		_, err := ds.CommitExternalForTest(h.ds, context.Background(), session, reg.GroupID, ds.CommitRequest{
+			Epoch:     6,
+			Commit:    fixtureFile(t, "commits/09.mls"),
+			GroupInfo: dsFixture(t).groupInfo,
+		})
+		if err == nil {
+			t.Fatal("a member commit must not be accepted on the external path")
+		}
+	}
+	if got := h.wasmCalls("public_group_staged_discard") - before; got != 3 {
+		t.Fatalf("public_group_staged_discard called %d times for 3 refused external commits, "+
+			"want 3: the release must cover every return after Process, not only the ones after "+
+			"the structural checks", got)
+	}
+}
+
+// ------------------------------------------------------ member proposals, again
+
+// `ProposalInspect` needs the proposal to BE in the guest's queue, so the put necessarily happens
+// before the shape is judged. Every refusal after it must therefore take the proposal back out:
+// otherwise the cached PublicGroup carries a proposal with no SQL row — R12's "SQL is the record"
+// divergence — and a member grows the queue by one entry per refused request for as long as the
+// group stays cached.
+func TestARefusedMemberProposalIsTakenBackOutOfTheGuestsQueue(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	// The fixture's one proposal removes leaf 0. The sender here belongs to another user, so the
+	// shape check refuses it — after the put.
+	session := h.memberSessionOfAnotherUser(t, reg.GroupID, 0)
+	blob := fixtureFile(t, "remove_leaf0.mls")
+
+	if err := ds.WithGroupForTest(h.ds, ctx, reg.GroupID, func(g *mlswasi.PublicGroup) error {
+		for i := 0; i < 3; i++ {
+			_, _, err := ds.QueueMemberProposalForTest(h.ds, ctx, g, session, reg.GroupID, blob)
+			var dsErr *ds.Error
+			if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+				t.Fatalf("got %v, want E_FORBIDDEN for a Remove of another user's leaf", err)
+			}
+		}
+		queued, err := g.ProposalList(ctx)
+		if err != nil {
+			t.Fatalf("ProposalList: %v", err)
+		}
+		if len(queued) != 0 {
+			t.Fatalf("the guest holds %d queued proposals after 3 refusals, want 0", len(queued))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("withGroup: %v", err)
 	}
 }
 

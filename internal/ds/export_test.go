@@ -39,3 +39,22 @@ func DeviceListsForTest(d *DS) DeviceLists { return d.opts.DeviceLists }
 func WithGroupForTest(d *DS, ctx context.Context, groupID id.ID, fn func(*mlswasi.PublicGroup) error) error {
 	return d.withGroup(ctx, groupID, fn)
 }
+
+// CommitExternalForTest is `commit` on the EXTERNAL path — the one tasks 24 and 25 turn on. No
+// caller sets commitOptions.external in task 20, so the two branches that separate a member commit
+// from an external one (the structural sender check, and the staged-handle release that has to
+// cover it) have no entry point from the public surface. They are reachable code in the shipped
+// binary the moment task 24 lands, and a handle leak on that path is driven by any enrolled
+// device, so they are tested here rather than left for the task that turns the flag on.
+func CommitExternalForTest(d *DS, ctx context.Context, s Session, groupID id.ID, c CommitRequest) (CommitResult, error) {
+	return d.commit(ctx, s, groupID, c, commitOptions{external: true})
+}
+
+// QueueMemberProposalForTest is queueMemberProposal: the guest-side half of `Proposal`, from the
+// put into the PublicGroup's queue to the shape decision. It is exported because the leaf check
+// above it refuses every proposal this repository holds — the fixture's one proposal has an
+// external sender — so the refusals that happen AFTER the queue has been written cannot be reached
+// through `Proposal` with committed material.
+func QueueMemberProposalForTest(d *DS, ctx context.Context, g *mlswasi.PublicGroup, s Session, groupID id.ID, blob []byte) ([]byte, mlswasi.ProposalDetail, error) {
+	return d.queueMemberProposal(ctx, g, s, groupID, blob)
+}

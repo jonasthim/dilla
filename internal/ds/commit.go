@@ -127,28 +127,12 @@ func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 		if err != nil {
 			return errCommitInvalid("structural", err.Error())
 		}
-		// A member commit is KindCommit and nothing else. KindExternalJoin belongs to the
-		// external-commit paths of tasks 24 and 25, which set `o.external`; letting it through
-		// here would put a joiner's commit on the member route, where the R25 scope guard that
-		// bounds what an external commit may remove does not run.
-		wantKind := mlswasi.KindCommit
-		if o.external {
-			wantKind = mlswasi.KindExternalJoin
-		}
-		if processed.Kind != wantKind {
-			return errCommitInvalid("structural", "the uploaded message is not a commit")
-		}
-		if processed.Staged == nil {
-			return errCommitInvalid("structural", "the commit did not stage")
-		}
-		if processed.SenderLeaf == nil && !o.external {
-			return errCommitInvalid("structural", "a member commit must name its leaf")
-		}
-
-		// Every refusal from here on must release the staged commit: public_group_process has
-		// already inserted it, public_group_merge is the only other consumer, and merging is
-		// exactly what a refusal must not do. Without this a client retrying a malformed commit
-		// in a loop grows the guest's handle table until the module runs out of linear memory.
+		// Every refusal from HERE on — the structural checks below included — must release the
+		// staged commit: public_group_process inserts one for every StagedCommitMessage it
+		// accepts, public_group_merge is the only other consumer, and merging is exactly what a
+		// refusal must not do. Registering this after the structural checks would leak one handle
+		// per refused external commit, which any enrolled device drives in a loop until the guest
+		// runs out of linear memory.
 		merged := false
 		defer func() {
 			if !merged && processed.Staged != nil {
@@ -159,17 +143,43 @@ func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 			}
 		}()
 
+		// A commit is KindCommit on BOTH paths. KindExternalJoin (2) is the external-join
+		// PROPOSAL arm — exports.rs returns `(2, None, None, Some(proposal_ref))` for it, with no
+		// staged commit at all — while a genuine external commit is a StagedCommitMessage and so
+		// arrives as KindCommit (1). What tells the two apart is the SENDER, not the kind:
+		// `Sender::NewMemberCommit` maps to no sender leaf (interfaces.md:774), and that is the
+		// sole marker the R25 scope guard is keyed on.
+		if processed.Kind != mlswasi.KindCommit {
+			return errCommitInvalid("structural", "the uploaded message is not a commit")
+		}
+		if processed.Staged == nil {
+			return errCommitInvalid("structural", "the commit did not stage")
+		}
+		if o.external {
+			if processed.SenderLeaf != nil {
+				return errCommitInvalid("structural", "an external commit must not name a leaf")
+			}
+		} else if processed.SenderLeaf == nil {
+			return errCommitInvalid("structural", "a member commit must name its leaf")
+		}
+
 		// (5) invariant 4's clauses over the applied list.
 		if err := d.checkAppliedProposals(ctx, groupID, row, s, processed, o); err != nil {
 			return err
 		}
 
 		// (6) the GroupInfo: epoch n+1, signed by the committer.
-		signer := uint32(0)
-		if processed.SenderLeaf != nil {
-			signer = *processed.SenderLeaf
+		//
+		// The signer is the committer's own leaf, and leaf 0 is not a safe default for a commit
+		// that names none: on the external path it would check the joiner's GroupInfo against the
+		// CREATOR's signature key, which is a different question from the one invariant 4 asks.
+		// Task 25 supplies the joiner's new leaf index here; until it does, a commit with no
+		// sender leaf fails closed rather than borrowing leaf 0's key.
+		if processed.SenderLeaf == nil {
+			return errCommitInvalid("group_info_signature",
+				"the committer's leaf is unknown, so the GroupInfo's signer cannot be checked")
 		}
-		check, err := g.ValidateGroupInfo(ctx, c.GroupInfo, signer)
+		check, err := g.ValidateGroupInfo(ctx, c.GroupInfo, *processed.SenderLeaf)
 		if err != nil {
 			return errCommitInvalid("group_info", err.Error())
 		}
@@ -493,35 +503,15 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 		if processed.SenderLeaf == nil || *processed.SenderLeaf != leaf {
 			return errForbidden("a member proposal must be signed by the sending device's own leaf")
 		}
-		ref, err := g.ProposalPut(ctx, 0, blob)
+		ref, detail, err := d.queueMemberProposal(ctx, g, s, groupID, blob)
 		if err != nil {
 			return err
-		}
-		detail, err := g.ProposalInspect(ctx, ref)
-		if err != nil {
-			return err
-		}
-		switch detail.Kind {
-		case mlswasi.ProposalUpdate:
-		case mlswasi.ProposalRemove:
-			if detail.TargetLeaf == nil {
-				return errForbidden("a member Remove must name its target")
-			}
-			target, err := d.userOfLeaf(ctx, groupID, *detail.TargetLeaf)
-			if err != nil {
-				return err
-			}
-			if target != s.UserID {
-				return errForbidden("a member may only Remove its own user's devices")
-			}
-		default:
-			return errForbidden("a member may only propose an Update or a Remove of its own devices")
 		}
 
 		// senderDevice is taken once, outside the closure: `s` is the session parameter and must
 		// not be shadowed by the seq variable below.
 		senderDevice := s.DeviceID
-		return d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		txErr := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
 			allocated, err := nextSeq(ctx, tx, groupID)
 			if err != nil {
 				return err
@@ -549,7 +539,22 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 			}
 			return persistState(ctx, tx, groupID, g, row.GroupInfoBlob)
 		})
+		if txErr != nil {
+			// The put is already in the guest's queue and the row it was going to get has rolled
+			// back. Take it out again, for the same reason the shape refusals do.
+			d.unqueueProposal(ctx, g, groupID, ref)
+			return txErr
+		}
+		return nil
 	})
+	if d.takeStaleAfterFailedMerge(groupID) {
+		// Outside withGroup, so the handle lock is free. Reached only when the guest refused to
+		// give a refused proposal back, which leaves the cached group ahead of SQL.
+		if evErr := d.states.evict(ctx, groupID); evErr != nil {
+			d.log().Error("evicting a group whose proposal queue outran its transaction failed",
+				"group", groupID, "err", evErr)
+		}
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -562,6 +567,63 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 		}
 	}
 	return seq, nil
+}
+
+// queueMemberProposal puts a member's proposal into the guest's queue and decides whether its
+// shape is one a member may send. `ProposalInspect` is keyed on a ref the queue hands out, so the
+// put necessarily precedes the decision.
+//
+// Every refusal after the put must take the proposal back OUT of the queue. A refused proposal
+// left behind is one the cached PublicGroup holds and SQL does not — R12's "SQL is the record",
+// inverted — and it stays there until the group is evicted, so an enrolled member grows the queue
+// by one entry per refused request. The commit path guards its own equivalent with Discard; this
+// is that guard.
+func (d *DS) queueMemberProposal(ctx context.Context, g *mlswasi.PublicGroup, s Session, groupID id.ID, blob []byte) ([]byte, mlswasi.ProposalDetail, error) {
+	ref, err := g.ProposalPut(ctx, 0, blob)
+	if err != nil {
+		return nil, mlswasi.ProposalDetail{}, err
+	}
+	accepted := false
+	defer func() {
+		if !accepted {
+			d.unqueueProposal(ctx, g, groupID, ref)
+		}
+	}()
+	detail, err := g.ProposalInspect(ctx, ref)
+	if err != nil {
+		return nil, mlswasi.ProposalDetail{}, err
+	}
+	switch detail.Kind {
+	case mlswasi.ProposalUpdate:
+	case mlswasi.ProposalRemove:
+		if detail.TargetLeaf == nil {
+			return nil, mlswasi.ProposalDetail{}, errForbidden("a member Remove must name its target")
+		}
+		target, err := d.userOfLeaf(ctx, groupID, *detail.TargetLeaf)
+		if err != nil {
+			return nil, mlswasi.ProposalDetail{}, err
+		}
+		if target != s.UserID {
+			return nil, mlswasi.ProposalDetail{}, errForbidden("a member may only Remove its own user's devices")
+		}
+	default:
+		return nil, mlswasi.ProposalDetail{}, errForbidden(
+			"a member may only propose an Update or a Remove of its own devices")
+	}
+	accepted = true
+	return ref, detail, nil
+}
+
+// unqueueProposal removes one proposal from the guest's queue by ref (public_group_proposal_put
+// op 1). If the removal itself fails the cached PublicGroup is left holding a proposal SQL does
+// not have, so the group is marked for eviction and the next request re-imports the committed
+// state blob — the same escape hatch a merge that outran its transaction takes.
+func (d *DS) unqueueProposal(ctx context.Context, g *mlswasi.PublicGroup, groupID id.ID, ref []byte) {
+	if _, err := g.ProposalPut(ctx, 1, ref); err != nil {
+		d.log().Warn("removing a refused proposal from the guest's queue failed",
+			"group", groupID, "err", err)
+		d.markStaleAfterFailedMerge(groupID)
+	}
 }
 
 // leafOf is invariant 8's "current leaf" check, shared by Commit, Proposal and Upload.
