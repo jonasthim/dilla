@@ -37,8 +37,9 @@ const (
 )
 
 // DumpTables is the replay order: parents before children. It grows with the
-// schema — task 19 appends the mls_* tables, Plan 2 the structure, readable and
-// blob tables — and a restore replays it front to back.
+// schema — task 19 appends the mls_* tables, task 23 mls_app_messages, Plan 2
+// the structure, readable and blob tables — and a restore replays it front to
+// back.
 var DumpTables = []string{
 	"instances", "instance_settings", "users", "devices", "device_lists", "sessions",
 	"password_credentials", "totp_secrets", "recovery_codes", "webauthn_users",
@@ -50,6 +51,10 @@ var DumpTables = []string{
 	"mls_groups", "mls_handshakes", "mls_pending_proposals", "mls_members",
 	"mls_welcome_payloads", "mls_epoch_trees", "mls_welcomes", "key_packages",
 	"device_cursors", "fork_reports",
+	// 005_messages.sql, appended by task 23. Its only parent is mls_groups, so
+	// it replays after the whole 004 block; a dump that omitted it would restore
+	// an instance with every group intact and no message in any of them.
+	"mls_app_messages",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

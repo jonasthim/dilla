@@ -1,0 +1,138 @@
+package ds_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/jonasthim/dilla/internal/ds"
+)
+
+// Invariant 8: the DS reads C from private_message.authenticated_data and refuses an upload whose
+// authenticated_data is not exactly 32 bytes.
+func TestAnUploadWithTheWrongCommitmentLengthIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	for _, n := range []int{0, 31, 33} {
+		_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageWithAAD(t, g, n))
+		var dsErr *ds.Error
+		if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMITMENT_INVALID" {
+			t.Fatalf("%d-byte authenticated_data: got %v, want E_COMMITMENT_INVALID", n, err)
+		}
+		if dsErr.Status != 422 {
+			t.Errorf("status = %d, want 422", dsErr.Status)
+		}
+	}
+	if _, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageWithAAD(t, g, 32)); err != nil {
+		t.Fatalf("32 bytes must be accepted: %v", err)
+	}
+}
+
+func TestAnUploadFromADeviceWhoseLeafIsGoneIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	h.removeLeafOfDevice(t, g, g.device)
+	_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_LEAF_NOT_CURRENT" {
+		t.Fatalf("got %v, want E_LEAF_NOT_CURRENT", err)
+	}
+}
+
+// R6/R32/D7: the cap is 131072 bytes of MLS ciphertext, exactly.
+func TestTheCiphertextCapIsExactlyOneHundredAndThirtyOneThousandAndSeventyTwoBytes(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	if _, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfSize(t, g, 131072)); err != nil {
+		t.Fatalf("131072 bytes must be accepted: %v", err)
+	}
+	_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfSize(t, g, 131073))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_TOO_LARGE" {
+		t.Fatalf("131073 bytes: got %v, want E_TOO_LARGE", err)
+	}
+	if dsErr.Status != 413 {
+		t.Errorf("status = %d, want 413", dsErr.Status)
+	}
+}
+
+// R30: message.ct reaches the uploader too, so the per-group seq stream is dense on every device,
+// and the response carries seq.
+func TestMessageCTReachesTheUploaderAndTheResponseCarriesSeq(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	h.online(g.device)
+	out, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if out.Seq == 0 {
+		t.Fatal("the upload response must carry seq")
+	}
+	if len(out.FrankingTag) != 32 {
+		t.Fatalf("franking tag is %d bytes, want 32", len(out.FrankingTag))
+	}
+	h.expectDeviceFrames(t, g.device, "message.ct")
+}
+
+// R29: only the uploading user's devices may delete, and a tombstone keeps everything but the
+// ciphertext.
+func TestDeleteIsUploaderOnlyAndKeepsTheTombstoneFields(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	out, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	stranger := h.sessionOfAnotherUser(t, g)
+	err = h.ds.DeleteMessage(context.Background(), stranger, g.id, out.Seq)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_UPLOADER" {
+		t.Fatalf("delete by another user: got %v, want E_NOT_UPLOADER", err)
+	}
+
+	sibling := h.otherDeviceOfSameUser(t, g)
+	if err := h.ds.DeleteMessage(context.Background(), sibling, g.id, out.Seq); err != nil {
+		t.Fatalf("any device of the uploading user may delete: %v", err)
+	}
+
+	rows, err := h.ds.Messages(context.Background(), g.id, g.session, 0, 10)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("catch-up returned %d rows, want 1 tombstone", len(rows))
+	}
+	row := rows[0]
+	if row.Blob != nil {
+		t.Error("a tombstone keeps no ciphertext")
+	}
+	if row.DeletedAt == nil {
+		t.Error("a tombstone must carry deleted_at")
+	}
+	if row.Seq != out.Seq || row.Epoch == 0 || len(row.FrankingTag) != 32 || len(row.CommitmentC) != 32 {
+		t.Error("a tombstone keeps seq, epoch, uploader_device, commitment_c, franking_tag and recv_ts")
+	}
+}
+
+// A cursor advances only on the explicit POST /cursor, never on fan-out.
+func TestACursorAdvancesOnlyOnAnExplicitAcknowledgement(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	h.online(g.device)
+	out, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if got := h.cursorOf(t, g.device, g.id); got != 0 {
+		t.Fatalf("cursor = %d after fan-out, want 0 — a frame on a writer queue is not a delivery", got)
+	}
+	// Epoch is a field on UploadResult, not a method.
+	if err := h.ds.AdvanceCursor(context.Background(), g.session, g.id, out.Seq, out.Epoch); err != nil {
+		t.Fatalf("AdvanceCursor: %v", err)
+	}
+	if got := h.cursorOf(t, g.device, g.id); got != out.Seq {
+		t.Fatalf("cursor = %d, want %d", got, out.Seq)
+	}
+}

@@ -121,7 +121,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 }
 
 // ID1's other half: Repository embeds only the seven sub-interfaces whose tables
-// part 1a ships. Each later task that satisfies one of the remaining six owes an
+// part 1a ships, plus the ones later tasks add. Each later task that satisfies
+// one of the remaining interfaces owes an
 // explicit numbered step that edits this embed list — task 19 (MLS), task 23
 // (Messages, Cursors), Plan 2 task 1 (Structure), Plan 2 task 8 (Readable) and
 // Plan 2 task 10 (Blobs, OpsBackups) — so this test moves with them, and a
@@ -144,6 +145,12 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.Ops)(nil)).Elem(),
 		// Task 19 step 1a: MLS joins the embed list with 00002_mls.sql.
 		reflect.TypeOf((*store.MLS)(nil)).Elem(),
+		// Task 23 step 1a: Messages joins with 00003_messages.sql, and Cursors
+		// with the queries that satisfy it — ID1's rule is that the embed lands
+		// with the methods, not with the DDL, and `device_cursors` shipped in
+		// 00002_mls.sql a task earlier.
+		reflect.TypeOf((*store.Messages)(nil)).Elem(),
+		reflect.TypeOf((*store.Cursors)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

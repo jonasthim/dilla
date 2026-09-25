@@ -108,6 +108,20 @@ type LoginAttempts struct {
 	At     int64
 }
 
+type MlsAppMessages struct {
+	GroupID        id.ID
+	Seq            int64
+	Epoch          int64
+	UploaderDevice id.ID
+	Blob           []byte
+	CommitmentC    []byte
+	FrankingTag    []byte
+	Size           int64
+	Created        int64
+	Expires        sql.NullInt64
+	DeletedAt      sql.NullInt64
+}
+
 type MlsEpochTrees struct {
 	GroupID     id.ID
 	Epoch       int64

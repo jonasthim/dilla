@@ -38,8 +38,10 @@ type Querier interface {
 	DeleteSessionsByDevice(ctx context.Context, arg DeleteSessionsByDeviceParams) (int64, error)
 	DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsByUserParams) (int64, error)
 	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
+	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
+	GetCursor(ctx context.Context, arg GetCursorParams) (DeviceCursors, error)
 	GetDevice(ctx context.Context, arg GetDeviceParams) (Devices, error)
 	GetDeviceList(ctx context.Context, arg GetDeviceListParams) (DeviceLists, error)
 	GetGroup(ctx context.Context, arg GetGroupParams) (MlsGroups, error)
@@ -61,6 +63,7 @@ type Querier interface {
 	GroupsForDevice(ctx context.Context, arg GroupsForDeviceParams) ([]id.ID, error)
 	InsertAudit(ctx context.Context, arg InsertAuditParams) error
 	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
+	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
 	ListHandshakes(ctx context.Context, arg ListHandshakesParams) ([]MlsHandshakes, error)
@@ -72,14 +75,18 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
 	ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error)
+	MinCursor(ctx context.Context, arg MinCursorParams) (int64, error)
 	OldestHandshakeSeq(ctx context.Context, arg OldestHandshakeSeqParams) (int64, error)
+	PruneAppMessages(ctx context.Context, arg PruneAppMessagesParams) (int64, error)
 	PruneCeremonies(ctx context.Context, arg PruneCeremoniesParams) (int64, error)
 	PruneHandshakes(ctx context.Context, arg PruneHandshakesParams) (int64, error)
 	PruneSessions(ctx context.Context, arg PruneSessionsParams) (int64, error)
 	PruneWelcomes(ctx context.Context, arg PruneWelcomesParams) (int64, error)
 	PurgeAllKeyPackages(ctx context.Context) (int64, error)
 	PurgeKeyPackagesKeepingLastResort(ctx context.Context) (int64, error)
+	PutAppMessage(ctx context.Context, arg PutAppMessageParams) error
 	PutCeremony(ctx context.Context, arg PutCeremonyParams) error
+	PutCursor(ctx context.Context, arg PutCursorParams) error
 	PutDeviceList(ctx context.Context, arg PutDeviceListParams) error
 	PutEpochTree(ctx context.Context, arg PutEpochTreeParams) error
 	PutForkReport(ctx context.Context, arg PutForkReportParams) error
@@ -109,6 +116,7 @@ type Querier interface {
 	SetGroupHealing(ctx context.Context, arg SetGroupHealingParams) error
 	SetUserDisabled(ctx context.Context, arg SetUserDisabledParams) error
 	TakeKeyPackage(ctx context.Context, arg TakeKeyPackageParams) (KeyPackages, error)
+	TombstoneAppMessage(ctx context.Context, arg TombstoneAppMessageParams) error
 	TombstoneUser(ctx context.Context, arg TombstoneUserParams) error
 	TouchDevice(ctx context.Context, arg TouchDeviceParams) error
 	TouchSession(ctx context.Context, arg TouchSessionParams) error

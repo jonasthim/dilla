@@ -129,10 +129,14 @@ type Authenticator interface {
 // without the gateway ever holding one. The gateway's own tests use a double, so without this the
 // first thing to find out would be task 27a's wiring.
 //
-// There is deliberately no matching `var _ Store = (store.Repository)(nil)`: GroupsForDevice and
-// CountKeyPackages live in store.MLS and GetCursor in store.Cursors, and Repository does not embed
-// either until tasks 19 and 23 add them. The assertion belongs in the task that closes that gap.
-var _ Authenticator = (*auth.Sessions)(nil)
+// The matching `var _ Store = (store.Repository)(nil)` waited for the embed that made it true:
+// GroupsForDevice and CountKeyPackages live in store.MLS and GetCursor in store.Cursors, and
+// Repository embedded neither until tasks 19 and 23 added them (deviation ID1). Task 23 closed
+// that gap, so the assertion lands here with it.
+var (
+	_ Authenticator = (*auth.Sessions)(nil)
+	_ Store         = (store.Repository)(nil)
+)
 
 // OnlineDevice is one candidate for invariant 7's committer election.
 type OnlineDevice struct {

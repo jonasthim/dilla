@@ -1375,6 +1375,135 @@ func (r *Repo) QuarantineDevice(ctx context.Context, deviceID id.ID, at int64, r
 	}))
 }
 
+// ---------------------------------------------------------------- Messages
+
+// PutAppMessage appends one application ciphertext at the seq NextSeq allocated.
+// It runs inside the delivery service's own transaction, beside that allocation.
+func (r *Repo) PutAppMessage(ctx context.Context, m store.AppMessageRow) error {
+	return wrap(r.w.PutAppMessage(ctx, pgdb.PutAppMessageParams{
+		GroupID:        m.GroupID,
+		Seq:            int64(m.Seq),
+		Epoch:          int64(m.Epoch),
+		UploaderDevice: m.UploaderDevice,
+		Blob:           m.Blob,
+		CommitmentC:    m.CommitmentC,
+		FrankingTag:    m.FrankingTag,
+		Size:           int64(m.Size),
+		Created:        m.Created,
+		Expires:        nullInt64(m.Expires),
+		DeletedAt:      nullInt64(m.DeletedAt),
+	}))
+}
+
+func (r *Repo) ListAppMessages(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]store.AppMessageRow, error) {
+	rows, err := r.r.ListAppMessages(ctx, pgdb.ListAppMessagesParams{
+		GroupID: groupID, Seq: int64(fromSeq), MaxRows: int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.AppMessageRow, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, appMessageRow(m))
+	}
+	return out, nil
+}
+
+func (r *Repo) GetAppMessage(ctx context.Context, groupID id.ID, seq uint64) (store.AppMessageRow, error) {
+	row, err := r.r.GetAppMessage(ctx, pgdb.GetAppMessageParams{GroupID: groupID, Seq: int64(seq)})
+	if err != nil {
+		return store.AppMessageRow{}, wrap(err)
+	}
+	return appMessageRow(row), nil
+}
+
+// appMessageRow is the one place `mls_app_messages` becomes store.AppMessageRow.
+// A tombstoned row keeps every column but `blob`, which the UPDATE nulls.
+func appMessageRow(m pgdb.MlsAppMessages) store.AppMessageRow {
+	return store.AppMessageRow{
+		GroupID:        m.GroupID,
+		Seq:            uint64(m.Seq),
+		Epoch:          uint64(m.Epoch),
+		UploaderDevice: m.UploaderDevice,
+		Blob:           m.Blob,
+		CommitmentC:    m.CommitmentC,
+		FrankingTag:    m.FrankingTag,
+		Size:           uint64(m.Size),
+		Created:        m.Created,
+		Expires:        ptrInt64(m.Expires),
+		DeletedAt:      ptrInt64(m.DeletedAt),
+	}
+}
+
+// TombstoneAppMessage drops the ciphertext and records when. The row itself
+// stays: seq, epoch, uploader_device, commitment_c, franking_tag and recv_ts are
+// what a franking report is checked against, and a deleted message must still be
+// reportable (R29). The `deleted_at IS NULL` guard keeps a second delete from
+// moving the timestamp.
+func (r *Repo) TombstoneAppMessage(ctx context.Context, groupID id.ID, seq uint64, at int64) error {
+	return wrap(r.w.TombstoneAppMessage(ctx, pgdb.TombstoneAppMessageParams{
+		DeletedAt: sql.NullInt64{Int64: at, Valid: true},
+		GroupID:   groupID,
+		Seq:       int64(seq),
+	}))
+}
+
+func (r *Repo) PruneAppMessages(ctx context.Context, groupID id.ID, belowSeq uint64, before int64) (int64, error) {
+	n, err := r.w.PruneAppMessages(ctx, pgdb.PruneAppMessagesParams{
+		GroupID: groupID, Seq: int64(belowSeq), Created: before,
+	})
+	return n, wrap(err)
+}
+
+// ---------------------------------------------------------------- Cursors
+
+func (r *Repo) PutCursor(ctx context.Context, deviceID, groupID id.ID, lastSeq, lastEpoch uint64, at int64) error {
+	return wrap(r.w.PutCursor(ctx, pgdb.PutCursorParams{
+		DeviceID:  deviceID,
+		GroupID:   groupID,
+		LastSeq:   int64(lastSeq),
+		LastEpoch: int64(lastEpoch),
+		Updated:   at,
+	}))
+}
+
+// GetCursor answers a device that has acknowledged nothing in this group with a
+// ZERO CursorRow and a nil error, not store.ErrNotFound. A cursor row is created
+// by the first POST /cursor, while the gateway reads one per group of every
+// device that connects (internal/gateway/session.go, sendReady) and returns the
+// first error it gets: an ErrNotFound here would close every new connection
+// before `ready`, and `Gateway.Online` — the predicate invariants 5, 6 and 7 are
+// all defined over — would then be false for every device forever. "No row" and
+// "acknowledged nothing" are the same state, so the absent row is not an error.
+func (r *Repo) GetCursor(ctx context.Context, deviceID, groupID id.ID) (store.CursorRow, error) {
+	row, err := r.r.GetCursor(ctx, pgdb.GetCursorParams{DeviceID: deviceID, GroupID: groupID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.CursorRow{DeviceID: deviceID, GroupID: groupID}, nil
+	}
+	if err != nil {
+		return store.CursorRow{}, wrap(err)
+	}
+	return store.CursorRow{
+		DeviceID:  row.DeviceID,
+		GroupID:   row.GroupID,
+		LastSeq:   uint64(row.LastSeq),
+		LastEpoch: uint64(row.LastEpoch),
+		Updated:   row.Updated,
+	}, nil
+}
+
+// MinCursor is the retention floor: the lowest seq acknowledged by any device
+// that is still eligible, which is any device whose cursor moved at or after
+// `activeSince`. A group no eligible device has acknowledged anything in
+// answers 0, which retains everything.
+func (r *Repo) MinCursor(ctx context.Context, groupID id.ID, activeSince int64) (uint64, error) {
+	n, err := r.r.MinCursor(ctx, pgdb.MinCursorParams{GroupID: groupID, Updated: activeSince})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return uint64(n), nil
+}
+
 // boolInt64, nullUint32/ptrUint32, nullUint64/ptrUint64 and idBytes/idPtr are
 // 004_mls.sql's conversions: a 0/1 integer column, a uint32 leaf index in a
 // nullable INTEGER, a uint64 epoch in one, and a nullable 16-byte identifier

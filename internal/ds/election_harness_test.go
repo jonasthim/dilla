@@ -216,6 +216,9 @@ var dsFrameNames = map[gateway.Op]string{
 	gateway.OpMLSCommitNeeded: "mls.commit_needed",
 	gateway.OpMLSEpochChanged: "mls.epoch_changed",
 	gateway.OpPresence:        "filler",
+	// Task 23's fan-out: R30 sends message.ct to every online member, the uploader included.
+	gateway.OpMessageCT:      "message.ct",
+	gateway.OpMessageDeleted: "message.deleted",
 }
 
 func dsFrameName(op gateway.Op) string {

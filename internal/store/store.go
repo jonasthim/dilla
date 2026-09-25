@@ -34,7 +34,9 @@ type Repository interface {
 	Auth
 	Invites
 	Ops
-	MLS // added HERE — ID1; its tables are 00002_mls.sql, written by task 19 step 1
+	MLS      // task 19 step 1a — 00002_mls.sql
+	Messages // added HERE — ID1; its table is 00003_messages.sql, written in step 1
+	Cursors  // added HERE — ID1; device_cursors ships with 00002_mls.sql, its queries here
 }
 
 type Instance interface {
