@@ -573,14 +573,55 @@ func TestForkReportIsAcceptedWithAnEmptyArrayBody(t *testing.T) {
 	h := newGroupsAPI(t)
 	h.mustCreate(t)
 	token := h.memberToken(t)
+	seq := h.seedHandshake(t)
 	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/fork-report", token,
-		mustCBOR(t, []any{uint64(6), uint64(1), "cannot process"}))
+		mustCBOR(t, []any{uint64(6), seq, "cannot process"}))
 	if res.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202: %s", res.Code, res.Body.String())
 	}
 	if got := res.Body.Bytes(); len(got) != 1 || got[0] != 0x80 {
 		t.Fatalf("body = %x, want the empty CBOR array 80", got)
 	}
+}
+
+// A report for a seq beyond the group's own log is 404 — the same code, over the wire, that a
+// report about a group the device is not in gets. The bound is what keeps `fork_reports`, which
+// nothing prunes, from growing one row per uint64 a member cares to name.
+func TestForkReportBeyondTheLogsHeadIsFourZeroFour(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	token := h.memberToken(t)
+	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/fork-report", token,
+		mustCBOR(t, []any{uint64(6), uint64(9999), "cannot process"}))
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", res.Code, res.Body.String())
+	}
+	if got := errorCode(t, res); got != string(server.CodeNotFound) {
+		t.Fatalf("code = %s, want %s", got, server.CodeNotFound)
+	}
+}
+
+// seedHandshake appends one commit handshake at the group's own next seq, so that a fork report
+// has a real entry of the log to name. `DS.Commit` cannot supply one: no commit in this repository
+// can be ACCEPTED (the fixture ships one GroupInfo at epoch 6 where invariant 4 wants epoch n+1).
+func (h *groupsAPI) seedHandshake(t *testing.T) uint64 {
+	t.Helper()
+	ctx := context.Background()
+	seq, err := h.deps.Repo.NextSeq(ctx, h.groupID)
+	if err != nil {
+		t.Fatalf("NextSeq: %v", err)
+	}
+	if err := h.deps.Repo.AppendHandshake(ctx, store.HandshakeRow{
+		GroupID: h.groupID,
+		Seq:     seq,
+		Epoch:   6,
+		Kind:    1, // commit
+		Blob:    []byte{0x01},
+		Created: h.clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("AppendHandshake: %v", err)
+	}
+	return seq
 }
 
 // A fork report about a group the device is not in is 404, never 403: the code protocol/02's row

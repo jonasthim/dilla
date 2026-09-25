@@ -22,12 +22,17 @@ package ds_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
+	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
 
 // Invariant 9: three DISTINCT reporter devices against one commit quarantine the committer.
@@ -77,20 +82,135 @@ func TestAForkQuorumAgainstAnInstanceHandshakeQuarantinesNobody(t *testing.T) {
 	}
 }
 
-// A report against a seq the log does not hold is recorded and quarantines nobody: the client's
-// view of the log is not the instance's, and a fork report is a bug report, not an accusation the
-// instance must be able to resolve.
-func TestAForkQuorumAgainstAnUnknownSeqQuarantinesNobody(t *testing.T) {
+// A report against a seq the log no longer holds — a real GAP, which is what a pruned handshake
+// leaves behind — is recorded and quarantines nobody. The client's view of the log is not the
+// instance's, and a fork report is a bug report, not an accusation the instance must be able to
+// resolve.
+//
+// This is the test for `quarantineCommitterOf`'s identity clause (`rows[0].Seq != seq`).
+// `ListHandshakes`' `fromSeq` is INCLUSIVE, so a page from a seq the log has lost starts at the
+// next SURVIVING handshake; without the clause its committer — a device nobody reported — is
+// quarantined and Removed.
+func TestAForkQuorumAgainstAPrunedSeqQuarantinesNobody(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.groupWithMembers(t, 4)
 
+	// `skipped` is reserved off the group's own sequence and never appended; the NEXT seq carries
+	// member 0's commit, so the log really does have a hole with a known committer behind it.
+	skipped, err := h.repo.NextSeq(context.Background(), g.id)
+	if err != nil {
+		t.Fatalf("NextSeq: %v", err)
+	}
+	survivor := h.acceptedCommitBy(t, g, 0)
+	if survivor.Seq <= skipped {
+		t.Fatalf("the surviving handshake is at seq %d, want above the gap at %d", survivor.Seq, skipped)
+	}
+
 	for _, reporter := range []int{1, 2, 3} {
-		if err := h.ds.ForkReport(context.Background(), g.sessionOf(reporter), g.id, g.epoch(t), 9999, "cannot process"); err != nil {
+		if err := h.ds.ForkReport(context.Background(), g.sessionOf(reporter), g.id, g.epoch(t), skipped, "cannot process"); err != nil {
 			t.Fatalf("ForkReport from %d: %v", reporter, err)
 		}
 	}
-	if n := h.countForkReporters(t, g, 9999); n != 3 {
+	if n := h.countForkReporters(t, g, skipped); n != 3 {
 		t.Fatalf("fork reporters = %d, want 3", n)
+	}
+	if h.isQuarantined(t, g.members[0]) {
+		t.Fatal("a quorum against a seq the log no longer holds must quarantine nobody")
+	}
+	if h.hasOutstandingRemoveOfLeaf(t, g, g.leafOf(0)) {
+		t.Fatal("a quorum against a seq the log no longer holds must Remove nobody")
+	}
+}
+
+// A report for a seq the instance NEVER appended is refused, and no row is written.
+//
+// Without the bound any member may spend one `fork_reports` row per arbitrary uint64 — the primary
+// key (group_id, seq, reporter_device) makes every distinct seq a new row, each carrying up to 256
+// bytes of reason — and nothing in the tree prunes that table, so the endpoint is unbounded
+// member-driven storage growth. A client cannot have observed a handshake the instance never
+// appended, and `protocol/02-delivery-service.md:81` names E_NOT_FOUND as this endpoint's one
+// refusal.
+func TestAForkReportAgainstASeqTheInstanceNeverAppendedIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+
+	err := h.ds.ForkReport(context.Background(), g.sessionOf(1), g.id, g.epoch(t), 9999, "cannot process")
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+		t.Fatalf("got %v, want E_NOT_FOUND", err)
+	}
+	if n := h.countForkReporters(t, g, 9999); n != 0 {
+		t.Fatalf("fork reporters = %d, want 0: the row must be refused BEFORE it is written", n)
+	}
+}
+
+// …and seq 0 the same way, on the FIRST report rather than after two rows have already been
+// accepted: the first handshake a group ever appends is 1.
+func TestAForkReportOfSeqZeroIsRefusedOnTheFirstReport(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+
+	err := h.ds.ForkReport(context.Background(), g.sessionOf(1), g.id, g.epoch(t), 0, "cannot process")
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+		t.Fatalf("got %v, want E_NOT_FOUND", err)
+	}
+	if n := h.countForkReporters(t, g, 0); n != 0 {
+		t.Fatalf("fork reporters = %d, want 0", n)
+	}
+}
+
+// A reason longer than the bound is truncated on a RUNE boundary, not on a byte boundary.
+//
+// `internal/cborx/decode.go:149` guarantees the incoming text is valid UTF-8, and slicing it at
+// byte 256 destroys that guarantee: Postgres' `reason TEXT NOT NULL`
+// (internal/store/postgres/migrations/00002_mls.sql:136) refuses invalid UTF-8 outright with
+// `invalid byte sequence for encoding "UTF8"`, while SQLite's STRICT TEXT stores the broken bytes
+// without a word — so the two engines diverge and only Postgres answers 500, on a path no local
+// test run reaches. The repository's own convention for bounding free text is
+// `internal/auth/handle.go:42,88`, which counts runes.
+func TestALongMultiByteForkReasonIsStoredAsValidUTF8(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+	commit := h.acceptedCommitBy(t, g, 0)
+	// '€' is three bytes, so byte 256 of this string falls INSIDE a rune: 85 runes are 255 bytes
+	// and the 86th spans bytes 256, 257 and 258.
+	reason := strings.Repeat("€", 200)
+
+	session := g.sessionOf(1)
+	if err := h.ds.ForkReport(context.Background(), session, g.id, commit.Epoch, commit.Seq, reason); err != nil {
+		t.Fatalf("ForkReport: %v", err)
+	}
+
+	got := h.storedForkReason(t, g, commit.Seq, session.DeviceID)
+	if !utf8.ValidString(got) {
+		t.Fatalf("the stored reason is not valid UTF-8 (%d bytes): Postgres refuses the INSERT", len(got))
+	}
+	if len(got) > 256 {
+		t.Fatalf("the stored reason is %d bytes, want at most 256", len(got))
+	}
+	if !strings.HasPrefix(reason, got) {
+		t.Fatal("the stored reason must be a prefix of the reported one")
+	}
+	// …and the bound stays tight: the truncation gives up at most one rune, not the whole tail.
+	if len(got) < 256-utf8.UTFMax {
+		t.Fatalf("the stored reason is %d bytes, want within %d of the 256-byte bound", len(got), utf8.UTFMax)
+	}
+}
+
+// A reason that already fits is stored exactly as it was reported, multi-byte runes and all.
+func TestAForkReasonThatFitsIsStoredUnchanged(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+	commit := h.acceptedCommitBy(t, g, 0)
+	reason := "cannot process — épée ✓"
+
+	session := g.sessionOf(1)
+	if err := h.ds.ForkReport(context.Background(), session, g.id, commit.Epoch, commit.Seq, reason); err != nil {
+		t.Fatalf("ForkReport: %v", err)
+	}
+	if got := h.storedForkReason(t, g, commit.Seq, session.DeviceID); got != reason {
+		t.Fatalf("stored reason = %q, want %q", got, reason)
 	}
 }
 
@@ -166,6 +286,27 @@ func (h *dsHarness) hasOutstandingRemoveOfLeaf(t *testing.T, g *dsGroup, leaf ui
 		}
 	}
 	return false
+}
+
+// storedForkReason reads the `reason` column straight off the harness's database file, the way
+// `countRows` reads a table's size. `store.MLS`'s whole fork_reports surface is `PutForkReport`
+// and `CountForkReporters` — there is no reader — and what the row actually HOLDS is the claim the
+// two truncation tests make.
+func (h *dsHarness) storedForkReason(t *testing.T, g *dsGroup, seq uint64, reporter id.ID) string {
+	t.Helper()
+	db, err := sqlite.OpenRead(h.path)
+	if err != nil {
+		t.Fatalf("sqlite.OpenRead: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	var reason string
+	row := db.QueryRow(
+		"SELECT reason FROM fork_reports WHERE group_id = ? AND seq = ? AND reporter_device = ?",
+		g.id, int64(seq), reporter)
+	if err := row.Scan(&reason); err != nil {
+		t.Fatalf("read the fork report's reason: %v", err)
+	}
+	return reason
 }
 
 func (h *dsHarness) countForkReporters(t *testing.T, g *dsGroup, seq uint64) int64 {
