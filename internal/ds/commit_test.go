@@ -360,26 +360,82 @@ func TestTheHandshakeStreamIsMemberOnlyAndSparseOverTheOneSeqSpace(t *testing.T)
 }
 
 // A `from` below the retention floor is E_PRUNED, which tells the client to resync rather than to
-// retry. The floor is the oldest handshake still in the log, and the group is old enough for the
-// sweep to have reached it: the test below pins the other half of the rule, that a younger group's
-// gap below the floor is the message stream's and not a hole.
+// retry. This is the TRUE POSITIVE, and it is built by really deleting a handshake: the sweep's one
+// deletion rule (`DELETE FROM mls_handshakes WHERE created < now - HandshakeRetention`, task 26's
+// `PruneHandshakes`) runs here over a log that straddles the window, so the hole below the floor is
+// a hole the instance genuinely cannot fill. The two tests below pin the other halves of the rule.
 func TestACatchUpBelowTheRetentionFloorIsPruned(t *testing.T) {
 	h := newDSHarness(t)
 	ctx := context.Background()
 	reg, session := h.mustRegister(t)
-	h.clk.Advance(31 * 24 * time.Hour) // past HandshakeRetention: this group can have been swept
-	h.appendHandshake(t, reg.GroupID, 20, 6, 1, []byte("commit"))
+
+	// Seq 1 is written now and seq 20 thirty-one days later, so exactly one of the two is older
+	// than HandshakeRetention when the sweep runs.
+	h.appendHandshake(t, reg.GroupID, 1, 6, 1, []byte("swept"))
+	h.clk.Advance(31 * 24 * time.Hour)
+	h.appendHandshake(t, reg.GroupID, 20, 7, 1, []byte("commit"))
+
+	cutoff := h.clk.Now().Add(-ds.DefaultPolicy().HandshakeRetention).Unix()
+	gone, err := h.repo.PruneHandshakes(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("PruneHandshakes: %v", err)
+	}
+	if gone != 1 {
+		t.Fatalf("the sweep deleted %d rows, want the one at seq 1: the hole below the floor has to be real", gone)
+	}
 
 	if _, err := h.ds.Handshakes(ctx, reg.GroupID, session, 19, 100); err != nil {
 		t.Fatalf("a cursor one below the floor is still contiguous: %v", err)
 	}
-	_, err := h.ds.Handshakes(ctx, reg.GroupID, session, 5, 100)
+	_, err = h.ds.Handshakes(ctx, reg.GroupID, session, 5, 100)
 	var dsErr *ds.Error
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_PRUNED" {
 		t.Fatalf("got %v, want E_PRUNED", err)
 	}
 	if dsErr.Status != 410 {
 		t.Errorf("status = %d, want 410", dsErr.Status)
+	}
+}
+
+// The residual OVER-REFUSAL, pinned deliberately: a group OLDER than HandshakeRetention whose early
+// seqs are application messages and whose first handshake sits later is still answered E_PRUNED,
+// although the sweep has deleted nothing. `mayHavePrunedHandshakes` compares the group's age to the
+// retention window, which is the only prune signal the store holds at task 20 — no row and no
+// column records how far a sweep has reached, and `floor` is the oldest surviving HANDSHAKE while
+// `from` is a cursor in the ONE space both streams share.
+//
+// This is accepted for this wave by ruling 41 / deviation B20, NOT a defect the fix forgot: the
+// predicate is one-directional on purpose (an unnecessary rejoin costs bandwidth, a silently
+// holed log forks the client). Task 23 lands `mls_app_messages` and `store.Messages`, which is
+// what makes the real floor — `min(OldestHandshakeSeq, oldest live app-message seq)` — computable;
+// when it does, THIS test is the one that must flip to expecting the rows, and the test above,
+// which really sweeps, is the one that must stay red-free.
+func TestAnOldGroupWithNothingSweptIsStillRefusedUntilTask23(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+
+	// Older than the retention window, and its first handshake is recent: seqs 1-19 are the
+	// message stream's, so the log has no hole at all.
+	h.clk.Advance(31 * 24 * time.Hour)
+	h.appendHandshake(t, reg.GroupID, 20, 6, 1, []byte("commit"))
+
+	// Nothing has ever been deleted from this group: a sweep run right now keeps every row.
+	cutoff := h.clk.Now().Add(-ds.DefaultPolicy().HandshakeRetention).Unix()
+	gone, err := h.repo.PruneHandshakes(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("PruneHandshakes: %v", err)
+	}
+	if gone != 0 {
+		t.Fatalf("the sweep deleted %d rows: this fixture must have lost nothing", gone)
+	}
+
+	_, err = h.ds.Handshakes(ctx, reg.GroupID, session, 0, 100)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_PRUNED" {
+		t.Fatalf("got %v, want the accepted over-refusal E_PRUNED (ruling 41 / B20); if this now "+
+			"serves the rows, task 23's real floor has landed and this test must be rewritten to "+
+			"assert the rows instead", err)
 	}
 }
 
