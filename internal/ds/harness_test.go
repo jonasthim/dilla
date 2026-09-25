@@ -275,6 +275,11 @@ type failingRepo struct {
 
 	mu     sync.Mutex
 	failOn string
+	// onPut is called with every proposal row as it is written, INSIDE the transaction that
+	// writes it. It is how a test observes what was true at that moment — for task 22, whether
+	// the loop writing the row was running inside a batch's election window — without a double
+	// for the store.
+	onPut func(store.ProposalRow)
 }
 
 var errInjected = errors.New("injected failure")
@@ -295,9 +300,29 @@ func (r *failingRepo) take(method string) bool {
 	return true
 }
 
+// observeProposals installs the hook PutProposal calls. Passing nil removes it.
+func (r *failingRepo) observeProposals(fn func(store.ProposalRow)) {
+	r.mu.Lock()
+	r.onPut = fn
+	r.mu.Unlock()
+}
+
+func (r *failingRepo) snapshotOnPut() func(store.ProposalRow) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.onPut
+}
+
+func (r *failingRepo) PutProposal(ctx context.Context, row store.ProposalRow) error {
+	if fn := r.snapshotOnPut(); fn != nil {
+		fn(row)
+	}
+	return r.Repository.PutProposal(ctx, row)
+}
+
 func (r *failingRepo) Tx(ctx context.Context, fn func(store.Repository) error) error {
 	return r.Repository.Tx(ctx, func(tx store.Repository) error {
-		sub := &failingRepo{Repository: tx, failOn: r.snapshotFailOn()}
+		sub := &failingRepo{Repository: tx, failOn: r.snapshotFailOn(), onPut: r.snapshotOnPut()}
 		err := fn(sub)
 		// The sub-repository owns the injection for the duration of the transaction; whatever it
 		// did not consume goes back, so failNextTx("X") before a call that never reaches X does

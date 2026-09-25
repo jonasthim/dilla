@@ -4,6 +4,10 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // Every test in this file issues an instance proposal FIRST. RequestCommit returns immediately on
@@ -154,4 +158,169 @@ func TestAGroupWithNobodyOnlineArmsNoTimer(t *testing.T) {
 		t.Fatalf("RequestCommit: %v", err)
 	}
 	h.expectDeviceFrames(t, g.members[0], "mls.commit_needed")
+}
+
+// ------------------------------------------------- one election per BATCH, not per proposal
+
+// Invariant 7 elects ONE device and has the others back off. An operation that issues many
+// instance proposals therefore holds ONE election, when they are all durable — not one per
+// proposal, which walks beginRound's rotation once per device and tells several of them,
+// concurrently, that each is the committer.
+//
+// The window is driven directly here because the batch that motivates it — ProposeAddBatch's 256
+// Adds — cannot issue two real Adds from committed material: testkit/fixtures/ds-1500 ships ONE
+// KeyPackage, every Add built from it is byte for byte the same external proposal with the same
+// ref, and the second row of a two-device batch is refused by mls_pending_proposals' primary key
+// (verified: "UNIQUE constraint failed: mls_pending_proposals.group_id, …ref"). Two Removes of two
+// leaves are two real proposals. TestProposeAddBatchElectsOnceForTheWholeBatch below pins that
+// ProposeAddBatch is a caller that opens the window.
+func TestManyInstanceProposalsInOneWindowElectOnce(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 3)
+	h.online(g.members[0], g.members[1], g.members[2])
+	h.setLeaves(g, map[int]uint32{0: 1, 1: 2, 2: 3})
+
+	release := ds.SuppressElectionsForTest(h.ds, g.id)
+	h.proposeRemoveOf(t, g, g.leaves[1])
+	h.proposeRemoveOf(t, g, g.leaves[2])
+	release()
+	if err := h.ds.RequestCommit(context.Background(), g.id); err != nil {
+		t.Fatalf("RequestCommit: %v", err)
+	}
+
+	if got := h.ds.CurrentRound(g.id); got != 1 {
+		t.Fatalf("two proposals in one window held %d rounds, want exactly 1", got)
+	}
+	// And the one frame goes to the lowest-index online device, which a per-proposal election
+	// would have rotated past.
+	h.expectExactlyOneCommitNeeded(t, g.members[0], g.members[1], g.members[2])
+}
+
+// ProposeAddBatch is a batch: every proposal of it is written with the election window open, and
+// the batch elects once afterwards.
+func TestProposeAddBatchElectsOnceForTheWholeBatch(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	g := h.groupWithMembers(t, 2)
+	h.online(g.members[0], g.members[1])
+	h.setLeaves(g, map[int]uint32{0: 1, 1: 2})
+
+	joiner := h.deviceWithKeyPackage(t)
+
+	rows, inWindow := 0, 0
+	h.repo.observeProposals(func(store.ProposalRow) {
+		rows++
+		if ds.ElectionSuppressedForTest(h.ds, g.id) {
+			inWindow++
+		}
+	})
+	// The second device has no KeyPackage, so the batch skips it and keeps going: what is under
+	// test is the loop, not the arithmetic.
+	if err := h.ds.ProposeAddBatch(ctx, g.id, []id.ID{joiner, id.New()}); err != nil {
+		t.Fatalf("ProposeAddBatch: %v", err)
+	}
+	h.repo.observeProposals(nil)
+
+	if rows == 0 {
+		t.Fatal("the batch issued no proposal at all; the assertions below would be vacuous")
+	}
+	if inWindow != rows {
+		t.Fatalf("%d of the batch's %d proposals were written inside the election window, want all "+
+			"of them: a batch that elects per proposal nominates a different device each time",
+			inWindow, rows)
+	}
+	if got := h.ds.CurrentRound(g.id); got != 1 {
+		t.Fatalf("the batch held %d rounds, want exactly 1", got)
+	}
+	h.expectExactlyOneCommitNeeded(t, g.members[0], g.members[1])
+}
+
+// ------------------------------------------------- a round that was WON is not a round lost
+
+// A device whose commit was ACCEPTED is never charged a lost round. Three charged rounds remove a
+// device from the group by an instance Remove, so a stale charge against the one device that did
+// exactly what it was told removes the group's best committer.
+//
+// The accepted commit is staged as the epoch move it leaves behind: no commit in this repository
+// can be accepted (the fixture ships one GroupInfo, at epoch 6, and invariant 4 wants epoch n+1 —
+// the blocker TestAnAcceptedCommitFansOutHandshakeEpochChangedAndWelcomes skips on), and the epoch
+// is what the watchdog reads. The commit path's own half of the rule is the clearElection at
+// commit step (8b); this is the half that covers the window in which the watchdog's tick beats it.
+func TestADeviceWhoseCommitLandedIsNeverChargedALostRound(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	g := h.groupWithMembers(t, 1)
+	h.online(g.members[0])
+
+	if err := h.ds.RequestCommit(ctx, g.id); err != nil {
+		t.Fatalf("RequestCommit: %v", err)
+	}
+	round := h.ds.CurrentRound(g.id)
+	if round == 0 {
+		t.Fatal("no election is armed; RequestCommit found no outstanding proposal")
+	}
+	if err := h.ds.AckCommitNeeded(ctx, g.id, g.members[0], round); err != nil {
+		t.Fatalf("AckCommitNeeded: %v", err)
+	}
+
+	// The commit lands. The next proposal is already in SQL at the NEW epoch when the tick
+	// arrives — the window between its row and its own RequestCommit, which spans DeliverGroup's
+	// fan-out to every member of the group — so the election is not cleared by an empty ref set.
+	epoch := h.advanceGroupEpoch(t, g.id)
+	h.putDSProposal(t, g.id, epoch, false)
+
+	h.clk.Advance(h.policy().WatchdogInterval + time.Second)
+	h.ds.RunWatchdogOnce(ctx)
+
+	if got := ds.LostRoundsForTest(h.ds, g.id, g.members[0]); got != 0 {
+		t.Fatalf("the committer was charged %d lost rounds; its commit was ACCEPTED", got)
+	}
+	if h.removedLeaves(t, g) != 0 {
+		t.Fatal("a device whose commit landed was proposed for removal")
+	}
+}
+
+// ------------------------------------------------- the background loops actually run
+
+// Start runs the watchdog and the sweeper, and Shutdown drains both. Nothing in the module calls
+// DS.Start before the composition root (task 27a), so without this test runWatchdog, runSweeper,
+// the wg.Add(2) and Shutdown's wait are entirely unexercised — and the ticker they arm panics, in
+// a goroutine, on any non-positive interval.
+func TestStartRunsTheWatchdogAndSweeperAndShutdownEndsThem(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+
+	if err := h.ds.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	stop, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := h.ds.Shutdown(stop); err != nil {
+		t.Fatalf("Shutdown: %v — Start's two goroutines did not drain", err)
+	}
+
+	// A config-derived Policy is filled field by field, and a partially filled one is exactly what
+	// task 27a can hand New. A zero WatchdogInterval must never reach time.NewTicker: the panic it
+	// raises is inside Start's goroutine, unrecoverable, and takes the process down at startup.
+	partial, err := ds.New(ds.Options{
+		Store: h.repo, Wasm: h.wasm, Gateway: h.gw, Clock: h.clk,
+		Keys: testInstanceKeys(t), Channels: h.channels,
+		Policy: ds.Policy{MaxCiphertextBytes: 131072},
+	})
+	if err != nil {
+		t.Fatalf("ds.New: %v", err)
+	}
+	p := ds.PolicyForTest(partial)
+	if p.WatchdogInterval <= 0 || p.MaxLostRounds <= 0 || p.CommitDeadline <= 0 {
+		t.Fatalf("New kept the zeros of a partially filled Policy: watchdog %v, lost rounds %d, "+
+			"deadline %v", p.WatchdogInterval, p.MaxLostRounds, p.CommitDeadline)
+	}
+	if err := partial.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	drain, cancelDrain := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelDrain()
+	if err := partial.Shutdown(drain); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
 }

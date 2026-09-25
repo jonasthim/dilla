@@ -137,7 +137,16 @@ func (d *DS) ProposeAddBatch(ctx context.Context, groupID id.ID, devices []id.ID
 			room--
 		}
 	}
+	// ONE election for the whole batch, not one per device. invariant 7 elects a single committer
+	// and has the others back off; a batch that elected per proposal walked beginRound's rotation
+	// 256 times and told a third of the online devices, concurrently, that each was the committer.
+	// The window stays open until the batch returns; the single RequestCommit below is the
+	// explicit call, which suppressElections deliberately does not suppress, so the one frame the
+	// batch sends names the whole ref set and goes to the lowest-index online device.
+	defer d.suppressElections(groupID)()
+
 	remainder := make([]id.ID, 0, len(devices))
+	issued := 0
 	for i, device := range devices {
 		if room <= 0 {
 			remainder = append(remainder, devices[i:]...)
@@ -149,7 +158,17 @@ func (d *DS) ProposeAddBatch(ctx context.Context, groupID id.ID, devices []id.ID
 			d.log().Warn("batched add skipped", "device", device.String()[:8], "err", err)
 			continue
 		}
+		issued++
 		room--
+	}
+	if issued > 0 {
+		// Logged, not returned, for storeInstanceProposal's own reason: every proposal of the
+		// batch is already durable and fanned out, and a failed election is re-run by the
+		// watchdog's next tick.
+		if err := d.RequestCommit(ctx, groupID); err != nil {
+			d.log().Error("electing a committer for a batch of instance proposals failed",
+				"group", groupID.String()[:8], "err", err)
+		}
 	}
 	// The remainder is KEPT, not dropped. Nothing else re-invokes this method, so a dropped tail
 	// means a 1,000-device join storm stalls after its first 256 and `join_storm_256_batched` can
@@ -221,10 +240,22 @@ func (d *DS) takePendingJoins(groupID id.ID, limit int) []id.ID {
 // drainPendingJoins proposes the next slice of a join storm. The commit path calls it after a
 // merge that applied Adds, with the group lock already held and withGroup already returned, so it
 // uses the lock-free body.
+// It elects once for the whole slice, exactly as ProposeAddBatch does: the commit that applied
+// this epoch's Adds is followed by ONE mls.commit_needed for the next 256, never by 256 of them.
 func (d *DS) drainPendingJoins(ctx context.Context, groupID id.ID) {
+	defer d.suppressElections(groupID)()
+	issued := 0
 	for _, device := range d.takePendingJoins(groupID, d.opts.Policy.MaxAddsPerCommit) {
 		if err := d.proposeAddLocked(ctx, groupID, device, id.New()); err != nil {
 			d.log().Warn("queued add skipped", "device", device.String()[:8], "err", err)
+			continue
+		}
+		issued++
+	}
+	if issued > 0 {
+		if err := d.RequestCommit(ctx, groupID); err != nil {
+			d.log().Error("electing a committer for the next slice of a join storm failed",
+				"group", groupID.String()[:8], "err", err)
 		}
 	}
 }
@@ -302,15 +333,21 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 		d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(p.Kind)).Inc()
 	}
 	// A fresh instance proposal is what invariant 7's election exists to get committed, so the
-	// election is held here, the moment the proposal is durable.
+	// election is held here, the moment the proposal is durable — UNLESS a batch window is open.
+	// This function is the sink of every issuing path, single and batched alike (ProposeAdd,
+	// ProposeRemove, reissue, and each device of ProposeAddBatch and drainPendingJoins), and
+	// invariant 7 elects ONE committer per round: a batch therefore suppresses the per-proposal
+	// election and makes one call of its own when the whole batch is durable.
 	//
-	// Its error is LOGGED, not returned: the proposal is already written, fanned out and counted,
+	// The error is LOGGED, not returned: the proposal is already written, fanned out and counted,
 	// and answering the caller an error now would say the proposal failed when it did not. A
 	// failed election is not lost either — the watchdog re-elects on its own tick, and so does the
 	// next proposal.
-	if err := d.RequestCommit(ctx, groupID); err != nil {
-		d.log().Error("electing a committer for a fresh instance proposal failed",
-			"group", groupID.String()[:8], "err", err)
+	if !d.electionsSuppressed(groupID) {
+		if err := d.RequestCommit(ctx, groupID); err != nil {
+			d.log().Error("electing a committer for a fresh instance proposal failed",
+				"group", groupID.String()[:8], "err", err)
+		}
 	}
 	return nil
 }

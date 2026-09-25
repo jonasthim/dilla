@@ -136,6 +136,54 @@ func (h *dsHarness) removedLeaves(t *testing.T, g *dsGroup) int {
 	return n
 }
 
+// advanceGroupEpoch moves the group one epoch on in SQL, which is what an ACCEPTED commit leaves
+// behind: `persistState` writes the new epoch through the same UPDATE this uses, and the applied
+// proposals are deleted in the same transaction.
+//
+// It is a direct write because no commit in this repository can be accepted — the committed
+// fixture ships one GroupInfo, at epoch 6, and invariant 4 wants epoch n+1, which is the blocker
+// `TestAnAcceptedCommitFansOutHandshakeEpochChangedAndWelcomes` skips on. The state blob is
+// re-put unchanged: every path under test here (RequestCommit, RunWatchdogOnce) reads the group
+// row and the proposal rows and never the cached PublicGroup.
+func (h *dsHarness) advanceGroupEpoch(t *testing.T, groupID id.ID) uint64 {
+	t.Helper()
+	ctx := context.Background()
+	row, err := h.repo.GetGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	epoch := row.Epoch + 1
+	if err := h.repo.PutGroupState(ctx, groupID, epoch,
+		row.PublicGroupState, row.GroupInfoBlob, row.TreeHash); err != nil {
+		t.Fatalf("PutGroupState: %v", err)
+	}
+	return epoch
+}
+
+// expectExactlyOneCommitNeeded asserts that invariant 7 elected ONE device: `elected` received
+// mls.commit_needed, no other device did, and no second one followed on the elected device's own
+// connection either.
+func (h *dsHarness) expectExactlyOneCommitNeeded(t *testing.T, elected id.ID, others ...id.ID) {
+	t.Helper()
+	h.waitDeviceFrame(t, elected, "mls.commit_needed")
+	// One settle: every frame of the operation under test was written from the same call, so a
+	// second election's frame is already on the wire by now.
+	time.Sleep(150 * time.Millisecond)
+	c := h.connOf(t, elected)
+	for {
+		select {
+		case f := <-c.frames:
+			if f.name == "mls.commit_needed" {
+				t.Fatalf("device %s was elected twice: a second mls.commit_needed arrived",
+					elected.String()[:8])
+			}
+		default:
+			h.expectNoFrames(t, others...)
+			return
+		}
+	}
+}
+
 // ------------------------------------------------------------------ devices on the wire
 
 // deviceConn is one device's live gateway connection: a real WebSocket over a real HTTP server,

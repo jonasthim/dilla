@@ -16,6 +16,13 @@ type election struct {
 	candidate id.ID
 	sentAt    time.Time
 	acked     bool
+	// epoch is the group epoch the round was elected FOR: the epoch whose refs the
+	// mls.commit_needed frame named. It is what tells a round that was WON from one that was
+	// lost. A commit that lands moves the group to epoch+1 and deletes the refs it applied, so a
+	// round whose epoch the group has already left asked for work that is done, and charging its
+	// candidate a lost round would punish the device that did exactly what it was told
+	// (RunWatchdogOnce).
+	epoch uint64
 	// lost counts ACKNOWLEDGED rounds this device failed to commit. An unacknowledged round only
 	// advances the election — the frame reaching the connection's writer is not an
 	// acknowledgement (protocol/02 invariant 7 as amended).
@@ -26,6 +33,13 @@ type election struct {
 type elections struct {
 	mu sync.Mutex
 	m  map[id.ID]*election
+	// suppressed counts the open election windows of a group. While one is open,
+	// storeInstanceProposal holds NO election: an operation that issues MANY instance proposals
+	// — ProposeAddBatch's 256 Adds, drainPendingJoins' next slice of a join storm — elects ONCE,
+	// at the end, for the whole batch. It is a counter rather than a flag so that a window nested
+	// inside another (a batch whose body ever grows a nested issuing path) closes in the right
+	// order.
+	suppressed map[id.ID]int
 }
 
 // RequestCommit elects a committer and sends mls.commit_needed. It is called whenever an instance
@@ -62,7 +76,7 @@ func (d *DS) RequestCommit(ctx context.Context, groupID id.ID) error {
 	// e.tried, e.candidate, e.acked and e.sentAt out here with no lock held would race
 	// RunWatchdogOnce, which reads exactly those fields under the mutex from its own goroutine —
 	// a map write against a map read, which `go test -race ./internal/ds/` reports.
-	chosen, round := d.beginRound(groupID, candidates, d.opts.Clock.Now())
+	chosen, round := d.beginRound(groupID, candidates, d.opts.Clock.Now(), row.Epoch)
 
 	payload, err := gateway.CommitNeededPayload(
 		row.Epoch, refs, uint64(d.opts.Policy.CommitDeadline/time.Millisecond), round)
@@ -108,7 +122,7 @@ func (d *DS) AckCommitNeeded(_ context.Context, groupID, deviceID id.ID, round u
 
 // beginRound advances the round and picks the next untried candidate, entirely under the mutex,
 // and returns copies. Nothing outside this function touches an *election's fields.
-func (d *DS) beginRound(groupID id.ID, candidates []gateway.OnlineDevice, now time.Time) (chosen id.ID, round uint64) {
+func (d *DS) beginRound(groupID id.ID, candidates []gateway.OnlineDevice, now time.Time, epoch uint64) (chosen id.ID, round uint64) {
 	d.elections.mu.Lock()
 	defer d.elections.mu.Unlock()
 	e, ok := d.elections.m[groupID]
@@ -133,7 +147,49 @@ func (d *DS) beginRound(groupID id.ID, candidates []gateway.OnlineDevice, now ti
 	e.candidate = chosen
 	e.acked = false
 	e.sentAt = now
+	e.epoch = epoch
 	return chosen, e.round
+}
+
+// suppressElections opens a window in which storeInstanceProposal holds no election, and returns
+// the function that closes it. Invariant 7 elects ONE device per round; a caller that issues many
+// proposals in one operation therefore elects once, when they are all durable, and not once per
+// proposal.
+//
+// Without the window, ProposeAddBatch's 256 Adds held 256 elections: beginRound marks each chosen
+// candidate `tried` and restarts the rotation when everybody has been tried, so a batch told
+// several devices at once that they were the committer — the conflict storm invariant 7 exists to
+// prevent — and left the last frame wherever the rotation happened to land rather than at the
+// lowest-index online device.
+//
+// RequestCommit itself is NOT suppressed: it is the explicit call, and the batch makes it once
+// after its loop.
+func (d *DS) suppressElections(groupID id.ID) (release func()) {
+	d.elections.mu.Lock()
+	if d.elections.suppressed == nil {
+		d.elections.suppressed = map[id.ID]int{}
+	}
+	d.elections.suppressed[groupID]++
+	d.elections.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			d.elections.mu.Lock()
+			if n := d.elections.suppressed[groupID] - 1; n > 0 {
+				d.elections.suppressed[groupID] = n
+			} else {
+				delete(d.elections.suppressed, groupID)
+			}
+			d.elections.mu.Unlock()
+		})
+	}
+}
+
+// electionsSuppressed reports whether a batch window is open for this group.
+func (d *DS) electionsSuppressed(groupID id.ID) bool {
+	d.elections.mu.Lock()
+	defer d.elections.mu.Unlock()
+	return d.elections.suppressed[groupID] > 0
 }
 
 func (d *DS) clearElection(groupID id.ID) {

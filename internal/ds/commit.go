@@ -318,6 +318,18 @@ func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 		d.opts.Metrics.DSCommits.WithLabelValues("accepted").Inc()
 	}
 
+	// (8b) the round is WON. Invariant 7's watchdog charges a lost round to the candidate of an
+	// overdue election that was acknowledged, and three of those remove the device from the group
+	// by an instance Remove — so the election must learn that this committer did what it was asked
+	// to do. Nothing else tells it: `clearElection`'s other call sites are all inside
+	// RequestCommit, and `e.acked` is cleared only by the next round.
+	//
+	// The refs this commit applied are deleted in the transaction above, so the fresh election
+	// step (9) and the next proposal hold is over the NEW epoch's outstanding work, from round one
+	// of a fresh rotation. RunWatchdogOnce carries the same rule for the window in which its tick
+	// beats this line: an election whose epoch the group has already left is won, never lost.
+	d.clearElection(groupID)
+
 	// (9) invariant 5's tail, with the group lock still held and withGroup returned. A commit can
 	// only OMIT an outstanding instance proposal through the nobody-online exception above, so
 	// the re-issue runs exactly on that path: every proposal the commit did not reference is

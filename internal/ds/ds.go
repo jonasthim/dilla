@@ -33,11 +33,31 @@ type InstanceKeys struct {
 
 // Policy holds every tunable of protocol/02's invariants.
 type Policy struct {
-	ProposalTTLText  time.Duration // 24h
-	ProposalTTLCall  time.Duration // 30s
-	CommitDeadline   time.Duration // the deadline_ms in mls.commit_needed
-	Backoff          time.Duration // 300ms
-	BackoffJitter    time.Duration // 300ms
+	ProposalTTLText time.Duration // 24h
+	ProposalTTLCall time.Duration // 30s
+	CommitDeadline  time.Duration // the deadline_ms in mls.commit_needed
+
+	// Backoff and BackoffJitter are invariant 7's back-off window — "the other devices back off
+	// 300 ms + random(0..300 ms)" (protocol/02-delivery-service.md:257) — and NOTHING READS THEM
+	// YET. The instance only ever addresses the elected device, so the window is advertised once,
+	// in `hello`, to the devices that are not; a client that never receives mls.commit_needed
+	// waits it out before volunteering.
+	//
+	// TASK 27a OWES THE AMENDMENT (deviation B23, ruling 44). `hello` is a seven-element frame in
+	// five places that move together — protocol/02:133, `gateway.HelloPayload`
+	// (internal/gateway/codec.go), `opSpecs[OpHello]` (internal/gateway/frame.go),
+	// `packages/protocol-vectors/src/frames.ts` and the generated `protocol/vectors/frames.json`
+	// (a wasm32-wasip1 rebuild, which internal/mlswasi/vectors_test.go pins) — and `gateway.
+	// Options` has no field for either value, so `ds.Policy` cannot reach the gateway at all.
+	// Task 22, whose Files are three new files in internal/ds, could amend none of it. Task 22's
+	// `TestTheBackoffWindowIsAdvertisedInHello` is carried verbatim into that task.
+	//
+	// Until it lands, a non-elected client has no advertised window: it either volunteers at once,
+	// racing the elected committer, or hard-codes 300 ms and drifts the moment an operator tunes
+	// these two fields.
+	Backoff       time.Duration // 300ms
+	BackoffJitter time.Duration // 300ms
+
 	WatchdogInterval time.Duration // 2s
 	MaxLostRounds    int           // 3
 
@@ -87,6 +107,47 @@ func DefaultPolicy() Policy {
 		MaxCiphertextBytes: 131072,
 		MaxAddsPerCommit:   256,
 	}
+}
+
+// normalisePolicy fills every unset tunable from DefaultPolicy, FIELD BY FIELD.
+//
+// The earlier form keyed the whole substitution on one field — `if Policy.MaxCiphertextBytes == 0
+// { Policy = DefaultPolicy() }` — so a partially filled Policy, which is exactly the shape a
+// config-derived one produces, kept every zero it arrived with. A zero `WatchdogInterval` then
+// reached `time.NewTicker` inside Start's goroutine, where the panic it raises is unrecoverable
+// and takes the process down at startup; a zero `MaxLostRounds` would remove the elected committer
+// on its first overdue round.
+//
+// Every field of Policy is a positive duration or count, so "unset" is "not positive" and an
+// operator can never mean zero.
+func normalisePolicy(p Policy) Policy {
+	d := DefaultPolicy()
+	fill := func(v *time.Duration, def time.Duration) {
+		if *v <= 0 {
+			*v = def
+		}
+	}
+	fillInt := func(v *int, def int) {
+		if *v <= 0 {
+			*v = def
+		}
+	}
+	fill(&p.ProposalTTLText, d.ProposalTTLText)
+	fill(&p.ProposalTTLCall, d.ProposalTTLCall)
+	fill(&p.CommitDeadline, d.CommitDeadline)
+	fill(&p.Backoff, d.Backoff)
+	fill(&p.BackoffJitter, d.BackoffJitter)
+	fill(&p.WatchdogInterval, d.WatchdogInterval)
+	fillInt(&p.MaxLostRounds, d.MaxLostRounds)
+	fill(&p.HandshakeRetention, d.HandshakeRetention)
+	fill(&p.MessageRetention, d.MessageRetention)
+	fill(&p.HealWindow, d.HealWindow)
+	fill(&p.InactivityRemove, d.InactivityRemove)
+	fill(&p.FreezeWarn, d.FreezeWarn)
+	fill(&p.FreezeMax, d.FreezeMax)
+	fillInt(&p.MaxCiphertextBytes, d.MaxCiphertextBytes)
+	fillInt(&p.MaxAddsPerCommit, d.MaxAddsPerCommit)
+	return p
 }
 
 // Session is the authenticated caller of every mutating entry point, and of the four group-scoped
@@ -187,9 +248,7 @@ func New(o Options) (*DS, error) {
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
-	if o.Policy.MaxCiphertextBytes == 0 {
-		o.Policy = DefaultPolicy()
-	}
+	o.Policy = normalisePolicy(o.Policy)
 	if o.Channels == nil {
 		o.Channels = PermissiveChannels{}
 	}

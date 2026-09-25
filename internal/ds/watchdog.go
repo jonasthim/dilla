@@ -7,9 +7,19 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
+// watchdogInterval is the tick, and never a non-positive duration: time.NewTicker panics on one,
+// inside a goroutine Start cannot recover from. New already fills every unset Policy field from
+// DefaultPolicy (normalisePolicy), so this is the second belt rather than the first.
+func (d *DS) watchdogInterval() time.Duration {
+	if d.opts.Policy.WatchdogInterval <= 0 {
+		return DefaultPolicy().WatchdogInterval
+	}
+	return d.opts.Policy.WatchdogInterval
+}
+
 // runWatchdog ticks every WatchdogInterval (2 s) and advances every overdue election.
 func (d *DS) runWatchdog(ctx context.Context) {
-	ticker := time.NewTicker(d.opts.Policy.WatchdogInterval)
+	ticker := time.NewTicker(d.watchdogInterval())
 	defer ticker.Stop()
 	for {
 		select {
@@ -31,23 +41,55 @@ func (d *DS) RunWatchdogOnce(ctx context.Context) {
 		groupID   id.ID
 		candidate id.ID
 		acked     bool
+		round     uint64
+		epoch     uint64
 	}
 	var due []overdue
 
 	d.elections.mu.Lock()
 	for groupID, e := range d.elections.m {
-		if e.candidate == (id.ID{}) || now.Sub(e.sentAt) < d.opts.Policy.WatchdogInterval {
+		if e.candidate == (id.ID{}) || now.Sub(e.sentAt) < d.watchdogInterval() {
 			continue
 		}
-		due = append(due, overdue{groupID: groupID, candidate: e.candidate, acked: e.acked})
-		if e.acked {
-			e.lost[e.candidate]++
-		}
+		due = append(due, overdue{
+			groupID: groupID, candidate: e.candidate, acked: e.acked,
+			round: e.round, epoch: e.epoch,
+		})
 	}
 	d.elections.mu.Unlock()
 
 	for _, o := range due {
-		if o.acked && d.lostRounds(o.groupID, o.candidate) >= d.opts.Policy.MaxLostRounds {
+		// A ROUND THAT WAS WON is not a round that was lost. The election is charged nowhere else,
+		// so this is the one place that distinction is made: an accepted Commit clears the group's
+		// election (commit step (8b)), and where the watchdog's tick beats that clear — the window
+		// between the next proposal's row and its own RequestCommit, which spans DeliverGroup's
+		// fan-out to every member — the group's epoch has already moved past the one the round was
+		// elected for. Either way the candidate committed exactly what it was told to commit, and
+		// three such charges would remove it from the group by an instance Remove.
+		row, err := d.opts.Store.GetGroup(ctx, o.groupID)
+		if err != nil {
+			d.log().Error("reading the group of an overdue election failed",
+				"group", o.groupID.String()[:8], "err", err)
+			continue
+		}
+		if row.Epoch != o.epoch {
+			d.clearElection(o.groupID)
+			if d.opts.Metrics != nil {
+				d.opts.Metrics.ElectionRounds.WithLabelValues("won").Inc()
+			}
+			// Whatever is outstanding at the NEW epoch gets a fresh election, from round one of a
+			// fresh rotation.
+			if err := d.RequestCommit(ctx, o.groupID); err != nil {
+				d.log().Error("re-electing after a won round failed",
+					"group", o.groupID.String()[:8], "err", err)
+			}
+			continue
+		}
+		lost := 0
+		if o.acked {
+			lost = d.chargeLostRound(o.groupID, o.candidate, o.round)
+		}
+		if o.acked && lost >= d.opts.Policy.MaxLostRounds {
 			// Three acknowledged-and-lost rounds: the device is removed by an instance Remove.
 			// ProposeRemove, not proposeRemoveLocked: the watchdog runs on its own goroutine and
 			// holds no group lock, so it is the locking form that is correct here.
@@ -75,6 +117,21 @@ func (d *DS) RunWatchdogOnce(ctx context.Context) {
 				"group", o.groupID.String()[:8], "err", err)
 		}
 	}
+}
+
+// chargeLostRound charges one ACKNOWLEDGED-and-lost round and returns the running count. The
+// round is named, so a round that has already been superseded between the two passes of
+// RunWatchdogOnce — by a proposal's own RequestCommit, say — is not charged twice and is not
+// charged to a candidate that is no longer the one that acknowledged.
+func (d *DS) chargeLostRound(groupID, deviceID id.ID, round uint64) int {
+	d.elections.mu.Lock()
+	defer d.elections.mu.Unlock()
+	e, ok := d.elections.m[groupID]
+	if !ok || e.round != round || e.candidate != deviceID || !e.acked {
+		return 0
+	}
+	e.lost[deviceID]++
+	return e.lost[deviceID]
 }
 
 func (d *DS) lostRounds(groupID, deviceID id.ID) int {

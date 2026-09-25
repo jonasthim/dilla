@@ -99,6 +99,29 @@ func ProposalTTLForTest(d *DS, groupKind uint8) time.Duration { return d.proposa
 // nothing on the wire shows it: the frame that is not sent leaves no trace.
 func ArmedElectionsForTest(d *DS) int { return d.armedElections() }
 
+// SuppressElectionsForTest opens a batch's election window and returns its release. It is
+// exported because the property it carries — MANY instance proposals in one operation hold ONE
+// election, not one each — cannot be driven through `ProposeAddBatch` with committed material:
+// `testkit/fixtures/ds-1500` ships a single KeyPackage, so every Add built from it is byte for
+// byte the same proposal with the same ref, and the second row of a two-device batch is refused by
+// `mls_pending_proposals`' primary key. Two Removes of two leaves are two real proposals, and the
+// window is what makes them one round.
+func SuppressElectionsForTest(d *DS, groupID id.ID) func() { return d.suppressElections(groupID) }
+
+// ElectionSuppressedForTest reports whether a batch window is open for this group. A test that
+// observes it from inside `PutProposal` sees whether the loop that wrote the row was running in
+// one.
+func ElectionSuppressedForTest(d *DS, groupID id.ID) bool { return d.electionsSuppressed(groupID) }
+
+// LostRoundsForTest is how many acknowledged-and-lost rounds a device has been charged. Three of
+// them remove it from the group, and the charge itself is in memory: nothing on the wire or in SQL
+// shows a device one round away from an instance Remove.
+func LostRoundsForTest(d *DS, groupID, deviceID id.ID) int { return d.lostRounds(groupID, deviceID) }
+
+// PolicyForTest is the Policy the delivery service actually runs with, after New filled in
+// whatever the caller left unset. A zero interval here is a panic in Start's goroutine.
+func PolicyForTest(d *DS) Policy { return d.opts.Policy }
+
 // PendingJoinsForTest is how many devices of a join storm are waiting for the next commit.
 func PendingJoinsForTest(d *DS, groupID id.ID) int {
 	d.pendingMu.Lock()
