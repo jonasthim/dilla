@@ -74,6 +74,19 @@ func (h *Groups) RegisterSequencer(mux *server.Mux, sessions *auth.Sessions) {
 	mux.Handle("GET /v1/groups/{id}/proposals", enrolled(h.proposals))
 }
 
+// RegisterRecovery mounts the two routes a device out of step with the epoch uses: endpoint 8
+// (`POST /v1/groups/{id}/resync`, the own-leaf external commit R25 exempts from invariant 5's
+// freeze) and endpoint 9 (`POST /v1/groups/{id}/fork-report`, invariant 9's report). It is a
+// third method for the reason RegisterSequencer is a second one: the delivery service's surface
+// grows one named group per task.
+func (h *Groups) RegisterRecovery(mux *server.Mux, sessions *auth.Sessions) {
+	enrolled := func(f http.HandlerFunc) http.Handler {
+		return sessions.Middleware(f, auth.ScopeEnrolled)
+	}
+	mux.Handle("POST /v1/groups/{id}/resync", enrolled(h.resync))
+	mux.Handle("POST /v1/groups/{id}/fork-report", enrolled(h.forkReport))
+}
+
 // sessionOf is the one place this file reads the request's session. It is a helper in package api,
 // not in package server: the context key belongs to internal/auth.
 func sessionOf(r *http.Request) (ds.Session, error) {
@@ -407,6 +420,82 @@ func (h *Groups) proposals(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
+		server.WriteError(w, err)
+	}
+}
+
+type resyncRequestBody struct {
+	_              struct{} `cbor:",toarray"`
+	ExternalCommit []byte
+	GroupInfo      []byte
+}
+
+// resync is endpoint 8: body [external_commit, group_info] -> [seq, epoch], the same pair endpoint
+// 5 answers. It carries no epoch of its own: a device that has fallen out of the epoch does not
+// know it, which is the whole reason it is resyncing, so the instance supplies its own under the
+// group lock (`ds.Resync`).
+func (h *Groups) resync(w http.ResponseWriter, r *http.Request) {
+	groupID, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	var body resyncRequestBody
+	if err := server.DecodeBody(w, r, h.max(), &body); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	session, err := sessionOf(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	out, err := h.DS.Resync(r.Context(), session, groupID, ds.ResyncRequest{
+		ExternalCommit: body.ExternalCommit, GroupInfo: body.GroupInfo,
+	})
+	if err != nil {
+		server.WriteError(w, dsError(err))
+		return
+	}
+	if err := server.EncodeBody(w, http.StatusOK,
+		seqEpochResponse{Seq: out.Seq, Epoch: out.Epoch}); err != nil {
+		server.WriteError(w, err)
+	}
+}
+
+type forkReportBody struct {
+	_      struct{} `cbor:",toarray"`
+	Epoch  uint64
+	Seq    uint64
+	Reason string
+}
+
+// forkReport is endpoint 9: body [epoch, seq, reason] -> 202 with an empty array body.
+//
+// The body is `[]any{}` rather than nothing at all: protocol/02's row says `202 []`, every /v1
+// response is deterministic CBOR, and a client that decodes each answer as an array would have to
+// special-case a zero-length one.
+func (h *Groups) forkReport(w http.ResponseWriter, r *http.Request) {
+	groupID, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	var body forkReportBody
+	if err := server.DecodeBody(w, r, h.max(), &body); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	session, err := sessionOf(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := h.DS.ForkReport(r.Context(), session, groupID, body.Epoch, body.Seq, body.Reason); err != nil {
+		server.WriteError(w, dsError(err))
+		return
+	}
+	if err := server.EncodeBody(w, http.StatusAccepted, []any{}); err != nil {
 		server.WriteError(w, err)
 	}
 }

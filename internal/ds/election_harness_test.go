@@ -38,6 +38,11 @@ type dsGroup struct {
 	id      id.ID
 	members []id.ID
 	leaves  []uint32
+
+	// h is the harness that built the group, so a dsGroup can answer the three questions a test
+	// asks of it directly — `sessionOf`, `leafOf`, `epoch` (fork_test.go) — without every call
+	// site threading the harness back in.
+	h *dsHarness
 }
 
 // groupWithMembers registers the committed 1,500-leaf fixture and exposes its first n member
@@ -66,7 +71,7 @@ func (h *dsHarness) groupWithMembers(t *testing.T, n int) *dsGroup {
 		return int(a.LeafIndex) - int(b.LeafIndex)
 	})
 
-	g := &dsGroup{id: got.GroupID}
+	g := &dsGroup{id: got.GroupID, h: h}
 	if h.sessions == nil {
 		h.sessions = map[id.ID]auth.Session{}
 	}

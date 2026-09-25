@@ -352,6 +352,8 @@ func newGroupsAPI(t *testing.T) *groupsAPI {
 	groups := &api.Groups{DS: d, MaxBody: 1 << 21}
 	groups.Register(mux, deps.Sessions)
 	groups.RegisterSequencer(mux, deps.Sessions)
+	// Task 25's two recovery routes, endpoints 8 and 9.
+	groups.RegisterRecovery(mux, deps.Sessions)
 
 	// Endpoints 7, 12, 17 and 18 ride on the same mux, sessions and delivery service; the caps are
 	// left at their zero values on purpose in one test of messages_test.go, so they are set here.
@@ -562,4 +564,52 @@ func apiWasmCacheDir(t *testing.T) string {
 		t.Cleanup(func() { _ = os.RemoveAll(apiCacheDir) })
 	})
 	return apiCacheDir
+}
+
+// ------------------------------------------ endpoints 8 and 9: resync and fork-report (task 25)
+
+// Endpoint 9: `[epoch, seq, reason]` -> 202 with an empty CBOR array body.
+func TestForkReportIsAcceptedWithAnEmptyArrayBody(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	token := h.memberToken(t)
+	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/fork-report", token,
+		mustCBOR(t, []any{uint64(6), uint64(1), "cannot process"}))
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", res.Code, res.Body.String())
+	}
+	if got := res.Body.Bytes(); len(got) != 1 || got[0] != 0x80 {
+		t.Fatalf("body = %x, want the empty CBOR array 80", got)
+	}
+}
+
+// A fork report about a group the device is not in is 404, never 403: the code protocol/02's row
+// for this endpoint names, and a 403 would tell any authenticated device which groups exist.
+func TestForkReportByANonMemberIsFourZeroFour(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/fork-report", h.session,
+		mustCBOR(t, []any{uint64(6), uint64(1), "cannot process"}))
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", res.Code, res.Body.String())
+	}
+	if got := errorCode(t, res); got != string(server.CodeNotFound) {
+		t.Fatalf("code = %s, want %s", got, server.CodeNotFound)
+	}
+}
+
+// Endpoint 8: `[external_commit, group_info]` reaches the delivery service, and its refusal is
+// protocol/02's CBOR error array — not a 404 from an unmounted route.
+func TestResyncCarriesTheDeliveryServicesRefusal(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	token := h.memberToken(t)
+	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/resync", token,
+		mustCBOR(t, []any{[]byte{0x00, 0x01, 0x02}, []byte{0x03}}))
+	if res.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422: %s", res.Code, res.Body.String())
+	}
+	if got := errorCode(t, res); got != string(server.CodeCommitInvalid) {
+		t.Fatalf("code = %s, want %s", got, server.CodeCommitInvalid)
+	}
 }

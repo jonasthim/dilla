@@ -1,0 +1,152 @@
+package ds
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/jonasthim/dilla/internal/store"
+)
+
+// ResyncRequest is POST /v1/groups/{id}/resync: [external_commit(bstr), group_info(bstr)].
+type ResyncRequest struct {
+	ExternalCommit []byte
+	GroupInfo      []byte
+}
+
+// Resync is an own-leaf external commit: how a device that has fallen out of the epoch returns.
+//
+// R25 exempts it from invariant 5's freeze, with two guards. First, it is refused when the
+// resyncing device is the target of an outstanding non-void instance Remove — otherwise a device
+// the instance is evicting could re-add itself forever. Second, the instance re-issues its
+// outstanding proposals for the new epoch immediately afterwards, so the freeze that was skipped
+// is not lost.
+//
+// Resync takes the group lock ONCE, for the whole read-guard-commit sequence, which is why it
+// calls `commitLocked` rather than `commit`.
+//
+// Reading the epoch with `d.epochOf` outside the lock and only then calling `d.commit` — which
+// takes the lock itself and compares `c.Epoch != row.Epoch` — would let a commit landing between
+// the two reads turn a valid resync into a spurious E_COMMIT_CONFLICT, and the device that is
+// already out of the epoch is precisely the one that cannot recover from it. `guardResyncTarget`
+// would read the group row unlocked too. Every read that feeds commit's epoch comparison happens
+// under the same lock acquisition.
+func (d *DS) Resync(ctx context.Context, s Session, groupID id.ID, r ResyncRequest) (CommitResult, error) {
+	unlock := d.lock(groupID)
+	defer unlock()
+	return d.resyncLocked(ctx, s, groupID, r)
+}
+
+func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r ResyncRequest) (CommitResult, error) {
+	epoch, err := d.epochOf(ctx, groupID)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	if err := d.guardResyncTarget(ctx, s, groupID, epoch); err != nil {
+		return CommitResult{}, err
+	}
+	out, err := d.commitLocked(ctx, s, groupID, CommitRequest{
+		Epoch:     epoch,
+		Commit:    r.ExternalCommit,
+		GroupInfo: r.GroupInfo,
+	}, commitOptions{
+		external:      true,
+		skipFreeze:    true,
+		handshakeKind: handshakeExternalCommit,
+	})
+	if err != nil {
+		return CommitResult{}, err
+	}
+	// Guard 2's second half: whatever was outstanding is re-issued for the epoch the resync
+	// created, and RequestCommit elects somebody to commit it.
+	//
+	// `commitLocked` step (9) already ran `reissueOmitted` for the same epoch — every external
+	// commit does — so on the ordinary path this finds nothing left to re-issue and its work is
+	// the RequestCommit at the end. It is still called, because `reissueOmitted` is keyed on what
+	// the commit REFERENCED and this is keyed on what is still outstanding: a proposal that
+	// survived both is one a freeze would hold on to, and R25's promise is that a resync leaves
+	// the freeze intact rather than that it leaves it exactly as it found it.
+	if err := d.reissueAll(ctx, groupID, out.Epoch); err != nil {
+		return CommitResult{}, err
+	}
+	return out, nil
+}
+
+// guardResyncTarget refuses a resync by the target of an outstanding non-void instance Remove.
+func (d *DS) guardResyncTarget(ctx context.Context, s Session, groupID id.ID, epoch uint64) error {
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, epoch, false)
+	if err != nil {
+		return err
+	}
+	// The resyncing device may have no current leaf at all — that is the ordinary case, and why
+	// it is resyncing — so a leaf lookup that fails is not an error here, only a clause that does
+	// not apply.
+	leaf, leafErr := d.leafOf(ctx, groupID, s.DeviceID)
+	for _, p := range rows {
+		if p.Origin != 0 || p.VoidAt != nil || p.Kind != uint8(mlswasi.ProposalRemove) {
+			continue
+		}
+		if p.TargetDevice != nil && *p.TargetDevice == s.DeviceID {
+			return errForbidden("this device is the target of an outstanding Remove")
+		}
+		if leafErr == nil && p.TargetLeaf != nil && *p.TargetLeaf == leaf {
+			return errForbidden("this device is the target of an outstanding Remove")
+		}
+	}
+	return nil
+}
+
+// checkExternalCommitScope is the third clause of invariant 4 for external commits: an external
+// commit may Remove only the joiner's own previous leaf.
+func (d *DS) checkExternalCommitScope(ctx context.Context, groupID id.ID, s Session, applied []mlswasi.AppliedProposal) error {
+	for _, a := range applied {
+		if a.Kind != mlswasi.ProposalRemove || a.TargetLeaf == nil {
+			continue
+		}
+		device, err := d.deviceOfLeaf(ctx, groupID, *a.TargetLeaf)
+		if err != nil {
+			return err
+		}
+		if device != s.DeviceID {
+			return errCommitInvalid("external_commit_remove_scope",
+				"an external commit may only Remove the joining device's own previous leaf")
+		}
+	}
+	return nil
+}
+
+// reissueAll re-issues every non-void instance proposal still outstanding at the epoch the resync
+// replaced, for the new one, and elects a committer for them.
+func (d *DS) reissueAll(ctx context.Context, groupID id.ID, epoch uint64) error {
+	if epoch == 0 {
+		return nil
+	}
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, epoch-1, false)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if r.Origin != 0 || r.VoidAt != nil {
+			continue
+		}
+		if err := d.reissue(ctx, groupID, r); err != nil {
+			return err
+		}
+	}
+	return d.RequestCommit(ctx, groupID)
+}
+
+// epochOf is the group's epoch as SQL holds it — R12's record. It is a hard error rather than a
+// zero default: a zero epoch fed to commit's `c.Epoch != row.Epoch` comparison would answer
+// E_COMMIT_CONFLICT for a group that does not exist, which is a refusal the client cannot act on.
+func (d *DS) epochOf(ctx context.Context, groupID id.ID) (uint64, error) {
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, errNotFound("group")
+	}
+	if err != nil {
+		return 0, err
+	}
+	return row.Epoch, nil
+}

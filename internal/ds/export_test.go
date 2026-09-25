@@ -167,3 +167,25 @@ func CheckAddressedWelcomesForTest(applied []mlswasi.AppliedProposal, welcomes [
 func FanOutWelcomesForTest(d *DS, ctx context.Context, groupID id.ID, epoch uint64, tree, treeHash []byte, welcomes []WelcomeFor) {
 	d.fanOutWelcomes(ctx, groupID, epoch, tree, treeHash, welcomes)
 }
+
+// CheckExternalCommitScopeForTest is checkExternalCommitScope, R25's guard 2: an external commit
+// may Remove nobody but the joining device's own previous leaf. It is exported for the same reason
+// CheckAddressedWelcomesForTest is — no commit in this repository can be ACCEPTED, and the fixture
+// holds no external commit at all — so the clause is asserted over the applied list it is defined
+// on rather than over a commit that cannot exist.
+func CheckExternalCommitScopeForTest(d *DS, ctx context.Context, groupID id.ID, s Session, applied []mlswasi.AppliedProposal) error {
+	return d.checkExternalCommitScope(ctx, groupID, s, applied)
+}
+
+// ReissueOmittedUnderLockForTest runs `reissueOmitted` exactly as commit step (9) runs it: with the
+// group lock HELD and outside `withGroup`. It is deviation B24 / ruling 45's regression guard —
+// everything reachable from `reissue` must be lock-free, and nothing FAILS today if a later change
+// makes one of those paths take `d.lock(groupID)` again.
+//
+// It is a seam rather than an accepted commit because no commit in this repository can be
+// accepted, which is the same reason task 22 had to carry the test here in the first place.
+func ReissueOmittedUnderLockForTest(d *DS, ctx context.Context, groupID id.ID, oldEpoch uint64, applied []mlswasi.AppliedProposal) error {
+	unlock := d.lock(groupID)
+	defer unlock()
+	return d.reissueOmitted(ctx, groupID, oldEpoch, applied)
+}

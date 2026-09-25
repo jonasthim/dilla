@@ -66,7 +66,19 @@ type commitOptions struct {
 func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitRequest, o commitOptions) (CommitResult, error) {
 	unlock := d.lock(groupID)
 	defer unlock()
+	return d.commitLocked(ctx, s, groupID, c, o)
+}
 
+// commitLocked is the commit path with the group lock ALREADY HELD.
+//
+// The split exists for `Resync` (R25), which has to read the group's epoch and run its own guard
+// against the same epoch the commit will compare `c.Epoch` with. `d.lock` is a plain sync.Mutex
+// and is not reentrant, so a resync that read the epoch through `commit` would either take the
+// lock twice — deadlocking that group's request goroutine for the life of the process — or read
+// the epoch outside it, where a commit landing in between turns a valid resync into a spurious
+// E_COMMIT_CONFLICT. The device that is already out of the epoch is exactly the one that cannot
+// recover from that.
+func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c CommitRequest, o commitOptions) (CommitResult, error) {
 	// (1) scope and membership.
 	// Named, not the literal 0: a future reordering of auth.Scope's constants would silently
 	// change what this line means without touching it.
@@ -397,20 +409,29 @@ func (d *DS) checkAppliedProposals(ctx context.Context, groupID id.ID, row store
 	}
 	// Clause 1: every outstanding non-void DS proposal is referenced.
 	//
-	// TASK 25 OWES THIS CLAUSE ONE EXEMPTION (deviation B21, ruling 42). Invariant 5's
-	// nobody-online case requires the EXTERNAL commit to be ACCEPTED while instance proposals are
-	// outstanding, and the omitted ones to be re-issued for the new epoch afterwards — which is
-	// what `reissueOmitted` (freeze.go) exists to do at commit step (9). As written, clause 1
-	// refuses ANY commit that omits a non-void origin-0 row at the current epoch, external or not,
-	// so step (9) is never reached on the one path that needs it and `reissueOmitted` cannot fire.
-	// The exemption task 25 must add here is: skip origin-0 rows when `o.external && !frozen`,
-	// i.e. when the commit is external AND the freeze has lifted because nobody is online
-	// (`freezeState`'s own answer — never an unconditional external carve-out, which would let an
-	// outsider commit straight through a live freeze). Task 21 could not add it: nothing sets
-	// `commitOptions.external` until task 24/25, and no fixture in this repository can produce an
-	// acceptable commit, so the exemption would have shipped untested and unexercised.
+	// THE EXEMPTION (deviation B21, ruling 42). An external commit cannot reference the instance's
+	// outstanding proposals — it is built by a device that is not in the epoch — and there are
+	// exactly two places protocol/02 accepts one anyway:
+	//
+	//  1. Invariant 5's nobody-online case. The freeze has LIFTED because no member device is
+	//     online, the external commit is accepted, and the proposals it omitted are re-issued for
+	//     the new epoch by `reissueOmitted` at step (9). Without this exemption step (9) is
+	//     unreachable and `reissueOmitted` can never fire.
+	//  2. R25's resync, which is exempt from the freeze under its own two guards and re-issues
+	//     the outstanding proposals for the new epoch immediately afterwards (`reissueAll`).
+	//
+	// The freeze's own answer is what decides case 1 — never an unconditional external carve-out,
+	// which would let an outsider commit straight through a live freeze — and `o.skipFreeze`,
+	// which only `Resync` sets, is what decides case 2.
+	exemptFromClause1, err := d.clause1Exempt(ctx, groupID, row.Epoch, o)
+	if err != nil {
+		return err
+	}
 	for _, pending := range outstanding {
 		if pending.Origin != 0 || pending.VoidAt != nil {
+			continue
+		}
+		if exemptFromClause1 {
 			continue
 		}
 		if _, ok := applied[string(pending.Ref)]; !ok {
@@ -448,13 +469,29 @@ func (d *DS) checkAppliedProposals(ctx context.Context, groupID id.ID, row store
 		}
 	}
 	if o.external {
-		// R25 — an external commit may remove nobody but the joiner's own prior leaf — is task
-		// 25's `checkExternalCommitScope`, called from here. Task 20 sets `external` nowhere, so
-		// the clause has no reachable caller yet and is not stubbed out permissively.
-		return errCommitInvalid("external_commit_scope",
-			"external commits are not accepted by this instance yet")
+		// R25: an external commit may remove nobody but the joiner's own prior leaf.
+		return d.checkExternalCommitScope(ctx, groupID, s, p.Applied)
 	}
 	return nil
+}
+
+// clause1Exempt answers whether this commit may omit the instance's outstanding proposals. The
+// two cases are written out at clause 1 itself; a member commit is never exempt, and it is the
+// thing that lifts the freeze.
+func (d *DS) clause1Exempt(ctx context.Context, groupID id.ID, epoch uint64, o commitOptions) (bool, error) {
+	if !o.external {
+		return false, nil
+	}
+	if o.skipFreeze {
+		// R25's resync. `reissueAll` re-issues whatever it omitted, for the new epoch.
+		return true, nil
+	}
+	frozen, _, err := d.freezeState(ctx, groupID, epoch)
+	if err != nil {
+		return false, err
+	}
+	// Invariant 5's nobody-online exception: exempt exactly when the freeze is NOT holding.
+	return !frozen, nil
 }
 
 // checkAddressedWelcomes is the clause that keeps `CommitRequest.Welcomes` inside the commit that
@@ -771,6 +808,24 @@ func (d *DS) userOfLeaf(ctx context.Context, groupID id.ID, leaf uint32) (id.ID,
 		}
 	}
 	return id.ID{}, errCommitInvalid("member_remove_scope", "the Remove targets a leaf that is not a member")
+}
+
+// deviceOfLeaf is `userOfLeaf`'s sibling: the same `ListMembers` scan, answering with the leaf's
+// DEVICE. R25's external-commit scope clause is about the device — "the joining device's own
+// previous leaf" — and a user with two devices in one group would pass a user-level check while
+// removing the other device's leaf.
+func (d *DS) deviceOfLeaf(ctx context.Context, groupID id.ID, leaf uint32) (id.ID, error) {
+	members, err := d.opts.Store.ListMembers(ctx, groupID)
+	if err != nil {
+		return id.ID{}, err
+	}
+	for _, m := range members {
+		if m.LeafIndex == leaf && m.RemovedEpoch == nil {
+			return m.DeviceID, nil
+		}
+	}
+	return id.ID{}, errCommitInvalid("external_commit_remove_scope",
+		"the Remove targets a leaf that is not a member")
 }
 
 func (d *DS) refsOf(ctx context.Context, groupID id.ID, epoch uint64) ([][]byte, error) {
