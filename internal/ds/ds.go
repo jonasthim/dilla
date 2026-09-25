@@ -143,6 +143,24 @@ type DS struct {
 	staleMu sync.Mutex
 	stale   map[id.ID]struct{}
 
+	// supersede carries one ref from `reissue` into the `storeInstanceProposal` it wraps, so that
+	// call writes through `ReissueProposal` — which retires the old row and keeps its action_id —
+	// rather than through `PutProposal`. Passing it down the call chain instead would put an
+	// `oldRef []byte` parameter on both public Propose methods, where it means nothing.
+	//
+	// It is keyed BY GROUP, not one field. Each re-issue window runs under its own group's lock,
+	// so two groups re-issuing at once are both legal — and a single field would let one group's
+	// storeInstanceProposal pick up the other's ref and retire a proposal of a group it never
+	// touched.
+	supersedeMu sync.Mutex
+	supersede   map[id.ID][]byte
+
+	// pending is the tail of a join storm: the devices ProposeAddBatch could not fit into this
+	// epoch's 256 Adds, waiting for the next commit. It is in memory because `pending_joins` has
+	// no table and `store.Repository` no methods yet — see queuePendingJoins for the deviation.
+	pendingMu sync.Mutex
+	pending   map[id.ID][]id.ID
+
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup

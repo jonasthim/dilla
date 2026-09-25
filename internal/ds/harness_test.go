@@ -42,6 +42,10 @@ type dsHarness struct {
 	repo *failingRepo
 
 	channels *fakeChannels
+	// auth is the gateway's token resolver. The gateway holds an `Authenticator` interface, not
+	// *auth.Sessions (deviation B9), so the delivery service's tests satisfy that seam directly
+	// rather than standing a whole account stack up to put one device online.
+	auth *fakeAuth
 
 	// calls counts guest exports by name, through mlswasi.Options.OnCall. It is what makes
 	// "the state blob is imported lazily, and the tree is never rebuilt" an assertion rather
@@ -81,7 +85,10 @@ func newDSHarness(t *testing.T) *dsHarness {
 	t.Cleanup(func() { _ = wasm.Close(context.Background()) })
 	h.wasm = wasm
 
-	h.gw = gateway.New(gateway.Options{Clock: clk, Store: gatewayStore{repo}, Generation: 1})
+	h.auth = newFakeAuth()
+	h.gw = gateway.New(gateway.Options{
+		Clock: clk, Store: gatewayStore{repo}, Generation: 1, Auth: h.auth,
+	})
 	t.Cleanup(func() { _ = h.gw.Shutdown(context.Background()) })
 
 	h.channels = &fakeChannels{modes: map[id.ID][2]uint8{}}
@@ -127,12 +134,17 @@ func openMigratedSQLite(t *testing.T, path string) store.Repository {
 
 // gatewayStore is the real repository plus the one method `store.Cursors` owns. `device_cursors`
 // is 00002_mls.sql's table but `Cursors` does not join `store.Repository` until task 23, so the
-// method is answered from the generated queries' own contract here: no cursor yet, which is what
-// a group nobody has read means.
+// method is answered here: a zero cursor, which is what a group nobody has read means.
+//
+// It answers (zero, nil), NOT store.ErrNotFound. `sendReady` reads one cursor per group of the
+// connecting device and returns the first error it gets, so an ErrNotFound here closes every
+// connection with 4000 "register" before ready — and `Gateway.Online`, which invariants 5, 6 and
+// 7 are all defined over, would then be false for every device forever. The gateway's own harness
+// answers the same shape (internal/gateway/harness_test.go:255).
 type gatewayStore struct{ store.Repository }
 
 func (gatewayStore) GetCursor(_ context.Context, _, _ id.ID) (store.CursorRow, error) {
-	return store.CursorRow{}, store.ErrNotFound
+	return store.CursorRow{}, nil
 }
 
 func (h *dsHarness) countCall(export string) {
@@ -450,9 +462,12 @@ func testInstanceKeys(tb testing.TB) ds.InstanceKeys {
 	for i := range k.FrankingKeyID {
 		k.FrankingKeyID[i] = 0x33
 	}
-	for i := range k.ExternalSenderPriv {
-		k.ExternalSenderPriv[i] = byte(i)
-	}
+	// The instance's external-sender signing key is the fixture's own, re-derived rather than
+	// invented: `queue_proposal` resolves an external proposal's sender through the group's
+	// `external_senders` extension and verifies the signature against it, so a key of the test's
+	// invention would make every ProposeAdd and ProposeRemove fail at the guest and leave the
+	// whole issuing path of task 21 unexercised. See fixtureExternalSenderKey in proposal_test.go.
+	k.ExternalSenderPriv = fixtureExternalSenderKey()
 	for i := range k.FrankingKey {
 		k.FrankingKey[i] = byte(0x80 + i)
 	}

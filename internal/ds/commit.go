@@ -116,11 +116,31 @@ func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 
 	// (3) the freeze (invariant 5) belongs HERE, between the epoch check and the parse: an
 	// external commit is refused while a non-void proposal is outstanding and some member device
-	// is online, and a resync skips it under R25's two guards. Task 21 owns `freezeState` and
-	// wires it in at this point; task 20 never sets `o.external`, so no path reaching this line
-	// is subject to the freeze yet.
+	// is online, and a resync skips it under R25's two guards. Task 20 never sets `o.external`,
+	// so no path reaching this line is subject to the freeze until task 24 or 25 turns the flag
+	// on — but the clause is written and reached from the one place the invariant puts it, not
+	// left for the task that needs it to remember.
+	//
+	// A MEMBER commit is never refused here: it is the thing that lifts the freeze.
+	if o.external && !o.skipFreeze {
+		frozen, refs, ferr := d.freezeState(ctx, groupID, row.Epoch)
+		if ferr != nil {
+			return CommitResult{}, ferr
+		}
+		if frozen {
+			return CommitResult{}, errCommitRequired(refs,
+				uint64(d.opts.Policy.CommitDeadline.Milliseconds()))
+		}
+	}
 
 	var result CommitResult
+	// The applied list and the epoch the commit came FROM are carried out of the closure: the
+	// re-issue of whatever an external commit omitted (invariant 5's nobody-online exception) and
+	// the next slice of a join storm both call back into the proposal path, which takes withGroup
+	// again — and withGroup's handle lock is a plain sync.Mutex. Running either inside the closure
+	// would deadlock this group's request goroutine for the life of the process.
+	var applied []mlswasi.AppliedProposal
+	oldEpoch := row.Epoch
 	err = d.withGroup(ctx, groupID, func(g *mlswasi.PublicGroup) error {
 		// (4) structural validation.
 		processed, err := g.Process(ctx, c.Commit)
@@ -269,8 +289,9 @@ func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 		}
 
 		// (8) fan out. Everything reachable from here runs with the group lock ALREADY HELD by
-		// commit, so it must be lock-free: task 21's reissueOmitted joins this point and calls
-		// only the …Locked forms of the proposal API.
+		// commit, so it must be lock-free: the re-issue below and drainPendingJoins call only the
+		// …Locked forms of the proposal API.
+		applied = processed.Applied
 		if d.opts.Gateway != nil {
 			d.opts.Gateway.SetGroupMembers(groupID, members.devices)
 			d.opts.Gateway.SetGroupLeaves(groupID, members.leaves)
@@ -295,6 +316,25 @@ func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 		// plan-1a task 7 declares `DSCommits *prometheus.CounterVec` for
 		// `dilla_ds_commits_total{result}`. There is no `CommitsTotal`.
 		d.opts.Metrics.DSCommits.WithLabelValues("accepted").Inc()
+	}
+
+	// (9) invariant 5's tail, with the group lock still held and withGroup returned. A commit can
+	// only OMIT an outstanding instance proposal through the nobody-online exception above, so
+	// the re-issue runs exactly on that path: every proposal the commit did not reference is
+	// re-signed for the new epoch, keeping its action_id, and the freeze stays.
+	if o.external {
+		if rerr := d.reissueOmitted(ctx, groupID, oldEpoch, applied); rerr != nil {
+			d.log().Error("re-issuing the proposals an external commit omitted failed",
+				"group", groupID, "err", rerr)
+		}
+	}
+	// And the next slice of a join storm, once the Adds of this commit have landed. Without it a
+	// 1,000-device batch stalls after its first 256.
+	for _, a := range applied {
+		if a.Kind == mlswasi.ProposalAdd {
+			d.drainPendingJoins(ctx, groupID)
+			break
+		}
 	}
 	return result, nil
 }

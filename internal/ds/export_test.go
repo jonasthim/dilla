@@ -58,3 +58,35 @@ func CommitExternalForTest(d *DS, ctx context.Context, s Session, groupID id.ID,
 func QueueMemberProposalForTest(d *DS, ctx context.Context, g *mlswasi.PublicGroup, s Session, groupID id.ID, blob []byte) ([]byte, mlswasi.ProposalDetail, error) {
 	return d.queueMemberProposal(ctx, g, s, groupID, blob)
 }
+
+// ------------------------------------------------------------------- task 21
+
+// FreezeStateForTest is freezeState: invariant 5's predicate WITH the online clause. It is
+// exported because the two callers that consult it — the external-commit path (tasks 24 and 25)
+// and the resync exemption — do not exist yet, and R10's "the freeze lifts when nobody is online"
+// is the one clause a later task could quietly drop.
+func FreezeStateForTest(d *DS, ctx context.Context, groupID id.ID, epoch uint64) (bool, [][]byte, error) {
+	return d.freezeState(ctx, groupID, epoch)
+}
+
+// RequireNoFreezeForTest is requireNoFreeze: the guard the MESSAGE path takes, which deliberately
+// does NOT consult the online predicate. `DS.Upload` is task 23's, so this is the only way to
+// assert that difference before the endpoint exists — and getting it wrong lets ciphertext
+// through a live freeze.
+func RequireNoFreezeForTest(d *DS, ctx context.Context, groupID id.ID, epoch uint64) error {
+	return d.requireNoFreeze(ctx, groupID, epoch)
+}
+
+// SweepProposalsForTest is sweepProposals. The retention sweeper that owns its tick is task 26's;
+// invariant 6's TTL is task 21's, and it is evaluated lazily at a decision point rather than by an
+// armed timer, so the tests drive the sweep directly against clock.Fake.
+func SweepProposalsForTest(d *DS, ctx context.Context) (int, error) {
+	return d.sweepProposals(ctx)
+}
+
+// PendingJoinsForTest is how many devices of a join storm are waiting for the next commit.
+func PendingJoinsForTest(d *DS, groupID id.ID) int {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+	return len(d.pending[groupID])
+}
