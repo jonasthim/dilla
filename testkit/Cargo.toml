@@ -29,6 +29,21 @@ rand_chacha = "0.3"     # deterministic seeding; matches openmls_rust_crypto's m
 # derives the Ed25519 key itself. Same pin and same features as dilla-core, so no second major.
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
 clap        = { version = "4", features = ["derive"] }
+# The remote-DS client. Both are fully synchronous over std::net::TcpStream, which is what keeps
+# the testkit single-threaded and its failures readable. NO TLS on either: the TLS stacks pull
+# five crates deny.toml's licence allow-list rejects, and the harness only ever talks to a
+# loopback listener the Go harness started.
+#
+# tungstenite's `handshake` feature is NOT optional here, which is a departure from "no default
+# features on either": tungstenite 0.30.0's manifest has `default = ["handshake"]`, and
+# `src/lib.rs` gates `pub mod client`, `pub mod handshake`, `pub use http` and the
+# `connect`/`ClientHandshake` re-exports on `#[cfg(feature = "handshake")]`. Without it
+# `tungstenite::client`, `tungstenite::http::Request::builder()` and
+# `tungstenite::handshake::client::generate_key()` — all three of which the client below calls —
+# do not exist. The feature pulls only `data-encoding`, `http`, `httparse` and `sha1`, and no TLS
+# stack. interfaces §7.1 pins `default-features = false` for **ureq** alone. Deviation B15.
+ureq        = { version = "3.4.2", default-features = false }
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 
 [[bin]]
 name = "dilla-testkit"

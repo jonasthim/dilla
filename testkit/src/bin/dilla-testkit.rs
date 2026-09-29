@@ -22,6 +22,12 @@ enum Command {
         /// run: reproduction is structural, not byte-for-byte.
         #[arg(long, default_value_t = 0x5eed)]
         seed: u64,
+        /// Run against the dillad instance at this base URL (`http://127.0.0.1:<port>`) instead
+        /// of the in-memory stub. Overrides the scenario's own `ds <url>` line. A remote run reads
+        /// the bootstrap invite code from DILLA_TESTKIT_INVITE and the test host's control
+        /// listener from DILLA_TESTKIT_CONTROL.
+        #[arg(long)]
+        ds: Option<String>,
     },
     /// Check the committed protocol vectors and print the report.
     Vectors,
@@ -39,7 +45,7 @@ enum Command {
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Run { path, seed } => {
+        Command::Run { path, seed, ds } => {
             let src = match std::fs::read_to_string(&path) {
                 Ok(s) => s,
                 Err(e) => {
@@ -58,7 +64,7 @@ fn main() -> std::process::ExitCode {
                     return std::process::ExitCode::from(2);
                 }
             };
-            let mut runner = Runner::new(seed);
+            let mut runner = Runner::new(seed).with_ds(ds);
             match runner.run(&scenario) {
                 Ok(report) => {
                     print!("{}", report.to_text());

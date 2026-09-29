@@ -292,6 +292,31 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     24 hours the group is closed and re-created by the channel owner's device. All non-last-resort
     KeyPackages are purged on restore. Live calls end.
 
+### Testkit scenario DSL
+
+The chaos scenarios are `.scn` files in `testkit/scenarios/`: one statement per line, `#` comments.
+They run against `dilla-testkit`'s in-memory delivery service, or against a running instance when
+the file says `ds <url>` or the runner is given `--ds <url>` (which wins). This list is informative;
+the parser in `testkit/src/scenario/parse.rs` is the reference.
+
+Base vocabulary: `instance`, `client`, `sync`, `group`, `join`, `external_join`, `send`,
+`expect_decrypts`, `remove`, `go_offline`, `go_online`, `expect_reject <code> <statement>`.
+
+Added for the remote delivery service:
+
+- `ds <url>` — run against the instance at `url`; only before the first `client`.
+- `kick <actor> <target>` — the instance proposes removing `target`'s device on `actor`'s authority.
+- `advance_clock <duration>` — move the instance clock by `30s`, `5m`, `24h` or `90d`.
+- `expect_frame <op> [field=value …]` — the last client to act received that frame, by its label above.
+- `expect_425 <statement>` — the statement is refused `425 E_COMMIT_REQUIRED`.
+- `snapshot <name>` — the test host snapshots the instance's state under `name`.
+- `restore_snapshot <name>` — the test host restores it, as `dillad restore` would.
+- `commit <actor>` — the actor commits for the current epoch of every group it is in.
+- `join_many <group> <count>` — `count` new clients join, at most 256 Adds per commit.
+- `expect_decrypts_all <actor>` — everything the actor received since its last such assertion decrypts.
+- `expect_quarantined <actor>` — the instance reports the actor's device quarantined (invariant 9).
+- `expect_closed <group>` — the instance reports the group closed (invariant 11).
+
 ## Errors
 
 Every `/v1` refusal is an HTTP status plus a body that is the deterministic-CBOR fixed-position

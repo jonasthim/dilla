@@ -1,5 +1,7 @@
-//! dilla-testkit v0: N headless native `dilla-core` clients against an in-memory delivery service,
-//! driven by a line-oriented scenario language.
+//! dilla-testkit: N headless native `dilla-core` clients against a delivery service, driven by a
+//! line-oriented scenario language. The delivery service is a trait (`DeliveryService`) with two
+//! implementations: the in-memory `DsStub`, which a scenario gets by default, and `HttpDs`, the
+//! real `/v1` surface and gateway of a running `dillad`, which `ds <url>` or `--ds <url>` selects.
 //!
 //! The stub covers R20's week-1 subset of `protocol/02-delivery-service.md`: registration with the
 //! `dilla_binding` (invariant 1, minus the `mode_readable` channel check), the tree service
@@ -18,8 +20,11 @@ mod scenario;
 
 pub use client::{Received, TestClient};
 pub use ds::{
-    CommitAccepted, CommitUpload, DsError, DsStub, Frame, GroupInfoResponse, GroupRegistered,
-    HandshakeItem, InstanceConfig, MessageAccepted, MessageItem, RegisterGroup, TreeResponse,
+    CommitAccepted, CommitRequest, CommitResult, CommitUpload, DeliveryService, Device, DsError,
+    DsStub, Enrolled, ErrorExtras, Frame, GroupId, GroupInfoResp, GroupInfoResponse,
+    GroupRegistered, HandshakeItem, HealRequest, HttpDs, InstanceConfig, KeyPackageResp,
+    MessageAccepted, MessageItem, NewAccount, RegisterGroup, RegisterRequest, RegisterResult,
+    ResyncRequest, TreeResp, TreeResponse, UploadResult, WelcomeItem,
 };
 pub use fixtures::{FixtureFile, FixtureManifest, FixtureSpec, gen_public_group};
 pub use scenario::{ParseError, RunReport, Runner, Scenario, StepResult, Stmt, parse};

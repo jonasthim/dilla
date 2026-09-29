@@ -48,11 +48,74 @@ pub enum Stmt {
     GoOnline {
         client: String,
     },
+    /// `expect_reject <code> <statement…>`, and `expect_425 <statement…>` with `status` set: the
+    /// inner statement must fail with that code (and, when given, that HTTP status).
     ExpectReject {
         code: String,
+        status: Option<u16>,
         inner: Box<Stmt>,
     },
+    /// `ds <url>`: run against the instance at `url` through `HttpDs` instead of `DsStub`. Must
+    /// precede the first `client` (NV-B2); the CLI's `--ds` overrides it.
+    Ds {
+        url: String,
+    },
+    /// `kick <actor> <target>`: the instance proposes the removal of every device of `target`'s
+    /// from each group `target` is in, on `actor`'s authority (invariants 5 and 6).
+    Kick {
+        actor: String,
+        target: String,
+    },
+    /// `advance_clock <duration>`: `30s`, `5m`, `24h` or `90d`.
+    AdvanceClock {
+        seconds: u64,
+    },
+    /// `expect_frame <op> [field=value …]`: the last client that acted has received a frame with
+    /// that protocol/02 label whose named payload fields have those values.
+    ExpectFrame {
+        op: String,
+        fields: Vec<(String, String)>,
+    },
+    Snapshot {
+        name: String,
+    },
+    RestoreSnapshot {
+        name: String,
+    },
+    /// `commit <actor>`: the actor commits for the current epoch of every group it is in.
+    Commit {
+        actor: String,
+    },
+    /// `join_many <group> <count>`: `count` new clients join `group`, at most 256 Adds a commit.
+    JoinMany {
+        group: String,
+        count: usize,
+    },
+    /// `expect_decrypts_all <actor>`: every message the actor received since its last such
+    /// assertion decrypts, and there is at least one.
+    ExpectDecryptsAll {
+        actor: String,
+    },
+    /// `expect_quarantined <actor>`: the test host reports the actor's device quarantined.
+    ExpectQuarantined {
+        actor: String,
+    },
+    /// `expect_closed <group>`: the test host reports the group closed.
+    ExpectClosed {
+        group: String,
+    },
 }
+
+/// protocol/02's labels for the delivery-service frames a client receives, plus `error`.
+const FRAME_LABELS: &[&str] = &[
+    "mls.handshake",
+    "mls.commit_needed",
+    "mls.epoch_changed",
+    "message.ct",
+    "mls.welcome",
+    "message.deleted",
+    "error",
+];
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Scenario {
@@ -95,6 +158,46 @@ fn hex16(s: &str, line: usize) -> Result<[u8; 16], ParseError> {
 
 fn named<'a>(args: &[&'a str], key: &str) -> Option<&'a str> {
     args.iter().find_map(|a| a.strip_prefix(key))
+}
+
+/// `30s`, `5m`, `24h`, `90d`: a scenario never writes a bare number of seconds for a 90-day window.
+fn duration_seconds(s: &str, line: usize) -> Result<u64, ParseError> {
+    let bad = || {
+        err(
+            line,
+            format!("expected a duration like 30s, 5m, 24h or 90d, got {s:?}"),
+        )
+    };
+    let (digits, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).ok_or_else(bad)?);
+    let n: u64 = digits.parse().map_err(|_| bad())?;
+    let scale = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        _ => return Err(bad()),
+    };
+    n.checked_mul(scale).ok_or_else(bad)
+}
+
+fn op_name(s: &str, line: usize) -> Result<String, ParseError> {
+    if FRAME_LABELS.contains(&s) {
+        Ok(s.to_owned())
+    } else {
+        Err(err(
+            line,
+            format!("unknown frame {s:?}; expected one of {FRAME_LABELS:?}"),
+        ))
+    }
+}
+
+fn key_values(args: &[&str], line: usize) -> Result<Vec<(String, String)>, ParseError> {
+    args.iter()
+        .map(|a| match a.split_once('=') {
+            Some((k, v)) if !k.is_empty() && !v.is_empty() => Ok((k.to_owned(), v.to_owned())),
+            _ => Err(err(line, format!("expected field=value, got {a:?}"))),
+        })
+        .collect()
 }
 
 fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, ParseError> {
@@ -242,11 +345,129 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
             let inner_rest = rest_after(rest, 2);
             Stmt::ExpectReject {
                 code: args[0].to_owned(),
-                inner: Box::new(parse_stmt(line_no, &inner_tokens, &inner_rest)?),
+                status: None,
+                inner: Box::new(parse_inner(line_no, &inner_tokens, &inner_rest)?),
+            }
+        }
+        // Sugar over `expect_reject E_COMMIT_REQUIRED <statement…>` that also pins the status:
+        // invariant 5's freeze answers 425 Too Early.
+        "expect_425" => {
+            need(1)?;
+            let inner_tokens: Vec<&str> = tokens[1..].to_vec();
+            // The inner verb is one token earlier than under `expect_reject`, so its free-text
+            // body starts one token after the outer line's `rest`.
+            let inner_rest = rest_after(rest, 1);
+            Stmt::ExpectReject {
+                code: "E_COMMIT_REQUIRED".to_owned(),
+                status: Some(425),
+                inner: Box::new(parse_inner(line_no, &inner_tokens, &inner_rest)?),
+            }
+        }
+        "ds" => {
+            need(1)?;
+            if !args[0].starts_with("http://") {
+                return Err(err(
+                    line_no,
+                    format!(
+                        "ds needs an http:// URL (the testkit speaks to loopback only), got {:?}",
+                        args[0]
+                    ),
+                ));
+            }
+            Stmt::Ds {
+                url: args[0].to_owned(),
+            }
+        }
+        "kick" => {
+            need(2)?;
+            Stmt::Kick {
+                actor: args[0].to_owned(),
+                target: args[1].to_owned(),
+            }
+        }
+        "advance_clock" => {
+            need(1)?;
+            Stmt::AdvanceClock {
+                seconds: duration_seconds(args[0], line_no)?,
+            }
+        }
+        "expect_frame" => {
+            need(1)?;
+            Stmt::ExpectFrame {
+                op: op_name(args[0], line_no)?,
+                fields: key_values(&args[1..], line_no)?,
+            }
+        }
+        "snapshot" => {
+            need(1)?;
+            Stmt::Snapshot {
+                name: args[0].to_owned(),
+            }
+        }
+        "restore_snapshot" => {
+            need(1)?;
+            Stmt::RestoreSnapshot {
+                name: args[0].to_owned(),
+            }
+        }
+        // The five verbs task 29's scenarios use beyond the vocabulary above: a scenario has no
+        // other way to commit without an implicit commit hiding inside `send`, to join in bulk, or
+        // to assert on state only the test host can see.
+        "commit" => {
+            need(1)?;
+            Stmt::Commit {
+                actor: args[0].to_owned(),
+            }
+        }
+        "join_many" => {
+            need(2)?;
+            let count = args[1]
+                .parse::<usize>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| {
+                    err(
+                        line_no,
+                        format!("join_many needs a positive count, got {:?}", args[1]),
+                    )
+                })?;
+            Stmt::JoinMany {
+                group: args[0].to_owned(),
+                count,
+            }
+        }
+        "expect_decrypts_all" => {
+            need(1)?;
+            Stmt::ExpectDecryptsAll {
+                actor: args[0].to_owned(),
+            }
+        }
+        "expect_quarantined" => {
+            need(1)?;
+            Stmt::ExpectQuarantined {
+                actor: args[0].to_owned(),
+            }
+        }
+        "expect_closed" => {
+            need(1)?;
+            Stmt::ExpectClosed {
+                group: args[0].to_owned(),
             }
         }
         other => return Err(err(line_no, format!("unknown statement {other:?}"))),
     })
+}
+
+/// The statement an `expect_reject` or `expect_425` wraps. `ds` is a directive, not something
+/// that can fail, so it is refused here as it is anywhere after the first `client`.
+fn parse_inner(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, ParseError> {
+    if tokens.first() == Some(&"ds") {
+        return Err(err(
+            line_no,
+            "`ds <url>` cannot be wrapped in an expectation",
+        ));
+    }
+    parse_stmt(line_no, tokens, rest)
 }
 
 /// The tail of a line after `skip` further whitespace-separated tokens.
@@ -264,6 +485,7 @@ fn rest_after(rest: &str, skip: usize) -> String {
 pub fn parse(src: &str, name: &str) -> Result<Scenario, ParseError> {
     let mut stmts = Vec::new();
     let mut lines = Vec::new();
+    let mut saw_client = false;
     for (index, raw) in src.lines().enumerate() {
         let line_no = index + 1;
         let line = raw.trim();
@@ -271,9 +493,16 @@ pub fn parse(src: &str, name: &str) -> Result<Scenario, ParseError> {
             continue;
         }
         let tokens: Vec<&str> = line.split_whitespace().collect();
+        // NV-B2: `ds` is an ordinary statement, but it selects the delivery service every client
+        // is enrolled with, so it must come before the first one.
+        if tokens[0] == "ds" && saw_client {
+            return Err(err(line_no, "`ds <url>` must precede the first `client`"));
+        }
         // Everything after the third token, used as the free-text body of send/expect_decrypts.
         let rest = rest_after(line, 3);
-        stmts.push(parse_stmt(line_no, &tokens, &rest)?);
+        let stmt = parse_stmt(line_no, &tokens, &rest)?;
+        saw_client |= matches!(stmt, Stmt::Client { .. } | Stmt::JoinMany { .. });
+        stmts.push(stmt);
         lines.push(line_no);
     }
     Ok(Scenario {
@@ -364,12 +593,200 @@ expect_reject E_BINDING join bob chat
         assert!(matches!(&s.stmts[11], Stmt::GoOnline { .. }));
         assert!(matches!(&s.stmts[12], Stmt::Sync { .. }));
         match &s.stmts[13] {
-            Stmt::ExpectReject { code, inner } => {
+            Stmt::ExpectReject {
+                code,
+                status,
+                inner,
+            } => {
                 assert_eq!(code, "E_BINDING");
+                assert_eq!(*status, None);
                 assert!(matches!(**inner, Stmt::Join { .. }));
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    fn one(line: &str) -> Result<Stmt, ParseError> {
+        parse(line, "one").map(|s| s.stmts.into_iter().next().expect("one statement"))
+    }
+
+    fn refused(line: &str, needle: &str) {
+        let e = one(line).expect_err(line);
+        assert_eq!(e.line, 1, "{line}");
+        assert!(e.message.contains(needle), "{line}: {}", e.message);
+    }
+
+    #[test]
+    fn ds_selects_the_remote_delivery_service_before_the_first_client_only() {
+        let s = parse(
+            "ds http://127.0.0.1:4567\ninstance dilla\nclient alice\n",
+            "ds",
+        )
+        .unwrap();
+        assert_eq!(
+            s.stmts[0],
+            Stmt::Ds {
+                url: "http://127.0.0.1:4567".into()
+            }
+        );
+        let e = parse(
+            "instance dilla\nclient alice\nds http://127.0.0.1:1\n",
+            "late",
+        )
+        .unwrap_err();
+        assert_eq!(e.line, 3);
+        assert!(
+            e.message.contains("precede the first `client`"),
+            "{}",
+            e.message
+        );
+        refused("ds https://dilla.example", "http://");
+        refused("ds", "ds needs 1");
+        refused(
+            "expect_reject E_X ds http://127.0.0.1:1",
+            "cannot be wrapped",
+        );
+    }
+
+    #[test]
+    fn kick_names_an_actor_and_a_target() {
+        assert_eq!(
+            one("kick alice bob").unwrap(),
+            Stmt::Kick {
+                actor: "alice".into(),
+                target: "bob".into()
+            }
+        );
+        refused("kick alice", "kick needs 2");
+    }
+
+    #[test]
+    fn advance_clock_takes_a_duration_with_a_unit() {
+        for (text, seconds) in [
+            ("30s", 30),
+            ("5m", 300),
+            ("24h", 86_400),
+            ("90d", 7_776_000),
+        ] {
+            assert_eq!(
+                one(&format!("advance_clock {text}")).unwrap(),
+                Stmt::AdvanceClock { seconds },
+                "{text}"
+            );
+        }
+        refused("advance_clock 90", "duration");
+        refused("advance_clock 2w", "duration");
+        refused("advance_clock h", "duration");
+        refused("advance_clock", "advance_clock needs 1");
+    }
+
+    #[test]
+    fn expect_frame_names_a_protocol_02_label_and_field_values() {
+        assert_eq!(
+            one("expect_frame mls.commit_needed epoch=3 round=1").unwrap(),
+            Stmt::ExpectFrame {
+                op: "mls.commit_needed".into(),
+                fields: vec![("epoch".into(), "3".into()), ("round".into(), "1".into())],
+            }
+        );
+        assert!(matches!(
+            one("expect_frame message.ct").unwrap(),
+            Stmt::ExpectFrame { fields, .. } if fields.is_empty()
+        ));
+        refused("expect_frame mls.nonsense", "unknown frame");
+        refused("expect_frame mls.handshake epoch", "field=value");
+    }
+
+    #[test]
+    fn expect_425_is_expect_reject_e_commit_required_at_status_425() {
+        match one("expect_425 send alice chat hold on there").unwrap() {
+            Stmt::ExpectReject {
+                code,
+                status,
+                inner,
+            } => {
+                assert_eq!(code, "E_COMMIT_REQUIRED");
+                assert_eq!(status, Some(425));
+                assert_eq!(
+                    *inner,
+                    Stmt::Send {
+                        client: "alice".into(),
+                        group: "chat".into(),
+                        body: "hold on there".into()
+                    }
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        refused("expect_425", "expect_425 needs 1");
+    }
+
+    #[test]
+    fn snapshot_and_restore_snapshot_name_the_snapshot() {
+        assert_eq!(
+            one("snapshot before").unwrap(),
+            Stmt::Snapshot {
+                name: "before".into()
+            }
+        );
+        assert_eq!(
+            one("restore_snapshot before").unwrap(),
+            Stmt::RestoreSnapshot {
+                name: "before".into()
+            }
+        );
+        refused("snapshot", "snapshot needs 1");
+        refused("restore_snapshot", "restore_snapshot needs 1");
+    }
+
+    #[test]
+    fn commit_names_its_actor() {
+        assert_eq!(
+            one("commit alice").unwrap(),
+            Stmt::Commit {
+                actor: "alice".into()
+            }
+        );
+        refused("commit", "commit needs 1");
+    }
+
+    #[test]
+    fn join_many_takes_a_group_and_a_positive_count() {
+        assert_eq!(
+            one("join_many chat 1000").unwrap(),
+            Stmt::JoinMany {
+                group: "chat".into(),
+                count: 1000
+            }
+        );
+        refused("join_many chat 0", "positive count");
+        refused("join_many chat many", "positive count");
+        refused("join_many chat", "join_many needs 2");
+    }
+
+    #[test]
+    fn the_three_state_assertions_name_what_they_assert_on() {
+        assert_eq!(
+            one("expect_decrypts_all bob").unwrap(),
+            Stmt::ExpectDecryptsAll {
+                actor: "bob".into()
+            }
+        );
+        assert_eq!(
+            one("expect_quarantined bob").unwrap(),
+            Stmt::ExpectQuarantined {
+                actor: "bob".into()
+            }
+        );
+        assert_eq!(
+            one("expect_closed chat").unwrap(),
+            Stmt::ExpectClosed {
+                group: "chat".into()
+            }
+        );
+        refused("expect_decrypts_all", "expect_decrypts_all needs 1");
+        refused("expect_quarantined", "expect_quarantined needs 1");
+        refused("expect_closed", "expect_closed needs 1");
     }
 
     #[test]

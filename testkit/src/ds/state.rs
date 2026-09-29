@@ -9,8 +9,18 @@ use openmls::prelude::*;
 use openmls::treesync::RatchetTree;
 use std::collections::BTreeMap;
 
-/// The stub parses exactly two things: a commit, so `DillaPublicGroup` can validate it, and the
-/// ratchet tree it serves back. It never parses an application message — see `post_message`.
+// Named explicitly: the openmls prelude glob above also exports a `GroupId`, and an explicit import
+// shadows a glob one.
+use super::{
+    CommitRequest, CommitResult, DeliveryService, Device, GroupId, GroupInfoResp, HealRequest,
+    KeyPackageResp, RegisterRequest, RegisterResult, ResyncRequest, TreeResp, UploadResult,
+    WelcomeItem,
+};
+
+/// The stub parses three things: a commit, so `DillaPublicGroup` can validate it; the ratchet tree
+/// and GroupInfo a creator registers, so it can build that view; and the cleartext
+/// `authenticated_data` header of an application message, which is where the franking commitment
+/// travels. It never decrypts anything — see `post_message`.
 fn deserialize_protocol(bytes: &[u8]) -> Result<ProtocolMessage, String> {
     use tls_codec::Deserialize as _;
     MlsMessageIn::tls_deserialize_exact(bytes)
@@ -65,8 +75,73 @@ pub enum DsError {
     },
     #[error("E_COMMIT_REQUIRED")]
     CommitRequired { proposals: Vec<Vec<u8>> },
-    #[error("E_COMMIT_INVALID")]
+    /// The Display carries the rule, because "which rule refused it" is the whole diagnosis.
+    #[error("E_COMMIT_INVALID: {reason}")]
     CommitInvalid { reason: String },
+    /// A refusal from a remote instance whose code the stub never raises itself (`E_FORBIDDEN`,
+    /// `E_UNAUTHENTICATED`, `E_INVALID_REQUEST`, …). `code` is interned from protocol/02's one
+    /// vocabulary, so `code()` stays `&'static str`; an answer carrying a code outside that
+    /// vocabulary is a `Protocol` error, not one of these.
+    #[error("{code} ({status}): {detail}")]
+    Remote {
+        status: u16,
+        code: &'static str,
+        detail: String,
+    },
+    /// The testkit's own client could not make sense of an answer: a body that is not the CBOR
+    /// shape its route promises, a missing environment variable, an unknown frame. Not a wire code.
+    #[error("testkit protocol: {0}")]
+    Protocol(String),
+    /// The socket, the HTTP connection or the WebSocket failed. Not a wire code.
+    #[error("testkit transport: {0}")]
+    Transport(String),
+    /// The delivery service behind the trait does not model this call. `DsStub` answers it for
+    /// invariants 9 and 11 (fork reports, heal) and for the control-listener verbs, so a scenario
+    /// that needs them fails loudly against the stub instead of passing vacuously.
+    #[error("testkit unsupported: {0}")]
+    Unsupported(String),
+}
+
+/// protocol/02's error vocabulary, the one table `internal/server/errors.go` holds and
+/// `scripts/check-protocol-docs.mjs` diffs in both directions. `DsError::from_code` interns a
+/// remote answer's code against it.
+const WIRE_CODES: &[&str] = &[
+    "E_BINDING_INVALID",
+    "E_CHANNEL_MODE",
+    "E_COMMIT_CONFLICT",
+    "E_COMMIT_INVALID",
+    "E_COMMITMENT_INVALID",
+    "E_COMMIT_REQUIRED",
+    "E_ENVELOPE_LIMIT",
+    "E_ENVELOPE_SHAPE",
+    "E_ENVELOPE_TYPE",
+    "E_FORBIDDEN",
+    "E_GROUP_EXISTS",
+    "E_INTERNAL",
+    "E_INVALID_REQUEST",
+    "E_INVITE_INVALID",
+    "E_LEAF_NOT_CURRENT",
+    "E_MODE_READABLE",
+    "E_NOT_FOUND",
+    "E_NOT_UPLOADER",
+    "E_PROVISIONAL_OUTSIDE_PAIRING",
+    "E_PRUNED",
+    "E_RATE_LIMITED",
+    "E_STORAGE_FULL",
+    "E_TOO_LARGE",
+    "E_UNAUTHENTICATED",
+    "E_VERSION",
+];
+
+/// The positions after `[code, detail, retry_after_ms]` in a remote error body: the four
+/// extended shapes of protocol/02 § Errors. `check_status` in `ds::remote` fills in what the
+/// body carries; everything else is left empty.
+#[derive(Default)]
+pub struct ErrorExtras {
+    pub retry_after_ms: Option<u64>,
+    pub winning_commit: Vec<u8>,
+    pub proposals: Vec<Vec<u8>>,
+    pub rule: String,
 }
 
 impl DsError {
@@ -84,6 +159,60 @@ impl DsError {
             Self::CommitConflict { .. } => "E_COMMIT_CONFLICT",
             Self::CommitRequired { .. } => "E_COMMIT_REQUIRED",
             Self::CommitInvalid { .. } => "E_COMMIT_INVALID",
+            Self::Remote { code, .. } => code,
+            Self::Protocol(_) => "testkit:protocol",
+            Self::Transport(_) => "testkit:transport",
+            Self::Unsupported(_) => "testkit:unsupported",
+        }
+    }
+
+    /// Rebuilds the refusal a remote instance answered with. The twelve codes the stub raises
+    /// itself come back as their own variants, carrying what the extended body positions hold, so
+    /// a scenario's `expect_reject` matches one Display whichever delivery service ran it.
+    pub fn from_code(status: u16, code: &str, detail: &str, extras: ErrorExtras) -> Self {
+        let typed = match code {
+            "E_BINDING_INVALID" => Some(Self::BindingInvalid),
+            "E_MODE_READABLE" => Some(Self::ModeReadable),
+            "E_GROUP_EXISTS" => Some(Self::GroupExists),
+            "E_NOT_FOUND" => Some(Self::NotFound),
+            "E_LEAF_NOT_CURRENT" => Some(Self::LeafNotCurrent),
+            "E_COMMITMENT_INVALID" => Some(Self::CommitmentInvalid),
+            "E_TOO_LARGE" => Some(Self::TooLarge),
+            "E_PRUNED" => Some(Self::Pruned),
+            "E_RATE_LIMITED" => Some(Self::RateLimited {
+                retry_after_ms: extras.retry_after_ms.unwrap_or(0),
+            }),
+            "E_COMMIT_CONFLICT" => Some(Self::CommitConflict {
+                winning_commit: extras.winning_commit,
+                proposals: extras.proposals,
+            }),
+            "E_COMMIT_REQUIRED" => Some(Self::CommitRequired {
+                proposals: extras.proposals,
+            }),
+            "E_COMMIT_INVALID" => Some(Self::CommitInvalid {
+                reason: if extras.rule.is_empty() {
+                    detail.to_owned()
+                } else {
+                    extras.rule
+                },
+            }),
+            _ => None,
+        };
+        // A typed variant carries its own default status; a remote instance that answered the
+        // same code at another status (protocol/02 permits exactly one such override, a duplicate
+        // username at 409) is kept as `Remote` so the status the scenario sees is the real one.
+        match typed {
+            Some(e) if e.http_status() == status => e,
+            _ => match WIRE_CODES.iter().find(|c| **c == code) {
+                Some(code) => Self::Remote {
+                    status,
+                    code,
+                    detail: detail.to_owned(),
+                },
+                None => Self::Protocol(format!(
+                    "HTTP {status} carried {code:?}, which is not in protocol/02's vocabulary: {detail}"
+                )),
+            },
         }
     }
 
@@ -98,6 +227,9 @@ impl DsError {
             Self::CommitmentInvalid | Self::CommitInvalid { .. } => 422,
             Self::CommitRequired { .. } => 425,
             Self::RateLimited { .. } => 429,
+            Self::Remote { status, .. } => *status,
+            // Not an HTTP answer at all: the request never produced one the client could read.
+            Self::Protocol(_) | Self::Transport(_) | Self::Unsupported(_) => 0,
         }
     }
 
@@ -188,6 +320,82 @@ pub enum Frame {
         group_id: Vec<u8>,
         item: MessageItem,
     },
+    /// Op 17, invariant 7's election. The stub never sends it: it does not model the watchdog.
+    CommitNeeded {
+        group_id: Vec<u8>,
+        epoch: u64,
+        proposal_refs: Vec<Vec<u8>>,
+        deadline_ms: u64,
+        round: u64,
+    },
+    /// Op 21. The stub never sends it: it has no message delete.
+    MessageDeleted {
+        group_id: Vec<u8>,
+        seq: u64,
+        deleted_at: u64,
+    },
+    /// Op 9, the structured failure an instance sends before it closes a connection.
+    GatewayError {
+        cid: u64,
+        code: String,
+        detail: String,
+    },
+}
+
+impl Frame {
+    /// protocol/02's documentation label for the frame's opcode, which is what a scenario's
+    /// `expect_frame` names.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::MlsHandshake { .. } => "mls.handshake",
+            Self::CommitNeeded { .. } => "mls.commit_needed",
+            Self::MlsEpochChanged { .. } => "mls.epoch_changed",
+            Self::MessageCt { .. } => "message.ct",
+            Self::MlsWelcome { .. } => "mls.welcome",
+            Self::MessageDeleted { .. } => "message.deleted",
+            Self::GatewayError { .. } => "error",
+        }
+    }
+
+    /// One payload field by its protocol/02 name, rendered the way a scenario writes it: decimal
+    /// for a uint, lowercase hex for a byte string. `group_id` is element 2 of every group frame.
+    pub fn field(&self, name: &str) -> Option<String> {
+        let uint = |v: u64| Some(v.to_string());
+        let hex = |v: &[u8]| Some(hex::encode(v));
+        match (self, name) {
+            (
+                Self::MlsHandshake { group_id, .. }
+                | Self::MlsWelcome { group_id, .. }
+                | Self::MlsEpochChanged { group_id, .. }
+                | Self::MessageCt { group_id, .. }
+                | Self::CommitNeeded { group_id, .. }
+                | Self::MessageDeleted { group_id, .. },
+                "group_id",
+            ) => hex(group_id),
+            (Self::MlsHandshake { item, .. }, "seq") => uint(item.seq),
+            (Self::MlsHandshake { item, .. }, "epoch") => uint(item.epoch),
+            (Self::MlsHandshake { item, .. }, "kind") => uint(u64::from(item.kind)),
+            (Self::MlsHandshake { item, .. }, "sender") => {
+                item.sender.map(u64::from).and_then(uint)
+            }
+            (Self::MlsEpochChanged { epoch, .. }, "epoch") => uint(*epoch),
+            (Self::MlsEpochChanged { seq, .. }, "seq") => uint(*seq),
+            (Self::MessageCt { item, .. }, "seq") => uint(item.seq),
+            (Self::MessageCt { item, .. }, "epoch") => uint(item.epoch),
+            (Self::MessageCt { item, .. }, "uploader_device") => {
+                hex(item.uploader_device.as_bytes())
+            }
+            (Self::CommitNeeded { epoch, .. }, "epoch") => uint(*epoch),
+            (Self::CommitNeeded { deadline_ms, .. }, "deadline_ms") => uint(*deadline_ms),
+            (Self::CommitNeeded { round, .. }, "round") => uint(*round),
+            (Self::CommitNeeded { proposal_refs, .. }, "proposals") => {
+                uint(proposal_refs.len() as u64)
+            }
+            (Self::MessageDeleted { seq, .. }, "seq") => uint(*seq),
+            (Self::GatewayError { code, .. }, "code") => Some(code.clone()),
+            _ => None,
+        }
+    }
 }
 
 struct GroupState {
@@ -211,6 +419,8 @@ struct DeviceState {
     last_resort: Vec<u8>,
     online: bool,
     queue: Vec<Frame>,
+    /// Row 15's durable Welcome queue: fetched without being consumed, acknowledged by id.
+    welcomes: Vec<WelcomeItem>,
 }
 
 pub struct DsStub {
@@ -218,6 +428,11 @@ pub struct DsStub {
     groups: BTreeMap<Vec<u8>, GroupState>,
     devices: BTreeMap<[u8; 16], DeviceState>,
     clock: u64,
+    /// The device the `DeliveryService` impl speaks for; see `act_as`.
+    current: Option<DeviceId>,
+    /// Row 18: each device's `(last_seq, last_epoch)` per group.
+    cursors: BTreeMap<([u8; 16], Vec<u8>), (u64, u64)>,
+    next_welcome_id: u64,
 }
 
 impl DsStub {
@@ -227,7 +442,33 @@ impl DsStub {
             groups: BTreeMap::new(),
             devices: BTreeMap::new(),
             clock: 1_758_659_640,
+            current: None,
+            cursors: BTreeMap::new(),
+            next_welcome_id: 1,
         }
+    }
+
+    /// The device whose view the `DeliveryService` impl speaks for. `HttpDs` is one device's client
+    /// by construction; the stub is every device's, so the trait impl needs to know which one.
+    pub fn act_as(&mut self, device: DeviceId) {
+        self.current = Some(device);
+    }
+
+    fn current_device(&self) -> Result<DeviceId, DsError> {
+        self.current
+            .ok_or_else(|| DsError::Protocol("no current device: call act_as first".into()))
+    }
+
+    /// The cursor `advance_cursor` last recorded for `device` in `group_id`.
+    pub fn cursor(&self, device: &DeviceId, group_id: &[u8]) -> Option<(u64, u64)> {
+        self.cursors
+            .get(&(*device.as_bytes(), group_id.to_vec()))
+            .copied()
+    }
+
+    /// The stub's own clock, in unix seconds: `recv_ts` of the next upload.
+    pub fn clock(&self) -> u64 {
+        self.clock
     }
 
     fn device(&mut self, device: &DeviceId) -> &mut DeviceState {
@@ -238,6 +479,7 @@ impl DsStub {
                 last_resort: Vec::new(),
                 online: true,
                 queue: Vec::new(),
+                welcomes: Vec::new(),
             })
     }
 
@@ -443,10 +685,25 @@ impl DsStub {
         };
         g.handshakes.push(item.clone());
         let epoch = g.epoch;
+        let (welcome_tree, welcome_tree_hash) = (g.ratchet_tree.clone(), g.tree_hash.clone());
 
         for (device, blob) in req.welcomes {
             self.add_member_device(group_id, device);
-            self.device(&device).queue.push(Frame::MlsWelcome {
+            let welcome_id = self.next_welcome_id;
+            self.next_welcome_id += 1;
+            let entry = self.device(&device);
+            // Row 15 carries the tree **as of the welcoming epoch** (a dilla Welcome carries no
+            // tree, and the live tree moves on before the joiner collects).
+            entry.welcomes.push(WelcomeItem {
+                welcome_id,
+                group_id: group_id.to_vec(),
+                epoch,
+                commit_seq: seq,
+                blob: blob.clone(),
+                ratchet_tree: welcome_tree.clone(),
+                tree_hash: welcome_tree_hash.clone(),
+            });
+            entry.queue.push(Frame::MlsWelcome {
                 group_id: group_id.to_vec(),
                 blob,
             });
@@ -658,9 +915,49 @@ impl DsStub {
             |f| matches!(f, Frame::MlsWelcome { group_id: g, .. } if g.as_slice() == group_id),
         )?;
         match entry.queue.remove(at) {
-            Frame::MlsWelcome { blob, .. } => Some(blob),
+            Frame::MlsWelcome { blob, .. } => {
+                // The durable row goes with the frame: taking a Welcome is its acknowledgement.
+                if let Some(row) = entry
+                    .welcomes
+                    .iter()
+                    .position(|w| w.group_id == group_id && w.blob == blob)
+                {
+                    entry.welcomes.remove(row);
+                }
+                Some(blob)
+            }
             other => unreachable!("position() matched a Welcome, got {other:?}"),
         }
+    }
+
+    /// Row 15 for one device: every Welcome not yet acknowledged, oldest first, without consuming
+    /// any. An offline device is served nothing, exactly as `drain` and `take_welcome` serve it
+    /// nothing.
+    fn welcomes_for(&mut self, device: &DeviceId) -> Vec<WelcomeItem> {
+        let entry = self.device(device);
+        if !entry.online {
+            return Vec::new();
+        }
+        entry.welcomes.clone()
+    }
+
+    /// Row 16: marks one Welcome delivered. Its `mls.welcome` frame leaves the queue with it, and
+    /// every other queued frame stays where it is, in order — the `take_welcome` bookkeeping.
+    fn ack_welcome_for(&mut self, device: &DeviceId, welcome_id: u64) -> Result<(), DsError> {
+        let entry = self.device(device);
+        let row = entry
+            .welcomes
+            .iter()
+            .position(|w| w.welcome_id == welcome_id)
+            .ok_or(DsError::NotFound)?;
+        let acked = entry.welcomes.remove(row);
+        if let Some(at) = entry.queue.iter().position(|f| {
+            matches!(f, Frame::MlsWelcome { group_id, blob }
+                if *group_id == acked.group_id && *blob == acked.blob)
+        }) {
+            entry.queue.remove(at);
+        }
+        Ok(())
     }
 
     pub fn public_group(&self, group_id: &[u8]) -> Option<&DillaPublicGroup> {
@@ -673,5 +970,224 @@ impl DsStub {
 
     pub fn epoch(&self, group_id: &[u8]) -> Option<u64> {
         self.groups.get(group_id).map(|g| g.epoch)
+    }
+}
+
+/// Invariant 2's structural view, built from exactly the GroupInfo and tree a creator uploaded.
+fn public_view(group_info: &[u8], ratchet_tree: &[u8]) -> Result<DillaPublicGroup, DsError> {
+    use tls_codec::Deserialize as _;
+    let invalid = |reason: String| DsError::CommitInvalid { reason };
+    let info = match MlsMessageIn::tls_deserialize_exact(group_info)
+        .map_err(|e| invalid(format!("group_info: {e:?}")))?
+        .extract()
+    {
+        MlsMessageBodyIn::GroupInfo(info) => info,
+        other => return Err(invalid(format!("expected a GroupInfo, got {other:?}"))),
+    };
+    let tree = RatchetTreeIn::tls_deserialize_exact(ratchet_tree)
+        .map_err(|e| invalid(format!("ratchet_tree: {e:?}")))?;
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    DillaPublicGroup::from_external(&crypto, tree, info)
+        .map(|(public, _committer)| public)
+        .map_err(|e| invalid(format!("{e:?}")))
+}
+
+/// protocol/04 "Franking": the commitment `C` is the whole `authenticated_data` of the
+/// `PrivateMessage`, 32 bytes, in cleartext. This is the read the real instance makes through the
+/// wasi module's `private_message_aad`; `PrivateMessageIn::aad` (openmls-0.9.0
+/// `src/framing/private_message_in.rs:59`) is the same field. Anything else is
+/// `E_COMMITMENT_INVALID`, the refusal the real instance makes.
+fn commitment_of(private_message: &[u8]) -> Result<[u8; 32], DsError> {
+    use tls_codec::Deserialize as _;
+    let message = MlsMessageIn::tls_deserialize_exact(private_message)
+        .map_err(|_| DsError::CommitmentInvalid)?;
+    match message.extract() {
+        MlsMessageBodyIn::PrivateMessage(m) => {
+            <[u8; 32]>::try_from(m.aad()).map_err(|_| DsError::CommitmentInvalid)
+        }
+        _ => Err(DsError::CommitmentInvalid),
+    }
+}
+
+/// The adapter between the contract's trait and the stub's inherent methods (interface deviation
+/// B16). Every per-device call speaks for the device `act_as` last named.
+impl DeliveryService for DsStub {
+    fn publish_key_packages(
+        &mut self,
+        d: &Device,
+        kps: Vec<Vec<u8>>,
+        last_resort: Option<Vec<u8>>,
+    ) -> Result<usize, DsError> {
+        DsStub::publish_key_packages(self, d.id(), kps, last_resort.unwrap_or_default())
+    }
+
+    /// Invariant 1, then invariant 2's view built by the DS itself. The real instance builds its
+    /// own `PublicGroup` from the registration, so the client no longer hands one over
+    /// (`attach_public_group` and `add_member_device` are the stub's own business now).
+    fn register_group(&mut self, r: RegisterRequest) -> Result<RegisterResult, DsError> {
+        let device = self.current_device()?;
+        let public = public_view(&r.group_info, &r.ratchet_tree);
+        // The binding is checked first, by the inherent method, so a bad binding is
+        // E_BINDING_INVALID whatever the GroupInfo looks like.
+        let registered = DsStub::register_group(self, r)?;
+        match public {
+            Ok(public) => self.attach_public_group(&registered.group_id, public),
+            Err(e) => {
+                self.groups.remove(&registered.group_id);
+                return Err(e);
+            }
+        }
+        self.add_member_device(&registered.group_id, device);
+        Ok(registered)
+    }
+
+    fn group_info(&mut self, g: &GroupId) -> Result<GroupInfoResp, DsError> {
+        DsStub::group_info(self, g)
+    }
+
+    fn ratchet_tree(&mut self, g: &GroupId) -> Result<TreeResp, DsError> {
+        DsStub::ratchet_tree(self, g)
+    }
+
+    fn handshakes(&mut self, g: &GroupId, from: u64) -> Result<Vec<HandshakeItem>, DsError> {
+        DsStub::handshakes(self, g, from)
+    }
+
+    fn take_key_package(&mut self, target: &DeviceId) -> Result<KeyPackageResp, DsError> {
+        use sha2::{Digest, Sha256};
+        let (blob, last_resort) = DsStub::take_key_package(self, target)?;
+        let kp_ref = Sha256::digest(&blob).to_vec();
+        Ok(KeyPackageResp {
+            blob,
+            last_resort,
+            kp_ref,
+        })
+    }
+
+    fn post_commit(&mut self, g: &GroupId, c: CommitRequest) -> Result<CommitResult, DsError> {
+        let accepted = DsStub::post_commit(
+            self,
+            g,
+            CommitUpload {
+                epoch: c.epoch,
+                commit: c.commit,
+                group_info: c.group_info,
+                welcomes: c.welcomes,
+            },
+        )?;
+        Ok(CommitResult {
+            seq: accepted.seq,
+            epoch: accepted.epoch,
+        })
+    }
+
+    /// Row 8 carries no epoch: the instance supplies its own. The joiner becomes a member of the
+    /// fan-out list once its commit is accepted, which is the stub's half of what the real
+    /// instance derives from the merged tree.
+    fn post_external_commit(
+        &mut self,
+        g: &GroupId,
+        c: ResyncRequest,
+    ) -> Result<CommitResult, DsError> {
+        let device = self.current_device()?;
+        let epoch = self.epoch(g).ok_or(DsError::NotFound)?;
+        let accepted = DsStub::post_external_commit(
+            self,
+            g,
+            CommitUpload {
+                epoch,
+                commit: c.external_commit,
+                group_info: c.group_info,
+                welcomes: Vec::new(),
+            },
+        )?;
+        self.add_member_device(g, device);
+        Ok(CommitResult {
+            seq: accepted.seq,
+            epoch: accepted.epoch,
+        })
+    }
+
+    fn post_proposal(
+        &mut self,
+        g: &GroupId,
+        epoch: u64,
+        proposal: Vec<u8>,
+    ) -> Result<u64, DsError> {
+        DsStub::post_proposal(self, g, epoch, proposal)
+    }
+
+    /// The uploader is the current device and the commitment comes out of the message's own
+    /// `authenticated_data`, as it does on the real instance — the caller no longer hands `C` over.
+    fn post_message_from(
+        &mut self,
+        g: &GroupId,
+        epoch: u64,
+        pm: Vec<u8>,
+    ) -> Result<UploadResult, DsError> {
+        let device = self.current_device()?;
+        let commitment = commitment_of(&pm)?;
+        let accepted = DsStub::post_message_from(self, g, epoch, device, pm, Some(commitment))?;
+        Ok(UploadResult {
+            seq: accepted.seq,
+            franking_tag: accepted.franking_tag.to_vec(),
+            recv_ts: accepted.recv_ts,
+        })
+    }
+
+    fn messages(&mut self, g: &GroupId, from: u64) -> Result<Vec<MessageItem>, DsError> {
+        DsStub::messages(self, g, from)
+    }
+
+    fn welcomes(&mut self) -> Result<Vec<WelcomeItem>, DsError> {
+        let device = self.current_device()?;
+        Ok(self.welcomes_for(&device))
+    }
+
+    fn ack_welcome(&mut self, welcome_id: u64) -> Result<(), DsError> {
+        let device = self.current_device()?;
+        self.ack_welcome_for(&device, welcome_id)
+    }
+
+    fn fork_report(
+        &mut self,
+        _g: &GroupId,
+        _epoch: u64,
+        _seq: u64,
+        _reason: &str,
+    ) -> Result<(), DsError> {
+        Err(DsError::Unsupported(
+            "DsStub does not model invariant 9/11; use `ds <url>`".into(),
+        ))
+    }
+
+    fn heal(&mut self, _g: &GroupId, _h: HealRequest) -> Result<CommitResult, DsError> {
+        Err(DsError::Unsupported(
+            "DsStub does not model invariant 9/11; use `ds <url>`".into(),
+        ))
+    }
+
+    fn advance_cursor(&mut self, g: &GroupId, seq: u64, epoch: u64) -> Result<(), DsError> {
+        let device = self.current_device()?;
+        self.group(g)?;
+        self.cursors
+            .insert((*device.as_bytes(), g.to_vec()), (seq, epoch));
+        Ok(())
+    }
+
+    fn drain(&mut self) -> Result<Vec<Frame>, DsError> {
+        let device = self.current_device()?;
+        Ok(DsStub::drain(self, &device))
+    }
+
+    fn set_online(&mut self, online: bool) -> Result<(), DsError> {
+        let device = self.current_device()?;
+        DsStub::set_online(self, &device, online);
+        Ok(())
+    }
+
+    fn advance_clock(&mut self, secs: u64) -> Result<(), DsError> {
+        self.clock = self.clock.saturating_add(secs);
+        Ok(())
     }
 }

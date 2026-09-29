@@ -1,14 +1,20 @@
 //! A headless dilla client: a `DillaProvider` over an in-memory SQLite database, one signing key,
 //! one credential and the groups it belongs to.
+//!
+//! Every method that talks to a delivery service takes `&mut dyn DeliveryService`, so the same
+//! client drives the in-memory `DsStub` and a real instance through `HttpDs`. Against the stub the
+//! caller names the acting device first (`DsStub::act_as`); `HttpDs` is one device's client by
+//! construction.
 
-use crate::{DsStub, Frame, TestkitError};
+use crate::ds::{CommitRequest, DeliveryService, Device, NewAccount, RegisterGroup, ResyncRequest};
+use crate::{Frame, TestkitError};
 use dilla_core::envelope::{Envelope, EnvelopeType};
 use dilla_core::identity::{CredentialIdentity, Kind, SskSigner, Tier, UmkSigner};
 use dilla_core::ids::{DeviceId, MsgId, UserId};
 use dilla_core::mls::{
-    CIPHERSUITE, DillaBinding, DillaGroup, DillaProcessed, DillaProvider, build_key_package,
+    CIPHERSUITE, CommitBundle, DillaBinding, DillaGroup, DillaProcessed, DillaProvider,
+    MAX_ADDS_PER_COMMIT, build_key_package,
 };
-use dilla_core::public_group::DillaPublicGroup;
 // Not re-exported by `openmls::prelude` in 0.9.0: the prelude carries nothing from
 // `messages::group_info` (verified in openmls-0.9.0/src/prelude.rs:20 — `messages::*` stops at the
 // module boundary), so `VerifiableGroupInfo` has to be named through its own path.
@@ -34,8 +40,14 @@ pub struct TestClient {
     provider: DillaProvider,
     signer: SignatureKeyPair,
     credential: CredentialWithKey,
+    /// The decoded credential, kept for the account half of `POST /v1/accounts`.
+    identity: CredentialIdentity,
+    /// The device signing key (DSK), which also signs session challenges.
+    dsk: ed25519_dalek::SigningKey,
     groups: BTreeMap<Vec<u8>, DillaGroup>,
     inbox: Vec<Received>,
+    /// Every frame `sync` drained, in arrival order, for a scenario's `expect_frame`.
+    frames: Vec<Frame>,
     next_msg: u64,
 }
 
@@ -45,6 +57,10 @@ impl TestClient {
     /// credential. It does **not** make a run byte-for-byte reproducible: everything the OpenMLS
     /// provider draws from the OS RNG (HPKE init keys, leaf secrets, nonces) is still random, so
     /// commits, GroupInfos and ciphertext differ run to run. Reproduction is structural.
+    ///
+    /// `user_id` is not derived from the seed, so the same seed under another user id yields the
+    /// same device and keys with a credential naming that user — which is how a remote client
+    /// rebuilds itself around the user id the instance minted at registration.
     pub fn new(
         name: &str,
         user_id: UserId,
@@ -133,8 +149,11 @@ impl TestClient {
             provider,
             signer,
             credential,
+            identity,
+            dsk,
             groups: BTreeMap::new(),
             inbox: Vec::new(),
+            frames: Vec::new(),
             next_msg: 1,
         })
     }
@@ -145,6 +164,11 @@ impl TestClient {
 
     pub fn device_id(&self) -> DeviceId {
         self.device_id
+    }
+
+    /// This client's device as a delivery service authenticates it: its id and its DSK.
+    pub fn device(&self) -> Device {
+        Device::new(self.device_id, self.dsk.clone())
     }
 
     pub fn credential(&self) -> CredentialWithKey {
@@ -159,20 +183,56 @@ impl TestClient {
         &self.signer
     }
 
-    pub fn publish_key_packages(&mut self, ds: &mut DsStub, n: usize) -> Result<(), TestkitError> {
+    /// The account half and the first device of `POST /v1/accounts`, from this client's own key
+    /// material. `credential` is the `CredentialIdentity` CBOR the MLS leaf carries.
+    pub fn new_account(&self, username: &str, display: &str) -> NewAccount {
+        NewAccount {
+            username: username.to_owned(),
+            display: display.to_owned(),
+            umk_pub: self.identity.umk_pub,
+            ssk_pub: self.identity.ssk_pub,
+            sig_umk_ssk: self.identity.sig_umk_ssk,
+            device_id: self.device_id,
+            dsk_pub: self.dsk.verifying_key().to_bytes(),
+            tier: self.identity.tier as u8,
+            signer_tier: self.identity.signer_tier as u8,
+            credential: self.identity.encode(),
+        }
+    }
+
+    /// The groups this client is a member of, in id order.
+    pub fn group_ids(&self) -> Vec<Vec<u8>> {
+        self.groups.keys().cloned().collect()
+    }
+
+    pub fn is_member(&self, group_id: &[u8]) -> bool {
+        self.groups.contains_key(group_id)
+    }
+
+    pub fn publish_key_packages(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        n: usize,
+    ) -> Result<(), TestkitError> {
+        // Each package travels as an RFC 9420 `MLSMessage` carrying a KeyPackage, the framing the
+        // instance's `validate_key_package` reads (`dilla-core-wasi` `abi::tls::key_package_in`); a
+        // bare `KeyPackage` is `E_COMMIT_INVALID` there.
+        let wrap = |kp: &KeyPackage| serialize(&MlsMessageOut::from(kp.clone()));
         let mut packages = Vec::with_capacity(n);
         for _ in 0..n {
             let kp = build_key_package(&self.provider, &self.signer, self.credential(), false)?;
-            packages.push(serialize(kp.key_package())?);
+            packages.push(wrap(kp.key_package())?);
         }
         let last = build_key_package(&self.provider, &self.signer, self.credential(), true)?;
-        ds.publish_key_packages(self.device_id, packages, serialize(last.key_package())?)?;
+        ds.publish_key_packages(&self.device(), packages, Some(wrap(last.key_package())?))?;
         Ok(())
     }
 
+    /// Registers the group with its binding, the GroupInfo and the tree. The delivery service
+    /// builds its own structural view from those two (invariant 2) and its own fan-out list.
     pub fn create_group(
         &mut self,
-        ds: &mut DsStub,
+        ds: &mut dyn DeliveryService,
         binding: DillaBinding,
     ) -> Result<Vec<u8>, TestkitError> {
         let group_id = GroupId::from_slice(&binding.target_id);
@@ -186,25 +246,11 @@ impl TestClient {
         )?;
         let group_info = serialize(&group.export_group_info(&self.provider, &self.signer)?)?;
         let ratchet_tree = serialize(&group.export_ratchet_tree())?;
-        let registered = ds.register_group(crate::RegisterGroup {
+        let registered = ds.register_group(RegisterGroup {
             binding: binding.encode(),
-            group_info: group_info.clone(),
-            ratchet_tree: ratchet_tree.clone(),
+            group_info,
+            ratchet_tree,
         })?;
-
-        // Invariant 2: hand the DS the structural view it serves the tree and `tree_hash` from,
-        // built from exactly the GroupInfo and tree just uploaded. Everything after this point -
-        // every commit, every joiner - goes through it.
-        let crypto = openmls_rust_crypto::RustCrypto::default();
-        let (public, _committer_info) = DillaPublicGroup::from_external(
-            &crypto,
-            deserialize_tree(&ratchet_tree)?,
-            deserialize_group_info(&group_info)?,
-        )
-        .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
-        ds.attach_public_group(&registered.group_id, public);
-
-        ds.add_member_device(&registered.group_id, self.device_id);
         self.groups.insert(registered.group_id.clone(), group);
         Ok(registered.group_id)
     }
@@ -213,63 +259,120 @@ impl TestClient {
     /// with one Welcome addressed to that device.
     pub fn invite(
         &mut self,
-        ds: &mut DsStub,
+        ds: &mut dyn DeliveryService,
         group_id: &[u8],
         device: DeviceId,
     ) -> Result<(), TestkitError> {
-        let (blob, _was_last_resort) = ds.take_key_package(&device)?;
-        let key_package = {
-            use tls_codec::Deserialize as _;
-            let incoming = KeyPackageIn::tls_deserialize_exact(&blob)
-                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
-            use openmls_traits::OpenMlsProvider as _;
-            dilla_core::public_group::validate_key_package(self.provider.crypto(), incoming)
-                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?
-        };
+        self.invite_many(ds, group_id, &[device])
+    }
+
+    /// One Add commit for every device named, which is at most `MAX_ADDS_PER_COMMIT`: the
+    /// instance's batching bound, and the most one commit may carry.
+    pub fn invite_many(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        devices: &[DeviceId],
+    ) -> Result<(), TestkitError> {
+        if devices.len() > MAX_ADDS_PER_COMMIT {
+            return Err(TestkitError::Scenario(format!(
+                "{} Adds in one commit; the bound is {MAX_ADDS_PER_COMMIT}",
+                devices.len()
+            )));
+        }
+        let mut key_packages = Vec::with_capacity(devices.len());
+        for device in devices {
+            let blob = ds.take_key_package(device)?.blob;
+            let key_package = {
+                let incoming = match deserialize_message(&blob)?.extract() {
+                    MlsMessageBodyIn::KeyPackage(kp) => kp,
+                    other => {
+                        return Err(TestkitError::Scenario(format!(
+                            "expected a KeyPackage, got {other:?}"
+                        )));
+                    }
+                };
+                use openmls_traits::OpenMlsProvider as _;
+                dilla_core::public_group::validate_key_package(self.provider.crypto(), incoming)
+                    .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?
+            };
+            key_packages.push(key_package);
+        }
         let group = self
             .groups
             .get_mut(group_id)
             .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
-        let epoch = group.epoch();
-        let bundle = group.add_members(&self.provider, &self.signer, &[key_package])?;
+        let bundle = group.add_members(&self.provider, &self.signer, &key_packages)?;
         let welcomes = bundle
             .welcomes
             .iter()
             .map(|(d, w)| Ok((*d, serialize(w)?)))
             .collect::<Result<Vec<_>, TestkitError>>()?;
-        ds.post_commit(
+        self.upload_commit(ds, group_id, bundle, welcomes)
+    }
+
+    /// Posts a commit this client staged and merges it once the delivery service accepts it.
+    ///
+    /// Spec line 591 / protocol/02 `commit_conflict`: the loser of an epoch clears its pending
+    /// commit, syncs, and re-applies. Without the clear the group stays in
+    /// `MlsGroupState::PendingCommit` and every later commit from this client fails with
+    /// `MlsGroupStateError::PendingCommit` instead of the error the caller expects.
+    fn upload_commit(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        bundle: CommitBundle,
+        welcomes: Vec<(DeviceId, Vec<u8>)>,
+    ) -> Result<(), TestkitError> {
+        let group = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        let epoch = group.epoch();
+        let accepted = ds.post_commit(
             group_id,
-            crate::CommitUpload {
+            CommitRequest {
                 epoch,
                 commit: serialize(&bundle.commit)?,
                 group_info: serialize(&group.export_group_info(&self.provider, &self.signer)?)?,
                 welcomes,
             },
-        )?;
+        );
+        if let Err(refused) = accepted {
+            group.clear_pending_commit(&self.provider)?;
+            return Err(refused.into());
+        }
         group.merge_pending_commit(&self.provider)?;
         Ok(())
     }
 
-    pub fn join_welcome(&mut self, ds: &mut DsStub, group_id: &[u8]) -> Result<(), TestkitError> {
-        let expected = ds
-            .binding(group_id)
-            .cloned()
-            .ok_or_else(|| TestkitError::Scenario("unknown group".into()))?;
-        // `take_welcome`, not `drain`: everything else queued for this device - a handshake, an
-        // epoch notice, application ciphertext sent between the Add commit and this call - stays in
-        // the queue, in order, for the next `sync`.
-        let welcome_blob = ds
-            .take_welcome(&self.device_id, group_id)
+    /// Collects this device's Welcome for `group_id` (row 15), joins with the tree **as of the
+    /// welcoming epoch** that the Welcome row carries, and acknowledges it (row 16) only once the
+    /// join has succeeded: `StagedWelcome::new_from_welcome` consumes the key material even when
+    /// the join then fails, so a fetch must not consume.
+    ///
+    /// `expected` is the binding of the channel the joiner was invited into; the Welcome's
+    /// GroupContext must carry exactly it. The joiner does not ask the delivery service what to
+    /// expect.
+    pub fn join_welcome(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        expected: &DillaBinding,
+    ) -> Result<(), TestkitError> {
+        let item = ds
+            .welcomes()?
+            .into_iter()
+            .find(|w| w.group_id == group_id)
             .ok_or_else(|| TestkitError::Assertion("no welcome for this device".into()))?;
-        let tree = ds.ratchet_tree(group_id)?;
-        let welcome = deserialize_welcome(&welcome_blob)?;
+        let welcome = deserialize_welcome(&item.blob)?;
         let group = DillaGroup::join_from_welcome(
             &self.provider,
             welcome,
-            deserialize_tree(&tree.ratchet_tree)?,
-            &expected,
+            deserialize_tree(&item.ratchet_tree)?,
+            expected,
         )?;
-        ds.add_member_device(group_id, self.device_id);
+        ds.ack_welcome(item.welcome_id)?;
         self.groups.insert(group_id.to_vec(), group);
         Ok(())
     }
@@ -278,7 +381,7 @@ impl TestClient {
     /// joining. A joiner that skips this trusts the DS with the membership list.
     pub fn join_external(
         &mut self,
-        ds: &mut DsStub,
+        ds: &mut dyn DeliveryService,
         group_id: &[u8],
         expected: &DillaBinding,
     ) -> Result<(), TestkitError> {
@@ -303,28 +406,24 @@ impl TestClient {
             deserialize_tree(&tree.ratchet_tree)?,
             expected,
         )?;
-        let epoch = info.epoch;
         // The joiner re-exports the GroupInfo from its own merged state either way, so the
         // `Option<GroupInfo>` the commit builder returned is not used here; it is named so the
         // unused-variable lint stays quiet and so a reader can see it was considered.
         let _ = &group_info;
         ds.post_external_commit(
             group_id,
-            crate::CommitUpload {
-                epoch,
-                commit: serialize(&commit)?,
+            ResyncRequest {
+                external_commit: serialize(&commit)?,
                 group_info: serialize(&group.export_group_info(&self.provider, &self.signer)?)?,
-                welcomes: Vec::new(),
             },
         )?;
-        ds.add_member_device(group_id, self.device_id);
         self.groups.insert(group_id.to_vec(), group);
         Ok(())
     }
 
     pub fn send(
         &mut self,
-        ds: &mut DsStub,
+        ds: &mut dyn DeliveryService,
         group_id: &[u8],
         body: &str,
     ) -> Result<MsgId, TestkitError> {
@@ -347,77 +446,64 @@ impl TestClient {
             previews: Vec::new(),
             k_f: [0x06; 32],
         };
-        let commitment = envelope.commitment()?;
+        // The commitment `C` travels in the message's `authenticated_data`, which is where the
+        // delivery service reads it: the upload carries nothing else.
         let out = group.create_message(&self.provider, &self.signer, &envelope)?;
         let epoch = group.epoch();
-        ds.post_message_from(
-            group_id,
-            epoch,
-            self.device_id,
-            serialize(&out)?,
-            Some(commitment),
-        )?;
+        ds.post_message_from(group_id, epoch, serialize(&out)?)?;
         Ok(envelope.msg_id)
     }
 
+    /// Commits a `Remove` of `target`'s leaf. The leaf is found by parsing `GET /tree` and
+    /// walking its leaves' credentials, which is what a real client does: `remove <actor> <group>
+    /// <target>` removes the **target**, and committing `own_leaf_index()` here would make every
+    /// scenario remove its own committer and would leave `E_MEMBER_REMOVE_FORBIDDEN` untested end
+    /// to end.
     pub fn remove(
         &mut self,
-        ds: &mut DsStub,
+        ds: &mut dyn DeliveryService,
         group_id: &[u8],
         target: DeviceId,
     ) -> Result<(), TestkitError> {
-        // Resolve the target's leaf from the DS's structural view, which carries every member's
-        // decoded `CredentialIdentity` (invariant 2). `remove <actor> <group> <target>` removes the
-        // **target**; committing `own_leaf_index()` here would make every scenario remove its own
-        // committer and would leave `E_MEMBER_REMOVE_FORBIDDEN` untested end to end.
-        let leaf = ds
-            .public_group(group_id)
-            .ok_or_else(|| TestkitError::Assertion("the DS has no view of this group".into()))?
-            .members()
-            .into_iter()
-            .find(|m| m.identity.device_id == target)
-            .map(|m| LeafNodeIndex::new(m.leaf_index))
-            .ok_or_else(|| {
-                TestkitError::Assertion(format!(
-                    "{} is not a member of this group",
-                    target.to_hex()
-                ))
-            })?;
+        let leaf = leaf_of(&ds.ratchet_tree(group_id)?.ratchet_tree, target)?;
         let group = self
             .groups
             .get_mut(group_id)
             .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
         let bundle = group.remove_members(&self.provider, &self.signer, &[leaf])?;
-        let epoch = group.epoch();
-        let accepted = ds.post_commit(
-            group_id,
-            crate::CommitUpload {
-                epoch,
-                commit: serialize(&bundle.commit)?,
-                group_info: serialize(&group.export_group_info(&self.provider, &self.signer)?)?,
-                welcomes: Vec::new(),
-            },
-        );
-        if let Err(refused) = accepted {
-            // Spec line 591 / protocol/02 `commit_conflict`: the loser of an epoch clears its
-            // pending commit, syncs, and re-applies. Without this the group stays in
-            // `MlsGroupState::PendingCommit` and every later commit from this client fails with
-            // `MlsGroupStateError::PendingCommit` instead of the error the caller expects.
-            group.clear_pending_commit(&self.provider)?;
-            return Err(refused.into());
-        }
-        group.merge_pending_commit(&self.provider)?;
-        Ok(())
+        self.upload_commit(ds, group_id, bundle, Vec::new())
     }
 
-    /// Drains this device's queue and applies everything in order: handshakes first, then the
-    /// application messages of the epoch they belong to.
-    pub fn sync(&mut self, ds: &mut DsStub) -> Result<Vec<Received>, TestkitError> {
-        let frames = ds.drain(&self.device_id);
+    /// Commits for the group's current epoch: a self-update, which also carries every proposal
+    /// this client holds for the epoch. This is what lets a scenario drive invariant 3 without an
+    /// implicit commit hiding inside `send`.
+    pub fn commit(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+    ) -> Result<(), TestkitError> {
+        let group = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        let bundle = group.self_update(&self.provider, &self.signer)?;
+        self.upload_commit(ds, group_id, bundle, Vec::new())
+    }
+
+    /// Drains this device's frames and applies everything in order: handshakes first, then the
+    /// application messages of the epoch they belong to. Every frame is also kept, in order, for
+    /// `take_frame`.
+    pub fn sync(&mut self, ds: &mut dyn DeliveryService) -> Result<Vec<Received>, TestkitError> {
+        let frames = ds.drain()?;
+        self.frames.extend(frames.iter().cloned());
         let mut new = Vec::new();
         for frame in frames {
             match frame {
-                Frame::MlsWelcome { .. } | Frame::MlsEpochChanged { .. } => {}
+                Frame::MlsWelcome { .. }
+                | Frame::MlsEpochChanged { .. }
+                | Frame::CommitNeeded { .. }
+                | Frame::MessageDeleted { .. }
+                | Frame::GatewayError { .. } => {}
                 Frame::MlsHandshake { group_id, item } => {
                     if let Some(group) = self.groups.get_mut(&group_id) {
                         // The DS fans a commit out to every member, the committer included, and a
@@ -461,6 +547,63 @@ impl TestClient {
     pub fn inbox(&self) -> &[Received] {
         &self.inbox
     }
+
+    /// Every frame `sync` has drained and no `take_frame` has claimed yet, in arrival order.
+    pub fn frames(&self) -> &[Frame] {
+        &self.frames
+    }
+
+    /// Claims the first drained frame `matches` accepts, so one frame satisfies one assertion.
+    pub fn take_frame(&mut self, matches: impl Fn(&Frame) -> bool) -> Option<Frame> {
+        let at = self.frames.iter().position(matches)?;
+        Some(self.frames.remove(at))
+    }
+}
+
+/// The leaf index of `target` in a serialized ratchet tree.
+///
+/// `RatchetTreeIn` keeps its node vector private and `leaves()` flattens the blanks away, which
+/// loses the positions a leaf index is. Its serde form keeps every position (`null` for a blank,
+/// leaves at even node indices), so the positions come from there and the credentials from
+/// `leaves()`, and the two are zipped in order.
+fn leaf_of(tree: &[u8], target: DeviceId) -> Result<LeafNodeIndex, TestkitError> {
+    let tree = deserialize_tree(tree)?;
+    let positions: Vec<usize> = match serde_json::to_value(&tree)
+        .map_err(|e| TestkitError::Scenario(format!("ratchet tree: {e}")))?
+    {
+        serde_json::Value::Array(nodes) => nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, node)| i % 2 == 0 && !node.is_null())
+            .map(|(i, _)| i / 2)
+            .collect(),
+        _ => {
+            return Err(TestkitError::Scenario(
+                "ratchet tree: not a node array".into(),
+            ));
+        }
+    };
+    let leaves: Vec<_> = tree.leaves().collect();
+    if leaves.len() != positions.len() {
+        return Err(TestkitError::Scenario(format!(
+            "ratchet tree: {} leaves at {} positions",
+            leaves.len(),
+            positions.len()
+        )));
+    }
+    for (index, leaf) in positions.into_iter().zip(leaves) {
+        let basic = BasicCredential::try_from(leaf.credential().clone())
+            .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
+        if CredentialIdentity::decode(basic.identity())?.device_id == target {
+            let index = u32::try_from(index)
+                .map_err(|_| TestkitError::Scenario("leaf index overflows u32".into()))?;
+            return Ok(LeafNodeIndex::new(index));
+        }
+    }
+    Err(TestkitError::Assertion(format!(
+        "{} is not a member of this group",
+        target.to_hex()
+    )))
 }
 
 fn serialize<T: tls_codec::Serialize>(value: &T) -> Result<Vec<u8>, TestkitError> {
