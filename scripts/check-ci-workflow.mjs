@@ -17,6 +17,9 @@ export const REQUIRED_JOBS = [
   'browser-spike',
   'deny',
   'go',
+  // The scenario harness in its own job with its own timeout (final review): it needs both the
+  // wasi core and the testkit binary, and in the go job it pushed a 4-vCPU runner past its budget.
+  'go-harness',
   // go-fts5-arm64 is created by plan-1a task 2 (interfaces §9.2): it cross-builds the SQLite FTS5
   // path for arm64. If it is ever missing, the fix is to add it there, not to drop it from this list.
   'go-fts5-arm64',
@@ -91,13 +94,21 @@ const REQUIRED_STEPS = {
     'path: internal/mlswasi/testdata',
     'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
     'go test -race -shuffle=on -timeout 15m ./...',
+    'name: dilla-core-wasi',
+  ],
+  // The harness job: both hand-offs, the binary, and a run that FAILS without it.
+  'go-harness': [
+    'timeout-minutes: 30',
+    'actions/download-artifact@v8',
+    'path: internal/mlswasi/testdata',
+    'name: dilla-core-wasi',
+    'name: dilla-testkit',
+    'artifacts/dilla-testkit',
+    'go test -race -shuffle=on -timeout 25m ./internal/testkit/...',
     'DILLA_TESTKIT',
     // `DILLA_TESTKIT` above is a prefix of this one, so both are named: without the second, a
     // missing binary would skip every scenario test and the job would stay green.
     'DILLA_TESTKIT_REQUIRED',
-    'artifacts/dilla-testkit',
-    'name: dilla-core-wasi',
-    'name: dilla-testkit',
   ],
   // modernc.org/sqlite carries one generated translation unit per GOOS/GOARCH, so the FTS5
   // assertion is only actually *executed* on arm64 by a native arm64 runner (deviation B9): moved to
@@ -194,10 +205,9 @@ export function checkWorkflow(root) {
     if (!/^\s*needs:.*rust-wasi/m.test(jobs.go)) {
       problems.push('ci.yml: job "go" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
     }
-    // The testkit binary is built by `rust-native` and downloaded by `go`; without the edge the
-    // download finds nothing in the run and the job is red on every push.
-    if (!/^\s*needs:.*rust-native/m.test(jobs.go)) {
-      problems.push('ci.yml: job "go" downloads the rust-native testkit artifact but has no "needs: rust-native"');
+    // The go job has no testkit binary, so requiring one there fails every run.
+    if (jobs.go.includes('DILLA_TESTKIT_REQUIRED')) {
+      problems.push('ci.yml: job "go" requires the testkit but does not download it; the harness is go-harness\'s');
     }
     // gap-31 §4 item 2 / NV-14 (resolved): the current majors deliberately pair
     // `actions/upload-artifact@v7` (this file's `rust-wasi` job) with `actions/download-artifact@v8`.
@@ -209,6 +219,18 @@ export function checkWorkflow(root) {
       problems.push(
         'ci.yml: job "go" must use actions/download-artifact@v8 to pair with rust-wasi\'s actions/upload-artifact@v7 (gap-31 §4 item 2)',
       );
+    }
+  }
+
+  if ('go-harness' in jobs) {
+    const harness = jobs['go-harness'];
+    if (!/^\s*needs:.*rust-wasi/m.test(harness)) {
+      problems.push('ci.yml: job "go-harness" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
+    }
+    // The testkit binary is built by `rust-native` and downloaded by `go-harness`; without the
+    // edge the download finds nothing in the run and the job is red on every push.
+    if (!/^\s*needs:.*rust-native/m.test(harness)) {
+      problems.push('ci.yml: job "go-harness" downloads the rust-native testkit artifact but has no "needs: rust-native"');
     }
   }
 

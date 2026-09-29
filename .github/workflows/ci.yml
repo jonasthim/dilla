@@ -170,10 +170,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     # rust-wasi (Plan A's CI task) builds and uploads the dilla-core-wasi
-    # artifact this job downloads, and rust-native builds and uploads the
-    # dilla-testkit binary. Without `needs:` GitHub starts the jobs in
+    # artifact this job downloads. Without `needs:` GitHub starts the jobs in
     # parallel, download-artifact finds nothing in the run, and the job is red on
-    # every push (gap-31 §3.2's reference job carries it).
+    # every push (gap-31 §3.2's reference job carries it). The scenario harness
+    # (internal/testkit) is go-harness's: here DILLA_TESTKIT is unset and those
+    # tests skip, which keeps this job inside a 4-vCPU runner's budget.
+    needs: [rust-wasi]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: go mod verify
+      - run: go vet ./...
+      - name: The pinned module graph still compiles cgo-free
+        run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
+      - name: Unit tests with the race detector (cgo required, do not set CGO_ENABLED=0 here)
+        run: go test -race -shuffle=on -timeout 15m ./...
+        env:
+          GORACE: halt_on_error=1
+      - name: Static release build
+        run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
+
+  go-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The scenario harness drives a real instance with the Rust testkit clients:
+    # it needs the wasi core from rust-wasi and the testkit binary from
+    # rust-native, and it is the slowest Go suite, so it has a job and a
+    # timeout of its own.
     needs: [rust-wasi, rust-native]
     steps:
       - uses: actions/checkout@v7
@@ -192,20 +223,14 @@ jobs:
           name: dilla-testkit
           path: artifacts
       - run: chmod +x artifacts/dilla-testkit
-      - run: go mod verify
-      - run: go vet ./...
-      - name: The pinned module graph still compiles cgo-free
-        run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
-      - name: Unit tests with the race detector (cgo required, do not set CGO_ENABLED=0 here)
-        run: go test -race -shuffle=on -timeout 15m ./...
+      - name: The scenario harness against the real instance
+        run: go test -race -shuffle=on -timeout 25m ./internal/testkit/...
         env:
           GORACE: halt_on_error=1
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
           # internal/testkit skips without the binary; here a skip would pass every scenario test
           # without running one, so a missing or unusable binary must fail instead.
           DILLA_TESTKIT_REQUIRED: '1'
-      - name: Static release build
-        run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
 
   go-fts5-arm64:
     runs-on: ubuntu-24.04-arm
