@@ -457,11 +457,17 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	// rotated value as element 2, and it is the only frame that does — the client's next resume
 	// answers what it reads here, so a stale read would leave it holding the spent token.
 	if err := g.rotateResume(c); err != nil {
+		w.stop()
 		s.close(CloseUnknown, "rotate")
 		return nil, false
 	}
-	p, err := ResumedPayload(out.from, out.to, c.resumeToken())
+	resumedPayload := g.resumedPayloadFn
+	if resumedPayload == nil {
+		resumedPayload = ResumedPayload
+	}
+	p, err := resumedPayload(out.from, out.to, c.resumeToken())
 	if err != nil {
+		w.stop()
 		s.close(CloseUnknown, "resumed")
 		return nil, false
 	}

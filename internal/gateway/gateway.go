@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/fxamacker/cbor/v2"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -181,6 +182,11 @@ type Gateway struct {
 	presence  *presence
 	beat      heartbeatPolicy
 	suspended sync.Map // resume token string -> *conn, inside the resume window
+
+	// Test seams for the two steps of a resume that cannot fail with real inputs; nil means the
+	// real one. They are set before the Gateway serves and never after.
+	newResumeTokenFn func() ([]byte, error)
+	resumedPayloadFn func(from, to uint64, resumeToken []byte) (cbor.RawMessage, error)
 
 	// generation is the instance generation every `hello`, every `ready` and every resume check
 	// reads. It is an atomic and NOT `opts.Generation` because invariant 11 moves it while
@@ -408,7 +414,11 @@ func (g *Gateway) sweepSuspended() {
 
 // rotateResume issues a fresh resume token, which happens on every resumed frame.
 func (g *Gateway) rotateResume(c *conn) error {
-	token, err := newResumeToken()
+	newToken := g.newResumeTokenFn
+	if newToken == nil {
+		newToken = newResumeToken
+	}
+	token, err := newToken()
 	if err != nil {
 		return err
 	}
