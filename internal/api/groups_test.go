@@ -353,9 +353,15 @@ func newGroupsAPI(t *testing.T) *groupsAPI {
 	gw := gateway.New(gateway.Options{Clock: clk, Store: apiGatewayStore{deps.Repo}, Generation: 1})
 	t.Cleanup(func() { _ = gw.Shutdown(context.Background()) })
 
+	// The fixture's dilla_binding names the generator's instance, 0x11 sixteen times
+	// (testkit/src/fixtures.rs:98), and Register refuses a binding for any other instance.
+	var keys ds.InstanceKeys
+	for i := range keys.InstanceID {
+		keys.InstanceID[i] = 0x11
+	}
 	d, err := ds.New(ds.Options{
 		Store: deps.Repo, Wasm: wasm, Gateway: gw, Clock: clk,
-		Policy: ds.DefaultPolicy(),
+		Policy: ds.DefaultPolicy(), Keys: keys,
 	})
 	if err != nil {
 		t.Fatalf("ds.New: %v", err)

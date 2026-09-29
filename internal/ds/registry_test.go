@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -134,6 +135,31 @@ func TestRegisterRefusesABindingThatDoesNotMatchTheGroupInfo(t *testing.T) {
 		}
 		mustRefuseWithBindingInvalid(t, h, req)
 	})
+}
+
+// A group whose dilla_binding names ANOTHER instance is that instance's group: the binding is
+// consistent with its own GroupInfo, and still refused, because this instance's id is not the one
+// it carries (invariant 1). The same fixture registers on an instance whose id it does carry.
+func TestRegisterRefusesABindingForAnotherInstance(t *testing.T) {
+	h := newDSHarness(t)
+	keys := testInstanceKeys(t)
+	keys.InstanceID[0] ^= 0xff
+	other, err := ds.New(ds.Options{
+		Store: h.repo, Wasm: h.wasm, Gateway: h.gw, Clock: h.clk, Keys: keys,
+		Channels: h.channels, Policy: ds.DefaultPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("ds.New: %v", err)
+	}
+	req := h.registerRequest(t, h.channel(t, 0, 0))
+	var dsErr *ds.Error
+	if _, err := other.Register(context.Background(), req); !errors.As(err, &dsErr) ||
+		dsErr.Code != "E_BINDING_INVALID" || !strings.Contains(dsErr.Detail, "instance") {
+		t.Fatalf("got %v, want E_BINDING_INVALID naming the instance", err)
+	}
+	if _, err := h.ds.Register(context.Background(), req); err != nil {
+		t.Fatalf("the instance the binding names must accept it: %v", err)
+	}
 }
 
 func mustRefuseWithBindingInvalid(t *testing.T, h *dsHarness, req ds.RegisterRequest) {

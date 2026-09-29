@@ -3,6 +3,7 @@ package ds
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
@@ -76,6 +77,13 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 	binding, err := decodeBinding(r.Binding)
 	if err != nil {
 		return RegisterResult{}, errBinding("undecodable dilla_binding: " + err.Error())
+	}
+	// Invariant 1's instance_id: a group bound to another instance is that instance's group, and
+	// registering it here would let a client carry one instance's binding — and every signature
+	// over it — into another. (The external_senders check needs an ABI accessor; follow-up card.)
+	if binding.InstanceID != d.opts.Keys.InstanceID {
+		return RegisterResult{}, errBinding(fmt.Sprintf(
+			"dilla_binding names instance %s; this instance is %s", binding.InstanceID, d.opts.Keys.InstanceID))
 	}
 	if err := d.checkChannelMode(ctx, binding); err != nil {
 		return RegisterResult{}, err
