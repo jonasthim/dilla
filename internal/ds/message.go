@@ -132,157 +132,25 @@ func (d *DS) Messages(ctx context.Context, groupID id.ID, session Session, from 
 		limit = 256
 	}
 	// interfaces.md §5.1 row 12 gives this endpoint E_PRUNED, for the same reason the handshake
-	// catch-up has it: below the floor the answer would be a silently short list starting at the
-	// floor, and the client cannot tell "these are gone, resync" from "nothing new".
-	floor, err := d.oldestAppMessageSeq(ctx, groupID)
+	// catch-up has it: past a deletion the answer would be a silently short list, and the client
+	// cannot tell "these are gone, resync" from "nothing new". The group's PrunedBelow is the
+	// highest seq retention has deleted from this stream, whichever trigger took it (the cursor
+	// floor, the 30-day delivery window or an archival expiry), raised by PruneAppMessages in the
+	// transaction that deletes: a catch-up from `from` has lost something exactly when `from` is at
+	// or below it. Read back, never recomputed — MinCursor moves, and the oldest surviving message
+	// says nothing about the seqs below it, which are as often handshakes.
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
 	if err != nil {
 		return nil, err
 	}
-	if floor == 0 {
-		// An EMPTY log, the twin of the handshake catch-up's case: a stream the sweep has
-		// emptied has no surviving floor, and reading 0 would serve "nothing new" to a device
-		// that missed everything the sweep took. Every seq from `from` to the head is the hole.
-		row, err := d.opts.Store.GetGroup(ctx, groupID)
-		if err != nil {
-			return nil, err
-		}
-		if from <= row.Seq {
-			gone, err := d.mayHavePrunedMessages(ctx, groupID, from, row.Seq)
-			if err != nil {
-				return nil, err
-			}
-			if gone {
-				return nil, errPruned(from, row.Seq+1)
-			}
-		}
-	}
-	// `from` is the first seq the caller still wants, so a cursor at floor-1 is contiguous with
-	// the log. Below that a message MAY be gone — MAY, because `from` is a cursor in the ONE seq
-	// space handshakes and application messages share, so a group whose early seqs are handshakes
-	// sits below its message floor with nothing ever deleted. Refusing that would send a healthy
-	// member through a full rejoin, which is what protocol/02 makes E_PRUNED mean. The predicate
-	// below has to agree that a message CAN already be gone.
-	if floor > 0 && from+1 < floor {
-		gone, err := d.mayHavePrunedMessages(ctx, groupID, from+1, floor-1)
-		if err != nil {
-			return nil, err
-		}
-		if gone {
-			return nil, errPruned(from, floor)
-		}
+	if through := row.PrunedBelow; through > 0 && from <= through {
+		return nil, errPruned(from, through+1)
 	}
 	rows, err := d.opts.Store.ListAppMessages(ctx, groupID, from, limit)
 	if err != nil {
 		return nil, err
 	}
 	return rows, nil
-}
-
-// oldestAppMessageSeq is the lowest surviving seq of the group's application messages, or 0 when
-// it has none. `ListAppMessages` is ordered by seq, so one row from 0 is the MIN(seq) query
-// without a tenth method on `store.Messages` — ID1 fixes that method set.
-func (d *DS) oldestAppMessageSeq(ctx context.Context, groupID id.ID) (uint64, error) {
-	rows, err := d.opts.Store.ListAppMessages(ctx, groupID, 0, 1)
-	if err != nil {
-		return 0, err
-	}
-	if len(rows) == 0 {
-		return 0, nil
-	}
-	return rows[0].Seq, nil
-}
-
-// mayHavePrunedMessages answers whether an application message can already have been deleted from
-// the seq window [lo, hi] — the hole between what the caller asked for and the oldest surviving
-// message. It is the twin of mayHavePrunedHandshakes and one-directional for the same reason
-// (ruling 41, deviation B20): it may over-refuse — an unnecessary rejoin costs bandwidth — but it
-// must never say "nothing is gone" about a group that has lost something.
-//
-// It takes the window rather than the group alone because task 26's sweep has more than one
-// deletion trigger (D14/R28) and the two ask different questions of the same hole:
-//
-//  1. Age. Every row of a group is younger than the group itself and the delivery cutoff only
-//     moves forward with the clock, so a group younger than MessageRetention has provably lost
-//     nothing to `created < now - MessageRetention`. An older one may have lost anything, and
-//     its handshake log is itself past HandshakeRetention, so nothing below can be trusted to
-//     explain the hole: the answer is yes.
-//  2. The delivery CURSOR floor, which is bounded by no age at all: the sweep deletes every
-//     message at or below the lowest ELIGIBLE cursor, whenever that happens, in a group of any
-//     age. So a hole can be real in a young group — but only at or below the floor the sweep
-//     ACTUALLY deleted at, which is `mls_groups.pruned_below`, the monotone high-water the sweep
-//     writes at the moment it deletes. Above it, and while it is still 0 (no cursor-floor prune
-//     has ever run here), the young group has lost nothing to this trigger.
-//
-// The floor is READ BACK, never recomputed, and that is the whole point of the column. `MinCursor`
-// evaluated here would be an aggregate over the cursor rows as they are NOW, and they move: a
-// device has no `device_cursors` row at all until its FIRST AdvanceCursor call, so a member quiet
-// since genesis is absent from the aggregate while the sweep deletes ciphertext it was entitled
-// to, and then drags the aggregate down to its own low seq the moment it speaks — an ordinary
-// idempotent `AdvanceCursor(0)` is enough, and a returning 90-day-idle device does the same when
-// `updated` moves back inside the horizon. A window clamped to that live number answers "nothing
-// is gone" about rows deleted minutes earlier, which is exactly the silently short list
-// protocol/02's E_PRUNED exists to prevent.
-//
-// What is left is the part of the hole the cursor half could have reached, and that part is NOT
-// evidence on its own: `from` is a cursor in the ONE seq space handshakes and application messages
-// share, so the seqs below a group's oldest message are routinely its handshakes. A seq covered by
-// a surviving `mls_handshakes` row was never an application message and cannot be a deleted one;
-// when every seq of the window is covered, nothing is missing and the catch-up is served. Clause 1
-// is what makes reading the handshake log sound here: in a group younger than MessageRetention no
-// handshake has reached HandshakeRetention either, so the log has no holes of its own.
-//
-// The third trigger, archival `expires`, cannot fire in this wave: `Upload` writes NULL and no
-// Plan-1 path fills the column (Plan 2's community policy does). When it does, a group that has
-// ever set an expiry joins this predicate too.
-//
-// A tombstone is not a loss: TombstoneAppMessage keeps the row, so the seq stays in the answer
-// with `deleted = 1` and the floor does not move.
-func (d *DS) mayHavePrunedMessages(ctx context.Context, groupID id.ID, lo, hi uint64) (bool, error) {
-	row, err := d.opts.Store.GetGroup(ctx, groupID)
-	if err != nil {
-		return false, err
-	}
-	if row.Created < d.opts.Clock.Now().Add(-d.opts.Policy.MessageRetention).Unix() {
-		return true, nil
-	}
-	if row.PrunedBelow < hi {
-		hi = row.PrunedBelow
-	}
-	if lo < 1 {
-		lo = 1
-	}
-	if lo > hi {
-		return false, nil
-	}
-	covered, err := d.handshakesCover(ctx, groupID, lo, hi)
-	if err != nil {
-		return false, err
-	}
-	return !covered, nil
-}
-
-// handshakeWindow caps how much of the seq space one E_PRUNED decision reads. A window wider than
-// this answers "not covered", which over-refuses rather than under-refuses: the predicate above is
-// one-directional, and a catch-up that far behind is a resync in every practical sense anyway.
-const handshakeWindow = 4096
-
-// handshakesCover reports whether every seq in [lo, hi] carries a surviving handshake row.
-// `ListHandshakes` is ordered by seq and starts at `lo`, so the first hi-lo+1 rows it returns are
-// the lowest seqs at or above lo: if all of them fall inside the window, the window is full and no
-// seq in it was ever an application message.
-func (d *DS) handshakesCover(ctx context.Context, groupID id.ID, lo, hi uint64) (bool, error) {
-	want := hi - lo + 1
-	if want > handshakeWindow {
-		return false, nil
-	}
-	rows, err := d.opts.Store.ListHandshakes(ctx, groupID, lo, int32(want))
-	if err != nil {
-		return false, err
-	}
-	if uint64(len(rows)) != want {
-		return false, nil
-	}
-	return rows[len(rows)-1].Seq <= hi, nil
 }
 
 // DeleteMessage tombstones one message. At v1 only the uploading user may delete, from any of

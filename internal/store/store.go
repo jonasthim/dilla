@@ -181,6 +181,8 @@ type MLS interface {
 	// conflict-recovery loop invariant 3 exists for. ErrNotFound means the
 	// epoch's handshake has been pruned, not that the epoch never happened.
 	GetCommitAtEpoch(ctx context.Context, groupID id.ID, epoch uint64) (HandshakeRow, error)
+	// PruneHandshakes deletes every handshake created before `before` and raises each affected
+	// group's HandshakesPruned to the highest seq it lost, in one transaction.
 	PruneHandshakes(ctx context.Context, before int64) (int64, error)
 	PutProposal(ctx context.Context, p ProposalRow) error
 	ListProposals(ctx context.Context, groupID id.ID, epoch uint64, includeVoid bool) ([]ProposalRow, error)
@@ -216,17 +218,13 @@ type Messages interface {
 	// passed -- 0 meaning no eligible cursor exists and so no deletion -- or `deliveryFloor`,
 	// now - MessageRetention) and archival retention (`expires` against `now`, where NULL means
 	// retained indefinitely). Deviation D14: three parameters, not two, and `now` is not the
-	// delivery floor.
+	// delivery floor. In the same transaction it raises the group's PrunedBelow to the highest
+	// seq it deletes, so the high-water is exact whichever trigger fired.
 	PruneAppMessages(ctx context.Context, groupID id.ID, cursorFloor uint64, deliveryFloor, now int64) (int64, error)
-	// RaisePrunedBelow records the cursor floor `PruneAppMessages` was just called with, as a
-	// MONOTONE high-water on the group (`mls_groups.pruned_below`): the highest seq at or below
-	// which application ciphertext may already be gone. A lower value is ignored.
-	//
-	// The catch-up predicate needs the floor that was IN FORCE WHEN THE ROWS WENT, and that is not
-	// `MinCursor` read again later: a device has no `device_cursors` row until its first cursor
-	// write, so a member quiet during the sweep is absent from the aggregate and pulls it back
-	// down the moment it speaks -- and a returning 90-day-idle device does the same. Recomputing
-	// would answer "nothing is gone" about messages deleted minutes earlier.
+	// RaisePrunedBelow raises the group's MONOTONE message high-water (`mls_groups.pruned_below`)
+	// to `below`; a lower value is ignored. PruneAppMessages calls it itself with the exact seq it
+	// deletes; it stays on the interface for a caller that must record a deletion it made some
+	// other way.
 	RaisePrunedBelow(ctx context.Context, groupID id.ID, below uint64) error
 }
 

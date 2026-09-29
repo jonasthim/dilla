@@ -108,6 +108,36 @@ func (q *Queries) ListAppMessages(ctx context.Context, arg ListAppMessagesParams
 	return items, nil
 }
 
+const maxPrunableAppMessageSeq = `-- name: MaxPrunableAppMessageSeq :one
+SELECT CAST(COALESCE(MAX(seq), 0) AS BIGINT) AS max_seq FROM mls_app_messages
+ WHERE group_id = $1
+   AND (($2::bigint > 0 AND seq <= $2::bigint)
+        OR created < $3::bigint
+        OR (expires IS NOT NULL AND expires <= $4::bigint))
+`
+
+type MaxPrunableAppMessageSeqParams struct {
+	GroupID       id.ID
+	CursorFloor   int64
+	DeliveryFloor int64
+	Now           int64
+}
+
+// The highest seq PruneAppMessages is about to delete with the same arguments, or 0. The store runs
+// it in PruneAppMessages' transaction and raises pruned_below to it before the DELETE, so the
+// high-water records exactly what went, whichever trigger took it.
+func (q *Queries) MaxPrunableAppMessageSeq(ctx context.Context, arg MaxPrunableAppMessageSeqParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, maxPrunableAppMessageSeq,
+		arg.GroupID,
+		arg.CursorFloor,
+		arg.DeliveryFloor,
+		arg.Now,
+	)
+	var max_seq int64
+	err := row.Scan(&max_seq)
+	return max_seq, err
+}
+
 const minCursor = `-- name: MinCursor :one
 SELECT COALESCE(MIN(c.last_seq), 0)::bigint AS min_seq
 FROM device_cursors c

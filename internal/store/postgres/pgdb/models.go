@@ -131,27 +131,28 @@ type MlsEpochTrees struct {
 }
 
 type MlsGroups struct {
-	GroupID             id.ID
-	Binding             []byte
-	Kind                int64
-	CommunityID         *id.ID
-	TargetID            id.ID
-	CallID              *id.ID
-	Ciphersuite         int64
-	Epoch               int64
-	Seq                 int64
-	GroupInfoBlob       []byte
-	TreeHash            []byte
-	PublicGroupState    []byte
-	ExternalSenderKeyID id.ID
-	E2eeVersion         int64
-	MediaVersion        int64
-	PolicyVersion       int64
-	EpochUnknown        int64
-	HealDeadline        sql.NullInt64
-	Created             int64
-	ClosedAt            sql.NullInt64
-	PrunedBelow         int64
+	GroupID                 id.ID
+	Binding                 []byte
+	Kind                    int64
+	CommunityID             *id.ID
+	TargetID                id.ID
+	CallID                  *id.ID
+	Ciphersuite             int64
+	Epoch                   int64
+	Seq                     int64
+	GroupInfoBlob           []byte
+	TreeHash                []byte
+	PublicGroupState        []byte
+	ExternalSenderKeyID     id.ID
+	E2eeVersion             int64
+	MediaVersion            int64
+	PolicyVersion           int64
+	EpochUnknown            int64
+	HealDeadline            sql.NullInt64
+	Created                 int64
+	ClosedAt                sql.NullInt64
+	PrunedBelow             int64
+	HandshakesPrunedThrough int64
 }
 
 type MlsHandshakes struct {

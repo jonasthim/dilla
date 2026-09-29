@@ -384,33 +384,33 @@ func TestACatchUpBelowTheRetentionFloorIsPruned(t *testing.T) {
 		t.Fatalf("the sweep deleted %d rows, want the one at seq 1: the hole below the floor has to be real", gone)
 	}
 
-	if _, err := h.ds.Handshakes(ctx, reg.GroupID, session, 19, 100); err != nil {
-		t.Fatalf("a cursor one below the floor is still contiguous: %v", err)
+	// `from` is the first seq wanted. Seqs 2-19 were never handshakes the sweep took, so every
+	// catch-up from 2 up is whole; seq 1 is the one the sweep deleted, so a catch-up that still
+	// wants it — from 1, or from 0 — has a hole and is refused.
+	for _, from := range []uint64{19, 5, 2} {
+		if _, err := h.ds.Handshakes(ctx, reg.GroupID, session, from, 100); err != nil {
+			t.Fatalf("from %d lost nothing to the sweep: %v", from, err)
+		}
 	}
-	_, err = h.ds.Handshakes(ctx, reg.GroupID, session, 5, 100)
-	var dsErr *ds.Error
-	if !errors.As(err, &dsErr) || dsErr.Code != "E_PRUNED" {
-		t.Fatalf("got %v, want E_PRUNED", err)
-	}
-	if dsErr.Status != 410 {
-		t.Errorf("status = %d, want 410", dsErr.Status)
+	for _, from := range []uint64{1, 0} {
+		_, err = h.ds.Handshakes(ctx, reg.GroupID, session, from, 100)
+		var dsErr *ds.Error
+		if !errors.As(err, &dsErr) || dsErr.Code != "E_PRUNED" {
+			t.Fatalf("from %d: got %v, want E_PRUNED", from, err)
+		}
+		if dsErr.Status != 410 {
+			t.Errorf("status = %d, want 410", dsErr.Status)
+		}
 	}
 }
 
-// The residual OVER-REFUSAL, pinned deliberately: a group OLDER than HandshakeRetention whose early
-// seqs are application messages and whose first handshake sits later is still answered E_PRUNED,
-// although the sweep has deleted nothing. `mayHavePrunedHandshakes` compares the group's age to the
-// retention window, which is the only prune signal the store holds at task 20 — no row and no
-// column records how far a sweep has reached, and `floor` is the oldest surviving HANDSHAKE while
-// `from` is a cursor in the ONE space both streams share.
-//
-// This is accepted for this wave by ruling 41 / deviation B20, NOT a defect the fix forgot: the
-// predicate is one-directional on purpose (an unnecessary rejoin costs bandwidth, a silently
-// holed log forks the client). Task 23 lands `mls_app_messages` and `store.Messages`, which is
-// what makes the real floor — `min(OldestHandshakeSeq, oldest live app-message seq)` — computable;
-// when it does, THIS test is the one that must flip to expecting the rows, and the test above,
-// which really sweeps, is the one that must stay red-free.
-func TestAnOldGroupWithNothingSweptIsStillRefusedUntilTask23(t *testing.T) {
+// An old group with nothing swept is SERVED. Until the final review the predicate compared the
+// group's age with the retention window and refused this catch-up although nothing had been
+// deleted (the over-refusal ruling 41 / deviation B20 accepted for the wave). The store now records
+// the highest handshake seq retention deleted, in the transaction that deletes, so the refusal is
+// exact: a group older than the window whose early seqs are messages has lost nothing, and a
+// member catching up from 0 is served rather than sent through a full rejoin.
+func TestAnOldGroupWithNothingSweptIsServed(t *testing.T) {
 	h := newDSHarness(t)
 	ctx := context.Background()
 	reg, session := h.mustRegister(t)
@@ -430,12 +430,12 @@ func TestAnOldGroupWithNothingSweptIsStillRefusedUntilTask23(t *testing.T) {
 		t.Fatalf("the sweep deleted %d rows: this fixture must have lost nothing", gone)
 	}
 
-	_, err = h.ds.Handshakes(ctx, reg.GroupID, session, 0, 100)
-	var dsErr *ds.Error
-	if !errors.As(err, &dsErr) || dsErr.Code != "E_PRUNED" {
-		t.Fatalf("got %v, want the accepted over-refusal E_PRUNED (ruling 41 / B20); if this now "+
-			"serves the rows, task 23's real floor has landed and this test must be rewritten to "+
-			"assert the rows instead", err)
+	rows, err := h.ds.Handshakes(ctx, reg.GroupID, session, 0, 100)
+	if err != nil {
+		t.Fatalf("an old group that lost nothing must be served: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Seq != 20 {
+		t.Fatalf("handshakes = %v, want the one row at seq 20", rows)
 	}
 }
 

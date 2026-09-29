@@ -19,18 +19,18 @@ CREATE TABLE mls_groups (
   heal_deadline          BIGINT,
   created                BIGINT   NOT NULL,
   closed_at              BIGINT,
-  -- Invariant 10's retention high-water: the highest seq at or below which this group's
-  -- application ciphertext may already have been deleted by the delivery-CURSOR trigger, written
-  -- by the sweep at the moment it deletes. 0 means no cursor-floor prune has ever run here.
+  -- Invariant 10's retention high-waters, one per stream of the group's one seq space: the
+  -- highest seq of an application message (pruned_below) and of a handshake
+  -- (handshakes_pruned_through) that any retention trigger has deleted, raised by the store in
+  -- the same transaction as the DELETE. 0 means nothing of that stream was ever deleted. A
+  -- catch-up from `from` has lost something exactly when `from` is at or below the mark, which
+  -- makes E_PRUNED exact rather than a guess from the group's age (deviation B20).
   --
-  -- It is a column and not a recomputation because the floor that did the deleting cannot be read
-  -- back later: `MinCursor` is an aggregate over cursor rows that move, and a device has no
-  -- `device_cursors` row at all until its FIRST POST /cursor -- so a member that was quiet while
-  -- the sweep ran is absent from that aggregate, and drags it back down to its own low seq the
-  -- moment it speaks. A catch-up checked against the recomputed number is then told "nothing is
-  -- gone" about messages deleted moments earlier, which is the silently short list E_PRUNED
-  -- exists to prevent.
-  pruned_below           BIGINT   NOT NULL DEFAULT 0
+  -- They are columns and not recomputations because nothing can read a deleted row's seq back
+  -- later: `MinCursor` is an aggregate over cursor rows that move, and the oldest surviving row of
+  -- a stream says nothing about seqs below it, which may never have belonged to that stream.
+  pruned_below              BIGINT   NOT NULL DEFAULT 0,
+  handshakes_pruned_through BIGINT   NOT NULL DEFAULT 0
 );
 CREATE INDEX mls_groups_by_target ON mls_groups(target_id, kind);
 

@@ -194,11 +194,13 @@ type GroupRow struct {
 	HealDeadline        *int64
 	Created             int64
 	ClosedAt            *int64
-	// PrunedBelow is invariant 10's retention high-water: the highest seq at or below which this
-	// group's application ciphertext may already have been deleted by the delivery-cursor trigger.
-	// 0 means no cursor-floor prune has ever run here. Written only by RaisePrunedBelow, which the
-	// sweep calls with the floor it actually deleted at; CreateGroup leaves it at the column's 0.
-	PrunedBelow uint64
+	// PrunedBelow and HandshakesPruned are invariant 10's retention high-waters: the highest seq
+	// of an application message, and of a handshake, that retention has deleted from this group
+	// (0: none). PruneAppMessages and PruneHandshakes raise them in the transaction that deletes,
+	// so a catch-up from `from` has lost something exactly when `from` is at or below the mark.
+	// CreateGroup leaves both at the column's 0.
+	PrunedBelow      uint64
+	HandshakesPruned uint64
 }
 
 // HandshakeRow mirrors `mls_handshakes`. A leaf index is uint32, the width the

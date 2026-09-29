@@ -102,24 +102,8 @@ func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 				return report, err
 			}
 			report.MessagesPruned += pruned
-			// Record the floor that was in force for the deletion that just happened, BEFORE any
-			// cursor can move. This is the only moment the number exists: `MinCursor` read again
-			// later aggregates rows that come and go — a device has no cursor row at all until
-			// its first POST /cursor, and a returning 90-day-idle device re-enters the aggregate
-			// at whatever low seq it left — so a catch-up checked against a recomputed floor is
-			// told "nothing is gone" about the rows this call has just deleted.
-			//
-			// It is recorded whenever the floor is above 0, deleted rows or not: over-stating
-			// what MAY be gone costs a catch-up an unnecessary resync, understating it costs a
-			// member a silently short list, and the predicate is one-directional for that reason
-			// (ruling 41, deviation B20). `RaisePrunedBelow` is monotone, so the order of sweeps
-			// and the 0 the floor falls back to when every cursor goes ineligible cannot walk it
-			// backwards.
-			if floor > 0 {
-				if err := d.opts.Store.RaisePrunedBelow(ctx, g.GroupID, floor); err != nil {
-					return report, err
-				}
-			}
+			// PruneAppMessages raises the group's PrunedBelow to the highest seq it deleted, in
+			// the same transaction, so the catch-up's E_PRUNED is exact; nothing is recorded here.
 			after = g.GroupID
 		}
 		if len(groups) < sweepPage {

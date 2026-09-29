@@ -26,8 +26,8 @@ func nextSeq(ctx context.Context, tx store.Repository, groupID id.ID) (uint64, e
 // MaxInt64 names no row, so it saturates: the page is empty, as it should be.
 func clampCursor(from uint64) uint64 { return min(from, math.MaxInt64) }
 
-// Handshakes serves the catch-up stream. A `from` below the retention floor is E_PRUNED, which
-// tells the client to resync rather than to retry.
+// Handshakes serves the catch-up stream. A `from` at or below a handshake retention has deleted
+// is E_PRUNED, which tells the client to resync rather than to retry.
 func (d *DS) Handshakes(ctx context.Context, groupID id.ID, session Session, from uint64, limit int32) ([]store.HandshakeRow, error) {
 	// Member-only: the handshake log names every leaf that ever committed and every epoch
 	// transition of the group. A non-member is E_NOT_FOUND, never E_FORBIDDEN.
@@ -38,88 +38,20 @@ func (d *DS) Handshakes(ctx context.Context, groupID id.ID, session Session, fro
 	if limit <= 0 || limit > 512 {
 		limit = 512
 	}
-	floor, err := d.opts.Store.OldestHandshakeSeq(ctx, groupID)
+	// `from` is the first seq the caller wants. The log has a hole for it exactly when retention
+	// has deleted a handshake at or above it, which is what the group's HandshakesPruned records:
+	// PruneHandshakes raises it to the highest seq it deletes, in the same transaction. Exact in
+	// both directions (deviation B20, closed by the final review): a young group or an old one
+	// with nothing swept is served; a cursor one below the lowest surviving handshake is refused
+	// only if that seq was a handshake the sweep took, never because it happens to be a message.
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
 	if err != nil {
 		return nil, err
 	}
-	if floor == 0 {
-		// An EMPTY log. The floor below is the oldest SURVIVING seq, and a log the sweep has
-		// emptied has none, so without this the predicate reads 0 and serves an empty page —
-		// "nothing new" — to a device that missed everything the sweep took. Nothing survives,
-		// so every seq the group ever issued at or above `from` is a hole unless no handshake
-		// can have been swept; one past the head has lost nothing.
-		row, err := d.opts.Store.GetGroup(ctx, groupID)
-		if err != nil {
-			return nil, err
-		}
-		if from <= row.Seq {
-			gone, err := d.mayHavePrunedHandshakes(ctx, groupID)
-			if err != nil {
-				return nil, err
-			}
-			if gone {
-				return nil, errPruned(from, row.Seq+1)
-			}
-		}
-	}
-	// `from` is the first seq the caller still wants. A cursor at floor-1 is contiguous with the
-	// log; below that the log MAY have a hole the instance cannot fill, which is a resync, not a
-	// retry.
-	//
-	// MAY, because `floor` is the oldest surviving HANDSHAKE while `from` is a cursor in the ONE
-	// seq space handshakes and application messages share: a group whose seqs 1-19 carry messages
-	// and whose first handshake sits at 20 is below its floor from seq 0 with nothing ever
-	// deleted. Refusing that is not a harmless over-refusal — protocol/02's error table makes
-	// E_PRUNED mean "resync by external commit", so it sends a healthy member through a full
-	// rejoin. So the floor alone does not refuse: `mayHavePrunedHandshakes` has to agree that a
-	// handshake CAN already be gone.
-	if floor > 0 && from+1 < floor {
-		gone, err := d.mayHavePrunedHandshakes(ctx, groupID)
-		if err != nil {
-			return nil, err
-		}
-		if gone {
-			return nil, errPruned(from, floor)
-		}
+	if through := row.HandshakesPruned; through > 0 && from <= through {
+		return nil, errPruned(from, through+1)
 	}
 	return d.opts.Store.ListHandshakes(ctx, groupID, from, limit)
-}
-
-// mayHavePrunedHandshakes answers whether ANY handshake of this group can already have been
-// deleted.
-//
-// The retention sweep has exactly one deletion rule for handshakes — `DELETE FROM mls_handshakes
-// WHERE created < now - HandshakeRetention` — and every row of a group is younger than the group
-// itself. A group younger than the retention window has therefore lost nothing, whatever its
-// floor looks like, and the gap below the floor belongs to the other stream in the shared space.
-// The cutoff only ever moves forward with the clock, so an earlier sweep cannot have deleted what
-// this one would keep.
-//
-// It is deliberately one-directional: it can say "a handshake MAY be gone" for a group that has
-// in fact lost nothing (an OLD group whose first handshake is recent and whose earlier seqs are
-// all messages), and it never says "nothing is gone" about a group that has lost something. An
-// unnecessary rejoin is expensive; serving a log with a silent hole in it forks the client.
-//
-// That residual over-refusal is a KNOWN, ACCEPTED deviation for this wave — ruling 41, plan
-// deviation B20 — not an oversight. The exact test is `min(OldestHandshakeSeq, oldest live
-// app-message seq)`, which needs `mls_app_messages`: that table and `store.Messages` are TASK
-// 23's, and task 23 owes both the replacement of this predicate and the flip of
-// `TestAnOldGroupWithNothingSweptIsStillRefusedUntilTask23` from asserting the refusal to
-// asserting the rows. A `pruned_through_seq` high-water column instead would have to be added to
-// task 19's migration and written by task 26's sweep, so until task 26 it would read 0 on every
-// group and this predicate would serve a silently holed log — the one failure this exists to
-// prevent. The interface contract (ID1) fixes the store's method set for the same reason.
-//
-// The one case this cannot see is an operator LENGTHENING HandshakeRetention after a sweep has
-// already run under a shorter one; protocol/02 fixes the window at 30 days and the DS has no
-// knob for it.
-func (d *DS) mayHavePrunedHandshakes(ctx context.Context, groupID id.ID) (bool, error) {
-	row, err := d.opts.Store.GetGroup(ctx, groupID)
-	if err != nil {
-		return false, err
-	}
-	cutoff := d.opts.Clock.Now().Add(-d.opts.Policy.HandshakeRetention).Unix()
-	return row.Created < cutoff, nil
 }
 
 // Outstanding is every non-void proposal of the group's current epoch. It is the list both

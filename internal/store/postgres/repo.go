@@ -915,6 +915,7 @@ func mlsGroupRow(m pgdb.MlsGroups) store.GroupRow {
 		Created:             m.Created,
 		ClosedAt:            ptrInt64(m.ClosedAt),
 		PrunedBelow:         uint64(m.PrunedBelow),
+		HandshakesPruned:    uint64(m.HandshakesPrunedThrough),
 	}
 }
 
@@ -1106,9 +1107,35 @@ func (r *Repo) OldestHandshakeSeq(ctx context.Context, groupID id.ID) (uint64, e
 	return uint64(seq), nil
 }
 
+// PruneHandshakes deletes every handshake older than `before` and, in the same transaction and
+// first, raises each affected group's handshakes_pruned_through to the highest seq it loses: the
+// catch-up's E_PRUNED is decided against that mark, so a deletion the mark does not record would
+// serve a log with a silent hole.
 func (r *Repo) PruneHandshakes(ctx context.Context, before int64) (int64, error) {
-	n, err := r.w.PruneHandshakes(ctx, pgdb.PruneHandshakesParams{Created: before})
+	var n int64
+	err := r.atomically(ctx, func(q *pgdb.Queries) error {
+		if err := q.RaiseHandshakesPrunedThrough(ctx, pgdb.RaiseHandshakesPrunedThroughParams{Created: before}); err != nil {
+			return err
+		}
+		var err error
+		n, err = q.PruneHandshakes(ctx, pgdb.PruneHandshakesParams{Created: before})
+		return err
+	})
 	return n, wrap(err)
+}
+
+// atomically runs fn on the transaction this repository is already in, or on a new one.
+func (r *Repo) atomically(ctx context.Context, fn func(q *pgdb.Queries) error) error {
+	if r.inTx {
+		return fn(r.w)
+	}
+	return r.Tx(ctx, func(tx store.Repository) error {
+		sub, ok := tx.(*Repo)
+		if !ok {
+			return errors.New("store: a transaction that is not this engine's")
+		}
+		return fn(sub.w)
+	})
 }
 
 func (r *Repo) PutProposal(ctx context.Context, p store.ProposalRow) error {
@@ -1553,11 +1580,31 @@ func (r *Repo) TombstoneAppMessage(ctx context.Context, groupID id.ID, seq uint6
 
 func (r *Repo) PruneAppMessages(ctx context.Context, groupID id.ID,
 	cursorFloor uint64, deliveryFloor, now int64) (int64, error) {
-	n, err := r.w.PruneAppMessages(ctx, pgdb.PruneAppMessagesParams{
-		GroupID:       groupID,
-		CursorFloor:   int64(cursorFloor),
-		DeliveryFloor: deliveryFloor,
-		Now:           now,
+	var n int64
+	err := r.atomically(ctx, func(q *pgdb.Queries) error {
+		// The high-water first, from the same predicate the DELETE applies: pruned_below is
+		// then exactly the highest seq this call takes, whichever trigger takes it.
+		top, err := q.MaxPrunableAppMessageSeq(ctx, pgdb.MaxPrunableAppMessageSeqParams{
+			GroupID:       groupID,
+			CursorFloor:   int64(cursorFloor),
+			DeliveryFloor: deliveryFloor,
+			Now:           now,
+		})
+		if err != nil {
+			return err
+		}
+		if top > 0 {
+			if err := q.RaisePrunedBelow(ctx, pgdb.RaisePrunedBelowParams{GroupID: groupID, PrunedBelow: top}); err != nil {
+				return err
+			}
+		}
+		n, err = q.PruneAppMessages(ctx, pgdb.PruneAppMessagesParams{
+			GroupID:       groupID,
+			CursorFloor:   int64(cursorFloor),
+			DeliveryFloor: deliveryFloor,
+			Now:           now,
+		})
+		return err
 	})
 	return n, wrap(err)
 }

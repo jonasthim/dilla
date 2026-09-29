@@ -73,6 +73,17 @@ SELECT * FROM mls_handshakes
 WHERE group_id = ? AND epoch = ? AND kind IN (1, 2)
 ORDER BY seq LIMIT 1;
 
+-- name: RaiseHandshakesPrunedThrough :exec
+-- Runs in PruneHandshakes' transaction, BEFORE the DELETE with the same cutoff: every group whose
+-- handshakes the DELETE is about to take records the highest seq it loses. MONOTONE by the `<`.
+UPDATE mls_groups
+   SET handshakes_pruned_through = (SELECT MAX(h.seq) FROM mls_handshakes h
+                                     WHERE h.group_id = mls_groups.group_id
+                                       AND h.created < CAST(sqlc.arg(created) AS INTEGER))
+ WHERE handshakes_pruned_through < (SELECT COALESCE(MAX(h.seq), 0) FROM mls_handshakes h
+                                     WHERE h.group_id = mls_groups.group_id
+                                       AND h.created < CAST(sqlc.arg(created) AS INTEGER));
+
 -- name: PruneHandshakes :execrows
 DELETE FROM mls_handshakes WHERE created < ?;
 

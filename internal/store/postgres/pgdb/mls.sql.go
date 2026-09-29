@@ -279,7 +279,7 @@ func (q *Queries) GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochPara
 }
 
 const getGroup = `-- name: GetGroup :one
-SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below FROM mls_groups WHERE group_id = $1
+SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below, handshakes_pruned_through FROM mls_groups WHERE group_id = $1
 `
 
 type GetGroupParams struct {
@@ -311,6 +311,7 @@ func (q *Queries) GetGroup(ctx context.Context, arg GetGroupParams) (MlsGroups, 
 		&i.Created,
 		&i.ClosedAt,
 		&i.PrunedBelow,
+		&i.HandshakesPrunedThrough,
 	)
 	return i, err
 }
@@ -449,7 +450,7 @@ func (q *Queries) ListAllProposals(ctx context.Context, arg ListAllProposalsPara
 }
 
 const listGroupsForRetention = `-- name: ListGroupsForRetention :many
-SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below FROM mls_groups WHERE group_id > $1
+SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below, handshakes_pruned_through FROM mls_groups WHERE group_id > $1
 ORDER BY group_id LIMIT $2::bigint
 `
 
@@ -495,6 +496,7 @@ func (q *Queries) ListGroupsForRetention(ctx context.Context, arg ListGroupsForR
 			&i.Created,
 			&i.ClosedAt,
 			&i.PrunedBelow,
+			&i.HandshakesPrunedThrough,
 		); err != nil {
 			return nil, err
 		}
@@ -638,7 +640,7 @@ func (q *Queries) ListMembers(ctx context.Context, arg ListMembersParams) ([]Mls
 }
 
 const listOpenGroups = `-- name: ListOpenGroups :many
-SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below FROM mls_groups WHERE closed_at IS NULL AND group_id > $1
+SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below, handshakes_pruned_through FROM mls_groups WHERE closed_at IS NULL AND group_id > $1
 ORDER BY group_id LIMIT $2::bigint
 `
 
@@ -678,6 +680,7 @@ func (q *Queries) ListOpenGroups(ctx context.Context, arg ListOpenGroupsParams) 
 			&i.Created,
 			&i.ClosedAt,
 			&i.PrunedBelow,
+			&i.HandshakesPrunedThrough,
 		); err != nil {
 			return nil, err
 		}
@@ -1095,6 +1098,27 @@ type QuarantineDeviceParams struct {
 
 func (q *Queries) QuarantineDevice(ctx context.Context, arg QuarantineDeviceParams) error {
 	_, err := q.db.ExecContext(ctx, quarantineDevice, arg.QuarantinedAt, arg.QuarantineReason, arg.ID)
+	return err
+}
+
+const raiseHandshakesPrunedThrough = `-- name: RaiseHandshakesPrunedThrough :exec
+UPDATE mls_groups
+   SET handshakes_pruned_through = (SELECT MAX(h.seq) FROM mls_handshakes h
+                                     WHERE h.group_id = mls_groups.group_id
+                                       AND h.created < $1::bigint)
+ WHERE handshakes_pruned_through < (SELECT COALESCE(MAX(h.seq), 0) FROM mls_handshakes h
+                                     WHERE h.group_id = mls_groups.group_id
+                                       AND h.created < $1::bigint)
+`
+
+type RaiseHandshakesPrunedThroughParams struct {
+	Created int64
+}
+
+// Runs in PruneHandshakes' transaction, BEFORE the DELETE with the same cutoff: every group whose
+// handshakes the DELETE is about to take records the highest seq it loses. MONOTONE by the `<`.
+func (q *Queries) RaiseHandshakesPrunedThrough(ctx context.Context, arg RaiseHandshakesPrunedThroughParams) error {
+	_, err := q.db.ExecContext(ctx, raiseHandshakesPrunedThrough, arg.Created)
 	return err
 }
 

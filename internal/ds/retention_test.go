@@ -179,9 +179,11 @@ func TestArchivalRetentionIsIndependentOfDeliveryRetention(t *testing.T) {
 	if _, err := h.ds.Sweep(ctx); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	rows, err := h.ds.Messages(ctx, g.id, g.session, 0, 10)
+	// The table itself, not the catch-up: a catch-up from 0 still wants the expired seq and is
+	// E_PRUNED now that the high-water records every trigger's deletions.
+	rows, err := h.repo.ListAppMessages(ctx, g.id, 0, 10)
 	if err != nil {
-		t.Fatalf("Messages: %v", err)
+		t.Fatalf("ListAppMessages: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Seq != kept.Seq {
 		t.Fatalf("got %v, want only the message with expires = NULL (retained)", rows)
@@ -218,7 +220,7 @@ func TestTheSweeperIsIdempotentAndBounded(t *testing.T) {
 }
 
 // The delivery-cursor half of the sweep deletes whenever every eligible cursor has passed, in a
-// group of any age, so `mayHavePrunedMessages` has to see it. What it must NOT do is read "some
+// group of any age, so the catch-up has to see it. What it must NOT do is read "some
 // cursor has moved" as "a message is gone": `from` is a cursor in the ONE seq space handshakes and
 // application messages share, so the gap between a member's cursor and the oldest surviving
 // message is routinely handshakes. A group whose early seqs are handshakes has lost nothing, and
@@ -298,9 +300,9 @@ func TestACatchUpBelowACursorFloorPruneIsEPrunedInAYoungGroup(t *testing.T) {
 	if dsErr.Status != 410 {
 		t.Errorf("status = %d, want 410", dsErr.Status)
 	}
-	rows, err := h.ds.Messages(ctx, g.id, g.session, first.Seq, 10)
+	rows, err := h.ds.Messages(ctx, g.id, g.session, first.Seq+1, 10)
 	if err != nil {
-		t.Fatalf("a cursor contiguous with the floor must be served: %v", err)
+		t.Fatalf("a catch-up from one past the deleted seq must be served: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Seq != second.Seq {
 		t.Fatalf("got %d rows, want the survivor at seq %d", len(rows), second.Seq)
@@ -431,9 +433,9 @@ func TestAQuietMemberIsToldItsCiphertextIsGoneRatherThanServedAShortList(t *test
 	}
 	// A cursor contiguous with the surviving floor is still served, so the refusal above is the
 	// hole talking and not a group-wide refusal.
-	rows, err := h.ds.Messages(ctx, g.id, quietSession, survivor.Seq-1, 10)
+	rows, err := h.ds.Messages(ctx, g.id, quietSession, survivor.Seq, 10)
 	if err != nil {
-		t.Fatalf("a cursor at the floor - 1 must be served: %v", err)
+		t.Fatalf("a catch-up from the first surviving seq must be served: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Seq != survivor.Seq {
 		t.Fatalf("got %d rows, want the survivor at seq %d", len(rows), survivor.Seq)
@@ -487,9 +489,9 @@ func TestAReturningIdleDeviceIsToldItsCiphertextIsGone(t *testing.T) {
 		t.Fatalf("the returning device's catch-up from 0: got %v, want E_PRUNED — "+
 			"3 application messages were deleted while it was away", err)
 	}
-	rows, err := h.ds.Messages(ctx, g.id, idleSession, survivor.Seq-1, 10)
+	rows, err := h.ds.Messages(ctx, g.id, idleSession, survivor.Seq, 10)
 	if err != nil {
-		t.Fatalf("a cursor at the floor - 1 must be served: %v", err)
+		t.Fatalf("a catch-up from the first surviving seq must be served: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Seq != survivor.Seq {
 		t.Fatalf("got %d rows, want the survivor at seq %d", len(rows), survivor.Seq)
@@ -563,9 +565,9 @@ func TestTheRetentionHighWaterNeverWalksBack(t *testing.T) {
 		t.Fatalf("a catch-up from 0 after the lower second floor: got %v, want E_PRUNED — "+
 			"the three messages the first sweep deleted are still gone", err)
 	}
-	rows, err := h.ds.Messages(ctx, g.id, h.sessions[behind], survivor.Seq-1, 10)
+	rows, err := h.ds.Messages(ctx, g.id, h.sessions[behind], survivor.Seq, 10)
 	if err != nil {
-		t.Fatalf("a cursor at the floor - 1 must be served: %v", err)
+		t.Fatalf("a catch-up from the first surviving seq must be served: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Seq != survivor.Seq {
 		t.Fatalf("got %d rows, want the survivor at seq %d", len(rows), survivor.Seq)

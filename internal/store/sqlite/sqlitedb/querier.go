@@ -96,6 +96,10 @@ type Querier interface {
 	// every group past the batch serving state the restored database no longer matches. Closed groups
 	// are skipped -- a closed group has nothing left to heal.
 	MarkAllGroupsEpochUnknown(ctx context.Context, arg MarkAllGroupsEpochUnknownParams) error
+	// The highest seq PruneAppMessages is about to delete with the same arguments, or 0. The store runs
+	// it in PruneAppMessages' transaction and raises pruned_below to it before the DELETE, so the
+	// high-water records exactly what went, whichever trigger took it.
+	MaxPrunableAppMessageSeq(ctx context.Context, arg MaxPrunableAppMessageSeqParams) (int64, error)
 	// The retention floor: the lowest seq an ELIGIBLE device has acknowledged in this group, or 0
 	// when no eligible cursor exists. A device is ineligible when it is revoked, when its user is
 	// disabled, or when its cursor has not moved since `updated` (the 90-day inactivity horizon) --
@@ -149,6 +153,9 @@ type Querier interface {
 	PutWelcome(ctx context.Context, arg PutWelcomeParams) error
 	PutWelcomePayload(ctx context.Context, arg PutWelcomePayloadParams) error
 	QuarantineDevice(ctx context.Context, arg QuarantineDeviceParams) error
+	// Runs in PruneHandshakes' transaction, BEFORE the DELETE with the same cutoff: every group whose
+	// handshakes the DELETE is about to take records the highest seq it loses. MONOTONE by the `<`.
+	RaiseHandshakesPrunedThrough(ctx context.Context, arg RaiseHandshakesPrunedThroughParams) error
 	// The record of what the DELIVERY-CURSOR trigger above actually deleted at, kept on the group
 	// because nothing can recompute it afterwards: `MinCursor` aggregates rows that move, and a device
 	// has no cursor row at all until its first POST /cursor. The catch-up predicate reads this column,

@@ -33,6 +33,16 @@ DELETE FROM mls_app_messages
         OR created < CAST(sqlc.arg(delivery_floor) AS INTEGER)
         OR (expires IS NOT NULL AND expires <= CAST(sqlc.arg(now) AS INTEGER)));
 
+-- name: MaxPrunableAppMessageSeq :one
+-- The highest seq PruneAppMessages is about to delete with the same arguments, or 0. The store runs
+-- it in PruneAppMessages' transaction and raises pruned_below to it before the DELETE, so the
+-- high-water records exactly what went, whichever trigger took it.
+SELECT CAST(COALESCE(MAX(seq), 0) AS BIGINT) AS max_seq FROM mls_app_messages
+ WHERE group_id = sqlc.arg(group_id)
+   AND ((CAST(sqlc.arg(cursor_floor) AS INTEGER) > 0 AND seq <= CAST(sqlc.arg(cursor_floor) AS INTEGER))
+        OR created < CAST(sqlc.arg(delivery_floor) AS INTEGER)
+        OR (expires IS NOT NULL AND expires <= CAST(sqlc.arg(now) AS INTEGER)));
+
 -- name: RaisePrunedBelow :exec
 -- The record of what the DELIVERY-CURSOR trigger above actually deleted at, kept on the group
 -- because nothing can recompute it afterwards: `MinCursor` aggregates rows that move, and a device

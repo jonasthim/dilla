@@ -200,10 +200,16 @@ func TestACatchUpBelowTheMessageRetentionFloorIsPruned(t *testing.T) {
 		t.Errorf("status = %d, want 410", dsErr.Status)
 	}
 
-	// A cursor contiguous with the floor has no hole and is served.
-	rows, err = h.ds.Messages(ctx, g.id, g.session, first.Seq, 10)
+	// `from` is the first seq wanted, so from = the deleted seq itself still wants it: a hole.
+	// Until the final review this was served — the one-seq hole of the old `from+1 < floor` guard.
+	if _, err := h.ds.Messages(ctx, g.id, g.session, first.Seq, 10); !errors.As(err, &dsErr) ||
+		dsErr.Code != "E_PRUNED" {
+		t.Fatalf("from the deleted seq %d: got %v, want E_PRUNED", first.Seq, err)
+	}
+	// One past what was deleted has no hole and is served.
+	rows, err = h.ds.Messages(ctx, g.id, g.session, first.Seq+1, 10)
 	if err != nil {
-		t.Fatalf("a cursor at the floor - 1 must be served: %v", err)
+		t.Fatalf("a catch-up past the deleted seq must be served: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Seq != second.Seq {
 		t.Fatalf("got %d rows, want the surviving message at seq %d", len(rows), second.Seq)

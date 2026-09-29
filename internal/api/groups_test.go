@@ -222,11 +222,24 @@ func TestTheHandshakeStreamIsServedAsRowsAndPrunesBelowItsFloor(t *testing.T) {
 		t.Errorf("row 1 = seq %d sender %v, want seq 20 and a null sender", rows[1].Seq, rows[1].Sender)
 	}
 
-	// A cursor two or more below the oldest surviving handshake of a group the sweep can already
-	// have reached has a hole the instance cannot fill: 410, not 200 with a short answer. The
-	// group must be older than HandshakeRetention for that to be true — below the window the same
-	// gap is the message stream's, which internal/ds pins.
+	// A catch-up that still wants a handshake retention has deleted has a hole the instance cannot
+	// fill: 410, not 200 with a short answer. Seqs 10 and 20 are swept here and seq 30, written
+	// after the jump, stays: a catch-up from 0 wants what went, one from 21 wants nothing that did.
 	h.clk.Advance(31 * 24 * time.Hour)
+	if err := h.deps.Repo.AppendHandshake(ctx, store.HandshakeRow{
+		GroupID: h.groupID, Seq: 30, Epoch: 8, Kind: 0, Blob: []byte("later"),
+		Created: h.clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("AppendHandshake: %v", err)
+	}
+	if _, err := h.deps.Repo.PruneHandshakes(ctx, h.clk.Now().Add(-30*24*time.Hour).Unix()); err != nil {
+		t.Fatalf("PruneHandshakes: %v", err)
+	}
+	res = h.do(t, http.MethodGet,
+		"/v1/groups/"+h.groupID.String()+"/handshakes?from=21", member, nil)
+	if res.Code != http.StatusOK {
+		t.Fatalf("from past every swept seq: status = %d, want 200: %s", res.Code, res.Body.String())
+	}
 	res = h.do(t, http.MethodGet,
 		"/v1/groups/"+h.groupID.String()+"/handshakes?from=0", member, nil)
 	if res.Code != http.StatusGone {
@@ -252,7 +265,7 @@ func TestACommitForADecidedEpochIsFourZeroNineCarryingTheWinnerAndTheProposals(t
 	winner := apiFixtureFile(t, "commits/09.mls")
 	if err := h.deps.Repo.AppendHandshake(ctx, store.HandshakeRow{
 		GroupID: h.groupID, Seq: 1, Epoch: 6, Kind: 1, Blob: winner,
-		Created: h.deps.Clock.Now().Unix(),
+		Created: h.clk.Now().Unix(),
 	}); err != nil {
 		t.Fatalf("AppendHandshake: %v", err)
 	}
