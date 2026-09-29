@@ -46,6 +46,12 @@ type Server struct {
 	gw       *gateway.Gateway
 	ds       *ds.DS
 
+	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
+	// Shutdown calls before it stops the gateway.
+	throttle    *auth.Throttle
+	limiter     *server.RateLimiter
+	maintenance func()
+
 	shutdownOnce sync.Once
 	shutdownErr  error
 }
@@ -243,6 +249,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
 		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery,
+		throttle: throttle, limiter: limiter,
 	}
 	s.httpSrv = &http.Server{
 		Handler:           h,
@@ -267,8 +274,26 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	s.httpSrv.Protocols = protocols
 	o.Health.Gate("db").Set(true, "")
 	o.Health.Gate("schema").Set(true, "")
+	// The gateway's maintenance loop: 4009 for an overdue heartbeat and the resume window's
+	// expiry, every heartbeat interval on the instance clock, with the login throttle, the rate
+	// limiter's idle buckets and the expired sessions swept on the same tick. Without it a
+	// connection that stops heartbeating stays "online" forever and every suspended connection
+	// keeps its ring for the life of the process.
+	s.maintenance = gw.Run(context.WithoutCancel(ctx), s.sweep)
 	return s, nil
 }
+
+// sweep is the maintenance tick's non-gateway half.
+func (s *Server) sweep(ctx context.Context) {
+	s.throttle.Sweep()
+	s.limiter.Sweep()
+	if _, err := s.o.Repo.PruneSessions(ctx, s.o.Clock.Now().Unix()); err != nil {
+		s.o.Log.Warn("pruning expired sessions failed", "err", err)
+	}
+}
+
+// Throttle is the login throttle New built; the maintenance loop sweeps it.
+func (s *Server) Throttle() *auth.Throttle { return s.throttle }
 
 func (s *Server) Handler() http.Handler    { return s.handler }
 func (s *Server) Mux() *server.Mux         { return s.mux }
@@ -333,6 +358,9 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if serr := s.httpSrv.Shutdown(ctx); serr != nil {
 		keep(s.httpSrv.Close())
+	}
+	if s.maintenance != nil {
+		s.maintenance()
 	}
 	if derr := s.ds.Shutdown(ctx); derr != nil {
 		keep(fmt.Errorf("dillad: stop the delivery service: %w", derr))

@@ -501,8 +501,8 @@ func (g *Gateway) OnlineIn(groupID id.ID) []OnlineDevice {
 	return g.reg.onlineIn(groupID, g.opts.Clock.Now(), g.opts.IdleClose)
 }
 
-// sweepLiveness closes every connection whose heartbeat is overdue. It runs on the gateway's own
-// ticker in production and is called directly by tests driving a clock.Fake.
+// sweepLiveness closes every connection whose heartbeat is overdue. It runs on Run's ticker in
+// production and is called directly by tests driving a clock.Fake.
 func (g *Gateway) sweepLiveness() {
 	now := g.opts.Clock.Now()
 	for _, c := range g.reg.all() {
@@ -517,6 +517,59 @@ func (g *Gateway) sweepLiveness() {
 		}
 	}
 	g.sweepSuspended()
+}
+
+// Run starts the gateway's maintenance loop and returns the function that stops it. Every
+// heartbeat interval, on g.opts.Clock, it closes the connections whose heartbeat is overdue
+// (4009), drops the suspended connections past the resume window — their rings with them — and
+// then runs each of `also`, which is how the composition root puts the auth throttle's and the
+// session table's sweeps on the same ticker.
+//
+// The first timer is armed BEFORE Run returns, not inside the goroutine: under clock.Fake a timer
+// created after the test's first Advance would be armed from the advanced time and never fire for
+// the advance that was meant to trigger it. stop is idempotent and waits for the loop to exit.
+func (g *Gateway) Run(ctx context.Context, also ...func(context.Context)) (stop func()) {
+	interval := g.beat.interval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	timer := g.opts.Clock.NewTimer(interval)
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C():
+				g.sweepLiveness()
+				for _, f := range also {
+					f(ctx)
+				}
+				timer.Reset(interval)
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
+}
+
+// Suspended is how many connections are parked in the resume window, each holding its ring. It
+// is what the maintenance loop bounds, and what a test through the composition root reads.
+func (g *Gateway) Suspended() int {
+	n := 0
+	g.suspended.Range(func(any, any) bool {
+		n++
+		return true
+	})
+	return n
 }
 
 // Shutdown tells every client to reconnect, waits for that frame to reach the wire, then closes

@@ -176,6 +176,15 @@ func (t *Throttle) Sweep() {
 	t.limiter.Sweep()
 }
 
+// Tracked is how many entries the throttle holds: accounts and addresses with failures inside the
+// observation window, plus the limiter's buckets. Sweep is what keeps it bounded.
+func (t *Throttle) Tracked() int {
+	t.mu.Lock()
+	n := len(t.byUser) + len(t.byAddr)
+	t.mu.Unlock()
+	return n + t.limiter.Len()
+}
+
 func appendWithin(ts []time.Time, now time.Time, window time.Duration) []time.Time {
 	return append(within(ts, now, window), now)
 }

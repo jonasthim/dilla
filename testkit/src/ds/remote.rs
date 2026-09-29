@@ -657,6 +657,18 @@ impl HttpDs {
         self.device
     }
 
+    /// Reads what the gateway has already written into `pending`, as `set_online(false)` does.
+    /// A clock jump longer than the heartbeat grace makes the instance close every connection
+    /// 4009 on its next maintenance tick, and the reconnect's catch-up resumes after `delivered`,
+    /// which only a pumped frame advances: frames left unread in the dead socket would be asked
+    /// for again after the jump, when retention may already have taken them.
+    pub fn settle(&mut self) -> Result<(), DsError> {
+        if !self.online {
+            return Ok(());
+        }
+        self.pump()
+    }
+
     /// The session's hard expiry in the instance's unix seconds; 0 when unknown.
     pub fn session_expires(&self) -> u64 {
         self.expires

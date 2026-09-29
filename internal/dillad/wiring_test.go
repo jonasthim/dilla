@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/dillad"
+	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 )
 
@@ -453,4 +455,125 @@ func TestRevokingADeviceClosesItsGatewayConnection(t *testing.T) {
 	if got := websocket.CloseStatus(err); got != 4004 {
 		t.Fatalf("the socket ended with %v (status %d), want close 4004 session revoked", err, got)
 	}
+}
+
+// newGreetedServerAt is newGreetedServer on a fake clock the test moves, so the maintenance loop
+// the composition root starts can be driven past a deadline without waiting for it.
+func newGreetedServerAt(t *testing.T) (*dillad.Server, *httptest.Server, string, *clock.Fake) {
+	t.Helper()
+	cfg, code := testConfigInvite(t)
+	cfg.Log.Level = "warn"
+	clk := clock.NewFake(time.Now().Truncate(time.Second))
+	s, err := dillad.New(context.Background(), dillad.Options{
+		Config: cfg, Clock: clk, Wasm: sharedRuntime(t),
+	})
+	if err != nil {
+		t.Fatalf("dillad.New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return s, ts, accountToken(t, s.Handler(), code), clk
+}
+
+// dialReady opens a gateway connection and takes it through hello, identify and ready.
+func dialReady(t *testing.T, ctx context.Context, ts *httptest.Server, token string) *websocket.Conn {
+	t.Helper()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/gateway", //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
+		&websocket.DialOptions{
+			HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + token}},
+			Subprotocols: []string{"dilla.v1"},
+		})
+	if err != nil {
+		t.Fatalf("dial /gateway: %v", err)
+	}
+	t.Cleanup(func() { _ = c.CloseNow() })
+	if op, _ := readFrame(t, ctx, c); op != 0 {
+		t.Fatalf("first frame op %d, want hello", op)
+	}
+	identify(t, ctx, c)
+	if op, _ := readFrame(t, ctx, c); op != 3 {
+		t.Fatalf("op %d after identify, want ready", op)
+	}
+	return c
+}
+
+// advanceUntil moves the fake clock one step at a time, giving the maintenance goroutine a moment
+// after each step, until done reports true or ten seconds of wall time pass.
+func advanceUntil(t *testing.T, clk *clock.Fake, step time.Duration, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !done() {
+		if time.Now().After(deadline) {
+			t.Fatal("the condition never held while the clock advanced")
+		}
+		clk.Advance(step)
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The gateway's liveness sweep runs in production, not only when a test calls it: an identified
+// connection that stops heartbeating is closed 4009 once the clock passes interval*2 + 5 s.
+func TestTheCompositionRootClosesAConnectionThatStopsHeartbeating(t *testing.T) {
+	s, ts, token, clk := newGreetedServerAt(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	c := dialReady(t, ctx, ts, token)
+	sess, err := s.Sessions().Resolve(ctx, token)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	ended := make(chan error, 1)
+	go func() {
+		for {
+			if _, _, err := c.Read(ctx); err != nil {
+				ended <- err
+				return
+			}
+		}
+	}()
+	var closed error
+	advanceUntil(t, clk, 30*time.Second, func() bool {
+		select {
+		case closed = <-ended:
+			return true
+		default:
+			return false
+		}
+	})
+	if got := websocket.CloseStatus(closed); got != 4009 {
+		t.Fatalf("the silent connection ended with %v (status %d), want close 4009 session_timeout", closed, got)
+	}
+	if s.Gateway().Online(sess.DeviceID) {
+		t.Error("a device whose only connection timed out is still online")
+	}
+}
+
+// A connection the client dropped waits in the resume window with its ring, and the maintenance
+// loop drops it once the window has passed.
+func TestTheCompositionRootDropsASuspendedSessionPastTheResumeWindow(t *testing.T) {
+	s, ts, token, clk := newGreetedServerAt(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	c := dialReady(t, ctx, ts, token)
+	_ = c.Close(websocket.StatusNormalClosure, "bye")
+	deadline := time.Now().Add(5 * time.Second)
+	for s.Gateway().Suspended() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("suspended = %d after the client left, want 1", s.Gateway().Suspended())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	advanceUntil(t, clk, 30*time.Second, func() bool { return s.Gateway().Suspended() == 0 })
+}
+
+// The login throttle's ledger is swept on the same tick: failures older than the observation
+// window, and the buckets they filled, are gone without anyone logging in again.
+func TestTheCompositionRootSweepsTheLoginThrottle(t *testing.T) {
+	s, _, _, clk := newGreetedServerAt(t)
+	s.Throttle().RecordFailure(id.New(), netip.MustParseAddr("198.51.100.9"))
+	if s.Throttle().Tracked() == 0 {
+		t.Fatal("a recorded failure left nothing in the throttle")
+	}
+	advanceUntil(t, clk, 5*time.Minute, func() bool { return s.Throttle().Tracked() == 0 })
 }

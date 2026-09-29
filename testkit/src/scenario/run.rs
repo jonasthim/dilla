@@ -367,6 +367,14 @@ impl Runner {
             }
             Stmt::AdvanceClock { seconds } => {
                 if self.is_remote() {
+                    // Every online client reads what its socket already holds first: the jump
+                    // outlives the heartbeat grace, so the instance's maintenance tick closes the
+                    // connections 4009, and a frame left unread in one is gone with it.
+                    if let Some(Backend::Remote { clients, .. }) = self.backend.as_mut() {
+                        for ds in clients.values_mut() {
+                            ds.settle()?;
+                        }
+                    }
                     control_post("/debug/clock", &format!("{{\"seconds\":{seconds}}}"))?;
                     // A device whose session the jump has outlived signs in again, as a real
                     // client does when its 30-day native session runs out: a scenario that
