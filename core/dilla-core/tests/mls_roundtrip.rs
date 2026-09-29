@@ -575,6 +575,241 @@ fn a_stored_instance_proposal_is_carried_by_the_next_commit() {
     );
 }
 
+/// protocol/01's client policy for proposals from the EXTERNAL sender: in a `text` group an Add
+/// and a Remove from the instance are accepted - that is how a user joins while offline and how a
+/// user is removed - while a member may neither Add nor Remove another user. A receiver must
+/// therefore judge each proposal by its own sender, not the commit by its proposal types: the
+/// member policy applied to every Add or Remove refused every commit that carried an instance
+/// proposal, which is every membership change the instance makes.
+#[test]
+fn a_receiver_accepts_a_member_commit_of_instance_adds_and_removes() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let carol_p = provider();
+    let dave_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    let (carol_signer, carol_cred) = signer_and_credential(0xcc, 0x03);
+    let (dave_signer, dave_cred) = signer_and_credential(0xdd, 0x04);
+    for (p, s) in [
+        (&alice_p, &alice_signer),
+        (&bob_p, &bob_signer),
+        (&carol_p, &carol_signer),
+        (&dave_p, &dave_signer),
+    ] {
+        s.store(p.storage()).expect("store signer");
+    }
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+    let carol_kp =
+        build_key_package(&carol_p, &carol_signer, carol_cred, false).expect("key package");
+    let dave_kp = build_key_package(&dave_p, &dave_signer, dave_cred, false).expect("key package");
+    let instance_signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    let senders = external_senders(
+        instance_signer.public().into(),
+        &InstanceId::from_bytes([0x11; 16]),
+    );
+    let group_id = GroupId::from_slice(&[0x48; 16]);
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        b.clone(),
+        Some(senders),
+    )
+    .expect("create");
+    let add = alice
+        .add_members(
+            &alice_p,
+            &alice_signer,
+            &[
+                bob_kp.key_package().clone(),
+                carol_kp.key_package().clone(),
+            ],
+        )
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    let mut bob = DillaGroup::join_from_welcome(
+        &bob_p,
+        into_welcome(add.welcomes[0].1.clone()),
+        alice.export_ratchet_tree().into(),
+        &b,
+    )
+    .expect("join");
+
+    // The instance proposes removing Carol (leaf 2) and adding Dave; Alice and Bob both queue
+    // both, and Alice commits them.
+    let remove = ExternalProposal::new_remove::<DillaProvider>(
+        LeafNodeIndex::new(2),
+        group_id.clone(),
+        alice.epoch().into(),
+        &instance_signer,
+        instance_sender_index(),
+    )
+    .expect("external remove");
+    let admit = ExternalProposal::new_add::<DillaProvider>(
+        dave_kp.key_package().clone(),
+        group_id,
+        alice.epoch().into(),
+        &instance_signer,
+        instance_sender_index(),
+    )
+    .expect("external add");
+    for proposal in [remove, admit] {
+        for (group, p) in [(&mut alice, &alice_p), (&mut bob, &bob_p)] {
+            let bytes = {
+                use tls_codec::Serialize as _;
+                proposal.tls_serialize_detached().expect("serialize")
+            };
+            let message = {
+                use tls_codec::Deserialize as _;
+                MlsMessageIn::tls_deserialize_exact(&bytes)
+                    .expect("deserialize")
+                    .try_into_protocol_message()
+                    .expect("protocol message")
+            };
+            let DillaProcessed::Proposal(queued) =
+                group.process_message(p, message).expect("process")
+            else {
+                panic!("expected a queued proposal");
+            };
+            group.store_pending_proposal(p, *queued).expect("store");
+        }
+    }
+
+    let bundle = alice.self_update(&alice_p, &alice_signer).expect("commit");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    match bob
+        .process_message(&bob_p, into_protocol(bundle.commit))
+        .expect("the instance's Add and Remove, committed by a member, are accepted")
+    {
+        DillaProcessed::StagedCommit(staged) => {
+            bob.merge_staged_commit(&bob_p, *staged).expect("merge")
+        }
+        other => panic!("expected a staged commit, got {other:?}"),
+    }
+    assert_eq!(bob.epoch(), alice.epoch());
+    assert_eq!(bob.member_count(), 3, "alice, bob and dave; carol is gone");
+}
+
+/// A member's own Add in a `text` group is still refused by the receiver (protocol/01: a member
+/// Add is accepted only in `pairing` and `interaction` groups).
+#[test]
+fn a_receiver_refuses_a_member_add_in_a_text_group() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let carol_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    let (carol_signer, carol_cred) = signer_and_credential(0xcc, 0x03);
+    for (p, s) in [
+        (&alice_p, &alice_signer),
+        (&bob_p, &bob_signer),
+        (&carol_p, &carol_signer),
+    ] {
+        s.store(p.storage()).expect("store signer");
+    }
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+    let carol_kp =
+        build_key_package(&carol_p, &carol_signer, carol_cred, false).expect("key package");
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        GroupId::from_slice(&[0x49; 16]),
+        b.clone(),
+        None,
+    )
+    .expect("create");
+    let add = alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    let mut bob = DillaGroup::join_from_welcome(
+        &bob_p,
+        into_welcome(add.welcomes[0].1.clone()),
+        alice.export_ratchet_tree().into(),
+        &b,
+    )
+    .expect("join");
+    let add = alice
+        .add_members(&alice_p, &alice_signer, &[carol_kp.key_package().clone()])
+        .expect("add_members");
+    let err = bob
+        .process_message(&bob_p, into_protocol(add.commit))
+        .expect_err("a member Add in a text group must be refused");
+    assert!(
+        matches!(
+            err,
+            MlsError::Protocol(ProtocolError::MemberRemoveForbidden)
+        ),
+        "{err:?}"
+    );
+}
+
+/// An instance Add committed through `self_update` produces a Welcome, and it must reach the
+/// added device: the bundle addresses it to the device the Add's KeyPackage names, which is what
+/// the delivery service keys the Welcome queue on.
+#[test]
+fn a_committed_instance_add_addresses_its_welcome_to_the_added_device() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+    let instance_signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    let senders = external_senders(
+        instance_signer.public().into(),
+        &InstanceId::from_bytes([0x11; 16]),
+    );
+    let group_id = GroupId::from_slice(&[0x47; 16]);
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        b.clone(),
+        Some(senders),
+    )
+    .expect("create");
+
+    let proposal = ExternalProposal::new_add::<DillaProvider>(
+        bob_kp.key_package().clone(),
+        group_id,
+        alice.epoch().into(),
+        &instance_signer,
+        instance_sender_index(),
+    )
+    .expect("external add proposal");
+    let DillaProcessed::Proposal(queued) = alice
+        .process_message(&alice_p, into_protocol(proposal))
+        .expect("process")
+    else {
+        panic!("expected a queued proposal");
+    };
+    alice
+        .store_pending_proposal(&alice_p, *queued)
+        .expect("store the proposal");
+
+    let bundle = alice.self_update(&alice_p, &alice_signer).expect("commit");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    assert_eq!(bundle.welcomes.len(), 1);
+    assert_eq!(bundle.welcomes[0].0, DeviceId::from_bytes([0x02; 16]));
+    let bob = DillaGroup::join_from_welcome(
+        &bob_p,
+        into_welcome(bundle.welcomes[0].1.clone()),
+        alice.export_ratchet_tree().into(),
+        &b,
+    )
+    .expect("the added device joins with the Welcome it was addressed");
+    assert_eq!(bob.epoch(), alice.epoch());
+}
+
 /// Regression (fix round 1, finding 2): a database failure while `create_message` persists the
 /// secret tree must reach the caller as `MlsError::NeedsReload`.
 ///

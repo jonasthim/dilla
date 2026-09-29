@@ -363,13 +363,26 @@ impl DillaGroup {
         signer: &SignatureKeyPair,
     ) -> Result<CommitBundle, MlsError> {
         let bundle = self.stage_commit(provider, signer, CommitShape::Update)?;
-        let (commit, welcome, group_info) = bundle.into_contents();
-        // As in `remove_members`: an Update commit adds nobody, so there is no Welcome and no
-        // device to address one to.
-        debug_assert!(welcome.is_none(), "a self-update commit emits no Welcome");
+        // A self-update also commits every proposal in the queue, and an instance Add queued by
+        // `store_pending_proposal` (invariant 6) makes the commit carry a Welcome. It is addressed
+        // to exactly the devices those Adds name, read off the staged commit, as `add_members`
+        // addresses its own: dropping it would add a leaf whose device can never join.
+        let devices: Vec<DeviceId> = match self.group.pending_commit() {
+            Some(staged) => staged
+                .add_proposals()
+                .map(|add| device_of(add.add_proposal().key_package()))
+                .collect::<Result<_, _>>()?,
+            None => Vec::new(),
+        };
+        let welcome = bundle.to_welcome_msg();
+        let (commit, _, group_info) = bundle.into_contents();
+        let welcomes = match welcome {
+            Some(w) => devices.into_iter().map(|d| (d, w.clone())).collect(),
+            None => Vec::new(),
+        };
         Ok(CommitBundle {
             commit,
-            welcomes: Vec::new(),
+            welcomes,
             group_info,
         })
     }
