@@ -17,7 +17,14 @@ export const REQUIRED_JOBS = [
   'browser-spike',
   'deny',
   'go',
+  // go-fts5-arm64 is created by plan-1a task 2 (interfaces §9.2): it cross-builds the SQLite FTS5
+  // path for arm64. If it is ever missing, the fix is to add it there, not to drop it from this list.
   'go-fts5-arm64',
+  'go-lint',
+  'go-vuln',
+  'go-sqlc',
+  'go-postgres',
+  'go-release',
 ];
 
 /**
@@ -34,10 +41,14 @@ const FORBIDDEN = [
 
 /** One load-bearing command per job, so a silently gutted job is caught. */
 const REQUIRED_STEPS = {
+  // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
     'cargo fmt --all --check',
     'cargo clippy --workspace --all-targets --all-features --locked -- -D warnings',
     'cargo test --workspace --all-features --locked',
+    'cargo build -p dilla-testkit --release --locked',
+    'name: dilla-testkit',
+    'if-no-files-found: error',
   ],
   'rust-wasm-node': ['cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked'],
   // Each entry must be a string the job carries and no other step of that job already contains.
@@ -80,12 +91,45 @@ const REQUIRED_STEPS = {
     'path: internal/mlswasi/testdata',
     'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
     'go test -race -shuffle=on -timeout 15m ./...',
+    'DILLA_TESTKIT',
+    // `DILLA_TESTKIT` above is a prefix of this one, so both are named: without the second, a
+    // missing binary would skip every scenario test and the job would stay green.
+    'DILLA_TESTKIT_REQUIRED',
+    'artifacts/dilla-testkit',
+    'name: dilla-core-wasi',
+    'name: dilla-testkit',
   ],
   // modernc.org/sqlite carries one generated translation unit per GOOS/GOARCH, so the FTS5
   // assertion is only actually *executed* on arm64 by a native arm64 runner (deviation B9): moved to
   // ubuntu-latest this job would silently re-run what the `go` job already ran.
   'go-fts5-arm64': ['runs-on: ubuntu-24.04-arm', 'go test ./internal/store/sqlite/...'],
+  // The five W2-W5 gates. Each entry is a string the job carries and no other step of that job
+  // already contains, so a silently gutted job is caught.
+  'go-lint': ['golangci/golangci-lint-action@v9', 'version: v2.13.2'],
+  'go-vuln': [
+    'golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...',
+    '-scan package -tags dillapins ./internal/deps',
+  ],
+  'go-sqlc': ['sqlc-dev/setup-sqlc@v5', "sqlc-version: '1.31.1'", 'sqlc diff', 'git diff --exit-code'],
+  'go-postgres': [
+    'postgres:18.6-alpine3.24',
+    '--locale-provider=builtin --builtin-locale=C.UTF-8',
+    'DILLA_TEST_PG',
+  ],
+  'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error'],
 };
+
+/**
+ * The `go` job's test step is a module-wide wildcard on purpose: every new internal/… package is
+ * picked up with zero workflow edits. Narrowing it to a package list is how a whole subsystem
+ * silently stops being tested, so the exact text is pinned.
+ */
+function assertTestStepIsNotNarrowed(workflow, fail) {
+  const line = 'go test -race -shuffle=on -timeout 15m ./...';
+  if (!workflow.includes(line)) {
+    fail(`the go job's test step must be exactly "${line}"`);
+  }
+}
 
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
 function splitJobs(text) {
@@ -139,6 +183,8 @@ export function checkWorkflow(root) {
     }
   }
 
+  assertTestStepIsNotNarrowed(text, (msg) => problems.push(`ci.yml: ${msg}`));
+
   // Plan B task 8 owns the `go` job; this plan owns `rust-wasi`. `actions/download-artifact@v8`
   // fetches from the same workflow run, so GitHub schedules `go` after `rust-wasi` only if a `needs:`
   // says so, and whichever plan lands second has to add the edge. Nobody owned that rule, so it lives
@@ -147,6 +193,11 @@ export function checkWorkflow(root) {
   if ('go' in jobs) {
     if (!/^\s*needs:.*rust-wasi/m.test(jobs.go)) {
       problems.push('ci.yml: job "go" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
+    }
+    // The testkit binary is built by `rust-native` and downloaded by `go`; without the edge the
+    // download finds nothing in the run and the job is red on every push.
+    if (!/^\s*needs:.*rust-native/m.test(jobs.go)) {
+      problems.push('ci.yml: job "go" downloads the rust-native testkit artifact but has no "needs: rust-native"');
     }
     // gap-31 §4 item 2 / NV-14 (resolved): the current majors deliberately pair
     // `actions/upload-artifact@v7` (this file's `rust-wasi` job) with `actions/download-artifact@v8`.
