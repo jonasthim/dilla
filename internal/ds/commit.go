@@ -196,7 +196,7 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 		}
 
 		// (5) invariant 4's clauses over the applied list.
-		if err := d.checkAppliedProposals(ctx, groupID, row, s, processed, o); err != nil {
+		if err := d.checkAppliedProposals(ctx, g, groupID, row, s, processed, o); err != nil {
 			return err
 		}
 
@@ -210,13 +210,26 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 		// The signer is the committer's own leaf, and leaf 0 is not a safe default for a commit
 		// that names none: on the external path it would check the joiner's GroupInfo against the
 		// CREATOR's signature key, which is a different question from the one invariant 4 asks.
-		// Task 25 supplies the joiner's new leaf index here; until it does, a commit with no
-		// sender leaf fails closed rather than borrowing leaf 0's key.
-		if processed.SenderLeaf == nil {
-			return errCommitInvalid("group_info_signature",
-				"the committer's leaf is unknown, so the GroupInfo's signer cannot be checked")
+		//
+		// On the external path the joiner occupies no leaf of the current tree, so there is no
+		// tree key to check against: ABI v3 reports the leaf the joiner lands on (`NewLeaf`) and
+		// checks the GroupInfo under the key the staged commit's UpdatePath brings for it
+		// (deviation B33, closing B30(a)). Both happen BEFORE the merge, which is irreversible. A
+		// commit that reports no new leaf still fails closed rather than borrowing leaf 0's key.
+		var check mlswasi.GroupInfoCheck
+		if o.external {
+			if processed.NewLeaf == nil {
+				return errCommitInvalid("group_info_signature",
+					"the joiner's leaf is unknown, so the GroupInfo's signer cannot be checked")
+			}
+			check, err = g.ValidateStagedGroupInfo(ctx, *processed.Staged, c.GroupInfo)
+		} else {
+			if processed.SenderLeaf == nil {
+				return errCommitInvalid("group_info_signature",
+					"the committer's leaf is unknown, so the GroupInfo's signer cannot be checked")
+			}
+			check, err = g.ValidateGroupInfo(ctx, c.GroupInfo, *processed.SenderLeaf)
 		}
-		check, err := g.ValidateGroupInfo(ctx, c.GroupInfo, *processed.SenderLeaf)
 		if err != nil {
 			return errCommitInvalid("group_info", err.Error())
 		}
@@ -398,7 +411,7 @@ func (d *DS) takeStaleAfterFailedMerge(groupID id.ID) bool {
 
 // checkAppliedProposals is invariant 4's clauses over the applied list. The clause numbers are
 // protocol/02's own.
-func (d *DS) checkAppliedProposals(ctx context.Context, groupID id.ID, row store.GroupRow, s Session, p mlswasi.Processed, o commitOptions) error {
+func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, groupID id.ID, row store.GroupRow, s Session, p mlswasi.Processed, o commitOptions) error {
 	outstanding, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
 	if err != nil {
 		return err
@@ -463,7 +476,7 @@ func (d *DS) checkAppliedProposals(ctx context.Context, groupID id.ID, row store
 		case mlswasi.ProposalAdd:
 			// Clause 4: the added KeyPackage validates, its user is eligible and its DSK is in
 			// the newest device list.
-			if err := d.checkAddedMember(ctx, groupID, a); err != nil {
+			if err := d.checkAddedMember(ctx, g, groupID, a); err != nil {
 				return err
 			}
 		}
@@ -535,8 +548,9 @@ func checkAddressedWelcomes(applied []mlswasi.AppliedProposal, welcomes []Welcom
 }
 
 // checkAddedMember validates one Add's credential against the device list the delivery service
-// holds and the channel ACL.
-func (d *DS) checkAddedMember(ctx context.Context, groupID id.ID, a mlswasi.AppliedProposal) error {
+// holds and the channel ACL. v is the guest the caller already holds, which the device list is
+// verified in (DeviceLists.Entries says why a second instance must not be acquired here).
+func (d *DS) checkAddedMember(ctx context.Context, v DeviceListVerifier, groupID id.ID, a mlswasi.AppliedProposal) error {
 	deviceID, userID, err := decodeCredentialIdentity(a.CredentialIdentity)
 	if err != nil {
 		return errCommitInvalid("add_key_package", "undecodable credential identity")
@@ -561,7 +575,7 @@ func (d *DS) checkAddedMember(ctx context.Context, groupID id.ID, a mlswasi.Appl
 	// the clause that stops a compromised instance or a stale list from admitting a device the
 	// user never authorised, so the list is decoded, its signature verified, and the comparison
 	// made against a decoded entry.
-	entries, err := d.opts.DeviceLists.Entries(ctx, userID)
+	entries, err := d.opts.DeviceLists.Entries(ctx, v, userID)
 	if err != nil {
 		// A missing or unverifiable list is a refusal, never a pass: an Add of an unlisted device
 		// must not be accepted because the user happens to have no device_lists row.

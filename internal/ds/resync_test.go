@@ -10,10 +10,13 @@ package ds_test
 //   - `testkit/fixtures/ds-1500` ships exactly one GroupInfo, at epoch 6, and invariant 4's step
 //     (6) wants epoch n+1 — the blocker `commit_test.go` records in two skips and the plan in
 //     deviations B21 and B24.
-//   - the fixture holds no external commit at all, and `internal/mlswasi.Processed` carries no
-//     field naming the joiner's NEW leaf, so commit step (6) — which needs the signer leaf to
-//     validate the GroupInfo, because `VerifiableGroupInfo::signer()` is `pub(crate)` (D17) —
-//     cannot be satisfied on the external path by any material this repository holds.
+//   - the fixture holds no external commit at all. (Task 27a closed the ABI half, deviation
+//     B33: `mlswasi.Processed.NewLeaf` names the joiner's leaf and `ValidateStagedGroupInfo`
+//     checks its GroupInfo under the key its commit brings, so commit step (6) is satisfiable
+//     on the external path; `core/dilla-core-wasi`'s
+//     `an_external_commit_reports_the_leaf_the_joiner_lands_on` drives a real external commit
+//     through both. What is still missing is external-commit material a Go test can hold,
+//     which Ruling C assigns to task 29's harness.)
 //
 // So the happy path is one honest skip naming both blockers, and everything R25 states that IS
 // reachable is asserted for real against the real store and the real guest: guard 1 in full, the
@@ -37,9 +40,9 @@ func TestAResyncSucceedsDuringAFreezeAndReissuesTheProposals(t *testing.T) {
 	t.Skip("needs an ACCEPTED external commit, which nothing in this repository can produce: " +
 		"testkit/fixtures/ds-1500 ships one GroupInfo (group_info.mls, epoch 6) where invariant 4 " +
 		"wants epoch n+1 (the blocker commit_test.go and proposal_test.go already record in three " +
-		"skips), it holds no external commit, and mlswasi.Processed names no NEW leaf for the " +
-		"joiner, so commit step (6) cannot check the GroupInfo's signer on the external path at " +
-		"all. TestAResyncIsExemptFromTheFreeze below asserts the half of this test that does not " +
+		"skips), and it holds no external commit (the ABI half — Processed.NewLeaf and " +
+		"ValidateStagedGroupInfo — landed in task 27a; the external-commit material is task 29's). " +
+		"TestAResyncIsExemptFromTheFreeze below asserts the half of this test that does not " +
 		"need the commit to be accepted")
 }
 

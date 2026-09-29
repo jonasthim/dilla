@@ -31,4 +31,8 @@ pub const WIRE_VERSION: u64 = 1;
 /// applied-proposal list and `committer_updated`) and `validate_key_package`'s from 5 to 6
 /// (`kp_ref`). Both are response-shape changes, and dillad's host is the only consumer, so the
 /// version moves instead of a compatibility shim being written (R27, interfaces §3).
-pub const ABI_VERSION: u64 = 2;
+///
+/// **3** since 2026-09-29 (dillad-1 task 27a, Ruling C): `public_group_process`'s response grew a
+/// ninth element, `new_leaf` — the leaf an external commit's joiner lands on — and the module
+/// grew `device_list_entries`, the verified decoder of a user's signed device list (NV-B8).
+pub const ABI_VERSION: u64 = 3;

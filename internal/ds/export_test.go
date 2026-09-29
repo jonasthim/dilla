@@ -33,6 +33,15 @@ func ACLForTest(d *DS) ACL { return d.opts.ACL }
 
 func DeviceListsForTest(d *DS) DeviceLists { return d.opts.DeviceLists }
 
+// CheckAddedMemberForTest is invariant 4's Add clause on its own, verified in the group's own
+// instance exactly as the commit path does. No committed commit adds a device this instance can
+// be made to know AND that passes the ACL, so the clause's accepting branch is reached here.
+func CheckAddedMemberForTest(d *DS, ctx context.Context, groupID id.ID, a mlswasi.AppliedProposal) error {
+	return d.withGroup(ctx, groupID, func(g *mlswasi.PublicGroup) error {
+		return d.checkAddedMember(ctx, g, groupID, a)
+	})
+}
+
 // WithGroupForTest is withGroup WITHOUT the per-group lock every public read path takes first.
 // Tree and Register serialise one group's work through d.lock, so the state cache's own
 // concurrency — the reservation that keeps two first touches of one group from importing it

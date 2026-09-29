@@ -40,18 +40,19 @@ func TestNewDefaultsTheInjectedSeamsToTheirPlan1Stubs(t *testing.T) {
 		t.Error("a user the instance cannot see in the group was declared eligible")
 	}
 
-	// NV-B8: the device-list verifier fails closed until the ABI export exists. Returning entries
-	// — or no error — would let an Add past invariant 4's DSK clause on an unverified list.
+	// NV-B8: the device-list verifier fails closed for a user who has published no list.
+	// Returning entries — or no error — would let an Add past invariant 4's DSK clause on a list
+	// nobody signed. devicelist_test.go covers the lists that do verify.
 	lists := ds.DeviceListsForTest(h.ds)
 	if lists == nil {
 		t.Fatal("New left Options.DeviceLists nil; invariant 4's DSK clause would be a nil call")
 	}
-	entries, err := lists.Entries(ctx, session.UserID)
+	entries, err := lists.Entries(ctx, nil, session.UserID)
 	if err == nil {
-		t.Errorf("the Plan-1 device list answered %d entries; it must fail closed", len(entries))
+		t.Errorf("a user with no device list answered %d entries; it must fail closed", len(entries))
 	}
 	if entries != nil {
-		t.Errorf("the Plan-1 device list returned %d entries beside its error", len(entries))
+		t.Errorf("a user with no device list returned %d entries beside its error", len(entries))
 	}
 }
 

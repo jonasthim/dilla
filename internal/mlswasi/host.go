@@ -52,11 +52,14 @@ import (
 
 // ABIVersion is the version every request carries as its first element and every module must
 // accept. **2** since 2026-09-24: public_group_process grew to eight elements and
-// validate_key_package to six (interfaces.md §3, R27). There is no compatibility shim — this host
-// is the guest's only consumer and CI builds both from one commit.
-const ABIVersion uint64 = 2
+// validate_key_package to six (interfaces.md §3, R27). **3** since 2026-09-29 (task 27a, Ruling
+// C): public_group_process grew a ninth element, new_leaf, and the module grew
+// device_list_entries and public_group_staged_group_info_validate (deviations B32, B33). There is
+// no compatibility shim — this host is the guest's only consumer and CI builds both from one
+// commit.
+const ABIVersion uint64 = 3
 
-// RequiredExports is the 21-export ABI v2 surface. New refuses any module that does not carry all
+// RequiredExports is the 23-export ABI v3 surface. New refuses any module that does not carry all
 // of them. _initialize is deliberately absent: see the package comment.
 var RequiredExports = []string{
 	"dilla_alloc",
@@ -75,11 +78,13 @@ var RequiredExports = []string{
 	"public_group_proposal_list",
 	"public_group_staged_discard",
 	"public_group_group_info_validate",
+	"public_group_staged_group_info_validate",
 	"public_group_proposal_inspect",
 	"private_message_aad",
 	"validate_key_package",
 	"external_propose_add",
 	"external_propose_remove",
+	"device_list_entries",
 }
 
 // startFunctions is what every instance, and the control arm of the clock test,

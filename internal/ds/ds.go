@@ -197,8 +197,8 @@ type Options struct {
 	// resolver arrives with Plan 2 task 3 (NV-B6).
 	ACL ACL
 	// DeviceLists decodes and verifies a user's signed device list for invariant 4's DSK clause.
-	// nil means NewDeviceLists(Store, Wasm), which fails closed until the ABI export exists
-	// (NV-B8).
+	// nil means NewDeviceLists(Store, Wasm), which verifies the stored list in the guest (NV-B8,
+	// resolved by task 27a's ABI v3 export device_list_entries).
 	//
 	// ACL and DeviceLists have no call site before tasks 20-24 — checkAddedMember is the first —
 	// but they are declared now, with Options, because Options is the one shape both plans read

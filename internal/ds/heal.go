@@ -469,7 +469,7 @@ func (d *DS) replayHealCommit(ctx context.Context, groupID id.ID, g *mlswasi.Pub
 			}
 		}
 	}()
-	if err := d.checkHealedCommit(ctx, groupID, leaves, p); err != nil {
+	if err := d.checkHealedCommit(ctx, g, groupID, leaves, p); err != nil {
 		return healReplayed{}, err
 	}
 	epoch, err := g.Merge(ctx, *p.Staged)
@@ -489,7 +489,7 @@ func (d *DS) replayHealCommit(ctx context.Context, groupID id.ID, g *mlswasi.Pub
 	if err != nil {
 		return healReplayed{}, err
 	}
-	joiner, err := d.checkHealedExternalCommit(ctx, groupID, leaves, after, p.Applied)
+	joiner, err := d.checkHealedExternalCommit(ctx, g, groupID, leaves, after, p.Applied)
 	if err != nil {
 		return healReplayed{}, err
 	}
@@ -499,7 +499,7 @@ func (d *DS) replayHealCommit(ctx context.Context, groupID id.ID, g *mlswasi.Pub
 
 // checkHealedCommit is invariant 4's content clauses over one replayed commit, before its merge.
 // The clause numbers are protocol/02's, as in `checkAppliedProposals`.
-func (d *DS) checkHealedCommit(ctx context.Context, groupID id.ID, leaves map[uint32]leafIdentity, p mlswasi.Processed) error {
+func (d *DS) checkHealedCommit(ctx context.Context, g DeviceListVerifier, groupID id.ID, leaves map[uint32]leafIdentity, p mlswasi.Processed) error {
 	var committer *leafIdentity
 	if p.SenderLeaf != nil {
 		who, ok := leaves[*p.SenderLeaf]
@@ -529,7 +529,7 @@ func (d *DS) checkHealedCommit(ctx context.Context, groupID id.ID, leaves map[ui
 			}
 		case mlswasi.ProposalAdd:
 			// Clause 4: the added device is known, unrevoked, listed and eligible.
-			if err := d.checkAddedMember(ctx, groupID, a); err != nil {
+			if err := d.checkAddedMember(ctx, g, groupID, a); err != nil {
 				return err
 			}
 		}
@@ -542,7 +542,7 @@ func (d *DS) checkHealedCommit(ctx context.Context, groupID id.ID, leaves map[ui
 // Removes that same device's previous leaf, so a removed device must be back in the tree after the
 // merge; on a fresh join nothing is removed and the joiner is the one device the merge added,
 // which must pass the same eligibility clause an Add does.
-func (d *DS) checkHealedExternalCommit(ctx context.Context, groupID id.ID, before map[uint32]leafIdentity, after mlswasi.GroupState, applied []mlswasi.AppliedProposal) (id.ID, error) {
+func (d *DS) checkHealedExternalCommit(ctx context.Context, g DeviceListVerifier, groupID id.ID, before map[uint32]leafIdentity, after mlswasi.GroupState, applied []mlswasi.AppliedProposal) (id.ID, error) {
 	present := make(map[id.ID]struct{}, len(before))
 	for _, who := range before {
 		present[who.device] = struct{}{}
@@ -582,7 +582,7 @@ func (d *DS) checkHealedExternalCommit(ctx context.Context, groupID id.ID, befor
 	if len(added) != 1 {
 		return id.ID{}, errCommitInvalid("structural", "an external commit must add exactly one device")
 	}
-	if err := d.checkAddedMember(ctx, groupID, mlswasi.AppliedProposal{
+	if err := d.checkAddedMember(ctx, g, groupID, mlswasi.AppliedProposal{
 		Kind: mlswasi.ProposalAdd, CredentialIdentity: now[added[0]],
 	}); err != nil {
 		return id.ID{}, err

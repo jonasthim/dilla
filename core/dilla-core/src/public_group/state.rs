@@ -452,6 +452,29 @@ impl DillaPublicGroup {
             .required_capabilities()
     }
 
+    /// The signature key the committer of `staged` holds in the epoch the commit produces, which is
+    /// the key the GroupInfo of that epoch is signed under.
+    ///
+    /// A commit with an UpdatePath carries the committer's new leaf node, whose key may differ from
+    /// the one the tree holds today, and an EXTERNAL commit always carries one: the joiner is in no
+    /// leaf of the current tree, so `signature_key_of_leaf` has nothing to answer for it. A member
+    /// commit without a path leaves the committer's leaf untouched, so its key is the tree's.
+    /// `None` is a commit that names no sender and brings no leaf node, which openmls refuses to
+    /// stage; it is reported rather than assumed away.
+    pub fn staged_committer_key(
+        &self,
+        staged: &StagedCommit,
+        sender_leaf: Option<u32>,
+    ) -> Option<OpenMlsSignaturePublicKey> {
+        if let Some(leaf) = staged.update_path_leaf_node() {
+            return Some(OpenMlsSignaturePublicKey::from_signature_key(
+                leaf.signature_key().clone(),
+                self.group.ciphersuite().signature_algorithm(),
+            ));
+        }
+        sender_leaf.and_then(|l| self.signature_key_of_leaf(LeafNodeIndex::new(l)))
+    }
+
     pub fn ext_commit_sender_index(
         &self,
         staged: &StagedCommit,

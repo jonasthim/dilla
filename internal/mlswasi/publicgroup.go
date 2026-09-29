@@ -49,6 +49,19 @@ type Processed struct {
 	ProposalRef      []byte
 	Applied          []AppliedProposal // empty unless Kind == KindCommit
 	CommitterUpdated bool              // the commit carries an UpdatePath
+	// NewLeaf is the leaf an EXTERNAL commit's joiner lands on once the commit is merged, and nil
+	// for everything else (ABI v3). An external commit names no sender leaf, so this is the only
+	// way the delivery service learns which leaf the joiner will hold.
+	NewLeaf *uint32
+}
+
+// DeviceListEntry is one entry of a user's signed device list, as device_list_entries reports
+// it after the guest has decoded the list and verified its ssk_signature (NV-B8).
+type DeviceListEntry struct {
+	DeviceID []byte
+	DSKPub   []byte
+	Tier     uint8
+	Revoked  bool
 }
 
 // GroupInfoCheck is the public_group_group_info_validate response. SignatureOK false is a
@@ -217,7 +230,7 @@ func (g *PublicGroup) Process(ctx context.Context, mlsMessage []byte) (Processed
 	if err != nil {
 		return Processed{}, err
 	}
-	if err := expectLen(elems, 8, "public_group_process"); err != nil {
+	if err := expectLen(elems, 9, "public_group_process"); err != nil {
 		return Processed{}, err
 	}
 	kind, err := rawUint(elems[1])
@@ -244,6 +257,9 @@ func (g *PublicGroup) Process(ctx context.Context, mlsMessage []byte) (Processed
 		return Processed{}, err
 	}
 	if p.CommitterUpdated, err = rawBool(elems[7]); err != nil {
+		return Processed{}, err
+	}
+	if p.NewLeaf, err = rawOptUint32(elems[8]); err != nil {
 		return Processed{}, err
 	}
 	return p, nil
@@ -446,9 +462,81 @@ func (g *PublicGroup) ValidateGroupInfo(ctx context.Context, groupInfo []byte, s
 	if err != nil {
 		return GroupInfoCheck{}, err
 	}
-	if err := expectLen(elems, 6, "public_group_group_info_validate"); err != nil {
+	return decodeGroupInfoCheck(elems, "public_group_group_info_validate")
+}
+
+// ValidateStagedGroupInfo verifies an uploaded GroupInfo against the key the COMMITTER of the
+// staged commit holds in the epoch that commit produces (ABI v3). It is the check invariant 4
+// step (6) needs on the external path: the joiner of an external commit is in no leaf of the
+// current tree, so ValidateGroupInfo has no key to check against, and its key exists only in the
+// staged commit's UpdatePath. The staged handle is read, never consumed.
+func (g *PublicGroup) ValidateStagedGroupInfo(ctx context.Context, staged uint32, groupInfo []byte) (GroupInfoCheck, error) {
+	elems, err := g.inst.call(ctx, "public_group_staged_group_info_validate",
+		uint64(g.handle), uint64(staged), groupInfo)
+	if err != nil {
 		return GroupInfoCheck{}, err
 	}
+	return decodeGroupInfoCheck(elems, "public_group_staged_group_info_validate")
+}
+
+// DeviceListEntries decodes a user's signed device list inside the guest, verifies its
+// ssk_signature against sskPub and that it names userID, and returns every entry, revoked ones
+// flagged (ABI v3, NV-B8). A list that does not verify is an *ABIError with code E_CREDENTIAL.
+func (i *Instance) DeviceListEntries(ctx context.Context, list, sskPub, userID []byte) ([]DeviceListEntry, error) {
+	elems, err := i.call(ctx, "device_list_entries", list, sskPub, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := expectLen(elems, 2, "device_list_entries"); err != nil {
+		return nil, err
+	}
+	rows, err := rawArray(elems[1])
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DeviceListEntry, 0, len(rows))
+	for _, row := range rows {
+		fields, err := rawArray(row)
+		if err != nil {
+			return nil, err
+		}
+		if err := expectLen(fields, 4, "device list entry"); err != nil {
+			return nil, err
+		}
+		var e DeviceListEntry
+		if e.DeviceID, err = rawBytes(fields[0]); err != nil {
+			return nil, err
+		}
+		if e.DSKPub, err = rawBytes(fields[1]); err != nil {
+			return nil, err
+		}
+		tier, err := rawUint(fields[2])
+		if err != nil {
+			return nil, err
+		}
+		if tier > 255 {
+			return nil, fmt.Errorf("mlswasi: device list tier %d does not fit a byte", tier)
+		}
+		e.Tier = uint8(tier)
+		if e.Revoked, err = rawBool(fields[3]); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// DeviceListEntries is Instance.DeviceListEntries on the instance this group lives in, for a caller
+// that holds the group and must not acquire a second instance to verify a device list with.
+func (g *PublicGroup) DeviceListEntries(ctx context.Context, list, sskPub, userID []byte) ([]DeviceListEntry, error) {
+	return g.inst.DeviceListEntries(ctx, list, sskPub, userID)
+}
+
+func decodeGroupInfoCheck(elems []cbor.RawMessage, what string) (GroupInfoCheck, error) {
+	if err := expectLen(elems, 6, what); err != nil {
+		return GroupInfoCheck{}, err
+	}
+	var err error
 	var c GroupInfoCheck
 	if c.Epoch, err = rawUint(elems[1]); err != nil {
 		return GroupInfoCheck{}, err

@@ -135,15 +135,15 @@ func TestClockAndRandomnessConfigurationIsLoadBearing(t *testing.T) {
 	}
 }
 
-func TestABIReportsVersionTwo(t *testing.T) {
+func TestABIReportsVersionThree(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRuntime(t, Options{PoolSize: 1})
 	info, err := r.ABI(ctx)
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 2 {
-		t.Errorf("ABIVersion = %d, want 2", info.ABIVersion)
+	if info.ABIVersion != 3 {
+		t.Errorf("ABIVersion = %d, want 3", info.ABIVersion)
 	}
 	if info.E2EEVersion != 1 || info.MediaVersion != 1 {
 		t.Errorf("E2EEVersion/MediaVersion = %d/%d, want 1/1", info.E2EEVersion, info.MediaVersion)
@@ -691,14 +691,16 @@ func TestNewNamesTheMissingExport(t *testing.T) {
 	}
 }
 
-func TestABIVersionIsTwoAndTwentyOneExportsAreRequired(t *testing.T) {
-	if ABIVersion != 2 {
-		t.Fatalf("ABIVersion = %d, want 2", ABIVersion)
+func TestABIVersionIsThreeAndTwentyThreeExportsAreRequired(t *testing.T) {
+	if ABIVersion != 3 {
+		t.Fatalf("ABIVersion = %d, want 3", ABIVersion)
 	}
-	if len(RequiredExports) != 21 {
-		t.Fatalf("RequiredExports has %d names, want 21", len(RequiredExports))
+	if len(RequiredExports) != 23 {
+		t.Fatalf("RequiredExports has %d names, want 23", len(RequiredExports))
 	}
 	for _, name := range []string{
+		"device_list_entries",
+		"public_group_staged_group_info_validate",
 		"public_group_staged_discard",
 		"public_group_group_info_validate",
 		"public_group_proposal_inspect",
@@ -719,8 +721,8 @@ func TestABIVersionIsTwoAndTwentyOneExportsAreRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 2 {
-		t.Fatalf("dilla_abi reports abi_version %d, want 2", info.ABIVersion)
+	if info.ABIVersion != 3 {
+		t.Fatalf("dilla_abi reports abi_version %d, want 3", info.ABIVersion)
 	}
 }
 
@@ -774,6 +776,9 @@ func TestProcessReportsTheAppliedListAndTheCommitterUpdateFlag(t *testing.T) {
 	}
 	if !p.CommitterUpdated {
 		t.Error("CommitterUpdated = false; a self-update always carries an UpdatePath")
+	}
+	if p.NewLeaf != nil {
+		t.Errorf("NewLeaf = %d; only an external commit names the leaf its joiner lands on", *p.NewLeaf)
 	}
 	if p.Staged == nil {
 		t.Fatal("a commit must stage")
