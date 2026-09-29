@@ -94,14 +94,14 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	deps := api.Deps{
 		Repo: o.Repo, Clock: o.Clock, Log: o.Log, Limiter: limiter, Metrics: o.Metrics,
 		Instance: instance, Domain: o.Config.Instance.Domain,
-		// GET /v1/instance publishes the external-sender public key, derived from the seed the
-		// delivery service signs with, so the two cannot disagree.
-		// An ed25519.PrivateKey is seed || public, so its second half is the public key.
-		ExternalSenderPub: []byte(ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])[ed25519.SeedSize:]),
 		Registration: o.Config.Registration, Config: o.Config,
 		Sessions: sessions, Hasher: hasher, Throttle: throttle, Passkeys: passkeys,
 		Assertions: api.NewAssertions(o.Clock, api.AssertionTTL),
 	}
+	// GET /v1/instance publishes the external-sender public key, derived from the seed the
+	// delivery service signs with, so the two cannot disagree. An ed25519.PrivateKey is
+	// seed || public, so its second half is the public key.
+	deps.ExternalSenderPub = []byte(ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])[ed25519.SeedSize:])
 	// The pending path spends an enrolment assertion, and internal/auth cannot
 	// import internal/api, so the store is handed over through the interface.
 	sessions.Assertions = deps.Assertions
@@ -271,7 +271,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		throttle: throttle, limiter: limiter,
 	}
 	s.httpSrv = &http.Server{
-		Handler:           h,
+		Handler: h,
 		// Never zero: net/http reads that as "no limit", and a client trickling a header holds a
 		// connection open for as long as it likes. The commit route adds a body deadline of its
 		// own (api.withReadDeadline); ReadTimeout stays unset because the gateway upgrade shares

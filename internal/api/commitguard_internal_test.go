@@ -60,7 +60,7 @@ func TestTheCommitRouteBodyHasAReadDeadline(t *testing.T) {
 		})))
 	t.Cleanup(srv.Close)
 
-	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", srv.Listener.Addr().String())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

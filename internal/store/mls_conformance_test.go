@@ -316,7 +316,7 @@ func TestRetentionHighWatersRecordExactlyWhatWasDeleted(t *testing.T) {
 
 			// Messages: the cursor floor takes seq 3, the delivery window takes seq 4, an archival
 			// expiry takes seq 8; seq 6 stays.
-			expired := int64(50 * day)
+			expired := 50 * day
 			putMessage(ctx, t, repo, young.GroupID, 3, 45*day, nil)
 			putMessage(ctx, t, repo, young.GroupID, 4, 1_000, nil)
 			putMessage(ctx, t, repo, young.GroupID, 6, 45*day, nil)
