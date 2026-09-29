@@ -260,7 +260,11 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	}
 	s.httpSrv = &http.Server{
 		Handler:           h,
-		ReadHeaderTimeout: o.Config.Server.ReadHeaderTimeout.Value(),
+		// Never zero: net/http reads that as "no limit", and a client trickling a header holds a
+		// connection open for as long as it likes. The commit route adds a body deadline of its
+		// own (api.withReadDeadline); ReadTimeout stays unset because the gateway upgrade shares
+		// the listener.
+		ReadHeaderTimeout: readHeaderTimeout(o.Config.Server.ReadHeaderTimeout.Value()),
 		IdleTimeout:       o.Config.Server.IdleTimeout.Value(),
 		// WriteTimeout is deliberately unset: the gateway's per-connection write
 		// deadlines live in its writer goroutine, and hijacking clears the
@@ -433,6 +437,18 @@ func scrapeToken(o Options) (string, error) {
 		"path", o.Config.Metrics.Path)
 	return hex.EncodeToString(buf), nil
 }
+
+// readHeaderTimeout is server.read_header_timeout, or its 10 s default when a programmatic
+// configuration left it zero.
+func readHeaderTimeout(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 10 * time.Second
+	}
+	return d
+}
+
+// ReadHeaderTimeout is the listener's header deadline.
+func (s *Server) ReadHeaderTimeout() time.Duration { return s.httpSrv.ReadHeaderTimeout }
 
 // generationHeader stamps X-Dilla-Generation on every response, so an HTTP-only
 // client notices a restore without holding a gateway connection.

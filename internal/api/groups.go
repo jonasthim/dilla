@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -37,6 +38,9 @@ type Groups struct {
 	// Limiter meters every route per device session from `[limits.rate]` (dsmeter.go); nil
 	// meters nothing.
 	Limiter *server.RateLimiter
+
+	// commitsInFlight holds the devices with a POST /commit upload in progress (commitguard.go).
+	commitsInFlight sync.Map
 }
 
 // maxDSBody is the delivery service's own body cap. It is far above §5.3's 64 KiB general limit
@@ -89,7 +93,8 @@ func (h *Groups) RegisterSequencer(mux *server.Mux, sessions *auth.Sessions) {
 		return sessions.Middleware(f, auth.ScopeEnrolled)
 	}
 	mux.Handle("GET /v1/groups/{id}/handshakes", enrolled(dsMeter(h.Limiter, dsClassRead, h.handshakes)))
-	mux.Handle("POST /v1/groups/{id}/commit", enrolled(dsMeter(h.Limiter, dsClassCommit, h.commit)))
+	mux.Handle("POST /v1/groups/{id}/commit",
+		withReadDeadline(commitReadTimeout, enrolled(dsMeter(h.Limiter, dsClassCommit, h.commit))))
 	mux.Handle("POST /v1/groups/{id}/proposal", enrolled(dsMeter(h.Limiter, dsClassProposal, h.proposal)))
 	mux.Handle("GET /v1/groups/{id}/proposals", enrolled(dsMeter(h.Limiter, dsClassRead, h.proposals)))
 }
@@ -366,9 +371,35 @@ func (h *Groups) commit(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	session, err := sessionOf(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	// Everything that can be answered without the body is answered before it is read: the body
+	// may be 16 MiB (deviation B37). One upload in flight per device, then the membership and
+	// the epoch, from the path, the session and the first bytes of the stream.
+	done, err := h.beginCommit(session.DeviceID)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	defer done()
+	if epoch, ok := peekCommitEpoch(r); ok {
+		if err := h.DS.CheckCommit(r.Context(), session, groupID, epoch); err != nil {
+			server.WriteError(w, dsError(err))
+			return
+		}
+	}
 	var body commitRequestBody
 	if err := server.DecodeBody(w, r, h.maxCommit(), &body); err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	// protocol/01 § Joining batches at most 256 Adds, and each Welcome is addressed to one of them.
+	if len(body.Welcomes) > maxWelcomesPerCommit {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
+			"%d Welcomes in one commit; at most %d (MAX_ADDS)", len(body.Welcomes), maxWelcomesPerCommit))
 		return
 	}
 	// The headroom above the delivery service's own cap exists for a full batch of Welcomes
@@ -377,11 +408,6 @@ func (h *Groups) commit(w http.ResponseWriter, r *http.Request) {
 	if rest := int64(len(body.Commit) + len(body.GroupInfo) + len(body.RatchetTree)); rest > h.max() {
 		server.WriteError(w, server.Errorf(server.CodeTooLarge,
 			"the commit, GroupInfo and tree are %d bytes, over %d; only Welcomes may exceed it", rest, h.max()))
-		return
-	}
-	session, err := sessionOf(r)
-	if err != nil {
-		server.WriteError(w, err)
 		return
 	}
 	welcomes := make([]ds.WelcomeFor, 0, len(body.Welcomes))

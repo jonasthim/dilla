@@ -64,6 +64,60 @@ type commitOptions struct {
 	handshakeKind    uint8 // 0 means "derive it from `external`"
 }
 
+// CheckCommit is Commit's first two steps — the enrolled scope, a current leaf in the group, and
+// invariant 3's epoch — answered from the path, the session and the epoch alone, with the same
+// refusals Commit gives. POST /commit runs it BEFORE it reads a body the Welcome headroom lets grow
+// to 16 MiB (deviation B37), so a stranger or a committer a round behind is refused for the price
+// of a header. Commit runs both steps again under the group lock; this is an early answer, not
+// the check.
+func (d *DS) CheckCommit(ctx context.Context, s Session, groupID id.ID, epoch uint64) error {
+	_, err := d.commitPreflight(ctx, s, groupID, epoch, false)
+	return err
+}
+
+// commitPreflight is steps (1) and (2) of the commit path.
+func (d *DS) commitPreflight(ctx context.Context, s Session, groupID id.ID, epoch uint64, external bool) (store.GroupRow, error) {
+	// (1) scope and membership.
+	// Named, not the literal 0: a future reordering of auth.Scope's constants would silently
+	// change what this line means without touching it.
+	if s.Scope != auth.ScopeEnrolled {
+		return store.GroupRow{}, errForbidden("a commit needs an enrolled session")
+	}
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.GroupRow{}, errNotFound("group")
+	}
+	if err != nil {
+		return store.GroupRow{}, err
+	}
+	if !external {
+		if _, err := d.leafOf(ctx, groupID, s.DeviceID); err != nil {
+			return store.GroupRow{}, err
+		}
+	}
+
+	// (2) one commit per epoch (invariant 3). protocol/02 defines the conflict as "a later one
+	// for the SAME epoch", so a client AHEAD of the instance — after a restore, say — is a
+	// structural error, not a conflict: winningCommit has nothing to return for a future epoch,
+	// and a conflict body with a null winner is one the client cannot act on.
+	if epoch > row.Epoch {
+		return store.GroupRow{}, errCommitInvalid("epoch_ahead",
+			fmt.Sprintf("the commit is for epoch %d; this instance is at %d", epoch, row.Epoch))
+	}
+	if epoch != row.Epoch {
+		outstanding, err := d.refsOf(ctx, groupID, row.Epoch)
+		if err != nil {
+			return store.GroupRow{}, err
+		}
+		winner, err := d.winningCommit(ctx, groupID, epoch)
+		if err != nil {
+			return store.GroupRow{}, err
+		}
+		return store.GroupRow{}, errCommitConflict(winner, outstanding)
+	}
+	return row, nil
+}
+
 func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitRequest, o commitOptions) (CommitResult, error) {
 	unlock := d.lock(groupID)
 	defer unlock()
@@ -80,43 +134,10 @@ func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 // E_COMMIT_CONFLICT. The device that is already out of the epoch is exactly the one that cannot
 // recover from that.
 func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c CommitRequest, o commitOptions) (CommitResult, error) {
-	// (1) scope and membership.
-	// Named, not the literal 0: a future reordering of auth.Scope's constants would silently
-	// change what this line means without touching it.
-	if s.Scope != auth.ScopeEnrolled {
-		return CommitResult{}, errForbidden("a commit needs an enrolled session")
-	}
-	row, err := d.opts.Store.GetGroup(ctx, groupID)
-	if errors.Is(err, store.ErrNotFound) {
-		return CommitResult{}, errNotFound("group")
-	}
+	// (1) scope and membership, (2) one commit per epoch: commitPreflight.
+	row, err := d.commitPreflight(ctx, s, groupID, c.Epoch, o.external)
 	if err != nil {
 		return CommitResult{}, err
-	}
-	if !o.external {
-		if _, err := d.leafOf(ctx, groupID, s.DeviceID); err != nil {
-			return CommitResult{}, err
-		}
-	}
-
-	// (2) one commit per epoch (invariant 3). protocol/02 defines the conflict as "a later one
-	// for the SAME epoch", so a client AHEAD of the instance — after a restore, say — is a
-	// structural error, not a conflict: winningCommit has nothing to return for a future epoch,
-	// and a conflict body with a null winner is one the client cannot act on.
-	if c.Epoch > row.Epoch {
-		return CommitResult{}, errCommitInvalid("epoch_ahead",
-			fmt.Sprintf("the commit is for epoch %d; this instance is at %d", c.Epoch, row.Epoch))
-	}
-	if c.Epoch != row.Epoch {
-		outstanding, err := d.refsOf(ctx, groupID, row.Epoch)
-		if err != nil {
-			return CommitResult{}, err
-		}
-		winner, err := d.winningCommit(ctx, groupID, c.Epoch)
-		if err != nil {
-			return CommitResult{}, err
-		}
-		return CommitResult{}, errCommitConflict(winner, outstanding)
 	}
 
 	// (2a) invariant 2: the delivery service serves the ratchet tree from its own PublicGroup, so

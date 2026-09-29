@@ -59,6 +59,55 @@ func TestTheWelcomeHeadroomDoesNotWidenTheRestOfTheCommit(t *testing.T) {
 	}
 }
 
+// A device that holds no leaf in the group is refused BEFORE its body is read: the stream here is a
+// commit head followed by bytes that are not CBOR at all, and the answer is the delivery service's
+// E_LEAF_NOT_CURRENT, not the decoder's E_INVALID_REQUEST.
+func TestACommitFromANonMemberIsRefusedBeforeItsBodyIsRead(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	body := append([]byte{0x85, 0x00}, bytes.Repeat([]byte{0xff}, 64)...)
+	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/commit", h.session, body)
+	if got := errorCode(t, res); got != "E_LEAF_NOT_CURRENT" {
+		t.Fatalf("code = %s (status %d), want E_LEAF_NOT_CURRENT before the body is decoded", got, res.Code)
+	}
+}
+
+// A member's commit for an epoch the instance has not reached is refused from the epoch at the head
+// of the stream, before the rest is read.
+func TestACommitForTheWrongEpochIsRefusedBeforeItsBodyIsRead(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	member := h.memberToken(t)
+	body := append([]byte{0x85, 0x19, 0x01, 0x00}, bytes.Repeat([]byte{0xff}, 64)...) // epoch 256
+	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/commit", member, body)
+	if res.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want the delivery service's 422 epoch_ahead: %s", res.Code, res.Body.String())
+	}
+	if got := errorCode(t, res); got != "E_COMMIT_INVALID" {
+		t.Fatalf("code = %s, want E_COMMIT_INVALID", got)
+	}
+}
+
+// protocol/01 § Joining's MAX_ADDS: a commit addresses at most 256 Welcomes.
+func TestACommitWithMoreThanMaxAddsWelcomesIsRefused(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	member := h.memberToken(t)
+	welcomes := make([]any, 0, 257)
+	for range 257 {
+		device := id.New()
+		welcomes = append(welcomes, []any{device[:], []byte{0x01}})
+	}
+	body := mustCBOR(t, []any{h.groupEpoch(t), []byte{0x00}, []byte{0x00}, welcomes, nil})
+	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/commit", member, body)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", res.Code, res.Body.String())
+	}
+	if got := errorCode(t, res); got != "E_INVALID_REQUEST" {
+		t.Fatalf("code = %s, want E_INVALID_REQUEST", got)
+	}
+}
+
 // …and the raised cap is still a cap.
 func TestACommitBodyAboveTheBatchCapIsTooLarge(t *testing.T) {
 	h := newGroupsAPI(t)

@@ -490,6 +490,27 @@ func TestTheDeliveryServiceRoutesAreMeteredPerDevice(t *testing.T) {
 	t.Fatalf("%d reads in a row were never refused; the read burst is %d", 2*burst, burst)
 }
 
+// The listener bounds how long a request header may take, from server.read_header_timeout and
+// never zero — net/http reads zero as "no limit".
+func TestTheListenerBoundsHowLongAHeaderMayTake(t *testing.T) {
+	s, _ := newServer(t)
+	if got := s.ReadHeaderTimeout(); got != 10*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want the configured 10s", got)
+	}
+	cfg := testConfig(t)
+	cfg.Server.ReadHeaderTimeout = "0s"
+	zero, err := dillad.New(context.Background(), dillad.Options{
+		Config: cfg, Clock: clock.NewFake(time.Unix(1_700_000_000, 0)), Wasm: sharedRuntime(t),
+	})
+	if err != nil {
+		t.Fatalf("dillad.New: %v", err)
+	}
+	t.Cleanup(func() { _ = zero.Shutdown(context.Background()) })
+	if got := zero.ReadHeaderTimeout(); got <= 0 {
+		t.Errorf("a zero read_header_timeout left the listener unbounded (%v)", got)
+	}
+}
+
 // newGreetedServerAt is newGreetedServer on a fake clock the test moves, so the maintenance loop
 // the composition root starts can be driven past a deadline without waiting for it.
 func newGreetedServerAt(t *testing.T) (*dillad.Server, *httptest.Server, string, *clock.Fake) {
