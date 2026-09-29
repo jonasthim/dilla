@@ -623,10 +623,7 @@ fn a_receiver_accepts_a_member_commit_of_instance_adds_and_removes() {
         .add_members(
             &alice_p,
             &alice_signer,
-            &[
-                bob_kp.key_package().clone(),
-                carol_kp.key_package().clone(),
-            ],
+            &[bob_kp.key_package().clone(), carol_kp.key_package().clone()],
         )
         .expect("add_members");
     alice.merge_pending_commit(&alice_p).expect("merge");
