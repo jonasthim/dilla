@@ -230,12 +230,18 @@ pub fn gen_public_group(spec: &FixtureSpec) -> Result<FixtureManifest, TestkitEr
         commits.push(serialize(&bundle.commit)?);
         fresh.clear_pending_commit(creator.provider())?;
     }
+    // The last alternative, the creator's self-update, is the one commit the fixture ALSO merges:
+    // its handle is kept pending here and merged only after the creator's in-memory base-epoch
+    // handle has sent `application_message.mls` below, and the GroupInfo of the epoch it produces
+    // is exported as `commits/09.group_info.mls`. That GroupInfo is what lets a delivery service
+    // ACCEPT a commit of this fixture at all (invariant 4 wants a GroupInfo at epoch n+1, signed
+    // by the committer), and what a heal whose tail merges uploads (invariant 11). The
+    // self-update adds nobody, so accepting it needs no device list and no ACL.
+    let mut self_update = DillaGroup::load(creator.provider(), &group_id)?
+        .ok_or_else(|| TestkitError::Scenario("the creator's group vanished".into()))?;
     {
-        let mut fresh = DillaGroup::load(creator.provider(), &group_id)?
-            .ok_or_else(|| TestkitError::Scenario("the creator's group vanished".into()))?;
-        let bundle = fresh.self_update(creator.provider(), creator.signer())?;
+        let bundle = self_update.self_update(creator.provider(), creator.signer())?;
         commits.push(serialize(&bundle.commit)?);
-        fresh.clear_pending_commit(creator.provider())?;
     }
 
     let mut files = Vec::new();
@@ -302,7 +308,8 @@ pub fn gen_public_group(spec: &FixtureSpec) -> Result<FixtureManifest, TestkitEr
         .commitment()
         .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?);
     // Sent from the creator's own in-memory handle, which is still at the frozen base epoch: each
-    // of the ten alternative commits above was staged on a fresh `load` and cleared, never merged.
+    // of the ten alternative commits above was staged on a fresh `load`, and none is merged before
+    // this line (the self-update is merged at the very end, on its own handle).
     // This is the last thing the creator's handle does, so the application generation it ratchets
     // here cannot disturb anything above.
     let application_message = serialize(&group.create_message(
@@ -322,6 +329,18 @@ pub fn gen_public_group(spec: &FixtureSpec) -> Result<FixtureManifest, TestkitEr
     for (i, commit) in commits.iter().enumerate() {
         write_file(spec, &format!("commits/{i:02}.mls"), commit, &mut files)?;
     }
+
+    // Now, and only now, the self-update is merged: nothing above reads the creator's storage
+    // again, so moving it to epoch n+1 cannot disturb a base-epoch file.
+    self_update.merge_pending_commit(creator.provider())?;
+    let merged_group_info =
+        serialize(&self_update.export_group_info(creator.provider(), creator.signer())?)?;
+    write_file(
+        spec,
+        "commits/09.group_info.mls",
+        &merged_group_info,
+        &mut files,
+    )?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
