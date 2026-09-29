@@ -266,7 +266,8 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 		}, g.opts.Clock),
 	}
 	c.wire, c.e2ee, c.media = chosen[0], chosen[1], chosen[2]
-	c.writer = newWriterWithLogger(s, writerLimits{
+	// Paused until the connection is live: see newPausedWriter.
+	c.writer = newPausedWriter(s, writerLimits{
 		Frames:   g.opts.QueueFrames,
 		Bytes:    g.opts.QueueBytes,
 		Deadline: g.opts.WriteDeadline,
@@ -285,6 +286,8 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 	// against protocol/02's "n ... the per-session replay sequence, starting at 1" and against
 	// the hello/identify/ready handshake order a client is written to.
 	g.addLive(c)
+	// Only now may `ready` reach the wire: a client that has read it is a device Online counts.
+	c.currentWriter().open()
 	g.touch(ctx, c.deviceID, now)
 	return c, nil
 }

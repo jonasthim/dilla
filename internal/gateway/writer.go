@@ -60,6 +60,10 @@ type writer struct {
 	// log is where a dropped frame is recorded. It is set once, before run starts, and never
 	// written again; nil means the process default logger.
 	log *slog.Logger
+	// gate, when non-nil, holds run back until open: a paused writer queues but does not write.
+	// See newPausedWriter.
+	gate     chan struct{}
+	openOnce sync.Once
 
 	mu          sync.Mutex
 	queuedBytes int
@@ -72,7 +76,27 @@ func newWriter(s sink, l writerLimits, clk clock.Clock) *writer {
 }
 
 func newWriterWithLogger(s sink, l writerLimits, clk clock.Clock, log *slog.Logger) *writer {
-	w := &writer{
+	w := buildWriter(s, l, clk, log)
+	go w.run()
+	return w
+}
+
+// newPausedWriter is a writer that queues but writes nothing until open. A connection's first
+// frame — `ready` or `resumed` — is queued on it BEFORE the connection is published to the live
+// registry, and the writer is opened only AFTER: a client that has read `ready` is then always a
+// device the online predicate counts. With a running writer, `ready` could reach the wire in the
+// window between the enqueue and the publish, and a client acting on it at once — electing,
+// asserting presence — found itself not online (the internal/ds election tests' flake on the
+// slower CI runners).
+func newPausedWriter(s sink, l writerLimits, clk clock.Clock, log *slog.Logger) *writer {
+	w := buildWriter(s, l, clk, log)
+	w.gate = make(chan struct{})
+	go w.run()
+	return w
+}
+
+func buildWriter(s sink, l writerLimits, clk clock.Clock, log *slog.Logger) *writer {
+	return &writer{
 		sink:     s,
 		limits:   l,
 		clk:      clk,
@@ -81,8 +105,14 @@ func newWriterWithLogger(s sink, l writerLimits, clk clock.Clock, log *slog.Logg
 		finished: make(chan struct{}),
 		log:      log,
 	}
-	go w.run()
-	return w
+}
+
+// open lets a paused writer start writing. It is idempotent and a no-op on a running writer.
+func (w *writer) open() {
+	if w.gate == nil {
+		return
+	}
+	w.openOnce.Do(func() { close(w.gate) })
 }
 
 // enqueue never blocks. A queue that is full on either axis is a slow consumer, and the answer to
@@ -130,6 +160,13 @@ func (w *writer) enqueueRaw(b []byte) {
 
 func (w *writer) run() {
 	defer close(w.finished)
+	if w.gate != nil {
+		select {
+		case <-w.done:
+			return
+		case <-w.gate:
+		}
+	}
 	for {
 		select {
 		case <-w.done:

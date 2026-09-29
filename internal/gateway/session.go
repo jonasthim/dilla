@@ -443,7 +443,8 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	c.mu.Lock()
 	c.state = stateReady
 	c.lastLive = now
-	c.writer = newWriterWithLogger(s, writerLimits{
+	// Paused until the connection is live again, as on identify: see newPausedWriter.
+	c.writer = newPausedWriter(s, writerLimits{
 		Frames:   g.opts.QueueFrames,
 		Bytes:    g.opts.QueueBytes,
 		Deadline: g.opts.WriteDeadline,
@@ -471,6 +472,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	// and the replay are on the writer lets a concurrent fan-out land ahead of `resumed` or in
 	// among the replayed frames — the non-monotonic n a client answers with close 4007.
 	g.addLive(c)
+	w.open()
 	return c, true
 }
 
