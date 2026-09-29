@@ -64,6 +64,45 @@ func TestThreeDistinctReportersQuarantineTheCommitterAndOneDeviceDoesNot(t *test
 	}
 }
 
+// The quarantine flag is READ: a device three reporters quarantined cannot read the GroupInfo and
+// tree a rejoin needs, nor resync itself back into the epoch (deviation B36's ruling). Before the
+// final review nothing read `devices.quarantined_at`, so the committer answered /info as a member
+// and could rejoin by external commit the moment its leaf was removed.
+func TestAQuarantinedDeviceCannotReadOrRejoinTheGroup(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+	commit := h.acceptedCommitBy(t, g, 0)
+	ctx := context.Background()
+	committer := g.sessionOf(0)
+	if _, err := h.ds.Info(ctx, g.id, committer); err != nil {
+		t.Fatalf("before the quorum the committer reads the group: %v", err)
+	}
+	for _, reporter := range []int{1, 2, 3} {
+		if err := h.ds.ForkReport(ctx, g.sessionOf(reporter), g.id, commit.Epoch, commit.Seq, "cannot process"); err != nil {
+			t.Fatalf("ForkReport from %d: %v", reporter, err)
+		}
+	}
+	if !h.isQuarantined(t, g.members[0]) {
+		t.Fatal("the quorum did not quarantine the committer")
+	}
+
+	var dsErr *ds.Error
+	if _, err := h.ds.Info(ctx, g.id, committer); !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+		t.Errorf("/info from the quarantined device: %v, want E_FORBIDDEN", err)
+	}
+	if _, err := h.ds.Tree(ctx, g.id, committer); !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+		t.Errorf("/tree from the quarantined device: %v, want E_FORBIDDEN", err)
+	}
+	_, err := h.ds.Resync(ctx, committer, g.id, ds.ResyncRequest{ExternalCommit: []byte{0x01}, GroupInfo: []byte{0x01}})
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" || !strings.Contains(dsErr.Detail, "quarantined") {
+		t.Errorf("/resync from the quarantined device: %v, want E_FORBIDDEN for the quarantine", err)
+	}
+	// The reporters are unaffected.
+	if _, err := h.ds.Info(ctx, g.id, g.sessionOf(1)); err != nil {
+		t.Errorf("a reporter's /info: %v", err)
+	}
+}
+
 // A quorum against the instance's OWN handshake — one with no sender device, which is what an
 // external-sender proposal leaves in the log — quarantines nobody. Without the guard the
 // committer lookup dereferences a nil device id.

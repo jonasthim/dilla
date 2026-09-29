@@ -249,6 +249,26 @@ func (d *DS) requireMember(ctx context.Context, groupID id.ID, session Session) 
 	return errNotFound("group")
 }
 
+// refuseQuarantined is invariant 9's flag, READ: a device three distinct reporters have
+// quarantined is removed from the group by an instance Remove, and it must not read its way back
+// in — the GroupInfo and the tree are exactly what a rejoin by external commit needs (deviation
+// B36) — nor resync itself back into the epoch. E_FORBIDDEN, not E_NOT_FOUND: the answer is about
+// the device, which already knows it was quarantined, not about the group. A device the instance
+// holds no row for (the fixture's leaves) is not quarantined.
+func (d *DS) refuseQuarantined(ctx context.Context, deviceID id.ID) error {
+	row, err := d.opts.Store.GetDevice(ctx, deviceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if row.QuarantinedAt != nil {
+		return errForbidden("this device is quarantined by a fork quorum (invariant 9)")
+	}
+	return nil
+}
+
 // requireReader is requireMember widened by exactly one reader: a device whose user the channel
 // ACL admits, which is who joins a text or call group by external commit (protocol/01 § Joining:
 // "An online device joins by external commit using the GroupInfo and ratchet tree served by the
@@ -257,6 +277,9 @@ func (d *DS) requireMember(ctx context.Context, groupID id.ID, session Session) 
 // admit is E_NOT_FOUND, exactly as a stranger is to requireMember, so existence is still not
 // probeable. ds.DenyUnlessMember, Plan 1's ACL, admits only a user already in the group.
 func (d *DS) requireReader(ctx context.Context, groupID id.ID, session Session) error {
+	if err := d.refuseQuarantined(ctx, session.DeviceID); err != nil {
+		return err
+	}
 	err := d.requireMember(ctx, groupID, session)
 	if err == nil || session.Scope != auth.ScopeEnrolled {
 		return err

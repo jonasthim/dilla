@@ -39,6 +39,10 @@ func (d *DS) Resync(ctx context.Context, s Session, groupID id.ID, r ResyncReque
 }
 
 func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r ResyncRequest) (CommitResult, error) {
+	// A quarantined device neither resyncs nor rejoins (invariant 9; deviation B36's ruling).
+	if err := d.refuseQuarantined(ctx, s.DeviceID); err != nil {
+		return CommitResult{}, err
+	}
 	epoch, err := d.epochOf(ctx, groupID)
 	if err != nil {
 		return CommitResult{}, err
