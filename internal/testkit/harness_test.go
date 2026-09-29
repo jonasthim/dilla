@@ -203,7 +203,7 @@ func TestAThousandDeviceJoinStormCompletesInAtMostFourCommits(t *testing.T) {
 	t.Cleanup(h.Stop)
 	result := h.Run(t, filepath.Join("..", "..", "testkit", "scenarios", "join_storm_256_batched.scn"))
 	if result.Err != nil {
-		t.Fatalf("scenario: %v\n%s", result.Err, result.Stderr)
+		t.Fatalf("scenario: %v\nstdout:\n%s\nstderr:\n%s", result.Err, result.Stdout, result.Stderr)
 	}
 	if commits := h.CommitCount(); commits > 4 {
 		t.Fatalf("%d commits for 1,000 devices, want at most 4 (256 Adds per commit)", commits)

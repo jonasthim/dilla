@@ -59,6 +59,12 @@ pub struct HttpDs {
     /// The session's hard expiry in the instance's unix seconds, 0 when unknown: what tells a
     /// runner that has moved the instance clock whether this device must sign in again.
     expires: u64,
+    /// Diagnostics for a failed `expect_*`: how many times the socket was reopened, why it was
+    /// lost (the last few reasons), and how many frames `accept` queued. None of it steers
+    /// behaviour; a scenario that fails on a slow runner reports it instead of "never decrypted".
+    reconnects: u64,
+    lost: Vec<String>,
+    accepted: u64,
 }
 
 /// What `redeem_invite` returns: the identifiers the instance minted.
@@ -634,6 +640,9 @@ impl HttpDs {
             last_n: 0,
             delivered: BTreeMap::new(),
             connected_before: false,
+            reconnects: 0,
+            lost: Vec::new(),
+            accepted: 0,
             expires: 0,
         };
         ds.open_socket()?;
@@ -807,6 +816,7 @@ impl HttpDs {
         // A reconnect is a fresh identify with an empty replay ring, so what arrived while the
         // socket was closed is fetched over rows 4 and 12 before any live frame is returned.
         if self.connected_before {
+            self.reconnects += 1;
             self.catch_up()?;
         }
         self.connected_before = true;
@@ -876,6 +886,15 @@ impl HttpDs {
         Ok(())
     }
 
+    /// Drops the socket and remembers why, for `diagnostics`. The next `drain` reopens it.
+    fn socket_lost(&mut self, why: String) {
+        self.ws = None;
+        if self.lost.len() >= 4 {
+            self.lost.remove(0);
+        }
+        self.lost.push(why);
+    }
+
     /// Queues one frame for the next `drain`, dropping a handshake or a message whose seq was
     /// already delivered — the catch-up and the live socket can overlap by a frame or two.
     fn accept(&mut self, frame: Frame) {
@@ -891,6 +910,7 @@ impl HttpDs {
             }
             *high = seq;
         }
+        self.accepted += 1;
         self.pending.push(frame);
     }
 
@@ -943,22 +963,22 @@ impl HttpDs {
                     self.last_n = self.last_n.max(n);
                     match inbound {
                         Inbound::Frame(frame) => self.accept(frame),
-                        Inbound::Closing(_) => self.ws = None,
+                        Inbound::Closing(reason) => self.socket_lost(format!("closing: {reason}")),
                         Inbound::Hello { .. }
                         | Inbound::Ready
                         | Inbound::HeartbeatAck
                         | Inbound::Ignored => {}
                     }
                 }
-                Ok(Message::Close(_)) => self.ws = None,
+                Ok(Message::Close(frame)) => self.socket_lost(format!("close frame: {frame:?}")),
                 Ok(_) => {}
                 Err(e) if is_timeout(&e) => return Ok(()),
                 Err(
-                    tungstenite::Error::ConnectionClosed
+                    e @ (tungstenite::Error::ConnectionClosed
                     | tungstenite::Error::AlreadyClosed
                     | tungstenite::Error::Protocol(_)
-                    | tungstenite::Error::Io(_),
-                ) => self.ws = None,
+                    | tungstenite::Error::Io(_)),
+                ) => self.socket_lost(format!("read error: {e}")),
                 Err(e) => return Err(transport(e)),
             }
         }
@@ -1458,6 +1478,18 @@ impl DeliveryService for HttpDs {
     /// what the socket held when the device went offline stays queued, and what the instance
     /// sends meanwhile is fetched by the catch-up when the device comes back, which is
     /// `DsStub::drain`'s "an offline device's queue is left untouched".
+    fn diagnostics(&self, g: &GroupId) -> String {
+        format!(
+            "socket {}, reconnects {}, lost {:?}, frames accepted {}, delivered seq for the group {:?}, last n {}",
+            if self.ws.is_some() { "open" } else { "closed" },
+            self.reconnects,
+            self.lost,
+            self.accepted,
+            self.delivered.get(g),
+            self.last_n,
+        )
+    }
+
     fn drain(&mut self) -> Result<Vec<Frame>, DsError> {
         if !self.online {
             return Ok(Vec::new());
@@ -1843,6 +1875,9 @@ mod tests {
             last_n: 0,
             delivered: BTreeMap::new(),
             connected_before: true,
+            reconnects: 0,
+            lost: Vec::new(),
+            accepted: 0,
             expires: 0,
         }
     }

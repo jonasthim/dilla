@@ -76,6 +76,11 @@ pub trait DeliveryService {
     fn advance_cursor(&mut self, g: &GroupId, seq: u64, epoch: u64) -> Result<(), DsError>;
     /// Gateway frames received since the last drain.
     fn drain(&mut self) -> Result<Vec<Frame>, DsError>;
+    /// One line describing this device's transport state, for a failed `expect_*` step. The stub
+    /// has nothing to say; the remote client reports its socket, reconnects and cursors.
+    fn diagnostics(&self, _g: &GroupId) -> String {
+        String::new()
+    }
     /// Close or reopen the gateway connection. The stub flips a flag; `HttpDs` closes the socket,
     /// which is what makes `go_offline` mean the same thing to the DS's online predicate.
     fn set_online(&mut self, online: bool) -> Result<(), DsError>;

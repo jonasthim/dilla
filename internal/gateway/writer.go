@@ -122,7 +122,7 @@ func (w *writer) enqueue(f Frame, n uint64) {
 	w.mu.Lock()
 	if w.queuedBytes+size > w.limits.Bytes {
 		w.mu.Unlock()
-		w.sink.close(CloseRateLimited, "writer queue byte bound")
+		w.closeAs(CloseRateLimited, "writer queue byte bound", f.Op)
 		return
 	}
 	w.queuedBytes += size
@@ -133,8 +133,21 @@ func (w *writer) enqueue(f Frame, n uint64) {
 		w.mu.Lock()
 		w.queuedBytes -= size
 		w.mu.Unlock()
-		w.sink.close(CloseRateLimited, "writer queue overflow")
+		w.closeAs(CloseRateLimited, "writer queue overflow", f.Op)
 	}
+}
+
+// closeAs closes the sink and records why at INFO: a connection the writer takes down (a slow
+// consumer, a write past its deadline) leaves no other trace, and a harness run that then fails
+// on that device needs to know the instance closed it and with what queued.
+func (w *writer) closeAs(code CloseCode, reason string, op Op) {
+	w.mu.Lock()
+	bytes := w.queuedBytes
+	w.mu.Unlock()
+	w.logger().Info("gateway: connection closed by the writer",
+		slog.Int("code", int(code)), slog.String("reason", reason), slog.Int("op", int(op)),
+		slog.Int("queued_frames", len(w.queue)), slog.Int("queued_bytes", bytes))
+	w.sink.close(code, reason)
 }
 
 // enqueueRaw queues an already-encoded frame. Resume replay is its only caller: a replayed frame
@@ -192,7 +205,7 @@ func (w *writer) writeOne(q queued) bool {
 		err := w.sink.write(ctx, q.raw)
 		cancel()
 		if err != nil {
-			w.sink.close(CloseUnknown, "write")
+			w.closeAs(CloseUnknown, "write: "+err.Error(), 0)
 			return false
 		}
 		return true
@@ -218,14 +231,14 @@ func (w *writer) writeOne(q queued) bool {
 	}
 	b, err := Encode(frame, q.n)
 	if err != nil {
-		w.sink.close(CloseUnknown, "encode")
+		w.closeAs(CloseUnknown, "encode: "+err.Error(), frame.Op)
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), w.limits.Deadline)
 	err = w.sink.write(ctx, b)
 	cancel()
 	if err != nil {
-		w.sink.close(CloseUnknown, "write")
+		w.closeAs(CloseUnknown, "write: "+err.Error(), frame.Op)
 		return false
 	}
 	return true

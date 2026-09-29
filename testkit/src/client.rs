@@ -674,6 +674,11 @@ impl TestClient {
     /// Drains this device's frames and applies everything in order: handshakes first, then the
     /// application messages of the epoch they belong to. Every frame is also kept, in order, for
     /// `take_frame`.
+    /// The client's current epoch in `group_id`, or None when it holds no state for the group.
+    pub fn epoch_of(&self, group_id: &[u8]) -> Option<u64> {
+        self.groups.get(group_id).map(|g| g.epoch())
+    }
+
     pub fn sync(&mut self, ds: &mut dyn DeliveryService) -> Result<Vec<Received>, TestkitError> {
         let frames = ds.drain()?;
         self.frames.extend(frames.iter().cloned());

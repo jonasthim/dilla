@@ -221,7 +221,7 @@ impl Runner {
     /// the instance a `sync` is one 50 ms pump of the WebSocket, and the fan-out of one message to a
     /// thousand connections on a loaded runner (CI, race detector) takes longer than that: the
     /// assertion is "eventually decrypts", so it polls, and the happy path pays nothing extra.
-    const EXPECT_WAIT: Duration = Duration::from_secs(20);
+    const EXPECT_WAIT: Duration = Duration::from_secs(60);
 
     fn exec(&mut self, stmt: &Stmt) -> Result<(), TestkitError> {
         if let Some(actor) = actor_of(stmt) {
@@ -322,6 +322,7 @@ impl Runner {
             } => {
                 let id = self.group(group)?.id.clone();
                 let deadline = Instant::now() + Self::EXPECT_WAIT;
+                let mut syncs = 0u64;
                 loop {
                     let found = self.with_client(client, |actor, ds| {
                         let _ = actor.sync(ds)?;
@@ -330,12 +331,22 @@ impl Runner {
                             .iter()
                             .any(|r| r.group_id == id && r.envelope.body == *body))
                     })?;
+                    syncs += 1;
                     if found {
                         break Ok(());
                     }
                     if Instant::now() >= deadline {
+                        let state = self.with_client(client, |actor, ds| {
+                            Ok(format!(
+                                "epoch {:?}, inbox {}, {}",
+                                actor.epoch_of(&id),
+                                actor.inbox().len(),
+                                ds.diagnostics(&id)
+                            ))
+                        })?;
                         break Err(TestkitError::Assertion(format!(
-                            "{client} never decrypted {body:?}"
+                            "{client} never decrypted {body:?} after {syncs} syncs in {:?} ({state})",
+                            Self::EXPECT_WAIT
                         )));
                     }
                     std::thread::sleep(Duration::from_millis(25));
