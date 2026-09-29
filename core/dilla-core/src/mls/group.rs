@@ -88,6 +88,13 @@ pub struct CommitBundle {
     pub group_info: Option<GroupInfo>,
 }
 
+/// What one staged commit proposes: the three shapes `DillaGroup` builds.
+enum CommitShape<'a> {
+    Add(&'a [KeyPackage]),
+    Remove(&'a [LeafNodeIndex]),
+    Update,
+}
+
 #[derive(Debug)]
 pub enum DillaProcessed {
     Application(Envelope),
@@ -312,12 +319,11 @@ impl DillaGroup {
             .iter()
             .map(device_of)
             .collect::<Result<_, _>>()?;
-        let group = &mut self.group;
-        let (commit, welcome, group_info) = provider.storage().transaction(|| {
-            group
-                .add_members(provider, signer, key_packages)
-                .map_err(mls_err)
-        })?;
+        let bundle = self.stage_commit(provider, signer, CommitShape::Add(key_packages))?;
+        let welcome = bundle
+            .to_welcome_msg()
+            .ok_or_else(|| MlsError::OpenMls("an Add commit produced no Welcome".into()))?;
+        let (commit, _, group_info) = bundle.into_contents();
         Ok(CommitBundle {
             commit,
             welcomes: devices.into_iter().map(|d| (d, welcome.clone())).collect(),
@@ -332,12 +338,11 @@ impl DillaGroup {
         signer: &SignatureKeyPair,
         members: &[LeafNodeIndex],
     ) -> Result<CommitBundle, MlsError> {
-        let group = &mut self.group;
-        let (commit, welcome, group_info) = provider.storage().transaction(|| {
-            group
-                .remove_members(provider, signer, members)
-                .map_err(mls_err)
-        })?;
+        if members.is_empty() {
+            return Err(MlsError::OpenMls("a Remove commit names no member".into()));
+        }
+        let bundle = self.stage_commit(provider, signer, CommitShape::Remove(members))?;
+        let (commit, welcome, group_info) = bundle.into_contents();
         // `CommitBundle.welcomes` is the DS's per-device fan-out key. OpenMLS emits a Welcome only
         // for a commit that adds members, so this is always `None` here; inventing an all-zero
         // `DeviceId` for it would address a Welcome to a device that does not exist. If a future
@@ -357,16 +362,7 @@ impl DillaGroup {
         provider: &DillaProvider,
         signer: &SignatureKeyPair,
     ) -> Result<CommitBundle, MlsError> {
-        let group = &mut self.group;
-        let bundle = provider.storage().transaction(|| {
-            // Verified in step 1: `LeafNodeParameters` derives `Default`
-            // (openmls-0.9.0/src/treesync/node/leaf_node.rs:70) and
-            // `CommitMessageBundle::into_contents(self) -> (MlsMessageOut, Option<Welcome>,
-            // Option<GroupInfo>)` (src/group/mls_group/commit_builder.rs:1573).
-            group
-                .self_update(provider, signer, LeafNodeParameters::default())
-                .map_err(mls_err)
-        })?;
+        let bundle = self.stage_commit(provider, signer, CommitShape::Update)?;
         let (commit, welcome, group_info) = bundle.into_contents();
         // As in `remove_members`: an Update commit adds nobody, so there is no Welcome and no
         // device to address one to.
@@ -376,6 +372,62 @@ impl DillaGroup {
             welcomes: Vec::new(),
             group_info,
         })
+    }
+
+    /// Builds and stages one commit through `MlsGroup::commit_builder`, asking it for the
+    /// GroupInfo of the epoch the commit creates.
+    ///
+    /// Invariant 4 accepts a commit only with the GroupInfo of epoch n + 1. `add_members`,
+    /// `remove_members` and `self_update` on `MlsGroup` return a GroupInfo only when the group uses
+    /// the ratchet-tree extension, which dilla's never do (invariant 2: the DS serves the tree),
+    /// and exporting one after `merge_pending_commit` is too late: a refused commit cannot be
+    /// taken back once merged. `create_group_info(true)` makes the builder sign the n + 1
+    /// GroupInfo while it stages the commit - without the tree, with the external public key
+    /// (openmls-0.9.0/src/group/mls_group/commit_builder.rs:1036-1133).
+    ///
+    /// Each shape is the one the `MlsGroup` convenience method it replaces builds
+    /// (membership.rs:169-175, :246-251, updates.rs:43-49). Those methods also refuse a group
+    /// with a pending commit or one it was removed from (`is_operational`, which is crate-private);
+    /// the same two refusals are made here before the builder is touched.
+    fn stage_commit(
+        &mut self,
+        provider: &DillaProvider,
+        signer: &SignatureKeyPair,
+        shape: CommitShape<'_>,
+    ) -> Result<CommitMessageBundle, MlsError> {
+        if self.group.pending_commit().is_some() {
+            return Err(openmls(MlsGroupStateError::PendingCommit));
+        }
+        if !self.group.is_active() {
+            return Err(openmls(MlsGroupStateError::UseAfterEviction));
+        }
+        let group = &mut self.group;
+        let bundle = provider.storage().transaction(|| {
+            let builder = group.commit_builder();
+            let builder = match shape {
+                CommitShape::Add(kps) => builder
+                    .propose_adds(kps.iter().cloned())
+                    .force_self_update(true),
+                CommitShape::Remove(members) => builder.propose_removals(members.iter().copied()),
+                // Verified in step 1: `LeafNodeParameters` derives `Default`
+                // (openmls-0.9.0/src/treesync/node/leaf_node.rs:70).
+                CommitShape::Update => builder
+                    .leaf_node_parameters(LeafNodeParameters::default())
+                    .consume_proposal_store(true),
+            };
+            builder
+                .load_psks(provider.storage())
+                .map_err(openmls)?
+                .create_group_info(true)
+                .build(provider.rand(), provider.crypto(), signer, |_| true)
+                .map_err(openmls)?
+                .stage_commit(provider)
+                .map_err(|e| match e {
+                    CommitBuilderStageError::KeyStoreError(storage) => MlsError::Storage(storage),
+                    other => openmls(other),
+                })
+        })?;
+        Ok(bundle)
     }
 
     /// T11 housekeeping: drop a staged commit that will never be merged.
@@ -532,6 +584,32 @@ impl DillaGroup {
             ProcessedMessageContent::OwnPendingCommit => DillaProcessed::OwnPendingCommit,
             ProcessedMessageContent::OwnPrivateMessage => DillaProcessed::OwnPrivateMessage,
         })
+    }
+
+    /// Queues a proposal `process_message` handed back as `DillaProcessed::Proposal`, so the next
+    /// commit this client builds (`self_update` consumes the queue) covers it. Invariant 4 refuses a
+    /// commit that does not reference every outstanding instance proposal, so a member that drops
+    /// the proposals it receives can never commit while the instance has one outstanding.
+    ///
+    /// `MlsGroup::store_pending_proposal` takes the **storage** and writes the queued proposal, so it
+    /// runs inside a transaction like every other state change.
+    pub fn store_pending_proposal(
+        &mut self,
+        provider: &DillaProvider,
+        proposal: QueuedProposal,
+    ) -> Result<(), MlsError> {
+        let group = &mut self.group;
+        provider.storage().transaction(|| {
+            group
+                .store_pending_proposal(provider.storage(), proposal)
+                .map_err(MlsError::Storage)
+        })?;
+        Ok(())
+    }
+
+    /// How many members the group has, as this client's tree holds it.
+    pub fn member_count(&self) -> usize {
+        self.group.members().count()
     }
 
     /// T8 delete: 14 writes.

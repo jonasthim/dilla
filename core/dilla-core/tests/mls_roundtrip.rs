@@ -516,6 +516,65 @@ fn an_external_remove_proposal_from_the_instance_is_accepted() {
     }
 }
 
+/// Invariant 4 clause 1: a commit must reference every outstanding instance proposal, so a member
+/// that received one must be able to keep it for its next commit. `process_message` hands the
+/// proposal back; `store_pending_proposal` is what puts it in the queue `self_update` commits.
+#[test]
+fn a_stored_instance_proposal_is_carried_by_the_next_commit() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+    let instance_signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    let senders = external_senders(
+        instance_signer.public().into(),
+        &InstanceId::from_bytes([0x11; 16]),
+    );
+    let group_id = GroupId::from_slice(&[0x46; 16]);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        binding(GroupKind::Text),
+        Some(senders),
+    )
+    .expect("create");
+    alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+
+    let proposal = ExternalProposal::new_remove::<DillaProvider>(
+        LeafNodeIndex::new(1),
+        group_id,
+        alice.epoch().into(),
+        &instance_signer,
+        instance_sender_index(),
+    )
+    .expect("external remove proposal");
+    let DillaProcessed::Proposal(queued) = alice
+        .process_message(&alice_p, into_protocol(proposal))
+        .expect("process")
+    else {
+        panic!("expected a queued proposal");
+    };
+    alice
+        .store_pending_proposal(&alice_p, *queued)
+        .expect("store the proposal");
+
+    alice.self_update(&alice_p, &alice_signer).expect("commit");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    assert_eq!(
+        alice.member_count(),
+        1,
+        "the commit carried the instance's Remove of Bob's leaf"
+    );
+}
+
 /// Regression (fix round 1, finding 2): a database failure while `create_message` persists the
 /// secret tree must reach the caller as `MlsError::NeedsReload`.
 ///
@@ -1033,4 +1092,98 @@ fn the_ds_view_re_derives_its_binding_when_a_commit_rewrites_the_group_context()
         reloaded.binding(),
         "the cached binding must not contradict the stored group context"
     );
+}
+
+/// The KeyPackage wire round trip a delivery service performs on `POST /v1/keypackages`.
+fn into_key_package_in(kp: &KeyPackage) -> KeyPackageIn {
+    use tls_codec::{Deserialize as _, Serialize as _};
+    let bytes = MlsMessageOut::from(kp.clone())
+        .tls_serialize_detached()
+        .expect("serialize");
+    match MlsMessageIn::tls_deserialize_exact(&bytes)
+        .expect("deserialize")
+        .extract()
+    {
+        MlsMessageBodyIn::KeyPackage(kp) => kp,
+        other => panic!("expected a KeyPackage message, got {other:?}"),
+    }
+}
+
+/// RFC 9420 section 10.1: every extension a KeyPackage carries must be listed in its leaf's
+/// capabilities, and `last_resort` is not a default extension type (gap-5 section 4.2). A
+/// last-resort package whose leaf does not advertise it is refused by `KeyPackageIn::validate`
+/// with `UnsupportedExtension`, which is what the instance's `validate_key_package` runs - so every
+/// device's `POST /v1/keypackages` failed on the one package it must always publish.
+#[test]
+fn a_last_resort_key_package_validates_as_the_instance_validates_it() {
+    let p = provider();
+    let (signer, cred) = signer_and_credential(0xaa, 0x01);
+    signer.store(p.storage()).expect("store signer");
+    for last_resort in [false, true] {
+        let kp = build_key_package(&p, &signer, cred.clone(), last_resort).expect("key package");
+        let validated = validate_key_package(
+            openmls_traits::OpenMlsProvider::crypto(&p),
+            into_key_package_in(kp.key_package()),
+        )
+        .unwrap_or_else(|e| panic!("last_resort = {last_resort}: {e:?}"));
+        assert_eq!(validated.last_resort(), last_resort);
+    }
+}
+
+/// Invariant 4: the GroupInfo a committer uploads must be the one of epoch n + 1, the epoch its
+/// commit creates. A client that exports the GroupInfo before merging uploads epoch n, and one that
+/// merges first cannot take the commit back when the instance refuses it - so the commit itself
+/// must carry the n + 1 GroupInfo, signed, without the ratchet tree, with the external public key.
+#[test]
+fn every_commit_carries_the_group_info_of_the_epoch_it_creates() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        GroupId::from_slice(&[0x45; 16]),
+        binding(GroupKind::Text),
+        None,
+    )
+    .expect("create");
+
+    let check = |bundle: &CommitBundle, group: &DillaGroup, before: u64| {
+        let info = bundle
+            .group_info
+            .as_ref()
+            .expect("the commit carries its GroupInfo");
+        assert_eq!(info.group_context().epoch().as_u64(), before + 1);
+        assert!(
+            info.extensions().ratchet_tree().is_none(),
+            "invariant 2: without the tree"
+        );
+        assert!(
+            info.extensions().external_pub().is_some(),
+            "an external joiner needs the external public key"
+        );
+        // After the merge it is exactly the group's own epoch.
+        assert_eq!(info.group_context().epoch().as_u64(), group.epoch());
+    };
+
+    let bundle = alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    check(&bundle, &alice, 0);
+
+    let bundle = alice.self_update(&alice_p, &alice_signer).expect("update");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    check(&bundle, &alice, 1);
+
+    let bundle = alice
+        .remove_members(&alice_p, &alice_signer, &[LeafNodeIndex::new(1)])
+        .expect("remove");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    check(&bundle, &alice, 2);
 }
