@@ -88,6 +88,12 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
+      - run: cargo build -p dilla-testkit --release --locked
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dilla-testkit
+          path: target/release/dilla-testkit
+          if-no-files-found: error
 
   rust-wasi:
     runs-on: ubuntu-latest
@@ -162,10 +168,13 @@ jobs:
 
   go:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     # rust-wasi (Plan A's CI task) builds and uploads the dilla-core-wasi
-    # artifact this job downloads. Without `needs:` GitHub starts both jobs in
+    # artifact this job downloads. Without `needs:` GitHub starts the jobs in
     # parallel, download-artifact finds nothing in the run, and the job is red on
-    # every push (gap-31 §3.2's reference job carries it).
+    # every push (gap-31 §3.2's reference job carries it). The scenario harness
+    # (internal/testkit) is go-harness's: here DILLA_TESTKIT is unset and those
+    # tests skip, which keeps this job inside a 4-vCPU runner's budget.
     needs: [rust-wasi]
     steps:
       - uses: actions/checkout@v7
@@ -189,6 +198,40 @@ jobs:
       - name: Static release build
         run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
 
+  go-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The scenario harness drives a real instance with the Rust testkit clients:
+    # it needs the wasi core from rust-wasi and the testkit binary from
+    # rust-native, and it is the slowest Go suite, so it has a job and a
+    # timeout of its own.
+    needs: [rust-wasi, rust-native]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: Fetch the testkit binary built by the rust-native job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - run: chmod +x artifacts/dilla-testkit
+      - name: The scenario harness against the real instance
+        run: go test -race -shuffle=on -timeout 25m ./internal/testkit/...
+        env:
+          GORACE: halt_on_error=1
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+          # internal/testkit skips without the binary; here a skip would pass every scenario test
+          # without running one, so a missing or unusable binary must fail instead.
+          DILLA_TESTKIT_REQUIRED: '1'
+
   go-fts5-arm64:
     runs-on: ubuntu-24.04-arm
     steps:
@@ -199,3 +242,90 @@ jobs:
           cache-dependency-path: go.sum
       - name: FTS5 on native linux/arm64
         run: go test ./internal/store/sqlite/...
+
+  # go-lint, go-vuln, go-sqlc and go-release carry no `needs:` on purpose: `go vet ./...` and
+  # `go build ./cmd/dillad` both exit 0 with the wasi artifact absent, so they start at t=0
+  # alongside rust-wasi for zero added wall clock.
+  go-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2
+
+  go-vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+      - name: The pinned-but-unimported module graph is scanned too
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -scan package -tags dillapins ./internal/deps
+
+  go-sqlc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: sqlc-dev/setup-sqlc@v5
+        with:
+          sqlc-version: '1.31.1'
+      - run: sqlc diff
+      - run: git diff --exit-code
+      - run: test -z "$(git status --porcelain)"
+
+  go-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [rust-wasi]
+    services:
+      postgres:
+        image: postgres:18.6-alpine3.24      # not "-alpine": that floats onto the next Alpine
+        env:
+          POSTGRES_PASSWORD: dilla
+          POSTGRES_USER: dilla
+          POSTGRES_DB: dilla
+          POSTGRES_INITDB_ARGS: --locale-provider=builtin --builtin-locale=C.UTF-8
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U dilla" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: The same tests against Postgres
+        run: go test -race ./internal/store/... ./internal/api/... ./internal/ds/...
+        env:
+          DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
+
+  go-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: linux/amd64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-amd64 ./cmd/dillad
+      - name: linux/arm64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-arm64 ./cmd/dillad
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dillad-binaries
+          path: dist/
+          if-no-files-found: error

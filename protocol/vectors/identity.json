@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR with real Ed25519 signatures (03-identity.md)",
+  "description": "safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR with real Ed25519 signatures, and the 81-byte device-session signature preimage (03-identity.md, 02-delivery-service.md)",
   "safety_number": {
     "umk_a": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
     "umk_b": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
@@ -33,5 +33,12 @@
       "sig_ssk_dev": "caad6f3308aa16d76dea6eb86becc934651a88490c8de4b4236cc7cb9ae0e45377d0a573f1332c9519c707b87834e9937c5be53f1877fbe5284e37096375800e"
     },
     "cbor": "8a015820db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d50d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d450e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e500010058202152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db125840203a5d3b052bb587cc453ae05f171f75687e338847942acd50f9b44f7fee8a4a08d4bf56587f98d2701231e6af6668b03619b79d1ec5bb956a3ca78f8380ea035840caad6f3308aa16d76dea6eb86becc934651a88490c8de4b4236cc7cb9ae0e45377d0a573f1332c9519c707b87834e9937c5be53f1877fbe5284e37096375800e"
+  },
+  "session_preimage": {
+    "instance_id": "00112233445566778899aabbccddeeff",
+    "device_id": "0102030405060708090a0b0c0d0e0f10",
+    "nonce": "abababababababababababababababababababababababababababababababab",
+    "purpose": 0,
+    "preimage": "64696c6c612073657373696f6e20763100112233445566778899aabbccddeeff0102030405060708090a0b0c0d0e0f10abababababababababababababababababababababababababababababababab00"
   }
 }

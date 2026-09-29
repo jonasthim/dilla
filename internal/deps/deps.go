@@ -15,6 +15,7 @@
 package deps
 
 import (
+	_ "github.com/coder/websocket"
 	_ "github.com/fxamacker/cbor/v2"
 	_ "github.com/livekit/livekit-server/pkg/config"
 	_ "github.com/livekit/livekit-server/pkg/routing"

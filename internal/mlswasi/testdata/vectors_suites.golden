@@ -10,6 +10,31 @@ envelope	reaction add in a thread	length
 envelope	text message with a reply and one attachment	cbor
 envelope	text message with a reply and one attachment	commitment
 envelope	text message with a reply and one attachment	length
+frames	commit_ack	frame
+frames	error	frame
+frames	heartbeat	frame
+frames	heartbeat_ack	frame
+frames	hello	frame
+frames	identify	frame
+frames	interaction	frame
+frames	invalid_session	frame
+frames	message.ct	frame
+frames	message.deleted	frame
+frames	message.plain	frame
+frames	mls.commit_needed	frame
+frames	mls.epoch_changed	frame
+frames	mls.handshake	frame
+frames	mls.handshake from the instance	frame
+frames	mls.welcome	frame
+frames	presence	frame
+frames	ready	frame
+frames	reconnect	frame
+frames	resume	frame
+frames	resumed	frame
+frames	subscribe	frame
+frames	typing	frame
+frames	unsubscribe	frame
+frames	voice_state	frame
 franking	case 0	tag
 franking	case 1	tag
 franking	case 2	tag
@@ -25,6 +50,14 @@ identity	sas	digits
 rejects	authenticated_data not 32 bytes	verify_commitment
 rejects	envelope body over 4000 bytes	validate
 rejects	envelope reject: delete tombstone with a non-empty body	decode
+rejects	envelope reject: five attachments	decode
+rejects	envelope reject: mime one byte over 255	decode
+rejects	envelope reject: preview description one byte over 1024	decode
+rejects	envelope reject: preview image one byte over 16384	decode
+rejects	envelope reject: preview title one byte over 256	decode
+rejects	envelope reject: preview url one byte over 2048	decode
+rejects	envelope reject: three previews	decode
+rejects	envelope reject: thumb one byte over 8192	decode
 rejects	envelope trailing bytes	decode
 rejects	envelope unknown type	decode
 rejects	envelope wrong element count	decode

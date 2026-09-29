@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkDocs } from './check-protocol-docs.mjs';
+import { checkDocs, checkErrorVocabulary } from './check-protocol-docs.mjs';
 
 function fixture(files) {
   const dir = mkdtempSync(join(tmpdir(), 'dilla-docs-'));
@@ -24,6 +24,7 @@ test('passes when every required document exists with its required headings and 
     '06-backup-archive.md': '# Backup\n\n## Keys\n\n## Header\n\n## Archive\n\n## Restore\n',
     '07-versioning.md': '# Versioning\n\n## Versions\n\n## Negotiation\n\n## Change process\n',
     '08-threat-model.md': '# Threat model\n\n## Adversaries\n\n## Guarantees\n\n## Residual trust\n\n## Out of scope\n',
+    '09-http-api.md': '# HTTP API\n\n## Scope\n\n## Encoding\n\n## Identifiers\n\n## Sessions\n\n## Accounts and devices\n\n## Auth ceremonies\n\n## Instance\n\n## Rate limits\n\n## Flags\n',
   });
   assert.deepEqual(checkDocs(dir), []);
 });
@@ -56,6 +57,7 @@ test('recursively detects placeholders in all files under protocol/', () => {
     writeFileSync(join(protocolDir, '06-backup-archive.md'), '# Backup\n\n## Keys\n\n## Header\n\n## Archive\n\n## Restore\n');
     writeFileSync(join(protocolDir, '07-versioning.md'), '# Versioning\n\n## Versions\n\n## Negotiation\n\n## Change process\n');
     writeFileSync(join(protocolDir, '08-threat-model.md'), '# Threat model\n\n## Adversaries\n\n## Guarantees\n\n## Residual trust\n\n## Out of scope\n');
+    writeFileSync(join(protocolDir, '09-http-api.md'), '# HTTP API\n\n## Scope\n\n## Encoding\n\n## Identifiers\n\n## Sessions\n\n## Accounts and devices\n\n## Auth ceremonies\n\n## Instance\n\n## Rate limits\n\n## Flags\n');
 
     // Create extra files with placeholders in nested directories
     mkdirSync(join(protocolDir, 'vectors'), { recursive: true });
@@ -71,4 +73,63 @@ test('recursively detects placeholders in all files under protocol/', () => {
   } finally {
     rmSync(tmpDir, { recursive: true });
   }
+});
+
+test('checkErrorVocabulary reports a code present in state.rs but absent from 02', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-vocab-'));
+  mkdirSync(join(dir, 'protocol'), { recursive: true });
+  mkdirSync(join(dir, 'testkit', 'src', 'ds'), { recursive: true });
+  writeFileSync(join(dir, 'protocol', '02-delivery-service.md'), '| 404 | `E_NOT_FOUND` | x | y |\n');
+  writeFileSync(join(dir, 'testkit', 'src', 'ds', 'state.rs'), '"E_NOT_FOUND" "E_TOO_LARGE"\n');
+  const problems = checkErrorVocabulary(dir);
+  assert.ok(problems.some(p => p.includes('E_TOO_LARGE')));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('checkErrorVocabulary scopes doc codes to the Errors status table, not every backticked E_* token in the file', () => {
+  // 02 also has a "## Gateway frames" section that mentions E_FRAME_* codes in prose, never as a
+  // status-table row. Those are not HTTP error codes and Go has nothing to declare for them.
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-vocab-'));
+  mkdirSync(join(dir, 'protocol'), { recursive: true });
+  mkdirSync(join(dir, 'testkit', 'src', 'ds'), { recursive: true });
+  mkdirSync(join(dir, 'internal', 'server'), { recursive: true });
+  writeFileSync(join(dir, 'protocol', '02-delivery-service.md'),
+    '## Gateway frames\n\n' +
+    'An opcode outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored.\n' +
+    'A frame of the wrong element count for its opcode is `E_FRAME_SHAPE`.\n\n' +
+    '## Errors\n\n' +
+    '| HTTP | code | meaning |\n|---|---|---|\n| 404 | `E_NOT_FOUND` | x |\n');
+  writeFileSync(join(dir, 'testkit', 'src', 'ds', 'state.rs'), '"E_NOT_FOUND"\n');
+  writeFileSync(join(dir, 'internal', 'server', 'errors.go'), 'const CodeNotFound Code = "E_NOT_FOUND"\n');
+  const problems = checkErrorVocabulary(dir);
+  assert.deepEqual(problems.filter(p => p.includes('E_FRAME_')), [],
+    'gateway-frame codes are not status-table rows and must not be demanded of internal/server/errors.go');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('checkErrorVocabulary reports a code present in errors.go but absent from 02\'s Errors table (the Go direction)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-vocab-'));
+  mkdirSync(join(dir, 'protocol'), { recursive: true });
+  mkdirSync(join(dir, 'testkit', 'src', 'ds'), { recursive: true });
+  mkdirSync(join(dir, 'internal', 'server'), { recursive: true });
+  writeFileSync(join(dir, 'protocol', '02-delivery-service.md'),
+    '## Errors\n\n| HTTP | code | meaning |\n|---|---|---|\n| 404 | `E_NOT_FOUND` | x |\n');
+  writeFileSync(join(dir, 'testkit', 'src', 'ds', 'state.rs'), '"E_NOT_FOUND"\n');
+  writeFileSync(join(dir, 'internal', 'server', 'errors.go'),
+    'const CodeNotFound Code = "E_NOT_FOUND"\nconst CodeMystery Code = "E_MYSTERY"\n');
+  const problems = checkErrorVocabulary(dir);
+  assert.ok(problems.includes('02-delivery-service.md: missing code E_MYSTERY present in internal/server/errors.go'));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('checkErrorVocabulary skips both Go legs entirely when internal/server/errors.go does not exist yet', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-vocab-'));
+  mkdirSync(join(dir, 'protocol'), { recursive: true });
+  mkdirSync(join(dir, 'testkit', 'src', 'ds'), { recursive: true });
+  writeFileSync(join(dir, 'protocol', '02-delivery-service.md'),
+    '## Errors\n\n| HTTP | code | meaning |\n|---|---|---|\n| 404 | `E_NOT_FOUND` | x |\n');
+  writeFileSync(join(dir, 'testkit', 'src', 'ds', 'state.rs'), '"E_NOT_FOUND"\n');
+  const problems = checkErrorVocabulary(dir);
+  assert.deepEqual(problems.filter(p => p.includes('errors.go')), []);
+  rmSync(dir, { recursive: true, force: true });
 });

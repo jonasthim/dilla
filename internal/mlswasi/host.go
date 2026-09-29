@@ -43,18 +43,24 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
+	"github.com/tetratelabs/wazero/sys"
 )
 
-// ABIVersion is the version every request carries as its first element and
-// every module must accept (interfaces.md 2.10).
-const ABIVersion uint64 = 1
+// ABIVersion is the version every request carries as its first element and every module must
+// accept. **2** since 2026-09-24: public_group_process grew to eight elements and
+// validate_key_package to six (interfaces.md §3, R27). **3** since 2026-09-29 (task 27a, Ruling
+// C): public_group_process grew a ninth element, new_leaf, and the module grew
+// device_list_entries and public_group_staged_group_info_validate (deviations B32, B33). There is
+// no compatibility shim — this host is the guest's only consumer and CI builds both from one
+// commit.
+const ABIVersion uint64 = 3
 
-// RequiredExports is the 17-export ABI. New refuses any module that does not
-// carry all of them. _initialize is deliberately absent: see the package
-// comment.
+// RequiredExports is the 23-export ABI v3 surface. New refuses any module that does not carry all
+// of them. _initialize is deliberately absent: see the package comment.
 var RequiredExports = []string{
 	"dilla_alloc",
 	"dilla_free",
@@ -70,9 +76,15 @@ var RequiredExports = []string{
 	"public_group_state",
 	"public_group_proposal_put",
 	"public_group_proposal_list",
+	"public_group_staged_discard",
+	"public_group_group_info_validate",
+	"public_group_staged_group_info_validate",
+	"public_group_proposal_inspect",
+	"private_message_aad",
 	"validate_key_package",
 	"external_propose_add",
 	"external_propose_remove",
+	"device_list_entries",
 }
 
 // startFunctions is what every instance, and the control arm of the clock test,
@@ -95,6 +107,18 @@ type Options struct {
 	// Interpreter selects wazero's interpreter instead of its compiler. Only
 	// the benchmark's comparison arm should set it.
 	Interpreter bool
+	// Now, when set, is the wall clock the guest sees. wazero calls it on every clock_time_get,
+	// so advancing the clock after instantiation is visible to the guest without rebuilding the
+	// pool — which is what makes OpenMLS's KeyPackage lifetime check testable (gap-33 §4.3).
+	// Nil keeps WithSysWalltime(), the production setting.
+	Now func() time.Time
+	// OnCall, when set, is called with the name of every guest export the host invokes, before
+	// the call. It is observation only — nothing about the call changes — and it exists because
+	// "the delivery service imports a group's state blob lazily, and never rebuilds it from the
+	// tree" is a statement about WHICH guest export ran, which nothing else on this API reports
+	// (task 19). It runs on the caller's goroutine, so an implementation must be cheap and safe
+	// for concurrent use.
+	OnCall func(export string)
 }
 
 // Runtime owns one wazero runtime, one compiled module and a fixed pool of
@@ -104,6 +128,8 @@ type Runtime struct {
 	compiled wazero.CompiledModule
 	pool     chan *Instance
 	poolSize int
+	now      func() time.Time
+	onCall   func(export string)
 
 	mu     sync.Mutex
 	closed bool
@@ -152,7 +178,7 @@ func New(ctx context.Context, wasmBinary []byte, opts Options) (*Runtime, error)
 	if size <= 0 {
 		size = runtime.GOMAXPROCS(0)
 	}
-	r := &Runtime{rt: rt, compiled: compiled, pool: make(chan *Instance, size), poolSize: size}
+	r := &Runtime{rt: rt, compiled: compiled, pool: make(chan *Instance, size), poolSize: size, now: opts.Now, onCall: opts.OnCall}
 	for range size {
 		inst, err := r.newInstance(ctx)
 		if err != nil {
@@ -172,8 +198,18 @@ func (r *Runtime) newInstance(ctx context.Context) (*Instance, error) {
 		WithName(""). // anonymous: many instances may share one runtime
 		WithStartFunctions(startFunctions...).
 		WithRandSource(crand.Reader).
-		WithSysWalltime().
 		WithSysNanotime()
+	if r.now == nil {
+		cfg = cfg.WithSysWalltime()
+	} else {
+		// Deviation from the brief: sys.Walltime in wazero v1.12.0 is
+		// `func() (sec int64, nsec int32)` (sys/clock.go:13), with no context parameter, so the
+		// closure the brief wrote does not satisfy it.
+		cfg = cfg.WithWalltime(func() (sec int64, nsec int32) {
+			t := r.now()
+			return t.Unix(), int32(t.Nanosecond())
+		}, sys.ClockResolution(time.Microsecond.Nanoseconds()))
+	}
 	mod, err := r.rt.InstantiateModule(ctx, r.compiled, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("mlswasi: instantiate: %w", err)

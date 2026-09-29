@@ -409,7 +409,7 @@ dilla is one Go binary (`dillad`) and one Rust core (`dilla-core`) that every cl
 
 ### System architecture
 
-**One process per instance: `dillad` (Go 1.26, `CGO_ENABLED=0`, linux/amd64+arm64).** It embeds:
+**One process per instance: `dillad` (Go 1.27, `CGO_ENABLED=0`, linux/amd64+arm64).** It embeds:
 1. HTTPS API (JSON) and the realtime gateway (WebSocket, CBOR frames with fixed field order) on 443.
 2. The MLS Delivery Service (`dilla-ds`): KeyPackage directory, per-group sequencer, GroupInfo store, external-sender signer, freeze/void/re-issue logic.
 3. `dilla-core-wasi`: the same Rust core compiled to `wasm32-wasip1` and executed by wazero (Apache-2.0, pure Go) for exactly three jobs: maintain an OpenMLS `PublicGroup` per group from PublicMessage handshakes, structurally validate commits/proposals/GroupInfo, and sign external proposals. No Go MLS code, no cgo, no decryption capability. Fallback if the W1 spike fails: cbindgen + cgo (drops the static-binary claim, keeps one binary).
@@ -561,13 +561,27 @@ Under the hood: channel membership by DS Add proposal on install or external com
 
 **Founder path.** dillad in an LXC on the isolated VLAN. Pangolin's Traefik owns 443 on the VPS, so: HTTPS/WSS via a Pangolin HTTP resource with dillad in `behind_proxy` mode; UDP 7882 as a raw UDP resource (`allow_raw_resources: true`, gerbil port mapping; source IPs appear as newt's address, fine for ICE); optional raw TCP 5349 for TURN/TLS with a DNS-01 certificate. `node_ip` = VPS IP; WireGuard MTU 1420 clears Pion's 1200-byte packets. Documented as the CGNAT "relay node on a small VPS" pattern.
 
-**Upgrades.** Forward-only goose migrations at start after an automatic pre-migration backup (SQLite `VACUUM INTO`; Postgres via a Go-native logical dump over pgx `COPY TO`, so no `pg_dump` binary is required); refuse to start on a newer schema; semver; wire/E2EE/media versions independent with N-2. `dillad backup` = one tarball (DB snapshot, blobs, config, instance keys); `dillad restore` bumps the instance generation and triggers the group-heal protocol (Server section); the docs state that restores drop live calls and that backups hold ciphertext only.
+**Upgrades.** Forward-only goose migrations at start after an automatic pre-migration backup (SQLite `VACUUM INTO`; Postgres via a Go-native logical dump over pgx `COPY TO`, so no `pg_dump` binary is required); refuse to start on a newer schema; semver; wire/E2EE/media versions independent with N-2. `dillad backup` = one tarball (DB snapshot, blobs, config, instance keys); `dillad restore` bumps the instance generation and triggers the group-heal protocol (Server section); the docs state that restores drop live calls and that backups hold no end-to-end-encrypted plaintext: they contain ciphertext, server-readable channel content, revealed report envelopes, TLS material and the instance keys.
 
 **Observability and doctor.** `/metrics` (dilla + LiveKit on one registry, incl. `dilla_mls_pending_removal_age_seconds`), `/healthz`, `/readyz`, JSON logs, an admin call-diagnostics page (candidate types, relay share, loss, decrypt failures, aggregate SFU egress). `dillad doctor` checks config, DB, ACME, clock skew, a TURN allocation on 443, and UDP reachability by asking the operator to run `dilla-desktop --probe <host>` from another network (no project-run reflector: the record allows only the push relay as a central service).
 
 **Registration:** invite-only; email never required; open registration with email + CAPTCHA later.
 
 ### Data model
+
+> **Deviation (2026-09-24):** this section is superseded on six points by
+> `scratchpad/planning/dillad/interfaces.md` §0.1, each with its ruling.
+> **D2 (R24)** identifiers are 16 CSPRNG bytes stored as `BLOB(16)`/`BYTEA`, not ULIDs, and every
+> timestamp is an integer unix second, not a string.
+> **D3 (R37)** the migration table is goose's default `goose_db_version`, not `schema_migrations`.
+> **D4 (gap-13)** `mls_welcomes` becomes three tables — `mls_welcome_payloads`, `mls_epoch_trees`,
+> `mls_welcomes`.
+> **D5 (R5)** `mls_handshakes.kind ∈ {0 proposal, 1 commit, 2 external_commit}`; a Welcome is not a
+> handshake.
+> **D13 (`protocol/01`)** the inactivity Remove is 90 days, not 30.
+> **D15 (R38)** "backups hold ciphertext only" becomes "backups hold no end-to-end-encrypted
+> plaintext: they contain ciphertext, server-readable channel content, revealed report envelopes,
+> TLS material and the instance keys".
 
 **Server (one schema, SQLite or Postgres; ULIDs; UTC timestamps).**
 - Identity: `instances(instance_id, external_sender_key_id, key_history, franking_key_id, generation)`; `users(id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at)`; `devices(id, user_id, dsk_pub, tier, signer_tier, credential_blob, verified_at, revoked_at, last_seen)`; `device_lists(user_id, version, blob, ssk_signature, prev_hash)`; `key_packages(device_id, kp_ref, blob, last_resort, expires, consumed_at)`; `sessions(token_hash, device_id, expires)`.

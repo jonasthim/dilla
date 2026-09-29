@@ -58,3 +58,17 @@ export function sskMessage(sskPub: Uint8Array): Uint8Array {
 export function dskMessage(deviceId: Uint8Array, dskPub: Uint8Array, kind: number, tier: number, signerTier: number): Uint8Array {
   return concat(utf8('dilla dsk v1'), deviceId, dskPub, new Uint8Array([kind, tier, signerTier]));
 }
+
+/**
+ * `"dilla session v1" || instance_id(16) || device_id(16) || nonce(32) || purpose(1)` - the 81
+ * bytes a device's DSK_priv signs to establish, renew or provision a session
+ * (02-delivery-service.md "Device sessions" item 2). Every field sits at a fixed offset, so there
+ * is nothing to parse and nothing to confuse; `purpose` is 0 session, 1 renew, 2 provisional, and
+ * binding it into the signature is what stops a renew signature being replayed as an establish.
+ */
+export function sessionPreimage(instanceId: Uint8Array, deviceId: Uint8Array, nonce: Uint8Array, purpose: 0 | 1 | 2): Uint8Array {
+  if (instanceId.length !== 16) throw new Error('instance_id must be 16 bytes');
+  if (deviceId.length !== 16) throw new Error('device_id must be 16 bytes');
+  if (nonce.length !== 32) throw new Error('nonce must be 32 bytes');
+  return concat(utf8('dilla session v1'), instanceId, deviceId, nonce, new Uint8Array([purpose]));
+}

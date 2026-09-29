@@ -1,4 +1,6 @@
-//! The fifteen `(ptr, len) -> u64` handlers of interfaces §2.10, written as pure functions over
+//! The `(ptr, len) -> u64` handlers of interfaces §2.10 — the fifteen shipped at ABI v1, ABI
+//! v2's `public_group_staged_discard`, and ABI v3's `device_list_entries` and
+//! `public_group_staged_group_info_validate` — written as pure functions over
 //! `&[u8]` so the native test build drives exactly the same encoders the wasm build does.
 
 // `Decoder` is deliberately absent: nothing outside the `#[cfg(test)]` module (which has its own
@@ -16,6 +18,10 @@ use dilla_core::public_group::{
 // 0.9.0 (`messages::proposals` imports it privately) — the same finding `public_group::state`
 // records.
 use openmls::ciphersuite::hash_ref::ProposalRef;
+// Named explicitly so the two types this file's ABI v2 code leans on are visible at the top of
+// the file rather than arriving through the glob.
+use openmls::group::StagedCommit;
+use openmls::messages::proposals::Proposal;
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::RustCrypto;
@@ -37,13 +43,21 @@ pub fn dispatch(export: &str, req: &[u8]) -> Vec<u8> {
         "public_group_close" => public_group_close(req, t),
         "public_group_process" => public_group_process(req, t),
         "public_group_merge" => public_group_merge(req, t),
+        "public_group_staged_discard" => public_group_staged_discard(req, t),
         "public_group_tree" => public_group_tree(req, t),
         "public_group_state" => public_group_state(req, t),
         "public_group_proposal_put" => public_group_proposal_put(req, t),
         "public_group_proposal_list" => public_group_proposal_list(req, t),
+        "public_group_group_info_validate" => public_group_group_info_validate(req, t),
+        "public_group_staged_group_info_validate" => {
+            public_group_staged_group_info_validate(req, t)
+        }
+        "public_group_proposal_inspect" => public_group_proposal_inspect(req, t),
+        "private_message_aad" => private_message_aad(req, t),
         "validate_key_package" => validate_key_package_export(req, t),
         "external_propose_add" => external_propose_add_export(req, t),
         "external_propose_remove" => external_propose_remove_export(req, t),
+        "device_list_entries" => device_list_entries_export(req, t),
         other => Err(AbiError::shape(format!("unknown export {other}"))),
     });
     match result {
@@ -172,6 +186,13 @@ fn public_group_process(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> 
         (group.process_message(&crypto, pm)?, group.epoch())
     };
 
+    // ABI v3: the leaf an external commit's joiner lands on. A commit whose sender is not a member
+    // is a `NewMemberCommit` (RFC 9420 §12.4.3.2: an external sender may propose but never
+    // commit), which names no leaf of its own, so without this element the delivery service could
+    // not say which leaf signed the GroupInfo that came with it (task 25 C1, deviation B30(a)).
+    // `PublicGroup::ext_commit_sender_index` is openmls's own answer: the leftmost free leaf once
+    // the commit's Removes have been applied, which is where the merge puts the joiner.
+    let mut new_leaf: Option<u32> = None;
     let (kind, sender_leaf, staged, proposal_ref) = match processed {
         PublicProcessed::Proposal {
             proposal_ref,
@@ -185,6 +206,15 @@ fn public_group_process(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> 
                 PublicProcessed::StagedCommit { sender_leaf, .. } => *sender_leaf,
                 _ => unreachable!("matched StagedCommit one line above"),
             };
+            // ABI v3's `new_leaf`, computed BEFORE the staged commit enters the table so that a
+            // failure here leaves no handle behind (see `with_staged_or_release`).
+            if let PublicProcessed::StagedCommit {
+                staged,
+                sender_leaf: None,
+            } = &p
+            {
+                new_leaf = Some(t.group(handle)?.ext_commit_sender_index(staged)?.u32());
+            }
             let staged_handle = t.insert_staged(p);
             (1, sender, Some(staged_handle), None)
         }
@@ -192,12 +222,117 @@ fn public_group_process(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> 
         PublicProcessed::Rejected(_) => (3, None, None, None),
     };
 
+    // ABI v2: the applied list and the committer-update flag. Both elements are always present;
+    // for anything but a commit they are the empty array and 0. The staged commit is read back
+    // **by reference** (`Table::staged`), never taken: `public_group_merge` is the one consumer.
+    // Building the list can fail on input a remote member controls, and the handle is already in
+    // the table by then, so it goes through `with_staged_or_release`: see that function for why an
+    // error must take the entry with it.
+    let (applied, committer_updated) = match staged {
+        Some(h) => with_staged_or_release(t, h, |p| match p {
+            PublicProcessed::StagedCommit { staged, .. } => Ok((
+                applied_proposals(staged)?,
+                u64::from(staged.update_path_leaf_node().is_some()),
+            )),
+            _ => Ok((Vec::new(), 0)),
+        })?,
+        None => (Vec::new(), 0),
+    };
+
     let mut e = Encoder::new();
-    e.array(6).uint(0).uint(kind).uint(epoch);
+    e.array(9).uint(0).uint(kind).uint(epoch);
     e.opt_uint(sender_leaf.map(u64::from));
     e.opt_uint(staged.map(u64::from));
     e.opt_bytes(proposal_ref.as_deref());
+    e.array(applied.len());
+    for item in &applied {
+        e.array(5).bytes(&item.proposal_ref).uint(item.kind);
+        e.opt_uint(item.sender_leaf.map(u64::from));
+        e.opt_uint(item.target_leaf.map(u64::from));
+        e.opt_bytes(item.credential_identity.as_deref());
+    }
+    e.uint(committer_updated);
+    e.opt_uint(new_leaf.map(u64::from));
     Ok(e.into_vec())
+}
+
+/// Reads the staged commit at `handle` by reference, and releases it if `f` fails.
+///
+/// `public_group_process` inserts the `StagedCommit` before it can know whether the applied list
+/// will build, and `applied_proposals` has two failure modes a remote member controls: a proposal
+/// type outside the seven `protocol/02-delivery-service.md` numbers (openmls 0.9.0 carries
+/// `SelfRemove` and `Custom` unconditionally) and an Add whose credential is not a
+/// `BasicCredential` (`E_CREDENTIAL`). An error frame carries no handle number, and `take_staged`
+/// is the only remover, so an entry left behind on that path can never be reached again by
+/// `public_group_merge` or `public_group_staged_discard` — for a 1500-leaf group that is the
+/// unbounded growth the discard export exists to prevent, on a message the DS did not choose to
+/// accept. So the handle is released before the error leaves this module.
+fn with_staged_or_release<T>(
+    t: &mut Table,
+    handle: u32,
+    f: impl FnOnce(&PublicProcessed) -> Result<T, AbiError>,
+) -> Result<T, AbiError> {
+    // An unknown handle is E_ABI_HANDLE and removes nothing: `f` never runs, so the release arm
+    // below is not reached and no live entry is touched.
+    let staged = t.staged(handle)?;
+    match f(staged) {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            let _ = t.take_staged(handle);
+            Err(err)
+        }
+    }
+}
+
+/// One entry of ABI v2 §3.1's `applied` array.
+struct Applied {
+    proposal_ref: Vec<u8>,
+    kind: u64,
+    sender_leaf: Option<u32>,
+    target_leaf: Option<u32>,
+    credential_identity: Option<Vec<u8>>,
+}
+
+/// Every proposal the commit resolved, in the order `StagedCommit` reports them.
+///
+/// `kind` is the RFC 9420 proposal type as `protocol/02-delivery-service.md` numbers it —
+/// 1 add, 2 update, 3 remove, 4 psk, 5 reinit, 6 external_init, 7 group_context_extensions.
+/// Anything else (openmls 0.9.0 also has `SelfRemove`, `Custom` and the two `extensions-draft`
+/// variants) is a shape failure rather than a silently dropped item: invariant 4 clause 1 is a
+/// **set** comparison against the DS's outstanding proposals, and an item the DS cannot name is
+/// exactly the case where discarding it would let an unreferenced proposal through.
+fn applied_proposals(staged: &StagedCommit) -> Result<Vec<Applied>, AbiError> {
+    let mut out = Vec::new();
+    for queued in staged.queued_proposals() {
+        let sender_leaf = match queued.sender() {
+            Sender::Member(index) => Some(index.u32()),
+            _ => None,
+        };
+        let proposal_ref = queued.proposal_reference_ref().as_slice().to_vec();
+        let (kind, target_leaf, credential_identity) = match queued.proposal() {
+            Proposal::Add(add) => (1u64, None, Some(leaf_credential_bytes(add.key_package())?)),
+            Proposal::Update(_) => (2, None, None),
+            Proposal::Remove(remove) => (3, Some(remove.removed().u32()), None),
+            Proposal::PreSharedKey(_) => (4, None, None),
+            Proposal::ReInit(_) => (5, None, None),
+            Proposal::ExternalInit(_) => (6, None, None),
+            Proposal::GroupContextExtensions(_) => (7, None, None),
+            other => {
+                return Err(AbiError::shape(format!(
+                    "commit applies an unsupported proposal type {:?}",
+                    other.proposal_type()
+                )));
+            }
+        };
+        out.push(Applied {
+            proposal_ref,
+            kind,
+            sender_leaf,
+            target_leaf,
+            credential_identity,
+        });
+    }
+    Ok(out)
 }
 
 fn public_group_merge(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
@@ -221,6 +356,31 @@ fn public_group_merge(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
 
     let mut e = Encoder::new();
     e.array(2).uint(0).uint(epoch);
+    Ok(e.into_vec())
+}
+
+/// Releases a staged commit the DS decided not to merge. `public_group_process` inserts the
+/// `StagedCommit` before the delivery service has checked invariant 4, and every refusal path
+/// (an omitted outstanding proposal, a committer Update, a cross-user Remove, a GroupInfo whose
+/// epoch or signature is wrong) leaves that handle behind. `public_group_merge` consumes a handle
+/// but also advances the group, which is exactly what a refusal must not do — so the ABI needs a
+/// second, non-advancing consumer. Discarding an unknown handle is `E_ABI_HANDLE`, so a double
+/// discard is a clean error rather than a silent success.
+fn public_group_staged_discard(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
+    let mut d = abi::open(req, 3)?;
+    let handle = abi::read_handle(&mut d)?;
+    let staged = abi::read_handle(&mut d)?;
+    d.finish()?;
+    // `handle` is validated and nothing more: it proves the caller named a *live group*, not that
+    // this group is the one `public_group_process` staged `staged` against. The two handle classes
+    // share one id space (`handles.rs`) but not an ownership link, so pairing group A's handle with
+    // group B's staged handle still discards B's commit. That pairing is the host's to get right —
+    // interfaces §2.10 defines `staged` as a flat per-instance handle, exactly as
+    // `public_group_merge` takes it, and dillad issues both from the same call site.
+    let _ = t.group(handle)?;
+    t.take_staged(staged)?;
+    let mut e = Encoder::new();
+    e.array(1).uint(0);
     Ok(e.into_vec())
 }
 
@@ -340,6 +500,138 @@ fn public_group_proposal_list(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiE
     Ok(e.into_vec())
 }
 
+/// ABI v2 §3.2. A signature mismatch is `signature_ok = 0`, not an error frame; a signer leaf that
+/// is not in the tree is `E_ABI_STATE`, because there is no key to check against.
+///
+/// The caller names the signer leaf because `VerifiableGroupInfo::signer()` is `pub(crate)` in
+/// openmls 0.9.0 (`src/messages/group_info.rs:100`), so the DS cannot read it off the GroupInfo
+/// itself; it knows it from the commit it is validating.
+fn public_group_group_info_validate(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
+    let mut d = abi::open(req, 4)?;
+    let handle = abi::read_handle(&mut d)?;
+    let group_info = d.bytes()?;
+    let signer_leaf = abi::read_handle(&mut d)?;
+    d.finish()?;
+
+    let crypto = RustCrypto::default();
+    let verifiable = tls::verifiable_group_info(group_info)?;
+    let group = t.group(handle)?;
+    let key = group
+        .signature_key_of_leaf(LeafNodeIndex::new(signer_leaf))
+        .ok_or_else(|| AbiError::state(format!("leaf {signer_leaf} is not in the tree")))?;
+    let signature_ok = verifiable.verify_no_out(&crypto, &key).is_ok();
+    let context = verifiable.group_context();
+
+    let mut e = Encoder::new();
+    e.array(6)
+        .uint(0)
+        .uint(verifiable.epoch().as_u64())
+        .bytes(verifiable.group_id().as_slice())
+        .bytes(context.tree_hash())
+        .bytes(context.confirmed_transcript_hash())
+        .uint(u64::from(signature_ok));
+    Ok(e.into_vec())
+}
+
+/// ABI v3: `[abi, handle, staged, group_info]` -> the same six elements as
+/// `public_group_group_info_validate`, with the signature checked under the key the COMMITTER of
+/// `staged` holds in the epoch the commit produces (`DillaPublicGroup::staged_committer_key`).
+///
+/// Invariant 4 step (6) — "a GroupInfo at epoch n+1 signed by the committer" — is asked before
+/// the merge, because the merge is irreversible. For a member commit the tree can answer by leaf
+/// index; for an EXTERNAL commit it cannot, since the joiner occupies no leaf until the merge, and
+/// its key exists only in the staged commit's UpdatePath. That is why `new_leaf` alone does not
+/// make an external commit checkable, and why this export reads the key off the staged commit
+/// rather than off the tree (task 27a, Ruling C, deviation B32).
+fn public_group_staged_group_info_validate(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
+    let mut d = abi::open(req, 4)?;
+    let handle = abi::read_handle(&mut d)?;
+    let staged = abi::read_handle(&mut d)?;
+    let group_info = d.bytes()?;
+    d.finish()?;
+
+    let crypto = RustCrypto::default();
+    let verifiable = tls::verifiable_group_info(group_info)?;
+    let group = t.group(handle)?;
+    let key = match t.staged(staged)? {
+        PublicProcessed::StagedCommit {
+            staged,
+            sender_leaf,
+        } => group.staged_committer_key(staged, *sender_leaf),
+        _ => {
+            return Err(AbiError::handle(format!(
+                "handle {staged} is not a staged commit"
+            )));
+        }
+    }
+    .ok_or_else(|| AbiError::state("the staged commit names no committer key".to_owned()))?;
+    let signature_ok = verifiable.verify_no_out(&crypto, &key).is_ok();
+    let context = verifiable.group_context();
+
+    let mut e = Encoder::new();
+    e.array(6)
+        .uint(0)
+        .uint(verifiable.epoch().as_u64())
+        .bytes(verifiable.group_id().as_slice())
+        .bytes(context.tree_hash())
+        .bytes(context.confirmed_transcript_hash())
+        .uint(u64::from(signature_ok));
+    Ok(e.into_vec())
+}
+
+/// ABI v2 §3.3. Called on `POST /v1/groups/{id}/proposal` only: for its own proposals the instance
+/// knows kind and target by construction.
+///
+/// The detail comes from `DillaPublicGroup::queued_proposal_detail`, which reads the
+/// `QueuedProposal` the group already holds. The message is **not** re-processed here: the
+/// proposal is queued by the time this is called, and `process_message` on an already-queued
+/// proposal is a validation failure, not a read.
+fn public_group_proposal_inspect(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
+    let mut d = abi::open(req, 3)?;
+    let handle = abi::read_handle(&mut d)?;
+    // Deviation from the brief: `ProposalRef::from_slice` is `#[cfg(any(feature = "test-utils",
+    // test))]` in openmls 0.9.0 (`src/ciphersuite/hash_ref.rs:120`), so the reference travels as
+    // the opaque bytes it already is and `queued_proposal_detail` compares slices.
+    let wanted = d.bytes()?;
+    d.finish()?;
+
+    let group = t.group(handle)?;
+    let (kind, sender_leaf, target_leaf, credential_identity) = group
+        .queued_proposal_detail(wanted)?
+        .ok_or_else(|| AbiError::state("no queued proposal for that reference".to_owned()))?;
+
+    let mut e = Encoder::new();
+    e.array(5).uint(0).uint(kind);
+    e.opt_uint(sender_leaf.map(u64::from));
+    e.opt_uint(target_leaf.map(u64::from));
+    e.opt_bytes(credential_identity.as_deref());
+    Ok(e.into_vec())
+}
+
+/// ABI v2 §3.4: the 32-byte franking commitment and the epoch, without a Go TLS parser and without
+/// decrypting anything.
+fn private_message_aad(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, AbiError> {
+    let mut d = abi::open(req, 2)?;
+    let bytes = d.bytes()?;
+    d.finish()?;
+
+    let header = crate::private_message::parse(bytes)?;
+    if header.authenticated_data.len() != 32 {
+        return Err(AbiError::shape(format!(
+            "authenticated_data is {} bytes, want exactly 32",
+            header.authenticated_data.len()
+        )));
+    }
+
+    let mut e = Encoder::new();
+    e.array(4)
+        .uint(0)
+        .bytes(&header.authenticated_data)
+        .uint(header.epoch)
+        .uint(u64::from(header.content_type));
+    Ok(e.into_vec())
+}
+
 fn validate_key_package_export(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, AbiError> {
     let mut d = abi::open(req, 2)?;
     let bytes = d.bytes()?;
@@ -349,13 +641,20 @@ fn validate_key_package_export(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, Ab
     let kp = validate_key_package(&crypto, tls::key_package_in(bytes)?)?;
     let identity = CredentialIdentity::decode(&leaf_credential_bytes(&kp)?)?;
 
+    // ABI v2 §3.5: the DS keys its KeyPackage table by the RFC 9420 `KeyPackageRef`, so the module
+    // computes it here rather than leaving the Go side to re-serialise and hash an MLS object.
+    let kp_ref = kp
+        .hash_ref(&crypto)
+        .map_err(|e| AbiError::state(format!("key package ref: {e}")))?;
+
     let mut e = Encoder::new();
-    e.array(5)
+    e.array(6)
         .uint(0)
         .bytes(identity.device_id.as_bytes())
         .bytes(identity.user_id.as_bytes())
         .uint(u64::from(is_last_resort(&kp)))
-        .uint(lifetime_not_after(&kp));
+        .uint(lifetime_not_after(&kp))
+        .bytes(kp_ref.as_slice());
     Ok(e.into_vec())
 }
 
@@ -402,6 +701,49 @@ fn external_propose_remove_export(req: &[u8], _t: &mut Table) -> Result<Vec<u8>,
 
     let mut e = Encoder::new();
     e.array(2).uint(0).bytes(&tls::message_out(&out)?);
+    Ok(e.into_vec())
+}
+
+/// ABI v3 (NV-B8): `[abi, list, ssk_pub(32), user_id(16)]` -> `[0, [[device_id(16), dsk_pub(32),
+/// tier, revoked(0|1)], …]]`.
+///
+/// `list` is the user's signed device list as protocol/03-identity.md writes it — the 6-element
+/// array, `sig_ssk` included — which is the `blob` of `PUT /v1/users/{id}/device-list`. The list
+/// is decoded by `DeviceList::decode`, its `sig_ssk` verified against `ssk_pub` (the key the
+/// instance holds in `users.ssk_pub`), and it must name `user_id`; any failure is `E_CREDENTIAL`.
+/// So the delivery service never re-implements the format and cannot disagree with the client that
+/// produced it, and a substring of the blob can never pass for membership.
+///
+/// Every entry is reported, revoked ones flagged rather than dropped: the caller decides what a
+/// revoked entry means for its rule. No chain check is made against an earlier version (`accept`'s
+/// `prev` half): the instance stores and serves the newest list and is not the verifier of record,
+/// so this answers "what does the newest list the user signed say".
+fn device_list_entries_export(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, AbiError> {
+    let mut d = abi::open(req, 4)?;
+    let list = d.bytes()?;
+    let ssk_pub = d.bytes_exact::<32>()?;
+    let user_id = d.bytes_exact::<16>()?;
+    d.finish()?;
+
+    let list = dilla_core::identity::DeviceList::decode(list)?;
+    list.verify(&ssk_pub)?;
+    if list.unsigned.user_id.as_bytes() != &user_id {
+        return Err(AbiError::new(
+            "E_CREDENTIAL",
+            "the device list names another user",
+        ));
+    }
+
+    let entries = &list.unsigned.entries;
+    let mut e = Encoder::new();
+    e.array(2).uint(0).array(entries.len());
+    for entry in entries {
+        e.array(4)
+            .bytes(entry.device_id.as_bytes())
+            .bytes(&entry.dsk_pub)
+            .uint(u64::from(entry.tier.as_u8()))
+            .uint(u64::from(entry.revoked_at.is_some()));
+    }
     Ok(e.into_vec())
 }
 
@@ -800,5 +1142,1016 @@ mod tests {
         );
         crate::abi::tls::mls_message_in(&message)
             .expect("the output must be a well-formed MLSMessage");
+    }
+
+    // The fixture's own commits are the only committed multi-thousand-leaf MLS messages in the
+    // tree, and all ten are alternatives at the same base epoch, so each applies cleanly to a
+    // freshly created fixture group. `testkit/src/fixtures.rs:158-215` fixes which is which:
+    //   commits/00..07 - `DillaGroup::add_members` over MAX_ADDS_PER_COMMIT (256) KeyPackages
+    //   commits/08     - `DillaGroup::remove_members(&[LeafNodeIndex::new(1)])`
+    //   commits/09     - `DillaGroup::self_update`
+    // Naming the generator line in each constant is deliberate: a fixture regeneration that
+    // reorders the ten commits must fail these tests loudly rather than silently assert nothing.
+
+    /// `testkit/src/fixtures.rs:158-181` - 256 inline Add proposals, one per KeyPackage.
+    const FIXTURE_COMMIT_ADD: &[u8] =
+        include_bytes!("../../../testkit/fixtures/ds-1500/commits/00.mls");
+    /// `testkit/src/fixtures.rs:189-199` - one Remove of leaf 1.
+    const FIXTURE_COMMIT_REMOVE: &[u8] =
+        include_bytes!("../../../testkit/fixtures/ds-1500/commits/08.mls");
+    /// `testkit/src/fixtures.rs:207-215` - a self-update: no proposals at all.
+    const FIXTURE_COMMIT_SELF_UPDATE: &[u8] =
+        include_bytes!("../../../testkit/fixtures/ds-1500/commits/09.mls");
+
+    /// Decodes the ABI v2 `public_group_process` response and returns
+    /// `(kind, epoch, sender_leaf, staged, applied, committer_updated)`.
+    #[allow(clippy::type_complexity)]
+    fn process(
+        handle: u64,
+        message: &[u8],
+    ) -> (u64, u64, Option<u64>, Option<u64>, Vec<AppliedItem>, u64) {
+        let r = req(|e| {
+            e.array(3)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .bytes(message);
+        });
+        let out = dispatch("public_group_process", &r);
+        decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(9)?;
+            assert_eq!(
+                d.uint()?,
+                0,
+                "public_group_process must accept the fixture commit"
+            );
+            let kind = d.uint()?;
+            let epoch = d.uint()?;
+            let sender_leaf = d.opt_uint()?;
+            let staged = d.opt_uint()?;
+            d.skip()?; // proposal_ref
+            let n = d.array_len()?;
+            let mut applied = Vec::with_capacity(n);
+            for _ in 0..n {
+                d.array(5)?;
+                let proposal_ref = d.bytes()?.to_vec();
+                let kind = d.uint()?;
+                let sender_leaf = d.opt_uint()?;
+                let target_leaf = d.opt_uint()?;
+                let credential_identity = d.opt_bytes()?.map(<[u8]>::to_vec);
+                applied.push(AppliedItem {
+                    proposal_ref,
+                    kind,
+                    sender_leaf,
+                    target_leaf,
+                    credential_identity,
+                });
+            }
+            let committer_updated = d.uint()?;
+            // Every commit this helper is fed is a MEMBER commit (the fixture's ten), and only an
+            // external commit names the leaf its joiner lands on.
+            assert_eq!(d.opt_uint()?, None, "a member commit reports no new_leaf");
+            Ok((kind, epoch, sender_leaf, staged, applied, committer_updated))
+        })
+        .expect("the process response is deterministic CBOR")
+    }
+
+    #[derive(Debug)]
+    struct AppliedItem {
+        proposal_ref: Vec<u8>,
+        kind: u64,
+        sender_leaf: Option<u64>,
+        target_leaf: Option<u64>,
+        credential_identity: Option<Vec<u8>>,
+    }
+
+    /// interfaces §3: a response-shape change moves `abi_version`. 2 when the process and
+    /// validate_key_package responses grew; 3 since `public_group_process` grew `new_leaf` and the
+    /// module grew `device_list_entries` (task 27a, Ruling C).
+    #[test]
+    fn dilla_abi_reports_version_three() {
+        let out = dispatch("dilla_abi", &version_only());
+        let abi = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(6)?;
+            assert_eq!(d.uint()?, 0);
+            let abi = d.uint()?;
+            // `decode_strict` insists the whole frame is consumed, so the four elements this test
+            // does not assert (core_version, e2ee_version, media_version, ciphersuites) are
+            // skipped rather than left as trailing bytes.
+            d.skip()?; // core_version
+            d.skip()?; // e2ee_version
+            d.skip()?; // media_version
+            d.skip()?; // the ciphersuite array
+            Ok(abi)
+        })
+        .unwrap();
+        assert_eq!(
+            abi, 3,
+            "ABI v3: the process response grew new_leaf and device_list_entries was added"
+        );
+        assert_eq!(dilla_core::ABI_VERSION, 3);
+    }
+
+    /// An ABI v2 request must now be refused outright — there is no compatibility shim (§3).
+    #[test]
+    fn an_abi_version_two_request_is_refused() {
+        let r = req(|e| {
+            e.array(1).uint(2);
+        });
+        let (code, detail) = failure(&dispatch("dilla_abi", &r));
+        assert_eq!(code, crate::abi::E_ABI_VERSION);
+        assert!(
+            detail.contains('2') && detail.contains('3'),
+            "detail: {detail}"
+        );
+    }
+
+    /// A signing key for the device lists below. The SSK is a plain Ed25519 key, and
+    /// `SskSigner::sign_device_list` signs `"dilla devices v1" || [v, user_id, version, prev_hash,
+    /// entries]` exactly as protocol/03-identity.md writes it.
+    fn device_list_signer() -> dilla_core::identity::SskSigner {
+        dilla_core::identity::SskSigner::from_bytes(&[0x5a; 32])
+    }
+
+    const LIST_USER: [u8; 16] = [0xd4; 16];
+
+    /// A signed version-1 list of two devices, the second of them revoked.
+    fn signed_device_list(user: [u8; 16]) -> Vec<u8> {
+        use dilla_core::identity::{DeviceEntry, DeviceList, DeviceListUnsigned, Tier};
+        use dilla_core::ids::{DeviceId, UserId};
+        let unsigned = DeviceListUnsigned {
+            v: 1,
+            user_id: UserId::from_bytes(user),
+            version: 1,
+            prev_hash: [0u8; 32],
+            entries: vec![
+                DeviceEntry {
+                    device_id: DeviceId::from_bytes([0x01; 16]),
+                    dsk_pub: [0x11; 32],
+                    tier: Tier::Native,
+                    added_at: 1_758_659_640,
+                    revoked_at: None,
+                },
+                DeviceEntry {
+                    device_id: DeviceId::from_bytes([0x02; 16]),
+                    dsk_pub: [0x22; 32],
+                    tier: Tier::Browser,
+                    added_at: 1_758_659_641,
+                    revoked_at: Some(1_758_700_000),
+                },
+            ],
+        };
+        let sig_ssk = device_list_signer().sign_device_list(&unsigned);
+        DeviceList { unsigned, sig_ssk }.encode()
+    }
+
+    fn device_list_request(list: &[u8], ssk_pub: &[u8; 32], user: &[u8; 16]) -> Vec<u8> {
+        req(|e| {
+            e.array(4)
+                .uint(dilla_core::ABI_VERSION)
+                .bytes(list)
+                .bytes(ssk_pub)
+                .bytes(user);
+        })
+    }
+
+    /// NV-B8: the delivery service's view of a user's newest signed device list. Every entry is
+    /// reported — the revoked one too, flagged — so the caller decides, and the order is the
+    /// list's own.
+    #[test]
+    fn device_list_entries_reports_every_entry_of_a_verified_list() {
+        let out = dispatch(
+            "device_list_entries",
+            &device_list_request(
+                &signed_device_list(LIST_USER),
+                &device_list_signer().public(),
+                &LIST_USER,
+            ),
+        );
+        let entries = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(2)?;
+            assert_eq!(d.uint()?, 0, "a verified list must be accepted");
+            let n = d.array_len()?;
+            let mut v = Vec::new();
+            for _ in 0..n {
+                d.array(4)?;
+                v.push((
+                    d.bytes()?.to_vec(),
+                    d.bytes()?.to_vec(),
+                    d.uint()?,
+                    d.uint()?,
+                ));
+            }
+            Ok(v)
+        })
+        .expect("the response is deterministic CBOR");
+        // protocol/03-identity.md numbers the tiers native = 0, browser = 1.
+        assert_eq!(
+            entries,
+            vec![
+                (vec![0x01; 16], vec![0x11; 32], 0, 0),
+                (vec![0x02; 16], vec![0x22; 32], 1, 1),
+            ]
+        );
+    }
+
+    /// The signature is the whole point: a list the user's SSK did not sign is refused, however
+    /// well formed it is.
+    #[test]
+    fn device_list_entries_refuses_a_list_another_key_signed() {
+        let other = dilla_core::identity::SskSigner::from_bytes(&[0x77; 32]).public();
+        let (code, _) = failure(&dispatch(
+            "device_list_entries",
+            &device_list_request(&signed_device_list(LIST_USER), &other, &LIST_USER),
+        ));
+        assert_eq!(code, "E_CREDENTIAL");
+    }
+
+    /// A list signed by this user's SSK but naming another user is not this user's list.
+    #[test]
+    fn device_list_entries_refuses_a_list_naming_another_user() {
+        let (code, _) = failure(&dispatch(
+            "device_list_entries",
+            &device_list_request(
+                &signed_device_list([0xee; 16]),
+                &device_list_signer().public(),
+                &LIST_USER,
+            ),
+        ));
+        assert_eq!(code, "E_CREDENTIAL");
+    }
+
+    /// A tampered list and a blob that is not a device list at all are refusals, not traps.
+    #[test]
+    fn device_list_entries_refuses_a_tampered_or_undecodable_list() {
+        let mut tampered = signed_device_list(LIST_USER);
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        for blob in [tampered, b"not a device list".to_vec(), Vec::new()] {
+            let (code, _) = failure(&dispatch(
+                "device_list_entries",
+                &device_list_request(&blob, &device_list_signer().public(), &LIST_USER),
+            ));
+            assert_eq!(code, "E_CREDENTIAL", "blob {blob:02x?}");
+        }
+    }
+
+    /// Decodes the ABI v3 `public_group_process` response of an external commit and returns
+    /// `(kind, sender_leaf, staged, new_leaf)`.
+    fn process_external(
+        handle: u64,
+        message: &[u8],
+    ) -> (u64, Option<u64>, Option<u64>, Option<u64>) {
+        let r = req(|e| {
+            e.array(3)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .bytes(message);
+        });
+        let out = dispatch("public_group_process", &r);
+        decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(9)?;
+            assert_eq!(d.uint()?, 0, "the external commit must be accepted");
+            let kind = d.uint()?;
+            d.skip()?; // epoch
+            let sender_leaf = d.opt_uint()?;
+            let staged = d.opt_uint()?;
+            d.skip()?; // proposal_ref
+            d.skip()?; // applied
+            d.skip()?; // committer_updated
+            let new_leaf = d.opt_uint()?;
+            Ok((kind, sender_leaf, staged, new_leaf))
+        })
+        .expect("the process response is deterministic CBOR")
+    }
+
+    /// Task 25 C1 / deviation B30(a): an external commit names no sender leaf, so the delivery
+    /// service needs the leaf the joiner lands on to check the GroupInfo it signed. The joiner here
+    /// is a fresh openmls client joining the committed 1,500-leaf fixture from its GroupInfo and
+    /// tree, exactly as a resyncing device does from GET /info and GET /tree; the leaf the guest
+    /// reports must be the one the joiner's own group says it occupies, and merging the staged
+    /// commit must put the joiner's signature key at that leaf.
+    #[test]
+    fn an_external_commit_reports_the_leaf_the_joiner_lands_on() {
+        use openmls_rust_crypto::OpenMlsRustCrypto;
+        use tls_codec::Serialize as _;
+
+        let (handle, base_epoch, _group_id, _tree_hash) = create_fixture_group();
+
+        let provider = OpenMlsRustCrypto::default();
+        let signer = SignatureKeyPair::new(SignatureScheme::ED25519).expect("keygen");
+        let identity = {
+            use dilla_core::identity::{
+                CredentialIdentity, Kind, SignerTier, SskSigner, Tier, UmkSigner,
+            };
+            use dilla_core::ids::{DeviceId, UserId};
+            let umk = UmkSigner::from_bytes(&[0x61; 32]);
+            let ssk = SskSigner::from_bytes(&[0x62; 32]);
+            CredentialIdentity {
+                v: 1,
+                umk_pub: umk.public(),
+                user_id: UserId::from_bytes([0x63; 16]),
+                device_id: DeviceId::from_bytes([0x64; 16]),
+                kind: Kind::User,
+                tier: Tier::Native,
+                signer_tier: SignerTier::Native,
+                ssk_pub: ssk.public(),
+                sig_umk_ssk: umk.sign_ssk(&ssk.public()),
+                sig_ssk_dev: [0u8; 64],
+            }
+            .encode()
+        };
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(identity).into(),
+            signature_key: signer.public().into(),
+        };
+        #[allow(deprecated)]
+        let (joined, commit, _info) = MlsGroup::join_by_external_commit(
+            &provider,
+            &signer,
+            Some(tls::ratchet_tree_in(FIXTURE_TREE).expect("tree")),
+            tls::verifiable_group_info(FIXTURE_GROUP_INFO).expect("group info"),
+            &MlsGroupJoinConfig::default(),
+            Some(dilla_core::mls::leaf_capabilities()),
+            None,
+            &[],
+            credential,
+        )
+        .expect("a fresh client joins the fixture by external commit");
+        let commit = commit.tls_serialize_detached().expect("serialize");
+
+        let (kind, sender_leaf, staged, new_leaf) = process_external(handle, &commit);
+        assert_eq!(kind, 1, "an external commit is a commit");
+        assert_eq!(sender_leaf, None, "an external commit has no member sender");
+        let own = u64::from(joined.own_leaf_index().u32());
+        assert_eq!(new_leaf, Some(own), "the joiner's own leaf");
+        let staged = staged.expect("a staged handle");
+
+        // Invariant 4 step (6) on the external path, BEFORE the merge: the GroupInfo the joiner
+        // exports for the new epoch verifies under the key its commit brings, and the base
+        // epoch's GroupInfo (signed by leaf 0) does not.
+        let joiner_info = joined
+            .export_group_info(provider.crypto(), &signer, false)
+            .expect("the joiner exports its GroupInfo")
+            .tls_serialize_detached()
+            .expect("serialize");
+        let (epoch, ok) = staged_group_info_validate(handle, staged, &joiner_info);
+        assert_eq!(
+            epoch,
+            base_epoch + 1,
+            "the joiner's GroupInfo names epoch n+1"
+        );
+        assert!(
+            ok,
+            "the joiner's GroupInfo verifies under the key its commit brings"
+        );
+        let (_, ok) = staged_group_info_validate(handle, staged, FIXTURE_GROUP_INFO);
+        assert!(!ok, "a GroupInfo another leaf signed must not verify");
+
+        // After the merge the leaf the guest named carries the joiner's signature key.
+        let merged = dispatch(
+            "public_group_merge",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .uint(staged);
+            }),
+        );
+        decode_strict(&merged, |d: &mut Decoder<'_>| {
+            d.array(2)?;
+            assert_eq!(d.uint()?, 0, "the staged external commit merges");
+            d.skip()?;
+            Ok(())
+        })
+        .unwrap();
+        let slot = u32::try_from(own).expect("u32");
+        let state = t_with_group(handle, |g| {
+            g.leaf(LeafNodeIndex::new(slot))
+                .map(|leaf| leaf.signature_key().as_slice().to_vec())
+        });
+        assert_eq!(state.as_deref(), Some(signer.public()));
+    }
+
+    /// `public_group_staged_group_info_validate` -> `(epoch, signature_ok)`.
+    fn staged_group_info_validate(handle: u64, staged: u64, group_info: &[u8]) -> (u64, bool) {
+        let out = dispatch(
+            "public_group_staged_group_info_validate",
+            &req(|e| {
+                e.array(4)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .uint(staged)
+                    .bytes(group_info);
+            }),
+        );
+        decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(6)?;
+            assert_eq!(d.uint()?, 0, "the staged validation must answer");
+            let epoch = d.uint()?;
+            d.skip()?; // group_id
+            d.skip()?; // tree_hash
+            d.skip()?; // confirmed_transcript_hash
+            Ok((epoch, d.uint()? == 1))
+        })
+        .expect("the validate response is deterministic CBOR")
+    }
+
+    /// The member path of the same export: `commits/09.mls` is leaf 0's self-update and
+    /// `commits/09.group_info.mls` the GroupInfo leaf 0 signed for the epoch it produces, so the
+    /// key the staged commit brings for its committer verifies it and the epoch is n+1.
+    #[test]
+    fn a_member_commits_group_info_verifies_under_the_key_its_commit_brings() {
+        const MERGED_INFO: &[u8] =
+            include_bytes!("../../../testkit/fixtures/ds-1500/commits/09.group_info.mls");
+        let (handle, epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (_, _, _, staged, _, _) = process(handle, FIXTURE_COMMIT_SELF_UPDATE);
+        let staged = staged.expect("a staged handle");
+        assert_eq!(
+            staged_group_info_validate(handle, staged, MERGED_INFO),
+            (epoch + 1, true)
+        );
+    }
+
+    /// A handle that is not a staged commit is `E_ABI_HANDLE`, never a trap.
+    #[test]
+    fn staged_group_info_validate_refuses_an_unknown_staged_handle() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (code, _) = failure(&dispatch(
+            "public_group_staged_group_info_validate",
+            &req(|e| {
+                e.array(4)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .uint(9_999)
+                    .bytes(FIXTURE_GROUP_INFO);
+            }),
+        ));
+        assert_eq!(code, crate::abi::E_ABI_HANDLE);
+    }
+
+    /// Runs `f` against the live group behind `handle` in this thread's table.
+    fn t_with_group<T>(handle: u64, f: impl FnOnce(&DillaPublicGroup) -> T) -> T {
+        with_table(|t| {
+            f(t.group(u32::try_from(handle).expect("u32"))
+                .expect("live handle"))
+        })
+    }
+
+    /// Kind 1. `DillaGroup::add_members` builds one inline Add proposal per KeyPackage and
+    /// `StagedCommit::queued_proposals()` iterates the whole staged queue, inline proposals
+    /// included (openmls-0.9.0 `staged_commit.rs:926`), so `applied` has exactly
+    /// `MAX_ADDS_PER_COMMIT` items. `add_members` passes `force_self_update(true)` to the commit
+    /// builder (openmls-0.9.0 `src/group/mls_group/membership.rs:59,165`), so the UpdatePath is
+    /// present and `committer_updated` is 1.
+    #[test]
+    fn an_add_commit_reports_one_applied_item_per_key_package() {
+        let (handle, epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (kind, got_epoch, sender_leaf, staged, applied, committer_updated) =
+            process(handle, FIXTURE_COMMIT_ADD);
+        assert_eq!(kind, 1, "a commit");
+        assert_eq!(got_epoch, epoch, "process reports the pre-merge epoch");
+        assert!(sender_leaf.is_some(), "a member commit names its leaf");
+        assert!(staged.is_some(), "a commit yields a staged handle");
+        assert_eq!(
+            applied.len(),
+            dilla_core::mls::MAX_ADDS_PER_COMMIT,
+            "commits/00.mls carries one inline Add per KeyPackage"
+        );
+        for item in &applied {
+            assert_eq!(item.kind, 1, "every item is an Add");
+            assert_eq!(
+                item.sender_leaf, sender_leaf,
+                "an inline proposal is attributed to the committer's own leaf"
+            );
+            assert!(item.target_leaf.is_none(), "an Add names no leaf");
+            assert!(!item.proposal_ref.is_empty(), "every item carries its ref");
+            let identity = item
+                .credential_identity
+                .as_ref()
+                .expect("an Add carries the joiner's credential identity");
+            dilla_core::identity::CredentialIdentity::decode(identity)
+                .expect("the credential identity is the core's 10-element CBOR array");
+        }
+        assert_eq!(committer_updated, 1, "add_members forces a self-update");
+    }
+
+    /// Kind 3, with `target_leaf` set and no credential identity.
+    #[test]
+    fn a_remove_commit_reports_the_removed_leaf() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (kind, _got_epoch, _sender_leaf, staged, applied, committer_updated) =
+            process(handle, FIXTURE_COMMIT_REMOVE);
+        assert_eq!(kind, 1, "a commit");
+        assert!(staged.is_some());
+        assert_eq!(
+            applied.len(),
+            1,
+            "commits/08.mls removes exactly one leaf: {applied:?}"
+        );
+        assert_eq!(applied[0].kind, 3, "a Remove");
+        assert_eq!(
+            applied[0].target_leaf,
+            Some(1),
+            "leaf 1, per fixtures.rs:195"
+        );
+        assert!(
+            applied[0].credential_identity.is_none(),
+            "a Remove carries no credential"
+        );
+        assert_eq!(
+            committer_updated, 1,
+            "a Remove requires an UpdatePath (RFC 9420 §17.4)"
+        );
+    }
+
+    /// The zero-proposal arm: a self-update commit stages, applies nothing, and sets the flag.
+    #[test]
+    fn a_self_update_commit_reports_no_proposals_and_the_committer_update_flag() {
+        let (handle, epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (kind, got_epoch, sender_leaf, staged, applied, committer_updated) =
+            process(handle, FIXTURE_COMMIT_SELF_UPDATE);
+        assert_eq!(kind, 1, "a commit");
+        assert_eq!(got_epoch, epoch, "process reports the pre-merge epoch");
+        assert!(sender_leaf.is_some(), "a member commit names its leaf");
+        assert!(staged.is_some(), "a commit yields a staged handle");
+        assert!(
+            applied.is_empty(),
+            "commits/09.mls references no proposals: {applied:?}"
+        );
+        assert_eq!(
+            committer_updated, 1,
+            "a self-update always carries an UpdatePath"
+        );
+    }
+
+    /// The staged handle survives the applied read and is consumed exactly once by merge.
+    #[test]
+    fn the_staged_handle_from_a_v2_process_still_merges_exactly_once() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (_kind, _epoch, _sender, staged, _applied, _updated) =
+            process(handle, FIXTURE_COMMIT_SELF_UPDATE);
+        let staged = staged.expect("a commit stages");
+        let merge = req(|e| {
+            e.array(3)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .uint(staged);
+        });
+        let epoch = decode_strict(
+            &dispatch("public_group_merge", &merge),
+            |d: &mut Decoder<'_>| {
+                d.array(2)?;
+                assert_eq!(d.uint()?, 0);
+                d.uint()
+            },
+        )
+        .unwrap();
+        assert!(epoch > 0);
+        let (code, _) = failure(&dispatch("public_group_merge", &merge));
+        assert_eq!(
+            code,
+            crate::abi::E_ABI_HANDLE,
+            "the staged handle is consumed by merge"
+        );
+    }
+
+    /// A refused commit must not leak its staged handle. `public_group_process` inserts the
+    /// `StagedCommit` before the DS has run invariant 4, and the DS refuses commits routinely
+    /// (an omitted outstanding proposal, a committer Update, a cross-user Remove, a wrong
+    /// GroupInfo). `public_group_merge` is the only other consumer, so without a discard a
+    /// client that retries a refused commit in a loop grows the handle table without bound.
+    #[test]
+    fn a_staged_handle_can_be_discarded_without_merging() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (_kind, _epoch, _sender, staged, _applied, _updated) =
+            process(handle, FIXTURE_COMMIT_SELF_UPDATE);
+        let staged = staged.expect("a commit stages");
+        let discard = req(|e| {
+            e.array(3)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .uint(staged);
+        });
+        decode_strict(
+            &dispatch("public_group_staged_discard", &discard),
+            |d: &mut Decoder<'_>| {
+                d.array(1)?;
+                assert_eq!(d.uint()?, 0);
+                Ok(())
+            },
+        )
+        .expect("discard answers [0]");
+        let (code, _) = failure(&dispatch("public_group_staged_discard", &discard));
+        assert_eq!(
+            code,
+            crate::abi::E_ABI_HANDLE,
+            "the handle is gone after one discard"
+        );
+        let (code, _) = failure(&dispatch("public_group_merge", &discard));
+        assert_eq!(
+            code,
+            crate::abi::E_ABI_HANDLE,
+            "and merge cannot resurrect it"
+        );
+    }
+
+    /// A proposal, not a commit: `applied` is empty and `committer_updated` is 0 even though the
+    /// two elements are always present (fixed positions, §3.1).
+    #[test]
+    fn a_non_commit_still_carries_the_two_new_elements() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        // A truncated message is rejected by the TLS decoder, which is an error frame, so the
+        // shape assertion uses the fixture commit's own staged response instead: both new
+        // elements are present for every accepted message, and `a_commit_with_an_update_path…`
+        // above covers the commit arm. This test pins the *rejected* arm's shape.
+        let r = req(|e| {
+            e.array(3)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .bytes(&[]);
+        });
+        let (code, _detail) = failure(&dispatch("public_group_process", &r));
+        assert_eq!(
+            code,
+            crate::abi::E_ABI_SHAPE,
+            "an empty message is a shape failure, never a trap"
+        );
+    }
+
+    /// `public_group_process` inserts the `StagedCommit` and *then* builds the applied list, and
+    /// building it can fail on input a remote member controls: a proposal type outside the seven
+    /// numbered ones (openmls 0.9.0 has `SelfRemove` and `Custom` unconditionally), or an Add whose
+    /// credential is not a `BasicCredential`. The error frame carries no handle number and
+    /// `take_staged` is the only remover, so an entry left behind is unreachable for ever — the
+    /// unbounded growth `public_group_staged_discard` exists to prevent, reached without a discard
+    /// ever being callable. The failure is injected here rather than driven through a fixture
+    /// because no committed fixture carries an unsupported proposal; what is under test is the
+    /// handle accounting, which is the half that leaks.
+    #[test]
+    fn a_staged_handle_is_released_when_the_applied_list_fails_to_build() {
+        let mut t = Table::new();
+        let h = t.insert_staged(PublicProcessed::Rejected(
+            dilla_core::ProtocolError::Binding,
+        ));
+        assert_eq!(t.staged_count(), 1);
+        let err = with_staged_or_release(&mut t, h, |_| {
+            Err::<(), _>(AbiError::shape(
+                "commit applies an unsupported proposal type SelfRemove",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(err.code, crate::abi::E_ABI_SHAPE);
+        assert_eq!(
+            t.staged_count(),
+            0,
+            "a process call that fails after staging must not strand the handle"
+        );
+    }
+
+    /// The other half: the success path must leave the handle for `public_group_merge` (or
+    /// `public_group_staged_discard`), which is why the applied list is read by reference at all.
+    #[test]
+    fn a_staged_handle_survives_an_applied_list_that_builds() {
+        let mut t = Table::new();
+        let h = t.insert_staged(PublicProcessed::Rejected(
+            dilla_core::ProtocolError::Binding,
+        ));
+        assert_eq!(with_staged_or_release(&mut t, h, |_| Ok(7u64)).unwrap(), 7);
+        assert_eq!(t.staged_count(), 1);
+        assert!(t.take_staged(h).is_ok(), "merge can still consume it");
+    }
+
+    /// An unknown staged handle is `E_ABI_HANDLE` and removes nothing — the release path must not
+    /// turn a bad handle into a second, silent removal.
+    #[test]
+    fn with_staged_or_release_rejects_an_unknown_handle() {
+        let mut t = Table::new();
+        let h = t.insert_staged(PublicProcessed::Rejected(
+            dilla_core::ProtocolError::Binding,
+        ));
+        let err = with_staged_or_release(&mut t, h + 1, |_| Ok(())).unwrap_err();
+        assert_eq!(err.code, crate::abi::E_ABI_HANDLE);
+        assert_eq!(t.staged_count(), 1, "the live handle is untouched");
+    }
+
+    /// §3.2: the fixture's own GroupInfo verifies against the leaf that signed it, and the
+    /// response carries the epoch, group id, tree hash and confirmed transcript hash.
+    #[test]
+    fn a_group_info_signed_by_the_named_leaf_verifies() {
+        let (handle, epoch, group_id, tree_hash) = create_fixture_group();
+        let signer = fixture_group_info_signer();
+        let r = req(|e| {
+            e.array(4)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .bytes(FIXTURE_GROUP_INFO)
+                .uint(u64::from(signer));
+        });
+        let out = dispatch("public_group_group_info_validate", &r);
+        let (got_epoch, got_group_id, got_tree_hash, transcript, ok) =
+            decode_strict(&out, |d: &mut Decoder<'_>| {
+                d.array(6)?;
+                assert_eq!(d.uint()?, 0, "validation must not be an error frame");
+                Ok((
+                    d.uint()?,
+                    d.bytes()?.to_vec(),
+                    d.bytes()?.to_vec(),
+                    d.bytes()?.to_vec(),
+                    d.uint()?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(got_epoch, epoch);
+        assert_eq!(got_group_id, group_id);
+        assert_eq!(got_tree_hash, tree_hash);
+        assert_eq!(transcript.len(), 32);
+        assert_eq!(
+            ok, 1,
+            "the fixture GroupInfo is signed by its own committer"
+        );
+    }
+
+    /// A signature mismatch is `signature_ok = 0`, never an error frame: dillad turns it into
+    /// `422 E_COMMIT_INVALID` with `rule = "group_info_signature"` (§3.2).
+    #[test]
+    fn a_group_info_checked_against_another_leaf_reports_signature_ok_zero() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let wrong = fixture_group_info_signer() + 1;
+        let r = req(|e| {
+            e.array(4)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .bytes(FIXTURE_GROUP_INFO)
+                .uint(u64::from(wrong));
+        });
+        let ok = decode_strict(
+            &dispatch("public_group_group_info_validate", &r),
+            |d: &mut Decoder<'_>| {
+                d.array(6)?;
+                assert_eq!(d.uint()?, 0);
+                d.skip()?;
+                d.skip()?;
+                d.skip()?;
+                d.skip()?;
+                d.uint()
+            },
+        )
+        .unwrap();
+        assert_eq!(ok, 0, "a mismatch is reported, not raised");
+    }
+
+    /// A leaf that is not in the tree at all is an error frame — there is no key to check against.
+    #[test]
+    fn a_signer_leaf_outside_the_tree_is_an_error_frame() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let r = req(|e| {
+            e.array(4)
+                .uint(dilla_core::ABI_VERSION)
+                .uint(handle)
+                .bytes(FIXTURE_GROUP_INFO)
+                .uint(1_000_000);
+        });
+        let (code, _detail) = failure(&dispatch("public_group_group_info_validate", &r));
+        assert_eq!(code, crate::abi::E_ABI_STATE);
+    }
+
+    /// §3.5: `validate_key_package` grew to six elements and the sixth is the RFC 9420
+    /// KeyPackageRef.
+    #[test]
+    fn validate_key_package_returns_the_key_package_ref() {
+        let out = dispatch(
+            "validate_key_package",
+            &req(|e| {
+                e.array(2)
+                    .uint(dilla_core::ABI_VERSION)
+                    .bytes(FIXTURE_KEY_PACKAGE);
+            }),
+        );
+        let (device_id, user_id, last_resort, not_after, kp_ref) =
+            decode_strict(&out, |d: &mut Decoder<'_>| {
+                d.array(6)?;
+                assert_eq!(
+                    d.uint()?,
+                    0,
+                    "the committed KeyPackage fixture must validate"
+                );
+                Ok((
+                    d.bytes()?.to_vec(),
+                    d.bytes()?.to_vec(),
+                    d.uint()?,
+                    d.uint()?,
+                    d.bytes()?.to_vec(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(device_id.len(), 16);
+        assert_eq!(user_id.len(), 16);
+        assert!(last_resort <= 1);
+        assert!(not_after > 0);
+        assert_eq!(kp_ref.len(), 32, "the ciphersuite's hash is SHA-256");
+        assert_eq!(
+            kp_ref,
+            hex_bytes(&fixture_manifest_field("key_package_ref_hex")),
+            "kp_ref must equal KeyPackage::hash_ref computed natively for the same fixture"
+        );
+    }
+
+    /// §3.4: exactly 32 bytes of `authenticated_data` is the franking commitment; anything else
+    /// is E_ABI_SHAPE, which dillad maps to 422 E_COMMITMENT_INVALID.
+    #[test]
+    fn private_message_aad_reports_thirty_two_bytes_and_refuses_anything_else() {
+        for len in [31usize, 32, 33] {
+            let message = crate::private_message::tests_support::message(&vec![5u8; len], 7, 1);
+            let out = dispatch(
+                "private_message_aad",
+                &req(|e| {
+                    e.array(2).uint(dilla_core::ABI_VERSION).bytes(&message);
+                }),
+            );
+            if len == 32 {
+                let (aad, epoch, content_type) = decode_strict(&out, |d: &mut Decoder<'_>| {
+                    d.array(4)?;
+                    assert_eq!(d.uint()?, 0);
+                    Ok((d.bytes()?.to_vec(), d.uint()?, d.uint()?))
+                })
+                .unwrap();
+                assert_eq!(aad, vec![5u8; 32]);
+                assert_eq!(epoch, 7);
+                assert_eq!(content_type, 1);
+            } else {
+                let (code, detail) = failure(&out);
+                assert_eq!(code, crate::abi::E_ABI_SHAPE, "len {len}");
+                assert!(
+                    detail.contains("32"),
+                    "detail must name the required length: {detail}"
+                );
+            }
+        }
+    }
+
+    /// §3.4 against a `PrivateMessage` **openmls itself framed**, not one this crate encoded.
+    ///
+    /// `private_message_aad_reports_thirty_two_bytes_and_refuses_anything_else` above feeds the
+    /// parser bytes from `private_message::tests_support::message`, an encoder written in the same
+    /// module from the same reading of RFC 9420 §6.3.2 as the decoder: a symmetric framing mistake
+    /// — a field in the wrong order, a `<V>` header read as a fixed-width length, a `uint16`
+    /// written little-endian — would satisfy both sides and be invisible. Since this decode is
+    /// hand-written by controller ruling B2, runs on unauthenticated remote input and is the DS's
+    /// only reader of the franking commitment, it is checked here against a real encoder:
+    /// `testkit/fixtures/ds-1500/application_message.mls` is what `DillaGroup::create_message`
+    /// produced through openmls' own `TlsSerialize` derives, with the MLS `authenticated_data` set
+    /// to the envelope's 32-byte franking commitment (`mls/group.rs`'s `set_aad`). The manifest
+    /// records that commitment and the epoch the message was sent at, both computed natively.
+    #[test]
+    fn private_message_aad_reads_a_message_openmls_framed() {
+        const MESSAGE: &[u8] =
+            include_bytes!("../../../testkit/fixtures/ds-1500/application_message.mls");
+        let out = dispatch(
+            "private_message_aad",
+            &req(|e| {
+                e.array(2).uint(dilla_core::ABI_VERSION).bytes(MESSAGE);
+            }),
+        );
+        let (aad, epoch, content_type) = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(4)?;
+            assert_eq!(d.uint()?, 0, "a real application message must parse");
+            Ok((d.bytes()?.to_vec(), d.uint()?, d.uint()?))
+        })
+        .unwrap();
+        assert_eq!(
+            aad,
+            hex_bytes(&fixture_manifest_field(
+                "application_message_commitment_hex"
+            )),
+            "the AAD must be the envelope's 32-byte franking commitment"
+        );
+        assert_eq!(
+            epoch,
+            fixture_manifest_field("application_message_epoch")
+                .parse::<u64>()
+                .expect("the manifest's message epoch is a decimal u64"),
+            "the epoch must be the one the message was framed at"
+        );
+        assert_eq!(content_type, 1, "ContentType::Application");
+    }
+
+    /// §3.3: an inspected proposal is distinguished by kind and target. The fixture group carries
+    /// an `ExternalSenders` extension naming the instance at `instance_sender_index()`, which is
+    /// what makes the committed external Remove queueable at all.
+    #[test]
+    fn proposal_inspect_names_the_kind_and_target_of_a_queued_remove() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let proposal_ref = queue_fixture_remove_proposal(handle);
+        let out = dispatch(
+            "public_group_proposal_inspect",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .bytes(&proposal_ref);
+            }),
+        );
+        let (kind, _sender, target, _identity) = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(5)?;
+            assert_eq!(d.uint()?, 0);
+            Ok((
+                d.uint()?,
+                d.opt_uint()?,
+                d.opt_uint()?,
+                d.opt_bytes()?.map(<[u8]>::to_vec),
+            ))
+        })
+        .unwrap();
+        assert_eq!(kind, 3, "a Remove");
+        assert_eq!(target, Some(0), "the fixture Remove targets leaf 0");
+    }
+
+    /// An unknown ref is an error frame, never an empty success.
+    #[test]
+    fn proposal_inspect_refuses_an_unknown_ref() {
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let (code, _detail) = failure(&dispatch(
+            "public_group_proposal_inspect",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .bytes(&[0u8; 32]);
+            }),
+        ));
+        assert_eq!(code, crate::abi::E_ABI_STATE);
+    }
+
+    /// The 1,500-leaf fixture's GroupInfo is signed by the leaf the manifest records.
+    fn fixture_group_info_signer() -> u32 {
+        fixture_manifest_field("group_info_signer_leaf")
+            .parse()
+            .expect("the manifest's signer leaf is a decimal u32")
+    }
+
+    /// Reads one scalar out of `testkit/fixtures/ds-1500/manifest.json` without a JSON dependency:
+    /// the file is generated by `dilla-testkit gen-public-group` with one key per line.
+    fn fixture_manifest_field(key: &str) -> String {
+        const MANIFEST: &str = include_str!("../../../testkit/fixtures/ds-1500/manifest.json");
+        let needle = format!("\"{key}\"");
+        let line = MANIFEST
+            .lines()
+            .find(|l| l.contains(&needle))
+            .unwrap_or_else(|| {
+                panic!(
+                    "manifest.json carries no {key}; regenerate the fixture with \
+                     `cargo run -p dilla-testkit -- gen-public-group --out testkit/fixtures/ds-1500`"
+                )
+            });
+        let value = line
+            .split_once(':')
+            .expect("a manifest line is \"key\": value")
+            .1
+            .trim()
+            .trim_end_matches(',')
+            .trim_matches('"');
+        value.to_owned()
+    }
+
+    fn hex_bytes(s: &str) -> Vec<u8> {
+        assert!(
+            s.len().is_multiple_of(2),
+            "hex must have an even length: {s}"
+        );
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    /// Every committed fixture file lives under `testkit/fixtures/ds-1500/`, which is what
+    /// `gen-public-group --out …/testkit/fixtures/ds-1500` writes. Nothing is written to
+    /// `testkit/fixtures/` itself, so no reader may point there.
+    const FIXTURE_KEY_PACKAGE: &[u8] =
+        include_bytes!("../../../testkit/fixtures/ds-1500/key_package.mls");
+
+    /// Queues the fixture's committed Remove proposal against the handle and returns its ref.
+    ///
+    /// `public_group_proposal_put` op 0 answers `[0, bstr]` — the reference is a plain byte
+    /// string, not an optional one (`exports.rs`'s op-0 arm writes `.bytes(&proposal_ref)`), so it
+    /// is read back with `bytes()`.
+    fn queue_fixture_remove_proposal(handle: u64) -> Vec<u8> {
+        const REMOVE: &[u8] = include_bytes!("../../../testkit/fixtures/ds-1500/remove_leaf0.mls");
+        let out = dispatch(
+            "public_group_proposal_put",
+            &req(|e| {
+                e.array(4)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .uint(0)
+                    .bytes(REMOVE);
+            }),
+        );
+        decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(2)?;
+            assert_eq!(d.uint()?, 0, "queueing the fixture Remove must succeed");
+            Ok(d.bytes()?.to_vec())
+        })
+        .unwrap()
     }
 }

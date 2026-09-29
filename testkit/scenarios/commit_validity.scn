@@ -1,0 +1,37 @@
+# Invariant 4: a commit is accepted only if it references every outstanding instance proposal, its
+# member Removes target the committer's own user, and - for an external commit - its new leaf is the
+# uploading device's own, keyed by that device's DSK, which its user's newest signed device list
+# carries and which the instance has not revoked. Anything else is 422 E_COMMIT_INVALID naming the
+# rule, and none of the refusals leaves a trace: a well-formed join is accepted after all of them.
+instance dilla
+client alice
+client bob
+client carol
+client frank
+client dave device_list=none
+client erin device_list=revoked
+client mallory
+group chat kind=text target=f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4 community=none creator=alice
+join bob chat via=welcome
+sync bob
+# A member-originated Remove may only target the committer's own user.
+expect_reject E_COMMIT_INVALID rule=member_remove_scope remove bob chat alice
+# The instance proposes removing bob; alice has not synced, so her own Remove of bob does not carry
+# the instance's proposal and is refused for that before its scope is even looked at.
+kick alice bob
+expect_reject E_COMMIT_INVALID rule=outstanding_proposals remove alice chat bob
+commit alice
+# The external joiner's leaf: another device's commit under frank's session, the same on the resync
+# path under alice's, a leaf key that is not the DSK, no signed list, a list that revokes the
+# device, and a device the instance has revoked.
+expect_reject E_COMMIT_INVALID rule=external_joiner external_join carol chat as=frank
+expect_reject E_COMMIT_INVALID rule=external_joiner resync carol chat as=alice
+expect_reject E_COMMIT_INVALID rule=external_joiner external_join frank chat leaf_key=fresh
+expect_reject E_COMMIT_INVALID rule=external_joiner external_join dave chat
+expect_reject E_COMMIT_INVALID rule=external_joiner external_join erin chat
+mark_revoked mallory
+expect_reject E_COMMIT_INVALID rule=external_joiner external_join mallory chat
+external_join carol chat
+sync alice
+send alice chat every refusal left the group as it was
+expect_decrypts carol chat every refusal left the group as it was

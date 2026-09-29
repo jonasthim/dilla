@@ -5,5 +5,5 @@
 mod parse;
 mod run;
 
-pub use parse::{ParseError, Scenario, Stmt, parse};
+pub use parse::{DeviceListMode, ParseError, Scenario, Stmt, parse};
 pub use run::{RunReport, Runner, StepResult};

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity, decimalDigits } from './identity.ts';
+import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity, decimalDigits, sessionPreimage } from './identity.ts';
 import { decode } from './cbor.ts';
 import { hex, fromHex } from './bytes.ts';
 
@@ -41,6 +41,31 @@ describe('recovery key', () => {
     const { header, archive } = await deriveRecoveryKeys(rk);
     expect(header.length).toBe(32); expect(archive.length).toBe(32);
     expect(hex(header)).not.toBe(hex(archive));
+  });
+});
+
+describe('session preimage', () => {
+  it('is 81 bytes with every field at its documented offset', () => {
+    const instanceId = fromHex('00112233445566778899aabbccddeeff');
+    const deviceId = fromHex('0102030405060708090a0b0c0d0e0f10');
+    const nonce = fromHex('ab'.repeat(32));
+    const p = sessionPreimage(instanceId, deviceId, nonce, 0);
+    expect(p).toHaveLength(81);
+    expect(new TextDecoder().decode(p.subarray(0, 16))).toBe('dilla session v1');
+    expect(hex(p.subarray(16, 32))).toBe(hex(instanceId));
+    expect(hex(p.subarray(32, 48))).toBe(hex(deviceId));
+    expect(hex(p.subarray(48, 80))).toBe(hex(nonce));
+    expect(p[80]).toBe(0);
+  });
+  it('binds the purpose, so a renew signature is not an establish signature', () => {
+    const a = sessionPreimage(fromHex('00'.repeat(16)), fromHex('11'.repeat(16)), fromHex('22'.repeat(32)), 0);
+    const b = sessionPreimage(fromHex('00'.repeat(16)), fromHex('11'.repeat(16)), fromHex('22'.repeat(32)), 1);
+    expect(hex(a)).not.toBe(hex(b));
+  });
+  it('refuses a wrong-length field', () => {
+    expect(() => sessionPreimage(fromHex('00'.repeat(15)), fromHex('11'.repeat(16)), fromHex('22'.repeat(32)), 0)).toThrow();
+    expect(() => sessionPreimage(fromHex('00'.repeat(16)), fromHex('11'.repeat(15)), fromHex('22'.repeat(32)), 0)).toThrow();
+    expect(() => sessionPreimage(fromHex('00'.repeat(16)), fromHex('11'.repeat(16)), fromHex('22'.repeat(31)), 0)).toThrow();
   });
 });
 

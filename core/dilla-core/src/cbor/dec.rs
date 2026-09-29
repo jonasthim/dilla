@@ -226,6 +226,17 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    /// A `bstr` or `null`. The variable-length twin of `opt_bytes_exact`, for fields whose length
+    /// is not fixed by the format — ABI v2's `credential_identity` is one
+    /// (`core/dilla-core/src/identity/credential.rs` encodes a 10-element array of variable size).
+    pub fn opt_bytes(&mut self) -> Result<Option<&'a [u8]>, CborError> {
+        if self.try_null()? {
+            Ok(None)
+        } else {
+            Ok(Some(self.bytes()?))
+        }
+    }
+
     /// Skips one complete item, enforcing every strictness rule on the way, and returns the bytes
     /// it consumed.
     pub fn skip(&mut self) -> Result<&'a [u8], CborError> {

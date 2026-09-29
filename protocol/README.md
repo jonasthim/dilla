@@ -17,6 +17,7 @@ third-party clients, bots and servers can implement them without AGPL obligation
 | 06 | `06-backup-archive.md` | Recovery-key-encrypted header and history archive |
 | 07 | `07-versioning.md` | Wire, E2EE and media versions and the change process |
 | 08 | `08-threat-model.md` | Adversaries, guarantees, residual trust, out of scope |
+| 09 | `09-http-api.md` | The non-delivery-service `/v1` HTTP surface: instance discovery and limits, accounts, devices, sessions, invites, auth ceremonies, communities and content, rate limits, `users.flags` |
 
 ## Conformance
 

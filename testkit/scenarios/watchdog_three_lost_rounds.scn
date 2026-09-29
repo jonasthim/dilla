@@ -1,0 +1,29 @@
+# Invariant 7: mls.commit_needed goes to the lowest-index online device, a 2-second watchdog moves
+# the election on, and a device that ACKNOWLEDGES three rounds and commits none of them is removed
+# by an instance Remove. Alice is the only member online when the instance kicks carol; she acks
+# each round and does nothing, the clock moves 2 s past each deadline, and after the third lost
+# round the instance proposes removing alice. Bob, back online, commits both Removes, and the
+# instance no longer counts alice a member: once she has processed her own removal, even her fork
+# report is answered as a stranger's.
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9 community=none creator=alice
+join bob chat via=welcome
+join carol chat via=welcome
+sync bob
+go_offline bob
+go_offline carol
+kick alice carol
+ack_commit alice
+advance_clock 2s
+ack_commit alice
+advance_clock 2s
+ack_commit alice
+advance_clock 2s
+go_online bob
+sync bob
+commit bob
+sync alice
+expect_reject E_NOT_FOUND fork_report alice chat

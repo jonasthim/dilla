@@ -23,10 +23,14 @@ function assertLen(b: Uint8Array, n: number, what: string) { if (b.length !== n)
 const MAX_BODY_LONG = 4000; // type 0/1, UTF-8 bytes
 const MAX_BODY_SHORT = 32; // type 3/4, UTF-8 bytes
 const MAX_BODY_NONE = 0; // type 2/5/6: a tombstone, pin or unpin carries no body at all
-const MAX_ATTACHMENTS = 10;
-const MAX_PREVIEWS = 5;
-const MAX_PREVIEW_IMAGE = 32768;
-const MAX_THUMB = 16384;
+const MAX_ATTACHMENTS = 4;
+const MAX_PREVIEWS = 2;
+const MAX_PREVIEW_IMAGE = 16384;
+const MAX_THUMB = 8192;
+const MAX_MIME = 255;
+const MAX_URL = 2048;
+const MAX_TITLE = 256;
+const MAX_DESCRIPTION = 1024;
 
 function assertLimit(cond: boolean, what: string) { if (!cond) throw new Error(`envelope: limit exceeded: ${what}`); }
 
@@ -62,19 +66,23 @@ export function decodeEnvelope(bytes: Uint8Array): Envelope {
   // A delete, pin or unpin is contentless: any body there is unrenderable by a conforming client
   // and is a covert channel, so the limit is 0 and the envelope is rejected rather than trimmed.
   if (type === EnvelopeType.Delete || type === EnvelopeType.Pin || type === EnvelopeType.Unpin) assertLimit(bodyLen <= MAX_BODY_NONE, 'body on type 2/5/6');
-  assertLimit(attachments.length <= MAX_ATTACHMENTS, 'more than 10 attachments');
-  assertLimit(previews.length <= MAX_PREVIEWS, 'more than 5 previews');
+  assertLimit(attachments.length <= MAX_ATTACHMENTS, 'more than 4 attachments');
+  assertLimit(previews.length <= MAX_PREVIEWS, 'more than 2 previews');
 
   return {
     v: 1, msgId, type: type as EnvelopeType, threadId, replyTo, body,
     attachments: attachments.map(x => {
       const [blobId, key, nonce, size, mime, w, h, thumb] = x as [Uint8Array, Uint8Array, Uint8Array, number, string, number | null, number | null, Uint8Array | null];
-      if (thumb) assertLimit(thumb.length <= MAX_THUMB, 'thumb over 16384 bytes');
+      assertLimit(utf8(mime).length <= MAX_MIME, 'mime over 255 bytes');
+      if (thumb) assertLimit(thumb.length <= MAX_THUMB, 'thumb over 8192 bytes');
       return { blobId, key, nonce, size, mime, w, h, thumb };
     }),
     previews: previews.map(x => {
       const [url, title, description, image] = x as [string, string, string, Uint8Array | null];
-      if (image) assertLimit(image.length <= MAX_PREVIEW_IMAGE, 'preview image over 32768 bytes');
+      assertLimit(utf8(url).length <= MAX_URL, 'preview url over 2048 bytes');
+      assertLimit(utf8(title).length <= MAX_TITLE, 'preview title over 256 bytes');
+      assertLimit(utf8(description).length <= MAX_DESCRIPTION, 'preview description over 1024 bytes');
+      if (image) assertLimit(image.length <= MAX_PREVIEW_IMAGE, 'preview image over 16384 bytes');
       return { url, title, description, image };
     }),
     kf,

@@ -1,0 +1,19 @@
+# Invariants 5 and 6: the instance kicks bob while he is offline. Its Remove freezes the group -
+# alice's message is refused 425 until a member commits the Remove - alice commits it, carol then
+# joins through the instance's Add, and bob, back online, is no longer a current leaf.
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2 community=none creator=alice
+join bob chat via=welcome
+sync bob
+go_offline bob
+kick alice bob
+expect_425 send alice chat before the kick is committed
+commit alice
+join carol chat via=welcome
+send alice chat welcome carol
+expect_decrypts carol chat welcome carol
+go_online bob
+expect_reject E_LEAF_NOT_CURRENT send bob chat am I still here

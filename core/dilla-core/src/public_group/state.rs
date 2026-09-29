@@ -365,11 +365,114 @@ impl DillaPublicGroup {
         self.group.leaf(index)
     }
 
+    /// The signature public key of a leaf, as OpenMLS's verification API wants it.
+    ///
+    /// ABI v2 §3.2 needs it because `VerifiableGroupInfo::signer()` is `pub(crate)` in openmls
+    /// 0.9.0 (`src/messages/group_info.rs:100`), so the caller names the expected signer and the
+    /// key comes from the tree the DS already maintains.
+    ///
+    /// No import is added: this file already has `use openmls::prelude::*;`, and the prelude
+    /// re-exports `crate::ciphersuite::signature::*` (`openmls-0.9.0/src/prelude.rs:16`), which is
+    /// where `OpenMlsSignaturePublicKey` lives (`src/ciphersuite/signature.rs:118`).
+    /// `from_signature_key` is the right constructor: `::new` takes a `VLBytes` and returns a
+    /// `Result`, while the tree hands back a `SignaturePublicKey` (`signature.rs:157`).
+    pub fn signature_key_of_leaf(&self, index: LeafNodeIndex) -> Option<OpenMlsSignaturePublicKey> {
+        let leaf = self.group.leaf(index)?;
+        Some(OpenMlsSignaturePublicKey::from_signature_key(
+            leaf.signature_key().clone(),
+            self.group.ciphersuite().signature_algorithm(),
+        ))
+    }
+
+    /// The kind, sender, target and credential of one queued proposal — ABI v2 §3.3.
+    ///
+    /// This lives in `dilla-core`, not in `dilla-core-wasi`, because the two openmls APIs a
+    /// wasi-side re-parse would need are both unreachable from outside the crate:
+    /// `PublicMessageIn::content()` is `pub(crate)` (`src/framing/public_message_in.rs:43`) and
+    /// `impl From<ProposalIn> for Proposal` (`src/messages/proposals_in.rs:384`) is gated behind
+    /// `#[cfg(any(feature = "test-utils", test))]`. `PublicGroup::queued_proposals` hands back the
+    /// already-parsed `QueuedProposal`, which [`Self::queued_proposals`] above deliberately
+    /// discards in favour of the wire bytes (deviation A2-11); this is the other half of the same
+    /// read, so nothing is re-parsed and, crucially, nothing is re-processed.
+    ///
+    /// `Ok(None)` means "no queued proposal carries that reference", which the export turns into
+    /// `E_ABI_STATE` rather than an empty success. `kind` uses `protocol/02-delivery-service.md`'s
+    /// numbering: 1 add, 2 update, 3 remove, 4 psk, 5 reinit, 6 external_init,
+    /// 7 group_context_extensions.
+    ///
+    /// **Deviation from the brief, forced by the vendored source.** The brief typed `wanted` as
+    /// `&ProposalRef`. `ProposalRef` is `HashReference`, whose only constructor from opaque bytes
+    /// is `HashReference::from_slice`, and that is `#[cfg(any(feature = "test-utils", test))]`
+    /// (`openmls-0.9.0/src/ciphersuite/hash_ref.rs:120-125`) — so the wasi crate cannot build one
+    /// from a request at all. The brief's own fallback is taken: the parameter is the reference
+    /// bytes, which is what the comparison already used.
+    #[allow(clippy::type_complexity)]
+    pub fn queued_proposal_detail(
+        &self,
+        wanted: &[u8],
+    ) -> Result<Option<(u64, Option<u32>, Option<u32>, Option<Vec<u8>>)>, PublicGroupError> {
+        let queued = self.group.queued_proposals(&self.store).map_err(openmls)?;
+        for (reference, proposal) in queued {
+            if reference.as_slice() != wanted {
+                continue;
+            }
+            let sender_leaf = sender_leaf(proposal.sender());
+            let detail = match proposal.proposal() {
+                Proposal::Add(add) => (
+                    1u64,
+                    sender_leaf,
+                    None,
+                    Some(credential_identity_bytes(add.key_package())?),
+                ),
+                Proposal::Update(_) => (2, sender_leaf, None, None),
+                Proposal::Remove(remove) => (3, sender_leaf, Some(remove.removed().u32()), None),
+                Proposal::PreSharedKey(_) => (4, sender_leaf, None, None),
+                Proposal::ReInit(_) => (5, sender_leaf, None, None),
+                Proposal::ExternalInit(_) => (6, sender_leaf, None, None),
+                Proposal::GroupContextExtensions(_) => (7, sender_leaf, None, None),
+                other => {
+                    // openmls 0.9.0 also has SelfRemove, Custom and the two extensions-draft
+                    // variants. Dropping one silently would let invariant 4's set comparison
+                    // pass over a proposal the DS cannot name, so it is an error.
+                    return Err(PublicGroupError::OpenMls(format!(
+                        "unsupported proposal type {:?}",
+                        other.proposal_type()
+                    )));
+                }
+            };
+            return Ok(Some(detail));
+        }
+        Ok(None)
+    }
+
     pub fn required_capabilities(&self) -> Option<&RequiredCapabilitiesExtension> {
         self.group
             .group_context()
             .extensions()
             .required_capabilities()
+    }
+
+    /// The signature key the committer of `staged` holds in the epoch the commit produces, which is
+    /// the key the GroupInfo of that epoch is signed under.
+    ///
+    /// A commit with an UpdatePath carries the committer's new leaf node, whose key may differ from
+    /// the one the tree holds today, and an EXTERNAL commit always carries one: the joiner is in no
+    /// leaf of the current tree, so `signature_key_of_leaf` has nothing to answer for it. A member
+    /// commit without a path leaves the committer's leaf untouched, so its key is the tree's.
+    /// `None` is a commit that names no sender and brings no leaf node, which openmls refuses to
+    /// stage; it is reported rather than assumed away.
+    pub fn staged_committer_key(
+        &self,
+        staged: &StagedCommit,
+        sender_leaf: Option<u32>,
+    ) -> Option<OpenMlsSignaturePublicKey> {
+        if let Some(leaf) = staged.update_path_leaf_node() {
+            return Some(OpenMlsSignaturePublicKey::from_signature_key(
+                leaf.signature_key().clone(),
+                self.group.ciphersuite().signature_algorithm(),
+            ));
+        }
+        sender_leaf.and_then(|l| self.signature_key_of_leaf(LeafNodeIndex::new(l)))
     }
 
     pub fn ext_commit_sender_index(
@@ -378,6 +481,14 @@ impl DillaPublicGroup {
     ) -> Result<LeafNodeIndex, PublicGroupError> {
         self.group.ext_commit_sender_index(staged).map_err(openmls)
     }
+}
+
+/// The raw `credential_identity` bytes of a KeyPackage's leaf. `BasicCredential` is in
+/// `openmls::prelude`, which this file already imports; these are the same two lines
+/// [`DillaPublicGroup::members`] uses.
+fn credential_identity_bytes(kp: &KeyPackage) -> Result<Vec<u8>, PublicGroupError> {
+    let basic = BasicCredential::try_from(kp.leaf_node().credential().clone()).map_err(openmls)?;
+    Ok(basic.identity().to_vec())
 }
 
 /// `KeyPackageIn::validate` plus dilla's own checks: the leaf must advertise 0xF001, and the
@@ -444,7 +555,12 @@ pub fn external_propose_remove(
 mod tests {
     use super::*;
     use crate::mls::test_entities::TVal;
+    use openmls_rust_crypto::RustCrypto;
     use openmls_traits::public_storage::PublicStorageProvider as _;
+    // `openmls::prelude::*` re-exports `tls_codec::*`, but the file's own
+    // `use tls_codec::Serialize as _;` above shadows nothing on the deserialise side; naming the
+    // trait here is what makes `MlsMessageIn::tls_deserialize_exact` resolve.
+    use tls_codec::Deserialize as _;
 
     /// A torn write - one of the four entities missing - must surface as `StateMissing`, never as
     /// "this group does not exist" (gap-1 section 6.1 hazard 1).
@@ -474,5 +590,92 @@ mod tests {
             DillaPublicGroup::import_state(&blob, &group_id),
             Err(PublicGroupError::StateMissing)
         ));
+    }
+
+    // The committed 1,500-leaf fixture of Plan A task 13 — the same files `dilla-core-wasi`'s
+    // export tests read. `include_bytes!` is relative to this file's own directory, so the four
+    // `..` climb `public_group` -> `src` -> `dilla-core` -> `core` -> the repository root. There
+    // is no `tests/` alternative that would be cheaper: the fixture is what makes these tests run
+    // against a real 1,500-leaf tree rather than a hand-built toy.
+    const FIXTURE_TREE: &[u8] =
+        include_bytes!("../../../../testkit/fixtures/ds-1500/ratchet_tree.mls");
+    const FIXTURE_GROUP_INFO: &[u8] =
+        include_bytes!("../../../../testkit/fixtures/ds-1500/group_info.mls");
+    /// An external Remove of leaf 0, signed by the instance key the fixture's `external_senders`
+    /// extension names — which is the only reason a `DillaPublicGroup` will queue it at all.
+    const FIXTURE_EXTERNAL_REMOVE: &[u8] =
+        include_bytes!("../../../../testkit/fixtures/ds-1500/remove_leaf0.mls");
+
+    fn fixture_public_group() -> DillaPublicGroup {
+        let tree = RatchetTreeIn::tls_deserialize_exact(FIXTURE_TREE)
+            .expect("the committed ratchet tree decodes");
+        let group_info = match MlsMessageIn::tls_deserialize_exact(FIXTURE_GROUP_INFO)
+            .expect("the committed GroupInfo decodes")
+            .extract()
+        {
+            MlsMessageBodyIn::GroupInfo(info) => info,
+            other => panic!("expected a GroupInfo, got {other:?}"),
+        };
+        DillaPublicGroup::from_external(&RustCrypto::default(), tree, group_info)
+            .expect("the committed fixture seeds the DS view")
+            .0
+    }
+
+    /// ABI v2 §3.2's key source: a leaf inside the tree yields a verification key tagged with the
+    /// group's own signature scheme, and a leaf outside it yields `None` rather than a panic or a
+    /// zero key.
+    #[test]
+    fn signature_key_of_leaf_answers_for_a_member_and_none_for_a_stranger() {
+        let public = fixture_public_group();
+        let key = public
+            .signature_key_of_leaf(LeafNodeIndex::new(0))
+            .expect("leaf 0 is the creator");
+        assert_eq!(key.as_slice().len(), 32, "Ed25519");
+        assert_eq!(key.signature_scheme(), SignatureScheme::ED25519);
+        assert_eq!(
+            key.as_slice(),
+            public
+                .leaf(LeafNodeIndex::new(0))
+                .unwrap()
+                .signature_key()
+                .as_slice(),
+            "the key must come from the tree, not be invented"
+        );
+        assert!(
+            public
+                .signature_key_of_leaf(LeafNodeIndex::new(1_000_000))
+                .is_none(),
+            "a leaf outside the tree has no key to check a GroupInfo against"
+        );
+    }
+
+    /// ABI v2 §3.3. The brief's snippet asserted `target_leaf == Some(1)`; the committed fixture
+    /// the generator now writes is `remove_leaf0.mls`, so the target asserted here is leaf 0.
+    #[test]
+    fn queued_proposal_detail_names_a_removes_target_leaf() {
+        let crypto = RustCrypto::default();
+        let mut public = fixture_public_group();
+        let message = MlsMessageIn::tls_deserialize_exact(FIXTURE_EXTERNAL_REMOVE)
+            .expect("the committed external Remove decodes")
+            .try_into_protocol_message()
+            .expect("an external proposal is a handshake message");
+        let reference = public
+            .queue_proposal(&crypto, message)
+            .expect("the instance is the group's external sender");
+        let (kind, sender_leaf, target_leaf, identity) = public
+            .queued_proposal_detail(&reference)
+            .expect("the read succeeds")
+            .expect("the proposal was just queued");
+        assert_eq!(kind, 3);
+        assert_eq!(target_leaf, Some(0), "remove_leaf0.mls removes leaf 0");
+        assert!(
+            sender_leaf.is_none(),
+            "an external sender is not a member leaf"
+        );
+        assert!(identity.is_none());
+        assert!(
+            public.queued_proposal_detail(&[0u8; 32]).unwrap().is_none(),
+            "an unknown reference is None, never a wrong proposal"
+        );
     }
 }

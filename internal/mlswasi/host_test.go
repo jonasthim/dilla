@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -134,15 +135,15 @@ func TestClockAndRandomnessConfigurationIsLoadBearing(t *testing.T) {
 	}
 }
 
-func TestABIReportsVersionOne(t *testing.T) {
+func TestABIReportsVersionThree(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRuntime(t, Options{PoolSize: 1})
 	info, err := r.ABI(ctx)
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 1 {
-		t.Errorf("ABIVersion = %d, want 1", info.ABIVersion)
+	if info.ABIVersion != 3 {
+		t.Errorf("ABIVersion = %d, want 3", info.ABIVersion)
 	}
 	if info.E2EEVersion != 1 || info.MediaVersion != 1 {
 		t.Errorf("E2EEVersion/MediaVersion = %d/%d, want 1/1", info.E2EEVersion, info.MediaVersion)
@@ -687,5 +688,249 @@ func TestNewNamesTheMissingExport(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "missing export") {
 		t.Errorf("New error = %v, want it to name the missing export", err)
+	}
+}
+
+func TestABIVersionIsThreeAndTwentyThreeExportsAreRequired(t *testing.T) {
+	if ABIVersion != 3 {
+		t.Fatalf("ABIVersion = %d, want 3", ABIVersion)
+	}
+	if len(RequiredExports) != 23 {
+		t.Fatalf("RequiredExports has %d names, want 23", len(RequiredExports))
+	}
+	for _, name := range []string{
+		"device_list_entries",
+		"public_group_staged_group_info_validate",
+		"public_group_staged_discard",
+		"public_group_group_info_validate",
+		"public_group_proposal_inspect",
+		"private_message_aad",
+	} {
+		if !slices.Contains(RequiredExports, name) {
+			t.Errorf("RequiredExports is missing %q", name)
+		}
+	}
+
+	ctx := context.Background()
+	r, err := New(ctx, loadWasm(t), Options{PoolSize: 1, CacheDir: sharedCacheDir(t)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close(context.Background()) })
+	info, err := r.ABI(ctx)
+	if err != nil {
+		t.Fatalf("ABI: %v", err)
+	}
+	if info.ABIVersion != 3 {
+		t.Fatalf("dilla_abi reports abi_version %d, want 3", info.ABIVersion)
+	}
+}
+
+// A module that is one export short must be refused by name, not at the first call. The name is
+// deliberately NOT TestNewNamesTheMissingExport: that function already exists above (it feeds New
+// an empty module), and a second declaration of it in the same package does not compile.
+func TestNewNamesAMissingAbiV2Export(t *testing.T) {
+	ctx := context.Background()
+	stripped := stripExport(t, loadWasm(t), "private_message_aad")
+	_, err := New(ctx, stripped, Options{PoolSize: 1})
+	if err == nil {
+		t.Fatal("New accepted a module missing private_message_aad")
+	}
+	if !strings.Contains(err.Error(), "private_message_aad") {
+		t.Fatalf("error must name the missing export, got %v", err)
+	}
+}
+
+// The fixture's ten commits are not interchangeable (testkit/src/fixtures.rs:158-215):
+// commits/00..07 each carry MAX_ADDS_PER_COMMIT = 256 inline Add proposals, commits/08 is a
+// single Remove of leaf 1, commits/09 is a self-update with no proposals at all. Each arm is
+// asserted against the commit that actually exercises it.
+func TestProcessReportsTheAppliedListAndTheCommitterUpdateFlag(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, loadWasm(t), Options{PoolSize: 1, CacheDir: sharedCacheDir(t)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close(context.Background()) })
+	inst, err := r.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer inst.Release()
+	f := loadDS1500(t)
+
+	// (a) the self-update: no proposals, the flag set.
+	g, err := inst.PublicGroupFromExternal(ctx, f.ratchetTree, f.groupInfo)
+	if err != nil {
+		t.Fatalf("PublicGroupFromExternal: %v", err)
+	}
+	p, err := g.Process(ctx, f.commits[9])
+	if err != nil {
+		t.Fatalf("Process(commits/09.mls): %v", err)
+	}
+	if p.Kind != KindCommit {
+		t.Fatalf("Kind = %d, want KindCommit", p.Kind)
+	}
+	if len(p.Applied) != 0 {
+		t.Errorf("Applied = %v, want empty for commits/09.mls (a self-update)", p.Applied)
+	}
+	if !p.CommitterUpdated {
+		t.Error("CommitterUpdated = false; a self-update always carries an UpdatePath")
+	}
+	if p.NewLeaf != nil {
+		t.Errorf("NewLeaf = %d; only an external commit names the leaf its joiner lands on", *p.NewLeaf)
+	}
+	if p.Staged == nil {
+		t.Fatal("a commit must stage")
+	}
+	// The staged handle is released without advancing the group, so the same handle can process
+	// the other two commits, which are alternatives at the same base epoch.
+	if err := g.Discard(ctx, *p.Staged); err != nil {
+		t.Fatalf("Discard: %v", err)
+	}
+
+	// (b) the Remove: one item, kind 3, target leaf 1, no credential.
+	p, err = g.Process(ctx, f.commits[8])
+	if err != nil {
+		t.Fatalf("Process(commits/08.mls): %v", err)
+	}
+	if len(p.Applied) != 1 {
+		t.Fatalf("Applied = %v, want one Remove for commits/08.mls", p.Applied)
+	}
+	if p.Applied[0].Kind != ProposalRemove {
+		t.Errorf("Kind = %d, want ProposalRemove", p.Applied[0].Kind)
+	}
+	if p.Applied[0].TargetLeaf == nil || *p.Applied[0].TargetLeaf != 1 {
+		t.Errorf("TargetLeaf = %v, want 1 (fixtures.rs:195)", p.Applied[0].TargetLeaf)
+	}
+	if p.Applied[0].CredentialIdentity != nil {
+		t.Error("a Remove carries no credential identity")
+	}
+	if err := g.Discard(ctx, *p.Staged); err != nil {
+		t.Fatalf("Discard: %v", err)
+	}
+
+	// (c) the 256-Add commit: one item per KeyPackage, each with a decodable credential.
+	p, err = g.Process(ctx, f.commits[0])
+	if err != nil {
+		t.Fatalf("Process(commits/00.mls): %v", err)
+	}
+	if len(p.Applied) != 256 {
+		t.Fatalf("Applied has %d items, want 256 (MAX_ADDS_PER_COMMIT, fixtures.rs:163)",
+			len(p.Applied))
+	}
+	for i, a := range p.Applied {
+		if a.Kind != ProposalAdd {
+			t.Fatalf("Applied[%d].Kind = %d, want ProposalAdd", i, a.Kind)
+		}
+		if len(a.ProposalRef) == 0 {
+			t.Fatalf("Applied[%d] carries no proposal ref", i)
+		}
+		if len(a.CredentialIdentity) == 0 {
+			t.Fatalf("Applied[%d] carries no credential identity", i)
+		}
+	}
+	if _, err := g.Merge(ctx, *p.Staged); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+}
+
+func TestValidateGroupInfoAndProposalInspectRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, loadWasm(t), Options{PoolSize: 1, CacheDir: sharedCacheDir(t)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close(context.Background()) })
+	inst, err := r.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer inst.Release()
+
+	f := loadDS1500(t)
+	g, err := inst.PublicGroupFromExternal(ctx, f.ratchetTree, f.groupInfo)
+	if err != nil {
+		t.Fatalf("PublicGroupFromExternal: %v", err)
+	}
+	check, err := g.ValidateGroupInfo(ctx, f.groupInfo, fixtureSignerLeaf(t))
+	if err != nil {
+		t.Fatalf("ValidateGroupInfo: %v", err)
+	}
+	if !check.SignatureOK {
+		t.Error("SignatureOK = false for the fixture's own GroupInfo")
+	}
+	if len(check.TreeHash) != 32 || len(check.ConfirmedTranscriptHash) != 32 {
+		t.Errorf("hashes are %d and %d bytes, want 32 and 32",
+			len(check.TreeHash), len(check.ConfirmedTranscriptHash))
+	}
+	if got := len(check.GroupID); got != 16 {
+		t.Errorf("GroupID = %d bytes, want 16", got)
+	}
+
+	wrong, err := g.ValidateGroupInfo(ctx, f.groupInfo, fixtureSignerLeaf(t)+1)
+	if err != nil {
+		t.Fatalf("ValidateGroupInfo against another leaf must not be an error: %v", err)
+	}
+	if wrong.SignatureOK {
+		t.Error("SignatureOK = true for a GroupInfo checked against the wrong leaf")
+	}
+
+	// The round trip of the name: queue the fixture's external Remove and read back the kind and
+	// target dillad answers POST /v1/groups/{id}/proposal from.
+	ref, err := g.ProposalPut(ctx, 0, loadRemoveProposalFixture(t))
+	if err != nil {
+		t.Fatalf("ProposalPut: %v", err)
+	}
+	detail, err := g.ProposalInspect(ctx, ref)
+	if err != nil {
+		t.Fatalf("ProposalInspect: %v", err)
+	}
+	if detail.Kind != ProposalRemove {
+		t.Errorf("Kind = %d, want ProposalRemove", detail.Kind)
+	}
+	if detail.TargetLeaf == nil || *detail.TargetLeaf != 0 {
+		t.Errorf("TargetLeaf = %v, want 0 (remove_leaf0.mls)", detail.TargetLeaf)
+	}
+	if _, err := g.ProposalInspect(ctx, bytes.Repeat([]byte{0}, 32)); err == nil {
+		t.Error("ProposalInspect accepted a reference no queued proposal carries")
+	}
+}
+
+func TestPrivateMessageAADRefusesAnythingButThirtyTwoBytes(t *testing.T) {
+	ctx := context.Background()
+	r, err := New(ctx, loadWasm(t), Options{PoolSize: 1, CacheDir: sharedCacheDir(t)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close(context.Background()) })
+	inst, err := r.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer inst.Release()
+
+	meta, err := inst.PrivateMessageAAD(ctx, privateMessageFixture(t, 32))
+	if err != nil {
+		t.Fatalf("PrivateMessageAAD: %v", err)
+	}
+	if len(meta.AuthenticatedData) != 32 {
+		t.Fatalf("AuthenticatedData = %d bytes, want 32", len(meta.AuthenticatedData))
+	}
+	// content_type is 1..3 (RFC 9420: 0 is reserved): both ends of the range are refused.
+	for _, ct := range []byte{0, 4} {
+		if _, err := inst.PrivateMessageAAD(ctx, privateMessageFixtureOfType(t, 32, ct)); err == nil {
+			t.Errorf("content_type %d was accepted", ct)
+		}
+	}
+	for _, n := range []int{31, 33} {
+		if _, err := inst.PrivateMessageAAD(ctx, privateMessageFixture(t, n)); err == nil {
+			t.Errorf("%d bytes of authenticated_data was accepted", n)
+		} else {
+			var abiErr *ABIError
+			if !errors.As(err, &abiErr) || abiErr.Code != "E_ABI_SHAPE" {
+				t.Errorf("%d bytes: got %v, want an E_ABI_SHAPE frame", n, err)
+			}
+		}
 	}
 }

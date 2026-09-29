@@ -1,0 +1,17 @@
+# Invariant 5: while an instance proposal is outstanding and a member device is online, an external
+# commit is refused 425 E_COMMIT_REQUIRED. The instance kicks bob, alice is online, and carol's
+# external join waits; once alice commits the Remove the freeze lifts and carol's join is accepted.
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4 community=none creator=alice
+join bob chat via=welcome
+sync bob
+kick alice bob
+expect_425 external_join carol chat
+commit alice
+external_join carol chat
+sync alice
+send alice chat welcome carol
+expect_decrypts carol chat welcome carol

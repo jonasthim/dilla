@@ -1,0 +1,375 @@
+package ds_test
+
+// fork_test.go is invariant 9: a member that cannot process an accepted commit reports it, and
+// three DISTINCT reporter devices against one commit quarantine its committer.
+//
+// DEVIATION FROM THE BRIEF'S STEP 1 (recorded in the task-25 report). The brief's test obtains the
+// commit it reports against with
+//
+//	commit, err := h.ds.Commit(ctx, g.sessionOf(0), g.id, h.commitFor(t, g, g.Epoch()))
+//
+// and no commit in this repository can be ACCEPTED: `testkit/fixtures/ds-1500` ships exactly one
+// GroupInfo, at epoch 6, and invariant 4's step (6) wants epoch n+1 — the blocker
+// `commit_test.go` records in two skips, `proposal_test.go` in a third and the plan in deviations
+// B21/B24. Writing the test the brief's way would have produced a fourth skip and left invariant 9
+// — which is entirely about the fork_reports rows and the quarantine, not about how the commit got
+// into the log — completely unexercised.
+//
+// So the accepted commit is SEEDED into the handshake log, exactly as `appendHandshake` already
+// seeds the winner `E_COMMIT_CONFLICT` names, with the one thing invariant 9 reads that
+// `appendHandshake` does not write: the committer's device and leaf. Everything else — the store,
+// the quorum, the distinctness, the quarantine flag and the instance Remove — is the real thing.
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/jonasthim/dilla/internal/store"
+	"github.com/jonasthim/dilla/internal/store/sqlite"
+)
+
+// Invariant 9: three DISTINCT reporter devices against one commit quarantine the committer.
+func TestThreeDistinctReportersQuarantineTheCommitterAndOneDeviceDoesNot(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+	commit := h.acceptedCommitBy(t, g, 0)
+
+	// Three reports from ONE device must not quarantine anybody.
+	for range 3 {
+		if err := h.ds.ForkReport(context.Background(), g.sessionOf(1), g.id, commit.Epoch, commit.Seq, "cannot process"); err != nil {
+			t.Fatalf("ForkReport: %v", err)
+		}
+	}
+	if h.isQuarantined(t, g.members[0]) {
+		t.Fatal("three reports from one device must not quarantine the committer")
+	}
+
+	for _, reporter := range []int{1, 2, 3} {
+		if err := h.ds.ForkReport(context.Background(), g.sessionOf(reporter), g.id, commit.Epoch, commit.Seq, "cannot process"); err != nil {
+			t.Fatalf("ForkReport from %d: %v", reporter, err)
+		}
+	}
+	if !h.isQuarantined(t, g.members[0]) {
+		t.Fatal("three distinct reporters must quarantine the committer")
+	}
+	if !h.hasOutstandingRemoveOfLeaf(t, g, g.leafOf(0)) {
+		t.Fatal("quarantine must also Remove the committer's leaf by an instance proposal")
+	}
+}
+
+// The quarantine flag is READ: a device three reporters quarantined cannot read the GroupInfo and
+// tree a rejoin needs, nor resync itself back into the epoch (deviation B36's ruling). Before the
+// final review nothing read `devices.quarantined_at`, so the committer answered /info as a member
+// and could rejoin by external commit the moment its leaf was removed.
+func TestAQuarantinedDeviceCannotReadOrRejoinTheGroup(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+	commit := h.acceptedCommitBy(t, g, 0)
+	ctx := context.Background()
+	committer := g.sessionOf(0)
+	if _, err := h.ds.Info(ctx, g.id, committer); err != nil {
+		t.Fatalf("before the quorum the committer reads the group: %v", err)
+	}
+	for _, reporter := range []int{1, 2, 3} {
+		if err := h.ds.ForkReport(ctx, g.sessionOf(reporter), g.id, commit.Epoch, commit.Seq, "cannot process"); err != nil {
+			t.Fatalf("ForkReport from %d: %v", reporter, err)
+		}
+	}
+	if !h.isQuarantined(t, g.members[0]) {
+		t.Fatal("the quorum did not quarantine the committer")
+	}
+
+	var dsErr *ds.Error
+	if _, err := h.ds.Info(ctx, g.id, committer); !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+		t.Errorf("/info from the quarantined device: %v, want E_FORBIDDEN", err)
+	}
+	if _, err := h.ds.Tree(ctx, g.id, committer); !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+		t.Errorf("/tree from the quarantined device: %v, want E_FORBIDDEN", err)
+	}
+	_, err := h.ds.Resync(ctx, committer, g.id, ds.ResyncRequest{ExternalCommit: []byte{0x01}, GroupInfo: []byte{0x01}})
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" || !strings.Contains(dsErr.Detail, "quarantined") {
+		t.Errorf("/resync from the quarantined device: %v, want E_FORBIDDEN for the quarantine", err)
+	}
+	// The reporters are unaffected.
+	if _, err := h.ds.Info(ctx, g.id, g.sessionOf(1)); err != nil {
+		t.Errorf("a reporter's /info: %v", err)
+	}
+}
+
+// A quorum against the instance's OWN handshake — one with no sender device, which is what an
+// external-sender proposal leaves in the log — quarantines nobody. Without the guard the
+// committer lookup dereferences a nil device id.
+func TestAForkQuorumAgainstAnInstanceHandshakeQuarantinesNobody(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+	seq := h.seedHandshake(t, g, nil, nil)
+
+	for _, reporter := range []int{1, 2, 3} {
+		if err := h.ds.ForkReport(context.Background(), g.sessionOf(reporter), g.id, g.epoch(t), seq, "cannot process"); err != nil {
+			t.Fatalf("ForkReport from %d: %v", reporter, err)
+		}
+	}
+	if h.hasOutstandingRemoveOfLeaf(t, g, g.leafOf(0)) {
+		t.Fatal("a quorum against an instance handshake must remove nobody")
+	}
+}
+
+// A report against a seq the log no longer holds — a real GAP, which is what a pruned handshake
+// leaves behind — is recorded and quarantines nobody. The client's view of the log is not the
+// instance's, and a fork report is a bug report, not an accusation the instance must be able to
+// resolve.
+//
+// This is the test for `quarantineCommitterOf`'s identity clause (`rows[0].Seq != seq`).
+// `ListHandshakes`' `fromSeq` is INCLUSIVE, so a page from a seq the log has lost starts at the
+// next SURVIVING handshake; without the clause its committer — a device nobody reported — is
+// quarantined and Removed.
+func TestAForkQuorumAgainstAPrunedSeqQuarantinesNobody(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+
+	// `skipped` is reserved off the group's own sequence and never appended; the NEXT seq carries
+	// member 0's commit, so the log really does have a hole with a known committer behind it.
+	skipped, err := h.repo.NextSeq(context.Background(), g.id)
+	if err != nil {
+		t.Fatalf("NextSeq: %v", err)
+	}
+	survivor := h.acceptedCommitBy(t, g, 0)
+	if survivor.Seq <= skipped {
+		t.Fatalf("the surviving handshake is at seq %d, want above the gap at %d", survivor.Seq, skipped)
+	}
+
+	for _, reporter := range []int{1, 2, 3} {
+		if err := h.ds.ForkReport(context.Background(), g.sessionOf(reporter), g.id, g.epoch(t), skipped, "cannot process"); err != nil {
+			t.Fatalf("ForkReport from %d: %v", reporter, err)
+		}
+	}
+	if n := h.countForkReporters(t, g, skipped); n != 3 {
+		t.Fatalf("fork reporters = %d, want 3", n)
+	}
+	if h.isQuarantined(t, g.members[0]) {
+		t.Fatal("a quorum against a seq the log no longer holds must quarantine nobody")
+	}
+	if h.hasOutstandingRemoveOfLeaf(t, g, g.leafOf(0)) {
+		t.Fatal("a quorum against a seq the log no longer holds must Remove nobody")
+	}
+}
+
+// A report for a seq the instance NEVER appended is refused, and no row is written.
+//
+// Without the bound any member may spend one `fork_reports` row per arbitrary uint64 — the primary
+// key (group_id, seq, reporter_device) makes every distinct seq a new row, each carrying up to 256
+// bytes of reason — and nothing in the tree prunes that table, so the endpoint is unbounded
+// member-driven storage growth. A client cannot have observed a handshake the instance never
+// appended, and `protocol/02-delivery-service.md:81` names E_NOT_FOUND as this endpoint's one
+// refusal.
+func TestAForkReportAgainstASeqTheInstanceNeverAppendedIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+
+	err := h.ds.ForkReport(context.Background(), g.sessionOf(1), g.id, g.epoch(t), 9999, "cannot process")
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+		t.Fatalf("got %v, want E_NOT_FOUND", err)
+	}
+	if n := h.countForkReporters(t, g, 9999); n != 0 {
+		t.Fatalf("fork reporters = %d, want 0: the row must be refused BEFORE it is written", n)
+	}
+}
+
+// …and seq 0 the same way, on the FIRST report rather than after two rows have already been
+// accepted: the first handshake a group ever appends is 1.
+func TestAForkReportOfSeqZeroIsRefusedOnTheFirstReport(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+
+	err := h.ds.ForkReport(context.Background(), g.sessionOf(1), g.id, g.epoch(t), 0, "cannot process")
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+		t.Fatalf("got %v, want E_NOT_FOUND", err)
+	}
+	if n := h.countForkReporters(t, g, 0); n != 0 {
+		t.Fatalf("fork reporters = %d, want 0", n)
+	}
+}
+
+// A reason longer than the bound is truncated on a RUNE boundary, not on a byte boundary.
+//
+// `internal/cborx/decode.go:149` guarantees the incoming text is valid UTF-8, and slicing it at
+// byte 256 destroys that guarantee: Postgres' `reason TEXT NOT NULL`
+// (internal/store/postgres/migrations/00002_mls.sql:136) refuses invalid UTF-8 outright with
+// `invalid byte sequence for encoding "UTF8"`, while SQLite's STRICT TEXT stores the broken bytes
+// without a word — so the two engines diverge and only Postgres answers 500, on a path no local
+// test run reaches. The repository's own convention for bounding free text is
+// `internal/auth/handle.go:42,88`, which counts runes.
+func TestALongMultiByteForkReasonIsStoredAsValidUTF8(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+	commit := h.acceptedCommitBy(t, g, 0)
+	// '€' is three bytes, so byte 256 of this string falls INSIDE a rune: 85 runes are 255 bytes
+	// and the 86th spans bytes 256, 257 and 258.
+	reason := strings.Repeat("€", 200)
+
+	session := g.sessionOf(1)
+	if err := h.ds.ForkReport(context.Background(), session, g.id, commit.Epoch, commit.Seq, reason); err != nil {
+		t.Fatalf("ForkReport: %v", err)
+	}
+
+	got := h.storedForkReason(t, g, commit.Seq, session.DeviceID)
+	if !utf8.ValidString(got) {
+		t.Fatalf("the stored reason is not valid UTF-8 (%d bytes): Postgres refuses the INSERT", len(got))
+	}
+	if len(got) > 256 {
+		t.Fatalf("the stored reason is %d bytes, want at most 256", len(got))
+	}
+	if !strings.HasPrefix(reason, got) {
+		t.Fatal("the stored reason must be a prefix of the reported one")
+	}
+	// …and the bound stays tight: the truncation gives up at most one rune, not the whole tail.
+	if len(got) < 256-utf8.UTFMax {
+		t.Fatalf("the stored reason is %d bytes, want within %d of the 256-byte bound", len(got), utf8.UTFMax)
+	}
+}
+
+// A reason that already fits is stored exactly as it was reported, multi-byte runes and all.
+func TestAForkReasonThatFitsIsStoredUnchanged(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+	commit := h.acceptedCommitBy(t, g, 0)
+	reason := "cannot process — épée ✓"
+
+	session := g.sessionOf(1)
+	if err := h.ds.ForkReport(context.Background(), session, g.id, commit.Epoch, commit.Seq, reason); err != nil {
+		t.Fatalf("ForkReport: %v", err)
+	}
+	if got := h.storedForkReason(t, g, commit.Seq, session.DeviceID); got != reason {
+		t.Fatalf("stored reason = %q, want %q", got, reason)
+	}
+}
+
+// ---------------------------------------------------------------- the helpers
+
+// acceptedCommitBy seeds the handshake log with the commit member `i` committed, and returns the
+// same [seq, epoch] pair an accepted `DS.Commit` would have. It also writes the committer's
+// `users` and `devices` rows: `QuarantineDevice` is an UPDATE on `devices`, and the fixture's
+// members exist only as MLS leaves replayed into `mls_members` by Register, so without them the
+// quarantine would be a silent no-op.
+func (h *dsHarness) acceptedCommitBy(t *testing.T, g *dsGroup, i int) commitLogEntry {
+	t.Helper()
+	session := g.sessionOf(i)
+	h.account(t, session.UserID, session.DeviceID)
+	device := g.members[i]
+	leaf := g.leaves[i]
+	return commitLogEntry{Seq: h.seedHandshake(t, g, &device, &leaf), Epoch: g.epoch(t)}
+}
+
+type commitLogEntry struct {
+	Seq   uint64
+	Epoch uint64
+}
+
+// seedHandshake appends one commit handshake at the group's own next seq. A nil device is the
+// instance's own external sender, which names no leaf either.
+func (h *dsHarness) seedHandshake(t *testing.T, g *dsGroup, device *id.ID, leaf *uint32) uint64 {
+	t.Helper()
+	ctx := context.Background()
+	seq, err := h.repo.NextSeq(ctx, g.id)
+	if err != nil {
+		t.Fatalf("NextSeq: %v", err)
+	}
+	if err := h.repo.AppendHandshake(ctx, store.HandshakeRow{
+		GroupID:      g.id,
+		Seq:          seq,
+		Epoch:        g.epoch(t),
+		Kind:         1, // commit
+		SenderLeaf:   leaf,
+		SenderDevice: device,
+		Blob:         []byte{0x01},
+		Created:      h.clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("AppendHandshake: %v", err)
+	}
+	return seq
+}
+
+// isQuarantined reads the device's own row: invariant 9's "a flag on the device".
+func (h *dsHarness) isQuarantined(t *testing.T, device id.ID) bool {
+	t.Helper()
+	row, err := h.repo.GetDevice(context.Background(), device)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	return row.QuarantinedAt != nil
+}
+
+// hasOutstandingRemoveOfLeaf is invariant 9's other half: the instance Remove of the quarantined
+// committer's leaf.
+func (h *dsHarness) hasOutstandingRemoveOfLeaf(t *testing.T, g *dsGroup, leaf uint32) bool {
+	t.Helper()
+	rows, err := h.ds.Outstanding(context.Background(), g.id)
+	if err != nil {
+		t.Fatalf("Outstanding: %v", err)
+	}
+	for _, r := range rows {
+		if r.Origin != 0 || r.VoidAt != nil || r.Kind != uint8(mlswasi.ProposalRemove) {
+			continue
+		}
+		if r.TargetLeaf != nil && *r.TargetLeaf == leaf {
+			return true
+		}
+	}
+	return false
+}
+
+// storedForkReason reads the `reason` column straight off the harness's database file, the way
+// `countRows` reads a table's size. `store.MLS`'s whole fork_reports surface is `PutForkReport`
+// and `CountForkReporters` — there is no reader — and what the row actually HOLDS is the claim the
+// two truncation tests make.
+func (h *dsHarness) storedForkReason(t *testing.T, g *dsGroup, seq uint64, reporter id.ID) string {
+	t.Helper()
+	db, err := sqlite.OpenRead(h.path)
+	if err != nil {
+		t.Fatalf("sqlite.OpenRead: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	var reason string
+	row := db.QueryRowContext(t.Context(),
+		"SELECT reason FROM fork_reports WHERE group_id = ? AND seq = ? AND reporter_device = ?",
+		g.id, int64(seq), reporter)
+	if err := row.Scan(&reason); err != nil {
+		t.Fatalf("read the fork report's reason: %v", err)
+	}
+	return reason
+}
+
+func (h *dsHarness) countForkReporters(t *testing.T, g *dsGroup, seq uint64) int64 {
+	t.Helper()
+	n, err := h.repo.CountForkReporters(context.Background(), g.id, seq)
+	if err != nil {
+		t.Fatalf("CountForkReporters: %v", err)
+	}
+	return n
+}
+
+// sessionOf is the enrolled session of the group's i-th exposed member device, as
+// `groupWithMembers` recorded it.
+func (g *dsGroup) sessionOf(i int) auth.Session { return g.h.sessions[g.members[i]] }
+
+// leafOf is the MLS leaf the i-th exposed member sits at.
+func (g *dsGroup) leafOf(i int) uint32 { return g.leaves[i] }
+
+// epoch is the group's current epoch, read back from SQL — R12's record.
+func (g *dsGroup) epoch(t *testing.T) uint64 {
+	t.Helper()
+	row, err := g.h.repo.GetGroup(context.Background(), g.id)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	return row.Epoch
+}

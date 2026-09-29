@@ -1,0 +1,16 @@
+# Invariant 6: an instance proposal older than its TTL - 24 hours in a text group - is void, a
+# commit MAY omit it, and when every instance proposal has gone void the freeze lifts. The instance
+# proposes adding bob with one of his KeyPackages; nobody commits it for a day; alice's next commit
+# leaves the void Add out and is accepted, and bob joins by a fresh KeyPackage afterwards.
+instance dilla
+client alice
+client bob
+group chat kind=text target=d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6 community=none creator=alice
+admit chat bob
+expect_425 send alice chat before the day is out
+advance_clock 24h
+commit alice
+send alice chat the freeze has lifted
+join bob chat via=welcome
+send alice chat bob is in on a fresh KeyPackage
+expect_decrypts bob chat bob is in on a fresh KeyPackage

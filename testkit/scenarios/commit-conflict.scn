@@ -1,5 +1,5 @@
 # Invariant 3: one commit per epoch. Bob joins at epoch 1, goes offline so he never sees the commit
-# that admits Carol, and his own commit for epoch 1 is refused with commit_conflict.
+# that admits Carol, and his own commit for epoch 1 is refused with E_COMMIT_CONFLICT.
 #
 # The removal target is Alice, not Carol: Bob commits from his own epoch-1 view, where the members
 # are Alice and himself. Carol's leaf does not exist there, so `remove bob chat carol` would fail
@@ -14,4 +14,4 @@ group chat kind=text target=55555555555555555555555555555555 community=none crea
 join bob chat via=welcome
 go_offline bob
 join carol chat via=welcome
-expect_reject commit_conflict remove bob chat alice
+expect_reject E_COMMIT_CONFLICT remove bob chat alice

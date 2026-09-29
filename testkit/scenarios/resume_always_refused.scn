@@ -1,0 +1,21 @@
+# The gateway's replay ring is a convenience, never the truth: a client that never resumes still
+# converges. Every reconnect here is a fresh identify with an empty ring, and what bob missed while
+# offline comes from the per-group seq cursor he kept and GET /handshakes?from= and
+# GET /messages?from=. Nothing he missed is lost and nothing arrives twice.
+instance dilla
+client alice
+client bob
+group chat kind=text target=d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1 community=none creator=alice
+join bob chat via=welcome
+sync bob
+go_offline bob
+send alice chat one
+send alice chat two
+send alice chat three
+go_online bob
+sync bob
+expect_decrypts bob chat one
+expect_decrypts bob chat two
+expect_decrypts bob chat three
+send bob chat back again
+expect_decrypts alice chat back again

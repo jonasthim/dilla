@@ -32,12 +32,15 @@ const VECTOR_ENVELOPE_CBOR: &str = "89015011111111111111111111111111111111035012
 const VECTOR_ENVELOPE_COMMITMENT: &str =
     "ab2930d97f3c839758c035d9b2ace3b85676e65a37807b66370ffb2885a23148";
 
-/// The committed golden of suite names, in order, from `dilla_core::vectors`' five runners
+/// The committed golden of suite names, in order, from `dilla_core::vectors`' six runners
 /// (Plan A task 11 writes `SuiteReport { name: "envelope" | "franking" | "sframe" | "identity" |
-/// "rejects", .. }`). Without it, comparing the wasm report against a report produced by the same
+/// "rejects", .. }`; Plan B task 17 adds `"frames"`). Without it, comparing the wasm report
+/// against a report produced by the same
 /// wasm build proves only internal consistency: a build that silently lost an entire suite would
 /// pass. Plan B task 4 holds the equivalent golden for the wasip1 leg.
-const EXPECTED_SUITES: [&str; 5] = ["envelope", "franking", "sframe", "identity", "rejects"];
+const EXPECTED_SUITES: [&str; 6] = [
+    "envelope", "franking", "sframe", "identity", "frames", "rejects",
+];
 
 #[wasm_bindgen_test]
 fn the_vector_report_is_green_on_wasm() {
@@ -57,7 +60,7 @@ fn every_case_of_every_suite_holds_on_wasm() {
     let names: Vec<&str> = report.suites.iter().map(|s| s.name).collect();
     assert_eq!(
         names, EXPECTED_SUITES,
-        "the wasm build must run all five suites, in order"
+        "the wasm build must run all six suites, in order"
     );
 
     // Every CaseReport is one (case, field) check, so the two counters and the case rows must agree.

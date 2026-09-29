@@ -1,0 +1,20 @@
+[instance]
+domain    = "chat.example"
+public_ip = "203.0.113.7"
+
+[tls]
+mode   = "behind_proxy"
+agreed = true
+
+[server]
+trusted_proxy_cidrs = ["127.0.0.1/32"]
+
+[metrics]
+enabled = true
+
+[livekit]
+enabled         = true
+api_secret_file = "livekit.secret"
+
+[turn]
+realm = "chat.example"

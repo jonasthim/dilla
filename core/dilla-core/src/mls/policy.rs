@@ -96,8 +96,16 @@ pub fn validate_staged_commit(
         "own_user must be the receiver's user id"
     );
 
-    if staged.add_proposals().next().is_some() && matches!(kind, GroupKind::Text | GroupKind::Call)
-    {
+    // Each Add and Remove is judged by ITS OWN sender (protocol/01 has one table for proposals
+    // from the external sender and one for proposals from members). The instance's own Add and
+    // Remove are accepted in `text` and `call` groups - they are how an offline device joins and
+    // how a user is removed - and a member commit that carries them by reference is the only way
+    // they ever take effect, so judging the commit by its proposal types refused every membership
+    // change the instance makes.
+    let member_add = staged
+        .add_proposals()
+        .any(|add| !matches!(add.sender(), Sender::External(_)));
+    if member_add && matches!(kind, GroupKind::Text | GroupKind::Call) {
         // NEEDS VERIFICATION item 24: protocol/01-groups.md states this rule ("`Add`: accept only
         // in `pairing` … and `interaction` groups; reject in `text` and `call`") but assigns it no
         // code — its published list is the six `E_*` strings at line 122, and
@@ -123,6 +131,13 @@ pub fn validate_staged_commit(
         }
     }
     for remove in staged.remove_proposals() {
+        // An instance Remove is accepted outright in `text` and `call` groups (protocol/01, the
+        // external-sender table). `pairing` and `interaction` groups carry no external sender at
+        // all (`group_context_extensions` refuses one), so an `External` sender cannot occur
+        // there.
+        if matches!(remove.sender(), Sender::External(_)) {
+            continue;
+        }
         let target = remove.remove_proposal().removed();
         let target_user = user_of_leaf(tree, target)?;
         removal_verdict(external, committer_user, &target_user)?;

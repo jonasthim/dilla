@@ -88,7 +88,7 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 		default:
 		}
 		if s.server.IsRunning() {
-			conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+			conn, err := (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext(ctx, "tcp", addr)
 			if err == nil {
 				_ = conn.Close()
 				return s, nil

@@ -46,9 +46,13 @@ fn join_welcome_keeps_the_frames_queued_behind_the_welcome() {
     let mut ds = DsStub::new(config());
     let mut alice = client("alice", 0xa1, 1);
     let mut bob = client("bob", 0xb0, 2);
+    // The stub is every device's delivery service, so each call names the device acting.
+    ds.act_as(alice.device_id());
     alice.publish_key_packages(&mut ds, 2).expect("alice kps");
+    ds.act_as(bob.device_id());
     bob.publish_key_packages(&mut ds, 2).expect("bob kps");
 
+    ds.act_as(alice.device_id());
     let group_id = alice.create_group(&mut ds, binding()).expect("create");
     alice
         .invite(&mut ds, &group_id, bob.device_id())
@@ -58,7 +62,9 @@ fn join_welcome_keeps_the_frames_queued_behind_the_welcome() {
         .send(&mut ds, &group_id, "Grab the wolf capes.")
         .expect("send");
 
-    bob.join_welcome(&mut ds, &group_id).expect("join");
+    ds.act_as(bob.device_id());
+    bob.join_welcome(&mut ds, &group_id, &binding())
+        .expect("join");
     bob.sync(&mut ds).expect("sync");
 
     assert!(

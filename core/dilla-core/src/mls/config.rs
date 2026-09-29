@@ -45,11 +45,17 @@ pub fn group_context_extensions(
 
 /// Every dilla leaf advertises 0xF001. A KeyPackage that does not is rejected on Add with
 /// `ProposalValidationError::InsufficientCapabilities` (gap-4 section 5).
+///
+/// It also advertises `last_resort` (type 10). RFC 9420 section 10.1 requires every extension a
+/// KeyPackage carries to be listed in its leaf's capabilities, and `last_resort` is not one of the
+/// default types exempt from that (gap-5 section 4.2): without it `KeyPackageIn::validate` refuses
+/// every package `build_key_package(.., true)` builds with `UnsupportedExtension`, and each device
+/// must keep one last-resort package on the instance (protocol/01, "Joining").
 pub fn leaf_capabilities() -> Capabilities {
     Capabilities::new(
         None,
         None,
-        Some(&[DILLA_BINDING]),
+        Some(&[DILLA_BINDING, ExtensionType::LastResort]),
         None,
         Some(&[CredentialType::Basic]),
     )
@@ -180,6 +186,7 @@ mod tests {
     fn every_leaf_advertises_the_binding_extension_and_basic_credentials() {
         let caps = leaf_capabilities();
         assert!(caps.extensions().contains(&DILLA_BINDING));
+        assert!(caps.extensions().contains(&ExtensionType::LastResort));
         assert!(caps.credentials().contains(&CredentialType::Basic));
     }
 

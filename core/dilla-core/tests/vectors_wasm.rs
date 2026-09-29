@@ -26,10 +26,12 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_node_experimental);
 
-/// The five suites, in the order `run_all()` builds them. Same golden as
-/// `core/dilla-core-wasm/tests/node.rs`: a suite silently dropped from `run_all()` would otherwise
-/// leave a green report that checks less than it used to.
-const EXPECTED_SUITES: [&str; 5] = ["envelope", "franking", "sframe", "identity", "rejects"];
+/// The six suites, in the order `run_all()` builds them (Plan B task 17 added `"frames"`). Same
+/// golden as `core/dilla-core-wasm/tests/node.rs`: a suite silently dropped from `run_all()` would
+/// otherwise leave a green report that checks less than it used to.
+const EXPECTED_SUITES: [&str; 6] = [
+    "envelope", "franking", "sframe", "identity", "frames", "rejects",
+];
 
 #[wasm_bindgen_test]
 fn every_vector_suite_passes_on_wasm32() {
@@ -38,7 +40,7 @@ fn every_vector_suite_passes_on_wasm32() {
     let names: Vec<&str> = report.suites.iter().map(|s| s.name).collect();
     assert_eq!(
         names, EXPECTED_SUITES,
-        "the wasm32 build must run all five suites, in order"
+        "the wasm32 build must run all six suites, in order"
     );
 
     // Named per failing field, not just `failed == 0`: on a target with no `std::fs` and no

@@ -1,0 +1,19 @@
+# Invariant 11: after a restore from a stale snapshot every group is epoch-unknown, and a member
+# heals it by uploading its GroupInfo and its handshake tail. The instance rebuilds its PublicGroup
+# from the restored state blob, replays the commits the snapshot lacks, and adopts the result
+# because the tail replays cleanly and the tree hash matches. The group then carries on at the
+# epoch its members are at.
+instance dilla
+client alice
+client bob
+group chat kind=text target=dadadadadadadadadadadadadadadada community=none creator=alice
+join bob chat via=welcome
+sync bob
+snapshot before
+commit alice
+sync alice
+sync bob
+restore_snapshot before
+heal alice chat
+send alice chat healed from the tail
+expect_decrypts bob chat healed from the tail

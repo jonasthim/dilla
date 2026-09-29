@@ -1,0 +1,32 @@
+# Invariant 3: five devices commit for one epoch; exactly one wins and four get E_COMMIT_CONFLICT.
+#
+# The runner is sequential, so "at once" means "from the same epoch": every member syncs to the
+# same epoch first, alice's commit lands, and the other four still build theirs from the epoch
+# alice's commit has already left. Each loser clears its pending commit, syncs to the winner and
+# decrypts what comes after the race.
+instance dilla
+client alice
+client bob
+client carol
+client dave
+client erin
+group chat kind=text target=c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0 community=none creator=alice
+join bob chat via=welcome
+join carol chat via=welcome
+join dave chat via=welcome
+join erin chat via=welcome
+sync alice
+sync bob
+sync carol
+sync dave
+sync erin
+commit alice
+expect_reject E_COMMIT_CONFLICT commit bob
+expect_reject E_COMMIT_CONFLICT commit carol
+expect_reject E_COMMIT_CONFLICT commit dave
+expect_reject E_COMMIT_CONFLICT commit erin
+send alice chat after the race
+expect_decrypts bob chat after the race
+expect_decrypts carol chat after the race
+expect_decrypts dave chat after the race
+expect_decrypts erin chat after the race

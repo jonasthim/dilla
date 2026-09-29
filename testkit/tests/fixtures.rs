@@ -73,9 +73,25 @@ fn the_committed_manifest_lists_every_file_with_a_matching_digest() {
     let files = m["files"].as_array().expect("files");
     assert_eq!(
         files.len(),
-        13,
-        "group_info, ratchet_tree, state and ten commits"
+        17,
+        "group_info, ratchet_tree, key_package, remove_leaf0, application_message, state, \
+         ten commits and the GroupInfo commits/09.mls merges to"
     );
+    // ABI v2's `validate_key_package`, `public_group_proposal_inspect` and `private_message_aad`
+    // `include_bytes!` these three by name, so a regeneration that stopped writing one would break
+    // the wasi crate's tests at compile time rather than here. Naming them keeps the failure in
+    // the fixture's own test.
+    for expected in [
+        "key_package.mls",
+        "remove_leaf0.mls",
+        "application_message.mls",
+        "commits/09.group_info.mls",
+    ] {
+        assert!(
+            files.iter().any(|f| f["path"].as_str() == Some(expected)),
+            "the manifest must list {expected}"
+        );
+    }
     for file in files {
         let rel = file["path"].as_str().expect("path");
         let path = std::path::Path::new(FIXTURE_DIR).join(rel);
@@ -155,5 +171,34 @@ fn the_ds_view_accepts_the_committed_fixture_and_every_alternative_commit() {
             before + 1,
             "commits/{i:02}.mls must advance the epoch by one"
         );
+        if i == 9 {
+            // `verify_no_out` is the `Verifiable` trait's, which the prelude brings in.
+            use openmls::prelude::*;
+            // The one alternative the fixture also merges: its exported GroupInfo must describe
+            // exactly the tree the DS reaches by merging it, or a delivery service could never
+            // accept it (invariant 4) and a heal could never adopt it (invariant 11).
+            let raw =
+                std::fs::read(std::path::Path::new(FIXTURE_DIR).join("commits/09.group_info.mls"))
+                    .expect("commits/09.group_info.mls");
+            let info = {
+                use tls_codec::Deserialize as _;
+                match openmls::prelude::MlsMessageIn::tls_deserialize_exact(&raw)
+                    .expect("group info")
+                    .extract()
+                {
+                    openmls::prelude::MlsMessageBodyIn::GroupInfo(info) => info,
+                    other => panic!("commits/09.group_info.mls is not a GroupInfo: {other:?}"),
+                }
+            };
+            let signer = ds
+                .signature_key_of_leaf(openmls::prelude::LeafNodeIndex::new(0))
+                .expect("leaf 0");
+            assert!(
+                info.verify_no_out(&crypto, &signer).is_ok(),
+                "the merged GroupInfo must be signed by the committer, leaf 0"
+            );
+            assert_eq!(info.epoch().as_u64(), ds.epoch());
+            assert_eq!(info.group_context().tree_hash(), ds.tree_hash().as_slice());
+        }
     }
 }

@@ -1,0 +1,23 @@
+# Invariant 1: a group is registered with its dilla_binding, once per group id (409
+# E_GROUP_EXISTS). A text group is refused for a channel whose visibility is invite or discoverable,
+# or whose mode is readable (403 E_MODE_READABLE); a private e2ee channel takes one, and a call
+# group exists whatever the channel's text mode. The test host records the channels, because the
+# channels table is Plan 2's.
+instance dilla
+client alice
+client bob
+client carol
+channel f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1 visibility=private mode=e2ee
+group chat kind=text target=f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1 community=none creator=alice
+expect_reject E_GROUP_EXISTS group again kind=text target=f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1 community=none creator=bob
+channel f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2 visibility=private mode=readable
+expect_reject E_MODE_READABLE group readable kind=text target=f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2 community=none creator=alice
+channel f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3 visibility=invite mode=readable
+expect_reject E_MODE_READABLE group invite kind=text target=f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3 community=none creator=alice
+channel f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5 visibility=discoverable mode=readable
+expect_reject E_MODE_READABLE group discoverable kind=text target=f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5 community=none creator=alice
+channel f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6 visibility=invite mode=readable
+group voice kind=call target=f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6 community=none creator=bob
+join carol chat via=welcome
+send alice chat the private e2ee channel's group works
+expect_decrypts carol chat the private e2ee channel's group works

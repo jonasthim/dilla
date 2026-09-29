@@ -1,0 +1,77 @@
+package api
+
+import (
+	"net/http"
+
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/config"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/server"
+)
+
+// The delivery service's rate classes, one per `[limits.rate]` pair. Every bucket is keyed by the
+// uploading DEVICE session — protocol/01's "rate limits bind to the uploading device session" — so
+// one device cannot spend another's allowance, and an account with several devices has one
+// allowance per device.
+const (
+	dsClassMessage  = "message"
+	dsClassCommit   = "commit"
+	dsClassProposal = "proposal"
+	dsClassRead     = "read"
+	dsClassWrite    = "write"
+	// dsClassKeyPackage meters GET /v1/devices/{id}/keypackage per (requester, target) pair at
+	// the proposal rate: every fetched KeyPackage is consumed, so a requester that fetched without
+	// bound would exhaust the target's directory (32 + 1 last resort) and leave it unaddable. The
+	// requester's read bucket still applies on top.
+	dsClassKeyPackage = "keypackage"
+)
+
+func dsRateClass(r config.Rate, name string) server.Class {
+	switch name {
+	case dsClassMessage:
+		return server.Class{Name: name, PerSecond: r.MessagePerSecond, Burst: r.MessageBurst}
+	case dsClassCommit:
+		return server.Class{Name: name, PerSecond: r.CommitPerSecond, Burst: r.CommitBurst}
+	case dsClassProposal:
+		return server.Class{Name: name, PerSecond: r.ProposalPerSecond, Burst: r.ProposalBurst}
+	case dsClassKeyPackage:
+		return server.Class{Name: name, PerSecond: r.ProposalPerSecond, Burst: r.ProposalBurst}
+	case dsClassWrite:
+		return server.Class{Name: name, PerSecond: r.WritePerSecond, Burst: r.WriteBurst}
+	default:
+		return server.Class{Name: dsClassRead, PerSecond: r.ReadPerSecond, Burst: r.ReadBurst}
+	}
+}
+
+// dsMeter takes one token from the session's bucket of `class` before f runs and answers
+// 429 E_RATE_LIMITED with retry_after_ms when there is none. It runs INSIDE the session
+// middleware, which is what puts the device on the context. A nil limiter meters nothing: the
+// handler-level tests build Groups and Messages without one, and the composition root always
+// passes the instance's.
+func dsMeter(l *server.RateLimiter, class string, f http.HandlerFunc) http.HandlerFunc {
+	if l == nil {
+		return f
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s, ok := auth.FromContext(r.Context()); ok {
+			if err := allowDS(l, class, s.DeviceID.String()); err != nil {
+				server.WriteError(w, err)
+				return
+			}
+		}
+		f(w, r)
+	}
+}
+
+// allowDS spends one token of (class, key) or returns the refusal.
+func allowDS(l *server.RateLimiter, class, key string) error {
+	if ok, wait := l.Allow(dsRateClass(l.Config(), class), key); !ok {
+		return server.RateLimitedAfter(wait)
+	}
+	return nil
+}
+
+// keyPackageBucket is the (requester, target) key of dsClassKeyPackage.
+func keyPackageBucket(requester, target id.ID) string {
+	return requester.String() + "\x00" + target.String()
+}

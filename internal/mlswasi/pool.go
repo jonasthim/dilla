@@ -98,7 +98,7 @@ func (i *Instance) invoke(ctx context.Context, name string, fn api.Function, par
 	out, err := fn.Call(ctx, params...)
 	if err != nil {
 		i.poisoned = true
-		return nil, fmt.Errorf("%w: %s: %v", ErrTrap, name, err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrTrap, name, err)
 	}
 	return out, nil
 }
@@ -113,6 +113,9 @@ func (i *Instance) Call(ctx context.Context, export string, req []byte) ([]byte,
 	fn := i.mod.ExportedFunction(export)
 	if fn == nil {
 		return nil, fmt.Errorf("mlswasi: no export %q", export)
+	}
+	if i.rt != nil && i.rt.onCall != nil {
+		i.rt.onCall(export)
 	}
 	reqLen := uint32(len(req))
 

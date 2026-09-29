@@ -1,0 +1,14 @@
+# Invariant 11's terminal path: after a restore nobody heals the group, the 24-hour heal window
+# closes, and the instance closes the group so the channel owner's device re-creates it. The clock
+# is moved past the window rather than waited out: the sweep evaluates the deadline lazily.
+instance dilla
+client alice
+client bob
+group chat kind=text target=dbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdb community=none creator=alice
+join bob chat via=welcome
+sync bob
+snapshot before
+commit alice
+restore_snapshot before
+advance_clock 24h
+expect_closed chat

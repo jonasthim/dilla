@@ -25,6 +25,7 @@ pub const ENVELOPE_JSON: &str = include_str!("../../../../protocol/vectors/envel
 pub const FRANKING_JSON: &str = include_str!("../../../../protocol/vectors/franking.json");
 pub const SFRAME_JSON: &str = include_str!("../../../../protocol/vectors/sframe.json");
 pub const IDENTITY_JSON: &str = include_str!("../../../../protocol/vectors/identity.json");
+pub const FRAMES_JSON: &str = include_str!("../../../../protocol/vectors/frames.json");
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
@@ -551,12 +552,44 @@ pub fn run_rejects() -> SuiteReport {
     }
 }
 
+/// The gateway frame corpus (`02-delivery-service.md`). Each case is re-encoded as
+/// `[op, n, group_id, payload]` and compared against the committed `frame`; `payload` is spliced
+/// in as already-encoded bytes with `Encoder::raw` (`cbor/enc.rs:90`), because the payload's own
+/// shape is the responsibility of the producing suite, not of the framing.
+pub fn run_frames() -> SuiteReport {
+    let mut cases = Vec::new();
+    let doc: Value = serde_json::from_str(FRAMES_JSON).unwrap_or(Value::Null);
+    for case in doc["cases"].as_array().unwrap_or(&Vec::new()) {
+        let name = case["name"].as_str().unwrap_or("?").to_owned();
+        let mut e = crate::cbor::Encoder::new();
+        e.array(4).uint(int(&case["op"])).uint(int(&case["n"]));
+        let group = case["group_id"].as_str().unwrap_or("");
+        if group.is_empty() {
+            e.null();
+        } else {
+            e.bytes(&unhex(group));
+        }
+        e.raw(&unhex(case["payload"].as_str().unwrap_or("")));
+        cases.push(CaseReport::compare(
+            name,
+            "frame",
+            expect_str(&case["frame"]),
+            hex(e.as_slice()),
+        ));
+    }
+    SuiteReport {
+        name: "frames",
+        cases,
+    }
+}
+
 pub fn run_all() -> VectorReport {
     VectorReport::from_suites(vec![
         run_envelope(),
         run_franking(),
         run_sframe(),
         run_identity(),
+        run_frames(),
         run_rejects(),
     ])
 }

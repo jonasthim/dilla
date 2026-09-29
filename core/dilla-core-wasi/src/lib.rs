@@ -3,8 +3,10 @@
 //! **This module exports no `_initialize`, and needs none.** facts-wazero §3.1, gap-19 §0 items 6-8
 //! and interfaces §2.10 all say a `cdylib` for `wasm32-wasip1` is linked with `crt1-reactor.o` and
 //! therefore exports `_initialize`; measured on rustc 1.98.1 that is false. rustc passes `--no-entry`
-//! for a `cdylib` and links no crt object, so the built module's export section holds exactly the 17
-//! dilla exports plus `memory` (18 entries), there is no start section, and `__wasm_call_ctors` does
+//! for a `cdylib` and links no crt object, so the built module's export section holds exactly the
+//! dilla exports plus `memory` — 23 + 1 entries at ABI v3 (the 21 `abi_export!` lines plus
+//! `dilla_alloc` and `dilla_free`), 17 + 1 when this was first measured at ABI v1 — there is no
+//! start section, and `__wasm_call_ctors` does
 //! not appear in the module at all. Nothing is lost: `_initialize`'s only job is `__wasm_call_ctors`,
 //! and this graph registers no constructors (gap-19 §2.1), so there is no startup hook to run.
 //!
@@ -16,7 +18,9 @@
 //! function that does not exist, and wazero *silently skips* a missing start function, so the call is
 //! a no-op rather than an error — harmless here, but gap-19 item 8's "wrong target" guard
 //! (`CompiledModule.ExportedFunctions()` must contain `_initialize`) would reject this correct
-//! artifact, and an export-section assertion must expect 17 names plus `memory`, not plus
+//! artifact, and an export-section assertion must expect the `abi_export!` names plus `memory` (23
+//! plus `memory` at ABI v3; `lint_policy::every_dispatch_arm_is_exported_from_the_module` keeps that
+//! list and `exports::dispatch` in step with each other), not plus
 //! `_initialize`. Getting a reactor entry back would mean linking `crt1-reactor.o` by hand
 //! (`-C link-arg=<sysroot>/lib/rustlib/wasm32-wasip1/lib/self-contained/crt1-reactor.o`, verified to
 //! work), which needs a toolchain-absolute path in `[target.wasm32-wasip1] rustflags` — exactly what
@@ -28,6 +32,7 @@
 pub mod abi;
 pub mod exports;
 pub mod handles;
+mod private_message;
 
 /// The C-shaped exports. Only built for wasm: the ABI's `u32` pointers are the linear-memory
 /// addresses of a 32-bit target and have no meaning on a 64-bit host. Native `cargo test` drives
@@ -137,13 +142,19 @@ mod shims {
     abi_export!(public_group_close);
     abi_export!(public_group_process);
     abi_export!(public_group_merge);
+    abi_export!(public_group_staged_discard);
     abi_export!(public_group_tree);
     abi_export!(public_group_state);
     abi_export!(public_group_proposal_put);
     abi_export!(public_group_proposal_list);
+    abi_export!(public_group_group_info_validate);
+    abi_export!(public_group_staged_group_info_validate);
+    abi_export!(public_group_proposal_inspect);
+    abi_export!(private_message_aad);
     abi_export!(validate_key_package);
     abi_export!(external_propose_add);
     abi_export!(external_propose_remove);
+    abi_export!(device_list_entries);
 }
 
 /// The plan's Global Constraints say `dilla-core` is `#![forbid(unsafe_code)]` and that "only
@@ -188,5 +199,40 @@ mod lint_policy {
             allow > shims,
             "the opt-in must sit inside `mod shims`, not at the crate root"
         );
+    }
+
+    /// Every arm of `exports::dispatch` must also be an `abi_export!` line here. `dispatch` is an
+    /// internal router the native test build calls directly; the *wasm export section* is what the
+    /// host calls by name, and only `abi_export!` writes to it. A name added to one and not the
+    /// other is invisible in `cargo test` and missing from the shipped module —
+    /// `public_group_staged_discard` shipped exactly that way once, so this test exists.
+    #[test]
+    fn every_dispatch_arm_is_exported_from_the_module() {
+        const EXPORTS: &str = include_str!("exports.rs");
+        let router = EXPORTS
+            .split_once("pub fn dispatch(")
+            .expect("exports.rs must declare `pub fn dispatch`")
+            .1
+            .split_once("other =>")
+            .expect("the dispatch match must end in a catch-all arm")
+            .0;
+        let names: Vec<&str> = router
+            .lines()
+            .filter_map(|line| {
+                let (name, tail) = line.trim().strip_prefix('"')?.split_once('"')?;
+                tail.trim_start().starts_with("=>").then_some(name)
+            })
+            .collect();
+        assert!(
+            names.len() >= 16,
+            "the dispatch match parsed as {names:?}, which cannot be right"
+        );
+        for name in names {
+            assert!(
+                SOURCE.contains(&format!("abi_export!({name});")),
+                "`{name}` is a `dispatch` arm with no `abi_export!({name});` in lib.rs: the \
+                 compiled module would not export it and no host could ever call it"
+            );
+        }
     }
 }
