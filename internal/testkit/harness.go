@@ -7,6 +7,7 @@ package testkit
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -66,13 +67,11 @@ func Start(tb testing.TB, o Options) *Harness {
 		binary = os.Getenv("DILLA_TESTKIT")
 	}
 	if binary == "" {
-		tb.Skip("DILLA_TESTKIT is unset: build it with " +
+		return unavailable(tb, "DILLA_TESTKIT is unset: build it with "+
 			"`cargo build -p dilla-testkit --release` and export DILLA_TESTKIT=target/release/dilla-testkit")
-		return nil
 	}
 	if _, err := os.Stat(binary); err != nil {
-		tb.Skipf("DILLA_TESTKIT=%s is not usable: %v", binary, err)
-		return nil
+		return unavailable(tb, fmt.Sprintf("DILLA_TESTKIT=%s is not usable: %v", binary, err))
 	}
 	core := o.CorePath
 	if core == "" {
@@ -106,6 +105,24 @@ func Start(tb testing.TB, o Options) *Harness {
 		}
 	}
 	return h
+}
+
+// RequiredEnv, when set to anything, makes a missing or unusable dilla-testkit a failure rather
+// than a skip. CI sets it for the run that builds the binary: there a skip would pass every
+// accepted-commit test and every chaos scenario without running one.
+const RequiredEnv = "DILLA_TESTKIT_REQUIRED"
+
+// unavailable skips with reason — a developer without the binary still runs the rest of the
+// module — unless RequiredEnv is set, and then fails with it.
+func unavailable(tb testing.TB, reason string) *Harness {
+	tb.Helper()
+	if os.Getenv(RequiredEnv) != "" {
+		tb.Fatalf("%s, and %s is set: the harness is required here, so this is a failure, not a skip",
+			reason, RequiredEnv)
+		return nil
+	}
+	tb.Skip(reason)
+	return nil
 }
 
 // defaultCorePath is internal/mlswasi/testdata/dilla_core_wasi.wasm, resolved from this file

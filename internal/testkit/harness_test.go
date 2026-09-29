@@ -22,6 +22,8 @@ type recordingTB struct {
 	testing.TB
 	skipped    bool
 	skipReason string
+	failed     bool
+	failReason string
 }
 
 func (r *recordingTB) Skip(args ...any) {
@@ -37,8 +39,20 @@ func (r *recordingTB) Skipf(format string, args ...any) {
 func (r *recordingTB) SkipNow()      { r.skipped = true }
 func (r *recordingTB) Skipped() bool { return r.skipped }
 
+// Fatal and Fatalf record too, so a test can assert that Start failed rather than skipped.
+func (r *recordingTB) Fatal(args ...any) {
+	r.failed = true
+	r.failReason = fmt.Sprint(args...)
+}
+
+func (r *recordingTB) Fatalf(format string, args ...any) {
+	r.failed = true
+	r.failReason = fmt.Sprintf(format, args...)
+}
+
 func TestTheHarnessSkipsWithAClearReasonWhenTheBinaryIsAbsent(t *testing.T) {
 	t.Setenv("DILLA_TESTKIT", "")
+	t.Setenv("DILLA_TESTKIT_REQUIRED", "")
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("Start must skip, not panic: %v", r)
@@ -51,6 +65,37 @@ func TestTheHarnessSkipsWithAClearReasonWhenTheBinaryIsAbsent(t *testing.T) {
 	}
 	if !strings.Contains(fake.skipReason, "DILLA_TESTKIT") {
 		t.Fatalf("skip reason %q must name the variable and how to build the binary", fake.skipReason)
+	}
+}
+
+// Where the harness is required — CI, which builds dilla-testkit and the wasi core before this
+// package runs and sets DILLA_TESTKIT_REQUIRED — a missing or unusable binary is a FAILURE. A skip
+// there would turn every accepted-commit test and every chaos scenario into a silent pass.
+func TestAMissingBinaryFailsWhereTheHarnessIsRequired(t *testing.T) {
+	for name, binary := range map[string]string{
+		"unset":    "",
+		"unusable": filepath.Join(t.TempDir(), "no-such-dilla-testkit"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("DILLA_TESTKIT", binary)
+			t.Setenv("DILLA_TESTKIT_REQUIRED", "1")
+			fake := &recordingTB{TB: t}
+			if h := testkit.Start(fake, testkit.Options{DataDir: t.TempDir()}); h != nil {
+				h.Stop()
+				t.Fatal("Start answered a harness without a binary")
+			}
+			if fake.skipped {
+				t.Fatalf("Start skipped (%q) although DILLA_TESTKIT_REQUIRED is set", fake.skipReason)
+			}
+			if !fake.failed {
+				t.Fatal("Start must fail when the harness is required and the binary is missing")
+			}
+			for _, want := range []string{"DILLA_TESTKIT", "DILLA_TESTKIT_REQUIRED"} {
+				if !strings.Contains(fake.failReason, want) {
+					t.Errorf("failure %q must name %s", fake.failReason, want)
+				}
+			}
+		})
 	}
 }
 
