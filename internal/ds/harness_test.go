@@ -43,6 +43,9 @@ type dsHarness struct {
 	repo *failingRepo
 
 	channels *fakeChannels
+	// acl is invariant 4's eligibility source: ds.DenyUnlessMember, plus the users a test names
+	// eligible for an external join (join_test.go).
+	acl *fakeACL
 	// auth is the gateway's token resolver. The gateway holds an `Authenticator` interface, not
 	// *auth.Sessions (deviation B9), so the delivery service's tests satisfy that seam directly
 	// rather than standing a whole account stack up to put one device online.
@@ -121,6 +124,7 @@ func newDSHarness(t *testing.T) *dsHarness {
 	t.Cleanup(func() { _ = h.gw.Shutdown(context.Background()) })
 
 	h.channels = &fakeChannels{modes: map[id.ID][2]uint8{}}
+	h.acl = &fakeACL{deny: ds.DenyUnlessMember{Store: repo}, eligible: map[id.ID]bool{}}
 
 	d, err := ds.New(ds.Options{
 		Store:    repo,
@@ -130,6 +134,7 @@ func newDSHarness(t *testing.T) *dsHarness {
 		Keys:     testInstanceKeys(t),
 		Policy:   ds.DefaultPolicy(),
 		Channels: h.channels,
+		ACL:      h.acl,
 	})
 	if err != nil {
 		t.Fatalf("ds.New: %v", err)
@@ -204,6 +209,7 @@ func (h *dsHarness) restartDS() {
 	d, err := ds.New(ds.Options{
 		Store: h.repo, Wasm: h.wasm, Gateway: h.gw, Clock: h.clk,
 		Keys: testInstanceKeys(h.t), Policy: ds.DefaultPolicy(), Channels: h.channels,
+		ACL: h.acl,
 	})
 	if err != nil {
 		h.t.Fatalf("ds.New after restart: %v", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
@@ -248,6 +249,25 @@ func (d *DS) requireMember(ctx context.Context, groupID id.ID, session Session) 
 	return errNotFound("group")
 }
 
+// requireReader is requireMember widened by exactly one reader: a device whose user the channel
+// ACL admits, which is who joins a text or call group by external commit (protocol/01 § Joining:
+// "An online device joins by external commit using the GroupInfo and ratchet tree served by the
+// DS"). The GroupInfo and the tree are the two reads such a join needs, so only Info and Tree take
+// this path; the handshake log and the ciphertext stay member-only. A device the ACL does not
+// admit is E_NOT_FOUND, exactly as a stranger is to requireMember, so existence is still not
+// probeable. ds.DenyUnlessMember, Plan 1's ACL, admits only a user already in the group.
+func (d *DS) requireReader(ctx context.Context, groupID id.ID, session Session) error {
+	err := d.requireMember(ctx, groupID, session)
+	if err == nil || session.Scope != auth.ScopeEnrolled {
+		return err
+	}
+	ok, aclErr := d.opts.ACL.Eligible(ctx, groupID, session.UserID)
+	if aclErr != nil || !ok {
+		return err
+	}
+	return nil
+}
+
 func (d *DS) Info(ctx context.Context, groupID id.ID, session Session) (GroupInfo, error) {
 	row, err := d.opts.Store.GetGroup(ctx, groupID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -256,7 +276,7 @@ func (d *DS) Info(ctx context.Context, groupID id.ID, session Session) (GroupInf
 	if err != nil {
 		return GroupInfo{}, err
 	}
-	if err := d.requireMember(ctx, groupID, session); err != nil {
+	if err := d.requireReader(ctx, groupID, session); err != nil {
 		return GroupInfo{}, err
 	}
 	return GroupInfo{
@@ -283,7 +303,7 @@ type Tree struct {
 func (d *DS) Tree(ctx context.Context, groupID id.ID, session Session) (Tree, error) {
 	unlock := d.lock(groupID)
 	defer unlock()
-	if err := d.requireMember(ctx, groupID, session); err != nil {
+	if err := d.requireReader(ctx, groupID, session); err != nil {
 		return Tree{}, err
 	}
 	var out Tree

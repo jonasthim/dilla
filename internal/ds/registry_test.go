@@ -186,13 +186,17 @@ func TestTreeIsServedFromTheDSsOwnPublicGroup(t *testing.T) {
 	}
 }
 
-// Both reads are member-only, and a non-member is answered E_NOT_FOUND rather than E_FORBIDDEN:
-// a 403 would tell any authenticated device on the instance which group ids are live.
+// Both reads are refused to a non-member the channel ACL does not admit, and the refusal is
+// E_NOT_FOUND rather than E_FORBIDDEN: a 403 would tell any authenticated device on the instance
+// which group ids are live. The stranger is another user entirely: a second device of a member's
+// USER is eligible under Plan 1's ACL and may read both to join by external commit (join_test.go,
+// deviation B36).
 func TestInfoAndTreeAnswerNotFoundToANonMember(t *testing.T) {
 	h := newDSHarness(t)
 	reg, _ := h.mustRegister(t)
 	stranger := h.memberSession(t, reg.GroupID, 0)
 	stranger.DeviceID = id.New()
+	stranger.UserID = id.New()
 
 	var dsErr *ds.Error
 	if _, err := h.ds.Info(context.Background(), reg.GroupID, stranger); !errors.As(err, &dsErr) ||

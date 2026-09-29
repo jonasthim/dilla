@@ -58,6 +58,7 @@ func (d *DS) Commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 // external join) — turn them on without reshaping the function.
 type commitOptions struct {
 	external         bool  // an external commit: resync and join
+	joining          bool  // an external commit by a device that holds no leaf: a join (B36)
 	skipFreeze       bool  // R25: resync is exempt, under its own two guards
 	allowRatchetTree bool  // invariant 11's heal endpoint, the one route that DOES take a tree
 	handshakeKind    uint8 // 0 means "derive it from `external`"
@@ -293,6 +294,15 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 			state, err := g.State(ctx)
 			if err != nil {
 				return err
+			}
+			// The joiner's own leaf is checked against the session that uploaded it, on the
+			// merged state because that is the first place the leaf exists. A refusal here rolls
+			// the transaction back and the stale handle is evicted below, as for any failure
+			// after the merge.
+			if o.external {
+				if err := d.checkExternalJoiner(ctx, g, groupID, s, state, processed.NewLeaf, o.joining); err != nil {
+					return err
+				}
 			}
 			members, err = d.replaceMembersTx(ctx, tx, groupID, state)
 			if err != nil {
@@ -604,6 +614,61 @@ func (d *DS) checkAddedMember(ctx context.Context, v DeviceListVerifier, groupID
 		return errCommitInvalid("add_acl", "the added user is not eligible under the channel's ACL")
 	}
 	return nil
+}
+
+// checkExternalJoiner is invariant 4's Add clause applied to the leaf an external commit creates:
+// an external commit adds its committer, so the leaf must be the uploading session's own device and
+// user — a joiner may not land a leaf in another device's name — and, for a device joining rather
+// than resyncing, its user must be eligible under the channel ACL and its DSK, which is the leaf's
+// signature key, must be in the newest signed device list, exactly as for an Add by proposal
+// (`checkAddedMember`). Deviation B36.
+func (d *DS) checkExternalJoiner(ctx context.Context, v DeviceListVerifier, groupID id.ID, s Session, state mlswasi.GroupState, newLeaf *uint32, joining bool) error {
+	if newLeaf == nil {
+		return errCommitInvalid("external_joiner", "the joiner's leaf is unknown")
+	}
+	var leaf *mlswasi.Member
+	for i := range state.Members {
+		if state.Members[i].LeafIndex == *newLeaf {
+			leaf = &state.Members[i]
+			break
+		}
+	}
+	if leaf == nil {
+		return errCommitInvalid("external_joiner", "the merged tree holds no leaf where the joiner landed")
+	}
+	deviceID, userID, err := decodeCredentialIdentity(leaf.CredentialIdentity)
+	if err != nil {
+		return errCommitInvalid("external_joiner", "undecodable credential identity")
+	}
+	if deviceID != s.DeviceID || userID != s.UserID {
+		return errCommitInvalid("external_joiner",
+			"an external commit's leaf must be the uploading device's own")
+	}
+	if !joining {
+		return nil
+	}
+	device, err := d.opts.Store.GetDevice(ctx, deviceID)
+	if err != nil {
+		return err
+	}
+	if device.RevokedAt != nil {
+		return errCommitInvalid("external_joiner", "the joining device is revoked")
+	}
+	if !bytes.Equal(leaf.SignatureKey, device.DSKPub) {
+		return errCommitInvalid("external_joiner", "the joiner's leaf key is not its device key")
+	}
+	entries, err := d.opts.DeviceLists.Entries(ctx, v, userID)
+	if err != nil {
+		return errCommitInvalid("external_joiner",
+			"no verifiable signed device list for the joining user: "+err.Error())
+	}
+	for _, dsk := range entries {
+		if bytes.Equal(dsk, device.DSKPub) {
+			return nil
+		}
+	}
+	return errCommitInvalid("external_joiner",
+		"the joining device's DSK is not in the newest signed device list")
 }
 
 // fanOutCommit sends mls.handshake and mls.epoch_changed to the group. Every payload is encoded

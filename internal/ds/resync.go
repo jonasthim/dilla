@@ -43,6 +43,27 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 	if err != nil {
 		return CommitResult{}, err
 	}
+	// A device that holds no leaf has nothing to resync: its external commit is a JOIN
+	// (protocol/01 § Joining), which is gated by the channel ACL and is NOT exempt from
+	// invariant 5's freeze — R25's exemption exists for "the device that has fallen out of the
+	// epoch", and a joiner was never in it. Deviation B36.
+	_, leafErr := d.leafOf(ctx, groupID, s.DeviceID)
+	var noLeaf *Error
+	if leafErr != nil && !errors.As(leafErr, &noLeaf) {
+		return CommitResult{}, leafErr // the store failed; that is not an answer about the leaf
+	}
+	joining := leafErr != nil
+	if joining {
+		ok, err := d.opts.ACL.Eligible(ctx, groupID, s.UserID)
+		if err != nil {
+			return CommitResult{}, err
+		}
+		if !ok {
+			// E_NOT_FOUND, as every read answers a device the ACL does not admit: a 403 would
+			// say the group exists.
+			return CommitResult{}, errNotFound("group")
+		}
+	}
 	if err := d.guardResyncTarget(ctx, s, groupID, epoch); err != nil {
 		return CommitResult{}, err
 	}
@@ -52,11 +73,18 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 		GroupInfo: r.GroupInfo,
 	}, commitOptions{
 		external:      true,
-		skipFreeze:    true,
+		skipFreeze:    !joining,
+		joining:       joining,
 		handshakeKind: handshakeExternalCommit,
 	})
 	if err != nil {
 		return CommitResult{}, err
+	}
+	if joining {
+		// A join the freeze admitted is invariant 5's nobody-online exception, whose re-issue
+		// commit step (9) has already run (`reissueOmitted`). R25's belt-and-braces re-issue
+		// below is the resync's own.
+		return out, nil
 	}
 	// R25's tail: whatever was outstanding is re-issued for the epoch the resync created, and a
 	// committer is elected for it.

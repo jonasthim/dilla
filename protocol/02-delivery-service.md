@@ -242,7 +242,12 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    membership commit deadlocks exactly the device that cannot act. Two guards apply: the resync is
    refused with `E_FORBIDDEN` when the resyncing device is the target of an outstanding non-void
    instance Remove, and the instance re-issues its outstanding proposals for the new epoch
-   immediately afterwards.
+   immediately afterwards. `POST /v1/groups/{id}/resync` from a device that holds **no** leaf in the
+   group is not a resync but a join (`01-groups.md`, "Joining"): it is gated by the channel ACL
+   (`E_NOT_FOUND` to a device the ACL does not admit, as every read answers it), it is held by the
+   freeze above, and the joiner's leaf must be its own device with its DSK in its user's newest
+   signed device list (invariant 4's Add clause). A device the ACL admits may read
+   `GET /v1/groups/{id}/info` and `/tree` to build that external commit.
 6. **Void.** Before proposing, the DS validates a KeyPackage (lifetime not expired, capabilities
    include `0xF001`, not consumed) and a Remove target (leaf still present). A DS proposal older
    than its TTL — 30 seconds in `call` groups, 24 hours in `text` groups — is marked **void**; a
@@ -316,6 +321,19 @@ Added for the remote delivery service:
 - `expect_decrypts_all <actor>` — everything the actor received since its last such assertion decrypts.
 - `expect_quarantined <actor>` — the instance reports the actor's device quarantined (invariant 9).
 - `expect_closed <group>` — the instance reports the group closed (invariant 11).
+- `resync <client> <group>` — the client drops its copy of the group and returns by an own-leaf
+  external commit (`POST /resync`, invariant 9).
+- `fork_report <client> <group>` — the client reports the last commit it received for the group as
+  one it cannot process (`POST /fork-report`, invariant 9).
+- `heal <client> <group>` — the client uploads its GroupInfo and handshake tail to a restored
+  instance (`POST /heal`, invariant 11).
+- `ack_commit <client>` — the client acknowledges its latest `mls.commit_needed` with `commit_ack`
+  and does nothing else (invariant 7).
+- `admit <group> <client>` — the instance proposes adding the client's device (invariant 6).
+
+Against an instance, `join … via=welcome` is the protocol's own join: the instance proposes the Add
+and a member commits it, because a member's own Add is refused by every receiver in a `text` or
+`call` group (`01-groups.md`, "Client policy for proposals from members").
 
 ## Errors
 
