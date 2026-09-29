@@ -385,11 +385,17 @@ func (h *Groups) commit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer done()
-	if epoch, ok := peekCommitEpoch(r); ok {
-		if err := h.DS.CheckCommit(r.Context(), session, groupID, epoch); err != nil {
-			server.WriteError(w, dsError(err))
-			return
-		}
+	// Every valid body starts with 0x85 and a uint epoch, so a head that is not that is refused
+	// here rather than handed to a decoder that would read up to 16 MiB to say the same.
+	epoch, ok := peekCommitEpoch(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
+			"the body does not start with a commit array [epoch, commit, group_info, welcomes, ratchet_tree]"))
+		return
+	}
+	if err := h.DS.CheckCommit(r.Context(), session, groupID, epoch); err != nil {
+		server.WriteError(w, dsError(err))
+		return
 	}
 	var body commitRequestBody
 	if err := server.DecodeBody(w, r, h.maxCommit(), &body); err != nil {

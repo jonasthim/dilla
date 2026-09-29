@@ -50,7 +50,7 @@ func (h *Groups) beginCommit(device id.ID) (func(), error) {
 // peekCommitEpoch reads element 0 of the commit body — `[epoch, commit, group_info, welcomes,
 // ratchet_tree]`, deterministic CBOR, so an array head 0x85 and then the epoch's uint head — from
 // the head of the stream WITHOUT consuming it: r.Body is replaced by a reader that replays the
-// peeked bytes. ok is false when the head is not that shape, and DecodeBody then says why.
+// peeked bytes. ok is false when the head is not that shape, and the handler then refuses the body unread.
 func peekCommitEpoch(r *http.Request) (epoch uint64, ok bool) {
 	br := bufio.NewReaderSize(r.Body, 16)
 	head, _ := br.Peek(10)
