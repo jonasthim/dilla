@@ -2,6 +2,7 @@ package ds
 
 import (
 	"context"
+	"math"
 
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -18,6 +19,13 @@ func nextSeq(ctx context.Context, tx store.Repository, groupID id.ID) (uint64, e
 	return tx.NextSeq(ctx, groupID)
 }
 
+// clampCursor bounds a client-supplied seq cursor to what the stores can hold. Seqs are uint64 on
+// the wire and int64 in SQL, so an unbounded cursor wraps negative in the adapters (2^63 became a
+// cursor BEFORE the first row and served the whole log) and overflows `from+1` in the floor checks
+// (2^64-1 became 0, below every floor, and answered E_PRUNED for a log with no hole). A cursor past
+// MaxInt64 names no row, so it saturates: the page is empty, as it should be.
+func clampCursor(from uint64) uint64 { return min(from, math.MaxInt64) }
+
 // Handshakes serves the catch-up stream. A `from` below the retention floor is E_PRUNED, which
 // tells the client to resync rather than to retry.
 func (d *DS) Handshakes(ctx context.Context, groupID id.ID, session Session, from uint64, limit int32) ([]store.HandshakeRow, error) {
@@ -26,6 +34,7 @@ func (d *DS) Handshakes(ctx context.Context, groupID id.ID, session Session, fro
 	if err := d.requireMember(ctx, groupID, session); err != nil {
 		return nil, err
 	}
+	from = clampCursor(from)
 	if limit <= 0 || limit > 512 {
 		limit = 512
 	}

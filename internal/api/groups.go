@@ -286,6 +286,13 @@ func queryCursor(r *http.Request, name string) int64 {
 	return int64(v)
 }
 
+// queryFrom is queryUint for the "first seq I still want" cursor of the catch-up reads, which the
+// delivery service passes on as a uint64. It saturates at MaxInt64, the largest seq a store can
+// hold: a wider cursor names no row, and left unbounded it wraps negative in the adapters.
+func queryFrom(r *http.Request, name string) uint64 {
+	return min(queryUint(r, name, 0), math.MaxInt64)
+}
+
 type handshakeItem struct {
 	_      struct{} `cbor:",toarray"`
 	Seq    uint64
@@ -307,7 +314,7 @@ func (h *Groups) handshakes(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	from := queryUint(r, "from", 0)
+	from := queryFrom(r, "from")
 	limit := queryLimit(r, "limit", 256)
 	// The whole handshake log of a group is member-only: it names every leaf that ever committed
 	// and every epoch transition. Handshakes takes the session and answers E_NOT_FOUND to a

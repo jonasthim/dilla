@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -126,6 +127,7 @@ func (d *DS) Messages(ctx context.Context, groupID id.ID, session Session, from 
 	if err := d.requireMember(ctx, groupID, session); err != nil {
 		return nil, err
 	}
+	from = clampCursor(from)
 	if limit <= 0 || limit > 256 {
 		limit = 256
 	}
@@ -287,6 +289,11 @@ func (d *DS) handshakesCover(ctx context.Context, groupID id.ID, lo, hi uint64) 
 // their devices; moderator deletion of E2EE messages needs a signed moderation event and is a
 // later card (R29).
 func (d *DS) DeleteMessage(ctx context.Context, s Session, groupID id.ID, seq uint64) error {
+	// A seq no group can have reached is no message. Left alone it wraps negative in the store
+	// adapters, which is a lookup that happens to miss today and a wrong row the day it does not.
+	if seq > math.MaxInt64 {
+		return errNotFound("message")
+	}
 	row, err := d.opts.Store.GetAppMessage(ctx, groupID, seq)
 	if errors.Is(err, store.ErrNotFound) {
 		return errNotFound("message")

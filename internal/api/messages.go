@@ -122,7 +122,7 @@ func (h *Messages) list(w http.ResponseWriter, r *http.Request) {
 	// Member-only, like the other three group reads: the ciphertext, the commitments and the
 	// franking tags of a group are enough to correlate membership and message timing.
 	rows, err := h.DS.Messages(r.Context(), groupID, session,
-		queryUint(r, "from", 0), queryLimit(r, "limit", 128))
+		queryFrom(r, "from"), queryLimit(r, "limit", 128))
 	if err != nil {
 		server.WriteError(w, dsError(err))
 		return

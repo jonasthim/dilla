@@ -3,6 +3,7 @@ package ds_test
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -75,4 +76,52 @@ func burnSeq(t *testing.T, h *dsHarness, groupID id.ID) {
 	}); err != nil {
 		t.Fatalf("NextSeq: %v", err)
 	}
+}
+
+// `from` is the client's, a uint64 on the wire, and the floor check does `from+1`. At 2^64-1 that
+// wraps to 0, which is below every floor, so a caller asking for the rows AFTER a seq no group has
+// ever reached was told E_PRUNED — a "resync by external commit" for a log with no hole in it. A
+// cursor past the head is an empty page, whatever its width.
+func TestACatchUpFromTheTopOfTheUint64RangeIsAnEmptyPageNotPruned(t *testing.T) {
+	t.Run("handshakes", func(t *testing.T) {
+		h := newDSHarness(t)
+		ctx := context.Background()
+		reg, session := h.mustRegister(t)
+		h.appendHandshake(t, reg.GroupID, 1, 6, 1, []byte("swept"))
+		h.clk.Advance(31 * 24 * time.Hour)
+		h.appendHandshake(t, reg.GroupID, 20, 7, 1, []byte("commit"))
+		cutoff := h.clk.Now().Add(-ds.DefaultPolicy().HandshakeRetention).Unix()
+		if gone, err := h.repo.PruneHandshakes(ctx, cutoff); err != nil || gone != 1 {
+			t.Fatalf("PruneHandshakes: %d, %v; the floor must sit above zero", gone, err)
+		}
+		for _, from := range []uint64{math.MaxInt64, math.MaxInt64 + 1, math.MaxUint64} {
+			rows, err := h.ds.Handshakes(ctx, reg.GroupID, session, from, 100)
+			if err != nil || len(rows) != 0 {
+				t.Errorf("from=%d: %d rows, %v; want an empty page", from, len(rows), err)
+			}
+		}
+	})
+	t.Run("messages", func(t *testing.T) {
+		h := newDSHarness(t)
+		g := h.group(t)
+		ctx := context.Background()
+		if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch())); err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		h.clk.Advance(31 * 24 * time.Hour)
+		if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch())); err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		n, err := h.repo.PruneAppMessages(ctx, g.id, 0,
+			h.clk.Now().Add(-ds.DefaultPolicy().MessageRetention).Unix(), h.clk.Now().Unix())
+		if err != nil || n != 1 {
+			t.Fatalf("PruneAppMessages: %d, %v; the floor must sit above zero", n, err)
+		}
+		for _, from := range []uint64{math.MaxInt64, math.MaxInt64 + 1, math.MaxUint64} {
+			rows, err := h.ds.Messages(ctx, g.id, g.session, from, 10)
+			if err != nil || len(rows) != 0 {
+				t.Errorf("from=%d: %d rows, %v; want an empty page", from, len(rows), err)
+			}
+		}
+	})
 }

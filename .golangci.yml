@@ -73,8 +73,13 @@ linters:
         linters:
           - gosec
       # The two store adapters are the int64 (SQL INTEGER) <-> uint64 (protocol id, unix second,
-      # counter) boundary: every column crosses it, ~190 sites, all values this server wrote as
-      # non-negative. Scoped to the adapters, NOT global.
+      # counter) boundary: every column crosses it, ~190 sites. The rows READ back are values this
+      # server wrote as non-negative, but not every value WRITTEN or QUERIED is: a client-supplied
+      # cursor (`from`, a message seq) reaches an adapter as a uint64. Those are bounded ABOVE the
+      # adapters, where G115 stays live (`api.queryFrom`/`queryCursor`, `ds.clampCursor`), and a
+      # new client-controlled uint64 that reaches a store method must be bounded the same way:
+      # this exclusion will not flag it. Scoped to the adapters, NOT global. A deviation from the
+      # brief's file, kept pending a controller ruling.
       - path: ^internal/store/(sqlite|postgres)/
         text: G115
         linters:
