@@ -11,6 +11,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -80,8 +81,14 @@ type Deps struct {
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
 // store. The interface is declared here so Deps can carry a nil of it; the
 // implementation is part 1b's (interfaces.md §1, §6.1).
+//
+// Its signature is *gateway.Tickets' own (deviation B35): a ticket stands in
+// for the SESSION TOKEN on an upgrade that cannot carry an Authorization
+// header, so the store keeps the token it redeems to, and the gateway resolves
+// that token through the same auth.Sessions every other route does. The
+// 1a-era `Mint(userID, deviceID) (string, int64)` had nothing to redeem to.
 type GatewayTickets interface {
-	Mint(userID, deviceID id.ID) (ticket string, expires int64)
+	Mint(deviceID id.ID, sessionToken string) (ticket string, expires time.Time, err error)
 }
 
 // PasswordHasher is the view api needs of internal/auth's Argon2id hasher. Both

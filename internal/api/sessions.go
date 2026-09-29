@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
@@ -208,6 +209,13 @@ func (d Deps) GatewayTicket(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, notImplemented("the gateway ticket store is part 1b's"))
 		return
 	}
-	ticket, expires := d.Tickets.Mint(sess.UserID, sess.DeviceID)
-	d.write(w, r, http.StatusCreated, []any{ticket, uint64(expires)})
+	// The ticket redeems to the bearer token this request authenticated with:
+	// the session middleware has already resolved it, so it is known good.
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	ticket, expires, err := d.Tickets.Mint(sess.DeviceID, token)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.write(w, r, http.StatusCreated, []any{ticket, uint64(expires.Unix())})
 }

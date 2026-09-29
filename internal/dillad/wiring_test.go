@@ -1,0 +1,443 @@
+package dillad_test
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/dillad"
+	"github.com/jonasthim/dilla/internal/mlswasi"
+)
+
+// wiring_test.go is task 27a: the composition root builds the gateway and the delivery service,
+// mounts every delivery-service route and GET /gateway on the one mux, hands the gateway's ticket
+// store to POST /v1/gateway/ticket, and exposes the accessors task 29's harness needs.
+//
+// DEVIATION FROM THE BRIEF'S STEP 1 (deviation B35): the brief's newServer builds its config with
+// config.Default() and a bare temp database, but New reads the instance row (`dillad init`'s) and
+// the database must be migrated, so newServer starts from testConfig — which does exactly what
+// `dillad init` does — and passes the wasi core explicitly, because the config has no [mls] table.
+
+// testCorePath is the wasm32-wasip1 build of dilla-core-wasi the mlswasi tests use. CI downloads
+// it there from the rust-wasi job; locally it is built with
+// `cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked` and copied.
+func testCorePath(t *testing.T) string {
+	t.Helper()
+	path, err := filepath.Abs(filepath.Join("..", "mlswasi", "testdata", "dilla_core_wasi.wasm"))
+	if err != nil {
+		t.Fatalf("resolve the wasi core: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("%s is missing: build it with\n"+
+			"  cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked\n"+
+			"and copy it there (CI downloads the rust-wasi job's artifact): %v", path, err)
+	}
+	return path
+}
+
+var (
+	sharedWasmOnce sync.Once
+	sharedWasm     *mlswasi.Runtime
+	sharedWasmErr  error
+)
+
+// sharedRuntime is one wasm runtime for the whole package. Compiling the OpenMLS module is the most
+// expensive thing New does, and every server in this file would otherwise pay it; a runtime passed
+// in through Options.Wasm is not closed by Shutdown, so one outlives every server that borrows it.
+// The DS's state cache returns every instance it held when its server shuts down.
+func sharedRuntime(t *testing.T) *mlswasi.Runtime {
+	t.Helper()
+	sharedWasmOnce.Do(func() {
+		raw, err := os.ReadFile(testCorePath(t))
+		if err != nil {
+			sharedWasmErr = err
+			return
+		}
+		sharedWasm, sharedWasmErr = mlswasi.New(context.Background(), raw, mlswasi.Options{PoolSize: 4})
+	})
+	if sharedWasmErr != nil {
+		t.Fatalf("build the shared wasm runtime: %v", sharedWasmErr)
+	}
+	return sharedWasm
+}
+
+func newServer(t *testing.T) (*dillad.Server, *httptest.Server) {
+	t.Helper()
+	cfg := testConfig(t)
+	cfg.Log.Level = "warn"
+	s, err := dillad.New(context.Background(), dillad.Options{
+		Config: cfg,
+		Clock:  clock.NewFake(time.Unix(1_700_000_000, 0)),
+		Wasm:   sharedRuntime(t),
+	})
+	if err != nil {
+		t.Fatalf("dillad.New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return s, ts
+}
+
+// Every delivery-service route of §5.1 is MOUNTED. An unauthenticated request must be answered
+// 401, never 404: a 404 means the route does not exist, which is the failure this test exists for.
+func TestEveryDeliveryServiceRouteIsMounted(t *testing.T) {
+	_, ts := newServer(t)
+	const gid = "0102030405060708090a0b0c0d0e0f10"
+	for _, c := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/groups"},
+		{http.MethodGet, "/v1/groups/" + gid + "/info"},
+		{http.MethodGet, "/v1/groups/" + gid + "/tree"},
+		{http.MethodGet, "/v1/groups/" + gid + "/handshakes"},
+		{http.MethodPost, "/v1/groups/" + gid + "/commit"},
+		{http.MethodPost, "/v1/groups/" + gid + "/proposal"},
+		{http.MethodGet, "/v1/groups/" + gid + "/proposals"},
+		{http.MethodPost, "/v1/groups/" + gid + "/message"},
+		{http.MethodGet, "/v1/groups/" + gid + "/messages"},
+		{http.MethodDelete, "/v1/groups/" + gid + "/messages/1"},
+		{http.MethodPost, "/v1/groups/" + gid + "/cursor"},
+		{http.MethodPost, "/v1/groups/" + gid + "/resync"},
+		{http.MethodPost, "/v1/groups/" + gid + "/fork-report"},
+		{http.MethodGet, "/v1/groups/" + gid + "/heal"},
+		{http.MethodPost, "/v1/groups/" + gid + "/heal"},
+		{http.MethodPost, "/v1/keypackages"},
+		{http.MethodGet, "/v1/devices/" + gid + "/keypackage"},
+		{http.MethodGet, "/v1/welcomes"},
+		{http.MethodDelete, "/v1/welcomes/1"},
+	} {
+		req, err := http.NewRequest(c.method, ts.URL+c.path, strings.NewReader(""))
+		if err != nil {
+			t.Fatalf("%s %s: %v", c.method, c.path, err)
+		}
+		res, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", c.method, c.path, err)
+		}
+		res.Body.Close()
+		if res.StatusCode == http.StatusNotFound {
+			t.Errorf("%s %s is not mounted", c.method, c.path)
+		}
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s %s: status = %d, want 401 (mounted, unauthenticated)",
+				c.method, c.path, res.StatusCode)
+		}
+	}
+}
+
+// The gateway upgrade is served, and a plain GET without the upgrade headers is a 400 from
+// websocket.Accept rather than a 404.
+func TestTheGatewayUpgradeIsMounted(t *testing.T) {
+	_, ts := newServer(t)
+	res, err := ts.Client().Get(ts.URL + "/gateway")
+	if err != nil {
+		t.Fatalf("GET /gateway: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		t.Fatal("/gateway is not mounted")
+	}
+}
+
+// POST /v1/gateway/ticket can only mint from a gateway.Tickets the composition root passed in.
+func TestTheTicketRouteHasATicketStore(t *testing.T) {
+	s, _ := newServer(t)
+	if s.Gateway() == nil {
+		t.Fatal("the server built no gateway, so nothing can mint an upgrade ticket")
+	}
+	if s.Gateway().Tickets() == nil {
+		t.Fatal("the gateway has no ticket store")
+	}
+}
+
+// The five accessors the test harness needs.
+func TestTheServerExposesTheAccessorsTheHarnessNeeds(t *testing.T) {
+	s, _ := newServer(t)
+	if s.Repo() == nil {
+		t.Error("Repo() is nil")
+	}
+	if s.DS() == nil {
+		t.Error("DS() is nil")
+	}
+	if s.Gateway() == nil {
+		t.Error("Gateway() is nil")
+	}
+	if s.CommitCount() != 0 {
+		t.Errorf("CommitCount() = %d on a fresh instance, want 0", s.CommitCount())
+	}
+	if _, err := s.DebugState(context.Background()); err != nil {
+		t.Errorf("DebugState: %v", err)
+	}
+}
+
+// DS.Start's background goroutines stop with Shutdown, and Shutdown is idempotent.
+func TestShutdownStopsTheWatchdogAndTheSweeperAndIsIdempotent(t *testing.T) {
+	s, _ := newServer(t)
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("a second Shutdown must be a no-op: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------- beyond the brief's five
+
+// Now() is the server's own clock and DebugState reports the instance as it stands: a fresh
+// instance holds no group, has accepted no commit and runs no election.
+func TestNowAndDebugStateReadTheInstance(t *testing.T) {
+	s, _ := newServer(t)
+	if got := s.Now().Unix(); got != 1_700_000_000 {
+		t.Errorf("Now() = %d, want the fake clock's 1700000000", got)
+	}
+	state, err := s.DebugState(context.Background())
+	if err != nil {
+		t.Fatalf("DebugState: %v", err)
+	}
+	if state.Generation != 1 || state.Groups != 0 || state.Commits != 0 ||
+		state.OpenElections != 0 || state.FrozenGroups != 0 || state.NowUnix != 1_700_000_000 {
+		t.Errorf("DebugState = %+v, want generation 1, nothing else, now 1700000000", state)
+	}
+}
+
+// With no runtime passed in, New builds one from the core it is pointed at, and a core that is
+// not there is a start-up error that names the path — never a server whose every DS route fails.
+func TestNewBuildsTheWasmRuntimeFromTheCorePath(t *testing.T) {
+	cfg := testConfig(t)
+	s, err := dillad.New(context.Background(), dillad.Options{
+		Config: cfg, Clock: clock.System(), CorePath: testCorePath(t),
+	})
+	if err != nil {
+		t.Fatalf("New with a CorePath: %v", err)
+	}
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	missing := filepath.Join(t.TempDir(), "no-such-core.wasm")
+	_, err = dillad.New(context.Background(), dillad.Options{
+		Config: testConfig(t), Clock: clock.System(), CorePath: missing,
+	})
+	if err == nil || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("New with a missing core gave %v, want an error naming %s", err, missing)
+	}
+}
+
+// accountToken redeems the bootstrap invite and returns the account's first device session.
+func accountToken(t *testing.T, h http.Handler, code string) string {
+	t.Helper()
+	dev := newTestDevice(t)
+	body, err := cborx.Marshal(newAccountRequest(code, "jonas", dev))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	res := post(t, h, "/v1/accounts", body)
+	if res.Code != http.StatusOK {
+		t.Fatalf("POST /v1/accounts = %d: %s", res.Code, res.Body.String())
+	}
+	var account []any
+	if err := cborx.Unmarshal(res.Body.Bytes(), &account); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	token, ok := account[2].(string)
+	if !ok || token == "" {
+		t.Fatalf("no session token in the account response: %#v", account)
+	}
+	return token
+}
+
+// newGreetedServer is a served instance plus one enrolled device's session token.
+func newGreetedServer(t *testing.T) (*dillad.Server, *httptest.Server, string) {
+	t.Helper()
+	cfg, code := testConfigInvite(t)
+	s, err := dillad.New(context.Background(), dillad.Options{
+		Config: cfg, Clock: clock.System(), Wasm: sharedRuntime(t),
+	})
+	if err != nil {
+		t.Fatalf("dillad.New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return s, ts, accountToken(t, s.Handler(), code)
+}
+
+// readFrame reads one gateway frame and returns its opcode and payload.
+func readFrame(t *testing.T, ctx context.Context, c *websocket.Conn) (uint64, []any) {
+	t.Helper()
+	typ, b, err := c.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if typ != websocket.MessageBinary {
+		t.Fatalf("message type %v, want binary", typ)
+	}
+	var frame []any
+	if err := cborx.Unmarshal(b, &frame); err != nil {
+		t.Fatalf("decode frame: %v", err)
+	}
+	if len(frame) != 4 {
+		t.Fatalf("frame has %d elements, want [op, n, group_id, payload]", len(frame))
+	}
+	op, ok := frame[0].(uint64)
+	if !ok {
+		t.Fatalf("op is %T", frame[0])
+	}
+	payload, _ := frame[3].([]any)
+	return op, payload
+}
+
+// identify sends op 1 with the credential left to the upgrade, which is the path both the
+// Authorization header and the ticket take.
+func identify(t *testing.T, ctx context.Context, c *websocket.Conn) {
+	t.Helper()
+	b, err := cborx.Marshal([]any{uint64(1), uint64(1), nil,
+		[]any{"", uint64(1), uint64(1), uint64(1), uint64(0)}})
+	if err != nil {
+		t.Fatalf("marshal identify: %v", err)
+	}
+	if err := c.Write(ctx, websocket.MessageBinary, b); err != nil {
+		t.Fatalf("write identify: %v", err)
+	}
+}
+
+// The whole handshake through the composition root's handler chain: the upgrade has to reach
+// http.Hijacker through RequestLog and Recover, hello has to carry this instance's id, and ready
+// is only reached when the gateway resolves the session through the instance's own auth.Sessions
+// and reads the device's groups through its own store.
+func TestAnIdentifiedDeviceIsReadyAndOnlineThroughTheCompositionRoot(t *testing.T) {
+	s, ts, token := newGreetedServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/gateway",
+		&websocket.DialOptions{
+			HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + token}},
+			Subprotocols: []string{"dilla.v1"},
+		})
+	if err != nil {
+		t.Fatalf("dial /gateway: %v", err)
+	}
+	defer c.CloseNow()
+
+	op, hello := readFrame(t, ctx, c)
+	if op != 0 {
+		t.Fatalf("first frame op %d, want hello (0)", op)
+	}
+	instanceID := s.Sessions().InstanceID()
+	if got, _ := hello[5].([]byte); string(got) != string(instanceID[:]) {
+		t.Errorf("hello carries instance id %x, want this instance's %x", got, instanceID)
+	}
+	identify(t, ctx, c)
+	if op, _ := readFrame(t, ctx, c); op != 3 {
+		t.Fatalf("op %d after identify, want ready (3)", op)
+	}
+	sess, err := s.Sessions().Resolve(ctx, token)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !s.Gateway().Online(sess.DeviceID) {
+		t.Error("a device that reached ready through the composition root is not online")
+	}
+}
+
+// POST /v1/gateway/ticket mints from the gateway's own store, so the ticket it answers is one the
+// upgrade accepts: the browser path of gap-38, end to end.
+func TestTheTicketRouteMintsATicketTheGatewayAccepts(t *testing.T) {
+	_, ts, token := newGreetedServer(t)
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/gateway/ticket", strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/cbor")
+	res, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/gateway/ticket: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /v1/gateway/ticket = %d, want 201", res.StatusCode)
+	}
+	var body []any
+	raw := make([]byte, 512)
+	n, _ := res.Body.Read(raw)
+	if err := cborx.Unmarshal(raw[:n], &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	ticket, ok := body[0].(string)
+	if !ok || ticket == "" {
+		t.Fatalf("no ticket in %#v", body)
+	}
+	if expires, ok := body[1].(uint64); !ok || int64(expires) <= time.Now().Unix() {
+		t.Fatalf("expires = %#v, want a unix time in the future", body[1])
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/gateway",
+		&websocket.DialOptions{Subprotocols: []string{"dilla.v1", "dilla.ticket." + ticket}})
+	if err != nil {
+		t.Fatalf("dial /gateway with a ticket: %v", err)
+	}
+	defer c.CloseNow()
+	if op, _ := readFrame(t, ctx, c); op != 0 {
+		t.Fatalf("first frame op %d, want hello", op)
+	}
+	identify(t, ctx, c)
+	if op, _ := readFrame(t, ctx, c); op != 3 {
+		t.Fatalf("op %d after identify with a ticket, want ready (3)", op)
+	}
+}
+
+// Revoking a device's sessions closes its sockets in the same breath (protocol/02, "Device
+// sessions", rule 6): the composition root wires auth.Sessions.OnRevoke to Gateway.CloseDevice.
+func TestRevokingADeviceClosesItsGatewayConnection(t *testing.T) {
+	s, ts, token := newGreetedServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/gateway",
+		&websocket.DialOptions{
+			HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + token}},
+			Subprotocols: []string{"dilla.v1"},
+		})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.CloseNow()
+	readFrame(t, ctx, c)
+	identify(t, ctx, c)
+	if op, _ := readFrame(t, ctx, c); op != 3 {
+		t.Fatalf("op %d, want ready", op)
+	}
+	sess, err := s.Sessions().Resolve(ctx, token)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// The client keeps reading, as a live client does, so it answers the close handshake the
+	// gateway starts; a peer that never reads holds the revoking caller for the websocket
+	// library's close timeout instead.
+	ended := make(chan error, 1)
+	go func() {
+		for {
+			if _, _, err := c.Read(ctx); err != nil {
+				ended <- err
+				return
+			}
+		}
+	}()
+	if err := s.Sessions().RevokeDevice(ctx, sess.DeviceID); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	err = <-ended
+	if got := websocket.CloseStatus(err); got != 4004 {
+		t.Fatalf("the socket ended with %v (status %d), want close 4004 session revoked", err, got)
+	}
+}

@@ -13,11 +13,19 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
+	"sync"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/gateway"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
@@ -29,10 +37,17 @@ type Server struct {
 	sessions *auth.Sessions
 	httpSrv  *http.Server
 	instance store.InstanceRow
-	// ds and gateway are filled by part 1b; they are `any` here so that adding
-	// them costs 1b a type change and not a new method.
-	ds      any
-	gateway any
+
+	// Part 1b's three subsystems (task 27a). ownsWasm records that New compiled
+	// the runtime itself, so Shutdown closes it; a runtime passed in through
+	// Options.Wasm stays the caller's.
+	wasm     *mlswasi.Runtime
+	ownsWasm bool
+	gw       *gateway.Gateway
+	ds       *ds.DS
+
+	shutdownOnce sync.Once
+	shutdownErr  error
 }
 
 // New builds the server. It reads the instance row once — the instance id is in
@@ -45,6 +60,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	instance, err := o.Repo.GetInstance(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("dillad: read instance row (has `dillad init` run?): %w", err)
+	}
+	keys, err := instanceKeys(instance)
+	if err != nil {
+		return nil, err
 	}
 	// The generation goes into every 201 from POST /v1/devices/{device_id}/sessions
 	// and into the X-Dilla-Generation header below; one source, so they agree.
@@ -83,8 +102,112 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		deps.OIDC = auth.NewOIDC(o.Config.Auth.OIDC, secret, o.Clock)
 	}
 
+	// The wasm runtime. One per process: it holds the compiled module and the
+	// instance pool, and compiling the OpenMLS module twice is the single most
+	// expensive thing this binary can do.
+	wasm, ownsWasm := o.Wasm, false
+	if wasm == nil {
+		wasm, err = newWasmRuntime(ctx, o)
+		if err != nil {
+			return nil, err
+		}
+		ownsWasm = true
+	}
+	closeWasmOnError := func() {
+		if ownsWasm {
+			_ = wasm.Close(context.Background())
+		}
+	}
+
+	// The gateway, then the delivery service: ds holds *gateway.Gateway, and
+	// the gateway calls back into ds for ready's per-group digest and for
+	// invariant 7's acknowledgement. gateway.Options takes both as plain
+	// functions, so they close over `delivery`, which is assigned before New
+	// returns and therefore before any connection can reach either callback.
+	var delivery *ds.DS
+	gw := gateway.New(gateway.Options{
+		Store:   o.Repo,
+		Clock:   o.Clock,
+		Log:     o.Log,
+		Metrics: o.Metrics,
+		Auth:    sessions,
+		Outstanding: func(ctx context.Context, groupID id.ID) uint64 {
+			rows, err := delivery.Outstanding(ctx, groupID)
+			if err != nil {
+				return 0
+			}
+			return uint64(len(rows))
+		},
+		CommitAck: func(ctx context.Context, groupID, deviceID id.ID, round uint64) {
+			_ = delivery.AckCommitNeeded(ctx, groupID, deviceID, round)
+		},
+		InstanceID:     instance.InstanceID,
+		Generation:     instance.Generation,
+		HeartbeatMS:    uint64(o.Config.Gateway.HeartbeatInterval.Value() / time.Millisecond),
+		IdleClose:      o.Config.Gateway.SessionIdleClose.Value(),
+		ReadLimit:      o.Config.Gateway.ReadLimitBytes,
+		MaxFrameBytes:  o.Config.MaxFrameBytes(),
+		TrustedOrigins: o.Config.HTTP.TrustedOrigins,
+	})
+	delivery, err = ds.New(ds.Options{
+		Store:    o.Repo,
+		Wasm:     wasm,
+		Gateway:  gw,
+		Clock:    o.Clock,
+		Log:      o.Log,
+		Metrics:  o.Metrics,
+		Keys:     keys,
+		Policy:   policyFromConfig(o.Config),
+		Channels: o.Channels, // nil: ds.PermissiveChannels (NV-B5)
+		ACL:      o.ACL,      // nil: ds.DenyUnlessMember (NV-B6)
+		// The device lists are verified in the guest (NV-B8, deviation B32).
+		DeviceLists: ds.NewDeviceLists(o.Repo, wasm),
+	})
+	if err != nil {
+		closeWasmOnError()
+		return nil, err
+	}
+
+	// Revoking a device closes its sockets in the same breath as its sessions
+	// (protocol/02, "Device sessions", rule 6).
+	closeDevice := func(device id.ID) {
+		gw.CloseDevice(device, gateway.CloseSessionRevoked, "device revoked")
+	}
+	sessions.OnRevoke = closeDevice
+	deps.CloseGateway = closeDevice
+	// POST /v1/gateway/ticket mints from the gateway's own store; a second
+	// store would mint tickets the upgrade has never heard of.
+	deps.Tickets = gw.Tickets()
+
 	mux := server.NewMux()
 	api.Register(mux, deps)
+
+	// The upgrade is HTTP/1.1 only: a WebSocket needs Hijacker, so this route
+	// is never served over h2c (R19).
+	mux.Handle("GET /gateway", gw.Handler())
+
+	// Every Register method on *api.Groups is called exactly once (deviations
+	// B29, B31): there is no api.KeyPackages, api.Welcomes or api.Heal type.
+	//
+	// MaxBody is left at zero, which is each handler group's own §5.3 cap (the
+	// delivery service's 2 MiB, the small routes' 64 KiB): dilla.toml carries no
+	// body-size key, and the plan's `o.Config.Limits.MaxBodyBytes` does not
+	// exist (deviation B35).
+	groups := &api.Groups{DS: delivery}
+	groups.Register(mux, sessions)          // rows 1-3
+	groups.RegisterSequencer(mux, sessions) // rows 4-7, 19
+	groups.RegisterRecovery(mux, sessions)  // rows 8-9
+	groups.RegisterDirectory(mux, sessions) // rows 10, 12, 15-16
+	groups.RegisterHeal(mux, sessions)      // rows 13-14
+	(&api.Messages{
+		DS:                 delivery,
+		MaxCiphertextBytes: o.Config.Limits.MaxCiphertextBytes,
+	}).Register(mux, sessions) // rows 11, 17, 18 and the cursor
+
+	if err := delivery.Start(ctx); err != nil {
+		closeWasmOnError()
+		return nil, err
+	}
 	// The extension point parts 1b and 2 mount through. Registering after the 1a
 	// routes means a conflicting pattern panics at start-up, where the stdlib
 	// mux reports which two patterns collide.
@@ -113,7 +236,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	h = server.Recover(o.Log)(h)
 	h = server.RequestLog(o.Log, o.Clock, o.Metrics.ObserveHTTP)(h)
 
-	s := &Server{o: o, mux: mux, handler: h, sessions: sessions, instance: instance}
+	s := &Server{
+		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
+		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery,
+	}
 	s.httpSrv = &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: o.Config.Server.ReadHeaderTimeout.Value(),
@@ -145,16 +271,30 @@ func (s *Server) Mux() *server.Mux         { return s.mux }
 func (s *Server) Repo() store.Repository   { return s.o.Repo }
 func (s *Server) Sessions() *auth.Sessions { return s.sessions }
 
+// DS, Gateway and Now are the harness accessors of deviation B17: plain getters
+// over what New built.
+func (s *Server) DS() *ds.DS                { return s.ds }
+func (s *Server) Gateway() *gateway.Gateway { return s.gw }
+func (s *Server) Now() time.Time            { return s.o.Clock.Now() }
+
+// CommitCount is the delivery service's own accepted-commit counter. A
+// scenario that asserts "at most four commits for 1,000 devices" needs the
+// instance's count, not the client's.
+func (s *Server) CommitCount() int { return s.ds.AcceptedCommits() }
+
+// DebugState is the counter bundle the test control listener reports. The type
+// is ds.DebugState and not a dilladtest one (deviation B35): dilladtest imports
+// this package, and the release binary must never link it.
+type DebugState = ds.DebugState
+
+// DebugState reads the delivery service's counters.
+func (s *Server) DebugState(ctx context.Context) (DebugState, error) {
+	return s.ds.DebugState(ctx)
+}
+
 // Protocols reports the HTTP protocols the listener is configured for, so a
 // doctor leg and a test can both assert that unencrypted HTTP/2 is on.
 func (s *Server) Protocols() *http.Protocols { return s.httpSrv.Protocols }
-
-// DS and Gateway are reserved for part 1b, which adds the two fields and
-// changes these to return them. interfaces.md §7.3 requires the test harness to
-// reach all three, and a 1b test that calls them must not have to edit this
-// file's shape as well as its contents.
-func (s *Server) DS() any      { return s.ds }
-func (s *Server) Gateway() any { return s.gateway }
 
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if err := s.httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -163,24 +303,75 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	return nil
 }
 
-// Shutdown drains within shutdown_grace and then closes what is left. It also
-// closes the repository, but only when New opened it: a caller that supplied
-// its own store still owns it.
+// Shutdown drains within shutdown_grace and then closes what is left, in
+// dependency order: the HTTP server, the delivery service (it fans out to the
+// gateway, and its watchdog and sweeper stop here), the gateway, the wasm
+// runtime when New compiled it, and the repository when New opened it — a
+// caller that supplied its own store or runtime still owns it.
+//
+// Shutdown is idempotent: the second and later calls return the first call's
+// result and touch nothing.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.shutdownOnce.Do(func() { s.shutdownErr = s.shutdown(ctx) })
+	return s.shutdownErr
+}
+
+func (s *Server) shutdown(ctx context.Context) error {
 	s.o.Health.Drain()
 	grace := s.o.Config.Server.ShutdownGrace.Value()
 	ctx, cancel := context.WithTimeout(ctx, grace)
 	defer cancel()
 	var err error
+	keep := func(e error) {
+		if e != nil && err == nil {
+			err = e
+		}
+	}
 	if serr := s.httpSrv.Shutdown(ctx); serr != nil {
-		err = s.httpSrv.Close()
+		keep(s.httpSrv.Close())
+	}
+	if derr := s.ds.Shutdown(ctx); derr != nil {
+		keep(fmt.Errorf("dillad: stop the delivery service: %w", derr))
+	}
+	if gerr := s.gw.Shutdown(ctx); gerr != nil {
+		keep(fmt.Errorf("dillad: stop the gateway: %w", gerr))
+	}
+	if s.ownsWasm {
+		if werr := s.wasm.Close(ctx); werr != nil {
+			keep(fmt.Errorf("dillad: close the wasm runtime: %w", werr))
+		}
 	}
 	if s.o.closeRepo {
-		if cerr := s.o.Repo.Close(); cerr != nil && err == nil {
-			err = fmt.Errorf("dillad: close store: %w", cerr)
+		if cerr := s.o.Repo.Close(); cerr != nil {
+			keep(fmt.Errorf("dillad: close store: %w", cerr))
 		}
 	}
 	return err
+}
+
+// newWasmRuntime compiles the wasi core New was pointed at. The compilation
+// cache lives under the data directory, so a restart loads the compiled module
+// instead of compiling it again.
+func newWasmRuntime(ctx context.Context, o Options) (*mlswasi.Runtime, error) {
+	path := o.CorePath
+	if path == "" {
+		var err error
+		if path, err = defaultCorePath(); err != nil {
+			return nil, err
+		}
+	}
+	module, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("dillad: read the wasi core %s: %w", path, err)
+	}
+	rt, err := mlswasi.New(ctx, module, mlswasi.Options{
+		CacheDir: filepath.Join(o.Config.Instance.DataDir, "wazero-cache"),
+		Now:      o.Clock.Now,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dillad: build the wasi runtime from %s: %w", path, err)
+	}
+	return rt, nil
 }
 
 // scrapeToken is the bearer token /metrics is guarded with. An empty one with

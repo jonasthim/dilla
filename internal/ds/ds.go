@@ -11,6 +11,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
@@ -246,6 +247,9 @@ type DS struct {
 	// purpose: an election decided while everybody was away is stale by definition, and the
 	// instance re-elects on the first device that reaches READY.
 	elections elections
+
+	// accepted counts the commits this DS has accepted, for AcceptedCommits (debug.go).
+	accepted atomic.Int64
 
 	stop     chan struct{}
 	stopOnce sync.Once

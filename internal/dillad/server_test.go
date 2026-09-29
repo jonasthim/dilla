@@ -85,9 +85,11 @@ func testConfigInvite(t *testing.T) (*config.Config, string) {
 	repo := sqlite.New(write, read)
 
 	now := time.Now().Unix()
+	senderKeyID, frankingKeyID := id.New(), id.New()
 	instance := store.InstanceRow{
-		InstanceID: id.New(), ExternalSenderKeyID: id.New(), KeyHistory: []byte{1},
-		FrankingKeyID: id.New(), Generation: 1, PolicyVersion: 1, Created: now,
+		InstanceID: id.New(), ExternalSenderKeyID: senderKeyID,
+		KeyHistory:    testKeyHistory(t, senderKeyID, frankingKeyID, now),
+		FrankingKeyID: frankingKeyID, Generation: 1, PolicyVersion: 1, Created: now,
 	}
 	code, hash := auth.NewInviteCode()
 	invite := store.InviteRow{
@@ -128,6 +130,30 @@ func testConfigInvite(t *testing.T) (*config.Config, string) {
 	return loaded, code
 }
 
+// testKeyHistory is instances.key_history exactly as `dillad init` writes it
+// (protocol/03-identity.md § Instance keys): the composition root reads the
+// external-sender key and K_frank out of it, and refuses an instance whose
+// history does not name both.
+func testKeyHistory(t *testing.T, senderKeyID, frankingKeyID id.ID, now int64) []byte {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	frank := make([]byte, 32)
+	if _, err := rand.Read(frank); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	b, err := cborx.Marshal([]any{uint64(1), []any{
+		[]any{uint64(0), senderKeyID, []byte(pub), []byte(priv.Seed()), uint64(now), nil},
+		[]any{uint64(1), frankingKeyID, []byte{}, frank, uint64(now), nil},
+	}})
+	if err != nil {
+		t.Fatalf("encode key history: %v", err)
+	}
+	return b
+}
+
 // writeTestSecret writes 32 CSPRNG bytes as hex at 0600: config.Validate refuses
 // a secret file that is missing, group-readable or under 32 bytes.
 func writeTestSecret(t *testing.T, dir, name string) string {
@@ -165,7 +191,9 @@ func newInstanceTuned(t *testing.T, tune func(*config.Config)) (*dillad.Server, 
 	if tune != nil {
 		tune(cfg)
 	}
-	srv, err := dillad.New(context.Background(), dillad.Options{Config: cfg, Clock: clock.System()})
+	srv, err := dillad.New(context.Background(), dillad.Options{
+		Config: cfg, Clock: clock.System(), Wasm: sharedRuntime(t),
+	})
 	if err != nil {
 		t.Fatalf("dillad.New: %v", err)
 	}
@@ -499,15 +527,17 @@ func TestTheServerSpeaksUnencryptedHTTP2AndHTTP1(t *testing.T) {
 }
 
 // interfaces.md §7.3 requires the test harness to reach the repository, the
-// delivery service and the gateway. Part 1b fills the last two; all three
-// accessors must exist here so 1b changes their contents and not this file's
-// shape. And Options must default what it is not given: part 1b's harness calls
-// New with Config and Clock alone.
+// delivery service and the gateway, and Options must default what it is not
+// given: part 1b's harness calls New with the config, a clock and the wasi core
+// alone, and New opens the store, compiles the runtime and builds the gateway
+// and the delivery service itself (task 27a).
 func TestNewDefaultsTheCollaboratorsItIsNotGiven(t *testing.T) {
 	cfg := testConfig(t) // writes dilla.toml, migrates the database, runs init's bootstrap
-	srv, err := dillad.New(context.Background(), dillad.Options{Config: cfg, Clock: clock.System()})
+	srv, err := dillad.New(context.Background(), dillad.Options{
+		Config: cfg, Clock: clock.System(), CorePath: testCorePath(t),
+	})
 	if err != nil {
-		t.Fatalf("New with only Config and Clock: %v", err)
+		t.Fatalf("New with only Config, Clock and the core: %v", err)
 	}
 	defer srv.Shutdown(context.Background())
 	if srv.Repo() == nil {
@@ -516,8 +546,8 @@ func TestNewDefaultsTheCollaboratorsItIsNotGiven(t *testing.T) {
 	if srv.Mux() == nil {
 		t.Fatal("Server.Mux() is nil; parts 1b and 2 mount their routes through it")
 	}
-	if srv.DS() != nil || srv.Gateway() != nil {
-		t.Fatal("DS() and Gateway() must be nil in 1a, and present for 1b to fill")
+	if srv.DS() == nil || srv.Gateway() == nil {
+		t.Fatal("DS() and Gateway() must be what New built")
 	}
 }
 
@@ -525,7 +555,7 @@ func TestNewDefaultsTheCollaboratorsItIsNotGiven(t *testing.T) {
 func TestExtraRegistrarsAreMounted(t *testing.T) {
 	cfg := testConfig(t)
 	srv, err := dillad.New(context.Background(), dillad.Options{
-		Config: cfg, Clock: clock.System(),
+		Config: cfg, Clock: clock.System(), Wasm: sharedRuntime(t),
 		Extra: []func(*server.Mux){func(m *server.Mux) {
 			m.HandleFunc("GET /v1/extra", func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusTeapot)
@@ -613,7 +643,7 @@ func TestAPanickingHandlerIsStillLoggedAndCounted(t *testing.T) {
 	var logs bytes.Buffer
 	reg := prometheus.NewRegistry()
 	srv, err := dillad.New(context.Background(), dillad.Options{
-		Config: cfg, Clock: clock.System(),
+		Config: cfg, Clock: clock.System(), Wasm: sharedRuntime(t),
 		Log:         obs.NewLogger(cfg.Log, &logs),
 		Metrics:     obs.NewMetrics(reg, reg),
 		ScrapeToken: "scrape-me",

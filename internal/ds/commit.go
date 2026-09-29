@@ -351,6 +351,7 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 		}
 		return CommitResult{}, err
 	}
+	d.accepted.Add(1)
 	if d.opts.Metrics != nil {
 		// plan-1a task 7 declares `DSCommits *prometheus.CounterVec` for
 		// `dilla_ds_commits_total{result}`. There is no `CommitsTotal`.

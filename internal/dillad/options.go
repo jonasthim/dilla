@@ -10,6 +10,8 @@ import (
 
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
+	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
@@ -36,6 +38,23 @@ type Options struct {
 	// mount their handler groups. Each function gets the same *server.Mux the
 	// composition root built (deviation ID14).
 	Extra []func(*server.Mux)
+
+	// Part 1b (deviation B17). Wasm is the wasi runtime the delivery service
+	// validates every handshake in; nil means New compiles one from CorePath
+	// and closes it on Shutdown, while a runtime passed in stays the caller's
+	// (a test harness shares one across servers, because compiling the OpenMLS
+	// module is the most expensive thing New can do).
+	Wasm *mlswasi.Runtime
+	// CorePath is the dilla_core_wasi.wasm New compiles when Wasm is nil. ""
+	// means CoreFileName beside the dillad binary, the path `dillad doctor`
+	// checks (deviation B35: dilla.toml has no [mls] table).
+	CorePath string
+	// ACL is invariant 4's eligibility source; nil means ds.DenyUnlessMember
+	// until Plan 2 task 3's permission resolver (NV-B6).
+	ACL ds.ACL
+	// Channels is invariant 1's channel-mode source; nil means the permissive
+	// stub until Plan 2 task 2 creates the channels table (NV-B5).
+	Channels ds.Channels
 
 	// closeRepo records that New opened the repository itself, so Shutdown
 	// closes it. A caller that supplied its own keeps ownership of it: closing
