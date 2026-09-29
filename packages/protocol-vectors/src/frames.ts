@@ -31,7 +31,8 @@ function frame(name: string, op: number, n: number, group: Uint8Array | null, pa
 
 export function frameVectors() {
   const cases: Case[] = [
-    frame('hello', 0, 0, null, [[1], [1], [1], 30000, 131584, new Uint8Array(16).fill(0x01), 1]),
+    // The last two elements are invariant 7's back-off window, backoff_ms and backoff_jitter_ms.
+    frame('hello', 0, 0, null, [[1], [1], [1], 30000, 131584, new Uint8Array(16).fill(0x01), 1, 300, 300]),
     frame('identify', 1, 1, null, ['tok', 1, 1, 1, 0]),
     frame('resume', 2, 2, null, ['tok', TOKEN, 1, 41]),
     frame('ready', 3, 1, null, [DEVICE, USER, 1, TOKEN, 1, 1, 1, 32, [[GROUP, 6, 4127, 0]]]),

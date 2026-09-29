@@ -16,9 +16,11 @@ func payload(items ...any) (cbor.RawMessage, error) {
 	return cbor.RawMessage(b), nil
 }
 
-// HelloPayload is the first frame the instance sends on every connection.
-func HelloPayload(wire, e2ee, media []uint64, heartbeatMS, maxFrameBytes uint64, instanceID id.ID, generation uint64) (cbor.RawMessage, error) {
-	return payload(wire, e2ee, media, heartbeatMS, maxFrameBytes, instanceID, generation)
+// HelloPayload is the first frame the instance sends on every connection. Its last two elements are
+// invariant 7's back-off window in milliseconds (deviation B23).
+func HelloPayload(wire, e2ee, media []uint64, heartbeatMS, maxFrameBytes uint64, instanceID id.ID, generation, backoffMS, backoffJitterMS uint64) (cbor.RawMessage, error) {
+	return payload(wire, e2ee, media, heartbeatMS, maxFrameBytes, instanceID, generation,
+		backoffMS, backoffJitterMS)
 }
 
 // GroupDigest is one entry of ready's per-group catch-up list.

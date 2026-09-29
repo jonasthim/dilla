@@ -255,7 +255,8 @@ func decodeAny(b []byte) (Inbound, error) {
 func (g *Gateway) serve(ctx context.Context, s sink, token string) {
 	wire, e2ee, media := g.advertised()
 	hello, err := HelloPayload(wire, e2ee, media,
-		g.opts.HeartbeatMS, g.opts.MaxFrameBytes, g.opts.InstanceID, g.Generation())
+		g.opts.HeartbeatMS, g.opts.MaxFrameBytes, g.opts.InstanceID, g.Generation(),
+		uint64(g.opts.Backoff/time.Millisecond), uint64(g.opts.BackoffJitter/time.Millisecond))
 	if err != nil {
 		s.close(CloseUnknown, "hello")
 		return

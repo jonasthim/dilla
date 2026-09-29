@@ -62,6 +62,13 @@ type Options struct {
 	WriteDeadline time.Duration
 
 	TrustedOrigins []string
+
+	// Backoff and BackoffJitter are invariant 7's back-off window, elements 7 and 8 of hello
+	// (deviation B23, ruling 44): "the other devices back off 300 ms + random(0..300 ms)". The
+	// instance only ever addresses the elected committer, so every other device learns the window
+	// here, once per connection. The composition root fills both from ds.Policy.
+	Backoff       time.Duration
+	BackoffJitter time.Duration
 }
 
 // withDefaults fills zero values and enforces the ring-vs-queue contract. The ring must be at
@@ -100,6 +107,12 @@ func (o Options) withDefaults() Options {
 	}
 	if o.WriteDeadline == 0 {
 		o.WriteDeadline = 10 * time.Second
+	}
+	if o.Backoff == 0 {
+		o.Backoff = 300 * time.Millisecond
+	}
+	if o.BackoffJitter == 0 {
+		o.BackoffJitter = 300 * time.Millisecond
 	}
 	if o.RingFrames < o.QueueFrames {
 		o.RingFrames = o.QueueFrames

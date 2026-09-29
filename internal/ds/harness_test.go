@@ -112,8 +112,11 @@ func newDSHarness(t *testing.T) *dsHarness {
 	h.wasm = wasm
 
 	h.auth = newFakeAuth()
+	// The back-off window comes from the policy the delivery service is built with, exactly as the
+	// composition root wires it (deviation B23).
 	h.gw = gateway.New(gateway.Options{
 		Clock: clk, Store: gatewayStore{repo}, Generation: 1, Auth: h.auth,
+		Backoff: ds.DefaultPolicy().Backoff, BackoffJitter: ds.DefaultPolicy().BackoffJitter,
 	})
 	t.Cleanup(func() { _ = h.gw.Shutdown(context.Background()) })
 

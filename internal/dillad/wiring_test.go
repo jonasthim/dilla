@@ -335,6 +335,14 @@ func TestAnIdentifiedDeviceIsReadyAndOnlineThroughTheCompositionRoot(t *testing.
 	if got, _ := hello[5].([]byte); string(got) != string(instanceID[:]) {
 		t.Errorf("hello carries instance id %x, want this instance's %x", got, instanceID)
 	}
+	// Invariant 7's back-off window reaches hello from the delivery service's policy (deviation
+	// B23): 300 ms + random(0..300 ms) on a default configuration.
+	if len(hello) != 9 {
+		t.Fatalf("hello has %d elements, want 9", len(hello))
+	}
+	if backoff, jitter := hello[7], hello[8]; backoff != uint64(300) || jitter != uint64(300) {
+		t.Errorf("hello advertises backoff %v + jitter %v ms, want the policy's 300 + 300", backoff, jitter)
+	}
 	identify(t, ctx, c)
 	if op, _ := readFrame(t, ctx, c); op != 3 {
 		t.Fatalf("op %d after identify, want ready (3)", op)

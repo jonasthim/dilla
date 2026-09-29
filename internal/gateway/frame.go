@@ -90,7 +90,7 @@ type opSpec struct {
 }
 
 var opSpecs = map[Op]opSpec{
-	OpHello:    {elements: 7},
+	OpHello:    {elements: 9},
 	OpIdentify: {elements: 5, fromClient: true},
 	OpResume:   {elements: 4, fromClient: true},
 	// Deviation B8: §2.3's heading says "Control (0-15) - group_id = null, n = 0", but `ready` and

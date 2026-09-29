@@ -117,6 +117,24 @@ func (h *dsHarness) markBot(device id.ID) { h.gw.SetBotDevices([]id.ID{device}) 
 // policy is the Policy the harness built its delivery service with.
 func (h *dsHarness) policy() ds.Policy { return ds.DefaultPolicy() }
 
+// helloBackoff puts one member device online and returns the two back-off elements of the hello
+// it was greeted with: backoff_ms and backoff_jitter_ms, elements 7 and 8 (deviation B23).
+func (h *dsHarness) helloBackoff(t *testing.T) (backoff, jitter uint64) {
+	t.Helper()
+	g := h.groupWithMembers(t, 1)
+	h.online(g.members[0])
+	if len(h.hello.payload) != 9 {
+		t.Fatalf("hello has %d elements, want 9", len(h.hello.payload))
+	}
+	if err := cborx.Unmarshal(h.hello.payload[7], &backoff); err != nil {
+		t.Fatalf("hello backoff_ms: %v", err)
+	}
+	if err := cborx.Unmarshal(h.hello.payload[8], &jitter); err != nil {
+		t.Fatalf("hello backoff_jitter_ms: %v", err)
+	}
+	return backoff, jitter
+}
+
 // armedElections is how many groups hold a live election.
 func (h *dsHarness) armedElections() int { return ds.ArmedElectionsForTest(h.ds) }
 

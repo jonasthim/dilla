@@ -39,23 +39,11 @@ type Policy struct {
 	CommitDeadline  time.Duration // the deadline_ms in mls.commit_needed
 
 	// Backoff and BackoffJitter are invariant 7's back-off window — "the other devices back off
-	// 300 ms + random(0..300 ms)" (protocol/02-delivery-service.md:257) — and NOTHING READS THEM
-	// YET. The instance only ever addresses the elected device, so the window is advertised once,
-	// in `hello`, to the devices that are not; a client that never receives mls.commit_needed
-	// waits it out before volunteering.
-	//
-	// TASK 27a OWES THE AMENDMENT (deviation B23, ruling 44). `hello` is a seven-element frame in
-	// five places that move together — protocol/02:133, `gateway.HelloPayload`
-	// (internal/gateway/codec.go), `opSpecs[OpHello]` (internal/gateway/frame.go),
-	// `packages/protocol-vectors/src/frames.ts` and the generated `protocol/vectors/frames.json`
-	// (a wasm32-wasip1 rebuild, which internal/mlswasi/vectors_test.go pins) — and `gateway.
-	// Options` has no field for either value, so `ds.Policy` cannot reach the gateway at all.
-	// Task 22, whose Files are three new files in internal/ds, could amend none of it. Task 22's
-	// `TestTheBackoffWindowIsAdvertisedInHello` is carried verbatim into that task.
-	//
-	// Until it lands, a non-elected client has no advertised window: it either volunteers at once,
-	// racing the elected committer, or hard-codes 300 ms and drifts the moment an operator tunes
-	// these two fields.
+	// 300 ms + random(0..300 ms)" (protocol/02-delivery-service.md:257). The instance only ever
+	// addresses the elected device, so the window is advertised once, in `hello` (elements 7 and
+	// 8), to the devices that are not; a client that never receives mls.commit_needed waits it out
+	// before volunteering. The composition root copies both into gateway.Options (deviation B23,
+	// closed by task 27a); nothing inside the delivery service reads them.
 	Backoff       time.Duration // 300ms
 	BackoffJitter time.Duration // 300ms
 

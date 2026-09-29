@@ -22,14 +22,12 @@ import (
 // test names, so that TestTheWatchdogNudgesTheNextCandidate — which calls RequestCommit without
 // proposing anything — has something to elect for too; see the helper.
 //
-// TWO TESTS OF THE BRIEF ARE NOT HERE. Both are now ASSIGNED, in the plan's part-1b deviation
-// table and in the SDD workspace rulings, so the task that inherits each one reads it where it
-// works rather than in task 22's report:
+// TWO TESTS OF THE BRIEF WERE CARRIED. Both were ASSIGNED, in the plan's part-1b deviation table
+// and in the SDD workspace rulings:
 //
-//   - TestTheBackoffWindowIsAdvertisedInHello -> TASK 27a (deviation B23, ruling 44), carried
-//     verbatim, together with the `hello` 7 -> 9 amendment and the `Backoff`/`BackoffJitter`
-//     fields on `gateway.Options` that let `ds.Policy` reach the gateway at all. The comment on
-//     `Policy.Backoff` (internal/ds/ds.go) states the five places that move together.
+//   - TestTheBackoffWindowIsAdvertisedInHello -> TASK 27a (deviation B23, ruling 44). It is at the
+//     end of this file, verbatim from the plan's task 22 step 1, and landed with the `hello`
+//     7 -> 9 amendment and the `Backoff`/`BackoffJitter` fields on `gateway.Options`.
 //   - TestACommitThatReissuesAnOmittedRemoveDoesNotDeadlock -> TASK 25 (deviation B24, ruling 45),
 //     in the same commit that exempts `checkAppliedProposals`' clause 1 for
 //     `o.external && !frozen` (B21) and beside the merged GroupInfo the fixture owes. The comment
@@ -335,5 +333,22 @@ func TestStartRunsTheWatchdogAndSweeperAndShutdownEndsThem(t *testing.T) {
 	defer cancelDrain()
 	if err := partial.Shutdown(drain); err != nil {
 		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+// The back-off the other candidates observe is advertised once, in hello, and is not a second
+// frame: protocol/02 invariant 7 says "other devices back off 300 ms + random(0..300 ms)", and the
+// instance only ever addresses the chosen device. Policy.Backoff and Policy.BackoffJitter are
+// therefore read HERE, into the gateway's hello payload, and nowhere else; a client that never
+// receives mls.commit_needed waits that long before volunteering.
+func TestTheBackoffWindowIsAdvertisedInHello(t *testing.T) {
+	h := newDSHarness(t)
+	backoff, jitter := h.helloBackoff(t)
+	if backoff != uint64(h.policy().Backoff/time.Millisecond) {
+		t.Errorf("hello advertises backoff_ms = %d, want %d", backoff, h.policy().Backoff/time.Millisecond)
+	}
+	if jitter != uint64(h.policy().BackoffJitter/time.Millisecond) {
+		t.Errorf("hello advertises backoff_jitter_ms = %d, want %d",
+			jitter, h.policy().BackoffJitter/time.Millisecond)
 	}
 }

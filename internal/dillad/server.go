@@ -124,6 +124,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// invariant 7's acknowledgement. gateway.Options takes both as plain
 	// functions, so they close over `delivery`, which is assigned before New
 	// returns and therefore before any connection can reach either callback.
+	policy := policyFromConfig(o.Config)
 	var delivery *ds.DS
 	gw := gateway.New(gateway.Options{
 		Store:   o.Repo,
@@ -148,6 +149,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		ReadLimit:      o.Config.Gateway.ReadLimitBytes,
 		MaxFrameBytes:  o.Config.MaxFrameBytes(),
 		TrustedOrigins: o.Config.HTTP.TrustedOrigins,
+		// Invariant 7's back-off window, advertised in hello (deviation B23).
+		Backoff:       policy.Backoff,
+		BackoffJitter: policy.BackoffJitter,
 	})
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,
@@ -157,7 +161,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Log:      o.Log,
 		Metrics:  o.Metrics,
 		Keys:     keys,
-		Policy:   policyFromConfig(o.Config),
+		Policy:   policy,
 		Channels: o.Channels, // nil: ds.PermissiveChannels (NV-B5)
 		ACL:      o.ACL,      // nil: ds.DenyUnlessMember (NV-B6)
 		// The device lists are verified in the guest (NV-B8, deviation B32).
