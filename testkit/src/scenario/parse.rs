@@ -104,6 +104,35 @@ pub enum Stmt {
     ExpectClosed {
         group: String,
     },
+    /// `resync <client> <group>`: the client drops its copy of the group and returns by an
+    /// own-leaf external commit (`POST /resync`, invariant 9 and R25).
+    Resync {
+        client: String,
+        group: String,
+    },
+    /// `fork_report <client> <group>`: the client reports the last commit it received for the
+    /// group as one it cannot process (`POST /fork-report`, invariant 9).
+    ForkReport {
+        client: String,
+        group: String,
+    },
+    /// `heal <client> <group>`: the client uploads its GroupInfo and its handshake tail to a
+    /// restored instance (`POST /heal`, invariant 11).
+    Heal {
+        client: String,
+        group: String,
+    },
+    /// `ack_commit <client>`: the client acknowledges the last `mls.commit_needed` it received
+    /// (the `commit_ack` frame, invariant 7) and then does nothing about it.
+    AckCommit {
+        client: String,
+    },
+    /// `admit <group> <client>`: the instance proposes adding the client's device to the group
+    /// with a KeyPackage from the directory (invariant 6's Add).
+    Admit {
+        group: String,
+        client: String,
+    },
 }
 
 /// protocol/02's labels for the delivery-service frames a client receives, plus `error`.
@@ -454,6 +483,30 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                 group: args[0].to_owned(),
             }
         }
+        // Task 29's five: a scenario has no other way to resync, report a fork, heal, acknowledge
+        // an election or have the instance propose an Add.
+        "resync" | "fork_report" | "heal" => {
+            need(2)?;
+            let (client, group) = (args[0].to_owned(), args[1].to_owned());
+            match verb {
+                "resync" => Stmt::Resync { client, group },
+                "fork_report" => Stmt::ForkReport { client, group },
+                _ => Stmt::Heal { client, group },
+            }
+        }
+        "ack_commit" => {
+            need(1)?;
+            Stmt::AckCommit {
+                client: args[0].to_owned(),
+            }
+        }
+        "admit" => {
+            need(2)?;
+            Stmt::Admit {
+                group: args[0].to_owned(),
+                client: args[1].to_owned(),
+            }
+        }
         other => return Err(err(line_no, format!("unknown statement {other:?}"))),
     })
 }
@@ -789,6 +842,52 @@ expect_reject E_BINDING join bob chat
         refused("expect_closed", "expect_closed needs 1");
     }
 
+    /// The five member and instance actions task 29's chaos scenarios need beyond task 28's
+    /// vocabulary: a resync (invariant 9, R25), a fork report (invariant 9), a heal (invariant 11),
+    /// a commit_ack (invariant 7) and an instance-issued Add (invariant 6).
+    #[test]
+    fn the_member_and_instance_actions_name_who_acts_on_what() {
+        assert_eq!(
+            one("resync bob chat").unwrap(),
+            Stmt::Resync {
+                client: "bob".into(),
+                group: "chat".into()
+            }
+        );
+        assert_eq!(
+            one("fork_report bob chat").unwrap(),
+            Stmt::ForkReport {
+                client: "bob".into(),
+                group: "chat".into()
+            }
+        );
+        assert_eq!(
+            one("heal alice chat").unwrap(),
+            Stmt::Heal {
+                client: "alice".into(),
+                group: "chat".into()
+            }
+        );
+        assert_eq!(
+            one("ack_commit alice").unwrap(),
+            Stmt::AckCommit {
+                client: "alice".into()
+            }
+        );
+        assert_eq!(
+            one("admit chat bob").unwrap(),
+            Stmt::Admit {
+                group: "chat".into(),
+                client: "bob".into()
+            }
+        );
+        refused("resync bob", "resync needs 2");
+        refused("fork_report bob", "fork_report needs 2");
+        refused("heal alice", "heal needs 2");
+        refused("ack_commit", "ack_commit needs 1");
+        refused("admit chat", "admit needs 2");
+    }
+
     #[test]
     fn reports_the_line_number_of_a_syntax_error() {
         let err = parse("instance dilla\nclient alice\nnope alice\n", "bad").unwrap_err();
@@ -846,6 +945,66 @@ expect_reject E_BINDING join bob chat
             (
                 "commit-conflict.scn",
                 include_str!("../../scenarios/commit-conflict.scn"),
+            ),
+            (
+                "concurrent_commits_5.scn",
+                include_str!("../../scenarios/concurrent_commits_5.scn"),
+            ),
+            (
+                "kick_while_offline_then_join.scn",
+                include_str!("../../scenarios/kick_while_offline_then_join.scn"),
+            ),
+            (
+                "external_commit_during_freeze_online.scn",
+                include_str!("../../scenarios/external_commit_during_freeze_online.scn"),
+            ),
+            (
+                "external_commit_during_freeze_offline.scn",
+                include_str!("../../scenarios/external_commit_during_freeze_offline.scn"),
+            ),
+            (
+                "expired_keypackage_void.scn",
+                include_str!("../../scenarios/expired_keypackage_void.scn"),
+            ),
+            (
+                "remove_gone_leaf.scn",
+                include_str!("../../scenarios/remove_gone_leaf.scn"),
+            ),
+            (
+                "malformed_commit_fork_report.scn",
+                include_str!("../../scenarios/malformed_commit_fork_report.scn"),
+            ),
+            (
+                "resync_to_head.scn",
+                include_str!("../../scenarios/resync_to_head.scn"),
+            ),
+            (
+                "watchdog_three_lost_rounds.scn",
+                include_str!("../../scenarios/watchdog_three_lost_rounds.scn"),
+            ),
+            (
+                "restore_heal_from_tail.scn",
+                include_str!("../../scenarios/restore_heal_from_tail.scn"),
+            ),
+            (
+                "restore_force_recreate.scn",
+                include_str!("../../scenarios/restore_force_recreate.scn"),
+            ),
+            (
+                "inactivity_remove_90d.scn",
+                include_str!("../../scenarios/inactivity_remove_90d.scn"),
+            ),
+            (
+                "join_storm_256_batched.scn",
+                include_str!("../../scenarios/join_storm_256_batched.scn"),
+            ),
+            (
+                "resume_always_refused.scn",
+                include_str!("../../scenarios/resume_always_refused.scn"),
+            ),
+            (
+                "retention_prune_then_resync.scn",
+                include_str!("../../scenarios/retention_prune_then_resync.scn"),
             ),
         ] {
             parse(src, file).unwrap_or_else(|e| panic!("{file}:{}: {}", e.line, e.message));

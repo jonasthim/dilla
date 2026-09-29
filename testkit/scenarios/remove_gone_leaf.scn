@@ -1,0 +1,18 @@
+# Invariant 6: before proposing a Remove the instance checks that the target leaf is still present,
+# and an action whose leaf is already gone is dropped rather than proposed. Bob is kicked and the
+# Remove is committed; kicking him again names the same, now empty, leaf and is refused, and no
+# freeze follows it: alice's next message goes straight through.
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3 community=none creator=alice
+join bob chat via=welcome
+join carol chat via=welcome
+sync carol
+kick alice bob
+commit alice
+sync carol
+expect_reject E_INVALID_REQUEST kick alice bob
+send alice chat nothing is frozen
+expect_decrypts carol chat nothing is frozen

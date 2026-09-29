@@ -82,6 +82,25 @@ pub trait DeliveryService {
     /// Advance the instance's clock. Only the test-control listener offers this; the stub moves
     /// its own counter.
     fn advance_clock(&mut self, secs: u64) -> Result<(), DsError>;
+    /// Invariant 7's acknowledgement: the `commit_ack` gateway frame (opcode 12) naming the
+    /// `round` of the `mls.commit_needed` it answers. The stub never elects a committer, so it
+    /// refuses this with `Unsupported`.
+    fn ack_commit(&mut self, g: &GroupId, round: u64) -> Result<(), DsError>;
+    /// Row 19: the instance proposals outstanding for the group's current epoch, void ones
+    /// included and marked. A committer reads them here rather than trusting that every
+    /// proposal's `mls.handshake` frame has already reached its socket: invariant 4 refuses a
+    /// commit that misses one. The stub issues no instance proposals and answers none.
+    fn proposals(&mut self, g: &GroupId) -> Result<Vec<ProposalItem>, DsError>;
+}
+
+/// One item of row 19: `[ref, kind, target_leaf|null, blob, void]`.
+#[derive(Clone, Debug)]
+pub struct ProposalItem {
+    pub proposal_ref: Vec<u8>,
+    pub kind: u8,
+    pub target_leaf: Option<u32>,
+    pub blob: Vec<u8>,
+    pub void: bool,
 }
 
 /// A group identifier as the trait takes it. `[u8]`, not the contract's `Vec<u8>`, so a caller

@@ -1190,4 +1190,18 @@ impl DeliveryService for DsStub {
         self.clock = self.clock.saturating_add(secs);
         Ok(())
     }
+
+    fn ack_commit(&mut self, _g: &GroupId, _round: u64) -> Result<(), DsError> {
+        Err(DsError::Unsupported(
+            "DsStub does not model invariant 7's election; use `ds <url>`".into(),
+        ))
+    }
+
+    /// The stub issues no instance proposals, so none is ever outstanding.
+    fn proposals(&mut self, g: &GroupId) -> Result<Vec<super::ProposalItem>, DsError> {
+        if !self.groups.contains_key(g) {
+            return Err(DsError::NotFound);
+        }
+        Ok(Vec::new())
+    }
 }

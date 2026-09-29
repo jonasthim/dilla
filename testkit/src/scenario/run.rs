@@ -11,7 +11,7 @@ use crate::ds::remote::{control_get, control_post, instance_id as remote_instanc
 use crate::{DeliveryService, DsError, DsStub, HttpDs, InstanceConfig, TestClient, TestkitError};
 use dilla_core::identity::{Kind, Tier};
 use dilla_core::ids::{InstanceId, UserId};
-use dilla_core::mls::{DillaBinding, MAX_ADDS_PER_COMMIT};
+use dilla_core::mls::{DillaBinding, GroupKind, MAX_ADDS_PER_COMMIT, external_senders};
 use std::collections::BTreeMap;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -82,6 +82,11 @@ pub struct Runner {
     last_actor: Option<String>,
     /// Per client, how much of its inbox `expect_decrypts_all` has already vouched for.
     vouched: BTreeMap<String, usize>,
+    /// Which of the comma-separated codes in `DILLA_TESTKIT_INVITE` enrols the next client.
+    invite_index: usize,
+    /// The instance's external-sender public key, which every `text` and `call` group a remote
+    /// scenario creates carries (protocol/01 § External senders). The test host reports it.
+    external_sender: Option<Vec<u8>>,
 }
 
 impl Runner {
@@ -96,6 +101,8 @@ impl Runner {
             ds_directive: None,
             last_actor: None,
             vouched: BTreeMap::new(),
+            invite_index: 0,
+            external_sender: None,
         }
     }
 
@@ -228,9 +235,15 @@ impl Runner {
                     media_version: kind.media_version(),
                 };
                 let mut client = self.take(creator)?;
+                let senders = match (&self.external_sender, kind) {
+                    (Some(key), GroupKind::Text | GroupKind::Call) => {
+                        Some(external_senders(key.clone().into(), &self.instance_id))
+                    }
+                    _ => None,
+                };
                 let result = self
                     .ds_for(&client)
-                    .and_then(|ds| client.create_group(ds, binding.clone()));
+                    .and_then(|ds| client.create_group_with(ds, binding.clone(), senders));
                 self.clients.insert(creator.clone(), client);
                 self.groups.insert(
                     name.clone(),
@@ -331,6 +344,12 @@ impl Runner {
             Stmt::AdvanceClock { seconds } => {
                 if self.is_remote() {
                     control_post("/debug/clock", &format!("{{\"seconds\":{seconds}}}"))?;
+                    // A device whose session the jump has outlived signs in again, as a real
+                    // client does when its 30-day native session runs out: a scenario that
+                    // crosses a retention or inactivity window is otherwise a scenario of 401s.
+                    // An offline device refreshes its token and stays offline; a session the
+                    // jump did not reach is left alone, connection and all.
+                    self.reauthenticate_expired()?;
                 } else {
                     DeliveryService::advance_clock(self.stub()?, *seconds)?;
                 }
@@ -409,7 +428,69 @@ impl Runner {
                 let id = hex::encode(&self.group(group)?.id);
                 self.expect_listed("closed_groups", &id, group)
             }
+            Stmt::Resync { client, group } => {
+                let target = self.group(group)?;
+                let (id, binding) = (target.id.clone(), target.binding.clone());
+                self.with_client(client, |actor, ds| actor.resync(ds, &id, &binding))
+            }
+            Stmt::ForkReport { client, group } => {
+                let id = self.group(group)?.id.clone();
+                self.with_client(client, |actor, ds| actor.fork_report(ds, &id))
+            }
+            Stmt::Heal { client, group } => {
+                let id = self.group(group)?.id.clone();
+                self.with_client(client, |actor, ds| actor.heal(ds, &id))
+            }
+            Stmt::AckCommit { client } => {
+                self.with_client(client, |actor, ds| actor.ack_commit(ds))
+            }
+            Stmt::Admit { group, client } => {
+                if !self.is_remote() {
+                    return Err(DsError::Unsupported(
+                        "DsStub does not model instance-originated proposals (invariant 6); use \
+                         `ds <url>`"
+                            .into(),
+                    )
+                    .into());
+                }
+                let id = hex::encode(&self.group(group)?.id);
+                let device = self.device_of(client)?.to_hex();
+                control_post(
+                    "/debug/admit",
+                    &format!("{{\"group\":\"{id}\",\"device\":\"{device}\"}}"),
+                )?;
+                Ok(())
+            }
         }
+    }
+
+    /// Signs every remote client whose session has expired on the instance's clock in again,
+    /// with a fresh challenge-response session.
+    fn reauthenticate_expired(&mut self) -> Result<(), TestkitError> {
+        if !self.is_remote() {
+            return Ok(());
+        }
+        let body = control_get("/debug/state")?;
+        let state: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|e| DsError::Protocol(format!("GET /debug/state: {e}")))?;
+        let now = state
+            .get("now_unix")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| DsError::Protocol("GET /debug/state carries no now_unix".into()))?;
+        let Some(Backend::Remote { clients, .. }) = self.backend.as_mut() else {
+            return Ok(());
+        };
+        for (name, ds) in clients.iter_mut() {
+            if ds.session_expires() > now {
+                continue;
+            }
+            let client = self
+                .clients
+                .get(name)
+                .ok_or_else(|| TestkitError::Scenario(format!("unknown client {name}")))?;
+            ds.reauthenticate(&client.device(), &client.credential_blob())?;
+        }
+        Ok(())
     }
 
     /// The stub, or the instance at the `ds` URL. A remote instance's own id replaces the stub's
@@ -419,6 +500,22 @@ impl Runner {
             Some(url) => {
                 let base = url.trim_end_matches('/').to_owned();
                 self.instance_id = InstanceId::from_bytes(remote_instance_id(&base)?);
+                // protocol/09's discovery document carries no external-sender key, so a remote
+                // scenario reads it from the test host; without a test host it creates groups the
+                // instance can propose nothing into, and says so the first time it tries.
+                self.external_sender = if std::env::var("DILLA_TESTKIT_CONTROL").is_ok() {
+                    let body = control_get("/debug/state")?;
+                    let state: serde_json::Value = serde_json::from_slice(&body)
+                        .map_err(|e| DsError::Protocol(format!("GET /debug/state: {e}")))?;
+                    state
+                        .get("external_sender_pub")
+                        .and_then(serde_json::Value::as_str)
+                        .map(hex::decode)
+                        .transpose()
+                        .map_err(|e| DsError::Protocol(format!("external_sender_pub: {e}")))?
+                } else {
+                    None
+                };
                 Backend::Remote {
                     base,
                     clients: BTreeMap::new(),
@@ -460,13 +557,25 @@ impl Runner {
             Some(Backend::Remote { base, .. }) => Some(base.clone()),
         };
         if let Some(base) = remote_base {
-            let code = std::env::var(INVITE_ENV).map_err(|_| {
+            let codes = std::env::var(INVITE_ENV).map_err(|_| {
                 TestkitError::Scenario(format!(
                     "{INVITE_ENV} is unset: a remote scenario enrols each client through the \
                      instance's bootstrap invite"
                 ))
             })?;
-            let enrolled = HttpDs::redeem_invite(&base, &code, client.new_account(name, name))?;
+            // One code, or several separated by commas: an invite admits at most 1,000 accounts
+            // (the schema's `max_uses` ceiling), and the join storm enrols 1,001. A spent invite
+            // answers E_INVITE_INVALID, and the next code is tried.
+            let codes: Vec<&str> = codes.split(',').filter(|c| !c.is_empty()).collect();
+            let enrolled = loop {
+                let code = codes.get(self.invite_index).ok_or_else(|| {
+                    TestkitError::Scenario(format!("every invite in {INVITE_ENV} is spent"))
+                })?;
+                match HttpDs::redeem_invite(&base, code, client.new_account(name, name)) {
+                    Err(e) if e.code() == "E_INVITE_INVALID" => self.invite_index += 1,
+                    other => break other?,
+                }
+            };
             // The instance mints the user id, and the MLS credential must name it: invariant 4's
             // Add check compares the credential's user with the device's owner. The seed fixes the
             // device and every key, so the client is rebuilt around the minted id unchanged
@@ -480,7 +589,16 @@ impl Runner {
                 ))
                 .into());
             }
-            let ds = HttpDs::with_session(&base, client.device_id(), enrolled.token)?;
+            let mut ds = HttpDs::with_session(&base, client.device_id(), enrolled.token)?;
+            ds.set_session_expires(enrolled.expires);
+            // The user signs its one device into its device list, as a real client does right
+            // after registering: invariant 4 refuses any Add whose DSK is in no list the user
+            // signed, so a client without one could never be added to anything.
+            let added_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            ds.put_device_list(&enrolled.user_id, &client.signed_device_list(added_at))?;
             if let Some(Backend::Remote { clients, .. }) = self.backend.as_mut() {
                 clients.insert(name.to_owned(), ds);
             }
@@ -512,8 +630,31 @@ impl Runner {
             .iter()
             .map(|n| self.device_of(n))
             .collect::<Result<Vec<_>, _>>()?;
-        for batch in devices.chunks(MAX_ADDS_PER_COMMIT) {
-            self.with_client(&creator, |inviter, ds| inviter.invite_many(ds, &id, batch))?;
+        if self.is_remote() {
+            // protocol/01 § Joining: "Creating a private channel … is done by the DS issuing Add
+            // proposals in batches: the creator's device commits at most 256 Adds per commit".
+            // The instance holds the batching (`ProposeAddBatch` keeps 256 outstanding and issues
+            // the next slice when a commit applies them), so the creator commits until nothing is
+            // outstanding, and the commit count is the instance's to assert.
+            let hexes: Vec<String> = devices
+                .iter()
+                .map(|d| format!("\"{}\"", d.to_hex()))
+                .collect();
+            control_post(
+                "/debug/admit-batch",
+                &format!(
+                    "{{\"group\":\"{}\",\"devices\":[{}]}}",
+                    hex::encode(&id),
+                    hexes.join(",")
+                ),
+            )?;
+            for _ in 0..devices.len().div_ceil(MAX_ADDS_PER_COMMIT) {
+                self.with_client(&creator, |committer, ds| committer.commit(ds, &id))?;
+            }
+        } else {
+            for batch in devices.chunks(MAX_ADDS_PER_COMMIT) {
+                self.with_client(&creator, |inviter, ds| inviter.invite_many(ds, &id, batch))?;
+            }
         }
         for name in &names {
             self.with_client(name, |joiner, ds| joiner.join_welcome(ds, &id, &binding))?;
@@ -559,8 +700,14 @@ impl Runner {
         result
     }
 
-    /// The inviter commits an Add for `joiner`, so a `join ... via=welcome` has a Welcome waiting.
-    /// The inviter is the first other client, in name order, that is a member of the group.
+    /// A commit that adds `joiner`, so a `join ... via=welcome` has a Welcome waiting. The
+    /// committer is the first other client, in name order, that is a member of the group.
+    ///
+    /// Against an instance the Add is the INSTANCE'S, committed by that member: protocol/01's
+    /// client policy refuses a member's own Add in a `text` or `call` group, so every other
+    /// member would reject the commit, and "an offline device is added by a DS Add proposal
+    /// carrying one of the device's KeyPackages, committed by an online member" is the join the
+    /// protocol defines. The stub issues no instance proposals, so there the member adds by value.
     fn invite(&mut self, joiner: &str, group: &str) -> Result<(), TestkitError> {
         let id = self.group(group)?.id.clone();
         let device = self.device_of(joiner)?;
@@ -570,6 +717,20 @@ impl Runner {
             .find(|(n, c)| n.as_str() != joiner && c.is_member(&id))
             .map(|(n, _)| n.clone())
             .ok_or_else(|| TestkitError::Scenario("no client can invite".into()))?;
+        if self.is_remote() {
+            control_post(
+                "/debug/admit",
+                &format!(
+                    "{{\"group\":\"{}\",\"device\":\"{}\"}}",
+                    hex::encode(&id),
+                    device.to_hex()
+                ),
+            )?;
+            return self.with_client(&inviter_name, |inviter, ds| {
+                inviter.sync(ds)?;
+                inviter.commit(ds, &id)
+            });
+        }
         self.with_client(&inviter_name, |inviter, ds| inviter.invite(ds, &id, device))
     }
 
@@ -607,7 +768,11 @@ fn actor_of(stmt: &Stmt) -> Option<&str> {
         | Stmt::ExpectDecrypts { client, .. }
         | Stmt::Sync { client }
         | Stmt::GoOffline { client }
-        | Stmt::GoOnline { client } => Some(client),
+        | Stmt::GoOnline { client }
+        | Stmt::Resync { client, .. }
+        | Stmt::ForkReport { client, .. }
+        | Stmt::Heal { client, .. }
+        | Stmt::AckCommit { client } => Some(client),
         Stmt::Remove { actor, .. }
         | Stmt::Kick { actor, .. }
         | Stmt::Commit { actor }

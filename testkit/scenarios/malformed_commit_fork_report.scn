@@ -1,0 +1,24 @@
+# Invariant 9: a member that cannot process an accepted commit reports it, and three DISTINCT
+# reporters against one commit quarantine its committer - a flag on the device and an instance
+# Remove of its leaf. Alice's commit is the one bob, carol and dave report; the second report from
+# the same device would not count, so each reporter is a different member.
+instance dilla
+client alice
+client bob
+client carol
+client dave
+group chat kind=text target=d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7 community=none creator=alice
+join bob chat via=welcome
+join carol chat via=welcome
+join dave chat via=welcome
+sync bob
+sync carol
+sync dave
+commit alice
+fork_report bob chat
+fork_report bob chat
+fork_report carol chat
+fork_report dave chat
+expect_quarantined alice
+commit bob
+expect_reject E_LEAF_NOT_CURRENT send alice chat still here

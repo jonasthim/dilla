@@ -6,10 +6,16 @@
 //! caller names the acting device first (`DsStub::act_as`); `HttpDs` is one device's client by
 //! construction.
 
-use crate::ds::{CommitRequest, DeliveryService, Device, NewAccount, RegisterGroup, ResyncRequest};
+use crate::ds::{
+    CommitRequest, DeliveryService, Device, HandshakeItem, HealRequest, NewAccount, RegisterGroup,
+    ResyncRequest,
+};
 use crate::{Frame, TestkitError};
 use dilla_core::envelope::{Envelope, EnvelopeType};
-use dilla_core::identity::{CredentialIdentity, Kind, SskSigner, Tier, UmkSigner};
+use dilla_core::identity::{
+    CredentialIdentity, DeviceEntry, DeviceList, DeviceListUnsigned, Kind, SskSigner, Tier,
+    UmkSigner,
+};
 use dilla_core::ids::{DeviceId, MsgId, UserId};
 use dilla_core::mls::{
     CIPHERSUITE, CommitBundle, DillaBinding, DillaGroup, DillaProcessed, DillaProvider,
@@ -18,12 +24,13 @@ use dilla_core::mls::{
 // Not re-exported by `openmls::prelude` in 0.9.0: the prelude carries nothing from
 // `messages::group_info` (verified in openmls-0.9.0/src/prelude.rs:20 — `messages::*` stops at the
 // module boundary), so `VerifiableGroupInfo` has to be named through its own path.
+use openmls::extensions::ExternalSendersExtension;
 use openmls::messages::group_info::VerifiableGroupInfo;
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
@@ -33,6 +40,10 @@ pub struct Received {
     pub sender: DeviceId,
     pub envelope: Envelope,
 }
+
+/// How many handshakes a client keeps per group for a heal: protocol/02's bound on the tail an
+/// instance accepts, which is also what a client is asked to buffer.
+pub const HEAL_TAIL: usize = 64;
 
 pub struct TestClient {
     name: String,
@@ -44,10 +55,19 @@ pub struct TestClient {
     identity: CredentialIdentity,
     /// The device signing key (DSK), which also signs session challenges.
     dsk: ed25519_dalek::SigningKey,
+    /// The SSK's seed: the SSK signs this device into the user's device list.
+    ssk_seed: [u8; 32],
     groups: BTreeMap<Vec<u8>, DillaGroup>,
     inbox: Vec<Received>,
     /// Every frame `sync` drained, in arrival order, for a scenario's `expect_frame`.
     frames: Vec<Frame>,
+    /// The last `HEAL_TAIL` handshakes drained per group, in seq order: what a heal uploads to a
+    /// restored instance (invariant 11), and where a fork report finds the commit it names.
+    tails: BTreeMap<Vec<u8>, VecDeque<HandshakeItem>>,
+    /// Per group, the ProposalRefs queued for this client's next commit, so a proposal that
+    /// arrives twice — as an `mls.handshake` frame and in row 19's list — is queued once. OpenMLS
+    /// empties its queue on every merge, and so does `merged`.
+    queued: BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>,
     next_msg: u64,
 }
 
@@ -151,9 +171,12 @@ impl TestClient {
             credential,
             identity,
             dsk,
+            ssk_seed,
             groups: BTreeMap::new(),
             inbox: Vec::new(),
             frames: Vec::new(),
+            tails: BTreeMap::new(),
+            queued: BTreeMap::new(),
             next_msg: 1,
         })
     }
@@ -200,6 +223,27 @@ impl TestClient {
         }
     }
 
+    /// protocol/03's signed device list, version 1, naming this one device: what the user
+    /// publishes with `PUT /v1/users/{user_id}/device-list`, and what invariant 4 checks an Add's
+    /// DSK against. `added_at` is the list's own timestamp for the entry.
+    pub fn signed_device_list(&self, added_at: u64) -> DeviceList {
+        let unsigned = DeviceListUnsigned {
+            v: 1,
+            user_id: self.identity.user_id,
+            version: 1,
+            prev_hash: [0u8; 32],
+            entries: vec![DeviceEntry {
+                device_id: self.device_id,
+                dsk_pub: self.dsk.verifying_key().to_bytes(),
+                tier: self.identity.tier,
+                added_at,
+                revoked_at: None,
+            }],
+        };
+        let sig_ssk = SskSigner::from_bytes(&self.ssk_seed).sign_device_list(&unsigned);
+        DeviceList { unsigned, sig_ssk }
+    }
+
     /// The groups this client is a member of, in id order.
     pub fn group_ids(&self) -> Vec<Vec<u8>> {
         self.groups.keys().cloned().collect()
@@ -235,6 +279,18 @@ impl TestClient {
         ds: &mut dyn DeliveryService,
         binding: DillaBinding,
     ) -> Result<Vec<u8>, TestkitError> {
+        self.create_group_with(ds, binding, None)
+    }
+
+    /// `create_group` with the instance's external sender in the group context, which protocol/01
+    /// requires of every `text` and `call` group: without it the instance can issue no Add or
+    /// Remove proposal for the group (invariants 5 and 6).
+    pub fn create_group_with(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        binding: DillaBinding,
+        external_senders: Option<ExternalSendersExtension>,
+    ) -> Result<Vec<u8>, TestkitError> {
         let group_id = GroupId::from_slice(&binding.target_id);
         let group = DillaGroup::create(
             &self.provider,
@@ -242,7 +298,7 @@ impl TestClient {
             self.credential(),
             group_id.clone(),
             binding.clone(),
-            None,
+            external_senders,
         )?;
         let group_info = serialize(&group.export_group_info(&self.provider, &self.signer)?)?;
         let ratchet_tree = serialize(&group.export_ratchet_tree())?;
@@ -329,12 +385,21 @@ impl TestClient {
             .get_mut(group_id)
             .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
         let epoch = group.epoch();
+        // The GroupInfo of epoch n + 1 that the commit builder signed while staging (invariant 4):
+        // exporting one here, before the merge, would name epoch n, and merging first would leave
+        // a refused commit applied.
+        let Some(group_info) = bundle.group_info else {
+            group.clear_pending_commit(&self.provider)?;
+            return Err(TestkitError::Scenario(
+                "the staged commit carries no GroupInfo".into(),
+            ));
+        };
         let accepted = ds.post_commit(
             group_id,
             CommitRequest {
                 epoch,
                 commit: serialize(&bundle.commit)?,
-                group_info: serialize(&group.export_group_info(&self.provider, &self.signer)?)?,
+                group_info: serialize(&MlsMessageOut::from(group_info))?,
                 welcomes,
             },
         );
@@ -343,6 +408,7 @@ impl TestClient {
             return Err(refused.into());
         }
         group.merge_pending_commit(&self.provider)?;
+        self.queued.remove(group_id);
         Ok(())
     }
 
@@ -410,13 +476,21 @@ impl TestClient {
         // `Option<GroupInfo>` the commit builder returned is not used here; it is named so the
         // unused-variable lint stays quiet and so a reader can see it was considered.
         let _ = &group_info;
-        ds.post_external_commit(
+        let posted = ds.post_external_commit(
             group_id,
             ResyncRequest {
                 external_commit: serialize(&commit)?,
                 group_info: serialize(&group.export_group_info(&self.provider, &self.signer)?)?,
             },
-        )?;
+        );
+        if let Err(refused) = posted {
+            // The join already wrote the joiner's group state under this group id; a refused join
+            // must not leave it behind, or the next attempt finds a group that never existed.
+            let mut group = group;
+            group.delete(&self.provider)?;
+            return Err(refused.into());
+        }
+        self.queued.remove(group_id);
         self.groups.insert(group_id.to_vec(), group);
         Ok(())
     }
@@ -482,12 +556,59 @@ impl TestClient {
         ds: &mut dyn DeliveryService,
         group_id: &[u8],
     ) -> Result<(), TestkitError> {
+        self.absorb_proposals(ds, group_id)?;
         let group = self
             .groups
             .get_mut(group_id)
             .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
         let bundle = group.self_update(&self.provider, &self.signer)?;
-        self.upload_commit(ds, group_id, bundle, Vec::new())
+        // A queued instance Add makes the commit carry a Welcome, addressed by `self_update` to
+        // the device the Add names; the instance stores it for that device (row 15).
+        let welcomes = bundle
+            .welcomes
+            .iter()
+            .map(|(d, w)| Ok((*d, serialize(w)?)))
+            .collect::<Result<Vec<_>, TestkitError>>()?;
+        self.upload_commit(ds, group_id, bundle, welcomes)
+    }
+
+    /// Queues every non-void instance proposal the delivery service lists for the group's current
+    /// epoch (row 19) that this client has not queued already. A void one is left out: invariant 6
+    /// lets a commit omit it, and that is what a committer does.
+    ///
+    /// The list, not only the `mls.handshake` frames, because a frame is fanned out asynchronously
+    /// and may not have reached the socket when the committer builds its commit; invariant 4
+    /// refuses a commit that misses an outstanding proposal.
+    fn absorb_proposals(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+    ) -> Result<(), TestkitError> {
+        let items = ds.proposals(group_id)?;
+        let group = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        for item in items.into_iter().filter(|i| !i.void) {
+            let message = deserialize_protocol(&item.blob)?;
+            if message.epoch().as_u64() != group.epoch() {
+                continue;
+            }
+            if let DillaProcessed::Proposal(proposal) =
+                group.process_message(&self.provider, message)?
+            {
+                let reference = proposal.proposal_reference_ref().as_slice().to_vec();
+                if self
+                    .queued
+                    .entry(group_id.to_vec())
+                    .or_default()
+                    .insert(reference)
+                {
+                    group.store_pending_proposal(&self.provider, *proposal)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Drains this device's frames and applies everything in order: handshakes first, then the
@@ -505,20 +626,50 @@ impl TestClient {
                 | Frame::MessageDeleted { .. }
                 | Frame::GatewayError { .. } => {}
                 Frame::MlsHandshake { group_id, item } => {
+                    let tail = self.tails.entry(group_id.clone()).or_default();
+                    if tail.back().is_none_or(|last| last.seq < item.seq) {
+                        tail.push_back(item.clone());
+                        if tail.len() > HEAL_TAIL {
+                            tail.pop_front();
+                        }
+                    }
                     if let Some(group) = self.groups.get_mut(&group_id) {
                         // The DS fans a commit out to every member, the committer included, and a
                         // committer has already merged its own commit before the frame arrives.
                         // Feeding OpenMLS a handshake for an epoch the group has left is a
                         // `WrongEpoch` validation failure, so a frame that is already applied is
                         // skipped rather than processed.
-                        if item.epoch < group.epoch() {
+                        //
+                        // The epoch compared is the one the MLS message is FRAMED in, not the
+                        // record's `epoch`: the instance records a commit under the epoch it
+                        // creates (`GetCommitAtEpoch`: "the handshake that carried a group into
+                        // `epoch`") while the stub records the epoch it was sent in, and only the
+                        // framing says which epoch OpenMLS will process it against.
+                        let message = deserialize_protocol(&item.blob)?;
+                        if message.epoch().as_u64() < group.epoch() {
                             continue;
                         }
-                        let message = deserialize_protocol(&item.blob)?;
-                        if let DillaProcessed::StagedCommit(staged) =
-                            group.process_message(&self.provider, message)?
-                        {
-                            group.merge_staged_commit(&self.provider, *staged)?;
+                        match group.process_message(&self.provider, message)? {
+                            DillaProcessed::StagedCommit(staged) => {
+                                group.merge_staged_commit(&self.provider, *staged)?;
+                                self.queued.remove(&group_id);
+                            }
+                            // An instance proposal (or a member's own-device Remove) is queued for
+                            // this client's next commit: invariant 4 refuses a commit that does
+                            // not reference every outstanding instance proposal.
+                            DillaProcessed::Proposal(proposal) => {
+                                let reference =
+                                    proposal.proposal_reference_ref().as_slice().to_vec();
+                                if self
+                                    .queued
+                                    .entry(group_id.clone())
+                                    .or_default()
+                                    .insert(reference)
+                                {
+                                    group.store_pending_proposal(&self.provider, *proposal)?;
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -542,6 +693,122 @@ impl TestClient {
             }
         }
         Ok(new)
+    }
+
+    /// Invariant 9 and R25: the client drops its own copy of the group and returns to the
+    /// instance's head by an own-leaf external commit. OpenMLS removes the leaf that carries this
+    /// client's signature key in the same commit (external_commits.rs: the Remove of the member
+    /// whose `signature_key` is the joiner's), so the device ends with one leaf, not two.
+    pub fn resync(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        expected: &DillaBinding,
+    ) -> Result<(), TestkitError> {
+        if let Some(mut stale) = self.groups.remove(group_id) {
+            stale.delete(&self.provider)?;
+        }
+        self.join_external(ds, group_id, expected)
+    }
+
+    /// Invariant 9: reports the last commit this client received for the group as one it cannot
+    /// process. The seq and epoch are the handshake record's own.
+    pub fn fork_report(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+    ) -> Result<(), TestkitError> {
+        self.sync(ds)?;
+        let commit = self
+            .tails
+            .get(group_id)
+            .and_then(|tail| tail.iter().rev().find(|h| h.kind == 1 || h.kind == 2))
+            .cloned()
+            .ok_or_else(|| {
+                TestkitError::Scenario(format!("{} received no commit to report", self.name))
+            })?;
+        ds.fork_report(
+            group_id,
+            commit.epoch,
+            commit.seq,
+            "dilla-testkit: this commit does not process",
+        )?;
+        Ok(())
+    }
+
+    /// Invariant 11: after a restore, uploads this member's GroupInfo and the handshake tail it
+    /// holds. The instance replays what its restored log lacks and adopts the result only when the
+    /// GroupInfo's tree hash matches the tree it rebuilt.
+    pub fn heal(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+    ) -> Result<(), TestkitError> {
+        self.sync(ds)?;
+        let group = self
+            .groups
+            .get(group_id)
+            .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        let group_info = serialize(&group.export_group_info(&self.provider, &self.signer)?)?;
+        let tail = self
+            .tails
+            .get(group_id)
+            .map(|t| t.iter().cloned().collect())
+            .unwrap_or_default();
+        ds.heal(
+            group_id,
+            HealRequest {
+                group_info,
+                tail,
+                ratchet_tree: None,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Invariant 7: acknowledges the most recent `mls.commit_needed` this client received, and
+    /// does nothing else. A round that is acknowledged and then not committed is a lost round.
+    pub fn ack_commit(&mut self, ds: &mut dyn DeliveryService) -> Result<(), TestkitError> {
+        self.sync(ds)?;
+        let latest = self
+            .frames
+            .iter()
+            .rposition(|f| matches!(f, Frame::CommitNeeded { .. }))
+            .ok_or_else(|| {
+                TestkitError::Assertion(format!("{} was never asked to commit", self.name))
+            })?;
+        // Claimed, with every older election frame: one acknowledgement answers one round, and
+        // the next `ack_commit` must find the NEXT round rather than this one again.
+        let mut claimed = Vec::new();
+        let mut index = 0;
+        self.frames.retain(|f| {
+            let keep = !(index <= latest && matches!(f, Frame::CommitNeeded { .. }));
+            if !keep {
+                claimed.push(f.clone());
+            }
+            index += 1;
+            keep
+        });
+        match claimed.pop() {
+            Some(Frame::CommitNeeded {
+                group_id, round, ..
+            }) => {
+                ds.ack_commit(&group_id, round)?;
+                Ok(())
+            }
+            _ => unreachable!("the latest CommitNeeded frame was claimed"),
+        }
+    }
+
+    /// The `CredentialIdentity` CBOR this device registered with, which a session challenge
+    /// carries.
+    pub fn credential_blob(&self) -> Vec<u8> {
+        self.identity.encode()
+    }
+
+    /// How many members this client's tree of the group holds.
+    pub fn member_count(&self, group_id: &[u8]) -> Option<usize> {
+        self.groups.get(group_id).map(DillaGroup::member_count)
     }
 
     pub fn inbox(&self) -> &[Received] {

@@ -1,0 +1,26 @@
+# protocol/01 § Cadence: a device that has not connected for 90 days is removed from every group by
+# an instance Remove (90, not the spec chaos list's 30 - deviation D13), and it rejoins by external
+# commit. Alice and bob reconnect at day 45; carol stays away. At day 91 only carol is past the
+# window: the instance proposes her removal - the group freezes on it, which is how the scenario
+# sees it - alice commits it, and carol returns by external commit and reads what is sent after.
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=dddddddddddddddddddddddddddddddd community=none creator=alice
+join bob chat via=welcome
+join carol chat via=welcome
+sync bob
+sync carol
+go_offline carol
+advance_clock 45d
+send alice chat nobody is past the window at day 45
+expect_decrypts bob chat nobody is past the window at day 45
+advance_clock 46d
+expect_425 send alice chat carol is past it at day 91
+commit alice
+go_online carol
+resync carol chat
+sync alice
+send alice chat welcome back carol
+expect_decrypts carol chat welcome back carol

@@ -1,0 +1,18 @@
+# Invariant 10: handshakes and application ciphertext are kept for 30 days, and a device away for
+# longer finds the log pruned behind it. Bob's catch-up is answered E_PRUNED, and he returns by an
+# own-leaf external commit to the instance's head instead - after which what alice sends reaches
+# him again. Nothing he missed is served to him out of a log that no longer holds it.
+instance dilla
+client alice
+client bob
+group chat kind=text target=dcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc community=none creator=alice
+join bob chat via=welcome
+sync bob
+go_offline bob
+send alice chat sent before bob came back
+advance_clock 31d
+expect_reject E_PRUNED go_online bob
+resync bob chat
+sync alice
+send alice chat after the resync
+expect_decrypts bob chat after the resync

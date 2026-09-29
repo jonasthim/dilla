@@ -1,0 +1,23 @@
+# Invariant 9's recovery and R25: a member that has fallen out of the epoch returns to the
+# instance's head by an own-leaf external commit (POST /resync), and that resync is EXEMPT from
+# invariant 5's freeze - making the one device that cannot act wait on a membership commit would
+# deadlock it. Bob misses two epochs, the instance's Remove of carol freezes the group, and bob
+# still resyncs; the Remove is re-issued for the new epoch and alice commits it.
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8 community=none creator=alice
+join bob chat via=welcome
+join carol chat via=welcome
+sync bob
+go_offline bob
+commit alice
+commit alice
+kick alice carol
+go_online bob
+resync bob chat
+sync alice
+commit alice
+send alice chat back at the head
+expect_decrypts bob chat back at the head

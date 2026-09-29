@@ -13,13 +13,14 @@ use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
+use dilla_core::identity::DeviceList;
 use dilla_core::ids::DeviceId;
 use tungstenite::{Message, WebSocket};
 
 use super::{
     CommitRequest, CommitResult, DeliveryService, Device, DsError, ErrorExtras, Frame, GroupId,
-    GroupInfoResp, HandshakeItem, HealRequest, KeyPackageResp, MessageItem, RegisterRequest,
-    RegisterResult, ResyncRequest, TreeResp, UploadResult, WelcomeItem,
+    GroupInfoResp, HandshakeItem, HealRequest, KeyPackageResp, MessageItem, ProposalItem,
+    RegisterRequest, RegisterResult, ResyncRequest, TreeResp, UploadResult, WelcomeItem,
 };
 
 /// The gateway subprotocol `internal/gateway.Handler` negotiates.
@@ -55,6 +56,9 @@ pub struct HttpDs {
     /// held — the per-group seq cursors and `GET ?from=` are the truth, not the replay ring.
     delivered: BTreeMap<Vec<u8>, u64>,
     connected_before: bool,
+    /// The session's hard expiry in the instance's unix seconds, 0 when unknown: what tells a
+    /// runner that has moved the instance clock whether this device must sign in again.
+    expires: u64,
 }
 
 /// What `redeem_invite` returns: the identifiers the instance minted.
@@ -63,6 +67,8 @@ pub struct Enrolled {
     pub user_id: [u8; 16],
     pub device_id: DeviceId,
     pub token: String,
+    /// The first session's hard expiry, in the instance's unix seconds.
+    pub expires: u64,
 }
 
 /// The account half and the first device of `POST /v1/accounts`, as protocol/09 fixes them:
@@ -176,6 +182,13 @@ fn call(
         }
         ("POST", Some((content_type, bytes))) => {
             let mut r = agent.post(url).content_type(content_type);
+            if let Some(b) = &bearer {
+                r = r.header("Authorization", b);
+            }
+            r.send(bytes)
+        }
+        ("PUT", Some((content_type, bytes))) => {
+            let mut r = agent.put(url).content_type(content_type);
             if let Some(b) = &bearer {
                 r = r.header("Authorization", b);
             }
@@ -296,8 +309,11 @@ enum Inbound {
     /// `invalid_session` or `reconnect`: the connection is over and the reason says why.
     Closing(String),
     Frame(Frame),
-    /// Control frames the client has no use for (`resumed`, `heartbeat_ack`) and the ops outside
-    /// the delivery service (32 and above).
+    /// `heartbeat_ack` (7): the gateway handles one connection's frames in order, so the answer to
+    /// a heartbeat proves every frame sent before it has been handled.
+    HeartbeatAck,
+    /// Control frames the client has no use for (`resumed`) and the ops outside the delivery
+    /// service (32 and above).
     Ignored,
 }
 
@@ -367,6 +383,12 @@ fn decode_frame(bytes: &[u8]) -> Result<(u64, Inbound), DsError> {
                 let reason = d.text()?.to_owned();
                 let after_ms = d.uint()?;
                 Inbound::Closing(format!("reconnect: {reason} (after {after_ms} ms)"))
+            }
+            7 => {
+                for _ in 0..len {
+                    d.skip()?;
+                }
+                Inbound::HeartbeatAck
             }
             9 => {
                 expect(3)?;
@@ -476,62 +498,98 @@ fn is_timeout(e: &tungstenite::Error) -> bool {
     ))
 }
 
+/// A challenge-response device session: a nonce, an Ed25519 signature over the 81-byte preimage
+/// of `protocol/02`'s "Device sessions", then the session itself. Answers the bearer token and
+/// its hard expiry, in the instance's unix seconds.
+fn establish(
+    agent: &ureq::Agent,
+    base: &str,
+    device: &Device,
+    credential: &[u8],
+) -> Result<(String, u64), DsError> {
+    let device_hex = hex::encode(device.id().as_bytes());
+    let challenge = post_cbor(
+        agent,
+        &format!("{base}/v1/devices/{device_hex}/sessions/challenge"),
+        None,
+        &encode(|e| {
+            e.array(0);
+        }),
+    )?;
+    let (nonce, _expires) = decode_strict(&challenge, |d: &mut Decoder<'_>| {
+        d.array(2)?;
+        Ok((d.bytes_exact::<32>()?, d.uint()?))
+    })
+    .map_err(protocol)?;
+
+    // "dilla session v1" (16) || instance_id (16) || device_id (16) || nonce (32) || purpose (1)
+    let instance_id = instance_id_of(agent, base)?;
+    let mut preimage = Vec::with_capacity(81);
+    preimage.extend_from_slice(b"dilla session v1");
+    preimage.extend_from_slice(&instance_id);
+    preimage.extend_from_slice(device.id().as_bytes());
+    preimage.extend_from_slice(&nonce);
+    preimage.push(0); // purpose 0: session
+    let sig = device.sign(&preimage);
+
+    let body = encode(|e| {
+        e.array(5)
+            .bytes(&nonce)
+            .uint(0)
+            .bytes(&sig)
+            .bytes(credential)
+            .null();
+    });
+    let session = post_cbor(
+        agent,
+        &format!("{base}/v1/devices/{device_hex}/sessions"),
+        None,
+        &body,
+    )?;
+    // `[token, scope, user_id, device_id, expires, idle_expires, generation]` (protocol/09).
+    decode_strict(&session, |d: &mut Decoder<'_>| {
+        d.array(7)?;
+        let token = d.text()?.to_owned();
+        for _ in 1..4 {
+            d.skip()?;
+        }
+        let expires = d.uint()?;
+        d.skip()?;
+        d.skip()?;
+        Ok((token, expires))
+    })
+    .map_err(protocol)
+}
+
 impl HttpDs {
     /// Establishes a device session over the real endpoints: a challenge, an Ed25519 signature
     /// over the 81-byte preimage of `protocol/02`'s "Device sessions", then the session itself.
     pub fn connect(base: &str, device: &Device, credential: &[u8]) -> Result<Self, DsError> {
-        let agent = new_agent();
-        let device_hex = hex::encode(device.id().as_bytes());
+        let (token, expires) = establish(&new_agent(), base, device, credential)?;
+        let mut ds = Self::with_session(base, device.id(), token)?;
+        ds.expires = expires;
+        Ok(ds)
+    }
 
-        let challenge = post_cbor(
-            &agent,
-            &format!("{base}/v1/devices/{device_hex}/sessions/challenge"),
-            None,
-            &encode(|e| {
-                e.array(0);
-            }),
-        )?;
-        let (nonce, _expires) = decode_strict(&challenge, |d: &mut Decoder<'_>| {
-            d.array(2)?;
-            Ok((d.bytes_exact::<32>()?, d.uint()?))
-        })
-        .map_err(protocol)?;
-
-        // "dilla session v1" (16) || instance_id (16) || device_id (16) || nonce (32) || purpose (1)
-        let instance_id = instance_id_of(&agent, base)?;
-        let mut preimage = Vec::with_capacity(81);
-        preimage.extend_from_slice(b"dilla session v1");
-        preimage.extend_from_slice(&instance_id);
-        preimage.extend_from_slice(device.id().as_bytes());
-        preimage.extend_from_slice(&nonce);
-        preimage.push(0); // purpose 0: session
-        let sig = device.sign(&preimage);
-
-        let body = encode(|e| {
-            e.array(5)
-                .bytes(&nonce)
-                .uint(0)
-                .bytes(&sig)
-                .bytes(credential)
-                .null();
-        });
-        let session = post_cbor(
-            &agent,
-            &format!("{base}/v1/devices/{device_hex}/sessions"),
-            None,
-            &body,
-        )?;
-        let token = decode_strict(&session, |d: &mut Decoder<'_>| {
-            d.array(7)?;
-            let token = d.text()?.to_owned();
-            for _ in 1..7 {
-                d.skip()?;
-            }
-            Ok(token)
-        })
-        .map_err(protocol)?;
-
-        Self::with_session(base, device.id(), token)
+    /// Signs in again: a fresh challenge-response session replaces the one this client holds,
+    /// and the gateway connection is reopened over it when the device is online. A native
+    /// session lasts 30 days (protocol/02 § Device sessions item 5), so a scenario that moves the
+    /// instance clock past that is one in which every device has to sign in again — which a real
+    /// client does the same way.
+    pub fn reauthenticate(&mut self, device: &Device, credential: &[u8]) -> Result<(), DsError> {
+        (self.token, self.expires) = establish(&self.agent, &self.base, device, credential)?;
+        // What the old connection already holds is read first, as `set_online(false)` does: the
+        // reconnect's catch-up starts after `delivered`, which only a pumped frame advances, so
+        // closing over them would ask the instance for frames it may since have pruned.
+        self.pump()?;
+        if let Some(mut ws) = self.ws.take() {
+            let _ = ws.close(None);
+            let _ = ws.flush();
+        }
+        if self.online {
+            self.open_socket()?;
+        }
+        Ok(())
     }
 
     /// A client over a session the caller already holds — the one `POST /v1/accounts` returns
@@ -552,6 +610,7 @@ impl HttpDs {
             last_n: 0,
             delivered: BTreeMap::new(),
             connected_before: false,
+            expires: 0,
         };
         ds.open_socket()?;
         Ok(ds)
@@ -583,11 +642,12 @@ impl HttpDs {
             let user_id = d.bytes_exact::<16>()?;
             let device_id = device_id(d)?;
             let token = d.text()?.to_owned();
-            d.skip()?;
+            let expires = d.uint()?;
             Ok(Enrolled {
                 user_id,
                 device_id,
                 token,
+                expires,
             })
         })
         .map_err(protocol)
@@ -595,6 +655,39 @@ impl HttpDs {
 
     pub fn device(&self) -> DeviceId {
         self.device
+    }
+
+    /// The session's hard expiry in the instance's unix seconds; 0 when unknown.
+    pub fn session_expires(&self) -> u64 {
+        self.expires
+    }
+
+    /// Records the hard expiry of the session `with_session` was handed (the one `POST
+    /// /v1/accounts` answers with).
+    pub fn set_session_expires(&mut self, expires: u64) {
+        self.expires = expires;
+    }
+
+    /// `PUT /v1/users/{user_id}/device-list`: `[version, blob, ssk_signature, prev_hash]`, where
+    /// `blob` is protocol/03's full six-element signed list — the form the instance hands to the
+    /// guest's `device_list_entries` when invariant 4 checks an Add's DSK against it.
+    pub fn put_device_list(&self, user_id: &[u8; 16], list: &DeviceList) -> Result<(), DsError> {
+        let body = encode(|e| {
+            e.array(4)
+                .uint(list.unsigned.version)
+                .bytes(&list.encode())
+                .bytes(&list.sig_ssk)
+                .bytes(&list.unsigned.prev_hash);
+        });
+        let path = format!("/v1/users/{}/device-list", hex::encode(user_id));
+        let (status, out) = call(
+            &self.agent,
+            "PUT",
+            &self.url(&path),
+            Some(&self.token),
+            Some(("application/cbor", &body)),
+        )?;
+        check_status(status, &out)
     }
 
     /// Opens the gateway: the upgrade with the bearer on the `Authorization` header, `hello`,
@@ -815,7 +908,10 @@ impl HttpDs {
                     match inbound {
                         Inbound::Frame(frame) => self.accept(frame),
                         Inbound::Closing(_) => self.ws = None,
-                        Inbound::Hello { .. } | Inbound::Ready | Inbound::Ignored => {}
+                        Inbound::Hello { .. }
+                        | Inbound::Ready
+                        | Inbound::HeartbeatAck
+                        | Inbound::Ignored => {}
                     }
                 }
                 Ok(Message::Close(_)) => self.ws = None,
@@ -827,6 +923,50 @@ impl HttpDs {
                     | tungstenite::Error::Protocol(_)
                     | tungstenite::Error::Io(_),
                 ) => self.ws = None,
+                Err(e) => return Err(transport(e)),
+            }
+        }
+    }
+
+    /// Sends a heartbeat and reads until its `heartbeat_ack`, keeping every frame that arrives
+    /// meanwhile. The gateway handles one connection's frames in order, so on return every frame
+    /// this client sent before the heartbeat has been handled — which is what makes a following
+    /// control-listener call (an `advance_clock` that runs the watchdog) see a `commit_ack`.
+    fn barrier(&mut self) -> Result<(), DsError> {
+        self.send_heartbeat()?;
+        let deadline = Instant::now() + HANDSHAKE_WAIT;
+        loop {
+            let Some(ws) = self.ws.as_mut() else {
+                return Err(DsError::Transport(
+                    "the gateway closed the connection before answering the heartbeat".into(),
+                ));
+            };
+            match ws.read() {
+                Ok(Message::Binary(bytes)) => {
+                    let (n, inbound) = decode_frame(&bytes)?;
+                    self.last_n = self.last_n.max(n);
+                    match inbound {
+                        Inbound::HeartbeatAck => return Ok(()),
+                        Inbound::Frame(frame) => self.accept(frame),
+                        Inbound::Closing(reason) => {
+                            self.ws = None;
+                            return Err(DsError::Transport(reason));
+                        }
+                        Inbound::Hello { .. } | Inbound::Ready | Inbound::Ignored => {}
+                    }
+                }
+                Ok(Message::Close(_)) => {
+                    self.ws = None;
+                    return Err(DsError::Transport(
+                        "the gateway closed the connection".into(),
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) if is_timeout(&e) => {
+                    if Instant::now() >= deadline {
+                        return Err(DsError::Transport("no heartbeat_ack".into()));
+                    }
+                }
                 Err(e) => return Err(transport(e)),
             }
         }
@@ -1289,6 +1429,14 @@ impl DeliveryService for HttpDs {
             self.open_socket()?;
         }
         self.pump()?;
+        // A connection the instance closed under this drain (a restart, a restore, an expired
+        // session) is reopened now rather than on the next drain: the reconnect's catch-up is what
+        // brings in what the dead connection would have carried, and a drain that returned empty
+        // here would tell the scenario there was nothing to read.
+        if self.ws.is_none() {
+            self.open_socket()?;
+            self.pump()?;
+        }
         Ok(std::mem::take(&mut self.pending))
     }
 
@@ -1325,6 +1473,48 @@ impl DeliveryService for HttpDs {
     fn advance_clock(&mut self, secs: u64) -> Result<(), DsError> {
         let body = format!("{{\"seconds\":{secs}}}");
         self.post_control("/debug/clock", &body).map(|_| ())
+    }
+
+    /// Row 19: `[[ref, kind, target_leaf|null, blob, void(uint)]]`.
+    fn proposals(&mut self, g: &GroupId) -> Result<Vec<ProposalItem>, DsError> {
+        self.get_decoded(&Self::group_path(g, "/proposals"), |d| {
+            let n = array_or_null(d)?;
+            (0..n)
+                .map(|_| {
+                    d.array(5)?;
+                    Ok(ProposalItem {
+                        proposal_ref: bytes_or_null(d)?,
+                        kind: small(d.uint()?)?,
+                        target_leaf: d.opt_uint()?.map(small).transpose()?,
+                        blob: bytes_or_null(d)?,
+                        void: d.uint()? != 0,
+                    })
+                })
+                .collect::<Result<Vec<_>, CborError>>()
+        })
+    }
+
+    /// Opcode 12, `[round]`, group-scoped: the one client frame that carries a `group_id`
+    /// (protocol/02 § Gateway frames). An offline device has no connection to send it on.
+    fn ack_commit(&mut self, g: &GroupId, round: u64) -> Result<(), DsError> {
+        if !self.online {
+            return Err(DsError::Protocol(
+                "an offline device cannot acknowledge an election".into(),
+            ));
+        }
+        if self.ws.is_none() {
+            self.open_socket()?;
+        }
+        let frame = encode(|e| {
+            e.array(4).uint(12).uint(0).bytes(g);
+            e.array(1).uint(round);
+        });
+        let ws = self
+            .ws
+            .as_mut()
+            .ok_or_else(|| DsError::Transport("no gateway connection".into()))?;
+        ws.send(Message::Binary(frame.into())).map_err(transport)?;
+        self.barrier()
     }
 }
 
@@ -1580,6 +1770,7 @@ mod tests {
             last_n: 0,
             delivered: BTreeMap::new(),
             connected_before: true,
+            expires: 0,
         }
     }
 

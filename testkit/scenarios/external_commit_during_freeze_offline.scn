@@ -1,0 +1,19 @@
+# Invariant 5's exception: with no member device online, an external commit is accepted even though
+# an instance proposal is outstanding. The proposal it omitted is re-issued for the new epoch, the
+# freeze stays, and mls.commit_needed goes to the joiner - the one online device - who commits it.
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5 community=none creator=alice
+join bob chat via=welcome
+sync bob
+kick alice bob
+go_offline alice
+go_offline bob
+external_join carol chat
+expect_frame mls.commit_needed
+commit carol
+send carol chat hello from the joiner
+go_online alice
+expect_decrypts alice chat hello from the joiner

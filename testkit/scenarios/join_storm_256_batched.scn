@@ -1,0 +1,14 @@
+# protocol/01 § Joining: a private channel opened to 1,000 devices is populated by instance Add
+# proposals in batches, at most 256 per commit, so the storm completes in four commits (256, 256,
+# 256, 232). The instance keeps the batch - ProposeAddBatch holds 256 outstanding and issues the
+# next slice when a commit applies them - and the Go harness asserts the commit count from the
+# instance's own counter. Every joiner enters by the Welcome of the commit that added it.
+instance dilla
+client owner
+group chat kind=text target=dededededededededededededededede community=none creator=owner
+join_many chat 1000
+send owner chat everyone is here
+expect_decrypts chat-2 chat everyone is here
+expect_decrypts chat-500 chat everyone is here
+expect_decrypts chat-1001 chat everyone is here
+expect_decrypts_all chat-1001
