@@ -33,6 +33,26 @@ func (d *DS) Handshakes(ctx context.Context, groupID id.ID, session Session, fro
 	if err != nil {
 		return nil, err
 	}
+	if floor == 0 {
+		// An EMPTY log. The floor below is the oldest SURVIVING seq, and a log the sweep has
+		// emptied has none, so without this the predicate reads 0 and serves an empty page —
+		// "nothing new" — to a device that missed everything the sweep took. Nothing survives,
+		// so every seq the group ever issued at or above `from` is a hole unless no handshake
+		// can have been swept; one past the head has lost nothing.
+		row, err := d.opts.Store.GetGroup(ctx, groupID)
+		if err != nil {
+			return nil, err
+		}
+		if from <= row.Seq {
+			gone, err := d.mayHavePrunedHandshakes(ctx, groupID)
+			if err != nil {
+				return nil, err
+			}
+			if gone {
+				return nil, errPruned(from, row.Seq+1)
+			}
+		}
+	}
 	// `from` is the first seq the caller still wants. A cursor at floor-1 is contiguous with the
 	// log; below that the log MAY have a hole the instance cannot fill, which is a resync, not a
 	// retry.

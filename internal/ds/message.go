@@ -136,6 +136,24 @@ func (d *DS) Messages(ctx context.Context, groupID id.ID, session Session, from 
 	if err != nil {
 		return nil, err
 	}
+	if floor == 0 {
+		// An EMPTY log, the twin of the handshake catch-up's case: a stream the sweep has
+		// emptied has no surviving floor, and reading 0 would serve "nothing new" to a device
+		// that missed everything the sweep took. Every seq from `from` to the head is the hole.
+		row, err := d.opts.Store.GetGroup(ctx, groupID)
+		if err != nil {
+			return nil, err
+		}
+		if from <= row.Seq {
+			gone, err := d.mayHavePrunedMessages(ctx, groupID, from, row.Seq)
+			if err != nil {
+				return nil, err
+			}
+			if gone {
+				return nil, errPruned(from, row.Seq+1)
+			}
+		}
+	}
 	// `from` is the first seq the caller still wants, so a cursor at floor-1 is contiguous with
 	// the log. Below that a message MAY be gone — MAY, because `from` is a cursor in the ONE seq
 	// space handshakes and application messages share, so a group whose early seqs are handshakes

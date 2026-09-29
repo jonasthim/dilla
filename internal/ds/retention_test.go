@@ -105,7 +105,14 @@ func TestAnIneligibleDeviceDoesNotHoldThePruneFloor(t *testing.T) {
 			if _, err := h.ds.Sweep(ctx); err != nil {
 				t.Fatalf("Sweep: %v", err)
 			}
+			// The sweep emptied the stream, so a catch-up from before the message is told it is
+			// gone (E_PRUNED, emptied_log_test.go) rather than served an empty page; either way
+			// the message did not survive, which is what the ineligible device must not prevent.
 			rows, err := h.ds.Messages(ctx, g.id, g.session, 0, 10)
+			var dsErr *ds.Error
+			if errors.As(err, &dsErr) && dsErr.Code == "E_PRUNED" {
+				return
+			}
 			if err != nil {
 				t.Fatalf("Messages: %v", err)
 			}
