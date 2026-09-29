@@ -657,26 +657,12 @@ func TestProposalsJoinsTheSqlRowToTheGuestsQueuedBlob(t *testing.T) {
 
 // ------------------------------------------------------ the gaps, named in code
 
-// The brief's step 1 names this test. It cannot be written yet: it needs `DS.Upload` and
-// `DS.Messages`, which are task 23's, and an ACCEPTED commit, which needs a GroupInfo at epoch 7.
-func TestOneSeqSpaceNumbersHandshakesAndMessages(t *testing.T) {
-	t.Skip("needs DS.Upload and DS.Messages (task 23) and an accepted commit, which needs a " +
-		"GroupInfo at epoch 7: testkit/fixtures/ds-1500 ships exactly one GroupInfo " +
-		"(group_info.mls, epoch 6, signer leaf 0), so invariant 4's epoch-n+1 clause cannot be " +
-		"satisfied by any committed material")
-}
-
-// The brief's step 1 names this test too. The whole accepted path — Merge, nextSeq,
-// AppendHandshake, persistState, replaceMembersTx, DeleteProposals, fanOutCommit and both
-// DSCommits counters — is unexecuted until the fixture exports a merged GroupInfo beside one of
-// the commits. That is a blocking prerequisite for task 23, not a recommendation.
-func TestAnAcceptedCommitFansOutHandshakeEpochChangedAndWelcomes(t *testing.T) {
-	t.Skip("no commit in this repository can be accepted: the fixture holds one GroupInfo, at " +
-		"epoch 6, and invariant 4 wants epoch n+1. Exporting a merged group_info beside " +
-		"commits/09.mls (the self-update, which adds nobody and so needs no device list) is the " +
-		"one fixture change that makes the accepted path, the seq space, the fan-out and the " +
-		"stale-eviction path testable. The Welcome half is task 24's regardless")
-}
+// The brief's step 1 named two more tests here, TestOneSeqSpaceNumbersHandshakesAndMessages and
+// TestAnAcceptedCommitFansOutHandshakeEpochChangedAndWelcomes. Both need an ACCEPTED commit, and
+// the committed fixture cannot produce one (one GroupInfo, at epoch 6; invariant 4 wants n+1), so
+// they shipped here as skips. Task 29 (Ruling C(5)) replaced them, under the same names, with
+// harness-driven tests in internal/testkit/accepted_test.go: real dilla-core clients commit
+// through the in-process instance and the tests read back what it stored.
 
 // ---------------------------------------------------------------- the helpers
 

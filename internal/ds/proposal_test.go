@@ -617,17 +617,11 @@ func TestReissueForAnUnknownActionIsNotFound(t *testing.T) {
 
 // ------------------------------------------------------ the gaps, named in code
 
-// Invariant 5's nobody-online exception ends in a re-issue FOR THE NEW EPOCH, and the assertion
-// that distinguishes it from doing nothing is that the re-issued ref differs. A ProposalRef is
-// taken over the proposal's framed content, which carries the group context's epoch, so two
-// epochs are needed and this package can reach only one.
-func TestWithNobodyOnlineAnExternalCommitIsAcceptedAndTheProposalsAreReissued(t *testing.T) {
-	t.Skip("needs an ACCEPTED external commit, so a second epoch: testkit/fixtures/ds-1500 ships " +
-		"one GroupInfo (group_info.mls, epoch 6) and invariant 4 wants epoch n+1, so no commit in " +
-		"this repository merges (commit_test.go records the same blocker). The external path is " +
-		"task 25's besides: checkAppliedProposals refuses every external commit today. Exporting " +
-		"a merged group_info beside commits/09.mls is the one fixture change that unblocks it")
-}
+// Invariant 5's nobody-online exception ends in a re-issue FOR THE NEW EPOCH, which needs an
+// accepted external commit and so a second epoch; this package can reach only the fixture's one.
+// TestWithNobodyOnlineAnExternalCommitIsAcceptedAndTheProposalsAreReissued, which shipped here as
+// a skip, is task 29's harness-driven test of the same name in internal/testkit/accepted_test.go
+// (Ruling C(5)); join_test.go asserts the freeze's half that needs no accepted commit.
 
 // ---------------------------------------------------------------- the helpers
 

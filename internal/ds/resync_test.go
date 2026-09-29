@@ -18,9 +18,12 @@ package ds_test
 //     through both. What is still missing is external-commit material a Go test can hold,
 //     which Ruling C assigns to task 29's harness.)
 //
-// So the happy path is one honest skip naming both blockers, and everything R25 states that IS
-// reachable is asserted for real against the real store and the real guest: guard 1 in full, the
-// freeze exemption in full, and guard 2 over the applied list its own clause is defined on.
+// So everything R25 states that IS reachable from here is asserted for real against the real store
+// and the real guest: guard 1 in full, the freeze exemption in full, and guard 2 over the applied
+// list its own clause is defined on. The happy path — an accepted resync during a freeze, and the
+// re-issue after it — shipped here as a skip and is now task 29's harness-driven
+// TestAResyncSucceedsDuringAFreezeAndReissuesTheProposals in internal/testkit/accepted_test.go,
+// where real dilla-core clients produce the external commit (Ruling C(5)).
 
 import (
 	"context"
@@ -32,19 +35,6 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 )
-
-// R25: a resync succeeds DURING a freeze, and the outstanding proposals are re-issued for the new
-// epoch afterwards. Making the one device that cannot act wait on a membership commit deadlocks
-// exactly that device.
-func TestAResyncSucceedsDuringAFreezeAndReissuesTheProposals(t *testing.T) {
-	t.Skip("needs an ACCEPTED external commit, which nothing in this repository can produce: " +
-		"testkit/fixtures/ds-1500 ships one GroupInfo (group_info.mls, epoch 6) where invariant 4 " +
-		"wants epoch n+1 (the blocker commit_test.go and proposal_test.go already record in three " +
-		"skips), and it holds no external commit (the ABI half — Processed.NewLeaf and " +
-		"ValidateStagedGroupInfo — landed in task 27a; the external-commit material is task 29's). " +
-		"TestAResyncIsExemptFromTheFreeze below asserts the half of this test that does not " +
-		"need the commit to be accepted")
-}
 
 // The freeze exemption itself, without an acceptable commit: a resync during a live freeze is NOT
 // refused with E_COMMIT_REQUIRED. It is refused later, by the parse, and that is the whole point —
