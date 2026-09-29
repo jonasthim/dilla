@@ -41,6 +41,13 @@ type Deps struct {
 	Registration config.Registration
 	Sessions     *auth.Sessions
 
+	// ExternalSenderPub is the public half of the instance's current external-sender signing
+	// key (protocol/03 § Instance keys), elements 9 and 10 of GET /v1/instance with
+	// Instance.ExternalSenderKeyID: a client creating a text or call group puts it in the
+	// group's external_senders extension. The composition root derives it from the key history;
+	// the history itself is never served.
+	ExternalSenderPub []byte
+
 	// CloseGateway closes a device's gateway connections inside the same
 	// transaction that revokes it. Nil until part 1b's gateway exists; the
 	// composition root wires it to Sessions.OnRevoke.

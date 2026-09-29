@@ -7,7 +7,7 @@
 //! own gateway connection.
 
 use super::{DeviceListMode, Scenario, Stmt};
-use crate::ds::remote::{control_get, control_post, instance_id as remote_instance_id};
+use crate::ds::remote::{control_get, control_post, instance_document as remote_instance_document};
 use crate::{DeliveryService, DsError, DsStub, HttpDs, InstanceConfig, TestClient, TestkitError};
 use dilla_core::identity::{Kind, Tier};
 use dilla_core::ids::{InstanceId, UserId};
@@ -578,23 +578,12 @@ impl Runner {
         let backend = match self.ds_url() {
             Some(url) => {
                 let base = url.trim_end_matches('/').to_owned();
-                self.instance_id = InstanceId::from_bytes(remote_instance_id(&base)?);
-                // protocol/09's discovery document carries no external-sender key, so a remote
-                // scenario reads it from the test host; without a test host it creates groups the
-                // instance can propose nothing into, and says so the first time it tries.
-                self.external_sender = if std::env::var("DILLA_TESTKIT_CONTROL").is_ok() {
-                    let body = control_get("/debug/state")?;
-                    let state: serde_json::Value = serde_json::from_slice(&body)
-                        .map_err(|e| DsError::Protocol(format!("GET /debug/state: {e}")))?;
-                    state
-                        .get("external_sender_pub")
-                        .and_then(serde_json::Value::as_str)
-                        .map(hex::decode)
-                        .transpose()
-                        .map_err(|e| DsError::Protocol(format!("external_sender_pub: {e}")))?
-                } else {
-                    None
-                };
+                // protocol/09's discovery document carries the instance id and the current
+                // external-sender key, so a remote scenario needs no test host to create groups
+                // the instance can propose into.
+                let doc = remote_instance_document(&base)?;
+                self.instance_id = InstanceId::from_bytes(doc.instance_id);
+                self.external_sender = Some(doc.external_sender_pub.to_vec());
                 Backend::Remote {
                     base,
                     clients: BTreeMap::new(),

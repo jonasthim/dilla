@@ -158,21 +158,30 @@ blob `PUT`.
 | `GET /v1/instance` | — or E (`instance.discovery`) | — | the discovery document below | `401` |
 | `GET /v1/instance/limits` | — | — | the limits array below | — |
 
-The discovery document is a nine-element array, in this order:
+The discovery document is an eleven-element array, in this order:
 
 ```
 [
-  wire_versions,      ; [uint]
-  e2ee_versions,      ; [uint]
-  media_versions,     ; [uint]
-  instance_id,        ; bstr 16
-  generation,         ; uint
-  name,               ; tstr, the instance domain
-  registration_mode,  ; uint
-  auth_methods,       ; [uint], ascending, no duplicates
-  policy_version      ; uint
+  wire_versions,           ; [uint]
+  e2ee_versions,           ; [uint]
+  media_versions,          ; [uint]
+  instance_id,             ; bstr 16
+  generation,              ; uint
+  name,                    ; tstr, the instance domain
+  registration_mode,       ; uint
+  auth_methods,            ; [uint], ascending, no duplicates
+  policy_version,          ; uint
+  external_sender_key_id,  ; bstr 16
+  external_sender_pub      ; bstr 32
 ]
 ```
+
+`external_sender_key_id` and `external_sender_pub` are the key id and the Ed25519 public key of the
+instance's current external-sender signing key (`03-identity.md` § Instance keys): the entry of
+`key_history` the instance row names. A client creating a `text` or `call` group puts
+`external_sender_pub` in the group's `external_senders` extension, which is how the instance can
+propose into it. Only the public half is served; `key_history` itself never is. After a rotation
+the document carries the new key, and the rotation proposal of `03` is how existing groups move.
 
 `registration_mode` is **0 invite-only, 1 open, 2 closed**. Invite-only is 0 because it is the
 default an instance starts in; `closed` accepts no new account by any route. `auth_methods` values

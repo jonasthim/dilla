@@ -321,8 +321,8 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	if err := cborx.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
 		t.Fatalf("decode instance: %v", err)
 	}
-	if len(doc) != 9 {
-		t.Fatalf("the instance document has %d elements, want 9", len(doc))
+	if len(doc) != 11 {
+		t.Fatalf("the instance document has %d elements, want 11", len(doc))
 	}
 	// Every element, in the ORDER protocol/09-http-api.md § Instance fixes: a
 	// transposed pair or an inverted enum passes a length check.
@@ -359,6 +359,30 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	}
 	if doc[8] != uint64(1) {
 		t.Fatalf("policy_version = %v, want the seeded row's 1", doc[8])
+	}
+	// external_sender_key_id and external_sender_pub: the current kind-0 entry of the key
+	// history, the key every text and call group's external_senders extension must carry.
+	row, err := srv.Repo().GetInstance(t.Context())
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if got, _ := doc[9].([]byte); !bytes.Equal(got, row.ExternalSenderKeyID[:]) {
+		t.Fatalf("external_sender_key_id = %x, want the instance row's %x", got, row.ExternalSenderKeyID[:])
+	}
+	var keys []any
+	if err := cborx.Unmarshal(row.KeyHistory, &keys); err != nil {
+		t.Fatalf("decode key_history: %v", err)
+	}
+	entries, _ := keys[1].([]any)
+	var wantPub []byte
+	for _, e := range entries {
+		entry, _ := e.([]any)
+		if keyID, _ := entry[1].([]byte); entry[0] == uint64(0) && bytes.Equal(keyID, row.ExternalSenderKeyID[:]) {
+			wantPub, _ = entry[2].([]byte)
+		}
+	}
+	if got, _ := doc[10].([]byte); len(wantPub) != 32 || !bytes.Equal(got, wantPub) {
+		t.Fatalf("external_sender_pub = %x, want the key history's current public key %x", got, wantPub)
 	}
 
 	rec = httptest.NewRecorder()

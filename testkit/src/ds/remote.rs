@@ -218,23 +218,47 @@ fn post_cbor(
     Ok(out)
 }
 
-/// `GET /v1/instance`'s element 3. The instance id is bound into every session signature, and
-/// this is the one place a client that holds no session yet can read it.
-fn instance_id_of(agent: &ureq::Agent, base: &str) -> Result<[u8; 16], DsError> {
+/// What a client reads from `GET /v1/instance` before it holds a session (protocol/09 §
+/// Instance): the instance id, bound into every session signature and every group's binding, and
+/// the current external-sender key, which every `text` and `call` group's `external_senders`
+/// extension must carry for the instance to propose into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InstanceDocument {
+    pub instance_id: [u8; 16],
+    pub external_sender_key_id: [u8; 16],
+    pub external_sender_pub: [u8; 32],
+}
+
+/// `GET /v1/instance`: elements 3 (instance_id), 9 (external_sender_key_id) and 10
+/// (external_sender_pub) of the eleven-element discovery document.
+fn instance_document_of(agent: &ureq::Agent, base: &str) -> Result<InstanceDocument, DsError> {
     let (status, out) = call(agent, "GET", &format!("{base}/v1/instance"), None, None)?;
     check_status(status, &out)?;
-    decode_strict(&out, |d| {
-        d.array(9)?;
+    decode_instance_document(&out).map_err(protocol)
+}
+
+fn decode_instance_document(body: &[u8]) -> Result<InstanceDocument, CborError> {
+    decode_strict(body, |d| {
+        d.array(11)?;
         for _ in 0..3 {
             d.skip()?;
         }
-        let id = d.bytes_exact::<16>()?;
+        let instance_id = d.bytes_exact::<16>()?;
         for _ in 4..9 {
             d.skip()?;
         }
-        Ok(id)
+        let external_sender_key_id = d.bytes_exact::<16>()?;
+        let external_sender_pub = d.bytes_exact::<32>()?;
+        Ok(InstanceDocument {
+            instance_id,
+            external_sender_key_id,
+            external_sender_pub,
+        })
     })
-    .map_err(protocol)
+}
+
+fn instance_id_of(agent: &ureq::Agent, base: &str) -> Result<[u8; 16], DsError> {
+    instance_document_of(agent, base).map(|doc| doc.instance_id)
 }
 
 /// A non-2xx answer is decoded as protocol/02's error array, so a scenario's `expect_reject`
@@ -1060,11 +1084,12 @@ fn control(
     Ok(out)
 }
 
-/// The instance id of the instance at `base`, from `GET /v1/instance`. A remote scenario binds
-/// its groups to it: invariant 1 refuses a binding that names another instance.
-pub fn instance_id(base: &str) -> Result<[u8; 16], DsError> {
+/// The discovery document of the instance at `base`: its id, which a remote scenario binds its
+/// groups to (invariant 1 refuses a binding that names another instance), and its current
+/// external-sender key.
+pub fn instance_document(base: &str) -> Result<InstanceDocument, DsError> {
     host_of(base)?;
-    instance_id_of(&new_agent(), base.trim_end_matches('/'))
+    instance_document_of(&new_agent(), base.trim_end_matches('/'))
 }
 
 /// `POST <control><path>` with a JSON body, for the runner's control-listener verbs.
@@ -1536,6 +1561,42 @@ mod tests {
 
     fn cbor(f: impl FnOnce(&mut Encoder)) -> Vec<u8> {
         encode(f)
+    }
+
+    /// protocol/09's eleven-element discovery document: the instance id is element 3 and the
+    /// external-sender key id and public key are elements 9 and 10, which a remote scenario puts
+    /// in every text group's external_senders extension instead of asking the test host.
+    #[test]
+    fn the_discovery_document_carries_the_external_sender_key() {
+        let doc = cbor(|e| {
+            e.array(11);
+            e.array(1).uint(1);
+            e.array(1).uint(1);
+            e.array(1).uint(1);
+            e.bytes(&[0x11; 16]).uint(1).text("dilla.test").uint(0);
+            e.array(2).uint(0).uint(1);
+            e.uint(1).bytes(&[0x22; 16]).bytes(&[0x33; 32]);
+        });
+        let got = decode_instance_document(&doc).unwrap();
+        assert_eq!(
+            got,
+            InstanceDocument {
+                instance_id: [0x11; 16],
+                external_sender_key_id: [0x22; 16],
+                external_sender_pub: [0x33; 32],
+            }
+        );
+        // The nine-element document of before the key was published is refused, not misread.
+        let old = cbor(|e| {
+            e.array(9);
+            e.array(1).uint(1);
+            e.array(1).uint(1);
+            e.array(1).uint(1);
+            e.bytes(&[0x11; 16]).uint(1).text("dilla.test").uint(0);
+            e.array(2).uint(0).uint(1);
+            e.uint(1);
+        });
+        assert!(decode_instance_document(&old).is_err());
     }
 
     /// protocol/02's error array: the code, the detail and every extended position, whatever the

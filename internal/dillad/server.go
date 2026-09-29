@@ -7,6 +7,7 @@ package dillad
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -93,6 +94,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	deps := api.Deps{
 		Repo: o.Repo, Clock: o.Clock, Log: o.Log, Limiter: limiter, Metrics: o.Metrics,
 		Instance: instance, Domain: o.Config.Instance.Domain,
+		// GET /v1/instance publishes the external-sender public key, derived from the seed the
+		// delivery service signs with, so the two cannot disagree.
+		// An ed25519.PrivateKey is seed || public, so its second half is the public key.
+		ExternalSenderPub: []byte(ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])[ed25519.SeedSize:]),
 		Registration: o.Config.Registration, Config: o.Config,
 		Sessions: sessions, Hasher: hasher, Throttle: throttle, Passkeys: passkeys,
 		Assertions: api.NewAssertions(o.Clock, api.AssertionTTL),

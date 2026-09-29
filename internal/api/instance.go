@@ -22,7 +22,7 @@ func registerInstance(m *server.Mux, d Deps) {
 	m.Handle("GET /v1/instance/limits", http.HandlerFunc(d.InstanceLimits))
 }
 
-// InstanceDocument serves GET /v1/instance: the nine-element discovery document of
+// InstanceDocument serves GET /v1/instance: the eleven-element discovery document of
 // protocol/09-http-api.md § Instance. It is unauthenticated unless
 // instance.discovery = "session"; Register decides which by wrapping this
 // handler. registration_mode is 0 invite-only, 1 open, 2 closed; auth_methods
@@ -41,6 +41,13 @@ func (d Deps) InstanceDocument(w http.ResponseWriter, r *http.Request) {
 	// server.Recover turns into a 500.
 	if d.Config == nil {
 		d.logf(r, "api: instance route without a config")
+		server.WriteError(w, server.Errorf(server.CodeInternal, ""))
+		return
+	}
+	// The same for the external-sender key: a document without it would send every client that
+	// creates a text group off to build one the instance can propose nothing into.
+	if len(d.ExternalSenderPub) != 32 {
+		d.logf(r, "api: instance route without the external-sender key")
 		server.WriteError(w, server.Errorf(server.CodeInternal, ""))
 		return
 	}
@@ -79,6 +86,8 @@ func (d Deps) InstanceDocument(w http.ResponseWriter, r *http.Request) {
 		mode,
 		methods,
 		d.Instance.PolicyVersion,
+		d.Instance.ExternalSenderKeyID, // external_sender_key_id
+		d.ExternalSenderPub,            // external_sender_pub
 	}
 	d.generation(w)
 	if err := server.EncodeBody(w, http.StatusOK, doc); err != nil {
