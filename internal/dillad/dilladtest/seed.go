@@ -122,6 +122,54 @@ func ControlHandler(h *Host) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("POST /debug/mark-revoked", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Device string `json:"device"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		device, err := id.Parse(body.Device)
+		if err != nil {
+			http.Error(w, "device: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := h.MarkRevoked(r.Context(), device); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /debug/channel", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Target     string `json:"target"`
+			Visibility string `json:"visibility"`
+			Mode       string `json:"mode"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		target, err := id.Parse(body.Target)
+		if err != nil {
+			http.Error(w, "target: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		visibility, ok := map[string]uint8{
+			"private": VisibilityPrivate, "invite": VisibilityInvite,
+			"discoverable": VisibilityDiscoverable,
+		}[body.Visibility]
+		if !ok {
+			http.Error(w, "visibility is private, invite or discoverable", http.StatusBadRequest)
+			return
+		}
+		mode, ok := map[string]uint8{"e2ee": ModeE2EE, "readable": ModeReadable}[body.Mode]
+		if !ok {
+			http.Error(w, "mode is e2ee or readable", http.StatusBadRequest)
+			return
+		}
+		h.Channels().Set(target, visibility, mode)
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /debug/snapshot", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name string `json:"name"`

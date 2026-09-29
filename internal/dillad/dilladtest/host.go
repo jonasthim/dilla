@@ -27,6 +27,7 @@ import (
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/dillad"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/obs"
@@ -75,6 +76,47 @@ type AllowEveryone struct{}
 
 func (AllowEveryone) Eligible(context.Context, id.ID, id.ID) (bool, error) { return true, nil }
 
+// Channel visibilities and text modes as ds.Channels reports them: invariant 1 refuses a text group
+// for any visibility other than private, and for the readable mode.
+const (
+	VisibilityPrivate      uint8 = 0
+	VisibilityInvite       uint8 = 1
+	VisibilityDiscoverable uint8 = 2
+	ModeE2EE               uint8 = 0
+	ModeReadable           uint8 = 1
+)
+
+// ChannelModes is the harness's channel-mode source (ds.Channels): the channels a scenario named
+// with `channel <target> …`, and "no channel row" for every other target, as
+// ds.PermissiveChannels answers everything in Plan 1. It is how invariant 1's E_MODE_READABLE is
+// reachable end to end before Plan 2 task 2 creates the channels table (NV-B5); the rule itself,
+// ds.checkChannelMode, is the delivery service's own.
+type ChannelModes struct {
+	mu       sync.RWMutex
+	channels map[id.ID][2]uint8
+}
+
+// Set records the channel under target.
+func (c *ChannelModes) Set(target id.ID, visibility, mode uint8) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.channels == nil {
+		c.channels = map[id.ID][2]uint8{}
+	}
+	c.channels[target] = [2]uint8{visibility, mode}
+}
+
+// Channel is ds.Channels.
+func (c *ChannelModes) Channel(_ context.Context, target id.ID) (visibility, mode uint8, err error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	ch, ok := c.channels[target]
+	if !ok {
+		return 0, 0, ds.ErrNoChannel
+	}
+	return ch[0], ch[1], nil
+}
+
 // Host is one initialised instance behind a stable public handler. Restore replaces the server
 // underneath the handler, as `dillad restore` followed by a restart replaces the process, so the
 // clients keep their base URL across it.
@@ -88,6 +130,9 @@ type Host struct {
 
 	mu     sync.RWMutex
 	server *dillad.Server
+
+	// channels outlives a Restore, as the channels table outlives a restart.
+	channels *ChannelModes
 
 	// kicked remembers, per target device, the leaves the last kick of it named.
 	kickMu sync.Mutex
@@ -104,7 +149,9 @@ func NewHost(ctx context.Context, o HostOptions) (*Host, error) {
 	if clk == nil {
 		clk = clock.NewFake(time.Now().Truncate(time.Second))
 	}
-	h := &Host{o: o, clk: clk, cfg: hostConfig(o), kicked: map[id.ID][]kicked{}}
+	h := &Host{
+		o: o, clk: clk, cfg: hostConfig(o), kicked: map[id.ID][]kicked{}, channels: &ChannelModes{},
+	}
 	invites, err := bootstrap(ctx, h.cfg, clk.Now())
 	if err != nil {
 		return nil, err
@@ -230,12 +277,29 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 		out = os.Stderr
 	}
 	return dillad.New(ctx, dillad.Options{
-		Config: h.cfg,
-		Clock:  h.clk,
-		Wasm:   h.wasm,
-		Log:    obs.NewLogger(h.cfg.Log, out),
-		ACL:    AllowEveryone{},
+		Config:   h.cfg,
+		Clock:    h.clk,
+		Wasm:     h.wasm,
+		Log:      obs.NewLogger(h.cfg.Log, out),
+		ACL:      AllowEveryone{},
+		Channels: h.channels,
 	})
+}
+
+// Channels is the channel-mode source the instance's invariant 1 reads; `channel <target> …`
+// writes it through POST /debug/channel.
+func (h *Host) Channels() *ChannelModes { return h.channels }
+
+// MarkRevoked sets the device row's revoked_at and nothing else. A real revocation
+// (auth.Sessions.RevokeDevice) also deletes the device's sessions in the same transaction; this
+// leaves them, which is the window a request authenticated just before the revocation reaches the
+// delivery service in. Invariant 4's external-joiner clause refuses a revoked joiner there.
+func (h *Host) MarkRevoked(ctx context.Context, device id.ID) error {
+	s := h.Server()
+	if _, err := s.Repo().GetDevice(ctx, device); err != nil {
+		return fmt.Errorf("dilladtest: mark %s revoked: %w", device, err)
+	}
+	return s.Repo().RevokeDevice(ctx, device, h.clk.Now().Unix())
 }
 
 // Server is the instance as it stands: a Restore replaces it.

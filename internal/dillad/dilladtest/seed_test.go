@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/dillad/dilladtest"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -86,6 +88,120 @@ func TestTheSeedRouteCreatesAnAccountWhoseSessionsResolve(t *testing.T) {
 	}
 	if session.DeviceID != device || session.UserID.String() != out[0].UserID {
 		t.Fatalf("the session names %s/%s, want the seeded device and user", session.UserID, session.DeviceID)
+	}
+}
+
+// postJSON posts v to the control listener and answers the status.
+func postJSON(t *testing.T, url string, v any) int {
+	t.Helper()
+	body, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	res, err := http.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer res.Body.Close()
+	return res.StatusCode
+}
+
+// seedDevice creates one account with one device through SeedUsers and answers the device and
+// its session token.
+func seedDevice(t *testing.T, h *dilladtest.Host, username string) (id.ID, string) {
+	t.Helper()
+	pub := func() string {
+		p, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+		return hex.EncodeToString(p)
+	}
+	device := id.New()
+	out, err := dilladtest.SeedUsers(context.Background(), h.Server(), []dilladtest.SeedRequest{{
+		Username: username, Display: username,
+		UMKPub: pub(), SSKPub: pub(), SigUMKSSK: hex.EncodeToString(make([]byte, 64)),
+		Devices: []dilladtest.Device{{
+			DeviceID: device.String(), DSKPub: pub(), Credential: hex.EncodeToString([]byte{0x01}),
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("SeedUsers: %v", err)
+	}
+	return device, out[0].Tokens[device.String()]
+}
+
+// POST /debug/mark-revoked revokes the device ROW and nothing else: its session still resolves.
+// That is the window a real revocation — which deletes the sessions in the same transaction — can
+// race, where a request already authenticated reaches the delivery service after the row changed.
+// Invariant 4's external-joiner clause refuses a revoked joiner, and this is the only way a
+// scenario can reach that refusal.
+func TestTheMarkRevokedRouteRevokesTheRowAndLeavesTheSession(t *testing.T) {
+	h := newHost(t)
+	control := httptest.NewServer(dilladtest.ControlHandler(h))
+	t.Cleanup(control.Close)
+	device, token := seedDevice(t, h, "revoked")
+
+	if status := postJSON(t, control.URL+"/debug/mark-revoked",
+		map[string]string{"device": device.String()}); status != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", status)
+	}
+	row, err := h.Server().Repo().GetDevice(context.Background(), device)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	if row.RevokedAt == nil {
+		t.Fatal("the device row is not revoked")
+	}
+	if _, err := h.Server().Sessions().Resolve(context.Background(), token); err != nil {
+		t.Fatalf("the session was deleted with the row: %v", err)
+	}
+	if status := postJSON(t, control.URL+"/debug/mark-revoked",
+		map[string]string{"device": "zz"}); status != http.StatusBadRequest {
+		t.Fatalf("a malformed device id: status = %d, want 400", status)
+	}
+}
+
+// POST /debug/channel records a channel's visibility and mode under its target id, which is what
+// invariant 1's registration check reads (ds.Channels). A target the route never named is no
+// channel at all — a DM or a pairing group — exactly as ds.PermissiveChannels answers it.
+func TestTheChannelRouteRecordsWhatInvariantOneReads(t *testing.T) {
+	h := newHost(t)
+	control := httptest.NewServer(dilladtest.ControlHandler(h))
+	t.Cleanup(control.Close)
+	target := id.New()
+
+	for _, c := range []struct {
+		visibility, mode string
+		wantV, wantM     uint8
+	}{
+		{"private", "e2ee", 0, 0},
+		{"private", "readable", 0, 1},
+		{"invite", "readable", 1, 1},
+		{"discoverable", "readable", 2, 1},
+	} {
+		if status := postJSON(t, control.URL+"/debug/channel", map[string]string{
+			"target": target.String(), "visibility": c.visibility, "mode": c.mode,
+		}); status != http.StatusNoContent {
+			t.Fatalf("%s/%s: status = %d, want 204", c.visibility, c.mode, status)
+		}
+		v, m, err := h.Channels().Channel(context.Background(), target)
+		if err != nil || v != c.wantV || m != c.wantM {
+			t.Fatalf("%s/%s: Channel = %d, %d, %v; want %d, %d", c.visibility, c.mode, v, m, err,
+				c.wantV, c.wantM)
+		}
+	}
+	if _, _, err := h.Channels().Channel(context.Background(), id.New()); !errors.Is(err, ds.ErrNoChannel) {
+		t.Fatalf("an unnamed target: %v, want ds.ErrNoChannel", err)
+	}
+	for _, bad := range []map[string]string{
+		{"target": target.String(), "visibility": "secret", "mode": "e2ee"},
+		{"target": target.String(), "visibility": "private", "mode": "plain"},
+		{"target": "zz", "visibility": "private", "mode": "e2ee"},
+	} {
+		if status := postJSON(t, control.URL+"/debug/channel", bad); status != http.StatusBadRequest {
+			t.Fatalf("%v: status = %d, want 400", bad, status)
+		}
 	}
 }
 
