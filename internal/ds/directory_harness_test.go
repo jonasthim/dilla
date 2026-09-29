@@ -277,6 +277,21 @@ func (h *dsHarness) countRows(t *testing.T, table string) int64 {
 	return countIn(t, db, table)
 }
 
+// keyPackageExpiry is the `expires` of the one row in key_packages.
+func (h *dsHarness) keyPackageExpiry(t *testing.T) int64 {
+	t.Helper()
+	db, err := sqlite.OpenRead(h.path)
+	if err != nil {
+		t.Fatalf("sqlite.OpenRead: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	var expires int64
+	if err := db.QueryRowContext(t.Context(), "SELECT expires FROM key_packages").Scan(&expires); err != nil {
+		t.Fatalf("reading key_packages.expires: %v", err)
+	}
+	return expires
+}
+
 func countIn(t *testing.T, db *sql.DB, table string) int64 {
 	t.Helper()
 	var n int64

@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -229,6 +230,80 @@ func TestPublishRefusesAKeyPackageThatDoesNotValidate(t *testing.T) {
 	var dsErr *ds.Error
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" {
 		t.Fatalf("got %v, want E_COMMIT_INVALID", err)
+	}
+}
+
+// A KeyPackage's lifetime is CLIENT-controlled, and OpenMLS 0.9.0 only checks
+// `not_before <= now < not_after`: a package built with `not_after = u64::MAX` is valid to the
+// guest. Stored as `int64(u64::MAX)` that is -1, and `CountKeyPackages` filters `expires > now`, so
+// such a row would never count against `max_keypackages_per_device` and a device could publish
+// batches of it for ever. The delivery service therefore bounds the lifetime itself (RFC 9420
+// ValSem #32: "applications MUST define a maximum total lifetime").
+func TestPublishRefusesAKeyPackageWhoseLifetimeExceedsThePolicyMaximum(t *testing.T) {
+	h := newDSHarness(t)
+	_, session, blob, info := h.keyPackageOwner(t)
+
+	// The fixture's own lifetime is 90 days; a policy that allows 30 must refuse it. This is the
+	// route end to end: the guest accepts the package, the delivery service does not.
+	tight := ds.DefaultPolicy()
+	tight.MaxKeyPackageLifetime = 30 * 24 * time.Hour
+	strict, err := ds.New(ds.Options{
+		Store: h.repo, Wasm: h.wasm, Gateway: h.gw, Clock: h.clk,
+		Keys: testInstanceKeys(t), Policy: tight, Channels: h.channels, ACL: h.acl,
+	})
+	if err != nil {
+		t.Fatalf("ds.New: %v", err)
+	}
+	t.Cleanup(func() { _ = strict.Shutdown(context.Background()) })
+
+	_, err = strict.PublishKeyPackages(context.Background(), session, [][]byte{blob}, nil)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" {
+		t.Fatalf("got %v, want E_COMMIT_INVALID for a lifetime over the policy maximum", err)
+	}
+	if total := h.countRows(t, "key_packages"); total != 0 {
+		t.Fatalf("%d rows were written for a refused publish, want 0", total)
+	}
+
+	// The default policy accepts the same package, and the row carries the guest's not_after.
+	if _, err := h.ds.PublishKeyPackages(context.Background(), session, [][]byte{blob}, nil); err != nil {
+		t.Fatalf("the default policy must accept a client-default 90-day package: %v", err)
+	}
+	if got := h.keyPackageExpiry(t); got != int64(info.NotAfter) {
+		t.Fatalf("stored expires = %d, want the package's not_after %d", got, info.NotAfter)
+	}
+}
+
+// The rule on its own, at the values a hostile client picks. `not_after` is a uint64 on the wire,
+// so the ones that matter are u64::MAX, 2^63 (the first value that wraps negative as an int64),
+// int64's own maximum, and the boundary itself.
+func TestKeyPackageLifetimeBound(t *testing.T) {
+	const day = 24 * 60 * 60
+	now := time.Unix(1_800_000_000, 0)
+	maxLifetime := 91 * 24 * time.Hour
+	limit := uint64(now.Unix()) + uint64(maxLifetime/time.Second)
+
+	for _, tc := range []struct {
+		name     string
+		notAfter uint64
+		ok       bool
+	}{
+		{"u64 max", math.MaxUint64, false},
+		{"first value that wraps negative as int64", 1 << 63, false},
+		{"int64 max", math.MaxInt64, false},
+		{"one second over the maximum", limit + 1, false},
+		{"exactly the maximum", limit, true},
+		{"a client-default 90 days", uint64(now.Unix()) + 90*day, true},
+		{"one hour", uint64(now.Unix()) + 3600, true},
+	} {
+		err := ds.CheckKeyPackageLifetimeForTest(now.Unix(), tc.notAfter, maxLifetime)
+		var dsErr *ds.Error
+		switch {
+		case tc.ok && err != nil:
+			t.Errorf("%s: refused: %v", tc.name, err)
+		case !tc.ok && (!errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID"):
+			t.Errorf("%s: got %v, want E_COMMIT_INVALID", tc.name, err)
+		}
 	}
 }
 

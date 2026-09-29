@@ -91,6 +91,17 @@ type Policy struct {
 	// would make the delivery service depend on the file format. The composition root copies the
 	// configured value across, exactly as it does for MaxCiphertextBytes.
 	MaxKeyPackagesPerDevice int // 32
+
+	// MaxKeyPackageLifetime bounds how far in the future a published KeyPackage may expire,
+	// measured from the delivery service's clock: RFC 9420 ValSem #32, "applications MUST define a
+	// maximum total lifetime". The guest does not enforce one (OpenMLS 0.9.0 checks only
+	// `not_before <= now < not_after`), and `not_after` is the CLIENT's, so without this bound
+	// `not_after = u64::MAX` is a valid package and, stored as an int64, an `expires` of -1 that
+	// `CountKeyPackages` never counts against `MaxKeyPackagesPerDevice`.
+	//
+	// The default is the 90 days every dilla client builds (`KEY_PACKAGE_LIFETIME_DAYS`) plus one
+	// day of clock skew between a client and the instance.
+	MaxKeyPackageLifetime time.Duration // 91d
 }
 
 // DefaultPolicy is every value interfaces.md §6.2 fixes.
@@ -114,6 +125,7 @@ func DefaultPolicy() Policy {
 		// config.Default().Limits.MaxKeypackagesPerDevice, kept in step by
 		// TestPublishRefusesMoreThanThePolicyCap rather than by a comment.
 		MaxKeyPackagesPerDevice: 32,
+		MaxKeyPackageLifetime:   91 * 24 * time.Hour,
 	}
 }
 
@@ -153,6 +165,7 @@ func normalisePolicy(p Policy) Policy {
 	fill(&p.InactivityRemove, d.InactivityRemove)
 	fill(&p.FreezeWarn, d.FreezeWarn)
 	fill(&p.FreezeMax, d.FreezeMax)
+	fill(&p.MaxKeyPackageLifetime, d.MaxKeyPackageLifetime)
 	fillInt(&p.MaxCiphertextBytes, d.MaxCiphertextBytes)
 	fillInt(&p.MaxAddsPerCommit, d.MaxAddsPerCommit)
 	fillInt(&p.MaxKeyPackagesPerDevice, d.MaxKeyPackagesPerDevice)

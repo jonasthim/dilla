@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
@@ -55,6 +56,27 @@ func errKeyPackageDirectoryFull(held int64, adding, limit int) *Error {
 			held, adding, limit),
 		Status: http.StatusRequestEntityTooLarge,
 	}
+}
+
+// checkKeyPackageLifetime refuses a `not_after` (unix seconds, the client's) later than now plus
+// the policy's maximum lifetime. The comparison is in uint64 so no value a client can send
+// overflows or wraps it; `now` is a clock reading and never negative in practice, and a negative
+// one is treated as zero rather than as a huge unsigned number.
+func checkKeyPackageLifetime(now int64, notAfter uint64, maxLifetime time.Duration) error {
+	base := uint64(0)
+	if now > 0 {
+		base = uint64(now)
+	}
+	if maxLifetime < 0 {
+		maxLifetime = 0
+	}
+	limit := base + uint64(maxLifetime/time.Second)
+	if notAfter > limit {
+		return errCommitInvalid("key_package", fmt.Sprintf(
+			"the package's lifetime ends beyond the instance's maximum of %s from now",
+			maxLifetime.Round(time.Second)))
+	}
+	return nil
 }
 
 // PublishKeyPackages validates every package inside the guest and stores it with the guest's own
@@ -132,6 +154,11 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 			return errCommitInvalid("key_package",
 				"the package's last_resort extension disagrees with where it was published")
 		}
+		// not_after is the client's. The guest only checks it is in the future, so a lifetime is
+		// bounded HERE, and only then converted: an unbounded uint64 wraps negative as an int64.
+		if err := checkKeyPackageLifetime(d.now(), info.NotAfter, d.opts.Policy.MaxKeyPackageLifetime); err != nil {
+			return err
+		}
 		var lr uint8
 		if last {
 			lr = 1
@@ -141,8 +168,10 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 			KPRef:      info.KPRef,
 			Blob:       blob,
 			LastResort: lr,
-			Expires:    int64(info.NotAfter), //nolint:gosec // G115: a unix second, far below 2^63
-			Created:    d.now(),
+			// G115: checkKeyPackageLifetime above refused every not_after past now plus
+			// MaxKeyPackageLifetime, which is far below 2^63.
+			Expires: int64(info.NotAfter), //nolint:gosec // bounded by checkKeyPackageLifetime
+			Created: d.now(),
 		})
 		return nil
 	}

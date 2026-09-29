@@ -140,6 +140,13 @@ func LostRoundsForTest(d *DS, groupID, deviceID id.ID) int { return d.lostRounds
 // whatever the caller left unset. A zero interval here is a panic in Start's goroutine.
 func PolicyForTest(d *DS) Policy { return d.opts.Policy }
 
+// CheckKeyPackageLifetimeForTest is the KeyPackage lifetime bound on its own: the guest accepts any
+// `not_after` in the future, so the hostile values (u64::MAX, 2^63) are reachable only here, since
+// no generator in this repository can mint a package that carries them.
+func CheckKeyPackageLifetimeForTest(now int64, notAfter uint64, maxLifetime time.Duration) error {
+	return checkKeyPackageLifetime(now, notAfter, maxLifetime)
+}
+
 // PendingJoinsForTest is how many devices of a join storm are waiting for the next commit.
 func PendingJoinsForTest(d *DS, groupID id.ID) int {
 	d.pendingMu.Lock()
