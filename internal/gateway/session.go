@@ -544,6 +544,57 @@ func (g *Gateway) sendReady(ctx context.Context, c *conn) error {
 	return nil
 }
 
+// maxSubscribedGroups caps one connection's subscription set. A device is in at most this many
+// groups in any instance this version targets; the set is otherwise bounded only by the read limit
+// per frame and by nothing across frames.
+const maxSubscribedGroups = 4096
+
+// subscribe adds the groups of one subscribe frame that the device is a member of — the store's
+// GroupsForDevice, the same list `ready` digests — up to maxSubscribedGroups. A frame naming more
+// than the cap is refused whole (E_FRAME_LIMIT); a group the device is not in is not added and the
+// client is told (E_FORBIDDEN), so the set can hold neither strangers' groups nor unbounded junk.
+func (g *Gateway) subscribe(ctx context.Context, c *conn, cid uint64, groups []id.ID) {
+	refuse := func(code, detail string) {
+		if p, err := ErrorPayload(cid, code, detail); err == nil {
+			c.send(Frame{Op: OpError, Payload: p})
+		}
+	}
+	if len(groups) > maxSubscribedGroups {
+		refuse("E_FRAME_LIMIT", fmt.Sprintf("%d groups in one subscribe; at most %d", len(groups), maxSubscribedGroups))
+		return
+	}
+	mine, err := g.opts.Store.GroupsForDevice(ctx, c.deviceID)
+	if err != nil {
+		return
+	}
+	member := make(map[id.ID]bool, len(mine))
+	for _, gid := range mine {
+		member[gid] = true
+	}
+	refused, full := 0, false
+	c.mu.Lock()
+	for _, gid := range groups {
+		if _, ok := c.groups[gid]; ok {
+			continue
+		}
+		switch {
+		case !member[gid]:
+			refused++
+		case len(c.groups) >= maxSubscribedGroups:
+			full = true
+		default:
+			c.groups[gid] = struct{}{}
+		}
+	}
+	c.mu.Unlock()
+	if refused > 0 {
+		refuse("E_FORBIDDEN", fmt.Sprintf("%d of the groups are not this device's", refused))
+	}
+	if full {
+		refuse("E_FRAME_LIMIT", fmt.Sprintf("the subscription set is full at %d groups", maxSubscribedGroups))
+	}
+}
+
 // readLoop reads one frame at a time. Conn.Read plus cborx.Unmarshal, never the streaming
 // decoder: coder/websocket's reader grows 2*cap+512 without bound.
 func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
@@ -612,15 +663,15 @@ func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 		if err := cborx.Unmarshal(in.Payload[0], &groups); err != nil {
 			return
 		}
-		c.mu.Lock()
-		for _, gid := range groups {
-			if in.Op == OpSubscribe {
-				c.groups[gid] = struct{}{}
-			} else {
+		if in.Op == OpUnsubscribe {
+			c.mu.Lock()
+			for _, gid := range groups {
 				delete(c.groups, gid)
 			}
+			c.mu.Unlock()
+			break
 		}
-		c.mu.Unlock()
+		g.subscribe(ctx, c, in.CID, groups)
 	}
 	if g.opts.Metrics != nil {
 		g.opts.Metrics.GatewayFrames.WithLabelValues(opLabel(in.Op), "in").Inc()
