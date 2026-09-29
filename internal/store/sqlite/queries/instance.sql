@@ -15,7 +15,7 @@ UPDATE instances SET generation = generation + 1 RETURNING generation;
 -- BACKWARDS, and the generation is exactly what invalidates outstanding resume tokens, so a
 -- backwards step would revive every token the last restore killed. MAX() keeps the one promise
 -- every client depends on: the generation only ever grows.
-UPDATE instances SET generation = MAX(generation, sqlc.arg(generation));
+UPDATE instances SET generation = MAX(generation, CAST(sqlc.arg(generation) AS INTEGER));
 
 -- name: GetSetting :one
 SELECT value FROM instance_settings WHERE key = ?;

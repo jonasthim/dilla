@@ -57,6 +57,21 @@ func (q *Queries) BumpGroupSeq(ctx context.Context, arg BumpGroupSeqParams) (int
 	return seq, err
 }
 
+const clearEpochUnknown = `-- name: ClearEpochUnknown :exec
+UPDATE mls_groups SET epoch_unknown = 0, heal_deadline = NULL WHERE group_id = ?
+`
+
+type ClearEpochUnknownParams struct {
+	GroupID id.ID
+}
+
+// An adopted heal. The deadline goes with the flag: closeUnhealedGroups reads the pair, and a
+// healed group that kept its deadline would be one restart away from looking overdue again.
+func (q *Queries) ClearEpochUnknown(ctx context.Context, arg ClearEpochUnknownParams) error {
+	_, err := q.db.ExecContext(ctx, clearEpochUnknown, arg.GroupID)
+	return err
+}
+
 const closeGroup = `-- name: CloseGroup :exec
 UPDATE mls_groups SET closed_at = ? WHERE group_id = ?
 `
@@ -68,19 +83,6 @@ type CloseGroupParams struct {
 
 func (q *Queries) CloseGroup(ctx context.Context, arg CloseGroupParams) error {
 	_, err := q.db.ExecContext(ctx, closeGroup, arg.ClosedAt, arg.GroupID)
-	return err
-}
-
-const clearEpochUnknown = `-- name: ClearEpochUnknown :exec
-UPDATE mls_groups SET epoch_unknown = 0, heal_deadline = NULL WHERE group_id = ?
-`
-
-type ClearEpochUnknownParams struct {
-	GroupID id.ID
-}
-
-func (q *Queries) ClearEpochUnknown(ctx context.Context, arg ClearEpochUnknownParams) error {
-	_, err := q.db.ExecContext(ctx, clearEpochUnknown, arg.GroupID)
 	return err
 }
 
@@ -232,7 +234,7 @@ func (q *Queries) DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) er
 }
 
 const endAllVoiceSessions = `-- name: EndAllVoiceSessions :exec
-UPDATE mls_groups SET closed_at = ?1
+UPDATE mls_groups SET closed_at = CAST(?1 AS INTEGER)
 WHERE call_id IS NOT NULL AND closed_at IS NULL
 `
 
@@ -240,6 +242,10 @@ type EndAllVoiceSessionsParams struct {
 	At int64
 }
 
+// Invariant 11's "Live calls end." A live call IS its call group (R9 puts the call id in the
+// companion column), and `voice_sessions` is Plan 2's table -- so on a Plan-1 database the whole
+// of "end every live call" is closing the call groups. Plan 2 task 1 extends the same statement
+// to `voice_sessions` rather than declaring a second method (deviation B13, P2-D19).
 func (q *Queries) EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error {
 	_, err := q.db.ExecContext(ctx, endAllVoiceSessions, arg.At)
 	return err
@@ -758,7 +764,7 @@ func (q *Queries) ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]L
 }
 
 const markAllGroupsEpochUnknown = `-- name: MarkAllGroupsEpochUnknown :exec
-UPDATE mls_groups SET epoch_unknown = 1, heal_deadline = ?1
+UPDATE mls_groups SET epoch_unknown = 1, heal_deadline = CAST(?1 AS INTEGER)
 WHERE closed_at IS NULL
 `
 
@@ -766,6 +772,10 @@ type MarkAllGroupsEpochUnknownParams struct {
 	HealDeadline int64
 }
 
+// Invariant 11's first half, as ONE statement rather than a paged loop: a restore runs once and
+// correctness, not latency, governs it, while a loop that stopped at a fixed batch would leave
+// every group past the batch serving state the restored database no longer matches. Closed groups
+// are skipped -- a closed group has nothing left to heal.
 func (q *Queries) MarkAllGroupsEpochUnknown(ctx context.Context, arg MarkAllGroupsEpochUnknownParams) error {
 	_, err := q.db.ExecContext(ctx, markAllGroupsEpochUnknown, arg.HealDeadline)
 	return err

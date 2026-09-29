@@ -109,6 +109,11 @@ type SetGenerationParams struct {
 	Generation int64
 }
 
+// Invariant 11's restore half, and MONOTONE. `dillad restore` names the generation it read out of
+// the backup's manifest; a backup taken before an earlier restore would otherwise walk the number
+// BACKWARDS, and the generation is exactly what invalidates outstanding resume tokens, so a
+// backwards step would revive every token the last restore killed. GREATEST() keeps the one
+// promise every client depends on: the generation only ever grows.
 func (q *Queries) SetGeneration(ctx context.Context, arg SetGenerationParams) error {
 	_, err := q.db.ExecContext(ctx, setGeneration, arg.Generation)
 	return err

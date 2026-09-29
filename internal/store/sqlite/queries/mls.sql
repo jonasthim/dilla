@@ -41,7 +41,7 @@ UPDATE mls_groups SET epoch_unknown = ?, heal_deadline = ? WHERE group_id = ?;
 -- correctness, not latency, governs it, while a loop that stopped at a fixed batch would leave
 -- every group past the batch serving state the restored database no longer matches. Closed groups
 -- are skipped -- a closed group has nothing left to heal.
-UPDATE mls_groups SET epoch_unknown = 1, heal_deadline = sqlc.arg(heal_deadline)
+UPDATE mls_groups SET epoch_unknown = 1, heal_deadline = CAST(sqlc.arg(heal_deadline) AS INTEGER)
 WHERE closed_at IS NULL;
 
 -- name: ClearEpochUnknown :exec
@@ -54,7 +54,7 @@ UPDATE mls_groups SET epoch_unknown = 0, heal_deadline = NULL WHERE group_id = ?
 -- companion column), and `voice_sessions` is Plan 2's table -- so on a Plan-1 database the whole
 -- of "end every live call" is closing the call groups. Plan 2 task 1 extends the same statement
 -- to `voice_sessions` rather than declaring a second method (deviation B13, P2-D19).
-UPDATE mls_groups SET closed_at = sqlc.arg(at)
+UPDATE mls_groups SET closed_at = CAST(sqlc.arg(at) AS INTEGER)
 WHERE call_id IS NOT NULL AND closed_at IS NULL;
 
 -- name: AppendHandshake :exec
