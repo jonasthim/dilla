@@ -89,16 +89,24 @@ func (s *recordingSink) release() {
 	s.cond.Broadcast()
 }
 
+// close records the FIRST close code and ignores the rest, which is what websocket.Conn.Close does
+// (a second Close returns an error and changes nothing on the wire). The code is recorded under the
+// lock that flips `shut`, before the broadcast: a writer blocked in write wakes on that broadcast,
+// sees `shut`, and closes 4000 "write" — and with the code recorded afterwards, that 4000 could
+// win the race against the 4008 whose close woke it. It did, on a loaded CI runner.
 func (s *recordingSink) close(code CloseCode, _ string) {
 	s.mu.Lock()
+	first := !s.shut
 	s.shut = true
+	if first {
+		select {
+		case s.closed <- code:
+		default:
+		}
+	}
 	s.mu.Unlock()
 	// Waking every blocked writer is what stops a stalled test from leaking its goroutine.
 	s.cond.Broadcast()
-	select {
-	case s.closed <- code:
-	default:
-	}
 }
 
 func TestAnOverflowingWriterClosesFourZeroZeroEight(t *testing.T) {
