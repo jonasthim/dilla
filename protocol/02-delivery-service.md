@@ -74,7 +74,7 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `GET /v1/groups/{id}/info` | E | — | `[epoch, group_info, tree_hash, next_seq]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/tree` | E | — | `[epoch, ratchet_tree, tree_hash]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/handshakes?from=&limit=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
-| `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_LEAF_NOT_CURRENT` |
+| `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
 | `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN` |
 | `POST /v1/groups/{id}/message` | E | `[epoch, private_message(bstr)]` | `[seq, franking_tag(bstr32), recv_ts]` | `E_COMMIT_REQUIRED`, `E_LEAF_NOT_CURRENT`, `E_TOO_LARGE`, `E_COMMITMENT_INVALID` |
 | `POST /v1/groups/{id}/resync` | E | `[external_commit(bstr), group_info(bstr)]` | `[seq, epoch]` | `E_COMMIT_INVALID`, `E_FORBIDDEN` (freeze-exempt, invariant 5) |
@@ -94,6 +94,14 @@ Two rules the table encodes: a Welcome is **fetched without being consumed** —
 marks it delivered, because `StagedWelcome::new_from_welcome` consumes the key material even when
 the client then fails — and the Welcome response carries the ratchet tree **as of the welcoming
 epoch**, because dilla Welcomes carry no tree and the live tree has moved on.
+
+A commit's `welcomes` are addressed: each `device_id` must be a device the commit's own applied Add
+proposals add, and a commit that addresses a Welcome to any other device is refused with
+`E_COMMIT_INVALID` and `rule = "welcome_addressee"` — otherwise any committer could queue opaque
+blobs to arbitrary devices, telling each the id and epoch of a group it was never added to. A commit
+carries at most 256 Welcomes (`01`'s `MAX_ADDS`); more is `E_INVALID_REQUEST`. The instance answers
+membership and the epoch from the path, the session and the head of the body before it reads the
+rest, and a device has one commit upload in flight at a time (`E_RATE_LIMITED` for a second).
 
 `commitment` in the `GET /v1/groups/{id}/messages` items is the stored value of `C`, read by the DS
 from `private_message.authenticated_data` at upload time; it is not a separate client-supplied
@@ -162,6 +170,14 @@ was away is stale by definition, and the instance re-elects.
 
 `message.ct` is fanned out to **every** member device including the uploader's, so the per-group
 `seq` stream is dense on every device.
+
+`mls.welcome` is a convenience, not the delivery: every Welcome is durably queued and served by
+`GET /v1/welcomes`. The instance sends the frame only when the Welcome blob and the welcoming
+epoch's ratchet tree fit the `max_frame_bytes` it advertised in `hello` — a frame above it would
+close the joiner's connection rather than reach it, and a real group's tree (620 KiB at 1,500
+leaves) routinely does not fit. When no `mls.welcome` arrives, a device that expects to be added —
+it published KeyPackages, or it is completing a pairing — polls `GET /v1/welcomes`, whose items carry
+the same tree.
 
 ### Non-E2EE and interactions (32–47) — `n ≠ 0`
 
@@ -394,7 +410,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 404 | `E_NOT_FOUND` | no such group, device, message or blob | none |
 | 409 | `E_GROUP_EXISTS` | this `group_id` is already registered | mint a new `group_id` |
 | 409 | `E_COMMIT_CONFLICT` | another commit won this epoch | discard the pending commit, process the winner, retry |
-| 410 | `E_PRUNED` | the requested `seq` is older than retention | resync; mark older messages "undecryptable (too old)" |
+| 410 | `E_PRUNED` | retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest deleted `seq` of each stream, so the answer is exact) | resync; mark older messages "undecryptable (too old)" |
 | 410 | `E_INVITE_INVALID` | the invite is expired, exhausted or revoked | none |
 | 413 | `E_TOO_LARGE` | the object exceeds the instance limit | split or attach |
 | 422 | `E_COMMIT_INVALID` | structural or policy failure; `rule` names the clause | do not retry unchanged; resync if behind |
