@@ -64,14 +64,7 @@ func loadTestdata(t *testing.T, name string) (*config.Config, error) {
 		t.Fatalf("write config: %v", err)
 	}
 	writeSecrets(t, dir)
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	t.Cleanup(func() { os.Chdir(cwd) })
+	t.Chdir(dir) // restores the working directory when the test ends
 	return config.Load(path)
 }
 
@@ -145,14 +138,7 @@ func TestAnExplicitTURNEnabledSurvivesBehindProxy(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 	writeSecrets(t, dir)
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	t.Cleanup(func() { os.Chdir(cwd) })
+	t.Chdir(dir) // restores the working directory when the test ends
 	c, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -197,11 +183,7 @@ func TestNoFieldIsATimeDuration(t *testing.T) {
 func TestEveryDurationRoundTripsThroughWriteToAndLoad(t *testing.T) {
 	dir := t.TempDir()
 	writeSecrets(t, dir)
-	cwd, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	t.Cleanup(func() { os.Chdir(cwd) })
+	t.Chdir(dir) // restores the working directory when the test ends
 
 	c := config.Default()
 	c.Instance.Domain = "chat.example"

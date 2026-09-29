@@ -49,7 +49,7 @@ func runMigrate(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer repo.Close()
+	defer func() { _ = repo.Close() }()
 
 	provider, err := migrationProvider(cfg, db)
 	if err != nil {

@@ -12,13 +12,14 @@ import (
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
+	_ "modernc.org/sqlite"
+
 	"github.com/jonasthim/dilla/internal/id"
 	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
 	"github.com/jonasthim/dilla/internal/store/postgres/pgdb"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
 	"github.com/jonasthim/dilla/internal/store/sqlite/sqlitedb"
-	"github.com/pressly/goose/v3"
-	_ "modernc.org/sqlite"
 )
 
 // methodShapes returns one line per method of an interface type: its name, its
@@ -48,7 +49,7 @@ func methodShapes(t reflect.Type) []string {
 
 func shape(t reflect.Type) string {
 	switch t.Kind() {
-	case reflect.Slice, reflect.Ptr:
+	case reflect.Slice, reflect.Pointer:
 		return t.Kind().String() + "<" + shape(t.Elem()) + ">"
 	case reflect.Struct:
 		fields := make([]string, 0, t.NumField())
@@ -196,7 +197,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 	if _, err := p.Up(context.Background()); err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	rows, err := db.Query(`SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+	rows, err := db.QueryContext(t.Context(), `SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
 	if err != nil {
 		t.Fatalf("query schema: %v", err)
 	}
@@ -223,6 +224,9 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 				t.Errorf("table %s declares %s: %s", name, banned, ddl)
 			}
 		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate schema: %v", err)
 	}
 	sort.Strings(names)
 	if !reflect.DeepEqual(names, wantTables) {
@@ -298,13 +302,13 @@ func TestMigrationTableIsGooseDefault(t *testing.T) {
 		t.Fatalf("up: %v", err)
 	}
 	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='goose_db_version'`).Scan(&n); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='goose_db_version'`).Scan(&n); err != nil {
 		t.Fatalf("query: %v", err)
 	}
 	if n != 1 {
 		t.Fatalf("goose_db_version missing")
 	}
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='schema_migrations'`).Scan(&n); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='schema_migrations'`).Scan(&n); err != nil {
 		t.Fatalf("query: %v", err)
 	}
 	if n != 0 {
@@ -319,11 +323,11 @@ func TestIdentifierColumnsRejectFifteenBytes(t *testing.T) {
 		t.Fatalf("up: %v", err)
 	}
 	short := make([]byte, 15)
-	_, err := db.Exec(`INSERT INTO instance_settings (key, value, updated) VALUES ('k', ?, 1)`, short)
+	_, err := db.ExecContext(t.Context(), `INSERT INTO instance_settings (key, value, updated) VALUES ('k', ?, 1)`, short)
 	if err != nil {
 		t.Fatalf("a 15-byte blob is legal in a plain BLOB column: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO instances (instance_id, external_sender_key_id, key_history, franking_key_id, generation, policy_version, created)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO instances (instance_id, external_sender_key_id, key_history, franking_key_id, generation, policy_version, created)
 	                  VALUES (?, ?, x'00', ?, 1, 1, 1)`, short, short, short)
 	if err == nil {
 		t.Fatal("instances accepted a 15-byte instance_id; the length CHECK is missing")

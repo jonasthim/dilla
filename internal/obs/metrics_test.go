@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/jonasthim/dilla/internal/obs"
 )
 
 // A wrapped Registerer is not a Gatherer, and Handler must not assume it is:
@@ -18,7 +19,7 @@ func TestHandlerDoesNotPanicOnAWrappedRegisterer(t *testing.T) {
 	reg := prometheus.NewPedanticRegistry()
 	m := obs.NewMetrics(prometheus.WrapRegistererWithPrefix("x_", reg), reg)
 	rec := httptest.NewRecorder()
-	m.Handler(false, "").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	m.Handler(false, "").ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/metrics = %d over a wrapped registerer", rec.Code)
 	}
@@ -53,14 +54,14 @@ func TestMetricsEndpointIsGuarded(t *testing.T) {
 	m := obs.NewMetrics(reg, reg)
 	h := m.Handler(true, "scrapetoken")
 
-	r := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated scrape gave %d, want 401", rec.Code)
 	}
 
-	r = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	r = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	r.Header.Set("Authorization", "Bearer scrapetoken")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, r)

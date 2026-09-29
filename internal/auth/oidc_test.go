@@ -16,14 +16,15 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/pressly/goose/v3"
+	"golang.org/x/oauth2"
+
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
-	"golang.org/x/oauth2"
 )
 
 // newAuthRepo returns a repository over a migrated temporary database. It is
@@ -52,12 +53,12 @@ func newAuthRepo(t *testing.T) store.Repository {
 	return repo
 }
 
-// fakeIdP serves a discovery document, a JWKS and a token endpoint, so the whole
+// fakeIDP serves a discovery document, a JWKS and a token endpoint, so the whole
 // flow is exercised without a network. The token endpoint switches on the `code`
 // form value, so one server serves the good case and the three refusals.
-func fakeIdP(t *testing.T) *httptest.Server {
+func fakeIDP(t *testing.T) *httptest.Server {
 	t.Helper()
-	srv, _ := fakeIdPCounted(t)
+	srv, _ := fakeIDPCounted(t)
 	return srv
 }
 
@@ -68,8 +69,8 @@ func fakeIdP(t *testing.T) *httptest.Server {
 // apart.
 type idpHits struct{ discovery, token atomic.Int64 }
 
-// fakeIdPCounted is fakeIdP with those counters.
-func fakeIdPCounted(t *testing.T) (*httptest.Server, *idpHits) {
+// fakeIDPCounted is fakeIDP with those counters.
+func fakeIDPCounted(t *testing.T) (*httptest.Server, *idpHits) {
 	t.Helper()
 	hits := &idpHits{}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -213,7 +214,7 @@ func TestStateCookieIsSecurePrefixedAndScopedToTheCallback(t *testing.T) {
 }
 
 func TestIssuerAndAudienceMismatchesAreRefused(t *testing.T) {
-	idp := fakeIdP(t)
+	idp := fakeIDP(t)
 	defer idp.Close()
 	c := config.Default().Auth.OIDC
 	c.Enabled = true
@@ -264,7 +265,7 @@ func TestDiscoveryIsLazySoADownIdPDoesNotBlockStartUp(t *testing.T) {
 	// timeout and a timing test passes against the very constructor it exists
 	// to catch. What LAZY means is that NewOIDC asks the identity provider
 	// nothing at all.
-	idp, hits := fakeIdPCounted(t)
+	idp, hits := fakeIDPCounted(t)
 	c := config.Default().Auth.OIDC
 	c.Enabled = true
 	c.Issuer = idp.URL

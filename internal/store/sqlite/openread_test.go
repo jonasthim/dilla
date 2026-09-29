@@ -24,10 +24,10 @@ func TestOpenReadOpensAFileNoWriterPutIntoWAL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the seed connection: %v", err)
 	}
-	if _, err := seed.Exec(`CREATE TABLE t (v INTEGER NOT NULL) STRICT`); err != nil {
+	if _, err := seed.ExecContext(t.Context(), `CREATE TABLE t (v INTEGER NOT NULL) STRICT`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := seed.Exec(`INSERT INTO t (v) VALUES (7)`); err != nil {
+	if _, err := seed.ExecContext(t.Context(), `INSERT INTO t (v) VALUES (7)`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	if err := seed.Close(); err != nil {
@@ -41,7 +41,7 @@ func TestOpenReadOpensAFileNoWriterPutIntoWAL(t *testing.T) {
 	defer db.Close()
 
 	var v int
-	if err := db.QueryRow(`SELECT v FROM t`).Scan(&v); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT v FROM t`).Scan(&v); err != nil {
 		t.Fatalf("read through the read pool: %v", err)
 	}
 	if v != 7 {

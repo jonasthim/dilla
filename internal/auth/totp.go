@@ -56,11 +56,11 @@ func GenerateTOTP(issuer, account string, p TOTPParams) (string, string, error) 
 // base32 secret would look like a wrong code.
 func ValidateTOTP(code, secret string, p TOTPParams, now time.Time) (int64, bool) {
 	opts := totp.ValidateOpts{Period: p.Period, Skew: p.Skew, Digits: p.digits(), Algorithm: p.algorithm()}
-	period := int64(p.Period)
+	period := int64(p.Period) //nolint:gosec // G115: a TOTP period in seconds and a skew in steps, both validated small
 	if period == 0 {
 		period = 30
 	}
-	for offset := -int64(p.Skew); offset <= int64(p.Skew); offset++ {
+	for offset := -int64(p.Skew); offset <= int64(p.Skew); offset++ { //nolint:gosec // G115: a TOTP period in seconds and a skew in steps, both validated small
 		at := now.Add(time.Duration(offset*period) * time.Second)
 		exact := totp.ValidateOpts{Period: p.Period, Skew: 0, Digits: opts.Digits, Algorithm: opts.Algorithm}
 		ok, err := totp.ValidateCustom(code, secret, at, exact)

@@ -37,7 +37,7 @@ func TestTheLoggedResponseWriterStillHijacks(t *testing.T) {
 		}))
 	srv := httptest.NewServer(h)
 	defer srv.Close()
-	res, err := http.Get(srv.URL + "/anything")
+	res, err := httpGet(t, srv.URL+"/anything")
 	if err == nil {
 		res.Body.Close()
 	}

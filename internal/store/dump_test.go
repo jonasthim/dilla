@@ -12,12 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
+
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/postgres"
 	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
 )
 
 // TestVacuumIntoProducesAReadableCopy covers the pre-migration backup of

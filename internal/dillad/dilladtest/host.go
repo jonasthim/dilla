@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pressly/goose/v3"
+
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -34,7 +36,6 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
 )
 
 // InviteUses is how many accounts each of the harness's invites admits: the schema's own ceiling
@@ -213,20 +214,20 @@ func bootstrap(ctx context.Context, c *config.Config, now time.Time) ([]string, 
 	}
 	provider, err := goose.NewProvider(goose.DialectSQLite3, write, sqlitemigrations.FS)
 	if err != nil {
-		write.Close()
+		_ = write.Close()
 		return nil, fmt.Errorf("dilladtest: migrations: %w", err)
 	}
 	if _, err := provider.Up(ctx); err != nil {
-		write.Close()
+		_ = write.Close()
 		return nil, fmt.Errorf("dilladtest: migrate: %w", err)
 	}
 	read, err := sqlite.OpenRead(c.DB.Path)
 	if err != nil {
-		write.Close()
+		_ = write.Close()
 		return nil, fmt.Errorf("dilladtest: %w", err)
 	}
 	repo := sqlite.New(write, read)
-	defer repo.Close()
+	defer func() { _ = repo.Close() }()
 
 	esPub, esPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -239,8 +240,8 @@ func bootstrap(ctx context.Context, c *config.Config, now time.Time) ([]string, 
 	unix := now.Unix()
 	senderKeyID, frankingKeyID := id.New(), id.New()
 	history, err := cborx.Marshal([]any{uint64(1), []any{
-		[]any{uint64(0), senderKeyID, []byte(esPub), []byte(esPriv.Seed()), uint64(unix), nil},
-		[]any{uint64(1), frankingKeyID, []byte{}, frank, uint64(unix), nil},
+		[]any{uint64(0), senderKeyID, []byte(esPub), esPriv.Seed(), uint64(unix), nil}, //nolint:gosec // G115: a unix second or row id this server wrote, never negative
+		[]any{uint64(1), frankingKeyID, []byte{}, frank, uint64(unix), nil},            //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 	}})
 	if err != nil {
 		return nil, err
@@ -358,7 +359,7 @@ func (h *Host) Snapshot(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
 		return fmt.Errorf("dilladtest: snapshot %s: %w", name, err)
 	}
@@ -401,17 +402,17 @@ func (h *Host) Restore(ctx context.Context, name string) error {
 }
 
 func copyFile(from, to string) error {
-	in, err := os.Open(from)
+	in, err := os.Open(from) //nolint:gosec // G304: a test host copying between two paths the harness itself chose
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-	out, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: a test host copying between two paths the harness itself chose
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+		_ = out.Close()
 		return err
 	}
 	return out.Close()

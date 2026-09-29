@@ -94,7 +94,7 @@ func TestTheUnauthenticatedRoutesCarryTheirOwnBuckets(t *testing.T) {
 		h, deps := newTestAPI(t)
 		code := seedInvite(t, deps, 1000)
 		get := func() *httptest.ResponseRecorder {
-			req := httptest.NewRequest(http.MethodGet, "/i/"+code, nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/i/"+code, nil)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			return rec

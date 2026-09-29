@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/jonasthim/dilla/internal/exit"
 )
 
 // runtimeNumCPU is runtime.NumCPU behind a variable so a test can pin it.
@@ -20,7 +21,7 @@ var runtimeNumCPU = runtime.NumCPU
 // documented empties and validates. Every failure carries exit.Config (78) and,
 // for a parse failure, a line and a column.
 func Load(path string) (*Config, error) {
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) //nolint:gosec // G304: path is the operator's own --config argument
 	if err != nil {
 		return nil, fmt.Errorf("config: read %s: %w: %w", path, err, exit.Config)
 	}
@@ -280,8 +281,8 @@ func (c *Config) Validate() error {
 	return errors.Join(problems...)
 }
 
-// secretFile checks a *_file key: present, readable, mode 0600, at least min bytes.
-func secretFile(path string, min int) error {
+// secretFile checks a *_file key: present, readable, mode 0600, at least minBytes bytes.
+func secretFile(path string, minBytes int) error {
 	if path == "" {
 		return errors.New("is required")
 	}
@@ -292,8 +293,8 @@ func secretFile(path string, min int) error {
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return fmt.Errorf("%s has mode %04o; a secret file must be 0600", path, perm)
 	}
-	if info.Size() < int64(min) {
-		return fmt.Errorf("%s is %d bytes; at least %d are required", path, info.Size(), min)
+	if info.Size() < int64(minBytes) {
+		return fmt.Errorf("%s is %d bytes; at least %d are required", path, info.Size(), minBytes)
 	}
 	return nil
 }

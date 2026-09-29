@@ -4,6 +4,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -23,8 +24,8 @@ func Open(dsn string, maxOpen int, connMaxLifetime time.Duration) (*sql.DB, erro
 	if connMaxLifetime > 0 {
 		db.SetConnMaxLifetime(connMaxLifetime)
 	}
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := db.PingContext(context.Background()); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("postgres: ping: %w", err)
 	}
 	return db, nil

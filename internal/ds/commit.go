@@ -142,7 +142,7 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 		}
 		if frozen {
 			return CommitResult{}, errCommitRequired(refs,
-				uint64(d.opts.Policy.CommitDeadline.Milliseconds()))
+				uint64(d.opts.Policy.CommitDeadline.Milliseconds())) //nolint:gosec // G115: a non-negative duration in milliseconds
 		}
 	}
 

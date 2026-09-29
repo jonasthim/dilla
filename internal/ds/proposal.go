@@ -524,7 +524,7 @@ func (d *DS) sweepProposals(ctx context.Context) (int, error) {
 				return voided, err
 			}
 			for _, r := range rows {
-				if r.VoidAt != nil || now < r.IssuedAt+int64(r.TTL) {
+				if r.VoidAt != nil || now < r.IssuedAt+int64(r.TTL) { //nolint:gosec // G115: a proposal TTL in seconds, at most a few days
 					continue
 				}
 				if err := d.opts.Store.VoidProposal(ctx, g.GroupID, r.Ref, now); err != nil {

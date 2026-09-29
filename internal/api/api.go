@@ -216,7 +216,7 @@ func (d Deps) meter(class string, r *http.Request) error {
 	}
 	key := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
 	if ok, wait := d.Limiter.Allow(c, key); !ok {
-		return server.RateLimited(uint64(wait.Milliseconds()))
+		return server.RateLimitedAfter(wait)
 	}
 	return nil
 }

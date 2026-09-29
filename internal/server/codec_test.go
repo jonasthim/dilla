@@ -17,7 +17,7 @@ func asServerError(err error, target **server.Error) bool { return errors.As(err
 
 func TestDecodeBodyRefusesTheWrongContentType(t *testing.T) {
 	body, _ := cborx.Marshal([]uint64{1})
-	r := httptest.NewRequest(http.MethodPost, "/v1/x", bytes.NewReader(body))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/x", bytes.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	var out []uint64
@@ -33,7 +33,7 @@ func TestDecodeBodyRefusesTheWrongContentType(t *testing.T) {
 
 func TestDecodeBodyRefusesABodyOverTheCap(t *testing.T) {
 	big, _ := cborx.Marshal(strings.Repeat("a", 5000))
-	r := httptest.NewRequest(http.MethodPost, "/v1/x", bytes.NewReader(big))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/x", bytes.NewReader(big))
 	r.Header.Set("Content-Type", "application/cbor")
 	rec := httptest.NewRecorder()
 	var out string
@@ -49,7 +49,7 @@ func TestDecodeBodyRefusesABodyOverTheCap(t *testing.T) {
 
 func TestDecodeBodyRefusesNonDeterministicCBOR(t *testing.T) {
 	// 0x18 0x01 is the non-minimal encoding of the integer 1.
-	r := httptest.NewRequest(http.MethodPost, "/v1/x", bytes.NewReader([]byte{0x81, 0x18, 0x01}))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/x", bytes.NewReader([]byte{0x81, 0x18, 0x01}))
 	r.Header.Set("Content-Type", "application/cbor")
 	rec := httptest.NewRecorder()
 	var out []uint64
@@ -77,7 +77,7 @@ func TestPathIDRejectsMalformedAndAcceptsWellFormed(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	res, err := http.Get(srv.URL + "/v1/groups/" + want.String() + "/info")
+	res, err := httpGet(t, srv.URL+"/v1/groups/"+want.String()+"/info")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestPathIDRejectsMalformedAndAcceptsWellFormed(t *testing.T) {
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("well-formed id gave %d", res.StatusCode)
 	}
-	res, err = http.Get(srv.URL + "/v1/groups/NOTHEX/info")
+	res, err = httpGet(t, srv.URL+"/v1/groups/NOTHEX/info")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}

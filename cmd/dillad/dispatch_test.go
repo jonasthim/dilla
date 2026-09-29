@@ -11,11 +11,12 @@ import (
 	"strings"
 	"testing"
 
+	_ "modernc.org/sqlite"
+
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/exit"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	_ "modernc.org/sqlite"
 )
 
 // countMigrations is the goose version a fully migrated database reports: one per embedded
@@ -190,7 +191,7 @@ func TestInitWritesAParseableKeyHistory(t *testing.T) {
 	}
 	defer db.Close()
 	var blob []byte
-	if err := db.QueryRow(`SELECT key_history FROM instances`).Scan(&blob); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT key_history FROM instances`).Scan(&blob); err != nil {
 		t.Fatalf("read key_history: %v", err)
 	}
 	var doc []any
@@ -245,7 +246,7 @@ func TestInitInsertsExactlyOneInvite(t *testing.T) {
 	}
 	defer db.Close()
 	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM invites WHERE grants_admin = 1`).Scan(&n); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM invites WHERE grants_admin = 1`).Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if n != 1 {
@@ -268,7 +269,7 @@ func TestDoctorExitsUnavailableOnAPragmaMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if _, err := db.Exec(`PRAGMA journal_mode = DELETE`); err != nil {
+	if _, err := db.ExecContext(t.Context(), `PRAGMA journal_mode = DELETE`); err != nil {
 		t.Fatalf("set journal_mode: %v", err)
 	}
 	db.Close()

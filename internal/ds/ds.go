@@ -314,7 +314,8 @@ func (d *DS) Shutdown(ctx context.Context) error {
 // lock serialises one group's mutations.
 func (d *DS) lock(groupID id.ID) func() {
 	v, _ := d.groupLocks.LoadOrStore(groupID, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
+	// groupLocks only ever holds *sync.Mutex values stored by the line above.
+	mu, _ := v.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
 }

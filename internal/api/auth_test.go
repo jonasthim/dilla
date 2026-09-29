@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pquerna/otp/totp"
+
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/store"
-	"github.com/pquerna/otp/totp"
 )
 
 // seedPassword gives a seeded user a password credential, hashed with the same

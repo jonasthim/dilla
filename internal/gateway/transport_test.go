@@ -33,7 +33,7 @@ func TestBearerOrTicketTakesTheCredentialFromTheHandshake(t *testing.T) {
 
 	t.Run("the authorization header is the credential", func(t *testing.T) {
 		tickets, _ := newTickets(t)
-		r := httptest.NewRequest(http.MethodGet, "/gateway", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/gateway", nil)
 		r.Header.Set("Authorization", "Bearer "+sessionToken)
 		if got := bearerOrTicket(r, tickets); got != sessionToken {
 			t.Fatalf("credential = %q, want %q", got, sessionToken)
@@ -45,7 +45,7 @@ func TestBearerOrTicketTakesTheCredentialFromTheHandshake(t *testing.T) {
 
 	t.Run("a ticket is spent once", func(t *testing.T) {
 		tickets, s := newTickets(t)
-		r := httptest.NewRequest(http.MethodGet, "/gateway", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/gateway", nil)
 		r.Header.Set("Sec-WebSocket-Protocol", "dilla.v1, dilla.ticket."+s)
 		if got := bearerOrTicket(r, tickets); got != sessionToken {
 			t.Fatalf("credential = %q, want %q", got, sessionToken)
@@ -61,7 +61,7 @@ func TestBearerOrTicketTakesTheCredentialFromTheHandshake(t *testing.T) {
 
 	t.Run("the header wins over a ticket and leaves it unspent", func(t *testing.T) {
 		tickets, s := newTickets(t)
-		r := httptest.NewRequest(http.MethodGet, "/gateway", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/gateway", nil)
 		r.Header.Set("Authorization", "Bearer "+sessionToken)
 		r.Header.Set("Sec-WebSocket-Protocol", "dilla.v1, dilla.ticket."+s)
 		if got := bearerOrTicket(r, tickets); got != sessionToken {
@@ -74,7 +74,7 @@ func TestBearerOrTicketTakesTheCredentialFromTheHandshake(t *testing.T) {
 
 	t.Run("the first ticket Take accepts is the one spent", func(t *testing.T) {
 		tickets, s := newTickets(t)
-		r := httptest.NewRequest(http.MethodGet, "/gateway", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/gateway", nil)
 		r.Header.Set("Sec-WebSocket-Protocol", "dilla.v1, dilla.ticket.nonsense, dilla.ticket."+s)
 		if got := bearerOrTicket(r, tickets); got != sessionToken {
 			t.Fatalf("credential = %q, want %q", got, sessionToken)
@@ -83,7 +83,7 @@ func TestBearerOrTicketTakesTheCredentialFromTheHandshake(t *testing.T) {
 
 	t.Run("an unknown ticket is no credential", func(t *testing.T) {
 		tickets, _ := newTickets(t)
-		r := httptest.NewRequest(http.MethodGet, "/gateway", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/gateway", nil)
 		r.Header.Set("Sec-WebSocket-Protocol", "dilla.v1, dilla.ticket.nonsense")
 		if got := bearerOrTicket(r, tickets); got != "" {
 			t.Fatalf("credential = %q, want the empty string", got)
@@ -95,7 +95,7 @@ func TestBearerOrTicketTakesTheCredentialFromTheHandshake(t *testing.T) {
 
 	t.Run("a bare upgrade is no credential", func(t *testing.T) {
 		tickets, _ := newTickets(t)
-		r := httptest.NewRequest(http.MethodGet, "/gateway", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/gateway", nil)
 		if got := bearerOrTicket(r, tickets); got != "" {
 			t.Fatalf("credential = %q, want the empty string", got)
 		}
@@ -103,7 +103,7 @@ func TestBearerOrTicketTakesTheCredentialFromTheHandshake(t *testing.T) {
 
 	t.Run("a non-bearer authorization header falls through to the ticket", func(t *testing.T) {
 		tickets, s := newTickets(t)
-		r := httptest.NewRequest(http.MethodGet, "/gateway", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/gateway", nil)
 		r.Header.Set("Authorization", "Basic ZGVhZDpiZWVm")
 		r.Header.Set("Sec-WebSocket-Protocol", "dilla.ticket."+s)
 		if got := bearerOrTicket(r, tickets); got != sessionToken {
@@ -122,7 +122,7 @@ func dialGateway(t *testing.T, g *Gateway, opts *websocket.DialOptions) (*websoc
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), opts)
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), opts) //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

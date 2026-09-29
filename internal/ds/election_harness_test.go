@@ -22,6 +22,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/fxamacker/cbor/v2"
+
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -321,7 +322,7 @@ func (h *dsHarness) connect(device id.ID) *deviceConn {
 	dialCtx, cancelDial := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelDial()
 
-	ws, _, err := websocket.Dial(dialCtx, "ws"+strings.TrimPrefix(srv.URL, "http"),
+	ws, _, err := websocket.Dial(dialCtx, "ws"+strings.TrimPrefix(srv.URL, "http"), //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
 		&websocket.DialOptions{
 			HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + h.auth.token(session)}},
 			Subprotocols: []string{"dilla.v1"},

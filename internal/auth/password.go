@@ -76,10 +76,10 @@ func VerifyPasswordWithPolicy(pw, phc string, policy PasswordParams) (bool, bool
 	if err != nil {
 		return false, false, err
 	}
-	got := argon2.IDKey([]byte(pw), salt, stored.Iterations, stored.MemoryKiB, stored.Parallelism, uint32(len(want)))
+	got := argon2.IDKey([]byte(pw), salt, stored.Iterations, stored.MemoryKiB, stored.Parallelism, uint32(len(want))) //nolint:gosec // G115: the length of an in-memory Argon2 key or salt, a few dozen bytes
 	// Constant-time on the derived key bytes, never on the PHC string and never
 	// with == or bytes.Equal.
-	if subtle.ConstantTimeEq(int32(len(got)), int32(len(want))) != 1 {
+	if subtle.ConstantTimeEq(int32(len(got)), int32(len(want))) != 1 { //nolint:gosec // G115: the length of an in-memory Argon2 key or salt, a few dozen bytes
 		return false, false, nil
 	}
 	if subtle.ConstantTimeCompare(got, want) != 1 {
@@ -88,8 +88,8 @@ func VerifyPasswordWithPolicy(pw, phc string, policy PasswordParams) (bool, bool
 	rehash := stored.MemoryKiB < policy.MemoryKiB ||
 		stored.Iterations < policy.Iterations ||
 		stored.Parallelism != policy.Parallelism ||
-		uint32(len(want)) != policy.KeyBytes ||
-		uint32(len(salt)) < policy.SaltBytes
+		uint32(len(want)) != policy.KeyBytes || //nolint:gosec // G115: the length of an in-memory Argon2 key or salt, a few dozen bytes
+		uint32(len(salt)) < policy.SaltBytes //nolint:gosec // G115: the length of an in-memory Argon2 key or salt, a few dozen bytes
 	return true, rehash, nil
 }
 
@@ -120,8 +120,8 @@ func decodePHC(phc string) (PasswordParams, []byte, []byte, error) {
 	if err != nil || len(key) == 0 {
 		return PasswordParams{}, nil, nil, ErrPHCMalformed
 	}
-	p.SaltBytes = uint32(len(salt))
-	p.KeyBytes = uint32(len(key))
+	p.SaltBytes = uint32(len(salt)) //nolint:gosec // G115: the length of an in-memory Argon2 key or salt, a few dozen bytes
+	p.KeyBytes = uint32(len(key))   //nolint:gosec // G115: the length of an in-memory Argon2 key or salt, a few dozen bytes
 	return p, salt, key, nil
 }
 

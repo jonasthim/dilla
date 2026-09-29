@@ -19,6 +19,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
+	"github.com/prometheus/client_golang/prometheus"
+	_ "modernc.org/sqlite"
+
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -30,9 +34,6 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
-	"github.com/prometheus/client_golang/prometheus"
-	_ "modernc.org/sqlite"
 )
 
 // testConfig writes a dilla.toml under t.TempDir(), migrates the database it
@@ -145,7 +146,7 @@ func testKeyHistory(t *testing.T, senderKeyID, frankingKeyID id.ID, now int64) [
 		t.Fatalf("rand: %v", err)
 	}
 	b, err := cborx.Marshal([]any{uint64(1), []any{
-		[]any{uint64(0), senderKeyID, []byte(pub), []byte(priv.Seed()), uint64(now), nil},
+		[]any{uint64(0), senderKeyID, []byte(pub), priv.Seed(), uint64(now), nil},
 		[]any{uint64(1), frankingKeyID, []byte{}, frank, uint64(now), nil},
 	}})
 	if err != nil {
@@ -251,8 +252,8 @@ func newAccountRequest(code, username string, dev testDevice) []any {
 	}
 }
 
-func post(_ *testing.T, h http.Handler, path string, body []byte) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+func post(t *testing.T, h http.Handler, path string, body []byte) *httptest.ResponseRecorder {
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/cbor")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -312,7 +313,7 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 
 	// 2. the instance document, with and without a session.
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/instance", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/instance", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /v1/instance = %d with discovery = public", rec.Code)
 	}
@@ -361,7 +362,7 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/instance/limits", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/instance/limits", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /v1/instance/limits = %d", rec.Code)
 	}
@@ -432,7 +433,7 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	}
 
 	// 3. an authenticated read.
-	req := httptest.NewRequest(http.MethodGet, "/v1/accounts/me", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/accounts/me", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -451,7 +452,7 @@ func TestAuthMethodsAreSortedAndDeduplicated(t *testing.T) {
 	})
 	defer srv.Shutdown(context.Background())
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/instance", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/instance", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /v1/instance = %d", rec.Code)
 	}
@@ -469,7 +470,7 @@ func TestEveryResponseCarriesTheGenerationHeader(t *testing.T) {
 	defer srv.Shutdown(context.Background())
 	for _, path := range []string{"/v1/instance", "/v1/instance/limits", "/healthz", "/v1/accounts/me"} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
 		if rec.Header().Get("X-Dilla-Generation") == "" {
 			t.Fatalf("%s carries no X-Dilla-Generation header (status %d)", path, rec.Code)
 		}
@@ -480,7 +481,7 @@ func TestDiscoverySessionMakesTheInstanceDocumentAuthenticated(t *testing.T) {
 	srv, h, _ := newInstanceWith(t, func(c *config.Config) { c.Instance.Discovery = "session" })
 	defer srv.Shutdown(context.Background())
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/instance", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/instance", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("GET /v1/instance = %d with discovery = session, want 401", rec.Code)
 	}
@@ -488,7 +489,7 @@ func TestDiscoverySessionMakesTheInstanceDocumentAuthenticated(t *testing.T) {
 
 func TestShutdownClosesTheListenerWithinTheGrace(t *testing.T) {
 	srv, _, _ := newInstance(t)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -501,7 +502,7 @@ func TestShutdownClosesTheListenerWithinTheGrace(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 30*time.Second {
 		t.Fatalf("Shutdown took %s, longer than shutdown_grace", elapsed)
 	}
-	if _, err := net.DialTimeout("tcp", ln.Addr().String(), 200*time.Millisecond); err == nil {
+	if _, err := (&net.Dialer{Timeout: 200 * time.Millisecond}).DialContext(t.Context(), "tcp", ln.Addr().String()); err == nil {
 		t.Fatal("the listener is still accepting connections after Shutdown")
 	}
 }
@@ -567,7 +568,7 @@ func TestExtraRegistrarsAreMounted(t *testing.T) {
 	}
 	defer srv.Shutdown(context.Background())
 	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/extra", nil))
+	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/extra", nil))
 	if rec.Code != http.StatusTeapot {
 		t.Fatalf("an Extra registrar's route answered %d; it was never mounted", rec.Code)
 	}
@@ -582,7 +583,7 @@ func TestMetricsIsNotOpenWhenNoScrapeTokenWasSupplied(t *testing.T) {
 	srv, h, _ := newInstance(t)
 	defer srv.Shutdown(context.Background())
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("GET /metrics with no Authorization header = %d, want 401", rec.Code)
 	}
@@ -621,7 +622,7 @@ func TestTheReleaseBinaryDoesNotLinkTheTestHelpers(t *testing.T) {
 	// The MODULE path, not "./cmd/dillad": the test's working directory is
 	// internal/dillad, where that relative path does not exist and go list exits
 	// non-zero on every run.
-	out, err := exec.Command(goToolPath(t), "list", "-deps",
+	out, err := exec.CommandContext(t.Context(), goToolPath(t), "list", "-deps",
 		"github.com/jonasthim/dilla/cmd/dillad").Output()
 	if err != nil {
 		t.Fatalf("go list: %v", err)
@@ -660,7 +661,7 @@ func TestAPanickingHandlerIsStillLoggedAndCounted(t *testing.T) {
 	h := srv.Handler()
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/panic", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/panic", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("GET /v1/panic = %d, want 500 from server.Recover", rec.Code)
 	}
@@ -678,7 +679,7 @@ func TestAPanickingHandlerIsStillLoggedAndCounted(t *testing.T) {
 		t.Fatalf("the access-log line records the wrong status: %s", access)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, cfg.Metrics.Path, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, cfg.Metrics.Path, nil)
 	req.Header.Set("Authorization", "Bearer scrape-me")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

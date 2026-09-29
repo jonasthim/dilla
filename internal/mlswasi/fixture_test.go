@@ -76,7 +76,9 @@ var (
 // unmeasured, so it is not a cost to pay blind.
 func sharedCacheDir(tb testing.TB) string {
 	tb.Helper()
-	cacheOnce.Do(func() { cacheDir, cacheErr = os.MkdirTemp("", "mlswasi-cache-") })
+	cacheOnce.Do(func() {
+		cacheDir, cacheErr = os.MkdirTemp("", "mlswasi-cache-") //nolint:usetesting // shared by the whole package, removed by TestMain
+	})
 	if cacheErr != nil {
 		tb.Fatalf("create the shared wazero compilation cache: %v", cacheErr)
 	}

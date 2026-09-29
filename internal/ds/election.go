@@ -79,7 +79,7 @@ func (d *DS) RequestCommit(ctx context.Context, groupID id.ID) error {
 	chosen, round := d.beginRound(groupID, candidates, d.opts.Clock.Now(), row.Epoch)
 
 	payload, err := gateway.CommitNeededPayload(
-		row.Epoch, refs, uint64(d.opts.Policy.CommitDeadline/time.Millisecond), round)
+		row.Epoch, refs, uint64(d.opts.Policy.CommitDeadline/time.Millisecond), round) //nolint:gosec // G115: a non-negative duration in milliseconds
 	if err != nil {
 		return err
 	}

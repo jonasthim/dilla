@@ -663,7 +663,7 @@ func (h *dsHarness) setExpires(t *testing.T, g *dsMessageGroup, seq uint64, at t
 		t.Fatalf("sqlite.OpenWrite: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	res, err := db.Exec(
+	res, err := db.ExecContext(t.Context(),
 		`UPDATE mls_app_messages SET expires = ? WHERE group_id = ? AND seq = ?`,
 		at.Unix(), g.id, int64(seq))
 	if err != nil {

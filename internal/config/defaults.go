@@ -137,7 +137,7 @@ func (c *Config) Derive() {
 	// gateway's hello frame must advertise the same number, and
 	// limits.max_ciphertext_bytes is operator-settable over 4096..1048576, so a
 	// literal 131584 in either place is wrong the moment an operator changes it.
-	c.maxFrameBytes = uint64(c.Limits.MaxCiphertextBytes) + 512
+	c.maxFrameBytes = uint64(c.Limits.MaxCiphertextBytes) + 512 //nolint:gosec // G115: a config value that Validate keeps positive
 }
 
 // MaxFrameBytes is the largest gateway frame the instance accepts and

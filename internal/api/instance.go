@@ -97,21 +97,21 @@ func (d Deps) InstanceLimits(w http.ResponseWriter, r *http.Request) {
 	}
 	c := d.Config
 	limits := []uint64{
-		uint64(c.Limits.MaxCiphertextBytes),
-		uint64(c.Blobs.MaxBlobBytes),
-		4, // max_attachments (protocol/04, tightened by R6/R32)
-		2, // max_previews
-		uint64(c.Limits.MaxKeypackagesPerDevice),
-		uint64(c.Limits.KeypackageRefillThreshold),
-		uint64(c.Blobs.QuotaBytesPerUser),
-		uint64(c.Gateway.HeartbeatInterval.Value() / time.Millisecond),
+		uint64(c.Limits.MaxCiphertextBytes),      //nolint:gosec // G115: a config value that Validate keeps positive
+		uint64(c.Blobs.MaxBlobBytes),             //nolint:gosec // G115: a config value that Validate keeps positive
+		4,                                        // max_attachments (protocol/04, tightened by R6/R32)
+		2,                                        // max_previews
+		uint64(c.Limits.MaxKeypackagesPerDevice), //nolint:gosec // G115: a config value that Validate keeps positive
+		uint64(c.Limits.KeypackageRefillThreshold),                     //nolint:gosec // G115: a config value that Validate keeps positive
+		uint64(c.Blobs.QuotaBytesPerUser),                              //nolint:gosec // G115: a config value that Validate keeps positive
+		uint64(c.Gateway.HeartbeatInterval.Value() / time.Millisecond), //nolint:gosec // G115: a non-negative duration in milliseconds
 		// max_frame_bytes is derived once, in config.Derive, and part 1b's
 		// gateway.Options.MaxFrameBytes reads the same accessor: an operator who
 		// changes limits.max_ciphertext_bytes must move both this element and
 		// the gateway's hello frame, not one of them.
 		c.MaxFrameBytes(),
-		uint64(c.Retention.HandshakeDays),
-		uint64(c.Retention.CiphertextDays),
+		uint64(c.Retention.HandshakeDays),  //nolint:gosec // G115: a config value that Validate keeps positive
+		uint64(c.Retention.CiphertextDays), //nolint:gosec // G115: a config value that Validate keeps positive
 	}
 	d.generation(w)
 	if err := server.EncodeBody(w, http.StatusOK, limits); err != nil {

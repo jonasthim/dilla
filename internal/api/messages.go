@@ -122,7 +122,7 @@ func (h *Messages) list(w http.ResponseWriter, r *http.Request) {
 	// Member-only, like the other three group reads: the ciphertext, the commitments and the
 	// franking tags of a group are enough to correlate membership and message timing.
 	rows, err := h.DS.Messages(r.Context(), groupID, session,
-		queryUint(r, "from", 0), int32(queryUint(r, "limit", 128)))
+		queryUint(r, "from", 0), queryLimit(r, "limit", 128))
 	if err != nil {
 		server.WriteError(w, dsError(err))
 		return
@@ -132,7 +132,7 @@ func (h *Messages) list(w http.ResponseWriter, r *http.Request) {
 		item := messageItem{
 			Seq: row.Seq, Epoch: row.Epoch, UploaderDevice: row.UploaderDevice,
 			Blob: row.Blob, Commitment: row.CommitmentC, FrankingTag: row.FrankingTag,
-			RecvTS: uint64(row.Created),
+			RecvTS: uint64(row.Created), //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 		}
 		if row.DeletedAt != nil {
 			item.Deleted = 1

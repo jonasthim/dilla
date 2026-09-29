@@ -21,7 +21,7 @@ import (
 const Size = 16
 
 // ID is a dilla identifier.
-type ID [Size]byte
+type ID [Size]byte //nolint:recvcheck // Scan must have a pointer receiver (sql.Scanner); every other method is a value receiver on a 16-byte array
 
 // Zero is the identifier no row may hold.
 var Zero ID

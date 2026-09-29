@@ -105,8 +105,12 @@ func (a *virtualAuthenticator) authData(extra protocol.AuthenticatorFlags, attes
 // struct, so the test does not depend on the encoder it exercises.
 func (a *virtualAuthenticator) attestedCredentialData(t *testing.T) []byte {
 	t.Helper()
-	x := a.key.PublicKey.X.FillBytes(make([]byte, 32))
-	y := a.key.PublicKey.Y.FillBytes(make([]byte, 32))
+	// PublicKey.Bytes is the SEC 1 uncompressed point 0x04 || X || Y, 32 bytes each on P-256.
+	point, err := a.key.PublicKey.Bytes()
+	if err != nil {
+		t.Fatalf("public key point: %v", err)
+	}
+	x, y := point[1:33], point[33:65]
 	cose, err := cbor.Marshal(map[int64]any{
 		1: int64(2), 3: int64(-7), -1: int64(1), -2: x, -3: y,
 	})

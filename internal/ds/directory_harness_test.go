@@ -282,7 +282,7 @@ func countIn(t *testing.T, db *sql.DB, table string) int64 {
 	var n int64
 	// `table` is a literal at every call site in this package; no value from a test's data
 	// reaches it.
-	if err := db.QueryRow("SELECT count(*) FROM " + table).Scan(&n); err != nil {
+	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&n); err != nil {
 		t.Fatalf("count %s: %v", table, err)
 	}
 	return n

@@ -14,6 +14,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/fxamacker/cbor/v2"
+	"golang.org/x/crypto/chacha20"
+
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -21,7 +23,6 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
-	"golang.org/x/crypto/chacha20"
 )
 
 // Task 21 is invariants 5 and 6 of protocol/02: the freeze an outstanding instance proposal puts
@@ -772,7 +773,7 @@ func (h *dsHarness) onlineSession(t *testing.T, session auth.Session) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), &websocket.DialOptions{
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), &websocket.DialOptions{ //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
 		HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + h.auth.token(session)}},
 		Subprotocols: []string{"dilla.v1"},
 	})

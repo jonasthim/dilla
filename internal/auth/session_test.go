@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
+	_ "modernc.org/sqlite"
+
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
@@ -22,8 +25,6 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
-	_ "modernc.org/sqlite"
 )
 
 // authDBPaths lets corruptDSKPub reach the file behind a repository, which is
@@ -96,7 +97,7 @@ func corruptDSKPub(repo store.Repository, device id.ID, n int) error {
 		return err
 	}
 	defer db.Close()
-	_, err = db.Exec(`UPDATE devices SET dsk_pub = ? WHERE id = ?`, make([]byte, n), device[:])
+	_, err = db.ExecContext(context.Background(), `UPDATE devices SET dsk_pub = ? WHERE id = ?`, make([]byte, n), device[:])
 	return err
 }
 
@@ -301,7 +302,7 @@ func TestProvisionalIsRefusedOutsideThePairingSurface(t *testing.T) {
 	guarded := s.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}), auth.ScopeEnrolled)
-	req := httptest.NewRequest(http.MethodGet, "/v1/accounts/me", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/accounts/me", nil)
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
 	rec := httptest.NewRecorder()
 	guarded.ServeHTTP(rec, req)

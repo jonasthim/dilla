@@ -83,8 +83,8 @@ func OpenWrite(path string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := db.PingContext(context.Background()); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("sqlite: ping write %s: %w", path, err)
 	}
 	return db, nil
@@ -101,8 +101,8 @@ func OpenRead(path string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(runtime.NumCPU())
 	db.SetMaxIdleConns(runtime.NumCPU())
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := db.PingContext(context.Background()); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("sqlite: ping read %s: %w", path, err)
 	}
 	return db, nil
@@ -140,11 +140,11 @@ func Open(path string) (*sql.DB, error) {
 
 // CompileOptions returns the library's compile-time options.
 func CompileOptions(db *sql.DB) ([]string, error) {
-	rows, err := db.Query(`SELECT compile_options FROM pragma_compile_options`)
+	rows, err := db.QueryContext(context.Background(), `SELECT compile_options FROM pragma_compile_options`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: pragma_compile_options: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var opts []string
 	for rows.Next() {

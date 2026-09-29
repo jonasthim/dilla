@@ -78,7 +78,7 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 		return UploadResult{}, errCommitInvalid("epoch", "the message's epoch is not the group's")
 	}
 
-	recvTS := uint64(d.now())
+	recvTS := uint64(d.now()) //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 	var out UploadResult
 	err = d.opts.Store.Tx(ctx, func(tx store.Repository) error {
 		seq, err := nextSeq(ctx, tx, groupID)
@@ -95,7 +95,7 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 			CommitmentC:    meta.AuthenticatedData,
 			FrankingTag:    tag,
 			Size:           uint64(len(pm)),
-			Created:        int64(recvTS),
+			Created:        int64(recvTS), //nolint:gosec // G115: a unix second, far below 2^63
 			// Archival retention: NULL means retained. The community policy fills it in Plan 2;
 			// delivery retention is the sweeper's business, not this column's.
 			Expires: nil,
@@ -305,7 +305,7 @@ func (d *DS) DeleteMessage(ctx context.Context, s Session, groupID id.ID, seq ui
 	if err := d.opts.Store.TombstoneAppMessage(ctx, groupID, seq, at); err != nil {
 		return err
 	}
-	payload, err := gateway.MessageDeletedPayload(seq, uint64(at))
+	payload, err := gateway.MessageDeletedPayload(seq, uint64(at)) //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 	if err == nil {
 		d.opts.Gateway.DeliverGroup(groupID, gateway.Frame{
 			Op: gateway.OpMessageDeleted, GroupID: &groupID, Payload: payload, Replay: true,

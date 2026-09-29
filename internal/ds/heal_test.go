@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
@@ -527,7 +528,7 @@ func (h *dsHarness) countKeyPackages(t *testing.T, device id.ID) int64 {
 	}
 	defer func() { _ = db.Close() }()
 	var n int64
-	if err := db.QueryRow(
+	if err := db.QueryRowContext(t.Context(),
 		"SELECT count(*) FROM key_packages WHERE device_id = ?", device[:]).Scan(&n); err != nil {
 		t.Fatalf("count key_packages: %v", err)
 	}
@@ -542,7 +543,7 @@ func (h *dsHarness) handshakeCount(t *testing.T, groupID id.ID) int64 {
 	}
 	defer func() { _ = db.Close() }()
 	var n int64
-	if err := db.QueryRow(
+	if err := db.QueryRowContext(t.Context(),
 		"SELECT count(*) FROM mls_handshakes WHERE group_id = ?", groupID[:]).Scan(&n); err != nil {
 		t.Fatalf("count mls_handshakes: %v", err)
 	}
@@ -560,7 +561,7 @@ func (h *dsHarness) liveCalls(t *testing.T) int64 {
 	}
 	defer func() { _ = db.Close() }()
 	var n int64
-	if err := db.QueryRow(
+	if err := db.QueryRowContext(t.Context(),
 		"SELECT count(*) FROM mls_groups WHERE call_id IS NOT NULL AND closed_at IS NULL",
 	).Scan(&n); err != nil {
 		t.Fatalf("count call groups: %v", err)
@@ -769,7 +770,7 @@ func (h *dsHarness) resumeAccepted(t *testing.T, c *deviceConn, token []byte) bo
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(c.url, "http"),
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(c.url, "http"), //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
 		&websocket.DialOptions{
 			HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + c.bearer}},
 			Subprotocols: []string{"dilla.v1"},

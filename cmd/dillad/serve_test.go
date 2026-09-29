@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -96,7 +97,7 @@ func TestServeDoesNotReturnUntilTheDrainFinishes(t *testing.T) {
 		t.Fatalf("probe /healthz: %v", err)
 	}
 
-	inflight, err := net.Dial("tcp", addr)
+	inflight, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", addr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -171,7 +172,11 @@ func waitForListenAddr(t *testing.T, stdout *syncBuffer, served <-chan error) st
 // probe runs one complete request to confirm the server is serving.
 func probe(addr string) error {
 	client := &http.Client{Timeout: 5 * time.Second}
-	res, err := client.Get("http://" + addr + "/healthz")
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+addr+"/healthz", nil)
+	if err != nil {
+		return err
+	}
+	res, err := client.Do(req)
 	if err != nil {
 		return err
 	}

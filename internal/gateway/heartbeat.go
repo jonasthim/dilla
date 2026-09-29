@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
+
 	"github.com/jonasthim/dilla/internal/cborx"
 )
 
@@ -30,7 +31,7 @@ func newHeartbeatPolicy(interval time.Duration) heartbeatPolicy {
 // firstDelay jitters the first beat into [0, interval) so 1,500 clients reconnecting after a
 // restart do not synchronise onto one second.
 func (p heartbeatPolicy) firstDelay() time.Duration {
-	return time.Duration(rand.Float64() * float64(p.interval))
+	return time.Duration(rand.Float64() * float64(p.interval)) //nolint:gosec // G404: start-up jitter spreads reconnects; it is not a secret
 }
 
 // rebaseDeadline rewrites element 2 (deadline_ms) of an mls.commit_needed payload, subtracting the
@@ -48,7 +49,7 @@ func rebaseDeadline(p cbor.RawMessage, waited time.Duration) (cbor.RawMessage, e
 	if err != nil {
 		return nil, err
 	}
-	waitedMS := uint64(waited / time.Millisecond)
+	waitedMS := uint64(waited / time.Millisecond) //nolint:gosec // G115: a non-negative duration in milliseconds
 	if waitedMS >= deadline {
 		deadline = 0
 	} else {

@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
+	_ "modernc.org/sqlite"
+
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -21,8 +24,6 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
-	_ "modernc.org/sqlite"
 )
 
 // dsHarness is a whole delivery service over a real SQLite file, a real wazero runtime and a real
@@ -514,7 +515,11 @@ var (
 // twenty-five times.
 func sharedWasmCacheDir(tb testing.TB) string {
 	tb.Helper()
-	dsCacheOnce.Do(func() { dsCacheDir, _ = os.MkdirTemp("", "ds-wasm-cache-") })
+	// One directory for every test in the package, removed by TestMain: tb.TempDir would be removed
+	// when the first test ends.
+	dsCacheOnce.Do(func() {
+		dsCacheDir, _ = os.MkdirTemp("", "ds-wasm-cache-") //nolint:usetesting // shared by the whole package, removed by TestMain
+	})
 	return dsCacheDir
 }
 

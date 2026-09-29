@@ -25,7 +25,7 @@ func TestAutomatic405CarriesAllow(t *testing.T) {
 	m.Handle("POST /v1/accounts", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv := httptest.NewServer(m)
 	defer srv.Close()
-	res, err := http.Get(srv.URL + "/v1/accounts")
+	res, err := httpGet(t, srv.URL+"/v1/accounts")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -37,4 +37,14 @@ func TestAutomatic405CarriesAllow(t *testing.T) {
 	if res.Header.Get("Allow") == "" {
 		t.Fatal("the automatic 405 carries no Allow header")
 	}
+}
+
+// httpGet is http.Get bound to the test's context.
+func httpGet(t *testing.T, url string) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	return http.DefaultClient.Do(req)
 }

@@ -9,8 +9,10 @@ package gateway
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/fxamacker/cbor/v2"
+
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -190,7 +192,7 @@ func Decode(b []byte, maxBytes int) (Inbound, error) {
 	if err != nil {
 		return Inbound{}, frameErr("E_FRAME_SHAPE", "op: "+err.Error(), CloseDecode)
 	}
-	spec, ok := opSpecs[Op(op)]
+	code, spec, ok := lookupOp(op)
 	if !ok || !spec.fromClient {
 		return Inbound{}, frameErr("E_FRAME_TYPE",
 			fmt.Sprintf("opcode %d is not a client frame in this wire_version", op), CloseDecode)
@@ -230,7 +232,18 @@ func Decode(b []byte, maxBytes int) (Inbound, error) {
 			fmt.Sprintf("opcode %d payload has %d elements, want %d", op, len(payload), spec.elements),
 			CloseDecode)
 	}
-	return Inbound{Op: Op(op), CID: cid, GroupID: gid, Payload: payload}, nil
+	return Inbound{Op: code, CID: cid, GroupID: gid, Payload: payload}, nil
+}
+
+// lookupOp resolves a wire opcode to its catalogue entry. An opcode is a uint8, so 256+6 is an
+// unknown opcode and not a heartbeat that wrapped.
+func lookupOp(op uint64) (Op, opSpec, bool) {
+	if op > math.MaxUint8 {
+		return 0, opSpec{}, false
+	}
+	code := Op(op)
+	spec, ok := opSpecs[code]
+	return code, spec, ok
 }
 
 func isClientOp(op Op) bool { return opSpecs[op].fromClient }

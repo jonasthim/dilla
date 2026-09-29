@@ -28,7 +28,7 @@ func (h *Harness) Run(tb testing.TB, scenario string) ScenarioResult {
 	ctx, cancel := context.WithTimeout(context.Background(), ScenarioTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, h.binary, "run", scenario, "--ds", h.BaseURL())
+	cmd := exec.CommandContext(ctx, h.binary, "run", scenario, "--ds", h.BaseURL()) //nolint:gosec // G204: h.binary is the DILLA_TESTKIT environment variable, a test-harness input
 	cmd.Env = append(cmd.Environ(),
 		"DILLA_TESTKIT_CONTROL="+h.ControlURL(),
 		"DILLA_TESTKIT_INVITE="+h.Invite(),

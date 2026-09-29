@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/dillad"
@@ -114,7 +115,7 @@ func TestEveryDeliveryServiceRouteIsMounted(t *testing.T) {
 		{http.MethodGet, "/v1/welcomes"},
 		{http.MethodDelete, "/v1/welcomes/1"},
 	} {
-		req, err := http.NewRequest(c.method, ts.URL+c.path, strings.NewReader(""))
+		req, err := http.NewRequestWithContext(t.Context(), c.method, ts.URL+c.path, strings.NewReader(""))
 		if err != nil {
 			t.Fatalf("%s %s: %v", c.method, c.path, err)
 		}
@@ -137,7 +138,11 @@ func TestEveryDeliveryServiceRouteIsMounted(t *testing.T) {
 // websocket.Accept rather than a 404.
 func TestTheGatewayUpgradeIsMounted(t *testing.T) {
 	_, ts := newServer(t)
-	res, err := ts.Client().Get(ts.URL + "/gateway")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/gateway", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	res, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("GET /gateway: %v", err)
 	}
@@ -317,7 +322,7 @@ func TestAnIdentifiedDeviceIsReadyAndOnlineThroughTheCompositionRoot(t *testing.
 	s, ts, token := newGreetedServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/gateway",
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/gateway", //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
 		&websocket.DialOptions{
 			HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + token}},
 			Subprotocols: []string{"dilla.v1"},
@@ -360,7 +365,7 @@ func TestAnIdentifiedDeviceIsReadyAndOnlineThroughTheCompositionRoot(t *testing.
 // upgrade accepts: the browser path of gap-38, end to end.
 func TestTheTicketRouteMintsATicketTheGatewayAccepts(t *testing.T) {
 	_, ts, token := newGreetedServer(t)
-	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/gateway/ticket", strings.NewReader(""))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/v1/gateway/ticket", strings.NewReader(""))
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
@@ -390,7 +395,7 @@ func TestTheTicketRouteMintsATicketTheGatewayAccepts(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/gateway",
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/gateway", //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
 		&websocket.DialOptions{Subprotocols: []string{"dilla.v1", "dilla.ticket." + ticket}})
 	if err != nil {
 		t.Fatalf("dial /gateway with a ticket: %v", err)
@@ -411,7 +416,7 @@ func TestRevokingADeviceClosesItsGatewayConnection(t *testing.T) {
 	s, ts, token := newGreetedServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/gateway",
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/gateway", //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
 		&websocket.DialOptions{
 			HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + token}},
 			Subprotocols: []string{"dilla.v1"},

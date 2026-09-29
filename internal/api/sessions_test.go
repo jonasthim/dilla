@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"fmt"
 	"net/http"
@@ -114,7 +115,7 @@ func TestTheGatewayTicketRouteIsReservedUntilPartOneB(t *testing.T) {
 // routes' refusals are about the caller's identity, so the body is never the
 // interesting half.
 func doAuth(h http.Handler, method, path, token string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, nil)
+	req := httptest.NewRequestWithContext(context.Background(), method, path, nil)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -127,7 +128,7 @@ func doAuth(h http.Handler, method, path, token string) *httptest.ResponseRecord
 // per-address bucket from the per-device_id one: vary the address and only the
 // device key can fill, vary the device and only the address key can.
 func postFrom(h http.Handler, path, addr string, body []byte) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/cbor")
 	req.RemoteAddr = addr + ":40000"
 	rec := httptest.NewRecorder()

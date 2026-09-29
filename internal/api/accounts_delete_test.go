@@ -14,7 +14,7 @@ import (
 
 // deleteMe sends DELETE /v1/accounts/me with the bearer token.
 func deleteMe(h http.Handler, token string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodDelete, "/v1/accounts/me", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/v1/accounts/me", nil)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}

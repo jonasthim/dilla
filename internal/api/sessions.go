@@ -56,7 +56,7 @@ func (d Deps) meterSession(r *http.Request, class server.Class, deviceID id.ID) 
 			if d.Metrics != nil {
 				d.Metrics.RateLimited(class.Name)
 			}
-			return server.RateLimited(uint64(retry.Milliseconds()))
+			return server.RateLimitedAfter(retry)
 		}
 	}
 	return nil
@@ -82,7 +82,7 @@ func (d Deps) SessionChallenge(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.write(w, r, http.StatusCreated, []any{nonce, uint64(expires)})
+	d.write(w, r, http.StatusCreated, []any{nonce, uint64(expires)}) //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 }
 
 // SessionEstablish serves POST /v1/devices/{device_id}/sessions. The body is the
@@ -145,7 +145,7 @@ func (d Deps) SessionEstablish(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []any{
 		tok.Token, uint64(tok.Scope), tok.UserID, tok.DeviceID,
-		uint64(tok.Expires), uint64(tok.IdleExpires), tok.Generation,
+		uint64(tok.Expires), uint64(tok.IdleExpires), tok.Generation, //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 	}
 	d.write(w, r, http.StatusCreated, out)
 }
@@ -217,5 +217,5 @@ func (d Deps) GatewayTicket(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.write(w, r, http.StatusCreated, []any{ticket, uint64(expires.Unix())})
+	d.write(w, r, http.StatusCreated, []any{ticket, uint64(expires.Unix())}) //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 }

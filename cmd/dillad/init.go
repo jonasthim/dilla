@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/pressly/goose/v3"
+
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/config"
@@ -21,7 +23,6 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
 )
 
 // writeSecret writes n CSPRNG bytes as lowercase hex at mode 0600 and returns
@@ -102,20 +103,20 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	}
 	provider, err := goose.NewProvider(goose.DialectSQLite3, write, sqlitemigrations.FS)
 	if err != nil {
-		write.Close()
+		_ = write.Close()
 		return fmt.Errorf("init: migrations: %w: %w", err, exit.Software)
 	}
 	if _, err := provider.Up(context.Background()); err != nil {
-		write.Close()
+		_ = write.Close()
 		return fmt.Errorf("init: migrate: %w: %w", err, exit.Data)
 	}
 	read, err := sqlite.OpenRead(c.DB.Path)
 	if err != nil {
-		write.Close()
+		_ = write.Close()
 		return fmt.Errorf("init: %w: %w", err, exit.CantCreate)
 	}
 	repo := sqlite.New(write, read)
-	defer repo.Close() // closes BOTH pools; `defer write.Close()` would leak the read pool
+	defer func() { _ = repo.Close() }() // closes BOTH pools; `defer write.Close()` would leak the read pool
 
 	now := time.Now().Unix()
 	// The two instance secrets of protocol/03 § Instance keys: the external
@@ -137,9 +138,9 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		[]any{
 			// kind 0: external sender. The secret is the 32-byte Ed25519 seed,
 			// which is ed25519.PrivateKey's first half.
-			[]any{uint64(0), externalSenderKeyID, []byte(esPub), []byte(esPriv.Seed()), uint64(now), nil},
+			[]any{uint64(0), externalSenderKeyID, []byte(esPub), esPriv.Seed(), uint64(now), nil}, //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 			// kind 1: franking. No public half.
-			[]any{uint64(1), frankingKeyID, []byte{}, frankKey, uint64(now), nil},
+			[]any{uint64(1), frankingKeyID, []byte{}, frankKey, uint64(now), nil}, //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 		},
 	})
 	if err != nil {
@@ -164,12 +165,12 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	}
 
 	sum := sha256.Sum256(hash)
-	c.Registration.AdminInvite = hex.EncodeToString(sum[:4]) // the reference, never the code (NV12)
-	f, err := os.OpenFile(cfgPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	c.Registration.AdminInvite = hex.EncodeToString(sum[:4])                 // the reference, never the code (NV12)
+	f, err := os.OpenFile(cfgPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: cfgPath is the operator's own --config path; O_EXCL refuses to overwrite
 	if err != nil {
 		return fmt.Errorf("init: write %s: %w: %w", cfgPath, err, exit.CantCreate)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := c.WriteConfig(f); err != nil {
 		return fmt.Errorf("init: %w: %w", err, exit.IOErr)
 	}

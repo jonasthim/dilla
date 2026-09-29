@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
@@ -197,7 +198,7 @@ func New(o Options) *Gateway {
 		reg:      newRegistry(),
 		tickets:  NewTickets(o.Clock),
 		presence: newPresence(o.Clock),
-		beat:     newHeartbeatPolicy(time.Duration(o.HeartbeatMS) * time.Millisecond),
+		beat:     newHeartbeatPolicy(time.Duration(o.HeartbeatMS) * time.Millisecond), //nolint:gosec // G115: a non-negative duration in milliseconds
 	}
 	g.generation.Store(o.Generation)
 	return g

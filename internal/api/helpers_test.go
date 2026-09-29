@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
+	_ "modernc.org/sqlite"
+
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -24,8 +27,6 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
-	_ "modernc.org/sqlite"
 )
 
 // testHasher stands in for task 9's Argon2id *auth.Hasher, which does not exist
@@ -215,7 +216,7 @@ func postCBOR(h http.Handler, path string, body []byte) *httptest.ResponseRecord
 
 // postCBORAuth is postCBOR with an Authorization: Bearer header.
 func postCBORAuth(h http.Handler, path string, body []byte, token string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/cbor")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)

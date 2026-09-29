@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/build"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -182,7 +183,7 @@ func TestTheControlListenerAdvancesTheClockAndReportsItBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	res, err := http.Post(h.ControlURL()+"/debug/clock", "application/json", bytes.NewReader(body))
+	res, err := httpPost(t, h.ControlURL()+"/debug/clock", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /debug/clock: %v", err)
 	}
@@ -226,7 +227,7 @@ func TestAdvanceClockDrivesTheTwentyFourHourTTL(t *testing.T) {
 
 // The test-only seeding and the harness must never reach a dillad build.
 func TestTheReleaseBinaryDependsOnNeitherDilladtestNorTestkit(t *testing.T) {
-	out, err := exec.Command(goToolPath(t), "list", "-deps",
+	out, err := exec.CommandContext(t.Context(), goToolPath(t), "list", "-deps",
 		"github.com/jonasthim/dilla/cmd/dillad").Output()
 	if err != nil {
 		t.Fatalf("go list: %v", err)
@@ -259,4 +260,15 @@ func goToolPath(t *testing.T) string {
 		t.Fatalf("no go toolchain: GOROOT %q holds no bin/go and PATH has none: %v", build.Default.GOROOT, err)
 	}
 	return p
+}
+
+// httpPost is http.Post bound to the test's context.
+func httpPost(t *testing.T, url, contentType string, body io.Reader) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, body)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	return http.DefaultClient.Do(req)
 }

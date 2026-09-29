@@ -10,19 +10,19 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
-// DecodeBody reads at most max bytes of deterministic CBOR into v. Every /v1
+// DecodeBody reads at most limit bytes of deterministic CBOR into v. Every /v1
 // body is CBOR; blob uploads are the one exception and do not come through here.
-func DecodeBody(w http.ResponseWriter, r *http.Request, max int64, v any) error {
+func DecodeBody(w http.ResponseWriter, r *http.Request, limit int64, v any) error {
 	ct := r.Header.Get("Content-Type")
 	if mt, _, _ := strings.Cut(ct, ";"); strings.TrimSpace(mt) != "application/cbor" {
 		return unsupportedMedia(ct)
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, max)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			return Errorf(CodeTooLarge, "body over %d bytes", max)
+			return Errorf(CodeTooLarge, "body over %d bytes", limit)
 		}
 		return Errorf(CodeInvalidRequest, "read body: %v", err)
 	}
@@ -71,7 +71,7 @@ func PathDigest(r *http.Request, name string) ([]byte, error) {
 		if hi < 0 || lo < 0 {
 			return nil, Errorf(CodeInvalidRequest, "path %s: not lowercase hex", name)
 		}
-		out[i/2] = byte(hi<<4 | lo)
+		out[i/2] = byte(hi<<4 | lo) //nolint:gosec // G115: hi and lo are 0-15 here: hexVal returned a negative for anything else and that case returned above
 	}
 	return out, nil
 }

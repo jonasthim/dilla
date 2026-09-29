@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/fxamacker/cbor/v2"
+
 	"github.com/jonasthim/dilla/internal/id"
 )
 

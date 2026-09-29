@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/fxamacker/cbor/v2"
+
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -247,5 +248,22 @@ func TestAnUnknownOpcodeIsAHardError(t *testing.T) {
 	}
 	if fe.Close != CloseDecode {
 		t.Fatalf("close code = %d, want 4002", fe.Close)
+	}
+}
+
+// An opcode is a uint8 on this side. 256+6 must not wrap to 6 and be served as a heartbeat: it is
+// an unknown opcode, exactly like 63.
+func TestAnOpcodeThatOverflowsAByteIsAnUnknownOpcode(t *testing.T) {
+	payload, err := cborx.Marshal([]any{uint64(1), uint64(2)})
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	frame, err := cborx.MarshalFrame(uint64(OpHeartbeat)+256, 1, nil, payload)
+	if err != nil {
+		t.Fatalf("MarshalFrame: %v", err)
+	}
+	var fe *FrameError
+	if _, err := Decode(frame, 16384); !errors.As(err, &fe) || fe.Code != "E_FRAME_TYPE" {
+		t.Fatalf("got %v, want E_FRAME_TYPE — opcode 262 is not heartbeat (6)", err)
 	}
 }

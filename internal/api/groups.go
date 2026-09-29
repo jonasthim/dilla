@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -264,6 +265,27 @@ func queryUint(r *http.Request, name string, def uint64) uint64 {
 	return v
 }
 
+// queryLimit is queryUint for a page-size parameter the delivery service takes as an int32. A value
+// past MaxInt32 saturates rather than wrapping, so it reaches the DS's own clamp as "a lot" and not
+// as a negative number.
+func queryLimit(r *http.Request, name string, def uint64) int32 {
+	v := queryUint(r, name, def)
+	if v > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(v)
+}
+
+// queryCursor is queryUint for a "rows after this id" parameter the store takes as an int64. A
+// value past MaxInt64 saturates: it names no row, so the page is empty, as it should be.
+func queryCursor(r *http.Request, name string) int64 {
+	v := queryUint(r, name, 0)
+	if v > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(v)
+}
+
 type handshakeItem struct {
 	_      struct{} `cbor:",toarray"`
 	Seq    uint64
@@ -286,7 +308,7 @@ func (h *Groups) handshakes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	from := queryUint(r, "from", 0)
-	limit := int32(queryUint(r, "limit", 256))
+	limit := queryLimit(r, "limit", 256)
 	// The whole handshake log of a group is member-only: it names every leaf that ever committed
 	// and every epoch transition. Handshakes takes the session and answers E_NOT_FOUND to a
 	// non-member, exactly as Info and Tree do.

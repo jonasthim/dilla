@@ -28,7 +28,7 @@ func TestTheInstanceRoutesWithoutAConfigFailClosed(t *testing.T) {
 
 	for _, path := range []string{"/v1/instance", "/v1/instance/limits"} {
 		rec := httptest.NewRecorder()
-		m.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		m.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("GET %s = %d with no config, want 500: a missing config must fail closed", path, rec.Code)
 		}

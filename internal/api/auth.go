@@ -167,7 +167,7 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	// on people who typed their password correctly. Failures reach it through
 	// Throttle.RecordFailure, which is the one writer of that bucket.
 	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
-		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
 
@@ -181,7 +181,7 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	// bucket whose one writer is Throttle.RecordFailure can be read here
 	// without charging a correct password for someone else's guesses.
 	if ok, wait := d.Throttle.Peek(classLoginFailed, addrKey); !ok {
-		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
 
@@ -193,7 +193,7 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	if herr == nil {
 		spelling = handle
 		if ok, wait := d.Throttle.Allow(classLogin, "handle\x00"+handle); !ok {
-			server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+			server.WriteError(w, server.RateLimitedAfter(wait))
 			return
 		}
 	}
@@ -228,7 +228,7 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	// says nothing about which.
 	ledger := loginLedger(user, found, spelling)
 	if locked := d.Throttle.LockedFor(ledger); locked > 0 {
-		server.WriteError(w, server.RateLimited(uint64(locked.Milliseconds())))
+		server.WriteError(w, server.RateLimitedAfter(locked))
 		return
 	}
 
@@ -318,7 +318,7 @@ func loginLedger(user store.UserRow, found bool, spelling string) id.ID {
 // is the one writer of the login_failed bucket PasswordLogin peeks at.
 func (d Deps) failure(ledger id.ID, ip netip.Addr) error {
 	if locked := d.Throttle.RecordFailure(ledger, ip); locked > 0 {
-		return server.RateLimited(uint64(locked.Milliseconds()))
+		return server.RateLimitedAfter(locked)
 	}
 	return server.Errorf(server.CodeUnauthenticated, "")
 }
@@ -488,7 +488,7 @@ func (d Deps) EnrollTOTP(w http.ResponseWriter, r *http.Request) {
 	}
 	now := d.Clock.Now().Unix()
 	if err := d.Repo.PutTOTP(ctx, store.TOTPRow{
-		UserID: sess.UserID, Secret: []byte(secret), Digits: uint64(p.Digits),
+		UserID: sess.UserID, Secret: []byte(secret), Digits: uint64(p.Digits), //nolint:gosec // G115: TOTP digits are 6 or 8
 		Period: uint64(p.Period), Algorithm: p.Algorithm, Created: now,
 	}); err != nil {
 		server.WriteError(w, d.storeError(r, err))
@@ -561,7 +561,7 @@ func (d Deps) ConfirmTOTP(w http.ResponseWriter, r *http.Request) {
 func rowParams(row store.TOTPRow, current auth.TOTPParams) auth.TOTPParams {
 	return auth.TOTPParams{
 		Issuer: current.Issuer, Period: uint(row.Period), Skew: current.Skew,
-		SecretSize: current.SecretSize, Digits: int(row.Digits), Algorithm: row.Algorithm,
+		SecretSize: current.SecretSize, Digits: int(row.Digits), Algorithm: row.Algorithm, //nolint:gosec // G115: TOTP digits are 6 or 8
 	}
 }
 
@@ -623,7 +623,7 @@ func (d Deps) verifySecondFactor(w http.ResponseWriter, r *http.Request, method 
 	ip := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
 	addrKey := server.RateKey(ip)
 	if ok, wait := d.Throttle.Allow(classLogin, secondFactorKey(addrKey)); !ok {
-		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
 	userID, needsSecondFactor, ok := d.Assertions.Spend(req.Assertion)
@@ -765,7 +765,7 @@ func (d Deps) BeginPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
 	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
-		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
 	ceremonyID, options, err := p.BeginLogin(r.Context())
@@ -817,14 +817,14 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	ip := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
 	addrKey := server.RateKey(ip)
 	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
-		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
 	// The address's FAILURE budget, peeked rather than spent, for the same
 	// reason PasswordLogin peeks it: taking a token here would meter every
 	// successful login on the failure bucket.
 	if ok, wait := d.Throttle.Peek(classLoginFailed, addrKey); !ok {
-		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
 	userID, err := p.FinishLogin(ctx, req.CeremonyID, []byte(req.Response))
@@ -916,7 +916,7 @@ func (d Deps) StartOIDC(w http.ResponseWriter, r *http.Request) {
 	}
 	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
 	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
-		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
 	state, nonce, verifier := auth.NewVerifierAndState()
@@ -958,14 +958,14 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 	ip := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
 	addrKey := server.RateKey(ip)
 	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
-		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
 	// Peeked rather than spent, for the same reason every other ceremony in
 	// this file peeks it: taking a token here would meter every successful
 	// login on the failure bucket.
 	if ok, wait := d.Throttle.Peek(classLoginFailed, addrKey); !ok {
-		server.WriteError(w, server.RateLimited(uint64(wait.Milliseconds())))
+		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
 	http.SetCookie(w, auth.StateCookie(oidcStateCookie, "", -1))

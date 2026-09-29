@@ -12,6 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pressly/goose/v3"
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/dillad"
@@ -22,8 +25,6 @@ import (
 	postgresmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/pressly/goose/v3"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // metricsTokenEnv carries the bearer token /metrics is guarded with when
@@ -33,7 +34,7 @@ import (
 // where the unit already keeps them. An unset variable is not a way in —
 // dillad.New substitutes an unguessable random token and logs that no scrape
 // will succeed.
-const metricsTokenEnv = "DILLA_METRICS_TOKEN"
+const metricsTokenEnv = "DILLA_METRICS_TOKEN" //nolint:gosec // G101: the name of an environment variable, not a credential
 
 // openRepository opens the configured storage engine's pool(s) and wraps them
 // in a store.Repository. The *sql.DB it also returns is the pool migrations,
@@ -49,7 +50,7 @@ func openRepository(c *config.Config) (store.Repository, *sql.DB, error) {
 		}
 		read, err := sqlite.OpenRead(c.DB.Path)
 		if err != nil {
-			write.Close()
+			_ = write.Close()
 			return nil, nil, fmt.Errorf("open database: %w: %w", err, exit.Unavailable)
 		}
 		return sqlite.New(write, read), write, nil
@@ -108,7 +109,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer repo.Close()
+	defer func() { _ = repo.Close() }()
 
 	ctx := context.Background()
 	provider, err := migrationProvider(cfg, db)
@@ -149,7 +150,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 
 	listenAddr := cfg.Server.Listen
-	ln, err := net.Listen("tcp", listenAddr)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("serve: listen %s: %w: %w", listenAddr, err, exit.Unavailable)
 	}
@@ -241,10 +242,10 @@ func notifyReady() {
 	if sock == "" {
 		return
 	}
-	conn, err := net.Dial("unixgram", sock)
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(context.Background(), "unixgram", sock)
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_, _ = conn.Write([]byte("READY=1"))
 }

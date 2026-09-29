@@ -437,9 +437,9 @@ func (h *groupsAPI) do(t *testing.T, method, path, token string, body []byte) *h
 	t.Helper()
 	var req *http.Request
 	if body == nil {
-		req = httptest.NewRequest(method, path, nil)
+		req = httptest.NewRequestWithContext(t.Context(), method, path, nil)
 	} else {
-		req = httptest.NewRequest(method, path, bytes.NewReader(body))
+		req = httptest.NewRequestWithContext(t.Context(), method, path, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/cbor")
 	}
 	if token != "" {
@@ -562,7 +562,8 @@ func apiFixtureFile(t *testing.T, rel string) []byte {
 func apiWasmCacheDir(t *testing.T) string {
 	t.Helper()
 	apiCacheOnce.Do(func() {
-		apiCacheDir, _ = os.MkdirTemp("", "api-wasm-cache-")
+		// One directory for every test in the package: t.TempDir would be removed when the first test ends.
+		apiCacheDir, _ = os.MkdirTemp("", "api-wasm-cache-") //nolint:usetesting // shared by the whole package, removed by the cleanup below
 		t.Cleanup(func() { _ = os.RemoveAll(apiCacheDir) })
 	})
 	return apiCacheDir

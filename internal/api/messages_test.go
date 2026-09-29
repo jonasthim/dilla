@@ -299,9 +299,9 @@ func doOn(t *testing.T, mux *server.Mux, method, path, token string, body []byte
 	t.Helper()
 	var req *http.Request
 	if body == nil {
-		req = httptest.NewRequest(method, path, nil)
+		req = httptest.NewRequestWithContext(t.Context(), method, path, nil)
 	} else {
-		req = httptest.NewRequest(method, path, bytes.NewReader(body))
+		req = httptest.NewRequestWithContext(t.Context(), method, path, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/cbor")
 	}
 	if token != "" {

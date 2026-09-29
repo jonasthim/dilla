@@ -10,7 +10,7 @@ import (
 
 func TestRealIPTrustsOnlyConfiguredProxies(t *testing.T) {
 	trusted := []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
-	r := httptest.NewRequest("GET", "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), "GET", "/", nil)
 	r.RemoteAddr = "127.0.0.1:5000"
 	r.Header.Set("X-Forwarded-For", "203.0.113.9, 127.0.0.1")
 	if got := server.RealIP(r, trusted); got.String() != "203.0.113.9" {
@@ -60,7 +60,7 @@ func TestMappedIPv4KeysAsIPv4(t *testing.T) {
 // otherwise be mistaken for the client.
 func TestRealIPUnmapsForwardedAddresses(t *testing.T) {
 	trusted := []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
-	r := httptest.NewRequest("GET", "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), "GET", "/", nil)
 	r.RemoteAddr = "127.0.0.1:5000"
 	r.Header.Set("X-Forwarded-For", "::ffff:203.0.113.9, ::ffff:127.0.0.1")
 	got := server.RealIP(r, trusted)

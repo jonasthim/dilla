@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/cborx"
 )
@@ -155,6 +156,15 @@ func Version(wire, e2ee, media []uint64) *Error {
 func RateLimited(retryAfterMS uint64) *Error {
 	ms := retryAfterMS
 	return &Error{Code: CodeRateLimited, Detail: "rate limited", RetryAfterMS: &ms}
+}
+
+// RateLimitedAfter is RateLimited for a wait the caller holds as a duration. A non-positive wait
+// is reported as zero milliseconds instead of wrapping to a huge uint64.
+func RateLimitedAfter(wait time.Duration) *Error {
+	if wait <= 0 {
+		return RateLimited(0)
+	}
+	return RateLimited(uint64(wait / time.Millisecond))
 }
 
 // unsupportedMedia is 415 with E_INVALID_REQUEST.

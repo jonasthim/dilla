@@ -84,7 +84,7 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 		// A join the freeze admitted is invariant 5's nobody-online exception, whose re-issue
 		// commit step (9) has already run (`reissueOmitted`). R25's belt-and-braces re-issue
 		// below is the resync's own.
-		return out, nil
+		return out, nil //nolint:nilerr // leafErr only records that the device holds no leaf, which is what makes this a join; the store failure case returned above
 	}
 	// R25's tail: whatever was outstanding is re-issued for the epoch the resync created, and a
 	// committer is elected for it.

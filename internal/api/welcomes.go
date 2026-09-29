@@ -31,7 +31,7 @@ func (h *Groups) welcomes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.DS.Welcomes(r.Context(), session,
-		int64(queryUint(r, "after", 0)), int32(queryUint(r, "limit", 64)))
+		queryCursor(r, "after"), queryLimit(r, "limit", 64))
 	if err != nil {
 		server.WriteError(w, dsError(err))
 		return
@@ -39,7 +39,7 @@ func (h *Groups) welcomes(w http.ResponseWriter, r *http.Request) {
 	out := make([]welcomeItem, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, welcomeItem{
-			WelcomeID:   uint64(row.WelcomeID),
+			WelcomeID:   uint64(row.WelcomeID), //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 			GroupID:     row.GroupID,
 			Epoch:       row.Epoch,
 			CommitSeq:   row.CommitSeq,

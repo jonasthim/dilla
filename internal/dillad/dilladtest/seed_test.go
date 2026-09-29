@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -67,7 +68,7 @@ func TestTheSeedRouteCreatesAnAccountWhoseSessionsResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	res, err := http.Post(control.URL+"/debug/seed", "application/json", bytes.NewReader(body))
+	res, err := httpPost(t, control.URL+"/debug/seed", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /debug/seed: %v", err)
 	}
@@ -98,7 +99,7 @@ func postJSON(t *testing.T, url string, v any) int {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	res, err := http.Post(url, "application/json", bytes.NewReader(body))
+	res, err := httpPost(t, url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}
@@ -212,7 +213,7 @@ func TestTheStateRouteCarriesTheListsAndTheExternalSenderKey(t *testing.T) {
 	control := httptest.NewServer(dilladtest.ControlHandler(h))
 	t.Cleanup(control.Close)
 
-	res, err := http.Get(control.URL + "/debug/state")
+	res, err := httpGet(t, control.URL+"/debug/state")
 	if err != nil {
 		t.Fatalf("GET /debug/state: %v", err)
 	}
@@ -233,4 +234,25 @@ func TestTheStateRouteCarriesTheListsAndTheExternalSenderKey(t *testing.T) {
 	if _, ok := state["now_unix"].(float64); !ok {
 		t.Error("now_unix is missing")
 	}
+}
+
+// httpGet is http.Get bound to the test's context.
+func httpGet(t *testing.T, url string) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	return http.DefaultClient.Do(req)
+}
+
+// httpPost is http.Post bound to the test's context.
+func httpPost(t *testing.T, url, contentType string, body io.Reader) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, body)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	return http.DefaultClient.Do(req)
 }

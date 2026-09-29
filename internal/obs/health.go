@@ -100,12 +100,12 @@ func (h *Health) Liveness() http.Handler {
 			sort.Strings(stalled)
 			w.WriteHeader(http.StatusInternalServerError)
 			for _, name := range stalled {
-				w.Write([]byte("stalled: " + name + "\n"))
+				_, _ = w.Write([]byte("stalled: " + name + "\n"))
 			}
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok\n"))
+		_, _ = w.Write([]byte("ok\n"))
 	})
 }
 
@@ -145,6 +145,6 @@ func (h *Health) Readiness() http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(body)
+		_ = json.NewEncoder(w).Encode(body)
 	})
 }

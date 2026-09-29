@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/server"
@@ -14,6 +15,23 @@ import (
 func errorsNew(s string) error { return errors.New(s) }
 
 func bytesContains(haystack, needle []byte) bool { return bytes.Contains(haystack, needle) }
+
+func TestRateLimitedAfterReportsWholeMillisecondsAndNeverWraps(t *testing.T) {
+	for _, tc := range []struct {
+		wait time.Duration
+		want uint64
+	}{
+		{1500 * time.Millisecond, 1500},
+		{time.Second + 999*time.Microsecond, 1000},
+		{0, 0},
+		{-time.Second, 0}, // a negative wait must not wrap to a 18-quintillion-millisecond retry
+	} {
+		e := server.RateLimitedAfter(tc.wait)
+		if e.RetryAfterMS == nil || *e.RetryAfterMS != tc.want {
+			t.Errorf("RateLimitedAfter(%v).RetryAfterMS = %v, want %d", tc.wait, e.RetryAfterMS, tc.want)
+		}
+	}
+}
 
 // The twenty-five rows of protocol/02 § Errors, exercised one by one, plus the
 // one WithStatus override 1a uses (a duplicate username is E_INVALID_REQUEST at

@@ -7,9 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	_ "modernc.org/sqlite"
+
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
-	_ "modernc.org/sqlite"
 )
 
 func TestNewIsSixteenNonZeroBytesAndUnique(t *testing.T) {
@@ -65,15 +66,15 @@ func TestValueScanThroughSQL(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE t (k BLOB NOT NULL CHECK (length(k) = 16)) STRICT`); err != nil {
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE t (k BLOB NOT NULL CHECK (length(k) = 16)) STRICT`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	want := id.New()
-	if _, err := db.Exec(`INSERT INTO t (k) VALUES (?)`, want); err != nil {
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO t (k) VALUES (?)`, want); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	var got id.ID
-	if err := db.QueryRow(`SELECT k FROM t`).Scan(&got); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT k FROM t`).Scan(&got); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 	if got != want {

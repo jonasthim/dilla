@@ -4,9 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pquerna/otp/totp"
+
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/config"
-	"github.com/pquerna/otp/totp"
 )
 
 func totpParams() auth.TOTPParams {

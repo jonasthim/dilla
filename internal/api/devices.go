@@ -61,7 +61,7 @@ func (d Deps) ListDevices(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		out = append(out, []any{
 			row.ID, uint64(row.Tier), uint64(row.SignerTier),
-			nullableTime(row.VerifiedAt), nullableTime(row.RevokedAt), uint64(row.LastSeen),
+			nullableTime(row.VerifiedAt), nullableTime(row.RevokedAt), uint64(row.LastSeen), //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 		})
 	}
 	d.write(w, r, http.StatusOK, out)
@@ -183,5 +183,5 @@ func nullableTime(v *int64) any {
 	if v == nil {
 		return nil
 	}
-	return uint64(*v)
+	return uint64(*v) //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 }

@@ -192,7 +192,7 @@ func (d Deps) CreateAccount(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.registrationError(r, err))
 		return
 	}
-	d.write(w, r, http.StatusOK, []any{user.ID, device.ID, token.Token, uint64(token.Expires)})
+	d.write(w, r, http.StatusOK, []any{user.ID, device.ID, token.Token, uint64(token.Expires)}) //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 }
 
 // redeem spends the first candidate the instance knows. CanonicalizeInviteCode
@@ -246,7 +246,7 @@ func (d Deps) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.write(w, r, http.StatusOK, []any{
-		u.ID, u.Username, u.Display, uint64(u.Kind), u.Flags, uint64(u.Created),
+		u.ID, u.Username, u.Display, uint64(u.Kind), u.Flags, uint64(u.Created), //nolint:gosec // G115: a small account-kind enum and a unix second, never negative
 	})
 }
 

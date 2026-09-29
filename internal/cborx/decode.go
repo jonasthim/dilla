@@ -142,10 +142,10 @@ func scanItem(data []byte, depth int) (int, error) {
 	case MajorUint:
 		return headLen, nil
 	case MajorBytes, MajorText:
-		if arg > uint64(len(data)-headLen) {
+		if arg > uint64(len(data)-headLen) { //nolint:gosec // G115: readArg guarantees headLen <= len(data), so the difference is not negative
 			return 0, ErrTruncated
 		}
-		end := headLen + int(arg)
+		end := headLen + int(arg) //nolint:gosec // G115: arg <= len(data)-headLen was checked on the line above
 		if major == MajorText && !utf8.Valid(data[headLen:end]) {
 			return 0, ErrInvalidUTF8
 		}

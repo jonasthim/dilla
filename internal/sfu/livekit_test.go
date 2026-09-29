@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -166,7 +165,9 @@ func TestPrometheusInitPrecedesInitializeServer(t *testing.T) {
 func TestNothingInTheModuleImportsTheCgoMediaPackage(t *testing.T) {
 	goTool, err := exec.LookPath("go")
 	if err != nil {
-		if root := runtime.GOROOT(); root != "" {
+		// runtime.GOROOT is deprecated; the environment variable is what `go test` itself is run
+		// under when the tool is not on PATH. (`go env GOROOT` would need the tool it is looking for.)
+		if root := os.Getenv("GOROOT"); root != "" {
 			goTool = filepath.Join(root, "bin", "go")
 		} else {
 			t.Fatalf("cannot locate the go tool to list the module's dependencies: %v", err)
@@ -177,7 +178,7 @@ func TestNothingInTheModuleImportsTheCgoMediaPackage(t *testing.T) {
 	// very file, so the plain form reports neither the SDK nor anything it would
 	// pull in — the check would pass vacuously. With -test the set covers every
 	// package dillad compiles, tests included.
-	cmd := exec.Command(goTool, "list", "-deps", "-test", "./...")
+	cmd := exec.CommandContext(t.Context(), goTool, "list", "-deps", "-test", "./...")
 	cmd.Dir = "../.." // the module root
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -294,7 +295,7 @@ func nothingListensOn(t *testing.T, addr string, window time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(window)
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 250*time.Millisecond)
+		conn, err := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(t.Context(), "tcp", addr)
 		if err == nil {
 			_ = conn.Close()
 			t.Fatalf("%s accepted a connection after Start aborted: the server was stopped "+

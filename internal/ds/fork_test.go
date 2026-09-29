@@ -300,7 +300,7 @@ func (h *dsHarness) storedForkReason(t *testing.T, g *dsGroup, seq uint64, repor
 	}
 	defer func() { _ = db.Close() }()
 	var reason string
-	row := db.QueryRow(
+	row := db.QueryRowContext(t.Context(),
 		"SELECT reason FROM fork_reports WHERE group_id = ? AND seq = ? AND reporter_device = ?",
 		g.id, int64(seq), reporter)
 	if err := row.Scan(&reason); err != nil {

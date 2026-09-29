@@ -69,7 +69,7 @@ func (h *Groups) publishKeyPackages(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, dsError(err))
 		return
 	}
-	if err := server.EncodeBody(w, http.StatusCreated, publishResponse{Count: uint64(n)}); err != nil {
+	if err := server.EncodeBody(w, http.StatusCreated, publishResponse{Count: uint64(n)}); err != nil { //nolint:gosec // G115: a count of stored rows, never negative
 		server.WriteError(w, err)
 	}
 }

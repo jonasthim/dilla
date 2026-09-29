@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/fxamacker/cbor/v2"
+
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -238,11 +239,15 @@ func decodeAny(b []byte) (Inbound, error) {
 	if err != nil {
 		return Inbound{}, err
 	}
+	code, _, ok := lookupOp(op)
+	if !ok {
+		return Inbound{}, frameErr("E_FRAME_TYPE", "op", CloseDecode)
+	}
 	var payload []cbor.RawMessage
 	if err := cborx.Unmarshal(elems[3], &payload); err != nil {
 		return Inbound{}, err
 	}
-	return Inbound{Op: Op(op), CID: n, Payload: payload}, nil
+	return Inbound{Op: code, CID: n, Payload: payload}, nil
 }
 
 // serve runs one connection: hello, then exactly one identify or resume frame, then the read loop.
@@ -256,7 +261,7 @@ func (g *Gateway) serve(ctx context.Context, s sink, token string) {
 	wire, e2ee, media := g.advertised()
 	hello, err := HelloPayload(wire, e2ee, media,
 		g.opts.HeartbeatMS, g.opts.MaxFrameBytes, g.opts.InstanceID, g.Generation(),
-		uint64(g.opts.Backoff/time.Millisecond), uint64(g.opts.BackoffJitter/time.Millisecond))
+		uint64(g.opts.Backoff/time.Millisecond), uint64(g.opts.BackoffJitter/time.Millisecond)) //nolint:gosec // G115: a non-negative duration in milliseconds
 	if err != nil {
 		s.close(CloseUnknown, "hello")
 		return
@@ -527,7 +532,7 @@ func (g *Gateway) sendReady(ctx context.Context, c *conn) error {
 		return err
 	}
 	p, err := ReadyPayload(c.deviceID, c.userID, g.Generation(), c.resume,
-		c.wire, c.e2ee, c.media, uint64(remaining), digests)
+		c.wire, c.e2ee, c.media, uint64(remaining), digests) //nolint:gosec // G115: a COUNT(*) result, never negative
 	if err != nil {
 		return err
 	}
@@ -575,7 +580,7 @@ func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 		}
 		c.mark(g.opts.Clock.Now())
 		c.ring.trim(lastN)
-		if p, err := HeartbeatAckPayload(uint64(g.opts.Clock.Now().Unix())); err == nil {
+		if p, err := HeartbeatAckPayload(uint64(g.opts.Clock.Now().Unix())); err == nil { //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 			c.send(Frame{Op: OpHeartbeatAck, Payload: p})
 		}
 	case OpCommitAck:

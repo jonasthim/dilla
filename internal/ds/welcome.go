@@ -164,7 +164,7 @@ func (d *DS) fanOutWelcomes(ctx context.Context, groupID id.ID, epoch uint64, tr
 		if !ok {
 			continue
 		}
-		payload, err := gateway.WelcomePayload(uint64(row.WelcomeID), row.Epoch, row.CommitSeq,
+		payload, err := gateway.WelcomePayload(uint64(row.WelcomeID), row.Epoch, row.CommitSeq, //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 			row.Blob, tree, treeHash)
 		if err != nil {
 			d.log().Error("encoding an mls.welcome failed", "group", groupID, "err", err)
@@ -269,11 +269,11 @@ func (d *DS) Welcomes(ctx context.Context, s Session, after int64, limit int32) 
 				continue
 			}
 			out = append(out, row)
-			if int32(len(out)) == limit {
+			if int32(len(out)) == limit { //nolint:gosec // G115: bounded by the int32 page size the slice was requested with
 				return out, nil
 			}
 		}
-		if int32(len(rows)) < pageSize {
+		if int32(len(rows)) < pageSize { //nolint:gosec // G115: bounded by the int32 page size the slice was requested with
 			break // a short page is the end of the queue
 		}
 		pageSize = maxWelcomesPerPage

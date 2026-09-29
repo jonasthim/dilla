@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -17,7 +19,6 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/postgres"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Options is everything New needs. Only Config is required; every other
@@ -106,7 +107,7 @@ func openRepositoryFromConfig(_ context.Context, c *config.Config) (store.Reposi
 		}
 		read, err := sqlite.OpenRead(c.DB.Path)
 		if err != nil {
-			write.Close()
+			_ = write.Close()
 			return nil, fmt.Errorf("dillad: open database: %w", err)
 		}
 		return sqlite.New(write, read), nil
@@ -134,7 +135,7 @@ func readSecretFile(path string) (string, error) {
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return "", fmt.Errorf("dillad: secret file %s has mode %04o; a secret file must be 0600", path, perm)
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G304: path is a *_file setting the operator wrote in dilla.toml, checked for mode 0600 above
 	if err != nil {
 		return "", fmt.Errorf("dillad: secret file %s: %w", path, err)
 	}

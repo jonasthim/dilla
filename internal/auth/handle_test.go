@@ -18,7 +18,7 @@ func TestNormalizeHandle(t *testing.T) {
 		{"lowercases", "Jonas", "jonas", true},
 		{"all caps", "JONAS", "jonas", true},
 		{"space is disallowed", "jo nas", "", false},
-		{"zero width space fails the bidi rule", "jonas​", "", false},
+		{"zero width space fails the bidi rule", "jonas\u200b", "", false},
 		{"roman numeral is disallowed", "Ⅹ", "", false},
 		{"mixed script fails the bidi rule", "jonasא", "", false},
 		// Trap 1 (facts-auth §6.2): UsernameCaseMapped has no DisallowEmpty and
@@ -51,7 +51,7 @@ func TestNormalizeHandle(t *testing.T) {
 }
 
 func TestNormalizeDisplay(t *testing.T) {
-	if _, err := auth.NormalizeDisplay("Jonas‮"); err == nil {
+	if _, err := auth.NormalizeDisplay("Jonas\u202e"); err == nil {
 		t.Fatal("a right-to-left override was accepted in a display name")
 	}
 	got, err := auth.NormalizeDisplay("Å")

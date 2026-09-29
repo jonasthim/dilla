@@ -82,7 +82,7 @@ func (d *DS) requireNoFreeze(ctx context.Context, groupID id.ID, epoch uint64) e
 		return err
 	}
 	if len(refs) > 0 {
-		return errCommitRequired(refs, uint64(d.opts.Policy.CommitDeadline.Milliseconds()))
+		return errCommitRequired(refs, uint64(d.opts.Policy.CommitDeadline.Milliseconds())) //nolint:gosec // G115: a non-negative duration in milliseconds
 	}
 	return nil
 }

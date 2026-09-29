@@ -41,7 +41,7 @@ func run(public, control, dataDir, core, logLevel string) error {
 		if err != nil {
 			return err
 		}
-		defer os.RemoveAll(dir)
+		defer func() { _ = os.RemoveAll(dir) }()
 		dataDir = dir
 	}
 	if core == "" {
@@ -65,11 +65,11 @@ func run(public, control, dataDir, core, logLevel string) error {
 	}
 	defer func() { _ = host.Close(context.Background()) }()
 
-	publicLn, err := net.Listen("tcp", public)
+	publicLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", public)
 	if err != nil {
 		return err
 	}
-	controlLn, err := net.Listen("tcp", control)
+	controlLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", control)
 	if err != nil {
 		return err
 	}

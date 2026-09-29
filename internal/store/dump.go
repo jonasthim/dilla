@@ -71,7 +71,7 @@ func DumpPostgres(ctx context.Context, dsn string, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("store: connect for dump: %w", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
 		AccessMode: pgx.ReadOnly,
@@ -79,7 +79,7 @@ func DumpPostgres(ctx context.Context, dsn string, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("store: begin dump snapshot: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := io.WriteString(w, DumpMagic); err != nil {
 		return fmt.Errorf("store: write dump magic: %w", err)
@@ -92,13 +92,13 @@ func DumpPostgres(ctx context.Context, dsn string, w io.Writer) error {
 		if _, err := tx.Conn().PgConn().CopyTo(ctx, &buf, `COPY `+table+` TO STDOUT (FORMAT binary)`); err != nil {
 			return fmt.Errorf("store: copy %s: %w", table, err)
 		}
-		if err := binary.Write(w, binary.BigEndian, uint32(len(table))); err != nil {
+		if err := binary.Write(w, binary.BigEndian, uint32(len(table))); err != nil { //nolint:gosec // G115: the length of a table name from the fixed DumpTables list
 			return fmt.Errorf("store: write dump header for %s: %w", table, err)
 		}
 		if _, err := io.WriteString(w, table); err != nil {
 			return fmt.Errorf("store: write dump header for %s: %w", table, err)
 		}
-		if err := binary.Write(w, binary.BigEndian, uint64(buf.Len())); err != nil {
+		if err := binary.Write(w, binary.BigEndian, uint64(buf.Len())); err != nil { //nolint:gosec // G115: a buffer length is never negative
 			return fmt.Errorf("store: write dump header for %s: %w", table, err)
 		}
 		if _, err := buf.WriteTo(w); err != nil {

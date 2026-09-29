@@ -20,7 +20,7 @@ func TestReadyzIsUnreadyUntilEveryGateIsGreen(t *testing.T) {
 		gates[n] = h.Gate(n)
 	}
 	rec := httptest.NewRecorder()
-	h.Readiness().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	h.Readiness().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d before any gate is green, want 503", rec.Code)
 	}
@@ -28,7 +28,7 @@ func TestReadyzIsUnreadyUntilEveryGateIsGreen(t *testing.T) {
 		gates[n].Set(true, "")
 	}
 	rec = httptest.NewRecorder()
-	h.Readiness().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	h.Readiness().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d with one gate red, want 503", rec.Code)
 	}
@@ -46,7 +46,7 @@ func TestReadyzIsUnreadyUntilEveryGateIsGreen(t *testing.T) {
 	}
 	gates["heal"].Set(true, "")
 	rec = httptest.NewRecorder()
-	h.Readiness().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	h.Readiness().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d with every gate green, want 200", rec.Code)
 	}
@@ -58,13 +58,13 @@ func TestHealthzFailsWhenAWorkerIsPastItsHardLimit(t *testing.T) {
 	h := obs.NewHealth(clk)
 	h.MarkWorker("retention", start.Add(time.Minute))
 	rec := httptest.NewRecorder()
-	h.Liveness().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	h.Liveness().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d while the worker is inside its deadline, want 200", rec.Code)
 	}
 	clk.Advance(2 * time.Minute)
 	rec = httptest.NewRecorder()
-	h.Liveness().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	h.Liveness().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d past the worker's hard limit, want 500", rec.Code)
 	}
@@ -77,7 +77,7 @@ func TestDrainMakesReadyzUnready(t *testing.T) {
 	}
 	h.Drain()
 	rec := httptest.NewRecorder()
-	h.Readiness().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	h.Readiness().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatal("a draining instance still reported ready; a load balancer would keep sending it work")
 	}

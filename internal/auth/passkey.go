@@ -148,7 +148,7 @@ func (p *Passkeys) credentials(ctx context.Context, userID id.ID) ([]webauthn.Cr
 			AttestationFormat: r.AttestationFormat,
 			Transport:         splitTransports(r.Transports),
 			Flags:             flagsFromByte(r.Flags),
-			Authenticator:     webauthn.Authenticator{SignCount: uint32(r.SignCount)},
+			Authenticator:     webauthn.Authenticator{SignCount: uint32(r.SignCount)}, //nolint:gosec // G115: the WebAuthn signature counter is a uint32 by the specification; the row stores it widened
 		}
 		if r.ExtensionsJSON != "" {
 			if err := json.Unmarshal([]byte(r.ExtensionsJSON), &c.Extensions); err != nil {

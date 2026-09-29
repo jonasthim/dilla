@@ -127,7 +127,7 @@ func (d Deps) InviteLanding(w http.ResponseWriter, r *http.Request) {
 		if invite.CommunityID != nil {
 			communityValue = *invite.CommunityID
 		}
-		d.write(w, r, http.StatusOK, []any{d.Domain, communityValue, uint64(invite.ExpiresAt)})
+		d.write(w, r, http.StatusOK, []any{d.Domain, communityValue, uint64(invite.ExpiresAt)}) //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 		return
 	}
 	d.generation(w)

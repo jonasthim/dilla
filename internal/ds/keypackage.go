@@ -141,7 +141,7 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 			KPRef:      info.KPRef,
 			Blob:       blob,
 			LastResort: lr,
-			Expires:    int64(info.NotAfter),
+			Expires:    int64(info.NotAfter), //nolint:gosec // G115: a unix second, far below 2^63
 			Created:    d.now(),
 		})
 		return nil

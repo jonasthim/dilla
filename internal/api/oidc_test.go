@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -28,13 +29,13 @@ import (
 // different name would be testing nothing.
 const oidcStateCookieName = "__Secure-dilla-oidc"
 
-// oidcIdP is a fake identity provider: discovery, JWKS and a token endpoint,
+// oidcIDP is a fake identity provider: discovery, JWKS and a token endpoint,
 // signing its own id_tokens. The nonce is settable because the start leg mints
 // it server-side — the test reads it back off the authorization redirect and
 // tells the provider to echo it, exactly as a real provider echoes the nonce it
 // was given. `token` counts the exchanges, which is how the replay test proves
 // a second callback never reaches the token endpoint at all.
-type oidcIdP struct {
+type oidcIDP struct {
 	*httptest.Server
 	mu      sync.Mutex
 	nonce   string
@@ -42,27 +43,27 @@ type oidcIdP struct {
 	token   atomic.Int64
 }
 
-func (i *oidcIdP) setNonce(n string) {
+func (i *oidcIDP) setNonce(n string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.nonce = n
 }
 
-func (i *oidcIdP) setSubject(s string) {
+func (i *oidcIDP) setSubject(s string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.subject = s
 }
 
-func (i *oidcIdP) claims() (nonce, subject string) {
+func (i *oidcIDP) claims() (nonce, subject string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	return i.nonce, i.subject
 }
 
-func (i *oidcIdP) exchanges() int64 { return i.token.Load() }
+func (i *oidcIDP) exchanges() int64 { return i.token.Load() }
 
-func fakeOIDCProvider(t *testing.T) *oidcIdP {
+func fakeOIDCProvider(t *testing.T) *oidcIDP {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -75,7 +76,7 @@ func fakeOIDCProvider(t *testing.T) *oidcIdP {
 	if err != nil {
 		t.Fatalf("new signer: %v", err)
 	}
-	idp := &oidcIdP{subject: "sub-123"}
+	idp := &oidcIDP{subject: "sub-123"}
 	mux := http.NewServeMux()
 	idp.Server = httptest.NewServer(mux)
 	t.Cleanup(idp.Close)
@@ -135,7 +136,7 @@ func fakeOIDCProvider(t *testing.T) *oidcIdP {
 // mux rather than reaching into the one newTestAPI made, for the reason
 // newPasskeyAPI does: Deps is copied per route, so a field set afterwards would
 // reach no handler.
-func newOIDCAPI(t *testing.T, autoCreate bool) (http.Handler, api.Deps, *oidcIdP) {
+func newOIDCAPI(t *testing.T, autoCreate bool) (http.Handler, api.Deps, *oidcIDP) {
 	t.Helper()
 	idp := fakeOIDCProvider(t)
 	_, d := newTestAPIWithConfig(t, func(c *config.Config) {
@@ -158,7 +159,7 @@ func newOIDCAPI(t *testing.T, autoCreate bool) (http.Handler, api.Deps, *oidcIdP
 // getWithCookies drives a browser navigation: these two routes are the only
 // ones in the tree that are not CBOR calls.
 func getWithCookies(h http.Handler, target string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}

@@ -31,7 +31,7 @@ func fileJournalMode(ctx context.Context, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var mode string
 	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil {
 		return "", err
@@ -91,7 +91,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		fail("database", err)
 	} else {
-		defer repo.Close()
+		defer func() { _ = repo.Close() }()
 		if err := db.PingContext(ctx); err != nil {
 			fail("database", err)
 		} else if version, err := repo.SchemaVersion(ctx); err != nil {
@@ -157,7 +157,7 @@ func doctorWasiLeg(ctx context.Context) (mlswasi.ABIInfo, error) {
 		return mlswasi.ABIInfo{}, fmt.Errorf("locate the dillad binary: %w", err)
 	}
 	path := filepath.Join(filepath.Dir(exe), "dilla_core_wasi.wasm")
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: the path is the running binary's own directory joined with a constant file name
 	if err != nil {
 		return mlswasi.ABIInfo{}, fmt.Errorf("read %s: %w", path, err)
 	}
@@ -165,7 +165,7 @@ func doctorWasiLeg(ctx context.Context) (mlswasi.ABIInfo, error) {
 	if err != nil {
 		return mlswasi.ABIInfo{}, fmt.Errorf("load %s: %w", path, err)
 	}
-	defer rt.Close(ctx)
+	defer func() { _ = rt.Close(ctx) }()
 	return rt.ABI(ctx)
 }
 
@@ -192,7 +192,7 @@ func doctorClockLeg(ctx context.Context, peers []string, maxSkew time.Duration) 
 			continue
 		}
 		dateHeader := resp.Header.Get("Date")
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		remote, err := http.ParseTime(dateHeader)
 		if err != nil {
 			lastErr = fmt.Errorf("%s: no parseable Date header", peer)

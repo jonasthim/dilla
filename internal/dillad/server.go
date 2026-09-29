@@ -144,7 +144,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		},
 		InstanceID:     instance.InstanceID,
 		Generation:     instance.Generation,
-		HeartbeatMS:    uint64(o.Config.Gateway.HeartbeatInterval.Value() / time.Millisecond),
+		HeartbeatMS:    uint64(o.Config.Gateway.HeartbeatInterval.Value() / time.Millisecond), //nolint:gosec // G115: a non-negative duration in milliseconds
 		IdleClose:      o.Config.Gateway.SessionIdleClose.Value(),
 		ReadLimit:      o.Config.Gateway.ReadLimitBytes,
 		MaxFrameBytes:  o.Config.MaxFrameBytes(),
@@ -275,8 +275,8 @@ func (s *Server) Mux() *server.Mux         { return s.mux }
 func (s *Server) Repo() store.Repository   { return s.o.Repo }
 func (s *Server) Sessions() *auth.Sessions { return s.sessions }
 
-// DS, Gateway and Now are the harness accessors of deviation B17: plain getters
-// over what New built.
+// DS returns the delivery service New built. It is one of three harness accessors of
+// deviation B17 (with Gateway and Now): plain getters over what New built.
 func (s *Server) DS() *ds.DS                { return s.ds }
 func (s *Server) Gateway() *gateway.Gateway { return s.gw }
 func (s *Server) Now() time.Time            { return s.o.Clock.Now() }
@@ -364,7 +364,7 @@ func newWasmRuntime(ctx context.Context, o Options) (*mlswasi.Runtime, error) {
 			return nil, err
 		}
 	}
-	module, err := os.ReadFile(path)
+	module, err := os.ReadFile(path) //nolint:gosec // G304: path is Options.CorePath or the wasi core beside the binary
 	if err != nil {
 		return nil, fmt.Errorf("dillad: read the wasi core %s: %w", path, err)
 	}

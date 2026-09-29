@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/postgres/pgdb"
@@ -82,7 +83,7 @@ func wrap(err error) error {
 	default:
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
-			return fmt.Errorf("%w: %v", store.ErrConflict, err)
+			return fmt.Errorf("%w: %w", store.ErrConflict, err)
 		}
 		return err
 	}
@@ -481,7 +482,10 @@ func (r *Repo) PutRecoveryCodes(ctx context.Context, userID id.ID, hashes [][]by
 		return r.putRecoveryCodesTx(ctx, r.w, userID, hashes, created)
 	}
 	return r.Tx(ctx, func(tx store.Repository) error {
-		sub := tx.(*Repo)
+		sub, ok := tx.(*Repo)
+		if !ok {
+			return fmt.Errorf("store: Tx handed a %T, not this adapter's *Repo", tx)
+		}
 		return sub.putRecoveryCodesTx(ctx, sub.w, userID, hashes, created)
 	})
 }
@@ -638,7 +642,10 @@ func (r *Repo) TakeCeremony(ctx context.Context, ceremonyID id.ID, now int64) (s
 	}
 	var out store.CeremonyRow
 	err := r.Tx(ctx, func(tx store.Repository) error {
-		sub := tx.(*Repo)
+		sub, ok := tx.(*Repo)
+		if !ok {
+			return fmt.Errorf("store: Tx handed a %T, not this adapter's *Repo", tx)
+		}
 		var err error
 		out, err = sub.takeCeremonyTx(ctx, sub.w, ceremonyID, now)
 		return err
@@ -978,8 +985,8 @@ func (r *Repo) CloseGroup(ctx context.Context, groupID id.ID, at int64) error {
 	}))
 }
 
-// MarkAllGroupsEpochUnknown, ClearEpochUnknown and EndAllVoiceSessions are
-// invariant 11's three statements (deviation B13).
+// MarkAllGroupsEpochUnknown is the first of invariant 11's three statements (deviation B13);
+// ClearEpochUnknown and EndAllVoiceSessions are the other two.
 func (r *Repo) MarkAllGroupsEpochUnknown(ctx context.Context, healDeadline int64) error {
 	return wrap(r.w.MarkAllGroupsEpochUnknown(ctx, pgdb.MarkAllGroupsEpochUnknownParams{
 		HealDeadline: healDeadline,

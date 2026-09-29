@@ -107,7 +107,7 @@ func TestRevokingADeviceDeletesItsSessionsInOneTransaction(t *testing.T) {
 	h, deps := newTestAPI(t)
 	ctx := context.Background()
 	u, d, token := seedSession(t, deps)
-	req := httptest.NewRequest(http.MethodDelete, "/v1/devices/"+d.ID.String(), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodDelete, "/v1/devices/"+d.ID.String(), nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -134,7 +134,7 @@ func TestRevokingADeviceDeletesItsSessionsInOneTransaction(t *testing.T) {
 func TestInviteLandingNeverMutates(t *testing.T) {
 	h, deps := newTestAPI(t)
 	code := seedInvite(t, deps, 1)
-	req := httptest.NewRequest(http.MethodGet, "/i/"+code, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/i/"+code, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

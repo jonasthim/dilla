@@ -70,7 +70,7 @@ func Start(tb testing.TB, o Options) *Harness {
 		return unavailable(tb, "DILLA_TESTKIT is unset: build it with "+
 			"`cargo build -p dilla-testkit --release` and export DILLA_TESTKIT=target/release/dilla-testkit")
 	}
-	if _, err := os.Stat(binary); err != nil {
+	if _, err := os.Stat(binary); err != nil { //nolint:gosec // G703: binary is the DILLA_TESTKIT environment variable, a test-harness input
 		return unavailable(tb, fmt.Sprintf("DILLA_TESTKIT=%s is not usable: %v", binary, err))
 	}
 	core := o.CorePath
@@ -107,7 +107,7 @@ func Start(tb testing.TB, o Options) *Harness {
 	return h
 }
 
-// RequiredEnv, when set to anything, makes a missing or unusable dilla-testkit a failure rather
+// RequiredEnv names the variable that, when set to anything, makes a missing or unusable dilla-testkit a failure rather
 // than a skip. CI sets it for the run that builds the binary: there a skip would pass every
 // accepted-commit test and every chaos scenario without running one.
 const RequiredEnv = "DILLA_TESTKIT_REQUIRED"

@@ -56,12 +56,12 @@ func TestCompileOptionsAreReadable(t *testing.T) {
 func TestFTS5VirtualTableMatchesAndHighlights(t *testing.T) {
 	db := openTestDB(t)
 
-	if _, err := db.Exec(
+	if _, err := db.ExecContext(t.Context(),
 		`CREATE VIRTUAL TABLE msgs USING fts5(body, channel_id UNINDEXED, tokenize='unicode61')`,
 	); err != nil {
 		t.Fatalf("CREATE VIRTUAL TABLE ... USING fts5: %v", err)
 	}
-	if _, err := db.Exec(
+	if _, err := db.ExecContext(t.Context(),
 		`INSERT INTO msgs (body, channel_id) VALUES (?, ?), (?, ?)`,
 		"hello encrypted world", "c1",
 		"nothing to see here", "c2",
@@ -70,7 +70,7 @@ func TestFTS5VirtualTableMatchesAndHighlights(t *testing.T) {
 	}
 
 	var body, highlighted, channel string
-	row := db.QueryRow(
+	row := db.QueryRowContext(t.Context(),
 		`SELECT body, highlight(msgs, 0, '[', ']'), channel_id FROM msgs WHERE msgs MATCH ?`,
 		"encrypted")
 	if err := row.Scan(&body, &highlighted, &channel); err != nil {
@@ -87,7 +87,7 @@ func TestFTS5VirtualTableMatchesAndHighlights(t *testing.T) {
 	}
 
 	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM msgs WHERE msgs MATCH ?`, "nothing").Scan(&n); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM msgs WHERE msgs MATCH ?`, "nothing").Scan(&n); err != nil {
 		t.Fatalf("second MATCH: %v", err)
 	}
 	if n != 1 {
@@ -98,11 +98,11 @@ func TestFTS5VirtualTableMatchesAndHighlights(t *testing.T) {
 // VACUUM INTO is the pre-migration backup the spec's "Upgrades" section wants.
 func TestVacuumIntoWorks(t *testing.T) {
 	db := openTestDB(t)
-	if _, err := db.Exec(`CREATE TABLE t (a TEXT)`); err != nil {
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE t (a TEXT)`); err != nil {
 		t.Fatalf("CREATE TABLE: %v", err)
 	}
 	backup := filepath.Join(t.TempDir(), "backup.db")
-	if _, err := db.Exec(`VACUUM INTO ?`, backup); err != nil {
+	if _, err := db.ExecContext(t.Context(), `VACUUM INTO ?`, backup); err != nil {
 		t.Fatalf("VACUUM INTO: %v", err)
 	}
 }
