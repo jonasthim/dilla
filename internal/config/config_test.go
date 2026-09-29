@@ -211,8 +211,8 @@ func TestEveryDurationRoundTripsThroughWriteToAndLoad(t *testing.T) {
 	c.TURN.RelayIP = "203.0.113.7"
 	c.LiveKit.APISecretFile = "livekit.secret"
 	var buf bytes.Buffer
-	if err := c.WriteTo(&buf); err != nil {
-		t.Fatalf("WriteTo: %v", err)
+	if err := c.WriteConfig(&buf); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
 	}
 	path := filepath.Join(dir, "written.toml")
 	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
@@ -220,12 +220,12 @@ func TestEveryDurationRoundTripsThroughWriteToAndLoad(t *testing.T) {
 	}
 	back, err := config.Load(path)
 	if err != nil {
-		t.Fatalf("Load(WriteTo output): %v", err)
+		t.Fatalf("Load(WriteConfig output): %v", err)
 	}
 	if back.Server.ShutdownGrace.Value() != c.Server.ShutdownGrace.Value() ||
 		back.Auth.Session.NativeLifetime.Value() != c.Auth.Session.NativeLifetime.Value() ||
 		back.Blobs.GCInterval.Value() != c.Blobs.GCInterval.Value() {
-		t.Fatal("a duration key did not survive WriteTo -> Load")
+		t.Fatal("a duration key did not survive WriteConfig -> Load")
 	}
 }
 

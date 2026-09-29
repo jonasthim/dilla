@@ -170,7 +170,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("init: write %s: %w: %w", cfgPath, err, exit.CantCreate)
 	}
 	defer f.Close()
-	if err := c.WriteTo(f); err != nil {
+	if err := c.WriteConfig(f); err != nil {
 		return fmt.Errorf("init: %w: %w", err, exit.IOErr)
 	}
 	fmt.Fprintf(stdout, "dillad init: wrote %s\n", cfgPath)

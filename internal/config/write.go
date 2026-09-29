@@ -8,10 +8,10 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// WriteTo writes the commented dilla.toml that `dillad init` produces. Every
+// WriteConfig writes the commented dilla.toml that `dillad init` produces. Every
 // value is this struct's, so the file an operator reads is the configuration
 // the process is actually running.
-func (c *Config) WriteTo(w io.Writer) error {
+func (c *Config) WriteConfig(w io.Writer) error {
 	header := "# dilla.toml — dillad instance configuration.\n" +
 		"# Parsed with github.com/pelletier/go-toml/v2 in STRICT mode: an unknown\n" +
 		"# key or table aborts start-up with exit code 78 and a line and column.\n" +

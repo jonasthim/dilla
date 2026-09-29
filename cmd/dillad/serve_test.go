@@ -57,7 +57,7 @@ func bootstrapServeConfig(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("reopen dilla.toml: %v", err)
 	}
-	if err := c.WriteTo(f); err != nil {
+	if err := c.WriteConfig(f); err != nil {
 		f.Close()
 		t.Fatalf("rewrite dilla.toml: %v", err)
 	}

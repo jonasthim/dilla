@@ -114,7 +114,7 @@ func testConfigInvite(t *testing.T) (*config.Config, string) {
 	if err != nil {
 		t.Fatalf("create dilla.toml: %v", err)
 	}
-	if err := c.WriteTo(f); err != nil {
+	if err := c.WriteConfig(f); err != nil {
 		f.Close()
 		t.Fatalf("write dilla.toml: %v", err)
 	}
