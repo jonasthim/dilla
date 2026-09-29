@@ -156,19 +156,32 @@ mod tests {
             (DsError::Pruned, "E_PRUNED", 410),
             (DsError::TooLarge, "E_TOO_LARGE", 413),
             (DsError::CommitmentInvalid, "E_COMMITMENT_INVALID", 422),
-            (DsError::RateLimited { retry_after_ms: 1_500 }, "E_RATE_LIMITED", 429),
+            (
+                DsError::RateLimited {
+                    retry_after_ms: 1_500,
+                },
+                "E_RATE_LIMITED",
+                429,
+            ),
         ];
         for (err, code, status) in cases {
             assert_eq!(err.code(), *code, "code for {err:?}");
             assert_eq!(err.http_status(), *status, "status for {err:?}");
         }
-        let conflict = DsError::CommitConflict { winning_commit: vec![1], proposals: vec![vec![2]] };
+        let conflict = DsError::CommitConflict {
+            winning_commit: vec![1],
+            proposals: vec![vec![2]],
+        };
         assert_eq!(conflict.code(), "E_COMMIT_CONFLICT");
         assert_eq!(conflict.http_status(), 409);
-        let required = DsError::CommitRequired { proposals: vec![vec![3]] };
+        let required = DsError::CommitRequired {
+            proposals: vec![vec![3]],
+        };
         assert_eq!(required.code(), "E_COMMIT_REQUIRED");
         assert_eq!(required.http_status(), 425);
-        let invalid = DsError::CommitInvalid { reason: "group_info_signature".into() };
+        let invalid = DsError::CommitInvalid {
+            reason: "group_info_signature".into(),
+        };
         assert_eq!(invalid.code(), "E_COMMIT_INVALID");
         assert_eq!(invalid.http_status(), 422);
     }
@@ -186,9 +199,16 @@ mod tests {
             DsError::TooLarge.code(),
             DsError::CommitmentInvalid.code(),
             DsError::RateLimited { retry_after_ms: 0 }.code(),
-            DsError::CommitConflict { winning_commit: vec![], proposals: vec![] }.code(),
+            DsError::CommitConflict {
+                winning_commit: vec![],
+                proposals: vec![],
+            }
+            .code(),
             DsError::CommitRequired { proposals: vec![] }.code(),
-            DsError::CommitInvalid { reason: String::new() }.code(),
+            DsError::CommitInvalid {
+                reason: String::new(),
+            }
+            .code(),
         ];
         for code in all {
             assert!(code.starts_with("E_"), "{code} is not an E_* code");
