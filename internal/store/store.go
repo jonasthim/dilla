@@ -22,8 +22,9 @@ var (
 //
 // The embed list grows as the schema does, one named step per task (ID1):
 // task 19 step 1a adds MLS with 00002_mls.sql, task 23 step 1a adds Messages and
-// Cursors with 00003_messages.sql, Plan 2 task 1 step 9 adds Structure, and
-// Plan 2's tasks 8 and 10 add Readable, Blobs and OpsBackups.
+// Cursors with 00003_messages.sql, Plan 2 task 1 step 9 adds Communities (the
+// part of Structure whose tables 00004_structure.sql ships), and Plan 2's later
+// tasks add the rest of Structure, Readable, Blobs and OpsBackups.
 type Repository interface {
 	Tx(ctx context.Context, fn func(Repository) error) error
 	Close() error
@@ -34,9 +35,10 @@ type Repository interface {
 	Auth
 	Invites
 	Ops
-	MLS      // task 19 step 1a — 00002_mls.sql
-	Messages // added HERE — ID1; its table is 00003_messages.sql, written in step 1
-	Cursors  // added HERE — ID1; device_cursors ships with 00002_mls.sql, its queries here
+	MLS         // task 19 step 1a — 00002_mls.sql
+	Messages    // added HERE — ID1; its table is 00003_messages.sql, written in step 1
+	Cursors     // added HERE — ID1; device_cursors ships with 00002_mls.sql, its queries here
+	Communities // Plan 2 task 1 step 9 (P2-D23) — 00004_structure.sql
 }
 
 type Instance interface {
@@ -235,27 +237,23 @@ type Cursors interface {
 	MinCursor(ctx context.Context, groupID id.ID, activeSince int64) (uint64, error) // eligible devices only
 }
 
-// Structure is 006_structure.sql, implemented from Plan 2 task 1 onward.
+// Structure is 006_structure.sql and its successors, implemented from Plan 2
+// task 1 onward. §4.1 declares it as one interface, but its tables land across
+// six tasks (communities, members and roles in task 1; channels in 2;
+// overwrites in 3; bans in 4; channel members in 6; voice sessions in 16), and
+// ID1 forbids both stub methods and an embed whose methods do not exist yet. So
+// the part task 1 ships is its own interface, Communities, which Structure
+// embeds and Repository embeds on its own. Structure's method set is §4.1's
+// plus the plan's additions; a later task that ships the rest of it either
+// embeds its own slice the same way or, once every method exists, swaps
+// Communities for Structure in Repository's embed list.
 type Structure interface {
-	CreateCommunity(ctx context.Context, c CommunityRow) error
-	GetCommunity(ctx context.Context, communityID id.ID) (CommunityRow, error)
-	UpdateCommunityPolicy(ctx context.Context, communityID id.ID, policy []byte, version int64) error
-	PutMember(ctx context.Context, m MemberOfCommunityRow) error
-	DeleteMember(ctx context.Context, communityID, userID id.ID) error
-	ListMembersOfCommunity(ctx context.Context, communityID, after id.ID, limit int32) ([]MemberOfCommunityRow, error)
+	Communities
 	CreateChannel(ctx context.Context, c ChannelRow) error
 	GetChannel(ctx context.Context, channelID id.ID) (ChannelRow, error)
 	ListChannels(ctx context.Context, communityID id.ID) ([]ChannelRow, error)
 	UpdateChannel(ctx context.Context, c ChannelRow) error
 	DeleteChannel(ctx context.Context, channelID id.ID, at int64) error
-	PutRole(ctx context.Context, r RoleRow) error
-	ListRoles(ctx context.Context, communityID id.ID) ([]RoleRow, error)
-	PutMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
-	DeleteMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
-	// ListMemberRoles is Plan 2's P2-D7b: GET /v1/communities/{id}/members must
-	// list each member's roles and the permission resolver needs the set a user
-	// holds, which deriving from ListRoles would make a full scan per member.
-	ListMemberRoles(ctx context.Context, communityID, userID id.ID) ([]id.ID, error)
 	PutOverwrite(ctx context.Context, o OverwriteRow) error
 	ListOverwrites(ctx context.Context, channelID id.ID) ([]OverwriteRow, error)
 	PutChannelMember(ctx context.Context, channelID, userID id.ID, at int64) error
@@ -266,6 +264,44 @@ type Structure interface {
 	DeleteBan(ctx context.Context, communityID, userID id.ID) error
 	PutVoiceSession(ctx context.Context, v VoiceSessionRow) error
 	EndVoiceSession(ctx context.Context, callID id.ID, at int64) error
+}
+
+// Communities is the part of Structure whose tables are 00004_structure.sql:
+// communities, members, roles and member_roles (Plan 2 task 1).
+type Communities interface {
+	CreateCommunity(ctx context.Context, c CommunityRow) error
+	// GetCommunity answers ErrNotFound for a soft-deleted community too.
+	GetCommunity(ctx context.Context, communityID id.ID) (CommunityRow, error)
+	// UpdateCommunityPolicy writes the policy under version, which must be
+	// greater than the stored one. The version is monotone, so a writer that
+	// lost a race to the same successor gets ErrConflict rather than landing a
+	// second policy under a number clients already hold. ErrNotFound is an
+	// unknown or deleted community.
+	UpdateCommunityPolicy(ctx context.Context, communityID id.ID, policy []byte, version int64) error
+	// UpdateCommunityMeta and SoftDeleteCommunity are P2-D7: §4.3 declares
+	// name, min_account_age_seconds, require_mod_2fa and deleted_at mutable and
+	// §4.1 had no way to write them.
+	UpdateCommunityMeta(ctx context.Context, communityID id.ID, name string, minAge uint64, requireMod2FA uint8) error
+	SoftDeleteCommunity(ctx context.Context, communityID id.ID, at int64) error
+	// PutMember is an upsert: a second call rewrites the nick and nothing else.
+	PutMember(ctx context.Context, m MemberOfCommunityRow) error
+	// GetMember is P2-D7, every membership gate's read: ErrNotFound for a
+	// non-member.
+	GetMember(ctx context.Context, communityID, userID id.ID) (MemberOfCommunityRow, error)
+	// DeleteMember drops the member's role grants with the row (member_roles
+	// cascades), so a re-join does not resurrect them.
+	DeleteMember(ctx context.Context, communityID, userID id.ID) error
+	ListMembersOfCommunity(ctx context.Context, communityID, after id.ID, limit int32) ([]MemberOfCommunityRow, error)
+	PutRole(ctx context.Context, r RoleRow) error
+	// GetRole is P2-D9, written in task 1 because the role-grant route needs it.
+	GetRole(ctx context.Context, roleID id.ID) (RoleRow, error)
+	ListRoles(ctx context.Context, communityID id.ID) ([]RoleRow, error)
+	PutMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
+	DeleteMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
+	// ListMemberRoles is Plan 2's P2-D7b: GET /v1/communities/{id}/members must
+	// list each member's roles and the permission resolver needs the set a user
+	// holds, which deriving from ListRoles would make a full scan per member.
+	ListMemberRoles(ctx context.Context, communityID, userID id.ID) ([]id.ID, error)
 }
 
 // Readable is 007_readable.sql, implemented from Plan 2 task 8 onward.
@@ -345,5 +381,7 @@ type OpsBackups interface {
 // `ReadableSearchQuery` names — are declared there too, without the parser
 // functions Plan 2 task 8 brings. Each later task that satisfies one of the six
 // edits only the embed list: task 19 (MLS), task 23 (Messages, Cursors) and Plan
-// 2's tasks 1, 8 and 10 (Structure, Readable, Blobs with OpsBackups).
+// 2's tasks 1, 8 and 10 (Structure, Readable, Blobs with OpsBackups). Plan 2
+// task 1 embeds Communities, the slice of Structure its tables support; see
+// Structure's comment for why Structure itself cannot be embedded yet.
 // contract_test.go holds §4.1 as an assertion so a rename is a test failure.

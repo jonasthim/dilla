@@ -55,6 +55,10 @@ var DumpTables = []string{
 	// it replays after the whole 004 block; a dump that omitted it would restore
 	// an instance with every group intact and no message in any of them.
 	"mls_app_messages",
+	// 006_structure.sql, appended by Plan 2 task 1, parents before children: a
+	// community before its members and roles, and both of those before the
+	// member_roles rows that reference a (member, role) pair.
+	"communities", "members", "roles", "member_roles",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

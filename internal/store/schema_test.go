@@ -230,22 +230,24 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 	}
 	sort.Strings(names)
 	if !reflect.DeepEqual(names, wantTables) {
-		t.Fatalf("tables = %v, want the set 001/002/003/004/005/009 declare: %v", names, wantTables)
+		t.Fatalf("tables = %v, want the set 001/002/003/004/005/006/009 declare: %v", names, wantTables)
 	}
 	if seen != len(wantTables) {
-		t.Fatalf("%d dilla tables found; 001/002/003/004/005/009 declare %d", seen, len(wantTables))
+		t.Fatalf("%d dilla tables found; 001/002/003/004/005/006/009 declare %d", seen, len(wantTables))
 	}
 }
 
-// wantTables is the exact set 001/002/003/004/005/009 declare, sorted, so that a
+// wantTables is the exact set 001/002/003/004/005/006/009 declare, sorted, so that a
 // dropped or renamed table is caught and not just a change in the count. Task 19
-// added 004_mls.sql's twelve; task 23 added 005_messages.sql's one.
+// added 004_mls.sql's twelve; task 23 added 005_messages.sql's one; Plan 2 task 1
+// added 006_structure.sql's four (communities, members, roles, member_roles).
 var wantTables = []string{
-	"audit_log", "device_cursors", "device_lists", "devices", "fork_reports",
+	"audit_log", "communities", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invites", "key_packages", "login_attempts",
+	"member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
 	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "oidc_identities",
-	"password_credentials", "recovery_codes", "reports", "sessions", "totp_secrets", "users",
+	"password_credentials", "recovery_codes", "reports", "roles", "sessions", "totp_secrets", "users",
 	"webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
 }
 

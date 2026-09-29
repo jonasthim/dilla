@@ -1723,4 +1723,210 @@ func idPtr(b []byte) (*id.ID, error) {
 	return &out, nil
 }
 
+// ---------------------------------------------------------------- Communities
+//
+// Plan 2 task 1: the slice of store.Structure whose tables 00004_structure.sql
+// ships. internal/store/postgres/repo.go carries the same fifteen methods with
+// the package name changed: policy_json is TEXT on both engines and the three
+// SMALLINT flags are pulled back to int64 by sqlc.yaml, so nothing else differs.
+
+func (r *Repo) CreateCommunity(ctx context.Context, c store.CommunityRow) error {
+	return wrap(r.w.CreateCommunity(ctx, sqlitedb.CreateCommunityParams{
+		ID:                   c.ID,
+		Owner:                c.Owner,
+		Name:                 c.Name,
+		IconBlob:             c.IconBlob,
+		PolicyJson:           string(c.PolicyJSON),
+		PolicyVersion:        int64(c.PolicyVersion),
+		MinAccountAgeSeconds: int64(c.MinAccountAgeSeconds),
+		RequireMod2fa:        int64(c.RequireMod2FA),
+		Created:              c.Created,
+		DeletedAt:            nullInt64(c.DeletedAt),
+	}))
+}
+
+func (r *Repo) GetCommunity(ctx context.Context, communityID id.ID) (store.CommunityRow, error) {
+	row, err := r.r.GetCommunity(ctx, sqlitedb.GetCommunityParams{ID: communityID})
+	if err != nil {
+		return store.CommunityRow{}, wrap(err)
+	}
+	return store.CommunityRow{
+		ID:                   row.ID,
+		Owner:                row.Owner,
+		Name:                 row.Name,
+		IconBlob:             row.IconBlob,
+		PolicyJSON:           []byte(row.PolicyJson),
+		PolicyVersion:        uint64(row.PolicyVersion),
+		MinAccountAgeSeconds: uint64(row.MinAccountAgeSeconds),
+		RequireMod2FA:        uint8(row.RequireMod2fa),
+		Created:              row.Created,
+		DeletedAt:            ptrInt64(row.DeletedAt),
+	}, nil
+}
+
+func (r *Repo) UpdateCommunityPolicy(ctx context.Context, communityID id.ID, policy []byte, version int64) error {
+	n, err := r.w.UpdateCommunityPolicy(ctx, sqlitedb.UpdateCommunityPolicyParams{
+		PolicyJson:    string(policy),
+		PolicyVersion: version,
+		ID:            communityID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 1 {
+		return nil
+	}
+	// Zero rows: an unknown or deleted community, or a stored version at or
+	// above the one offered. Read through the write handle so a caller inside
+	// a Tx sees its own transaction.
+	if _, err := r.w.GetCommunity(ctx, sqlitedb.GetCommunityParams{ID: communityID}); err != nil {
+		return wrap(err)
+	}
+	return fmt.Errorf("%w: community %s is already at or past policy version %d", store.ErrConflict, communityID, version)
+}
+
+func (r *Repo) UpdateCommunityMeta(ctx context.Context, communityID id.ID, name string, minAge uint64, requireMod2FA uint8) error {
+	n, err := r.w.UpdateCommunityMeta(ctx, sqlitedb.UpdateCommunityMetaParams{
+		Name:                 name,
+		MinAccountAgeSeconds: int64(minAge),
+		RequireMod2fa:        int64(requireMod2FA),
+		ID:                   communityID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) SoftDeleteCommunity(ctx context.Context, communityID id.ID, at int64) error {
+	n, err := r.w.SoftDeleteCommunity(ctx, sqlitedb.SoftDeleteCommunityParams{
+		DeletedAt: sql.NullInt64{Int64: at, Valid: true},
+		ID:        communityID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) PutMember(ctx context.Context, m store.MemberOfCommunityRow) error {
+	return wrap(r.w.PutMember(ctx, sqlitedb.PutMemberParams{
+		CommunityID: m.CommunityID, UserID: m.UserID, Joined: m.Joined, Nick: m.Nick,
+	}))
+}
+
+func (r *Repo) GetMember(ctx context.Context, communityID, userID id.ID) (store.MemberOfCommunityRow, error) {
+	row, err := r.r.GetMember(ctx, sqlitedb.GetMemberParams{CommunityID: communityID, UserID: userID})
+	if err != nil {
+		// wrap turns sql.ErrNoRows into store.ErrNotFound, which is what every
+		// membership gate in internal/api tests with errors.Is.
+		return store.MemberOfCommunityRow{}, wrap(err)
+	}
+	return store.MemberOfCommunityRow{
+		CommunityID: row.CommunityID, UserID: row.UserID, Joined: row.Joined, Nick: row.Nick,
+	}, nil
+}
+
+func (r *Repo) DeleteMember(ctx context.Context, communityID, userID id.ID) error {
+	n, err := r.w.DeleteMember(ctx, sqlitedb.DeleteMemberParams{CommunityID: communityID, UserID: userID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) ListMembersOfCommunity(ctx context.Context, communityID, after id.ID, limit int32) ([]store.MemberOfCommunityRow, error) {
+	rows, err := r.r.ListMembersOfCommunity(ctx, sqlitedb.ListMembersOfCommunityParams{
+		CommunityID: communityID, UserID: after, MaxRows: int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.MemberOfCommunityRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.MemberOfCommunityRow{
+			CommunityID: row.CommunityID, UserID: row.UserID, Joined: row.Joined, Nick: row.Nick,
+		})
+	}
+	return out, nil
+}
+
+func (r *Repo) PutRole(ctx context.Context, role store.RoleRow) error {
+	return wrap(r.w.PutRole(ctx, sqlitedb.PutRoleParams{
+		ID: role.ID, CommunityID: role.CommunityID, Name: role.Name,
+		Color: int64(role.Color), Position: int64(role.Position),
+		Allow: int64(role.Allow), Deny: int64(role.Deny),
+		Hoist: int64(role.Hoist), Mentionable: int64(role.Mentionable),
+		Created: role.Created,
+	}))
+}
+
+func roleRow(row sqlitedb.Roles) store.RoleRow {
+	return store.RoleRow{
+		ID: row.ID, CommunityID: row.CommunityID, Name: row.Name,
+		Color: uint64(row.Color), Position: uint64(row.Position),
+		Allow: uint64(row.Allow), Deny: uint64(row.Deny),
+		Hoist: uint8(row.Hoist), Mentionable: uint8(row.Mentionable),
+		Created: row.Created,
+	}
+}
+
+func (r *Repo) GetRole(ctx context.Context, roleID id.ID) (store.RoleRow, error) {
+	row, err := r.r.GetRole(ctx, sqlitedb.GetRoleParams{ID: roleID})
+	if err != nil {
+		return store.RoleRow{}, wrap(err)
+	}
+	return roleRow(row), nil
+}
+
+func (r *Repo) ListRoles(ctx context.Context, communityID id.ID) ([]store.RoleRow, error) {
+	rows, err := r.r.ListRoles(ctx, sqlitedb.ListRolesParams{CommunityID: communityID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.RoleRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, roleRow(row))
+	}
+	return out, nil
+}
+
+func (r *Repo) PutMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error {
+	return wrap(r.w.PutMemberRole(ctx, sqlitedb.PutMemberRoleParams{
+		CommunityID: communityID, UserID: userID, RoleID: roleID,
+	}))
+}
+
+func (r *Repo) DeleteMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error {
+	n, err := r.w.DeleteMemberRole(ctx, sqlitedb.DeleteMemberRoleParams{
+		CommunityID: communityID, UserID: userID, RoleID: roleID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) ListMemberRoles(ctx context.Context, communityID, userID id.ID) ([]id.ID, error) {
+	rows, err := r.r.ListMemberRoles(ctx, sqlitedb.ListMemberRolesParams{
+		CommunityID: communityID, UserID: userID,
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return rows, nil
+}
+
 var _ store.Repository = (*Repo)(nil)

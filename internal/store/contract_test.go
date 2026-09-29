@@ -104,6 +104,18 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"ListMemberRoles", "ListMembersOfCommunity", "ListOverwrites", "ListRoles",
 			"PutBan", "PutChannelMember", "PutMember", "PutMemberRole", "PutOverwrite",
 			"PutRole", "PutVoiceSession", "UpdateChannel", "UpdateCommunityPolicy",
+			// §4.1 plus four, all reached through the embedded Communities: GetMember,
+			// UpdateCommunityMeta and SoftDeleteCommunity are Plan 2's P2-D7, GetRole
+			// is P2-D9 (task 3's, written in task 1 for the role-grant route).
+			"GetMember", "GetRole", "SoftDeleteCommunity", "UpdateCommunityMeta",
+		}},
+		// Communities is the slice of Structure Plan 2 task 1's tables support; it
+		// is what Repository embeds until the rest of Structure exists (P2-D23).
+		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
+			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "GetCommunity",
+			"GetMember", "GetRole", "ListMemberRoles", "ListMembersOfCommunity", "ListRoles",
+			"PutMember", "PutMemberRole", "PutRole", "SoftDeleteCommunity",
+			"UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
 		{"ReadableSearch", reflect.TypeOf((*store.ReadableSearch)(nil)).Elem(), []string{
 			"SearchReadable",
@@ -148,7 +160,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 // part 1a ships, plus the ones later tasks add. Each later task that satisfies
 // one of the remaining interfaces owes an
 // explicit numbered step that edits this embed list — task 19 (MLS), task 23
-// (Messages, Cursors), Plan 2 task 1 (Structure), Plan 2 task 8 (Readable) and
+// (Messages, Cursors), Plan 2 task 1 (Communities, Structure's first slice), Plan 2 task 8 (Readable) and
 // Plan 2 task 10 (Blobs, OpsBackups) — so this test moves with them, and a
 // premature embed (which would stop both adapters compiling) is caught here.
 func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
@@ -175,6 +187,10 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		// 00002_mls.sql a task earlier.
 		reflect.TypeOf((*store.Messages)(nil)).Elem(),
 		reflect.TypeOf((*store.Cursors)(nil)).Elem(),
+		// Plan 2 task 1 step 9: Communities joins with 00004_structure.sql. It is
+		// the slice of Structure whose tables exist; the rest of Structure (channels,
+		// overwrites, bans, channel members, voice sessions) lands with its tables.
+		reflect.TypeOf((*store.Communities)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

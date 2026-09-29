@@ -19,6 +19,19 @@ type AuditLog struct {
 	At     int64
 }
 
+type Communities struct {
+	ID                   id.ID
+	Owner                id.ID
+	Name                 string
+	IconBlob             []byte
+	PolicyJson           string
+	PolicyVersion        int64
+	MinAccountAgeSeconds int64
+	RequireMod2fa        int64
+	Created              int64
+	DeletedAt            sql.NullInt64
+}
+
 type DeviceCursors struct {
 	DeviceID  id.ID
 	GroupID   id.ID
@@ -106,6 +119,19 @@ type LoginAttempts struct {
 	Method int64
 	Ok     int64
 	At     int64
+}
+
+type MemberRoles struct {
+	CommunityID id.ID
+	UserID      id.ID
+	RoleID      id.ID
+}
+
+type Members struct {
+	CommunityID id.ID
+	UserID      id.ID
+	Joined      int64
+	Nick        string
 }
 
 type MlsAppMessages struct {
@@ -242,6 +268,19 @@ type Reports struct {
 	VerificationResult string
 	Status             int64
 	Created            int64
+}
+
+type Roles struct {
+	ID          id.ID
+	CommunityID id.ID
+	Name        string
+	Color       int64
+	Position    int64
+	Allow       int64
+	Deny        int64
+	Hoist       int64
+	Mentionable int64
+	Created     int64
 }
 
 type Sessions struct {

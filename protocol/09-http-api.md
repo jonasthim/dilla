@@ -135,6 +135,56 @@ only for the uploading user; the file is unlinked by the sweeper when the last r
 `unref_since` is older than `blobs.gc_grace`. Global removal is the admin verb and writes a
 tombstone, because content addressing otherwise lets anyone re-`PUT` the same bytes.
 
+### Communities
+
+Every route below is `E`. A community a caller is not a member of answers `404 E_NOT_FOUND`
+exactly as an unknown one does, so a non-member does not learn that it exists; a soft-deleted
+community answers `404` to everyone.
+
+| Method and path | Request | Response |
+|---|---|---|
+| `POST /v1/communities` | `[name(tstr), policy(bstr), min_account_age_seconds(uint), require_mod_2fa(uint)]` | `201 [community_id(bstr16), role_everyone(bstr16), policy_version(uint)]` |
+| `GET /v1/communities/{id}` | — | `[community_id, owner, name, policy, policy_version, min_account_age_seconds, require_mod_2fa, created]` |
+| `PATCH /v1/communities/{id}` | `[name(tstr\|null), policy(bstr\|null), min_account_age_seconds(uint\|null), require_mod_2fa(uint\|null)]` | `[policy_version(uint)]` |
+| `DELETE /v1/communities/{id}` | — | `204` |
+| `GET /v1/communities/{id}/members?after=` | — | `[[user_id, joined, nick, [role_id]]]`, at most 200 per page, ordered by `user_id`; `after` is the last `user_id` of the previous page |
+| `DELETE /v1/communities/{id}/members/{user_id}` | — | `204` |
+| `POST /v1/communities/{id}/join` | `[invite(tstr\|null)]` | `[community_id]` |
+| `POST /v1/communities/{id}/leave` | `[]` | `204` |
+| `PUT /v1/communities/{id}/members/{user_id}/roles/{role_id}` | `[]` | `204` |
+
+- The creator is the **owner** and the first member, and the community starts with one role,
+  `@everyone`, at position 0, whose id is `role_everyone`. The owner can neither leave nor be
+  removed. Until the permission resolver lands, `PATCH`, `DELETE`, member removal and role grants
+  are the owner's alone (`403 E_FORBIDDEN` for any other member).
+- `name` is 1–255 bytes of UTF-8 with no control character. `require_mod_2fa` is 0 or 1.
+  `min_account_age_seconds` is at most 3 153 600 000 (a century); 0 means no gate.
+- `policy` is the **policy document** below, and `policy_version` starts at 1 and grows by one on
+  every `PATCH` that carries a policy; a `PATCH` without one leaves it. Two concurrent policy
+  changes cannot share a version: the loser is `409 E_INVALID_REQUEST` and re-reads.
+- `join` refuses (`403 E_FORBIDDEN`) a disabled or deleted account and an account younger than
+  `min_account_age_seconds`. Joining a community the caller is already a member of is a no-op that
+  answers `[community_id]`.
+- `require_mod_2fa = 1` refuses (`403 E_FORBIDDEN`) a grant of a role whose `allow` carries any
+  moderation bit (manage messages, kick, ban, manage channels, manage roles, manage community,
+  administrator) to a user who holds neither a confirmed TOTP secret nor a passkey for this
+  instance's relying party.
+- A member's `nick` is a **display name**, not a handle: free Unicode, NFC, at most 64 characters,
+  no control or bidi character. The handle rules do not apply to it. An empty `nick` means the
+  member's own display name shows.
+
+The **policy document** is a UTF-8 JSON object of at most 16 KiB. The instance stores the bytes the
+owner sent and serves them back unchanged, but refuses (`400 E_INVALID_REQUEST`) a document that is
+not one object, carries a key this table does not list, or has a value out of range. Every key is
+optional; `{}` is every default.
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `join` | `"open"` or `"invite"` | `"open"` | whether a join needs a community invite |
+| `screening` | bool | `false` | membership screening; stored and served, **not enforced** by this version |
+| `retention_days` | uint ≤ 36500 | `0` | **archival** retention (`02` § Retention): days an application message every cursor has passed is kept; `0` keeps it indefinitely |
+| `delivery_retention_days` | uint ≤ 30 | `0` | **delivery** retention: `0` is the instance's 30 days; a community may shorten it, never lengthen it |
+
 ## Rate limits
 
 Every bucket is in-process, keyed by `(class, subject)` where subject is the device session, the

@@ -108,6 +108,10 @@ sql:
           - { column: "mls_pending_proposals.kind",        go_type: { type: "int64" } }
           - { column: "mls_pending_proposals.origin",      go_type: { type: "int64" } }
           - { column: "key_packages.last_resort",          go_type: { type: "int64" } }
+          # 006_structure.sql (Plan 2 task 1).
+          - { column: "communities.require_mod_2fa",       go_type: { type: "int64" } }
+          - { column: "roles.hoist",                       go_type: { type: "int64" } }
+          - { column: "roles.mentionable",                 go_type: { type: "int64" } }
           - { column: "invites.community_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "invites.created_by",

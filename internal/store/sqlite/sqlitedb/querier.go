@@ -26,6 +26,7 @@ type Querier interface {
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
 	CountSessionsByDevice(ctx context.Context, arg CountSessionsByDeviceParams) (int64, error)
+	CreateCommunity(ctx context.Context, arg CreateCommunityParams) error
 	CreateDevice(ctx context.Context, arg CreateDeviceParams) error
 	CreateGroup(ctx context.Context, arg CreateGroupParams) error
 	CreateInstance(ctx context.Context, arg CreateInstanceParams) error
@@ -33,6 +34,8 @@ type Querier interface {
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
+	DeleteMember(ctx context.Context, arg DeleteMemberParams) (int64, error)
+	DeleteMemberRole(ctx context.Context, arg DeleteMemberRoleParams) (int64, error)
 	DeleteMembers(ctx context.Context, arg DeleteMembersParams) error
 	DeleteOldestSessionForDevice(ctx context.Context, arg DeleteOldestSessionForDeviceParams) error
 	DeleteOtherLastResortKeyPackages(ctx context.Context, arg DeleteOtherLastResortKeyPackagesParams) error
@@ -50,6 +53,7 @@ type Querier interface {
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
+	GetCommunity(ctx context.Context, arg GetCommunityParams) (Communities, error)
 	GetCursor(ctx context.Context, arg GetCursorParams) (DeviceCursors, error)
 	GetDevice(ctx context.Context, arg GetDeviceParams) (Devices, error)
 	GetDeviceList(ctx context.Context, arg GetDeviceListParams) (DeviceLists, error)
@@ -57,10 +61,12 @@ type Querier interface {
 	GetInstance(ctx context.Context) (Instances, error)
 	GetInviteByHash(ctx context.Context, arg GetInviteByHashParams) (Invites, error)
 	GetLastResortKeyPackage(ctx context.Context, arg GetLastResortKeyPackageParams) (KeyPackages, error)
+	GetMember(ctx context.Context, arg GetMemberParams) (Members, error)
 	GetOIDCIdentity(ctx context.Context, arg GetOIDCIdentityParams) (id.ID, error)
 	GetPasswordCredential(ctx context.Context, arg GetPasswordCredentialParams) (string, error)
 	GetProposal(ctx context.Context, arg GetProposalParams) (MlsPendingProposals, error)
 	GetReport(ctx context.Context, arg GetReportParams) (Reports, error)
+	GetRole(ctx context.Context, arg GetRoleParams) (Roles, error)
 	GetSessionByHash(ctx context.Context, arg GetSessionByHashParams) (Sessions, error)
 	GetSetting(ctx context.Context, arg GetSettingParams) ([]byte, error)
 	GetTOTP(ctx context.Context, arg GetTOTPParams) (TotpSecrets, error)
@@ -86,8 +92,11 @@ type Querier interface {
 	ListInvites(ctx context.Context) ([]Invites, error)
 	ListInvitesByCommunity(ctx context.Context, arg ListInvitesByCommunityParams) ([]Invites, error)
 	ListLiveProposals(ctx context.Context, arg ListLiveProposalsParams) ([]MlsPendingProposals, error)
+	ListMemberRoles(ctx context.Context, arg ListMemberRolesParams) ([]id.ID, error)
 	ListMembers(ctx context.Context, arg ListMembersParams) ([]MlsMembers, error)
+	ListMembersOfCommunity(ctx context.Context, arg ListMembersOfCommunityParams) ([]Members, error)
 	ListOpenGroups(ctx context.Context, arg ListOpenGroupsParams) ([]MlsGroups, error)
+	ListRoles(ctx context.Context, arg ListRolesParams) ([]Roles, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
 	ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error)
@@ -136,12 +145,15 @@ type Querier interface {
 	PutForkReport(ctx context.Context, arg PutForkReportParams) error
 	PutGroupState(ctx context.Context, arg PutGroupStateParams) error
 	PutKeyPackage(ctx context.Context, arg PutKeyPackageParams) error
+	PutMember(ctx context.Context, arg PutMemberParams) error
 	PutMemberLeaf(ctx context.Context, arg PutMemberLeafParams) error
+	PutMemberRole(ctx context.Context, arg PutMemberRoleParams) error
 	PutOIDCIdentity(ctx context.Context, arg PutOIDCIdentityParams) error
 	PutPasswordCredential(ctx context.Context, arg PutPasswordCredentialParams) error
 	PutProposal(ctx context.Context, arg PutProposalParams) error
 	PutRecoveryCode(ctx context.Context, arg PutRecoveryCodeParams) error
 	PutReport(ctx context.Context, arg PutReportParams) error
+	PutRole(ctx context.Context, arg PutRoleParams) error
 	PutSetting(ctx context.Context, arg PutSettingParams) error
 	PutTOTP(ctx context.Context, arg PutTOTPParams) error
 	PutWebauthnCredential(ctx context.Context, arg PutWebauthnCredentialParams) error
@@ -177,11 +189,18 @@ type Querier interface {
 	SetGeneration(ctx context.Context, arg SetGenerationParams) error
 	SetGroupHealing(ctx context.Context, arg SetGroupHealingParams) error
 	SetUserDisabled(ctx context.Context, arg SetUserDisabledParams) error
+	SoftDeleteCommunity(ctx context.Context, arg SoftDeleteCommunityParams) (int64, error)
 	TakeKeyPackage(ctx context.Context, arg TakeKeyPackageParams) (KeyPackages, error)
 	TombstoneAppMessage(ctx context.Context, arg TombstoneAppMessageParams) error
 	TombstoneUser(ctx context.Context, arg TombstoneUserParams) error
 	TouchDevice(ctx context.Context, arg TouchDeviceParams) error
 	TouchSession(ctx context.Context, arg TouchSessionParams) error
+	UpdateCommunityMeta(ctx context.Context, arg UpdateCommunityMetaParams) (int64, error)
+	// The version is MONOTONE: two writers that read the same version both compute
+	// the same successor, and the second must not land a different policy under a
+	// number clients already hold. Zero rows is either an unknown community or a
+	// lost race; the adapter tells the two apart.
+	UpdateCommunityPolicy(ctx context.Context, arg UpdateCommunityPolicyParams) (int64, error)
 	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error
 	UpdateWebauthnCredential(ctx context.Context, arg UpdateWebauthnCredentialParams) error
 	VoidProposal(ctx context.Context, arg VoidProposalParams) error
