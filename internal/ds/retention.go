@@ -2,14 +2,18 @@ package ds
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // SweepReport is what one sweeper run did. Every field is a count, never an error budget: a sweep
 // that cannot prune reports zero and logs, it does not fail a request path.
 type SweepReport struct {
 	ProposalsVoided  int
+	InactiveRemoved  int
 	HandshakesPruned int64
 	MessagesPruned   int64
 	WelcomesPruned   int64
@@ -45,6 +49,12 @@ func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 		return report, err
 	}
 	report.ProposalsVoided = voided
+
+	removed, err := d.removeInactive(ctx)
+	if err != nil {
+		return report, err
+	}
+	report.InactiveRemoved = removed
 
 	now := d.opts.Clock.Now()
 	handshakeFloor := now.Add(-d.opts.Policy.HandshakeRetention).Unix()
@@ -120,4 +130,76 @@ func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 		return report, err
 	}
 	return report, nil
+}
+
+// removeInactive is protocol/01 § Cadence's inactivity rule: "a device that has not connected for
+// 90 days is removed from every group by a DS Remove proposal" (founder decision 2026-09-23; the
+// spec's chaos list says 30 and is wrong, deviation D13). A device connects when the gateway sends
+// it `ready`, which records `devices.last_seen`; a device holding a live connection has connected,
+// whatever that column says. It rejoins by external commit.
+//
+// One Remove per leaf: a leaf an outstanding non-void instance Remove already targets is left
+// alone, so a sweep every minute does not stack a proposal per tick on a device that stays away.
+// A member whose device row the instance does not hold is skipped rather than guessed at.
+func (d *DS) removeInactive(ctx context.Context) (int, error) {
+	horizon := d.opts.Clock.Now().Add(-d.opts.Policy.InactivityRemove).Unix()
+	lastSeen := map[id.ID]int64{}
+	removed := 0
+	after := id.ID{}
+	for {
+		groups, err := d.opts.Store.ListOpenGroups(ctx, after, sweepPage)
+		if err != nil {
+			return removed, err
+		}
+		for _, g := range groups {
+			after = g.GroupID
+			members, err := d.opts.Store.ListMembers(ctx, g.GroupID)
+			if err != nil {
+				return removed, err
+			}
+			pending, err := d.opts.Store.ListProposals(ctx, g.GroupID, g.Epoch, false)
+			if err != nil {
+				return removed, err
+			}
+			targeted := map[uint32]bool{}
+			for _, p := range pending {
+				if p.Origin == 0 && p.Kind == uint8(mlswasi.ProposalRemove) && p.TargetLeaf != nil {
+					targeted[*p.TargetLeaf] = true
+				}
+			}
+			for _, m := range members {
+				if m.RemovedEpoch != nil || targeted[m.LeafIndex] {
+					continue
+				}
+				seen, ok := lastSeen[m.DeviceID]
+				if !ok {
+					device, err := d.opts.Store.GetDevice(ctx, m.DeviceID)
+					if errors.Is(err, store.ErrNotFound) {
+						continue
+					}
+					if err != nil {
+						return removed, err
+					}
+					seen = device.LastSeen
+					lastSeen[m.DeviceID] = seen
+				}
+				if seen >= horizon {
+					continue
+				}
+				if d.opts.Gateway != nil && d.opts.Gateway.Online(m.DeviceID) {
+					continue
+				}
+				if err := d.ProposeRemove(ctx, g.GroupID, m.LeafIndex, id.New()); err != nil {
+					// One group's refusal must not stop the sweep of the others.
+					d.log().Warn("an inactivity Remove was not proposed",
+						"group", g.GroupID.String()[:8], "leaf", m.LeafIndex, "err", err)
+					continue
+				}
+				removed++
+			}
+		}
+		if len(groups) < sweepPage {
+			return removed, nil
+		}
+	}
 }

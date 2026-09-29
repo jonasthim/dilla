@@ -284,7 +284,29 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 	// against protocol/02's "n ... the per-session replay sequence, starting at 1" and against
 	// the hello/identify/ready handshake order a client is written to.
 	g.addLive(c)
+	g.touch(ctx, c.deviceID, now)
 	return c, nil
+}
+
+// deviceToucher is the one optional store method the gateway calls: store.Repository's
+// TouchDevice. It is not part of Store, so the narrow interface — and every double that satisfies
+// it — is unchanged; a store without it simply records nothing.
+type deviceToucher interface {
+	TouchDevice(ctx context.Context, deviceID id.ID, lastSeen int64) error
+}
+
+// touch records that the device connected. protocol/01 § Cadence removes "a device that has not
+// connected for 90 days", and invariant 10's cursor eligibility skips a device unseen for as long;
+// both read `devices.last_seen`, and a connection reaching `ready` is the device connecting. A
+// failure is logged, never a refusal: the connection is already good.
+func (g *Gateway) touch(ctx context.Context, device id.ID, now time.Time) {
+	t, ok := g.opts.Store.(deviceToucher)
+	if !ok {
+		return
+	}
+	if err := t.TouchDevice(ctx, device, now.Unix()); err != nil && g.opts.Log != nil {
+		g.opts.Log.Warn("recording the device as seen failed", "device", device.String()[:8], "err", err)
+	}
 }
 
 // addLive publishes a connection to the live registry and counts it. Every path that takes a
