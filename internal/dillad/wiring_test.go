@@ -2,6 +2,7 @@ package dillad_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -488,6 +489,36 @@ func TestTheDeliveryServiceRoutesAreMeteredPerDevice(t *testing.T) {
 		}
 	}
 	t.Fatalf("%d reads in a row were never refused; the read burst is %d", 2*burst, burst)
+}
+
+// A healthy Plan 1 instance is READY: /readyz answers 200 once New has built the database, the
+// schema, the wasi runtime and the delivery service. livekit and tls are Plan 2's and are not
+// required; until the final review they stayed red, so /readyz answered 503 forever and no load
+// balancer would ever route to the instance. Drain still turns it unready.
+func TestAHealthyPlanOneInstanceIsReady(t *testing.T) {
+	s, ts := newServer(t)
+	get := func() (int, string) {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/readyz", nil)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		res, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("GET /readyz: %v", err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(b)
+	}
+	if code, body := get(); code != http.StatusOK {
+		t.Fatalf("/readyz = %d %s, want 200 on a healthy instance", code, body)
+	}
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if code, _ := get(); code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz = %d while draining, want 503", code)
+	}
 }
 
 // The listener bounds how long a request header may take, from server.read_header_timeout and

@@ -290,6 +290,15 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	s.httpSrv.Protocols = protocols
 	o.Health.Gate("db").Set(true, "")
 	o.Health.Gate("schema").Set(true, "")
+	// The wasi runtime is built (or was handed in) and the delivery service it validates in has
+	// started its watchdog and sweeper, which is what the heal machinery of invariant 11 runs on.
+	o.Health.Gate("wasi").Set(true, "")
+	o.Health.Gate("heal").Set(true, "")
+	// Plan 1 runs neither the SFU nor the ACME client: both gates belong to Plan 2, which sets
+	// them from the subsystems it starts. Left red they would keep /readyz at 503 for the life of
+	// every Plan 1 instance.
+	o.Health.Gate("livekit").Set(true, "not run until Plan 2")
+	o.Health.Gate("tls").Set(true, "not run until Plan 2")
 	// The gateway's maintenance loop: 4009 for an overdue heartbeat and the resume window's
 	// expiry, every heartbeat interval on the instance clock, with the login throttle, the rate
 	// limiter's idle buckets and the expired sessions swept on the same tick. Without it a
