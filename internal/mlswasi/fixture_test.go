@@ -208,12 +208,18 @@ func loadRemoveProposalFixture(tb testing.TB) []byte {
 // Go writes the framing, so the guest's parser is exercised from both sides.
 func privateMessageFixture(tb testing.TB, n int) []byte {
 	tb.Helper()
+	return privateMessageFixtureOfType(tb, n, 1)
+}
+
+// privateMessageFixtureOfType is privateMessageFixture with the content_type byte chosen.
+func privateMessageFixtureOfType(tb testing.TB, n int, contentType byte) []byte {
+	tb.Helper()
 	var out []byte
 	out = binary.BigEndian.AppendUint16(out, 1) // protocol_version: MLS 1.0
 	out = binary.BigEndian.AppendUint16(out, 2) // wire_format: PrivateMessage
 	out = appendVLBytes(out, []byte("group-id"))
 	out = binary.BigEndian.AppendUint64(out, 7) // epoch
-	out = append(out, 1)                        // content_type: application
+	out = append(out, contentType)              // content_type: 1 application
 	out = appendVLBytes(out, bytes.Repeat([]byte{5}, n))
 	out = appendVLBytes(out, bytes.Repeat([]byte{7}, 16))
 	out = appendVLBytes(out, bytes.Repeat([]byte{9}, 64))

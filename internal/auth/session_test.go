@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -360,6 +361,49 @@ func TestTheIdleWindowFollowsTheDeviceTierNotTheScope(t *testing.T) {
 	}
 	if want := clk.Now().Add(c.NativeLifetime.Value()).Unix(); nativeTok.IdleExpires != want {
 		t.Fatalf("native idle_expires = %d, want %d (now + native_lifetime)", nativeTok.IdleExpires, want)
+	}
+}
+
+// Resolve writes the idle slide only when it moves the expiry by more than a minute: a burst of
+// requests is one write, not one per request on the single writer.
+func TestResolveTouchesTheSessionOnlyWhenTheWindowMovesByMoreThanAMinute(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	ctx := context.Background()
+	_, browser, priv := seedDeviceTier(t, repo, 1)
+	nonce, _, _ := s.Challenge(ctx, browser)
+	tok, err := s.Establish(ctx, signed(t, s, browser, nonce, auth.PurposeSession, priv))
+	if err != nil {
+		t.Fatalf("Establish: %v", err)
+	}
+	sum := sha256.Sum256([]byte(tok.Token))
+	stored := func() int64 {
+		t.Helper()
+		row, err := repo.GetSessionByHash(ctx, sum[:], clk.Now().Unix())
+		if err != nil {
+			t.Fatalf("GetSessionByHash: %v", err)
+		}
+		return row.IdleExpires
+	}
+	before := stored()
+
+	clk.Advance(30 * time.Second)
+	sess, err := s.Resolve(ctx, tok.Token)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := stored(); got != before {
+		t.Fatalf("a Resolve 30 s in wrote idle_expires %d over %d; want no write under a minute", got, before)
+	}
+	if sess.IdleExpires != before {
+		t.Fatalf("Resolve reported idle_expires %d, want the stored %d", sess.IdleExpires, before)
+	}
+
+	clk.Advance(61 * time.Second)
+	if _, err := s.Resolve(ctx, tok.Token); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := stored(); got <= before {
+		t.Fatalf("a Resolve 91 s in left idle_expires at %d; the slide must be written", got)
 	}
 }
 

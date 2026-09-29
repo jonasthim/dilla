@@ -621,7 +621,8 @@ func (i *Instance) PrivateMessageAAD(ctx context.Context, privateMessage []byte)
 	if err != nil {
 		return PrivateMessageMeta{}, err
 	}
-	if contentType > 3 {
+	// RFC 9420's ContentType is 1 application, 2 proposal, 3 commit; 0 is `reserved`.
+	if contentType < 1 || contentType > 3 {
 		return PrivateMessageMeta{}, fmt.Errorf("mlswasi: content_type %d is outside 1..3", contentType)
 	}
 	m.ContentType = uint8(contentType)

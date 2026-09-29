@@ -325,7 +325,7 @@ type Log struct {
 type Metrics struct {
 	Enabled      bool   `toml:"enabled"`
 	Path         string `toml:"path"`
-	RequireAdmin bool   `toml:"require_admin"`
+	RequireAdmin bool   `toml:"require_admin" comment:"When true, a scrape must carry Authorization: Bearer $DILLA_METRICS_TOKEN (an environment variable, never a dilla.toml key); unset, no scrape succeeds."`
 }
 
 type Doctor struct {

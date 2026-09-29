@@ -917,6 +917,12 @@ func TestPrivateMessageAADRefusesAnythingButThirtyTwoBytes(t *testing.T) {
 	if len(meta.AuthenticatedData) != 32 {
 		t.Fatalf("AuthenticatedData = %d bytes, want 32", len(meta.AuthenticatedData))
 	}
+	// content_type is 1..3 (RFC 9420: 0 is reserved): both ends of the range are refused.
+	for _, ct := range []byte{0, 4} {
+		if _, err := inst.PrivateMessageAAD(ctx, privateMessageFixtureOfType(t, 32, ct)); err == nil {
+			t.Errorf("content_type %d was accepted", ct)
+		}
+	}
 	for _, n := range []int{31, 33} {
 		if _, err := inst.PrivateMessageAAD(ctx, privateMessageFixture(t, n)); err == nil {
 			t.Errorf("%d bytes of authenticated_data was accepted", n)

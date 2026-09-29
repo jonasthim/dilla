@@ -24,9 +24,8 @@ type OIDC struct {
 	secret string
 	clk    clock.Clock
 
-	once     sync.Once
-	provider *oidc.Provider
-	discErr  error
+	discMu   sync.Mutex
+	provider *oidc.Provider // nil until a discovery SUCCEEDS; a failure is never cached
 
 	mu      sync.Mutex
 	pending map[string]pendingLogin
@@ -100,12 +99,30 @@ func NewOIDC(c config.OIDC, clientSecret string, clk clock.Clock) *OIDC {
 	return &OIDC{cfg: c, secret: clientSecret, clk: clk}
 }
 
+// discoveryTimeout bounds one discovery attempt, and every JWKS fetch the provider makes later.
+const discoveryTimeout = 30 * time.Second
+
+// discover fetches the issuer's discovery document once it can, and keeps only a SUCCESS: a
+// sync.Once cached the first answer for the life of the process, so one IdP outage, or one login
+// whose request was cancelled mid-discovery, disabled OIDC until a restart. The provider keeps the
+// context it was built with for its later JWKS fetches, so it is built on one that no request's
+// cancellation reaches, with a client timeout in place of the request's deadline.
 func (o *OIDC) discover(ctx context.Context) (*oidc.Provider, error) {
-	o.once.Do(func() { o.provider, o.discErr = oidc.NewProvider(ctx, o.cfg.Issuer) })
-	if o.discErr != nil {
-		return nil, fmt.Errorf("auth: oidc discovery for %s: %w", o.cfg.Issuer, o.discErr)
+	o.discMu.Lock()
+	defer o.discMu.Unlock()
+	if o.provider != nil {
+		return o.provider, nil
 	}
-	return o.provider, nil
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("auth: oidc discovery for %s: %w", o.cfg.Issuer, err)
+	}
+	base := oidc.ClientContext(context.WithoutCancel(ctx), &http.Client{Timeout: discoveryTimeout})
+	p, err := oidc.NewProvider(base, o.cfg.Issuer)
+	if err != nil {
+		return nil, fmt.Errorf("auth: oidc discovery for %s: %w", o.cfg.Issuer, err)
+	}
+	o.provider = p
+	return p, nil
 }
 
 func (o *OIDC) oauthConfig(p *oidc.Provider) oauth2.Config {

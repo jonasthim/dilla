@@ -283,7 +283,7 @@ func TestDiscoveryIsLazySoADownIdPDoesNotBlockStartUp(t *testing.T) {
 	if n := hits.discovery.Load(); n != 1 {
 		t.Fatalf("discovery ran %d times on first use, want exactly 1", n)
 	}
-	// And once for the life of the provider, not once per call: the sync.Once
+	// And once for the life of the provider, not once per call: the cached provider
 	// is the other half of the same property.
 	if _, _, _, err := o.Exchange(ctx, "code-good", "verifier", "nonce"); err != nil {
 		t.Fatalf("Exchange: %v", err)
@@ -305,6 +305,38 @@ func TestDiscoveryIsLazySoADownIdPDoesNotBlockStartUp(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("NewOIDC blocked on discovery; it must be lazy")
+	}
+}
+
+// A FAILED discovery is not cached: the first login's request was cancelled mid-discovery, and the
+// next login still discovers and completes. With a sync.Once the first failure disabled OIDC until
+// a restart. The provider the second call builds must also outlive the request that built it: its
+// JWKS fetch during Exchange runs after that request's context is gone.
+func TestAFailedDiscoveryIsRetriedOnTheNextLogin(t *testing.T) {
+	idp, hits := fakeIDPCounted(t)
+	c := config.Default().Auth.OIDC
+	c.Enabled = true
+	c.Issuer = idp.URL
+	c.ClientID = "dilla"
+	c.RedirectURL = "https://chat.example/v1/auth/oidc/callback"
+	o := auth.NewOIDC(c, "secret", clock.System())
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := o.AuthURL(cancelled, "state", "nonce", "verifier"); err == nil {
+		t.Fatal("a discovery under a cancelled request succeeded")
+	}
+
+	first, done := context.WithCancel(context.Background())
+	if _, err := o.AuthURL(first, "state", "nonce", "verifier"); err != nil {
+		t.Fatalf("the next login's discovery: %v — a failed discovery was cached", err)
+	}
+	done() // the request that discovered is over
+	if _, _, _, err := o.Exchange(context.Background(), "code-good", "verifier", "nonce"); err != nil {
+		t.Fatalf("Exchange after the discovering request ended: %v", err)
+	}
+	if n := hits.discovery.Load(); n != 1 {
+		t.Fatalf("discovery ran %d times, want once: a success is cached", n)
 	}
 }
 

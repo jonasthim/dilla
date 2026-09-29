@@ -230,6 +230,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		closeWasmOnError()
 		return nil, err
 	}
+	// From here an error return must also stop what Start started: the watchdog and the sweeper
+	// would otherwise keep running against a runtime closeWasmOnError has just closed.
+	stopOnError := func() {
+		_ = delivery.Shutdown(context.Background())
+		closeWasmOnError()
+	}
 	// The extension point parts 1b and 2 mount through. Registering after the 1a
 	// routes means a conflicting pattern panics at start-up, where the stdlib
 	// mux reports which two patterns collide.
@@ -241,6 +247,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if o.Config.Metrics.Enabled {
 		token, err := scrapeToken(o)
 		if err != nil {
+			stopOnError()
 			return nil, err
 		}
 		mux.Handle("GET "+o.Config.Metrics.Path, o.Metrics.Handler(o.Config.Metrics.RequireAdmin, token))

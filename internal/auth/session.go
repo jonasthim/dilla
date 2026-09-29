@@ -426,6 +426,10 @@ func (s *Sessions) mint(ctx context.Context, tx store.Repository, userID, device
 	}, nil
 }
 
+// touchGranularity is how far, in seconds, Resolve lets a session's idle expiry lag behind its
+// maximum before it writes the slide.
+const touchGranularity = 60
+
 // Resolve turns a bearer token into a session and slides its idle window.
 func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) {
 	if bearer == "" {
@@ -456,7 +460,14 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	if idleExpires > row.Expires {
 		idleExpires = row.Expires
 	}
-	_ = s.repo.TouchSession(ctx, sum[:], idleExpires)
+	// One write per request would put every authenticated read on the single SQLite writer; the
+	// window only has to move when it moves by more than touchGranularity, and an idle window
+	// that is a minute short of its maximum is still hours or days long.
+	if idleExpires-row.IdleExpires > touchGranularity {
+		_ = s.repo.TouchSession(ctx, sum[:], idleExpires)
+	} else {
+		idleExpires = row.IdleExpires
+	}
 	return Session{
 		UserID: row.UserID, DeviceID: row.DeviceID, Scope: Scope(row.Scope),
 		TokenHash: row.TokenHash, Expires: row.Expires, IdleExpires: idleExpires,

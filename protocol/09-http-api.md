@@ -204,6 +204,22 @@ its `hello` frame; an instance that changes `limits.max_ciphertext_bytes` moves 
 Every HTTP response under `/v1` carries `X-Dilla-Generation: <uint>`, so an HTTP-only client notices
 a restore without holding a gateway connection.
 
+## Operational endpoints
+
+These are not under `/v1` and carry no CBOR.
+
+| Method and path | Auth | Response |
+|---|---|---|
+| `GET /healthz` | — | `200 ok` while every background worker makes progress; `500` naming the stalled ones otherwise |
+| `GET /readyz` | — | `200 {"status":"ready"}`, or `503` with `"unready"` and only the failed gates named, or `"draining"` during shutdown |
+| `GET <metrics.path>` (default `/metrics`) | `Bearer` token when `metrics.require_admin` | the Prometheus text exposition; `401` without the token |
+
+The metrics token is the environment variable `DILLA_METRICS_TOKEN`, never a `dilla.toml` key: the
+configuration file is diffed and copied around, and the token is a credential (systemd's
+`EnvironmentFile=` is where it belongs). With `metrics.require_admin = true` and the variable unset,
+the instance guards the endpoint with a random token nobody holds and logs that every scrape will be
+refused, so an unset token never leaves the endpoint open.
+
 ## Flags
 
 `users.flags` is a bitfield. Two bits are assigned at `wire_version = 1`:
