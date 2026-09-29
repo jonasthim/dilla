@@ -374,7 +374,10 @@ impl Envelope {
             }
         }
         for p in &self.previews {
-            if p.url.len() > MAX_URL || p.title.len() > MAX_TITLE || p.description.len() > MAX_DESCRIPTION {
+            if p.url.len() > MAX_URL
+                || p.title.len() > MAX_TITLE
+                || p.description.len() > MAX_DESCRIPTION
+            {
                 return Err(ProtocolError::EnvelopeLimit);
             }
             if p.image
@@ -895,7 +898,11 @@ mod tests {
     fn vector_rejects_cover_every_new_limit() {
         let doc: serde_json::Value = serde_json::from_str(ENVELOPE_JSON).expect("envelope.json");
         let rejects = doc["rejects"].as_array().expect("rejects array");
-        assert_eq!(rejects.len(), 9, "one reject per tightened limit plus the type-2 body case");
+        assert_eq!(
+            rejects.len(),
+            9,
+            "one reject per tightened limit plus the type-2 body case"
+        );
         for case in rejects {
             let bytes = unhex(case["cbor"].as_str().expect("cbor"));
             let err = Envelope::decode(&bytes).expect_err("must be refused");
