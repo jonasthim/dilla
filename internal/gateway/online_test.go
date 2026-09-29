@@ -65,3 +65,36 @@ func TestReadyNeverReachesTheWireBeforeTheDeviceIsOnline(t *testing.T) {
 		t.Fatal("a device whose `ready` is on the wire is not online")
 	}
 }
+
+// The inbound frame bucket (facts-gateway-design §6.3; gateway.frame_burst and frame_burst_max):
+// a client that sends more than FrameBurst frames without the clock moving is told
+// E_RATE_LIMITED and closed 4008, which is resumable.
+func TestAClientPastTheInboundFrameBurstIsClosedFourZeroZeroEight(t *testing.T) {
+	h := newHarness(t)
+	s := newRecordingSink(512, false)
+	go h.gw.serve(context.Background(), s, "bearer")
+	h.readFrom(t, s) // hello
+	p, err := payload("bearer", uint64(1), uint64(1), uint64(1), uint64(0))
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	s.feed(mustEncode(t, Frame{Op: OpIdentify, Payload: p, Replay: true}, 1))
+	if in := h.readFrom(t, s); in.Op != OpReady {
+		t.Fatalf("op %d, want ready", in.Op)
+	}
+
+	burst := h.gw.opts.FrameBurst
+	beat, err := payload(uint64(0), uint64(1))
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	for range burst + 1 {
+		s.feed(mustEncode(t, Frame{Op: OpHeartbeat, Payload: beat, Replay: true}, 1))
+	}
+	if code := h.waitCloseOn(t, s); code != CloseRateLimited {
+		t.Fatalf("close code = %d, want 4008", code)
+	}
+	if !CloseRateLimited.Resumable() {
+		t.Fatal("4008 must be resumable")
+	}
+}

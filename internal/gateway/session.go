@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/fxamacker/cbor/v2"
+	"golang.org/x/time/rate"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -547,9 +548,18 @@ func (g *Gateway) sendReady(ctx context.Context, c *conn) error {
 // decoder: coder/websocket's reader grows 2*cap+512 without bound.
 func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 	defer g.suspend(c)
+	inbound := rate.NewLimiter(rate.Limit(g.opts.FramesPerSecond), g.opts.FrameBurst)
 	for {
 		typ, b, err := s.read(ctx)
 		if err != nil {
+			return
+		}
+		// The injected clock, not the wall clock x/time/rate would read by itself.
+		if !inbound.AllowN(g.opts.Clock.Now(), 1) {
+			if p, perr := ErrorPayload(0, "E_RATE_LIMITED", "inbound frame rate"); perr == nil {
+				c.send(Frame{Op: OpError, Payload: p})
+			}
+			g.closeConn(c, CloseRateLimited, "inbound frame rate")
 			return
 		}
 		if typ != websocket.MessageBinary {

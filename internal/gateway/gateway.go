@@ -70,6 +70,13 @@ type Options struct {
 	// here, once per connection. The composition root fills both from ds.Policy.
 	Backoff       time.Duration
 	BackoffJitter time.Duration
+
+	// FramesPerSecond and FrameBurst are the inbound token bucket every connection reads through
+	// (facts-gateway-design §6.3: 60 frames/s, burst 120; `gateway.frame_burst` and
+	// `gateway.frame_burst_max`). Inbound is control-only, so a client past it is misbehaving:
+	// it is sent E_RATE_LIMITED and closed 4008, which is resumable.
+	FramesPerSecond float64
+	FrameBurst      int
 }
 
 // withDefaults fills zero values and enforces the ring-vs-queue contract. The ring must be at
@@ -114,6 +121,12 @@ func (o Options) withDefaults() Options {
 	}
 	if o.BackoffJitter == 0 {
 		o.BackoffJitter = 300 * time.Millisecond
+	}
+	if o.FramesPerSecond <= 0 {
+		o.FramesPerSecond = 60
+	}
+	if o.FrameBurst <= 0 {
+		o.FrameBurst = 120
 	}
 	if o.RingFrames < o.QueueFrames {
 		o.RingFrames = o.QueueFrames

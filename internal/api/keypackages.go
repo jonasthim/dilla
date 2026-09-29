@@ -33,10 +33,10 @@ func (h *Groups) RegisterDirectory(mux *server.Mux, sessions *auth.Sessions) {
 	orProvisional := func(f http.HandlerFunc) http.Handler {
 		return sessions.Middleware(f, auth.ScopeProvisional)
 	}
-	mux.Handle("POST /v1/keypackages", orProvisional(h.publishKeyPackages))
-	mux.Handle("GET /v1/devices/{device_id}/keypackage", enrolled(h.takeKeyPackage))
-	mux.Handle("GET /v1/welcomes", orProvisional(h.welcomes))
-	mux.Handle("DELETE /v1/welcomes/{welcome_id}", orProvisional(h.ackWelcome))
+	mux.Handle("POST /v1/keypackages", orProvisional(dsMeter(h.Limiter, dsClassWrite, h.publishKeyPackages)))
+	mux.Handle("GET /v1/devices/{device_id}/keypackage", enrolled(dsMeter(h.Limiter, dsClassRead, h.takeKeyPackage)))
+	mux.Handle("GET /v1/welcomes", orProvisional(dsMeter(h.Limiter, dsClassRead, h.welcomes)))
+	mux.Handle("DELETE /v1/welcomes/{welcome_id}", orProvisional(dsMeter(h.Limiter, dsClassWrite, h.ackWelcome)))
 }
 
 type publishRequest struct {
@@ -94,6 +94,13 @@ func (h *Groups) takeKeyPackage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		server.WriteError(w, err)
 		return
+	}
+	// The (requester, target) bucket: each fetch consumes one of the target's KeyPackages.
+	if h.Limiter != nil {
+		if err := allowDS(h.Limiter, dsClassKeyPackage, keyPackageBucket(session.DeviceID, deviceID)); err != nil {
+			server.WriteError(w, err)
+			return
+		}
 	}
 	kp, err := h.DS.TakeKeyPackage(r.Context(), session, deviceID)
 	if err != nil {

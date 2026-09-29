@@ -19,6 +19,9 @@ type Messages struct {
 	DS                 *ds.DS
 	MaxCiphertextBytes int64 // zero means defaultMaxCiphertextBytes
 	MaxBody            int64 // §5.3's cap for the three small routes; zero means maxCBORBody
+	// Limiter meters every route per device session from `[limits.rate]` (dsmeter.go); nil
+	// meters nothing.
+	Limiter *server.RateLimiter
 }
 
 // defaultMaxCiphertextBytes is the MLS ciphertext cap of the Global Constraints, 131072 bytes. The
@@ -47,10 +50,10 @@ func (h *Messages) Register(mux *server.Mux, sessions *auth.Sessions) {
 	// The ciphertext route is the one with a raised body cap; every other route uses MaxBody. The
 	// cap is applied by DecodeBody's `max` argument, because plan-1a's internal/server has no
 	// per-route limiting wrapper.
-	mux.Handle("POST /v1/groups/{id}/message", enrolled(h.upload))
-	mux.Handle("GET /v1/groups/{id}/messages", enrolled(h.list))
-	mux.Handle("DELETE /v1/groups/{id}/messages/{seq}", enrolled(h.delete))
-	mux.Handle("POST /v1/groups/{id}/cursor", enrolled(h.cursor))
+	mux.Handle("POST /v1/groups/{id}/message", enrolled(dsMeter(h.Limiter, dsClassMessage, h.upload)))
+	mux.Handle("GET /v1/groups/{id}/messages", enrolled(dsMeter(h.Limiter, dsClassRead, h.list)))
+	mux.Handle("DELETE /v1/groups/{id}/messages/{seq}", enrolled(dsMeter(h.Limiter, dsClassWrite, h.delete)))
+	mux.Handle("POST /v1/groups/{id}/cursor", enrolled(dsMeter(h.Limiter, dsClassWrite, h.cursor)))
 }
 
 type uploadRequest struct {

@@ -34,6 +34,9 @@ import (
 type Groups struct {
 	DS      *ds.DS
 	MaxBody int64 // §5.3's cap for this group of routes; zero means maxDSBody
+	// Limiter meters every route per device session from `[limits.rate]` (dsmeter.go); nil
+	// meters nothing.
+	Limiter *server.RateLimiter
 }
 
 // maxDSBody is the delivery service's own body cap. It is far above §5.3's 64 KiB general limit
@@ -71,9 +74,9 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 	enrolled := func(f http.HandlerFunc) http.Handler {
 		return sessions.Middleware(f, auth.ScopeEnrolled)
 	}
-	mux.Handle("POST /v1/groups", enrolled(h.create))
-	mux.Handle("GET /v1/groups/{id}/info", enrolled(h.info))
-	mux.Handle("GET /v1/groups/{id}/tree", enrolled(h.tree))
+	mux.Handle("POST /v1/groups", enrolled(dsMeter(h.Limiter, dsClassWrite, h.create)))
+	mux.Handle("GET /v1/groups/{id}/info", enrolled(dsMeter(h.Limiter, dsClassRead, h.info)))
+	mux.Handle("GET /v1/groups/{id}/tree", enrolled(dsMeter(h.Limiter, dsClassRead, h.tree)))
 }
 
 // RegisterSequencer mounts the four routes of the sequencer and the commit path: endpoints 4
@@ -85,10 +88,10 @@ func (h *Groups) RegisterSequencer(mux *server.Mux, sessions *auth.Sessions) {
 	enrolled := func(f http.HandlerFunc) http.Handler {
 		return sessions.Middleware(f, auth.ScopeEnrolled)
 	}
-	mux.Handle("GET /v1/groups/{id}/handshakes", enrolled(h.handshakes))
-	mux.Handle("POST /v1/groups/{id}/commit", enrolled(h.commit))
-	mux.Handle("POST /v1/groups/{id}/proposal", enrolled(h.proposal))
-	mux.Handle("GET /v1/groups/{id}/proposals", enrolled(h.proposals))
+	mux.Handle("GET /v1/groups/{id}/handshakes", enrolled(dsMeter(h.Limiter, dsClassRead, h.handshakes)))
+	mux.Handle("POST /v1/groups/{id}/commit", enrolled(dsMeter(h.Limiter, dsClassCommit, h.commit)))
+	mux.Handle("POST /v1/groups/{id}/proposal", enrolled(dsMeter(h.Limiter, dsClassProposal, h.proposal)))
+	mux.Handle("GET /v1/groups/{id}/proposals", enrolled(dsMeter(h.Limiter, dsClassRead, h.proposals)))
 }
 
 // RegisterRecovery mounts the two routes a device out of step with the epoch uses: endpoint 8
@@ -100,8 +103,8 @@ func (h *Groups) RegisterRecovery(mux *server.Mux, sessions *auth.Sessions) {
 	enrolled := func(f http.HandlerFunc) http.Handler {
 		return sessions.Middleware(f, auth.ScopeEnrolled)
 	}
-	mux.Handle("POST /v1/groups/{id}/resync", enrolled(h.resync))
-	mux.Handle("POST /v1/groups/{id}/fork-report", enrolled(h.forkReport))
+	mux.Handle("POST /v1/groups/{id}/resync", enrolled(dsMeter(h.Limiter, dsClassCommit, h.resync)))
+	mux.Handle("POST /v1/groups/{id}/fork-report", enrolled(dsMeter(h.Limiter, dsClassWrite, h.forkReport)))
 }
 
 // sessionOf is the one place this file reads the request's session. It is a helper in package api,

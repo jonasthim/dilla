@@ -457,6 +457,39 @@ func TestRevokingADeviceClosesItsGatewayConnection(t *testing.T) {
 	}
 }
 
+// The delivery-service routes are metered through the composition root: the instance's own
+// limiter, keyed by the device session, refuses the request past [limits.rate]'s read burst with
+// 429 E_RATE_LIMITED — whatever the route would have answered.
+func TestTheDeliveryServiceRoutesAreMeteredPerDevice(t *testing.T) {
+	_, ts, token := newGreetedServer(t)
+	burst := testConfig(t).Limits.Rate.ReadBurst
+	get := func() int {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+			ts.URL+"/v1/groups/0102030405060708090a0b0c0d0e0f10/info", nil)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		res, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("GET info: %v", err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	// The clock is the wall clock, so the bucket refills a little while the loop runs: the first
+	// refusal comes at the burst or a few requests after it, never before, and always comes.
+	for i := range 2 * burst {
+		if get() == http.StatusTooManyRequests {
+			if i < burst {
+				t.Fatalf("request %d of a read burst of %d was refused", i+1, burst)
+			}
+			return
+		}
+	}
+	t.Fatalf("%d reads in a row were never refused; the read burst is %d", 2*burst, burst)
+}
+
 // newGreetedServerAt is newGreetedServer on a fake clock the test moves, so the maintenance loop
 // the composition root starts can be driven past a deadline without waiting for it.
 func newGreetedServerAt(t *testing.T) (*dillad.Server, *httptest.Server, string, *clock.Fake) {

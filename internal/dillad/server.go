@@ -158,6 +158,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		// Invariant 7's back-off window, advertised in hello (deviation B23).
 		Backoff:       policy.Backoff,
 		BackoffJitter: policy.BackoffJitter,
+		// The inbound frame bucket: gateway.frame_burst frames a second, gateway.frame_burst_max
+		// at once.
+		FramesPerSecond: float64(o.Config.Gateway.FrameBurst),
+		FrameBurst:      o.Config.Gateway.FrameBurstMax,
 	})
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,
@@ -203,7 +207,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// delivery service's 2 MiB, the small routes' 64 KiB): dilla.toml carries no
 	// body-size key, and the plan's `o.Config.Limits.MaxBodyBytes` does not
 	// exist (deviation B35).
-	groups := &api.Groups{DS: delivery}
+	// Every delivery-service route is metered per device session from [limits.rate], on the
+	// same limiter the unauthenticated routes use (its keys are class-prefixed).
+	groups := &api.Groups{DS: delivery, Limiter: limiter}
 	groups.Register(mux, sessions)          // rows 1-3
 	groups.RegisterSequencer(mux, sessions) // rows 4-7, 19
 	groups.RegisterRecovery(mux, sessions)  // rows 8-9
@@ -212,6 +218,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	(&api.Messages{
 		DS:                 delivery,
 		MaxCiphertextBytes: o.Config.Limits.MaxCiphertextBytes,
+		Limiter:            limiter,
 	}).Register(mux, sessions) // rows 11, 17, 18 and the cursor
 
 	if err := delivery.Start(ctx); err != nil {

@@ -16,8 +16,8 @@ func (h *Groups) RegisterHeal(mux *server.Mux, sessions *auth.Sessions) {
 	enrolled := func(f http.HandlerFunc) http.Handler {
 		return sessions.Middleware(f, auth.ScopeEnrolled)
 	}
-	mux.Handle("GET /v1/groups/{id}/heal", enrolled(h.healStatus))
-	mux.Handle("POST /v1/groups/{id}/heal", enrolled(h.heal))
+	mux.Handle("GET /v1/groups/{id}/heal", enrolled(dsMeter(h.Limiter, dsClassRead, h.healStatus)))
+	mux.Handle("POST /v1/groups/{id}/heal", enrolled(dsMeter(h.Limiter, dsClassCommit, h.heal)))
 }
 
 type healStatusResponse struct {
