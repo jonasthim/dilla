@@ -13,6 +13,7 @@ use dilla_core::identity::{Kind, Tier};
 use dilla_core::ids::{InstanceId, UserId};
 use dilla_core::mls::{DillaBinding, GroupKind, MAX_ADDS_PER_COMMIT, external_senders};
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StepResult {
@@ -216,6 +217,12 @@ impl Runner {
         Ok(RunReport { steps })
     }
 
+    /// How long an `expect_decrypts` / `expect_decrypts_all` keeps syncing before it fails. Against
+    /// the instance a `sync` is one 50 ms pump of the WebSocket, and the fan-out of one message to a
+    /// thousand connections on a loaded runner (CI, race detector) takes longer than that: the
+    /// assertion is "eventually decrypts", so it polls, and the happy path pays nothing extra.
+    const EXPECT_WAIT: Duration = Duration::from_secs(20);
+
     fn exec(&mut self, stmt: &Stmt) -> Result<(), TestkitError> {
         if let Some(actor) = actor_of(stmt) {
             self.last_actor = Some(actor.to_owned());
@@ -314,20 +321,25 @@ impl Runner {
                 body,
             } => {
                 let id = self.group(group)?.id.clone();
-                self.with_client(client, |actor, ds| {
-                    let _ = actor.sync(ds)?;
-                    let found = actor
-                        .inbox()
-                        .iter()
-                        .any(|r| r.group_id == id && r.envelope.body == *body);
+                let deadline = Instant::now() + Self::EXPECT_WAIT;
+                loop {
+                    let found = self.with_client(client, |actor, ds| {
+                        let _ = actor.sync(ds)?;
+                        Ok(actor
+                            .inbox()
+                            .iter()
+                            .any(|r| r.group_id == id && r.envelope.body == *body))
+                    })?;
                     if found {
-                        Ok(())
-                    } else {
-                        Err(TestkitError::Assertion(format!(
-                            "{client} never decrypted {body:?}"
-                        )))
+                        break Ok(());
                     }
-                })
+                    if Instant::now() >= deadline {
+                        break Err(TestkitError::Assertion(format!(
+                            "{client} never decrypted {body:?}"
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
             }
             Stmt::Sync { client } => {
                 self.with_client(client, |actor, ds| actor.sync(ds).map(|_| ()))
@@ -438,17 +450,24 @@ impl Runner {
             Stmt::JoinMany { group, count } => self.join_many(group, *count),
             Stmt::ExpectDecryptsAll { actor } => {
                 let vouched = self.vouched.get(actor).copied().unwrap_or(0);
-                let now = self.with_client(actor, |client, ds| {
-                    // `sync` applies every drained frame in order and fails on the first one that
-                    // does not decrypt, so a clean sync is "all of them decrypted".
-                    client.sync(ds)?;
-                    Ok(client.inbox().len())
-                })?;
-                if now <= vouched {
-                    return Err(TestkitError::Assertion(format!(
-                        "{actor} received no message since its last expect_decrypts_all"
-                    )));
-                }
+                let deadline = Instant::now() + Self::EXPECT_WAIT;
+                let now = loop {
+                    let now = self.with_client(actor, |client, ds| {
+                        // `sync` applies every drained frame in order and fails on the first one
+                        // that does not decrypt, so a clean sync is "all of them decrypted".
+                        client.sync(ds)?;
+                        Ok(client.inbox().len())
+                    })?;
+                    if now > vouched {
+                        break now;
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(TestkitError::Assertion(format!(
+                            "{actor} received no message since its last expect_decrypts_all"
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                };
                 self.vouched.insert(actor.clone(), now);
                 Ok(())
             }
