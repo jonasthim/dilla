@@ -85,6 +85,29 @@ expect_decrypts owner chat back at you
     );
 }
 
+/// A Welcome joiner that goes offline before it ever drained a frame still gets what was sent
+/// meanwhile once it is back. The stub keeps an offline device's queue; `HttpDs` must reach the
+/// same outcome through its reconnect catch-up, so this is the parity scenario a `ds <url>` run
+/// (task 29's harness) repeats against a real instance.
+#[test]
+fn a_welcome_joiner_offline_before_its_first_sync_catches_up() {
+    run(
+        "offline-joiner",
+        "\
+instance dilla
+client alice tier=native kind=user
+client bob tier=native kind=user
+group chat kind=text target=77777777777777777777777777777777 community=none creator=alice
+join bob chat via=welcome
+go_offline bob
+send alice chat sent while bob was away
+go_online bob
+sync bob
+expect_decrypts bob chat sent while bob was away
+",
+    );
+}
+
 /// `expect_decrypts_all` vouches for new messages only: a second one with nothing new fails.
 #[test]
 fn expect_decrypts_all_needs_something_new() {

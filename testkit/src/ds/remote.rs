@@ -701,6 +701,11 @@ impl HttpDs {
 
     /// Everything each known group accumulated past `delivered` while the socket was closed, in
     /// seq order, as the frames a live connection would have carried.
+    ///
+    /// A group the instance answers `E_NOT_FOUND` for is one this device is no longer a member
+    /// of (a non-member is E_NOT_FOUND, never E_FORBIDDEN — `internal/ds/sequencer.go`): it is
+    /// forgotten rather than failing the reconnect, which is what a live socket does too, since
+    /// the gateway stops fanning that group out to the device.
     fn catch_up(&mut self) -> Result<(), DsError> {
         let groups: Vec<(Vec<u8>, u64)> = self
             .delivered
@@ -709,7 +714,14 @@ impl HttpDs {
             .collect();
         for (group_id, after) in groups {
             let mut frames: Vec<(u64, Frame)> = Vec::new();
-            for item in self.handshakes(&group_id, after + 1)? {
+            let handshakes = match self.handshakes(&group_id, after + 1) {
+                Err(e) if e.code() == "E_NOT_FOUND" => {
+                    self.delivered.remove(&group_id);
+                    continue;
+                }
+                other => other?,
+            };
+            for item in handshakes {
                 frames.push((
                     item.seq,
                     Frame::MlsHandshake {
@@ -751,6 +763,17 @@ impl HttpDs {
             *high = seq;
         }
         self.pending.push(frame);
+    }
+
+    /// Records that this device takes part in `group_id` from `seq` onward, for a group it learned
+    /// of without a frame — its own registration, a Welcome row, its own external commit. Without
+    /// this the reconnect's catch-up, which walks `delivered`, never visits the group: a Welcome
+    /// joiner that went offline before its first `drain` would miss every message sent meanwhile.
+    ///
+    /// Only ever raises the high-water mark: what was already delivered is never fetched twice.
+    fn learn(&mut self, group_id: &[u8], seq: u64) {
+        let high = self.delivered.entry(group_id.to_vec()).or_insert(0);
+        *high = (*high).max(seq.saturating_sub(1));
     }
 
     fn send_heartbeat(&mut self) -> Result<(), DsError> {
@@ -933,6 +956,9 @@ impl DeliveryService for HttpDs {
 
     /// Row 1: `[group_id, binding, group_info, ratchet_tree]` -> `201 [group_id, next_seq]`. The
     /// group id is the binding's `target_id` (invariant 1), which the instance checks.
+    ///
+    /// The answer's `next_seq` is the first seq the group's log will hold, so the creator catches
+    /// up from there on a reconnect.
     fn register_group(&mut self, r: RegisterRequest) -> Result<RegisterResult, DsError> {
         let binding = dilla_core::mls::DillaBinding::decode(&r.binding)
             .map_err(|_| DsError::BindingInvalid)?;
@@ -943,13 +969,15 @@ impl DeliveryService for HttpDs {
                 .bytes(&r.group_info)
                 .bytes(&r.ratchet_tree);
         });
-        self.post_decoded("/v1/groups", &body, |d| {
+        let registered = self.post_decoded("/v1/groups", &body, |d| {
             d.array(2)?;
             Ok(RegisterResult {
                 group_id: d.bytes()?.to_vec(),
                 seq: d.uint()?,
             })
-        })
+        })?;
+        self.learn(&registered.group_id, registered.seq);
+        Ok(registered)
     }
 
     /// Row 2: `[epoch, group_info, tree_hash, next_seq]`.
@@ -1040,6 +1068,9 @@ impl DeliveryService for HttpDs {
     }
 
     /// Row 8: `[external_commit, group_info]` -> `[seq, epoch]`.
+    ///
+    /// The joiner is a member from its own commit on, and the gateway fans that commit out to it
+    /// like to any member, so a reconnect catches up from the commit's own seq.
     fn post_external_commit(
         &mut self,
         g: &GroupId,
@@ -1048,13 +1079,15 @@ impl DeliveryService for HttpDs {
         let body = encode(|e| {
             e.array(2).bytes(&c.external_commit).bytes(&c.group_info);
         });
-        self.post_decoded(&Self::group_path(g, "/resync"), &body, |d| {
+        let committed = self.post_decoded(&Self::group_path(g, "/resync"), &body, |d| {
             d.array(2)?;
             Ok(CommitResult {
                 seq: d.uint()?,
                 epoch: d.uint()?,
             })
-        })
+        })?;
+        self.learn(g, committed.seq);
+        Ok(committed)
     }
 
     /// Row 6: `[epoch, proposal]` -> `[seq]`.
@@ -1170,6 +1203,12 @@ impl DeliveryService for HttpDs {
             }
             out.extend(page);
             if short {
+                // The commit that added this device replaced the member list before its fan-out,
+                // so the device is sent that Add handshake and everything after it: a reconnect
+                // catches up from `commit_seq`, whether or not a frame was drained meanwhile.
+                for item in &out {
+                    self.learn(&item.group_id, item.commit_seq);
+                }
                 return Ok(out);
             }
         }
@@ -1239,8 +1278,9 @@ impl DeliveryService for HttpDs {
     }
 
     /// Frames received since the last drain. Offline, nothing is read and nothing is returned —
-    /// what the instance sends meanwhile is fetched by the catch-up when the device comes back,
-    /// which is `DsStub::drain`'s "an offline device's queue is left untouched".
+    /// what the socket held when the device went offline stays queued, and what the instance
+    /// sends meanwhile is fetched by the catch-up when the device comes back, which is
+    /// `DsStub::drain`'s "an offline device's queue is left untouched".
     fn drain(&mut self) -> Result<Vec<Frame>, DsError> {
         if !self.online {
             return Ok(Vec::new());
@@ -1253,6 +1293,13 @@ impl DeliveryService for HttpDs {
     }
 
     fn set_online(&mut self, online: bool) -> Result<(), DsError> {
+        if !online {
+            // The gateway may already have written frames the device has not drained. Closing
+            // over them would lose them for good: the catch-up resumes after `delivered`, which
+            // only a pumped frame advances, and the stub keeps an offline device's queue. So they
+            // are read into `pending` first and wait there for the next online `drain`.
+            self.pump()?;
+        }
         self.online = online;
         match (online, self.ws.take()) {
             (false, Some(mut ws)) => {
@@ -1515,5 +1562,275 @@ mod tests {
         assert_eq!(host_of("http://127.0.0.1:4567").unwrap(), "127.0.0.1:4567");
         assert_eq!(host_of("http://127.0.0.1:4567/").unwrap(), "127.0.0.1:4567");
         assert!(host_of("https://dilla.example").is_err());
+    }
+
+    /// A client in the state `open_socket` leaves after a first connection, over a socket the test
+    /// already holds (or none), so the offline and catch-up paths run without a gateway.
+    fn connected(base: &str, ws: Option<WebSocket<TcpStream>>) -> HttpDs {
+        HttpDs {
+            base: base.to_owned(),
+            token: "token".into(),
+            device: DeviceId::from_bytes([0xdd; 16]),
+            agent: new_agent(),
+            ws,
+            pending: Vec::new(),
+            online: true,
+            heartbeat: Duration::from_secs(30),
+            last_beat: Instant::now(),
+            last_n: 0,
+            delivered: BTreeMap::new(),
+            connected_before: true,
+        }
+    }
+
+    fn seq_of(frame: &Frame) -> Option<u64> {
+        match frame {
+            Frame::MlsHandshake { item, .. } => Some(item.seq),
+            Frame::MessageCt { item, .. } => Some(item.seq),
+            _ => None,
+        }
+    }
+
+    /// `go_offline` must not throw away what the gateway already wrote to the socket: the stub
+    /// keeps an offline device's queue, and a frame lost here is also a group the reconnect's
+    /// catch-up never learns of.
+    #[test]
+    fn going_offline_keeps_the_frames_the_socket_already_holds() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let group = [0x44u8; 16];
+        let (sent, written) = std::sync::mpsc::channel();
+        let gateway = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            let handshake = encode(|e| {
+                e.array(4).uint(16).uint(1).bytes(&group);
+                e.array(5).uint(4).uint(2).uint(1).uint(0).bytes(&[1]);
+            });
+            let message = encode(|e| {
+                e.array(4).uint(19).uint(2).bytes(&group);
+                e.array(6)
+                    .uint(5)
+                    .uint(3)
+                    .bytes(&[0xaa; 16])
+                    .bytes(&[4])
+                    .bytes(&[0xbb; 32])
+                    .uint(1_758_659_640);
+            });
+            ws.send(Message::Binary(handshake.into())).unwrap();
+            ws.send(Message::Binary(message.into())).unwrap();
+            sent.send(()).unwrap();
+            // Hold the connection until the client lets it go.
+            while ws.read().is_ok() {}
+        });
+
+        let stream = TcpStream::connect(addr).unwrap();
+        let (mut socket, _) = tungstenite::client(format!("ws://{addr}/gateway"), stream).unwrap();
+        read_timeout(&mut socket, PUMP_WAIT).unwrap();
+        written.recv().unwrap();
+        let mut ds = connected(&format!("http://{addr}"), Some(socket));
+
+        ds.set_online(false).unwrap();
+        assert!(ds.ws.is_none(), "offline means no socket");
+        assert!(
+            ds.drain().unwrap().is_empty(),
+            "an offline drain returns nothing"
+        );
+        let held: Vec<u64> = ds.pending.iter().filter_map(seq_of).collect();
+        assert_eq!(
+            held,
+            vec![4, 5],
+            "the buffered frames wait for the next online drain"
+        );
+        assert_eq!(ds.delivered.get(group.as_slice()), Some(&5));
+        gateway.join().unwrap();
+    }
+
+    const REGISTERED: [u8; 16] = [0x01; 16];
+    const WELCOMED: [u8; 16] = [0x02; 16];
+    const RESYNCED: [u8; 16] = [0x03; 16];
+    /// Welcomed, then removed: the instance answers a non-member E_NOT_FOUND (sequencer.go).
+    const LEFT: [u8; 16] = [0x04; 16];
+
+    /// The instance side of `a_group_learned_without_a_frame_is_caught_up_on_reconnect`.
+    fn instance(method: &str, path: &str) -> (u16, Vec<u8>) {
+        let reads = |g: &[u8; 16]| {
+            let at = format!("/v1/groups/{}/", hex::encode(g));
+            path.starts_with(&format!("{at}handshakes?"))
+                || path.starts_with(&format!("{at}messages?"))
+        };
+        let resync = format!("/v1/groups/{}/resync", hex::encode(RESYNCED));
+        match (method, path) {
+            ("POST", "/v1/groups") => (
+                201,
+                encode(|e| {
+                    e.array(2).bytes(&REGISTERED).uint(1);
+                }),
+            ),
+            ("GET", "/v1/welcomes?after=0&limit=64") => (
+                200,
+                encode(|e| {
+                    e.array(2);
+                    e.array(7)
+                        .uint(1)
+                        .bytes(&WELCOMED)
+                        .uint(2)
+                        .uint(3)
+                        .bytes(&[5])
+                        .bytes(&[6])
+                        .bytes(&[0xcc; 32]);
+                    e.array(7)
+                        .uint(2)
+                        .bytes(&LEFT)
+                        .uint(4)
+                        .uint(9)
+                        .bytes(&[5])
+                        .bytes(&[6])
+                        .bytes(&[0xcc; 32]);
+                }),
+            ),
+            ("POST", p) if p == resync => (
+                200,
+                encode(|e| {
+                    e.array(2).uint(7).uint(3);
+                }),
+            ),
+            ("GET", _) if reads(&LEFT) => (
+                404,
+                encode(|e| {
+                    e.array(3).text("E_NOT_FOUND").text("group").null();
+                }),
+            ),
+            ("GET", _) if reads(&REGISTERED) || reads(&WELCOMED) || reads(&RESYNCED) => (
+                200,
+                encode(|e| {
+                    e.array(0);
+                }),
+            ),
+            _ => (500, Vec::new()),
+        }
+    }
+
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// A throwaway HTTP/1.1 origin, one request per connection, answering from `route` and
+    /// recording every `METHOD path` it served.
+    fn origin(route: fn(&str, &str) -> (u16, Vec<u8>)) -> (String, Seen) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen: Seen = Default::default();
+        let log = std::sync::Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let mut length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = header.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0u8; length];
+                reader.read_exact(&mut body).unwrap();
+                let mut parts = line.split_whitespace();
+                let method = parts.next().unwrap_or_default().to_owned();
+                let path = parts.next().unwrap_or_default().to_owned();
+                log.lock().unwrap().push(format!("{method} {path}"));
+                let (status, out) = route(&method, &path);
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/cbor\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    out.len()
+                );
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.write_all(&out).unwrap();
+            }
+        });
+        (base, seen)
+    }
+
+    /// A device learns of a group from `register_group`, a Welcome row or its own external commit
+    /// without a single frame for it having been pumped. The reconnect's catch-up must still walk
+    /// that group from where the device came in — otherwise `go_offline bob; send alice …;
+    /// go_online bob` delivers nothing to a Welcome joiner, where the stub delivers everything.
+    #[test]
+    fn a_group_learned_without_a_frame_is_caught_up_on_reconnect() {
+        use dilla_core::ids::InstanceId;
+        use dilla_core::mls::{DillaBinding, GroupKind};
+
+        let (base, seen) = origin(instance);
+        let mut ds = connected(&base, None);
+        let binding = DillaBinding {
+            v: 1,
+            instance_id: InstanceId::from_bytes([0x11; 16]),
+            community_id: None,
+            target_id: REGISTERED,
+            kind: GroupKind::Text,
+            policy_version: 1,
+            e2ee_version: 1,
+            media_version: 0,
+        };
+        ds.register_group(RegisterRequest {
+            binding: binding.encode(),
+            group_info: vec![1],
+            ratchet_tree: vec![2],
+        })
+        .unwrap();
+        assert_eq!(ds.welcomes().unwrap().len(), 2);
+        ds.post_external_commit(
+            &RESYNCED,
+            ResyncRequest {
+                external_commit: vec![3],
+                group_info: vec![4],
+            },
+        )
+        .unwrap();
+        seen.lock().unwrap().clear();
+
+        ds.catch_up().unwrap();
+
+        let served = seen.lock().unwrap().clone();
+        for (group, from) in [(REGISTERED, 1), (WELCOMED, 3), (RESYNCED, 7)] {
+            let g = hex::encode(group);
+            for want in [
+                format!("GET /v1/groups/{g}/handshakes?from={from}&limit={HANDSHAKE_PAGE}"),
+                format!("GET /v1/groups/{g}/messages?from={from}&limit={MESSAGE_PAGE}"),
+            ] {
+                assert!(served.contains(&want), "{want} not in {served:#?}");
+            }
+        }
+        // A group the device can no longer read is dropped, not a failed reconnect.
+        let left = format!(
+            "GET /v1/groups/{}/handshakes?from=9&limit={HANDSHAKE_PAGE}",
+            hex::encode(LEFT)
+        );
+        assert!(served.contains(&left), "{left} not in {served:#?}");
+        assert!(!ds.delivered.contains_key(LEFT.as_slice()));
+
+        // Learning of a group again never rewinds past what was already delivered.
+        ds.accept(Frame::MessageCt {
+            group_id: WELCOMED.to_vec(),
+            item: MessageItem {
+                seq: 8,
+                epoch: 2,
+                uploader_device: DeviceId::from_bytes([0xaa; 16]),
+                blob: vec![1],
+                commitment: [0; 32],
+                franking_tag: [0; 32],
+                recv_ts: 0,
+            },
+        });
+        ds.welcomes().unwrap();
+        assert_eq!(ds.delivered.get(WELCOMED.as_slice()), Some(&8));
     }
 }
