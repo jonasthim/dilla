@@ -46,7 +46,8 @@ const maxDSBody = 2 << 20
 // batch carries 256 copies of a Welcome that is itself about 30 KiB at 256 joiners — some 8 MiB,
 // measured by join_storm_256_batched. 16 MiB leaves room for the commit and the GroupInfo beside
 // them and is still a cap (deviation B37; a wire form that sends one shared Welcome once is the
-// protocol follow-up that would bring this back down).
+// protocol follow-up that would bring this back down). The headroom is the Welcomes' alone: the
+// commit handler holds the commit, the GroupInfo and the tree together to maxDSBody.
 const maxCommitBody = 16 << 20
 
 func (h *Groups) max() int64 {
@@ -336,6 +337,14 @@ func (h *Groups) commit(w http.ResponseWriter, r *http.Request) {
 	var body commitRequestBody
 	if err := server.DecodeBody(w, r, h.maxCommit(), &body); err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	// The headroom above the delivery service's own cap exists for a full batch of Welcomes
+	// (deviation B37). Everything else the commit carries is held to that cap, as it is on every
+	// other delivery-service route.
+	if rest := int64(len(body.Commit) + len(body.GroupInfo) + len(body.RatchetTree)); rest > h.max() {
+		server.WriteError(w, server.Errorf(server.CodeTooLarge,
+			"the commit, GroupInfo and tree are %d bytes, over %d; only Welcomes may exceed it", rest, h.max()))
 		return
 	}
 	session, err := sessionOf(r)

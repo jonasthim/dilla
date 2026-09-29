@@ -35,6 +35,30 @@ func TestAFullBatchOfWelcomesIsNotRefusedAsTooLarge(t *testing.T) {
 	}
 }
 
+// …but the headroom above 2 MiB is the Welcomes' alone (deviation B37). A commit, GroupInfo and
+// ratchet tree that together exceed the delivery service's own 2 MiB cap are refused as they are
+// on every other delivery-service route, however few Welcomes ride along: the 16 MiB exists for a
+// full batch of Welcomes, not for any enrolled device to upload 16 MiB of anything.
+func TestTheWelcomeHeadroomDoesNotWidenTheRestOfTheCommit(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	member := h.memberToken(t)
+
+	for name, body := range map[string][]byte{
+		"a 3 MiB commit": mustCBOR(t, []any{h.groupEpoch(t), bytes.Repeat([]byte{0x00}, 3<<20),
+			[]byte{0x00}, []any{}, nil}),
+		"a 3 MiB ratchet tree": mustCBOR(t, []any{h.groupEpoch(t), []byte{0x00}, []byte{0x00},
+			[]any{}, bytes.Repeat([]byte{0x00}, 3<<20)}),
+		"a commit and a GroupInfo of 1.5 MiB each": mustCBOR(t, []any{h.groupEpoch(t),
+			bytes.Repeat([]byte{0x00}, 3<<19), bytes.Repeat([]byte{0x00}, 3<<19), []any{}, nil}),
+	} {
+		res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/commit", member, body)
+		if res.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("%s: status = %d, want 413: %s", name, res.Code, res.Body.String())
+		}
+	}
+}
+
 // …and the raised cap is still a cap.
 func TestACommitBodyAboveTheBatchCapIsTooLarge(t *testing.T) {
 	h := newGroupsAPI(t)
