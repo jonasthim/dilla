@@ -7,10 +7,15 @@ pub enum Stmt {
     Instance {
         name: String,
     },
+    /// `client <name> [tier=…] [kind=…] [device_list=signed|none|revoked]`: against an instance the
+    /// client signs itself into its user's device list (`signed`, the default), publishes no list
+    /// (`none`), or publishes one whose entry for it is revoked (`revoked`) — the last two are
+    /// invariant 4's "DSK in the newest signed device list" probes.
     Client {
         name: String,
         tier: Tier,
         kind: Kind,
+        device_list: DeviceListMode,
     },
     Sync {
         client: String,
@@ -22,10 +27,16 @@ pub enum Stmt {
         community: Option<CommunityId>,
         creator: String,
     },
+    /// `join <client> <group> [via=welcome|external]` and `external_join <client> <group>`. An
+    /// external join may also say `as=<uploader>` — the commit is the client's own but is uploaded
+    /// under the uploader's session — and `leaf_key=fresh` — the client's leaf carries a signature
+    /// key that is not its DSK. Both are invariant 4's external-joiner probes (deviation B36).
     Join {
         client: String,
         group: String,
         external: bool,
+        uploader: Option<String>,
+        fresh_leaf_key: bool,
     },
     Send {
         client: String,
@@ -48,11 +59,14 @@ pub enum Stmt {
     GoOnline {
         client: String,
     },
-    /// `expect_reject <code> <statement…>`, and `expect_425 <statement…>` with `status` set: the
-    /// inner statement must fail with that code (and, when given, that HTTP status).
+    /// `expect_reject <code> [rule=<rule>] <statement…>`, and `expect_425 <statement…>` with
+    /// `status` set: the inner statement must fail with that code (and, when given, that HTTP
+    /// status). `rule` pins an `E_COMMIT_INVALID` to the invariant-4 rule the instance named, so a
+    /// refusal for some other reason does not pass for the one the scenario is about.
     ExpectReject {
         code: String,
         status: Option<u16>,
+        rule: Option<String>,
         inner: Box<Stmt>,
     },
     /// `ds <url>`: run against the instance at `url` through `HttpDs` instead of `DsStub`. Must
@@ -104,11 +118,13 @@ pub enum Stmt {
     ExpectClosed {
         group: String,
     },
-    /// `resync <client> <group>`: the client drops its copy of the group and returns by an
-    /// own-leaf external commit (`POST /resync`, invariant 9 and R25).
+    /// `resync <client> <group> [as=<uploader>]`: the client drops its copy of the group and
+    /// returns by an own-leaf external commit (`POST /resync`, invariant 9 and R25). With `as=`,
+    /// the commit is uploaded under the uploader's session instead.
     Resync {
         client: String,
         group: String,
+        uploader: Option<String>,
     },
     /// `fork_report <client> <group>`: the client reports the last commit it received for the
     /// group as one it cannot process (`POST /fork-report`, invariant 9).
@@ -133,6 +149,39 @@ pub enum Stmt {
         group: String,
         client: String,
     },
+    /// `mark_revoked <client>`: the test host marks the client's device revoked in the instance's
+    /// store and leaves its session alone — the window between a request's authentication and its
+    /// transaction, which a real revocation (which also deletes the sessions) can race.
+    MarkRevoked {
+        client: String,
+    },
+    /// `send_bad_commitment <client> <group> <len>`: the client sends a message whose
+    /// `authenticated_data` — the franking commitment — is `len` bytes rather than 32
+    /// (invariant 8's `E_COMMITMENT_INVALID`).
+    SendBadCommitment {
+        client: String,
+        group: String,
+        len: usize,
+    },
+    /// `channel <target> [visibility=private|invite|discoverable] [mode=e2ee|readable]`: the test
+    /// host records a channel with that visibility and mode under `target`, which invariant 1's
+    /// registration check reads.
+    Channel {
+        target: [u8; 16],
+        visibility: String,
+        mode: String,
+    },
+}
+
+/// Which signed device list a remote client publishes for itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DeviceListMode {
+    /// A list naming this device, as a real client publishes right after registering.
+    Signed,
+    /// No list at all.
+    None,
+    /// A list whose entry for this device is revoked.
+    Revoked,
 }
 
 /// protocol/02's labels for the delivery-service frames a client receives, plus `error`.
@@ -259,10 +308,22 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                 Some("bot") => Kind::Bot,
                 Some(other) => return Err(err(line_no, format!("unknown kind {other:?}"))),
             };
+            let device_list = match named(args, "device_list=") {
+                None | Some("signed") => DeviceListMode::Signed,
+                Some("none") => DeviceListMode::None,
+                Some("revoked") => DeviceListMode::Revoked,
+                Some(other) => {
+                    return Err(err(
+                        line_no,
+                        format!("unknown device_list {other:?}; expected signed, none or revoked"),
+                    ));
+                }
+            };
             Stmt::Client {
                 name: args[0].to_owned(),
                 tier,
                 kind,
+                device_list,
             }
         }
         "sync" => {
@@ -300,27 +361,39 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                 creator,
             }
         }
-        "join" => {
+        "join" | "external_join" => {
             need(2)?;
-            let external = matches!(named(args, "via="), Some("external"));
+            let external =
+                verb == "external_join" || matches!(named(args, "via="), Some("external"));
             if let Some(via) = named(args, "via=")
                 && via != "welcome"
                 && via != "external"
             {
                 return Err(err(line_no, format!("unknown via= {via:?}")));
             }
+            let uploader = named(args, "as=").map(str::to_owned);
+            let fresh_leaf_key = match named(args, "leaf_key=") {
+                None => false,
+                Some("fresh") => true,
+                Some(other) => {
+                    return Err(err(
+                        line_no,
+                        format!("unknown leaf_key {other:?}; the only probe is leaf_key=fresh"),
+                    ));
+                }
+            };
+            if !external && (uploader.is_some() || fresh_leaf_key) {
+                return Err(err(
+                    line_no,
+                    "as= and leaf_key= probe an external commit; a Welcome join has neither",
+                ));
+            }
             Stmt::Join {
                 client: args[0].to_owned(),
                 group: args[1].to_owned(),
                 external,
-            }
-        }
-        "external_join" => {
-            need(2)?;
-            Stmt::Join {
-                client: args[0].to_owned(),
-                group: args[1].to_owned(),
-                external: true,
+                uploader,
+                fresh_leaf_key,
             }
         }
         "send" | "expect_decrypts" => {
@@ -365,16 +438,23 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
         }
         "expect_reject" => {
             need(2)?;
-            let inner_tokens: Vec<&str> = tokens[2..].to_vec();
+            // `rule=<rule>` may follow the code; the inner statement starts after it.
+            let rule = args[1].strip_prefix("rule=").map(str::to_owned);
+            let skip = usize::from(rule.is_some());
+            if tokens.len() < 3 + skip {
+                return Err(err(line_no, "expect_reject needs a statement to wrap"));
+            }
+            let inner_tokens: Vec<&str> = tokens[2 + skip..].to_vec();
             // `rest` is the tail after the outer line's first three tokens
             // (`expect_reject <code> <inner verb>`). The inner statement's own free-text body
-            // starts after *its* first three tokens, which is two tokens further along; skipping
-            // only one would hand `send`/`expect_decrypts` a body with the group name glued to
-            // the front.
-            let inner_rest = rest_after(rest, 2);
+            // starts after *its* first three tokens, which is two tokens further along (three with
+            // a rule); skipping only one would hand `send`/`expect_decrypts` a body with the group
+            // name glued to the front.
+            let inner_rest = rest_after(rest, 2 + skip);
             Stmt::ExpectReject {
                 code: args[0].to_owned(),
                 status: None,
+                rule,
                 inner: Box::new(parse_inner(line_no, &inner_tokens, &inner_rest)?),
             }
         }
@@ -389,6 +469,7 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
             Stmt::ExpectReject {
                 code: "E_COMMIT_REQUIRED".to_owned(),
                 status: Some(425),
+                rule: None,
                 inner: Box::new(parse_inner(line_no, &inner_tokens, &inner_rest)?),
             }
         }
@@ -489,7 +570,11 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
             need(2)?;
             let (client, group) = (args[0].to_owned(), args[1].to_owned());
             match verb {
-                "resync" => Stmt::Resync { client, group },
+                "resync" => Stmt::Resync {
+                    client,
+                    group,
+                    uploader: named(args, "as=").map(str::to_owned),
+                },
                 "fork_report" => Stmt::ForkReport { client, group },
                 _ => Stmt::Heal { client, group },
             }
@@ -505,6 +590,57 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
             Stmt::Admit {
                 group: args[0].to_owned(),
                 client: args[1].to_owned(),
+            }
+        }
+        // The invariant 1, 4 and 8 probes.
+        "mark_revoked" => {
+            need(1)?;
+            Stmt::MarkRevoked {
+                client: args[0].to_owned(),
+            }
+        }
+        "send_bad_commitment" => {
+            need(3)?;
+            let len = args[2].parse::<usize>().map_err(|_| {
+                err(
+                    line_no,
+                    format!("send_bad_commitment needs a byte length, got {:?}", args[2]),
+                )
+            })?;
+            if len == 32 {
+                return Err(err(
+                    line_no,
+                    "send_bad_commitment's length must not be 32, which is the well-formed one",
+                ));
+            }
+            Stmt::SendBadCommitment {
+                client: args[0].to_owned(),
+                group: args[1].to_owned(),
+                len,
+            }
+        }
+        "channel" => {
+            need(1)?;
+            let visibility = named(args, "visibility=").unwrap_or("private");
+            if !["private", "invite", "discoverable"].contains(&visibility) {
+                return Err(err(
+                    line_no,
+                    format!(
+                        "unknown visibility {visibility:?}; expected private, invite or discoverable"
+                    ),
+                ));
+            }
+            let mode = named(args, "mode=").unwrap_or("e2ee");
+            if !["e2ee", "readable"].contains(&mode) {
+                return Err(err(
+                    line_no,
+                    format!("unknown mode {mode:?}; expected e2ee or readable"),
+                ));
+            }
+            Stmt::Channel {
+                target: hex16(args[0], line_no)?,
+                visibility: visibility.to_owned(),
+                mode: mode.to_owned(),
             }
         }
         other => return Err(err(line_no, format!("unknown statement {other:?}"))),
@@ -649,10 +785,12 @@ expect_reject E_BINDING join bob chat
             Stmt::ExpectReject {
                 code,
                 status,
+                rule,
                 inner,
             } => {
                 assert_eq!(code, "E_BINDING");
                 assert_eq!(*status, None);
+                assert_eq!(*rule, None);
                 assert!(matches!(**inner, Stmt::Join { .. }));
             }
             other => panic!("{other:?}"),
@@ -757,6 +895,7 @@ expect_reject E_BINDING join bob chat
                 code,
                 status,
                 inner,
+                ..
             } => {
                 assert_eq!(code, "E_COMMIT_REQUIRED");
                 assert_eq!(status, Some(425));
@@ -851,7 +990,8 @@ expect_reject E_BINDING join bob chat
             one("resync bob chat").unwrap(),
             Stmt::Resync {
                 client: "bob".into(),
-                group: "chat".into()
+                group: "chat".into(),
+                uploader: None,
             }
         );
         assert_eq!(
@@ -931,6 +1071,152 @@ expect_reject E_BINDING join bob chat
         }
     }
 
+    /// The probes the invariant 1, 4 and 8 scenarios need: a joiner that uploads under another
+    /// device's session or with a leaf key that is not its DSK, a device whose signed list does not
+    /// carry it, a device the instance has marked revoked, a message whose commitment is the wrong
+    /// length, a channel whose mode the test host fixes, and a refusal pinned to the rule that
+    /// refused it.
+    #[test]
+    fn the_invariant_probes_name_what_they_break() {
+        assert_eq!(
+            one("client dave device_list=none").unwrap(),
+            Stmt::Client {
+                name: "dave".into(),
+                tier: Tier::Native,
+                kind: Kind::User,
+                device_list: DeviceListMode::None,
+            }
+        );
+        assert!(matches!(
+            one("client erin device_list=revoked").unwrap(),
+            Stmt::Client {
+                device_list: DeviceListMode::Revoked,
+                ..
+            }
+        ));
+        assert!(matches!(
+            one("client frank").unwrap(),
+            Stmt::Client {
+                device_list: DeviceListMode::Signed,
+                ..
+            }
+        ));
+        refused("client x device_list=maybe", "device_list");
+
+        assert_eq!(
+            one("external_join carol chat as=frank leaf_key=fresh").unwrap(),
+            Stmt::Join {
+                client: "carol".into(),
+                group: "chat".into(),
+                external: true,
+                uploader: Some("frank".into()),
+                fresh_leaf_key: true,
+            }
+        );
+        assert_eq!(
+            one("join carol chat via=external").unwrap(),
+            Stmt::Join {
+                client: "carol".into(),
+                group: "chat".into(),
+                external: true,
+                uploader: None,
+                fresh_leaf_key: false,
+            }
+        );
+        refused("join carol chat via=welcome as=frank", "external");
+        refused("join carol chat leaf_key=fresh", "external");
+        refused("external_join carol chat leaf_key=old", "leaf_key");
+
+        assert_eq!(
+            one("resync carol chat as=alice").unwrap(),
+            Stmt::Resync {
+                client: "carol".into(),
+                group: "chat".into(),
+                uploader: Some("alice".into()),
+            }
+        );
+        assert_eq!(
+            one("mark_revoked mallory").unwrap(),
+            Stmt::MarkRevoked {
+                client: "mallory".into()
+            }
+        );
+        refused("mark_revoked", "mark_revoked needs 1");
+
+        assert_eq!(
+            one("send_bad_commitment bob chat 31").unwrap(),
+            Stmt::SendBadCommitment {
+                client: "bob".into(),
+                group: "chat".into(),
+                len: 31,
+            }
+        );
+        refused("send_bad_commitment bob chat 32", "must not be 32");
+        refused("send_bad_commitment bob chat many", "length");
+        refused(
+            "send_bad_commitment bob chat",
+            "send_bad_commitment needs 3",
+        );
+
+        assert_eq!(
+            one("channel c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 visibility=invite mode=readable")
+                .unwrap(),
+            Stmt::Channel {
+                target: [0xc1; 16],
+                visibility: "invite".into(),
+                mode: "readable".into(),
+            }
+        );
+        assert_eq!(
+            one("channel c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1").unwrap(),
+            Stmt::Channel {
+                target: [0xc1; 16],
+                visibility: "private".into(),
+                mode: "e2ee".into(),
+            }
+        );
+        refused(
+            "channel c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 visibility=secret",
+            "visibility",
+        );
+        refused(
+            "channel c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 mode=plain",
+            "mode",
+        );
+
+        match one(
+            "expect_reject E_COMMIT_INVALID rule=external_joiner external_join carol chat as=frank",
+        )
+        .unwrap()
+        {
+            Stmt::ExpectReject {
+                code, rule, inner, ..
+            } => {
+                assert_eq!(code, "E_COMMIT_INVALID");
+                assert_eq!(rule.as_deref(), Some("external_joiner"));
+                assert!(matches!(
+                    *inner,
+                    Stmt::Join {
+                        uploader: Some(_),
+                        ..
+                    }
+                ));
+            }
+            other => panic!("{other:?}"),
+        }
+        // A rule shifts the inner statement one token along, and its body with it.
+        match one("expect_reject E_X rule=r send alice chat hello there").unwrap() {
+            Stmt::ExpectReject { inner, .. } => {
+                assert!(matches!(*inner, Stmt::Send { ref body, .. } if body == "hello there"));
+            }
+            other => panic!("{other:?}"),
+        }
+        match one("expect_reject E_X send alice chat hello there").unwrap() {
+            Stmt::ExpectReject { rule, .. } => assert_eq!(rule, None),
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn every_committed_scenario_parses() {
         for (file, src) in [
@@ -1005,6 +1291,18 @@ expect_reject E_BINDING join bob chat
             (
                 "retention_prune_then_resync.scn",
                 include_str!("../../scenarios/retention_prune_then_resync.scn"),
+            ),
+            (
+                "registration.scn",
+                include_str!("../../scenarios/registration.scn"),
+            ),
+            (
+                "commit_validity.scn",
+                include_str!("../../scenarios/commit_validity.scn"),
+            ),
+            (
+                "current_leaf_sends.scn",
+                include_str!("../../scenarios/current_leaf_sends.scn"),
             ),
         ] {
             parse(src, file).unwrap_or_else(|e| panic!("{file}:{}: {}", e.line, e.message));

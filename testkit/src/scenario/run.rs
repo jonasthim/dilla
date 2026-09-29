@@ -6,7 +6,7 @@
 //! call; against a real instance every client holds its own `HttpDs` — its own session and its
 //! own gateway connection.
 
-use super::{Scenario, Stmt};
+use super::{DeviceListMode, Scenario, Stmt};
 use crate::ds::remote::{control_get, control_post, instance_id as remote_instance_id};
 use crate::{DeliveryService, DsError, DsStub, HttpDs, InstanceConfig, TestClient, TestkitError};
 use dilla_core::identity::{Kind, Tier};
@@ -163,8 +163,23 @@ impl Runner {
                     false,
                     format!("expected rejection {code}, but it succeeded"),
                 ),
-                (Stmt::ExpectReject { code, status, .. }, Err(e)) => {
+                (
+                    Stmt::ExpectReject {
+                        code, status, rule, ..
+                    },
+                    Err(e),
+                ) => {
                     let text = e.to_string();
+                    // A rule, when named, must be the one the instance's E_COMMIT_INVALID names:
+                    // invariant 4 has a dozen reasons to refuse a commit, and a scenario about one
+                    // of them must not pass on another.
+                    let rule_ok = match (rule, &e) {
+                        (None, _) => true,
+                        (Some(want), TestkitError::Ds(DsError::CommitInvalid { reason })) => {
+                            reason == want
+                        }
+                        (Some(_), _) => false,
+                    };
                     // The status is checked only when the statement names one (`expect_425`):
                     // it comes from the refusal itself, so a matching code at the wrong status
                     // is a different refusal.
@@ -173,12 +188,15 @@ impl Runner {
                         (Some(want), TestkitError::Ds(ds)) => ds.http_status() == *want,
                         (Some(_), _) => false,
                     };
-                    let wanted = match status {
+                    let mut wanted = match status {
                         Some(s) => format!("{s} {code}"),
                         None => code.clone(),
                     };
+                    if let Some(rule) = rule {
+                        wanted.push_str(&format!(" rule={rule}"));
+                    }
                     (
-                        text.contains(code.as_str()) && status_ok,
+                        text.contains(code.as_str()) && status_ok && rule_ok,
                         format!("got {text}, wanted {wanted}"),
                     )
                 }
@@ -216,7 +234,12 @@ impl Runner {
                 Ok(())
             }
             Stmt::Instance { .. } => self.select_backend(),
-            Stmt::Client { name, tier, kind } => self.new_client(name, *tier, *kind, 4),
+            Stmt::Client {
+                name,
+                tier,
+                kind,
+                device_list,
+            } => self.new_client(name, *tier, *kind, 4, *device_list),
             Stmt::Group {
                 name,
                 kind,
@@ -259,6 +282,8 @@ impl Runner {
                 client,
                 group,
                 external,
+                uploader,
+                fresh_leaf_key,
             } => {
                 let target = self.group(group)?;
                 let (id, binding) = (target.id.clone(), target.binding.clone());
@@ -267,13 +292,12 @@ impl Runner {
                 // `unknown client <joiner>` and every `join … via=welcome` fails.
                 if !*external {
                     self.invite(client, group)?;
+                    return self
+                        .with_client(client, |actor, ds| actor.join_welcome(ds, &id, &binding));
                 }
-                self.with_client(client, |actor, ds| {
-                    if *external {
-                        actor.join_external(ds, &id, &binding)
-                    } else {
-                        actor.join_welcome(ds, &id, &binding)
-                    }
+                let uploader = uploader.as_deref().unwrap_or(client);
+                self.with_client_via(client, uploader, |actor, ds| {
+                    actor.join_external_with(ds, &id, &binding, *fresh_leaf_key)
                 })
             }
             Stmt::Send {
@@ -428,10 +452,17 @@ impl Runner {
                 let id = hex::encode(&self.group(group)?.id);
                 self.expect_listed("closed_groups", &id, group)
             }
-            Stmt::Resync { client, group } => {
+            Stmt::Resync {
+                client,
+                group,
+                uploader,
+            } => {
                 let target = self.group(group)?;
                 let (id, binding) = (target.id.clone(), target.binding.clone());
-                self.with_client(client, |actor, ds| actor.resync(ds, &id, &binding))
+                let uploader = uploader.as_deref().unwrap_or(client);
+                self.with_client_via(client, uploader, |actor, ds| {
+                    actor.resync(ds, &id, &binding)
+                })
             }
             Stmt::ForkReport { client, group } => {
                 let id = self.group(group)?.id.clone();
@@ -458,6 +489,46 @@ impl Runner {
                 control_post(
                     "/debug/admit",
                     &format!("{{\"group\":\"{id}\",\"device\":\"{device}\"}}"),
+                )?;
+                Ok(())
+            }
+            Stmt::MarkRevoked { client } => {
+                if !self.is_remote() {
+                    return Err(DsError::Unsupported(
+                        "DsStub keeps no device rows to revoke; use `ds <url>`".into(),
+                    )
+                    .into());
+                }
+                let device = self.device_of(client)?.to_hex();
+                control_post(
+                    "/debug/mark-revoked",
+                    &format!("{{\"device\":\"{device}\"}}"),
+                )?;
+                Ok(())
+            }
+            Stmt::SendBadCommitment { client, group, len } => {
+                let id = self.group(group)?.id.clone();
+                self.with_client(client, |actor, ds| actor.send_bad_commitment(ds, &id, *len))
+            }
+            Stmt::Channel {
+                target,
+                visibility,
+                mode,
+            } => {
+                if !self.is_remote() {
+                    return Err(DsError::Unsupported(
+                        "DsStub has no channels (invariant 1's mode rule); use `ds <url>`".into(),
+                    )
+                    .into());
+                }
+                control_post(
+                    "/debug/channel",
+                    &format!(
+                        "{{\"target\":\"{}\",\"visibility\":{},\"mode\":{}}}",
+                        hex::encode(target),
+                        json_string(visibility),
+                        json_string(mode)
+                    ),
                 )?;
                 Ok(())
             }
@@ -536,13 +607,15 @@ impl Runner {
     }
 
     /// Creates a client, enrols it with the delivery service and publishes `key_packages`
-    /// KeyPackages plus a last-resort one.
+    /// KeyPackages plus a last-resort one. Against an instance it also publishes the signed device
+    /// list `device_list` names.
     fn new_client(
         &mut self,
         name: &str,
         tier: Tier,
         kind: Kind,
         key_packages: usize,
+        device_list: DeviceListMode,
     ) -> Result<(), TestkitError> {
         if self.clients.contains_key(name) {
             return Err(TestkitError::Scenario(format!("client {name} exists")));
@@ -594,11 +667,22 @@ impl Runner {
             // The user signs its one device into its device list, as a real client does right
             // after registering: invariant 4 refuses any Add whose DSK is in no list the user
             // signed, so a client without one could never be added to anything.
+            // `device_list=none` and `device_list=revoked` are invariant 4's probes: a user who
+            // signed no list, and one whose list revokes this device.
             let added_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            ds.put_device_list(&enrolled.user_id, &client.signed_device_list(added_at))?;
+            match device_list {
+                DeviceListMode::Signed => {
+                    ds.put_device_list(&enrolled.user_id, &client.signed_device_list(added_at))?;
+                }
+                DeviceListMode::Revoked => ds.put_device_list(
+                    &enrolled.user_id,
+                    &client.signed_device_list_with(added_at, Some(added_at)),
+                )?,
+                DeviceListMode::None => {}
+            }
             if let Some(Backend::Remote { clients, .. }) = self.backend.as_mut() {
                 clients.insert(name.to_owned(), ds);
             }
@@ -623,7 +707,7 @@ impl Runner {
         let mut names = Vec::with_capacity(count);
         for i in 0..count {
             let name = format!("{group}-{}", first + i + 1);
-            self.new_client(&name, Tier::Native, Kind::User, 1)?;
+            self.new_client(&name, Tier::Native, Kind::User, 1, DeviceListMode::Signed)?;
             names.push(name);
         }
         let devices = names
@@ -700,6 +784,38 @@ impl Runner {
         result
     }
 
+    /// `with_client`, but every call `f` makes reaches the delivery service as `uploader` — its
+    /// session against an instance, its device against the stub. The client builds everything
+    /// with its own keys; only the upload is someone else's. That is the `as=` probe of invariant
+    /// 4's external-joiner clause: an instance must not let a device land a leaf in another's name.
+    fn with_client_via<T>(
+        &mut self,
+        name: &str,
+        uploader: &str,
+        f: impl FnOnce(&mut TestClient, &mut dyn DeliveryService) -> Result<T, TestkitError>,
+    ) -> Result<T, TestkitError> {
+        if uploader == name {
+            return self.with_client(name, f);
+        }
+        let uploading_device = self.device_of(uploader)?;
+        let mut client = self.take(name)?;
+        let result = match self.backend.as_mut() {
+            None => Err(no_instance()),
+            Some(Backend::Stub(stub)) => {
+                stub.act_as(uploading_device);
+                f(&mut client, stub.as_mut())
+            }
+            Some(Backend::Remote { clients, .. }) => match clients.get_mut(uploader) {
+                Some(ds) => f(&mut client, ds),
+                None => Err(TestkitError::Scenario(format!(
+                    "{uploader} holds no session"
+                ))),
+            },
+        };
+        self.clients.insert(name.to_owned(), client);
+        result
+    }
+
     /// A commit that adds `joiner`, so a `join ... via=welcome` has a Welcome waiting. The
     /// committer is the first other client, in name order, that is a member of the group.
     ///
@@ -765,6 +881,7 @@ fn actor_of(stmt: &Stmt) -> Option<&str> {
         Stmt::Group { creator, .. } => Some(creator),
         Stmt::Join { client, .. }
         | Stmt::Send { client, .. }
+        | Stmt::SendBadCommitment { client, .. }
         | Stmt::ExpectDecrypts { client, .. }
         | Stmt::Sync { client }
         | Stmt::GoOffline { client }

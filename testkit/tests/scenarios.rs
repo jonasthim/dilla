@@ -59,6 +59,50 @@ expect_reject E_BINDING send alice chat hello
     );
 }
 
+/// Invariant 8 against the stub, which reads the commitment as the instance does: a message whose
+/// `authenticated_data` is not 32 bytes is refused E_COMMITMENT_INVALID, and a well-formed one
+/// after it still goes through.
+#[test]
+fn a_commitment_of_the_wrong_length_is_refused() {
+    run(
+        "bad-commitment",
+        "\
+instance dilla
+client alice
+client bob
+group chat kind=text target=88888888888888888888888888888888 creator=alice
+join bob chat
+expect_reject E_COMMITMENT_INVALID send_bad_commitment alice chat 31
+expect_reject E_COMMITMENT_INVALID send_bad_commitment alice chat 33
+expect_reject E_COMMITMENT_INVALID send_bad_commitment alice chat 0
+send alice chat still well formed
+expect_decrypts bob chat still well formed
+",
+    );
+}
+
+/// `rule=` narrows an `expect_reject`: the right code refused for any reason other than the named
+/// invariant-4 rule fails the step, so a scenario about one rule cannot pass on another.
+#[test]
+fn expect_reject_with_a_rule_fails_on_any_other_refusal() {
+    let src = "\
+instance dilla
+client alice
+group chat kind=text target=77777777777777777777777777777777 creator=alice
+expect_reject E_COMMITMENT_INVALID rule=external_joiner send_bad_commitment alice chat 31
+";
+    let report = Runner::new(0x5eed)
+        .run(&parse(src, "wrong-rule").expect("parse"))
+        .expect("run");
+    assert!(!report.is_ok(), "{}", report.to_text());
+    let last = report.steps.last().expect("a step");
+    assert!(
+        last.detail.contains("rule=external_joiner"),
+        "{}",
+        last.detail
+    );
+}
+
 /// The verbs task 28 adds, against the stub: a bulk join batched by the creator, an explicit
 /// commit, "everything since the last assertion decrypted", a frame assertion on the last actor,
 /// and the stub's own clock.
@@ -163,6 +207,8 @@ fn the_control_listener_verbs_are_refused_by_the_stub() {
         "restore_snapshot before",
         "expect_quarantined bob",
         "expect_closed chat",
+        "mark_revoked bob",
+        "channel 99999999999999999999999999999999 mode=readable",
     ] {
         let src = format!(
             "\

@@ -27,7 +27,9 @@ pub use ds::{
     ResyncRequest, TreeResp, TreeResponse, UploadResult, WelcomeItem,
 };
 pub use fixtures::{FixtureFile, FixtureManifest, FixtureSpec, gen_public_group};
-pub use scenario::{ParseError, RunReport, Runner, Scenario, StepResult, Stmt, parse};
+pub use scenario::{
+    DeviceListMode, ParseError, RunReport, Runner, Scenario, StepResult, Stmt, parse,
+};
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

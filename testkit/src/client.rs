@@ -227,6 +227,13 @@ impl TestClient {
     /// publishes with `PUT /v1/users/{user_id}/device-list`, and what invariant 4 checks an Add's
     /// DSK against. `added_at` is the list's own timestamp for the entry.
     pub fn signed_device_list(&self, added_at: u64) -> DeviceList {
+        self.signed_device_list_with(added_at, None)
+    }
+
+    /// `signed_device_list` with this device's entry revoked at `revoked_at`: a list the user
+    /// signed that no longer vouches for the device, which invariant 4's Add clause must refuse
+    /// to find the device's DSK in.
+    pub fn signed_device_list_with(&self, added_at: u64, revoked_at: Option<u64>) -> DeviceList {
         let unsigned = DeviceListUnsigned {
             v: 1,
             user_id: self.identity.user_id,
@@ -237,7 +244,7 @@ impl TestClient {
                 dsk_pub: self.dsk.verifying_key().to_bytes(),
                 tier: self.identity.tier,
                 added_at,
-                revoked_at: None,
+                revoked_at,
             }],
         };
         let sig_ssk = SskSigner::from_bytes(&self.ssk_seed).sign_device_list(&unsigned);
@@ -451,6 +458,39 @@ impl TestClient {
         group_id: &[u8],
         expected: &DillaBinding,
     ) -> Result<(), TestkitError> {
+        self.join_external_with(ds, group_id, expected, false)
+    }
+
+    /// `join_external`, optionally with a leaf whose signature key is a fresh one rather than this
+    /// device's DSK: the credential still names this device and user, so only a check that the
+    /// leaf key IS the device's DSK tells the two apart (invariant 4's external-joiner clause,
+    /// deviation B36). The fresh key signs the commit and the GroupInfo, as a joiner that held
+    /// it would.
+    pub fn join_external_with(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        expected: &DillaBinding,
+        fresh_leaf_key: bool,
+    ) -> Result<(), TestkitError> {
+        let fresh = if fresh_leaf_key {
+            let key = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm())
+                .map_err(|e| TestkitError::Scenario(format!("a fresh leaf key: {e:?}")))?;
+            key.store(self.provider.storage())?;
+            Some(key)
+        } else {
+            None
+        };
+        let (signer, credential) = match &fresh {
+            Some(key) => (
+                key,
+                CredentialWithKey {
+                    credential: self.credential.credential.clone(),
+                    signature_key: key.public().into(),
+                },
+            ),
+            None => (&self.signer, self.credential()),
+        };
         let info = ds.group_info(group_id)?;
         let tree = ds.ratchet_tree(group_id)?;
         // No `is_empty()` escape: an empty `tree_hash` means the DS has no structural view of the
@@ -466,8 +506,8 @@ impl TestClient {
         let verifiable = deserialize_group_info(&info.group_info)?;
         let (group, commit, group_info) = DillaGroup::join_by_external_commit(
             &self.provider,
-            &self.signer,
-            self.credential(),
+            signer,
+            credential,
             verifiable,
             deserialize_tree(&tree.ratchet_tree)?,
             expected,
@@ -480,7 +520,7 @@ impl TestClient {
             group_id,
             ResyncRequest {
                 external_commit: serialize(&commit)?,
-                group_info: serialize(&group.export_group_info(&self.provider, &self.signer)?)?,
+                group_info: serialize(&group.export_group_info(&self.provider, signer)?)?,
             },
         );
         if let Err(refused) = posted {
@@ -501,6 +541,28 @@ impl TestClient {
         group_id: &[u8],
         body: &str,
     ) -> Result<MsgId, TestkitError> {
+        let (epoch, message, msg_id) = self.seal(group_id, body)?;
+        ds.post_message_from(group_id, epoch, message)?;
+        Ok(msg_id)
+    }
+
+    /// Invariant 8's malformed upload: a real message of this group whose `authenticated_data` —
+    /// the 32-byte franking commitment — is rewritten to `len` bytes. The field is cleartext in a
+    /// `PrivateMessage` (RFC 9420 §6.3), so the rewritten message still parses; only its AEAD no
+    /// longer opens, which the instance cannot see and a receiver would refuse.
+    pub fn send_bad_commitment(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        len: usize,
+    ) -> Result<(), TestkitError> {
+        let (epoch, message, _) = self.seal(group_id, "a commitment of the wrong length")?;
+        ds.post_message_from(group_id, epoch, with_authenticated_data_len(&message, len)?)?;
+        Ok(())
+    }
+
+    /// Frames `body` as an application message of the group's current epoch.
+    fn seal(&mut self, group_id: &[u8], body: &str) -> Result<(u64, Vec<u8>, MsgId), TestkitError> {
         let group = self
             .groups
             .get_mut(group_id)
@@ -523,9 +585,7 @@ impl TestClient {
         // The commitment `C` travels in the message's `authenticated_data`, which is where the
         // delivery service reads it: the upload carries nothing else.
         let out = group.create_message(&self.provider, &self.signer, &envelope)?;
-        let epoch = group.epoch();
-        ds.post_message_from(group_id, epoch, serialize(&out)?)?;
-        Ok(envelope.msg_id)
+        Ok((group.epoch(), serialize(&out)?, envelope.msg_id))
     }
 
     /// Commits a `Remove` of `target`'s leaf. The leaf is found by parsing `GET /tree` and
@@ -912,4 +972,183 @@ fn deserialize_tree(bytes: &[u8]) -> Result<RatchetTreeIn, TestkitError> {
     use tls_codec::Deserialize as _;
     RatchetTreeIn::tls_deserialize_exact(bytes)
         .map_err(|e| TestkitError::Scenario(format!("{e:?}")))
+}
+
+/// RFC 9420 §2.1.2's variable-length integer at `at`: (value, length of the prefix).
+fn read_varint(bytes: &[u8], at: usize) -> Result<(usize, usize), TestkitError> {
+    let truncated = || TestkitError::Scenario("a truncated MLS vector length".into());
+    let first = *bytes.get(at).ok_or_else(truncated)?;
+    let width = match first >> 6 {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        _ => {
+            return Err(TestkitError::Scenario(
+                "an invalid MLS vector length".into(),
+            ));
+        }
+    };
+    let prefix = bytes.get(at..at + width).ok_or_else(truncated)?;
+    let value = prefix[1..]
+        .iter()
+        .fold(usize::from(first & 0x3f), |n, b| (n << 8) | usize::from(*b));
+    Ok((value, width))
+}
+
+/// RFC 9420 §2.1.2's variable-length integer, in its shortest form.
+fn write_varint(n: usize) -> Result<Vec<u8>, TestkitError> {
+    match n {
+        0..=0x3f => Ok(vec![n as u8]),
+        0x40..=0x3fff => Ok(vec![0x40 | (n >> 8) as u8, n as u8]),
+        0x4000..=0x3fff_ffff => Ok(vec![
+            0x80 | (n >> 24) as u8,
+            (n >> 16) as u8,
+            (n >> 8) as u8,
+            n as u8,
+        ]),
+        _ => Err(TestkitError::Scenario(format!(
+            "{n} bytes do not fit an MLS vector"
+        ))),
+    }
+}
+
+/// Where `authenticated_data` sits in a serialized `MLSMessage` that carries a `PrivateMessage`:
+/// the start of its length prefix, the start of its bytes and their end. RFC 9420 §6.3:
+/// `version(u16) wire_format(u16) group_id<V> epoch(u64) content_type(u8) authenticated_data<V> …`.
+fn authenticated_data_span(message: &[u8]) -> Result<(usize, usize, usize), TestkitError> {
+    const MLS_PRIVATE_MESSAGE: [u8; 2] = [0x00, 0x02];
+    if message.get(2..4) != Some(&MLS_PRIVATE_MESSAGE[..]) {
+        return Err(TestkitError::Scenario(
+            "not a serialized PrivateMessage".into(),
+        ));
+    }
+    let (group_id_len, prefix) = read_varint(message, 4)?;
+    let start = 4 + prefix + group_id_len + 8 + 1;
+    let (aad_len, prefix) = read_varint(message, start)?;
+    let data = start + prefix;
+    let end = data + aad_len;
+    if end > message.len() {
+        return Err(TestkitError::Scenario(
+            "authenticated_data runs past the message".into(),
+        ));
+    }
+    Ok((start, data, end))
+}
+
+/// The same message with its `authenticated_data` rewritten to `len` bytes: the original bytes as
+/// far as they go, then zeros. Everything around the field is kept byte for byte.
+fn with_authenticated_data_len(message: &[u8], len: usize) -> Result<Vec<u8>, TestkitError> {
+    let (start, data, end) = authenticated_data_span(message)?;
+    let original = &message[data..end];
+    let mut out = message[..start].to_vec();
+    out.extend(write_varint(len)?);
+    out.extend((0..len).map(|i| original.get(i).copied().unwrap_or(0)));
+    out.extend_from_slice(&message[end..]);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dilla_core::ids::InstanceId;
+    use dilla_core::mls::GroupKind;
+
+    /// A real application message of a one-member text group, serialized as it is uploaded.
+    fn an_application_message() -> Vec<u8> {
+        let client = TestClient::new(
+            "alice",
+            UserId::from_bytes([0x01; 16]),
+            Tier::Native,
+            Kind::User,
+            7,
+        )
+        .expect("client");
+        let binding = DillaBinding {
+            v: 1,
+            instance_id: InstanceId::from_bytes([0x11; 16]),
+            community_id: None,
+            target_id: [0x22; 16],
+            kind: GroupKind::Text,
+            policy_version: 1,
+            e2ee_version: 1,
+            media_version: GroupKind::Text.media_version(),
+        };
+        let mut group = DillaGroup::create(
+            client.provider(),
+            client.signer(),
+            client.credential(),
+            GroupId::from_slice(&[0x22; 16]),
+            binding,
+            None,
+        )
+        .expect("group");
+        let envelope = Envelope {
+            v: 1,
+            msg_id: MsgId::from_bytes([0x33; 16]),
+            kind: EnvelopeType::Message,
+            thread_id: None,
+            reply_to: None,
+            body: "hello".into(),
+            attachments: Vec::new(),
+            previews: Vec::new(),
+            k_f: [0x06; 32],
+        };
+        let out = group
+            .create_message(client.provider(), client.signer(), &envelope)
+            .expect("message");
+        serialize(&out).expect("serialize")
+    }
+
+    #[test]
+    fn a_sent_message_carries_a_32_byte_commitment_where_the_span_says() {
+        let message = an_application_message();
+        let (_, data, end) = authenticated_data_span(&message).expect("span");
+        assert_eq!(end - data, 32);
+    }
+
+    /// The rewritten message still parses as the same group's message of the same epoch — the
+    /// instance must see a well-framed upload whose only fault is the commitment's length — and
+    /// everything after the field is untouched.
+    #[test]
+    fn the_commitment_is_rewritten_to_any_length_and_the_message_still_parses() {
+        let message = an_application_message();
+        let (_, _, end) = authenticated_data_span(&message).expect("span");
+        let original = deserialize_protocol(&message).expect("original");
+        for len in [0, 1, 31, 33, 63, 64, 100, 20_000] {
+            let bad = with_authenticated_data_len(&message, len).expect("rewrite");
+            let (_, data, new_end) = authenticated_data_span(&bad).expect("span");
+            assert_eq!(new_end - data, len, "len {len}");
+            assert_eq!(
+                &bad[new_end..],
+                &message[end..],
+                "len {len}: the tail moved"
+            );
+            let parsed = deserialize_protocol(&bad).unwrap_or_else(|e| panic!("len {len}: {e}"));
+            assert_eq!(parsed.epoch(), original.epoch(), "len {len}");
+            assert_eq!(parsed.group_id(), original.group_id(), "len {len}");
+        }
+    }
+
+    #[test]
+    fn only_a_private_message_is_rewritten() {
+        let mut message = an_application_message();
+        message[3] = 0x01; // mls_public_message
+        assert!(with_authenticated_data_len(&message, 31).is_err());
+        assert!(with_authenticated_data_len(&[0x00, 0x01], 31).is_err());
+    }
+
+    #[test]
+    fn varints_round_trip_at_each_width() {
+        for n in [0, 0x3f, 0x40, 0x3fff, 0x4000, 0x3fff_ffff] {
+            let bytes = write_varint(n).expect("fits");
+            assert_eq!(
+                read_varint(&bytes, 0).expect("reads"),
+                (n, bytes.len()),
+                "{n}"
+            );
+        }
+        assert!(write_varint(0x4000_0000).is_err());
+        assert!(read_varint(&[0xc0], 0).is_err());
+        assert!(read_varint(&[0x40], 0).is_err());
+    }
 }

@@ -1,0 +1,25 @@
+# Invariant 8: an application message is accepted only from a device whose leaf is in the current
+# tree (403 E_LEAF_NOT_CURRENT), and only when its authenticated_data - the franking commitment C -
+# is exactly 32 bytes (422 E_COMMITMENT_INVALID). Bob's commitments of 31, 33 and 0 bytes are
+# refused while his well-formed message goes through; once the instance's Remove of bob is
+# committed, his next message is refused because his leaf is gone, and the group carries on.
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8 community=none creator=alice
+join bob chat via=welcome
+join carol chat via=welcome
+sync bob
+sync carol
+expect_reject E_COMMITMENT_INVALID send_bad_commitment bob chat 31
+expect_reject E_COMMITMENT_INVALID send_bad_commitment bob chat 33
+expect_reject E_COMMITMENT_INVALID send_bad_commitment bob chat 0
+send bob chat a 32-byte commitment is accepted
+expect_decrypts carol chat a 32-byte commitment is accepted
+kick alice bob
+commit alice
+sync carol
+expect_reject E_LEAF_NOT_CURRENT send bob chat my leaf is gone
+send carol chat the group carries on
+expect_decrypts alice chat the group carries on

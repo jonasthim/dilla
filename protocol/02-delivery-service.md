@@ -331,6 +331,23 @@ Added for the remote delivery service:
   and does nothing else (invariant 7).
 - `admit <group> <client>` — the instance proposes adding the client's device (invariant 6).
 
+Probes for invariants 1, 4 and 8, which break exactly one rule each:
+
+- `expect_reject <code> rule=<rule> <statement>` — as `expect_reject`, and the `E_COMMIT_INVALID`
+  must name that invariant-4 rule (`member_remove_scope`, `outstanding_proposals`,
+  `external_joiner`, …).
+- `client <name> device_list=none|revoked` — the client's user publishes no signed device list, or
+  one whose entry for the device is revoked (default `signed`).
+- `external_join <client> <group> [as=<uploader>] [leaf_key=fresh]` and
+  `resync <client> <group> [as=<uploader>]` — the client's external commit is uploaded under the
+  uploader's session, or its leaf carries a signature key that is not the device's DSK.
+- `mark_revoked <client>` — the test host marks the device revoked in the store and leaves its
+  session, the window a revocation can race.
+- `send_bad_commitment <client> <group> <len>` — a message whose `authenticated_data` is `len`
+  bytes rather than 32 (invariant 8).
+- `channel <target> [visibility=private|invite|discoverable] [mode=e2ee|readable]` — the test host
+  records the channel invariant 1 checks a `text` group against.
+
 Against an instance, `join … via=welcome` is the protocol's own join: the instance proposes the Add
 and a member commits it, because a member's own Add is refused by every receiver in a `text` or
 `call` group (`01-groups.md`, "Client policy for proposals from members").
