@@ -30,14 +30,20 @@ type healStatusResponse struct {
 
 // healStatus is endpoint 13: `[epoch, next_seq, generation, need_from_seq]`. The generation is how
 // a client that has been away tells a restore from an ordinary gap — it is the same number `hello`
-// and `ready` carry, and a change in it is what makes the rest of this answer worth acting on.
+// and `ready` carry, and a change in it is what makes the rest of this answer worth acting on. It
+// is member-only: a non-member gets the same E_NOT_FOUND an unknown group does.
 func (h *Groups) healStatus(w http.ResponseWriter, r *http.Request) {
 	groupID, err := server.PathID(r, "id")
 	if err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	out, err := h.DS.HealStatus(r.Context(), groupID)
+	session, err := sessionOf(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	out, err := h.DS.HealStatus(r.Context(), session, groupID)
 	if err != nil {
 		server.WriteError(w, dsError(err))
 		return

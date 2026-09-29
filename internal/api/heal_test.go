@@ -49,6 +49,23 @@ func TestHealStatusServesTheEpochTheHighWaterAndTheGeneration(t *testing.T) {
 	}
 }
 
+// A group that EXISTS is still 404 to a device that is not a member of it: every group-scoped read
+// answers a non-member E_NOT_FOUND so that group existence is not probeable, and the heal status
+// (epoch, high-water, generation) is no exception.
+func TestHealStatusOfAGroupTheCallerIsNotInIsFourZeroFour(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+
+	// h.session is the CREATING session, which is not a leaf of the fixture's tree.
+	res := h.do(t, http.MethodGet, "/v1/groups/"+h.groupID.String()+"/heal", h.session, nil)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", res.Code, res.Body.String())
+	}
+	if got := errorCode(t, res); got != string(server.CodeNotFound) {
+		t.Fatalf("code = %s, want %s", got, server.CodeNotFound)
+	}
+}
+
 // An unknown group is 404, and the same 404 is what a non-existent id gets: the status endpoint
 // says nothing a client could not already ask `GET /info` for.
 func TestHealStatusOfAnUnknownGroupIsFourZeroFour(t *testing.T) {
@@ -68,6 +85,7 @@ func TestHealAdoptsTheUploadedGroupInfoAndAnswersEpochThenNextSeq(t *testing.T) 
 	h := newGroupsAPI(t)
 	h.mustCreate(t)
 	member := h.memberToken(t)
+	h.restore(t)
 
 	body := mustCBOR(t, []any{h.fixture.groupInfo, []any{}, nil})
 	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/heal", member, body)
@@ -120,6 +138,7 @@ func TestHealRefusesATailOverSixtyFourItems(t *testing.T) {
 func TestHealByANonMemberIsRefused(t *testing.T) {
 	h := newGroupsAPI(t)
 	h.mustCreate(t)
+	h.restore(t)
 
 	body := mustCBOR(t, []any{h.fixture.groupInfo, []any{}, nil})
 	// h.session is the CREATING session, which is not a leaf of the fixture's tree.
@@ -129,5 +148,35 @@ func TestHealByANonMemberIsRefused(t *testing.T) {
 	}
 	if got := errorCode(t, res); got != string(server.CodeForbidden) {
 		t.Fatalf("code = %s, want %s", got, server.CodeForbidden)
+	}
+}
+
+// POST /heal is invariant 11's post-restore route and nothing else: on a group no restore marked
+// epoch-unknown it is refused, so it can never serve as a second commit path beside POST /commit.
+func TestHealOfAGroupThatWasNeverRestoredIsRefused(t *testing.T) {
+	h := newGroupsAPI(t)
+	h.mustCreate(t)
+	member := h.memberToken(t)
+
+	body := mustCBOR(t, []any{h.fixture.groupInfo, []any{}, nil})
+	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/heal", member, body)
+	if res.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422: %s", res.Code, res.Body.String())
+	}
+	if got := errorCode(t, res); got != "E_COMMIT_INVALID" {
+		t.Fatalf("code = %s, want E_COMMIT_INVALID", got)
+	}
+}
+
+// restore runs invariant 11's first half on the harness's delivery service, the step `dillad
+// restore` performs before any heal can be accepted.
+func (h *groupsAPI) restore(t *testing.T) {
+	t.Helper()
+	instance, err := h.deps.Repo.GetInstance(context.Background())
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if err := h.ds.OnRestore(context.Background(), instance.Generation+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
 	}
 }

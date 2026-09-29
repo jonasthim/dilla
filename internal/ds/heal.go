@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
@@ -96,12 +97,19 @@ func (d *DS) OnRestore(ctx context.Context, generation uint64) error {
 }
 
 // HealStatus tells a member what the instance still needs.
-func (d *DS) HealStatus(ctx context.Context, groupID id.ID) (HealStatus, error) {
+//
+// It is member-only, like every other group-scoped read: a caller whose device is not a member is
+// answered E_NOT_FOUND, so neither the group's existence nor its epoch, high-water and generation
+// can be probed by any enrolled device on the instance (`requireMember`'s own comment).
+func (d *DS) HealStatus(ctx context.Context, s Session, groupID id.ID) (HealStatus, error) {
 	row, err := d.opts.Store.GetGroup(ctx, groupID)
 	if errors.Is(err, store.ErrNotFound) {
 		return HealStatus{}, errNotFound("group")
 	}
 	if err != nil {
+		return HealStatus{}, err
+	}
+	if err := d.requireMember(ctx, groupID, s); err != nil {
 		return HealStatus{}, err
 	}
 	instance, err := d.opts.Store.GetInstance(ctx)
@@ -125,9 +133,19 @@ func (d *DS) HealStatus(ctx context.Context, groupID id.ID) (HealStatus, error) 
 // uploads the ratchet tree in the same request and the instance reseeds from it. That is the one
 // upload where the tree is allowed, because the instance has none, and RFC 9420 §12.4.3.3's signed
 // tree_hash is what makes that source safe.
+//
+// Heal is NOT a second commit path. It is refused unless a restore has marked the group
+// epoch-unknown and the heal window is still open, and every commit the tail replays passes
+// invariant 4's clauses (`checkHealedCommit`) before it is merged. Without both, any enrolled
+// member could merge an Add the channel ACL refuses by uploading it as a one-item "tail" together
+// with a GroupInfo it signs itself for the result — every adoption check below only proves that
+// the member built the state it claims.
 func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) (CommitResult, error) {
 	if len(h.Tail) > maxHealTail {
 		return CommitResult{}, errInvalid("the handshake tail carries more than 64 items")
+	}
+	if s.Scope != auth.ScopeEnrolled {
+		return CommitResult{}, errForbidden("a heal needs an enrolled session")
 	}
 	unlock := d.lock(groupID)
 	defer unlock()
@@ -137,6 +155,9 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 		return CommitResult{}, errNotFound("group")
 	}
 	if err != nil {
+		return CommitResult{}, err
+	}
+	if err := d.checkHealState(row); err != nil {
 		return CommitResult{}, err
 	}
 
@@ -152,6 +173,7 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	}()
 
 	var group *mlswasi.PublicGroup
+	reseeded := false
 	switch {
 	case len(row.PublicGroupState) > 0:
 		group, err = inst.PublicGroupImport(ctx, row.PublicGroupState, groupID[:])
@@ -164,6 +186,7 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 		if err != nil {
 			return CommitResult{}, errCommitInvalid("reseed", err.Error())
 		}
+		reseeded = true
 	default:
 		return CommitResult{}, errCommitInvalid("reseed",
 			"the instance holds no state for this group and the request carries no ratchet tree")
@@ -178,22 +201,17 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 		}
 	}()
 
-	// Replay the tail. Every item is processed and merged in order; a gap or a rejection is a
-	// refusal, not a partial adoption.
-	for _, item := range h.Tail {
-		if healTailAlreadyApplied(item, row) {
-			continue // already applied before the backup was taken
-		}
-		processed, err := group.Process(ctx, item.Blob)
-		if err != nil {
-			return CommitResult{}, errCommitInvalid("tail", err.Error())
-		}
-		if processed.Staged == nil {
-			continue // a proposal: queued, not merged
-		}
-		if _, err := group.Merge(ctx, *processed.Staged); err != nil {
-			return CommitResult{}, errCommitInvalid("tail", err.Error())
-		}
+	base, err := group.State(ctx)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	// Replay the tail. Every item the rebuilt group does not already hold is processed, checked
+	// and merged (or queued) in order; a gap or a rejection is a refusal, not a partial adoption.
+	replayed, err := d.replayHealTail(ctx, groupID, group, healBase{
+		seq: row.Seq, epoch: base.Epoch, reseeded: reseeded,
+	}, h.Tail)
+	if err != nil {
+		return CommitResult{}, err
 	}
 
 	state, err := group.State(ctx)
@@ -233,26 +251,33 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	// behind for everyone else: every other member catches up with
 	// `GET /handshakes?from=<its cursor>` and would receive nothing for the epochs the instance
 	// just adopted, while the response's `next_seq` still reported the pre-heal high-water.
+	//
+	// Every column is what the REPLAY derived, never what the member claimed: `GetCommitAtEpoch`
+	// selects on kind and epoch to name a winning commit, the catch-up serves both to every other
+	// member, and invariant 9 quarantines the SenderDevice of a reported commit. An item the
+	// restored log already holds (its seq is at or below the restored high-water) is not written a
+	// second time.
 	var high uint64
 	var members memberView
 	err = d.opts.Store.Tx(ctx, func(tx store.Repository) error {
 		high = row.Seq
-		for _, item := range h.Tail {
-			if healTailAlreadyApplied(item, row) {
-				continue // already in the log before the backup was taken
+		for _, r := range replayed {
+			if r.item.Seq <= row.Seq {
+				continue // already in the restored log
 			}
 			seq, err := nextSeq(ctx, tx, groupID)
 			if err != nil {
 				return err
 			}
 			if err := tx.AppendHandshake(ctx, store.HandshakeRow{
-				GroupID:    groupID,
-				Seq:        seq,
-				Epoch:      item.Epoch,
-				Kind:       item.Kind,
-				SenderLeaf: item.Sender,
-				Blob:       item.Blob,
-				Created:    d.now(),
+				GroupID:      groupID,
+				Seq:          seq,
+				Epoch:        r.epoch,
+				Kind:         r.kind,
+				SenderLeaf:   r.senderLeaf,
+				SenderDevice: r.senderDevice,
+				Blob:         r.item.Blob,
+				Created:      d.now(),
 			}); err != nil {
 				return err
 			}
@@ -289,17 +314,280 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	return CommitResult{Seq: high, Epoch: state.Epoch}, nil
 }
 
-// healTailAlreadyApplied reports whether the instance's own restored state already covers the
-// item. It is one function because the replay loop and the append loop must agree exactly: a
-// predicate that drifted between them would either replay a handshake the blob already holds
-// (which the guest refuses, turning a legitimate heal into E_COMMIT_INVALID) or write a row for an
-// epoch it never replayed.
+// checkHealState is the gate that keeps Heal the post-restore path it is written for. protocol/02
+// invariant 11 defines the heal over a group a restore made epoch-unknown, inside the 24-hour
+// window; outside that state the one way to move a group's epoch is POST /commit, with invariants
+// 3, 4 and 5 in front of it.
+func (d *DS) checkHealState(row store.GroupRow) error {
+	if row.ClosedAt != nil {
+		return errCommitInvalid("heal_state", "the group is closed")
+	}
+	if !row.EpochUnknown {
+		return errCommitInvalid("heal_state",
+			"the group is not awaiting a heal: no restore has marked it epoch-unknown")
+	}
+	if row.HealDeadline != nil && d.now() >= *row.HealDeadline {
+		return errCommitInvalid("heal_state", "the heal window has closed")
+	}
+	return nil
+}
+
+// healBase is what the rebuilt group already holds before the tail is replayed.
+type healBase struct {
+	seq      uint64 // the restored log's high-water
+	epoch    uint64 // the rebuilt group's epoch
+	reseeded bool   // built from the member's tree rather than the instance's own blob
+}
+
+// healTailAlreadyApplied reports whether the rebuilt group already holds the item, so replaying
+// it would be a wrong-epoch (or duplicate) refusal of a legitimate heal.
 //
-// The blob check is the second half for a reason: on the RESEED path the instance holds no state
-// at all, so nothing in the tail has been applied and every item must be replayed, whatever its
-// seq claims.
-func healTailAlreadyApplied(item HealTailItem, row store.GroupRow) bool {
-	return item.Seq <= row.Seq && len(row.PublicGroupState) > 0
+// On the blob path the restored blob covers exactly the log up to its high-water, so the answer is
+// the item's seq. On the RESEED path the group was built from the member's tree at the uploaded
+// GroupInfo's epoch — the member's tip — so every item for an EARLIER epoch is already baked into
+// it, whatever its seq; an item at the tip epoch (a proposal the tip has not committed yet) is not.
+// A member that misstates an item's epoch or seq gains nothing: an item it hides is simply not
+// replayed or appended, and one it misplaces fails to process.
+func healTailAlreadyApplied(item HealTailItem, b healBase) bool {
+	if b.reseeded {
+		return item.Epoch < b.epoch
+	}
+	return item.Seq <= b.seq
+}
+
+// healReplayed is one tail item as the replay saw it: every field but the item itself is derived
+// by the guest or from the tree, never taken from the member's upload.
+type healReplayed struct {
+	item         HealTailItem
+	epoch        uint64
+	kind         uint8
+	senderLeaf   *uint32
+	senderDevice *id.ID
+}
+
+// leafIdentity is the device and user behind one leaf, read from the leaf's own credential.
+type leafIdentity struct {
+	device id.ID
+	user   id.ID
+}
+
+func leafIdentities(state mlswasi.GroupState) map[uint32]leafIdentity {
+	out := make(map[uint32]leafIdentity, len(state.Members))
+	for _, m := range state.Members {
+		device, user, err := decodeCredentialIdentity(m.CredentialIdentity)
+		if err != nil {
+			continue
+		}
+		out[m.LeafIndex] = leafIdentity{device: device, user: user}
+	}
+	return out
+}
+
+func deviceAtLeaf(leaves map[uint32]leafIdentity, leaf *uint32) *id.ID {
+	if leaf == nil {
+		return nil
+	}
+	who, ok := leaves[*leaf]
+	if !ok {
+		return nil
+	}
+	device := who.device
+	return &device
+}
+
+// replayHealTail processes every tail item the rebuilt group does not already hold, in order.
+//
+// A proposal is queued in the guest, not merely processed: `Process` writes nothing, and a later
+// commit in the same tail that references the proposal by ref would otherwise fail to process —
+// and the healed state would be missing a proposal the members hold. A commit goes through
+// `replayHealCommit`, which checks it before it merges it.
+func (d *DS) replayHealTail(ctx context.Context, groupID id.ID, g *mlswasi.PublicGroup, b healBase, tail []HealTailItem) ([]healReplayed, error) {
+	out := make([]healReplayed, 0, len(tail))
+	for _, item := range tail {
+		if healTailAlreadyApplied(item, b) {
+			continue
+		}
+		before, err := g.State(ctx)
+		if err != nil {
+			return nil, err
+		}
+		leaves := leafIdentities(before)
+		processed, err := g.Process(ctx, item.Blob)
+		if err != nil {
+			return nil, errCommitInvalid("tail", err.Error())
+		}
+		switch processed.Kind {
+		case mlswasi.KindProposal, mlswasi.KindExternalJoin:
+			if _, err := g.ProposalPut(ctx, 0, item.Blob); err != nil {
+				return nil, errCommitInvalid("tail", err.Error())
+			}
+			out = append(out, healReplayed{
+				item:         item,
+				epoch:        processed.Epoch,
+				kind:         handshakeProposal,
+				senderLeaf:   processed.SenderLeaf,
+				senderDevice: deviceAtLeaf(leaves, processed.SenderLeaf),
+			})
+		case mlswasi.KindCommit:
+			r, err := d.replayHealCommit(ctx, groupID, g, leaves, processed)
+			if err != nil {
+				return nil, err
+			}
+			r.item = item
+			out = append(out, r)
+		default:
+			return nil, errCommitInvalid("tail", "the tail carries a message the group rejects")
+		}
+	}
+	return out, nil
+}
+
+// replayHealCommit is invariant 4 over one replayed commit, then the merge.
+//
+// The clauses that are about the commit's CONTENT run here exactly as the commit path runs them:
+// no Update from the committer, a member-originated Remove only of the committer's own user, every
+// Add's device known, unrevoked, in its user's newest signed device list and eligible under the
+// channel ACL, and an external commit's Remove only of the joiner's own previous leaf. The
+// identities come from the rebuilt tree as it stood before the commit — the committer is whoever
+// signed it, not the device uploading the heal, and `mls_members` describes the restored epoch,
+// not the one the replay has reached.
+//
+// Clause 1 (every outstanding instance proposal is referenced) and invariant 5's freeze are NOT
+// re-run: both are judged against the instance's live proposal queue at the moment of the original
+// commit, and the restored database's queue describes the backup's epoch, not the ones the tail
+// crosses. A replayed commit that legitimately omitted a proposal voided after the backup would be
+// refused by them.
+func (d *DS) replayHealCommit(ctx context.Context, groupID id.ID, g *mlswasi.PublicGroup, leaves map[uint32]leafIdentity, p mlswasi.Processed) (healReplayed, error) {
+	if p.Staged == nil {
+		return healReplayed{}, errCommitInvalid("tail", "a commit in the tail did not stage")
+	}
+	merged := false
+	defer func() {
+		if !merged {
+			if derr := g.Discard(ctx, *p.Staged); derr != nil {
+				d.log().Warn("discarding a refused heal commit failed", "group", groupID, "err", derr)
+			}
+		}
+	}()
+	if err := d.checkHealedCommit(ctx, groupID, leaves, p); err != nil {
+		return healReplayed{}, err
+	}
+	epoch, err := g.Merge(ctx, *p.Staged)
+	if err != nil {
+		return healReplayed{}, errCommitInvalid("tail", err.Error())
+	}
+	merged = true
+
+	r := healReplayed{epoch: epoch, senderLeaf: p.SenderLeaf}
+	if p.SenderLeaf != nil {
+		r.kind = handshakeCommit
+		r.senderDevice = deviceAtLeaf(leaves, p.SenderLeaf)
+		return r, nil
+	}
+	r.kind = handshakeExternalCommit
+	after, err := g.State(ctx)
+	if err != nil {
+		return healReplayed{}, err
+	}
+	joiner, err := d.checkHealedExternalCommit(ctx, groupID, leaves, after, p.Applied)
+	if err != nil {
+		return healReplayed{}, err
+	}
+	r.senderDevice = &joiner
+	return r, nil
+}
+
+// checkHealedCommit is invariant 4's content clauses over one replayed commit, before its merge.
+// The clause numbers are protocol/02's, as in `checkAppliedProposals`.
+func (d *DS) checkHealedCommit(ctx context.Context, groupID id.ID, leaves map[uint32]leafIdentity, p mlswasi.Processed) error {
+	var committer *leafIdentity
+	if p.SenderLeaf != nil {
+		who, ok := leaves[*p.SenderLeaf]
+		if !ok {
+			return errCommitInvalid("structural", "a commit in the tail names a leaf the group does not hold")
+		}
+		committer = &who
+	}
+	for _, a := range p.Applied {
+		switch a.Kind {
+		case mlswasi.ProposalUpdate:
+			// Clause 2: no Update from the committer.
+			if a.SenderLeaf != nil && p.SenderLeaf != nil && *a.SenderLeaf == *p.SenderLeaf {
+				return errCommitInvalid("committer_update", "the commit carries the committer's own Update")
+			}
+		case mlswasi.ProposalRemove:
+			// Clause 3: every member-originated Remove targets the committer's own user. An
+			// instance Remove (no sender leaf) is invariant 6's, and an external commit's own
+			// Remove is checked after the merge, where the joiner can be seen.
+			if a.SenderLeaf == nil || a.TargetLeaf == nil || committer == nil {
+				continue
+			}
+			target, ok := leaves[*a.TargetLeaf]
+			if !ok || target.user != committer.user {
+				return errCommitInvalid("member_remove_scope",
+					"a member-originated Remove may only target the committer's own user")
+			}
+		case mlswasi.ProposalAdd:
+			// Clause 4: the added device is known, unrevoked, listed and eligible.
+			if err := d.checkAddedMember(ctx, groupID, a); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkHealedExternalCommit is R25's scope clause over a replayed external commit, and returns the
+// joining device. An external commit adds exactly one leaf, the joiner's: on a resync it also
+// Removes that same device's previous leaf, so a removed device must be back in the tree after the
+// merge; on a fresh join nothing is removed and the joiner is the one device the merge added,
+// which must pass the same eligibility clause an Add does.
+func (d *DS) checkHealedExternalCommit(ctx context.Context, groupID id.ID, before map[uint32]leafIdentity, after mlswasi.GroupState, applied []mlswasi.AppliedProposal) (id.ID, error) {
+	present := make(map[id.ID]struct{}, len(before))
+	for _, who := range before {
+		present[who.device] = struct{}{}
+	}
+	now := make(map[id.ID][]byte, len(after.Members))
+	for _, m := range after.Members {
+		device, _, err := decodeCredentialIdentity(m.CredentialIdentity)
+		if err != nil {
+			continue
+		}
+		now[device] = m.CredentialIdentity
+	}
+
+	var joiner id.ID
+	found := false
+	for _, a := range applied {
+		if a.Kind != mlswasi.ProposalRemove || a.TargetLeaf == nil {
+			continue
+		}
+		target, ok := before[*a.TargetLeaf]
+		if _, back := now[target.device]; !ok || !back || (found && target.device != joiner) {
+			return id.ID{}, errCommitInvalid("external_commit_remove_scope",
+				"an external commit may only Remove the joining device's own previous leaf")
+		}
+		joiner, found = target.device, true
+	}
+	if found {
+		return joiner, nil
+	}
+
+	var added []id.ID
+	for device := range now {
+		if _, was := present[device]; !was {
+			added = append(added, device)
+		}
+	}
+	if len(added) != 1 {
+		return id.ID{}, errCommitInvalid("structural", "an external commit must add exactly one device")
+	}
+	if err := d.checkAddedMember(ctx, groupID, mlswasi.AppliedProposal{
+		Kind: mlswasi.ProposalAdd, CredentialIdentity: now[added[0]],
+	}); err != nil {
+		return id.ID{}, err
+	}
+	return added[0], nil
 }
 
 // signerLeafOf is the leaf the healing device occupies in the rebuilt tree.

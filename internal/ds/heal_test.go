@@ -4,15 +4,17 @@ package ds_test
 // epoch-unknown, a member heals a group by uploading its member-signed GroupInfo and its handshake
 // tail, and a group nobody heals inside the window is closed.
 //
-// WHAT THE COMMITTED FIXTURE GIVES, AND WHAT IT WITHHOLDS, shapes three of these tests, exactly as
-// it shapes commit_test.go, proposal_test.go and directory_harness_test.go before them:
+// WHAT THE COMMITTED FIXTURE GIVES, AND WHAT IT WITHHOLDS, shapes several of these tests, exactly
+// as it shapes commit_test.go, proposal_test.go and directory_harness_test.go before them:
 //
-//   - `testkit/fixtures/ds-1500` ships ONE GroupInfo, at epoch 6 and signed by leaf 0. Invariant
-//     4 wants epoch n+1, so no commit in this repository can be ACCEPTED (commit_test.go:670).
-//     Every test here that the brief drives through `DS.Commit` is therefore driven through the
-//     same state transition written straight into SQL — the epoch column IS what `Heal` compares
-//     against — or, where the assertion is about the tail replaying, through the fixture's one
-//     PROPOSAL, which a PublicGroup processes without moving the epoch or the tree hash.
+//   - `testkit/fixtures/ds-1500` ships the base GroupInfo (epoch 6, signed by leaf 0) and, since
+//     task 27's fix round 1, `commits/09.group_info.mls`: the GroupInfo of the epoch the
+//     creator's self-update `commits/09.mls` merges to. That pair is what lets a heal's tail
+//     MERGE and move the instance forward, which is invariant 11's central promise.
+//   - The fixture's one proposal, `remove_leaf0.mls`, is the instance's external Remove of leaf 0
+//     at the base epoch. It is what a tail that only queues looks like.
+//   - Commits 00-07 each Add 256 devices this instance has never enrolled. They are what a tail
+//     that tries to carry an Add past invariant 4 looks like.
 //   - The one KeyPackage the fixture ships carries no `last_resort` extension and cannot be
 //     minted a second time (directory_harness_test.go's header), so the directory a restore
 //     purges is seeded through the store, which is where the purge rule lives anyway.
@@ -30,6 +32,7 @@ import (
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
@@ -65,7 +68,7 @@ func TestOnRestoreBumpsTheGenerationMarksEveryGroupUnknownAndPurgesKeyPackages(t
 	if !h.isClosed(t, call) {
 		t.Error("the call group is still open after a restore")
 	}
-	status, err := h.ds.HealStatus(context.Background(), g.id)
+	status, err := h.ds.HealStatus(context.Background(), g.session, g.id)
 	if err != nil {
 		t.Fatalf("HealStatus: %v", err)
 	}
@@ -106,36 +109,35 @@ func TestAHealBelowTheStoredEpochIsRefused(t *testing.T) {
 	}
 }
 
-// The happy path: the tail replays cleanly through the restored blob and the rebuilt tree's hash
-// equals the GroupInfo's.
+// The happy path: the tail replays cleanly through the restored blob, MERGES, and the rebuilt
+// tree's hash equals the GroupInfo's, so the instance moves forward to the members' epoch.
 //
-// DEVIATION from the brief, whose tail is a COMMIT and whose GroupInfo is the one that commit
-// produced. The fixture ships no GroupInfo at epoch 7, so a commit in the tail would leave the
-// rebuilt tree at a hash no uploadable GroupInfo names, and the adoption could never be asserted.
-// The tail here is the fixture's one PROPOSAL, which is the other half of the same loop —
-// `Process` returns it with no staged handle, so it is queued and not merged — and it exercises
-// everything the adoption turns on: the import from the restored blob, the replay, the signature,
-// epoch and tree-hash checks, the appended handshake rows, the new high-water and the cleared
-// epoch_unknown.
+// The restored blob is the fixture's base epoch and the members are one commit ahead of it: the
+// tail is the creator's self-update `commits/09.mls` and the GroupInfo is the one it merges to.
 func TestAHealWhoseTailReplaysCleanlyIsAdopted(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
-	tail := h.tailFrom(t, g, 0)
+	tail := h.commitTail(t, g, 0)
 	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
 		t.Fatalf("OnRestore: %v", err)
 	}
 
 	out, err := h.ds.Heal(context.Background(), g.session, g.id, ds.HealRequest{
-		GroupInfo: h.groupInfoAt(t, g, g.Epoch()),
+		GroupInfo: h.groupInfoAt(t, g, g.Epoch()+1),
 		Tail:      tail,
 	})
 	if err != nil {
 		t.Fatalf("Heal: %v", err)
 	}
-	if out.Epoch != g.Epoch() {
-		t.Fatalf("healed to epoch %d, want %d", out.Epoch, g.Epoch())
+	if out.Epoch != g.Epoch()+1 {
+		t.Fatalf("healed to epoch %d, want %d: the tail's commit must move the instance forward",
+			out.Epoch, g.Epoch()+1)
 	}
-	if h.epochUnknown(t, g.id) {
+	row := h.groupRow(t, g.id)
+	if row.Epoch != g.Epoch()+1 {
+		t.Errorf("the stored epoch is %d, want %d", row.Epoch, g.Epoch()+1)
+	}
+	if row.EpochUnknown {
 		t.Error("an adopted heal clears epoch_unknown")
 	}
 	// The replayed tail is APPENDED and the high-water advances with it: without that, every other
@@ -147,8 +149,226 @@ func TestAHealWhoseTailReplaysCleanlyIsAdopted(t *testing.T) {
 	if got := h.handshakeCount(t, g.id); got != int64(len(tail)) {
 		t.Errorf("%d handshake rows, want %d", got, len(tail))
 	}
-	if got := h.storedSeq(t, g.id); got != out.Seq {
-		t.Errorf("the group's seq column is %d, want %d", got, out.Seq)
+	if row.Seq != out.Seq {
+		t.Errorf("the group's seq column is %d, want %d", row.Seq, out.Seq)
+	}
+	// The adopted state is the one every later request is served from.
+	if err := ds.WithGroupForTest(h.ds, context.Background(), g.id, func(pg *mlswasi.PublicGroup) error {
+		state, err := pg.State(context.Background())
+		if err != nil {
+			return err
+		}
+		if state.Epoch != g.Epoch()+1 {
+			t.Errorf("the cached PublicGroup is at epoch %d, want %d", state.Epoch, g.Epoch()+1)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("withGroup: %v", err)
+	}
+}
+
+// The rows a heal appends are what every other member's catch-up is served and what
+// E_COMMIT_CONFLICT names as a winning commit, so they carry what the replay DERIVED, never what
+// the uploading member claimed: the epoch the group actually reached, the kind the guest reported,
+// the leaf that signed it and the device behind that leaf.
+func TestAHealStoresTheReplayedMetadataNotTheClaimedOne(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	tail := h.commitTail(t, g, 0)
+	tail[0].Epoch = 99 // a lie
+	tail[0].Kind = 0   // "a proposal"
+	tail[0].Sender = nil
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	if _, err := h.ds.Heal(context.Background(), g.session, g.id, ds.HealRequest{
+		GroupInfo: h.groupInfoAt(t, g, g.Epoch()+1),
+		Tail:      tail,
+	}); err != nil {
+		t.Fatalf("Heal: %v", err)
+	}
+	rows := h.handshakes(t, g.id)
+	if len(rows) != 1 {
+		t.Fatalf("%d handshake rows, want 1", len(rows))
+	}
+	got := rows[0]
+	if got.Epoch != g.Epoch()+1 {
+		t.Errorf("stored epoch = %d, want %d (the epoch the merge reached)", got.Epoch, g.Epoch()+1)
+	}
+	if got.Kind != 1 {
+		t.Errorf("stored kind = %d, want 1 (a member commit)", got.Kind)
+	}
+	if got.SenderLeaf == nil || *got.SenderLeaf != 0 {
+		t.Errorf("stored sender leaf = %v, want 0 (the committer)", got.SenderLeaf)
+	}
+	if got.SenderDevice == nil || *got.SenderDevice != g.device {
+		t.Errorf("stored sender device = %v, want the committer's device %s",
+			got.SenderDevice, g.device.String()[:8])
+	}
+}
+
+// A tail that only queues: the fixture's instance Remove of leaf 0. It is replayed INTO the
+// guest's queue, because a later commit in the same tail references it by ref and the healed
+// state must carry it, and it is stored as the proposal it is, at the epoch it was issued for,
+// with no sender leaf or device, because the instance's external sender has neither.
+func TestAHealReplaysAProposalIntoTheGuestsQueue(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	tail := h.proposalTail(t, g, 0)
+	tail[0].Kind = 1 // a lie: "a commit"
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	out, err := h.ds.Heal(context.Background(), g.session, g.id, ds.HealRequest{
+		GroupInfo: h.groupInfoAt(t, g, g.Epoch()),
+		Tail:      tail,
+	})
+	if err != nil {
+		t.Fatalf("Heal: %v", err)
+	}
+	if out.Epoch != g.Epoch() {
+		t.Fatalf("healed to epoch %d, want %d: a proposal does not move the epoch", out.Epoch, g.Epoch())
+	}
+	rows := h.handshakes(t, g.id)
+	if len(rows) != 1 {
+		t.Fatalf("%d handshake rows, want 1", len(rows))
+	}
+	if r := rows[0]; r.Kind != 0 || r.Epoch != g.Epoch() || r.SenderLeaf != nil || r.SenderDevice != nil {
+		t.Errorf("stored row = kind %d epoch %d leaf %v device %v, want the instance's proposal at epoch %d",
+			r.Kind, r.Epoch, r.SenderLeaf, r.SenderDevice, g.Epoch())
+	}
+	if err := ds.WithGroupForTest(h.ds, context.Background(), g.id, func(pg *mlswasi.PublicGroup) error {
+		queued, err := pg.ProposalList(context.Background())
+		if err != nil {
+			return err
+		}
+		if len(queued) != 1 {
+			t.Errorf("the healed guest queues %d proposals, want the 1 the tail replayed", len(queued))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("withGroup: %v", err)
+	}
+}
+
+// Invariant 11 is the post-restore path and nothing else. A group that was never restored is not
+// epoch-unknown, and a heal there would be a second, unguarded commit path: the tail's commits
+// would be merged outside invariant 3's one-commit-per-epoch rule and invariant 5's freeze.
+func TestAHealOfAGroupThatWasNeverRestoredIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	_, err := h.ds.Heal(context.Background(), g.session, g.id, h.healAtEpoch(t, g, g.Epoch()))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" || dsErr.Rule != "heal_state" {
+		t.Fatalf("got %v, want E_COMMIT_INVALID/heal_state", err)
+	}
+}
+
+// The heal window closes at the deadline, even before the sweeper has closed the group.
+func TestAHealAfterTheWindowIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	h.clk.Advance(25 * time.Hour)
+	_, err := h.ds.Heal(context.Background(), g.session, g.id, h.healAtEpoch(t, g, g.Epoch()))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" || dsErr.Rule != "heal_state" {
+		t.Fatalf("got %v, want E_COMMIT_INVALID/heal_state", err)
+	}
+}
+
+// Invariant 4's Add clause runs over every commit a tail replays. `commits/00.mls` adds 256
+// devices this instance has never enrolled. Replayed without the clause it is merged into the
+// instance's tree, and with a GroupInfo the healing member signs for the result it would be
+// adopted, written to mls_members and republished to the gateway.
+func TestAHealWhoseTailAddsAnIneligibleDeviceIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	leaf := uint32(0)
+	tail := []ds.HealTailItem{{
+		Seq: 1, Epoch: g.Epoch(), Kind: 1, Sender: &leaf, Blob: fixtureFile(t, "commits/00.mls"),
+	}}
+	_, err := h.ds.Heal(context.Background(), g.session, g.id, ds.HealRequest{
+		GroupInfo: h.groupInfoAt(t, g, g.Epoch()),
+		Tail:      tail,
+	})
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" || dsErr.Rule != "add_key_package" {
+		t.Fatalf("got %v, want E_COMMIT_INVALID/add_key_package", err)
+	}
+	if !h.epochUnknown(t, g.id) {
+		t.Error("a refused heal must leave the group epoch-unknown")
+	}
+	if got := h.handshakeCount(t, g.id); got != 0 {
+		t.Errorf("a refused heal wrote %d handshake rows", got)
+	}
+}
+
+// A reseed builds the group at the uploaded GroupInfo's epoch, the member's tip, so every tail
+// item for an EARLIER epoch is already in the tree it was built from. Replaying one would be a
+// wrong-epoch refusal of a legitimate heal, and tree plus tail is protocol/02's own shape. Only
+// what the tree does not already hold is replayed and appended.
+func TestAReseedingHealSkipsTheTailTheTreeAlreadyHolds(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	tree := h.currentTree(t, g)
+	groupInfo := h.groupInfoAt(t, g, g.Epoch())
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	h.destroyStateBlob(t, g)
+
+	leaf := uint32(0)
+	tail := append([]ds.HealTailItem{{
+		// An earlier epoch's commit: the reseeded tree already includes it.
+		Seq: 1, Epoch: g.Epoch() - 1, Kind: 1, Sender: &leaf, Blob: fixtureFile(t, "commits/09.mls"),
+	}}, h.proposalTail(t, g, 1)...)
+	out, err := h.ds.Heal(context.Background(), g.session, g.id, ds.HealRequest{
+		GroupInfo: groupInfo, Tail: tail, RatchetTree: tree,
+	})
+	if err != nil {
+		t.Fatalf("reseeding heal with a tail: %v", err)
+	}
+	if out.Epoch != g.Epoch() {
+		t.Errorf("healed to epoch %d, want %d", out.Epoch, g.Epoch())
+	}
+	rows := h.handshakes(t, g.id)
+	if len(rows) != 1 || rows[0].Kind != 0 {
+		t.Fatalf("%d handshake rows appended, want only the 1 proposal the tree did not hold", len(rows))
+	}
+}
+
+// The restored log already holds seq 1 and only the state blob is lost. A reseeding heal whose
+// tail carries seq 1 again replays it into the reseeded guest, but does not write it a second
+// time under a fresh seq.
+func TestAReseedingHealDoesNotDuplicateTheRestoredLog(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	tree := h.currentTree(t, g)
+	groupInfo := h.groupInfoAt(t, g, g.Epoch())
+	tail := h.proposalTail(t, g, 0)
+	h.appendLoggedHandshake(t, g.id, tail[0])
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	h.destroyStateBlob(t, g)
+
+	out, err := h.ds.Heal(context.Background(), g.session, g.id, ds.HealRequest{
+		GroupInfo: groupInfo, Tail: tail, RatchetTree: tree,
+	})
+	if err != nil {
+		t.Fatalf("reseeding heal: %v", err)
+	}
+	if got := h.handshakeCount(t, g.id); got != 1 {
+		t.Errorf("%d handshake rows after the heal, want the 1 the restored log already held", got)
+	}
+	if out.Seq != 1 {
+		t.Errorf("high-water = %d, want 1", out.Seq)
 	}
 }
 
@@ -296,11 +516,6 @@ func (h *dsHarness) isClosed(t *testing.T, groupID id.ID) bool {
 	return h.groupRow(t, groupID).ClosedAt != nil
 }
 
-func (h *dsHarness) storedSeq(t *testing.T, groupID id.ID) uint64 {
-	t.Helper()
-	return h.groupRow(t, groupID).Seq
-}
-
 // countKeyPackages is EVERY row the device still holds, the last-resort one included —
 // `CountKeyPackages` deliberately excludes it, and the purge rule is precisely about which of the
 // two kinds survives.
@@ -379,16 +594,20 @@ func (h *dsHarness) liveCallGroup(t *testing.T) id.ID {
 	return groupID
 }
 
-// groupInfoAt is the member-signed GroupInfo for that epoch. The fixture ships exactly one, at
-// epoch 6 and signed by leaf 0 — which is the leaf `h.group` hands the test its session for — so
-// any other epoch is a test asking for material that does not exist.
+// groupInfoAt is the member-signed GroupInfo for that epoch. The fixture ships two, both signed
+// by leaf 0 — the leaf `h.group` hands the test its session for: the base epoch's, and the one
+// `commits/09.mls` merges to. Any other epoch is a test asking for material that does not exist.
 func (h *dsHarness) groupInfoAt(t *testing.T, g *dsMessageGroup, epoch uint64) []byte {
 	t.Helper()
-	if epoch != g.Epoch() {
-		t.Fatalf("the fixture ships one GroupInfo, at epoch %d; epoch %d is not available",
-			g.Epoch(), epoch)
+	switch epoch {
+	case g.Epoch():
+		return dsFixture(t).groupInfo
+	case g.Epoch() + 1:
+		return fixtureFile(t, "commits/09.group_info.mls")
 	}
-	return dsFixture(t).groupInfo
+	t.Fatalf("the fixture ships GroupInfos for epochs %d and %d; epoch %d is not available",
+		g.Epoch(), g.Epoch()+1, epoch)
+	return nil
 }
 
 // currentTree is the ratchet tree of the group's current epoch, as a healing member would upload
@@ -404,18 +623,64 @@ func (h *dsHarness) healAtEpoch(t *testing.T, g *dsMessageGroup, epoch uint64) d
 	return ds.HealRequest{GroupInfo: h.groupInfoAt(t, g, epoch)}
 }
 
-// tailFrom is the handshake tail a healing member uploads: the fixture's one proposal, numbered
-// from the seq the caller is behind at.
-func (h *dsHarness) tailFrom(t *testing.T, g *dsMessageGroup, from uint64) []ds.HealTailItem {
+// commitTail is a tail that MERGES: the creator's self-update, whose resulting epoch
+// `commits/09.group_info.mls` describes. It is numbered from the seq the caller is behind at.
+func (h *dsHarness) commitTail(t *testing.T, g *dsMessageGroup, from uint64) []ds.HealTailItem {
 	t.Helper()
 	leaf := uint32(0)
 	return []ds.HealTailItem{{
 		Seq:    from + 1,
 		Epoch:  g.Epoch(),
-		Kind:   0, // proposal
+		Kind:   1, // commit
 		Sender: &leaf,
-		Blob:   fixtureFile(t, "remove_leaf0.mls"),
+		Blob:   fixtureFile(t, "commits/09.mls"),
 	}}
+}
+
+// proposalTail is a tail that only queues: the fixture's one proposal, the instance's external
+// Remove of leaf 0, numbered from the seq the caller is behind at.
+func (h *dsHarness) proposalTail(t *testing.T, g *dsMessageGroup, from uint64) []ds.HealTailItem {
+	t.Helper()
+	return []ds.HealTailItem{{
+		Seq:   from + 1,
+		Epoch: g.Epoch(),
+		Kind:  0, // proposal
+		Blob:  fixtureFile(t, "remove_leaf0.mls"),
+	}}
+}
+
+// appendLoggedHandshake writes one tail item into the log the way the live path would have before
+// the backup was taken: under the next seq, which advances the group's high-water with it.
+func (h *dsHarness) appendLoggedHandshake(t *testing.T, groupID id.ID, item ds.HealTailItem) {
+	t.Helper()
+	ctx := context.Background()
+	var allocated uint64
+	if err := h.repo.Tx(ctx, func(tx store.Repository) error {
+		seq, err := tx.NextSeq(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		allocated = seq
+		return tx.AppendHandshake(ctx, store.HandshakeRow{
+			GroupID: groupID, Seq: seq, Epoch: item.Epoch, Kind: item.Kind,
+			SenderLeaf: item.Sender, Blob: item.Blob, Created: h.clk.Now().Unix(),
+		})
+	}); err != nil {
+		t.Fatalf("append the logged handshake: %v", err)
+	}
+	if allocated != item.Seq {
+		t.Fatalf("the log allocated seq %d, the tail item claims %d", allocated, item.Seq)
+	}
+}
+
+// handshakes is the group's whole handshake log, in seq order.
+func (h *dsHarness) handshakes(t *testing.T, groupID id.ID) []store.HandshakeRow {
+	t.Helper()
+	rows, err := h.repo.ListHandshakes(context.Background(), groupID, 0, 512)
+	if err != nil {
+		t.Fatalf("ListHandshakes: %v", err)
+	}
+	return rows
 }
 
 // syntheticTail is n items of nothing in particular: the length cap is checked before a single
