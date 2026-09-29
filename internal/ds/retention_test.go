@@ -25,9 +25,9 @@ import (
 // which tells the client to resync rather than to retry.
 //
 // DEVIATION from the brief's literal test, which drives two `h.ds.Commit` calls through
-// `h.commitFor`. No commit in this repository can be ACCEPTED — the committed fixture ships one
-// GroupInfo at epoch 6 and invariant 4 wants epoch n+1, the blocker
-// `TestAnAcceptedCommitFansOutHandshakeEpochChangedAndWelcomes` skips on — and there is no
+// `h.commitFor`. No commit in this package can be ACCEPTED — the committed fixture ships one
+// GroupInfo at epoch 6 and invariant 4 wants epoch n+1, the blocker that moved
+// `TestAnAcceptedCommitFansOutHandshakeEpochChangedAndWelcomes` to internal/testkit — and there is no
 // `commitFor` helper. The handshake log is therefore seeded exactly as every other test in this
 // package seeds it (`appendHandshake`, commit_test.go), which is what
 // `TestACatchUpBelowTheRetentionFloorIsPruned` already does; the assertion — the SWEEP deletes the

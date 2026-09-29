@@ -252,9 +252,10 @@ func TestProposeAddBatchElectsOnceForTheWholeBatch(t *testing.T) {
 // device from the group by an instance Remove, so a stale charge against the one device that did
 // exactly what it was told removes the group's best committer.
 //
-// The accepted commit is staged as the epoch move it leaves behind: no commit in this repository
-// can be accepted (the fixture ships one GroupInfo, at epoch 6, and invariant 4 wants epoch n+1 —
-// the blocker TestAnAcceptedCommitFansOutHandshakeEpochChangedAndWelcomes skips on), and the epoch
+// The accepted commit is staged as the epoch move it leaves behind: no commit in this package can
+// be accepted (the fixture ships one GroupInfo, at epoch 6, and invariant 4 wants epoch n+1 — the
+// blocker that moved TestAnAcceptedCommitFansOutHandshakeEpochChangedAndWelcomes to
+// internal/testkit/accepted_test.go, where real clients drive the instance), and the epoch
 // is what the watchdog reads. The commit path's own half of the rule is the clearElection at
 // commit step (8b); this is the half that covers the window in which the watchdog's tick beats it.
 func TestADeviceWhoseCommitLandedIsNeverChargedALostRound(t *testing.T) {

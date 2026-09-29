@@ -163,9 +163,10 @@ func (h *dsHarness) removedLeaves(t *testing.T, g *dsGroup) int {
 // behind: `persistState` writes the new epoch through the same UPDATE this uses, and the applied
 // proposals are deleted in the same transaction.
 //
-// It is a direct write because no commit in this repository can be accepted — the committed
-// fixture ships one GroupInfo, at epoch 6, and invariant 4 wants epoch n+1, which is the blocker
-// `TestAnAcceptedCommitFansOutHandshakeEpochChangedAndWelcomes` skips on. The state blob is
+// It is a direct write because no commit in this package can be accepted — the committed fixture
+// ships one GroupInfo, at epoch 6, and invariant 4 wants epoch n+1, the blocker that moved
+// `TestAnAcceptedCommitFansOutHandshakeEpochChangedAndWelcomes` to internal/testkit/accepted_test.go.
+// The state blob is
 // re-put unchanged: every path under test here (RequestCommit, RunWatchdogOnce) reads the group
 // row and the proposal rows and never the cached PublicGroup.
 func (h *dsHarness) advanceGroupEpoch(t *testing.T, groupID id.ID) uint64 {
