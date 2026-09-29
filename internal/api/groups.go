@@ -40,11 +40,26 @@ type Groups struct {
 // 620 KiB, and the MLS ciphertext cap alone is 128 KiB.
 const maxDSBody = 2 << 20
 
+// maxCommitBody is POST /commit's own cap, above maxDSBody because of the one batch the protocol
+// mandates: protocol/01 § Joining puts up to 256 Adds in one commit, and row 5 addresses the
+// commit's Welcome to each added device separately (`welcomes([[device_id, blob]])`), so a full
+// batch carries 256 copies of a Welcome that is itself about 30 KiB at 256 joiners — some 8 MiB,
+// measured by join_storm_256_batched. 16 MiB leaves room for the commit and the GroupInfo beside
+// them and is still a cap (deviation B37; a wire form that sends one shared Welcome once is the
+// protocol follow-up that would bring this back down).
+const maxCommitBody = 16 << 20
+
 func (h *Groups) max() int64 {
 	if h.MaxBody == 0 {
 		return maxDSBody
 	}
 	return h.MaxBody
+}
+
+// maxCommit is the commit route's cap: maxCommitBody, or MaxBody when a caller configured a
+// larger one.
+func (h *Groups) maxCommit() int64 {
+	return max(h.max(), maxCommitBody)
 }
 
 func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
@@ -319,7 +334,7 @@ func (h *Groups) commit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body commitRequestBody
-	if err := server.DecodeBody(w, r, h.max(), &body); err != nil {
+	if err := server.DecodeBody(w, r, h.maxCommit(), &body); err != nil {
 		server.WriteError(w, err)
 		return
 	}
