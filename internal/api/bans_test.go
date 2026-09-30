@@ -623,3 +623,80 @@ func fixtureExternalSenderKey() [32]byte {
 	c.XORKeyStream(out[:], out[:])
 	return out
 }
+
+// banRacer is the Communities handler's repository with a ban that lands the
+// first time the handler reads the ban row. Outside a transaction the ban lands
+// at once, between the join gate's read and the membership write, which is the
+// window a check-then-act join leaves open. Inside a transaction it lands from a
+// goroutine: a join that reads and writes under one lock makes the ban's own
+// transaction wait for the join to commit, and the ban then removes the member
+// it finds.
+type banRacer struct {
+	store.Repository
+	inTx bool
+	once *sync.Once
+	land func()
+	done chan struct{}
+}
+
+func (b *banRacer) GetBan(ctx context.Context, cid, uid id.ID) (store.BanRow, error) {
+	row, err := b.Repository.GetBan(ctx, cid, uid)
+	b.once.Do(func() {
+		if b.inTx {
+			go func() {
+				defer close(b.done)
+				b.land()
+			}()
+			return
+		}
+		defer close(b.done)
+		b.land()
+	})
+	return row, err
+}
+
+func (b *banRacer) Tx(ctx context.Context, fn func(store.Repository) error) error {
+	return b.Repository.Tx(ctx, func(tx store.Repository) error {
+		return fn(&banRacer{Repository: tx, inTx: true, once: b.once, land: b.land, done: b.done})
+	})
+}
+
+// A ban that commits while a join is between its ban check and its membership
+// write must not leave a banned member: either the join sees the ban and is
+// refused, or the join commits first and the ban removes the row it wrote.
+func TestABanRacingAJoinLeavesNoBannedMember(t *testing.T) {
+	e := newEnv(t)
+	discard := slog.New(slog.DiscardHandler)
+	api.NewBans(e.Repo, &recordingDS{}, e.Clk, discard).Register(e.Mux)
+	_, ownerTok := e.NewUser("owner")
+	target, targetTok := e.NewUser("troll")
+
+	racer := &banRacer{Repository: e.Repo, once: &sync.Once{}, done: make(chan struct{})}
+	api.NewCommunities(racer, e.DS, e.Clk, discard).Register(e.Mux)
+	cid := createCommunity(t, e, ownerTok)
+
+	racer.land = func() {
+		status, err := doBounded(t, e, 30*time.Second, http.MethodPut,
+			"/v1/communities/"+cid.String()+"/bans/"+target.String(), ownerTok, []any{"raid", nil})
+		if err != nil || status != http.StatusNoContent {
+			t.Errorf("PUT ban during the join = %d, %v", status, err)
+		}
+	}
+
+	status, body := e.Do(http.MethodPost, "/v1/communities/"+cid.String()+"/join", targetTok, []any{nil})
+	if status != http.StatusOK && status != http.StatusForbidden {
+		t.Fatalf("join = %d (%x)", status, body)
+	}
+	select {
+	case <-racer.done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the join never read the ban row, or the ban never landed")
+	}
+
+	if _, err := e.Repo.GetBan(t.Context(), cid, target); err != nil {
+		t.Fatalf("GetBan after the race: %v", err)
+	}
+	if _, err := e.Repo.GetMember(t.Context(), cid, target); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a banned user is a member after racing a ban with a join (join = %d): %v", status, err)
+	}
+}

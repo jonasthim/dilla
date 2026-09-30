@@ -322,36 +322,41 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	row, err := c.repo.GetCommunity(r.Context(), cid)
-	if err != nil {
-		c.fail(w, r, "join", notFound(err))
-		return
-	}
-	// Joining is idempotent: a member who joins again keeps the row, and with
-	// it the nick and the join time, rather than being rewritten by the upsert.
-	switch _, err := c.repo.GetMember(r.Context(), cid, s.UserID); {
-	case err == nil:
-		if err := server.EncodeBody(w, http.StatusOK, []id.ID{cid}); err != nil {
-			c.log.Error("encode join", "err", err)
-		}
-		return
-	case !errors.Is(err, store.ErrNotFound):
-		c.fail(w, r, "join", err)
-		return
-	}
-	if err := c.joinGate(r.Context(), row, s.UserID); err != nil {
-		c.fail(w, r, "join", err)
-		return
-	}
 	nick, err := memberNick("")
 	if err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	// Task 5 adds invite redemption here; at task 1 a community with no gate
-	// is joinable by any authenticated account.
-	if err := c.repo.PutMember(r.Context(), store.MemberOfCommunityRow{
-		CommunityID: cid, UserID: s.UserID, Joined: c.clk.Now().Unix(), Nick: nick,
+	// The gate and the membership write are one transaction under the community
+	// row lock Bans.put also takes. Checked and written apart, a ban committing
+	// between the two would find no member to delete and the join would then
+	// write one: a banned member of the community, whom the Add and join ACL
+	// treats as eligible.
+	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.LockCommunity(r.Context(), cid); err != nil {
+			return notFound(err)
+		}
+		row, err := tx.GetCommunity(r.Context(), cid)
+		if err != nil {
+			return notFound(err)
+		}
+		// Joining is idempotent: a member who joins again keeps the row, and
+		// with it the nick and the join time, rather than being rewritten by the
+		// upsert.
+		switch _, err := tx.GetMember(r.Context(), cid, s.UserID); {
+		case err == nil:
+			return nil
+		case !errors.Is(err, store.ErrNotFound):
+			return err
+		}
+		if err := c.joinGate(r.Context(), tx, row, s.UserID); err != nil {
+			return err
+		}
+		// Task 5 adds invite redemption here; at task 1 a community with no gate
+		// is joinable by any authenticated account.
+		return tx.PutMember(r.Context(), store.MemberOfCommunityRow{
+			CommunityID: cid, UserID: s.UserID, Joined: c.clk.Now().Unix(), Nick: nick,
+		})
 	}); err != nil {
 		c.fail(w, r, "join", err)
 		return
@@ -364,16 +369,17 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 // joinGate enforces R17's stored gates: the account must not be banned from the
 // community (a ban whose expiry has passed no longer gates), must be live, and
 // at least min_account_age_seconds old. Invite-only communities and the
-// screening flag are task 5's.
-func (c *Communities) joinGate(ctx context.Context, row store.CommunityRow, userID id.ID) error {
-	if ban, err := c.repo.GetBan(ctx, row.ID, userID); err == nil {
+// screening flag are task 5's. repo is the join's transaction, holding the
+// community row lock, so the ban read here cannot go stale before the insert.
+func (c *Communities) joinGate(ctx context.Context, repo store.Repository, row store.CommunityRow, userID id.ID) error {
+	if ban, err := repo.GetBan(ctx, row.ID, userID); err == nil {
 		if BanStands(ban, c.clk.Now().Unix()) {
 			return server.Errorf(server.CodeForbidden, "banned from this community")
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
-	u, err := c.repo.GetUser(ctx, userID)
+	u, err := repo.GetUser(ctx, userID)
 	if err != nil {
 		return err
 	}
