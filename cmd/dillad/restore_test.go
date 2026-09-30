@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -553,6 +555,8 @@ func TestServeAdmitsABackupRefusesARestoreAndFinishesOneAtStart(t *testing.T) {
 	if err := probe(addr); err != nil {
 		t.Fatalf("probe /healthz: %v", err)
 	}
+	before := h.Generation(t)
+	assertServedGeneration(t, addr, before)
 
 	archive := h.MakeBackup(t)
 	if code, out := h.Run(t, "serve", "--config="+h.ConfigPath); code != int(exit.TempFail) {
@@ -568,6 +572,9 @@ func TestServeAdmitsABackupRefusesARestoreAndFinishesOneAtStart(t *testing.T) {
 		t.Fatalf("restore exit %d: %s", code, out)
 	}
 	restored := h.Generation(t)
+	if restored <= before {
+		t.Fatalf("restore left the generation at %d, from %d", restored, before)
+	}
 
 	stdout, stderr = syncBuffer{}, syncBuffer{}
 	served = make(chan error, 1)
@@ -576,6 +583,10 @@ func TestServeAdmitsABackupRefusesARestoreAndFinishesOneAtStart(t *testing.T) {
 	if err := probe(addr); err != nil {
 		t.Fatalf("probe /healthz: %v", err)
 	}
+	// Invariant 11 on the wire: the restarted instance tells every client about
+	// the restore, in the header on every response and in the discovery
+	// document, not only in its database.
+	assertServedGeneration(t, addr, restored)
 	stopServe(t, served)
 
 	if g := h.Generation(t); g != restored {
@@ -595,6 +606,37 @@ func TestServeAdmitsABackupRefusesARestoreAndFinishesOneAtStart(t *testing.T) {
 			t.Fatalf("group %x after serve: epoch_unknown %v, deadline %v; want re-armed from serve's start",
 				g.GroupID, g.EpochUnknown, g.HealDeadline)
 		}
+	}
+}
+
+// assertServedGeneration fails unless the serve at addr puts want on the wire:
+// the X-Dilla-Generation header of a response and element 4 (generation) of
+// the GET /v1/instance discovery document (protocol/09).
+func assertServedGeneration(t *testing.T, addr string, want uint64) {
+	t.Helper()
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/v1/instance", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /v1/instance: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, err := io.ReadAll(res.Body)
+	if err != nil || res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/instance = %d, %v", res.StatusCode, err)
+	}
+	if got := res.Header.Get("X-Dilla-Generation"); got != strconv.FormatUint(want, 10) {
+		t.Fatalf("X-Dilla-Generation = %q, want %d", got, want)
+	}
+	var doc []any
+	if err := cborx.Unmarshal(body, &doc); err != nil || len(doc) != 11 {
+		t.Fatalf("decode the discovery document: %d elements, %v", len(doc), err)
+	}
+	if got, ok := doc[4].(uint64); !ok || got != want {
+		t.Fatalf("discovery generation = %#v, want %d", doc[4], want)
 	}
 }
 
