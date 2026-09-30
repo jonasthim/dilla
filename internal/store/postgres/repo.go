@@ -2641,6 +2641,11 @@ func (r *Repo) UserBlobBytes(ctx context.Context, userID id.ID) (int64, error) {
 	return n, wrap(err)
 }
 
+func (r *Repo) InstanceBlobBytes(ctx context.Context) (int64, error) {
+	n, err := r.r.InstanceBlobBytes(ctx)
+	return n, wrap(err)
+}
+
 func (r *Repo) DeleteAllBlobRefs(ctx context.Context, blobID []byte) (int64, error) {
 	n, err := r.w.DeleteAllBlobRefs(ctx, pgdb.DeleteAllBlobRefsParams{BlobID: blobID})
 	return n, wrap(err)

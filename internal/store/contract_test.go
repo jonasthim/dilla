@@ -191,6 +191,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"CountBlobRefs", "DeleteBlob", "DeleteBlobRef", "GetBlob", "GetBlobTombstone",
 			"ListCollectableBlobs", "MarkBlobUnreferenced", "PutBlob", "PutBlobRef",
 			"PutBlobTombstone", "UserBlobBytes",
+			// Fix wave C7: blobs.store_max_bytes.
+			"InstanceBlobBytes",
 			// Plan 2 task 10: P2-D16's ClearBlobUnreferenced, and P2-D17's
 			// GetBlobRef, which the GET's "404 without a reference here" rule needs.
 			"ClearBlobUnreferenced", "GetBlobRef",

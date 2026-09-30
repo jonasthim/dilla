@@ -37,6 +37,31 @@ func seedDevice(ctx context.Context, t *testing.T, repo store.Repository, user i
 
 func digest(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
 
+// C7 (fix wave): blobs.store_max_bytes bounds what the instance holds on disk, so InstanceBlobBytes
+// counts every blob row, referenced or not (an orphan and a blob whose last reference was deleted
+// still occupy their bytes until the sweeper collects them).
+func TestInstanceBlobBytesCountsEveryRow(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			if n, err := repo.InstanceBlobBytes(ctx); err != nil || n != 0 {
+				t.Fatalf("an empty instance = %d, %v; want 0", n, err)
+			}
+			for i, size := range []uint64{10, 20, 4000} {
+				if err := repo.PutBlob(ctx, store.BlobRow{BlobID: digest(byte(0x70 + i)), Size: size, StorageRef: "fs:x", Created: 1}); err != nil {
+					t.Fatalf("PutBlob: %v", err)
+				}
+			}
+			if err := repo.MarkBlobUnreferenced(ctx, digest(0x72), 5); err != nil {
+				t.Fatalf("MarkBlobUnreferenced: %v", err)
+			}
+			if n, err := repo.InstanceBlobBytes(ctx); err != nil || n != 4030 {
+				t.Fatalf("InstanceBlobBytes = %d, %v; want 4030 (unreferenced rows included)", n, err)
+			}
+		})
+	}
+}
+
 // Plan 2 task 10: 00010_blobs.sql's blobs, blob_refs and blob_tombstones, with
 // P2-D16's ClearBlobUnreferenced and P2-D17's GetBlobRef, on both engines.
 func TestBlobReferencesAndCollection(t *testing.T) {

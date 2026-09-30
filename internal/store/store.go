@@ -553,6 +553,9 @@ type Blobs interface {
 	PutBlobTombstone(ctx context.Context, blobID []byte, reason string, by id.ID, at int64) error
 	GetBlobTombstone(ctx context.Context, blobID []byte) (bool, error)
 	UserBlobBytes(ctx context.Context, userID id.ID) (int64, error)
+	// InstanceBlobBytes is the size of every blob row, referenced or not: what
+	// blobs.store_max_bytes bounds (fix wave C7).
+	InstanceBlobBytes(ctx context.Context) (int64, error)
 	// DeleteAllBlobRefs is P2-D18: the admin purge removes every reference to
 	// the blob, in every channel, in one statement, and reports how many.
 	DeleteAllBlobRefs(ctx context.Context, blobID []byte) (int64, error)

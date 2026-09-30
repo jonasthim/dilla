@@ -126,6 +126,9 @@ type Querier interface {
 	// here instead of scanning every open group of the instance.
 	GroupsForTarget(ctx context.Context, arg GroupsForTargetParams) ([]MlsGroups, error)
 	InsertAudit(ctx context.Context, arg InsertAuditParams) error
+	// Fix wave C7: blobs.store_max_bytes. Every row counts, referenced or not: an orphaned or
+	// unreferenced blob's file is on disk until the sweeper collects it.
+	InstanceBlobBytes(ctx context.Context) (int64, error)
 	// The slowmode gate's read. A deleted message still counts: deleting the last message must not
 	// reset the gate, or delete-and-repost would bypass slowmode.
 	LastReadableMessageAt(ctx context.Context, arg LastReadableMessageAtParams) (int64, error)

@@ -29,6 +29,12 @@ func blobEnv(t *testing.T) (*env, id.ID, string) {
 // blobEnvWithLimits is blobEnv with max_blob_bytes and quota_bytes_per_user set.
 func blobEnvWithLimits(t *testing.T, maxBlob, quota int64) (*env, id.ID, string) {
 	t.Helper()
+	return blobEnvWithConfig(t, func(c *config.Blobs) { c.MaxBlobBytes, c.QuotaBytesPerUser = maxBlob, quota })
+}
+
+// blobEnvWithConfig is blobEnv with the [blobs] section adjusted by set.
+func blobEnvWithConfig(t *testing.T, set func(*config.Blobs)) (*env, id.ID, string) {
+	t.Helper()
 	e, cid, tok := channelEnv(t)
 	bs, err := blob.Open(t.TempDir(), "fs")
 	if err != nil {
@@ -36,7 +42,7 @@ func blobEnvWithLimits(t *testing.T, maxBlob, quota int64) (*env, id.ID, string)
 	}
 	t.Cleanup(func() { _ = bs.Close() })
 	cfg := config.Default().Blobs
-	cfg.MaxBlobBytes, cfg.QuotaBytesPerUser = maxBlob, quota
+	set(&cfg)
 	log := slog.New(slog.DiscardHandler)
 	api.NewBlobs(e.Repo, bs, api.NewResolver(e.Repo), cfg, e.Clk, log).Register(e.Mux)
 	api.NewAdmin(e.Repo, bs, e.Clk, log).Register(e.Mux)
@@ -202,7 +208,10 @@ func TestAnUploadRefusedOverTheQuotaIsLeftForTheSweeper(t *testing.T) {
 	}
 	second := bytes.Repeat([]byte{'b'}, 3000)
 	sum := sha256.Sum256(second)
-	if status, _ := e.DoRaw(http.MethodPut, blobURL(ch, sum[:]), tok, "application/octet-stream", second); status != http.StatusInsufficientStorage {
+	// Sent with no Content-Length, so the pre-body quota check cannot see its size and the body
+	// is read: this is the path that leaves a file for the sweeper (one with a Content-Length
+	// over the quota is refused before a byte is read, TestTheQuotaPreCheckCountsTheBody).
+	if status := putUnsized(t, e, ch, tok, sum[:], second); status != http.StatusInsufficientStorage {
 		t.Fatalf("second PUT = %d, want 507", status)
 	}
 	row, err := e.Repo.GetBlob(t.Context(), sum[:])

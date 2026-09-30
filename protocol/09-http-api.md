@@ -493,7 +493,15 @@ are CBOR as everywhere else.
   back.
 - **Quota.** `blobs.quota_bytes_per_user` bounds the ciphertext bytes of the distinct blobs a user
   references, from any of their devices; a blob in several channels counts once. An upload that
-  would pass it is `507 E_STORAGE_FULL`, and so is any upload once it is reached.
+  would pass it is `507 E_STORAGE_FULL`, and so is any upload once it is reached; an upload that
+  announces a `Content-Length` taking the user past the quota is refused before its body is read.
+  `blobs.store_max_bytes` bounds the whole instance the same way (every stored blob counts,
+  including one no channel references any more), `507 E_STORAGE_FULL` before the body is read.
+- **Upload rate.** Each user may start `blobs.uploads_per_minute` uploads a minute and upload
+  `blobs.upload_bytes_per_day` bytes a day (both refill continuously); over either the answer is
+  `429 E_RATE_LIMITED` with its `retry_after_ms`, before the body is read. Every byte the instance
+  reads spends the day's budget, whether the upload is stored, refused or later deleted: deleting
+  an attachment frees quota, never budget.
 - **Reading.** `GET` answers `404 E_NOT_FOUND` whenever this channel holds no reference, even when
   the bytes exist, so the answer never says that an unreachable blob exists; `HEAD` has the same
   rule. The response carries `Content-Type: application/octet-stream`,

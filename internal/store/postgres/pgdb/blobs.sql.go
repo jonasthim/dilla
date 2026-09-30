@@ -149,6 +149,20 @@ func (q *Queries) GetBlobTombstone(ctx context.Context, arg GetBlobTombstonePara
 	return count, err
 }
 
+const instanceBlobBytes = `-- name: InstanceBlobBytes :one
+SELECT CAST(COALESCE(SUM(size), 0) AS BIGINT) FROM blobs
+`
+
+// Fix wave C7: blobs.store_max_bytes. Every row counts, referenced or not: an orphaned or
+// unreferenced blob's file is on disk until the sweeper collects it. The cast keeps SUM's
+// NUMERIC an int64, as UserBlobBytes does.
+func (q *Queries) InstanceBlobBytes(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, instanceBlobBytes)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const listBackups = `-- name: ListBackups :many
 SELECT user_id, kind, device_id, chunk_seq, blob_id, manifest_sig, created
 FROM backups WHERE user_id = $1 AND kind = $2

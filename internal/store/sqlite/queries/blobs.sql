@@ -80,6 +80,11 @@ WHERE b.blob_id IN (
   WHERE d.user_id = sqlc.arg(user_id)
 );
 
+-- name: InstanceBlobBytes :one
+-- Fix wave C7: blobs.store_max_bytes. Every row counts, referenced or not: an orphaned or
+-- unreferenced blob's file is on disk until the sweeper collects it.
+SELECT CAST(COALESCE(SUM(size), 0) AS INTEGER) FROM blobs;
+
 -- name: DeleteAllBlobRefs :execrows
 -- P2-D18 (Plan 2 task 11): the admin purge removes every reference to the blob, in every
 -- channel, in one statement.

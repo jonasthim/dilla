@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"io"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -31,11 +32,30 @@ type Blobs struct {
 	cfg   config.Blobs
 	clk   clock.Clock
 	log   *slog.Logger
+	meter *blobMeter // nil when neither upload limit is set
 }
 
-// NewBlobs wires the routes over one blob store and the [blobs] configuration.
+// NewBlobs wires the routes over one blob store and the [blobs] configuration,
+// including the per-user upload meter uploads_per_minute and
+// upload_bytes_per_day configure (blobMeter).
 func NewBlobs(repo store.Repository, bs *blob.Store, res *Resolver, cfg config.Blobs, clk clock.Clock, log *slog.Logger) *Blobs {
-	return &Blobs{repo: repo, store: bs, res: res, cfg: cfg, clk: clk, log: log}
+	b := &Blobs{repo: repo, store: bs, res: res, cfg: cfg, clk: clk, log: log}
+	if cfg.UploadsPerMinute > 0 || cfg.UploadBytesPerDay > 0 {
+		b.meter = newBlobMeter(clk, cfg.UploadsPerMinute, cfg.UploadBytesPerDay)
+	}
+	return b
+}
+
+// countingReader counts the bytes read through it.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func (b *Blobs) Register(mux *server.Mux) {
@@ -126,22 +146,51 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	// The most this upload can write: its Content-Length when it sends one,
+	// max_blob_bytes when it does not (a chunked body).
+	announced := r.ContentLength
+	reserve := b.cfg.MaxBlobBytes
+	if announced >= 0 && announced < reserve {
+		reserve = announced
+	}
+	if limit := b.cfg.StoreMaxBytes; limit > 0 {
+		// blobs.store_max_bytes, before a byte is read. Every blob row counts,
+		// unreferenced ones included: their files are on disk until collected.
+		total, err := b.repo.InstanceBlobBytes(r.Context())
+		if err != nil {
+			server.WriteError(w, err)
+			return
+		}
+		if total+reserve > limit {
+			server.WriteError(w, server.Errorf(server.CodeStorageFull, "the instance's attachment storage is full"))
+			return
+		}
+	}
 	quota := b.cfg.QuotaBytesPerUser
 	if quota > 0 {
-		// The cheap refusal, before a byte of the body is read. The exact check
-		// runs in the reference transaction below.
+		// The cheap refusal, before a byte of the body is read, counting the
+		// body the request announces. The exact check runs in the reference
+		// transaction below.
 		used, err := b.repo.UserBlobBytes(r.Context(), s.UserID)
 		if err != nil {
 			server.WriteError(w, err)
 			return
 		}
-		if used >= quota {
+		if used >= quota || (announced > 0 && used+announced > quota) {
 			server.WriteError(w, errStorageFull())
 			return
 		}
 	}
-	body := http.MaxBytesReader(w, r.Body, b.cfg.MaxBlobBytes)
-	n, created, err := b.store.Put(r.Context(), blobID, body, b.cfg.MaxBlobBytes)
+	// blobs.uploads_per_minute and upload_bytes_per_day, before the body too.
+	held, err := b.meter.begin(s.UserID, reserve)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	counted := &countingReader{r: http.MaxBytesReader(w, r.Body, b.cfg.MaxBlobBytes)}
+	n, created, err := b.store.Put(r.Context(), blobID, counted, b.cfg.MaxBlobBytes)
+	// Every byte read spends the day's budget, whatever happens to the upload next.
+	b.meter.settle(s.UserID, held, counted.n)
 	var mbe *http.MaxBytesError
 	switch {
 	case errors.Is(err, blob.ErrTooLarge), errors.As(err, &mbe):
