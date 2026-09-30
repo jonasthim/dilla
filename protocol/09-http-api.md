@@ -280,7 +280,9 @@ that channel); a caller who is not a member of the community answers `404 E_NOT_
   moving, deleting, granting and revoking a role at or above it is `403 E_FORBIDDEN`.
 - **No new authority.** A role's `allow` and `deny`, and an overwrite's, may name only bits the
   caller holds (for an overwrite, in that channel); a grant or revoke of a role that carries a bit
-  the caller does not hold is refused the same way. `403 E_FORBIDDEN`.
+  the caller does not hold is refused the same way, and so is a grant or revoke of a role whose
+  overwrite in any channel names a bit the caller does not hold in that channel (a role that opens
+  a private channel the caller cannot see is not the caller's to hand out). `403 E_FORBIDDEN`.
 - **`@everyone`** is the role at position 0, created with the community and held by every member.
   No other role may be created at or moved to position 0, `@everyone` is never moved, deleted,
   granted or revoked, and all of these are `400 E_INVALID_REQUEST`; its fields and bits may be

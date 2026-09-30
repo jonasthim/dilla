@@ -193,6 +193,63 @@ func TestRemovingARoleThatOpenedAPrivateChannelSchedulesRemoves(t *testing.T) {
 	}
 }
 
+// I1 (fix wave), protocol/09 § Roles "No new authority": a role's channel overwrites are
+// authority too. A manage_roles holder may not grant (or revoke) a lower role whose overwrite in
+// some channel carries a bit the holder does not have THERE, or they could open a private channel
+// they cannot see to themself: bits 0 community-wide, 0x8ff3 in the channel after a self-grant.
+func TestARoleGrantCannotHandOutChannelAccessTheGranterLacks(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	private, _, _ := newChannel(t, e, cid, ownerTok, 0, 0 /* e2ee */, 0 /* private */, "secret")
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil || len(roles) == 0 || roles[0].Position != 0 {
+		t.Fatalf("ListRoles = %+v, %v; want @everyone first", roles, err)
+	}
+	if status, _ := e.Do(http.MethodPut,
+		"/v1/channels/"+private.String()+"/overwrites/0/"+roles[0].ID.String(), ownerTok,
+		[]any{uint64(0), uint64(api.PermViewChannel)}); status != http.StatusNoContent {
+		t.Fatal("PUT @everyone deny failed")
+	}
+	// "insiders" carries nothing community-wide; its overwrite is what opens the channel.
+	insiders := createRole(t, e, cid, ownerTok, "insiders", 5, 0)
+	if status, _ := e.Do(http.MethodPut,
+		"/v1/channels/"+private.String()+"/overwrites/0/"+insiders.String(), ownerTok,
+		[]any{uint64(api.PermViewChannel | api.PermSendMessages), uint64(0)}); status != http.StatusNoContent {
+		t.Fatal("PUT insiders overwrite failed")
+	}
+	// A role whose overwrite touches only a channel the staffer sees, with bits they hold there.
+	open, _, _ := newChannel(t, e, cid, ownerTok, 0, 0, 0, "open")
+	helpers := createRole(t, e, cid, ownerTok, "helpers", 4, 0)
+	if status, _ := e.Do(http.MethodPut,
+		"/v1/channels/"+open.String()+"/overwrites/0/"+helpers.String(), ownerTok,
+		[]any{uint64(api.PermSendMessages), uint64(0)}); status != http.StatusNoContent {
+		t.Fatal("PUT helpers overwrite failed")
+	}
+
+	staff := createRole(t, e, cid, ownerTok, "staff", 10, api.PermViewChannel|api.PermSendMessages|api.PermManageRoles)
+	staffer, stafferTok := e.NewUser("staffer")
+	joinCommunity(t, e, cid, stafferTok)
+	grant(t, e, cid, ownerTok, staffer, staff, http.StatusNoContent)
+	if bits, _ := api.NewResolver(e.Repo).Resolve(t.Context(), staffer, mustChannel(t, e, private)); bits.Has(api.PermViewChannel) {
+		t.Fatal("the staffer already sees the private channel; the test proves nothing")
+	}
+
+	grant(t, e, cid, stafferTok, staffer, insiders, http.StatusForbidden)
+	if bits, _ := api.NewResolver(e.Repo).Resolve(t.Context(), staffer, mustChannel(t, e, private)); bits.Has(api.PermViewChannel) {
+		t.Fatal("the refused self-grant opened the private channel anyway")
+	}
+	// The revoke is the same authority: a staffer who could not grant it may not take it away.
+	victim, victimTok := e.NewUser("victim")
+	joinCommunity(t, e, cid, victimTok)
+	grant(t, e, cid, ownerTok, victim, insiders, http.StatusNoContent)
+	path := "/v1/communities/" + cid.String() + "/members/" + victim.String() + "/roles/" + insiders.String()
+	if status, _ := e.Do(http.MethodDelete, path, stafferTok, nil); status != http.StatusForbidden {
+		t.Fatalf("a staffer revoking a role that opens a channel they cannot see = %d, want 403", status)
+	}
+	// The positive control.
+	grant(t, e, cid, stafferTok, victim, helpers, http.StatusNoContent)
+}
+
 // createRole posts one role to /v1/communities/{id}/roles as tok and returns its
 // id. Its body is [name, color, position, allow, deny, hoist, mentionable].
 func createRole(t *testing.T, e *env, cid id.ID, tok, name string, position uint64, allow api.Bits) id.ID {

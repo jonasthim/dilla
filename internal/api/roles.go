@@ -557,6 +557,13 @@ func (h *Roles) grantPath(r *http.Request, verb string) (grantTarget, error) {
 	if err := checkBits(g.a.have, Bits(g.role.Allow)&PermAll, Bits(g.role.Deny)&PermAll); err != nil {
 		return grantTarget{}, err
 	}
+	// The role's channel overwrites are authority as well: a lower role whose
+	// overwrite opens a channel the actor cannot see would otherwise hand the
+	// actor (or anyone) that channel. Each one must name only bits the actor
+	// holds in that channel, the rule putOverwrite applies when writing one.
+	if err := h.checkRoleOverwrites(r.Context(), g.a.s.UserID, g.a.have, g.cid, g.role.ID); err != nil {
+		return grantTarget{}, err
+	}
 	if _, err := h.repo.GetMember(r.Context(), g.cid, g.target); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return grantTarget{}, server.Errorf(server.CodeNotFound, "not a member")
@@ -564,6 +571,41 @@ func (h *Roles) grantPath(r *http.Request, verb string) (grantTarget, error) {
 		return grantTarget{}, err
 	}
 	return g, nil
+}
+
+// checkRoleOverwrites refuses 403 E_FORBIDDEN when some channel of the
+// community carries a kind-0 overwrite on roleID naming a bit the actor does
+// not hold in that channel (fix wave I1, protocol/09 § Roles "No new
+// authority"). An actor with every bit community-wide (the owner, an
+// administrator) holds every bit in every channel and is not checked.
+func (h *Roles) checkRoleOverwrites(ctx context.Context, actor id.ID, have Bits, cid, roleID id.ID) error {
+	if have&PermAll == PermAll {
+		return nil
+	}
+	channels, err := h.repo.ListChannels(ctx, cid)
+	if err != nil {
+		return err
+	}
+	for _, ch := range channels {
+		overwrites, err := h.repo.ListOverwrites(ctx, ch.ID)
+		if err != nil {
+			return err
+		}
+		for _, o := range overwrites {
+			if o.TargetKind != overwriteRole || o.TargetID != roleID {
+				continue
+			}
+			chHave, err := h.res.Resolve(ctx, actor, ch)
+			if err != nil {
+				return err
+			}
+			if bad := Bits(o.Allow|o.Deny) &^ chHave; bad != 0 {
+				return server.Errorf(server.CodeForbidden,
+					"the role's channel overwrite carries a permission you do not hold in that channel (%#x)", uint64(bad))
+			}
+		}
+	}
+	return nil
 }
 
 // grant is PUT /v1/communities/{id}/members/{user_id}/roles/{role_id}: 204 with
