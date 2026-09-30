@@ -229,13 +229,18 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 	var seq uint64
 	var tag []byte
 	err = h.repo.Tx(r.Context(), func(tx store.Repository) error {
-		// The slowmode read is inside the write transaction, so two concurrent
-		// posts by one user cannot both pass it.
-		if err := h.slowmode(r.Context(), tx, ch, s.UserID, bits, now); err != nil {
-			return err
-		}
+		// NextChannelSeq comes first: it is `UPDATE channels … RETURNING seq`,
+		// which serialises every post to this channel on its row (Postgres's
+		// row lock; SQLite's single writer). The slowmode read after it
+		// therefore sees any post that committed ahead of this one — under
+		// Postgres READ COMMITTED each statement takes a fresh snapshot — so two
+		// concurrent posts by one user cannot both pass. A refusal rolls the
+		// bump back and spends no seq.
 		var err error
 		if seq, err = tx.NextChannelSeq(r.Context(), ch.ID); err != nil {
+			return err
+		}
+		if err := h.slowmode(r.Context(), tx, ch, s.UserID, bits, now); err != nil {
 			return err
 		}
 		tag = Tag(key, ch.ID, 0 /* no epoch on a readable channel */, seq, s.DeviceID, c, now)

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -392,6 +393,79 @@ func TestSlowmodeHoldsAMemberAndNotTheBypass(t *testing.T) {
 	postReadable(t, e, ch, f.ownerTok, envelope0(t, "nor twice"))
 	e.Clk.Advance(20 * time.Second)
 	postReadable(t, e, ch, memberTok, envelope0(t, "the window passed"))
+}
+
+// callOrderRepo records, in order, the post transaction's two slowmode-relevant
+// calls: the channel seq bump and the slowmode read. Tx hands fn a wrapped
+// transaction so the calls made inside it are recorded too.
+type callOrderRepo struct {
+	store.Repository
+	mu    *sync.Mutex
+	calls *[]string
+}
+
+func (r *callOrderRepo) record(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	*r.calls = append(*r.calls, name)
+}
+
+func (r *callOrderRepo) Tx(ctx context.Context, fn func(store.Repository) error) error {
+	return r.Repository.Tx(ctx, func(tx store.Repository) error {
+		return fn(&callOrderRepo{Repository: tx, mu: r.mu, calls: r.calls})
+	})
+}
+
+func (r *callOrderRepo) NextChannelSeq(ctx context.Context, channelID id.ID) (uint64, error) {
+	r.record("NextChannelSeq")
+	return r.Repository.NextChannelSeq(ctx, channelID)
+}
+
+func (r *callOrderRepo) LastReadableMessageAt(ctx context.Context, channelID, userID id.ID) (int64, error) {
+	r.record("LastReadableMessageAt")
+	return r.Repository.LastReadableMessageAt(ctx, channelID, userID)
+}
+
+// The slowmode read runs AFTER NextChannelSeq inside the post transaction.
+// NextChannelSeq is `UPDATE channels … RETURNING seq`, which takes the channel's
+// row lock on Postgres; a read before it runs under READ COMMITTED with no lock
+// held, so two concurrent posts by one user would both read the old last-post
+// time and both pass. After the lock, the second post waits for the first to
+// commit and its read (a fresh READ COMMITTED snapshot) sees the first message.
+// A refused post rolls the bump back, so it spends no seq.
+func TestTheSlowmodeReadFollowsTheChannelRowLock(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	log := slog.New(slog.DiscardHandler)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", log).Register(e.Mux)
+	rec := &callOrderRepo{Repository: e.Repo, mu: &sync.Mutex{}, calls: &[]string{}}
+	keys := api.NewStaticFrankingKeys(api.FrankingKey{ID: id.New(), Key: bytes.Repeat([]byte{0x09}, 32)})
+	api.NewReadable(rec, api.NewResolver(e.Repo), nil, keys, e.Clk, log).Register(e.Mux)
+
+	ch := readableChannel(t, e, cid, ownerTok)
+	if status, _ := e.Do(http.MethodPatch, "/v1/channels/"+ch.String(), ownerTok,
+		[]any{nil, nil, nil, nil, nil, nil, uint64(30)}); status != http.StatusNoContent {
+		t.Fatalf("PATCH slowmode = %d", status)
+	}
+	_, memberTok := e.NewUser("member")
+	joinCommunity(t, e, cid, memberTok)
+
+	if seq := postReadable(t, e, ch, memberTok, envelope0(t, "first")); seq != 1 {
+		t.Fatalf("first seq = %d, want 1", seq)
+	}
+	rec.mu.Lock()
+	got := slices.Clone(*rec.calls)
+	rec.mu.Unlock()
+	if want := []string{"NextChannelSeq", "LastReadableMessageAt"}; !slices.Equal(got, want) {
+		t.Fatalf("post transaction calls = %v, want %v: the slowmode read must follow the row lock", got, want)
+	}
+
+	if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", memberTok,
+		[]any{envelope0(t, "too soon")}); status != http.StatusTooManyRequests {
+		t.Fatalf("a post inside slowmode = %d, want 429", status)
+	}
+	if seq := postReadable(t, e, ch, ownerTok, envelope0(t, "bypass")); seq != 2 {
+		t.Fatalf("seq after a refused post = %d, want 2: the refusal must roll its bump back", seq)
+	}
 }
 
 type listRow struct {
