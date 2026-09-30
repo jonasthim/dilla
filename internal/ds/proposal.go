@@ -34,6 +34,33 @@ func (d *DS) proposeAddLocked(ctx context.Context, groupID, deviceID, actionID i
 	if err != nil {
 		return err
 	}
+	// Invariant 6's "validate before proposing", for the target itself. A device that is already
+	// a current leaf is refused, and a device whose Add is already outstanding at this epoch is
+	// not proposed twice: two Adds for one signature key make every commit that carries them
+	// invalid (OpenMLS refuses the commit with DuplicateSignatureKey, so the group freezes) and
+	// would spend a second KeyPackage. The check runs under the group lock, so two proposers
+	// racing for one device (a channel-membership sync and an admit, say) cannot both pass it;
+	// the second is a no-op, because the action it asks for is already in flight.
+	members, err := d.opts.Store.ListMembers(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	for _, m := range members {
+		if m.RemovedEpoch == nil && m.DeviceID == deviceID {
+			return errInvalid("the device is already a member of the group")
+		}
+	}
+	outstanding, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
+	if err != nil {
+		return err
+	}
+	for _, p := range outstanding {
+		if p.Origin == 0 && p.VoidAt == nil && p.Kind == uint8(mlswasi.ProposalAdd) &&
+			p.TargetDevice != nil && *p.TargetDevice == deviceID {
+			return nil
+		}
+	}
+
 	inst, err := d.opts.Wasm.Acquire(ctx)
 	if err != nil {
 		return err

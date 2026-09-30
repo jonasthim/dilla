@@ -494,9 +494,47 @@ func TestProposeAddIssuesAnExternalAddAndConsumesTheKeyPackage(t *testing.T) {
 		t.Error("the row must keep the KeyPackage the proposal was built from, for the re-issue")
 	}
 
-	// The KeyPackage is consumed: a second Add for the same device has nothing to use.
-	if err := h.ds.ProposeAdd(ctx, reg.GroupID, joiner, id.New()); err == nil {
-		t.Error("the KeyPackage was not consumed: a second ProposeAdd reused it")
+	// A second Add for the same device while the first is outstanding is a no-op: the action is
+	// already in flight, so nothing is proposed and no second KeyPackage is spent.
+	if err := h.ds.ProposeAdd(ctx, reg.GroupID, joiner, id.New()); err != nil {
+		t.Errorf("a repeated ProposeAdd for an outstanding Add must be a no-op, got %v", err)
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, true); len(rows) != 1 {
+		t.Errorf("%d proposal rows after the repeat, want 1: the device was proposed twice", len(rows))
+	}
+}
+
+// Two Adds for one signature key make every commit that carries them invalid (OpenMLS:
+// DuplicateSignatureKey), so the delivery service never issues the second: a device whose Add is
+// outstanding is not proposed again, and a device that is already a current leaf is refused. The
+// kick_with_outstanding_add_production_acl scenario found the race between a channel-membership
+// sync and an admit on CI.
+func TestProposeAddNeverIssuesTwoAddsForOneDeviceAndRefusesACurrentMember(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, creator := h.mustRegister(t)
+	joiner := h.deviceWithKeyPackage(t)
+
+	for i := range 3 {
+		if err := h.ds.ProposeAdd(ctx, reg.GroupID, joiner, id.New()); err != nil {
+			t.Fatalf("ProposeAdd #%d: %v", i+1, err)
+		}
+	}
+	rows, err := h.repo.ListProposals(ctx, reg.GroupID, 6, true)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("%d Add proposals for one device, want exactly 1", len(rows))
+	}
+
+	err = h.ds.ProposeAdd(ctx, reg.GroupID, creator.DeviceID, id.New())
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_INVALID_REQUEST" {
+		t.Fatalf("an Add for a current member: got %v, want E_INVALID_REQUEST", err)
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, true); len(rows) != 1 {
+		t.Fatalf("%d proposal rows after refusing a current member, want 1", len(rows))
 	}
 }
 
