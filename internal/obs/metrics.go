@@ -40,6 +40,9 @@ type Metrics struct {
 	BlobGCBytes     prometheus.Counter
 	BlobRefsExpired *prometheus.CounterVec
 	BlobPurges      prometheus.Counter
+	// dillad doctor's two operational signals (Plan 2 task 15).
+	CertRenewalFailures prometheus.Counter
+	ClockSkewSeconds    prometheus.Gauge
 }
 
 // NewMetrics takes the gatherer explicitly rather than type-asserting the
@@ -95,6 +98,10 @@ func NewMetrics(r prometheus.Registerer, g prometheus.Gatherer) *Metrics {
 		[]string{"reason"})
 	m.BlobPurges = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "dilla_blob_purges_total", Help: "Blobs an instance admin purged."})
+	m.CertRenewalFailures = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_cert_renewal_failures_total", Help: "ACME issuance or renewal attempts that failed; the last certificate keeps being served."})
+	m.ClockSkewSeconds = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "dilla_clock_skew_seconds", Help: "Median local clock offset against the doctor.clock_peers HTTPS origins; positive means the local clock is ahead."})
 	r.MustRegister(m.collectors()...)
 	return m
 }
@@ -106,6 +113,7 @@ func (m *Metrics) collectors() []prometheus.Collector {
 		m.PendingRemovalAge, m.FrozenGroups, m.ElectionRounds, m.WasiCalls,
 		m.WasiDuration, m.StoreTxDuration, m.BlobBytes, m.RateLimitedTotal,
 		m.BlobGCRuns, m.BlobGCDeleted, m.BlobGCBytes, m.BlobRefsExpired, m.BlobPurges,
+		m.CertRenewalFailures, m.ClockSkewSeconds,
 	}
 }
 

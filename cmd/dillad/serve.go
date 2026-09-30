@@ -292,6 +292,20 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		<-sweepDone
 	}()
 
+	// dilla_clock_skew_seconds, refreshed hourly from the same peers `dillad
+	// doctor` reads. Nothing gates on it: a booting host with no network yet
+	// must still start, so a round with no answer only leaves the gauge alone.
+	clockCtx, stopClock := context.WithCancel(runCtx)
+	clockDone := make(chan struct{})
+	go func() {
+		defer close(clockDone)
+		ops.WatchClock(clockCtx, doctorHTTPClient, cfg.Doctor.ClockPeers, time.Hour, metrics.ClockSkewSeconds.Set)
+	}()
+	defer func() {
+		stopClock()
+		<-clockDone
+	}()
+
 	notifyReady()
 
 	drained := make(chan struct{})

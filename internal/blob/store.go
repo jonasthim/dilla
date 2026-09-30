@@ -225,6 +225,31 @@ func (s *Store) SweepTemp() (int, error) {
 	return n, err
 }
 
+// Walk calls fn with the base name and size of every finished object under the
+// store, in path order, skipping the .tmp-* files of an interrupted upload. The
+// name of a well-formed object is the 64-character hex of its SHA-256; Walk does
+// not judge that, so a stray file that is not named like one is reported too.
+// `dillad doctor` uses it to find files with no blobs row.
+func (s *Store) Walk(fn func(name string, size int64) error) error {
+	err := fs.WalkDir(s.root.FS(), "att", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || strings.Contains(d.Name(), ".tmp-") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return fn(d.Name(), info.Size())
+	})
+	return err
+}
+
 // writeRelative is unexported and is reached from tests through
 // internal/blob/export_test.go. It exists only so a test can assert that os.Root
 // refuses a traversal; an exported production method that exists only for a test

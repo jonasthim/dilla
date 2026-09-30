@@ -87,6 +87,7 @@ func TestMetricNamesAreTheDocumentedSet(t *testing.T) {
 		"dilla_blob_bytes_total", "dilla_rate_limited_total",
 		"dilla_blob_gc_runs_total", "dilla_blob_gc_deleted_total", "dilla_blob_gc_bytes_total",
 		"dilla_blob_refs_expired_total", "dilla_blob_purges_total",
+		"dilla_cert_renewal_failures_total", "dilla_clock_skew_seconds",
 	}
 	families, err := reg.Gather()
 	if err != nil {
