@@ -117,6 +117,30 @@ func (c StructureChannels) MayRegister(ctx context.Context, userID id.ID, b ds.B
 	return nil
 }
 
+var _ ds.GroupRecreation = StructureChannels{}
+
+// MayRecreate is invariant 11's "re-created by the channel owner's device": while a
+// restore's heal is pending, the channel's replacement text or call group may be
+// registered only by the community's owner. A DM has no owner, and MayRegister has
+// already required a participant, so any participant may. The delivery service
+// asks only after MayRegister admitted the same user and binding.
+func (c StructureChannels) MayRecreate(ctx context.Context, userID id.ID, b ds.Binding) error {
+	if b.CommunityID == nil {
+		return nil
+	}
+	com, err := c.Repo.GetCommunity(ctx, *b.CommunityID)
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("%w: the community is gone", ds.ErrNotEligible)
+	}
+	if err != nil {
+		return err
+	}
+	if com.Owner != userID {
+		return fmt.Errorf("%w: only the community owner re-creates a channel's group", ds.ErrNotEligible)
+	}
+	return nil
+}
+
 // groupBits is what a channel group of kind needs, the same set ResolverACL
 // requires of a joiner.
 func groupBits(kind uint8) Bits {

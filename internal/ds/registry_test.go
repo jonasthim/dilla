@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // Invariant 1: a text group is refused for an invite or discoverable channel and for a
@@ -183,6 +185,66 @@ func TestRegisterRefusesADuplicateGroupID(t *testing.T) {
 	var dsErr *ds.Error
 	if _, err := h.ds.Register(context.Background(), req); !errors.As(err, &dsErr) || dsErr.Code != "E_GROUP_EXISTS" {
 		t.Fatalf("got %v, want E_GROUP_EXISTS", err)
+	}
+}
+
+// rivalGroup stores another open group of the fixture's kind (text) on the fixture's target, as a
+// member who registered first would have left it; epochUnknown marks it as a restore leaves it.
+func (h *dsHarness) rivalGroup(t *testing.T, epochUnknown bool) id.ID {
+	t.Helper()
+	ctx := context.Background()
+	gid := id.New()
+	if err := h.repo.CreateGroup(ctx, store.GroupRow{
+		GroupID: gid, Binding: []byte{0xf6}, Kind: 0, TargetID: dsFixture(t).targetID,
+		Ciphersuite: 1, Epoch: 3, Created: h.clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if epochUnknown {
+		if err := h.repo.MarkAllGroupsEpochUnknown(ctx, h.clk.Now().Add(24*time.Hour).Unix()); err != nil {
+			t.Fatalf("MarkAllGroupsEpochUnknown: %v", err)
+		}
+	}
+	return gid
+}
+
+// C1 (fix wave): one text group per end-to-end-encrypted channel and one call group per voice
+// channel (protocol/01 § Group kinds). A second registration for a target that already has an
+// open group of the kind forks the channel (text) or hijacks the live call (call), and every
+// registration starts an Add storm that spends one KeyPackage of every eligible device.
+func TestRegisterRefusesASecondOpenGroupForOneTarget(t *testing.T) {
+	h := newDSHarness(t)
+	rival := h.rivalGroup(t, false)
+	_, err := h.ds.Register(context.Background(), h.registerRequest(t, h.channel(t, 0, 0)))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_GROUP_EXISTS" || dsErr.Status != http.StatusConflict {
+		t.Fatalf("a second text group for the target: %v, want 409 E_GROUP_EXISTS", err)
+	}
+	if _, err := h.repo.GetGroup(context.Background(), dsFixture(t).groupID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the refused group was stored: %v", err)
+	}
+	if groups, _ := h.repo.GroupsForTarget(context.Background(), dsFixture(t).targetID, 0); len(groups) != 1 || groups[0].GroupID != rival {
+		t.Fatalf("open groups for the target = %+v, want only the first", groups)
+	}
+}
+
+// Invariant 11's one exception: while every open group of the target is epoch-unknown (a restore
+// whose heal is pending), the channel owner's device may re-create the group. Anyone the channel
+// source does not name is still refused.
+func TestRegisterAdmitsTheOwnersReCreationOfAnEpochUnknownGroup(t *testing.T) {
+	refused := newDSHarness(t)
+	refused.rivalGroup(t, true)
+	refused.channels.recreate = fmt.Errorf("%w: not the channel owner", ds.ErrNotEligible)
+	_, err := refused.ds.Register(context.Background(), refused.registerRequest(t, refused.channel(t, 0, 0)))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_GROUP_EXISTS" {
+		t.Fatalf("a non-owner's re-creation: %v, want E_GROUP_EXISTS", err)
+	}
+
+	h := newDSHarness(t)
+	h.rivalGroup(t, true)
+	if _, err := h.ds.Register(context.Background(), h.registerRequest(t, h.channel(t, 0, 0))); err != nil {
+		t.Fatalf("the owner's re-creation of an epoch-unknown group: %v", err)
 	}
 }
 

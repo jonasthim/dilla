@@ -129,6 +129,10 @@ func (c *ChannelModes) Channel(_ context.Context, target id.ID) (visibility, mod
 // protocol, not the community structure. internal/api/dschannels_test.go pins the real ACL.
 func (c *ChannelModes) MayRegister(context.Context, id.ID, ds.Binding) error { return nil }
 
+// MayRecreate admits every re-creation of an epoch-unknown group, as MayRegister admits every
+// registration (ds.GroupRecreation).
+func (c *ChannelModes) MayRecreate(context.Context, id.ID, ds.Binding) error { return nil }
+
 // Host is one initialised instance behind a stable public handler. Restore replaces the server
 // underneath the handler, as `dillad restore` followed by a restart replaces the process, so the
 // clients keep their base URL across it.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
@@ -92,6 +93,17 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 	// E_MODE_READABLE whoever registers it, and before anything is written.
 	if err := d.checkRegistrant(ctx, r.Session.UserID, binding); err != nil {
 		return RegisterResult{}, err
+	}
+	// One text group per end-to-end-encrypted channel, one call group per voice channel
+	// (protocol/01 § Group kinds). The target lock is held until the group row is written, so two
+	// first registrations for one target cannot both pass the check; it is always taken after the
+	// group lock and nothing takes the two in the other order.
+	if isChannelGroupKind(binding.Kind) {
+		unlockTarget := d.lockTarget(binding.Kind, binding.TargetID)
+		defer unlockTarget()
+		if err := d.checkNoLiveGroup(ctx, r.Session.UserID, binding); err != nil {
+			return RegisterResult{}, err
+		}
 	}
 
 	row := store.GroupRow{
@@ -212,6 +224,69 @@ func (d *DS) checkRegistrant(ctx context.Context, userID id.ID, b Binding) error
 	default:
 		return err
 	}
+}
+
+// GroupRecreation is the optional half of Channels that invariant 11's re-creation path reads:
+// "if no heal succeeds … the group is closed and re-created by the channel owner's device". While
+// a restore's heal is pending, every open group of the target is epoch-unknown, and MayRecreate
+// says whether userID is the one who may register its replacement (nil admits; an error wrapping
+// ErrNotEligible refuses; any other error is "cannot answer"). A Channels that does not implement
+// it admits no re-creation before the heal window closes the old group.
+type GroupRecreation interface {
+	MayRecreate(ctx context.Context, userID id.ID, b Binding) error
+}
+
+// isChannelGroupKind is true for the two kinds a channel or DM carries one of: text (0) and
+// call (1). Pairing and interaction groups are not channel groups.
+func isChannelGroupKind(kind uint8) bool { return kind == 0 || kind == 1 }
+
+// checkNoLiveGroup refuses a registration whose target already has an open group of the same kind
+// (409 E_GROUP_EXISTS). A second text group forks the channel's end-to-end encryption, and every
+// registration starts an Add storm that spends one KeyPackage of every eligible device; a second
+// call group takes over the live call, whose call id every call group of the channel shares. The
+// one exception is invariant 11's: when every open group of the target is epoch-unknown, the
+// registrant the channel source names (GroupRecreation) may re-create it.
+func (d *DS) checkNoLiveGroup(ctx context.Context, userID id.ID, b Binding) error {
+	groups, err := d.opts.Store.GroupsForTarget(ctx, b.TargetID, b.Kind)
+	if err != nil {
+		return err
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+	for _, g := range groups {
+		if !g.EpochUnknown {
+			return errGroupExists(fmt.Sprintf(
+				"the target already has an open group of this kind (%s); a channel carries one", g.GroupID))
+		}
+	}
+	rc, ok := d.opts.Channels.(GroupRecreation)
+	if !ok {
+		return errGroupExists("the target's group awaits its heal and this instance names no one to re-create it")
+	}
+	if err := rc.MayRecreate(ctx, userID, b); err != nil {
+		if errors.Is(err, ErrNotEligible) {
+			return errGroupExists("the target's group awaits its heal; only the channel owner's device may re-create it")
+		}
+		return err
+	}
+	return nil
+}
+
+// lockTarget serialises registrations of one kind of group for one target. Its locks live apart
+// from the group locks, so a target id that happens to equal some group id cannot contend with,
+// or deadlock against, that group's lock.
+func (d *DS) lockTarget(kind uint8, target id.ID) func() {
+	v, _ := d.targetLocks.LoadOrStore(targetKey{kind: kind, target: target}, &sync.Mutex{})
+	// targetLocks only ever holds *sync.Mutex values stored by the line above.
+	mu, _ := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+type targetKey struct {
+	kind   uint8
+	target id.ID
 }
 
 // checkChannelMode is invariant 1's refusal. A call group is allowed on any channel; a text group

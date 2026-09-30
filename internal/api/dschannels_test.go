@@ -77,6 +77,23 @@ func binding(community *id.ID, target id.ID, kind uint8) ds.Binding {
 	return ds.Binding{V: 1, CommunityID: community, TargetID: target, Kind: kind, E2EEVersion: 1}
 }
 
+// C1 (fix wave), invariant 11: while a restore's heal is pending, a channel's replacement group is
+// re-created by its owner's device only: the community owner for a community channel, any
+// participant for a DM (which has no owner).
+func TestOnlyTheCommunityOwnerMayRecreateAChannelsGroup(t *testing.T) {
+	f := newStructureFixture(t)
+	ctx := context.Background()
+	if err := f.src.MayRecreate(ctx, f.member, binding(&f.community, f.text, api.GroupText)); err != nil {
+		t.Fatalf("the community owner re-creating: %v, want nil", err)
+	}
+	if err := f.src.MayRecreate(ctx, f.outsider, binding(&f.community, f.text, api.GroupText)); !errors.Is(err, ds.ErrNotEligible) {
+		t.Fatalf("a non-owner re-creating: %v, want ErrNotEligible", err)
+	}
+	if err := f.src.MayRecreate(ctx, f.outsider, binding(nil, f.dm, api.GroupText)); err != nil {
+		t.Fatalf("a DM participant re-creating: %v, want nil", err)
+	}
+}
+
 // Invariant 1's input, from the real table: a live channel's visibility and mode, and "no
 // channel row" (not an error) for a deleted channel and for a target that was never a channel.
 func TestStructureChannelsReportsTheStoredMode(t *testing.T) {

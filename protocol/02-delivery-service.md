@@ -267,8 +267,13 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    community-wide never stand in for the channel's overwrites. A `text` or `call` group with no
    `community_id` (a DM or group DM) must name a live DM or group DM as its `target_id` and needs
    the user to be one of its participants (`09` § DMs). A binding that names no such target is
-   `400 E_BINDING_INVALID`; a user who may not register it is `403 E_FORBIDDEN`. `pairing` and
-   `interaction` groups are not channel groups and are not gated here.
+   `400 E_BINDING_INVALID`; a user who may not register it is `403 E_FORBIDDEN`. A channel or DM
+   carries one `text` group and one `call` group (`01-groups.md` § Group kinds): a registration
+   whose target already has an open group of the same kind is `409 E_GROUP_EXISTS`, decided under
+   a lock on the target so two first registrations cannot both pass, with one exception, invariant
+   11's re-creation: while every open group of the target is epoch-unknown, the channel owner's
+   device (the community owner; any participant of a DM) may register its replacement. `pairing`
+   and `interaction` groups are not channel groups and are not gated here.
 2. **Tree service.** The DS keeps a `PublicGroup` per group. Committers upload a GroupInfo
    **without** the ratchet tree; the DS serves the tree from its own `PublicGroup`, and a joiner
    MUST verify `tree_hash` in the GroupInfo against the served tree before joining.

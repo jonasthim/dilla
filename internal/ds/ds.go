@@ -217,6 +217,8 @@ type DS struct {
 	// in SQL: the lock keeps two commits for the same epoch from both passing validation, and the
 	// epoch comparison inside the transaction is what makes it durable.
 	groupLocks sync.Map // id.ID -> *sync.Mutex
+	// targetLocks serialises the registration of a channel's one text or call group (lockTarget).
+	targetLocks sync.Map // targetKey -> *sync.Mutex
 
 	states *stateCache
 

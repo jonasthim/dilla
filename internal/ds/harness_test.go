@@ -291,7 +291,12 @@ type fakeChannels struct {
 	refuse error
 	// asked records each MayRegister question, so a test can assert who was asked about.
 	asked []registrationQuestion
+	// recreate is what MayRecreate answers; nil admits the re-creation of a group whose heal is
+	// pending (invariant 11).
+	recreate error
 }
+
+func (f *fakeChannels) MayRecreate(context.Context, id.ID, ds.Binding) error { return f.recreate }
 
 type registrationQuestion struct {
 	user    id.ID
