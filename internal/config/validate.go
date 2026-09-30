@@ -3,10 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -169,6 +171,10 @@ func (c *Config) Validate() error {
 			add("turn.relay_ip %q is neither an IP address of this host nor %q", c.TURN.RelayIP, RelayIPAuto)
 		}
 	}
+	if c.TURN.PublicURL != "" && !validTURNURL(c.TURN.PublicURL) {
+		add("turn.public_url %q is not a turn: or turns: URL with a host and a port, e.g. \"turns:turn.example.org:5349?transport=tcp\"",
+			c.TURN.PublicURL)
+	}
 	if c.TURN.ProxyProtocol && c.TURN.Listen == "" {
 		add("turn.proxy_protocol requires turn.listen")
 	}
@@ -294,6 +300,24 @@ func (c *Config) Validate() error {
 		add("doctor.clock_skew_max is %s; HTTP-date has one-second granularity, so anything under 2s is noise", c.Doctor.ClockSkewMax.Value())
 	}
 	return errors.Join(problems...)
+}
+
+// validTURNURL is RFC 7065's shape as clients take it: "turn:" or "turns:", a host (an IPv6 literal
+// in brackets), a numeric port, and an optional "?transport=..." query.
+func validTURNURL(s string) bool {
+	rest, ok := strings.CutPrefix(s, "turns:")
+	if !ok {
+		if rest, ok = strings.CutPrefix(s, "turn:"); !ok {
+			return false
+		}
+	}
+	hostport, _, _ := strings.Cut(rest, "?")
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil || host == "" || strings.ContainsAny(host, "/@ ") {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n > 0 && n < 65536
 }
 
 // secretFile checks a *_file key: present, readable, mode 0600, at least minBytes bytes.

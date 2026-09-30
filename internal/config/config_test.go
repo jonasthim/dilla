@@ -339,6 +339,27 @@ func TestValidationRules(t *testing.T) {
 			}
 		}
 	})
+	// I14 (fix wave): turn.public_url is a turn: or turns: URL with a host and a port, or empty.
+	t.Run("turn.public_url is a TURN URL", func(t *testing.T) {
+		for u, ok := range map[string]bool{
+			"": true, "turns:turn.example:5349?transport=tcp": true, "turn:[2001:db8::1]:3478?transport=tcp": true,
+			"https://turn.example": false, "turns:turn.example": false, "turn:turn.example:x": false, "turns::5349": false,
+		} {
+			c := base()
+			c.TURN.Enabled = true
+			c.TURN.SharedSecretFile = writeSecretFile(t)
+			c.TURN.RelayIP = "auto"
+			c.TURN.PublicURL = u
+			c.Derive()
+			err := c.Validate()
+			if ok && err != nil {
+				t.Errorf("public_url %q refused: %v", u, err)
+			}
+			if !ok && (err == nil || !strings.Contains(err.Error(), "turn.public_url")) {
+				t.Errorf("public_url %q: Validate = %v, want an error naming turn.public_url", u, err)
+			}
+		}
+	})
 	t.Run("a zero rate limit is refused", func(t *testing.T) {
 		c := base()
 		c.Limits.Rate.MessageBurst = 0

@@ -112,6 +112,11 @@ func callsConfig(cfg *config.Config) (api.CallsConfig, error) {
 	}
 	c.TURNSecret = secret
 	c.TURNURLs = []string{fmt.Sprintf("%s:%s:%s?transport=tcp", scheme, urlHost(host), port)}
+	if cfg.TURN.PublicURL != "" {
+		// The operator knows what the world reaches: a proxy's port that differs from the listen
+		// port, or a TLS-terminating proxy in front of the plaintext relay (turns:).
+		c.TURNURLs = []string{cfg.TURN.PublicURL}
+	}
 	return c, nil
 }
 

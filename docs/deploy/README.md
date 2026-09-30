@@ -34,6 +34,23 @@ explicit relay-unavailable dialog and the call is UDP-or-nothing. Decide this wh
 mode: a proxy in front of dillad is a convenient way to share 443 with other sites, and the price
 is one more port to open, or calls that fail for people behind a UDP-blocking network.
 
+dillad does not terminate TLS on `turn.listen`: the relay there is plain TURN over TCP (a recorded
+deviation from the design, which puts TURN/TLS on the relay itself before the first public
+release). Media stays DTLS-SRTP with SFrame end to end, but a relay credential's username
+(`<expiry>:<device_id>`), the allocation requests and the call timing cross the network in the
+clear unless you put TLS in front of it: a TCP stream proxy that terminates TLS and forwards to
+`turn.listen` (with `turn.proxy_protocol` if it sends a PROXY header). Tell clients where it is with
+`turn.public_url`, which they are handed verbatim instead of `turn:<domain>:<turn.listen port>`:
+
+```toml
+[turn]
+enabled = true
+listen = "127.0.0.1:13478"
+public_url = "turns:turn.example.org:5349?transport=tcp"
+```
+
+Set `turn.public_url` whenever the port the world reaches differs from `turn.listen`'s, TLS or not.
+
 ## 2. Compose
 
 The image is `ghcr.io/jonasthim/dilla/dillad`, built for linux/amd64 and linux/arm64 on distroless

@@ -45,6 +45,16 @@ func TestTheCallsConfigNamesTheRelayTheModeRuns(t *testing.T) {
 			c.TLS.Mode = config.TLSModeBehindProxy
 			c.TURN.Listen = "0.0.0.0:3478"
 		}, "wss://chat.example.test", "turn:chat.example.test:3478?transport=tcp", true},
+		// I14 (fix wave): a proxy that publishes the relay on another port, or terminates TLS in front
+		// of it, tells clients so through turn.public_url, advertised verbatim.
+		{"behind_proxy with public_url", func(c *config.Config) {
+			c.TLS.Mode = config.TLSModeBehindProxy
+			c.TURN.Listen = "127.0.0.1:13478"
+			c.TURN.PublicURL = "turns:turn.example.test:5349?transport=tcp"
+		}, "wss://chat.example.test", "turns:turn.example.test:5349?transport=tcp", true},
+		{"acme with public_url", func(c *config.Config) {
+			c.TURN.PublicURL = "turns:chat.example.test:8443?transport=tcp"
+		}, "wss://chat.example.test", "turns:chat.example.test:8443?transport=tcp", true},
 		{"turn off", func(c *config.Config) { c.TURN.Enabled = false }, "wss://chat.example.test", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

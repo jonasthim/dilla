@@ -565,7 +565,13 @@ who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown one.
   validate — and an empty array when it runs none. The relay is `turns:` on the instance's 443,
   where the instance tells a STUN stream from HTTP by its first bytes after the TLS handshake; in
   `behind_proxy` it is a separate operator-configured TCP port, and without one the list is empty
-  and the client's "relay unavailable" dialog applies: the call is direct UDP or nothing. At most
+  and the client's "relay unavailable" dialog applies: the call is direct UDP or nothing. That
+  relay is plain `turn:` on the listen port, because the instance terminates no TLS for it there
+  (a recorded deviation from the spec, plan dillad-2 **D25**): its credential username and
+  allocation traffic cross the network in cleartext unless a TLS front the operator runs carries
+  it, while the media itself stays DTLS-SRTP with SFrame. When `turn.public_url` is set, in any
+  mode, it is the one URL in `urls`, verbatim — for a proxy that terminates TLS for the relay
+  (`turns:`) or publishes it on another port. At most
   `turn.allocations_per_device` relay allocations are live per device (default 2); another is
   refused with STUN error 486 until one ends. The relay reaches only the instance's own SFU (its
   `livekit.node_ip`, and with `livekit.advertise_internal_ip` the host's interface addresses LiveKit
