@@ -3,11 +3,13 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/pressly/goose/v3"
 
 	"github.com/jonasthim/dilla/internal/id"
@@ -15,14 +17,35 @@ import (
 	"github.com/jonasthim/dilla/internal/store/postgres/migrations"
 )
 
-// newPostgresRepo opens and migrates the CI database, or skips.
+// newPostgresRepo opens and migrates a database of the test's own on the CI server, or
+// skips. The database is created for the test and dropped at cleanup, so the plan the test
+// reads depends on its own rows and indexes only, never on what other packages' Postgres
+// legs left in the shared database.
 func newPostgresRepo(t *testing.T) (store.Repository, *sql.DB) {
 	t.Helper()
-	dsn := os.Getenv("DILLA_TEST_PG")
-	if dsn == "" {
+	base := os.Getenv("DILLA_TEST_PG")
+	if base == "" {
 		t.Skip("DILLA_TEST_PG is unset: no local Postgres server on this box; CI's postgres service container runs this test")
 	}
-	db, err := Open(dsn, 4, time.Hour)
+	admin, err := Open(base, 1, time.Hour)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	name := "dilla_t_" + id.New().String()[:16]
+	if _, err := admin.ExecContext(context.Background(), `CREATE DATABASE `+name); err != nil {
+		_ = admin.Close()
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.ExecContext(context.Background(), `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
+		_ = admin.Close()
+	})
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatalf("DILLA_TEST_PG is not a URL: %v", err)
+	}
+	u.Path = "/" + name
+	db, err := Open(u.String(), 4, time.Hour)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -82,8 +105,12 @@ func seedSearchCorpus(t *testing.T, repo store.Repository) []id.ID {
 // The statement the repository runs must reach the composite GIN index, and the
 // bound configuration must keep the tsquery a scan constant rather than a
 // row-derived Function Scan (gap-69 §3.5). A handful of rows would plan as a
-// sequential scan whatever the indexes, so this session turns sequential scans
-// off: the assertion is that the index is USABLE by this exact statement.
+// sequential scan whatever the indexes, and with sequential scans off the planner
+// still prefers the btrees that lead with channel_id (readable_messages_by_channel,
+// readable_messages_by_sender and the (channel_id, seq) unique constraint), which
+// a larger corpus plus ANALYZE does not change. So inside one transaction that is
+// rolled back, sequential scans are turned off and those competitors are dropped:
+// the assertion is that the GIN index is USABLE by this exact statement.
 func TestSearchUsesTheCompositeGINIndex(t *testing.T) {
 	repo, db := newPostgresRepo(t)
 	chans := seedSearchCorpus(t, repo)
@@ -92,20 +119,31 @@ func TestSearchUsesTheCompositeGINIndex(t *testing.T) {
 		t.Fatalf("ParseQuery: %v", err)
 	}
 	ctx := t.Context()
-	conn, err := db.Conn(ctx)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		t.Fatalf("Conn: %v", err)
+		t.Fatalf("BeginTx: %v", err)
 	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `SET enable_seqscan = off`); err != nil {
-		t.Fatalf("SET enable_seqscan: %v", err)
+	defer func() { _ = tx.Rollback() }()
+	var unique string
+	if err := tx.QueryRowContext(ctx, `SELECT conname FROM pg_constraint
+		WHERE conrelid = 'readable_messages'::regclass AND contype = 'u'`).Scan(&unique); err != nil {
+		t.Fatalf("look up the (channel_id, seq) unique constraint: %v", err)
 	}
-	rows, err := conn.QueryContext(ctx, `EXPLAIN (FORMAT TEXT) `+searchSQL, searchConfig, q.TSQuery(),
+	for _, stmt := range []string{
+		`SET LOCAL enable_seqscan = off`,
+		`DROP INDEX readable_messages_by_channel`,
+		`DROP INDEX readable_messages_by_sender`,
+		`ALTER TABLE readable_messages DROP CONSTRAINT ` + pgx.Identifier{unique}.Sanitize(),
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `EXPLAIN (FORMAT TEXT) `+searchSQL, searchConfig, q.TSQuery(),
 		byteaArray(store.ReadableSearchQuery{ChannelIDs: chans}), int64(0), int64(20))
 	if err != nil {
 		t.Fatalf("EXPLAIN: %v", err)
 	}
-	defer func() { _ = rows.Close() }()
 	var lines []string
 	for rows.Next() {
 		var line string
@@ -116,6 +154,12 @@ func TestSearchUsesTheCompositeGINIndex(t *testing.T) {
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows: %v", err)
+	}
+	_ = rows.Close()
+	// The dropped indexes come back, and the ACCESS EXCLUSIVE lock the DROPs took is
+	// released before the repository's own connection reads the table below.
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
 	}
 	plan := strings.Join(lines, "\n")
 	if !strings.Contains(plan, "readable_messages_fts") {
