@@ -103,6 +103,8 @@ func printPlan(w io.Writer, from, cfgPath string, p ops.RestorePlan, dryRun bool
 	for _, warning := range p.Warnings {
 		fmt.Fprintf(w, "  warning: %s\n", warning)
 	}
+	// R38: the restore output is one of the three places its wording appears.
+	fmt.Fprintf(w, "dillad restore: note: %s\n", ops.ContentNotice)
 	window := ds.DefaultPolicy().HealWindow
 	if dryRun {
 		fmt.Fprintf(w, "dillad restore: dry run: nothing was written. Without --dry-run: live calls end, every client resyncs, "+

@@ -446,6 +446,11 @@ func TestRestoreBumpsTheGenerationAndArmsTheHeal(t *testing.T) {
 	if !strings.Contains(stderr, "24h") || !strings.Contains(stderr, "live calls ended") {
 		t.Fatalf("restore did not print the operator summary: %q", stderr)
 	}
+	// I17 (fix wave): R38's wording is on the restore output too, not only in the archive and the
+	// backup output: the operator restoring an archive is told what it holds.
+	if !strings.Contains(stderr, "dillad restore: note: "+ops.ContentNotice) {
+		t.Fatalf("restore did not print R38's content notice: %q", stderr)
+	}
 }
 
 func TestDryRunWritesNothing(t *testing.T) {
@@ -464,7 +469,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	if n := h.Rows(t); n != 3 {
 		t.Fatalf("--dry-run replaced the database: %d seeded rows left, want 3", n)
 	}
-	for _, want := range []string{"generation", "blobs", "rows", "mls_groups"} {
+	for _, want := range []string{"generation", "blobs", "rows", "mls_groups", "dillad restore: note: " + ops.ContentNotice} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("the plan does not mention %q: %q", want, stdout)
 		}
