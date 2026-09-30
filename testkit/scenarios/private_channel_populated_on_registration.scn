@@ -1,0 +1,13 @@
+# protocol/01 § Joining: creating a private channel is done by the instance issuing Add proposals
+# for every eligible device. The test host writes a community-less private channel whose
+# channel_members are alice and bob (channel … members=), and alice registers its text group. The
+# composition root's AfterRegister runs api.SyncRegisteredGroup AFTER the 201 (protocol/02, POST
+# /v1/groups), which proposes bob's device through ds.ProposeAddBatch. The Go harness test
+# (TestRegisteringAChannelGroupThroughTheInstanceProposesItsMembers) waits for that Add in the
+# instance's store: the scenario itself cannot, because the Add arrives asynchronously and no verb
+# here waits for an instance proposal. The join storm's own batching is join_storm_256_batched.
+instance dilla
+client alice
+client bob
+channel f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7 visibility=private mode=e2ee members=alice,bob
+group chat kind=text target=f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7 community=none creator=alice

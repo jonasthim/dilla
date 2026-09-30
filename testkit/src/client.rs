@@ -189,6 +189,11 @@ impl TestClient {
         self.device_id
     }
 
+    /// The user this client's credential names: the id the instance minted at registration.
+    pub fn user_id(&self) -> UserId {
+        self.identity.user_id
+    }
+
     /// This client's device as a delivery service authenticates it: its id and its DSK.
     pub fn device(&self) -> Device {
         Device::new(self.device_id, self.dsk.clone())

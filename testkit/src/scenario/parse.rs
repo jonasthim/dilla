@@ -163,13 +163,17 @@ pub enum Stmt {
         group: String,
         len: usize,
     },
-    /// `channel <target> [visibility=private|invite|discoverable] [mode=e2ee|readable]`: the test
-    /// host records a channel with that visibility and mode under `target`, which invariant 1's
-    /// registration check reads.
+    /// `channel <target> [visibility=private|invite|discoverable] [mode=e2ee|readable]
+    /// [members=<client>,<client>…]`: the test host records a channel with that visibility and
+    /// mode under `target`, which invariant 1's registration check reads. With `members=` it also
+    /// writes the channel row, community-less, and those clients' users as its channel_members:
+    /// a channel whose text group the instance populates when the group is registered
+    /// (protocol/01 § Joining, "creating a private channel").
     Channel {
         target: [u8; 16],
         visibility: String,
         mode: String,
+        members: Vec<String>,
     },
 }
 
@@ -637,10 +641,24 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                     format!("unknown mode {mode:?}; expected e2ee or readable"),
                 ));
             }
+            let members: Vec<String> = match named(args, "members=") {
+                None => vec![],
+                Some(list) => {
+                    let names: Vec<String> = list.split(',').map(str::to_owned).collect();
+                    if names.iter().any(String::is_empty) {
+                        return Err(err(
+                            line_no,
+                            format!("members {list:?} names an empty client"),
+                        ));
+                    }
+                    names
+                }
+            };
             Stmt::Channel {
                 target: hex16(args[0], line_no)?,
                 visibility: visibility.to_owned(),
                 mode: mode.to_owned(),
+                members,
             }
         }
         other => return Err(err(line_no, format!("unknown statement {other:?}"))),
@@ -1165,6 +1183,7 @@ expect_reject E_BINDING join bob chat
                 target: [0xc1; 16],
                 visibility: "invite".into(),
                 mode: "readable".into(),
+                members: vec![],
             }
         );
         assert_eq!(
@@ -1173,7 +1192,21 @@ expect_reject E_BINDING join bob chat
                 target: [0xc1; 16],
                 visibility: "private".into(),
                 mode: "e2ee".into(),
+                members: vec![],
             }
+        );
+        assert_eq!(
+            one("channel c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 members=alice,bob").unwrap(),
+            Stmt::Channel {
+                target: [0xc1; 16],
+                visibility: "private".into(),
+                mode: "e2ee".into(),
+                members: vec!["alice".into(), "bob".into()],
+            }
+        );
+        refused(
+            "channel c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 members=alice,,bob",
+            "members",
         );
         refused(
             "channel c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 visibility=secret",

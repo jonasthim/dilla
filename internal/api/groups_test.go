@@ -706,19 +706,103 @@ func TestResyncCarriesTheDeliveryServicesRefusal(t *testing.T) {
 // A registration the delivery service accepted is handed to AfterRegister, which is how the
 // composition root populates a private channel's new group (SyncRegisteredGroup); a refused one
 // is not.
-func TestAnAcceptedRegistrationIsHandedToAfterRegister(t *testing.T) {
+//
+// The hook runs AFTER the 201: populating a channel of a thousand members is a thousand
+// permission resolutions and up to 256 Adds built in the guest, which the registrant must not
+// wait for, and the proposals and the commit_needed election it fans out to the creator must not
+// overtake the answer that tells the creator the group exists (protocol/02, POST /v1/groups).
+// Here the hook blocks until the test has read the 201; a handler that ran it first would never
+// answer.
+func TestAnAcceptedRegistrationIsHandedToAfterRegisterAfterThe201(t *testing.T) {
 	h := newGroupsAPI(t)
+	answered := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(answered) }) })
+	var mu sync.Mutex
 	var got []id.ID
-	h.groups.AfterRegister = func(_ context.Context, groupID id.ID) { got = append(got, groupID) }
+	var hookCtxErr error
+	h.groups.AfterRegister = func(ctx context.Context, groupID id.ID) {
+		<-answered
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, groupID)
+		hookCtxErr = ctx.Err()
+	}
 
-	h.mustCreate(t)
+	reqCtx, cancelReq := context.WithCancel(t.Context())
+	res := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequestWithContext(reqCtx, http.MethodPost, "/v1/groups", bytes.NewReader(h.createBody(t)))
+		req.Header.Set("Content-Type", "application/cbor")
+		req.Header.Set("Authorization", "Bearer "+h.session)
+		rec := httptest.NewRecorder()
+		h.mux.ServeHTTP(rec, req)
+		res <- rec
+	}()
+	select {
+	case rec := <-res:
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("POST /v1/groups did not answer while AfterRegister was still running: " +
+			"the 201 must be written before the group is populated")
+	}
+	// The request is over, and its context with it; the hook's work is not.
+	cancelReq()
+	once.Do(func() { close(answered) })
+
+	if err := h.groups.Drain(t.Context()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	mu.Lock()
 	if len(got) != 1 || got[0] != h.groupID {
 		t.Fatalf("AfterRegister saw %v, want exactly [%s]", got, h.groupID)
 	}
+	if hookCtxErr != nil {
+		t.Fatalf("the hook's context ended with the request: %v", hookCtxErr)
+	}
+	mu.Unlock()
+
 	if res := h.do(t, http.MethodPost, "/v1/groups", h.session, h.createBody(t)); res.Code == http.StatusCreated {
 		t.Fatal("a second registration of the same group was accepted")
 	}
+	if err := h.groups.Drain(t.Context()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
 	if len(got) != 1 {
 		t.Fatalf("a refused registration reached AfterRegister: %v", got)
+	}
+}
+
+// Drain is what shutdown waits on: it returns once every hook it started has finished, and gives
+// up with the context's error when the grace runs out first.
+func TestDrainWaitsForAfterRegisterAndHonoursItsDeadline(t *testing.T) {
+	h := newGroupsAPI(t)
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	finished := make(chan struct{})
+	h.groups.AfterRegister = func(context.Context, id.ID) {
+		<-release
+		close(finished)
+	}
+	h.mustCreate(t)
+
+	short, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if err := h.groups.Drain(short); err == nil {
+		t.Fatal("Drain returned nil while a hook was still running")
+	}
+	once.Do(func() { close(release) })
+	if err := h.groups.Drain(t.Context()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	select {
+	case <-finished:
+	default:
+		t.Fatal("Drain returned before the hook finished")
 	}
 }

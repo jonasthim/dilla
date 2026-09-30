@@ -552,6 +552,7 @@ impl Runner {
                 target,
                 visibility,
                 mode,
+                members,
             } => {
                 if !self.is_remote() {
                     return Err(DsError::Unsupported(
@@ -559,13 +560,18 @@ impl Runner {
                     )
                     .into());
                 }
+                let users = members
+                    .iter()
+                    .map(|m| self.user_of(m).map(|u| format!("\"{}\"", u.to_hex())))
+                    .collect::<Result<Vec<_>, _>>()?;
                 control_post(
                     "/debug/channel",
                     &format!(
-                        "{{\"target\":\"{}\",\"visibility\":{},\"mode\":{}}}",
+                        "{{\"target\":\"{}\",\"visibility\":{},\"mode\":{},\"members\":[{}]}}",
                         hex::encode(target),
                         json_string(visibility),
-                        json_string(mode)
+                        json_string(mode),
+                        users.join(",")
                     ),
                 )?;
                 Ok(())
@@ -881,6 +887,13 @@ impl Runner {
         self.clients
             .get(name)
             .map(TestClient::device_id)
+            .ok_or_else(|| TestkitError::Scenario(format!("unknown client {name}")))
+    }
+
+    fn user_of(&self, name: &str) -> Result<dilla_core::ids::UserId, TestkitError> {
+        self.clients
+            .get(name)
+            .map(TestClient::user_id)
             .ok_or_else(|| TestkitError::Scenario(format!("unknown client {name}")))
     }
 

@@ -142,9 +142,10 @@ func ControlHandler(h *Host) http.Handler {
 	})
 	mux.HandleFunc("POST /debug/channel", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Target     string `json:"target"`
-			Visibility string `json:"visibility"`
-			Mode       string `json:"mode"`
+			Target     string   `json:"target"`
+			Visibility string   `json:"visibility"`
+			Mode       string   `json:"mode"`
+			Members    []string `json:"members"`
 		}
 		if !decode(w, r, &body) {
 			return
@@ -166,6 +167,21 @@ func ControlHandler(h *Host) http.Handler {
 		if !ok {
 			http.Error(w, "mode is e2ee or readable", http.StatusBadRequest)
 			return
+		}
+		members := make([]id.ID, 0, len(body.Members))
+		for _, m := range body.Members {
+			u, err := id.Parse(m)
+			if err != nil {
+				http.Error(w, "members: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			members = append(members, u)
+		}
+		if len(members) > 0 {
+			if err := h.PutChannel(r.Context(), target, visibility, mode, members); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		h.Channels().Set(target, visibility, mode)
 		w.WriteHeader(http.StatusNoContent)

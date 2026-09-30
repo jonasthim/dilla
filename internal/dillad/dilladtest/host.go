@@ -24,6 +24,7 @@ import (
 
 	"github.com/pressly/goose/v3"
 
+	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -299,6 +300,35 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 // Channels is the channel-mode source the instance's invariant 1 reads; `channel <target> …`
 // writes it through POST /debug/channel.
 func (h *Host) Channels() *ChannelModes { return h.channels }
+
+// PutChannel writes a community-less channel row under target (a group DM's shape, which is what a
+// channel with no community is) and puts every member in its channel_members. It is what
+// `channel … members=` asks for: api.SyncRegisteredGroup, which the composition root runs after a
+// registration, reads the channels table rather than the ChannelModes source, and it populates the
+// registered text group with the members' devices. A channel already written keeps its row and
+// gains any member it lacked.
+func (h *Host) PutChannel(ctx context.Context, target id.ID, visibility, mode uint8, members []id.ID) error {
+	repo := h.Server().Repo()
+	now := h.clk.Now().Unix()
+	return repo.Tx(ctx, func(tx store.Repository) error {
+		if _, err := tx.GetChannel(ctx, target); errors.Is(err, store.ErrNotFound) {
+			if err := tx.CreateChannel(ctx, store.ChannelRow{
+				ID: target, Kind: api.ChannelGroupDM, Mode: mode, Visibility: visibility,
+				SettingsJSON: []byte("{}"), HostPolicyVersion: 1, Created: now,
+			}); err != nil {
+				return fmt.Errorf("dilladtest: channel %s: %w", target, err)
+			}
+		} else if err != nil {
+			return err
+		}
+		for _, u := range members {
+			if err := tx.PutChannelMember(ctx, target, u, now); err != nil {
+				return fmt.Errorf("dilladtest: channel %s member %s: %w", target, u, err)
+			}
+		}
+		return nil
+	})
+}
 
 // MarkRevoked sets the device row's revoked_at and nothing else. A real revocation
 // (auth.Sessions.RevokeDevice) also deletes the device's sessions in the same transaction; this

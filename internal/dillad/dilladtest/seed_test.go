@@ -13,11 +13,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/dillad/dilladtest"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 func newHost(t *testing.T) *dilladtest.Host {
@@ -203,6 +205,74 @@ func TestTheChannelRouteRecordsWhatInvariantOneReads(t *testing.T) {
 		if status := postJSON(t, control.URL+"/debug/channel", bad); status != http.StatusBadRequest {
 			t.Fatalf("%v: status = %d, want 400", bad, status)
 		}
+	}
+}
+
+// `channel … members=` also writes the channel row, community-less, and its channel_members: the
+// shape api.SyncRegisteredGroup reads when the channel's text group is registered, so a scenario
+// can drive "creating a private channel" (protocol/01 § Joining) through the wired instance. An
+// empty members list writes neither, as before.
+func TestTheChannelRouteWritesTheChannelAndItsMembersWhenNamed(t *testing.T) {
+	h := newHost(t)
+	control := httptest.NewServer(dilladtest.ControlHandler(h))
+	t.Cleanup(control.Close)
+	ctx := context.Background()
+	repo := h.Server().Repo()
+	var users []string
+	var want []id.ID
+	for _, name := range []string{"alice", "bob"} {
+		u := id.New()
+		if err := repo.CreateUser(ctx, store.UserRow{
+			ID: u, Username: name, Display: name, UMKPub: make([]byte, 32), SSKPub: make([]byte, 32),
+			SigUMKSSK: make([]byte, 64), Created: 1,
+		}); err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+		users = append(users, u.String())
+		want = append(want, u)
+	}
+
+	bare := id.New()
+	if status := postJSON(t, control.URL+"/debug/channel", map[string]any{
+		"target": bare.String(), "visibility": "private", "mode": "e2ee", "members": []string{},
+	}); status != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", status)
+	}
+	if _, err := repo.GetChannel(ctx, bare); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a channel named without members got a row: %v", err)
+	}
+
+	target := id.New()
+	for range 2 { // naming it twice is not a conflict
+		if status := postJSON(t, control.URL+"/debug/channel", map[string]any{
+			"target": target.String(), "visibility": "private", "mode": "e2ee", "members": users,
+		}); status != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", status)
+		}
+	}
+	ch, err := repo.GetChannel(ctx, target)
+	if err != nil {
+		t.Fatalf("GetChannel: %v", err)
+	}
+	if ch.CommunityID != nil || ch.Visibility != dilladtest.VisibilityPrivate || ch.Mode != dilladtest.ModeE2EE {
+		t.Fatalf("channel row = %+v, want a community-less private e2ee channel", ch)
+	}
+	got, err := repo.ListChannelMembers(ctx, target)
+	if err != nil {
+		t.Fatalf("ListChannelMembers: %v", err)
+	}
+	slices.SortFunc(got, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	slices.SortFunc(want, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	if !slices.Equal(got, want) {
+		t.Fatalf("channel_members = %v, want %v", got, want)
+	}
+	if v, m, err := h.Channels().Channel(ctx, target); err != nil || v != 0 || m != 0 {
+		t.Fatalf("Channel = %d, %d, %v; invariant 1's source must still record it", v, m, err)
+	}
+	if status := postJSON(t, control.URL+"/debug/channel", map[string]any{
+		"target": id.New().String(), "visibility": "private", "mode": "e2ee", "members": []string{"zz"},
+	}); status != http.StatusBadRequest {
+		t.Fatalf("a malformed member id: status = %d, want 400", status)
 	}
 }
 

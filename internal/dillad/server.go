@@ -46,6 +46,10 @@ type Server struct {
 	ownsWasm bool
 	gw       *gateway.Gateway
 	ds       *ds.DS
+	// groups is the mounted delivery-service route group. Shutdown drains its AfterRegister runs
+	// (a channel group being populated after its 201) before it stops the delivery service they
+	// issue proposals through.
+	groups *api.Groups
 
 	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
 	// Shutdown calls before it stops the gateway.
@@ -231,11 +235,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	groups := &api.Groups{DS: delivery, Limiter: limiter}
 	// A channel's freshly registered group is populated by batched delivery-service Adds (Plan 2
 	// task 7, protocol/01 § Joining: "creating a private channel … is done by the DS issuing Add
-	// proposals in batches"). The registration has already succeeded, so a failure is logged; the
-	// next membership change of the channel re-derives it. The request's cancellation does not
-	// reach it: the group exists whether or not the client waits for the answer.
+	// proposals in batches"). Groups runs the hook after the 201 is flushed, on its own goroutine
+	// under a context the request's cancellation does not reach, and Shutdown drains it. The
+	// registration has already succeeded, so a failure is logged; the next membership change of
+	// the channel re-derives it.
 	groups.AfterRegister = func(ctx context.Context, groupID id.ID) {
-		if err := api.SyncRegisteredGroup(context.WithoutCancel(ctx), o.Repo, delivery, groupID,
+		if err := api.SyncRegisteredGroup(ctx, o.Repo, delivery, groupID,
 			o.Clock.Now().Unix()); err != nil {
 			o.Log.ErrorContext(ctx, "populating a registered group failed", "group", groupID, "err", err)
 		}
@@ -292,7 +297,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
-		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery,
+		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery, groups: groups,
 		throttle: throttle, limiter: limiter,
 	}
 	s.httpSrv = &http.Server{
@@ -415,6 +420,11 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if serr := s.httpSrv.Shutdown(ctx); serr != nil {
 		keep(s.httpSrv.Close())
+	}
+	// No request is being served any more, so no AfterRegister run can start; the ones still
+	// populating a registered group finish before the delivery service they propose through stops.
+	if gerr := s.groups.Drain(ctx); gerr != nil {
+		keep(fmt.Errorf("dillad: wait for the registered groups being populated: %w", gerr))
 	}
 	if s.maintenance != nil {
 		s.maintenance()

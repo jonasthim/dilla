@@ -103,6 +103,15 @@ carries at most 256 Welcomes (`01`'s `MAX_ADDS`); more is `E_INVALID_REQUEST`. T
 membership and the epoch from the path, the session and the head of the body before it reads the
 rest, and a device has one commit upload in flight at a time (`E_RATE_LIMITED` for a second).
 
+A `POST /v1/groups` that registers the `text` group of a channel with more eligible users than the
+creator is followed by the instance's Add proposals for their devices (`01-groups.md`, "Joining":
+creating a private channel), at most 256 per commit. The instance issues them only **after** the
+`201` has been written: the registrant never waits for them, and no `mls.handshake` carrying one
+of them, and no `mls.commit_needed` asking the creator to commit them, is sent before the answer
+that tells the creator the group exists. The answer and the frames travel on different connections,
+so a client can still read a frame for a group whose `201` it has not yet read; it holds such a
+frame until the registration's answer arrives rather than discarding it.
+
 `commitment` in the `GET /v1/groups/{id}/messages` items is the stored value of `C`, read by the DS
 from `private_message.authenticated_data` at upload time; it is not a separate client-supplied
 field.
@@ -376,8 +385,10 @@ Probes for invariants 1, 4 and 8, which break exactly one rule each:
   session, the window a revocation can race.
 - `send_bad_commitment <client> <group> <len>` — a message whose `authenticated_data` is `len`
   bytes rather than 32 (invariant 8).
-- `channel <target> [visibility=private|invite|discoverable] [mode=e2ee|readable]` — the test host
-  records the channel invariant 1 checks a `text` group against.
+- `channel <target> [visibility=private|invite|discoverable] [mode=e2ee|readable]
+  [members=<client>,…]` — the test host records the channel invariant 1 checks a `text` group
+  against; with `members=` it also stores a community-less channel with those clients' users as its
+  members, whose group the instance populates once it is registered.
 
 Against an instance, `join … via=welcome` is the protocol's own join: the instance proposes the Add
 and a member commits it, because a member's own Add is refused by every receiver in a `text` or
