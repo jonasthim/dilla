@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
 	"github.com/jonasthim/dilla/internal/store/postgres/pgdb"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
@@ -271,6 +273,18 @@ var wantTables = []string{
 	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "oidc_identities",
 	"password_credentials", "pending_joins", "read_state", "readable_messages", "recovery_codes", "reports", "roles", "sessions", "totp_secrets", "users",
 	"voice_sessions", "webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
+}
+
+// DumpTables must name every schema table exactly once. LoadPostgres truncates only the
+// tables it lists, so a table with a foreign key into a listed one that is itself missing
+// makes every Postgres restore fail ("cannot truncate a table referenced in a foreign key
+// constraint"), and the Postgres dump silently leaves its rows out (C5: voice_sessions).
+func TestDumpTablesNamesEverySchemaTable(t *testing.T) {
+	got := slices.Clone(store.DumpTables)
+	sort.Strings(got)
+	if !slices.Equal(got, wantTables) {
+		t.Fatalf("sorted DumpTables = %v\nwant the schema's tables %v", got, wantTables)
+	}
 }
 
 // The two AUTOINCREMENT surrogate keys must survive sqlc's `*.id` wildcard as
