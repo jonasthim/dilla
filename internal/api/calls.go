@@ -108,6 +108,35 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	// R9: the call is keyed by the call group's call id, which every call group
+	// of the channel shares. While a call is live, the group it was opened on
+	// (voice_sessions.group_id) is the one its token gate reads: a newer call
+	// group of the channel neither locks that call's leaves out nor lets its
+	// own leaves into that call's room.
+	callID := callIDOfGroup(group)
+	now := h.clk.Now().Unix()
+	prev, err := h.repo.GetVoiceSession(r.Context(), callID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		server.WriteError(w, err)
+		return
+	}
+	live := err == nil && prev.Ended == nil
+	endStale := false
+	if live && prev.GroupID != nil && *prev.GroupID != group.GroupID {
+		recorded, gerr := h.repo.GetGroup(r.Context(), *prev.GroupID)
+		switch {
+		case gerr == nil && recorded.ClosedAt == nil:
+			group = recorded
+		case gerr == nil || errors.Is(gerr, store.ErrNotFound):
+			// The live call's group is closed or gone, so that call cannot go on:
+			// once this request passes the gates it ends it and opens the next
+			// call on the channel's newest call group.
+			live, endStale = false, true
+		default:
+			server.WriteError(w, gerr)
+			return
+		}
+	}
 	if err := h.requireCurrentLeaf(r.Context(), group, s.DeviceID); err != nil {
 		server.WriteError(w, err)
 		return
@@ -120,26 +149,25 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, notImplemented("this instance runs no SFU (livekit.enabled is false)"))
 		return
 	}
+	if endStale {
+		if err := h.repo.EndVoiceSession(r.Context(), callID, now); err != nil && !errors.Is(err, store.ErrNotFound) {
+			server.WriteError(w, err)
+			return
+		}
+	}
 
-	// R9: the call is keyed by the call group's call id. PutVoiceSession leaves a
-	// live call as it is, so the row read back afterwards is the one call every
-	// device of this group lands in, however many start it at once.
-	callID := callIDOfGroup(group)
-	now := h.clk.Now().Unix()
+	// PutVoiceSession leaves a live call as it is, so the row read back
+	// afterwards is the one call every device of this group lands in, however
+	// many start it at once.
 	groupID := group.GroupID
 	// A fresh room per call, so a device from the previous call of the same
 	// group cannot linger in this one.
 	room := fmt.Sprintf("%s-%d", callID, now)
-	prev, err := h.repo.GetVoiceSession(r.Context(), callID)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		server.WriteError(w, err)
-		return
-	}
 	// 201 when this request opens the call, 200 when it joins one under way.
 	// Two devices opening the same call in the same instant may both be told
 	// 201; both are still handed the one room the store kept.
 	status := http.StatusCreated
-	if err == nil && prev.Ended == nil {
+	if live {
 		status = http.StatusOK
 	}
 	if err := h.repo.PutVoiceSession(r.Context(), store.VoiceSessionRow{
@@ -152,6 +180,21 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		server.WriteError(w, err)
 		return
+	}
+	// Another device may have opened the call on another call group of the
+	// channel between the read above and the write: the room belongs to the
+	// group the row names, so that is the group this device must be a leaf of.
+	if row.GroupID != nil && *row.GroupID != groupID {
+		kept, err := h.repo.GetGroup(r.Context(), *row.GroupID)
+		if err != nil {
+			server.WriteError(w, notFound(err))
+			return
+		}
+		if err := h.requireCurrentLeaf(r.Context(), kept, s.DeviceID); err != nil {
+			server.WriteError(w, err)
+			return
+		}
+		groupID = kept.GroupID
 	}
 	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String())
 	if err != nil {

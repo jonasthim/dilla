@@ -524,7 +524,10 @@ who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown one.
   the group is epoch-unknown after a restore — is `403 E_LEAF_NOT_CURRENT`, so a device that
   cannot derive the call's media keys cannot join its room either. A channel of another kind is
   `400 E_INVALID_REQUEST`; a voice channel whose call group is not registered yet is
-  `404 E_NOT_FOUND`.
+  `404 E_NOT_FOUND`. While a call is live, "the call group" is the one the call was opened on,
+  never merely the newest open call group of the channel: a leaf of any other call group is
+  `403 E_LEAF_NOT_CURRENT` for that call. A live call whose group has been closed ends at the next
+  start that passes the gate, which opens a fresh call on the channel's current call group.
 - **The token.** `token` is a LiveKit room-join JWT for the call's room, valid for one hour, whose
   identity is the device id, with publish, subscribe and data grants. `livekit_url` is where the
   client connects with it: `wss://` and the instance's own host (its public IP in `acme_ip`), whose

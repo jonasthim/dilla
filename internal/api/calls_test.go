@@ -196,6 +196,78 @@ func TestASecondDeviceJoinsTheLiveCall(t *testing.T) {
 	}
 }
 
+// C1 (fix wave): while a call is live, its token gate is the call group the call was opened on
+// (voice_sessions.group_id), never merely the newest open call group of the channel. A second
+// call group registered during the call (a restore's re-creation, or a registration from before
+// the delivery service refused it) neither locks the live call's leaves out nor lets its own
+// leaves into the live room.
+func TestALiveCallIsGatedOnTheGroupItWasOpenedOn(t *testing.T) {
+	e, ch, tok, group, sfu := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if status != http.StatusCreated {
+		t.Fatalf("opening the call = %d (%x)", status, body)
+	}
+	first := decodeCall(t, body)
+
+	// A member's device is a leaf of a NEWER call group of the same channel only.
+	cid := ownerCommunityOf(t, e, ch)
+	_, memberTok := e.NewUser("member")
+	joinCommunity(t, e, cid, memberTok)
+	e.Clk.Advance(time.Minute)
+	rival := seedCallGroup(t, e, ch, cid, callGroupEpoch)
+	seedLeaf(t, e, rival, deviceOf(t, e, memberTok), 3, nil)
+
+	status, body = e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if status != http.StatusOK {
+		t.Fatalf("a leaf of the live call's group, after a newer group appeared = %d %s, want 200",
+			status, e.ErrCode(body))
+	}
+	if again := decodeCall(t, body); again.GroupID != group || again.CallID != first.CallID {
+		t.Fatalf("rejoining = %+v, want group %s and call %s", again, group, first.CallID)
+	}
+	status, body = e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", memberTok, []any{})
+	if status != http.StatusForbidden || e.ErrCode(body) != "E_LEAF_NOT_CURRENT" {
+		t.Fatalf("a leaf of only the newer group = %d %s, want 403 E_LEAF_NOT_CURRENT", status, e.ErrCode(body))
+	}
+	if minted := sfu.minted(); len(minted) != 2 {
+		t.Fatalf("tokens minted %v, want the owner's two and none for the newer group's leaf", minted)
+	}
+	row, err := e.Repo.GetVoiceSession(t.Context(), first.CallID)
+	if err != nil || row.GroupID == nil || *row.GroupID != group {
+		t.Fatalf("voice_sessions row = %+v (%v), want it still on the first group", row, err)
+	}
+}
+
+// A live call whose group has been closed (a failed heal's re-creation) cannot go on: the next
+// start from a leaf of the channel's current call group ends it and opens a fresh call there.
+func TestACallWhoseGroupClosedIsReplacedOnTheCurrentGroup(t *testing.T) {
+	e, ch, tok, group, _ := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	dev := deviceOf(t, e, tok)
+	seedLeaf(t, e, group, dev, 3, nil)
+	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	first := decodeCall(t, body)
+	before, _ := e.Repo.GetVoiceSession(t.Context(), first.CallID)
+
+	e.Clk.Advance(time.Minute)
+	if err := e.Repo.CloseGroup(t.Context(), group, e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("CloseGroup: %v", err)
+	}
+	next := seedCallGroup(t, e, ch, ownerCommunityOf(t, e, ch), callGroupEpoch)
+	seedLeaf(t, e, next, dev, 3, nil)
+	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if status != http.StatusCreated {
+		t.Fatalf("starting after the live call's group closed = %d %s, want 201", status, e.ErrCode(body))
+	}
+	if out := decodeCall(t, body); out.GroupID != next {
+		t.Fatalf("the new call is on group %s, want the current group %s", out.GroupID, next)
+	}
+	after, _ := e.Repo.GetVoiceSession(t.Context(), first.CallID)
+	if after.Ended != nil || after.GroupID == nil || *after.GroupID != next || after.LivekitRoom == before.LivekitRoom {
+		t.Fatalf("voice_sessions row = %+v after %+v, want a fresh live room on the current group", after, before)
+	}
+}
+
 func TestCallsAreRefusedWhereThereIsNoCall(t *testing.T) {
 	e, ch, tok, _ := callEnv(t)
 	// A stranger learns nothing about the channel.
