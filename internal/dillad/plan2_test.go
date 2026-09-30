@@ -36,6 +36,7 @@ func planTwoRoutes() []struct{ group, method, path string } {
 		{"communities", http.MethodPost, "/v1/communities/" + x + "/join"},
 		{"communities", http.MethodPost, "/v1/communities/" + x + "/leave"},
 		{"channels", http.MethodPost, "/v1/communities/" + x + "/channels"},
+		{"channels", http.MethodGet, "/v1/communities/" + x + "/channels"},
 		{"channels", http.MethodGet, "/v1/channels/" + x},
 		{"channels", http.MethodPatch, "/v1/channels/" + x},
 		{"channels", http.MethodDelete, "/v1/channels/" + x},

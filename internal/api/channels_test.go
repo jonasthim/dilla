@@ -70,6 +70,97 @@ func TestInviteAndDiscoverableChannelsAreForcedReadable(t *testing.T) {
 	}
 }
 
+// I10 (fix wave): a member discovers a community's channels in band. GET
+// /v1/communities/{id}/channels lists the live channels the caller may view, by position then
+// channel id, each [channel_id, kind, mode, visibility, parent_id|null, name, topic, position,
+// slowmode_seconds, seq]; a category is listed when it or a child of it is visible; a deleted
+// channel never is; a non-member gets 404, as for an unknown community.
+func TestAMemberListsTheCommunitysVisibleChannels(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	cat, _, _ := newChannel(t, e, cid, ownerTok, uint64(api.ChannelCategory), 0, 0, "zeta")
+	general, _, _ := newChannel(t, e, cid, ownerTok, 0, 1, 2, "general")
+	hidden, _, _ := newChannel(t, e, cid, ownerTok, 0, 0, 0, "hidden")
+	emptyCat, _, _ := newChannel(t, e, cid, ownerTok, uint64(api.ChannelCategory), 0, 0, "empty")
+	gone, _, _ := newChannel(t, e, cid, ownerTok, 0, 0, 0, "gone")
+	// Move "general" under the category, and order by position: general 1, hidden 2, cat 3.
+	for _, p := range []struct {
+		ch   id.ID
+		body []any
+	}{
+		{general, []any{nil, nil, nil, nil, cat, uint64(1), nil}},
+		{hidden, []any{nil, nil, nil, nil, nil, uint64(2), nil}},
+		{cat, []any{nil, nil, nil, nil, nil, uint64(3), nil}},
+		{emptyCat, []any{nil, nil, nil, nil, nil, uint64(4), nil}},
+	} {
+		if status, body := e.Do(http.MethodPatch, "/v1/channels/"+p.ch.String(), ownerTok, p.body); status != http.StatusNoContent {
+			t.Fatalf("PATCH = %d (%x)", status, body)
+		}
+	}
+	if status, _ := e.Do(http.MethodDelete, "/v1/channels/"+gone.String(), ownerTok, nil); status != http.StatusNoContent {
+		t.Fatal("DELETE failed")
+	}
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	roles, _ := e.Repo.ListRoles(t.Context(), cid)
+	// @everyone may not view "hidden" or the empty category.
+	for _, ch := range []id.ID{hidden, emptyCat} {
+		if status, _ := e.Do(http.MethodPut, "/v1/channels/"+ch.String()+"/overwrites/0/"+roles[0].ID.String(), ownerTok,
+			[]any{uint64(0), uint64(api.PermViewChannel)}); status != http.StatusNoContent {
+			t.Fatal("PUT deny-view failed")
+		}
+	}
+	_, memberTok := e.NewUser("member")
+	joinCommunity(t, e, cid, memberTok)
+
+	list := func(tok string) []id.ID {
+		t.Helper()
+		status, body := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/channels", tok, nil)
+		if status != http.StatusOK {
+			t.Fatalf("GET channels = %d (%x)", status, body)
+		}
+		var rows [][]cbor.RawMessage
+		if err := cborx.Unmarshal(body, &rows); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		var out []id.ID
+		for _, r := range rows {
+			if len(r) != 10 {
+				t.Fatalf("an element has %d fields, want 10", len(r))
+			}
+			var chID id.ID
+			mustUnmarshal(t, r[0], &chID)
+			out = append(out, chID)
+			if chID == general {
+				var kind, mode, vis, pos, slow, seq uint64
+				var parent *id.ID
+				var name, topic string
+				mustUnmarshal(t, r[1], &kind)
+				mustUnmarshal(t, r[2], &mode)
+				mustUnmarshal(t, r[3], &vis)
+				mustUnmarshal(t, r[4], &parent)
+				mustUnmarshal(t, r[5], &name)
+				mustUnmarshal(t, r[6], &topic)
+				mustUnmarshal(t, r[7], &pos)
+				mustUnmarshal(t, r[8], &slow)
+				mustUnmarshal(t, r[9], &seq)
+				if kind != 0 || mode != 1 || vis != 2 || parent == nil || *parent != cat || name != "general" || pos != 1 {
+					t.Fatalf("general = %d %d %d %v %q %d", kind, mode, vis, parent, name, pos)
+				}
+			}
+		}
+		return out
+	}
+	if got := list(memberTok); len(got) != 2 || got[0] != general || got[1] != cat {
+		t.Fatalf("the member's list = %v, want [general %s, category %s]", got, general, cat)
+	}
+	if got := list(ownerTok); len(got) != 4 || got[0] != general || got[1] != hidden || got[2] != cat || got[3] != emptyCat {
+		t.Fatalf("the owner's list = %v, want general, hidden, category, empty category", got)
+	}
+	_, outsiderTok := e.NewUser("outsider")
+	if status, _ := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/channels", outsiderTok, nil); status != http.StatusNotFound {
+		t.Fatalf("a non-member's GET = %d, want 404", status)
+	}
+}
+
 // I3 (fix wave): a channel that stops being end-to-end encrypted is never allowed an MLS text
 // group (spec, trust boundaries; protocol/01). A PATCH to mode=readable, or to a visibility that
 // forces it, closes the channel's open text group after the commit, and the ACL admits nobody to

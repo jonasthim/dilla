@@ -97,6 +97,7 @@ func NewChannels(repo store.Repository, dsvc DS, clk clock.Clock, maxGroupDM int
 
 func (c *Channels) Register(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/communities/{id}/channels", c.create)
+	mux.HandleFunc("GET /v1/communities/{id}/channels", c.list)
 	mux.HandleFunc("GET /v1/channels/{id}", c.get)
 	mux.HandleFunc("PATCH /v1/channels/{id}", c.patch)
 	mux.HandleFunc("DELETE /v1/channels/{id}", c.delete)
@@ -601,6 +602,81 @@ type channelResp struct {
 	Position        uint64
 	SlowmodeSeconds uint64
 	Seq             uint64
+}
+
+// listedChannel is one element of GET /v1/communities/{id}/channels: channelResp
+// without community_id, which the path already names.
+type listedChannel struct {
+	_               struct{} `cbor:",toarray"`
+	ChannelID       id.ID
+	Kind            uint64
+	Mode            uint64
+	Visibility      uint64
+	ParentID        *id.ID
+	Name            string
+	Topic           string
+	Position        uint64
+	SlowmodeSeconds uint64
+	Seq             uint64
+}
+
+// list is GET /v1/communities/{id}/channels (fix wave I10): the community's live
+// channels the caller may view, ordered by position then channel_id, with a
+// category listed when it or one of its children is visible. A caller who is not
+// a member, like an unknown or deleted community, gets 404.
+func (c *Channels) list(w http.ResponseWriter, r *http.Request) {
+	s, err := enrolledSession(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	cid, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	com, err := c.repo.GetCommunity(r.Context(), cid)
+	if err != nil || com.DeletedAt != nil {
+		c.fail(w, r, "list channels", server.Errorf(server.CodeNotFound, "no such object"))
+		return
+	}
+	if _, err := c.repo.GetMember(r.Context(), cid, s.UserID); err != nil {
+		c.fail(w, r, "list channels", notFound(err))
+		return
+	}
+	channels, err := c.repo.ListChannels(r.Context(), cid)
+	if err != nil {
+		c.fail(w, r, "list channels", err)
+		return
+	}
+	visible := make(map[id.ID]bool, len(channels))
+	for _, ch := range channels {
+		bits, err := c.res.Resolve(r.Context(), s.UserID, ch)
+		if err != nil {
+			c.fail(w, r, "list channels", err)
+			return
+		}
+		if bits.Has(PermViewChannel) {
+			visible[ch.ID] = true
+			if ch.ParentID != nil {
+				visible[*ch.ParentID] = true // the category of a visible child
+			}
+		}
+	}
+	out := make([]listedChannel, 0, len(channels))
+	for _, ch := range channels {
+		if !visible[ch.ID] {
+			continue
+		}
+		out = append(out, listedChannel{
+			ChannelID: ch.ID, Kind: uint64(ch.Kind), Mode: uint64(ch.Mode),
+			Visibility: uint64(ch.Visibility), ParentID: ch.ParentID, Name: ch.Name, Topic: ch.Topic,
+			Position: ch.Position, SlowmodeSeconds: ch.SlowmodeSeconds, Seq: ch.Seq,
+		})
+	}
+	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
+		c.log.Error("encode channel list", "err", err)
+	}
 }
 
 func (c *Channels) get(w http.ResponseWriter, r *http.Request) {
