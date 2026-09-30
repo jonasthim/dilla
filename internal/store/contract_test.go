@@ -140,6 +140,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// /v1/channels/{id}/calls joins through (task 16), reached through the
 			// embedded VoiceSessions.
 			"GetVoiceSession", "ListLiveVoiceSessions",
+			// Fix wave C3, reached through the embedded ChannelMembers: a kick, ban or
+			// leave drops the user's rows for the community's channels.
+			"DeleteCommunityChannelMembers",
 		}},
 		// VoiceSessions is the slice of Structure Plan 2 task 16's table supports.
 		{"VoiceSessions", reflect.TypeOf((*store.VoiceSessions)(nil)).Elem(), []string{
@@ -147,7 +150,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		}},
 		// ChannelMembers is the slice of Structure Plan 2 task 6's table supports.
 		{"ChannelMembers", reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(), []string{
-			"DeleteChannelMember", "ListChannelMembers", "ListChannelsForUser", "PutChannelMember",
+			"DeleteChannelMember", "DeleteCommunityChannelMembers", "ListChannelMembers",
+			"ListChannelsForUser", "PutChannelMember",
 		}},
 		// Bans is the slice of Structure Plan 2 task 4's table supports.
 		{"Bans", reflect.TypeOf((*store.Bans)(nil)).Elem(), []string{

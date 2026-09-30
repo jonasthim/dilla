@@ -31,6 +31,8 @@ type fakeACL struct {
 	// middle of a drain, after the slice was read and before the device was proposed. Nothing the
 	// drain defers runs for it except the unwinding itself, which is what a kill leaves behind.
 	crashOn *id.ID
+	// forbidden users are ineligible whatever else holds (forbid).
+	forbidden map[id.ID]bool
 }
 
 // errSimulatedCrash is what the crashOn panic carries.
@@ -40,7 +42,11 @@ func (a *fakeACL) Eligible(ctx context.Context, groupID, userID id.ID) (bool, er
 	a.mu.Lock()
 	ok := a.eligible[userID]
 	crash := a.crashOn != nil && *a.crashOn == userID
+	forbidden := a.forbidden[userID]
 	a.mu.Unlock()
+	if forbidden {
+		return false, nil
+	}
 	if crash {
 		panic(errSimulatedCrash)
 	}
@@ -54,6 +60,17 @@ func (a *fakeACL) allow(userID id.ID) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.eligible[userID] = true
+}
+
+// forbid makes the user ineligible outright, even where they already hold a leaf: what the real
+// resolver answers once a kick, a ban or a lost view_channel has committed.
+func (a *fakeACL) forbid(userID id.ID) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.forbidden == nil {
+		a.forbidden = map[id.ID]bool{}
+	}
+	a.forbidden[userID] = true
 }
 
 // revoke undoes allow: the user is back to DenyUnlessMember's answer (a kick, a ban, a role or

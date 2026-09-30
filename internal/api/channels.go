@@ -198,7 +198,7 @@ func (c *Channels) addMember(w http.ResponseWriter, r *http.Request) {
 	// After the commit, never inside the transaction: SyncGroupMembers calls the
 	// delivery service. See RemoveUserFromCommunityGroups on the single-writer
 	// pool. A failure here leaves the row, and the next sync proposes the Adds.
-	if err := SyncGroupMembers(r.Context(), c.repo, c.dsvc, row, now); err != nil {
+	if err := SyncGroupMembers(afterCommit(r), c.repo, c.dsvc, row, now); err != nil {
 		c.log.ErrorContext(r.Context(), "sync group members after add", "channel", row.ID, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -227,7 +227,7 @@ func (c *Channels) removeMember(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, "remove channel member", err)
 		return
 	}
-	if err := SyncGroupMembers(r.Context(), c.repo, c.dsvc, row, now); err != nil {
+	if err := SyncGroupMembers(afterCommit(r), c.repo, c.dsvc, row, now); err != nil {
 		c.log.ErrorContext(r.Context(), "sync group members after remove", "channel", row.ID, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -356,7 +356,7 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 	// exists. After the commit, never inside it (task 7). The channel has no
 	// group yet, so nothing is proposed: registering its text group is what
 	// populates that (SyncRegisteredGroup).
-	if err := MaterialiseChannelMembers(r.Context(), c.repo, c.dsvc, row, row.Created); err != nil {
+	if err := MaterialiseChannelMembers(afterCommit(r), c.repo, c.dsvc, row, row.Created); err != nil {
 		c.log.ErrorContext(r.Context(), "materialise channel members", "channel", row.ID, "err", err)
 	}
 	if err := server.EncodeBody(w, http.StatusCreated, createChannelResp{
@@ -563,7 +563,7 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 	// A visibility change re-derives who may be a leaf of the channel's groups
 	// (task 7), after the commit and never inside it.
 	if visibility != nil {
-		if err := MaterialiseChannelMembers(r.Context(), c.repo, c.dsvc, updated, now); err != nil {
+		if err := MaterialiseChannelMembers(afterCommit(r), c.repo, c.dsvc, updated, now); err != nil {
 			c.log.ErrorContext(r.Context(), "materialise channel members", "channel", updated.ID, "err", err)
 		}
 	}
@@ -649,7 +649,7 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	// write pool the transaction held (see RemoveUserFromCommunityGroups). A
 	// group left open by a crash here is bound to a deleted channel, which the
 	// Add and join ACL refuses.
-	if err := closeGroups(r.Context(), c.dsvc, toClose); err != nil {
+	if err := closeGroups(afterCommit(r), c.dsvc, toClose); err != nil {
 		c.log.ErrorContext(r.Context(), "close the groups of a deleted channel",
 			"channel", row.ID, "err", err)
 	}

@@ -420,7 +420,7 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 	// answered: the membership stands, and the next change to a channel
 	// re-derives it.
 	if joined {
-		if err := materialiseJoiner(r.Context(), c.repo, cid, s.UserID, now); err != nil {
+		if err := materialiseJoiner(afterCommit(r), c.repo, cid, s.UserID, now); err != nil {
 			c.log.ErrorContext(r.Context(), "materialise joiner", "community", cid, "user", s.UserID, "err", err)
 		}
 	}
@@ -630,6 +630,9 @@ func (c *Communities) removeMember(w http.ResponseWriter, r *http.Request) {
 		if err := tx.DeleteMember(r.Context(), m.community, m.target); err != nil {
 			return err
 		}
+		if _, err := tx.DeleteCommunityChannelMembers(r.Context(), m.community, m.target); err != nil {
+			return err
+		}
 		return tx.Audit(r.Context(), store.AuditRow{
 			Actor: &m.session.UserID, Action: "member.kick",
 			Target: m.target.String(), Detail: m.community.String(), At: c.clk.Now().Unix(),
@@ -646,10 +649,12 @@ func (c *Communities) removeMember(w http.ResponseWriter, r *http.Request) {
 // removeFromGroups issues the delivery-service Removes of a membership change
 // that has already committed. A failure is logged, not answered: the membership
 // row is gone, so the Add and join ACL (ResolverACL) already refuses the user,
-// and the change itself cannot be undone by a refused proposal.
+// and the change itself cannot be undone by a refused proposal. It runs on
+// afterCommit's context, so a client that disconnects does not cut it short.
 func (c *Communities) removeFromGroups(r *http.Request, cid, userID id.ID) {
-	if err := RemoveUserFromCommunityGroups(r.Context(), c.repo, c.dsvc, cid, userID); err != nil {
-		c.log.ErrorContext(r.Context(), "remove user from the community's groups",
+	ctx := afterCommit(r)
+	if err := RemoveUserFromCommunityGroups(ctx, c.repo, c.dsvc, cid, userID); err != nil {
+		c.log.ErrorContext(ctx, "remove user from the community's groups",
 			"community", cid, "user", userID, "err", err)
 	}
 }
@@ -665,7 +670,15 @@ func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
 			"the owner must transfer ownership or delete the community"))
 		return
 	}
-	if err := c.repo.DeleteMember(r.Context(), row.ID, s.UserID); err != nil {
+	// The membership and the user's channel_members rows for the community go in
+	// one transaction, as for a kick.
+	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.DeleteMember(r.Context(), row.ID, s.UserID); err != nil {
+			return err
+		}
+		_, err := tx.DeleteCommunityChannelMembers(r.Context(), row.ID, s.UserID)
+		return err
+	}); err != nil {
 		c.fail(w, r, "leave", notFound(err))
 		return
 	}
@@ -717,7 +730,7 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	// writes through the single-connection write pool the transaction held. A
 	// crash between the two leaves the community tombstoned and its groups open;
 	// they carry no live channel, so the Add and join ACL refuses everyone.
-	if err := closeGroups(r.Context(), c.dsvc, toClose); err != nil {
+	if err := closeGroups(afterCommit(r), c.dsvc, toClose); err != nil {
 		c.log.ErrorContext(r.Context(), "close the groups of a deleted community",
 			"community", row.ID, "err", err)
 	}

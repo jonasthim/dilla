@@ -26,6 +26,10 @@ func CheckChannelModeForTest(d *DS, ctx context.Context, b Binding) error {
 	return d.checkChannelMode(ctx, b)
 }
 
+// ReconcileLeavesForTest is the sweeper's leaf reconcile on its own, without the rest of Sweep
+// (whose inactivity pass would also propose Removes over the fixture's devices).
+func ReconcileLeavesForTest(d *DS, ctx context.Context) (int, error) { return d.reconcileLeaves(ctx) }
+
 // ACLForTest and DeviceListsForTest are the seams New defaulted, which is the only way to see
 // that a DS built without them is built with the conservative Plan-1 stubs rather than with
 // nothing at all.

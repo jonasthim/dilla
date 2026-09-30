@@ -163,6 +163,27 @@ func (q *Queries) DeleteChannelsOfCommunity(ctx context.Context, arg DeleteChann
 	return result.RowsAffected()
 }
 
+const deleteCommunityChannelMembers = `-- name: DeleteCommunityChannelMembers :execrows
+DELETE FROM channel_members
+WHERE user_id = $1
+  AND channel_id IN (SELECT id FROM channels WHERE community_id = $2)
+`
+
+type DeleteCommunityChannelMembersParams struct {
+	UserID      id.ID
+	CommunityID *id.ID
+}
+
+// Fix wave C3: a kick, ban or leave drops the user from every channel of the community, in the
+// transaction that removes the membership. A DM has no community and is never matched.
+func (q *Queries) DeleteCommunityChannelMembers(ctx context.Context, arg DeleteCommunityChannelMembersParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteCommunityChannelMembers, arg.UserID, arg.CommunityID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteMember = `-- name: DeleteMember :execrows
 DELETE FROM members WHERE community_id = $1 AND user_id = $2
 `

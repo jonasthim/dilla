@@ -2261,6 +2261,13 @@ func (r *Repo) PutChannelMember(ctx context.Context, channelID, userID id.ID, at
 	}))
 }
 
+func (r *Repo) DeleteCommunityChannelMembers(ctx context.Context, communityID, userID id.ID) (int64, error) {
+	n, err := r.w.DeleteCommunityChannelMembers(ctx, sqlitedb.DeleteCommunityChannelMembersParams{
+		UserID: userID, CommunityID: &communityID,
+	})
+	return n, wrap(err)
+}
+
 func (r *Repo) DeleteChannelMember(ctx context.Context, channelID, userID id.ID) error {
 	n, err := r.w.DeleteChannelMember(ctx, sqlitedb.DeleteChannelMemberParams{
 		ChannelID: channelID, UserID: userID,

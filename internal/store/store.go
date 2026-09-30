@@ -329,6 +329,10 @@ type ChannelMembers interface {
 	PutChannelMember(ctx context.Context, channelID, userID id.ID, at int64) error
 	// DeleteChannelMember answers ErrNotFound when the user was not a member.
 	DeleteChannelMember(ctx context.Context, channelID, userID id.ID) error
+	// DeleteCommunityChannelMembers removes userID from channel_members of every channel of
+	// communityID, live or tombstoned, and answers how many rows went. A kick, ban or leave runs it
+	// in the transaction that removes the membership (fix wave C3). A DM is never matched.
+	DeleteCommunityChannelMembers(ctx context.Context, communityID, userID id.ID) (int64, error)
 	// ListChannelMembers is the channel's members ordered by user id, so the
 	// order is the same on both engines.
 	ListChannelMembers(ctx context.Context, channelID id.ID) ([]id.ID, error)

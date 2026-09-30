@@ -108,3 +108,46 @@ func TestChannelMembersRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// C3 (fix wave): a kick, ban or leave removes the user's channel_members rows for every channel
+// of that community in the same transaction as the membership; other communities' channels, DMs
+// and other users are untouched.
+func TestDeleteCommunityChannelMembersIsScopedToOneUserAndCommunity(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			u, v := seedUser(ctx, t, repo).ID, seedUser(ctx, t, repo).ID
+			a, b := seedCommunity(ctx, t, repo), seedCommunity(ctx, t, repo)
+			a1, a2, b1 := channelIn(a, 0, 0, 0, "a1", 0), channelIn(a, 1, 0, 0, "a2", 1), channelIn(b, 0, 0, 0, "b1", 0)
+			dm := dmChannel(3, 100)
+			for _, ch := range []store.ChannelRow{a1, a2, b1, dm} {
+				if err := repo.CreateChannel(ctx, ch); err != nil {
+					t.Fatalf("CreateChannel: %v", err)
+				}
+			}
+			for _, m := range []struct{ ch, u id.ID }{
+				{a1.ID, u}, {a2.ID, u}, {b1.ID, u}, {dm.ID, u}, {a1.ID, v},
+			} {
+				if err := repo.PutChannelMember(ctx, m.ch, m.u, 100); err != nil {
+					t.Fatalf("PutChannelMember: %v", err)
+				}
+			}
+			n, err := repo.DeleteCommunityChannelMembers(ctx, a, u)
+			if err != nil || n != 2 {
+				t.Fatalf("DeleteCommunityChannelMembers = %d, %v; want 2", n, err)
+			}
+			for _, c := range []struct {
+				ch   id.ID
+				want []id.ID
+			}{{a1.ID, []id.ID{v}}, {a2.ID, []id.ID{}}, {b1.ID, []id.ID{u}}, {dm.ID, []id.ID{u}}} {
+				got, err := repo.ListChannelMembers(ctx, c.ch)
+				if err != nil || len(got) != len(c.want) || (len(got) > 0 && !slices.Equal(got, c.want)) {
+					t.Fatalf("ListChannelMembers(%s) = %x, %v; want %x", c.ch, got, err, c.want)
+				}
+			}
+			if n, err := repo.DeleteCommunityChannelMembers(ctx, a, u); err != nil || n != 0 {
+				t.Fatalf("a second DeleteCommunityChannelMembers = %d, %v; want 0", n, err)
+			}
+		})
+	}
+}

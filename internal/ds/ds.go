@@ -220,6 +220,10 @@ type DS struct {
 	// targetLocks serialises the registration of a channel's one text or call group (lockTarget).
 	targetLocks sync.Map // targetKey -> *sync.Mutex
 
+	// reconcileAfter is where the sweeper's leaf reconcile resumes (reconcileLeaves).
+	reconcileMu    sync.Mutex
+	reconcileAfter id.ID
+
 	states *stateCache
 
 	// stale carries one bit out of withGroup's handle lock: a commit whose Merge succeeded and

@@ -172,6 +172,13 @@ VALUES ($1, $2, $3) ON CONFLICT (channel_id, user_id) DO NOTHING;
 -- name: DeleteChannelMember :execrows
 DELETE FROM channel_members WHERE channel_id = $1 AND user_id = $2;
 
+-- name: DeleteCommunityChannelMembers :execrows
+-- Fix wave C3: a kick, ban or leave drops the user from every channel of the community, in the
+-- transaction that removes the membership. A DM has no community and is never matched.
+DELETE FROM channel_members
+WHERE user_id = sqlc.arg(user_id)
+  AND channel_id IN (SELECT id FROM channels WHERE community_id = sqlc.arg(community_id));
+
 -- name: ListChannelMembers :many
 SELECT user_id FROM channel_members WHERE channel_id = $1 ORDER BY user_id;
 

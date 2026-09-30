@@ -324,7 +324,12 @@ the kick needs `kick_members` (§ Permissions); `403 E_FORBIDDEN` otherwise.
   § Roles), issues one `Remove` proposal for every live leaf of the user in every `text` and `call`
   group of the community's channels. Each freezes its group (`02` invariant 5) until a member
   commits it, so a user kicked while offline cannot read past the epoch that removes them; a
-  `Remove` whose leaf is already gone is dropped (`02` invariant 6).
+  `Remove` whose leaf is already gone is dropped (`02` invariant 6). The user's channel membership
+  rows for the community go in the same transaction as the membership. The `Remove`s do not depend
+  on the request: a client that disconnects after the `204` (or before it) does not cut them short,
+  and a `Remove` that is still never issued is proposed by the instance's sweep, which, a page of
+  groups at a time, proposes a `Remove` for every live leaf of an open `text` or `call` group whose
+  user the channel ACL no longer admits and that no outstanding instance `Remove` targets.
 - Every ban, lift and kick writes an audit row naming the moderator (`ban.create`, `ban.delete`,
   `member.kick`).
 

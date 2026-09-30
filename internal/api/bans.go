@@ -107,6 +107,11 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 		if err := tx.DeleteMember(r.Context(), m.community, m.target); err != nil && !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
+		// The user's channel_members rows go with the membership, so no channel still
+		// lists a banned user (the readable audience, GET channel members, the sync).
+		if _, err := tx.DeleteCommunityChannelMembers(r.Context(), m.community, m.target); err != nil {
+			return err
+		}
 		return tx.Audit(r.Context(), store.AuditRow{
 			Actor: &m.session.UserID, Action: "ban.create", Target: m.target.String(),
 			Detail: m.community.String() + " " + req.Reason, At: now,
@@ -123,8 +128,13 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 	// A failure here is logged, not answered: the ban stands and gates every
 	// join. A Remove that was not issued leaves the user's leaf in a group whose
 	// Add and join ACL (ResolverACL) already refuses them.
-	if err := RemoveUserFromCommunityGroups(r.Context(), b.repo, b.dsvc, m.community, m.target); err != nil {
-		b.log.ErrorContext(r.Context(), "remove banned user from groups",
+	//
+	// It runs on afterCommit's context: the ban has landed, and a moderator whose
+	// client goes away must not leave the banned user a leaf in the groups the
+	// loop had not reached yet.
+	ctx := afterCommit(r)
+	if err := RemoveUserFromCommunityGroups(ctx, b.repo, b.dsvc, m.community, m.target); err != nil {
+		b.log.ErrorContext(ctx, "remove banned user from groups",
 			"community", m.community, "user", m.target, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)

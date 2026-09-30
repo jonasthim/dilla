@@ -449,7 +449,7 @@ func (h *Roles) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A role's bits decide who may see every private channel of the community.
-	h.materialiseCommunity(r.Context(), current.CommunityID, now)
+	h.materialiseCommunity(afterCommit(r), current.CommunityID, now)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -499,7 +499,7 @@ func (h *Roles) delete(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "delete role", err)
 		return
 	}
-	h.materialiseCommunity(r.Context(), role.CommunityID, now)
+	h.materialiseCommunity(afterCommit(r), role.CommunityID, now)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -601,7 +601,7 @@ func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
 	// open transaction. A failure here is logged, not answered: the grant stands,
 	// channel_members is derived state, and the next change to the channel
 	// re-derives it.
-	if err := syncChannelEligibility(r.Context(), h.repo, h.dsvc, g.cid, g.target, now); err != nil {
+	if err := syncChannelEligibility(afterCommit(r), h.repo, h.dsvc, g.cid, g.target, now); err != nil {
 		h.log.ErrorContext(r.Context(), "sync channel eligibility", "community", g.cid, "user", g.target, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -628,7 +628,7 @@ func (h *Roles) revoke(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "revoke role", err)
 		return
 	}
-	if err := syncChannelEligibility(r.Context(), h.repo, h.dsvc, g.cid, g.target, now); err != nil {
+	if err := syncChannelEligibility(afterCommit(r), h.repo, h.dsvc, g.cid, g.target, now); err != nil {
 		h.log.ErrorContext(r.Context(), "sync channel eligibility", "community", g.cid, "user", g.target, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -784,7 +784,7 @@ func (h *Roles) putOverwrite(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "put overwrite", err)
 		return
 	}
-	if err := materialiseChannel(r.Context(), h.repo, h.dsvc, o.ch.ID, now); err != nil {
+	if err := materialiseChannel(afterCommit(r), h.repo, h.dsvc, o.ch.ID, now); err != nil {
 		h.log.ErrorContext(r.Context(), "materialise channel members", "channel", o.ch.ID, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -811,7 +811,7 @@ func (h *Roles) deleteOverwrite(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "delete overwrite", err)
 		return
 	}
-	if err := materialiseChannel(r.Context(), h.repo, h.dsvc, o.ch.ID, now); err != nil {
+	if err := materialiseChannel(afterCommit(r), h.repo, h.dsvc, o.ch.ID, now); err != nil {
 		h.log.ErrorContext(r.Context(), "materialise channel members", "channel", o.ch.ID, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)

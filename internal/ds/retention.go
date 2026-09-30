@@ -14,6 +14,7 @@ import (
 type SweepReport struct {
 	ProposalsVoided  int
 	JoinsDrained     int // Adds the sweeper proposed from stalled join storms (pending_joins)
+	LeavesReconciled int // Removes for leaves whose user the ACL no longer admits (reconcileLeaves)
 	InactiveRemoved  int
 	HandshakesPruned int64
 	MessagesPruned   int64
@@ -62,6 +63,14 @@ func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 		return report, err
 	}
 	report.JoinsDrained = drained
+
+	// A membership change whose Removes were never issued is caught here, a page of groups a
+	// tick (fix wave C3).
+	reconciled, err := d.reconcileLeaves(ctx)
+	if err != nil {
+		return report, err
+	}
+	report.LeavesReconciled = reconciled
 
 	removed, err := d.removeInactive(ctx)
 	if err != nil {

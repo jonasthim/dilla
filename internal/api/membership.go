@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -22,6 +23,16 @@ type DS interface {
 	// its ACL clause pull in opposite directions), so without the void the group stays frozen
 	// until the Add's TTL.
 	VoidIneligibleAdds(ctx context.Context, groupID id.ID) error
+}
+
+// afterCommit is the context every delivery-service step that follows a
+// committed membership or structure change runs on: the request's values
+// without its cancellation. The change has already landed, so a client that
+// disconnects must not abort the Removes, Adds and Closes that make the groups
+// match it; a cancelled context would fail every repository read and proposal
+// still to come, leaving a removed user with a live leaf (fix wave C3).
+func afterCommit(r *http.Request) context.Context {
+	return context.WithoutCancel(r.Context())
 }
 
 // errNoDS is what a membership change answers when the handler was built
