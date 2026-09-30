@@ -36,29 +36,35 @@ func (q *Queries) DeleteReadableMessage(ctx context.Context, arg DeleteReadableM
 }
 
 const editReadableMessage = `-- name: EditReadableMessage :execrows
-UPDATE readable_messages SET envelope = $1, body = $2, franking_tag = $3, franking_key_id = $4, edited = $5
-WHERE channel_id = $6 AND seq = $7 AND deleted IS NULL
+UPDATE readable_messages SET envelope = $1, body = $2, franking_tag = $3, franking_key_id = $4,
+                             uploader_device = $5, commitment_c = $6, edited = $7
+WHERE channel_id = $8 AND seq = $9 AND deleted IS NULL
 `
 
 type EditReadableMessageParams struct {
-	Envelope      []byte
-	Body          string
-	FrankingTag   []byte
-	FrankingKeyID id.ID
-	Edited        sql.NullInt64
-	ChannelID     id.ID
-	Seq           int64
+	Envelope       []byte
+	Body           string
+	FrankingTag    []byte
+	FrankingKeyID  id.ID
+	UploaderDevice id.ID
+	CommitmentC    []byte
+	Edited         sql.NullInt64
+	ChannelID      id.ID
+	Seq            int64
 }
 
 // A deleted message is not edited: its envelope and body are gone for good. The franking tag and
 // the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
-// instance no longer stores could never verify.
+// instance no longer stores could never verify. Plan 2 task 17 moves the rest of the tuple too: the
+// editing device and the new C, which a report against the edited message is checked against.
 func (q *Queries) EditReadableMessage(ctx context.Context, arg EditReadableMessageParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, editReadableMessage,
 		arg.Envelope,
 		arg.Body,
 		arg.FrankingTag,
 		arg.FrankingKeyID,
+		arg.UploaderDevice,
+		arg.CommitmentC,
 		arg.Edited,
 		arg.ChannelID,
 		arg.Seq,
@@ -146,7 +152,7 @@ func (q *Queries) ListReadableAudience(ctx context.Context, arg ListReadableAudi
 
 const listReadableMessages = `-- name: ListReadableMessages :many
 SELECT id, channel_id, channel_hex, seq, sender, envelope, body, franking_tag, franking_key_id,
-       mention_count, created, edited, deleted
+       mention_count, created, edited, deleted, uploader_device, commitment_c
 FROM readable_messages
 WHERE channel_id = $1 AND seq >= $2
 ORDER BY seq LIMIT $3::bigint
@@ -159,19 +165,21 @@ type ListReadableMessagesParams struct {
 }
 
 type ListReadableMessagesRow struct {
-	ID            int64
-	ChannelID     id.ID
-	ChannelHex    string
-	Seq           int64
-	Sender        id.ID
-	Envelope      []byte
-	Body          string
-	FrankingTag   []byte
-	FrankingKeyID id.ID
-	MentionCount  int64
-	Created       int64
-	Edited        sql.NullInt64
-	Deleted       sql.NullInt64
+	ID             int64
+	ChannelID      id.ID
+	ChannelHex     string
+	Seq            int64
+	Sender         id.ID
+	Envelope       []byte
+	Body           string
+	FrankingTag    []byte
+	FrankingKeyID  id.ID
+	MentionCount   int64
+	Created        int64
+	Edited         sql.NullInt64
+	Deleted        sql.NullInt64
+	UploaderDevice id.ID
+	CommitmentC    []byte
 }
 
 func (q *Queries) ListReadableMessages(ctx context.Context, arg ListReadableMessagesParams) ([]ListReadableMessagesRow, error) {
@@ -197,6 +205,8 @@ func (q *Queries) ListReadableMessages(ctx context.Context, arg ListReadableMess
 			&i.Created,
 			&i.Edited,
 			&i.Deleted,
+			&i.UploaderDevice,
+			&i.CommitmentC,
 		); err != nil {
 			return nil, err
 		}
@@ -232,24 +242,27 @@ func (q *Queries) PutReadState(ctx context.Context, arg PutReadStateParams) erro
 const putReadableMessage = `-- name: PutReadableMessage :one
 
 INSERT INTO readable_messages (channel_id, channel_hex, seq, sender, envelope, body, franking_tag,
-                               franking_key_id, mention_count, created, edited, deleted)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                               franking_key_id, mention_count, created, edited, deleted,
+                               uploader_device, commitment_c)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 RETURNING id
 `
 
 type PutReadableMessageParams struct {
-	ChannelID     id.ID
-	ChannelHex    string
-	Seq           int64
-	Sender        id.ID
-	Envelope      []byte
-	Body          string
-	FrankingTag   []byte
-	FrankingKeyID id.ID
-	MentionCount  int64
-	Created       int64
-	Edited        sql.NullInt64
-	Deleted       sql.NullInt64
+	ChannelID      id.ID
+	ChannelHex     string
+	Seq            int64
+	Sender         id.ID
+	Envelope       []byte
+	Body           string
+	FrankingTag    []byte
+	FrankingKeyID  id.ID
+	MentionCount   int64
+	Created        int64
+	Edited         sql.NullInt64
+	Deleted        sql.NullInt64
+	UploaderDevice id.ID
+	CommitmentC    []byte
 }
 
 // Server-readable channels (Plan 2 task 8, 00009_readable.sql). Search is NOT here: it is
@@ -272,6 +285,8 @@ func (q *Queries) PutReadableMessage(ctx context.Context, arg PutReadableMessage
 		arg.Created,
 		arg.Edited,
 		arg.Deleted,
+		arg.UploaderDevice,
+		arg.CommitmentC,
 	)
 	var id int64
 	err := row.Scan(&id)

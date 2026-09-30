@@ -7,13 +7,14 @@
 
 -- name: PutReadableMessage :one
 INSERT INTO readable_messages (channel_id, channel_hex, seq, sender, envelope, body, franking_tag,
-                               franking_key_id, mention_count, created, edited, deleted)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               franking_key_id, mention_count, created, edited, deleted,
+                               uploader_device, commitment_c)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING id;
 
 -- name: ListReadableMessages :many
 SELECT id, channel_id, channel_hex, seq, sender, envelope, body, franking_tag, franking_key_id,
-       mention_count, created, edited, deleted
+       mention_count, created, edited, deleted, uploader_device, commitment_c
 FROM readable_messages
 WHERE channel_id = ? AND seq >= ?
 ORDER BY seq LIMIT sqlc.arg(max_rows);
@@ -21,8 +22,10 @@ ORDER BY seq LIMIT sqlc.arg(max_rows);
 -- name: EditReadableMessage :execrows
 -- A deleted message is not edited: its envelope and body are gone for good. The franking tag and
 -- the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
--- instance no longer stores could never verify.
-UPDATE readable_messages SET envelope = ?, body = ?, franking_tag = ?, franking_key_id = ?, edited = ?
+-- instance no longer stores could never verify. Plan 2 task 17 moves the rest of the tuple too: the
+-- editing device and the new C, which a report against the edited message is checked against.
+UPDATE readable_messages SET envelope = ?, body = ?, franking_tag = ?, franking_key_id = ?,
+                             uploader_device = ?, commitment_c = ?, edited = ?
 WHERE channel_id = ? AND seq = ? AND deleted IS NULL;
 
 -- name: DeleteReadableMessage :execrows

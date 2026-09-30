@@ -223,6 +223,9 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 			ChannelID: ch.ID, ChannelHex: ch.ID.String(), Seq: seq, Sender: s.UserID,
 			Envelope: req.Envelope, Body: indexedBody(env.Type, env.Body), FrankingTag: tag,
 			FrankingKeyID: keyID, MentionCount: uint64(env.MentionCount), Created: now, //nolint:gosec // G115: a count of distinct mentions, never negative
+			// The rest of protocol/04's stored tuple (task 17): T binds the uploading
+			// device, and a report's first equation is checked against C.
+			UploaderDevice: s.DeviceID, CommitmentC: c,
 		})
 		return err
 	})
@@ -410,9 +413,10 @@ func (h *Readable) target(ctx context.Context, ch store.ChannelRow, seq uint64) 
 //
 // The franking tag is RECOMPUTED over the new bytes, by the editing device, at
 // the edit's time (which the row records as edited), under the current key, and
-// the key id moves with it. Keeping the upload's tag would leave a tag that
-// commits to text the instance no longer stores, so a report against an edited
-// message could never verify.
+// the key id, the editing device and the new C move with it (task 17), so the
+// stored tuple still recomputes to the stored tag. Keeping the upload's tag
+// would leave a tag that commits to text the instance no longer stores, so a
+// report against an edited message could never verify.
 func (h *Readable) applyEdit(ctx context.Context, ch store.ChannelRow, s auth.Session, seq uint64, env Envelope, envelope []byte) error {
 	if env.Type != EnvMessage && env.Type != EnvEdit {
 		return server.Errorf(server.CodeEnvelopeType, "an edit carries a type-0 or type-1 envelope")
@@ -431,7 +435,8 @@ func (h *Readable) applyEdit(ctx context.Context, ch store.ChannelRow, s auth.Se
 	now := h.clk.Now().Unix()
 	keyID, key := h.keys.Current()
 	tag := Tag(key, ch.ID, 0 /* no epoch on a readable channel */, seq, s.DeviceID, c, now)
-	if err := h.repo.EditReadableMessage(ctx, ch.ID, seq, envelope, indexedBody(env.Type, env.Body), tag, keyID, now); err != nil {
+	f := store.ReadableFranking{Tag: tag, KeyID: keyID, UploaderDevice: s.DeviceID, CommitmentC: c}
+	if err := h.repo.EditReadableMessage(ctx, ch.ID, seq, envelope, indexedBody(env.Type, env.Body), f, now); err != nil {
 		return notFound(err)
 	}
 	h.deliver(ctx, ch.ID, seq, row.Sender, envelope, tag, 1, 0)

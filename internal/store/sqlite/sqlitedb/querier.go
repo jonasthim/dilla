@@ -68,7 +68,8 @@ type Querier interface {
 	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
 	// A deleted message is not edited: its envelope and body are gone for good. The franking tag and
 	// the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
-	// instance no longer stores could never verify.
+	// instance no longer stores could never verify. Plan 2 task 17 moves the rest of the tuple too: the
+	// editing device and the new C, which a report against the edited message is checked against.
 	EditReadableMessage(ctx context.Context, arg EditReadableMessageParams) (int64, error)
 	// Invariant 11's "Live calls end", the voice_sessions half of store.MLS.EndAllVoiceSessions
 	// (P2-D19): the call-group half is mls.sql's EndAllVoiceSessions.
@@ -172,6 +173,8 @@ type Querier interface {
 	// community, so a kicked, banned or departed user drops out before any re-materialisation.
 	ListReadableAudience(ctx context.Context, arg ListReadableAudienceParams) ([]id.ID, error)
 	ListReadableMessages(ctx context.Context, arg ListReadableMessagesParams) ([]ReadableMessages, error)
+	// GET /v1/reports (Plan 2 task 17): the queue, newest first, ties broken by id.
+	ListReports(ctx context.Context, arg ListReportsParams) ([]Reports, error)
 	ListRoles(ctx context.Context, arg ListRolesParams) ([]Roles, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)

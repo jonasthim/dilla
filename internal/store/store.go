@@ -461,9 +461,10 @@ type Readable interface {
 	// parsing envelopes, which is internal/api's job. Plan 2 task 9 adds the
 	// franking tag and the id of the key that made it: an edit re-franks the new
 	// bytes, and a tag that committed to text the row no longer holds could
-	// never verify. ErrNotFound for an unknown or deleted message.
+	// never verify. Plan 2 task 17 widens that to the whole tuple (the editing
+	// device and the new C). ErrNotFound for an unknown or deleted message.
 	EditReadableMessage(ctx context.Context, channelID id.ID, seq uint64,
-		envelope []byte, body string, frankingTag []byte, frankingKeyID id.ID, at int64) error
+		envelope []byte, body string, f ReadableFranking, at int64) error
 	// DeleteReadableMessage empties the envelope and the body (so the row leaves
 	// the index) and keeps the franking tuple. ErrNotFound for an unknown or an
 	// already deleted message.
@@ -566,6 +567,9 @@ type Blobs interface {
 type Ops interface {
 	PutReport(ctx context.Context, r ReportRow) error
 	GetReport(ctx context.Context, reportID id.ID) (ReportRow, error)
+	// ListReports is GET /v1/reports (Plan 2 task 17): newest first, ties
+	// broken by id descending, at most limit.
+	ListReports(ctx context.Context, limit int32) ([]ReportRow, error)
 	UpdateReportStatus(ctx context.Context, reportID id.ID, status int32, result string) error
 	Audit(ctx context.Context, a AuditRow) error
 	ListAudit(ctx context.Context, since int64, limit int32) ([]AuditRow, error)

@@ -199,6 +199,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Ops", reflect.TypeOf((*store.Ops)(nil)).Elem(), []string{
 			"Audit", "GetReport", "ListAudit", "PutReport", "SchemaVersion",
 			"UpdateReportStatus",
+			// Plan 2 task 17: the report queue.
+			"ListReports",
 		}},
 		// OpsBackups is §4.1's backup half of Ops, split out by deviation ID2
 		// because `backups` is 008_blobs.sql's table.

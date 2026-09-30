@@ -100,6 +100,9 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 			// Archival retention: NULL means retained. The community policy fills it in Plan 2;
 			// delivery retention is the sweeper's business, not this column's.
 			Expires: nil,
+			// The key the tag was made under (Plan 2 task 17, P2-D21): a report selects it by
+			// this id, so a message stays verifiable after the franking key rotates.
+			FrankingKeyID: d.opts.Keys.FrankingKeyID,
 		}); err != nil {
 			return err
 		}

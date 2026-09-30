@@ -220,6 +220,7 @@ type MlsAppMessages struct {
 	Created        int64
 	Expires        sql.NullInt64
 	DeletedAt      sql.NullInt64
+	FrankingKeyID  id.ID
 }
 
 type MlsEpochTrees struct {
@@ -337,20 +338,22 @@ type ReadState struct {
 }
 
 type ReadableMessages struct {
-	ID            int64
-	ChannelID     id.ID
-	ChannelHex    string
-	Seq           int64
-	Sender        id.ID
-	Envelope      []byte
-	Body          string
-	FrankingTag   []byte
-	FrankingKeyID id.ID
-	MentionCount  int64
-	Created       int64
-	Edited        sql.NullInt64
-	Deleted       sql.NullInt64
-	BodyTsv       string
+	ID             int64
+	ChannelID      id.ID
+	ChannelHex     string
+	Seq            int64
+	Sender         id.ID
+	Envelope       []byte
+	Body           string
+	FrankingTag    []byte
+	FrankingKeyID  id.ID
+	MentionCount   int64
+	Created        int64
+	Edited         sql.NullInt64
+	Deleted        sql.NullInt64
+	BodyTsv        string
+	UploaderDevice id.ID
+	CommitmentC    []byte
 }
 
 type RecoveryCodes struct {

@@ -542,6 +542,49 @@ who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown one.
 - **Ending.** `DELETE` ends the call for everyone and is kept to its participants. A restore ends
   every live call (`02` invariant 11).
 
+### Reports
+
+A report reveals one message to the instance's admins so they can verify what was sent (`04` §
+Franking). Filing is `E` for any enrolled session; the queue and its status are instance-admin only
+(§ Flags), `403 E_FORBIDDEN` for anyone else.
+
+| Method and path | Request | Response |
+|---|---|---|
+| `POST /v1/reports` | `[group_id(bstr 16), seq(uint), envelope(bstr), k_f(bstr 32)]` | `201 [report_id(bstr 16), verification_result(tstr)]` |
+| `GET /v1/reports?limit=` | — | `[[report_id(bstr 16), reporter(bstr 16), group_id(bstr 16), seq(uint), revealed_envelope(bstr), verification_result(tstr), status(uint), created(uint)]]` |
+| `PATCH /v1/reports/{id}` | `[status(uint), result(tstr)]` | `204` |
+
+- **The target.** A `group_id` that names a registered MLS group is a ciphertext message of that
+  group; any other is read as a server-readable channel's `channel_id`, whose messages carry the
+  same franking tuple with the channel id in the `group_id` slot and epoch `0` (§ Readable
+  channels). A message the instance never stored is `404 E_NOT_FOUND`; a deleted one is still
+  reportable, because the tuple outlives the content. A malformed body, or a `k_f` that is not 32
+  bytes, is `400 E_INVALID_REQUEST`. The body cap is 96 KiB, as on the envelope routes, so a
+  maximal legal envelope can be reported.
+- **Verification.** The instance recomputes `04`'s `C` from the submitted `envelope` and `k_f` and
+  compares it with the `C` it stored at upload, then recomputes `T` from its own stored `(group_id,
+  epoch, seq, uploader_device, recv_ts)` and that `C` under the franking key the message records
+  (`03` § Instance keys: retired franking keys are kept for this), and compares it with the stored
+  tag. On a server-readable message edited since, the stored tuple is the edit's: the editing
+  device and the edit's time. A report that does not verify is still filed: it is evidence about
+  the reporter. `verification_result` is exactly one of `verified` (both equations hold),
+  `envelope_malformed` (not a `04` envelope, so no `C`), `no_commitment_stored` (the instance holds
+  no `C` for the message), `commitment_mismatch` (the envelope or `k_f` is not what was sent),
+  `franking_key_unavailable` (the key the message names is no longer held), `franking_key_unknown`
+  (a message stored before its key was recorded, and no retained key made its tag) and
+  `tag_mismatch` (`C` matches but the stored tag does not).
+- **What is kept and shown.** The report stores exactly the submitted `envelope` bytes, `k_f`, the
+  id of the key the message was franked with, the result and the reporter. The queue shows the
+  eight elements above and nothing else about the group: no other message and no member list.
+  Authorship rests on the instance's session-to-device record, an operator attestation that is
+  deniable to third parties.
+- **The queue.** Newest first (ties by `report_id`), at most `limit` (default 100, at most 1000).
+- **Status.** `0` open (the state a report is filed in), `1` resolved, `2` dismissed; any other
+  value is `400 E_INVALID_REQUEST`, and so is a `result` over 1 024 bytes or with a NUL. An unknown
+  report is `404`. `PATCH` never changes `verification_result`, which is the instance's finding and
+  not a moderator's; `result` becomes the detail of an audit row whose action is `report.reopen`,
+  `report.resolve` or `report.dismiss` and whose target is the report id in hex.
+
 ### Admin
 
 The instance-admin routes. Every one is `E` and needs a user whose `users.flags` has bit 0 set
@@ -646,9 +689,9 @@ separately and loosely, so the delivery service's own throttle never becomes the
 committer-election watchdog removes a device.
 
 Body caps: `max_ciphertext_bytes + 4096` on `POST /v1/groups/{id}/message`; 96 KiB on
-`POST /v1/channels/{id}/messages` and `PATCH /v1/channels/{id}/messages/{seq}` (`protocol/04`'s own
-worst-case legal envelope is ≈ 74 KiB, so a smaller cap would refuse a maximal but valid envelope
-before the validator ever saw it); 64 KiB on every other CBOR route; `blobs.max_blob_bytes` on a
+`POST /v1/channels/{id}/messages`, `PATCH /v1/channels/{id}/messages/{seq}` and `POST /v1/reports`
+(`protocol/04`'s own worst-case legal envelope is ≈ 74 KiB, so a smaller cap would refuse a maximal
+but valid envelope before the validator ever saw it); 64 KiB on every other CBOR route; `blobs.max_blob_bytes` on a
 blob `PUT`.
 
 ## Instance

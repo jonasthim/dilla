@@ -132,7 +132,8 @@ func TestEditAndDeleteUpdateTheIndex(t *testing.T) {
 			// is a separate indexed column that the store cannot derive from the
 			// envelope.
 			if err := repo.EditReadableMessage(t.Context(), before[0].ChannelID, before[0].Seq,
-				testEnvelope(t, "edited body"), "edited body", make([]byte, 32), id.New(), 2000); err != nil {
+				testEnvelope(t, "edited body"), "edited body",
+				store.ReadableFranking{Tag: make([]byte, 32), KeyID: id.New()}, 2000); err != nil {
 				t.Fatalf("EditReadableMessage: %v", err)
 			}
 			after, _ := repo.SearchReadable(t.Context(), store.ReadableSearchQuery{
@@ -381,10 +382,11 @@ func TestReadableMessagesRoundTrip(t *testing.T) {
 			edited := testEnvelope(t, "hello again")
 			editTag := bytes.Repeat([]byte{0x5e}, 32)
 			editKeyID := id.New()
-			if err := repo.EditReadableMessage(ctx, ch.ID, 1, edited, "hello again", editTag, editKeyID, 1_700_000_100); err != nil {
+			editF := store.ReadableFranking{Tag: editTag, KeyID: editKeyID}
+			if err := repo.EditReadableMessage(ctx, ch.ID, 1, edited, "hello again", editF, 1_700_000_100); err != nil {
 				t.Fatalf("EditReadableMessage: %v", err)
 			}
-			if err := repo.EditReadableMessage(ctx, ch.ID, 9, edited, "x", editTag, editKeyID, 1); !errors.Is(err, store.ErrNotFound) {
+			if err := repo.EditReadableMessage(ctx, ch.ID, 9, edited, "x", editF, 1); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("EditReadableMessage(unknown seq) = %v, want ErrNotFound", err)
 			}
 			rows, _ = repo.ListReadableMessages(ctx, ch.ID, 1, 1)
@@ -407,7 +409,7 @@ func TestReadableMessagesRoundTrip(t *testing.T) {
 			if err := repo.DeleteReadableMessage(ctx, ch.ID, 1, 1); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("a second delete = %v, want ErrNotFound", err)
 			}
-			if err := repo.EditReadableMessage(ctx, ch.ID, 1, edited, "revived", editTag, editKeyID, 1); !errors.Is(err, store.ErrNotFound) {
+			if err := repo.EditReadableMessage(ctx, ch.ID, 1, edited, "revived", editF, 1); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("an edit of a deleted message = %v, want ErrNotFound", err)
 			}
 			// Deleting the last message does not reset the slowmode gate.

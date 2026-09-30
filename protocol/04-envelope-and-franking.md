@@ -74,7 +74,9 @@ instance ever reading content and without the reporter being able to forge it.
   `T` and `recv_ts` to the uploader.
 - **Report.** The reporter submits `(group_id, seq, envelope, k_f)`. The moderator's client
   recomputes `C` from the envelope and `k_f`, the instance recomputes `T` from its stored fields and
-  the submitted `C`, and the report is verified only if both match the stored values. Authorship is
+  the submitted `C`, and the report is verified only if both match the stored values. The instance
+  also recomputes `C` itself and compares it with the `C` it stored, and it recomputes `T` under the
+  franking key the message was tagged with, which it records beside the tag (`09` § Reports). Authorship is
   bound through the instance's session-to-device record (an operator attestation, deniable to
   third parties); the report shows exactly the envelope submitted and nothing else.
 

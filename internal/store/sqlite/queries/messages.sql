@@ -1,7 +1,7 @@
 -- name: PutAppMessage :exec
 INSERT INTO mls_app_messages (group_id, seq, epoch, uploader_device, blob, commitment_c,
-                              franking_tag, size, created, expires, deleted_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                              franking_tag, size, created, expires, deleted_at, franking_key_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListAppMessages :many
 SELECT * FROM mls_app_messages WHERE group_id = ? AND seq >= ?

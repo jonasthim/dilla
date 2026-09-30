@@ -319,6 +319,9 @@ type ForkReportRow struct {
 
 // AppMessageRow mirrors `mls_app_messages`. Blob is NULL once tombstoned and
 // Expires is NULL when the message is retained under an archival policy.
+// FrankingKeyID names the instance franking key FrankingTag was made under
+// (Plan 2 task 17, P2-D21), so a report still verifies after a rotation; the
+// all-zero id marks a row franked before the column existed.
 type AppMessageRow struct {
 	GroupID        id.ID
 	Seq            uint64
@@ -331,6 +334,7 @@ type AppMessageRow struct {
 	Created        int64 // = recv_ts
 	Expires        *int64
 	DeletedAt      *int64
+	FrankingKeyID  id.ID
 }
 
 // CursorRow mirrors `device_cursors`.
@@ -435,20 +439,37 @@ type VoiceSessionRow struct {
 // filters on (P2-D1). Envelope is deterministic CBOR, not JSON text (P2-D27);
 // Body is the only indexed text. FrankingKeyID names the instance franking key
 // FrankingTag was made under, so a report still verifies after a rotation.
+// UploaderDevice and CommitmentC complete protocol/04's stored tuple (Plan 2
+// task 17): T binds the uploading device, not the sender's user id, and a
+// report's first equation is checked against C. A row written before
+// 00012_reports.sql has the all-zero device and a nil CommitmentC.
 type ReadableMessageRow struct {
-	ID            int64
-	ChannelID     id.ID
-	ChannelHex    string
-	Seq           uint64
-	Sender        id.ID
-	Envelope      []byte
-	Body          string
-	FrankingTag   []byte
-	FrankingKeyID id.ID
-	MentionCount  uint64
-	Created       int64
-	Edited        *int64
-	Deleted       *int64
+	ID             int64
+	ChannelID      id.ID
+	ChannelHex     string
+	Seq            uint64
+	Sender         id.ID
+	Envelope       []byte
+	Body           string
+	FrankingTag    []byte
+	FrankingKeyID  id.ID
+	MentionCount   uint64
+	Created        int64
+	Edited         *int64
+	Deleted        *int64
+	UploaderDevice id.ID
+	CommitmentC    []byte
+}
+
+// ReadableFranking is the franking tuple an edit re-franks a readable message
+// with (Plan 2 tasks 9 and 17): the new tag, the id of the key that made it,
+// the editing device and the edited envelope's C. They move together, or the
+// stored tuple no longer recomputes to the stored tag.
+type ReadableFranking struct {
+	Tag            []byte
+	KeyID          id.ID
+	UploaderDevice id.ID
+	CommitmentC    []byte
 }
 
 // BlobRow mirrors `blobs`. BlobID is the 32-byte content address.

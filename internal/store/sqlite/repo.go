@@ -819,6 +819,24 @@ func (r *Repo) GetReport(ctx context.Context, reportID id.ID) (store.ReportRow, 
 	if err != nil {
 		return store.ReportRow{}, wrap(err)
 	}
+	return reportRow(row), nil
+}
+
+// ListReports is the report queue, newest first (Plan 2 task 17).
+func (r *Repo) ListReports(ctx context.Context, limit int32) ([]store.ReportRow, error) {
+	rows, err := r.r.ListReports(ctx, sqlitedb.ListReportsParams{MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ReportRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, reportRow(row))
+	}
+	return out, nil
+}
+
+// reportRow is the one place `reports` becomes store.ReportRow.
+func reportRow(row sqlitedb.Reports) store.ReportRow {
 	return store.ReportRow{
 		ID:                 row.ID,
 		Reporter:           row.Reporter,
@@ -830,7 +848,7 @@ func (r *Repo) GetReport(ctx context.Context, reportID id.ID) (store.ReportRow, 
 		VerificationResult: row.VerificationResult,
 		Status:             int32(row.Status),
 		Created:            row.Created,
-	}, nil
+	}
 }
 
 func (r *Repo) UpdateReportStatus(ctx context.Context, reportID id.ID, status int32, result string) error {
@@ -1542,6 +1560,7 @@ func (r *Repo) PutAppMessage(ctx context.Context, m store.AppMessageRow) error {
 		Created:        m.Created,
 		Expires:        nullInt64(m.Expires),
 		DeletedAt:      nullInt64(m.DeletedAt),
+		FrankingKeyID:  m.FrankingKeyID,
 	}))
 }
 
@@ -1582,6 +1601,7 @@ func appMessageRow(m sqlitedb.MlsAppMessages) store.AppMessageRow {
 		Created:        m.Created,
 		Expires:        ptrInt64(m.Expires),
 		DeletedAt:      ptrInt64(m.DeletedAt),
+		FrankingKeyID:  m.FrankingKeyID,
 	}
 }
 
@@ -2340,18 +2360,20 @@ func (r *Repo) ListPendingJoinGroups(ctx context.Context, after id.ID, limit int
 // what the FTS index is content-mapped to.
 func (r *Repo) PutReadableMessage(ctx context.Context, m store.ReadableMessageRow) (int64, error) {
 	rowID, err := r.w.PutReadableMessage(ctx, sqlitedb.PutReadableMessageParams{
-		ChannelID:     m.ChannelID,
-		ChannelHex:    m.ChannelHex,
-		Seq:           int64(m.Seq),
-		Sender:        m.Sender,
-		Envelope:      m.Envelope,
-		Body:          m.Body,
-		FrankingTag:   m.FrankingTag,
-		FrankingKeyID: m.FrankingKeyID,
-		MentionCount:  int64(m.MentionCount),
-		Created:       m.Created,
-		Edited:        nullInt64(m.Edited),
-		Deleted:       nullInt64(m.Deleted),
+		ChannelID:      m.ChannelID,
+		ChannelHex:     m.ChannelHex,
+		Seq:            int64(m.Seq),
+		Sender:         m.Sender,
+		Envelope:       m.Envelope,
+		Body:           m.Body,
+		FrankingTag:    m.FrankingTag,
+		FrankingKeyID:  m.FrankingKeyID,
+		MentionCount:   int64(m.MentionCount),
+		Created:        m.Created,
+		Edited:         nullInt64(m.Edited),
+		Deleted:        nullInt64(m.Deleted),
+		UploaderDevice: m.UploaderDevice,
+		CommitmentC:    m.CommitmentC,
 	})
 	if err != nil {
 		return 0, wrap(err)
@@ -2371,35 +2393,39 @@ func (r *Repo) ListReadableMessages(ctx context.Context, channelID id.ID, fromSe
 	out := make([]store.ReadableMessageRow, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, store.ReadableMessageRow{
-			ID:            row.ID,
-			ChannelID:     row.ChannelID,
-			ChannelHex:    row.ChannelHex,
-			Seq:           uint64(row.Seq),
-			Sender:        row.Sender,
-			Envelope:      row.Envelope,
-			Body:          row.Body,
-			FrankingTag:   row.FrankingTag,
-			FrankingKeyID: row.FrankingKeyID,
-			MentionCount:  uint64(row.MentionCount),
-			Created:       row.Created,
-			Edited:        ptrInt64(row.Edited),
-			Deleted:       ptrInt64(row.Deleted),
+			ID:             row.ID,
+			ChannelID:      row.ChannelID,
+			ChannelHex:     row.ChannelHex,
+			Seq:            uint64(row.Seq),
+			Sender:         row.Sender,
+			Envelope:       row.Envelope,
+			Body:           row.Body,
+			FrankingTag:    row.FrankingTag,
+			FrankingKeyID:  row.FrankingKeyID,
+			MentionCount:   uint64(row.MentionCount),
+			Created:        row.Created,
+			Edited:         ptrInt64(row.Edited),
+			Deleted:        ptrInt64(row.Deleted),
+			UploaderDevice: row.UploaderDevice,
+			CommitmentC:    row.CommitmentC,
 		})
 	}
 	return out, nil
 }
 
 func (r *Repo) EditReadableMessage(ctx context.Context, channelID id.ID, seq uint64,
-	envelope []byte, body string, frankingTag []byte, frankingKeyID id.ID, at int64,
+	envelope []byte, body string, f store.ReadableFranking, at int64,
 ) error {
 	n, err := r.w.EditReadableMessage(ctx, sqlitedb.EditReadableMessageParams{
-		Envelope:      envelope,
-		Body:          body,
-		FrankingTag:   frankingTag,
-		FrankingKeyID: frankingKeyID,
-		Edited:        sql.NullInt64{Int64: at, Valid: true},
-		ChannelID:     channelID,
-		Seq:           int64(seq),
+		Envelope:       envelope,
+		Body:           body,
+		FrankingTag:    f.Tag,
+		FrankingKeyID:  f.KeyID,
+		UploaderDevice: f.UploaderDevice,
+		CommitmentC:    f.CommitmentC,
+		Edited:         sql.NullInt64{Int64: at, Valid: true},
+		ChannelID:      channelID,
+		Seq:            int64(seq),
 	})
 	if err != nil {
 		return wrap(err)
