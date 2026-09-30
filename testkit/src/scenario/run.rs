@@ -246,7 +246,14 @@ impl Runner {
                 tier,
                 kind,
                 device_list,
-            } => self.new_client(name, *tier, *kind, 4, *device_list),
+                key_packages,
+            } => {
+                let count = if *key_packages { Some(4) } else { None };
+                self.new_client(name, *tier, *kind, count, *device_list)
+            }
+            Stmt::PublishKeyPackages { client, count } => {
+                self.with_client(client, |c, ds| c.publish_key_packages(ds, *count))
+            }
             Stmt::Group {
                 name,
                 kind,
@@ -652,14 +659,14 @@ impl Runner {
     }
 
     /// Creates a client, enrols it with the delivery service and publishes `key_packages`
-    /// KeyPackages plus a last-resort one. Against an instance it also publishes the signed device
-    /// list `device_list` names.
+    /// KeyPackages plus a last-resort one (none at all when it is `None`). Against an instance it
+    /// also publishes the signed device list `device_list` names.
     fn new_client(
         &mut self,
         name: &str,
         tier: Tier,
         kind: Kind,
-        key_packages: usize,
+        key_packages: Option<usize>,
         device_list: DeviceListMode,
     ) -> Result<(), TestkitError> {
         if self.clients.contains_key(name) {
@@ -732,9 +739,12 @@ impl Runner {
                 clients.insert(name.to_owned(), ds);
             }
         }
-        let result = self
-            .ds_for(&client)
-            .and_then(|ds| client.publish_key_packages(ds, key_packages));
+        let result = match key_packages {
+            Some(n) => self
+                .ds_for(&client)
+                .and_then(|ds| client.publish_key_packages(ds, n)),
+            None => Ok(()),
+        };
         self.clients.insert(name.to_owned(), client);
         result
     }
@@ -763,7 +773,13 @@ impl Runner {
         let mut names = Vec::with_capacity(count);
         for i in 0..count {
             let name = format!("{group}-{}", first + i + 1);
-            self.new_client(&name, Tier::Native, Kind::User, 1, DeviceListMode::Signed)?;
+            self.new_client(
+                &name,
+                Tier::Native,
+                Kind::User,
+                Some(1),
+                DeviceListMode::Signed,
+            )?;
             names.push(name);
         }
         if let Some(unknown) = revoke.iter().find(|r| !names.contains(r)) {
@@ -1015,7 +1031,8 @@ fn actor_of(stmt: &Stmt) -> Option<&str> {
         | Stmt::Resync { client, .. }
         | Stmt::ForkReport { client, .. }
         | Stmt::Heal { client, .. }
-        | Stmt::AckCommit { client } => Some(client),
+        | Stmt::AckCommit { client }
+        | Stmt::PublishKeyPackages { client, .. } => Some(client),
         Stmt::Remove { actor, .. }
         | Stmt::Kick { actor, .. }
         | Stmt::Commit { actor }

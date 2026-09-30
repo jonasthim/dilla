@@ -282,6 +282,34 @@ func TestTheRTCPathsAreMountedOnlyWithAnSFU(t *testing.T) {
 	}
 }
 
+// Fix wave I19: POST /v1/communities/{id}/join is metered on the ("invite", client address) bucket
+// GET /i/{code} is on, so a join is no way round the limit on guessing codes: one address is
+// refused 429 after invite_burst joins, long before the per-device write burst would refuse it.
+func TestTheJoinIsMeteredOnTheInviteBucket(t *testing.T) {
+	_, h, code := newInstance(t)
+	tok := accountToken(t, h, code)
+	rate := testConfig(t).Limits.Rate
+	if rate.InviteBurst >= rate.WriteBurst {
+		t.Fatalf("invite burst %d is not below the write burst %d: the test could not tell the buckets apart",
+			rate.InviteBurst, rate.WriteBurst)
+	}
+	path := "/v1/communities/" + id.New().String() + "/join"
+	for i := range rate.WriteBurst {
+		rec := call(t, h, http.MethodPost, path, tok, []any{nil})
+		if rec.Code != http.StatusTooManyRequests {
+			continue
+		}
+		if i < rate.InviteBurst {
+			t.Fatalf("join %d of an invite burst of %d was refused", i+1, rate.InviteBurst)
+		}
+		if errorCode(rec) != "E_RATE_LIMITED" {
+			t.Fatalf("429 carried %q, want E_RATE_LIMITED", errorCode(rec))
+		}
+		return
+	}
+	t.Fatalf("%d joins from one address were never refused; the invite burst is %d", rate.WriteBurst, rate.InviteBurst)
+}
+
 // Plan 2's routes are metered on the instance's [limits.rate] buckets, per device session: past the
 // read burst a GET is refused 429 E_RATE_LIMITED, whatever it would have answered.
 func TestThePlanTwoRoutesAreMeteredPerDevice(t *testing.T) {

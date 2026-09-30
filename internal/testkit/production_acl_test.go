@@ -125,6 +125,29 @@ func TestAKickWithAnOutstandingAddRunsThroughTheProductionACL(t *testing.T) {
 	}
 }
 
+// Fix wave I19: a DM participant who publishes their first KeyPackage after the DM's group exists
+// is added by the instance, through the composition root's AfterKeyPackages hook.
+func TestAKeyPackagePublishAddsTheDeviceToItsDMs(t *testing.T) {
+	h := productionScenario(t, "dm_member_added_on_key_package_publish.scn")
+	repo := h.Repo()
+	ctx := context.Background()
+	if err := h.Server().DrainHooks(ctx); err != nil {
+		t.Fatalf("DrainHooks: %v", err)
+	}
+	g := textGroupOf(t, repo, "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7")
+	bob := deviceOf(t, repo, "bob")
+	live := 0
+	for _, p := range addsFor(t, repo, g, bob.ID) {
+		if p.VoidAt == nil && p.Epoch == g.Epoch {
+			live++
+		}
+	}
+	if live != 1 {
+		t.Fatalf("outstanding instance Adds for bob's device = %d, want 1: publishing his first "+
+			"KeyPackage did not add him to the DM", live)
+	}
+}
+
 func TestAStormWithViewRevokedMidwayRunsThroughTheProductionACL(t *testing.T) {
 	h := productionScenario(t, "join_storm_revoked_mid_storm_production_acl.scn")
 	repo := h.Repo()

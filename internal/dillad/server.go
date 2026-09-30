@@ -433,6 +433,12 @@ func (s *Server) DS() *ds.DS                { return s.ds }
 func (s *Server) Gateway() *gateway.Gateway { return s.gw }
 func (s *Server) Now() time.Time            { return s.o.Clock.Now() }
 
+// DrainHooks waits until every post-answer hook the group routes started (AfterRegister and
+// AfterKeyPackages) has returned, or ctx ends. Shutdown does the same before it
+// stops the delivery service; a harness calls it to order a scenario's next step after the
+// proposals a registration or a publish issues.
+func (s *Server) DrainHooks(ctx context.Context) error { return s.groups.Drain(ctx) }
+
 // CommitCount is the delivery service's own accepted-commit counter. A
 // scenario that asserts "at most four commits for 1,000 devices" needs the
 // instance's count, not the client's.

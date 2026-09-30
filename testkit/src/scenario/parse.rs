@@ -11,11 +11,21 @@ pub enum Stmt {
     /// client signs itself into its user's device list (`signed`, the default), publishes no list
     /// (`none`), or publishes one whose entry for it is revoked (`revoked`) — the last two are
     /// invariant 4's "DSK in the newest signed device list" probes.
+    /// `key_packages=none` enrols the client without publishing a single KeyPackage (not even a
+    /// last-resort one) until a `publish_key_packages` says so: a device the instance cannot add
+    /// when a group is created, which it must add once it publishes (protocol/09's KeyPackage hook).
     Client {
         name: String,
         tier: Tier,
         kind: Kind,
         device_list: DeviceListMode,
+        key_packages: bool,
+    },
+    /// `publish_key_packages <client> <n>`: the client publishes `n` KeyPackages and a last-resort
+    /// one.
+    PublishKeyPackages {
+        client: String,
+        count: usize,
     },
     Sync {
         client: String,
@@ -356,11 +366,42 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                     ));
                 }
             };
+            let key_packages = match named(args, "key_packages=") {
+                None => true,
+                Some("none") => false,
+                Some(other) => {
+                    return Err(err(
+                        line_no,
+                        format!("unknown key_packages {other:?}; the one value is none"),
+                    ));
+                }
+            };
             Stmt::Client {
                 name: args[0].to_owned(),
                 tier,
                 kind,
                 device_list,
+                key_packages,
+            }
+        }
+        "publish_key_packages" => {
+            need(2)?;
+            let count = args[1]
+                .parse::<usize>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| {
+                    err(
+                        line_no,
+                        format!(
+                            "publish_key_packages needs a positive count, got {:?}",
+                            args[1]
+                        ),
+                    )
+                })?;
+            Stmt::PublishKeyPackages {
+                client: args[0].to_owned(),
+                count,
             }
         }
         "sync" => {
@@ -1185,6 +1226,7 @@ expect_reject E_BINDING join bob chat
                 tier: Tier::Native,
                 kind: Kind::User,
                 device_list: DeviceListMode::None,
+                key_packages: true,
             }
         );
         assert!(matches!(
@@ -1202,6 +1244,24 @@ expect_reject E_BINDING join bob chat
             }
         ));
         refused("client x device_list=maybe", "device_list");
+        // Fix wave I19: a client that publishes no KeyPackage until the scenario says so.
+        assert!(matches!(
+            one("client gus key_packages=none").unwrap(),
+            Stmt::Client {
+                key_packages: false,
+                ..
+            }
+        ));
+        refused("client gus key_packages=some", "key_packages");
+        assert_eq!(
+            one("publish_key_packages gus 2").unwrap(),
+            Stmt::PublishKeyPackages {
+                client: "gus".into(),
+                count: 2,
+            }
+        );
+        refused("publish_key_packages gus", "publish_key_packages needs 2");
+        refused("publish_key_packages gus 0", "positive count");
 
         assert_eq!(
             one("external_join carol chat as=frank leaf_key=fresh").unwrap(),

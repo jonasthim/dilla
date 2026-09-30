@@ -332,8 +332,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 // wall-clock and keep running; this makes a scenario's `advance_clock` observable by the very next
 // statement instead of up to a minute later.
 func (h *Host) Advance(ctx context.Context, d time.Duration) error {
-	h.clk.Advance(d)
 	s := h.Server()
+	// The proposals a registration or a KeyPackage publish issues run after the answer, on hooks of
+	// their own; they finish first, so what the scenario did before `advance_clock` has landed
+	// before the clock moves (and `advance_clock 0s` is a barrier for them).
+	if err := s.DrainHooks(ctx); err != nil {
+		return fmt.Errorf("dilladtest: wait for the post-answer hooks: %w", err)
+	}
+	h.clk.Advance(d)
 	s.DS().RunWatchdogOnce(ctx)
 	if _, err := s.DS().Sweep(ctx); err != nil {
 		return fmt.Errorf("dilladtest: sweep after advancing the clock: %w", err)
