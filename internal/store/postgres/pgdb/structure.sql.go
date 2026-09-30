@@ -596,6 +596,25 @@ func (q *Queries) ListRoles(ctx context.Context, arg ListRolesParams) ([]Roles, 
 	return items, nil
 }
 
+const lockCommunity = `-- name: LockCommunity :one
+SELECT id FROM communities WHERE id = $1 AND deleted_at IS NULL FOR NO KEY UPDATE
+`
+
+type LockCommunityParams struct {
+	ID id.ID
+}
+
+// The join and the ban both take this lock before they read or write the
+// membership, so a join's ban check and its member insert cannot interleave with
+// a ban under READ COMMITTED. FOR NO KEY UPDATE: two lockers conflict, while the
+// FOR KEY SHARE a foreign-key check on members or channels takes does not.
+func (q *Queries) LockCommunity(ctx context.Context, arg LockCommunityParams) (id.ID, error) {
+	row := q.db.QueryRowContext(ctx, lockCommunity, arg.ID)
+	var id id.ID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const nextChannelSeq = `-- name: NextChannelSeq :one
 UPDATE channels SET seq = seq + 1 WHERE id = $1 AND deleted_at IS NULL RETURNING seq
 `

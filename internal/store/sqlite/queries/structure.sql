@@ -27,6 +27,12 @@ WHERE id = ? AND deleted_at IS NULL;
 -- name: SoftDeleteCommunity :execrows
 UPDATE communities SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL;
 
+-- name: LockCommunity :one
+-- SQLite has no row locks and needs none: every write transaction is BEGIN
+-- IMMEDIATE on a one-connection pool, so the join's and the ban's transactions
+-- are already exclusive. This is the existence read the Postgres form shares.
+SELECT id FROM communities WHERE id = ? AND deleted_at IS NULL;
+
 -- name: PutMember :exec
 INSERT INTO members (community_id, user_id, joined, nick)
 VALUES (?, ?, ?, ?)

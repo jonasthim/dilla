@@ -116,6 +116,10 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
 	ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error)
+	// SQLite has no row locks and needs none: every write transaction is BEGIN
+	// IMMEDIATE on a one-connection pool, so the join's and the ban's transactions
+	// are already exclusive. This is the existence read the Postgres form shares.
+	LockCommunity(ctx context.Context, arg LockCommunityParams) (id.ID, error)
 	// Invariant 11's first half, as ONE statement rather than a paged loop: a restore runs once and
 	// correctness, not latency, governs it, while a loop that stopped at a fixed batch would leave
 	// every group past the batch serving state the restored database no longer matches. Closed groups

@@ -1834,6 +1834,17 @@ func (r *Repo) SoftDeleteCommunity(ctx context.Context, communityID id.ID, at in
 	return nil
 }
 
+// LockCommunity takes the community row FOR NO KEY UPDATE until the
+// transaction ends. Outside a transaction the lock would be released with the
+// statement, so it is refused there.
+func (r *Repo) LockCommunity(ctx context.Context, communityID id.ID) error {
+	if !r.inTx {
+		return errors.New("store: LockCommunity outside a transaction")
+	}
+	_, err := r.w.LockCommunity(ctx, pgdb.LockCommunityParams{ID: communityID})
+	return wrap(err)
+}
+
 func (r *Repo) PutMember(ctx context.Context, m store.MemberOfCommunityRow) error {
 	return wrap(r.w.PutMember(ctx, pgdb.PutMemberParams{
 		CommunityID: m.CommunityID, UserID: m.UserID, Joined: m.Joined, Nick: m.Nick,

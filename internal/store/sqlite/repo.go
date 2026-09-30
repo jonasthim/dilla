@@ -1829,6 +1829,17 @@ func (r *Repo) SoftDeleteCommunity(ctx context.Context, communityID id.ID, at in
 	return nil
 }
 
+// LockCommunity reads the live community row inside the write transaction.
+// SQLite needs no row lock: the transaction is BEGIN IMMEDIATE on the
+// one-connection write pool, so it already excludes every other writer.
+func (r *Repo) LockCommunity(ctx context.Context, communityID id.ID) error {
+	if !r.inTx {
+		return errors.New("store: LockCommunity outside a transaction")
+	}
+	_, err := r.w.LockCommunity(ctx, sqlitedb.LockCommunityParams{ID: communityID})
+	return wrap(err)
+}
+
 func (r *Repo) PutMember(ctx context.Context, m store.MemberOfCommunityRow) error {
 	return wrap(r.w.PutMember(ctx, sqlitedb.PutMemberParams{
 		CommunityID: m.CommunityID, UserID: m.UserID, Joined: m.Joined, Nick: m.Nick,

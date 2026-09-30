@@ -289,6 +289,15 @@ type Communities interface {
 	// §4.1 had no way to write them.
 	UpdateCommunityMeta(ctx context.Context, communityID id.ID, name string, minAge uint64, requireMod2FA uint8) error
 	SoftDeleteCommunity(ctx context.Context, communityID id.ID, at int64) error
+	// LockCommunity is Plan 2 task 4 fix round 1: it holds the community row
+	// until the transaction ends, so a join's ban check and member insert and a
+	// ban's ban write and member delete serialise rather than interleave (a ban
+	// landing between the check and the insert would leave a banned member).
+	// Postgres takes SELECT ... FOR NO KEY UPDATE; a SQLite write transaction is
+	// exclusive already. It is refused outside a Tx, where the lock would end
+	// with the statement, and answers ErrNotFound for an unknown or deleted
+	// community.
+	LockCommunity(ctx context.Context, communityID id.ID) error
 	// PutMember is an upsert: a second call rewrites the nick and nothing else.
 	PutMember(ctx context.Context, m MemberOfCommunityRow) error
 	// GetMember is P2-D7, every membership gate's read: ErrNotFound for a

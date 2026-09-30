@@ -27,6 +27,13 @@ WHERE id = $4 AND deleted_at IS NULL;
 -- name: SoftDeleteCommunity :execrows
 UPDATE communities SET deleted_at = $1 WHERE id = $2 AND deleted_at IS NULL;
 
+-- name: LockCommunity :one
+-- The join and the ban both take this lock before they read or write the
+-- membership, so a join's ban check and its member insert cannot interleave with
+-- a ban under READ COMMITTED. FOR NO KEY UPDATE: two lockers conflict, while the
+-- FOR KEY SHARE a foreign-key check on members or channels takes does not.
+SELECT id FROM communities WHERE id = $1 AND deleted_at IS NULL FOR NO KEY UPDATE;
+
 -- name: PutMember :exec
 INSERT INTO members (community_id, user_id, joined, nick)
 VALUES ($1, $2, $3, $4)

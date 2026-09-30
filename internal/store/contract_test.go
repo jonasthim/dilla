@@ -120,6 +120,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"DeleteOverwrite", "DeleteRole",
 			// §4.1 plus P2-D10's listing (task 4), reached through the embedded Bans.
 			"ListBans",
+			// Task 4 fix round 1, reached through the embedded Communities: the
+			// community row lock that serialises a join's ban check with a ban.
+			"LockCommunity",
 		}},
 		// Bans is the slice of Structure Plan 2 task 4's table supports.
 		{"Bans", reflect.TypeOf((*store.Bans)(nil)).Elem(), []string{
@@ -139,7 +142,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
 			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity",
 			"GetMember", "GetRole", "ListMemberRoles", "ListMembersOfCommunity", "ListRoles",
-			"PutMember", "PutMemberRole", "PutRole", "SoftDeleteCommunity",
+			"LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SoftDeleteCommunity",
 			"UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
 		{"ReadableSearch", reflect.TypeOf((*store.ReadableSearch)(nil)).Elem(), []string{

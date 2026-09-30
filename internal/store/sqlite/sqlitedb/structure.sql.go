@@ -596,6 +596,24 @@ func (q *Queries) ListRoles(ctx context.Context, arg ListRolesParams) ([]Roles, 
 	return items, nil
 }
 
+const lockCommunity = `-- name: LockCommunity :one
+SELECT id FROM communities WHERE id = ? AND deleted_at IS NULL
+`
+
+type LockCommunityParams struct {
+	ID id.ID
+}
+
+// SQLite has no row locks and needs none: every write transaction is BEGIN
+// IMMEDIATE on a one-connection pool, so the join's and the ban's transactions
+// are already exclusive. This is the existence read the Postgres form shares.
+func (q *Queries) LockCommunity(ctx context.Context, arg LockCommunityParams) (id.ID, error) {
+	row := q.db.QueryRowContext(ctx, lockCommunity, arg.ID)
+	var id id.ID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const nextChannelSeq = `-- name: NextChannelSeq :one
 UPDATE channels SET seq = seq + 1 WHERE id = ? AND deleted_at IS NULL RETURNING seq
 `

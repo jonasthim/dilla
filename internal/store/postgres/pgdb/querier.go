@@ -116,6 +116,11 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
 	ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error)
+	// The join and the ban both take this lock before they read or write the
+	// membership, so a join's ban check and its member insert cannot interleave with
+	// a ban under READ COMMITTED. FOR NO KEY UPDATE: two lockers conflict, while the
+	// FOR KEY SHARE a foreign-key check on members or channels takes does not.
+	LockCommunity(ctx context.Context, arg LockCommunityParams) (id.ID, error)
 	// Invariant 11's first half, as ONE statement rather than a paged loop: a restore runs once and
 	// correctness, not latency, governs it, while a loop that stopped at a fixed batch would leave
 	// every group past the batch serving state the restored database no longer matches. Closed groups

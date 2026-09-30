@@ -3,7 +3,9 @@ package store_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -138,6 +140,81 @@ func TestGroupsForTarget(t *testing.T) {
 			}
 			if none, err := repo.GroupsForTarget(ctx, id.New(), 0); err != nil || len(none) != 0 {
 				t.Fatalf("GroupsForTarget(unknown) = %+v, %v", none, err)
+			}
+		})
+	}
+}
+
+// LockCommunity (task 4 fix round 1) is the lock a join and a ban both take on
+// the community row, so a join's ban check and its membership write cannot
+// interleave with a ban. It works only inside a transaction, answers
+// ErrNotFound for an unknown or deleted community, and a second transaction's
+// lock waits for the first transaction to end.
+func TestLockCommunity(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			cid := seedCommunity(ctx, t, repo)
+			gone := seedCommunity(ctx, t, repo)
+			if err := repo.SoftDeleteCommunity(ctx, gone, 5); err != nil {
+				t.Fatalf("SoftDeleteCommunity: %v", err)
+			}
+
+			if err := repo.LockCommunity(ctx, cid); err == nil {
+				t.Fatal("LockCommunity outside a transaction succeeded; the lock would end with the statement")
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error {
+				if err := tx.LockCommunity(ctx, cid); err != nil {
+					t.Errorf("LockCommunity(live) = %v", err)
+				}
+				if err := tx.LockCommunity(ctx, id.New()); !errors.Is(err, store.ErrNotFound) {
+					t.Errorf("LockCommunity(unknown) = %v, want ErrNotFound", err)
+				}
+				if err := tx.LockCommunity(ctx, gone); !errors.Is(err, store.ErrNotFound) {
+					t.Errorf("LockCommunity(deleted) = %v, want ErrNotFound", err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatalf("Tx: %v", err)
+			}
+
+			// A second locker waits for the first transaction to commit.
+			held := make(chan struct{})
+			release := make(chan struct{})
+			first := make(chan error, 1)
+			go func() {
+				first <- repo.Tx(ctx, func(tx store.Repository) error {
+					if err := tx.LockCommunity(ctx, cid); err != nil {
+						close(held)
+						return err
+					}
+					close(held)
+					<-release
+					return nil
+				})
+			}()
+			<-held
+			var locked atomic.Bool
+			second := make(chan error, 1)
+			go func() {
+				second <- repo.Tx(ctx, func(tx store.Repository) error {
+					if err := tx.LockCommunity(ctx, cid); err != nil {
+						return err
+					}
+					locked.Store(true)
+					return nil
+				})
+			}()
+			time.Sleep(100 * time.Millisecond)
+			if locked.Load() {
+				t.Error("a second transaction took the community lock while the first held it")
+			}
+			close(release)
+			if err := <-first; err != nil {
+				t.Fatalf("first Tx: %v", err)
+			}
+			if err := <-second; err != nil || !locked.Load() {
+				t.Fatalf("second Tx = %v, locked = %v", err, locked.Load())
 			}
 		})
 	}
