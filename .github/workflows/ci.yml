@@ -191,12 +191,39 @@ jobs:
       - run: go vet ./...
       - name: The pinned module graph still compiles cgo-free
         run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
+      # Every package but internal/ds, which go-ds runs: together they are ./... (the checker pins
+      # both lines). internal/ds under -race took ~7.5 min of a 4-core machine's ~8 min alone and
+      # pushed this job past its 25 minutes on the runner (run 36697379567).
       - name: Unit tests with the race detector (cgo required, do not set CGO_ENABLED=0 here)
-        run: go test -race -shuffle=on -timeout 15m ./...
+        run: go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
         env:
           GORACE: halt_on_error=1
       - name: Static release build
         run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
+
+  go-ds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # The delivery service's tests drive the real wasm core over a 1,500-leaf fixture, and under the
+    # race detector they are the slowest package of the module, so they have a job and a budget of
+    # their own; the go job runs everything else. Measured on a 4-core machine: 250 s (447 s before
+    # the reconcile asked its ACL once per group); the runner is roughly three times slower.
+    needs: [rust-wasi]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: The delivery service's tests with the race detector
+        run: go test -race -shuffle=on -timeout 20m ./internal/ds/...
+        env:
+          GORACE: halt_on_error=1
 
   go-harness:
     runs-on: ubuntu-latest
@@ -339,8 +366,8 @@ jobs:
     runs-on: ubuntu-latest
     # The wasi core is not built here: dillad loads it from beside its own binary
     # and the Dockerfile copies it in, so the image job fetches rust-wasi's
-    # artifact into the build context first. `go` and `go-lint` gate the push.
-    needs: [go, go-lint, rust-wasi]
+    # artifact into the build context first. `go`, `go-ds` and `go-lint` gate the push.
+    needs: [go, go-ds, go-lint, rust-wasi]
     permissions: { contents: read, packages: write }
     timeout-minutes: 30
     steps:

@@ -9,6 +9,9 @@ import { checkWorkflow } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 
+// The go job's test step: every package but internal/ds, which go-ds runs (CI budget, fix wave).
+const GO_TEST = 'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
+
 const GOOD = `name: ci
 on:
   push:
@@ -79,8 +82,19 @@ jobs:
           path: internal/mlswasi/testdata
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
-      - run: go test -race -shuffle=on -timeout 15m ./...
+      - run: go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
+
+  go-ds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [rust-wasi]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...
 
   go-harness:
     runs-on: ubuntu-latest
@@ -152,7 +166,7 @@ jobs:
 
   image:
     runs-on: ubuntu-latest
-    needs: [go, go-lint, rust-wasi]
+    needs: [go, go-ds, go-lint, rust-wasi]
     permissions: { contents: read, packages: write }
     timeout-minutes: 30
     steps:
@@ -272,8 +286,8 @@ test('a go-harness job whose needs: lists the two edges in the other order passe
 // The go job has no testkit binary: requiring one there would fail every run.
 test('a go job that requires the testkit it does not download is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 15m ./...\n',
-      "      - run: go test -race -shuffle=on -timeout 15m ./...\n        env:\n          DILLA_TESTKIT_REQUIRED: '1'\n")),
+    fixture(GOOD.replace(`      - run: ${GO_TEST}\n`,
+      `      - run: ${GO_TEST}\n        env:\n          DILLA_TESTKIT_REQUIRED: '1'\n`)),
   );
   assert.ok(problems.some((p) => p.includes('go-harness\'s')), problems.join('\n'));
 });
@@ -337,9 +351,41 @@ test('a go-harness job that stopped requiring the testkit is reported', () => {
 // The wildcard is what picks up every new internal/... package without a workflow edit.
 test('a go job whose test step is narrowed to a package list is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('go test -race -shuffle=on -timeout 15m ./...', 'go test -race -shuffle=on -timeout 15m ./internal/store/...')),
+    fixture(GOOD.replace(GO_TEST, 'go test -race -shuffle=on -timeout 15m ./internal/store/...')),
   );
   assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
+});
+
+// CI budget (fix wave): the go job leaves out internal/ds and nothing else, and go-ds runs it.
+test('a go job that leaves out more than internal/ds is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('grep -vx github.com/jonasthim/dilla/internal/ds', 'grep -v -e /internal/ds -e /internal/api')),
+  );
+  assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
+});
+
+test('a workflow without the go-ds job is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/  go-ds:[\s\S]*?\n\n/, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "go-ds"')), problems.join('\n'));
+});
+
+test('a go-ds job that stopped running internal/ds is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...\n', '')),
+  );
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('./internal/ds/...')), problems.join('\n'));
+});
+
+test('a go-ds job without needs: rust-wasi is reported', () => {
+  const start = GOOD.indexOf('  go-ds:\n');
+  const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [rust-wasi]\n', ''))));
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('rust-wasi')), problems.join('\n'));
+});
+
+test('an image job that does not wait for go-ds is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi]', 'needs: [go, go-lint, rust-wasi]')));
+  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-ds"')), problems.join('\n'));
 });
 
 for (const [job, needle] of [
@@ -398,7 +444,7 @@ test('a go job that lost the pinned-module-graph build is reported', () => {
 
 test('a go job that stopped running the race-detector tests is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 15m ./...\n', '')),
+    fixture(GOOD.replace(`      - run: ${GO_TEST}\n`, '')),
   );
   assert.ok(problems.some((p) => p.includes('-race')), problems.join('\n'));
 });
@@ -473,12 +519,12 @@ test('setup-qemu-action anywhere in the workflow is reported', () => {
 // `go` is a prefix of `go-lint`: an image job that waits only for go-lint and rust-wasi must still be
 // reported as not waiting for go.
 test('an image job that does not wait for the go job is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-lint, rust-wasi]', 'needs: [go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi]', 'needs: [go-ds, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go"')), problems.join('\n'));
 });
 
 test('an image job that does not wait for go-lint is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-lint, rust-wasi]', 'needs: [go, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi]', 'needs: [go, go-ds, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-lint"')), problems.join('\n'));
 });
 
