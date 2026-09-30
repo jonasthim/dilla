@@ -56,6 +56,16 @@ const (
 	MaxPendingNonces = 100_000
 )
 
+// TokenHash is what the sessions table stores for a bearer token: SHA-256 of
+// the token's text (protocol/02 §2.2 point 3), so a database read never yields
+// a credential. It is the one place the hash is spelled: minting, resolving and
+// `dillad admin` (which finds a session by the token an operator was handed)
+// all go through it.
+func TokenHash(token string) []byte {
+	sum := sha256.Sum256([]byte(token))
+	return sum[:]
+}
+
 // tierBrowser is `devices.tier` for a browser device; 0 is native. The schema's
 // CHECK allows only these two.
 const tierBrowser uint8 = 1
@@ -392,7 +402,7 @@ func (s *Sessions) mint(ctx context.Context, tx store.Repository, userID, device
 		return Token{}, err
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw)
-	sum := sha256.Sum256([]byte(token))
+	sum := TokenHash(token)
 
 	now := s.clk.Now()
 	lifetime := s.cfg.NativeLifetime.Value()
@@ -402,7 +412,7 @@ func (s *Sessions) mint(ctx context.Context, tx store.Repository, userID, device
 		idle = s.cfg.BrowserIdle.Value()
 	}
 	row := store.SessionRow{
-		TokenHash: sum[:], DeviceID: deviceID, UserID: userID, Scope: uint8(scope),
+		TokenHash: sum, DeviceID: deviceID, UserID: userID, Scope: uint8(scope),
 		// The tier is carried on the session so Resolve can slide the idle
 		// window by it without a second query (deviation ID15).
 		Tier:    tier,
@@ -435,16 +445,16 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	if bearer == "" {
 		return Session{}, server.Errorf(server.CodeUnauthenticated, "")
 	}
-	sum := sha256.Sum256([]byte(bearer))
+	sum := TokenHash(bearer)
 	now := s.clk.Now()
-	row, err := s.repo.GetSessionByHash(ctx, sum[:], now.Unix())
+	row, err := s.repo.GetSessionByHash(ctx, sum, now.Unix())
 	if err != nil {
 		return Session{}, server.Errorf(server.CodeUnauthenticated, "")
 	}
 	// The lookup is by a unique index, so this compare is redundant today; it
 	// stays so that a future non-unique index cannot reintroduce a timing side
 	// channel without someone deleting this line on purpose.
-	if subtle.ConstantTimeCompare(row.TokenHash, sum[:]) != 1 {
+	if subtle.ConstantTimeCompare(row.TokenHash, sum) != 1 {
 		return Session{}, server.Errorf(server.CodeUnauthenticated, "")
 	}
 	// The idle window follows the DEVICE TIER, exactly as issue() picks it, and
@@ -464,7 +474,7 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	// window only has to move when it moves by more than touchGranularity, and an idle window
 	// that is a minute short of its maximum is still hours or days long.
 	if idleExpires-row.IdleExpires > touchGranularity {
-		_ = s.repo.TouchSession(ctx, sum[:], idleExpires)
+		_ = s.repo.TouchSession(ctx, sum, idleExpires)
 	} else {
 		idleExpires = row.IdleExpires
 	}
