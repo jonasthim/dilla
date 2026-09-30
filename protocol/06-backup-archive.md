@@ -121,7 +121,10 @@ table, and writes nothing.
   `dilla.toml` is written as `dilla.toml.restored`, and the configuration in use is never replaced.
   While the swap runs, `RESTORE-IN-PROGRESS` in the data directory names both halves; if it is ever
   found afterwards the swap was interrupted, and `serve` and `restore` refuse (65) until the
-  operator has moved the entries back.
+  operator has moved the entries back. A move that fails during the swap is undone and the marker
+  removed; if the undo itself cannot move an entry back, the marker stays with one line per entry
+  left out of place, the staging directory is kept, and `restore` exits 74 asking for that manual
+  repair.
 - **Invariant 11 (`02-delivery-service.md`) runs in one transaction on the restored database.** The
   instance `generation` is set above both the live and the archived one, so it never moves
   backwards; every open group becomes epoch-unknown with a heal deadline 24 hours out; live calls

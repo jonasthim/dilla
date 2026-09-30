@@ -84,6 +84,10 @@ type RestorePlan struct {
 // place, while Restore still holds the lock.
 var afterSwap func(dataDir string)
 
+// swapRename is every rename the swap and its undo make; a test replaces it to
+// make one fail.
+var swapRename = os.Rename
+
 // maxKeysBytes bounds keys/instance.json, which Restore reads into memory.
 const maxKeysBytes = 16 << 20
 
@@ -157,7 +161,11 @@ func Restore(ctx context.Context, cfg *config.Config, o RestoreOptions) (Restore
 	if err := os.Mkdir(r.stage, 0o700); err != nil {
 		return RestorePlan{}, fmt.Errorf("ops: restore: %w: %w", err, exit.CantCreate)
 	}
-	defer func() { _ = os.RemoveAll(r.stage) }()
+	defer func() {
+		if !r.keepStage {
+			_ = os.RemoveAll(r.stage)
+		}
+	}()
 	if !o.DryRun {
 		if err := linkTree(lay.dataDir, r.stage, lay.owned); err != nil {
 			return RestorePlan{}, fmt.Errorf("ops: restore: carry the live files over: %w: %w", err, exit.IOErr)
@@ -253,33 +261,61 @@ func (r *restorer) swap() (string, error) {
 	}
 	type move struct{ from, to string }
 	var moved []move
-	undo := func() {
+	// undo moves every entry back, the latest first. Only a complete undo
+	// removes the marker: an entry that cannot move back leaves the directory
+	// split between itself, <old> and the staging directory, so the marker
+	// stays, gains a line per entry out of place, and keeps serve and restore
+	// from running (InterruptedRestore) until the operator has repaired it.
+	undo := func(what string, cause error) (string, error) {
+		var stuck []string
+		occupied := map[string]bool{} // data-directory paths a restored entry still holds
 		for i := len(moved) - 1; i >= 0; i-- {
-			_ = os.Rename(moved[i].to, moved[i].from)
+			m := moved[i]
+			if occupied[m.from] {
+				stuck = append(stuck, fmt.Sprintf("%s is still at %s: the restored entry could not leave %s", m.from, m.to, m.from))
+				continue
+			}
+			if err := swapRename(m.to, m.from); err != nil {
+				stuck = append(stuck, fmt.Sprintf("%s is still at %s: %v", m.from, m.to, err))
+				if filepath.Dir(m.from) == r.stage {
+					occupied[m.to] = true
+				}
+			}
 		}
-		_ = os.Remove(old)
-		_ = os.Remove(marker)
+		if len(stuck) == 0 {
+			_ = os.Remove(old)
+			_ = os.Remove(marker)
+			return fail(what, cause)
+		}
+		// The staging directory now holds half of what the operator puts back.
+		r.keepStage = true
+		repair := fmt.Sprintf("the swap failed (%s: %v) and its undo left these entries out of place:\n%s\n",
+			what, cause, strings.Join(stuck, "\n"))
+		recorded := ""
+		if err := appendFile(marker, repair); err != nil {
+			recorded = fmt.Sprintf(" (%s could not record them: %v)", marker, err)
+		}
+		return "", fmt.Errorf("ops: restore: %s: %w; undoing the swap left %d entries out of place, so %s needs manual repair "+
+			"before dillad can start; %s names both halves%s: %s: %w",
+			what, cause, len(stuck), dataDir, marker, recorded, strings.Join(stuck, "; "), exit.IOErr)
 	}
 	live, err := os.ReadDir(dataDir)
 	if err != nil {
-		undo()
-		return fail("list "+dataDir, err)
+		return undo("list "+dataDir, err)
 	}
 	for _, e := range live {
 		if swapExempt(e.Name()) || filepath.Join(dataDir, e.Name()) == old {
 			continue
 		}
 		m := move{filepath.Join(dataDir, e.Name()), filepath.Join(old, e.Name())}
-		if err := os.Rename(m.from, m.to); err != nil {
-			undo()
-			return fail("move "+m.from+" aside", err)
+		if err := swapRename(m.from, m.to); err != nil {
+			return undo("move "+m.from+" aside", err)
 		}
 		moved = append(moved, m)
 	}
 	staged, err := os.ReadDir(r.stage)
 	if err != nil {
-		undo()
-		return fail("list "+r.stage, err)
+		return undo("list "+r.stage, err)
 	}
 	// The database's top-level entry goes last, so an interruption never leaves
 	// a restored database beside the live directory's other files.
@@ -295,9 +331,8 @@ func (r *restorer) swap() (string, error) {
 			continue
 		}
 		m := move{filepath.Join(r.stage, e.Name()), filepath.Join(dataDir, e.Name())}
-		if err := os.Rename(m.from, m.to); err != nil {
-			undo()
-			return fail("move "+m.from+" into place", err)
+		if err := swapRename(m.from, m.to); err != nil {
+			return undo("move "+m.from+" into place", err)
 		}
 		moved = append(moved, m)
 	}
@@ -416,6 +451,10 @@ type restorer struct {
 	stage string
 	now   time.Time
 	plan  RestorePlan
+
+	// keepStage keeps the staging directory when Restore returns: a swap whose
+	// undo failed left restored entries in it that the operator must see.
+	keepStage bool
 
 	dbFile string // the staged database member (SQLite file or DILLADMP stream)
 	keys   keysDoc
@@ -1030,6 +1069,24 @@ func writeNew(p string, body io.Reader) error {
 		return err
 	}
 	if _, err := io.Copy(f, body); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// appendFile adds text to the end of the existing file p and syncs it. It never
+// creates or truncates p, so a failure leaves what p already said intact.
+func appendFile(p, text string) error {
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND, 0) //nolint:gosec // G304: the swap marker in the operator's data directory
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(f, text); err != nil {
 		_ = f.Close()
 		return err
 	}

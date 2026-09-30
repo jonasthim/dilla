@@ -422,3 +422,89 @@ func TestRestoreArmsTheHealOnEveryOpenGroup(t *testing.T) {
 		t.Fatalf("group after restore: epoch_unknown %v deadline %v, want true and %d", g.EpochUnknown, g.HealDeadline, want)
 	}
 }
+
+// failRestoredDBMove makes the swap's last move, the restored database into
+// place, fail; every other rename runs, unless also refuses it.
+func failRestoredDBMove(t *testing.T, h *opsHarness, also func(from, to string) error) {
+	t.Helper()
+	sep := string(filepath.Separator)
+	ops.SetSwapRename(t, func(from, to string) error {
+		if to == h.Cfg.DB.Path && strings.Contains(from, sep+".restore-") {
+			return errors.New("injected: the restored database cannot move into place")
+		}
+		if also != nil {
+			if err := also(from, to); err != nil {
+				return err
+			}
+		}
+		return os.Rename(from, to)
+	})
+}
+
+// A move that fails half-way through the swap is undone: every live entry is
+// back where it was, the marker is gone, and nothing a restore made is left.
+func TestAFailedSwapIsUndoneCompletely(t *testing.T) {
+	h := newOpsHarness(t)
+	h.SeedRows(3)
+	archive := h.backup(t)
+	h.SeedRows(2)
+	dataDir := h.Cfg.Instance.DataDir
+	failRestoredDBMove(t, h, nil)
+	_, err := h.restore(t, archive, ops.RestoreOptions{})
+	var code exit.Code
+	if !errors.As(err, &code) || code != exit.IOErr {
+		t.Fatalf("restore with a failing swap = %v, want exit.IOErr", err)
+	}
+	if err := ops.InterruptedRestore(dataDir); err != nil {
+		t.Fatalf("a fully undone swap still reads as interrupted: %v", err)
+	}
+	assertNoLeftovers(t, dataDir)
+	if n := countMessages(t, h.restored(t), h.group); n != 5 {
+		t.Fatalf("%d messages after the undone swap, want the live 5", n)
+	}
+}
+
+// An undo that cannot move an entry back leaves the data directory split
+// between itself, .old-<hex> and .restore-<hex>. The marker must survive, name
+// what is out of place, and keep serve (InterruptedRestore) and a second
+// restore from running over the half-swapped directory; the staging directory
+// is kept, since it holds half of what the operator must put back.
+func TestAFailedUndoKeepsTheMarkerAndRefusesServe(t *testing.T) {
+	h := newOpsHarness(t)
+	archive := h.backup(t)
+	dataDir := h.Cfg.Instance.DataDir
+	blobs := filepath.Join(dataDir, "blobs")
+	failRestoredDBMove(t, h, func(from, to string) error {
+		if to == blobs && strings.Contains(from, string(filepath.Separator)+".old-") {
+			return errors.New("injected: the live blobs cannot move back")
+		}
+		return nil
+	})
+	_, err := h.restore(t, archive, ops.RestoreOptions{})
+	var code exit.Code
+	if !errors.As(err, &code) || code != exit.IOErr || !strings.Contains(err.Error(), "manual repair") {
+		t.Fatalf("restore with a failing undo = %v, want exit.IOErr asking for manual repair", err)
+	}
+	body, rerr := os.ReadFile(filepath.Join(dataDir, ops.RestoreMarkerFile))
+	if rerr != nil {
+		t.Fatalf("the marker is gone after an undo that failed: %v", rerr)
+	}
+	if !strings.Contains(string(body), blobs) || !strings.Contains(string(body), "cannot move back") {
+		t.Fatalf("the marker does not name the entry left out of place: %q", body)
+	}
+	// serve's check, and a second restore, both refuse.
+	if ierr := ops.InterruptedRestore(dataDir); !errors.As(ierr, &code) || code != exit.Data {
+		t.Fatalf("InterruptedRestore after a failed undo = %v, want exit.Data", ierr)
+	}
+	if _, err := h.restore(t, archive, ops.RestoreOptions{}); !errors.As(err, &code) || code != exit.Data ||
+		!strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("a restore over the half-swapped directory = %v, want the interrupted refusal", err)
+	}
+	// Both halves are still on disk for the operator to put back.
+	if olds, _ := filepath.Glob(filepath.Join(dataDir, ".old-*", "blobs")); len(olds) != 1 {
+		t.Fatalf("the live blobs are not in the .old- directory: %v", olds)
+	}
+	if stages, _ := filepath.Glob(filepath.Join(dataDir, ".restore-*")); len(stages) != 1 {
+		t.Fatalf("the staging directory was removed after a failed undo: %v", stages)
+	}
+}
