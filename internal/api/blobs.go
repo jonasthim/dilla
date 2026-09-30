@@ -153,7 +153,16 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 	if announced >= 0 && announced < reserve {
 		reserve = announced
 	}
-	if limit := b.cfg.StoreMaxBytes; limit > 0 {
+	// A blob the uploader already references is already on disk and already counted toward their
+	// quota (each distinct blob counts once), so re-publishing it, a forward into a second
+	// channel, adds no bytes: the byte pre-checks below would refuse it by its Content-Length
+	// near a limit it cannot cross (M3). The reference-count and tombstone logic still run.
+	owned, err := b.repo.UserReferencesBlob(r.Context(), s.UserID, blobID)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if limit := b.cfg.StoreMaxBytes; limit > 0 && !owned {
 		// blobs.store_max_bytes, before a byte is read. Every blob row counts,
 		// unreferenced ones included: their files are on disk until collected.
 		total, err := b.repo.InstanceBlobBytes(r.Context())
@@ -167,7 +176,7 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	quota := b.cfg.QuotaBytesPerUser
-	if quota > 0 {
+	if quota > 0 && !owned {
 		// The cheap refusal, before a byte of the body is read, counting the
 		// body the request announces. The exact check runs in the reference
 		// transaction below.

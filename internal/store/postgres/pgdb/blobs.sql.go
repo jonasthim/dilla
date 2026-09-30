@@ -576,3 +576,23 @@ func (q *Queries) UserBlobBytes(ctx context.Context, arg UserBlobBytesParams) (i
 	err := row.Scan(&column_1)
 	return column_1, err
 }
+
+const userReferencesBlob = `-- name: UserReferencesBlob :one
+SELECT COUNT(*) FROM blob_refs r
+JOIN devices d ON d.id = r.uploader_device
+WHERE r.blob_id = $1 AND d.user_id = $2
+`
+
+type UserReferencesBlobParams struct {
+	BlobID []byte
+	UserID id.ID
+}
+
+// Whether the user already references the blob in some channel, so the bytes already count
+// toward their quota. COUNT, not EXISTS, for the reason GetBlobTombstone gives.
+func (q *Queries) UserReferencesBlob(ctx context.Context, arg UserReferencesBlobParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, userReferencesBlob, arg.BlobID, arg.UserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}

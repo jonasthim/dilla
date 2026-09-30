@@ -347,6 +347,9 @@ type Querier interface {
 	// The quota counts each distinct blob a user uploaded once, however many
 	// channels they published it into.
 	UserBlobBytes(ctx context.Context, arg UserBlobBytesParams) (int64, error)
+	// Whether the user already references the blob in some channel, so the bytes already count
+	// toward their quota. COUNT, not EXISTS, for the reason GetBlobTombstone gives.
+	UserReferencesBlob(ctx context.Context, arg UserReferencesBlobParams) (int64, error)
 	VoidProposal(ctx context.Context, arg VoidProposalParams) error
 }
 

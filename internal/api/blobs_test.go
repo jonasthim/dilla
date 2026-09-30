@@ -195,6 +195,39 @@ func TestOverTheUserQuotaIs507(t *testing.T) {
 	}
 }
 
+// M3: a blob the user already references counts once toward the quota and is already on disk, so
+// re-publishing it (a forward into a second channel) near quota_bytes_per_user or
+// store_max_bytes is not refused by the pre-body byte checks, which count the Content-Length.
+// A NEW blob of the same size is still refused 507.
+func TestAReUploadOfABlobTheUserHoldsDoesNotCountAgainstTheLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*config.Blobs)
+	}{
+		{"per-user quota", func(c *config.Blobs) { c.MaxBlobBytes, c.QuotaBytesPerUser = 1<<20, 4000 }},
+		{"store_max_bytes", func(c *config.Blobs) { c.MaxBlobBytes, c.StoreMaxBytes = 1<<20, 4000 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, ch, tok := blobEnvWithConfig(t, tc.set)
+			other := secondChannel(t, e, ch, tok)
+			held := bytes.Repeat([]byte{'a'}, 3000)
+			heldSum := sha256.Sum256(held)
+			if status, body := e.DoRaw(http.MethodPut, blobURL(ch, heldSum[:]), tok, "application/octet-stream", held); status != http.StatusCreated {
+				t.Fatalf("first PUT = %d (%s)", status, body)
+			}
+			if status, body := e.DoRaw(http.MethodPut, blobURL(other, heldSum[:]), tok, "application/octet-stream", held); status != http.StatusOK {
+				t.Fatalf("a re-upload of a held blob near the limit = %d, want 200 (%s)", status, body)
+			}
+			fresh := bytes.Repeat([]byte{'b'}, 3000)
+			freshSum := sha256.Sum256(fresh)
+			status, body := e.DoRaw(http.MethodPut, blobURL(ch, freshSum[:]), tok, "application/octet-stream", fresh)
+			if status != http.StatusInsufficientStorage {
+				t.Fatalf("a NEW blob near the limit = %d, want 507 (%s)", status, body)
+			}
+		})
+	}
+}
+
 // An upload refused over the quota after its bytes were written leaves a blobs
 // row marked unreferenced, so the sweeper collects the file after the grace
 // window rather than it staying on disk with no row forever. The user is not

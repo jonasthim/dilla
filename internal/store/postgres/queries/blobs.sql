@@ -79,6 +79,13 @@ WHERE b.blob_id IN (
   WHERE d.user_id = sqlc.arg(user_id)
 );
 
+-- name: UserReferencesBlob :one
+-- Whether the user already references the blob in some channel, so the bytes already count
+-- toward their quota. COUNT, not EXISTS, for the reason GetBlobTombstone gives.
+SELECT COUNT(*) FROM blob_refs r
+JOIN devices d ON d.id = r.uploader_device
+WHERE r.blob_id = sqlc.arg(blob_id) AND d.user_id = sqlc.arg(user_id);
+
 -- name: InstanceBlobBytes :one
 -- Fix wave C7: blobs.store_max_bytes. Every row counts, referenced or not: an orphaned or
 -- unreferenced blob's file is on disk until the sweeper collects it. The cast keeps SUM's

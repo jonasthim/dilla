@@ -138,6 +138,18 @@ func TestBlobReferencesAndCollection(t *testing.T) {
 				t.Fatalf("UserBlobBytes of a user with no upload = %d, %v; want 0", used, err)
 			}
 
+			// UserReferencesBlob: true for the uploader of a reference, from any device, false for
+			// another user and for a blob nobody references.
+			if ok, err := repo.UserReferencesBlob(ctx, alice, y); err != nil || !ok {
+				t.Fatalf("UserReferencesBlob(alice, y) = %v, %v; want true", ok, err)
+			}
+			if ok, err := repo.UserReferencesBlob(ctx, id.New(), y); err != nil || ok {
+				t.Fatalf("UserReferencesBlob(stranger, y) = %v, %v; want false", ok, err)
+			}
+			if ok, err := repo.UserReferencesBlob(ctx, alice, []byte("no such blob")); err != nil || ok {
+				t.Fatalf("UserReferencesBlob(alice, unknown) = %v, %v; want false", ok, err)
+			}
+
 			// Marking is refused while any reference stands.
 			if err := repo.DeleteBlobRef(ctx, x, chA); err != nil {
 				t.Fatalf("DeleteBlobRef A: %v", err)

@@ -351,6 +351,9 @@ type Querier interface {
 	// channels they published it into. SUM over BIGINT is NUMERIC on Postgres; the
 	// cast keeps it int64 like the SQLite twin.
 	UserBlobBytes(ctx context.Context, arg UserBlobBytesParams) (int64, error)
+	// Whether the user already references the blob in some channel, so the bytes already count
+	// toward their quota. COUNT, not EXISTS, for the reason GetBlobTombstone gives.
+	UserReferencesBlob(ctx context.Context, arg UserReferencesBlobParams) (int64, error)
 	VoidProposal(ctx context.Context, arg VoidProposalParams) error
 }
 

@@ -2641,6 +2641,14 @@ func (r *Repo) UserBlobBytes(ctx context.Context, userID id.ID) (int64, error) {
 	return n, wrap(err)
 }
 
+func (r *Repo) UserReferencesBlob(ctx context.Context, userID id.ID, blobID []byte) (bool, error) {
+	n, err := r.r.UserReferencesBlob(ctx, pgdb.UserReferencesBlobParams{BlobID: blobID, UserID: userID})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return n > 0, nil
+}
+
 func (r *Repo) InstanceBlobBytes(ctx context.Context) (int64, error) {
 	n, err := r.r.InstanceBlobBytes(ctx)
 	return n, wrap(err)
