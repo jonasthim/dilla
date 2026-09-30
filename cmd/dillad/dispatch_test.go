@@ -85,18 +85,21 @@ func TestUnknownFlagGoesToStderrAndExitsTwo(t *testing.T) {
 	}
 }
 
-func TestReservedVerbsExitThree(t *testing.T) {
-	for _, name := range []string{"admin"} {
-		t.Run(name, func(t *testing.T) {
-			_, errBuf, err := run(t, name)
-			var code exit.Code
-			if !errors.As(err, &code) || code != exit.NotImplemented {
-				t.Fatalf("%s gave %v, want exit.NotImplemented (3)", name, err)
-			}
-			if !strings.Contains(errBuf+err.Error(), "not in this build") {
-				t.Fatalf("%s did not say it is not in this build: %q / %v", name, errBuf, err)
-			}
-		})
+// admin was the last reserved verb ("not in this build", exit 3); it is a dispatcher now, so the
+// bare verb is a usage error with the admin usage block, and nothing answers exit 3 any more.
+func TestAdminIsDispatchedNotReserved(t *testing.T) {
+	_, errBuf, err := run(t, "admin")
+	var code exit.Code
+	if !errors.As(err, &code) || code != exit.Usage {
+		t.Fatalf("admin gave %v, want exit.Usage (2)", err)
+	}
+	if !strings.Contains(errBuf, "usage: dillad admin") {
+		t.Fatalf("admin did not print its usage block: %q", errBuf)
+	}
+	for name, v := range verbs() {
+		if v.run == nil {
+			t.Fatalf("verb %s has no handler", name)
+		}
 	}
 }
 

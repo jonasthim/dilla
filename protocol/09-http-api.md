@@ -534,6 +534,19 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
 - `GET /v1/admin/diagnostics` answers the `dillad doctor` report; its body is defined with the
   report.
 
+Informative: the operator's own surface is `dillad admin <noun> <verb>`, run at a shell on the
+instance's host and acting as the operator, who is not a `users` row. `user list|show|disable|
+enable|delete`, `invite create|list|revoke`, `community list|show`, `device revoke`, `blob purge`
+and `audit` read and write the same tables as the routes above. Every verb that changes state
+writes an audit row with a null `actor` (and the same `action` names: `user.disable`, `user.enable`,
+`user.delete`, `invite.create`, `invite.revoke`, `device.revoke`, `blob.purge`); a read-only verb
+writes none. `invite create` prints the link once and stores only its hash; the audit row and the
+log carry the 8-hex reference. The command is a separate process from `dillad serve` and cannot
+close a gateway connection; the running instance ends the connections of a disabled user or a
+revoked device within one heartbeat interval (`02` § Device sessions, item 6). `user delete` is the
+tombstone of `DELETE /v1/accounts/me`: the handle stays reserved. The command refuses a database
+whose schema is not the one the binary embeds (exit 78).
+
 ## Permissions
 
 A permission set is a 64-bit unsigned integer; `roles.allow`, `roles.deny` and a channel

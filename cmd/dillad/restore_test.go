@@ -42,6 +42,11 @@ type cliHarness struct {
 	archives   string
 	device     id.ID
 	n          int
+
+	// Added with the admin verbs' tests (admin_harness_test.go).
+	stderr strings.Builder // everything every Run wrote to stderr, for LogOutput
+	shared store.Repository
+	tokens map[id.ID]string // user -> the bearer token SeedSession minted
 }
 
 func newCLIHarness(t *testing.T) *cliHarness {
@@ -68,6 +73,7 @@ func newCLIHarness(t *testing.T) *cliHarness {
 func (h *cliHarness) Run(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	stdout, stderr, err := run(t, args...)
+	h.stderr.WriteString(stderr)
 	out := stdout + stderr
 	if err == nil {
 		return 0, out

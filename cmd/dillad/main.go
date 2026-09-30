@@ -1,9 +1,7 @@
 // Command dillad is the dilla server.
 //
-// The command line is a verb dispatcher with eight names. Seven are implemented
-// here; admin is reserved, prints "not in this build" and exits 3, so an
-// operator who reads the roadmap and types it gets an honest answer instead of
-// "unknown command".
+// The command line is a verb dispatcher with eight names, every one implemented.
+// admin is itself a dispatcher, noun then verb (admin.go).
 package main
 
 import (
@@ -34,7 +32,7 @@ func verbs() map[string]verb {
 		"version": {"version", "print the version, VCS revision and cgo status", runVersion},
 		"backup":  {"backup", "write a backup archive, or check one with `backup verify`", runBackup},
 		"restore": {"restore", "replace the instance with a backup archive, and arm the group heal", runRestore},
-		"admin":   {"admin", "administrative commands (dillad-2)", reserved("admin")},
+		"admin":   {"admin", "user, invite, community, device, blob and audit commands", runAdmin},
 	}
 }
 
