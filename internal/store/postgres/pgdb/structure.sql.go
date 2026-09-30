@@ -129,6 +129,23 @@ func (q *Queries) DeleteChannel(ctx context.Context, arg DeleteChannelParams) (i
 	return result.RowsAffected()
 }
 
+const deleteChannelMember = `-- name: DeleteChannelMember :execrows
+DELETE FROM channel_members WHERE channel_id = $1 AND user_id = $2
+`
+
+type DeleteChannelMemberParams struct {
+	ChannelID id.ID
+	UserID    id.ID
+}
+
+func (q *Queries) DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteChannelMember, arg.ChannelID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteChannelsOfCommunity = `-- name: DeleteChannelsOfCommunity :execrows
 UPDATE channels SET deleted_at = $1 WHERE community_id = $2 AND deleted_at IS NULL
 `
@@ -390,6 +407,37 @@ func (q *Queries) ListBans(ctx context.Context, arg ListBansParams) ([]Bans, err
 	return items, nil
 }
 
+const listChannelMembers = `-- name: ListChannelMembers :many
+SELECT user_id FROM channel_members WHERE channel_id = $1 ORDER BY user_id
+`
+
+type ListChannelMembersParams struct {
+	ChannelID id.ID
+}
+
+func (q *Queries) ListChannelMembers(ctx context.Context, arg ListChannelMembersParams) ([]id.ID, error) {
+	rows, err := q.db.QueryContext(ctx, listChannelMembers, arg.ChannelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []id.ID{}
+	for rows.Next() {
+		var user_id id.ID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listChannels = `-- name: ListChannels :many
 SELECT id, community_id, kind, mode, visibility, parent_id, name, topic, position,
        settings_json, host_policy_version, slowmode_seconds, seq, created, deleted_at
@@ -404,6 +452,61 @@ type ListChannelsParams struct {
 
 func (q *Queries) ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error) {
 	rows, err := q.db.QueryContext(ctx, listChannels, arg.CommunityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Channels{}
+	for rows.Next() {
+		var i Channels
+		if err := rows.Scan(
+			&i.ID,
+			&i.CommunityID,
+			&i.Kind,
+			&i.Mode,
+			&i.Visibility,
+			&i.ParentID,
+			&i.Name,
+			&i.Topic,
+			&i.Position,
+			&i.SettingsJson,
+			&i.HostPolicyVersion,
+			&i.SlowmodeSeconds,
+			&i.Seq,
+			&i.Created,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChannelsForUser = `-- name: ListChannelsForUser :many
+SELECT c.id, c.community_id, c.kind, c.mode, c.visibility, c.parent_id, c.name, c.topic,
+       c.position, c.settings_json, c.host_policy_version, c.slowmode_seconds, c.seq,
+       c.created, c.deleted_at
+FROM channels c
+JOIN channel_members m ON m.channel_id = c.id
+WHERE m.user_id = $1 AND c.kind IN (3, 4) AND c.deleted_at IS NULL
+ORDER BY c.created DESC, c.id
+`
+
+type ListChannelsForUserParams struct {
+	UserID id.ID
+}
+
+// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
+// participant of, newest first, ties broken by id.
+func (q *Queries) ListChannelsForUser(ctx context.Context, arg ListChannelsForUserParams) ([]Channels, error) {
+	rows, err := q.db.QueryContext(ctx, listChannelsForUser, arg.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -658,6 +761,24 @@ func (q *Queries) PutBan(ctx context.Context, arg PutBanParams) error {
 		arg.Created,
 		arg.Expires,
 	)
+	return err
+}
+
+const putChannelMember = `-- name: PutChannelMember :exec
+
+INSERT INTO channel_members (channel_id, user_id, added)
+VALUES ($1, $2, $3) ON CONFLICT (channel_id, user_id) DO NOTHING
+`
+
+type PutChannelMemberParams struct {
+	ChannelID id.ID
+	UserID    id.ID
+	Added     int64
+}
+
+// Channel members (Plan 2 task 6, 00008_channel_members.sql).
+func (q *Queries) PutChannelMember(ctx context.Context, arg PutChannelMemberParams) error {
+	_, err := q.db.ExecContext(ctx, putChannelMember, arg.ChannelID, arg.UserID, arg.Added)
 	return err
 }
 

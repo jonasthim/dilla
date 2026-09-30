@@ -30,7 +30,7 @@ type ACL interface {
 // them as a member of the group. That admits the ordinary re-add of a device belonging to a user
 // already in the group and refuses everything else (NV-B6). It is the default of a DS built with
 // no ACL, and api.ResolverACL still answers with it for the groups the resolver has no rule for
-// yet (DMs until task 6, pairing and interaction groups).
+// (pairing and interaction groups, and a DM-shaped group whose target is no DM channel).
 type DenyUnlessMember struct{ Store store.Repository }
 
 func (a DenyUnlessMember) Eligible(ctx context.Context, groupID, userID id.ID) (bool, error) {

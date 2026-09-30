@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"unicode"
 	"unicode/utf8"
 
@@ -78,17 +79,20 @@ func CallGroupAllowed(c store.ChannelRow) bool {
 // Communities does, and each handler requires an enrolled session itself.
 // Every permission decision is the resolver's (perm.go).
 type Channels struct {
-	repo store.Repository
-	dsvc DS
-	clk  clock.Clock
-	log  *slog.Logger
-	res  *Resolver
+	repo       store.Repository
+	dsvc       DS
+	clk        clock.Clock
+	maxGroupDM int
+	log        *slog.Logger
+	res        *Resolver
 }
 
 // NewChannels takes the delivery service that closes a deleted channel's
-// groups (membership.go).
-func NewChannels(repo store.Repository, dsvc DS, clk clock.Clock, log *slog.Logger) *Channels {
-	return &Channels{repo: repo, dsvc: dsvc, clk: clk, log: log, res: NewResolver(repo)}
+// groups (membership.go) and brings a group DM's groups in line with its
+// participants (SyncGroupMembers), and maxGroupDM, the cap NewDMs enforces at
+// creation, which the member routes enforce on every add.
+func NewChannels(repo store.Repository, dsvc DS, clk clock.Clock, maxGroupDM int, log *slog.Logger) *Channels {
+	return &Channels{repo: repo, dsvc: dsvc, clk: clk, maxGroupDM: maxGroupDM, log: log, res: NewResolver(repo)}
 }
 
 func (c *Channels) Register(mux *server.Mux) {
@@ -96,6 +100,137 @@ func (c *Channels) Register(mux *server.Mux) {
 	mux.HandleFunc("GET /v1/channels/{id}", c.get)
 	mux.HandleFunc("PATCH /v1/channels/{id}", c.patch)
 	mux.HandleFunc("DELETE /v1/channels/{id}", c.delete)
+}
+
+// RegisterMembers registers the three channel-membership routes of §5.2. They are
+// separate from Register because channel_members is task 6's table: a build of
+// tasks 1-5 alone must not advertise a route with no storage behind it.
+func (c *Channels) RegisterMembers(mux *server.Mux) {
+	mux.HandleFunc("GET /v1/channels/{id}/members", c.members)
+	mux.HandleFunc("PUT /v1/channels/{id}/members/{user_id}", c.addMember)
+	mux.HandleFunc("DELETE /v1/channels/{id}/members/{user_id}", c.removeMember)
+}
+
+// members lists the channel's materialised membership, ordered by user id, one
+// [user_id] row per member. On a community channel that is the set task 7
+// derives from the resolver; on a DM or group DM it is the participant list,
+// which is the only place it is stored.
+func (c *Channels) members(w http.ResponseWriter, r *http.Request) {
+	row, _, err := c.visible(r)
+	if err != nil {
+		c.fail(w, r, "list channel members", err)
+		return
+	}
+	ids, err := c.repo.ListChannelMembers(r.Context(), row.ID)
+	if err != nil {
+		c.fail(w, r, "list channel members", err)
+		return
+	}
+	out := make([][]id.ID, 0, len(ids))
+	for _, u := range ids {
+		out = append(out, []id.ID{u})
+	}
+	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
+		c.log.Error("encode channel members", "err", err)
+	}
+}
+
+// groupDM is visible restricted to a group DM, the one kind whose membership is
+// written by hand, and the {user_id} the route names. A community channel's
+// membership is derived from the permission resolver and is never written
+// directly: a hand-written row would be overwritten by the next materialisation
+// pass and the caller would never know. A 1:1 DM's pair is its id (P2-D31).
+// Every participant may add and remove, because a group DM has no roles.
+func (c *Channels) groupDM(r *http.Request) (store.ChannelRow, auth.Session, id.ID, error) {
+	row, s, err := c.visible(r)
+	if err != nil {
+		return row, s, id.ID{}, err
+	}
+	if row.Kind != ChannelGroupDM {
+		return row, s, id.ID{}, server.Errorf(server.CodeForbidden,
+			"only a group DM's membership is set directly; a channel's follows its permissions")
+	}
+	target, err := server.PathID(r, "user_id")
+	if err != nil {
+		return row, s, id.ID{}, err
+	}
+	return row, s, target, nil
+}
+
+// addMember adds one participant to a group DM, then proposes the new
+// participant's devices for the DM's text group.
+func (c *Channels) addMember(w http.ResponseWriter, r *http.Request) {
+	row, s, target, err := c.groupDM(r)
+	if err != nil {
+		c.fail(w, r, "add channel member", err)
+		return
+	}
+	if err := mayReceiveDM(r.Context(), c.repo, target); err != nil {
+		c.fail(w, r, "add channel member", err)
+		return
+	}
+	now := c.clk.Now().Unix()
+	// The count and the insert share one transaction, so two adds racing for
+	// the last seat cannot both land on SQLite's single writer.
+	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		existing, err := tx.ListChannelMembers(r.Context(), row.ID)
+		if err != nil {
+			return err
+		}
+		if slices.Contains(existing, target) {
+			return nil // already a participant: not growth, and not an error
+		}
+		if len(existing) >= c.maxGroupDM {
+			return server.Errorf(server.CodeInvalidRequest,
+				"a group DM holds at most %d members", c.maxGroupDM)
+		}
+		if err := tx.PutChannelMember(r.Context(), row.ID, target, now); err != nil {
+			return err
+		}
+		return tx.Audit(r.Context(), store.AuditRow{
+			Actor: &s.UserID, Action: "channel.member.add", Target: row.ID.String(),
+			Detail: target.String(), At: now,
+		})
+	}); err != nil {
+		c.fail(w, r, "add channel member", err)
+		return
+	}
+	// After the commit, never inside the transaction: SyncGroupMembers calls the
+	// delivery service. See RemoveUserFromCommunityGroups on the single-writer
+	// pool. A failure here leaves the row, and the next sync proposes the Adds.
+	if err := SyncGroupMembers(r.Context(), c.repo, c.dsvc, row, now); err != nil {
+		c.log.ErrorContext(r.Context(), "sync group members after add", "channel", row.ID, "err", err)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeMember is the mirror image: DeleteChannelMember, then SyncGroupMembers,
+// which issues the Removes for every leaf the departing user held in the DM's
+// text and call groups. A participant may always remove themself, and any
+// participant may remove another.
+func (c *Channels) removeMember(w http.ResponseWriter, r *http.Request) {
+	row, s, target, err := c.groupDM(r)
+	if err != nil {
+		c.fail(w, r, "remove channel member", err)
+		return
+	}
+	now := c.clk.Now().Unix()
+	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.DeleteChannelMember(r.Context(), row.ID, target); err != nil {
+			return notFound(err)
+		}
+		return tx.Audit(r.Context(), store.AuditRow{
+			Actor: &s.UserID, Action: "channel.member.remove", Target: row.ID.String(),
+			Detail: target.String(), At: now,
+		})
+	}); err != nil {
+		c.fail(w, r, "remove channel member", err)
+		return
+	}
+	if err := SyncGroupMembers(r.Context(), c.repo, c.dsvc, row, now); err != nil {
+		c.log.ErrorContext(r.Context(), "sync group members after remove", "channel", row.ID, "err", err)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type createChannelReq struct {
@@ -519,13 +654,10 @@ func (c *Channels) visible(r *http.Request) (store.ChannelRow, auth.Session, err
 	if err != nil {
 		return store.ChannelRow{}, s, notFound(err)
 	}
-	if row.CommunityID == nil {
-		// A DM or group DM: its membership is channel_members, which task 6
-		// creates. Until then nobody is shown one (P2-D31's ordering constraint).
-		return store.ChannelRow{}, s, server.Errorf(server.CodeNotFound, "no such object")
-	}
 	// Require answers 404 to a non-member and to a member an overwrite has
-	// taken the channel from: neither learns that it exists.
+	// taken the channel from: neither learns that it exists. For a DM or group
+	// DM the members are its participants (channel_members), which is what
+	// makes a 1:1 DM's derived id a name rather than a capability (P2-D31).
 	if err := c.res.Require(r.Context(), s.UserID, row, PermViewChannel); err != nil {
 		return store.ChannelRow{}, s, err
 	}

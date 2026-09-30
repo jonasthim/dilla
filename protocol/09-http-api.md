@@ -328,6 +328,51 @@ the kick needs `kick_members` (§ Permissions); `403 E_FORBIDDEN` otherwise.
 - Every ban, lift and kick writes an audit row naming the moderator (`ban.create`, `ban.delete`,
   `member.kick`).
 
+### DMs
+
+A DM (`kind = 3`, two participants) or group DM (`kind = 4`, three or more) is a channel with no
+community: `community_id` is null, `mode` is always `0` (end-to-end encrypted) and `visibility`
+`0` (private). Its participants are the only users who see it; to anyone else every route below
+and `GET /v1/channels/{id}` answer `404 E_NOT_FOUND`, exactly as an unknown channel does. Every
+route is `E`.
+
+| Method and path | Request | Response |
+|---|---|---|
+| `POST /v1/dms` | `[recipients([bstr16])]` | `201 [channel_id(bstr16)]` new; `200 [channel_id]` the existing 1:1 DM |
+| `GET /v1/dms` | — | `[[channel_id, kind(uint), members([bstr16])]]`, newest first, ties broken by `channel_id` |
+| `GET /v1/channels/{id}/members` | — | `[[user_id(bstr16)]]`, ordered by `user_id` (bytewise) |
+| `PUT /v1/channels/{id}/members/{user_id}` | — | `204` |
+| `DELETE /v1/channels/{id}/members/{user_id}` | — | `204`; `404` when the user is not a participant |
+
+- The participants of `POST /v1/dms` are the caller and `recipients`, duplicates dropped. Fewer
+  than two (no recipient but the caller) is `400 E_INVALID_REQUEST`, and so is more than the
+  instance's group-DM cap, `livekit.max_voice_participants` (so that every participant fits in the
+  DM's call). An unknown account is `404`; a disabled or deleted one is `403 E_FORBIDDEN`
+  (a disabled account is v1's block).
+- A **1:1 DM** is idempotent: its `channel_id` is derived, not random, as the first 16 bytes of
+  `SHA-256("dilla dm v1" || lo || hi)`, where `lo` and `hi` are the two user ids sorted bytewise
+  and the label is its 11 ASCII bytes. Either participant opening it again, from either side, gets
+  `200` and the same id, which is also the `target_id` of its `text` and `call` groups
+  (`01` § dilla_binding). The id is a name, not a capability: it opens nothing to a
+  non-participant. A group DM's `channel_id` is random, because its membership changes.
+- A DM's `text` and `call` groups are registered by a participant (`02` invariant 1) with a
+  binding whose `community_id` is null and whose `target_id` is the `channel_id`; the instance
+  proposes the `Add` of every other participant's devices (below), and a participant's own client
+  may add them itself (`02` invariant 4).
+- The member routes set a **group DM**'s participants; any participant may add or remove any
+  other, and themself. A 1:1 DM's pair is fixed, and a community channel's membership follows its
+  permissions: `PUT` and `DELETE` on either are `403 E_FORBIDDEN`. `GET` lists a community
+  channel's members for anyone who may view it. Adding past the cap is `400`; adding an unknown
+  account `404`, a disabled or deleted one `403`; adding a participant again changes nothing.
+- After a participant is added or removed and the change has committed, the instance, as the
+  external sender (`02` § Roles), proposes an `Add` for every device of every participant that
+  holds an available KeyPackage and is not already in the DM's `text` group, and a `Remove` for
+  every live leaf of a user who is no longer a participant in its `text` and `call` groups. An
+  `Add` or `Remove` the instance already has outstanding is not proposed again. A device with no
+  available KeyPackage is not proposed; it is added by a later change once it has published one.
+- Opening a DM and every add and remove write an audit row (`dm.create`, `channel.member.add`,
+  `channel.member.remove`).
+
 ## Permissions
 
 A permission set is a 64-bit unsigned integer; `roles.allow`, `roles.deny` and a channel
@@ -374,6 +419,10 @@ be created at or moved to position 0. A user's permissions in a channel resolve 
    user's own overwrite, apply their `deny` and then their `allow`; community bits keep their
    value from step 2.
 5. `administrator` means every bit; without `view_channel`, no bit at all.
+
+A DM or group DM (§ DMs) has no community, no roles and no overwrites: each participant holds
+exactly `view_channel`, `send_messages`, `pin_messages`, `attach_files`, `add_reactions`,
+`read_history`, `connect`, `speak`, `video` and `screen_share` in it, and anyone else holds nothing.
 
 ## Rate limits
 

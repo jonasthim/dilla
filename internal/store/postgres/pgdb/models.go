@@ -28,6 +28,12 @@ type Bans struct {
 	Expires     sql.NullInt64
 }
 
+type ChannelMembers struct {
+	ChannelID id.ID
+	UserID    id.ID
+	Added     int64
+}
+
 type ChannelOverwrites struct {
 	ChannelID  id.ID
 	TargetKind int64

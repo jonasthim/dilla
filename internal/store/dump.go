@@ -68,6 +68,10 @@ var DumpTables = []string{
 	// 006c_bans.sql, appended by Plan 2 task 4. Its parents are communities and
 	// users; a restore that dropped it would let every banned user join again.
 	"bans",
+	// 006d_channel_members.sql, appended by Plan 2 task 6. Its parents are channels
+	// and users; a restore that dropped it would lose every DM's participant list,
+	// which is stored nowhere else.
+	"channel_members",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

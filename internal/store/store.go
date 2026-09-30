@@ -26,7 +26,8 @@ var (
 // part of Structure whose tables 00004_structure.sql ships), Plan 2 task 2 adds
 // Channels (the part 00005_channels.sql ships), Plan 2 task 3 adds Overwrites (the
 // part 00006_overwrites.sql ships), Plan 2 task 4 adds Bans (the part
-// 00007_bans.sql ships), and Plan 2's later tasks add the rest of
+// 00007_bans.sql ships), Plan 2 task 6 adds ChannelMembers (the part
+// 00008_channel_members.sql ships), and Plan 2's later tasks add the rest of
 // Structure, Readable, Blobs and OpsBackups.
 type Repository interface {
 	Tx(ctx context.Context, fn func(Repository) error) error
@@ -45,6 +46,8 @@ type Repository interface {
 	Channels    // Plan 2 task 2 (P2-D23) — 00005_channels.sql
 	Overwrites  // Plan 2 task 3 (P2-D23) — 00006_overwrites.sql
 	Bans        // Plan 2 task 4 (P2-D23) — 00007_bans.sql
+	// Plan 2 task 6 (P2-D23) — 00008_channel_members.sql
+	ChannelMembers
 }
 
 type Instance interface {
@@ -259,17 +262,34 @@ type Cursors interface {
 // plus the plan's additions; a later task that ships the rest of it either
 // embeds its own slice the same way or, once every method exists, swaps
 // Communities for Structure in Repository's embed list. Task 2's slice is
-// Channels, task 3's Overwrites, task 4's Bans.
+// Channels, task 3's Overwrites, task 4's Bans, task 6's ChannelMembers.
 type Structure interface {
 	Communities
 	Channels
 	Overwrites
 	Bans
-	PutChannelMember(ctx context.Context, channelID, userID id.ID, at int64) error
-	DeleteChannelMember(ctx context.Context, channelID, userID id.ID) error
-	ListChannelMembers(ctx context.Context, channelID id.ID) ([]id.ID, error)
+	ChannelMembers
 	PutVoiceSession(ctx context.Context, v VoiceSessionRow) error
 	EndVoiceSession(ctx context.Context, callID id.ID, at int64) error
+}
+
+// ChannelMembers is the part of Structure whose table is
+// 00008_channel_members.sql (Plan 2 task 6): §4.1's three channel-member methods
+// plus P2-D11's listing. For a DM or group DM the rows are the participant list;
+// for a community channel they are what the permission resolver derives.
+type ChannelMembers interface {
+	// PutChannelMember is idempotent: a second call for the same pair keeps the
+	// first row and its added time.
+	PutChannelMember(ctx context.Context, channelID, userID id.ID, at int64) error
+	// DeleteChannelMember answers ErrNotFound when the user was not a member.
+	DeleteChannelMember(ctx context.Context, channelID, userID id.ID) error
+	// ListChannelMembers is the channel's members ordered by user id, so the
+	// order is the same on both engines.
+	ListChannelMembers(ctx context.Context, channelID id.ID) ([]id.ID, error)
+	// ListChannelsForUser is P2-D11: GET /v1/dms. The live DMs and group DMs the
+	// user is a participant of, newest first, ties broken by channel id. A
+	// community channel is never listed, whatever channel_members says.
+	ListChannelsForUser(ctx context.Context, userID id.ID) ([]ChannelRow, error)
 }
 
 // Communities is the part of Structure whose tables are 00004_structure.sql:

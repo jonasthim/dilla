@@ -64,6 +64,11 @@ func newStructureFixture(t *testing.T) structureFixture {
 		t.Fatalf("DeleteChannel: %v", err)
 	}
 	f.dm = newRow(nil, api.ChannelDM, api.ModeE2EE, api.VisPrivate)
+	// The outsider of the communities is the DM's one participant here; the
+	// community member is not in it.
+	if err := e.Repo.PutChannelMember(ctx, f.dm, f.outsider, 1); err != nil {
+		t.Fatalf("PutChannelMember: %v", err)
+	}
 	f.otherText = newRow(&f.other, api.ChannelText, api.ModeE2EE, api.VisPrivate)
 	return f
 }
@@ -119,10 +124,14 @@ func TestStructureChannelsGatesRegistrationOnMembership(t *testing.T) {
 		{"a member's community call group whose target is no channel", f.member, binding(c, id.New(), 1), ds.ErrBindingTarget},
 		{"an outsider's community call group whose target is no channel", f.outsider, binding(c, id.New(), 1), ds.ErrBindingTarget},
 		{"a call group naming no live community", f.member, binding(new(id.New()), id.New(), 1), ds.ErrBindingTarget},
-		// DMs wait for task 6's channel_members.
-		{"a DM text group with no channel row", f.member, binding(nil, id.New(), 0), ds.ErrNotEligible},
-		{"a DM call group with no channel row", f.member, binding(nil, id.New(), 1), ds.ErrNotEligible},
-		{"a text group on a DM channel row", f.member, binding(nil, f.dm, 0), ds.ErrNotEligible},
+		// DMs (task 6): the participants of a live DM channel, and nobody else.
+		{"a DM text group with no channel row", f.member, binding(nil, id.New(), 0), ds.ErrBindingTarget},
+		{"a DM call group with no channel row", f.member, binding(nil, id.New(), 1), ds.ErrBindingTarget},
+		{"a non-participant's text group on a DM", f.member, binding(nil, f.dm, 0), ds.ErrNotEligible},
+		{"a non-participant's call group on a DM", f.member, binding(nil, f.dm, 1), ds.ErrNotEligible},
+		{"a participant's text group on a DM", f.outsider, binding(nil, f.dm, 0), nil},
+		{"a participant's call group on a DM", f.outsider, binding(nil, f.dm, 1), nil},
+		{"a community channel bound as a DM", f.member, binding(nil, f.text, 0), ds.ErrBindingTarget},
 		{"a DM channel row bound under a community", f.member, binding(c, f.dm, 0), ds.ErrBindingTarget},
 		// Not channel groups.
 		{"a pairing group", f.outsider, binding(nil, id.New(), 2), nil},
@@ -193,9 +202,17 @@ func TestRegisterThroughTheRealChannelSource(t *testing.T) {
 		wantCode   string
 	}{
 		{
-			// Card 14: before task 2 any enrolled device registered this group.
-			name:       "no channel row: a DM, refused until task 6's channel membership",
+			// Card 14: before task 2 any enrolled device registered this group. Since task 6 a
+			// group with no community must name a live DM.
+			name:       "no channel row: a DM-shaped group that names no DM",
 			seed:       func(*testing.T, *groupsAPI) {},
+			wantStatus: http.StatusBadRequest, wantCode: "E_BINDING_INVALID",
+		},
+		{
+			name: "the target is a DM the registering user is not in",
+			seed: func(t *testing.T, h *groupsAPI) {
+				seedDMAt(t, h, false)
+			},
 			wantStatus: http.StatusForbidden, wantCode: "E_FORBIDDEN",
 		},
 		{
@@ -233,6 +250,43 @@ func TestRegisterThroughTheRealChannelSource(t *testing.T) {
 				t.Fatalf("a refused registration left a group row: %v", err)
 			}
 		})
+	}
+}
+
+// A participant of the DM the fixture's binding names registers its text group through the real
+// channel source, the real delivery service and the real wasm core (task 6).
+func TestADMParticipantRegistersThroughTheRealChannelSource(t *testing.T) {
+	h := newGroupsAPIWith(t, func(repo store.Repository) ds.Channels {
+		return api.StructureChannels{Repo: repo}
+	})
+	seedDMAt(t, h, true)
+	h.mustCreate(t)
+	if _, err := h.deps.Repo.GetGroup(context.Background(), h.groupID); err != nil {
+		t.Fatalf("the registered group: %v", err)
+	}
+}
+
+// seedDMAt creates a DM channel whose id is the fixture's binding target, between a fresh user and,
+// when withSessionUser, the harness's session user (otherwise a second fresh user).
+func seedDMAt(t *testing.T, h *groupsAPI, withSessionUser bool) {
+	t.Helper()
+	ctx := context.Background()
+	if err := h.deps.Repo.CreateChannel(ctx, store.ChannelRow{
+		ID: h.groupID, Kind: api.ChannelDM, Mode: api.ModeE2EE, Visibility: api.VisPrivate,
+		SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: 1,
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	other, _, _ := seedAPIDevice(t, h.deps)
+	second := h.user
+	if !withSessionUser {
+		u, _, _ := seedAPIDevice(t, h.deps)
+		second = u.ID
+	}
+	for _, u := range []id.ID{other.ID, second} {
+		if err := h.deps.Repo.PutChannelMember(ctx, h.groupID, u, 1); err != nil {
+			t.Fatalf("PutChannelMember: %v", err)
+		}
 	}
 }
 

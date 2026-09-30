@@ -21,10 +21,13 @@ type StructureChannels struct{ Repo store.Repository }
 
 var _ ds.Channels = StructureChannels{}
 
-// Group kinds, protocol/01 "Group kinds".
+// Group kinds, protocol/01 "Group kinds". The two channel kinds are exported
+// because a binding names them (ExpectedBinding).
 const (
-	groupText        uint8 = 0
-	groupCall        uint8 = 1
+	GroupText        uint8 = 0
+	GroupCall        uint8 = 1
+	groupText              = GroupText
+	groupCall              = GroupCall
 	groupPairing     uint8 = 2
 	groupInteraction uint8 = 3
 )
@@ -58,9 +61,10 @@ func (c StructureChannels) Channel(ctx context.Context, targetID id.ID) (uint8, 
 //     target is not a live channel of it is refused: target_id is the channel id
 //     for both kinds (protocol/01 dilla_binding; R9 keeps a call's id in a
 //     companion column), and ResolverACL refuses the same group to a joiner.
-//   - text and call with no community: a DM or group DM. Their membership is
-//     channel_members, which task 6 creates; until then they are refused, which
-//     is the conservative answer, not a permanent one.
+//   - text and call with no community: a DM or group DM (task 6). The target
+//     must be a live DM channel (ds.ErrBindingTarget otherwise, a community
+//     channel included) and the user one of its participants, its
+//     channel_members (ds.ErrNotEligible otherwise).
 //   - pairing and interaction: not channel groups. Pairing is gated by the
 //     session scope rules of auth, and interaction groups have no structure row
 //     to check; both are admitted here.
@@ -84,21 +88,25 @@ func (c StructureChannels) MayRegister(ctx context.Context, userID id.ID, b ds.B
 		return err
 	}
 
-	if row.CommunityID == nil {
-		if b.CommunityID != nil {
-			return fmt.Errorf("%w: the target is a DM, which has no community", ds.ErrBindingTarget)
-		}
-		return fmt.Errorf("%w: DM membership arrives with channel_members (Plan 2 task 6)", ds.ErrNotEligible)
-	}
-	if b.CommunityID == nil || *b.CommunityID != *row.CommunityID {
+	switch {
+	case row.CommunityID == nil && b.CommunityID != nil:
+		return fmt.Errorf("%w: the target is a DM, which has no community", ds.ErrBindingTarget)
+	case row.CommunityID != nil && b.CommunityID == nil:
+		return fmt.Errorf("%w: a group with no community must name a DM", ds.ErrBindingTarget)
+	case row.CommunityID != nil && *b.CommunityID != *row.CommunityID:
 		return fmt.Errorf("%w: the target channel belongs to another community", ds.ErrBindingTarget)
 	}
+	// A DM or group DM carries both a text and a call group; a community
+	// channel carries the one its kind names. The schema ties a channel with no
+	// community to kinds 3 and 4.
 	switch {
-	case b.Kind == groupText && row.Kind != ChannelText:
+	case b.Kind == groupText && row.Kind != ChannelText && row.CommunityID != nil:
 		return fmt.Errorf("%w: a text group is bound to a text channel", ds.ErrBindingTarget)
-	case b.Kind == groupCall && row.Kind != ChannelVoice:
+	case b.Kind == groupCall && row.Kind != ChannelVoice && row.CommunityID != nil:
 		return fmt.Errorf("%w: a call group is bound to a voice channel", ds.ErrBindingTarget)
 	}
+	// The resolver answers a DM with its participants (channel_members) and a
+	// community channel with roles and overwrites.
 	bits, err := NewResolver(c.Repo).Resolve(ctx, userID, row)
 	if err != nil {
 		return err
@@ -119,10 +127,11 @@ func groupBits(kind uint8) Bits {
 }
 
 // mayRegisterWithoutChannel is MayRegister for a text or call group whose target
-// has no live channel row.
+// has no live channel row: with a community it names no channel of it, and
+// without one it names no DM (a DM's id is always a channel's, P2-D31).
 func mayRegisterWithoutChannel(b ds.Binding) error {
 	if b.CommunityID == nil {
-		return fmt.Errorf("%w: DM membership arrives with channel_members (Plan 2 task 6)", ds.ErrNotEligible)
+		return fmt.Errorf("%w: a group with no community must name a live DM", ds.ErrBindingTarget)
 	}
 	return fmt.Errorf("%w: a community channel group must name a live channel of that community", ds.ErrBindingTarget)
 }

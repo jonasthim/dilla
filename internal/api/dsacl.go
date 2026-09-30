@@ -27,9 +27,12 @@ import (
 //     channel is gone is refused exactly as a text group is. There is no
 //     community-wide fallback: it would drop the channel's overwrites and open
 //     a deleted private voice channel's group to every member.
-//   - everything else — a DM or group DM (no community; its participants are
-//     task 6's channel_members), a pairing group, an interaction group — keeps
-//     Plan 1's rule: eligible only where the user is already in the group.
+//   - text or call with no community, bound to a live DM or group DM: the DM's
+//     participants, task 6's channel_members, which the resolver answers with
+//     the DM bits (Resolver.resolveDM).
+//   - everything else — a pairing group, an interaction group, a DM-shaped
+//     group whose target is no channel — keeps Plan 1's rule: eligible only
+//     where the user is already in the group.
 //
 // An error means "cannot answer", which every caller in internal/ds treats as a
 // refusal.
@@ -51,26 +54,32 @@ func (a ResolverACL) Eligible(ctx context.Context, groupID, userID id.ID) (bool,
 	if err != nil {
 		return false, err
 	}
-	if g.CommunityID == nil || (g.Kind != groupText && g.Kind != groupCall) {
+	if g.Kind != groupText && g.Kind != groupCall {
 		return ds.DenyUnlessMember{Store: a.Repo}.Eligible(ctx, groupID, userID)
-	}
-	want := textGroupBits
-	if g.Kind == groupCall {
-		want = callGroupBits
 	}
 	ch, err := a.Repo.GetChannel(ctx, g.TargetID)
 	switch {
+	case errors.Is(err, store.ErrNotFound) && g.CommunityID == nil:
+		// A DM-shaped group whose target is no channel: StructureChannels no
+		// longer registers one, but a group registered before task 6 may still
+		// name such a target, and it keeps Plan 1's rule.
+		return ds.DenyUnlessMember{Store: a.Repo}.Eligible(ctx, groupID, userID)
 	case errors.Is(err, store.ErrNotFound):
 		return false, nil // a community channel group whose channel is gone
 	case err != nil:
 		return false, err
 	}
-	if ch.CommunityID == nil || *ch.CommunityID != *g.CommunityID {
+	switch {
+	case g.CommunityID == nil && ch.CommunityID != nil,
+		g.CommunityID != nil && (ch.CommunityID == nil || *ch.CommunityID != *g.CommunityID):
 		return false, nil
 	}
+	// A DM's participants hold its bits and nobody else does (Resolver.resolveDM),
+	// so a participant's devices can be added before any of them holds a leaf,
+	// and a removed participant's cannot.
 	bits, err := NewResolver(a.Repo).Resolve(ctx, userID, ch)
 	if err != nil {
 		return false, err
 	}
-	return bits.Has(want), nil
+	return bits.Has(groupBits(g.Kind)), nil
 }

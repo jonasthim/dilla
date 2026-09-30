@@ -75,9 +75,8 @@ func RemoveUserFromChannelGroups(ctx context.Context, repo store.Repository, dsv
 // sql.DB pool and not in SQLite's locking. Every caller commits its rows first
 // and calls this afterwards.
 //
-// channel_members (Plan 2 task 7's table) is not touched here: store.Repository
-// does not carry DeleteChannelMember until that table exists, and task 7's
-// eligibility materialiser owns it.
+// channel_members is not touched here: for a community channel it is derived
+// state, and task 7's eligibility materialiser owns it.
 func RemoveUserFromCommunityGroups(ctx context.Context, repo store.Repository, dsvc DS, communityID, userID id.ID) error {
 	if dsvc == nil {
 		return errNoDS

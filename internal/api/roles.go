@@ -656,8 +656,9 @@ func (h *Roles) overwriteTarget(r *http.Request) (overwritePath, error) {
 	if o.ch, err = h.repo.GetChannel(r.Context(), chID); err != nil {
 		return overwritePath{}, notFound(err)
 	}
-	// Require answers 404 to a caller who cannot view the channel, which
-	// includes a non-member and every DM until task 6.
+	// Answer 404 to a caller who cannot view the channel, which includes a
+	// non-member and anyone outside a DM. A DM's participants view it but hold
+	// no manage_roles (dmBits), so a DM never reaches the dereference below.
 	if o.have, err = h.res.Resolve(r.Context(), s.UserID, o.ch); err != nil {
 		return overwritePath{}, err
 	}
@@ -667,7 +668,7 @@ func (h *Roles) overwriteTarget(r *http.Request) (overwritePath, error) {
 	if !o.have.Has(PermManageRoles) {
 		return overwritePath{}, server.Errorf(server.CodeForbidden, "missing permission")
 	}
-	cid := *o.ch.CommunityID // Resolve answers 0 for a channel with no community
+	cid := *o.ch.CommunityID // only a community channel grants manage_roles
 	// The rank rule of the role routes holds here too: an overwrite may target
 	// only a role strictly below the actor's highest, or a member whose highest
 	// role is, so a staffer cannot mute a senior moderator in one channel.

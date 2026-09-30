@@ -2206,4 +2206,45 @@ func (r *Repo) DeleteBan(ctx context.Context, communityID, userID id.ID) error {
 	return nil
 }
 
+// PutChannelMember keeps the first row of a pair: a second call is a no-op.
+func (r *Repo) PutChannelMember(ctx context.Context, channelID, userID id.ID, at int64) error {
+	return wrap(r.w.PutChannelMember(ctx, pgdb.PutChannelMemberParams{
+		ChannelID: channelID, UserID: userID, Added: at,
+	}))
+}
+
+func (r *Repo) DeleteChannelMember(ctx context.Context, channelID, userID id.ID) error {
+	n, err := r.w.DeleteChannelMember(ctx, pgdb.DeleteChannelMemberParams{
+		ChannelID: channelID, UserID: userID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) ListChannelMembers(ctx context.Context, channelID id.ID) ([]id.ID, error) {
+	ids, err := r.r.ListChannelMembers(ctx, pgdb.ListChannelMembersParams{ChannelID: channelID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return ids, nil
+}
+
+// ListChannelsForUser is P2-D11: the live DMs and group DMs of userID.
+func (r *Repo) ListChannelsForUser(ctx context.Context, userID id.ID) ([]store.ChannelRow, error) {
+	rows, err := r.r.ListChannelsForUser(ctx, pgdb.ListChannelsForUserParams{UserID: userID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ChannelRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, channelRow(row))
+	}
+	return out, nil
+}
+
 var _ store.Repository = (*Repo)(nil)

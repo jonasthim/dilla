@@ -332,9 +332,9 @@ type groupsAPI struct {
 // rest of internal/api's tests use, over a real delivery service and the real wasm core.
 //
 // Its channel source admits the fixture's registration: the one committed fixture's binding names
-// no community (a DM-shaped text group), and the real source, api.StructureChannels, refuses DMs
-// until task 6 creates their membership. dschannels_test.go drives the real source through the
-// same harness with newGroupsAPIWith.
+// no community (a DM-shaped text group) and its target is no DM channel, which the real source,
+// api.StructureChannels, refuses since task 6. dschannels_test.go drives the real source through
+// the same harness with newGroupsAPIWith, with and without a DM channel at the target.
 func newGroupsAPI(t *testing.T) *groupsAPI {
 	t.Helper()
 	return newGroupsAPIWith(t, func(store.Repository) ds.Channels { return openChannels{} })

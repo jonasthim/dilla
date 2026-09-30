@@ -153,3 +153,26 @@ FROM bans WHERE community_id = ? ORDER BY created DESC, user_id;
 
 -- name: DeleteBan :execrows
 DELETE FROM bans WHERE community_id = ? AND user_id = ?;
+
+-- Channel members (Plan 2 task 6, 00008_channel_members.sql).
+
+-- name: PutChannelMember :exec
+INSERT INTO channel_members (channel_id, user_id, added)
+VALUES (?, ?, ?) ON CONFLICT (channel_id, user_id) DO NOTHING;
+
+-- name: DeleteChannelMember :execrows
+DELETE FROM channel_members WHERE channel_id = ? AND user_id = ?;
+
+-- name: ListChannelMembers :many
+SELECT user_id FROM channel_members WHERE channel_id = ? ORDER BY user_id;
+
+-- name: ListChannelsForUser :many
+-- P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
+-- participant of, newest first, ties broken by id.
+SELECT c.id, c.community_id, c.kind, c.mode, c.visibility, c.parent_id, c.name, c.topic,
+       c.position, c.settings_json, c.host_policy_version, c.slowmode_seconds, c.seq,
+       c.created, c.deleted_at
+FROM channels c
+JOIN channel_members m ON m.channel_id = c.id
+WHERE m.user_id = ? AND c.kind IN (3, 4) AND c.deleted_at IS NULL
+ORDER BY c.created DESC, c.id;

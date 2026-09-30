@@ -242,9 +242,10 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // added 004_mls.sql's twelve; task 23 added 005_messages.sql's one; Plan 2 task 1
 // added 006_structure.sql's four (communities, members, roles, member_roles); Plan 2
 // task 2 added 006a_channels.sql's channels; Plan 2 task 3 added 006b_overwrites.sql's
-// channel_overwrites; Plan 2 task 4 added 006c_bans.sql's bans.
+// channel_overwrites; Plan 2 task 4 added 006c_bans.sql's bans; Plan 2 task 6 added
+// 006d_channel_members.sql's channel_members.
 var wantTables = []string{
-	"audit_log", "bans", "channel_overwrites", "channels", "communities", "device_cursors", "device_lists", "devices", "fork_reports",
+	"audit_log", "bans", "channel_members", "channel_overwrites", "channels", "communities", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invites", "key_packages", "login_attempts",
 	"member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",

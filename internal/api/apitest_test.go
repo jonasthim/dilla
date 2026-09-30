@@ -232,3 +232,47 @@ func ownerOf(t *testing.T, e *env, cid id.ID) id.ID {
 	}
 	return row.Owner
 }
+
+// seedDevices gives user n more devices and returns their ids, in creation
+// order. They carry no KeyPackage; seedKeyPackage publishes one.
+func seedDevices(t *testing.T, e *env, user id.ID, n int) []id.ID {
+	t.Helper()
+	now := e.Clk.Now().Unix()
+	out := make([]id.ID, 0, n)
+	for range n {
+		did := id.New()
+		if err := e.Repo.CreateDevice(t.Context(), newAPITestDevice(did, user, now)); err != nil {
+			t.Fatalf("CreateDevice: %v", err)
+		}
+		out = append(out, did)
+	}
+	return out
+}
+
+// seedKeyPackage publishes one ordinary (not last-resort) KeyPackage row for
+// device, valid for a day. It is a row, not a KeyPackage: the code under test
+// only counts what is available, and the recording double stands in for the
+// delivery service that would take and validate it.
+func seedKeyPackage(t *testing.T, e *env, device id.ID) {
+	t.Helper()
+	now := e.Clk.Now().Unix()
+	ref := id.New()
+	if err := e.Repo.PutKeyPackages(t.Context(), device, []store.KeyPackageRow{{
+		DeviceID: device, KPRef: ref[:], Blob: []byte{1}, Expires: now + 86_400, Created: now,
+	}}); err != nil {
+		t.Fatalf("PutKeyPackages: %v", err)
+	}
+}
+
+// userOf is the user a bearer token NewUser minted authenticates as.
+func userOf(t *testing.T, e *env, tok string) id.ID {
+	t.Helper()
+	s, ok := e.sess[tok]
+	if !ok {
+		t.Fatalf("no session for token %q", tok)
+	}
+	return s.UserID
+}
+
+// ptr returns a pointer to a copy of v.
+func ptr[T any](v T) *T { return &v }

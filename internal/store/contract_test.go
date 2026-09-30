@@ -123,6 +123,13 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// Task 4 fix round 1, reached through the embedded Communities: the
 			// community row lock that serialises a join's ban check with a ban.
 			"LockCommunity",
+			// §4.1 plus P2-D11's listing (task 6), reached through the embedded
+			// ChannelMembers: GET /v1/dms.
+			"ListChannelsForUser",
+		}},
+		// ChannelMembers is the slice of Structure Plan 2 task 6's table supports.
+		{"ChannelMembers", reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(), []string{
+			"DeleteChannelMember", "ListChannelMembers", "ListChannelsForUser", "PutChannelMember",
 		}},
 		// Bans is the slice of Structure Plan 2 task 4's table supports.
 		{"Bans", reflect.TypeOf((*store.Bans)(nil)).Elem(), []string{
@@ -225,6 +232,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.Overwrites)(nil)).Elem(),
 		// Plan 2 task 4: Bans joins with 00007_bans.sql.
 		reflect.TypeOf((*store.Bans)(nil)).Elem(),
+		// Plan 2 task 6: ChannelMembers joins with 00008_channel_members.sql.
+		reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

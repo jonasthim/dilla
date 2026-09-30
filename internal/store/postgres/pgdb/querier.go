@@ -38,6 +38,7 @@ type Querier interface {
 	DeleteBan(ctx context.Context, arg DeleteBanParams) (int64, error)
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
 	DeleteChannel(ctx context.Context, arg DeleteChannelParams) (int64, error)
+	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)
 	DeleteChannelsOfCommunity(ctx context.Context, arg DeleteChannelsOfCommunityParams) (int64, error)
 	DeleteMember(ctx context.Context, arg DeleteMemberParams) (int64, error)
 	DeleteMemberRole(ctx context.Context, arg DeleteMemberRoleParams) (int64, error)
@@ -94,7 +95,11 @@ type Querier interface {
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
 	ListBans(ctx context.Context, arg ListBansParams) ([]Bans, error)
+	ListChannelMembers(ctx context.Context, arg ListChannelMembersParams) ([]id.ID, error)
 	ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error)
+	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
+	// participant of, newest first, ties broken by id.
+	ListChannelsForUser(ctx context.Context, arg ListChannelsForUserParams) ([]Channels, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
 	// The retention walk, and deliberately NOT `ListOpenGroups`: invariant 10 caps application
 	// ciphertext at thirty days for every group, and a group invariant 11 closed is still ciphertext
@@ -163,6 +168,8 @@ type Querier interface {
 	// Bans (Plan 2 task 4, 00007_bans.sql).
 	PutBan(ctx context.Context, arg PutBanParams) error
 	PutCeremony(ctx context.Context, arg PutCeremonyParams) error
+	// Channel members (Plan 2 task 6, 00008_channel_members.sql).
+	PutChannelMember(ctx context.Context, arg PutChannelMemberParams) error
 	PutCursor(ctx context.Context, arg PutCursorParams) error
 	PutDeviceList(ctx context.Context, arg PutDeviceListParams) error
 	PutEpochTree(ctx context.Context, arg PutEpochTreeParams) error

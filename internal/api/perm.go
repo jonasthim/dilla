@@ -233,14 +233,12 @@ func NewResolver(repo store.Repository) *Resolver { return &Resolver{repo: repo}
 // Resolve answers for one channel. A user who is not a member of the channel's
 // community holds nothing, and so does anyone once the community is deleted.
 //
-// A DM or group DM has no community and no roles; its participants are
-// channel_members, which Plan 2 task 6 creates. Until then nobody holds anything
-// in one, which is the conservative answer and matches Channels.visible, not a
-// permanent one: task 6 answers a participant here with the fixed DM set (view,
-// send, attach, react, read history, pin, connect, speak, video, screen share).
+// A DM or group DM has no community and no roles; its participants are its
+// channel_members (Plan 2 task 6), and each holds the fixed DM set, dmBits.
+// Anyone else holds nothing in it, so Require answers them 404.
 func (r *Resolver) Resolve(ctx context.Context, userID id.ID, ch store.ChannelRow) (Bits, error) {
 	if ch.CommunityID == nil {
-		return 0, nil
+		return r.resolveDM(ctx, userID, ch)
 	}
 	if _, err := r.repo.GetMember(ctx, *ch.CommunityID, userID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -259,6 +257,28 @@ func (r *Resolver) Resolve(ctx context.Context, userID id.ID, ch store.ChannelRo
 		return 0, err
 	}
 	return s.ResolveChannel(userID), nil
+}
+
+// dmBits is what every participant of a DM or group DM holds: a DM has no roles
+// and no moderator, so it carries the conversation and call bits and none that
+// manages anything.
+const dmBits = PermViewChannel | PermSendMessages | PermAttachFiles | PermAddReactions |
+	PermReadHistory | PermPinMessages | PermConnect | PermSpeak | PermVideo | PermScreenShare
+
+// resolveDM is Resolve for a channel with no community: dmBits for a
+// participant of a DM or group DM, nothing for anyone else or any other kind.
+func (r *Resolver) resolveDM(ctx context.Context, userID id.ID, ch store.ChannelRow) (Bits, error) {
+	if ch.DeletedAt != nil || (ch.Kind != ChannelDM && ch.Kind != ChannelGroupDM) {
+		return 0, nil
+	}
+	members, err := r.repo.ListChannelMembers(ctx, ch.ID)
+	if err != nil {
+		return 0, err
+	}
+	if !slices.Contains(members, userID) {
+		return 0, nil
+	}
+	return dmBits, nil
 }
 
 // Require is the one-line form handlers use: nil when userID holds every bit of

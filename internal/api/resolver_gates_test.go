@@ -271,7 +271,8 @@ func TestResolverACLAnswersInvariantFour(t *testing.T) {
 	if eligible(id.New(), member) {
 		t.Fatal("an unknown group admitted someone")
 	}
-	// A DM group keeps Plan 1's rule until task 6: only a user already in it.
+	// A DM-shaped group whose target is no DM channel keeps Plan 1's rule: only a
+	// user already in it. (A DM channel's participants: TestDMParticipantsMayRegisterAndBeAdded.)
 	if eligible(dmGroup, member) {
 		t.Fatal("a DM group admitted a user who is not in it")
 	}

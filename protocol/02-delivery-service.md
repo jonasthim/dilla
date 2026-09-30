@@ -245,8 +245,8 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    refused (`target_id` is the channel id for both kinds, `01-groups.md` § dilla_binding), and so
    is every Add to, and join of, such a group once its channel is deleted: permissions held
    community-wide never stand in for the channel's overwrites. A `text` or `call` group with no
-   `community_id` (a DM or group DM) needs the user to be a member of the DM; until the instance
-   records DM membership it refuses every such group. A binding that names no such target is
+   `community_id` (a DM or group DM) must name a live DM or group DM as its `target_id` and needs
+   the user to be one of its participants (`09` § DMs). A binding that names no such target is
    `400 E_BINDING_INVALID`; a user who may not register it is `403 E_FORBIDDEN`. `pairing` and
    `interaction` groups are not channel groups and are not gated here.
 2. **Tree service.** The DS keeps a `PublicGroup` per group. Committers upload a GroupInfo
@@ -259,7 +259,8 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    contains no `Update` from the committer; every member-originated `Remove` targets the
    committer's own user; every `Add` carries a credential whose user is eligible under the channel's
    ACL (for a community group, the same permission invariant 1 asks of a registrant, resolved
-   through `09` § Permissions; for any other group, being in it already) and whose DSK is in the
+   through `09` § Permissions; for a DM or group DM, being one of its participants; for any other
+   group, being in it already) and whose DSK is in the
    newest signed device list the DS holds; the `PublicGroup` validates
    it structurally; and the uploaded GroupInfo's epoch is `n + 1`. Otherwise `422 E_COMMIT_INVALID`.
 5. **Freeze.** While any DS proposal is outstanding for a group, application messages get
