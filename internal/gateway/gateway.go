@@ -390,6 +390,12 @@ func (g *Gateway) suspend(c *conn) {
 	if w != nil {
 		w.stop()
 	}
+	// WARN, not INFO: a suspended connection stops receiving fan-out, so when a device later
+	// reports "nothing arrived" this line is the one that says the instance stopped sending.
+	if g.opts.Log != nil {
+		g.opts.Log.Warn("gateway: connection suspended", "device", c.deviceID.String()[:8],
+			"resumable", resumable)
+	}
 }
 
 // sweepSuspended drops suspended connections past the resume window. sweepLiveness calls it on

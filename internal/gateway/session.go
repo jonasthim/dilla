@@ -609,6 +609,10 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 	for {
 		typ, b, err := s.read(ctx)
 		if err != nil {
+			if g.opts.Log != nil {
+				g.opts.Log.Warn("gateway: read loop ended", "device", c.deviceID.String()[:8],
+					"err", err.Error())
+			}
 			return
 		}
 		// The injected clock, not the wall clock x/time/rate would read by itself.

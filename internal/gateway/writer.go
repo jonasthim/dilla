@@ -144,7 +144,7 @@ func (w *writer) closeAs(code CloseCode, reason string, op Op) {
 	w.mu.Lock()
 	bytes := w.queuedBytes
 	w.mu.Unlock()
-	w.logger().Info("gateway: connection closed by the writer",
+	w.logger().Warn("gateway: connection closed by the writer",
 		slog.Int("code", int(code)), slog.String("reason", reason), slog.Int("op", int(op)),
 		slog.Int("queued_frames", len(w.queue)), slog.Int("queued_bytes", bytes))
 	w.sink.close(code, reason)
