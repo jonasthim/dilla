@@ -38,6 +38,8 @@ type recordingDS struct {
 	}
 	Adds   []struct{ Group, Device id.ID }
 	Closed []id.ID
+	// Voided is every group VoidIneligibleAdds was asked about, in call order (C2).
+	Voided []id.ID
 	// Commits counts the commit requests ProposeAddBatch makes: one per non-empty batch of at
 	// most 256 Adds, as ds.PlanBatches splits it (task 7).
 	Commits int
@@ -54,7 +56,20 @@ type recordingDS struct {
 func (d *recordingDS) Reset() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.Removes, d.Adds, d.Closed, d.Commits = nil, nil, nil, 0
+	d.Removes, d.Adds, d.Closed, d.Voided, d.Commits = nil, nil, nil, nil, 0
+}
+
+func (d *recordingDS) VoidIneligibleAdds(_ context.Context, g id.ID) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.Voided = append(d.Voided, g)
+	return nil
+}
+
+func (d *recordingDS) voided() []id.ID {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.Voided)
 }
 
 var _ api.DS = (*recordingDS)(nil)
@@ -474,6 +489,43 @@ func TestKickAndLeaveIssueDSRemoves(t *testing.T) {
 	got = e.DS.removes()
 	if len(got) != 4 || got[3] != (rm{tg, 5}) {
 		t.Fatalf("Removes after the leave = %+v, want one more for leaf 5", got)
+	}
+}
+
+// C2 (fix wave): a user removed while one of their devices' Adds is still outstanding would leave
+// the group uncommittable (clause 1 demands the Add, the ACL clause refuses it), so every group a
+// removal visits is asked to void its ineligible Adds: the kick path, and SyncGroupMembers, which
+// is also the group-DM removal path, before it issues its Removes.
+func TestRemovalsVoidOutstandingAddsOfIneligibleUsers(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	text, _, _ := newChannel(t, e, cid, ownerTok, 0, 0, 0, "secret")
+	voice, _, status := newChannel(t, e, cid, ownerTok, 1, 0, 0, "call")
+	if status != http.StatusCreated {
+		t.Fatalf("voice channel = %d", status)
+	}
+	kicked, kickedTok := e.NewUser("kicked")
+	joinCommunity(t, e, cid, kickedTok)
+	tg := seedTextGroup(t, e, text, cid)
+	cg := seedGroupOfKind(t, e, voice, cid, 1)
+
+	if status, _ := e.Do(http.MethodDelete, "/v1/communities/"+cid.String()+"/members/"+kicked.String(), ownerTok, nil); status != http.StatusNoContent {
+		t.Fatal("kick failed")
+	}
+	got := e.DS.voided()
+	if !slices.Contains(got, tg) || !slices.Contains(got, cg) {
+		t.Fatalf("VoidIneligibleAdds after the kick visited %v, want both %x and %x", got, tg, cg)
+	}
+
+	e.DS.Reset()
+	row, err := e.Repo.GetChannel(t.Context(), text)
+	if err != nil {
+		t.Fatalf("GetChannel: %v", err)
+	}
+	if err := api.SyncGroupMembers(t.Context(), e.Repo, e.DS, row, e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("SyncGroupMembers: %v", err)
+	}
+	if got := e.DS.voided(); !slices.Contains(got, tg) {
+		t.Fatalf("SyncGroupMembers asked VoidIneligibleAdds about %v, want %x", got, tg)
 	}
 }
 

@@ -16,6 +16,12 @@ type DS interface {
 	ProposeRemove(ctx context.Context, groupID id.ID, leaf uint32, actionID id.ID) error
 	ProposeAddBatch(ctx context.Context, groupID id.ID, devices []id.ID) error
 	Close(ctx context.Context, groupID id.ID) error
+	// VoidIneligibleAdds voids the group's outstanding instance Adds whose device or user is no
+	// longer eligible. Every removal path calls it for each group it visits: an Add for a user
+	// who has just lost access is one no member commit can satisfy (invariant 4's clause 1 and
+	// its ACL clause pull in opposite directions), so without the void the group stays frozen
+	// until the Add's TTL.
+	VoidIneligibleAdds(ctx context.Context, groupID id.ID) error
 }
 
 // errNoDS is what a membership change answers when the handler was built
@@ -46,6 +52,10 @@ func RemoveUserFromChannelGroups(ctx context.Context, repo store.Repository, dsv
 			return err
 		}
 		for _, g := range groups {
+			// The user may hold an outstanding Add here rather than (or as well as) a leaf.
+			if err := dsvc.VoidIneligibleAdds(ctx, g.GroupID); err != nil {
+				errs = append(errs, err)
+			}
 			members, err := repo.ListMembers(ctx, g.GroupID)
 			if err != nil {
 				errs = append(errs, err)

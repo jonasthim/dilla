@@ -335,6 +335,9 @@ func SyncGroupMembers(ctx context.Context, repo store.Repository, dsvc DS, ch st
 // syncGroup is SyncGroupMembers for one group; adds is false for a call group.
 func syncGroup(ctx context.Context, repo store.Repository, dsvc DS, g store.GroupRow,
 	eligible []id.ID, now int64, adds bool) error {
+	// First the Adds no commit could carry any more (a participant removed, or a role revoked,
+	// while their Add was outstanding), so the Removes below land in a group that can commit.
+	voidErr := dsvc.VoidIneligibleAdds(ctx, g.GroupID)
 	leaves, err := repo.ListMembers(ctx, g.GroupID)
 	if err != nil {
 		return err
@@ -362,6 +365,9 @@ func syncGroup(ctx context.Context, repo store.Repository, dsvc DS, g store.Grou
 	}
 
 	var errs []error
+	if voidErr != nil {
+		errs = append(errs, voidErr)
+	}
 	live := make(map[id.ID]bool, len(leaves))
 	for _, m := range leaves {
 		if m.RemovedEpoch != nil {

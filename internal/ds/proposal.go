@@ -420,6 +420,81 @@ func (d *DS) Void(ctx context.Context, groupID id.ID, ref []byte) error {
 	return nil
 }
 
+// VoidIneligibleAdds voids every outstanding instance Add at the group's current epoch whose
+// device is gone, revoked or quarantined, or whose user the channel ACL no longer admits.
+//
+// Such an Add is a deadlock, not a delay: clause 1 of invariant 4 refuses every member commit that
+// leaves it out, and checkAddedMember refuses every member commit that includes it (the add_acl
+// clause), so no commit can land and the group answers 425 until the Add's TTL voids it (24 h for
+// a text group), longer when a re-issue restarts the clock. A kick, a ban, a leave, a role revoked
+// mid-storm or a group-DM participant removed while their Add is outstanding all reach it. A void
+// proposal MAY be omitted, so voiding it is what lets the next member commit through.
+//
+// The api layer calls it for every group a user is being removed from; commitLocked also runs it
+// before invariant 4's clauses, so a change the api layer did not see is caught at the next commit.
+func (d *DS) VoidIneligibleAdds(ctx context.Context, groupID id.ID) error {
+	unlock := d.lock(groupID)
+	defer unlock()
+	_, err := d.voidIneligibleAddsLocked(ctx, groupID)
+	return err
+}
+
+// voidIneligibleAddsLocked is VoidIneligibleAdds with the group lock already held. It answers how
+// many Adds it voided. An eligibility question it cannot answer stops it with the error: an Add is
+// voided only on a definite "no".
+func (d *DS) voidIneligibleAddsLocked(ctx context.Context, groupID id.ID) (int, error) {
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, errNotFound("group")
+	}
+	if err != nil {
+		return 0, err
+	}
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
+	if err != nil {
+		return 0, err
+	}
+	voided := 0
+	for _, r := range rows {
+		if r.Origin != 0 || r.VoidAt != nil || mlswasi.ProposalKind(r.Kind) != mlswasi.ProposalAdd || r.TargetDevice == nil {
+			continue
+		}
+		ok, err := d.addStillEligible(ctx, groupID, *r.TargetDevice)
+		if err != nil {
+			return voided, err
+		}
+		if ok {
+			continue
+		}
+		if err := d.opts.Store.VoidProposal(ctx, groupID, r.Ref, d.now()); err != nil {
+			return voided, err
+		}
+		if d.opts.Metrics != nil {
+			d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(r.Kind)).Dec()
+		}
+		d.log().Info("an outstanding Add was voided: its device or user is no longer eligible",
+			"group", groupID.String()[:8], "device", r.TargetDevice.String()[:8])
+		voided++
+	}
+	return voided, nil
+}
+
+// addStillEligible is the part of invariant 4's Add clause that can change after the Add was
+// proposed: the device must still be live and its user still admitted by the channel ACL.
+func (d *DS) addStillEligible(ctx context.Context, groupID, deviceID id.ID) (bool, error) {
+	dev, err := d.opts.Store.GetDevice(ctx, deviceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if dev.RevokedAt != nil || dev.QuarantinedAt != nil {
+		return false, nil
+	}
+	return d.opts.ACL.Eligible(ctx, groupID, dev.UserID)
+}
+
 // kindOfProposal reads one row's kind, for the gauge that has to go back down again.
 //
 // It looks at the GROUP'S CURRENT EPOCH, which is where every live proposal is: a re-issue moves a
@@ -489,6 +564,16 @@ func (d *DS) reissue(ctx context.Context, groupID id.ID, old store.ProposalRow) 
 	case mlswasi.ProposalAdd:
 		if old.TargetDevice == nil {
 			return nil
+		}
+		// An Add whose device or user is no longer eligible is dropped, never re-proposed: a
+		// fresh copy would be exactly the Add no commit can satisfy (VoidIneligibleAdds), with a
+		// fresh TTL.
+		ok, err := d.addStillEligible(ctx, groupID, *old.TargetDevice)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return d.opts.Store.DeleteProposals(ctx, groupID, [][]byte{old.Ref})
 		}
 		return d.reissueVia(groupID, old.Ref, func() error {
 			return d.proposeAddLocked(ctx, groupID, *old.TargetDevice, old.ActionID)

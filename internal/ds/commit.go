@@ -140,6 +140,15 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 		return CommitResult{}, err
 	}
 
+	// (1a) an outstanding instance Add whose device or user has become ineligible is voided before
+	// clause 1 is applied, so a commit that leaves it out can land (VoidIneligibleAdds says why no
+	// commit could otherwise). A question the ACL cannot answer voids nothing and is logged: the
+	// clauses below then decide exactly as they would have.
+	if _, verr := d.voidIneligibleAddsLocked(ctx, groupID); verr != nil {
+		d.log().Warn("checking the outstanding Adds' eligibility before a commit failed",
+			"group", groupID.String()[:8], "err", verr)
+	}
+
 	// (2a) invariant 2: the delivery service serves the ratchet tree from its own PublicGroup, so
 	// a committer never uploads one. Accepting-and-ignoring the field would leave the one route a
 	// client could smuggle a tree through unguarded and untested.

@@ -303,7 +303,12 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    include `0xF001`, not consumed) and a Remove target (leaf still present). A DS proposal older
    than its TTL — 30 seconds in `call` groups, 24 hours in `text` groups — is marked **void**; a
    Commit MAY omit void proposals. The underlying action is retried with a fresh KeyPackage, or
-   dropped if the target leaf is already gone. When every instance proposal of a group has gone
+   dropped if the target leaf is already gone. Before proposing an Add the DS also checks invariant
+   4's device-list clause (the device's DSK is in its user's newest signed device list) and leaves
+   an unlisted device unproposed, its KeyPackage unspent. An outstanding DS Add whose device is
+   revoked or quarantined, or whose user is no longer eligible under the channel ACL, is marked void
+   at once — no Commit could carry it, and none could omit it while it was non-void — and it is
+   dropped rather than re-issued. When every instance proposal of a group has gone
    void, the freeze lifts even if no member device is online. A device is **online** while it holds
    a gateway connection in state `ready` whose last liveness mark — `ready`, `resumed` or a
    `heartbeat` frame — is newer than the instance's `session_idle_close` window (default 90 s, with

@@ -56,6 +56,14 @@ func (a *fakeACL) allow(userID id.ID) {
 	a.eligible[userID] = true
 }
 
+// revoke undoes allow: the user is back to DenyUnlessMember's answer (a kick, a ban, a role or
+// overwrite taking view_channel away).
+func (a *fakeACL) revoke(userID id.ID) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.eligible, userID)
+}
+
 // A device the channel ACL admits reads what an external join needs: the GroupInfo and the tree
 // the instance serves (invariant 2). Without them no eligible device can ever join a text group.
 func TestAnEligibleNonMemberReadsTheGroupInfoAndTheTree(t *testing.T) {

@@ -706,6 +706,123 @@ func TestReissueForAnUnknownActionIsNotFound(t *testing.T) {
 	}
 }
 
+// ------------------------------------------ C2: an Add whose user became ineligible
+
+// putAddFor stores one outstanding instance Add row at the fixture epoch targeting device. The
+// eligibility sweep reads SQL rows only, and the committed fixture's one KeyPackage can back just
+// one real Add per group (a second would carry the same proposal ref).
+func (h *dsHarness) putAddFor(t *testing.T, groupID, device id.ID) []byte {
+	t.Helper()
+	ref := id.New()
+	if err := h.repo.PutProposal(context.Background(), store.ProposalRow{
+		GroupID: groupID, Ref: ref[:], Epoch: 6, Kind: 1, Origin: 0, TargetDevice: &device,
+		ActionID: id.New(), IssuedAt: h.clk.Now().Unix(), TTL: 86400,
+	}); err != nil {
+		t.Fatalf("PutProposal: %v", err)
+	}
+	return ref[:]
+}
+
+// voidAtOf reads one proposal's void_at at the fixture epoch; found is false when the row is gone.
+func (h *dsHarness) voidAtOf(t *testing.T, groupID id.ID, ref []byte) (voidAt *int64, found bool) {
+	t.Helper()
+	rows, err := h.repo.ListProposals(context.Background(), groupID, 6, true)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	for _, r := range rows {
+		if bytes.Equal(r.Ref, ref) {
+			return r.VoidAt, true
+		}
+	}
+	return nil, false
+}
+
+// A kick while Bob's Add is outstanding: clause 1 refuses every member commit that leaves the Add
+// out and checkAddedMember refuses every commit that includes it, so without a void the group is
+// frozen until the 24-hour TTL. VoidIneligibleAdds voids exactly the Adds whose user the ACL no
+// longer admits, or whose device is gone, and leaves an eligible user's Add outstanding.
+func TestVoidIneligibleAddsVoidsOnlyTheAddsNoCommitCouldCarry(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	bob := h.eligibleDeviceWithKeyPackage(t)
+	carol := h.eligibleDeviceWithKeyPackage(t)
+	bobAdd := h.putAddFor(t, reg.GroupID, bob)
+	carolAdd := h.putAddFor(t, reg.GroupID, carol)
+	goneAdd := h.putAddFor(t, reg.GroupID, id.New()) // a device the instance no longer knows
+
+	bobRow, err := h.repo.GetDevice(ctx, bob)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	h.acl.revoke(bobRow.UserID) // the kick
+	if err := h.ds.VoidIneligibleAdds(ctx, reg.GroupID); err != nil {
+		t.Fatalf("VoidIneligibleAdds: %v", err)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, bobAdd); !ok || v == nil {
+		t.Fatalf("the kicked user's Add: void_at %v (found %v), want it voided", v, ok)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, goneAdd); !ok || v == nil {
+		t.Fatalf("the unknown device's Add: void_at %v (found %v), want it voided", v, ok)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, carolAdd); !ok || v != nil {
+		t.Fatalf("the eligible user's Add: void_at %v (found %v), want it outstanding", v, ok)
+	}
+}
+
+// The commit path runs the same void before invariant 4's clauses, so a change the api layer never
+// reported (a role revoked for a user in the storm's in-flight slice) is caught by the next commit
+// attempt. The commit here is refused structurally; the Add is void all the same.
+func TestACommitAttemptVoidsAnOutstandingAddWhoseUserBecameIneligible(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+	bob := h.eligibleDeviceWithKeyPackage(t)
+	bobAdd := h.putAddFor(t, reg.GroupID, bob)
+	bobRow, err := h.repo.GetDevice(ctx, bob)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	h.acl.revoke(bobRow.UserID)
+
+	if _, err := h.ds.Commit(ctx, session, reg.GroupID, ds.CommitRequest{
+		Epoch: 6, Commit: []byte{0x00, 0x01}, GroupInfo: dsFixture(t).groupInfo,
+	}); err == nil {
+		t.Fatal("a two-byte commit was accepted")
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, bobAdd); !ok || v == nil {
+		t.Fatalf("after a commit attempt the ineligible Add has void_at %v (found %v), want it voided", v, ok)
+	}
+}
+
+// The re-issue drops an Add whose user is no longer eligible instead of re-proposing it with a
+// fresh TTL, which would restart the freeze on a proposal no commit can satisfy.
+func TestAReissuedAddIsDroppedWhenItsUserIsNoLongerEligible(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	bob := h.eligibleDeviceWithKeyPackage(t)
+	action := id.New()
+	if err := h.ds.ProposeAdd(ctx, reg.GroupID, bob, action); err != nil {
+		t.Fatalf("ProposeAdd: %v", err)
+	}
+	// A second KeyPackage, so a re-issue would have one to spend.
+	h.seedKeyPackages(t, bob, 1, 80*24*time.Hour)
+	bobRow, err := h.repo.GetDevice(ctx, bob)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	h.acl.revoke(bobRow.UserID)
+
+	if err := h.ds.ReissueFor(ctx, reg.GroupID, action); err != nil {
+		t.Fatalf("ReissueFor: %v", err)
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, true); len(rows) != 0 {
+		t.Fatalf("%d proposal rows after re-issuing an ineligible Add, want 0: %+v", len(rows), rows)
+	}
+}
+
 // ------------------------------------------------------ the gaps, named in code
 
 // Invariant 5's nobody-online exception ends in a re-issue FOR THE NEW EPOCH, which needs an
