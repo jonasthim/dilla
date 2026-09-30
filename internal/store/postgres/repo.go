@@ -952,6 +952,20 @@ func (r *Repo) GetGroup(ctx context.Context, groupID id.ID) (store.GroupRow, err
 	return mlsGroupRow(row), nil
 }
 
+// GroupsForTarget is P2-D3 (Plan 2 task 4): the open groups of one kind bound
+// to one target, oldest first.
+func (r *Repo) GroupsForTarget(ctx context.Context, targetID id.ID, kind uint8) ([]store.GroupRow, error) {
+	rows, err := r.r.GroupsForTarget(ctx, pgdb.GroupsForTargetParams{TargetID: targetID, Kind: int64(kind)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.GroupRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, mlsGroupRow(row))
+	}
+	return out, nil
+}
+
 func (r *Repo) ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]store.GroupRow, error) {
 	rows, err := r.r.ListOpenGroups(ctx, pgdb.ListOpenGroupsParams{GroupID: after, MaxRows: int64(limit)})
 	if err != nil {
@@ -2114,6 +2128,64 @@ func (r *Repo) DeleteOverwrite(ctx context.Context, channelID id.ID, targetKind 
 	n, err := r.w.DeleteOverwrite(ctx, pgdb.DeleteOverwriteParams{
 		ChannelID: channelID, TargetKind: int64(targetKind), TargetID: targetID,
 	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------- Bans
+//
+// Plan 2 task 4: the slice of store.Structure whose table 00007_bans.sql ships,
+// with P2-D10's listing.
+
+func (r *Repo) PutBan(ctx context.Context, b store.BanRow) error {
+	return wrap(r.w.PutBan(ctx, pgdb.PutBanParams{
+		CommunityID: b.CommunityID,
+		UserID:      b.UserID,
+		Reason:      b.Reason,
+		ByUser:      b.ByUser,
+		Created:     b.Created,
+		Expires:     nullInt64(b.Expires),
+	}))
+}
+
+func banRow(row pgdb.Bans) store.BanRow {
+	return store.BanRow{
+		CommunityID: row.CommunityID,
+		UserID:      row.UserID,
+		Reason:      row.Reason,
+		ByUser:      row.ByUser,
+		Created:     row.Created,
+		Expires:     ptrInt64(row.Expires),
+	}
+}
+
+func (r *Repo) GetBan(ctx context.Context, communityID, userID id.ID) (store.BanRow, error) {
+	row, err := r.r.GetBan(ctx, pgdb.GetBanParams{CommunityID: communityID, UserID: userID})
+	if err != nil {
+		return store.BanRow{}, wrap(err)
+	}
+	return banRow(row), nil
+}
+
+func (r *Repo) ListBans(ctx context.Context, communityID id.ID) ([]store.BanRow, error) {
+	rows, err := r.r.ListBans(ctx, pgdb.ListBansParams{CommunityID: communityID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BanRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, banRow(row))
+	}
+	return out, nil
+}
+
+func (r *Repo) DeleteBan(ctx context.Context, communityID, userID id.ID) error {
+	n, err := r.w.DeleteBan(ctx, pgdb.DeleteBanParams{CommunityID: communityID, UserID: userID})
 	if err != nil {
 		return wrap(err)
 	}

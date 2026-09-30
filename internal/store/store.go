@@ -25,7 +25,8 @@ var (
 // Cursors with 00003_messages.sql, Plan 2 task 1 step 9 adds Communities (the
 // part of Structure whose tables 00004_structure.sql ships), Plan 2 task 2 adds
 // Channels (the part 00005_channels.sql ships), Plan 2 task 3 adds Overwrites (the
-// part 00006_overwrites.sql ships), and Plan 2's later tasks add the rest of
+// part 00006_overwrites.sql ships), Plan 2 task 4 adds Bans (the part
+// 00007_bans.sql ships), and Plan 2's later tasks add the rest of
 // Structure, Readable, Blobs and OpsBackups.
 type Repository interface {
 	Tx(ctx context.Context, fn func(Repository) error) error
@@ -43,6 +44,7 @@ type Repository interface {
 	Communities // Plan 2 task 1 step 9 (P2-D23) — 00004_structure.sql
 	Channels    // Plan 2 task 2 (P2-D23) — 00005_channels.sql
 	Overwrites  // Plan 2 task 3 (P2-D23) — 00006_overwrites.sql
+	Bans        // Plan 2 task 4 (P2-D23) — 00007_bans.sql
 }
 
 type Instance interface {
@@ -198,6 +200,12 @@ type MLS interface {
 	ReplaceMembers(ctx context.Context, groupID id.ID, epoch uint64, m []MemberRow) error
 	ListMembers(ctx context.Context, groupID id.ID) ([]MemberRow, error)
 	GroupsForDevice(ctx context.Context, deviceID id.ID) ([]id.ID, error)
+	// GroupsForTarget is Plan 2's P2-D3: the OPEN groups of one kind bound to one
+	// target (a channel's text and call groups), oldest first, over
+	// mls_groups_by_target. A membership change finds the groups to issue its
+	// Adds and Removes in here, rather than scanning ListOpenGroups, which is
+	// O(instance) per change.
+	GroupsForTarget(ctx context.Context, targetID id.ID, kind uint8) ([]GroupRow, error)
 	PutKeyPackages(ctx context.Context, deviceID id.ID, kps []KeyPackageRow) error
 	TakeKeyPackage(ctx context.Context, deviceID id.ID, now int64) (KeyPackageRow, error)
 	CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) (int64, error)
@@ -251,17 +259,15 @@ type Cursors interface {
 // plus the plan's additions; a later task that ships the rest of it either
 // embeds its own slice the same way or, once every method exists, swaps
 // Communities for Structure in Repository's embed list. Task 2's slice is
-// Channels, task 3's Overwrites.
+// Channels, task 3's Overwrites, task 4's Bans.
 type Structure interface {
 	Communities
 	Channels
 	Overwrites
+	Bans
 	PutChannelMember(ctx context.Context, channelID, userID id.ID, at int64) error
 	DeleteChannelMember(ctx context.Context, channelID, userID id.ID) error
 	ListChannelMembers(ctx context.Context, channelID id.ID) ([]id.ID, error)
-	PutBan(ctx context.Context, b BanRow) error
-	GetBan(ctx context.Context, communityID, userID id.ID) (BanRow, error)
-	DeleteBan(ctx context.Context, communityID, userID id.ID) error
 	PutVoiceSession(ctx context.Context, v VoiceSessionRow) error
 	EndVoiceSession(ctx context.Context, callID id.ID, at int64) error
 }
@@ -344,6 +350,22 @@ type Overwrites interface {
 	// DeleteOverwrite is P2-D9: DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}.
 	// ErrNotFound when there was no such overwrite.
 	DeleteOverwrite(ctx context.Context, channelID id.ID, targetKind uint8, targetID id.ID) error
+}
+
+// Bans is the part of Structure whose table is 00007_bans.sql (Plan 2 task 4):
+// §4.1's three ban methods plus P2-D10's listing.
+type Bans interface {
+	// PutBan is an upsert on (community, user): a second ban of the same user
+	// replaces the reason, the moderator, the time and the expiry.
+	PutBan(ctx context.Context, b BanRow) error
+	// GetBan answers ErrNotFound when there is no row. A row whose Expires has
+	// passed is still returned: whether it gates is the caller's decision.
+	GetBan(ctx context.Context, communityID, userID id.ID) (BanRow, error)
+	// ListBans is P2-D10: GET /v1/communities/{id}/bans. Newest first, ties
+	// broken by user id, lapsed bans included.
+	ListBans(ctx context.Context, communityID id.ID) ([]BanRow, error)
+	// DeleteBan lifts a ban. ErrNotFound when there was none.
+	DeleteBan(ctx context.Context, communityID, userID id.ID) error
 }
 
 // Readable is 007_readable.sql, implemented from Plan 2 task 8 onward.

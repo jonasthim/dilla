@@ -35,6 +35,7 @@ type Querier interface {
 	CreateInvite(ctx context.Context, arg CreateInviteParams) error
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
+	DeleteBan(ctx context.Context, arg DeleteBanParams) (int64, error)
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
 	DeleteChannel(ctx context.Context, arg DeleteChannelParams) (int64, error)
 	DeleteChannelsOfCommunity(ctx context.Context, arg DeleteChannelsOfCommunityParams) (int64, error)
@@ -57,6 +58,7 @@ type Querier interface {
 	// to `voice_sessions` rather than declaring a second method (deviation B13, P2-D19).
 	EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
+	GetBan(ctx context.Context, arg GetBanParams) (Bans, error)
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
 	GetChannel(ctx context.Context, arg GetChannelParams) (Channels, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
@@ -83,10 +85,15 @@ type Querier interface {
 	GetWebauthnUserByHandle(ctx context.Context, arg GetWebauthnUserByHandleParams) (id.ID, error)
 	GetWebauthnUserHandle(ctx context.Context, arg GetWebauthnUserHandleParams) ([]byte, error)
 	GroupsForDevice(ctx context.Context, arg GroupsForDeviceParams) ([]id.ID, error)
+	// Plan 2's P2-D3 (task 4): the open groups bound to one target, of one kind, over
+	// mls_groups_by_target. A membership change finds the text and call groups of a channel
+	// here instead of scanning every open group of the instance.
+	GroupsForTarget(ctx context.Context, arg GroupsForTargetParams) ([]MlsGroups, error)
 	InsertAudit(ctx context.Context, arg InsertAuditParams) error
 	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
+	ListBans(ctx context.Context, arg ListBansParams) ([]Bans, error)
 	ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
 	// The retention walk, and deliberately NOT `ListOpenGroups`: invariant 10 caps application
@@ -148,6 +155,8 @@ type Querier interface {
 	PurgeAllKeyPackages(ctx context.Context) (int64, error)
 	PurgeKeyPackagesKeepingLastResort(ctx context.Context) (int64, error)
 	PutAppMessage(ctx context.Context, arg PutAppMessageParams) error
+	// Bans (Plan 2 task 4, 00007_bans.sql).
+	PutBan(ctx context.Context, arg PutBanParams) error
 	PutCeremony(ctx context.Context, arg PutCeremonyParams) error
 	PutCursor(ctx context.Context, arg PutCursorParams) error
 	PutDeviceList(ctx context.Context, arg PutDeviceListParams) error

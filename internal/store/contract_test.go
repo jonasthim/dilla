@@ -70,6 +70,10 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"CreateGroup", "DeleteProposals", "DeleteWelcome", "EndAllVoiceSessions",
 			"GetCommitAtEpoch", "GetGroup",
 			"GroupsForDevice",
+			// GroupsForTarget is Plan 2's P2-D3 (task 4): the open groups bound to one
+			// channel, so a membership change finds the groups to issue Removes in
+			// without scanning every open group of the instance.
+			"GroupsForTarget",
 			"MarkAllGroupsEpochUnknown",
 			// ListGroupsForRetention is §4.1 plus one (deviation ID1, task 26 fix round 1):
 			// invariant 10's sweep must reach CLOSED groups too, and `ListOpenGroups` --
@@ -114,6 +118,12 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// §4.1 plus P2-D9's two deletes (task 3), reached through the embedded
 			// Communities (DeleteRole) and Overwrites (DeleteOverwrite).
 			"DeleteOverwrite", "DeleteRole",
+			// §4.1 plus P2-D10's listing (task 4), reached through the embedded Bans.
+			"ListBans",
+		}},
+		// Bans is the slice of Structure Plan 2 task 4's table supports.
+		{"Bans", reflect.TypeOf((*store.Bans)(nil)).Elem(), []string{
+			"DeleteBan", "GetBan", "ListBans", "PutBan",
 		}},
 		// Overwrites is the slice of Structure Plan 2 task 3's table supports.
 		{"Overwrites", reflect.TypeOf((*store.Overwrites)(nil)).Elem(), []string{
@@ -210,6 +220,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.Channels)(nil)).Elem(),
 		// Plan 2 task 3: Overwrites joins with 00006_overwrites.sql.
 		reflect.TypeOf((*store.Overwrites)(nil)).Elem(),
+		// Plan 2 task 4: Bans joins with 00007_bans.sql.
+		reflect.TypeOf((*store.Bans)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

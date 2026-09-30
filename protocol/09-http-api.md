@@ -155,15 +155,20 @@ community answers `404` to everyone.
 
 - The creator is the **owner** and the first member, and the community starts with one role,
   `@everyone`, at position 0, whose id is `role_everyone`. The owner can neither leave nor be
-  removed. `PATCH` needs `manage_community` (§ Permissions); `DELETE` and member removal are the
-  owner's alone (`403 E_FORBIDDEN` for any other member). Role grants are § Roles'.
+  removed. `PATCH` needs `manage_community` (§ Permissions); `DELETE` is the owner's alone
+  (`403 E_FORBIDDEN` for any other member). Removing a member is the **kick** of § Bans. Role
+  grants are § Roles'.
+- `leave` removes the caller's leaves from every `text` and `call` group of the community's
+  channels, as a kick does (§ Bans). `DELETE` closes every such group after the community and its
+  channels are tombstoned.
 - `name` is 1–255 bytes of UTF-8 with no control character. `require_mod_2fa` is 0 or 1.
   `min_account_age_seconds` is at most 3 153 600 000 (a century); 0 means no gate.
 - `policy` is the **policy document** below, and `policy_version` starts at 1 and grows by one on
   every `PATCH` that carries a policy; a `PATCH` without one leaves it. Two concurrent policy
   changes cannot share a version: the loser is `409 E_INVALID_REQUEST` and re-reads.
-- `join` refuses (`403 E_FORBIDDEN`) a disabled or deleted account and an account younger than
-  `min_account_age_seconds`. Joining a community the caller is already a member of is a no-op that
+- `join` refuses (`403 E_FORBIDDEN`) an account the community has banned (§ Bans; a ban whose
+  `expires` has passed no longer refuses), a disabled or deleted account and an account younger
+  than `min_account_age_seconds`. Joining a community the caller is already a member of is a no-op that
   answers `[community_id]`.
 - `require_mod_2fa = 1` refuses (`403 E_FORBIDDEN`) a grant of a role whose `allow` carries any
   moderation bit (manage messages, kick, ban, manage channels, manage roles, manage community,
@@ -223,7 +228,9 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   `slowmode_seconds` at most 21 600. A community's channels are ordered by `position`, ties broken
   by `channel_id` (bytewise), the same on every engine.
 - `seq` is the channel's own sequence, which the server-readable message path advances.
-- Deleting a community deletes its channels in the same transaction.
+- Deleting a community deletes its channels in the same transaction. Deleting a channel, or its
+  community, closes the channel's open `text` and `call` groups (`02`) once the deletion has
+  committed.
 
 ### Roles
 
@@ -258,6 +265,40 @@ that channel); a caller who is not a member of the community answers `404 E_NOT_
   target is a member of it); anything else is `400`, and an unknown target is `404`. An overwrite
   may not allow and deny the same bit, nor carry a community-wide bit (§ Permissions), both `400`.
   A second `PUT` for the same target replaces the pair.
+
+### Bans
+
+Every route below is `E`. A caller who is not a member of the community answers `404 E_NOT_FOUND`
+exactly as an unknown community does. The three ban routes need `ban_members` community-wide and
+the kick needs `kick_members` (§ Permissions); `403 E_FORBIDDEN` otherwise.
+
+| Method and path | Request | Response |
+|---|---|---|
+| `PUT /v1/communities/{id}/bans/{user_id}` | `[reason(tstr), expires(uint\|null)]` | `204` |
+| `DELETE /v1/communities/{id}/bans/{user_id}` | — | `204`; `404` when there is no such ban |
+| `GET /v1/communities/{id}/bans` | — | `[[user_id, reason, by_user, created, expires(uint\|null)]]`, newest first |
+| `DELETE /v1/communities/{id}/members/{user_id}` (kick) | — | `204`; `404` when the target is not a member |
+
+- **Rank.** Nobody may ban or kick the owner, and anyone but the owner acts only on a user whose
+  highest role is strictly below their own; a caller who holds no role but `@everyone` acts on
+  nobody, and nobody acts on themself. `403 E_FORBIDDEN`.
+- A **ban** needs an account of this instance (`404` otherwise) but not a member: a ban may
+  precede a join. It removes the membership, and `join` refuses the account while the ban stands.
+  A second `PUT` replaces the reason, the moderator, the time and the expiry.
+- `reason` is at most 512 bytes of UTF-8 with no control character but line breaks and tabs.
+  `expires` is a unix second in the future and at most 3 153 600 000 seconds (a century) away, or
+  null for a ban that stands until it is lifted; anything else is `400 E_INVALID_REQUEST`. A ban
+  whose `expires` has passed no longer refuses a join but stays listed, as the moderation history,
+  until it is lifted.
+- A **kick** removes the membership and writes no ban: the user may join again at once.
+- Lifting a ban re-adds the user to nothing; they join again.
+- After a ban, a kick or a `leave` has committed, the instance, as the external sender (`02`
+  § Roles), issues one `Remove` proposal for every live leaf of the user in every `text` and `call`
+  group of the community's channels. Each freezes its group (`02` invariant 5) until a member
+  commits it, so a user kicked while offline cannot read past the epoch that removes them; a
+  `Remove` whose leaf is already gone is dropped (`02` invariant 6).
+- Every ban, lift and kick writes an audit row naming the moderator (`ban.create`, `ban.delete`,
+  `member.kick`).
 
 ## Permissions
 

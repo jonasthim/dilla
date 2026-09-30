@@ -403,6 +403,66 @@ func (q *Queries) GroupsForDevice(ctx context.Context, arg GroupsForDeviceParams
 	return items, nil
 }
 
+const groupsForTarget = `-- name: GroupsForTarget :many
+SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below, handshakes_pruned_through FROM mls_groups
+WHERE target_id = $1 AND kind = $2 AND closed_at IS NULL
+ORDER BY created, group_id
+`
+
+type GroupsForTargetParams struct {
+	TargetID id.ID
+	Kind     int64
+}
+
+// Plan 2's P2-D3 (task 4): the open groups bound to one target, of one kind, over
+// mls_groups_by_target. A membership change finds the text and call groups of a channel
+// here instead of scanning every open group of the instance.
+func (q *Queries) GroupsForTarget(ctx context.Context, arg GroupsForTargetParams) ([]MlsGroups, error) {
+	rows, err := q.db.QueryContext(ctx, groupsForTarget, arg.TargetID, arg.Kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MlsGroups{}
+	for rows.Next() {
+		var i MlsGroups
+		if err := rows.Scan(
+			&i.GroupID,
+			&i.Binding,
+			&i.Kind,
+			&i.CommunityID,
+			&i.TargetID,
+			&i.CallID,
+			&i.Ciphersuite,
+			&i.Epoch,
+			&i.Seq,
+			&i.GroupInfoBlob,
+			&i.TreeHash,
+			&i.PublicGroupState,
+			&i.ExternalSenderKeyID,
+			&i.E2eeVersion,
+			&i.MediaVersion,
+			&i.PolicyVersion,
+			&i.EpochUnknown,
+			&i.HealDeadline,
+			&i.Created,
+			&i.ClosedAt,
+			&i.PrunedBelow,
+			&i.HandshakesPrunedThrough,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAllProposals = `-- name: ListAllProposals :many
 SELECT group_id, ref, epoch, kind, target_leaf, target_device, key_package, origin, action_id, issued_at, ttl, void_at FROM mls_pending_proposals WHERE group_id = $1 AND epoch = $2
 ORDER BY issued_at, ref

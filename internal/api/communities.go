@@ -28,12 +28,16 @@ import (
 // enrolled session, so a mis-mounted route fails closed.
 type Communities struct {
 	repo store.Repository
+	dsvc DS
 	clk  clock.Clock
 	log  *slog.Logger
 }
 
-func NewCommunities(repo store.Repository, clk clock.Clock, log *slog.Logger) *Communities {
-	return &Communities{repo: repo, clk: clk, log: log}
+// NewCommunities takes the delivery service a membership change reaches: a
+// kick or a leave removes the user's leaves from the community's groups, and a
+// community delete closes them (membership.go).
+func NewCommunities(repo store.Repository, dsvc DS, clk clock.Clock, log *slog.Logger) *Communities {
+	return &Communities{repo: repo, dsvc: dsvc, clk: clk, log: log}
 }
 
 func (c *Communities) Register(mux *server.Mux) {
@@ -357,10 +361,18 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// joinGate enforces R17's stored gates: the account must be live, and at least
-// min_account_age_seconds old. The ban list joins it in task 4; invite-only
-// communities and the screening flag are task 5's.
+// joinGate enforces R17's stored gates: the account must not be banned from the
+// community (a ban whose expiry has passed no longer gates), must be live, and
+// at least min_account_age_seconds old. Invite-only communities and the
+// screening flag are task 5's.
 func (c *Communities) joinGate(ctx context.Context, row store.CommunityRow, userID id.ID) error {
+	if ban, err := c.repo.GetBan(ctx, row.ID, userID); err == nil {
+		if BanStands(ban, c.clk.Now().Unix()) {
+			return server.Errorf(server.CodeForbidden, "banned from this community")
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
 	u, err := c.repo.GetUser(ctx, userID)
 	if err != nil {
 		return err
@@ -421,8 +433,7 @@ func (c *Communities) managerOnly(r *http.Request) (store.CommunityRow, auth.Ses
 	return row, s, nil
 }
 
-// ownerOnly is memberOnly plus ownership: deleting the community, and removing
-// a member until task 4 gives that its own permission (PermKickMembers).
+// ownerOnly is memberOnly plus ownership: deleting the community.
 func (c *Communities) ownerOnly(r *http.Request) (store.CommunityRow, auth.Session, error) {
 	row, s, err := c.memberOnly(r)
 	if err != nil {
@@ -477,36 +488,52 @@ func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// removeMember is the kick: it needs kick_members community-wide and a target
+// strictly below the caller (the pair Bans uses), deletes the membership row,
+// and then removes the user's leaves from the community's groups. It writes no
+// ban row, so a kicked user may join again at once.
 func (c *Communities) removeMember(w http.ResponseWriter, r *http.Request) {
-	// Kicking is task 4's verb; at task 1 a member may only remove themselves,
-	// which is what POST /leave does, so this route requires the owner.
-	row, s, err := c.ownerOnly(r)
+	m, err := moderate(r, c.repo, PermKickMembers)
 	if err != nil {
-		c.fail(w, r, "remove member", err)
+		c.fail(w, r, "kick", err)
 		return
 	}
-	target, err := server.PathID(r, "user_id")
-	if err != nil {
-		server.WriteError(w, err)
+	// A target who is not a member answers 404, before the rank check, so the
+	// answer does not depend on who the caller is.
+	if _, err := c.repo.GetMember(r.Context(), m.community, m.target); err != nil {
+		c.fail(w, r, "kick", notFound(err))
 		return
 	}
-	if target == row.Owner {
-		server.WriteError(w, server.Errorf(server.CodeForbidden, "the owner cannot be removed"))
+	if err := outranks(r.Context(), c.repo, m.snap, m.session.UserID, m.target, m.community); err != nil {
+		c.fail(w, r, "kick", err)
 		return
 	}
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
-		if err := tx.DeleteMember(r.Context(), row.ID, target); err != nil {
+		if err := tx.DeleteMember(r.Context(), m.community, m.target); err != nil {
 			return err
 		}
 		return tx.Audit(r.Context(), store.AuditRow{
-			Actor: &s.UserID, Action: "community.member.remove",
-			Target: target.String(), Detail: row.ID.String(), At: c.clk.Now().Unix(),
+			Actor: &m.session.UserID, Action: "member.kick",
+			Target: m.target.String(), Detail: m.community.String(), At: c.clk.Now().Unix(),
 		})
 	}); err != nil {
-		c.fail(w, r, "remove member", notFound(err))
+		c.fail(w, r, "kick", notFound(err))
 		return
 	}
+	// After the commit, never inside it: see RemoveUserFromCommunityGroups.
+	c.removeFromGroups(r, m.community, m.target)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeFromGroups issues the delivery-service Removes of a membership change
+// that has already committed. A failure is logged, not answered: the membership
+// row is gone, so the Add and join ACL (ResolverACL) already refuses the user,
+// and the change itself cannot be undone by a refused proposal.
+func (c *Communities) removeFromGroups(r *http.Request, cid, userID id.ID) {
+	if err := RemoveUserFromCommunityGroups(r.Context(), c.repo, c.dsvc, cid, userID); err != nil {
+		c.log.ErrorContext(r.Context(), "remove user from the community's groups",
+			"community", cid, "user", userID, "err", err)
+	}
 }
 
 func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
@@ -524,6 +551,9 @@ func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, "leave", notFound(err))
 		return
 	}
+	// A member who leaves stops receiving the community's keys: the instance
+	// removes their leaves exactly as for a kick, after the row is gone.
+	c.removeFromGroups(r, row.ID, s.UserID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -534,14 +564,27 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := c.clk.Now().Unix()
+	// Inside the transaction: read what will be closed, then tombstone.
+	// ListChannels filters deleted_at IS NULL, so it runs BEFORE
+	// DeleteChannelsOfCommunity or it returns nothing.
+	var toClose []id.ID
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
-		if err := tx.SoftDeleteCommunity(r.Context(), row.ID, now); err != nil {
+		channels, err := tx.ListChannels(r.Context(), row.ID)
+		if err != nil {
 			return err
 		}
-		// The community's channels go with it, in the same transaction. Their
-		// MLS groups are closed by the delivery service, which owns mls_groups:
-		// task 4 wires ds.Close in here once GroupsForTarget exists (P2-D3).
+		ids := make([]id.ID, 0, len(channels))
+		for _, ch := range channels {
+			ids = append(ids, ch.ID)
+		}
+		if toClose, err = openChannelGroups(r.Context(), tx, ids); err != nil {
+			return err
+		}
+		// The community's channels go with it, in the same transaction.
 		if _, err := tx.DeleteChannelsOfCommunity(r.Context(), row.ID, now); err != nil {
+			return err
+		}
+		if err := tx.SoftDeleteCommunity(r.Context(), row.ID, now); err != nil {
 			return err
 		}
 		return tx.Audit(r.Context(), store.AuditRow{
@@ -551,6 +594,14 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		c.fail(w, r, "delete community", notFound(err))
 		return
+	}
+	// After the commit, for RemoveUserFromCommunityGroups' reason: ds.Close
+	// writes through the single-connection write pool the transaction held. A
+	// crash between the two leaves the community tombstoned and its groups open;
+	// they carry no live channel, so the Add and join ACL refuses everyone.
+	if err := closeGroups(r.Context(), c.dsvc, toClose); err != nil {
+		c.log.ErrorContext(r.Context(), "close the groups of a deleted community",
+			"community", row.ID, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

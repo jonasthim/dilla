@@ -95,6 +95,23 @@ func (q *Queries) CreateCommunity(ctx context.Context, arg CreateCommunityParams
 	return err
 }
 
+const deleteBan = `-- name: DeleteBan :execrows
+DELETE FROM bans WHERE community_id = ? AND user_id = ?
+`
+
+type DeleteBanParams struct {
+	CommunityID id.ID
+	UserID      id.ID
+}
+
+func (q *Queries) DeleteBan(ctx context.Context, arg DeleteBanParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteBan, arg.CommunityID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteChannel = `-- name: DeleteChannel :execrows
 UPDATE channels SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL
 `
@@ -197,6 +214,30 @@ func (q *Queries) DeleteRole(ctx context.Context, arg DeleteRoleParams) (int64, 
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const getBan = `-- name: GetBan :one
+SELECT community_id, user_id, reason, by_user, created, expires
+FROM bans WHERE community_id = ? AND user_id = ?
+`
+
+type GetBanParams struct {
+	CommunityID id.ID
+	UserID      id.ID
+}
+
+func (q *Queries) GetBan(ctx context.Context, arg GetBanParams) (Bans, error) {
+	row := q.db.QueryRowContext(ctx, getBan, arg.CommunityID, arg.UserID)
+	var i Bans
+	err := row.Scan(
+		&i.CommunityID,
+		&i.UserID,
+		&i.Reason,
+		&i.ByUser,
+		&i.Created,
+		&i.Expires,
+	)
+	return i, err
 }
 
 const getChannel = `-- name: GetChannel :one
@@ -308,6 +349,45 @@ func (q *Queries) GetRole(ctx context.Context, arg GetRoleParams) (Roles, error)
 		&i.Created,
 	)
 	return i, err
+}
+
+const listBans = `-- name: ListBans :many
+SELECT community_id, user_id, reason, by_user, created, expires
+FROM bans WHERE community_id = ? ORDER BY created DESC, user_id
+`
+
+type ListBansParams struct {
+	CommunityID id.ID
+}
+
+func (q *Queries) ListBans(ctx context.Context, arg ListBansParams) ([]Bans, error) {
+	rows, err := q.db.QueryContext(ctx, listBans, arg.CommunityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Bans{}
+	for rows.Next() {
+		var i Bans
+		if err := rows.Scan(
+			&i.CommunityID,
+			&i.UserID,
+			&i.Reason,
+			&i.ByUser,
+			&i.Created,
+			&i.Expires,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listChannels = `-- name: ListChannels :many
@@ -529,6 +609,37 @@ func (q *Queries) NextChannelSeq(ctx context.Context, arg NextChannelSeqParams) 
 	var seq int64
 	err := row.Scan(&seq)
 	return seq, err
+}
+
+const putBan = `-- name: PutBan :exec
+
+INSERT INTO bans (community_id, user_id, reason, by_user, created, expires)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (community_id, user_id) DO UPDATE SET
+  reason = excluded.reason, by_user = excluded.by_user,
+  created = excluded.created, expires = excluded.expires
+`
+
+type PutBanParams struct {
+	CommunityID id.ID
+	UserID      id.ID
+	Reason      string
+	ByUser      id.ID
+	Created     int64
+	Expires     sql.NullInt64
+}
+
+// Bans (Plan 2 task 4, 00007_bans.sql).
+func (q *Queries) PutBan(ctx context.Context, arg PutBanParams) error {
+	_, err := q.db.ExecContext(ctx, putBan,
+		arg.CommunityID,
+		arg.UserID,
+		arg.Reason,
+		arg.ByUser,
+		arg.Created,
+		arg.Expires,
+	)
+	return err
 }
 
 const putMember = `-- name: PutMember :exec

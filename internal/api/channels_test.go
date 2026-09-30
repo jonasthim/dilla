@@ -19,8 +19,8 @@ func channelEnv(t *testing.T) (*env, id.ID, string) {
 	t.Helper()
 	e := newEnv(t)
 	log := slog.New(slog.DiscardHandler)
-	api.NewCommunities(e.Repo, e.Clk, log).Register(e.Mux)
-	api.NewChannels(e.Repo, e.Clk, log).Register(e.Mux)
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).Register(e.Mux)
+	api.NewChannels(e.Repo, e.DS, e.Clk, log).Register(e.Mux)
 	_, tok := e.NewUser("owner")
 	return e, createCommunity(t, e, tok), tok
 }

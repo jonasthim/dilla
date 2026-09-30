@@ -79,13 +79,16 @@ func CallGroupAllowed(c store.ChannelRow) bool {
 // Every permission decision is the resolver's (perm.go).
 type Channels struct {
 	repo store.Repository
+	dsvc DS
 	clk  clock.Clock
 	log  *slog.Logger
 	res  *Resolver
 }
 
-func NewChannels(repo store.Repository, clk clock.Clock, log *slog.Logger) *Channels {
-	return &Channels{repo: repo, clk: clk, log: log, res: NewResolver(repo)}
+// NewChannels takes the delivery service that closes a deleted channel's
+// groups (membership.go).
+func NewChannels(repo store.Repository, dsvc DS, clk clock.Clock, log *slog.Logger) *Channels {
+	return &Channels{repo: repo, dsvc: dsvc, clk: clk, log: log, res: NewResolver(repo)}
 }
 
 func (c *Channels) Register(mux *server.Mux) {
@@ -453,7 +456,13 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := c.clk.Now().Unix()
+	var toClose []id.ID
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// Read the channel's open groups inside the transaction; close them after it.
+		var err error
+		if toClose, err = openChannelGroups(r.Context(), tx, []id.ID{row.ID}); err != nil {
+			return err
+		}
 		if err := tx.DeleteChannel(r.Context(), row.ID, now); err != nil {
 			return notFound(err)
 		}
@@ -475,9 +484,6 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		// The channel's MLS group is closed by the delivery service, which owns
-		// mls_groups: task 4 wires ds.Close into this transaction once
-		// GroupsForTarget exists (P2-D3).
 		return tx.Audit(r.Context(), store.AuditRow{
 			Actor: &s.UserID, Action: "channel.delete", Target: row.ID.String(),
 			Detail: row.Name, At: now,
@@ -485,6 +491,15 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		c.fail(w, r, "delete channel", err)
 		return
+	}
+	// The channel's MLS groups are closed by the delivery service, which owns
+	// mls_groups, AFTER the commit: ds.Close writes through the single-connection
+	// write pool the transaction held (see RemoveUserFromCommunityGroups). A
+	// group left open by a crash here is bound to a deleted channel, which the
+	// Add and join ACL refuses.
+	if err := closeGroups(r.Context(), c.dsvc, toClose); err != nil {
+		c.log.ErrorContext(r.Context(), "close the groups of a deleted channel",
+			"channel", row.ID, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -34,6 +34,10 @@ type env struct {
 	Clk  *clock.Fake
 	Mux  *server.Mux
 	Srv  *httptest.Server
+	// DS records the delivery-service calls the Communities and Channels
+	// handlers communityEnv and channelEnv mount make (task 4). It never stands
+	// in for the delivery service's own behaviour, which internal/ds tests.
+	DS   *recordingDS
 	sess map[string]auth.Session // bearer token -> session
 }
 
@@ -66,6 +70,7 @@ func newEnv(t *testing.T) *env {
 		Repo: repo,
 		Clk:  clk,
 		Mux:  server.NewMux(),
+		DS:   &recordingDS{},
 		sess: map[string]auth.Session{},
 	}
 	e.Srv = httptest.NewServer(e.authMiddleware(e.Mux))
@@ -89,7 +94,14 @@ func (e *env) authMiddleware(next http.Handler) http.Handler {
 // authenticates as that (user, device) with an enrolled session.
 func (e *env) NewUser(username string) (id.ID, string) {
 	e.t.Helper()
-	uid, did := id.New(), id.New()
+	return e.NewUserWithID(id.New(), username)
+}
+
+// NewUserWithID is NewUser for a given user id: the identity an MLS leaf's
+// credential already carries, when a test drives a real group.
+func (e *env) NewUserWithID(uid id.ID, username string) (id.ID, string) {
+	e.t.Helper()
+	did := id.New()
 	now := e.Clk.Now().Unix()
 	if err := e.Repo.CreateUser(context.Background(), newAPITestUser(uid, username, now)); err != nil {
 		e.t.Fatalf("CreateUser: %v", err)
@@ -169,4 +181,54 @@ func newAPITestDevice(did, uid id.ID, created int64) store.DeviceRow {
 		ID: did, UserID: uid, DSKPub: make([]byte, 32), CredentialBlob: []byte{1},
 		LastSeen: created, Created: created,
 	}
+}
+
+// seedTextGroup writes one open mls_groups row of kind text bound to channelID
+// in community cid, and returns its id. It is a row, not an MLS group: the
+// handlers under test read it through GroupsForTarget and hand its id to the
+// delivery service, which the recording double stands behind.
+func seedTextGroup(t *testing.T, e *env, channelID, cid id.ID) id.ID {
+	t.Helper()
+	return seedGroupOfKind(t, e, channelID, cid, 0)
+}
+
+// seedGroupOfKind is seedTextGroup for any group kind (1 is a call group).
+func seedGroupOfKind(t *testing.T, e *env, target, cid id.ID, kind uint8) id.ID {
+	t.Helper()
+	c := cid
+	g := store.GroupRow{
+		GroupID: id.New(), Binding: []byte{0x80}, Kind: kind, CommunityID: &c, TargetID: target,
+		Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 1,
+		PolicyVersion: 1, Created: e.Clk.Now().Unix(),
+	}
+	if err := e.Repo.CreateGroup(t.Context(), g); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	return g.GroupID
+}
+
+// seedMember adds one mls_members row: user at leaf in group, on a fresh device.
+func seedMember(t *testing.T, e *env, group, user id.ID, leaf uint32) {
+	t.Helper()
+	members, err := e.Repo.ListMembers(t.Context(), group)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	members = append(members, store.MemberRow{
+		GroupID: group, LeafIndex: leaf, UserID: user, DeviceID: id.New(),
+		SignatureKey: make([]byte, 32),
+	})
+	if err := e.Repo.ReplaceMembers(t.Context(), group, 0, members); err != nil {
+		t.Fatalf("ReplaceMembers: %v", err)
+	}
+}
+
+// ownerOf reads the community's owner.
+func ownerOf(t *testing.T, e *env, cid id.ID) id.ID {
+	t.Helper()
+	row, err := e.Repo.GetCommunity(t.Context(), cid)
+	if err != nil {
+		t.Fatalf("GetCommunity: %v", err)
+	}
+	return row.Owner
 }

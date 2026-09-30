@@ -22,6 +22,14 @@ ORDER BY group_id LIMIT sqlc.arg(max_rows)::bigint;
 SELECT * FROM mls_groups WHERE group_id > $1
 ORDER BY group_id LIMIT sqlc.arg(max_rows)::bigint;
 
+-- name: GroupsForTarget :many
+-- Plan 2's P2-D3 (task 4): the open groups bound to one target, of one kind, over
+-- mls_groups_by_target. A membership change finds the text and call groups of a channel
+-- here instead of scanning every open group of the instance.
+SELECT * FROM mls_groups
+WHERE target_id = $1 AND kind = $2 AND closed_at IS NULL
+ORDER BY created, group_id;
+
 -- name: CloseGroup :exec
 UPDATE mls_groups SET closed_at = $1 WHERE group_id = $2;
 

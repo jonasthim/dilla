@@ -19,6 +19,15 @@ type AuditLog struct {
 	At     int64
 }
 
+type Bans struct {
+	CommunityID id.ID
+	UserID      id.ID
+	Reason      string
+	ByUser      id.ID
+	Created     int64
+	Expires     sql.NullInt64
+}
+
 type ChannelOverwrites struct {
 	ChannelID  id.ID
 	TargetKind int64

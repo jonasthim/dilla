@@ -20,7 +20,7 @@ func communityEnv(t *testing.T) *env {
 	t.Helper()
 	e := newEnv(t)
 	log := slog.New(slog.DiscardHandler)
-	api.NewCommunities(e.Repo, e.Clk, log).Register(e.Mux)
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).Register(e.Mux)
 	// Task 1 ships api.Roles with only the grant route; task 3 adds the other six.
 	// Without this registration the mux answers 404, not 403, to the 2FA test below.
 	api.NewRoles(e.Repo, e.Clk, "dilla.example", log).Register(e.Mux)

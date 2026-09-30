@@ -127,3 +127,23 @@ DELETE FROM channel_overwrites WHERE channel_id = $1 AND target_kind = $2 AND ta
 -- name: ListOverwrites :many
 SELECT channel_id, target_kind, target_id, allow, deny
 FROM channel_overwrites WHERE channel_id = $1 ORDER BY target_kind, target_id;
+
+-- Bans (Plan 2 task 4, 00007_bans.sql).
+
+-- name: PutBan :exec
+INSERT INTO bans (community_id, user_id, reason, by_user, created, expires)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (community_id, user_id) DO UPDATE SET
+  reason = excluded.reason, by_user = excluded.by_user,
+  created = excluded.created, expires = excluded.expires;
+
+-- name: GetBan :one
+SELECT community_id, user_id, reason, by_user, created, expires
+FROM bans WHERE community_id = $1 AND user_id = $2;
+
+-- name: ListBans :many
+SELECT community_id, user_id, reason, by_user, created, expires
+FROM bans WHERE community_id = $1 ORDER BY created DESC, user_id;
+
+-- name: DeleteBan :execrows
+DELETE FROM bans WHERE community_id = $1 AND user_id = $2;
