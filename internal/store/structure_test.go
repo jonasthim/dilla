@@ -1,8 +1,10 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/id"
@@ -302,6 +304,59 @@ func TestCommunityMetaMembershipAndRoleGrants(t *testing.T) {
 			}
 			if err := repo.SoftDeleteCommunity(ctx, cid, 100); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("SoftDeleteCommunity twice = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
+// ListCommunities is what `dillad admin community list` pages through: the live
+// communities in id order, a soft-deleted one left out, and the cursor and limit
+// honoured the way ListUsers honours them.
+func TestListCommunitiesPagesLiveCommunitiesInIDOrder(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			owner := seedUser(ctx, t, repo).ID
+			var ids []id.ID
+			for i := range 4 {
+				cid := id.New()
+				ids = append(ids, cid)
+				if err := repo.CreateCommunity(ctx, store.CommunityRow{
+					ID: cid, Owner: owner, Name: "c", PolicyJSON: []byte(`{}`),
+					PolicyVersion: 1, Created: int64(10 + i),
+				}); err != nil {
+					t.Fatalf("CreateCommunity: %v", err)
+				}
+			}
+			if err := repo.SoftDeleteCommunity(ctx, ids[0], 99); err != nil {
+				t.Fatalf("SoftDeleteCommunity: %v", err)
+			}
+			sorted := slices.SortedFunc(slices.Values(ids[1:]), func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+
+			all, err := repo.ListCommunities(ctx, id.ID{}, 100)
+			if err != nil {
+				t.Fatalf("ListCommunities: %v", err)
+			}
+			var got []id.ID
+			for _, c := range all {
+				if c.ID == ids[0] {
+					t.Fatalf("the soft-deleted community %s was listed", ids[0])
+				}
+				got = append(got, c.ID)
+			}
+			if !slices.Equal(got, sorted) {
+				t.Fatalf("ListCommunities = %v, want the live ones in id order %v", got, sorted)
+			}
+			if all[0].Owner != owner || all[0].PolicyVersion != 1 {
+				t.Fatalf("the listed row lost its columns: %+v", all[0])
+			}
+
+			page, err := repo.ListCommunities(ctx, sorted[0], 1)
+			if err != nil {
+				t.Fatalf("ListCommunities after a cursor: %v", err)
+			}
+			if len(page) != 1 || page[0].ID != sorted[1] {
+				t.Fatalf("page after %s = %v, want exactly %s", sorted[0], page, sorted[1])
 			}
 		})
 	}

@@ -544,6 +544,54 @@ func (q *Queries) ListChannelsForUser(ctx context.Context, arg ListChannelsForUs
 	return items, nil
 }
 
+const listCommunities = `-- name: ListCommunities :many
+SELECT id, owner, name, icon_blob, policy_json, policy_version,
+       min_account_age_seconds, require_mod_2fa, created, deleted_at
+FROM communities
+WHERE id > ? AND deleted_at IS NULL
+ORDER BY id
+LIMIT ?2
+`
+
+type ListCommunitiesParams struct {
+	ID      id.ID
+	MaxRows int64
+}
+
+func (q *Queries) ListCommunities(ctx context.Context, arg ListCommunitiesParams) ([]Communities, error) {
+	rows, err := q.db.QueryContext(ctx, listCommunities, arg.ID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Communities{}
+	for rows.Next() {
+		var i Communities
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Name,
+			&i.IconBlob,
+			&i.PolicyJson,
+			&i.PolicyVersion,
+			&i.MinAccountAgeSeconds,
+			&i.RequireMod2fa,
+			&i.Created,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMemberRoles = `-- name: ListMemberRoles :many
 SELECT role_id FROM member_roles WHERE community_id = ? AND user_id = ? ORDER BY role_id
 `

@@ -325,6 +325,10 @@ type Communities interface {
 	CreateCommunity(ctx context.Context, c CommunityRow) error
 	// GetCommunity answers ErrNotFound for a soft-deleted community too.
 	GetCommunity(ctx context.Context, communityID id.ID) (CommunityRow, error)
+	// ListCommunities is `dillad admin community list`: the live communities
+	// with id > after, ordered by id (so the order is the same on both engines),
+	// at most limit. A soft-deleted community is left out, as GetCommunity does.
+	ListCommunities(ctx context.Context, after id.ID, limit int32) ([]CommunityRow, error)
 	// UpdateCommunityPolicy writes the policy under version, which must be
 	// greater than the stored one. The version is monotone, so a writer that
 	// lost a race to the same successor gets ErrConflict rather than landing a

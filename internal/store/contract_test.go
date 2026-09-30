@@ -133,6 +133,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// §4.1 plus P2-D11's listing (task 6), reached through the embedded
 			// ChannelMembers: GET /v1/dms.
 			"ListChannelsForUser",
+			// Plan 2 task 14: `dillad admin community list`, reached through the
+			// embedded Communities.
+			"ListCommunities",
 		}},
 		// ChannelMembers is the slice of Structure Plan 2 task 6's table supports.
 		{"ChannelMembers", reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(), []string{
@@ -155,8 +158,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		// is what Repository embeds until the rest of Structure exists (P2-D23).
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
 			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity",
-			"GetMember", "GetRole", "ListMemberRoles", "ListMembersOfCommunity", "ListRoles",
-			"LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SoftDeleteCommunity",
+			"GetMember", "GetRole", "ListCommunities", "ListMemberRoles", "ListMembersOfCommunity",
+			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SoftDeleteCommunity",
 			"UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
 		{"ReadableSearch", reflect.TypeOf((*store.ReadableSearch)(nil)).Elem(), []string{

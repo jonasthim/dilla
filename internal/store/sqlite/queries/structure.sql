@@ -9,6 +9,14 @@ SELECT id, owner, name, icon_blob, policy_json, policy_version,
 FROM communities
 WHERE id = ? AND deleted_at IS NULL;
 
+-- name: ListCommunities :many
+SELECT id, owner, name, icon_blob, policy_json, policy_version,
+       min_account_age_seconds, require_mod_2fa, created, deleted_at
+FROM communities
+WHERE id > ? AND deleted_at IS NULL
+ORDER BY id
+LIMIT sqlc.arg(max_rows);
+
 -- name: UpdateCommunityPolicy :execrows
 -- The version is MONOTONE: two writers that read the same version both compute
 -- the same successor, and the second must not land a different policy under a

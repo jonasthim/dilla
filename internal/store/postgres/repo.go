@@ -1784,6 +1784,29 @@ func (r *Repo) GetCommunity(ctx context.Context, communityID id.ID) (store.Commu
 	}, nil
 }
 
+func (r *Repo) ListCommunities(ctx context.Context, after id.ID, limit int32) ([]store.CommunityRow, error) {
+	rows, err := r.r.ListCommunities(ctx, pgdb.ListCommunitiesParams{ID: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.CommunityRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.CommunityRow{
+			ID:                   row.ID,
+			Owner:                row.Owner,
+			Name:                 row.Name,
+			IconBlob:             row.IconBlob,
+			PolicyJSON:           []byte(row.PolicyJson),
+			PolicyVersion:        uint64(row.PolicyVersion),
+			MinAccountAgeSeconds: uint64(row.MinAccountAgeSeconds),
+			RequireMod2FA:        uint8(row.RequireMod2fa),
+			Created:              row.Created,
+			DeletedAt:            ptrInt64(row.DeletedAt),
+		})
+	}
+	return out, nil
+}
+
 func (r *Repo) UpdateCommunityPolicy(ctx context.Context, communityID id.ID, policy []byte, version int64) error {
 	n, err := r.w.UpdateCommunityPolicy(ctx, pgdb.UpdateCommunityPolicyParams{
 		PolicyJson:    string(policy),

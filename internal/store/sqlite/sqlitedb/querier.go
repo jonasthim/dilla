@@ -139,6 +139,7 @@ type Querier interface {
 	// The CAST keeps the parameter an int64: without it sqlc infers *int64 from the nullable
 	// unref_since, and a nil cutoff would compare against NULL and collect nothing (gap-47 section 19.4).
 	ListCollectableBlobs(ctx context.Context, arg ListCollectableBlobsParams) ([]Blobs, error)
+	ListCommunities(ctx context.Context, arg ListCommunitiesParams) ([]Communities, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
 	// A community's references created strictly before the retention cutoff, oldest first.
 	ListExpiredBlobRefs(ctx context.Context, arg ListExpiredBlobRefsParams) ([]BlobRefs, error)
