@@ -307,8 +307,13 @@ jobs:
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - name: The same tests against Postgres
-        run: go test -race ./internal/store/... ./internal/api/... ./internal/ds/...
+      # Only the packages that have a Postgres leg: internal/store (every query, both engines) and
+      # internal/ops (the Postgres backup, LoadPostgres, identity reset and heal-rollback tests).
+      # internal/api and internal/ds read SQLite only, so listing them here reran the go job's SQLite
+      # tests, and internal/ds under -race outran go test's 10m default on this runner; that, not
+      # Postgres, is what timed the job out. The -timeout is explicit and inside timeout-minutes.
+      - name: The store and ops tests against Postgres
+        run: go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...
         env:
           DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
 

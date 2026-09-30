@@ -128,6 +128,9 @@ const REQUIRED_STEPS = {
     'postgres:18.6-alpine3.24',
     '--locale-provider=builtin --builtin-locale=C.UTF-8',
     'DILLA_TEST_PG',
+    // I7 (fix wave): the packages with a Postgres leg, internal/ops's backup, restore and heal tests
+    // among them, with an explicit -timeout that fits the job's budget.
+    'go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...',
   ],
   'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error'],
   // Task 18. The pins are the versions P2-11 resolved against the registries and the marketplace

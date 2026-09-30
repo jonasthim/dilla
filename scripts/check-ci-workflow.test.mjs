@@ -136,7 +136,7 @@ jobs:
         env:
           POSTGRES_INITDB_ARGS: --locale-provider=builtin --builtin-locale=C.UTF-8
     steps:
-      - run: go test -race ./internal/store/...
+      - run: go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...
         env:
           DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
 
@@ -351,6 +351,9 @@ for (const [job, needle] of [
   ['go-postgres', 'postgres:18.6-alpine3.24'],
   ['go-postgres', '--locale-provider=builtin --builtin-locale=C.UTF-8'],
   ['go-postgres', 'DILLA_TEST_PG'],
+  // I7 (fix wave): internal/ops holds the only Postgres backup, restore and heal tests; a step that
+  // drops it skips them in every job. The -timeout is explicit so a slow package fails by name.
+  ['go-postgres', 'go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...'],
   ['go-release', 'if-no-files-found: error'],
 ]) {
   test(`a ${job} job that lost "${needle}" is reported`, () => {
