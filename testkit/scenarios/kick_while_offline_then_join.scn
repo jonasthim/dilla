@@ -1,6 +1,8 @@
 # Invariants 5 and 6: the instance kicks bob while he is offline. Its Remove freezes the group -
 # alice's message is refused 425 until a member commits the Remove - alice commits it, carol then
-# joins through the instance's Add, and bob, back online, is no longer a current leaf.
+# joins through the instance's Add, and bob, back online, is no longer a current leaf. The kick is
+# the test host's /debug/kick on a community-less group; kick_with_outstanding_add_production_acl.scn
+# is the same shape through DELETE /v1/communities/{cid}/members/{user} and the production ACL.
 instance dilla
 client alice
 client bob

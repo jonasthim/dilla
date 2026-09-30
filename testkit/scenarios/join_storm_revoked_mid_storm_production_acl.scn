@@ -1,0 +1,17 @@
+# protocol/01 § Joining through Plan 2's real ACL (fix wave I6): the storm's joiners are members of
+# the channel's community, so api.ResolverACL admits them, and the instance batches their Adds 256
+# per commit (ProposeAddBatch). After the batch is queued and its first slice proposed, the owner
+# denies view_channel to two joiners through PUT /v1/channels/{id}/overwrites: chat-3, whose Add is
+# outstanding, and chat-300, who is still queued. Neither is ever added - the outstanding Add is
+# voided, the queued one dropped when the queue drains - and every commit of the storm is
+# accepted: 298 joiners in two commits, each entering by its Welcome. The Go harness asserts the
+# instance's side: two commits, no leaf and no live Add for either revoked device, an empty queue.
+instance dilla
+client owner
+channel c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6 visibility=private mode=e2ee community=c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5 members=owner
+group chat kind=text target=c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6 community=c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5 creator=owner
+join_many chat 300 community=c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5 revoke=chat-3,chat-300
+send owner chat everyone else is here
+expect_decrypts chat-2 chat everyone else is here
+expect_decrypts chat-299 chat everyone else is here
+expect_decrypts chat-301 chat everyone else is here

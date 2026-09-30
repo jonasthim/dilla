@@ -50,8 +50,9 @@ func ControlHandler(h *Host) http.Handler {
 	})
 	mux.HandleFunc("POST /debug/kick", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Actor  string `json:"actor"`
-			Target string `json:"target"`
+			Actor     string `json:"actor"`
+			Target    string `json:"target"`
+			Community string `json:"community"`
 		}
 		if !decode(w, r, &body) {
 			return
@@ -59,6 +60,25 @@ func ControlHandler(h *Host) http.Handler {
 		target, err := id.Parse(body.Target)
 		if err != nil {
 			http.Error(w, "target: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.Community != "" {
+			// The production kick: the /v1 route on the actor's authority (fix wave I6).
+			community, err := id.Parse(body.Community)
+			if err != nil {
+				http.Error(w, "community: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			actor, err := id.Parse(body.Actor)
+			if err != nil {
+				http.Error(w, "actor: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := h.KickFromCommunity(r.Context(), community, actor, target); err != nil {
+				writeError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		n, err := h.Kick(r.Context(), target)
@@ -146,6 +166,7 @@ func ControlHandler(h *Host) http.Handler {
 			Visibility string   `json:"visibility"`
 			Mode       string   `json:"mode"`
 			Members    []string `json:"members"`
+			Community  string   `json:"community"`
 		}
 		if !decode(w, r, &body) {
 			return
@@ -177,6 +198,20 @@ func ControlHandler(h *Host) http.Handler {
 			}
 			members = append(members, u)
 		}
+		if body.Community != "" {
+			community, err := id.Parse(body.Community)
+			if err != nil {
+				http.Error(w, "community: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := h.PutCommunityChannel(r.Context(), community, target, visibility, mode, members); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			h.Channels().Set(target, visibility, mode)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if len(members) > 0 {
 			if err := h.PutChannel(r.Context(), target, visibility, mode, members); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -184,6 +219,30 @@ func ControlHandler(h *Host) http.Handler {
 			}
 		}
 		h.Channels().Set(target, visibility, mode)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /debug/deny-view", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Actor   string `json:"actor"`
+			Target  string `json:"target"`
+			Channel string `json:"channel"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		var ids [3]id.ID
+		for i, v := range []string{body.Actor, body.Target, body.Channel} {
+			parsed, err := id.Parse(v)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			ids[i] = parsed
+		}
+		if err := h.DenyView(r.Context(), ids[2], ids[0], ids[1]); err != nil {
+			writeError(w, err)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /debug/snapshot", func(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +311,11 @@ func writeError(w http.ResponseWriter, err error) {
 	var dsErr *ds.Error
 	if errors.As(err, &dsErr) {
 		http.Error(w, dsErr.Error(), dsErr.Status)
+		return
+	}
+	var routeErr *RouteError
+	if errors.As(err, &routeErr) {
+		http.Error(w, routeErr.Error(), routeErr.Status)
 		return
 	}
 	http.Error(w, err.Error(), http.StatusInternalServerError)

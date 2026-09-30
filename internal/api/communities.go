@@ -91,6 +91,11 @@ const everyoneRoleAllow = PermViewChannel | PermSendMessages | PermAttachFiles |
 	PermAddReactions | PermReadHistory | PermConnect | PermSpeak | PermVideo |
 	PermScreenShare | PermCreateInvite
 
+// DefaultEveryoneAllow is everyoneRoleAllow for a caller outside the package that writes a
+// community's rows itself (the test host's `channel … community=`), so the base it seeds is the
+// one POST /v1/communities writes.
+const DefaultEveryoneAllow = everyoneRoleAllow
+
 type createCommunityReq struct {
 	_                    struct{} `cbor:",toarray"`
 	Name                 string

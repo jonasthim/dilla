@@ -74,11 +74,15 @@ pub enum Stmt {
     Ds {
         url: String,
     },
-    /// `kick <actor> <target>`: the instance proposes the removal of every device of `target`'s
-    /// from each group `target` is in, on `actor`'s authority (invariants 5 and 6).
+    /// `kick <actor> <target> [community=<hex>]`: the instance proposes the removal of every
+    /// device of `target`'s from each group `target` is in, on `actor`'s authority (invariants 5
+    /// and 6). With `community=` the kick is the production one: the test host sends
+    /// `DELETE /v1/communities/{community}/members/{target}` in `actor`'s name, and whatever that
+    /// route does to the groups is what happens.
     Kick {
         actor: String,
         target: String,
+        community: Option<[u8; 16]>,
     },
     /// `advance_clock <duration>`: `30s`, `5m`, `24h` or `90d`.
     AdvanceClock {
@@ -100,10 +104,17 @@ pub enum Stmt {
     Commit {
         actor: String,
     },
-    /// `join_many <group> <count>`: `count` new clients join `group`, at most 256 Adds a commit.
+    /// `join_many <group> <count> [community=<hex>] [revoke=<client>,…]`: `count` new clients join
+    /// `group`, at most 256 Adds a commit. With `community=` the new clients are made members of
+    /// that community first (the group's channel is one of its channels), and with `revoke=` the
+    /// group's creator takes view of the channel away from those joiners, through
+    /// `PUT /v1/channels/{id}/overwrites`, after the batch is admitted and before its first
+    /// commit: they are never added, and they are not expected to join.
     JoinMany {
         group: String,
         count: usize,
+        community: Option<[u8; 16]>,
+        revoke: Vec<String>,
     },
     /// `expect_decrypts_all <actor>`: every message the actor received since its last such
     /// assertion decrypts, and there is at least one.
@@ -168,12 +179,16 @@ pub enum Stmt {
     /// mode under `target`, which invariant 1's registration check reads. With `members=` it also
     /// writes the channel row, community-less, and those clients' users as its channel_members:
     /// a channel whose text group the instance populates when the group is registered
-    /// (protocol/01 § Joining, "creating a private channel").
+    /// (protocol/01 § Joining, "creating a private channel"). With `community=<hex>` the channel
+    /// is a text channel of that community instead — created, with the first member as its owner,
+    /// the first time — and `members=` are made members of the community: what the production
+    /// ACL (roles and overwrites) then answers from. Repeating the statement adds members.
     Channel {
         target: [u8; 16],
         visibility: String,
         mode: String,
         members: Vec<String>,
+        community: Option<[u8; 16]>,
     },
 }
 
@@ -240,6 +255,24 @@ fn hex16(s: &str, line: usize) -> Result<[u8; 16], ParseError> {
 
 fn named<'a>(args: &[&'a str], key: &str) -> Option<&'a str> {
     args.iter().find_map(|a| a.strip_prefix(key))
+}
+
+/// `key=<32 hex>` when present.
+fn opt_hex16(args: &[&str], key: &str, line: usize) -> Result<Option<[u8; 16]>, ParseError> {
+    named(args, key).map(|v| hex16(v, line)).transpose()
+}
+
+/// `key=<name>,<name>…` when present, none of them empty; an empty list when absent.
+fn name_list(args: &[&str], key: &str, line: usize) -> Result<Vec<String>, ParseError> {
+    let Some(list) = named(args, key) else {
+        return Ok(vec![]);
+    };
+    let names: Vec<String> = list.split(',').map(str::to_owned).collect();
+    if names.iter().any(String::is_empty) {
+        let what = key.trim_end_matches('=');
+        return Err(err(line, format!("{what} {list:?} names an empty client")));
+    }
+    Ok(names)
 }
 
 /// `30s`, `5m`, `24h`, `90d`: a scenario never writes a bare number of seconds for a 90-day window.
@@ -497,6 +530,7 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
             Stmt::Kick {
                 actor: args[0].to_owned(),
                 target: args[1].to_owned(),
+                community: opt_hex16(args, "community=", line_no)?,
             }
         }
         "advance_clock" => {
@@ -545,9 +579,19 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                         format!("join_many needs a positive count, got {:?}", args[1]),
                     )
                 })?;
+            let community = opt_hex16(args, "community=", line_no)?;
+            let revoke = name_list(args, "revoke=", line_no)?;
+            if !revoke.is_empty() && community.is_none() {
+                return Err(err(
+                    line_no,
+                    "revoke= needs community=: view is revoked through a community channel's overwrite",
+                ));
+            }
             Stmt::JoinMany {
                 group: args[0].to_owned(),
                 count,
+                community,
+                revoke,
             }
         }
         "expect_decrypts_all" => {
@@ -641,24 +685,20 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                     format!("unknown mode {mode:?}; expected e2ee or readable"),
                 ));
             }
-            let members: Vec<String> = match named(args, "members=") {
-                None => vec![],
-                Some(list) => {
-                    let names: Vec<String> = list.split(',').map(str::to_owned).collect();
-                    if names.iter().any(String::is_empty) {
-                        return Err(err(
-                            line_no,
-                            format!("members {list:?} names an empty client"),
-                        ));
-                    }
-                    names
-                }
-            };
+            let members = name_list(args, "members=", line_no)?;
+            let community = opt_hex16(args, "community=", line_no)?;
+            if community.is_some() && members.is_empty() {
+                return Err(err(
+                    line_no,
+                    "community= needs members=: the first member owns the community",
+                ));
+            }
             Stmt::Channel {
                 target: hex16(args[0], line_no)?,
                 visibility: visibility.to_owned(),
                 mode: mode.to_owned(),
                 members,
+                community,
             }
         }
         other => return Err(err(line_no, format!("unknown statement {other:?}"))),
@@ -863,10 +903,26 @@ expect_reject E_BINDING join bob chat
             one("kick alice bob").unwrap(),
             Stmt::Kick {
                 actor: "alice".into(),
-                target: "bob".into()
+                target: "bob".into(),
+                community: None,
             }
         );
         refused("kick alice", "kick needs 2");
+    }
+
+    // Fix wave I6: with `community=` the kick is the production one, DELETE
+    // /v1/communities/{cid}/members/{target} on the actor's authority.
+    #[test]
+    fn a_kick_may_name_the_community_it_removes_the_target_from() {
+        assert_eq!(
+            one("kick alice bob community=c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1").unwrap(),
+            Stmt::Kick {
+                actor: "alice".into(),
+                target: "bob".into(),
+                community: Some([0xc1; 16]),
+            }
+        );
+        refused("kick alice bob community=c1", "32 lowercase hex");
     }
 
     #[test]
@@ -966,12 +1022,38 @@ expect_reject E_BINDING join bob chat
             one("join_many chat 1000").unwrap(),
             Stmt::JoinMany {
                 group: "chat".into(),
-                count: 1000
+                count: 1000,
+                community: None,
+                revoke: vec![],
             }
         );
         refused("join_many chat 0", "positive count");
         refused("join_many chat many", "positive count");
         refused("join_many chat", "join_many needs 2");
+    }
+
+    // Fix wave I6: a storm through the production ACL makes its joiners members of the
+    // community first, and `revoke=` takes view away from some of them mid-storm.
+    #[test]
+    fn join_many_may_name_a_community_and_the_joiners_it_revokes() {
+        assert_eq!(
+            one("join_many chat 300 community=c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 revoke=chat-3,chat-290")
+                .unwrap(),
+            Stmt::JoinMany {
+                group: "chat".into(),
+                count: 300,
+                community: Some([0xc1; 16]),
+                revoke: vec!["chat-3".into(), "chat-290".into()],
+            }
+        );
+        refused(
+            "join_many chat 300 revoke=chat-3",
+            "revoke= needs community=",
+        );
+        refused(
+            "join_many chat 300 community=c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 revoke=chat-3,,chat-4",
+            "revoke",
+        );
     }
 
     #[test]
@@ -1184,6 +1266,7 @@ expect_reject E_BINDING join bob chat
                 visibility: "invite".into(),
                 mode: "readable".into(),
                 members: vec![],
+                community: None,
             }
         );
         assert_eq!(
@@ -1193,6 +1276,7 @@ expect_reject E_BINDING join bob chat
                 visibility: "private".into(),
                 mode: "e2ee".into(),
                 members: vec![],
+                community: None,
             }
         );
         assert_eq!(
@@ -1202,7 +1286,24 @@ expect_reject E_BINDING join bob chat
                 visibility: "private".into(),
                 mode: "e2ee".into(),
                 members: vec!["alice".into(), "bob".into()],
+                community: None,
             }
+        );
+        // Fix wave I6: a channel of a community, whose members are its community members.
+        assert_eq!(
+            one("channel c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 community=c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2 members=alice")
+                .unwrap(),
+            Stmt::Channel {
+                target: [0xc1; 16],
+                visibility: "private".into(),
+                mode: "e2ee".into(),
+                members: vec!["alice".into()],
+                community: Some([0xc2; 16]),
+            }
+        );
+        refused(
+            "channel c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 community=c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+            "community= needs members=",
         );
         refused(
             "channel c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 members=alice,,bob",

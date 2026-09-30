@@ -368,7 +368,11 @@ impl Runner {
                 let online = matches!(stmt, Stmt::GoOnline { .. });
                 self.with_client(client, |_, ds| ds.set_online(online).map_err(Into::into))
             }
-            Stmt::Kick { actor, target } => {
+            Stmt::Kick {
+                actor,
+                target,
+                community,
+            } => {
                 let (actor, target) = (self.device_of(actor)?, self.device_of(target)?);
                 if !self.is_remote() {
                     return Err(DsError::Unsupported(
@@ -381,9 +385,10 @@ impl Runner {
                 control_post(
                     "/debug/kick",
                     &format!(
-                        "{{\"actor\":\"{}\",\"target\":\"{}\"}}",
+                        "{{\"actor\":\"{}\",\"target\":\"{}\"{}}}",
                         actor.to_hex(),
-                        target.to_hex()
+                        target.to_hex(),
+                        community_field(community.as_ref())
                     ),
                 )?;
                 Ok(())
@@ -458,7 +463,12 @@ impl Runner {
                 }
                 Ok(())
             }),
-            Stmt::JoinMany { group, count } => self.join_many(group, *count),
+            Stmt::JoinMany {
+                group,
+                count,
+                community,
+                revoke,
+            } => self.join_many(group, *count, community.as_ref(), revoke),
             Stmt::ExpectDecryptsAll { actor } => {
                 let vouched = self.vouched.get(actor).copied().unwrap_or(0);
                 let deadline = Instant::now() + Self::EXPECT_WAIT;
@@ -553,6 +563,7 @@ impl Runner {
                 visibility,
                 mode,
                 members,
+                community,
             } => {
                 if !self.is_remote() {
                     return Err(DsError::Unsupported(
@@ -567,11 +578,12 @@ impl Runner {
                 control_post(
                     "/debug/channel",
                     &format!(
-                        "{{\"target\":\"{}\",\"visibility\":{},\"mode\":{},\"members\":[{}]}}",
+                        "{{\"target\":\"{}\",\"visibility\":{},\"mode\":{},\"members\":[{}]{}}}",
                         hex::encode(target),
                         json_string(visibility),
                         json_string(mode),
-                        users.join(",")
+                        users.join(","),
+                        community_field(community.as_ref())
                     ),
                 )?;
                 Ok(())
@@ -731,10 +743,21 @@ impl Runner {
     /// them at most `MAX_ADDS_PER_COMMIT` (256) to a commit, and each joins by its Welcome. A loop
     /// of `join` is not viable for 1,000 devices — each is a full commit — and the point of the
     /// scenario is that the Adds are batched.
-    fn join_many(&mut self, group: &str, count: usize) -> Result<(), TestkitError> {
-        let (id, binding, creator) = {
+    fn join_many(
+        &mut self,
+        group: &str,
+        count: usize,
+        community: Option<&[u8; 16]>,
+        revoke: &[String],
+    ) -> Result<(), TestkitError> {
+        let (id, binding, creator, target) = {
             let g = self.group(group)?;
-            (g.id.clone(), g.binding.clone(), g.creator.clone())
+            (
+                g.id.clone(),
+                g.binding.clone(),
+                g.creator.clone(),
+                g.binding.target_id,
+            )
         };
         let first = self.clients.len();
         let mut names = Vec::with_capacity(count);
@@ -743,10 +766,73 @@ impl Runner {
             self.new_client(&name, Tier::Native, Kind::User, 1, DeviceListMode::Signed)?;
             names.push(name);
         }
+        if let Some(unknown) = revoke.iter().find(|r| !names.contains(r)) {
+            return Err(TestkitError::Scenario(format!(
+                "revoke= names {unknown}, which is not one of this storm's joiners"
+            )));
+        }
         let devices = names
             .iter()
             .map(|n| self.device_of(n))
             .collect::<Result<Vec<_>, _>>()?;
+        if let Some(community) = community {
+            if !self.is_remote() {
+                return Err(DsError::Unsupported(
+                    "DsStub has no communities; use `ds <url>`".into(),
+                )
+                .into());
+            }
+            // The joiners become members of the channel's community, which is what makes them
+            // eligible under the production ACL; nothing else about the channel changes.
+            let users = names
+                .iter()
+                .map(|n| self.user_of(n).map(|u| format!("\"{}\"", u.to_hex())))
+                .collect::<Result<Vec<_>, _>>()?;
+            control_post(
+                "/debug/channel",
+                &format!(
+                    "{{\"target\":\"{}\",\"visibility\":\"private\",\"mode\":\"e2ee\",\"members\":[{}]{}}}",
+                    hex::encode(target),
+                    users.join(","),
+                    community_field(Some(community))
+                ),
+            )?;
+        }
+        if self.is_remote() && !revoke.is_empty() {
+            let actor = self.device_of(&creator)?.to_hex();
+            let hexes: Vec<String> = devices
+                .iter()
+                .map(|d| format!("\"{}\"", d.to_hex()))
+                .collect();
+            control_post(
+                "/debug/admit-batch",
+                &format!(
+                    "{{\"group\":\"{}\",\"devices\":[{}]}}",
+                    hex::encode(&id),
+                    hexes.join(",")
+                ),
+            )?;
+            // Mid-storm: the batch is queued and its first slice proposed; now the creator takes
+            // view away from the revoked joiners, through the production overwrite route.
+            for name in revoke {
+                let device = self.device_of(name)?.to_hex();
+                control_post(
+                    "/debug/deny-view",
+                    &format!(
+                        "{{\"actor\":\"{actor}\",\"target\":\"{device}\",\"channel\":\"{}\"}}",
+                        hex::encode(target)
+                    ),
+                )?;
+            }
+            let admitted = devices.len() - revoke.len();
+            for _ in 0..admitted.div_ceil(MAX_ADDS_PER_COMMIT) {
+                self.with_client(&creator, |committer, ds| committer.commit(ds, &id))?;
+            }
+            for name in names.iter().filter(|n| !revoke.contains(n)) {
+                self.with_client(name, |joiner, ds| joiner.join_welcome(ds, &id, &binding))?;
+            }
+            return Ok(());
+        }
         if self.is_remote() {
             // protocol/01 § Joining: "Creating a private channel … is done by the DS issuing Add
             // proposals in batches: the creator's device commits at most 256 Adds per commit".
@@ -937,6 +1023,13 @@ fn actor_of(stmt: &Stmt) -> Option<&str> {
         Stmt::ExpectReject { inner, .. } => actor_of(inner),
         _ => None,
     }
+}
+
+/// `,"community":"<hex>"` for a control body when a statement names a community, else nothing.
+fn community_field(community: Option<&[u8; 16]>) -> String {
+    community.map_or_else(String::new, |c| {
+        format!(",\"community\":\"{}\"", hex::encode(c))
+    })
 }
 
 /// A JSON string literal, for the one free-text value the control bodies carry.

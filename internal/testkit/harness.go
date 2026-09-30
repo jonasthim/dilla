@@ -48,6 +48,9 @@ type Options struct {
 	Clock    *clock.Fake
 	Seed     []SeedUser
 	LogLevel string
+	// ProductionACL runs the instance with the seams production wires (dilladtest.HostOptions):
+	// the scenario builds community structure and its kicks and revocations go through /v1.
+	ProductionACL bool
 }
 
 type Harness struct {
@@ -84,10 +87,11 @@ func Start(tb testing.TB, o Options) *Harness {
 	}
 
 	host, err := dilladtest.NewHost(context.Background(), dilladtest.HostOptions{
-		DataDir:  o.DataDir,
-		CorePath: core,
-		Clock:    o.Clock,
-		LogLevel: o.LogLevel,
+		DataDir:       o.DataDir,
+		CorePath:      core,
+		Clock:         o.Clock,
+		LogLevel:      o.LogLevel,
+		ProductionACL: o.ProductionACL,
 	})
 	if err != nil {
 		tb.Fatalf("dilladtest.NewHost: %v", err)

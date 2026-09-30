@@ -7,6 +7,7 @@
 package dilladtest
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -15,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -66,6 +68,14 @@ type HostOptions struct {
 	LogLevel string
 	// LogOutput receives the instance log; nil means os.Stderr.
 	LogOutput io.Writer
+	// ProductionACL builds the instance with the seams production runs: dillad.New gets no ACL and
+	// no Channels, so it wires api.ResolverACL (roles and channel overwrites) and
+	// api.StructureChannels (the channels, communities and members tables). A scenario then has to
+	// build real community structure (`channel … community=`) for any group it registers, and a
+	// kick or a revocation (`kick … community=`, `join_many … revoke=`) goes through the /v1
+	// routes. The default keeps AllowEveryone and ChannelModes, which the Plan 1 scenarios need
+	// because their groups are bound to targets they invent.
+	ProductionACL bool
 }
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
@@ -295,14 +305,163 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 	if out == nil {
 		out = os.Stderr
 	}
-	return dillad.New(ctx, dillad.Options{
-		Config:   h.cfg,
-		Clock:    h.clk,
-		Wasm:     h.wasm,
-		Log:      obs.NewLogger(h.cfg.Log, out),
-		ACL:      AllowEveryone{},
-		Channels: h.channels,
+	o := dillad.Options{
+		Config: h.cfg,
+		Clock:  h.clk,
+		Wasm:   h.wasm,
+		Log:    obs.NewLogger(h.cfg.Log, out),
+	}
+	// Left nil under ProductionACL, so New wires api.ResolverACL and api.StructureChannels. (An
+	// interface holding a nil *ChannelModes would not be nil; the fields are simply not set.)
+	if !h.o.ProductionACL {
+		o.ACL, o.Channels = AllowEveryone{}, h.channels
+	}
+	return dillad.New(ctx, o)
+}
+
+// PutCommunityChannel writes a text channel of community under target, with visibility and mode,
+// and makes every user in members a member of the community. The community is created the first
+// time, with members[0] as its owner and the @everyone role POST /v1/communities writes; the
+// channel is created the first time too. Under ProductionACL this is what the resolver, and so
+// invariant 1's registration ACL and invariant 4's eligibility, answer from. No proposal is
+// issued: joining a community enters no group (protocol/01, a joiner enters by external commit).
+func (h *Host) PutCommunityChannel(ctx context.Context, community, target id.ID, visibility, mode uint8, members []id.ID) error {
+	if len(members) == 0 {
+		return errors.New("dilladtest: a community channel needs at least its owner as a member")
+	}
+	repo := h.Server().Repo()
+	now := h.clk.Now().Unix()
+	return repo.Tx(ctx, func(tx store.Repository) error {
+		if _, err := tx.GetCommunity(ctx, community); errors.Is(err, store.ErrNotFound) {
+			if err := tx.CreateCommunity(ctx, store.CommunityRow{
+				ID: community, Owner: members[0], Name: "harness", PolicyJSON: []byte("{}"),
+				PolicyVersion: 1, Created: now,
+			}); err != nil {
+				return fmt.Errorf("dilladtest: community %s: %w", community, err)
+			}
+			if err := tx.PutRole(ctx, store.RoleRow{
+				ID: id.New(), CommunityID: community, Name: "@everyone", Position: 0,
+				Allow: uint64(api.DefaultEveryoneAllow), Created: now,
+			}); err != nil {
+				return fmt.Errorf("dilladtest: community %s @everyone: %w", community, err)
+			}
+		} else if err != nil {
+			return err
+		}
+		for _, u := range members {
+			if _, err := tx.GetMember(ctx, community, u); err == nil {
+				continue
+			} else if !errors.Is(err, store.ErrNotFound) {
+				return err
+			}
+			if err := tx.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community, UserID: u, Joined: now}); err != nil {
+				return fmt.Errorf("dilladtest: community %s member %s: %w", community, u, err)
+			}
+		}
+		if _, err := tx.GetChannel(ctx, target); errors.Is(err, store.ErrNotFound) {
+			c := community
+			if err := tx.CreateChannel(ctx, store.ChannelRow{
+				ID: target, CommunityID: &c, Kind: api.ChannelText, Mode: mode, Visibility: visibility,
+				Name: "harness", SettingsJSON: []byte("{}"), HostPolicyVersion: 1, Created: now,
+			}); err != nil {
+				return fmt.Errorf("dilladtest: channel %s: %w", target, err)
+			}
+		} else if err != nil {
+			return err
+		}
+		return nil
 	})
+}
+
+// AsDevice sends one /v1 request through the public handler in device's name, with a session
+// minted for it the way POST /v1/accounts mints one, and answers the status and the body. It is how
+// the control listener drives a production route (a kick, an overwrite) on a scenario client's
+// authority without that client's own session. Each call mints a session; a device holds at most
+// auth's per-device cap of them, so a scenario uses this a handful of times per device, not in a
+// loop.
+func (h *Host) AsDevice(ctx context.Context, device id.ID, method, path string, body any) (int, []byte, error) {
+	s := h.Server()
+	dev, err := s.Repo().GetDevice(ctx, device)
+	if err != nil {
+		return 0, nil, fmt.Errorf("dilladtest: device %s: %w", device, err)
+	}
+	tok, err := s.Sessions().NewDeviceSession(ctx, s.Repo(), dev.UserID, dev.ID, dev.Tier)
+	if err != nil {
+		return 0, nil, fmt.Errorf("dilladtest: a session for %s: %w", device, err)
+	}
+	var rd io.Reader
+	if body != nil {
+		b, err := cborx.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		rd = bytes.NewReader(b)
+	}
+	req := httptest.NewRequestWithContext(ctx, method, path, rd)
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/cbor")
+	}
+	rec := httptest.NewRecorder()
+	h.Handler().ServeHTTP(rec, req)
+	return rec.Code, rec.Body.Bytes(), nil
+}
+
+// RouteError is a /v1 refusal AsDevice's caller relays: the HTTP status and the E_* code of the
+// CBOR error body.
+type RouteError struct {
+	Status int
+	Code   string
+	Detail string
+}
+
+func (e *RouteError) Error() string { return e.Code + ": " + e.Detail }
+
+// routeResult turns an AsDevice answer into nil for a 2xx and a *RouteError otherwise.
+func routeResult(status int, body []byte) error {
+	if status >= 200 && status < 300 {
+		return nil
+	}
+	var e []any
+	if err := cborx.Unmarshal(body, &e); err != nil || len(e) < 2 {
+		return &RouteError{Status: status, Code: "E_UNKNOWN", Detail: fmt.Sprintf("%x", body)}
+	}
+	code, _ := e[0].(string)
+	detail, _ := e[1].(string)
+	return &RouteError{Status: status, Code: code, Detail: detail}
+}
+
+// KickFromCommunity is `kick <actor> <target> community=`: DELETE
+// /v1/communities/{community}/members/{target's user} on actor's authority, so the membership
+// transaction and the Removes and voids after it are production's.
+func (h *Host) KickFromCommunity(ctx context.Context, community, actor, target id.ID) error {
+	dev, err := h.Server().Repo().GetDevice(ctx, target)
+	if err != nil {
+		return fmt.Errorf("dilladtest: kick target %s: %w", target, err)
+	}
+	status, body, err := h.AsDevice(ctx, actor, http.MethodDelete,
+		"/v1/communities/"+community.String()+"/members/"+dev.UserID.String(), nil)
+	if err != nil {
+		return err
+	}
+	return routeResult(status, body)
+}
+
+// DenyView is `join_many … revoke=`: PUT /v1/channels/{channel}/overwrites/1/{target's user} with
+// view_channel denied, on actor's authority, so the resolver's verdict changes and the route's own
+// re-derivation (MaterialiseChannelMembers, and through it the delivery service) runs.
+func (h *Host) DenyView(ctx context.Context, channel, actor, target id.ID) error {
+	dev, err := h.Server().Repo().GetDevice(ctx, target)
+	if err != nil {
+		return fmt.Errorf("dilladtest: deny-view target %s: %w", target, err)
+	}
+	status, body, err := h.AsDevice(ctx, actor, http.MethodPut,
+		"/v1/channels/"+channel.String()+"/overwrites/1/"+dev.UserID.String(),
+		[]any{uint64(0), uint64(api.PermViewChannel)})
+	if err != nil {
+		return err
+	}
+	return routeResult(status, body)
 }
 
 // Channels is the channel-mode source the instance's invariant 1 reads; `channel <target> …`
