@@ -467,6 +467,7 @@ are CBOR as everywhere else.
 | `PUT /v1/channels/{id}/blobs/{blob_id}` | the ciphertext | `201 [blob_id(bstr 32), size(uint)]` when the bytes are new, `200` with the same body when they were already stored | `attach_files` |
 | `GET /v1/channels/{id}/blobs/{blob_id}` | — | `200` the ciphertext, or `206` for a `Range` request | `read_history` |
 | `HEAD /v1/channels/{id}/blobs/{blob_id}` | — | `200` with the `GET` headers and no body | `read_history` |
+| `DELETE /v1/channels/{id}/blobs/{blob_id}` | — | `204` | `view_channel`, and the uploading user only (`403 E_NOT_UPLOADER` for anyone else) |
 
 - **Uploading.** The instance hashes the body while it writes it and keeps it only when the digest
   equals `{blob_id}`; otherwise the answer is `422 E_INVALID_REQUEST` and nothing is stored. The
@@ -489,8 +490,49 @@ are CBOR as everywhere else.
   `ETag: "<blob_id hex>"` and `Repr-Digest: sha-256=:<base64 of blob_id>:`, and no
   `Last-Modified`. `Range`, `If-Range`, `If-Match` and `If-None-Match` follow RFC 9110; an
   unsatisfiable range is `416` with a plain-text body, without the `ETag` and `Cache-Control`.
-- **Deleting** a reference is the uploader's (`DELETE` above, § Communities and content); the
-  bytes go only when no reference is left anywhere and `blobs.gc_grace` has passed.
+  A blob an instance administrator purged is `410 E_PRUNED` on `GET` and `HEAD` too.
+- **Deleting.** `DELETE` removes this channel's **reference**, never the bytes. Only the user
+  whose device made the reference may delete it, from any of their devices; anyone else —
+  including a holder of `manage_messages` and the community owner — is `403 E_NOT_UPLOADER`,
+  because moderator deletion needs a signed moderation event this version does not have. Deleting
+  a reference that is already gone is `204`, so a retry is harmless. When the last reference to a
+  blob anywhere goes, the instance marks the blob unreferenced, and unlinks the file once
+  `blobs.gc_grace` (default 24 h) has passed with no reference created in between; a forward that
+  re-uploads the bytes inside that window keeps them.
+- **Retention.** An attachment's retention is its community's archival retention: a reference
+  older than the community policy's `retention_days` (§ Communities) is removed, and the blob then
+  follows the deletion rule above. A community without `retention_days`, a DM and a group DM keep
+  attachments indefinitely. Deleting a channel removes its references. Attachment retention never
+  follows `02`'s 30-day delivery window, because an archive restore needs attachments far older.
+
+### Admin
+
+The instance-admin routes. Every one is `E` and needs a user whose `users.flags` has bit 0 set
+(§ Flags); anyone else is `403 E_FORBIDDEN`. Every action is written to the audit log.
+
+| Method and path | Request | Response |
+|---|---|---|
+| `DELETE /v1/admin/blobs/{blob_id}` | `[reason(tstr)]` | `204` |
+| `GET /v1/admin/audit?since=&limit=` | — | `[[actor(bstr 16)\|null, action(tstr), target(tstr), detail(tstr), at(uint)]]` |
+| `POST /v1/admin/users/{id}/disable` | `[disabled(uint)]` | `204` |
+
+- **Purge.** `DELETE /v1/admin/blobs/{blob_id}` removes every reference to the blob in every
+  channel, deletes it and unlinks the file at once, and records a tombstone, so a later `PUT`,
+  `GET` or `HEAD` of those bytes is `410 E_PRUNED`. Without the tombstone, content addressing would
+  hand the purged name straight back to anyone still holding the ciphertext. Purging bytes the
+  instance does not hold still records the tombstone, so the table is also the operator's
+  blocklist; a second purge of the same bytes is `204`. `reason` is 1..1024 bytes with no NUL and
+  becomes the audit row's `detail` under the action `blob.purge`, whose `target` is the blob id in
+  hex. A purge removes **bytes, not content**: every attachment is encrypted under its own random
+  key, so the same file sent again by anyone has a different `blob_id`.
+- **Audit.** The rows whose `at` is at or after `since` (unix seconds, default 0), newest first, at
+  most `limit` (default 100, at most 1000). An empty log is an empty array.
+- **Disable.** `[1]` sets the user's `disabled_at` and, in the same transaction, deletes every
+  session of every device of that user; `[0]` clears `disabled_at`. Any other value is
+  `400 E_INVALID_REQUEST`, an unknown user `404 E_NOT_FOUND`. The audit action is `user.disable`
+  or `user.enable` with the user id in hex as `target`.
+- `GET /v1/admin/diagnostics` answers the `dillad doctor` report; its body is defined with the
+  report.
 
 ## Permissions
 

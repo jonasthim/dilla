@@ -517,6 +517,23 @@ type Blobs interface {
 	PutBlobTombstone(ctx context.Context, blobID []byte, reason string, by id.ID, at int64) error
 	GetBlobTombstone(ctx context.Context, blobID []byte) (bool, error)
 	UserBlobBytes(ctx context.Context, userID id.ID) (int64, error)
+	// DeleteAllBlobRefs is P2-D18: the admin purge removes every reference to
+	// the blob, in every channel, in one statement, and reports how many.
+	DeleteAllBlobRefs(ctx context.Context, blobID []byte) (int64, error)
+	// The sweeper's reference-expiry phase (Plan 2 task 11). A reference goes
+	// when its community's archival retention (R28, the policy's
+	// retention_days) has passed, or when its channel was deleted; the blob is
+	// then unreferenced and the grace window collects it like any other.
+	//
+	// ListBlobRetentionPolicies is the stored policy of every live community
+	// that holds a reference in a live channel, ordered by community id.
+	ListBlobRetentionPolicies(ctx context.Context) ([]BlobRetentionRow, error)
+	// ListExpiredBlobRefs is the community's references created strictly
+	// before `before`, oldest first, at most limit.
+	ListExpiredBlobRefs(ctx context.Context, communityID id.ID, before int64, limit int32) ([]BlobRefRow, error)
+	// ListBlobRefsOfDeletedChannels is the references held by tombstoned
+	// channels, oldest first, at most limit.
+	ListBlobRefsOfDeletedChannels(ctx context.Context, limit int32) ([]BlobRefRow, error)
 }
 
 type Ops interface {

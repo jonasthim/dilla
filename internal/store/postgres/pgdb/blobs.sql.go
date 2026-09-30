@@ -40,6 +40,24 @@ func (q *Queries) CountBlobRefs(ctx context.Context, arg CountBlobRefsParams) (i
 	return count, err
 }
 
+const deleteAllBlobRefs = `-- name: DeleteAllBlobRefs :execrows
+DELETE FROM blob_refs WHERE blob_id = $1
+`
+
+type DeleteAllBlobRefsParams struct {
+	BlobID []byte
+}
+
+// P2-D18 (Plan 2 task 11): the admin purge removes every reference to the blob, in every
+// channel, in one statement.
+func (q *Queries) DeleteAllBlobRefs(ctx context.Context, arg DeleteAllBlobRefsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAllBlobRefs, arg.BlobID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteBlob = `-- name: DeleteBlob :execrows
 DELETE FROM blobs WHERE blob_id = $1
 `
@@ -173,6 +191,91 @@ func (q *Queries) ListBackups(ctx context.Context, arg ListBackupsParams) ([]Bac
 	return items, nil
 }
 
+const listBlobRefsOfDeletedChannels = `-- name: ListBlobRefsOfDeletedChannels :many
+SELECT blob_refs.blob_id, blob_refs.channel_id, blob_refs.uploader_device, blob_refs.mime,
+       blob_refs.created
+FROM blob_refs
+JOIN channels ON channels.id = blob_refs.channel_id
+WHERE channels.deleted_at IS NOT NULL
+ORDER BY blob_refs.created, blob_refs.channel_id, blob_refs.blob_id
+LIMIT $1::bigint
+`
+
+type ListBlobRefsOfDeletedChannelsParams struct {
+	MaxRows int64
+}
+
+// Channels are tombstoned, never removed, so the ON DELETE CASCADE on blob_refs never fires:
+// the sweeper drops a deleted channel's references itself.
+func (q *Queries) ListBlobRefsOfDeletedChannels(ctx context.Context, arg ListBlobRefsOfDeletedChannelsParams) ([]BlobRefs, error) {
+	rows, err := q.db.QueryContext(ctx, listBlobRefsOfDeletedChannels, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BlobRefs{}
+	for rows.Next() {
+		var i BlobRefs
+		if err := rows.Scan(
+			&i.BlobID,
+			&i.ChannelID,
+			&i.UploaderDevice,
+			&i.Mime,
+			&i.Created,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBlobRetentionPolicies = `-- name: ListBlobRetentionPolicies :many
+SELECT communities.id, communities.policy_json FROM communities
+WHERE communities.deleted_at IS NULL
+  AND EXISTS (
+    SELECT 1 FROM channels JOIN blob_refs ON blob_refs.channel_id = channels.id
+    WHERE channels.community_id = communities.id AND channels.deleted_at IS NULL
+  )
+ORDER BY communities.id
+`
+
+type ListBlobRetentionPoliciesRow struct {
+	ID         id.ID
+	PolicyJson string
+}
+
+// Plan 2 task 11, R28: the policy of every live community that still holds a reference in a
+// live channel, so the sweeper parses one policy per community rather than one per reference.
+func (q *Queries) ListBlobRetentionPolicies(ctx context.Context) ([]ListBlobRetentionPoliciesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listBlobRetentionPolicies)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBlobRetentionPoliciesRow{}
+	for rows.Next() {
+		var i ListBlobRetentionPoliciesRow
+		if err := rows.Scan(&i.ID, &i.PolicyJson); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCollectableBlobs = `-- name: ListCollectableBlobs :many
 SELECT blobs.blob_id, blobs.size, blobs.storage_ref, blobs.created, blobs.unref_since FROM blobs
 WHERE blobs.unref_since IS NOT NULL AND blobs.unref_since < $1::bigint
@@ -201,6 +304,54 @@ func (q *Queries) ListCollectableBlobs(ctx context.Context, arg ListCollectableB
 			&i.StorageRef,
 			&i.Created,
 			&i.UnrefSince,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExpiredBlobRefs = `-- name: ListExpiredBlobRefs :many
+SELECT blob_refs.blob_id, blob_refs.channel_id, blob_refs.uploader_device, blob_refs.mime,
+       blob_refs.created
+FROM blob_refs
+JOIN channels ON channels.id = blob_refs.channel_id
+JOIN communities ON communities.id = channels.community_id
+WHERE communities.id = $1
+  AND blob_refs.created < $2::bigint
+ORDER BY blob_refs.created, blob_refs.channel_id, blob_refs.blob_id
+LIMIT $3::bigint
+`
+
+type ListExpiredBlobRefsParams struct {
+	CommunityID id.ID
+	Before      int64
+	MaxRows     int64
+}
+
+// A community's references created strictly before the retention cutoff, oldest first.
+func (q *Queries) ListExpiredBlobRefs(ctx context.Context, arg ListExpiredBlobRefsParams) ([]BlobRefs, error) {
+	rows, err := q.db.QueryContext(ctx, listExpiredBlobRefs, arg.CommunityID, arg.Before, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BlobRefs{}
+	for rows.Next() {
+		var i BlobRefs
+		if err := rows.Scan(
+			&i.BlobID,
+			&i.ChannelID,
+			&i.UploaderDevice,
+			&i.Mime,
+			&i.Created,
 		); err != nil {
 			return nil, err
 		}

@@ -15,6 +15,7 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/dillad"
@@ -141,6 +142,22 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	metrics := obs.NewMetrics(reg, reg)
 	health := obs.NewHealth(clock.System())
 
+	// The blob store, its start-up sweep of interrupted uploads and the
+	// garbage collector (Plan 2 task 11). SweepTemp runs before the listener
+	// accepts an upload, so it can never remove one in flight.
+	blobStore, err := blob.Open(cfg.Blobs.Dir, cfg.Blobs.Backend)
+	if err != nil {
+		return fmt.Errorf("serve: open blob store %s: %w: %w", cfg.Blobs.Dir, err, exit.CantCreate)
+	}
+	defer func() { _ = blobStore.Close() }()
+	if n, err := blobStore.SweepTemp(); err != nil {
+		return fmt.Errorf("serve: sweep temp uploads: %w: %w", err, exit.IOErr)
+	} else if n > 0 {
+		log.Info("removed interrupted uploads", "count", n)
+	}
+	sweeper := blob.NewSweeper(repo, blobStore, clock.System(), cfg.Blobs.GCGrace.Value(),
+		cfg.Blobs.GCInterval.Value(), log).WithMetrics(metrics)
+
 	srv, err := dillad.New(ctx, dillad.Options{
 		Config: cfg, Repo: repo, Clock: clock.System(), Log: log,
 		Metrics: metrics, Health: health, ScrapeToken: os.Getenv(metricsTokenEnv),
@@ -199,6 +216,21 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		}
 		fmt.Fprintln(stderr, "dillad: second signal received, exiting immediately")
 		os.Exit(int(exit.Fail))
+	}()
+
+	// The sweeper runs for exactly as long as this serve, and runServe waits
+	// for it before its deferred repo.Close and blobStore.Close, so a pass never
+	// runs against a closed database. Its context is its own so that a Serve
+	// that returns for a reason other than a signal still stops it.
+	sweepCtx, stopSweep := context.WithCancel(runCtx)
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		sweeper.Run(sweepCtx)
+	}()
+	defer func() {
+		stopSweep()
+		<-sweepDone
 	}()
 
 	notifyReady()

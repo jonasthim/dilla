@@ -1,0 +1,217 @@
+package blob
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"time"
+
+	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/jonasthim/dilla/internal/store"
+)
+
+// sweepBatch bounds one pass so the sweeper never holds the single SQLite write
+// connection for an unbounded delete. It bounds each phase of a pass: at most
+// sweepBatch references of deleted channels, sweepBatch references past a
+// retention policy, and sweepBatch collected blobs.
+const sweepBatch = 256
+
+// maxRetentionDays mirrors the policy validator's bound (api.ParseCommunityPolicy):
+// a century, so days * 86400 stays far inside an int64 even for a stored
+// document written before the bound existed.
+const maxRetentionDays = 36500
+
+// Sweeper is the blob garbage collector of gap-47 §8. A channel never deletes a
+// blob, only its reference; the sweeper unlinks a file only when no reference
+// remains anywhere and unref_since is older than the grace window. The window is
+// what makes the check-then-unlink race harmless: a forward that creates a
+// reference between the listing and the unlink would otherwise lose its bytes,
+// and with a 24 h window that race needs a 24 h stall inside one pass.
+//
+// Each pass first drops the references that have expired — those of a deleted
+// channel, and those older than their community's archival retention (R28,
+// the policy's retention_days; absent or 0 keeps them indefinitely) — which
+// marks their blobs unreferenced, and then collects the blobs whose grace
+// window has passed. A reference therefore expires into the same grace window a
+// deletion does.
+type Sweeper struct {
+	repo     store.Repository
+	store    *Store
+	clk      clock.Clock
+	grace    time.Duration
+	interval time.Duration
+	log      *slog.Logger
+	metrics  *obs.Metrics
+}
+
+// NewSweeper builds a sweeper over one repository and blob store. A negative
+// grace is treated as zero, and an interval that is not positive as one hour,
+// so a misconfigured duration can neither collect a blob before it is marked
+// nor spin the loop.
+func NewSweeper(repo store.Repository, s *Store, clk clock.Clock, grace, interval time.Duration, log *slog.Logger) *Sweeper {
+	if grace < 0 {
+		grace = 0
+	}
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	return &Sweeper{repo: repo, store: s, clk: clk, grace: grace, interval: interval, log: log}
+}
+
+// WithMetrics records every pass in m (dilla_blob_gc_*,
+// dilla_blob_refs_expired_total) and returns the sweeper.
+func (s *Sweeper) WithMetrics(m *obs.Metrics) *Sweeper {
+	s.metrics = m
+	return s
+}
+
+// Run sweeps every interval until ctx is done. dillad serve starts it once.
+func (s *Sweeper) Run(ctx context.Context) {
+	t := s.clk.NewTimer(s.interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C():
+			if n, err := s.SweepOnce(ctx); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				s.log.Error("blob sweep", "err", err)
+			} else if n > 0 {
+				s.log.Info("blob sweep", "deleted", n)
+			}
+			t.Reset(s.interval)
+		}
+	}
+}
+
+// SweepOnce runs one pass and returns how many blobs it unlinked. Blobs are
+// collected at most sweepBatch at a time, only when they have no reference and
+// unref_since is older than the grace window. The row is deleted first, inside a
+// transaction that re-checks for references; the file is unlinked after the
+// commit, so a crash between the two leaves an orphan file (harmless, and
+// dillad doctor reports it) rather than a row pointing at nothing.
+func (s *Sweeper) SweepOnce(ctx context.Context) (int, error) {
+	n, err := s.sweep(ctx)
+	s.metrics.BlobSweep(err)
+	return n, err
+}
+
+func (s *Sweeper) sweep(ctx context.Context) (int, error) {
+	now := s.clk.Now()
+	if err := s.expireReferences(ctx, now.Unix()); err != nil {
+		return 0, err
+	}
+	cutoff := now.Add(-s.grace).Unix()
+	rows, err := s.repo.ListCollectableBlobs(ctx, cutoff, sweepBatch)
+	if err != nil {
+		return 0, err
+	}
+	var deleted int
+	for _, row := range rows {
+		var collect bool
+		if err := s.repo.Tx(ctx, func(tx store.Repository) error {
+			n, err := tx.CountBlobRefs(ctx, row.BlobID)
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				// A reference appeared between the listing and now: clear the
+				// mark and leave the bytes alone. This is the forward case.
+				return tx.ClearBlobUnreferenced(ctx, row.BlobID)
+			}
+			collect = true
+			return tx.DeleteBlob(ctx, row.BlobID)
+		}); err != nil {
+			return deleted, err
+		}
+		if !collect {
+			continue
+		}
+		if err := s.store.Delete(row.BlobID); err != nil {
+			return deleted, err
+		}
+		s.metrics.BlobCollected(row.Size)
+		deleted++
+	}
+	return deleted, nil
+}
+
+// expireReferences drops the references of deleted channels and the references
+// past their community's retention policy, each in its own transaction that
+// also marks the blob unreferenced when it was the last reference.
+func (s *Sweeper) expireReferences(ctx context.Context, now int64) error {
+	gone, err := s.repo.ListBlobRefsOfDeletedChannels(ctx, sweepBatch)
+	if err != nil {
+		return err
+	}
+	for _, ref := range gone {
+		if err := s.dropReference(ctx, ref, now, "channel_deleted"); err != nil {
+			return err
+		}
+	}
+
+	policies, err := s.repo.ListBlobRetentionPolicies(ctx)
+	if err != nil {
+		return err
+	}
+	budget := sweepBatch
+	var expired int
+	for _, p := range policies {
+		days := retentionDays(p.PolicyJSON)
+		if days == 0 {
+			continue
+		}
+		// days is at most maxRetentionDays, so the product stays far inside an int64.
+		before := now - int64(days)*24*60*60 //nolint:gosec // G115: bounded by maxRetentionDays
+		refs, err := s.repo.ListExpiredBlobRefs(ctx, p.CommunityID, before, int32(budget))
+		if err != nil {
+			return err
+		}
+		for _, ref := range refs {
+			if err := s.dropReference(ctx, ref, now, "retention"); err != nil {
+				return err
+			}
+		}
+		expired += len(refs)
+		if budget -= len(refs); budget <= 0 {
+			break
+		}
+	}
+	if n := len(gone) + expired; n > 0 {
+		s.log.Info("blob references expired", "channel_deleted", len(gone), "retention", expired)
+	}
+	return nil
+}
+
+func (s *Sweeper) dropReference(ctx context.Context, ref store.BlobRefRow, now int64, reason string) error {
+	if err := s.repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.DeleteBlobRef(ctx, ref.BlobID, ref.ChannelID); err != nil {
+			return err
+		}
+		// A no-op while another channel still references the blob.
+		return tx.MarkBlobUnreferenced(ctx, ref.BlobID, now)
+	}); err != nil {
+		return err
+	}
+	s.metrics.BlobRefExpired(reason)
+	return nil
+}
+
+// retentionDays reads retention_days from a stored community policy document
+// (protocol/09 § Communities, api.CommunityPolicy). The document was validated
+// when it was written; a stored document this cannot read keeps its
+// attachments, because failing towards deletion would lose data an owner never
+// asked to delete. 0 is "indefinitely".
+func retentionDays(policy []byte) uint64 {
+	var p struct {
+		RetentionDays uint64 `json:"retention_days"`
+	}
+	if err := json.Unmarshal(policy, &p); err != nil {
+		return 0
+	}
+	return min(p.RetentionDays, maxRetentionDays)
+}

@@ -43,8 +43,7 @@ func (b *Blobs) Register(mux *server.Mux) {
 	// ServeMux routes HEAD to the GET handler, so one registration answers both;
 	// http.ServeContent writes no body for a HEAD and keeps the headers.
 	mux.HandleFunc("GET /v1/channels/{id}/blobs/{blob_id}", b.get)
-	// DELETE /v1/channels/{id}/blobs/{blob_id}, the uploader-only reference
-	// delete, is Plan 2 task 11's.
+	mux.HandleFunc("DELETE /v1/channels/{id}/blobs/{blob_id}", b.delete)
 }
 
 // octetStream is the one media type a blob travels as, both ways: the server
@@ -117,14 +116,10 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 			server.Errorf(server.CodeInvalidRequest, "Content-Type must be %s", octetStream)))
 		return
 	}
-	if tomb, err := b.repo.GetBlobTombstone(r.Context(), blobID); err != nil {
-		server.WriteError(w, err)
-		return
-	} else if tomb {
+	if err := b.refuseTombstoned(r.Context(), blobID); err != nil {
 		// Without this, content addressing undoes an admin purge: anyone holding
 		// the ciphertext re-PUTs it and gets the same name back.
-		server.WriteError(w, server.Errorf(server.CodePruned,
-			"these bytes were removed by the server operator"))
+		server.WriteError(w, err)
 		return
 	}
 	quota := b.cfg.QuotaBytesPerUser
@@ -234,6 +229,20 @@ func (b *Blobs) orphan(ctx context.Context, blobID []byte, n, now int64) {
 	}
 }
 
+// refuseTombstoned is 410 E_PRUNED for bytes an instance admin purged, on PUT
+// and on GET alike: the purge removed every reference, and the answer says why
+// rather than a bare 404.
+func (b *Blobs) refuseTombstoned(ctx context.Context, blobID []byte) error {
+	tomb, err := b.repo.GetBlobTombstone(ctx, blobID)
+	if err != nil {
+		return err
+	}
+	if tomb {
+		return server.Errorf(server.CodePruned, "these bytes were removed by the server operator")
+	}
+	return nil
+}
+
 func errStorageFull() *server.Error {
 	return server.Errorf(server.CodeStorageFull, "your attachment quota is exhausted")
 }
@@ -245,6 +254,10 @@ func errStorageFull() *server.Error {
 func (b *Blobs) get(w http.ResponseWriter, r *http.Request) {
 	_, ch, blobID, err := b.channel(r, PermReadHistory)
 	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := b.refuseTombstoned(r.Context(), blobID); err != nil {
 		server.WriteError(w, err)
 		return
 	}
@@ -285,4 +298,58 @@ func (b *Blobs) get(w http.ResponseWriter, r *http.Request) {
 	// Last-Modified, which is meaningless after a restore. This one call answers
 	// 206, 416, If-Range and 304.
 	http.ServeContent(w, r, "", time.Time{}, f)
+}
+
+// delete is DELETE /v1/channels/{id}/blobs/{blob_id}: it removes this channel's
+// REFERENCE, never the bytes (gap-47 INV-B3). When it was the last reference
+// anywhere the blob is marked unreferenced in the same transaction, and the
+// sweeper unlinks the file once blobs.gc_grace has passed. Deleting a reference
+// that is already gone is a success, so a retry is harmless.
+func (b *Blobs) delete(w http.ResponseWriter, r *http.Request) {
+	s, ch, blobID, err := b.channel(r, PermViewChannel)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ref, err := b.repo.GetBlobRef(r.Context(), blobID, ch.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		// Idempotent: deleting something that is already gone is a success.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	// R29 and R34: at v1 only the uploading user may delete, from any of their
+	// devices. There is NO moderator fallback — a channel's manage-messages holder
+	// is refused here like anyone else. Moderator deletion of an attachment needs a
+	// signed moderation event, which is follow-up card 2; letting PermManageMessages
+	// drop another user's reference would ship exactly the capability R29 defers,
+	// with no signed event and no audit row.
+	dev, err := b.repo.GetDevice(r.Context(), ref.UploaderDevice)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		server.WriteError(w, err)
+		return
+	}
+	// A reference whose device row is gone has no provable uploader, so nobody
+	// may delete it through this route; the admin purge still can.
+	if err != nil || dev.UserID != s.UserID {
+		server.WriteError(w, server.Errorf(server.CodeNotUploader,
+			"only the uploading user may delete this object"))
+		return
+	}
+	now := b.clk.Now().Unix()
+	if err := b.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.DeleteBlobRef(r.Context(), blobID, ch.ID); err != nil {
+			return err
+		}
+		// Sets unref_since only when no reference is left; the statement's own
+		// NOT EXISTS makes it safe to call unconditionally.
+		return tx.MarkBlobUnreferenced(r.Context(), blobID, now)
+	}); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

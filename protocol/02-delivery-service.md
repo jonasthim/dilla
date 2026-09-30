@@ -495,7 +495,10 @@ consumed or until their MLS lifetime expires. **Archival retention** is the comm
 for application ciphertext that every cursor has already passed (default: indefinite), recorded per
 message in `expires`, where an absent value means "retained". An instance MAY shorten either half
 per community policy; it MUST NOT lengthen the handshake window beyond 30 days without also
-lengthening client-side past-epoch retention, which this version does not allow.
+lengthening client-side past-epoch retention, which this version does not allow. Attachment blobs
+(`09` § Blobs) have no delivery half: they follow the community's archival retention only (default:
+indefinite) and never the 30-day window, because a device restoring an archive needs attachments
+far older than that.
 
 Cursors: a device's cursor advances only on an **explicit client acknowledgement**, never on
 fan-out — a frame put on a writer queue is not a delivery. The prune floor is the minimum cursor

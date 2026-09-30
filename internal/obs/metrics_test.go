@@ -85,6 +85,8 @@ func TestMetricNamesAreTheDocumentedSet(t *testing.T) {
 		"dilla_ds_election_rounds_total", "dilla_wasi_calls_total",
 		"dilla_wasi_call_duration_seconds", "dilla_store_tx_duration_seconds",
 		"dilla_blob_bytes_total", "dilla_rate_limited_total",
+		"dilla_blob_gc_runs_total", "dilla_blob_gc_deleted_total", "dilla_blob_gc_bytes_total",
+		"dilla_blob_refs_expired_total", "dilla_blob_purges_total",
 	}
 	families, err := reg.Gather()
 	if err != nil {
@@ -125,4 +127,14 @@ func nameOf(d *prometheus.Desc) string {
 		return ""
 	}
 	return rest[:j]
+}
+
+// The blob recorders are nil-safe: the sweeper and the admin handler are built
+// without metrics in tests and CLI verbs.
+func TestTheBlobRecordersAreNilSafe(t *testing.T) {
+	var m *obs.Metrics
+	m.BlobSweep(nil)
+	m.BlobCollected(1)
+	m.BlobRefExpired("retention")
+	m.BlobPurged()
 }

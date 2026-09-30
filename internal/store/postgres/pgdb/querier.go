@@ -38,6 +38,9 @@ type Querier interface {
 	CreateInvite(ctx context.Context, arg CreateInviteParams) error
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
+	// P2-D18 (Plan 2 task 11): the admin purge removes every reference to the blob, in every
+	// channel, in one statement.
+	DeleteAllBlobRefs(ctx context.Context, arg DeleteAllBlobRefsParams) (int64, error)
 	DeleteBan(ctx context.Context, arg DeleteBanParams) (int64, error)
 	DeleteBlob(ctx context.Context, arg DeleteBlobParams) (int64, error)
 	DeleteBlobRef(ctx context.Context, arg DeleteBlobRefParams) error
@@ -120,6 +123,12 @@ type Querier interface {
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
 	ListBackups(ctx context.Context, arg ListBackupsParams) ([]Backups, error)
 	ListBans(ctx context.Context, arg ListBansParams) ([]Bans, error)
+	// Channels are tombstoned, never removed, so the ON DELETE CASCADE on blob_refs never fires:
+	// the sweeper drops a deleted channel's references itself.
+	ListBlobRefsOfDeletedChannels(ctx context.Context, arg ListBlobRefsOfDeletedChannelsParams) ([]BlobRefs, error)
+	// Plan 2 task 11, R28: the policy of every live community that still holds a reference in a
+	// live channel, so the sweeper parses one policy per community rather than one per reference.
+	ListBlobRetentionPolicies(ctx context.Context) ([]ListBlobRetentionPoliciesRow, error)
 	ListChannelMembers(ctx context.Context, arg ListChannelMembersParams) ([]id.ID, error)
 	ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error)
 	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
@@ -127,6 +136,8 @@ type Querier interface {
 	ListChannelsForUser(ctx context.Context, arg ListChannelsForUserParams) ([]Channels, error)
 	ListCollectableBlobs(ctx context.Context, arg ListCollectableBlobsParams) ([]Blobs, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
+	// A community's references created strictly before the retention cutoff, oldest first.
+	ListExpiredBlobRefs(ctx context.Context, arg ListExpiredBlobRefsParams) ([]BlobRefs, error)
 	// The retention walk, and deliberately NOT `ListOpenGroups`: invariant 10 caps application
 	// ciphertext at thirty days for every group, and a group invariant 11 closed is still ciphertext
 	// on the disk. Filtering on `closed_at IS NULL` here would mean a closed group's blobs are never

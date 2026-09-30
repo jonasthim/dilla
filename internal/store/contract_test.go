@@ -177,6 +177,11 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// Plan 2 task 10: P2-D16's ClearBlobUnreferenced, and P2-D17's
 			// GetBlobRef, which the GET's "404 without a reference here" rule needs.
 			"ClearBlobUnreferenced", "GetBlobRef",
+			// Plan 2 task 11: P2-D18's DeleteAllBlobRefs for the admin purge, and
+			// the three reads the sweeper's reference-expiry phase needs (the
+			// community retention policy, R28, and deleted channels).
+			"DeleteAllBlobRefs", "ListBlobRetentionPolicies", "ListExpiredBlobRefs",
+			"ListBlobRefsOfDeletedChannels",
 		}},
 		{"Ops", reflect.TypeOf((*store.Ops)(nil)).Elem(), []string{
 			"Audit", "GetReport", "ListAudit", "PutReport", "SchemaVersion",
@@ -291,6 +296,7 @@ func TestDeferredRowTypesAreDeclared(t *testing.T) {
 		"ReadableMessageRow":   store.ReadableMessageRow{},
 		"BlobRow":              store.BlobRow{},
 		"BlobRefRow":           store.BlobRefRow{},
+		"BlobRetentionRow":     store.BlobRetentionRow{},
 		"BackupRow":            store.BackupRow{},
 		"ReadableSearchQuery":  store.ReadableSearchQuery{},
 		"ReadableSearchHit":    store.ReadableSearchHit{},

@@ -187,3 +187,47 @@ func probe(addr string) error {
 	}
 	return nil
 }
+
+// `dillad serve` opens the blob store, removes the .tmp-* files an interrupted
+// upload left behind before the listener accepts anything, starts the blob
+// sweeper, and stops the sweeper again before it returns (Plan 2 task 11).
+func TestServeSweepsInterruptedUploadsAtStart(t *testing.T) {
+	cfgPath := bootstrapServeConfig(t)
+	c, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	leftover := filepath.Join(c.Blobs.Dir, "att", "ab", "cd", "abcd.tmp-crashed")
+	if err := os.MkdirAll(filepath.Dir(leftover), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(leftover, []byte("half an upload"), 0o600); err != nil {
+		t.Fatalf("write leftover: %v", err)
+	}
+
+	var stdout, stderr syncBuffer
+	served := make(chan error, 1)
+	go func() { served <- dispatch([]string{"serve", "--config=" + cfgPath}, &stdout, &stderr) }()
+	addr := waitForListenAddr(t, &stdout, served)
+	if err := probe(addr); err != nil {
+		t.Fatalf("probe /healthz: %v", err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Fatalf("the interrupted upload survived start-up: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "removed interrupted uploads") {
+		t.Fatalf("serve did not log the sweep: %s", stderr.String())
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("SIGTERM: %v", err)
+	}
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("serve never returned: the sweeper was not stopped")
+	}
+}

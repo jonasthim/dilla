@@ -17,6 +17,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
@@ -39,8 +40,11 @@ type env struct {
 	// DS records the delivery-service calls the Communities and Channels
 	// handlers communityEnv and channelEnv mount make (task 4). It never stands
 	// in for the delivery service's own behaviour, which internal/ds tests.
-	DS   *recordingDS
-	sess map[string]auth.Session // bearer token -> session
+	DS *recordingDS
+	// Blobs is the blob store blobEnv mounts the blob and admin routes over
+	// (tasks 10 and 11); nil in every other harness.
+	Blobs *blob.Store
+	sess  map[string]auth.Session // bearer token -> session
 }
 
 // newEnv builds a repository over a temp SQLite file, migrates it, and returns an

@@ -244,3 +244,103 @@ func TestBackupsRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// Plan 2 task 11: P2-D18's DeleteAllBlobRefs, and the reads behind the
+// sweeper's reference-expiry phase — the retention policy of every live
+// community that holds a reference (R28), a community's references older than a
+// cutoff, and the references left in deleted channels.
+func TestBlobReferenceExpiryAndPurge(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			alice := seedUser(ctx, t, repo).ID
+			dev := seedDevice(ctx, t, repo, alice)
+			cidA, cidB, cidEmpty := seedCommunity(ctx, t, repo), seedCommunity(ctx, t, repo), seedCommunity(ctx, t, repo)
+			if err := repo.UpdateCommunityPolicy(ctx, cidA, []byte(`{"retention_days":3}`), 2); err != nil {
+				t.Fatalf("UpdateCommunityPolicy: %v", err)
+			}
+			mk := func(cid id.ID) id.ID {
+				ch := channelIn(cid, 0, 0, 0, "files", 0)
+				if err := repo.CreateChannel(ctx, ch); err != nil {
+					t.Fatalf("CreateChannel: %v", err)
+				}
+				return ch.ID
+			}
+			chA1, chA2, chB := mk(cidA), mk(cidA), mk(cidB)
+			mk(cidEmpty)
+			x, y, z := digest(0x11), digest(0x22), digest(0x33)
+			for _, b := range [][]byte{x, y, z} {
+				if err := repo.PutBlob(ctx, store.BlobRow{BlobID: b, Size: 10, StorageRef: "fs:b", Created: 1}); err != nil {
+					t.Fatalf("PutBlob: %v", err)
+				}
+			}
+			for _, r := range []struct {
+				blob    []byte
+				ch      id.ID
+				created int64
+			}{{x, chA1, 100}, {y, chA1, 200}, {x, chA2, 150}, {x, chB, 100}, {z, chB, 300}} {
+				if err := repo.PutBlobRef(ctx, r.blob, r.ch, dev, "", r.created); err != nil {
+					t.Fatalf("PutBlobRef: %v", err)
+				}
+			}
+
+			// Only live communities that hold a reference are listed, each once,
+			// with the policy exactly as stored.
+			pols, err := repo.ListBlobRetentionPolicies(ctx)
+			if err != nil {
+				t.Fatalf("ListBlobRetentionPolicies: %v", err)
+			}
+			got := map[id.ID]string{}
+			for _, p := range pols {
+				got[p.CommunityID] = string(p.PolicyJSON)
+			}
+			if len(pols) != 2 || got[cidA] != `{"retention_days":3}` || got[cidB] != `{}` {
+				t.Fatalf("ListBlobRetentionPolicies = %+v", pols)
+			}
+
+			// A community's references created strictly before the cutoff, oldest
+			// first, bounded by limit; another community's never.
+			refs, err := repo.ListExpiredBlobRefs(ctx, cidA, 200, 10)
+			if err != nil {
+				t.Fatalf("ListExpiredBlobRefs: %v", err)
+			}
+			if len(refs) != 2 || refs[0].Created != 100 || refs[0].ChannelID != chA1 || !bytes.Equal(refs[0].BlobID, x) ||
+				refs[1].Created != 150 || refs[1].ChannelID != chA2 || refs[1].UploaderDevice != dev {
+				t.Fatalf("ListExpiredBlobRefs(A, 200) = %+v", refs)
+			}
+			if refs, _ := repo.ListExpiredBlobRefs(ctx, cidA, 1<<40, 1); len(refs) != 1 || refs[0].Created != 100 {
+				t.Fatalf("ListExpiredBlobRefs limit 1 = %+v", refs)
+			}
+
+			// No channel is deleted yet.
+			if refs, err := repo.ListBlobRefsOfDeletedChannels(ctx, 10); err != nil || len(refs) != 0 {
+				t.Fatalf("ListBlobRefsOfDeletedChannels before a delete = %+v, %v", refs, err)
+			}
+			if _, err := repo.DeleteChannelsOfCommunity(ctx, cidB, 500); err != nil {
+				t.Fatalf("DeleteChannelsOfCommunity: %v", err)
+			}
+			refs, err = repo.ListBlobRefsOfDeletedChannels(ctx, 10)
+			if err != nil || len(refs) != 2 || refs[0].ChannelID != chB || refs[0].Created != 100 || refs[1].Created != 300 {
+				t.Fatalf("ListBlobRefsOfDeletedChannels = %+v, %v", refs, err)
+			}
+			if refs, _ := repo.ListBlobRefsOfDeletedChannels(ctx, 1); len(refs) != 1 {
+				t.Fatalf("ListBlobRefsOfDeletedChannels limit 1 = %+v", refs)
+			}
+
+			// The purge's one statement: every reference to x, everywhere.
+			n, err := repo.DeleteAllBlobRefs(ctx, x)
+			if err != nil || n != 3 {
+				t.Fatalf("DeleteAllBlobRefs = %d, %v; want 3", n, err)
+			}
+			if c, _ := repo.CountBlobRefs(ctx, x); c != 0 {
+				t.Fatalf("CountBlobRefs after DeleteAllBlobRefs = %d", c)
+			}
+			if c, _ := repo.CountBlobRefs(ctx, y); c != 1 {
+				t.Fatalf("DeleteAllBlobRefs touched another blob: %d left", c)
+			}
+			if n, err := repo.DeleteAllBlobRefs(ctx, x); err != nil || n != 0 {
+				t.Fatalf("DeleteAllBlobRefs again = %d, %v; want 0", n, err)
+			}
+		})
+	}
+}

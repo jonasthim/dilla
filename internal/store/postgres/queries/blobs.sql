@@ -71,6 +71,45 @@ WHERE b.blob_id IN (
   WHERE d.user_id = sqlc.arg(user_id)
 );
 
+-- name: DeleteAllBlobRefs :execrows
+-- P2-D18 (Plan 2 task 11): the admin purge removes every reference to the blob, in every
+-- channel, in one statement.
+DELETE FROM blob_refs WHERE blob_id = $1;
+
+-- name: ListBlobRetentionPolicies :many
+-- Plan 2 task 11, R28: the policy of every live community that still holds a reference in a
+-- live channel, so the sweeper parses one policy per community rather than one per reference.
+SELECT communities.id, communities.policy_json FROM communities
+WHERE communities.deleted_at IS NULL
+  AND EXISTS (
+    SELECT 1 FROM channels JOIN blob_refs ON blob_refs.channel_id = channels.id
+    WHERE channels.community_id = communities.id AND channels.deleted_at IS NULL
+  )
+ORDER BY communities.id;
+
+-- name: ListExpiredBlobRefs :many
+-- A community's references created strictly before the retention cutoff, oldest first.
+SELECT blob_refs.blob_id, blob_refs.channel_id, blob_refs.uploader_device, blob_refs.mime,
+       blob_refs.created
+FROM blob_refs
+JOIN channels ON channels.id = blob_refs.channel_id
+JOIN communities ON communities.id = channels.community_id
+WHERE communities.id = sqlc.arg(community_id)
+  AND blob_refs.created < sqlc.arg(before)::bigint
+ORDER BY blob_refs.created, blob_refs.channel_id, blob_refs.blob_id
+LIMIT sqlc.arg(max_rows)::bigint;
+
+-- name: ListBlobRefsOfDeletedChannels :many
+-- Channels are tombstoned, never removed, so the ON DELETE CASCADE on blob_refs never fires:
+-- the sweeper drops a deleted channel's references itself.
+SELECT blob_refs.blob_id, blob_refs.channel_id, blob_refs.uploader_device, blob_refs.mime,
+       blob_refs.created
+FROM blob_refs
+JOIN channels ON channels.id = blob_refs.channel_id
+WHERE channels.deleted_at IS NOT NULL
+ORDER BY blob_refs.created, blob_refs.channel_id, blob_refs.blob_id
+LIMIT sqlc.arg(max_rows)::bigint;
+
 -- name: PutBackup :exec
 -- One row per (user, kind, device, chunk); a re-upload of the same chunk replaces it.
 INSERT INTO backups (user_id, kind, device_id, chunk_seq, blob_id, manifest_sig, created)

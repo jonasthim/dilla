@@ -472,6 +472,14 @@ type BlobRefRow struct {
 	Created        int64
 }
 
+// BlobRetentionRow is one community's stored policy document, as the blob
+// sweeper reads it to find the community's archival retention (Plan 2 task 11,
+// R28). PolicyJSON is communities.policy_json byte for byte.
+type BlobRetentionRow struct {
+	CommunityID id.ID
+	PolicyJSON  []byte
+}
+
 // BackupRow mirrors `backups` (interfaces.md §4.3), whose table is 008_blobs.sql
 // and therefore Plan 2 task 10's to ship.
 // DeviceID is NOT NULL with the all-zero id meaning "not device scoped"

@@ -2552,6 +2552,55 @@ func (r *Repo) UserBlobBytes(ctx context.Context, userID id.ID) (int64, error) {
 	return n, wrap(err)
 }
 
+func (r *Repo) DeleteAllBlobRefs(ctx context.Context, blobID []byte) (int64, error) {
+	n, err := r.w.DeleteAllBlobRefs(ctx, pgdb.DeleteAllBlobRefsParams{BlobID: blobID})
+	return n, wrap(err)
+}
+
+func (r *Repo) ListBlobRetentionPolicies(ctx context.Context) ([]store.BlobRetentionRow, error) {
+	rows, err := r.r.ListBlobRetentionPolicies(ctx)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BlobRetentionRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.BlobRetentionRow{CommunityID: row.ID, PolicyJSON: []byte(row.PolicyJson)})
+	}
+	return out, nil
+}
+
+func (r *Repo) ListExpiredBlobRefs(ctx context.Context, communityID id.ID, before int64, limit int32) ([]store.BlobRefRow, error) {
+	rows, err := r.r.ListExpiredBlobRefs(ctx, pgdb.ListExpiredBlobRefsParams{
+		CommunityID: communityID, Before: before, MaxRows: int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return blobRefRows(rows), nil
+}
+
+func (r *Repo) ListBlobRefsOfDeletedChannels(ctx context.Context, limit int32) ([]store.BlobRefRow, error) {
+	rows, err := r.r.ListBlobRefsOfDeletedChannels(ctx, pgdb.ListBlobRefsOfDeletedChannelsParams{MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return blobRefRows(rows), nil
+}
+
+func blobRefRows(rows []pgdb.BlobRefs) []store.BlobRefRow {
+	out := make([]store.BlobRefRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.BlobRefRow{
+			BlobID:         row.BlobID,
+			ChannelID:      row.ChannelID,
+			UploaderDevice: row.UploaderDevice,
+			Mime:           row.Mime,
+			Created:        row.Created,
+		})
+	}
+	return out
+}
+
 // ---------------------------------------------------------------- OpsBackups
 //
 // Plan 2 task 10 (P2-D5): the backups table ships in 00010_blobs.sql, so its

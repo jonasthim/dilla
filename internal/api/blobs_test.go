@@ -37,7 +37,10 @@ func blobEnvWithLimits(t *testing.T, maxBlob, quota int64) (*env, id.ID, string)
 	t.Cleanup(func() { _ = bs.Close() })
 	cfg := config.Default().Blobs
 	cfg.MaxBlobBytes, cfg.QuotaBytesPerUser = maxBlob, quota
-	api.NewBlobs(e.Repo, bs, api.NewResolver(e.Repo), cfg, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
+	log := slog.New(slog.DiscardHandler)
+	api.NewBlobs(e.Repo, bs, api.NewResolver(e.Repo), cfg, e.Clk, log).Register(e.Mux)
+	api.NewAdmin(e.Repo, bs, e.Clk, log).Register(e.Mux)
+	e.Blobs = bs
 	ch, _, status := newChannel(t, e, cid, tok, uint64(api.ChannelText), uint64(api.ModeE2EE),
 		uint64(api.VisPrivate), "files")
 	if status != http.StatusCreated {
