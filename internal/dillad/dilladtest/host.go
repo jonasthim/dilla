@@ -34,6 +34,7 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
@@ -379,10 +380,11 @@ func (h *Host) snapshotPath(name string) (string, error) {
 	if !snapshotName.MatchString(name) {
 		return "", fmt.Errorf("dilladtest: snapshot name %q is not [A-Za-z0-9_-]{1,64}", name)
 	}
-	return filepath.Join(h.cfg.Instance.DataDir, "snapshots", name+".db"), nil
+	return filepath.Join(h.cfg.Instance.DataDir, "snapshots", name+".tar.gz"), nil
 }
 
-// Snapshot copies the database, consistently, as a backup would.
+// Snapshot is `dillad backup`: ops.Backup writes the instance archive — database, blobs, keys —
+// exactly as the CLI does, under the shared data-directory lock.
 func (h *Host) Snapshot(ctx context.Context, name string) error {
 	path, err := h.snapshotPath(name)
 	if err != nil {
@@ -391,70 +393,50 @@ func (h *Host) Snapshot(ctx context.Context, name string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	_ = os.Remove(path)
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	db, err := sqlite.OpenWrite(h.cfg.DB.Path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // G304: a path the harness itself chose
 	if err != nil {
 		return err
 	}
-	defer func() { _ = db.Close() }()
-	if _, err := db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+	_, err = ops.Backup(ctx, h.cfg, h.server.Repo(), ops.BackupOptions{Out: f, IncludeBlobs: true, Clock: h.clk})
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		return fmt.Errorf("dilladtest: snapshot %s: %w", name, err)
 	}
 	return nil
 }
 
-// Restore does what `dillad restore` and the restart after it do: the server stops, the database
-// is replaced by the snapshot, a new server starts over it, and invariant 11's OnRestore bumps the
-// generation, marks every group epoch-unknown and purges the KeyPackages.
+// Restore is `dillad restore` followed by `dillad serve`: the server stops, ops.Restore — the
+// CLI's own code path — verifies the archive, swaps the data directory and runs invariant 11's
+// restore SQL (generation, epoch-unknown groups, KeyPackage purge, live calls ended), and the new
+// server finishes the pending restore at start through ds.FinishRestore, as serve does.
 func (h *Host) Restore(ctx context.Context, name string) error {
 	path, err := h.snapshotPath(name)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(path); err != nil {
+	archive, err := os.Open(path) //nolint:gosec // G304: a path the harness itself chose
+	if err != nil {
 		return fmt.Errorf("dilladtest: no snapshot %s: %w", name, err)
 	}
+	defer func() { _ = archive.Close() }()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err := h.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("dilladtest: stop the instance for the restore: %w", err)
 	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		if err := os.Remove(h.cfg.DB.Path + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
-	if err := copyFile(path, h.cfg.DB.Path); err != nil {
-		return err
+	if _, err := ops.Restore(ctx, h.cfg, ops.RestoreOptions{From: archive, RemoveOld: true, Clock: h.clk}); err != nil {
+		return fmt.Errorf("dilladtest: restore %s: %w", name, err)
 	}
 	server, err := h.newServer(ctx)
 	if err != nil {
 		return fmt.Errorf("dilladtest: start the restored instance: %w", err)
 	}
 	h.server = server
-	if err := server.DS().OnRestore(ctx, 0); err != nil {
-		return fmt.Errorf("dilladtest: OnRestore: %w", err)
-	}
 	return nil
-}
-
-func copyFile(from, to string) error {
-	in, err := os.Open(from) //nolint:gosec // G304: a test host copying between two paths the harness itself chose
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: a test host copying between two paths the harness itself chose
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
 }
 
 // Close stops the server and, when NewHost compiled it, the wasm runtime.

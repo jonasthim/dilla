@@ -626,6 +626,25 @@ func hashFile(ctx context.Context, p string) (int64, string, error) {
 	return n, hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// countReader counts what is read through it, for the "short member" message,
+// and keeps the first read error, so a sink that fails because the archive was
+// short is reported as the damaged archive it is (exit.Data), not as the
+// sink's own failure.
+type countReader struct {
+	r   io.Reader
+	n   int64
+	err error
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	if err != nil && !errors.Is(err, io.EOF) && c.err == nil {
+		c.err = err
+	}
+	return n, err
+}
+
 // readerCtx stops a long copy when ctx is done.
 type readerCtx struct {
 	ctx context.Context
@@ -717,6 +736,18 @@ channel.
 // in the manifest's order with the manifest's size and SHA-256, and nothing
 // after the last. Every refusal carries exit.Data.
 func Verify(ctx context.Context, r io.Reader) (Manifest, error) {
+	return readArchive(ctx, r, nil, nil)
+}
+
+// readArchive is Verify's one reader, which restore shares. check, when set,
+// sees the manifest before any member and before Verify's own format and schema
+// checks, so restore refuses a newer schema with its own exit code. sink, when
+// set, is handed every member after the manifest as it streams past; the bytes
+// it reads are the bytes hashed, and whatever it leaves unread is drained and
+// hashed too, so a sink never weakens the check. A sink that writes files must
+// treat them as provisional until readArchive returns nil: the digest of a
+// member is compared only once the member has been read to its end.
+func readArchive(ctx context.Context, r io.Reader, check func(Manifest) error, sink func(Entry, io.Reader) error) (Manifest, error) {
 	bad := func(format string, args ...any) error {
 		return fmt.Errorf("ops: verify: %s: %w", fmt.Sprintf(format, args...), exit.Data)
 	}
@@ -746,6 +777,11 @@ func Verify(ctx context.Context, r io.Reader) (Manifest, error) {
 	if man.FormatVersion != FormatVersion {
 		return Manifest{}, bad("format_version %d, this binary reads %d", man.FormatVersion, FormatVersion)
 	}
+	if check != nil {
+		if err := check(man); err != nil {
+			return Manifest{}, err
+		}
+	}
 	highest, err := HighestMigration(man.Engine)
 	if err != nil {
 		return Manifest{}, bad("engine %q: %v", man.Engine, err)
@@ -768,11 +804,19 @@ func Verify(ctx context.Context, r io.Reader) (Manifest, error) {
 			return Manifest{}, bad("member %s is %d bytes, the manifest says %d", e.Path, hdr.Size, e.Size)
 		}
 		h := sha256.New()
+		counted := &countReader{r: io.TeeReader(tr, h)}
+		if sink != nil {
+			if err := sink(e, counted); err != nil {
+				if counted.err != nil {
+					return Manifest{}, bad("member %s is short: read %d of %d bytes: %v", e.Path, counted.n, e.Size, counted.err)
+				}
+				return Manifest{}, err
+			}
+		}
 		// Streamed into a hash, never buffered: the member is bounded by its
 		// header's size, which must already equal the manifest's.
-		n, err := io.Copy(h, tr) //nolint:gosec // G110: nothing is held in memory; the read is bounded by hdr.Size
-		if err != nil {
-			return Manifest{}, bad("member %s is short: read %d of %d bytes: %v", e.Path, n, e.Size, err)
+		if _, err := io.Copy(io.Discard, counted); err != nil {
+			return Manifest{}, bad("member %s is short: read %d of %d bytes: %v", e.Path, counted.n, e.Size, err)
 		}
 		if got := hex.EncodeToString(h.Sum(nil)); got != e.SHA256 {
 			return Manifest{}, bad("member %s: sha256 mismatch: the archive holds %s, the manifest says %s", e.Path, got, e.SHA256)

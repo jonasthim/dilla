@@ -1,6 +1,12 @@
 # Invariant 11's terminal path: after a restore nobody heals the group, the 24-hour heal window
 # closes, and the instance closes the group so the channel owner's device re-creates it. The clock
 # is moved past the window rather than waited out: the sweep evaluates the deadline lazily.
+#
+# snapshot and restore_snapshot run the CLI's own code (Plan 2 task 13): the test host writes the
+# archive with ops.Backup, as `dillad backup` does, restores it with ops.Restore, as `dillad
+# restore` does, and the restarted instance finishes the pending restore at start, as `dillad
+# serve` does. The re-created group proves the restored instance is usable afterwards, although
+# the restore purged every ordinary KeyPackage bob's device had published before it.
 instance dilla
 client alice
 client bob
@@ -12,3 +18,8 @@ commit alice
 restore_snapshot before
 advance_clock 24h
 expect_closed chat
+group chat2 kind=text target=dcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc community=none creator=alice
+join bob chat2 via=welcome
+sync bob
+send alice chat2 re-created after the restore
+expect_decrypts bob chat2 re-created after the restore

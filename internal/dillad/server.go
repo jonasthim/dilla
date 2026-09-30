@@ -204,6 +204,17 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		closeWasmOnError()
 		return nil, err
 	}
+	// A `dillad restore` left pending finishes here (invariant 11): the CLI ran the restore's SQL
+	// with no delivery service, and OnRestore — the same call the in-process path makes — re-arms
+	// every heal window from this start. It runs BEFORE Start, so the sweeper never closes a group
+	// on a deadline that ran out while the instance was down.
+	if finished, err := delivery.FinishRestore(ctx); err != nil {
+		closeWasmOnError()
+		return nil, fmt.Errorf("dillad: finish the pending restore: %w", err)
+	} else if finished {
+		o.Log.Warn("finished a restore: every group is epoch-unknown until a member heals it",
+			"generation", instance.Generation, "heal_window", policy.HealWindow.String())
+	}
 
 	// Revoking a device closes its sockets in the same breath as its sessions
 	// (protocol/02, "Device sessions", rule 6).

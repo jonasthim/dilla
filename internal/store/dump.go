@@ -5,8 +5,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"math"
+	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -137,4 +141,207 @@ func DumpPostgres(ctx context.Context, dsn string, w io.Writer) error {
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// maxDumpTableName bounds a record's table name; every name in DumpTables is
+// far shorter, so a longer one is a damaged or foreign stream.
+const maxDumpTableName = 64
+
+// ReadDump walks a DumpPostgres stream record by record, calling fn with each
+// table's name and a reader bounded to exactly its COPY payload. fn need not
+// read the payload to its end: whatever it leaves is skipped. A table name that
+// is not in DumpTables is refused before fn sees it, so a crafted stream can
+// never name an identifier the restore would splice into SQL.
+func ReadDump(r io.Reader, fn func(table string, payload io.Reader) error) error {
+	magic := make([]byte, len(DumpMagic))
+	if _, err := io.ReadFull(r, magic); err != nil || string(magic) != DumpMagic {
+		return fmt.Errorf("store: not a %s stream", DumpMagic)
+	}
+	var version uint32
+	if err := binary.Read(r, binary.BigEndian, &version); err != nil {
+		return fmt.Errorf("store: dump version: %w", err)
+	}
+	if version != DumpVersion {
+		return fmt.Errorf("store: dump version %d, this binary reads %d", version, DumpVersion)
+	}
+	for {
+		var nameLen uint32
+		if err := binary.Read(r, binary.BigEndian, &nameLen); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("store: dump record header: %w", err)
+		}
+		if nameLen == 0 || nameLen > maxDumpTableName {
+			return fmt.Errorf("store: dump record names a table of %d bytes", nameLen)
+		}
+		name := make([]byte, nameLen)
+		if _, err := io.ReadFull(r, name); err != nil {
+			return fmt.Errorf("store: dump record header: %w", err)
+		}
+		table := string(name)
+		if !slices.Contains(DumpTables, table) {
+			return fmt.Errorf("store: dump record names %q, which is not a dilla table", table)
+		}
+		var size uint64
+		if err := binary.Read(r, binary.BigEndian, &size); err != nil {
+			return fmt.Errorf("store: dump record header for %s: %w", table, err)
+		}
+		if size > math.MaxInt64 {
+			return fmt.Errorf("store: dump record for %s claims %d bytes", table, size)
+		}
+		payload := &io.LimitedReader{R: r, N: int64(size)}
+		if err := fn(table, payload); err != nil {
+			return err
+		}
+		if _, err := io.Copy(io.Discard, payload); err != nil {
+			return fmt.Errorf("store: dump payload for %s: %w", table, err)
+		}
+		if payload.N != 0 {
+			return fmt.Errorf("store: dump payload for %s is short by %d bytes", table, payload.N)
+		}
+	}
+}
+
+// copySignature opens every PostgreSQL binary COPY stream.
+var copySignature = []byte("PGCOPY\n\xff\r\n\x00")
+
+// CountCopyRows counts the tuples in one binary COPY payload (PostgreSQL's
+// "Binary Format": an 11-byte signature, a 32-bit flags field, a header
+// extension, then per tuple a 16-bit field count and each field's 32-bit
+// length and bytes, ended by a field count of -1). It keeps nothing, so a dry
+// run can report a Postgres archive's row counts without a database.
+func CountCopyRows(r io.Reader) (int64, error) {
+	sig := make([]byte, len(copySignature))
+	if _, err := io.ReadFull(r, sig); err != nil || !bytes.Equal(sig, copySignature) {
+		return 0, errors.New("store: not a binary COPY payload")
+	}
+	var flags, extLen int32
+	if err := binary.Read(r, binary.BigEndian, &flags); err != nil {
+		return 0, fmt.Errorf("store: COPY header: %w", err)
+	}
+	if err := binary.Read(r, binary.BigEndian, &extLen); err != nil {
+		return 0, fmt.Errorf("store: COPY header: %w", err)
+	}
+	if extLen < 0 {
+		return 0, errors.New("store: negative COPY header extension")
+	}
+	if _, err := io.CopyN(io.Discard, r, int64(extLen)); err != nil {
+		return 0, fmt.Errorf("store: COPY header: %w", err)
+	}
+	var rows int64
+	for {
+		var fields int16
+		if err := binary.Read(r, binary.BigEndian, &fields); err != nil {
+			return 0, fmt.Errorf("store: COPY tuple header: %w", err)
+		}
+		if fields == -1 {
+			return rows, nil
+		}
+		if fields < 0 {
+			return 0, fmt.Errorf("store: COPY tuple with %d fields", fields)
+		}
+		for range fields {
+			var n int32
+			if err := binary.Read(r, binary.BigEndian, &n); err != nil {
+				return 0, fmt.Errorf("store: COPY field header: %w", err)
+			}
+			if n > 0 {
+				if _, err := io.CopyN(io.Discard, r, int64(n)); err != nil {
+					return 0, fmt.Errorf("store: COPY field: %w", err)
+				}
+			}
+		}
+		rows++
+	}
+}
+
+// LoadPostgres replays a DumpPostgres stream into the database at dsn, in ONE
+// transaction: every dilla table the schema holds is emptied in one TRUNCATE,
+// then each table the stream names is refilled with COPY FROM STDIN in the
+// stream's order, which is DumpTables' parents-before-children order. Either
+// the whole archive lands or nothing changes.
+//
+// The target must already be at the archive's schema version: a binary COPY
+// carries no column names, so a table whose columns differ from the dump's
+// fails its COPY, and the transaction with it. COPY FROM writes the dumped
+// value into a GENERATED ALWAYS identity column (PostgreSQL's COPY
+// documentation), so each identity sequence is then moved past its table's
+// highest value; a generated column (readable_messages.body_tsv) is left out by
+// COPY in both directions and recomputed as the row lands.
+func LoadPostgres(ctx context.Context, dsn string, r io.Reader) error {
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("store: connect for load: %w", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin load: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	present := make([]string, 0, len(DumpTables))
+	for _, table := range DumpTables {
+		var ok bool
+		if err := tx.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&ok); err != nil {
+			return fmt.Errorf("store: look up %s: %w", table, err)
+		}
+		if ok {
+			present = append(present, pgx.Identifier{table}.Sanitize())
+		}
+	}
+	if len(present) > 0 {
+		if _, err := tx.Exec(ctx, `TRUNCATE `+strings.Join(present, ", ")); err != nil {
+			return fmt.Errorf("store: empty the tables: %w", err)
+		}
+	}
+	err = ReadDump(r, func(table string, payload io.Reader) error {
+		q := `COPY ` + pgx.Identifier{table}.Sanitize() + ` FROM STDIN (FORMAT binary)`
+		if _, err := tx.Conn().PgConn().CopyFrom(ctx, payload, q); err != nil {
+			return fmt.Errorf("store: copy %s: %w", table, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := resetIdentities(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// resetIdentities moves every dilla table's identity sequence past the highest
+// value COPY wrote, so the next INSERT does not collide with a restored row.
+func resetIdentities(ctx context.Context, tx pgx.Tx) error {
+	rows, err := tx.Query(ctx, `SELECT table_name, column_name FROM information_schema.columns
+		WHERE table_schema = current_schema() AND is_identity = 'YES' ORDER BY table_name, column_name`)
+	if err != nil {
+		return fmt.Errorf("store: list identity columns: %w", err)
+	}
+	type identity struct{ table, column string }
+	var ids []identity
+	for rows.Next() {
+		var c identity
+		if err := rows.Scan(&c.table, &c.column); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: list identity columns: %w", err)
+		}
+		if slices.Contains(DumpTables, c.table) {
+			ids = append(ids, c)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: list identity columns: %w", err)
+	}
+	for _, c := range ids {
+		table, column := pgx.Identifier{c.table}.Sanitize(), pgx.Identifier{c.column}.Sanitize()
+		q := `SELECT setval(pg_get_serial_sequence($1, $2), COALESCE((SELECT MAX(` + column + `) FROM ` + table + `), 0) + 1, false)`
+		if _, err := tx.Exec(ctx, q, c.table, c.column); err != nil {
+			return fmt.Errorf("store: move the %s.%s sequence: %w", c.table, c.column, err)
+		}
+	}
+	return nil
 }

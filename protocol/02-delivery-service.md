@@ -363,8 +363,10 @@ Added for the remote delivery service:
 - `advance_clock <duration>` — move the instance clock by `30s`, `5m`, `24h` or `90d`.
 - `expect_frame <op> [field=value …]` — the last client to act received that frame, by its label above.
 - `expect_425 <statement>` — the statement is refused `425 E_COMMIT_REQUIRED`.
-- `snapshot <name>` — the test host snapshots the instance's state under `name`.
-- `restore_snapshot <name>` — the test host restores it, as `dillad restore` would.
+- `snapshot <name>` — the test host snapshots the instance's state under `name`, through `dillad
+  backup`'s own code.
+- `restore_snapshot <name>` — the test host restores it through `dillad restore`'s own code and
+  restarts the instance, which finishes the restore at start as `dillad serve` does.
 - `commit <actor>` — the actor commits for the current epoch of every group it is in.
 - `join_many <group> <count>` — `count` new clients join, at most 256 Adds per commit.
 - `expect_decrypts_all <actor>` — everything the actor received since its last such assertion decrypts.

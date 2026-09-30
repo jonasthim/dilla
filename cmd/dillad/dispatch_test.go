@@ -86,7 +86,7 @@ func TestUnknownFlagGoesToStderrAndExitsTwo(t *testing.T) {
 }
 
 func TestReservedVerbsExitThree(t *testing.T) {
-	for _, name := range []string{"restore", "admin"} {
+	for _, name := range []string{"admin"} {
 		t.Run(name, func(t *testing.T) {
 			_, errBuf, err := run(t, name)
 			var code exit.Code

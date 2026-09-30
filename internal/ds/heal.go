@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
@@ -94,6 +96,41 @@ func (d *DS) OnRestore(ctx context.Context, generation uint64) error {
 		d.opts.Gateway.SetGeneration(inst.Generation)
 	}
 	return nil
+}
+
+// RestorePendingKey is the instance setting `dillad restore` leaves behind: the decimal
+// generation it set. `dillad restore` runs with no delivery service, so it performs OnRestore's
+// SQL itself and the next start finishes the restore through FinishRestore. An empty value is
+// "nothing pending".
+const RestorePendingKey = "restore_pending_generation"
+
+// FinishRestore completes a restore `dillad restore` left pending, and reports whether one was.
+// It runs OnRestore with the recorded generation, which SetGeneration's monotone clamp makes a
+// no-op on the number itself, so the CLI path and the in-process path end in the same state;
+// what it adds is the heal window measured from this start rather than from the restore, since a
+// window that ran while the instance was down gave no member a chance to heal. The mark is
+// cleared last, so a start that fails half-way through finishes the restore on the next one.
+// The composition root calls it before Start, so the sweeper never closes a group on the stale
+// deadline first.
+func (d *DS) FinishRestore(ctx context.Context) (bool, error) {
+	mark, err := d.opts.Store.GetSetting(ctx, RestorePendingKey)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && len(mark) == 0) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	generation, err := strconv.ParseUint(string(mark), 10, 64)
+	if err != nil || generation == 0 {
+		return false, fmt.Errorf("ds: %s holds %q, not a generation", RestorePendingKey, mark)
+	}
+	if err := d.OnRestore(ctx, generation); err != nil {
+		return false, err
+	}
+	if err := d.opts.Store.PutSetting(ctx, RestorePendingKey, []byte{}, d.now()); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // HealStatus tells a member what the instance still needs.
