@@ -166,6 +166,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Readable", reflect.TypeOf((*store.Readable)(nil)).Elem(), []string{
 			"DeleteReadableMessage", "EditReadableMessage", "GetReadState",
 			"ListReadableMessages", "PutReadState", "PutReadableMessage", "SearchReadable",
+			// §4.1 plus two (Plan 2 task 8, recorded beside P2-D13): the slowmode
+			// gate's read and the message.plain fan-out audience (P2-D14).
+			"LastReadableMessageAt", "ListReadableAudience",
 		}},
 		{"Blobs", reflect.TypeOf((*store.Blobs)(nil)).Elem(), []string{
 			"CountBlobRefs", "DeleteBlob", "DeleteBlobRef", "GetBlob", "GetBlobTombstone",
@@ -241,6 +244,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.Bans)(nil)).Elem(),
 		// Plan 2 task 6: ChannelMembers joins with 00008_channel_members.sql.
 		reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(),
+		// Plan 2 task 8: Readable joins with 00009_readable.sql.
+		reflect.TypeOf((*store.Readable)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

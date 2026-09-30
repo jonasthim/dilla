@@ -76,6 +76,11 @@ var DumpTables = []string{
 	// is mls_groups; a dump that dropped it would stall every join storm in flight at the
 	// backup, with no row left to say which devices were still waiting.
 	"pending_joins",
+	// 007_readable.sql, appended by Plan 2 task 8. Both tables' parents are channels (and
+	// users for read_state); readable_messages is server-readable channel content, which D15
+	// says a backup holds. COPY TO leaves out the generated body_tsv, and the restore
+	// recomputes it.
+	"readable_messages", "read_state",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

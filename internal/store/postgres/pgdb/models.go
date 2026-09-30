@@ -297,6 +297,29 @@ type PendingJoins struct {
 	Queued   int64
 }
 
+type ReadState struct {
+	UserID      id.ID
+	ChannelID   id.ID
+	LastReadSeq int64
+}
+
+type ReadableMessages struct {
+	ID            int64
+	ChannelID     id.ID
+	ChannelHex    string
+	Seq           int64
+	Sender        id.ID
+	Envelope      []byte
+	Body          string
+	FrankingTag   []byte
+	FrankingKeyID id.ID
+	MentionCount  int64
+	Created       int64
+	Edited        sql.NullInt64
+	Deleted       sql.NullInt64
+	BodyTsv       string
+}
+
 type RecoveryCodes struct {
 	UserID   id.ID
 	CodeHash []byte

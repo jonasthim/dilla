@@ -2305,4 +2305,125 @@ func (r *Repo) ListPendingJoinGroups(ctx context.Context, after id.ID, limit int
 	return ids, nil
 }
 
+// ---------------------------------------------------------------- Readable
+//
+// 007_readable.sql (Plan 2 task 8). SearchReadable is hand-written in search.go.
+
+// PutReadableMessage ignores m.ID: the identity column is the store's to assign.
+func (r *Repo) PutReadableMessage(ctx context.Context, m store.ReadableMessageRow) (int64, error) {
+	rowID, err := r.w.PutReadableMessage(ctx, pgdb.PutReadableMessageParams{
+		ChannelID:     m.ChannelID,
+		ChannelHex:    m.ChannelHex,
+		Seq:           int64(m.Seq),
+		Sender:        m.Sender,
+		Envelope:      m.Envelope,
+		Body:          m.Body,
+		FrankingTag:   m.FrankingTag,
+		FrankingKeyID: m.FrankingKeyID,
+		MentionCount:  int64(m.MentionCount),
+		Created:       m.Created,
+		Edited:        nullInt64(m.Edited),
+		Deleted:       nullInt64(m.Deleted),
+	})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return rowID, nil
+}
+
+func (r *Repo) ListReadableMessages(ctx context.Context, channelID id.ID, fromSeq uint64, limit int32) ([]store.ReadableMessageRow, error) {
+	rows, err := r.r.ListReadableMessages(ctx, pgdb.ListReadableMessagesParams{
+		ChannelID: channelID,
+		Seq:       int64(fromSeq),
+		MaxRows:   int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ReadableMessageRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.ReadableMessageRow{
+			ID:            row.ID,
+			ChannelID:     row.ChannelID,
+			ChannelHex:    row.ChannelHex,
+			Seq:           uint64(row.Seq),
+			Sender:        row.Sender,
+			Envelope:      row.Envelope,
+			Body:          row.Body,
+			FrankingTag:   row.FrankingTag,
+			FrankingKeyID: row.FrankingKeyID,
+			MentionCount:  uint64(row.MentionCount),
+			Created:       row.Created,
+			Edited:        ptrInt64(row.Edited),
+			Deleted:       ptrInt64(row.Deleted),
+		})
+	}
+	return out, nil
+}
+
+func (r *Repo) EditReadableMessage(ctx context.Context, channelID id.ID, seq uint64, envelope []byte, body string, at int64) error {
+	n, err := r.w.EditReadableMessage(ctx, pgdb.EditReadableMessageParams{
+		Envelope:  envelope,
+		Body:      body,
+		Edited:    sql.NullInt64{Int64: at, Valid: true},
+		ChannelID: channelID,
+		Seq:       int64(seq),
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) DeleteReadableMessage(ctx context.Context, channelID id.ID, seq uint64, at int64) error {
+	n, err := r.w.DeleteReadableMessage(ctx, pgdb.DeleteReadableMessageParams{
+		Deleted:   sql.NullInt64{Int64: at, Valid: true},
+		ChannelID: channelID,
+		Seq:       int64(seq),
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// PutReadState is monotone in SQL (`GREATEST(stored, new)`).
+func (r *Repo) PutReadState(ctx context.Context, userID, channelID id.ID, lastReadSeq uint64) error {
+	return wrap(r.w.PutReadState(ctx, pgdb.PutReadStateParams{
+		UserID:      userID,
+		ChannelID:   channelID,
+		LastReadSeq: int64(lastReadSeq),
+	}))
+}
+
+func (r *Repo) GetReadState(ctx context.Context, userID, channelID id.ID) (uint64, error) {
+	seq, err := r.r.GetReadState(ctx, pgdb.GetReadStateParams{UserID: userID, ChannelID: channelID})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return uint64(seq), nil
+}
+
+func (r *Repo) LastReadableMessageAt(ctx context.Context, channelID, userID id.ID) (int64, error) {
+	at, err := r.r.LastReadableMessageAt(ctx, pgdb.LastReadableMessageAtParams{ChannelID: channelID, Sender: userID})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return at, nil
+}
+
+func (r *Repo) ListReadableAudience(ctx context.Context, channelID id.ID) ([]id.ID, error) {
+	ids, err := r.r.ListReadableAudience(ctx, pgdb.ListReadableAudienceParams{ChannelID: channelID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return ids, nil
+}
+
 var _ store.Repository = (*Repo)(nil)

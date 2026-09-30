@@ -87,6 +87,16 @@ func MessageDeletedPayload(seq, deletedAt uint64) (cbor.RawMessage, error) {
 	return payload(seq, deletedAt)
 }
 
+// MessagePlainPayload is op 32's body (protocol/02): [channel_id(bstr16), seq(uint),
+// sender(bstr16), envelope(bstr), franking_tag(bstr32), edited(uint), deleted(uint)]. A deleted
+// message carries an empty envelope, never a null: the element is a bstr.
+func MessagePlainPayload(channelID id.ID, seq uint64, sender id.ID, envelope, frankingTag []byte, edited, deleted uint64) (cbor.RawMessage, error) {
+	if envelope == nil {
+		envelope = []byte{}
+	}
+	return payload(channelID, seq, sender, envelope, frankingTag, edited, deleted)
+}
+
 func PresencePayload(userID id.ID, status uint64, sinceTS uint64, statusMsg string) (cbor.RawMessage, error) {
 	return payload(userID, status, sinceTS, statusMsg)
 }

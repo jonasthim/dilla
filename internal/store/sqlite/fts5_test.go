@@ -5,7 +5,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/pressly/goose/v3"
+
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
+	"github.com/jonasthim/dilla/internal/store/sqlite/migrations"
 )
 
 func openTestDB(t *testing.T) *sql.DB {
@@ -104,5 +111,130 @@ func TestVacuumIntoWorks(t *testing.T) {
 	backup := filepath.Join(t.TempDir(), "backup.db")
 	if _, err := db.ExecContext(t.Context(), `VACUUM INTO ?`, backup); err != nil {
 		t.Fatalf("VACUUM INTO: %v", err)
+	}
+}
+
+// The silent bug this whole design exists to avoid: plain VACUUM renumbers
+// implicit rowids, the external-content index keeps pointing at the old one,
+// and integrity-check reports success. The explicit INTEGER PRIMARY KEY is what
+// prevents it; this test proves the prevention, not the bug.
+func TestFTSIndexSurvivesVacuum(t *testing.T) {
+	db := openMigratedDB(t)
+	seedThreeReadableMessages(t, db)
+	if _, err := db.ExecContext(t.Context(), `DELETE FROM readable_messages WHERE seq = 2`); err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	if _, err := db.ExecContext(t.Context(), `VACUUM`); err != nil {
+		t.Fatalf("VACUUM: %v", err)
+	}
+	var body string
+	err := db.QueryRowContext(t.Context(), `
+SELECT m.body FROM readable_messages_fts
+JOIN readable_messages m ON m.id = readable_messages_fts.rowid
+WHERE readable_messages_fts MATCH 'body : ("raids")'`).Scan(&body)
+	if err != nil {
+		t.Fatalf("the FTS index lost its join after VACUUM: %v", err)
+	}
+	if !strings.Contains(body, "raids") {
+		t.Fatalf("joined body = %q", body)
+	}
+	// integrity-check compares the external-content index against the content
+	// table and fails the statement on any mismatch.
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO readable_messages_fts(readable_messages_fts) VALUES('integrity-check')`); err != nil {
+		t.Fatalf("integrity-check: %v", err)
+	}
+}
+
+// An edit and a delete move the index through the _au trigger, and the index
+// stays consistent with the content table afterwards.
+func TestTheTriggersKeepTheIndexConsistent(t *testing.T) {
+	db := openMigratedDB(t)
+	seedThreeReadableMessages(t, db)
+	count := func(match string) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRowContext(t.Context(),
+			`SELECT count(*) FROM readable_messages_fts WHERE readable_messages_fts MATCH ?`, match).Scan(&n); err != nil {
+			t.Fatalf("MATCH %s: %v", match, err)
+		}
+		return n
+	}
+	if n := count(`body : ("raids")`); n != 1 {
+		t.Fatalf("raids = %d before the edit, want 1", n)
+	}
+	if _, err := db.ExecContext(t.Context(), `UPDATE readable_messages SET body = 'nothing here' WHERE seq = 3`); err != nil {
+		t.Fatalf("UPDATE: %v", err)
+	}
+	if n := count(`body : ("raids")`); n != 0 {
+		t.Fatalf("raids = %d after the edit, want 0", n)
+	}
+	if n := count(`body : ("nothing")`); n != 1 {
+		t.Fatalf("the edited body is not indexed: %d", n)
+	}
+	if _, err := db.ExecContext(t.Context(), `DELETE FROM readable_messages WHERE seq = 3`); err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	if n := count(`body : ("nothing")`); n != 0 {
+		t.Fatalf("a deleted row is still indexed: %d", n)
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO readable_messages_fts(readable_messages_fts) VALUES('integrity-check')`); err != nil {
+		t.Fatalf("integrity-check: %v", err)
+	}
+}
+
+// openMigratedDB is a write pool over a fresh, fully migrated database file.
+func openMigratedDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := OpenWrite(filepath.Join(t.TempDir(), "migrated.db"))
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS)
+	if err != nil {
+		t.Fatalf("goose provider: %v", err)
+	}
+	if _, err := p.Up(t.Context()); err != nil {
+		t.Fatalf("goose up: %v", err)
+	}
+	return db
+}
+
+// seedThreeReadableMessages writes seqs 1-3 into one readable channel through
+// the repository, so each row passes the real constraints and triggers. The word
+// "raids" is only in seq 3, the row whose rowid a renumbering VACUUM would move
+// once seq 2 is gone.
+func seedThreeReadableMessages(t *testing.T, db *sql.DB) {
+	t.Helper()
+	ctx := t.Context()
+	repo := New(db, db)
+	owner := id.New()
+	if err := repo.CreateUser(ctx, store.UserRow{
+		ID: owner, Username: "fts" + owner.String()[:8], Display: "FTS", UMKPub: make([]byte, 32),
+		SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: 1,
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	cid := id.New()
+	if err := repo.CreateCommunity(ctx, store.CommunityRow{
+		ID: cid, Owner: owner, Name: "c", PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: 1,
+	}); err != nil {
+		t.Fatalf("CreateCommunity: %v", err)
+	}
+	ch := store.ChannelRow{
+		ID: id.New(), CommunityID: &cid, Kind: 0, Mode: 1, Visibility: 2, Name: "readable",
+		SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: 1,
+	}
+	if err := repo.CreateChannel(ctx, ch); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	for i, body := range []string{"hej vad händer", "the server never sees plaintext", "join raids are a metadata problem"} {
+		if _, err := repo.PutReadableMessage(ctx, store.ReadableMessageRow{
+			ChannelID: ch.ID, ChannelHex: ch.ID.String(), Seq: uint64(i + 1), Sender: owner,
+			Envelope: []byte{0x80}, Body: body, FrankingTag: make([]byte, 32), FrankingKeyID: id.New(),
+			Created: int64(i + 1),
+		}); err != nil {
+			t.Fatalf("PutReadableMessage: %v", err)
+		}
 	}
 }

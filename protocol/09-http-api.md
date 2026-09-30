@@ -373,6 +373,62 @@ route is `E`.
 - Opening a DM and every add and remove write an audit row (`dm.create`, `channel.member.add`,
   `channel.member.remove`).
 
+### Readable channels
+
+A server-readable text channel (`kind = 0`, `mode = 1`; every `invite` or `discoverable` channel
+is one) carries its messages through the routes below instead of an MLS group. The instance
+stores each envelope (`04`) as sent and indexes its text for search. Every route is `E`. A caller
+who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown channel; for any other
+channel — an end-to-end encrypted one, a voice channel or a category — every route answers
+`403 E_CHANNEL_MODE`, and an end-to-end encrypted channel's messages go through
+`POST /v1/groups/{id}/message` (`02`).
+
+| Method and path | Request | Response | Permission |
+|---|---|---|---|
+| `POST /v1/channels/{id}/messages` | `[envelope(bstr)]` | `[seq(uint), franking_tag(bstr 32), recv_ts(uint)]` | `send_messages`; `pin_messages` for a type 5 or 6 envelope, `add_reactions` for a type 3 or 4 |
+| `GET /v1/channels/{id}/messages?from=&limit=` | — | `[[seq, sender(bstr16), envelope(bstr), franking_tag(bstr 32), created, edited\|null, deleted\|null]]` | `read_history` |
+| `PATCH /v1/channels/{id}/messages/{seq}` | `[envelope(bstr)]` | `204` | the author, with `send_messages` |
+| `DELETE /v1/channels/{id}/messages/{seq}` | — | `204` | the author, or `manage_messages` |
+| `GET /v1/channels/{id}/search?q=&limit=&before=` | — | `[[channel_id, seq, sender, snippet(tstr), score_micros(uint), created]]` | `read_history` |
+| `PUT /v1/channels/{id}/read-state` | `[last_read_seq(uint)]` | `204` | `view_channel` |
+
+- **Posting.** `seq` is the channel's own sequence (`GET /v1/channels/{id}` element 10), one step
+  per message; `recv_ts` is the instance's clock and is the message's `created`. The envelope must
+  be a nine-element deterministic CBOR array whose `type` is a uint, whose `body` is a text string
+  and whose `k_f` is 32 bytes (`400 E_ENVELOPE_SHAPE`); a `type` above 6 is `400 E_ENVELOPE_TYPE`,
+  and so is an edit (1) or a delete (2) on `POST`, which have the `PATCH` and `DELETE` verbs. The
+  body cap is 96 KiB (§ Rate limits). Only a message's (type 0) or an edit's (type 1) `body` is
+  search content.
+- **Slow mode.** Inside `slowmode_seconds` of the caller's previous message in the channel, a post
+  is `429 E_RATE_LIMITED` with `retry_after_ms` the time left; `bypass_slowmode` is exempt. A
+  deleted message still counts, so deleting and reposting does not reset the wait.
+- **Franking.** A readable envelope carries its `k_f` in the clear, so the instance computes `04`'s
+  commitment `C` itself, unchanged. The tag `T` is `04`'s with two substitutions, because a
+  readable channel has no MLS group: `channel_id` in place of `group_id`, and `0` for the epoch. The
+  instance records which of its franking keys made the tag, so a report still verifies after a
+  rotation.
+- **Deleting** tombstones the message: its envelope becomes empty, it leaves the search index, and
+  `GET` lists it with its `deleted` time; the franking tag stays for a report. An unknown or already
+  deleted `seq` is `404`, and so is an edit of a deleted message. `{seq}` that is not a decimal uint
+  is `400 E_INVALID_REQUEST`.
+- **Live delivery.** Every accepted post, edit and delete is sent as `message.plain` (op 32, `02`)
+  to every live connection of every user who may view the channel and is still a member of its
+  community, the author included; `edited` and `deleted` are `1` on an edit's and a delete's frame,
+  and a delete's `envelope` is empty.
+- **Listing.** `from` is the first `seq` wanted (default: the first message); `limit` defaults to
+  50 and is capped at 256.
+- **Search.** `q` is words: a trailing `*` makes a word a prefix, text in double quotes is a phrase
+  (`""` inside it is a quote), and a leading `-` excludes the word or phrase after it; every other
+  character separates words. Matching folds case and diacritics (`haller` finds `håller`) and does
+  not stem. A query with no word at all is `400 E_INVALID_REQUEST`; a query of exclusions only
+  answers every message in scope without them. The scope is every server-readable text channel of
+  `{id}`'s community the caller may view and read the history of. Hits are best first, ties broken
+  by the newer `seq`; a `limit` outside 1 to 100 is 50; `before` returns only hits whose `seq`
+  is below it. The snippet marks each match with `[` and `]`, and `score_micros` is the relevance
+  score times 10^6, rounded, because deterministic CBOR carries no floats.
+- **Read state** never moves backwards and never past the channel's newest `seq`: a lower value
+  is ignored and a higher one is lowered to it.
+
 ## Permissions
 
 A permission set is a 64-bit unsigned integer; `roles.allow`, `roles.deny` and a channel

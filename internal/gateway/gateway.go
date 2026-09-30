@@ -451,6 +451,26 @@ func (g *Gateway) DeliverUser(userID id.ID, f Frame) {
 	g.countFrame(f)
 }
 
+// SetChannelMembers replaces the users a readable channel's frames reach (Plan 2 task 8, P2-D14).
+// A readable channel has no MLS group, so DeliverGroup cannot reach it; the api layer writes the
+// channel's audience here — its channel_members that are still community members — before it
+// delivers, which is how a user who lost the channel stops receiving it. An empty list
+// unsubscribes everyone.
+func (g *Gateway) SetChannelMembers(channelID id.ID, users []id.ID) {
+	g.reg.setChannelMembers(channelID, users)
+}
+
+// DeliverChannel fans one frame out to every live connection of every user in the channel's
+// audience, the author's own included (R30's rule for message.ct, applied to message.plain). The
+// payload is encoded once by the caller; a replayable frame is recorded in each connection's ring,
+// so a client that reconnects inside the ring window does not have to re-fetch.
+func (g *Gateway) DeliverChannel(channelID id.ID, f Frame) {
+	for _, c := range g.reg.connsOfChannel(channelID) {
+		c.send(f)
+	}
+	g.countFrame(f)
+}
+
 func (g *Gateway) countFrame(f Frame) {
 	if g.opts.Metrics != nil {
 		g.opts.Metrics.GatewayFrames.WithLabelValues(opLabel(f.Op), "out").Inc()

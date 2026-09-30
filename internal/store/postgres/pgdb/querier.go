@@ -49,12 +49,19 @@ type Querier interface {
 	DeleteOverwrite(ctx context.Context, arg DeleteOverwriteParams) (int64, error)
 	DeletePendingJoin(ctx context.Context, arg DeletePendingJoinParams) error
 	DeleteProposal(ctx context.Context, arg DeleteProposalParams) error
+	// A zero-length envelope, not an empty CBOR array: the column holds CBOR and a delete leaves none.
+	// The body is emptied so body_tsv recomputes to an empty tsvector and the row stops matching,
+	// while the franking tuple (franking_tag, franking_key_id, sender, created) survives for the report
+	// path.
+	DeleteReadableMessage(ctx context.Context, arg DeleteReadableMessageParams) (int64, error)
 	DeleteRecoveryCodes(ctx context.Context, arg DeleteRecoveryCodesParams) error
 	DeleteRole(ctx context.Context, arg DeleteRoleParams) (int64, error)
 	DeleteSession(ctx context.Context, arg DeleteSessionParams) error
 	DeleteSessionsByDevice(ctx context.Context, arg DeleteSessionsByDeviceParams) (int64, error)
 	DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsByUserParams) (int64, error)
 	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
+	// A deleted message is not edited: its envelope and body are gone for good.
+	EditReadableMessage(ctx context.Context, arg EditReadableMessageParams) (int64, error)
 	// Invariant 11's "Live calls end." A live call IS its call group (R9 puts the call id in the
 	// companion column), and `voice_sessions` is Plan 2's table -- so on a Plan-1 database the whole
 	// of "end every live call" is closing the call groups. Plan 2 task 1 extends the same statement
@@ -77,6 +84,7 @@ type Querier interface {
 	GetOIDCIdentity(ctx context.Context, arg GetOIDCIdentityParams) (id.ID, error)
 	GetPasswordCredential(ctx context.Context, arg GetPasswordCredentialParams) (string, error)
 	GetProposal(ctx context.Context, arg GetProposalParams) (MlsPendingProposals, error)
+	GetReadState(ctx context.Context, arg GetReadStateParams) (int64, error)
 	GetReport(ctx context.Context, arg GetReportParams) (Reports, error)
 	GetRole(ctx context.Context, arg GetRoleParams) (Roles, error)
 	GetSessionByHash(ctx context.Context, arg GetSessionByHashParams) (Sessions, error)
@@ -93,6 +101,9 @@ type Querier interface {
 	// here instead of scanning every open group of the instance.
 	GroupsForTarget(ctx context.Context, arg GroupsForTargetParams) ([]MlsGroups, error)
 	InsertAudit(ctx context.Context, arg InsertAuditParams) error
+	// The slowmode gate's read. A deleted message still counts: deleting the last message must not
+	// reset the gate, or delete-and-repost would bypass slowmode.
+	LastReadableMessageAt(ctx context.Context, arg LastReadableMessageAtParams) (int64, error)
 	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
@@ -121,6 +132,11 @@ type Querier interface {
 	ListOverwrites(ctx context.Context, arg ListOverwritesParams) ([]ChannelOverwrites, error)
 	ListPendingJoinGroups(ctx context.Context, arg ListPendingJoinGroupsParams) ([]id.ID, error)
 	ListPendingJoins(ctx context.Context, arg ListPendingJoinsParams) ([]id.ID, error)
+	// Who message.plain reaches: the channel's materialised members (task 7's channel_members, which
+	// holds exactly the users the resolver grants view_channel) who are still members of its
+	// community, so a kicked, banned or departed user drops out before any re-materialisation.
+	ListReadableAudience(ctx context.Context, arg ListReadableAudienceParams) ([]id.ID, error)
+	ListReadableMessages(ctx context.Context, arg ListReadableMessagesParams) ([]ListReadableMessagesRow, error)
 	ListRoles(ctx context.Context, arg ListRolesParams) ([]Roles, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
@@ -135,9 +151,15 @@ type Querier interface {
 	// every group past the batch serving state the restored database no longer matches. Closed groups
 	// are skipped -- a closed group has nothing left to heal.
 	MarkAllGroupsEpochUnknown(ctx context.Context, arg MarkAllGroupsEpochUnknownParams) error
-	// The highest seq PruneAppMessages is about to delete with the same arguments, or 0. The store runs
-	// it in PruneAppMessages' transaction and raises pruned_below to it before the DELETE, so the
-	// high-water records exactly what went, whichever trigger took it.
+	// The highest seq PruneAppMessages' DELIVERY triggers are about to delete with the same arguments,
+	// or 0. The store runs it in PruneAppMessages' transaction and raises pruned_below to it before the
+	// DELETE, so the high-water records exactly what delivery retention took.
+	//
+	// The archival trigger is deliberately NOT in this predicate (Plan 2 task 8's retention ruling):
+	// `expires` is not monotone in seq -- a community that shortens its retention makes newer messages
+	// expire before older ones -- so a mark raised to the highest expired seq would stand above
+	// messages that still exist, and the catch-up would answer E_PRUNED for a range it can serve. An
+	// archival deletion removes the row for every device alike; it never moves the mark.
 	MaxPrunableAppMessageSeq(ctx context.Context, arg MaxPrunableAppMessageSeqParams) (int64, error)
 	// The retention floor: the lowest seq an ELIGIBLE device has acknowledged in this group, or 0
 	// when no eligible cursor exists. A device is ineligible when it is revoked, when its user is
@@ -188,6 +210,15 @@ type Querier interface {
 	PutOverwrite(ctx context.Context, arg PutOverwriteParams) error
 	PutPasswordCredential(ctx context.Context, arg PutPasswordCredentialParams) error
 	PutProposal(ctx context.Context, arg PutProposalParams) error
+	// Monotone: a stale tab that reports an older position must not un-read the channel.
+	PutReadState(ctx context.Context, arg PutReadStateParams) error
+	// Server-readable channels (Plan 2 task 8, 00009_readable.sql). Search is NOT here: it is
+	// hand-written database/sql in search.go, for symmetry with SQLite, where sqlc cannot type it at
+	// all (gap-69 sections 5.1 and 5.2).
+	//
+	// Every read names its columns: body_tsv exists for the index and is never selected, and the two
+	// engines' Querier interfaces must stay identical (schema_test.go).
+	PutReadableMessage(ctx context.Context, arg PutReadableMessageParams) (int64, error)
 	PutRecoveryCode(ctx context.Context, arg PutRecoveryCodeParams) error
 	PutReport(ctx context.Context, arg PutReportParams) error
 	PutRole(ctx context.Context, arg PutRoleParams) error

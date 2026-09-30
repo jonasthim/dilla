@@ -27,8 +27,9 @@ var (
 // Channels (the part 00005_channels.sql ships), Plan 2 task 3 adds Overwrites (the
 // part 00006_overwrites.sql ships), Plan 2 task 4 adds Bans (the part
 // 00007_bans.sql ships), Plan 2 task 6 adds ChannelMembers (the part
-// 00008_channel_members.sql ships), and Plan 2's later tasks add the rest of
-// Structure, Readable, Blobs and OpsBackups.
+// 00008_channel_members.sql ships), Plan 2 task 8 adds Readable with
+// 00009_readable.sql, and Plan 2's later tasks add the rest of Structure, Blobs
+// and OpsBackups.
 type Repository interface {
 	Tx(ctx context.Context, fn func(Repository) error) error
 	Close() error
@@ -48,6 +49,8 @@ type Repository interface {
 	Bans        // Plan 2 task 4 (P2-D23) — 00007_bans.sql
 	// Plan 2 task 6 (P2-D23) — 00008_channel_members.sql
 	ChannelMembers
+	// Plan 2 task 8 (P2-D23) — 00009_readable.sql
+	Readable
 }
 
 type Instance interface {
@@ -418,14 +421,38 @@ type Bans interface {
 	DeleteBan(ctx context.Context, communityID, userID id.ID) error
 }
 
-// Readable is 007_readable.sql, implemented from Plan 2 task 8 onward.
+// Readable is 007_readable.sql (migration 00009_readable.sql), implemented by
+// Plan 2 task 8.
 type Readable interface {
+	// PutReadableMessage appends one message and returns its rowid. A second row
+	// at the same (channel, seq) is ErrConflict.
 	PutReadableMessage(ctx context.Context, m ReadableMessageRow) (int64, error)
+	// ListReadableMessages is the channel's messages from fromSeq upward, at most
+	// limit, deleted ones included (with an empty envelope and body).
 	ListReadableMessages(ctx context.Context, channelID id.ID, fromSeq uint64, limit int32) ([]ReadableMessageRow, error)
-	EditReadableMessage(ctx context.Context, channelID id.ID, seq uint64, envelope []byte, at int64) error
+	// EditReadableMessage is P2-D13: body is a parameter of its own, because
+	// the indexed column cannot be filled from the envelope without the store
+	// parsing envelopes, which is internal/api's job. ErrNotFound for an unknown
+	// or deleted message.
+	EditReadableMessage(ctx context.Context, channelID id.ID, seq uint64, envelope []byte, body string, at int64) error
+	// DeleteReadableMessage empties the envelope and the body (so the row leaves
+	// the index) and keeps the franking tuple. ErrNotFound for an unknown or an
+	// already deleted message.
 	DeleteReadableMessage(ctx context.Context, channelID id.ID, seq uint64, at int64) error
+	// PutReadState is monotone: a lower lastReadSeq than the stored one is
+	// ignored, so a stale tab cannot un-read a channel.
 	PutReadState(ctx context.Context, userID, channelID id.ID, lastReadSeq uint64) error
+	// GetReadState answers ErrNotFound when the user has never read the channel.
 	GetReadState(ctx context.Context, userID, channelID id.ID) (uint64, error)
+	// LastReadableMessageAt is the slowmode gate's read, added by Plan 2 task 8
+	// beside P2-D13: the created time of userID's latest message in the channel,
+	// deleted ones included (a delete must not reset the gate), or ErrNotFound.
+	LastReadableMessageAt(ctx context.Context, channelID, userID id.ID) (int64, error)
+	// ListReadableAudience is who a readable channel's message.plain frames
+	// reach, added by Plan 2 task 8 (P2-D14's fan-out): the channel's
+	// materialised channel_members that are still members of its community,
+	// ordered by user id.
+	ListReadableAudience(ctx context.Context, channelID id.ID) ([]id.ID, error)
 	ReadableSearch
 }
 

@@ -31,6 +31,9 @@ sql:
           # `mls_welcomes.welcome_id` is the third surrogate key (004_mls.sql) and
           # matches `*.*_id`, which would type it id.ID and break every scan.
           - { column: "mls_welcomes.welcome_id", go_type: { type: "int64" } }
+          # `readable_messages.id` is the fourth (007_readable.sql, Plan 2 task 8): the explicit
+          # rowid the FTS5 index is content-mapped to, which `*.id` would type id.ID.
+          - { column: "readable_messages.id", go_type: { type: "int64" } }
           - { column: "*.cred_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.blob_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.code_hash",   go_type: { type: "byte", slice: true } }
@@ -86,6 +89,10 @@ sql:
           # `mls_welcomes.welcome_id` is the third surrogate key (004_mls.sql) and
           # matches `*.*_id`, which would type it id.ID and break every scan.
           - { column: "mls_welcomes.welcome_id", go_type: { type: "int64" } }
+          - { column: "readable_messages.id", go_type: { type: "int64" } }
+          # body_tsv is the index's input and no query selects it; typed so the model is not
+          # interface{} (gap-69 §5.3: a db_type tsvector override is ignored, a column one works).
+          - { column: "readable_messages.body_tsv", go_type: { type: "string" } }
           - { column: "*.cred_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.blob_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.code_hash",   go_type: { type: "byte", slice: true } }

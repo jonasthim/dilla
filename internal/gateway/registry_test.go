@@ -2,12 +2,14 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
+	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -150,6 +152,77 @@ func TestReadyReportsProposalsOutstandingPerGroup(t *testing.T) {
 	if outstanding != 1 {
 		t.Fatalf("proposals_outstanding = %d, want 1", outstanding)
 	}
+}
+
+// P2-D14: a readable channel has no MLS group, so message.plain is fanned out by channel. The
+// channel's audience is a set of USERS (what the api layer resolves from channel_members), and a
+// frame reaches every live connection of every user in it — including a connection opened after
+// the audience was set — and nobody else. Replacing the audience with an empty one unsubscribes.
+func TestDeliverChannelReachesOnlySubscribers(t *testing.T) {
+	h := newHarness(t)
+	ca := h.connect(t, id.New())
+	cb := h.connect(t, id.New())
+	h.drainReady(t, ca)
+	h.drainReady(t, cb)
+	chA, chB := id.New(), id.New()
+	h.gw.SetChannelMembers(chA, []id.ID{ca.userID})
+	h.gw.SetChannelMembers(chB, []id.ID{cb.userID})
+
+	// A second device of A's user connects AFTER the audience was set: it is reached too,
+	// because the audience names users, not connections.
+	late := h.connectUser(t, id.New(), ca.userID)
+	h.drainReady(t, late)
+
+	p, err := MessagePlainPayload(chA, 7, ca.userID, []byte{0x89}, make([]byte, 32), 0, 0)
+	if err != nil {
+		t.Fatalf("MessagePlainPayload: %v", err)
+	}
+	h.gw.DeliverChannel(chA, Frame{Op: OpMessagePlain, Payload: p, Replay: true})
+	for _, c := range []*conn{ca, late} {
+		in := h.waitFrame(t, c.deviceID)
+		if in.Op != OpMessagePlain || len(in.Payload) != 7 {
+			t.Fatalf("device %s got op %d with %d elements; want message.plain with 7",
+				c.deviceID, in.Op, len(in.Payload))
+		}
+		if in.CID != 2 {
+			t.Fatalf("message.plain is replayable: n = %d, want 2 (after ready)", in.CID)
+		}
+	}
+	if n := connN(cb); n != 1 {
+		t.Fatalf("a connection outside the channel was sent a frame: n = %d", n)
+	}
+
+	// Unsubscribing is replacing the audience: an empty one reaches nobody.
+	h.gw.SetChannelMembers(chA, nil)
+	h.gw.DeliverChannel(chA, Frame{Op: OpMessagePlain, Payload: p, Replay: true})
+	if n := connN(ca); n != 2 {
+		t.Fatalf("an unsubscribed connection was sent a frame: n = %d", n)
+	}
+	h.gw.DeliverChannel(chB, Frame{Op: OpMessagePlain, Payload: p, Replay: true})
+	if in := h.waitFrame(t, cb.deviceID); in.Op != OpMessagePlain {
+		t.Fatalf("channel B's member got op %d", in.Op)
+	}
+}
+
+// connN reads a connection's replay counter under its lock.
+func connN(c *conn) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
+// connectUser is connect for a given user: a second device of a user the test already holds.
+func (h *harness) connectUser(t *testing.T, device, user id.ID) *conn {
+	t.Helper()
+	sink := newRecordingSink(1024, false)
+	c, err := h.gw.register(context.Background(), auth.Session{DeviceID: device, UserID: user, Scope: auth.ScopeEnrolled}, sink)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	h.mu.Lock()
+	h.sinks[c] = sink
+	h.mu.Unlock()
+	return c
 }
 
 // Fan-out is per connection: three tabs of one device each get their own n.

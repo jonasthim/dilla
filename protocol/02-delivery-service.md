@@ -195,6 +195,11 @@ the same tree.
 | 32 | `message.plain` | `[channel_id(bstr 16), seq(uint), sender(bstr 16), envelope(bstr), franking_tag(bstr 32), edited(uint), deleted(uint)]` |
 | 33 | `interaction` | `[interaction_id(bstr 16), bot_user_id(bstr 16), kind(uint), blob(bstr)]` |
 
+`message.plain` carries a server-readable channel's post, edit or delete (`09` § Readable
+channels). It is fanned out to every live connection of every user who may view the channel and
+is still a member of its community, the author's own included, so the channel's `seq` stream is
+dense on every device of its audience; `group_id` is null.
+
 ### Ephemeral (48–63) — `n = 0`, never replayed, never persisted
 
 | op | label | payload |

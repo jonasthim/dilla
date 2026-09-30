@@ -204,6 +204,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 	defer rows.Close()
 	seen := 0
 	names := make([]string, 0, 17)
+	var fts []string
 	for rows.Next() {
 		var name, ddl string
 		if err := rows.Scan(&name, &ddl); err != nil {
@@ -212,6 +213,14 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 		if name == "goose_db_version" {
 			// goose's own table cannot be STRICT: its tstamp column is TIMESTAMP,
 			// which STRICT does not permit (gap-67 §2.3).
+			continue
+		}
+		// The FTS5 index of 007_readable.sql (Plan 2 task 8) is a virtual table,
+		// and FTS5 creates its own untyped shadow tables beside it (_data, _idx,
+		// _docsize, _config); none of them can be STRICT and none is dilla's to
+		// type. They are collected and asserted separately below.
+		if name == "readable_messages_fts" || strings.HasPrefix(name, "readable_messages_fts_") {
+			fts = append(fts, name)
 			continue
 		}
 		seen++
@@ -235,6 +244,12 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 	if seen != len(wantTables) {
 		t.Fatalf("%d dilla tables found; 001/002/003/004/005/006/009 declare %d", seen, len(wantTables))
 	}
+	sort.Strings(fts)
+	wantFTS := []string{"readable_messages_fts", "readable_messages_fts_config", "readable_messages_fts_data",
+		"readable_messages_fts_docsize", "readable_messages_fts_idx"}
+	if !reflect.DeepEqual(fts, wantFTS) {
+		t.Fatalf("FTS5 tables = %v, want the external-content index and its four shadow tables %v", fts, wantFTS)
+	}
 }
 
 // wantTables is the exact set 001/002/003/004/005/006/009 declare, sorted, so that a
@@ -244,14 +259,15 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // task 2 added 006a_channels.sql's channels; Plan 2 task 3 added 006b_overwrites.sql's
 // channel_overwrites; Plan 2 task 4 added 006c_bans.sql's bans; Plan 2 task 6 added
 // 006d_channel_members.sql's channel_members; Plan 2 task 7 added 006e_pending_joins.sql's
-// pending_joins (Plan 1 follow-up card 8).
+// pending_joins (Plan 1 follow-up card 8); Plan 2 task 8 added 007_readable.sql's readable_messages
+// and read_state (its FTS5 index is asserted on its own, because a virtual table is not STRICT).
 var wantTables = []string{
 	"audit_log", "bans", "channel_members", "channel_overwrites", "channels", "communities", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invites", "key_packages", "login_attempts",
 	"member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
 	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "oidc_identities",
-	"password_credentials", "pending_joins", "recovery_codes", "reports", "roles", "sessions", "totp_secrets", "users",
+	"password_credentials", "pending_joins", "read_state", "readable_messages", "recovery_codes", "reports", "roles", "sessions", "totp_secrets", "users",
 	"webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
 }
 
