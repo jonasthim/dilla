@@ -81,3 +81,40 @@ func TestCandidateExplosionIsBounded(t *testing.T) {
 		t.Fatal("a code with 26 ambiguous characters was expanded instead of refused")
 	}
 }
+
+func TestMatchInviteCodeHashesEveryCandidate(t *testing.T) {
+	// A typed 1 is an I or an L, so a code with one 1 has two candidate hashes,
+	// and the hash of the code that was actually minted is among them.
+	base := strings.Repeat("A", 25)
+	got, err := auth.MatchInviteCode(base + "1")
+	if err != nil {
+		t.Fatalf("MatchInviteCode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("%d hashes, want 2 (I and L)", len(got))
+	}
+	want := auth.HashInviteCode(base + "L")
+	found := false
+	for _, h := range got {
+		if slices.Equal(h, want) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the hash of the L spelling is not among the candidates")
+	}
+
+	// An unambiguous code has exactly one, and it is the hash NewInviteCode stored.
+	code, hash := auth.NewInviteCode()
+	got, err = auth.MatchInviteCode(strings.ToLower(code))
+	if err != nil {
+		t.Fatalf("MatchInviteCode(lower): %v", err)
+	}
+	if len(got) != 1 || !slices.Equal(got[0], hash) {
+		t.Fatalf("hashes = %x, want [%x]", got, hash)
+	}
+
+	if _, err := auth.MatchInviteCode("too short"); err == nil {
+		t.Fatal("a malformed code produced hashes")
+	}
+}

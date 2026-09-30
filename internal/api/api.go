@@ -126,8 +126,7 @@ func Register(m *server.Mux, d Deps) {
 	// unauthenticated bucket §5.3 names, `unauth`, is deliberately not applied:
 	// no route this task owns is on it, and the next unauthenticated surface —
 	// task 12's session challenge — meters itself.
-	m.Handle("GET /i/{code}", d.metered(classInvite, d.InviteLanding, d.landingRefusal))
-	m.Handle("POST /v1/invites/redeem", d.metered(classInvite, d.RedeemInvite, refuseCBOR))
+	d.RegisterPublicInvites(m)
 	m.Handle("POST /v1/accounts", d.metered(classRegister, d.CreateAccount, refuseCBOR))
 
 	// Auth ceremonies (protocol/09 § Auth ceremonies). The three

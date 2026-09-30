@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -31,6 +32,13 @@ type Communities struct {
 	dsvc DS
 	clk  clock.Clock
 	log  *slog.Logger
+
+	// inviteLimiter meters POST /v1/communities/{id}/join on the ("invite",
+	// client address) bucket GET /i/{code} is on, so a join is not a way round
+	// the limit on guessing codes. Nil meters nothing: the handler-level tests
+	// build Communities without one, and the composition root always sets it.
+	inviteLimiter *server.RateLimiter
+	trustedProxy  []netip.Prefix
 }
 
 // NewCommunities takes the delivery service a membership change reaches: a
@@ -38,6 +46,14 @@ type Communities struct {
 // community delete closes them (membership.go).
 func NewCommunities(repo store.Repository, dsvc DS, clk clock.Clock, log *slog.Logger) *Communities {
 	return &Communities{repo: repo, dsvc: dsvc, clk: clk, log: log}
+}
+
+// WithInviteMeter puts POST /v1/communities/{id}/join on the invite bucket of l,
+// keyed by the client address as server.RealIP resolves it behind trusted proxy
+// prefixes. It returns c for chaining.
+func (c *Communities) WithInviteMeter(l *server.RateLimiter, trustedProxies []netip.Prefix) *Communities {
+	c.inviteLimiter, c.trustedProxy = l, trustedProxies
+	return c
 }
 
 func (c *Communities) Register(mux *server.Mux) {
@@ -300,10 +316,16 @@ func (c *Communities) patch(w http.ResponseWriter, r *http.Request) {
 
 type joinReq struct {
 	_ struct{} `cbor:",toarray"`
-	// Invite is task 5's: at task 1 a community is joinable by any
-	// authenticated account that passes the join gate, and the field is read
-	// and not used.
+	// Invite is a community invite code as a person typed it, or null. An
+	// invite-only community (policy join = "invite") admits a join only with a
+	// live invite of its own; an open one spends the invite when it is given.
 	Invite *string
+}
+
+// errInviteInvalid is the one refusal for an invite that is expired, exhausted,
+// revoked, unknown or another community's: 410 E_INVITE_INVALID.
+func errInviteInvalid(detail string) error {
+	return server.Errorf(server.CodeInviteInvalid, "%s", detail)
 }
 
 func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
@@ -317,10 +339,30 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	if c.inviteLimiter != nil {
+		key := server.RateKey(server.RealIP(r, c.trustedProxy))
+		if ok, wait := c.inviteLimiter.Allow(server.Class{
+			Name:      classInvite,
+			PerSecond: c.inviteLimiter.Config().InvitePerSecond,
+			Burst:     c.inviteLimiter.Config().InviteBurst,
+		}, key); !ok {
+			server.WriteError(w, server.RateLimitedAfter(wait))
+			return
+		}
+	}
 	var req joinReq
 	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
 		server.WriteError(w, err)
 		return
+	}
+	// A malformed code is refused before the transaction opens.
+	var hashes [][]byte
+	if req.Invite != nil {
+		var herr error
+		if hashes, herr = auth.MatchInviteCode(*req.Invite); herr != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "malformed invite"))
+			return
+		}
 	}
 	nick, err := memberNick("")
 	if err != nil {
@@ -352,8 +394,12 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 		if err := c.joinGate(r.Context(), tx, row, s.UserID); err != nil {
 			return err
 		}
-		// Task 5 adds invite redemption here; at task 1 a community with no gate
-		// is joinable by any authenticated account.
+		// The invite is spent AFTER the gate and in the same transaction as the
+		// member row: a join the gate refuses burns no use, and a use is never
+		// spent for a member row that was not written.
+		if err := c.admitByInvite(r.Context(), tx, row, hashes); err != nil {
+			return err
+		}
 		return tx.PutMember(r.Context(), store.MemberOfCommunityRow{
 			CommunityID: cid, UserID: s.UserID, Joined: c.clk.Now().Unix(), Nick: nick,
 		})
@@ -366,10 +412,59 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// admitByInvite is the invite half of a join. A community whose policy says
+// join = "invite" needs a live invite of its own (403 without one); an invite
+// given to an open community is spent all the same. hashes are the candidate
+// hashes of the typed code, nil when the request carried none.
+//
+// It resolves WHICH candidate exists before redeeming it. RedeemInvite is one
+// guarded UPDATE that answers ErrExhausted whenever RowsAffected != 1, which is
+// also what an unknown hash produces, so treating ErrExhausted as final would
+// answer 410 for the first non-existent candidate of a legitimate code. A typed
+// 1 is an I or an L, so a code with one has two candidates and one of them does
+// not exist: that is the common case, not the corner one.
+//
+// The invite's community is checked BEFORE the redemption, so an invite minted
+// for another community burns no use here.
+func (c *Communities) admitByInvite(ctx context.Context, repo store.Repository, row store.CommunityRow, hashes [][]byte) error {
+	policy, err := ParseCommunityPolicy(row.PolicyJSON)
+	if err != nil {
+		return err
+	}
+	if hashes == nil {
+		if policy.InviteOnly() {
+			return server.Errorf(server.CodeForbidden, "this community is invite only")
+		}
+		return nil
+	}
+	for _, h := range hashes {
+		inv, err := repo.GetInviteByHash(ctx, h)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if inv.CommunityID == nil || *inv.CommunityID != row.ID {
+			return errInviteInvalid("that invite is for another community")
+		}
+		// The row exists, so a refusal now is real: expired, exhausted or revoked.
+		if _, err := repo.RedeemInvite(ctx, inv.CodeHash, c.clk.Now().Unix()); err != nil {
+			if errors.Is(err, store.ErrExhausted) || errors.Is(err, store.ErrNotFound) {
+				return errInviteInvalid("the invite is expired, exhausted or revoked")
+			}
+			return err
+		}
+		return nil
+	}
+	return errInviteInvalid("the invite is expired, exhausted or revoked")
+}
+
 // joinGate enforces R17's stored gates: the account must not be banned from the
 // community (a ban whose expiry has passed no longer gates), must be live, and
-// at least min_account_age_seconds old. Invite-only communities and the
-// screening flag are task 5's. repo is the join's transaction, holding the
+// at least min_account_age_seconds old. The screening flag is stored and
+// served, never enforced (R17); invite-only communities are admitByInvite's.
+// repo is the join's transaction, holding the
 // community row lock, so the ban read here cannot go stale before the insert.
 func (c *Communities) joinGate(ctx context.Context, repo store.Repository, row store.CommunityRow, userID id.ID) error {
 	if ban, err := repo.GetBan(ctx, row.ID, userID); err == nil {
@@ -705,7 +800,7 @@ func memberNick(s string) (string, error) {
 // wrote it; this type is how the instance reads it.
 type CommunityPolicy struct {
 	// Join is "open" (the default, also spelled by omission) or "invite".
-	// Task 5 enforces "invite" on POST /v1/communities/{id}/join.
+	// POST /v1/communities/{id}/join enforces "invite" (admitByInvite).
 	Join string `json:"join"`
 	// Screening is R17's membership-screening flag: stored and served, not
 	// enforced by this version of the instance.

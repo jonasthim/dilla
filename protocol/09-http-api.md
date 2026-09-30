@@ -84,13 +84,34 @@ The full session issuance and lifetime rules — scopes, lifetimes, revocation �
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
-| `GET /i/{code}` | — | — | `text/html` + CBOR via content negotiation: instance name, community name, expiry. Never mutates; `Cache-Control: no-store`, `Referrer-Policy: no-referrer` |
+| `GET /i/{code}` | — | — | `text/html`, or CBOR when the request asks for `application/cbor`: `[instance(tstr), community_id(bstr16\|null), expires(uint), community_name(tstr\|null)]`. Never mutates; `Cache-Control: no-store`, `Referrer-Policy: no-referrer` |
 | `POST /v1/invites/redeem` | — | `[code(tstr)]` | `[invite_id(bstr16), community_id(bstr16\|null), grants_admin(uint)]` |
-| `POST /v1/communities/{id}/invites` | E | — | invite created |
-| `GET /v1/communities/{id}/invites` | E | — | `[invite]` |
+| `POST /v1/communities/{id}/invites` | E | `[max_uses(uint), ttl_seconds(uint), grants_admin(uint)]` | `201 [invite_id(bstr16), code(tstr), url(tstr), expires(uint)]` |
+| `GET /v1/communities/{id}/invites` | E | — | `[[invite_id, community_id\|null, created_by\|null, grants_admin, max_uses, used_count, created, expires_at, revoked_at\|null]]`, newest first, revoked and spent invites included, never a code |
 | `DELETE /v1/invites/{id}` | E | — | `204` |
 
 Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
+
+- A **community invite** is an invite whose `community_id` is set. Minting and listing need
+  `create_invite` community-wide (§ Permissions) and membership of the community (`404 E_NOT_FOUND`
+  otherwise, as for every community route); `403 E_FORBIDDEN` without the permission.
+  `max_uses` is 1–1000 and `ttl_seconds` 1–2 592 000 (thirty days); `grants_admin` is 0 or 1, and 1
+  is refused (`403 E_FORBIDDEN`) to anyone who is not an instance admin, because whoever registers
+  with the invite becomes one. Anything else out of range is `400 E_INVALID_REQUEST`.
+- `code` is the invite's only plaintext, returned once, by the mint. The instance stores its
+  SHA-256 and the audit row (`invite.create`) names it by the first four bytes of that hash in
+  hex. `url` is the instance's base URL followed by `/i/` and the code.
+- `DELETE` revokes: the caller must be a member of the invite's community and either its creator
+  or hold `manage_community`. Revoking a revoked invite is a no-op that keeps the first time; an
+  unknown invite, one without a community and one of a community the caller is not in are all
+  `404`. Each revocation writes an `invite.revoke` audit row.
+- `GET /i/{code}` of a community invite names the community; an invite of a deleted community
+  answers as an unknown one. A code is accepted as a person types it: hyphens and spaces stripped,
+  case ignored, and `0`, `8` and `1` read as `O`, `B` and `I` or `L`.
+- `GET /i/{code}`, `POST /v1/invites/redeem` and `POST /v1/communities/{id}/join` share one
+  bucket, `limits.rate.invite_per_second` (0.1) with `invite_burst` (5), keyed by the client
+  address, so a join is not a way round the limit on guessing codes. A refusal is `429
+  E_RATE_LIMITED`; the landing page carries `Retry-After` too.
 
 ## Auth ceremonies
 
@@ -170,6 +191,13 @@ community answers `404` to everyone.
   `expires` has passed no longer refuses), a disabled or deleted account and an account younger
   than `min_account_age_seconds`. Joining a community the caller is already a member of is a no-op that
   answers `[community_id]`.
+- `join` with `invite = null` on a community whose policy says `"join": "invite"` is
+  `403 E_FORBIDDEN`. With a code it spends one use of that community's invite (§ Invites): a
+  malformed code is `400 E_INVALID_REQUEST`, and an unknown, expired, exhausted or revoked one, or one
+  minted for another community, is `410 E_INVITE_INVALID`. The gates above run first, so a join
+  they refuse spends no use, and the use and the membership are written together. An open community
+  spends an invite it is given all the same. `max_uses` holds under concurrent joins: exactly that
+  many succeed.
 - `require_mod_2fa = 1` refuses (`403 E_FORBIDDEN`) a grant of a role whose `allow` carries any
   moderation bit (manage messages, kick, ban, manage channels, manage roles, manage community,
   administrator) to a user who holds neither a confirmed TOTP secret nor a passkey for this
