@@ -54,11 +54,10 @@ func (c StructureChannels) Channel(ctx context.Context, targetID id.ID) (uint8, 
 //     channel; a DM carries both), and the user must hold, in that channel and
 //     through the permission resolver, what ResolverACL requires of a joiner:
 //     PermViewChannel for a text group, PermViewChannel|PermConnect for a call
-//     group. A text group whose binding names a community but whose target is
-//     not a channel of it is refused. A call group's target may be the call
-//     rather than the channel (R9 puts the call id there, and voice_sessions is
-//     task 16's table), so a community call group whose target is not a channel
-//     needs a live community and the two call bits community-wide.
+//     group. A text or call group whose binding names a community but whose
+//     target is not a live channel of it is refused: target_id is the channel id
+//     for both kinds (protocol/01 dilla_binding; R9 keeps a call's id in a
+//     companion column), and ResolverACL refuses the same group to a joiner.
 //   - text and call with no community: a DM or group DM. Their membership is
 //     channel_members, which task 6 creates; until then they are refused, which
 //     is the conservative answer, not a permanent one.
@@ -80,7 +79,7 @@ func (c StructureChannels) MayRegister(ctx context.Context, userID id.ID, b ds.B
 	row, err := c.Repo.GetChannel(ctx, b.TargetID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return c.mayRegisterWithoutChannel(ctx, userID, b)
+		return mayRegisterWithoutChannel(b)
 	case err != nil:
 		return err
 	}
@@ -121,25 +120,9 @@ func groupBits(kind uint8) Bits {
 
 // mayRegisterWithoutChannel is MayRegister for a text or call group whose target
 // has no live channel row.
-func (c StructureChannels) mayRegisterWithoutChannel(ctx context.Context, userID id.ID, b ds.Binding) error {
+func mayRegisterWithoutChannel(b ds.Binding) error {
 	if b.CommunityID == nil {
 		return fmt.Errorf("%w: DM membership arrives with channel_members (Plan 2 task 6)", ds.ErrNotEligible)
 	}
-	if b.Kind == groupText {
-		return fmt.Errorf("%w: a community text group must name a live channel of that community", ds.ErrBindingTarget)
-	}
-	if _, err := c.Repo.GetCommunity(ctx, *b.CommunityID); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return fmt.Errorf("%w: the binding names no live community", ds.ErrBindingTarget)
-		}
-		return err
-	}
-	ok, err := communityHas(ctx, c.Repo, *b.CommunityID, userID, groupBits(b.Kind))
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("%w: not a member of the community, or not permitted to call in it", ds.ErrNotEligible)
-	}
-	return nil
+	return fmt.Errorf("%w: a community channel group must name a live channel of that community", ds.ErrBindingTarget)
 }

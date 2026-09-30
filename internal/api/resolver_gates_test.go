@@ -322,3 +322,69 @@ func TestMayRegisterNeedsViewOfTheChannel(t *testing.T) {
 		t.Fatalf("a member who cannot view the channel = %v, want ds.ErrNotEligible", err)
 	}
 }
+
+// A community call group is bound to its voice channel (protocol/01 dilla_binding,
+// R9: target_id is the channel id; the call id is a companion column). When that
+// channel is gone the group is refused exactly as a text group is: falling back
+// to community-wide bits would drop the channel's overwrites and hand a deleted
+// PRIVATE voice channel's call group, its GroupInfo and its tree to every member.
+func TestResolverACLRefusesACallGroupWhoseChannelIsGone(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	ctx := context.Background()
+	voice, _, _ := newChannel(t, e, cid, ownerTok, 1, 0, 0, "staff-call")
+	member, memberTok := e.NewUser("member")
+	joinCommunity(t, e, cid, memberTok)
+
+	// Private: @everyone may not view the voice channel.
+	roles, err := e.Repo.ListRoles(ctx, cid)
+	if err != nil || len(roles) == 0 {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	everyone := roles[0].ID
+	if status, body := e.Do(http.MethodPut, "/v1/channels/"+voice.String()+"/overwrites/0/"+everyone.String(),
+		ownerTok, []any{uint64(0), uint64(api.PermViewChannel)}); status != http.StatusNoContent {
+		t.Fatalf("PUT @everyone overwrite = %d (%x)", status, body)
+	}
+	g := store.GroupRow{
+		GroupID: id.New(), Binding: []byte{0x80}, Kind: 1, CommunityID: &cid, TargetID: voice,
+		Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 1,
+		PolicyVersion: 1, Created: 1,
+	}
+	if err := e.Repo.CreateGroup(ctx, g); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+
+	// The member holds view|connect community-wide through @everyone.
+	snap, err := api.LoadSnapshot(ctx, e.Repo, cid, member, nil)
+	if err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	if !snap.Resolve(member).Has(api.PermViewChannel | api.PermConnect) {
+		t.Fatal("fixture: the member must hold view|connect community-wide")
+	}
+
+	acl := api.ResolverACL{Repo: e.Repo}
+	eligible := func() bool {
+		t.Helper()
+		ok, err := acl.Eligible(ctx, g.GroupID, member)
+		if err != nil {
+			t.Fatalf("Eligible: %v", err)
+		}
+		return ok
+	}
+	if eligible() {
+		t.Fatal("a member the private voice channel hides is eligible for its call group")
+	}
+	if status, body := e.Do(http.MethodDelete, "/v1/channels/"+voice.String(), ownerTok, nil); status != http.StatusNoContent {
+		t.Fatalf("DELETE channel = %d (%x)", status, body)
+	}
+	if eligible() {
+		t.Fatal("deleting the private voice channel made its call group eligible community-wide")
+	}
+	// The registration ACL agrees: a community call group names a live voice channel.
+	src := api.StructureChannels{Repo: e.Repo}
+	if err := src.MayRegister(ctx, member, binding(&cid, voice, 1)); !errors.Is(err, ds.ErrBindingTarget) {
+		t.Fatalf("registering a call group on the deleted channel = %v, want ds.ErrBindingTarget", err)
+	}
+}

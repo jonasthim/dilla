@@ -114,9 +114,10 @@ func TestStructureChannelsGatesRegistrationOnMembership(t *testing.T) {
 		{"a call group on a text channel", f.member, binding(c, f.text, 1), ds.ErrBindingTarget},
 		{"a community text group whose target is no channel", f.member, binding(c, id.New(), 0), ds.ErrBindingTarget},
 		{"a text group on a deleted channel", f.member, binding(c, f.deletedText, 0), ds.ErrBindingTarget},
-		// R9: a call group's target may be the call itself; community membership decides.
-		{"a member's call group whose target is the call", f.member, binding(c, id.New(), 1), nil},
-		{"an outsider's call group whose target is the call", f.outsider, binding(c, id.New(), 1), ds.ErrNotEligible},
+		// R9: a call group's target is its voice channel, never the call; community-wide bits
+		// never stand in for the channel's overwrites.
+		{"a member's community call group whose target is no channel", f.member, binding(c, id.New(), 1), ds.ErrBindingTarget},
+		{"an outsider's community call group whose target is no channel", f.outsider, binding(c, id.New(), 1), ds.ErrBindingTarget},
 		{"a call group naming no live community", f.member, binding(new(id.New()), id.New(), 1), ds.ErrBindingTarget},
 		// DMs wait for task 6's channel_members.
 		{"a DM text group with no channel row", f.member, binding(nil, id.New(), 0), ds.ErrNotEligible},

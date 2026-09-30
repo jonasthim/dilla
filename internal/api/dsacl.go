@@ -21,10 +21,12 @@ import (
 //
 //   - text, in a community: the group's target is a live channel of the group's
 //     community and the user holds PermViewChannel in it, overwrites applied.
-//   - call, in a community: the same with PermViewChannel|PermConnect when the
-//     target is a voice channel; when the target is the call rather than the
-//     channel (R9, and voice_sessions is task 16's table), the user holds the
-//     two bits community-wide.
+//   - call, in a community: the same with PermViewChannel|PermConnect. The
+//     target is the voice channel (protocol/01 dilla_binding; R9 keeps the call
+//     id in a companion column, never in target_id), so a call group whose
+//     channel is gone is refused exactly as a text group is. There is no
+//     community-wide fallback: it would drop the channel's overwrites and open
+//     a deleted private voice channel's group to every member.
 //   - everything else — a DM or group DM (no community; its participants are
 //     task 6's channel_members), a pairing group, an interaction group — keeps
 //     Plan 1's rule: eligible only where the user is already in the group.
@@ -59,10 +61,7 @@ func (a ResolverACL) Eligible(ctx context.Context, groupID, userID id.ID) (bool,
 	ch, err := a.Repo.GetChannel(ctx, g.TargetID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		if g.Kind == groupText {
-			return false, nil // a community text group whose channel is gone
-		}
-		return communityHas(ctx, a.Repo, *g.CommunityID, userID, want)
+		return false, nil // a community channel group whose channel is gone
 	case err != nil:
 		return false, err
 	}
@@ -74,23 +73,4 @@ func (a ResolverACL) Eligible(ctx context.Context, groupID, userID id.ID) (bool,
 		return false, err
 	}
 	return bits.Has(want), nil
-}
-
-// communityHas reports whether userID is a member of the live community and
-// holds want community-wide.
-func communityHas(ctx context.Context, repo store.Repository, communityID, userID id.ID, want Bits) (bool, error) {
-	if _, err := repo.GetMember(ctx, communityID, userID); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	snap, err := LoadSnapshot(ctx, repo, communityID, userID, nil)
-	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return snap.Resolve(userID).Has(want), nil
 }

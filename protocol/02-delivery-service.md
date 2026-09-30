@@ -241,9 +241,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    of a kind that carries the group (a `text` group on a text channel, a `call` group on a voice
    channel) and the user to hold, in that channel (`09` § Permissions, overwrites applied),
    `view_channel` for a `text` group and `view_channel` and `connect` for a `call` group; a
-   community `text` group whose target is not a channel of it is refused, and a community `call`
-   group whose target is not a channel (the call itself) needs the user to be a member of that
-   community holding both bits community-wide. A `text` or `call` group with no
+   community `text` or `call` group whose target is not a live channel of that community is
+   refused (`target_id` is the channel id for both kinds, `01-groups.md` § dilla_binding), and so
+   is every Add to, and join of, such a group once its channel is deleted: permissions held
+   community-wide never stand in for the channel's overwrites. A `text` or `call` group with no
    `community_id` (a DM or group DM) needs the user to be a member of the DM; until the instance
    records DM membership it refuses every such group. A binding that names no such target is
    `400 E_BINDING_INVALID`; a user who may not register it is `403 E_FORBIDDEN`. `pairing` and
