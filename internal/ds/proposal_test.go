@@ -823,6 +823,62 @@ func TestAReissuedAddIsDroppedWhenItsUserIsNoLongerEligible(t *testing.T) {
 	}
 }
 
+// An outstanding Add for a device its user's newest signed list no longer names (not revoked) is
+// an Add no commit can carry: checkAddedMember refuses the commit that includes it and clause 1
+// refuses the one that omits it. The void pass catches it the same way it catches an ACL change.
+func TestAnOutstandingAddForADeviceDroppedFromItsSignedListIsVoided(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	bob := h.eligibleDeviceWithKeyPackage(t)
+	carol := h.eligibleDeviceWithKeyPackage(t)
+	bobAdd := h.putAddFor(t, reg.GroupID, bob)
+	carolAdd := h.putAddFor(t, reg.GroupID, carol)
+
+	// Both are listed: nothing is voided.
+	if err := h.ds.VoidIneligibleAdds(ctx, reg.GroupID); err != nil {
+		t.Fatalf("VoidIneligibleAdds: %v", err)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, bobAdd); !ok || v != nil {
+		t.Fatalf("a listed device's Add: void_at %v (found %v), want it outstanding", v, ok)
+	}
+
+	// Bob's user publishes a newer list that names another device only.
+	bobRow, err := h.repo.GetDevice(ctx, bob)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	other := id.New()
+	blob := signedDeviceList(t, testSSK(0x6b), bobRow.UserID, []listEntry{
+		{DeviceID: other[:], DSKPub: bytes.Repeat([]byte{9}, 32), AddedAt: 2},
+	})
+	if err := h.repo.PutDeviceList(ctx, store.DeviceListRow{
+		UserID: bobRow.UserID, Version: 2, Blob: blob,
+		SSKSignature: blob[len(blob)-64:], PrevHash: make([]byte, 32), Created: h.clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("PutDeviceList: %v", err)
+	}
+
+	if err := h.ds.VoidIneligibleAdds(ctx, reg.GroupID); err != nil {
+		t.Fatalf("VoidIneligibleAdds: %v", err)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, bobAdd); !ok || v == nil {
+		t.Fatalf("the delisted device's Add: void_at %v (found %v), want it voided", v, ok)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, carolAdd); !ok || v != nil {
+		t.Fatalf("the still-listed device's Add: void_at %v (found %v), want it outstanding", v, ok)
+	}
+	rows, err := h.repo.ListProposals(ctx, reg.GroupID, 6, false)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	for _, r := range rows {
+		if bytes.Equal(r.Ref, bobAdd) {
+			t.Fatalf("the voided Add is still among the proposals a commit must carry")
+		}
+	}
+}
+
 // ------------------------------------------------------ the gaps, named in code
 
 // Invariant 5's nobody-online exception ends in a re-issue FOR THE NEW EPOCH, which needs an

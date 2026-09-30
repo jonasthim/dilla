@@ -480,7 +480,8 @@ func (d *DS) voidIneligibleAddsLocked(ctx context.Context, groupID id.ID) (int, 
 }
 
 // addStillEligible is the part of invariant 4's Add clause that can change after the Add was
-// proposed: the device must still be live and its user still admitted by the channel ACL.
+// proposed: the device must still be live, still named in its user's newest signed device list,
+// and its user still admitted by the channel ACL.
 func (d *DS) addStillEligible(ctx context.Context, groupID, deviceID id.ID) (bool, error) {
 	dev, err := d.opts.Store.GetDevice(ctx, deviceID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -491,6 +492,17 @@ func (d *DS) addStillEligible(ctx context.Context, groupID, deviceID id.ID) (boo
 	}
 	if dev.RevokedAt != nil || dev.QuarantinedAt != nil {
 		return false, nil
+	}
+	// The device-list clause: the same test checkAddedMember applies to the commit that would
+	// carry the Add (checkListedDevice acquires its own guest, and no caller holds one here). A
+	// list that no longer names the device, or that does not verify, is a definite "no"; a list
+	// the verifier cannot reach at all is "cannot answer" and stops the pass.
+	if err := d.checkListedDevice(ctx, nil, deviceID); err != nil {
+		var dsErr *Error
+		if errors.As(err, &dsErr) && dsErr.Code == errInvalid("").Code {
+			return false, nil
+		}
+		return false, err
 	}
 	return d.opts.ACL.Eligible(ctx, groupID, dev.UserID)
 }
