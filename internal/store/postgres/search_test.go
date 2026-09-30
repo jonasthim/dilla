@@ -144,7 +144,9 @@ func TestSearchUsesTheCompositeGINIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EXPLAIN: %v", err)
 	}
+	defer func() { _ = rows.Close() }()
 	var lines []string
+	// rows.Next returning false closes rows, which frees the transaction for the Rollback below.
 	for rows.Next() {
 		var line string
 		if err := rows.Scan(&line); err != nil {
@@ -155,7 +157,6 @@ func TestSearchUsesTheCompositeGINIndex(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows: %v", err)
 	}
-	_ = rows.Close()
 	// The dropped indexes come back, and the ACCESS EXCLUSIVE lock the DROPs took is
 	// released before the repository's own connection reads the table below.
 	if err := tx.Rollback(); err != nil {
