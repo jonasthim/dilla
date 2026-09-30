@@ -260,6 +260,16 @@ func turnPeers(cfg *config.Config, interfaceAddrs func() ([]net.Addr, error)) ([
 	return peers, nil
 }
 
+// turnStartError is serve's exit status for a relay that did not start: 78 (exit.Config, which the
+// unit's RestartPreventExitStatus leaves stopped) only when dilla.toml is at fault, and 69
+// (exit.Unavailable, restarted) for the host's network — a sandbox that blocks netlink, a bind.
+func turnStartError(err error) error {
+	if server.IsTURNConfigError(err) {
+		return fmt.Errorf("serve: %w: %w", err, exit.Config)
+	}
+	return fmt.Errorf("serve: %w: %w", err, exit.Unavailable)
+}
+
 func startTURN(d frontDeps, f *front, ln net.Listener) error {
 	peers, err := turnPeers(d.cfg, net.InterfaceAddrs)
 	if err != nil {
@@ -269,7 +279,7 @@ func startTURN(d frontDeps, f *front, ln net.Listener) error {
 	t, err := server.StartTURN(d.cfg.TURN, ln, peers, clock.System(), d.log)
 	if err != nil {
 		_ = ln.Close()
-		return fmt.Errorf("serve: %w: %w", err, exit.Config)
+		return turnStartError(err)
 	}
 	f.closers = append(f.closers, func() { _ = t.Close() })
 	return nil

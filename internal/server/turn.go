@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/pion/logging"
+	"github.com/pion/transport/v4"
+	"github.com/pion/transport/v4/stdnet"
 	"github.com/pion/turn/v5"
 
 	"github.com/jonasthim/dilla/internal/clock"
@@ -58,15 +60,21 @@ func TURNCredential(secret string, deviceID id.ID, ttl time.Duration, now time.T
 func StartTURN(c config.TURN, ln net.Listener, peers []netip.Addr, clk clock.Clock, log *slog.Logger) (*TURN, error) {
 	body, err := os.ReadFile(c.SharedSecretFile)
 	if err != nil {
-		return nil, fmt.Errorf("turn: turn.shared_secret_file: %w", err)
+		return nil, turnConfigError{fmt.Errorf("turn: turn.shared_secret_file: %w", err)}
 	}
 	secret := strings.TrimSpace(string(body))
 	if secret == "" {
-		return nil, errors.New("turn: turn.shared_secret_file is empty")
+		return nil, turnConfigError{errors.New("turn: turn.shared_secret_file is empty")}
 	}
 	relayIP, err := ResolveRelayIP(c.RelayIP)
 	if err != nil {
 		return nil, err
+	}
+	// The relay generator's network is built here rather than left to pion, so that a failure
+	// (no netlink under a sandbox, say) is reported as the network error it is.
+	relayNet, err := newTURNNet()
+	if err != nil {
+		return nil, fmt.Errorf("turn: failed to create network: %w", err)
 	}
 	if c.RelayIP == config.RelayIPAuto {
 		log.Info("turn.relay_ip auto resolved", "relay_ip", relayIP.String())
@@ -88,6 +96,7 @@ func StartTURN(c config.TURN, ln net.Listener, peers []netip.Addr, clk clock.Clo
 			RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
 				RelayAddress: relayIP,
 				Address:      relayIP.String(),
+				Net:          relayNet,
 			},
 			PermissionHandler: peerFilter(peers),
 		}},
@@ -96,6 +105,23 @@ func StartTURN(c config.TURN, ln net.Listener, peers []netip.Addr, clk clock.Clo
 		return nil, fmt.Errorf("turn: %w", err)
 	}
 	return &TURN{srv: srv, quota: q}, nil
+}
+
+// newTURNNet is the network relay sockets are allocated on; a variable so a test can make it fail.
+var newTURNNet = func() (transport.Net, error) { return stdnet.NewNet() }
+
+// turnConfigError is a StartTURN failure dilla.toml causes (the shared secret file, turn.relay_ip
+// as written). Every other failure is the host's: the network, a bind.
+type turnConfigError struct{ err error }
+
+func (e turnConfigError) Error() string { return e.err.Error() }
+func (e turnConfigError) Unwrap() error { return e.err }
+
+// IsTURNConfigError reports whether StartTURN failed on its configuration rather than on the host,
+// which `dillad serve` turns into exit 78 (fix dilla.toml) rather than 69 (try again).
+func IsTURNConfigError(err error) bool {
+	var ce turnConfigError
+	return errors.As(err, &ce)
 }
 
 // ResolveRelayIP is the address relay sockets bind for turn.relay_ip: an IP address as written,
@@ -107,7 +133,7 @@ func ResolveRelayIP(s string) (net.IP, error) {
 	if s != config.RelayIPAuto {
 		ip := net.ParseIP(s)
 		if ip == nil {
-			return nil, fmt.Errorf("turn: turn.relay_ip %q is not an IP address or %q", s, config.RelayIPAuto)
+			return nil, turnConfigError{fmt.Errorf("turn: turn.relay_ip %q is not an IP address or %q", s, config.RelayIPAuto)}
 		}
 		return ip, nil
 	}

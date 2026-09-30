@@ -9,8 +9,10 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -27,6 +29,7 @@ import (
 	"github.com/pion/turn/v5"
 
 	"github.com/jonasthim/dilla/internal/config"
+	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/server"
@@ -405,6 +408,26 @@ func TestTheRelayPeersAreTheSFUsAddresses(t *testing.T) {
 	cfg.LiveKit.Enabled = false
 	if got, _ := turnPeers(cfg, ifaces); len(got) != 0 {
 		t.Errorf("peers with LiveKit off = %v, want none", got)
+	}
+}
+
+// C8 (fix wave): a relay that fails on dilla.toml is exit 78, which systemd does not restart; one
+// that fails to set up its network is exit 69, which it retries, and the message does not blame
+// the config.
+func TestATURNNetworkFailureIsUnavailableNotConfig(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.TURN.SharedSecretFile = filepath.Join(t.TempDir(), "missing")
+	cfg.TURN.RelayIP = "127.0.0.1"
+	d := frontDeps{cfg: cfg, log: slog.New(slog.DiscardHandler)}
+	if err := startTURN(d, &front{}, ln); !errors.Is(err, exit.Config) {
+		t.Errorf("a missing turn secret = %v, want exit.Config", err)
+	}
+	if err := turnStartError(errors.New("turn: failed to create network: netlinkrib")); !errors.Is(err, exit.Unavailable) || errors.Is(err, exit.Config) {
+		t.Errorf("a network setup failure = %v, want exit.Unavailable only", err)
 	}
 }
 

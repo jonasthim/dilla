@@ -21,6 +21,7 @@ require (
 	github.com/livekit/server-sdk-go/v2 v2.18.2-0.20260922130803-2088dabd3442
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/pion/logging v0.2.4
+	github.com/pion/transport/v4 v4.1.0
 	github.com/pion/turn/v5 v5.0.13
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/pquerna/otp v1.5.0
@@ -113,7 +114,6 @@ require (
 	github.com/pion/sdp/v3 v3.0.19 // indirect
 	github.com/pion/srtp/v3 v3.0.13 // indirect
 	github.com/pion/stun/v3 v3.1.7 // indirect
-	github.com/pion/transport/v4 v4.1.0 // indirect
 	github.com/pion/webrtc/v4 v4.2.19 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect

@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -359,6 +360,33 @@ func TestStartTURNRefusesAMissingSecret(t *testing.T) {
 	}, ln, nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("StartTURN ran without its shared secret")
+	}
+	if !server.IsTURNConfigError(err) {
+		t.Errorf("a missing shared secret = %v, want a configuration error", err)
+	}
+}
+
+// C8 (fix wave): a relay that cannot set up its network (no netlink under a sandbox that blocks
+// AF_NETLINK) is not a dilla.toml mistake: StartTURN's error says so, and serve reports it as
+// unavailable rather than as a configuration error that systemd never restarts.
+func TestANetworkSetupFailureIsNotAConfigError(t *testing.T) {
+	restore := server.FailTURNNetForTest(errors.New("netlinkrib: address family not supported by protocol"))
+	defer restore()
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	_, err = server.StartTURN(config.TURN{
+		Enabled: true, Realm: "chat.example.test", RelayIP: "127.0.0.1",
+		SharedSecretFile: writeFile(t, "turn.secret", "0123456789abcdef0123456789abcdef"),
+		CredentialTTL:    "1h", AllocationsPerDevice: 2,
+	}, ln, nil, clock.System(), slog.New(slog.DiscardHandler))
+	if err == nil || !strings.Contains(err.Error(), "netlinkrib") {
+		t.Fatalf("StartTURN with no network = %v, want the network error", err)
+	}
+	if server.IsTURNConfigError(err) {
+		t.Errorf("a network setup failure = %v, classified as a configuration error", err)
 	}
 }
 

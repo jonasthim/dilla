@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 
+	"github.com/pion/transport/v4"
 	"github.com/pion/turn/v5"
 
 	"github.com/jonasthim/dilla/internal/clock"
@@ -24,6 +25,13 @@ func TURNAuthForTest(secret string, clk clock.Clock) turn.AuthHandler {
 // fresh quota of maxPerDevice.
 func TURNHandlersForTest(maxPerDevice int) (turn.QuotaHandler, turn.EventHandler) {
 	return turnHandlers(NewAllocationQuota(maxPerDevice))
+}
+
+// FailTURNNetForTest makes StartTURN's network setup fail with err until the returned restore runs.
+func FailTURNNetForTest(err error) (restore func()) {
+	prev := newTURNNet
+	newTURNNet = func() (transport.Net, error) { return nil, err }
+	return func() { newTURNNet = prev }
 }
 
 // EmitForTest drives the certmagic OnEvent hook BuildTLS installed.
