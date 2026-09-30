@@ -261,7 +261,8 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // 006d_channel_members.sql's channel_members; Plan 2 task 7 added 006e_pending_joins.sql's
 // pending_joins (Plan 1 follow-up card 8); Plan 2 task 8 added 007_readable.sql's readable_messages
 // and read_state (its FTS5 index is asserted on its own, because a virtual table is not STRICT);
-// Plan 2 task 10 added 008_blobs.sql's blobs, blob_refs, blob_tombstones and backups.
+// Plan 2 task 10 added 008_blobs.sql's blobs, blob_refs, blob_tombstones and backups; Plan 2
+// task 16 added 006f_voice.sql's voice_sessions.
 var wantTables = []string{
 	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "channel_members", "channel_overwrites", "channels", "communities", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invites", "key_packages", "login_attempts",
@@ -269,7 +270,7 @@ var wantTables = []string{
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
 	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "oidc_identities",
 	"password_credentials", "pending_joins", "read_state", "readable_messages", "recovery_codes", "reports", "roles", "sessions", "totp_secrets", "users",
-	"webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
+	"voice_sessions", "webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
 }
 
 // The two AUTOINCREMENT surrogate keys must survive sqlc's `*.id` wildcard as

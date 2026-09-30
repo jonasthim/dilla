@@ -535,9 +535,13 @@ func TestShutdownClosesTheListenerWithinTheGrace(t *testing.T) {
 // (Server.Protocols + SetUnencryptedHTTP2), not x/net/http2/h2c. Without the
 // field a front proxy speaking unencrypted HTTP/2 cannot reach the API in
 // behind_proxy mode, and the one fact the facts file went out of its way to
-// correct goes silently unused.
+// correct goes silently unused. The direct-TLS listener (Plan 2 task 16) speaks
+// h2 over TLS instead, and never unencrypted HTTP/2.
 func TestTheServerSpeaksUnencryptedHTTP2AndHTTP1(t *testing.T) {
-	srv, _, _ := newInstance(t)
+	srv, _, _ := newInstanceWith(t, func(c *config.Config) {
+		c.TLS.Mode = config.TLSModeBehindProxy
+		c.Server.TrustedProxyCIDRs = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	})
 	defer srv.Shutdown(context.Background())
 	p := srv.Protocols()
 	if p == nil {
@@ -548,6 +552,12 @@ func TestTheServerSpeaksUnencryptedHTTP2AndHTTP1(t *testing.T) {
 	}
 	if !p.HTTP1() {
 		t.Fatal("HTTP/1 is not enabled; the /gateway route needs it for the WebSocket upgrade")
+	}
+
+	direct, _, _ := newInstance(t) // acme_tls_alpn: the listener behind the 443 demux
+	defer direct.Shutdown(context.Background())
+	if p := direct.Protocols(); p == nil || p.UnencryptedHTTP2() || !p.HTTP2() || !p.HTTP1() {
+		t.Fatal("the direct-TLS listener must speak HTTP/1.1 and h2, and never unencrypted HTTP/2")
 	}
 }
 

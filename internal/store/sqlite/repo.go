@@ -1011,8 +1011,17 @@ func (r *Repo) ClearEpochUnknown(ctx context.Context, groupID id.ID) error {
 	return wrap(r.w.ClearEpochUnknown(ctx, sqlitedb.ClearEpochUnknownParams{GroupID: groupID}))
 }
 
+// EndAllVoiceSessions is invariant 11's "Live calls end", in both of its halves and in one
+// transaction: every open call group is closed (Plan 1) and every live voice_sessions row is
+// ended (Plan 2 task 16, P2-D19). Inside a caller's transaction it runs in that one.
 func (r *Repo) EndAllVoiceSessions(ctx context.Context, at int64) error {
-	return wrap(r.w.EndAllVoiceSessions(ctx, sqlitedb.EndAllVoiceSessionsParams{At: at}))
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error { return tx.EndAllVoiceSessions(ctx, at) })
+	}
+	if err := r.w.EndAllVoiceSessions(ctx, sqlitedb.EndAllVoiceSessionsParams{At: at}); err != nil {
+		return wrap(err)
+	}
+	return wrap(r.w.EndAllVoiceSessionRows(ctx, sqlitedb.EndAllVoiceSessionRowsParams{At: at}))
 }
 
 // NextSeq allocates the next number in the group's ONE sequence space, shared by
@@ -2670,6 +2679,64 @@ func (r *Repo) ListBackups(ctx context.Context, userID id.ID, kind int32) ([]sto
 			ManifestSig: row.ManifestSig,
 			Created:     row.Created,
 		})
+	}
+	return out, nil
+}
+
+// Voice sessions (Plan 2 task 16, P2-D22, 00011_voice.sql).
+
+func voiceSessionRow(row sqlitedb.VoiceSessions) store.VoiceSessionRow {
+	return store.VoiceSessionRow{
+		CallID:      row.CallID,
+		ChannelID:   row.ChannelID,
+		GroupID:     row.GroupID,
+		LivekitRoom: row.LivekitRoom,
+		Started:     row.Started,
+		Ended:       ptrInt64(row.Ended),
+	}
+}
+
+// PutVoiceSession records a call, or reopens an ended one: a call is keyed by its call group's
+// call id (R9), so the next call of the same group rewrites the row and clears ended. A live row
+// is left as it is.
+func (r *Repo) PutVoiceSession(ctx context.Context, v store.VoiceSessionRow) error {
+	return wrap(r.w.PutVoiceSession(ctx, sqlitedb.PutVoiceSessionParams{
+		CallID:      v.CallID,
+		ChannelID:   v.ChannelID,
+		GroupID:     v.GroupID,
+		LivekitRoom: v.LivekitRoom,
+		Started:     v.Started,
+	}))
+}
+
+func (r *Repo) GetVoiceSession(ctx context.Context, callID id.ID) (store.VoiceSessionRow, error) {
+	row, err := r.r.GetVoiceSession(ctx, sqlitedb.GetVoiceSessionParams{CallID: callID})
+	if err != nil {
+		return store.VoiceSessionRow{}, wrap(err)
+	}
+	return voiceSessionRow(row), nil
+}
+
+// EndVoiceSession ends a live call; ErrNotFound when there is no such call or it has ended.
+func (r *Repo) EndVoiceSession(ctx context.Context, callID id.ID, at int64) error {
+	n, err := r.w.EndVoiceSession(ctx, sqlitedb.EndVoiceSessionParams{At: at, CallID: callID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) ListLiveVoiceSessions(ctx context.Context, channelID id.ID) ([]store.VoiceSessionRow, error) {
+	rows, err := r.r.ListLiveVoiceSessions(ctx, sqlitedb.ListLiveVoiceSessionsParams{ChannelID: channelID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.VoiceSessionRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, voiceSessionRow(row))
 	}
 	return out, nil
 }

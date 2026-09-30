@@ -233,6 +233,39 @@ func (q *Queries) DeleteRole(ctx context.Context, arg DeleteRoleParams) (int64, 
 	return result.RowsAffected()
 }
 
+const endAllVoiceSessionRows = `-- name: EndAllVoiceSessionRows :exec
+UPDATE voice_sessions SET ended = CAST(?1 AS INTEGER) WHERE ended IS NULL
+`
+
+type EndAllVoiceSessionRowsParams struct {
+	At int64
+}
+
+// Invariant 11's "Live calls end", the voice_sessions half of store.MLS.EndAllVoiceSessions
+// (P2-D19): the call-group half is mls.sql's EndAllVoiceSessions.
+func (q *Queries) EndAllVoiceSessionRows(ctx context.Context, arg EndAllVoiceSessionRowsParams) error {
+	_, err := q.db.ExecContext(ctx, endAllVoiceSessionRows, arg.At)
+	return err
+}
+
+const endVoiceSession = `-- name: EndVoiceSession :execrows
+UPDATE voice_sessions SET ended = CAST(?1 AS INTEGER)
+WHERE call_id = ?2 AND ended IS NULL
+`
+
+type EndVoiceSessionParams struct {
+	At     int64
+	CallID id.ID
+}
+
+func (q *Queries) EndVoiceSession(ctx context.Context, arg EndVoiceSessionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, endVoiceSession, arg.At, arg.CallID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getBan = `-- name: GetBan :one
 SELECT community_id, user_id, reason, by_user, created, expires
 FROM bans WHERE community_id = ? AND user_id = ?
@@ -364,6 +397,29 @@ func (q *Queries) GetRole(ctx context.Context, arg GetRoleParams) (Roles, error)
 		&i.Hoist,
 		&i.Mentionable,
 		&i.Created,
+	)
+	return i, err
+}
+
+const getVoiceSession = `-- name: GetVoiceSession :one
+SELECT call_id, channel_id, group_id, livekit_room, started, ended
+FROM voice_sessions WHERE call_id = ?
+`
+
+type GetVoiceSessionParams struct {
+	CallID id.ID
+}
+
+func (q *Queries) GetVoiceSession(ctx context.Context, arg GetVoiceSessionParams) (VoiceSessions, error) {
+	row := q.db.QueryRowContext(ctx, getVoiceSession, arg.CallID)
+	var i VoiceSessions
+	err := row.Scan(
+		&i.CallID,
+		&i.ChannelID,
+		&i.GroupID,
+		&i.LivekitRoom,
+		&i.Started,
+		&i.Ended,
 	)
 	return i, err
 }
@@ -578,6 +634,46 @@ func (q *Queries) ListCommunities(ctx context.Context, arg ListCommunitiesParams
 			&i.RequireMod2fa,
 			&i.Created,
 			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLiveVoiceSessions = `-- name: ListLiveVoiceSessions :many
+SELECT call_id, channel_id, group_id, livekit_room, started, ended
+FROM voice_sessions WHERE channel_id = ? AND ended IS NULL
+ORDER BY started, call_id
+`
+
+type ListLiveVoiceSessionsParams struct {
+	ChannelID id.ID
+}
+
+func (q *Queries) ListLiveVoiceSessions(ctx context.Context, arg ListLiveVoiceSessionsParams) ([]VoiceSessions, error) {
+	rows, err := q.db.QueryContext(ctx, listLiveVoiceSessions, arg.ChannelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []VoiceSessions{}
+	for rows.Next() {
+		var i VoiceSessions
+		if err := rows.Scan(
+			&i.CallID,
+			&i.ChannelID,
+			&i.GroupID,
+			&i.LivekitRoom,
+			&i.Started,
+			&i.Ended,
 		); err != nil {
 			return nil, err
 		}
@@ -931,6 +1027,40 @@ func (q *Queries) PutRole(ctx context.Context, arg PutRoleParams) error {
 		arg.Hoist,
 		arg.Mentionable,
 		arg.Created,
+	)
+	return err
+}
+
+const putVoiceSession = `-- name: PutVoiceSession :exec
+
+INSERT INTO voice_sessions (call_id, channel_id, group_id, livekit_room, started, ended)
+VALUES (?, ?, ?, ?, ?, NULL)
+ON CONFLICT (call_id) DO UPDATE SET
+  channel_id = excluded.channel_id, group_id = excluded.group_id,
+  livekit_room = excluded.livekit_room, started = excluded.started, ended = NULL
+WHERE voice_sessions.ended IS NOT NULL
+`
+
+type PutVoiceSessionParams struct {
+	CallID      id.ID
+	ChannelID   id.ID
+	GroupID     *id.ID
+	LivekitRoom string
+	Started     int64
+}
+
+// Voice sessions (Plan 2 task 16, P2-D22, 00011_voice.sql).
+// A call is keyed by its call group's call id (R9), so the next call of the same group reopens
+// the ended row: the room, the group and the start are rewritten and ended is cleared. A live
+// row is left exactly as it is, so two devices starting the same call at once both land in the
+// one room the first wrote; the caller reads the row back to learn which.
+func (q *Queries) PutVoiceSession(ctx context.Context, arg PutVoiceSessionParams) error {
+	_, err := q.db.ExecContext(ctx, putVoiceSession,
+		arg.CallID,
+		arg.ChannelID,
+		arg.GroupID,
+		arg.LivekitRoom,
+		arg.Started,
 	)
 	return err
 }

@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -359,3 +361,106 @@ func prevsToAny(prevs []api.Preview) []any {
 
 // ptr returns a pointer to a copy of v.
 func ptr[T any](v T) *T { return &v }
+
+// stubSFU stands in for internal/sfu.(*Server).Token: the JWT's contents are
+// internal/sfu's own test's business, and the epoch gate in front of it is
+// this file's.
+type stubSFU struct {
+	mu    sync.Mutex
+	calls [][2]string // (room, identity)
+	fail  error
+}
+
+func (s *stubSFU) Token(room, identity string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail != nil {
+		return "", s.fail
+	}
+	s.calls = append(s.calls, [2]string{room, identity})
+	return "jwt-for-" + identity, nil
+}
+
+func (s *stubSFU) minted() [][2]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([][2]string(nil), s.calls...)
+}
+
+const (
+	testTURNSecret = "0123456789abcdef0123456789abcdef"
+	testLiveKitURL = "wss://chat.example.test"
+	callGroupEpoch = 7
+)
+
+// callEnv is a voice channel with a call group at epoch 7, the owner's token,
+// and the calls routes mounted over a stub SFU with TURN on.
+func callEnv(t *testing.T) (*env, id.ID, string, id.ID) {
+	t.Helper()
+	e, ch, tok, group, _ := callEnvWith(t, api.CallsConfig{
+		LiveKitURL: testLiveKitURL, TURNSecret: testTURNSecret,
+		TURNURLs:      []string{"turns:chat.example.test:443?transport=tcp"},
+		CredentialTTL: time.Hour,
+	})
+	return e, ch, tok, group
+}
+
+func callEnvWith(t *testing.T, cfg api.CallsConfig) (*env, id.ID, string, id.ID, *stubSFU) {
+	t.Helper()
+	e, cid, tok := channelEnv(t)
+	ch, _, status := newChannel(t, e, cid, tok, 1 /* voice */, 1, 2, "voice")
+	if status != http.StatusCreated {
+		t.Fatalf("voice channel = %d", status)
+	}
+	sfu := &stubSFU{}
+	api.NewCalls(e.Repo, api.NewResolver(e.Repo), sfu, cfg, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
+	return e, ch, tok, seedCallGroup(t, e, ch, cid, callGroupEpoch), sfu
+}
+
+// seedCallGroup writes one open call group row bound to the channel at the
+// given epoch, with the call id the delivery service gives a call group (R9:
+// its target, the channel).
+func seedCallGroup(t *testing.T, e *env, ch, cid id.ID, epoch uint64) id.ID {
+	t.Helper()
+	c, call := cid, ch
+	g := store.GroupRow{
+		GroupID: id.New(), Binding: []byte{0x80}, Kind: api.GroupCall, CommunityID: &c, TargetID: ch,
+		CallID: &call, Ciphersuite: 1, Epoch: epoch, ExternalSenderKeyID: id.New(),
+		E2EEVersion: 1, MediaVersion: 1, PolicyVersion: 1, Created: e.Clk.Now().Unix(),
+	}
+	if err := e.Repo.CreateGroup(t.Context(), g); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	return g.GroupID
+}
+
+// deviceOf is the device a bearer token NewUser minted authenticates as.
+func deviceOf(t *testing.T, e *env, tok string) id.ID {
+	t.Helper()
+	s, ok := e.sess[tok]
+	if !ok {
+		t.Fatalf("no session for token %q", tok)
+	}
+	return s.DeviceID
+}
+
+// seedLeaf adds dev as the next leaf of group, added at addedEpoch and removed
+// at removedEpoch (nil while it is still a member).
+func seedLeaf(t *testing.T, e *env, group, dev id.ID, addedEpoch uint64, removedEpoch *uint64) {
+	t.Helper()
+	members, err := e.Repo.ListMembers(t.Context(), group)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	d, err := e.Repo.GetDevice(t.Context(), dev)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	members = append(members, store.MemberRow{
+		GroupID: group, LeafIndex: uint32(len(members)), UserID: d.UserID, DeviceID: dev,
+		SignatureKey: make([]byte, 32), AddedEpoch: addedEpoch, RemovedEpoch: removedEpoch,
+	})
+	if err := e.Repo.ReplaceMembers(t.Context(), group, callGroupEpoch, members); err != nil {
+		t.Fatalf("ReplaceMembers: %v", err)
+	}
+}

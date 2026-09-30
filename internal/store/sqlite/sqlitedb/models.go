@@ -427,6 +427,15 @@ type Users struct {
 	DeletedAt  sql.NullInt64
 }
 
+type VoiceSessions struct {
+	CallID      id.ID
+	ChannelID   id.ID
+	GroupID     *id.ID
+	LivekitRoom string
+	Started     int64
+	Ended       sql.NullInt64
+}
+
 type WebauthnCeremonies struct {
 	ID          id.ID
 	Kind        int64

@@ -136,6 +136,14 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// Plan 2 task 14: `dillad admin community list`, reached through the
 			// embedded Communities.
 			"ListCommunities",
+			// §4.1 plus P2-D22's GetVoiceSession and the live-call listing POST
+			// /v1/channels/{id}/calls joins through (task 16), reached through the
+			// embedded VoiceSessions.
+			"GetVoiceSession", "ListLiveVoiceSessions",
+		}},
+		// VoiceSessions is the slice of Structure Plan 2 task 16's table supports.
+		{"VoiceSessions", reflect.TypeOf((*store.VoiceSessions)(nil)).Elem(), []string{
+			"EndVoiceSession", "GetVoiceSession", "ListLiveVoiceSessions", "PutVoiceSession",
 		}},
 		// ChannelMembers is the slice of Structure Plan 2 task 6's table supports.
 		{"ChannelMembers", reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(), []string{
@@ -262,6 +270,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		// Plan 2 task 10: Blobs and OpsBackups join with 00010_blobs.sql (P2-D5).
 		reflect.TypeOf((*store.Blobs)(nil)).Elem(),
 		reflect.TypeOf((*store.OpsBackups)(nil)).Elem(),
+		// Plan 2 task 16: VoiceSessions joins with 00011_voice.sql (P2-D22).
+		reflect.TypeOf((*store.VoiceSessions)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

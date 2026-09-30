@@ -1,0 +1,260 @@
+package api_test
+
+import (
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
+	"errors"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/fxamacker/cbor/v2"
+
+	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/id"
+)
+
+// callResponse is POST /v1/channels/{id}/calls's five elements.
+type callResponse struct {
+	CallID     id.ID
+	GroupID    id.ID
+	LiveKitURL string
+	Token      string
+	ICE        [][]cbor.RawMessage
+}
+
+func decodeCall(t *testing.T, body []byte) callResponse {
+	t.Helper()
+	var out []cbor.RawMessage
+	mustUnmarshalBody(t, body, &out)
+	if len(out) != 5 {
+		t.Fatalf("call response has %d elements, want 5: %x", len(out), body)
+	}
+	var r callResponse
+	mustUnmarshal(t, out[0], &r.CallID)
+	mustUnmarshal(t, out[1], &r.GroupID)
+	mustUnmarshal(t, out[2], &r.LiveKitURL)
+	mustUnmarshal(t, out[3], &r.Token)
+	mustUnmarshal(t, out[4], &r.ICE)
+	return r
+}
+
+func TestACurrentLeafGetsALiveKitToken(t *testing.T) {
+	e, ch, tok, group, sfu := callEnvWith(t, api.CallsConfig{
+		LiveKitURL: testLiveKitURL, TURNSecret: testTURNSecret,
+		TURNURLs:      []string{"turns:chat.example.test:443?transport=tcp"},
+		CredentialTTL: time.Hour,
+	})
+	dev := deviceOf(t, e, tok)
+	seedLeaf(t, e, group, dev, 3 /* addedEpoch */, nil /* removedEpoch */)
+	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if status != http.StatusCreated {
+		t.Fatalf("POST calls = %d (%x)", status, body)
+	}
+	out := decodeCall(t, body)
+	if out.Token != "jwt-for-"+dev.String() || out.LiveKitURL != testLiveKitURL || out.GroupID != group {
+		t.Fatalf("response = %+v", out)
+	}
+	// R9: the call is keyed by the call group's call id.
+	if out.CallID != ch {
+		t.Fatalf("call_id = %s, want the call group's call id %s", out.CallID, ch)
+	}
+	minted := sfu.minted()
+	if len(minted) != 1 || minted[0][1] != dev.String() {
+		t.Fatalf("the SFU minted %v, want one token for device %s", minted, dev)
+	}
+	// The call is recorded, which is what DELETE /v1/calls/{call_id} and the
+	// restore path both read, and its room is the one the token names.
+	row, err := e.Repo.GetVoiceSession(t.Context(), out.CallID)
+	if err != nil || row.Ended != nil || row.LivekitRoom != minted[0][0] || row.LivekitRoom == "" ||
+		row.ChannelID != ch || row.GroupID == nil || *row.GroupID != group {
+		t.Fatalf("voice_sessions row = %+v (%v)", row, err)
+	}
+
+	// One relay entry, carrying the REST credential pion validates:
+	// "<expiry>:<device_id>" and base64(HMAC-SHA1(secret, username)).
+	if len(out.ICE) != 1 || len(out.ICE[0]) != 3 {
+		t.Fatalf("ice_servers = %v", out.ICE)
+	}
+	var urls []string
+	var user, cred string
+	mustUnmarshal(t, out.ICE[0][0], &urls)
+	mustUnmarshal(t, out.ICE[0][1], &user)
+	mustUnmarshal(t, out.ICE[0][2], &cred)
+	if len(urls) != 1 || urls[0] != "turns:chat.example.test:443?transport=tcp" {
+		t.Fatalf("urls = %v", urls)
+	}
+	expiry, who, _ := strings.Cut(user, ":")
+	if who != dev.String() || expiry != "1790003600" {
+		t.Fatalf("username = %q, want <now+1h>:<device>", user)
+	}
+	mac := hmac.New(sha1.New, []byte(testTURNSecret))
+	mac.Write([]byte(user))
+	if cred != base64.StdEncoding.EncodeToString(mac.Sum(nil)) {
+		t.Fatal("the TURN credential is not HMAC-SHA1 over the username")
+	}
+}
+
+func TestARemovedDeviceIsRefused(t *testing.T) {
+	e, ch, tok, group := callEnv(t)
+	dev := deviceOf(t, e, tok)
+	removed := uint64(5)
+	seedLeaf(t, e, group, dev, 3, &removed)
+	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if status != http.StatusForbidden {
+		t.Fatalf("removed leaf = %d, want 403", status)
+	}
+	if code := e.ErrCode(body); code != "E_LEAF_NOT_CURRENT" {
+		t.Fatalf("code = %s", code)
+	}
+}
+
+func TestALeafAddedInAFutureEpochIsRefused(t *testing.T) {
+	e, ch, tok, group := callEnv(t) // group epoch is 7
+	dev := deviceOf(t, e, tok)
+	seedLeaf(t, e, group, dev, 9 /* addedEpoch > epoch */, nil)
+	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if status != http.StatusForbidden {
+		t.Fatalf("future leaf = %d, want 403", status)
+	}
+	if code := e.ErrCode(body); code != "E_LEAF_NOT_CURRENT" {
+		t.Fatalf("code = %s", code)
+	}
+}
+
+func TestADeviceThatIsNoLeafIsRefused(t *testing.T) {
+	e, ch, tok, group := callEnv(t)
+	// Another device of the same user is a leaf; this one is not.
+	other := seedDevices(t, e, userOf(t, e, tok), 1)[0]
+	seedLeaf(t, e, group, other, 3, nil)
+	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if status != http.StatusForbidden || e.ErrCode(body) != "E_LEAF_NOT_CURRENT" {
+		t.Fatalf("no leaf = %d %s, want 403 E_LEAF_NOT_CURRENT", status, e.ErrCode(body))
+	}
+}
+
+func TestEndingACallMarksTheVoiceSession(t *testing.T) {
+	e, ch, tok, group := callEnv(t)
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	callID := decodeCall(t, body).CallID
+	e.Clk.Advance(time.Minute)
+	if status, _ := e.Do(http.MethodDelete, "/v1/calls/"+callID.String(), tok, nil); status != http.StatusNoContent {
+		t.Fatal("DELETE call failed")
+	}
+	row, _ := e.Repo.GetVoiceSession(t.Context(), callID)
+	if row.Ended == nil || *row.Ended != e.Clk.Now().Unix() {
+		t.Fatalf("the voice session was not ended: %+v", row)
+	}
+	// Ending it again is not an error: the call is over either way.
+	if status, _ := e.Do(http.MethodDelete, "/v1/calls/"+callID.String(), tok, nil); status != http.StatusNoContent {
+		t.Fatal("a second DELETE of an ended call failed")
+	}
+	// The next call of the same call group reopens the row in a fresh room.
+	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if status != http.StatusCreated {
+		t.Fatalf("the next call = %d", status)
+	}
+	again, _ := e.Repo.GetVoiceSession(t.Context(), decodeCall(t, body).CallID)
+	if again.Ended != nil || again.LivekitRoom == row.LivekitRoom {
+		t.Fatalf("the next call = %+v, after %+v", again, row)
+	}
+}
+
+// A second device starting the call that is already live joins it: the same
+// call id and the same room, answered 200 rather than 201.
+func TestASecondDeviceJoinsTheLiveCall(t *testing.T) {
+	e, ch, tok, group, sfu := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	first := decodeCall(t, body)
+
+	user := userOf(t, e, tok)
+	phone := seedDevices(t, e, user, 1)[0]
+	e.sess["phone"] = auth.Session{UserID: user, DeviceID: phone, Scope: auth.ScopeEnrolled}
+	seedLeaf(t, e, group, phone, 6, nil)
+	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", "phone", []any{})
+	if status != http.StatusOK {
+		t.Fatalf("joining a live call = %d, want 200", status)
+	}
+	second := decodeCall(t, body)
+	if second.CallID != first.CallID {
+		t.Fatalf("second call id %s, want %s", second.CallID, first.CallID)
+	}
+	minted := sfu.minted()
+	if len(minted) != 2 || minted[0][0] != minted[1][0] || minted[1][1] != phone.String() {
+		t.Fatalf("tokens minted %v: both devices must be in one room", minted)
+	}
+	// TURN is off here, so there is no relay to offer: an empty list, never null.
+	if second.ICE == nil || len(second.ICE) != 0 {
+		t.Fatalf("ice_servers without TURN = %v, want []", second.ICE)
+	}
+}
+
+func TestCallsAreRefusedWhereThereIsNoCall(t *testing.T) {
+	e, ch, tok, _ := callEnv(t)
+	// A stranger learns nothing about the channel.
+	_, stranger := e.NewUser("stranger")
+	if status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", stranger, []any{}); status != http.StatusNotFound {
+		t.Fatalf("a non-member = %d %s, want 404", status, e.ErrCode(body))
+	}
+	// A text channel carries no calls.
+	cid := ownerCommunityOf(t, e, ch)
+	text, _, _ := newChannel(t, e, cid, tok, 0, 1, 2, "text")
+	if status, body := e.Do(http.MethodPost, "/v1/channels/"+text.String()+"/calls", tok, []any{}); status != http.StatusBadRequest {
+		t.Fatalf("a text channel = %d %s, want 400", status, e.ErrCode(body))
+	}
+	// A voice channel with no call group registered yet.
+	bare, _, _ := newChannel(t, e, cid, tok, 1, 1, 2, "bare")
+	if status, body := e.Do(http.MethodPost, "/v1/channels/"+bare.String()+"/calls", tok, []any{}); status != http.StatusNotFound {
+		t.Fatalf("no call group = %d %s, want 404", status, e.ErrCode(body))
+	}
+	// An unknown call.
+	if status, _ := e.Do(http.MethodDelete, "/v1/calls/"+id.New().String(), tok, nil); status != http.StatusNotFound {
+		t.Fatalf("DELETE of an unknown call = %d, want 404", status)
+	}
+	// A body that is not the empty array.
+	if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{"x"}); status != http.StatusBadRequest {
+		t.Fatalf("a non-empty body = %d, want 400", status)
+	}
+}
+
+// Only a current leaf of the call's group may end it for everyone.
+func TestOnlyALeafEndsACall(t *testing.T) {
+	e, ch, tok, group := callEnv(t)
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	callID := decodeCall(t, body).CallID
+
+	user := userOf(t, e, tok)
+	other := seedDevices(t, e, user, 1)[0]
+	e.sess["other"] = auth.Session{UserID: user, DeviceID: other, Scope: auth.ScopeEnrolled}
+	status, resp := e.Do(http.MethodDelete, "/v1/calls/"+callID.String(), "other", nil)
+	if status != http.StatusForbidden || e.ErrCode(resp) != "E_LEAF_NOT_CURRENT" {
+		t.Fatalf("a non-leaf DELETE = %d %s, want 403 E_LEAF_NOT_CURRENT", status, e.ErrCode(resp))
+	}
+	if row, _ := e.Repo.GetVoiceSession(t.Context(), callID); row.Ended != nil {
+		t.Fatal("a non-leaf ended the call")
+	}
+}
+
+func TestASFUFailureIsAnInternalError(t *testing.T) {
+	e, ch, tok, group, sfu := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	sfu.fail = errors.New("sfu down")
+	if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{}); status != http.StatusInternalServerError {
+		t.Fatalf("an SFU failure = %d, want 500", status)
+	}
+}
+
+func ownerCommunityOf(t *testing.T, e *env, ch id.ID) id.ID {
+	t.Helper()
+	row, err := e.Repo.GetChannel(t.Context(), ch)
+	if err != nil || row.CommunityID == nil {
+		t.Fatalf("GetChannel: %v", err)
+	}
+	return *row.CommunityID
+}

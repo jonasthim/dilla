@@ -652,7 +652,7 @@ func setListen(t *testing.T, cfgPath, listen string) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	c.Server.Listen = listen
+	servePlain(c, listen)
 	f, err := os.OpenFile(cfgPath, os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		t.Fatalf("reopen dilla.toml: %v", err)

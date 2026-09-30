@@ -505,6 +505,43 @@ are CBOR as everywhere else.
   attachments indefinitely. Deleting a channel removes its references. Attachment retention never
   follows `02`'s 30-day delivery window, because an archive restore needs attachments far older.
 
+### Voice
+
+A call happens in a voice channel, a DM or a group DM, and its media keys come from the channel's
+**call group** (`01`, group kind 1), which its clients register as for any group. A call is keyed by
+the call group's call id (`mls_groups.call_id`, the channel id for a call group the instance
+registered), so every device of the group lands in the same call. Both routes are `E`; a caller
+who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown one.
+
+| Method and path | Request | Response | Permission |
+|---|---|---|---|
+| `POST /v1/channels/{id}/calls` | `[]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]])]` when the call is opened, `200` with the same body when it is already live | `connect`, and a current leaf of the call group |
+| `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended | `view_channel`, and a current leaf of the call's group |
+
+- **The leaf gate.** A token is minted only for a device whose leaf is in the call group's
+  **current epoch**: added at or before it and not removed. Any other device — a removed one, one
+  whose leaf the instance records only from a later epoch, one with no leaf, or any device while
+  the group is epoch-unknown after a restore — is `403 E_LEAF_NOT_CURRENT`, so a device that
+  cannot derive the call's media keys cannot join its room either. A channel of another kind is
+  `400 E_INVALID_REQUEST`; a voice channel whose call group is not registered yet is
+  `404 E_NOT_FOUND`.
+- **The token.** `token` is a LiveKit room-join JWT for the call's room, valid for one hour, whose
+  identity is the device id, with publish, subscribe and data grants. `livekit_url` is where the
+  client connects with it. A call gets a fresh room each time it is opened, so a device of the
+  previous call cannot remain in the next one.
+- **Relays.** `ice_servers` is the `RTCIceServer` list for the client's peer connection: one entry
+  when the instance runs its TURN relay, with a fresh ephemeral credential — `username` is
+  `"<expiry>:<device_id>"` (unix seconds, `turn.credential_ttl` ahead) and `credential` is
+  `base64(HMAC-SHA1(turn shared secret, username))`, the time-limited REST form TURN servers
+  validate — and an empty array when it runs none. The relay is `turns:` on the instance's 443,
+  where the instance tells a STUN stream from HTTP by its first bytes after the TLS handshake; in
+  `behind_proxy` it is a separate operator-configured TCP port, and without one the list is empty
+  and the client's "relay unavailable" dialog applies: the call is direct UDP or nothing. At most
+  `turn.allocations_per_device` relay allocations are live per device (default 2); another is
+  refused with STUN error 486 until one ends.
+- **Ending.** `DELETE` ends the call for everyone and is kept to its participants. A restore ends
+  every live call (`02` invariant 11).
+
 ### Admin
 
 The instance-admin routes. Every one is `E` and needs a user whose `users.flags` has bit 0 set

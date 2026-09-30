@@ -311,42 +311,26 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery, groups: groups,
 		throttle: throttle, limiter: limiter,
 	}
-	s.httpSrv = &http.Server{
-		Handler: h,
-		// Never zero: net/http reads that as "no limit", and a client trickling a header holds a
-		// connection open for as long as it likes. The commit route adds a body deadline of its
-		// own (api.withReadDeadline); ReadTimeout stays unset because the gateway upgrade shares
-		// the listener.
-		ReadHeaderTimeout: readHeaderTimeout(o.Config.Server.ReadHeaderTimeout.Value()),
-		IdleTimeout:       o.Config.Server.IdleTimeout.Value(),
-		// WriteTimeout is deliberately unset: the gateway's per-connection write
-		// deadlines live in its writer goroutine, and hijacking clears the
-		// server deadline anyway.
-	}
-	// h2c is stdlib in Go 1.27 — Server.Protocols plus SetUnencryptedHTTP2 —
-	// and x/net/http2/h2c is banned precisely because this field replaces it
-	// (facts-http-gateway §4.1). Without it Go's default for a non-TLS listener
-	// is HTTP/1 only, so a front proxy configured for unencrypted HTTP/2
-	// (`h2c://` in Traefik) cannot reach the API in behind_proxy mode.
-	//
-	// Caveat from the same fact: the /gateway route must stay HTTP/1.1, because
-	// a WebSocket upgrade is an HTTP/1.1 mechanism. A proxy's gateway service
-	// therefore stays `http://` even when its API service is `h2c://`.
-	protocols := new(http.Protocols)
-	protocols.SetHTTP1(true)
-	protocols.SetUnencryptedHTTP2(true)
-	s.httpSrv.Protocols = protocols
+	// One http.Server for whichever listener tls.mode chooses (Plan 2 task 16):
+	// ReadHeaderTimeout is never zero, ReadTimeout and WriteTimeout stay unset
+	// because the gateway's WebSocket shares the listener and keeps its own
+	// deadlines, and the protocols follow the listener — HTTP/1.1 plus stdlib
+	// h2c behind a proxy (facts-http-gateway §4.1), HTTP/1.1 plus h2 over TLS on
+	// the direct listener. /gateway stays HTTP/1.1 either way: a WebSocket
+	// upgrade is an HTTP/1.1 mechanism, and GODEBUG=http2xconnect stays unset.
+	s.httpSrv = server.NewHTTPServer(h, o.Config)
 	o.Health.Gate("db").Set(true, "")
 	o.Health.Gate("schema").Set(true, "")
 	// The wasi runtime is built (or was handed in) and the delivery service it validates in has
 	// started its watchdog and sweeper, which is what the heal machinery of invariant 11 runs on.
 	o.Health.Gate("wasi").Set(true, "")
 	o.Health.Gate("heal").Set(true, "")
-	// Plan 1 runs neither the SFU nor the ACME client: both gates belong to Plan 2, which sets
-	// them from the subsystems it starts. Left red they would keep /readyz at 503 for the life of
-	// every Plan 1 instance.
-	o.Health.Gate("livekit").Set(true, "not run until Plan 2")
-	o.Health.Gate("tls").Set(true, "not run until Plan 2")
+	// The composition root starts neither the SFU nor the ACME client: `dillad serve` does, and
+	// sets these two gates from the subsystems it starts — only when they are configured (Plan 2
+	// task 16). An in-process host (the test harness, dilladtest) runs neither, and left red the
+	// gates would keep its /readyz at 503 forever.
+	o.Health.Gate("livekit").Set(true, "not started by the composition root")
+	o.Health.Gate("tls").Set(true, "not started by the composition root")
 	// The gateway's maintenance loop: 4009 for an overdue heartbeat and the resume window's
 	// expiry, every heartbeat interval on the instance clock, with the login throttle, the rate
 	// limiter's idle buckets and the expired sessions swept on the same tick. Without it a
@@ -503,15 +487,6 @@ func scrapeToken(o Options) (string, error) {
 		"every scrape of this instance will be refused until one is",
 		"path", o.Config.Metrics.Path)
 	return hex.EncodeToString(buf), nil
-}
-
-// readHeaderTimeout is server.read_header_timeout, or its 10 s default when a programmatic
-// configuration left it zero.
-func readHeaderTimeout(d time.Duration) time.Duration {
-	if d <= 0 {
-		return 10 * time.Second
-	}
-	return d
 }
 
 // ReadHeaderTimeout is the listener's header deadline.

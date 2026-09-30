@@ -70,11 +70,15 @@ type Querier interface {
 	// the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
 	// instance no longer stores could never verify.
 	EditReadableMessage(ctx context.Context, arg EditReadableMessageParams) (int64, error)
+	// Invariant 11's "Live calls end", the voice_sessions half of store.MLS.EndAllVoiceSessions
+	// (P2-D19): the call-group half is mls.sql's EndAllVoiceSessions.
+	EndAllVoiceSessionRows(ctx context.Context, arg EndAllVoiceSessionRowsParams) error
 	// Invariant 11's "Live calls end." A live call IS its call group (R9 puts the call id in the
 	// companion column), and `voice_sessions` is Plan 2's table -- so on a Plan-1 database the whole
 	// of "end every live call" is closing the call groups. Plan 2 task 1 extends the same statement
 	// to `voice_sessions` rather than declaring a second method (deviation B13, P2-D19).
 	EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error
+	EndVoiceSession(ctx context.Context, arg EndVoiceSessionParams) (int64, error)
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
 	GetBan(ctx context.Context, arg GetBanParams) (Bans, error)
 	GetBlob(ctx context.Context, arg GetBlobParams) (Blobs, error)
@@ -105,6 +109,7 @@ type Querier interface {
 	GetTOTP(ctx context.Context, arg GetTOTPParams) (TotpSecrets, error)
 	GetUser(ctx context.Context, arg GetUserParams) (Users, error)
 	GetUserByUsername(ctx context.Context, arg GetUserByUsernameParams) (Users, error)
+	GetVoiceSession(ctx context.Context, arg GetVoiceSessionParams) (VoiceSessions, error)
 	GetWebauthnCredential(ctx context.Context, arg GetWebauthnCredentialParams) (WebauthnCredentials, error)
 	GetWebauthnUserByHandle(ctx context.Context, arg GetWebauthnUserByHandleParams) (id.ID, error)
 	GetWebauthnUserHandle(ctx context.Context, arg GetWebauthnUserHandleParams) ([]byte, error)
@@ -154,6 +159,7 @@ type Querier interface {
 	ListInvites(ctx context.Context) ([]Invites, error)
 	ListInvitesByCommunity(ctx context.Context, arg ListInvitesByCommunityParams) ([]Invites, error)
 	ListLiveProposals(ctx context.Context, arg ListLiveProposalsParams) ([]MlsPendingProposals, error)
+	ListLiveVoiceSessions(ctx context.Context, arg ListLiveVoiceSessionsParams) ([]VoiceSessions, error)
 	ListMemberRoles(ctx context.Context, arg ListMemberRolesParams) ([]id.ID, error)
 	ListMembers(ctx context.Context, arg ListMembersParams) ([]MlsMembers, error)
 	ListMembersOfCommunity(ctx context.Context, arg ListMembersOfCommunityParams) ([]Members, error)
@@ -267,6 +273,12 @@ type Querier interface {
 	PutRole(ctx context.Context, arg PutRoleParams) error
 	PutSetting(ctx context.Context, arg PutSettingParams) error
 	PutTOTP(ctx context.Context, arg PutTOTPParams) error
+	// Voice sessions (Plan 2 task 16, P2-D22, 00011_voice.sql).
+	// A call is keyed by its call group's call id (R9), so the next call of the same group reopens
+	// the ended row: the room, the group and the start are rewritten and ended is cleared. A live
+	// row is left exactly as it is, so two devices starting the same call at once both land in the
+	// one room the first wrote; the caller reads the row back to learn which.
+	PutVoiceSession(ctx context.Context, arg PutVoiceSessionParams) error
 	PutWebauthnCredential(ctx context.Context, arg PutWebauthnCredentialParams) error
 	// DO NOTHING, not DO UPDATE: a user handle is minted once and never rotated.
 	// The authenticator stores the handle it saw at registration, so overwriting it

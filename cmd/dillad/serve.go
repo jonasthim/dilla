@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -225,19 +224,21 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("serve: %w: %w", err, exit.Software)
 	}
 
-	listenAddr := cfg.Server.Listen
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
-	if err != nil {
-		return fmt.Errorf("serve: listen %s: %w: %w", listenAddr, err, exit.Unavailable)
-	}
-	// An operator (or a test) who asked the kernel for a port learns which one
-	// it got; there is nowhere else to read it from.
-	if strings.HasSuffix(listenAddr, ":0") {
-		fmt.Fprintln(stdout, ln.Addr().String())
-	}
-
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The listener tls.mode chooses (Plan 2 task 16): server.plain_listen
+	// behind a proxy, or server.listen through the 443 TLS/STUN demux with
+	// certmagic's certificate; the TURN relay when turn.enabled; and the
+	// in-process SFU when livekit.enabled. front.close runs after the drain
+	// below has finished, and before the repository closes.
+	fr, err := openFront(ctx, runCtx, frontDeps{cfg: cfg, log: log, health: health, metrics: metrics, stdout: stdout})
+	if err != nil {
+		_ = srv.Shutdown(context.Background())
+		return err
+	}
+	defer fr.close()
+	ln := fr.http
 
 	// A second SIGINT/SIGTERM exits immediately rather than waiting out the
 	// shutdown grace: NotifyContext only relays the first occurrence to runCtx.

@@ -184,3 +184,35 @@ FROM channels c
 JOIN channel_members m ON m.channel_id = c.id
 WHERE m.user_id = ? AND c.kind IN (3, 4) AND c.deleted_at IS NULL
 ORDER BY c.created DESC, c.id;
+
+-- Voice sessions (Plan 2 task 16, P2-D22, 00011_voice.sql).
+
+-- name: PutVoiceSession :exec
+-- A call is keyed by its call group's call id (R9), so the next call of the same group reopens
+-- the ended row: the room, the group and the start are rewritten and ended is cleared. A live
+-- row is left exactly as it is, so two devices starting the same call at once both land in the
+-- one room the first wrote; the caller reads the row back to learn which.
+INSERT INTO voice_sessions (call_id, channel_id, group_id, livekit_room, started, ended)
+VALUES (?, ?, ?, ?, ?, NULL)
+ON CONFLICT (call_id) DO UPDATE SET
+  channel_id = excluded.channel_id, group_id = excluded.group_id,
+  livekit_room = excluded.livekit_room, started = excluded.started, ended = NULL
+WHERE voice_sessions.ended IS NOT NULL;
+
+-- name: GetVoiceSession :one
+SELECT call_id, channel_id, group_id, livekit_room, started, ended
+FROM voice_sessions WHERE call_id = ?;
+
+-- name: EndVoiceSession :execrows
+UPDATE voice_sessions SET ended = CAST(sqlc.arg(at) AS INTEGER)
+WHERE call_id = sqlc.arg(call_id) AND ended IS NULL;
+
+-- name: ListLiveVoiceSessions :many
+SELECT call_id, channel_id, group_id, livekit_room, started, ended
+FROM voice_sessions WHERE channel_id = ? AND ended IS NULL
+ORDER BY started, call_id;
+
+-- name: EndAllVoiceSessionRows :exec
+-- Invariant 11's "Live calls end", the voice_sessions half of store.MLS.EndAllVoiceSessions
+-- (P2-D19): the call-group half is mls.sql's EndAllVoiceSessions.
+UPDATE voice_sessions SET ended = CAST(sqlc.arg(at) AS INTEGER) WHERE ended IS NULL;

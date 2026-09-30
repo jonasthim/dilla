@@ -54,6 +54,8 @@ type Repository interface {
 	// Plan 2 task 10 (P2-D23, P2-D5) — 00010_blobs.sql
 	Blobs
 	OpsBackups
+	// Plan 2 task 16 (P2-D22) — 00011_voice.sql
+	VoiceSessions
 }
 
 type Instance interface {
@@ -296,8 +298,25 @@ type Structure interface {
 	Overwrites
 	Bans
 	ChannelMembers
+	VoiceSessions
+}
+
+// VoiceSessions is the part of Structure whose table is 00011_voice.sql (Plan 2 task 16,
+// P2-D22): §4.1's two voice methods plus GetVoiceSession, which DELETE /v1/calls/{call_id}
+// reads before it ends a call, and ListLiveVoiceSessions, which POST /v1/channels/{id}/calls
+// reads to join a call already under way. A call is keyed by its call group's call id (R9).
+type VoiceSessions interface {
+	// PutVoiceSession records a call; putting an ended call's id again reopens it (the room,
+	// the group and the start are rewritten and ended is cleared), and putting a live call's id
+	// changes nothing, so concurrent starts of one call agree on its room.
 	PutVoiceSession(ctx context.Context, v VoiceSessionRow) error
+	// GetVoiceSession answers ErrNotFound for an unknown call.
+	GetVoiceSession(ctx context.Context, callID id.ID) (VoiceSessionRow, error)
+	// EndVoiceSession ends a live call; ErrNotFound when there is none by that id or it has
+	// already ended.
 	EndVoiceSession(ctx context.Context, callID id.ID, at int64) error
+	// ListLiveVoiceSessions is the channel's calls with ended NULL, oldest first.
+	ListLiveVoiceSessions(ctx context.Context, channelID id.ID) ([]VoiceSessionRow, error)
 }
 
 // ChannelMembers is the part of Structure whose table is

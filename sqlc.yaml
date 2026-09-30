@@ -62,6 +62,9 @@ sql:
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "channels.parent_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          # 006f_voice.sql (Plan 2 task 16): a call recorded before its group is known.
+          - { column: "voice_sessions.group_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           # 3. the NOT NULL wildcards.
           - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
           - { column: "*.*_id",            go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
@@ -150,6 +153,9 @@ sql:
           - { column: "channels.community_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "channels.parent_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          # 006f_voice.sql (Plan 2 task 16): a call recorded before its group is known.
+          - { column: "voice_sessions.group_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
           - { column: "*.*_id",            go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
