@@ -533,6 +533,9 @@ func TestProposeAddNeverIssuesTwoAddsForOneDeviceAndRefusesACurrentMember(t *tes
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_INVALID_REQUEST" {
 		t.Fatalf("an Add for a current member: got %v, want E_INVALID_REQUEST", err)
 	}
+	if !errors.Is(err, ds.ErrAlreadyMember) {
+		t.Fatalf("an Add for a current member: %v does not match ds.ErrAlreadyMember", err)
+	}
 	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, true); len(rows) != 1 {
 		t.Fatalf("%d proposal rows after refusing a current member, want 1", len(rows))
 	}

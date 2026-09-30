@@ -1,7 +1,15 @@
 # Invariants 5 and 6 through Plan 2's real ACL (fix wave I6, C2 and C3): the instance runs
 # api.ResolverACL and api.StructureChannels, and the channel is a text channel of a community. A
 # group bound to that community but to no channel of it is refused at registration.
-# carol holds an outstanding instance Add when she is kicked from the community, and bob is kicked
+# bob and dave are members of the channel when alice registers its group, so the registration's
+# eager Adds (Plan 2 task 7, api.SyncRegisteredGroup) propose both; the control listener drains
+# that hook before it admits anyone or changes a membership, so the order is the same on every
+# machine. `join bob` admits bob (a no-op: his eager Add is outstanding) and alice's commit carries
+# both Adds; `join dave` admits dave (already a member by that commit: done, not refused), alice
+# commits again, and dave joins by the Welcome the first commit left him.
+# carol joins the community only after that, and that change runs no membership sync, so
+# `admit chat carol` is what issues her instance Add; nothing commits between it and her kick, so
+# carol holds an OUTSTANDING instance Add when she is kicked from the community, and bob is kicked
 # while he is offline, both through DELETE /v1/communities/{cid}/members/{user}. The kick voids
 # carol's Add (she is no longer eligible) and proposes the Remove of bob's leaf, which freezes the
 # group: alice's send is refused 425 until she commits. Her commit is ACCEPTED - with carol's Add
@@ -14,13 +22,13 @@ client alice
 client bob
 client carol
 client dave
-channel c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4 visibility=private mode=e2ee community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 members=alice
+channel c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4 visibility=private mode=e2ee community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 members=alice,bob,dave
 group chat kind=text target=c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4 community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 creator=alice
-channel c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4 community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 members=bob,carol,dave
-expect_reject E_BINDING_INVALID group rogue kind=text target=c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9 community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 creator=carol
 join bob chat via=welcome
 join dave chat via=welcome
 sync bob
+channel c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4 community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 members=carol
+expect_reject E_BINDING_INVALID group rogue kind=text target=c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9 community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 creator=carol
 admit chat carol
 go_offline bob
 kick alice carol community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3

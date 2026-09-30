@@ -1,9 +1,17 @@
 package ds
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 )
+
+// ErrAlreadyMember is what ProposeAdd's refusal of a device that already holds a current leaf of
+// the group wraps. The refusal itself is an *Error (E_INVALID_REQUEST, 400) like every other; the
+// sentinel lets a caller that only needs the device to be IN the group (the test host's
+// POST /debug/admit, which a scenario's `join … via=welcome` uses to make sure the joiner is
+// admitted) tell "already done" from a real refusal with errors.Is.
+var ErrAlreadyMember = errors.New("ds: the device is already a member of the group")
 
 // Error is one refusal from the delivery service, carrying exactly what protocol/02's error table
 // says the body carries. The HTTP layer turns it into the CBOR array
@@ -17,6 +25,8 @@ type Error struct {
 	WinningCommit []byte   // E_COMMIT_CONFLICT
 	Proposals     [][]byte // E_COMMIT_CONFLICT, E_COMMIT_REQUIRED
 	RetryAfterMS  *uint64  // E_RATE_LIMITED, E_COMMIT_REQUIRED
+
+	cause error // a sentinel errors.Is can match (ErrAlreadyMember); never on the wire
 }
 
 func (e *Error) Error() string {
@@ -25,6 +35,9 @@ func (e *Error) Error() string {
 	}
 	return e.Code + ": " + e.Detail
 }
+
+// Unwrap answers the sentinel the refusal carries, if any.
+func (e *Error) Unwrap() error { return e.cause }
 
 func errNotFound(what string) *Error {
 	return &Error{Code: "E_NOT_FOUND", Detail: what, Status: http.StatusNotFound}

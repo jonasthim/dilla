@@ -47,7 +47,9 @@ func (d *DS) proposeAddLocked(ctx context.Context, groupID, deviceID, actionID i
 	}
 	for _, m := range members {
 		if m.RemovedEpoch == nil && m.DeviceID == deviceID {
-			return errInvalid("the device is already a member of the group")
+			refusal := errInvalid("the device is already a member of the group")
+			refusal.cause = ErrAlreadyMember
+			return refusal
 		}
 	}
 	outstanding, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)

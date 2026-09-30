@@ -106,7 +106,18 @@ func ControlHandler(h *Host) http.Handler {
 			http.Error(w, "device: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := h.Server().DS().ProposeAdd(r.Context(), groupID, device, id.New()); err != nil {
+		// Every registration and KeyPackage hook already started runs to its end first: the
+		// eager Adds a group's registration issues (Plan 2 task 7) are then in the delivery
+		// service before this one is asked for, never racing it or the commit that follows.
+		if err := h.Server().DrainHooks(r.Context()); err != nil {
+			http.Error(w, "drain hooks: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// "Admit" means "make sure the device is admitted": an outstanding Add for it is already a
+		// no-op in the delivery service, and a device an earlier commit already added (an eager Add
+		// committed with another joiner's) is done, not refused.
+		err = h.Server().DS().ProposeAdd(r.Context(), groupID, device, id.New())
+		if err != nil && !errors.Is(err, ds.ErrAlreadyMember) {
 			writeError(w, err)
 			return
 		}
@@ -169,6 +180,12 @@ func ControlHandler(h *Host) http.Handler {
 			Community  string   `json:"community"`
 		}
 		if !decode(w, r, &body) {
+			return
+		}
+		// A membership change orders after every hook already started: a registration's eager
+		// Adds read the membership as the statements BEFORE this one left it, on every machine.
+		if err := h.Server().DrainHooks(r.Context()); err != nil {
+			http.Error(w, "drain hooks: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		target, err := id.Parse(body.Target)
