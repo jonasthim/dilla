@@ -316,6 +316,72 @@ func TestAUserOverwriteEndsWithTheMembership(t *testing.T) {
 	}
 }
 
+// I4 (fix wave): a call group needs view_channel AND connect (protocol/02 invariants 1 and 4), so
+// a user who keeps view but loses connect must lose their call-group leaf too, through an
+// overwrite and through a role revoke alike. The view-only channel_members set is not enough.
+func TestLosingConnectRemovesTheCallLeaf(t *testing.T) {
+	setup := func(t *testing.T) (*env, id.ID, string, id.ID, id.ID, string, id.ID) {
+		e, cid, ownerTok := channelEnv(t)
+		api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).WithDS(e.DS).Register(e.Mux)
+		voice, _, status := newChannel(t, e, cid, ownerTok, 1, 0, 0, "call")
+		if status != http.StatusCreated {
+			t.Fatalf("voice channel = %d", status)
+		}
+		member, memberTok := e.NewUser("speaker")
+		joinCommunity(t, e, cid, memberTok)
+		cg := seedGroupOfKind(t, e, voice, cid, 1)
+		seedMember(t, e, cg, member, 4)
+		roles, _ := e.Repo.ListRoles(t.Context(), cid)
+		return e, cid, ownerTok, voice, member, memberTok, roles[0].ID
+	}
+	removedLeaf4 := func(e *env) bool {
+		for _, r := range e.DS.removes() {
+			if r.Leaf == 4 {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("overwrite", func(t *testing.T) {
+		e, _, ownerTok, voice, member, _, everyone := setup(t)
+		e.DS.Reset()
+		if status, _ := e.Do(http.MethodPut, "/v1/channels/"+voice.String()+"/overwrites/0/"+everyone.String(), ownerTok,
+			[]any{uint64(0), uint64(api.PermConnect)}); status != http.StatusNoContent {
+			t.Fatal("PUT @everyone deny-connect failed")
+		}
+		bits, _ := api.NewResolver(e.Repo).Resolve(t.Context(), member, mustChannel(t, e, voice))
+		if !bits.Has(api.PermViewChannel) || bits.Has(api.PermConnect) {
+			t.Fatalf("bits = %#x, want view without connect", uint64(bits))
+		}
+		if !removedLeaf4(e) {
+			t.Fatalf("Removes issued = %+v, want one for the call leaf 4", e.DS.removes())
+		}
+	})
+
+	t.Run("role revoke", func(t *testing.T) {
+		e, cid, ownerTok, voice, member, _, everyone := setup(t)
+		if status, _ := e.Do(http.MethodPut, "/v1/channels/"+voice.String()+"/overwrites/0/"+everyone.String(), ownerTok,
+			[]any{uint64(0), uint64(api.PermConnect)}); status != http.StatusNoContent {
+			t.Fatal("PUT @everyone deny-connect failed")
+		}
+		speakers := createRole(t, e, cid, ownerTok, "speakers", 5, 0)
+		if status, _ := e.Do(http.MethodPut, "/v1/channels/"+voice.String()+"/overwrites/0/"+speakers.String(), ownerTok,
+			[]any{uint64(api.PermConnect), uint64(0)}); status != http.StatusNoContent {
+			t.Fatal("PUT speakers allow-connect failed")
+		}
+		grant(t, e, cid, ownerTok, member, speakers, http.StatusNoContent)
+		e.DS.Reset()
+		path := "/v1/communities/" + cid.String() + "/members/" + member.String() + "/roles/" + speakers.String()
+		if status, _ := e.Do(http.MethodDelete, path, ownerTok, nil); status != http.StatusNoContent {
+			t.Fatal("revoke failed")
+		}
+		if !removedLeaf4(e) {
+			t.Fatalf("Removes issued after the revoke = %+v, want one for the call leaf 4", e.DS.removes())
+		}
+	})
+}
+
 // createRole posts one role to /v1/communities/{id}/roles as tok and returns its
 // id. Its body is [name, color, position, allow, deny, hoist, mentionable].
 func createRole(t *testing.T, e *env, cid id.ID, tok, name string, position uint64, allow api.Bits) id.ID {

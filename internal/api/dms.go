@@ -323,13 +323,41 @@ func SyncGroupMembers(ctx context.Context, repo store.Repository, dsvc DS, ch st
 		if err != nil {
 			return err
 		}
+		if len(groups) == 0 {
+			return errors.Join(errs...)
+		}
+		// channel_members is the view_channel set; a call group needs view_channel
+		// AND connect (protocol/02 invariants 1 and 4), so a member who kept view
+		// but lost connect is removed from the call groups (fix wave I4).
+		callers, err := withCallBits(ctx, repo, ch, eligible)
+		if err != nil {
+			return errors.Join(append(errs, err)...)
+		}
 		for _, g := range groups {
-			if err := syncGroup(ctx, repo, dsvc, g, eligible, now, false); err != nil {
+			if err := syncGroup(ctx, repo, dsvc, g, callers, now, false); err != nil {
 				errs = append(errs, err)
 			}
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// withCallBits narrows users to those whose resolved bits in ch carry
+// callGroupBits (view_channel and connect), what ResolverACL requires of a call
+// group's member.
+func withCallBits(ctx context.Context, repo store.Repository, ch store.ChannelRow, users []id.ID) ([]id.ID, error) {
+	res := NewResolver(repo)
+	out := make([]id.ID, 0, len(users))
+	for _, u := range users {
+		bits, err := res.Resolve(ctx, u, ch)
+		if err != nil {
+			return nil, err
+		}
+		if bits.Has(callGroupBits) {
+			out = append(out, u)
+		}
+	}
+	return out, nil
 }
 
 // syncGroup is SyncGroupMembers for one group; adds is false for a call group.

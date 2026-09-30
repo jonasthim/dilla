@@ -188,6 +188,14 @@ func syncChannelEligibility(ctx context.Context, repo store.Repository, dsvc DS,
 			continue
 		}
 		if bits.Has(PermViewChannel) == slices.Contains(members, userID) {
+			// The view verdict stands. A voice channel's call group also needs
+			// connect, which channel_members does not record: a member who kept view
+			// but lost connect still loses their call leaves (fix wave I4).
+			if CallGroupAllowed(ch) && bits.Has(PermViewChannel) && !bits.Has(callGroupBits) {
+				if err := SyncGroupMembers(ctx, repo, dsvc, ch, now); err != nil {
+					errs = append(errs, err)
+				}
+			}
 			continue
 		}
 		if err := MaterialiseChannelMembers(ctx, repo, dsvc, ch, now); err != nil {
