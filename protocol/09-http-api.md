@@ -567,7 +567,10 @@ who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown one.
   `behind_proxy` it is a separate operator-configured TCP port, and without one the list is empty
   and the client's "relay unavailable" dialog applies: the call is direct UDP or nothing. At most
   `turn.allocations_per_device` relay allocations are live per device (default 2); another is
-  refused with STUN error 486 until one ends.
+  refused with STUN error 486 until one ends. The relay reaches only the instance's own SFU (its
+  `livekit.node_ip`, and with `livekit.advertise_internal_ip` the host's interface addresses LiveKit
+  also offers): a `CreatePermission` or `ChannelBind` for any other peer is refused with STUN
+  error 403, and with LiveKit off every one is.
 - **Ending.** `DELETE` ends the call for everyone and is kept to its participants. A restore ends
   every live call (`02` invariant 11).
 

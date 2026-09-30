@@ -215,8 +215,58 @@ func manageCertificate(ctx context.Context, tl *server.TLS, domains []string, ga
 	}
 }
 
+// turnPeers is the co-located SFU's media addresses, the only peers the relay admits (C9):
+// livekit.node_ip, or loopback when it is unset, and, with livekit.advertise_internal_ip, the host
+// candidates LiveKit offers beside it — this host's own unicast interface addresses (link-local and,
+// unless the node itself is loopback, loopback ones excluded, as LiveKit excludes them). With LiveKit
+// off there is no SFU and the relay admits no peer.
+func turnPeers(cfg *config.Config, interfaceAddrs func() ([]net.Addr, error)) ([]netip.Addr, error) {
+	lk := cfg.LiveKit
+	if !lk.Enabled {
+		return nil, nil
+	}
+	sc := sfuConfig(lk, "")
+	var peers []netip.Addr
+	seen := map[netip.Addr]bool{}
+	add := func(a netip.Addr) {
+		if a = a.Unmap(); a.IsValid() && !seen[a] {
+			seen[a] = true
+			peers = append(peers, a)
+		}
+	}
+	node, err := netip.ParseAddr(sc.NodeIP)
+	if err != nil {
+		return nil, fmt.Errorf("livekit.node_ip %q is not an IP address: %w", sc.NodeIP, err)
+	}
+	add(node)
+	if !lk.AdvertiseInternalIP {
+		return peers, nil
+	}
+	addrs, err := interfaceAddrs()
+	if err != nil {
+		return nil, fmt.Errorf("list the interface addresses LiveKit advertises: %w", err)
+	}
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip, ok := netip.AddrFromSlice(ipn.IP)
+		if !ok || ip.IsLinkLocalUnicast() || (ip.IsLoopback() && !sc.EnableLoopbackCandidate) {
+			continue
+		}
+		add(ip)
+	}
+	return peers, nil
+}
+
 func startTURN(d frontDeps, f *front, ln net.Listener) error {
-	t, err := server.StartTURN(d.cfg.TURN, ln, clock.System(), d.log)
+	peers, err := turnPeers(d.cfg, net.InterfaceAddrs)
+	if err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("serve: turn: %w: %w", err, exit.Unavailable)
+	}
+	t, err := server.StartTURN(d.cfg.TURN, ln, peers, clock.System(), d.log)
 	if err != nil {
 		_ = ln.Close()
 		return fmt.Errorf("serve: %w: %w", err, exit.Config)

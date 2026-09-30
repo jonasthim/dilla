@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,7 +124,7 @@ func TestTURNAllocatesThroughTheDemuxAndHoldsTheQuota(t *testing.T) {
 		SharedSecretFile: writeFile(t, "turn.secret", secret+"\n"),
 		CredentialTTL:    "1h", AllocationsPerDevice: 2,
 	}
-	srv, err := server.StartTURN(c, d.TURN(), clock.System(), slog.New(slog.DiscardHandler))
+	srv, err := server.StartTURN(c, d.TURN(), nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("StartTURN: %v", err)
 	}
@@ -192,6 +193,120 @@ func TestTURNAllocatesThroughTheDemuxAndHoldsTheQuota(t *testing.T) {
 	}
 }
 
+// plainTURNClient allocates a relay over a plain TCP connection to addr.
+func plainTURNClient(t *testing.T, addr, secret string) net.PacketConn {
+	t.Helper()
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("dial TURN: %v", err)
+	}
+	user, pass := server.TURNCredential(secret, id.New(), time.Hour, time.Now())
+	client, err := turn.NewClient(&turn.ClientConfig{
+		TURNServerAddr: addr, Username: user, Password: pass,
+		Realm: "chat.example.test", Conn: turn.NewSTUNConn(conn), RTO: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("TURN client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	if err := client.Listen(); err != nil {
+		t.Fatalf("client listen: %v", err)
+	}
+	relay, err := client.Allocate()
+	if err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	t.Cleanup(func() { _ = relay.Close() })
+	return relay
+}
+
+// udpPeer is a UDP socket on addr that reports the first datagram it receives.
+func udpPeer(t *testing.T, addr string) (net.PacketConn, <-chan string) {
+	t.Helper()
+	pc, err := (&net.ListenConfig{}).ListenPacket(t.Context(), "udp4", addr)
+	if err != nil {
+		t.Fatalf("listen %s: %v", addr, err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	got := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 1500)
+		n, _, err := pc.ReadFrom(buf)
+		if err == nil {
+			got <- string(buf[:n])
+		}
+	}()
+	return pc, got
+}
+
+func startPlainTURN(t *testing.T, secret string, peers []netip.Addr) string {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv, err := server.StartTURN(config.TURN{
+		Enabled: true, Realm: "chat.example.test", RelayIP: "127.0.0.1",
+		SharedSecretFile: writeFile(t, "turn.secret", secret), CredentialTTL: "1h", AllocationsPerDevice: 2,
+	}, ln, peers, clock.System(), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("StartTURN: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	return ln.Addr().String()
+}
+
+// C9 (fix wave): the relay's only legitimate peer is the co-located SFU. A member holding a call
+// credential must not be able to relay into another loopback service or the LAN: CreatePermission
+// (and so every send) to any other address is refused, and nothing is delivered there.
+func TestTheRelayReachesOnlyTheSFU(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	sfu, toSFU := udpPeer(t, "127.0.0.2:0")
+	victim, toVictim := udpPeer(t, "127.0.0.1:0")
+	addr := startPlainTURN(t, secret, []netip.Addr{netip.MustParseAddr("127.0.0.2")})
+	relay := plainTURNClient(t, addr, secret)
+
+	if _, err := relay.WriteTo([]byte("media"), sfu.LocalAddr()); err != nil {
+		t.Fatalf("a write to the SFU at %s: %v", sfu.LocalAddr(), err)
+	}
+	select {
+	case got := <-toSFU:
+		if got != "media" {
+			t.Fatalf("the SFU received %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the SFU received nothing through the relay")
+	}
+
+	if _, err := relay.WriteTo([]byte("hello internal service"), victim.LocalAddr()); err == nil {
+		t.Errorf("a write to the loopback service at %s was accepted", victim.LocalAddr())
+	}
+	lan := &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 53}
+	if _, err := relay.WriteTo([]byte("dns"), lan); err == nil {
+		t.Errorf("a write to %s was accepted", lan)
+	}
+	select {
+	case got := <-toVictim:
+		t.Fatalf("the loopback service received %q through the relay", got)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// With LiveKit off there is no SFU on the host, so the relay admits no peer at all.
+func TestWithoutAnSFUTheRelayAdmitsNoPeer(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	peer, got := udpPeer(t, "127.0.0.2:0")
+	relay := plainTURNClient(t, startPlainTURN(t, secret, nil), secret)
+	if _, err := relay.WriteTo([]byte("media"), peer.LocalAddr()); err == nil {
+		t.Error("a write was accepted by a relay with no SFU to reach")
+	}
+	select {
+	case m := <-got:
+		t.Fatalf("the peer received %q", m)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 func TestStartTURNRefusesAMissingSecret(t *testing.T) {
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -201,7 +316,7 @@ func TestStartTURNRefusesAMissingSecret(t *testing.T) {
 	_, err = server.StartTURN(config.TURN{
 		Enabled: true, Realm: "chat.example.test", RelayIP: "127.0.0.1",
 		SharedSecretFile: filepath.Join(t.TempDir(), "missing"), CredentialTTL: "1h", AllocationsPerDevice: 2,
-	}, ln, clock.System(), slog.New(slog.DiscardHandler))
+	}, ln, nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("StartTURN ran without its shared secret")
 	}

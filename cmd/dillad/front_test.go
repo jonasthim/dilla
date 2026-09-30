@@ -374,6 +374,40 @@ func TestServeRefusesAnUnknownLiveKitMode(t *testing.T) {
 	}
 }
 
+// C9 (fix wave): the relay admits only the co-located SFU's media addresses: livekit.node_ip (or
+// loopback when unset) and, with advertise_internal_ip, the host candidates LiveKit also offers,
+// which are this host's interface addresses. With LiveKit off it admits none.
+func TestTheRelayPeersAreTheSFUsAddresses(t *testing.T) {
+	ifaces := func() ([]net.Addr, error) {
+		return []net.Addr{
+			&net.IPNet{IP: net.ParseIP("10.0.0.5"), Mask: net.CIDRMask(24, 32)},
+			&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},
+			&net.IPNet{IP: net.ParseIP("fe80::1"), Mask: net.CIDRMask(64, 128)},
+			&net.IPNet{IP: net.ParseIP("2001:db8::5"), Mask: net.CIDRMask(64, 128)},
+		}, nil
+	}
+	cfg := config.Default()
+	cfg.LiveKit.NodeIP = "203.0.113.7"
+	got, err := turnPeers(cfg, ifaces)
+	if err != nil {
+		t.Fatalf("turnPeers: %v", err)
+	}
+	want := []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("peers with a public node_ip and advertise_internal_ip = %v, want %v", got, want)
+	}
+
+	cfg.LiveKit.NodeIP, cfg.LiveKit.AdvertiseInternalIP = "", false
+	if got, _ := turnPeers(cfg, ifaces); fmt.Sprint(got) != "[127.0.0.1]" {
+		t.Errorf("peers with no node_ip = %v, want [127.0.0.1]", got)
+	}
+
+	cfg.LiveKit.Enabled = false
+	if got, _ := turnPeers(cfg, ifaces); len(got) != 0 {
+		t.Errorf("peers with LiveKit off = %v, want none", got)
+	}
+}
+
 // I13 (fix wave): every livekit.* key dilla.toml validates reaches the SFU's config, not only the
 // ports and the key pair.
 func TestTheSFUConfigCarriesTheLiveKitKeys(t *testing.T) {

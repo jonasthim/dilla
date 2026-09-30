@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -47,7 +48,14 @@ func TURNCredential(secret string, deviceID id.ID, ttl time.Duration, now time.T
 // StartTURN serves TURN on ln until Close. The shared secret is read from
 // turn.shared_secret_file (whitespace trimmed, as `dillad doctor` reads it), and
 // relays are allocated on turn.relay_ip.
-func StartTURN(c config.TURN, ln net.Listener, clk clock.Clock, log *slog.Logger) (*TURN, error) {
+//
+// peers are the co-located SFU's media addresses, the relay's only legitimate
+// peers (spec "Ports and TURN, made true"): CreatePermission and ChannelBind to
+// any other address are refused with 403, so a call credential cannot turn the
+// relay into a way into loopback or the LAN. With no peers (LiveKit off) the
+// relay admits none. pion's handler sees the peer IP only, so every port of an
+// admitted address stays reachable; the SFU's addresses are the host's own.
+func StartTURN(c config.TURN, ln net.Listener, peers []netip.Addr, clk clock.Clock, log *slog.Logger) (*TURN, error) {
 	body, err := os.ReadFile(c.SharedSecretFile)
 	if err != nil {
 		return nil, fmt.Errorf("turn: turn.shared_secret_file: %w", err)
@@ -78,12 +86,32 @@ func StartTURN(c config.TURN, ln net.Listener, clk clock.Clock, log *slog.Logger
 				RelayAddress: relayIP,
 				Address:      relayIP.String(),
 			},
+			PermissionHandler: peerFilter(peers),
 		}},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("turn: %w", err)
 	}
 	return &TURN{srv: srv, quota: q}, nil
+}
+
+// peerFilter admits a CreatePermission or ChannelBind only for a peer IP in
+// peers, compared unmapped so an IPv4-mapped spelling matches its IPv4 address.
+// An empty set admits nothing; pion treats a nil handler as admit-all, so the
+// handler is never nil.
+func peerFilter(peers []netip.Addr) turn.PermissionHandler {
+	allowed := make(map[netip.Addr]struct{}, len(peers))
+	for _, p := range peers {
+		allowed[p.Unmap()] = struct{}{}
+	}
+	return func(_ net.Addr, peer net.IP) bool {
+		a, ok := netip.AddrFromSlice(peer)
+		if !ok {
+			return false
+		}
+		_, ok = allowed[a.Unmap()]
+		return ok
+	}
 }
 
 // Close stops the server and closes its listener.
