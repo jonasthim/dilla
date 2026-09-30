@@ -74,7 +74,10 @@ func (h *Groups) publishKeyPackages(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if h.AfterKeyPackages != nil {
+	// Only an enrolled session's publish is handed on: a provisional (pairing) device's one
+	// KeyPackage belongs to its pairing group's Welcome, and a device no signed list names yet is
+	// not one the DMs may Add (invariant 4; the delivery service refuses it in any case).
+	if h.AfterKeyPackages != nil && session.Scope == auth.ScopeEnrolled {
 		user, device := session.UserID, session.DeviceID
 		h.runAfter(w, r, func(ctx context.Context) { h.AfterKeyPackages(ctx, user, device) })
 	}

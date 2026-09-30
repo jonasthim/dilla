@@ -83,6 +83,14 @@ type Deps struct {
 	// the start and callback legs share. It is nil unless auth.oidc.enabled,
 	// and the two routes answer 501 rather than panicking.
 	OIDC *auth.OIDC
+
+	// AfterDeviceList, when set, runs after an accepted PUT /v1/users/{id}/device-list, once the
+	// 204 is flushed, on a context the request's cancellation does not reach. The delivery service
+	// proposes an Add only for a device its user's newest signed list names (invariant 4), so a
+	// device that published its KeyPackages before the list that names it (protocol/03 § Pairing,
+	// steps 2 and 5) is brought into its user's DMs here. The composition root wires it to
+	// SyncUserDMs; a failure is the hook's to log.
+	AfterDeviceList func(ctx context.Context, userID id.ID)
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket

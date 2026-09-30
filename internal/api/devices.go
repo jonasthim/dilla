@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -156,6 +157,10 @@ func (d Deps) PutDeviceList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.noContent(w, r)
+	if d.AfterDeviceList != nil {
+		_ = http.NewResponseController(w).Flush()
+		d.AfterDeviceList(context.WithoutCancel(r.Context()), userID)
+	}
 }
 
 // GetDeviceList answers the newest list of any user: every member of a group

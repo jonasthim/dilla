@@ -500,6 +500,84 @@ func TestProposeAddIssuesAnExternalAddAndConsumesTheKeyPackage(t *testing.T) {
 	}
 }
 
+// C4 (fix wave): a device its user's newest signed list does not name is never proposed, and its
+// KeyPackage is not spent. A member commit could satisfy neither checkAddedMember (which refuses
+// the Add) nor clause 1 (which refuses leaving it out), so proposing it froze the group until the
+// Add voided, and took the KeyPackage the device's own pairing needed. Once the user publishes a
+// list that names the device, it is proposed.
+func TestProposeAddRefusesADeviceAbsentFromItsUsersSignedDeviceList(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	laptop := h.deviceWithKeyPackageListed(t, false)
+	before, err := h.repo.CountKeyPackages(ctx, laptop, h.clk.Now().Unix())
+	if err != nil || before != 1 {
+		t.Fatalf("CountKeyPackages before = %d, %v; want the one fixture package", before, err)
+	}
+
+	err = h.ds.ProposeAdd(ctx, reg.GroupID, laptop, id.New())
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_INVALID_REQUEST" {
+		t.Fatalf("ProposeAdd of an unlisted device = %v, want E_INVALID_REQUEST", err)
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, true); len(rows) != 0 {
+		t.Fatalf("%d proposals stored for an unlisted device, want 0", len(rows))
+	}
+	if n, _ := h.repo.CountKeyPackages(ctx, laptop, h.clk.Now().Unix()); n != before {
+		t.Fatalf("the unlisted device's KeyPackages went from %d to %d: the refusal spent one", before, n)
+	}
+
+	// Pairing step 5: the user publishes the list that names the laptop.
+	dev, err := h.repo.GetDevice(ctx, laptop)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	blob := signedDeviceList(t, testSSK(0x6b), dev.UserID, []listEntry{
+		{DeviceID: laptop[:], DSKPub: dev.DSKPub, AddedAt: 2},
+	})
+	if err := h.repo.PutDeviceList(ctx, store.DeviceListRow{
+		UserID: dev.UserID, Version: 2, Blob: blob, SSKSignature: blob[len(blob)-64:],
+		PrevHash: make([]byte, 32), Created: h.clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("PutDeviceList v2: %v", err)
+	}
+	if err := h.ds.ProposeAdd(ctx, reg.GroupID, laptop, id.New()); err != nil {
+		t.Fatalf("ProposeAdd once listed: %v", err)
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, false); len(rows) != 1 {
+		t.Fatalf("%d proposals once listed, want 1", len(rows))
+	}
+}
+
+// The join-storm drain applies the same clause: an unlisted device is dropped from the queue
+// without spending its KeyPackage, and the listed device beside it is proposed.
+func TestProposeAddBatchDropsAnUnlistedDeviceWithoutSpendingItsKeyPackage(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	unlisted := h.deviceWithKeyPackageListed(t, false)
+	listed := h.eligibleDeviceWithKeyPackage(t)
+	if row, err := h.repo.GetDevice(ctx, unlisted); err == nil {
+		h.acl.allow(row.UserID)
+	}
+	if err := h.ds.ProposeAddBatch(ctx, reg.GroupID, []id.ID{unlisted, listed}); err != nil {
+		t.Fatalf("ProposeAddBatch: %v", err)
+	}
+	rows, err := h.repo.ListProposals(ctx, reg.GroupID, 6, false)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	if len(rows) != 1 || rows[0].TargetDevice == nil || *rows[0].TargetDevice != listed {
+		t.Fatalf("outstanding Adds = %+v, want exactly the listed device's", rows)
+	}
+	if n, _ := h.repo.CountKeyPackages(ctx, unlisted, h.clk.Now().Unix()); n != 1 {
+		t.Fatalf("the unlisted device has %d KeyPackages left, want its 1", n)
+	}
+	if got := ds.PendingJoinsForTest(h.ds, reg.GroupID); got != 0 {
+		t.Fatalf("%d devices still queued, want 0: the unlisted one is dropped, not retried", got)
+	}
+}
+
 // ProposeAddBatch caps one commit's Adds at MaxAddsPerCommit, and it reads the outstanding count
 // at the GROUP'S CURRENT EPOCH. Reading it at literal epoch 0 would see nothing past epoch 0, so
 // `room` would always be the full 256 and successive batches would push straight past the cap —
@@ -716,25 +794,40 @@ func (h *dsHarness) bareGroup(t *testing.T) id.ID {
 // fixture's committed KeyPackage for it. `key_packages.device_id` references `devices(id)`, so the
 // two rows are not optional. The blob is real material a real `validate_key_package` accepts; only
 // the identities are the test's.
+//
+// The user's signed device list names the device, as it does for every device a real user has
+// finished pairing: the delivery service proposes an Add only for a listed device (invariant 4's
+// device-list clause, checked before the KeyPackage is spent).
 func (h *dsHarness) deviceWithKeyPackage(t *testing.T) id.ID {
+	t.Helper()
+	return h.deviceWithKeyPackageListed(t, true)
+}
+
+// deviceWithKeyPackageListed is deviceWithKeyPackage with the device named in its user's signed
+// device list or not: listed == false is a device that enrolled and published its KeyPackages
+// before its user published the list that names it (protocol/03 § Pairing, steps 2 and 5). The
+// user's list then names only another device.
+func (h *dsHarness) deviceWithKeyPackageListed(t *testing.T, listed bool) id.ID {
 	t.Helper()
 	ctx := context.Background()
 	now := h.clk.Now().Unix()
 	user := id.New()
-	if err := h.repo.CreateUser(ctx, store.UserRow{
-		ID: user, Username: "u" + user.String()[:12], Display: "joiner", Kind: 0,
-		UMKPub: bytes.Repeat([]byte{1}, 32), SSKPub: bytes.Repeat([]byte{2}, 32),
-		SigUMKSSK: bytes.Repeat([]byte{3}, 64), Created: now,
-	}); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
+	ssk := testSSK(0x6b)
+	h.userWithSSK(t, user, ssk)
 	device := id.New()
+	dsk := bytes.Repeat([]byte{4}, 32)
 	if err := h.repo.CreateDevice(ctx, store.DeviceRow{
-		ID: device, UserID: user, DSKPub: bytes.Repeat([]byte{4}, 32),
+		ID: device, UserID: user, DSKPub: dsk,
 		Tier: 0, SignerTier: 0, CredentialBlob: []byte{0xf6}, LastSeen: now, Created: now,
 	}); err != nil {
 		t.Fatalf("CreateDevice: %v", err)
 	}
+	entry := listEntry{DeviceID: device[:], DSKPub: dsk, AddedAt: 1}
+	if !listed {
+		other := id.New()
+		entry = listEntry{DeviceID: other[:], DSKPub: bytes.Repeat([]byte{5}, 32), AddedAt: 1}
+	}
+	h.publishDeviceList(t, user, signedDeviceList(t, ssk, user, []listEntry{entry}))
 	ref := id.New()
 	if err := h.repo.PutKeyPackages(ctx, device, []store.KeyPackageRow{{
 		DeviceID: device, KPRef: ref[:], Blob: fixtureFile(t, "key_package.mls"), LastResort: 0,

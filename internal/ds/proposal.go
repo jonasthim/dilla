@@ -34,6 +34,21 @@ func (d *DS) proposeAddLocked(ctx context.Context, groupID, deviceID, actionID i
 	if err != nil {
 		return err
 	}
+	inst, err := d.opts.Wasm.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer inst.Release()
+
+	// Invariant 4's device-list clause, checked BEFORE a KeyPackage is spent (invariant 6's
+	// "before proposing"). A device that enrolled and published its KeyPackages before its user's
+	// new signed list names it (protocol/03 § Pairing, steps 2 and 5) would otherwise be proposed:
+	// every member commit that includes the Add is refused by checkAddedMember, every commit that
+	// omits it is refused by clause 1, and the group is frozen until the Add voids, having also
+	// spent the KeyPackage the pairing needed.
+	if err := d.checkListedDevice(ctx, inst, deviceID); err != nil {
+		return err
+	}
 	kp, err := d.opts.Store.TakeKeyPackage(ctx, deviceID, d.now())
 	if errors.Is(err, store.ErrNotFound) {
 		return errInvalid("no usable KeyPackage for that device")
@@ -41,12 +56,6 @@ func (d *DS) proposeAddLocked(ctx context.Context, groupID, deviceID, actionID i
 	if err != nil {
 		return err
 	}
-
-	inst, err := d.opts.Wasm.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer inst.Release()
 
 	if _, err := inst.ValidateKeyPackage(ctx, kp.Blob); err != nil {
 		return errInvalid("the stored KeyPackage no longer validates: " + err.Error())
@@ -63,6 +72,37 @@ func (d *DS) proposeAddLocked(ctx context.Context, groupID, deviceID, actionID i
 		Origin:       0,
 		ActionID:     actionID,
 	})
+}
+
+// checkListedDevice answers errInvalid unless the device exists, is live, and its DSK is in the
+// newest signed device list of its user, verified in v (the guest the caller holds). It is the
+// same test checkAddedMember applies to the commit that will carry the Add, so an Add the delivery
+// service proposes is one a member can commit. A list the verifier cannot reach at all
+// (ErrDeviceListUnavailable) is returned as is: that is "cannot answer", not "not listed".
+func (d *DS) checkListedDevice(ctx context.Context, v DeviceListVerifier, deviceID id.ID) error {
+	dev, err := d.opts.Store.GetDevice(ctx, deviceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errInvalid("the device is unknown to this instance")
+	}
+	if err != nil {
+		return err
+	}
+	if dev.RevokedAt != nil || dev.QuarantinedAt != nil {
+		return errInvalid("the device is revoked or quarantined")
+	}
+	entries, err := d.opts.DeviceLists.Entries(ctx, v, dev.UserID)
+	if err != nil {
+		if errors.Is(err, ErrDeviceListUnavailable) || ctx.Err() != nil {
+			return err
+		}
+		return errInvalid("no verifiable signed device list for the device's user: " + err.Error())
+	}
+	for _, dsk := range entries {
+		if bytes.Equal(dsk, dev.DSKPub) {
+			return nil
+		}
+	}
+	return errInvalid("the device's DSK is not in its user's newest signed device list")
 }
 
 // ProposeRemove issues an external Remove. A target leaf that is already gone is dropped rather
@@ -224,6 +264,10 @@ func (d *DS) drainSlice(ctx context.Context, groupID id.ID) (int, error) {
 			} else if err := d.proposeAddLocked(ctx, groupID, device, id.New()); err != nil {
 				if ctx.Err() != nil {
 					return issued, ctx.Err()
+				}
+				if errors.Is(err, ErrDeviceListUnavailable) {
+					// Unanswered, not refused: the device stays queued.
+					return issued, err
 				}
 				// One unusable KeyPackage must not sink the slice: the device is skipped and the
 				// storm continues.
