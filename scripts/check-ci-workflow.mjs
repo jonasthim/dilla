@@ -149,6 +149,9 @@ const REQUIRED_STEPS = {
     'provenance: mode=max',
     'sbom: true',
     'timeout-minutes: 30',
+    // I16 (fix wave): Compose and the deploy README pull `:latest`, and metadata-action generates it
+    // only for tag events unless it is asked for on the default branch.
+    'type=raw,value=latest,enable={{is_default_branch}}',
   ],
 };
 

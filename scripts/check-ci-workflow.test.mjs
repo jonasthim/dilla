@@ -165,6 +165,11 @@ jobs:
       - uses: docker/login-action@v4.6.0
       - uses: docker/metadata-action@v6.2.0
         id: meta
+        with:
+          images: ghcr.io/\${{ github.repository }}/dillad
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
       - uses: docker/build-push-action@v7.4.0
         with:
           context: .
@@ -441,6 +446,9 @@ for (const needle of [
   'provenance: mode=max',
   'sbom: true',
   'timeout-minutes: 30',
+  // I16 (fix wave): metadata-action generates `latest` only for tag events, so without this line a
+  // push to main publishes `:main` alone and Compose's `:latest` pull fails with "manifest unknown".
+  'type=raw,value=latest,enable={{is_default_branch}}',
 ]) {
   test(`an image job that lost "${needle}" is reported`, () => {
     const start = GOOD.indexOf('  image:\n');
