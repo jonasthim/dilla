@@ -22,6 +22,14 @@ ORDER BY group_id LIMIT sqlc.arg(max_rows)::bigint;
 SELECT * FROM mls_groups WHERE group_id > $1
 ORDER BY group_id LIMIT sqlc.arg(max_rows)::bigint;
 
+-- name: GroupsForTarget :many
+-- Plan 2's P2-D3 (task 4): the open groups bound to one target, of one kind, over
+-- mls_groups_by_target. A membership change finds the text and call groups of a channel
+-- here instead of scanning every open group of the instance.
+SELECT * FROM mls_groups
+WHERE target_id = $1 AND kind = $2 AND closed_at IS NULL
+ORDER BY created, group_id;
+
 -- name: CloseGroup :exec
 UPDATE mls_groups SET closed_at = $1 WHERE group_id = $2;
 
@@ -205,3 +213,23 @@ SELECT count(*) FROM fork_reports WHERE group_id = $1 AND seq = $2;
 
 -- name: QuarantineDevice :exec
 UPDATE devices SET quarantined_at = $1, quarantine_reason = $2 WHERE id = $3;
+
+-- name: QueuePendingJoin :exec
+-- pending_joins (Plan 1 follow-up card 8, Plan 2 task 7): one device waiting for a slice of a join
+-- storm. A device already queued keeps its row and its place.
+INSERT INTO pending_joins (group_id, device_id, queued) VALUES ($1, $2, $3)
+ON CONFLICT (group_id, device_id) DO NOTHING;
+
+-- name: ListPendingJoins :many
+SELECT device_id FROM pending_joins WHERE group_id = $1
+ORDER BY queued, device_id LIMIT sqlc.arg(max_rows)::bigint;
+
+-- name: DeletePendingJoin :exec
+DELETE FROM pending_joins WHERE group_id = $1 AND device_id = $2;
+
+-- name: CountPendingJoins :one
+SELECT count(*) FROM pending_joins WHERE group_id = $1;
+
+-- name: ListPendingJoinGroups :many
+SELECT DISTINCT group_id FROM pending_joins WHERE group_id > $1
+ORDER BY group_id LIMIT sqlc.arg(max_rows)::bigint;

@@ -70,6 +70,10 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"CreateGroup", "DeleteProposals", "DeleteWelcome", "EndAllVoiceSessions",
 			"GetCommitAtEpoch", "GetGroup",
 			"GroupsForDevice",
+			// GroupsForTarget is Plan 2's P2-D3 (task 4): the open groups bound to one
+			// channel, so a membership change finds the groups to issue Removes in
+			// without scanning every open group of the instance.
+			"GroupsForTarget",
 			"MarkAllGroupsEpochUnknown",
 			// ListGroupsForRetention is §4.1 plus one (deviation ID1, task 26 fix round 1):
 			// invariant 10's sweep must reach CLOSED groups too, and `ListOpenGroups` --
@@ -82,6 +86,13 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"PutKeyPackages", "PutProposal", "PutWelcomePayload", "PutWelcomes",
 			"QuarantineDevice", "ReissueProposal", "ReplaceMembers", "TakeKeyPackage",
 			"VoidProposal",
+			// The pending-join queue: deviation B13 names QueuePendingJoins/TakePendingJoins,
+			// and Plan 2 task 7 (Plan 1 follow-up card 8) lands them with the length its tests
+			// and the debug state read and the paged walk the sweeper re-drives a stalled
+			// storm from. Its fix round 1 splits the take into a read and a delete, so a
+			// device leaves the queue only once the drain has resolved it.
+			"CountPendingJoins", "DeletePendingJoins", "ListPendingJoinGroups",
+			"ListPendingJoins", "QueuePendingJoins",
 		}},
 		{"Messages", reflect.TypeOf((*store.Messages)(nil)).Elem(), []string{
 			"GetAppMessage", "ListAppMessages", "PruneAppMessages", "PutAppMessage",
@@ -104,6 +115,66 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"ListMemberRoles", "ListMembersOfCommunity", "ListOverwrites", "ListRoles",
 			"PutBan", "PutChannelMember", "PutMember", "PutMemberRole", "PutOverwrite",
 			"PutRole", "PutVoiceSession", "UpdateChannel", "UpdateCommunityPolicy",
+			// §4.1 plus four, all reached through the embedded Communities: GetMember,
+			// UpdateCommunityMeta and SoftDeleteCommunity are Plan 2's P2-D7, GetRole
+			// is P2-D9 (task 3's, written in task 1 for the role-grant route).
+			"GetMember", "GetRole", "SoftDeleteCommunity", "UpdateCommunityMeta",
+			// §4.1 plus two more, reached through the embedded Channels: P2-D8's
+			// one-statement community tombstone and per-channel sequencer.
+			"DeleteChannelsOfCommunity", "NextChannelSeq",
+			// §4.1 plus P2-D9's two deletes (task 3), reached through the embedded
+			// Communities (DeleteRole) and Overwrites (DeleteOverwrite).
+			"DeleteOverwrite", "DeleteRole",
+			// Fix wave I2, reached through the embedded Overwrites.
+			"DeleteUserOverwrites",
+			// §4.1 plus P2-D10's listing (task 4), reached through the embedded Bans.
+			"ListBans",
+			// Task 4 fix round 1, reached through the embedded Communities: the
+			// community row lock that serialises a join's ban check with a ban.
+			"LockCommunity",
+			// §4.1 plus P2-D11's listing (task 6), reached through the embedded
+			// ChannelMembers: GET /v1/dms.
+			"ListChannelsForUser",
+			// Plan 2 task 14: `dillad admin community list`, reached through the
+			// embedded Communities.
+			"ListCommunities",
+			// §4.1 plus P2-D22's GetVoiceSession and the live-call listing POST
+			// /v1/channels/{id}/calls joins through (task 16), reached through the
+			// embedded VoiceSessions.
+			"GetVoiceSession", "ListLiveVoiceSessions",
+			// Fix wave C3, reached through the embedded ChannelMembers: a kick, ban or
+			// leave drops the user's rows for the community's channels.
+			"DeleteCommunityChannelMembers",
+		}},
+		// VoiceSessions is the slice of Structure Plan 2 task 16's table supports.
+		{"VoiceSessions", reflect.TypeOf((*store.VoiceSessions)(nil)).Elem(), []string{
+			"EndVoiceSession", "GetVoiceSession", "ListLiveVoiceSessions", "PutVoiceSession",
+		}},
+		// ChannelMembers is the slice of Structure Plan 2 task 6's table supports.
+		{"ChannelMembers", reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(), []string{
+			"DeleteChannelMember", "DeleteCommunityChannelMembers", "ListChannelMembers",
+			"ListChannelsForUser", "PutChannelMember",
+		}},
+		// Bans is the slice of Structure Plan 2 task 4's table supports.
+		{"Bans", reflect.TypeOf((*store.Bans)(nil)).Elem(), []string{
+			"DeleteBan", "GetBan", "ListBans", "PutBan",
+		}},
+		// Overwrites is the slice of Structure Plan 2 task 3's table supports.
+		{"Overwrites", reflect.TypeOf((*store.Overwrites)(nil)).Elem(), []string{
+			"DeleteOverwrite", "DeleteUserOverwrites", "ListOverwrites", "PutOverwrite",
+		}},
+		// Channels is the slice of Structure Plan 2 task 2's table supports.
+		{"Channels", reflect.TypeOf((*store.Channels)(nil)).Elem(), []string{
+			"CreateChannel", "DeleteChannel", "DeleteChannelsOfCommunity", "GetChannel",
+			"ListChannels", "NextChannelSeq", "UpdateChannel",
+		}},
+		// Communities is the slice of Structure Plan 2 task 1's tables support; it
+		// is what Repository embeds until the rest of Structure exists (P2-D23).
+		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
+			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity",
+			"GetMember", "GetRole", "ListCommunities", "ListMemberRoles", "ListMembersOfCommunity",
+			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SoftDeleteCommunity",
+			"UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
 		{"ReadableSearch", reflect.TypeOf((*store.ReadableSearch)(nil)).Elem(), []string{
 			"SearchReadable",
@@ -112,15 +183,32 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Readable", reflect.TypeOf((*store.Readable)(nil)).Elem(), []string{
 			"DeleteReadableMessage", "EditReadableMessage", "GetReadState",
 			"ListReadableMessages", "PutReadState", "PutReadableMessage", "SearchReadable",
+			// §4.1 plus two (Plan 2 task 8, recorded beside P2-D13): the slowmode
+			// gate's read and the message.plain fan-out audience (P2-D14).
+			"LastReadableMessageAt", "ListReadableAudience",
 		}},
 		{"Blobs", reflect.TypeOf((*store.Blobs)(nil)).Elem(), []string{
 			"CountBlobRefs", "DeleteBlob", "DeleteBlobRef", "GetBlob", "GetBlobTombstone",
 			"ListCollectableBlobs", "MarkBlobUnreferenced", "PutBlob", "PutBlobRef",
-			"PutBlobTombstone", "UserBlobBytes",
+			"PutBlobTombstone", "UserBlobBytes", "UserReferencesBlob",
+			// Fix wave C7: blobs.store_max_bytes.
+			"InstanceBlobBytes",
+			// Plan 2 task 10: P2-D16's ClearBlobUnreferenced, and P2-D17's
+			// GetBlobRef, which the GET's "404 without a reference here" rule needs.
+			"ClearBlobUnreferenced", "GetBlobRef",
+			// Plan 2 task 11: P2-D18's DeleteAllBlobRefs for the admin purge, and
+			// the three reads the sweeper's reference-expiry phase needs (the
+			// community retention policy, R28, and deleted channels).
+			"DeleteAllBlobRefs", "ListBlobRetentionPolicies", "ListExpiredBlobRefs",
+			"ListBlobRefsOfDeletedChannels",
+			// Plan 2 task 12: the backup walks every blob row in blob_id order.
+			"ListBlobs",
 		}},
 		{"Ops", reflect.TypeOf((*store.Ops)(nil)).Elem(), []string{
 			"Audit", "GetReport", "ListAudit", "PutReport", "SchemaVersion",
 			"UpdateReportStatus",
+			// Plan 2 task 17: the report queue.
+			"ListReports",
 		}},
 		// OpsBackups is §4.1's backup half of Ops, split out by deviation ID2
 		// because `backups` is 008_blobs.sql's table.
@@ -148,7 +236,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 // part 1a ships, plus the ones later tasks add. Each later task that satisfies
 // one of the remaining interfaces owes an
 // explicit numbered step that edits this embed list — task 19 (MLS), task 23
-// (Messages, Cursors), Plan 2 task 1 (Structure), Plan 2 task 8 (Readable) and
+// (Messages, Cursors), Plan 2 task 1 (Communities, Structure's first slice), Plan 2 task 8 (Readable) and
 // Plan 2 task 10 (Blobs, OpsBackups) — so this test moves with them, and a
 // premature embed (which would stop both adapters compiling) is caught here.
 func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
@@ -175,6 +263,25 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		// 00002_mls.sql a task earlier.
 		reflect.TypeOf((*store.Messages)(nil)).Elem(),
 		reflect.TypeOf((*store.Cursors)(nil)).Elem(),
+		// Plan 2 task 1 step 9: Communities joins with 00004_structure.sql. It is
+		// the slice of Structure whose tables exist; the rest of Structure (channels,
+		// overwrites, bans, channel members, voice sessions) lands with its tables.
+		reflect.TypeOf((*store.Communities)(nil)).Elem(),
+		// Plan 2 task 2: Channels joins with 00005_channels.sql.
+		reflect.TypeOf((*store.Channels)(nil)).Elem(),
+		// Plan 2 task 3: Overwrites joins with 00006_overwrites.sql.
+		reflect.TypeOf((*store.Overwrites)(nil)).Elem(),
+		// Plan 2 task 4: Bans joins with 00007_bans.sql.
+		reflect.TypeOf((*store.Bans)(nil)).Elem(),
+		// Plan 2 task 6: ChannelMembers joins with 00008_channel_members.sql.
+		reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(),
+		// Plan 2 task 8: Readable joins with 00009_readable.sql.
+		reflect.TypeOf((*store.Readable)(nil)).Elem(),
+		// Plan 2 task 10: Blobs and OpsBackups join with 00010_blobs.sql (P2-D5).
+		reflect.TypeOf((*store.Blobs)(nil)).Elem(),
+		reflect.TypeOf((*store.OpsBackups)(nil)).Elem(),
+		// Plan 2 task 16: VoiceSessions joins with 00011_voice.sql (P2-D22).
+		reflect.TypeOf((*store.VoiceSessions)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)
@@ -213,6 +320,8 @@ func TestDeferredRowTypesAreDeclared(t *testing.T) {
 		"VoiceSessionRow":      store.VoiceSessionRow{},
 		"ReadableMessageRow":   store.ReadableMessageRow{},
 		"BlobRow":              store.BlobRow{},
+		"BlobRefRow":           store.BlobRefRow{},
+		"BlobRetentionRow":     store.BlobRetentionRow{},
 		"BackupRow":            store.BackupRow{},
 		"ReadableSearchQuery":  store.ReadableSearchQuery{},
 		"ReadableSearchHit":    store.ReadableSearchHit{},

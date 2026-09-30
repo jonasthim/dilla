@@ -28,7 +28,7 @@ func Default() *Config {
 	c.LiveKit = LiveKit{
 		Enabled: true, Mode: "in_process", BindAddress: "127.0.0.1", Port: 7880,
 		UDPPort: 7882, TCPPort: 0, AdvertiseInternalIP: true, APIKey: "dilla",
-		MaxVoiceParticipants: 25, MaxPublishers: 10,
+		MaxVoiceParticipants: 25, MaxPublishers: defaultMaxPublishers,
 	}
 	c.DB = DB{
 		Driver: "sqlite", Path: "/var/lib/dilla/dilla.db", ConnMaxLifetime: "0s",
@@ -84,6 +84,14 @@ func Default() *Config {
 	c.Doctor = Doctor{ClockSkewMax: "60s", TURNProbe: true, UDPProbe: true}
 	return c
 }
+
+// RelayIPAuto is the turn.relay_ip value `dillad init` writes: serve binds relay sockets on this
+// host's own address (internal/server.ResolveRelayIP), never on a public IP the host may not hold.
+const RelayIPAuto = "auto"
+
+// defaultMaxPublishers is livekit.max_publishers' default, the spec's 25/10 sizing. It is the only
+// value Validate accepts until a publisher cap reaches LiveKit.
+const defaultMaxPublishers = 10
 
 // LetsEncryptProductionCA is certmagic's production directory, spelled out here
 // so Derive does not pull certmagic into every binary that reads config.

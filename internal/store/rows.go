@@ -319,6 +319,9 @@ type ForkReportRow struct {
 
 // AppMessageRow mirrors `mls_app_messages`. Blob is NULL once tombstoned and
 // Expires is NULL when the message is retained under an archival policy.
+// FrankingKeyID names the instance franking key FrankingTag was made under
+// (Plan 2 task 17, P2-D21), so a report still verifies after a rotation; the
+// all-zero id marks a row franked before the column existed.
 type AppMessageRow struct {
 	GroupID        id.ID
 	Seq            uint64
@@ -331,6 +334,7 @@ type AppMessageRow struct {
 	Created        int64 // = recv_ts
 	Expires        *int64
 	DeletedAt      *int64
+	FrankingKeyID  id.ID
 }
 
 // CursorRow mirrors `device_cursors`.
@@ -428,21 +432,44 @@ type VoiceSessionRow struct {
 	Ended       *int64
 }
 
-// ReadableMessageRow mirrors `readable_messages`. ID is the explicit rowid the
-// FTS index is content-mapped to (gap-69 claim 2). Envelope is deterministic
-// CBOR, not JSON text (Plan 2 P2-D27); Body is the only indexed text.
+// ReadableMessageRow mirrors `readable_messages` (Plan 2 task 8, P2-D24). ID is
+// the explicit rowid the FTS index is content-mapped to (gap-69 claim 2) and is
+// assigned by the store: PutReadableMessage ignores the field and returns it.
+// ChannelHex is the 32-char lowercase hex of ChannelID that the FTS5 MATCH
+// filters on (P2-D1). Envelope is deterministic CBOR, not JSON text (P2-D27);
+// Body is the only indexed text. FrankingKeyID names the instance franking key
+// FrankingTag was made under, so a report still verifies after a rotation.
+// UploaderDevice and CommitmentC complete protocol/04's stored tuple (Plan 2
+// task 17): T binds the uploading device, not the sender's user id, and a
+// report's first equation is checked against C. A row written before
+// 00012_reports.sql has the all-zero device and a nil CommitmentC.
 type ReadableMessageRow struct {
-	ID           int64
-	ChannelID    id.ID
-	Seq          uint64
-	Sender       id.ID
-	Envelope     []byte
-	Body         string
-	FrankingTag  []byte
-	MentionCount uint64
-	Created      int64
-	Edited       *int64
-	Deleted      *int64
+	ID             int64
+	ChannelID      id.ID
+	ChannelHex     string
+	Seq            uint64
+	Sender         id.ID
+	Envelope       []byte
+	Body           string
+	FrankingTag    []byte
+	FrankingKeyID  id.ID
+	MentionCount   uint64
+	Created        int64
+	Edited         *int64
+	Deleted        *int64
+	UploaderDevice id.ID
+	CommitmentC    []byte
+}
+
+// ReadableFranking is the franking tuple an edit re-franks a readable message
+// with (Plan 2 tasks 9 and 17): the new tag, the id of the key that made it,
+// the editing device and the edited envelope's C. They move together, or the
+// stored tuple no longer recomputes to the stored tag.
+type ReadableFranking struct {
+	Tag            []byte
+	KeyID          id.ID
+	UploaderDevice id.ID
+	CommitmentC    []byte
 }
 
 // BlobRow mirrors `blobs`. BlobID is the 32-byte content address.
@@ -454,20 +481,24 @@ type BlobRow struct {
 	UnrefSince *int64
 }
 
-// ParsedQuery and Term are §6.7's engine-neutral parse of a search string: one
-// parser in Go, because raw input is safe for websearch_to_tsquery and fatal for
-// FTS5. Only the types live here in Plan 1 — `ParseQuery`, `FTS5` and `TSQuery`
-// arrive with Plan 2 task 8 — because ReadableSearchQuery names ParsedQuery.
-type ParsedQuery struct {
-	Terms   []Term
-	Phrases []string
-	Not     []string
+// BlobRefRow mirrors `blob_refs` (Plan 2 task 10, P2-D17, P2-D24): one
+// channel's publication of one blob. UploaderDevice is the device that made the
+// reference; its user is the one the quota charges and the only one who may
+// delete the reference.
+type BlobRefRow struct {
+	BlobID         []byte
+	ChannelID      id.ID
+	UploaderDevice id.ID
+	Mime           string
+	Created        int64
 }
 
-// Term is one word of a ParsedQuery; Prefix marks a trailing `*`.
-type Term struct {
-	Text   string
-	Prefix bool
+// BlobRetentionRow is one community's stored policy document, as the blob
+// sweeper reads it to find the community's archival retention (Plan 2 task 11,
+// R28). PolicyJSON is communities.policy_json byte for byte.
+type BlobRetentionRow struct {
+	CommunityID id.ID
+	PolicyJSON  []byte
 }
 
 // BackupRow mirrors `backups` (interfaces.md §4.3), whose table is 008_blobs.sql

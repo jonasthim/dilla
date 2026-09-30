@@ -13,7 +13,7 @@ import (
 )
 
 const getAppMessage = `-- name: GetAppMessage :one
-SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at FROM mls_app_messages WHERE group_id = ? AND seq = ?
+SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at, franking_key_id FROM mls_app_messages WHERE group_id = ? AND seq = ?
 `
 
 type GetAppMessageParams struct {
@@ -36,6 +36,7 @@ func (q *Queries) GetAppMessage(ctx context.Context, arg GetAppMessageParams) (M
 		&i.Created,
 		&i.Expires,
 		&i.DeletedAt,
+		&i.FrankingKeyID,
 	)
 	return i, err
 }
@@ -63,7 +64,7 @@ func (q *Queries) GetCursor(ctx context.Context, arg GetCursorParams) (DeviceCur
 }
 
 const listAppMessages = `-- name: ListAppMessages :many
-SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at FROM mls_app_messages WHERE group_id = ? AND seq >= ?
+SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at, franking_key_id FROM mls_app_messages WHERE group_id = ? AND seq >= ?
 ORDER BY seq LIMIT ?3
 `
 
@@ -94,6 +95,7 @@ func (q *Queries) ListAppMessages(ctx context.Context, arg ListAppMessagesParams
 			&i.Created,
 			&i.Expires,
 			&i.DeletedAt,
+			&i.FrankingKeyID,
 		); err != nil {
 			return nil, err
 		}
@@ -112,27 +114,26 @@ const maxPrunableAppMessageSeq = `-- name: MaxPrunableAppMessageSeq :one
 SELECT CAST(COALESCE(MAX(seq), 0) AS BIGINT) AS max_seq FROM mls_app_messages
  WHERE group_id = ?1
    AND ((CAST(?2 AS INTEGER) > 0 AND seq <= CAST(?2 AS INTEGER))
-        OR created < CAST(?3 AS INTEGER)
-        OR (expires IS NOT NULL AND expires <= CAST(?4 AS INTEGER)))
+        OR created < CAST(?3 AS INTEGER))
 `
 
 type MaxPrunableAppMessageSeqParams struct {
 	GroupID       id.ID
 	CursorFloor   int64
 	DeliveryFloor int64
-	Now           int64
 }
 
-// The highest seq PruneAppMessages is about to delete with the same arguments, or 0. The store runs
-// it in PruneAppMessages' transaction and raises pruned_below to it before the DELETE, so the
-// high-water records exactly what went, whichever trigger took it.
+// The highest seq PruneAppMessages' DELIVERY triggers are about to delete with the same arguments,
+// or 0. The store runs it in PruneAppMessages' transaction and raises pruned_below to it before the
+// DELETE, so the high-water records exactly what delivery retention took.
+//
+// The archival trigger is deliberately NOT in this predicate (Plan 2 task 8's retention ruling):
+// `expires` is not monotone in seq -- a community that shortens its retention makes newer messages
+// expire before older ones -- so a mark raised to the highest expired seq would stand above
+// messages that still exist, and the catch-up would answer E_PRUNED for a range it can serve. An
+// archival deletion removes the row for every device alike; it never moves the mark.
 func (q *Queries) MaxPrunableAppMessageSeq(ctx context.Context, arg MaxPrunableAppMessageSeqParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, maxPrunableAppMessageSeq,
-		arg.GroupID,
-		arg.CursorFloor,
-		arg.DeliveryFloor,
-		arg.Now,
-	)
+	row := q.db.QueryRowContext(ctx, maxPrunableAppMessageSeq, arg.GroupID, arg.CursorFloor, arg.DeliveryFloor)
 	var max_seq int64
 	err := row.Scan(&max_seq)
 	return max_seq, err
@@ -211,8 +212,8 @@ func (q *Queries) PruneAppMessages(ctx context.Context, arg PruneAppMessagesPara
 
 const putAppMessage = `-- name: PutAppMessage :exec
 INSERT INTO mls_app_messages (group_id, seq, epoch, uploader_device, blob, commitment_c,
-                              franking_tag, size, created, expires, deleted_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              franking_tag, size, created, expires, deleted_at, franking_key_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type PutAppMessageParams struct {
@@ -227,6 +228,7 @@ type PutAppMessageParams struct {
 	Created        int64
 	Expires        sql.NullInt64
 	DeletedAt      sql.NullInt64
+	FrankingKeyID  id.ID
 }
 
 func (q *Queries) PutAppMessage(ctx context.Context, arg PutAppMessageParams) error {
@@ -242,6 +244,7 @@ func (q *Queries) PutAppMessage(ctx context.Context, arg PutAppMessageParams) er
 		arg.Created,
 		arg.Expires,
 		arg.DeletedAt,
+		arg.FrankingKeyID,
 	)
 	return err
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -67,6 +68,13 @@ type writer struct {
 
 	mu          sync.Mutex
 	queuedBytes int
+
+	// enqueued counts the frames the queue accepted and written the frames the sink took, over the
+	// writer's life. They exist for Gateway.Debug: a device that stops receiving while its socket
+	// stays open is either not being handed frames (enqueued stands still) or has a writer that no
+	// longer writes them (enqueued moves on, written does not).
+	enqueued atomic.Uint64
+	written  atomic.Uint64
 }
 
 // newWriter starts a writer whose dropped frames go to the process default logger. The Gateway
@@ -129,6 +137,7 @@ func (w *writer) enqueue(f Frame, n uint64) {
 	w.mu.Unlock()
 	select {
 	case w.queue <- queued{frame: f, n: n, at: w.clk.Now(), size: size}:
+		w.enqueued.Add(1)
 	default:
 		w.mu.Lock()
 		w.queuedBytes -= size
@@ -144,7 +153,7 @@ func (w *writer) closeAs(code CloseCode, reason string, op Op) {
 	w.mu.Lock()
 	bytes := w.queuedBytes
 	w.mu.Unlock()
-	w.logger().Info("gateway: connection closed by the writer",
+	w.logger().Warn("gateway: connection closed by the writer",
 		slog.Int("code", int(code)), slog.String("reason", reason), slog.Int("op", int(op)),
 		slog.Int("queued_frames", len(w.queue)), slog.Int("queued_bytes", bytes))
 	w.sink.close(code, reason)
@@ -163,6 +172,7 @@ func (w *writer) enqueueRaw(b []byte) {
 	w.mu.Unlock()
 	select {
 	case w.queue <- queued{raw: b, at: w.clk.Now(), size: len(b)}:
+		w.enqueued.Add(1)
 	default:
 		w.mu.Lock()
 		w.queuedBytes -= len(b)
@@ -208,6 +218,7 @@ func (w *writer) writeOne(q queued) bool {
 			w.closeAs(CloseUnknown, "write: "+err.Error(), 0)
 			return false
 		}
+		w.written.Add(1)
 		return true
 	}
 	frame := q.frame
@@ -241,7 +252,42 @@ func (w *writer) writeOne(q queued) bool {
 		w.closeAs(CloseUnknown, "write: "+err.Error(), frame.Op)
 		return false
 	}
+	w.written.Add(1)
 	return true
+}
+
+// writerStats is what Gateway.Debug reports about one writer.
+type writerStats struct {
+	queuedFrames, queuedBytes int
+	enqueued, written         uint64
+	gateOpen, stopped, done   bool
+}
+
+// stats reads the writer's counters and flags without changing anything.
+func (w *writer) stats() writerStats {
+	w.mu.Lock()
+	queuedBytes := w.queuedBytes
+	w.mu.Unlock()
+	return writerStats{
+		queuedFrames: len(w.queue),
+		queuedBytes:  queuedBytes,
+		enqueued:     w.enqueued.Load(),
+		written:      w.written.Load(),
+		gateOpen:     w.gate == nil || isClosed(w.gate),
+		stopped:      isClosed(w.done),
+		done:         isClosed(w.finished),
+	}
+}
+
+// isClosed reports whether ch is closed, without blocking. Every channel it is asked about is only
+// ever closed, never sent on.
+func isClosed(ch chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 // logDropped records a frame the writer refused to send and LEAVES THE CONNECTION UP: one

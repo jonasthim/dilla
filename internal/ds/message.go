@@ -100,6 +100,9 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 			// Archival retention: NULL means retained. The community policy fills it in Plan 2;
 			// delivery retention is the sweeper's business, not this column's.
 			Expires: nil,
+			// The key the tag was made under (Plan 2 task 17, P2-D21): a report selects it by
+			// this id, so a message stays verifiable after the franking key rotates.
+			FrankingKeyID: d.opts.Keys.FrankingKeyID,
 		}); err != nil {
 			return err
 		}
@@ -134,11 +137,14 @@ func (d *DS) Messages(ctx context.Context, groupID id.ID, session Session, from 
 	// interfaces.md §5.1 row 12 gives this endpoint E_PRUNED, for the same reason the handshake
 	// catch-up has it: past a deletion the answer would be a silently short list, and the client
 	// cannot tell "these are gone, resync" from "nothing new". The group's PrunedBelow is the
-	// highest seq retention has deleted from this stream, whichever trigger took it (the cursor
-	// floor, the 30-day delivery window or an archival expiry), raised by PruneAppMessages in the
-	// transaction that deletes: a catch-up from `from` has lost something exactly when `from` is at
-	// or below it. Read back, never recomputed — MinCursor moves, and the oldest surviving message
-	// says nothing about the seqs below it, which are as often handshakes.
+	// highest seq DELIVERY retention has deleted from this stream (the cursor floor or the 30-day
+	// delivery window), raised by PruneAppMessages in the transaction that deletes: a catch-up
+	// from `from` has lost something exactly when `from` is at or below it. Read back, never
+	// recomputed — MinCursor moves, and the oldest surviving message says nothing about the seqs
+	// below it, which are as often handshakes. An archival expiry deletes without raising it
+	// (Plan 2 task 8's retention ruling): `expires` is not monotone in seq, and a mark above a
+	// surviving message would refuse a range this endpoint can serve. An expired message is simply
+	// absent from the list, for every device alike; no resync could bring it back.
 	row, err := d.opts.Store.GetGroup(ctx, groupID)
 	if err != nil {
 		return nil, err

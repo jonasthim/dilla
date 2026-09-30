@@ -3,23 +3,27 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/pressly/goose/v3"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/dillad"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/postgres"
 	postgresmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
@@ -67,12 +71,17 @@ func openRepository(c *config.Config) (store.Repository, *sql.DB, error) {
 	}
 }
 
+// sqliteMigrations is the SQLite migration set every verb builds its goose
+// Provider over. It is a variable only so a test can hand serve a set with a
+// failing migration: the embedded directory is fixed at compile time.
+var sqliteMigrations fs.FS = sqlitemigrations.FS
+
 // migrationProvider builds a goose Provider over db (as openRepository
 // returned it), using the migration set for c's configured engine.
 func migrationProvider(c *config.Config, db *sql.DB) (*goose.Provider, error) {
 	switch c.DB.Driver {
 	case "sqlite":
-		p, err := goose.NewProvider(goose.DialectSQLite3, db, sqlitemigrations.FS)
+		p, err := goose.NewProvider(goose.DialectSQLite3, db, sqliteMigrations)
 		if err != nil {
 			return nil, fmt.Errorf("migrations: %w: %w", err, exit.Software)
 		}
@@ -88,11 +97,13 @@ func migrationProvider(c *config.Config, db *sql.DB) (*goose.Provider, error) {
 	}
 }
 
-// runServe loads the config, opens the repository, migrates it (when
-// db.auto_migrate, after a VACUUM INTO backup when db.pre_migration_backup),
-// refuses to start when the database's schema is newer than this binary's
-// highest migration, and then serves internal/dillad's composition root until
-// an interrupt drains it. Everything above the composition root is start-up
+// runServe loads the config, takes the data-directory lock (ops.AcquireServeLock),
+// opens the repository, migrates it (when db.auto_migrate and a migration is
+// pending, after a VACUUM INTO backup when db.pre_migration_backup, which is put
+// back if the migration fails), refuses to start when the database's schema is
+// newer than this binary's highest migration, and then serves
+// internal/dillad's composition root — which finishes a pending `dillad
+// restore` — until an interrupt drains it. Everything above the composition root is start-up
 // order; every route, middleware and timeout lives in dillad.New, so the
 // binary's surface and an end-to-end test's surface are one thing.
 func runServe(args []string, stdout, stderr io.Writer) error {
@@ -105,11 +116,35 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	// The data-directory lock (Plan 2 task 13): dilla.serve.lock exclusively,
+	// so a second serve is refused, and dilla.lock shared, so a backup may run
+	// beside this serve and a restore may not. It is held for the life of the
+	// process and covers the blob sweeper, which runs inside it.
+	lock, err := ops.AcquireServeLock(cfg.Instance.DataDir)
+	if err != nil {
+		if errors.Is(err, ops.ErrLocked) {
+			return fmt.Errorf("serve: %w: another dillad is serving this data directory, or a restore is running: %w",
+				err, exit.TempFail)
+		}
+		return fmt.Errorf("serve: %w: %w", err, exit.CantCreate)
+	}
+	defer func() { _ = lock.Release() }()
+	// A restore that stopped half-way through its swap left the directory in
+	// two halves; serving either would serve the wrong instance.
+	if err := ops.InterruptedRestore(cfg.Instance.DataDir); err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+
 	repo, db, err := openRepository(cfg)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = repo.Close() }()
+	repoClosed := false
+	defer func() {
+		if !repoClosed {
+			_ = repo.Close()
+		}
+	}()
 
 	ctx := context.Background()
 	provider, err := migrationProvider(cfg, db)
@@ -124,15 +159,39 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("serve: database schema %d is newer than this binary's highest migration %d: refusing to start: %w",
 			current, target, exit.Data)
 	}
-	if cfg.DB.AutoMigrate {
+	if cfg.DB.AutoMigrate && current < target {
+		// R35: migrate at start, after the pre-migration backup — which is
+		// taken only when there is a migration to run, so an ordinary restart
+		// leaves no file behind. A restored database is migrated here too.
+		var backupPath string
 		if cfg.DB.PreMigrationBackup && cfg.DB.Driver == "sqlite" {
-			backupPath := fmt.Sprintf("%s.pre-migration-%d", cfg.DB.Path, time.Now().Unix())
+			backupPath = fmt.Sprintf("%s.pre-migration-%d", cfg.DB.Path, time.Now().Unix())
 			if err := store.VacuumInto(ctx, db, backupPath); err != nil {
 				return fmt.Errorf("serve: pre-migration backup: %w: %w", err, exit.CantCreate)
 			}
 		}
 		if _, err := provider.Up(ctx); err != nil {
-			return fmt.Errorf("serve: migrate: %w: %w", err, exit.Software)
+			if backupPath == "" {
+				return fmt.Errorf("serve: migrate: %w: %w", err, exit.Software)
+			}
+			// "Migration failure restores the pre-migration backup and exits
+			// non-zero with the heal protocol pending" (the spec's operational
+			// rules). The mark is read before the pools close: it is what says
+			// whether a restore's heal is still owed.
+			pending, _ := repo.GetSetting(ctx, ds.RestorePendingKey)
+			_ = repo.Close()
+			repoClosed = true
+			if rerr := ops.RestoreFile(backupPath, cfg.DB.Path); rerr != nil {
+				return fmt.Errorf("serve: migration failed (%w) and restoring the pre-migration backup %s failed too: %w: %w",
+					err, backupPath, rerr, exit.IOErr)
+			}
+			heal := "no heal is pending: the database is again what it was before this start"
+			if len(pending) > 0 {
+				heal = "the group heal protocol is still pending: the restore it belongs to finishes on the next successful start"
+			}
+			fmt.Fprintf(stderr, "dillad serve: migration to schema %d failed; restored the pre-migration backup %s over %s; %s\n",
+				target, backupPath, cfg.DB.Path, heal)
+			return fmt.Errorf("serve: migrate: %w; restored the pre-migration backup; %s: %w", err, heal, exit.Data)
 		}
 	}
 
@@ -141,27 +200,63 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	metrics := obs.NewMetrics(reg, reg)
 	health := obs.NewHealth(clock.System())
 
-	srv, err := dillad.New(ctx, dillad.Options{
+	// The blob store, its start-up sweep of interrupted uploads and the
+	// garbage collector (Plan 2 task 11). SweepTemp runs before the listener
+	// accepts an upload, so it can never remove one in flight.
+	blobStore, err := blob.Open(cfg.Blobs.Dir, cfg.Blobs.Backend)
+	if err != nil {
+		return fmt.Errorf("serve: open blob store %s: %w: %w", cfg.Blobs.Dir, err, exit.CantCreate)
+	}
+	defer func() { _ = blobStore.Close() }()
+	if n, err := blobStore.SweepTemp(); err != nil {
+		return fmt.Errorf("serve: sweep temp uploads: %w: %w", err, exit.IOErr)
+	} else if n > 0 {
+		log.Info("removed interrupted uploads", "count", n)
+	}
+	sweeper := blob.NewSweeper(repo, blobStore, clock.System(), cfg.Blobs.GCGrace.Value(),
+		cfg.Blobs.GCInterval.Value(), log).WithMetrics(metrics)
+
+	// The in-process SFU when livekit.enabled (Plan 2 task 16). It starts before the composition
+	// root, which builds the call routes over its token mint and proxies /rtc to it, and it stops
+	// after the drain below — its deferred stop runs after front.close.
+	fd := frontDeps{cfg: cfg, log: log, health: health, metrics: metrics, stdout: stdout}
+	sfuServer, stopSFU, err := startSFU(ctx, fd)
+	if err != nil {
+		return err
+	}
+	defer stopSFU()
+
+	// The composition root mounts every route of both plans. It shares serve's blob store, the one
+	// the sweeper above collects from, and the SFU when there is one: a nil *sfu.Server must not
+	// become a non-nil dillad.SFU.
+	opts := dillad.Options{
 		Config: cfg, Repo: repo, Clock: clock.System(), Log: log,
 		Metrics: metrics, Health: health, ScrapeToken: os.Getenv(metricsTokenEnv),
-	})
+		Blobs: blobStore,
+	}
+	if sfuServer != nil {
+		opts.SFU = sfuServer
+	}
+	srv, err := dillad.New(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("serve: %w: %w", err, exit.Software)
 	}
 
-	listenAddr := cfg.Server.Listen
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
-	if err != nil {
-		return fmt.Errorf("serve: listen %s: %w: %w", listenAddr, err, exit.Unavailable)
-	}
-	// An operator (or a test) who asked the kernel for a port learns which one
-	// it got; there is nowhere else to read it from.
-	if strings.HasSuffix(listenAddr, ":0") {
-		fmt.Fprintln(stdout, ln.Addr().String())
-	}
-
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The listener tls.mode chooses (Plan 2 task 16): server.plain_listen
+	// behind a proxy, or server.listen through the 443 TLS/STUN demux with
+	// certmagic's certificate; and the TURN relay when turn.enabled.
+	// front.close runs after the drain below has finished, and before the
+	// repository closes.
+	fr, err := openFront(ctx, runCtx, fd)
+	if err != nil {
+		_ = srv.Shutdown(context.Background())
+		return err
+	}
+	defer fr.close()
+	ln := fr.http
 
 	// A second SIGINT/SIGTERM exits immediately rather than waiting out the
 	// shutdown grace: NotifyContext only relays the first occurrence to runCtx.
@@ -199,6 +294,35 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		}
 		fmt.Fprintln(stderr, "dillad: second signal received, exiting immediately")
 		os.Exit(int(exit.Fail))
+	}()
+
+	// The sweeper runs for exactly as long as this serve, and runServe waits
+	// for it before its deferred repo.Close and blobStore.Close, so a pass never
+	// runs against a closed database. Its context is its own so that a Serve
+	// that returns for a reason other than a signal still stops it.
+	sweepCtx, stopSweep := context.WithCancel(runCtx)
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		sweeper.Run(sweepCtx)
+	}()
+	defer func() {
+		stopSweep()
+		<-sweepDone
+	}()
+
+	// dilla_clock_skew_seconds, refreshed hourly from the same peers `dillad
+	// doctor` reads. Nothing gates on it: a booting host with no network yet
+	// must still start, so a round with no answer only leaves the gauge alone.
+	clockCtx, stopClock := context.WithCancel(runCtx)
+	clockDone := make(chan struct{})
+	go func() {
+		defer close(clockDone)
+		ops.WatchClock(clockCtx, doctorHTTPClient, cfg.Doctor.ClockPeers, time.Hour, metrics.ClockSkewSeconds.Set)
+	}()
+	defer func() {
+		stopClock()
+		<-clockDone
 	}()
 
 	notifyReady()

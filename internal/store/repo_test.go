@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,8 +21,9 @@ import (
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
 )
 
-// engines returns one opened, migrated repository per engine available here.
-// rawDBs lets a conformance assertion read a column the Repository interface
+// engines returns one opened, migrated repository per engine available here, each
+// in storage of the calling test's own: a fresh SQLite file, and a fresh Postgres
+// database (freshPostgresDSN) when DILLA_TEST_PG names a server. rawDBs lets a conformance assertion read a column the Repository interface
 // does not expose. There is exactly one such column — instance_settings.updated
 // — and it is worth asserting because a repository that wrote 0 there would
 // pass every round-trip test (deviation ID11).
@@ -39,6 +41,39 @@ func rawDB(t *testing.T, repo store.Repository) *sql.DB {
 		t.Fatal("no raw handle registered for this repository")
 	}
 	return db
+}
+
+// freshPostgresDSN creates a database named for this test alone on the server dsn names and
+// returns a DSN for it. The database is dropped WITH (FORCE) at cleanup, after the
+// repository's own Cleanup has closed its pool (cleanups run last-registered first).
+//
+// Every Postgres leg in this package runs in such a database. Sharing the one CI database
+// broke three ways: a test that asserts on an instance-wide listing (ListCommunities,
+// ListPendingJoinGroups, ListBlobRetentionPolicies, ListBlobRefsOfDeletedChannels, an empty
+// report queue, the single instance row) saw every other test's rows; a fixed key (an invite
+// code hash, a blob digest) collided on a second run; and two packages migrating the same
+// empty database at once failed with "relation instances already exists".
+func freshPostgresDSN(t *testing.T, dsn string) string {
+	t.Helper()
+	admin, err := postgres.Open(dsn, 1, time.Hour)
+	if err != nil {
+		t.Fatalf("postgres Open: %v", err)
+	}
+	name := "dilla_t_" + id.New().String()[:16]
+	if _, err := admin.ExecContext(context.Background(), `CREATE DATABASE `+name); err != nil {
+		_ = admin.Close()
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.ExecContext(context.Background(), `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
+		_ = admin.Close()
+	})
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("DILLA_TEST_PG is not a URL: %v", err)
+	}
+	u.Path = "/" + name
+	return u.String()
 }
 
 func engines(t *testing.T) map[string]store.Repository {
@@ -73,7 +108,7 @@ func engines(t *testing.T) map[string]store.Repository {
 		t.Log("DILLA_TEST_PG is unset: no local Postgres server on this box; CI's postgres service container runs the Postgres leg")
 		return out
 	}
-	db, err := postgres.Open(dsn, 8, time.Hour)
+	db, err := postgres.Open(freshPostgresDSN(t, dsn), 8, time.Hour)
 	if err != nil {
 		t.Fatalf("postgres Open: %v", err)
 	}

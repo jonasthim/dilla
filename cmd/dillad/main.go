@@ -1,9 +1,7 @@
 // Command dillad is the dilla server.
 //
-// The command line is a verb dispatcher with eight names. Five are implemented
-// here; backup, restore and admin are reserved, print "not in this build" and
-// exit 3, so an operator who reads the roadmap and types one gets an honest
-// answer instead of "unknown command".
+// The command line is a verb dispatcher with eight names, every one implemented.
+// admin is itself a dispatcher, noun then verb (admin.go).
 package main
 
 import (
@@ -32,9 +30,9 @@ func verbs() map[string]verb {
 		"migrate": {"migrate", "apply or inspect schema migrations", runMigrate},
 		"doctor":  {"doctor", "check configuration, database, wasi artifact and clock", runDoctor},
 		"version": {"version", "print the version, VCS revision and cgo status", runVersion},
-		"backup":  {"backup", "write a backup archive (dillad-2)", reserved("backup")},
-		"restore": {"restore", "restore from a backup archive (dillad-2)", reserved("restore")},
-		"admin":   {"admin", "administrative commands (dillad-2)", reserved("admin")},
+		"backup":  {"backup", "write a backup archive, or check one with `backup verify`", runBackup},
+		"restore": {"restore", "replace the instance with a backup archive, and arm the group heal", runRestore},
+		"admin":   {"admin", "user, invite, community, device, blob and audit commands", runAdmin},
 	}
 }
 
@@ -72,7 +70,11 @@ func dispatch(args []string, stdout, stderr io.Writer) error {
 		usage(stderr)
 		return exit.Usage
 	}
-	return v.run(args[1:], stdout, stderr)
+	if err := v.run(args[1:], stdout, stderr); !errors.Is(err, errHelp) {
+		return err
+	}
+	// The verb printed its usage for --help and did nothing else: exit 0.
+	return nil
 }
 
 func main() {

@@ -99,6 +99,49 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLo
 	return items, nil
 }
 
+const listReports = `-- name: ListReports :many
+SELECT id, reporter, group_id, seq, revealed_envelope, k_f, franking_key_id, verification_result, status, created FROM reports ORDER BY created DESC, id DESC LIMIT ?1
+`
+
+type ListReportsParams struct {
+	MaxRows int64
+}
+
+// GET /v1/reports (Plan 2 task 17): the queue, newest first, ties broken by id.
+func (q *Queries) ListReports(ctx context.Context, arg ListReportsParams) ([]Reports, error) {
+	rows, err := q.db.QueryContext(ctx, listReports, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Reports{}
+	for rows.Next() {
+		var i Reports
+		if err := rows.Scan(
+			&i.ID,
+			&i.Reporter,
+			&i.GroupID,
+			&i.Seq,
+			&i.RevealedEnvelope,
+			&i.KF,
+			&i.FrankingKeyID,
+			&i.VerificationResult,
+			&i.Status,
+			&i.Created,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const putReport = `-- name: PutReport :exec
 INSERT INTO reports (id, reporter, group_id, seq, revealed_envelope, k_f, franking_key_id, verification_result, status, created)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/config"
@@ -60,6 +61,32 @@ func dsMeter(l *server.RateLimiter, class string, f http.HandlerFunc) http.Handl
 			}
 		}
 		f(w, r)
+	}
+}
+
+// SessionRoute is what the composition root puts in front of every route a Plan 2 handler group
+// registers bare (server.Mux.Wrapped): the enrolled-session middleware, then one token from the
+// device session's bucket of the class the route's pattern names (routeClass). The buckets are the
+// delivery service's own, keyed the same way, so one device has one read allowance and one write
+// allowance across both plans' routes rather than one per route group.
+func SessionRoute(sessions *auth.Sessions, l *server.RateLimiter) func(pattern string, h http.Handler) http.Handler {
+	return func(pattern string, h http.Handler) http.Handler {
+		return sessions.Middleware(dsMeter(l, routeClass(pattern), h.ServeHTTP), auth.ScopeEnrolled)
+	}
+}
+
+// routeClass is the [limits.rate] class of a Plan 2 route: read for GET and HEAD, message for the
+// readable upload (POST /v1/channels/{id}/messages is the plaintext twin of the ciphertext upload),
+// write for every other change.
+func routeClass(pattern string) string {
+	method, path, _ := strings.Cut(pattern, " ")
+	switch {
+	case method == http.MethodGet || method == http.MethodHead:
+		return dsClassRead
+	case method == http.MethodPost && path == "/v1/channels/{id}/messages":
+		return dsClassMessage
+	default:
+		return dsClassWrite
 	}
 }
 

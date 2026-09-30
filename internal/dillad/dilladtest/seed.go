@@ -13,6 +13,7 @@ import (
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
@@ -50,8 +51,9 @@ func ControlHandler(h *Host) http.Handler {
 	})
 	mux.HandleFunc("POST /debug/kick", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Actor  string `json:"actor"`
-			Target string `json:"target"`
+			Actor     string `json:"actor"`
+			Target    string `json:"target"`
+			Community string `json:"community"`
 		}
 		if !decode(w, r, &body) {
 			return
@@ -59,6 +61,25 @@ func ControlHandler(h *Host) http.Handler {
 		target, err := id.Parse(body.Target)
 		if err != nil {
 			http.Error(w, "target: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.Community != "" {
+			// The production kick: the /v1 route on the actor's authority (fix wave I6).
+			community, err := id.Parse(body.Community)
+			if err != nil {
+				http.Error(w, "community: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			actor, err := id.Parse(body.Actor)
+			if err != nil {
+				http.Error(w, "actor: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := h.KickFromCommunity(r.Context(), community, actor, target); err != nil {
+				writeError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		n, err := h.Kick(r.Context(), target)
@@ -86,7 +107,18 @@ func ControlHandler(h *Host) http.Handler {
 			http.Error(w, "device: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := h.Server().DS().ProposeAdd(r.Context(), groupID, device, id.New()); err != nil {
+		// Every registration and KeyPackage hook already started runs to its end first: the
+		// eager Adds a group's registration issues (Plan 2 task 7) are then in the delivery
+		// service before this one is asked for, never racing it or the commit that follows.
+		if err := h.Server().DrainHooks(r.Context()); err != nil {
+			http.Error(w, "drain hooks: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// "Admit" means "make sure the device is admitted": an outstanding Add for it is already a
+		// no-op in the delivery service, and a device an earlier commit already added (an eager Add
+		// committed with another joiner's) is done, not refused.
+		err = h.Server().DS().ProposeAdd(r.Context(), groupID, device, id.New())
+		if err != nil && !errors.Is(err, ds.ErrAlreadyMember) {
 			writeError(w, err)
 			return
 		}
@@ -142,11 +174,19 @@ func ControlHandler(h *Host) http.Handler {
 	})
 	mux.HandleFunc("POST /debug/channel", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Target     string `json:"target"`
-			Visibility string `json:"visibility"`
-			Mode       string `json:"mode"`
+			Target     string   `json:"target"`
+			Visibility string   `json:"visibility"`
+			Mode       string   `json:"mode"`
+			Members    []string `json:"members"`
+			Community  string   `json:"community"`
 		}
 		if !decode(w, r, &body) {
+			return
+		}
+		// A membership change orders after every hook already started: a registration's eager
+		// Adds read the membership as the statements BEFORE this one left it, on every machine.
+		if err := h.Server().DrainHooks(r.Context()); err != nil {
+			http.Error(w, "drain hooks: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		target, err := id.Parse(body.Target)
@@ -167,7 +207,60 @@ func ControlHandler(h *Host) http.Handler {
 			http.Error(w, "mode is e2ee or readable", http.StatusBadRequest)
 			return
 		}
+		members := make([]id.ID, 0, len(body.Members))
+		for _, m := range body.Members {
+			u, err := id.Parse(m)
+			if err != nil {
+				http.Error(w, "members: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			members = append(members, u)
+		}
+		if body.Community != "" {
+			community, err := id.Parse(body.Community)
+			if err != nil {
+				http.Error(w, "community: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := h.PutCommunityChannel(r.Context(), community, target, visibility, mode, members); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			h.Channels().Set(target, visibility, mode)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if len(members) > 0 {
+			if err := h.PutChannel(r.Context(), target, visibility, mode, members); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
 		h.Channels().Set(target, visibility, mode)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /debug/deny-view", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Actor   string `json:"actor"`
+			Target  string `json:"target"`
+			Channel string `json:"channel"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		var ids [3]id.ID
+		for i, v := range []string{body.Actor, body.Target, body.Channel} {
+			parsed, err := id.Parse(v)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			ids[i] = parsed
+		}
+		if err := h.DenyView(r.Context(), ids[2], ids[0], ids[1]); err != nil {
+			writeError(w, err)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /debug/snapshot", func(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +309,96 @@ func ControlHandler(h *Host) http.Handler {
 		}
 		writeJSON(w, state)
 	})
+	mux.HandleFunc("GET /debug/conn", func(w http.ResponseWriter, r *http.Request) {
+		var ids [2]id.ID
+		for i, key := range []string{"device", "group"} {
+			parsed, err := id.Parse(r.URL.Query().Get(key))
+			if err != nil {
+				http.Error(w, key+": "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			ids[i] = parsed
+		}
+		report, err := Conn(r.Context(), h.Server(), ids[0], ids[1])
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, report)
+	})
 	return mux
+}
+
+// ConnReport is what GET /debug/conn answers: both sides of one device in one group, for a
+// scenario whose client stopped receiving with its socket open. Gateway is the live connections'
+// state and the fan-out list (gateway.Gateway.Debug); DS is what the delivery service's store says
+// the device should have been sent.
+type ConnReport struct {
+	Gateway gateway.DebugReport `json:"gateway"`
+	DS      ConnDSReport        `json:"ds"`
+}
+
+// ConnDSReport is the delivery service's side of ConnReport. Found is false when the group does
+// not exist, and every other field is then zero.
+type ConnDSReport struct {
+	Found bool   `json:"found"`
+	Epoch uint64 `json:"epoch"`
+	Seq   uint64 `json:"seq"`
+	// Leaves is every mls_members row of the device in the group, removed ones included.
+	Leaves []ConnLeaf `json:"leaves"`
+	// Outstanding counts the group's non-void proposals at its current epoch.
+	Outstanding int `json:"outstanding"`
+	// CursorSeq and CursorEpoch are the cursor the device last acknowledged (zero when it has
+	// acknowledged nothing).
+	CursorSeq   uint64 `json:"cursor_seq"`
+	CursorEpoch uint64 `json:"cursor_epoch"`
+}
+
+// ConnLeaf is one mls_members row.
+type ConnLeaf struct {
+	Leaf         uint32  `json:"leaf"`
+	AddedEpoch   uint64  `json:"added_epoch"`
+	RemovedEpoch *uint64 `json:"removed_epoch"`
+}
+
+// Conn assembles a ConnReport. It only reads.
+func Conn(ctx context.Context, s *dillad.Server, device, group id.ID) (ConnReport, error) {
+	out := ConnReport{Gateway: s.Gateway().Debug(device, group), DS: ConnDSReport{Leaves: []ConnLeaf{}}}
+	repo := s.Repo()
+	row, err := repo.GetGroup(ctx, group)
+	if errors.Is(err, store.ErrNotFound) {
+		return out, nil
+	}
+	if err != nil {
+		return out, err
+	}
+	out.DS.Found, out.DS.Epoch, out.DS.Seq = true, row.Epoch, row.Seq
+	members, err := repo.ListMembers(ctx, group)
+	if err != nil {
+		return out, err
+	}
+	for _, m := range members {
+		if m.DeviceID == device {
+			out.DS.Leaves = append(out.DS.Leaves, ConnLeaf{
+				Leaf: m.LeafIndex, AddedEpoch: m.AddedEpoch, RemovedEpoch: m.RemovedEpoch,
+			})
+		}
+	}
+	proposals, err := repo.ListProposals(ctx, group, row.Epoch, false)
+	if err != nil {
+		return out, err
+	}
+	for _, p := range proposals {
+		if p.VoidAt == nil {
+			out.DS.Outstanding++
+		}
+	}
+	cursor, err := repo.GetCursor(ctx, device, group)
+	if err != nil {
+		return out, err
+	}
+	out.DS.CursorSeq, out.DS.CursorEpoch = cursor.LastSeq, cursor.LastEpoch
+	return out, nil
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -238,6 +420,11 @@ func writeError(w http.ResponseWriter, err error) {
 		http.Error(w, dsErr.Error(), dsErr.Status)
 		return
 	}
+	var routeErr *RouteError
+	if errors.As(err, &routeErr) {
+		http.Error(w, routeErr.Error(), routeErr.Status)
+		return
+	}
 	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
@@ -252,8 +439,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 // wall-clock and keep running; this makes a scenario's `advance_clock` observable by the very next
 // statement instead of up to a minute later.
 func (h *Host) Advance(ctx context.Context, d time.Duration) error {
-	h.clk.Advance(d)
 	s := h.Server()
+	// The proposals a registration or a KeyPackage publish issues run after the answer, on hooks of
+	// their own; they finish first, so what the scenario did before `advance_clock` has landed
+	// before the clock moves (and `advance_clock 0s` is a barrier for them).
+	if err := s.DrainHooks(ctx); err != nil {
+		return fmt.Errorf("dilladtest: wait for the post-answer hooks: %w", err)
+	}
+	h.clk.Advance(d)
 	s.DS().RunWatchdogOnce(ctx)
 	if _, err := s.DS().Sweep(ctx); err != nil {
 		return fmt.Errorf("dilladtest: sweep after advancing the clock: %w", err)

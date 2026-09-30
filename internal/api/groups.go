@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -38,6 +39,23 @@ type Groups struct {
 	// Limiter meters every route per device session from `[limits.rate]` (dsmeter.go); nil
 	// meters nothing.
 	Limiter *server.RateLimiter
+	// AfterRegister, when set, runs after the delivery service accepted a registration, once the
+	// 201 has been written and flushed, on a goroutine of its own under a context the request's
+	// cancellation does not reach; Drain waits for it. The composition root sets it to
+	// SyncRegisteredGroup (Plan 2 task 7): a channel's new text group is populated by batched
+	// delivery-service Adds, which is protocol/01 § Joining's "creating a private channel". It runs
+	// outside any transaction; a failure is the hook's to log, because the registration itself has
+	// succeeded.
+	AfterRegister func(ctx context.Context, groupID id.ID)
+	// AfterKeyPackages, when set, runs after the delivery service stored a device's KeyPackages,
+	// the same way AfterRegister does: after the 201, on its own goroutine, under a context the
+	// request's cancellation does not reach, drained by Drain. SyncGroupMembers proposes only a
+	// device that holds an available KeyPackage, so the composition root uses it to bring the
+	// device's DMs in line once it has one (Plan 2 task 6).
+	AfterKeyPackages func(ctx context.Context, userID, deviceID id.ID)
+
+	// afterRegister counts the AfterRegister and AfterKeyPackages runs still in flight, for Drain.
+	afterRegister inFlight
 
 	// commitsInFlight holds the devices with a POST /commit upload in progress (commitguard.go).
 	commitsInFlight sync.Map
@@ -161,6 +179,82 @@ func (h *Groups) create(w http.ResponseWriter, r *http.Request) {
 	if err := server.EncodeBody(w, http.StatusCreated,
 		createGroupResponse{GroupID: out.GroupID, NextSeq: out.NextSeq}); err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	if h.AfterRegister == nil {
+		return
+	}
+	// The 201 goes on the wire FIRST (protocol/02, POST /v1/groups): the hook fans instance
+	// proposals and a commit_needed election out to the creator, which must not overtake the
+	// answer that tells it the group exists, and populating a large channel is work the
+	// registrant does not wait for. A writer that cannot flush still answers when the handler
+	// returns, which is at once, because the hook runs on its own goroutine. The request's
+	// cancellation must not reach the hook: the group exists whether or not the client is still
+	// connected.
+	groupID := out.GroupID
+	h.runAfter(w, r, func(ctx context.Context) { h.AfterRegister(ctx, groupID) })
+}
+
+// runAfter runs hook on a goroutine counted for Drain, once the answer is flushed, under a context
+// the request's cancellation does not reach.
+func (h *Groups) runAfter(w http.ResponseWriter, r *http.Request, hook func(ctx context.Context)) {
+	_ = http.NewResponseController(w).Flush()
+	ctx := context.WithoutCancel(r.Context())
+	h.afterRegister.start()
+	go func() {
+		defer h.afterRegister.done()
+		hook(ctx)
+	}()
+}
+
+// Drain waits until every AfterRegister and AfterKeyPackages run the handler started has returned, or until ctx ends,
+// whichever is first; it answers ctx's error in the second case. Shutdown calls it after the HTTP
+// server has stopped taking requests (so no new run can start) and before the delivery service
+// stops, because a run is still issuing that service's proposals.
+func (h *Groups) Drain(ctx context.Context) error {
+	return h.afterRegister.wait(ctx)
+}
+
+// inFlight counts running goroutines and lets a caller wait for none. It is not a sync.WaitGroup
+// because a handler that outlives the HTTP server's graceful stop (the Close fallback) may start
+// one while Drain is waiting, which a WaitGroup forbids.
+type inFlight struct {
+	mu   sync.Mutex
+	n    int
+	idle chan struct{} // closed when n returns to zero; nil while n is zero
+}
+
+func (f *inFlight) start() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n == 0 {
+		f.idle = make(chan struct{})
+	}
+	f.n++
+}
+
+func (f *inFlight) done() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.n--
+	if f.n == 0 {
+		close(f.idle)
+		f.idle = nil
+	}
+}
+
+func (f *inFlight) wait(ctx context.Context) error {
+	f.mu.Lock()
+	idle := f.idle
+	f.mu.Unlock()
+	if idle == nil {
+		return nil
+	}
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

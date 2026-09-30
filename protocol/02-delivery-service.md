@@ -51,7 +51,13 @@ Every endpoint in this document requires a **device session**. A device session 
    oldest is evicted.
 6. **Revocation.** Accepting a signed device list that revokes a device MUST delete that device's
    session rows and close its gateway connections in the same transaction. Setting
-   `users.disabled_at` does the same for every device of that user.
+   `users.disabled_at` does the same for every device of that user. Every instance process that
+   serves the gateway also re-reads each ready connection's session row once per
+   `gateway.heartbeat_interval`, and closes a connection whose session no longer resolves (deleted,
+   pruned or past its expiry) with close `4004 session_revoked`, which is not resumable. A session
+   deleted by a process that holds no handle on the gateway (the `dillad admin` command line) thus
+   ends its live connections within one heartbeat interval, not instantly. A store that cannot
+   answer is not a revocation: the connection stays and the next tick asks again.
 7. The sole exception to the proof rule above is `POST /v1/accounts`, which creates the device and
    its first session in the same transaction: the device's key is the one being registered, so there
    is no prior key to prove possession of. Every later session for that device goes through the
@@ -70,7 +76,7 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 
 | Method and path | Auth | Request | Response | Errors |
 |---|---|---|---|---|
-| `POST /v1/groups` | E | `[group_id(bstr16), binding(bstr), group_info(bstr), ratchet_tree(bstr)]` | `201 [group_id, next_seq]` | `E_BINDING_INVALID`, `E_MODE_READABLE`, `E_GROUP_EXISTS` |
+| `POST /v1/groups` | E | `[group_id(bstr16), binding(bstr), group_info(bstr), ratchet_tree(bstr)]` | `201 [group_id, next_seq]` | `E_BINDING_INVALID`, `E_MODE_READABLE`, `E_GROUP_EXISTS`, `E_FORBIDDEN` |
 | `GET /v1/groups/{id}/info` | E | — | `[epoch, group_info, tree_hash, next_seq]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/tree` | E | — | `[epoch, ratchet_tree, tree_hash]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/handshakes?from=&limit=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
@@ -102,6 +108,15 @@ blobs to arbitrary devices, telling each the id and epoch of a group it was neve
 carries at most 256 Welcomes (`01`'s `MAX_ADDS`); more is `E_INVALID_REQUEST`. The instance answers
 membership and the epoch from the path, the session and the head of the body before it reads the
 rest, and a device has one commit upload in flight at a time (`E_RATE_LIMITED` for a second).
+
+A `POST /v1/groups` that registers the `text` group of a channel with more eligible users than the
+creator is followed by the instance's Add proposals for their devices (`01-groups.md`, "Joining":
+creating a private channel), at most 256 per commit. The instance issues them only **after** the
+`201` has been written: the registrant never waits for them, and no `mls.handshake` carrying one
+of them, and no `mls.commit_needed` asking the creator to commit them, is sent before the answer
+that tells the creator the group exists. The answer and the frames travel on different connections,
+so a client can still read a frame for a group whose `201` it has not yet read; it holds such a
+frame until the registration's answer arrives rather than discarding it.
 
 `commitment` in the `GET /v1/groups/{id}/messages` items is the stored value of `C`, read by the DS
 from `private_message.authenticated_data` at upload time; it is not a separate client-supplied
@@ -186,6 +201,11 @@ the same tree.
 | 32 | `message.plain` | `[channel_id(bstr 16), seq(uint), sender(bstr 16), envelope(bstr), franking_tag(bstr 32), edited(uint), deleted(uint)]` |
 | 33 | `interaction` | `[interaction_id(bstr 16), bot_user_id(bstr 16), kind(uint), blob(bstr)]` |
 
+`message.plain` carries a server-readable channel's post, edit or delete (`09` § Readable
+channels). It is fanned out to every live connection of every user who may view the channel and
+is still a member of its community, the author's own included, so the channel's `seq` stream is
+dense on every device of its audience; `group_id` is null.
+
 ### Ephemeral (48–63) — `n = 0`, never replayed, never persisted
 
 | op | label | payload |
@@ -236,7 +256,24 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
 1. **Registration.** A group is registered with its `dilla_binding`. The DS refuses a `text` group
    for a channel whose visibility is `invite` or `discoverable`, or whose mode is `readable`
    (`403 E_MODE_READABLE`). `call` groups exist for every voice session regardless of the channel's
-   text mode.
+   text mode. Registration is also gated on the registering session's user: a `text` or `call`
+   group bound to a community channel needs that channel to be of the binding's `community_id` and
+   of a kind that carries the group (a `text` group on a text channel, a `call` group on a voice
+   channel) and the user to hold, in that channel (`09` § Permissions, overwrites applied),
+   `view_channel` for a `text` group and `view_channel` and `connect` for a `call` group; a
+   community `text` or `call` group whose target is not a live channel of that community is
+   refused (`target_id` is the channel id for both kinds, `01-groups.md` § dilla_binding), and so
+   is every Add to, and join of, such a group once its channel is deleted: permissions held
+   community-wide never stand in for the channel's overwrites. A `text` or `call` group with no
+   `community_id` (a DM or group DM) must name a live DM or group DM as its `target_id` and needs
+   the user to be one of its participants (`09` § DMs). A binding that names no such target is
+   `400 E_BINDING_INVALID`; a user who may not register it is `403 E_FORBIDDEN`. A channel or DM
+   carries one `text` group and one `call` group (`01-groups.md` § Group kinds): a registration
+   whose target already has an open group of the same kind is `409 E_GROUP_EXISTS`, decided under
+   a lock on the target so two first registrations cannot both pass, with one exception, invariant
+   11's re-creation: while every open group of the target is epoch-unknown, the channel owner's
+   device (the community owner; any participant of a DM) may register its replacement. `pairing`
+   and `interaction` groups are not channel groups and are not gated here.
 2. **Tree service.** The DS keeps a `PublicGroup` per group. Committers upload a GroupInfo
    **without** the ratchet tree; the DS serves the tree from its own `PublicGroup`, and a joiner
    MUST verify `tree_hash` in the GroupInfo against the served tree before joining.
@@ -246,7 +283,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    external commit; it references every outstanding non-void DS proposal (invariant 6); it
    contains no `Update` from the committer; every member-originated `Remove` targets the
    committer's own user; every `Add` carries a credential whose user is eligible under the channel's
-   ACL and whose DSK is in the newest signed device list the DS holds; the `PublicGroup` validates
+   ACL (for a community group, the same permission invariant 1 asks of a registrant, resolved
+   through `09` § Permissions; for a DM or group DM, being one of its participants; for any other
+   group, being in it already) and whose DSK is in the
+   newest signed device list the DS holds; the `PublicGroup` validates
    it structurally; and the uploaded GroupInfo's epoch is `n + 1`. Otherwise `422 E_COMMIT_INVALID`.
 5. **Freeze.** While any DS proposal is outstanding for a group, application messages get
    `425 E_COMMIT_REQUIRED`, and external commits get `425 E_COMMIT_REQUIRED` too — **unless no member
@@ -268,7 +308,12 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    include `0xF001`, not consumed) and a Remove target (leaf still present). A DS proposal older
    than its TTL — 30 seconds in `call` groups, 24 hours in `text` groups — is marked **void**; a
    Commit MAY omit void proposals. The underlying action is retried with a fresh KeyPackage, or
-   dropped if the target leaf is already gone. When every instance proposal of a group has gone
+   dropped if the target leaf is already gone. Before proposing an Add the DS also checks invariant
+   4's device-list clause (the device's DSK is in its user's newest signed device list) and leaves
+   an unlisted device unproposed, its KeyPackage unspent. An outstanding DS Add whose device is
+   revoked or quarantined, or whose user is no longer eligible under the channel ACL, is marked void
+   at once — no Commit could carry it, and none could omit it while it was non-void — and it is
+   dropped rather than re-issued. When every instance proposal of a group has gone
    void, the freeze lifts even if no member device is online. A device is **online** while it holds
    a gateway connection in state `ready` whose last liveness mark — `ready`, `resumed` or a
    `heartbeat` frame — is newer than the instance's `session_idle_close` window (default 90 s, with
@@ -299,7 +344,11 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     message in `expires`, where an absent value means "retained". An instance MAY shorten either
     half per community policy; it MUST NOT lengthen the handshake window beyond 30 days without also
     lengthening client-side past-epoch retention, which this version does not allow. Cursors are per
-    device.
+    device. Only a **delivery** deletion moves the `E_PRUNED` high-water of a stream; an archival
+    deletion never does. `expires` need not grow with `seq` (a community that shortens its policy
+    makes newer messages expire before older ones), so a high-water raised to an expired `seq`
+    would stand above messages that still exist and refuse a catch-up the instance can serve. A
+    catch-up across an archivally deleted message simply does not return it.
 11. **Restore.** `dillad restore` bumps the instance `generation`; every group becomes
     epoch-unknown and every response carries the new generation. A member heals a group by
     `POST /v1/groups/{id}/heal`, uploading its member-signed GroupInfo together with its handshake
@@ -330,8 +379,10 @@ Added for the remote delivery service:
 - `advance_clock <duration>` — move the instance clock by `30s`, `5m`, `24h` or `90d`.
 - `expect_frame <op> [field=value …]` — the last client to act received that frame, by its label above.
 - `expect_425 <statement>` — the statement is refused `425 E_COMMIT_REQUIRED`.
-- `snapshot <name>` — the test host snapshots the instance's state under `name`.
-- `restore_snapshot <name>` — the test host restores it, as `dillad restore` would.
+- `snapshot <name>` — the test host snapshots the instance's state under `name`, through `dillad
+  backup`'s own code.
+- `restore_snapshot <name>` — the test host restores it through `dillad restore`'s own code and
+  restarts the instance, which finishes the restore at start as `dillad serve` does.
 - `commit <actor>` — the actor commits for the current epoch of every group it is in.
 - `join_many <group> <count>` — `count` new clients join, at most 256 Adds per commit.
 - `expect_decrypts_all <actor>` — everything the actor received since its last such assertion decrypts.
@@ -361,8 +412,10 @@ Probes for invariants 1, 4 and 8, which break exactly one rule each:
   session, the window a revocation can race.
 - `send_bad_commitment <client> <group> <len>` — a message whose `authenticated_data` is `len`
   bytes rather than 32 (invariant 8).
-- `channel <target> [visibility=private|invite|discoverable] [mode=e2ee|readable]` — the test host
-  records the channel invariant 1 checks a `text` group against.
+- `channel <target> [visibility=private|invite|discoverable] [mode=e2ee|readable]
+  [members=<client>,…]` — the test host records the channel invariant 1 checks a `text` group
+  against; with `members=` it also stores a community-less channel with those clients' users as its
+  members, whose group the instance populates once it is registered.
 
 Against an instance, `join … via=welcome` is the protocol's own join: the instance proposes the Add
 and a member commits it, because a member's own Add is refused by every receiver in a `text` or
@@ -410,7 +463,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 404 | `E_NOT_FOUND` | no such group, device, message or blob | none |
 | 409 | `E_GROUP_EXISTS` | this `group_id` is already registered | mint a new `group_id` |
 | 409 | `E_COMMIT_CONFLICT` | another commit won this epoch | discard the pending commit, process the winner, retry |
-| 410 | `E_PRUNED` | retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest deleted `seq` of each stream, so the answer is exact) | resync; mark older messages "undecryptable (too old)" |
+| 410 | `E_PRUNED` | delivery retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest `seq` delivery retention deleted from each stream, so the answer is exact; an archival deletion is not recorded, invariant 10) | resync; mark older messages "undecryptable (too old)" |
 | 410 | `E_INVITE_INVALID` | the invite is expired, exhausted or revoked | none |
 | 413 | `E_TOO_LARGE` | the object exceeds the instance limit | split or attach |
 | 422 | `E_COMMIT_INVALID` | structural or policy failure; `rule` names the clause | do not retry unchanged; resync if behind |
@@ -460,7 +513,10 @@ consumed or until their MLS lifetime expires. **Archival retention** is the comm
 for application ciphertext that every cursor has already passed (default: indefinite), recorded per
 message in `expires`, where an absent value means "retained". An instance MAY shorten either half
 per community policy; it MUST NOT lengthen the handshake window beyond 30 days without also
-lengthening client-side past-epoch retention, which this version does not allow.
+lengthening client-side past-epoch retention, which this version does not allow. Attachment blobs
+(`09` § Blobs) have no delivery half: they follow the community's archival retention only (default:
+indefinite) and never the 30-day window, because a device restoring an archive needs attachments
+far older than that.
 
 Cursors: a device's cursor advances only on an **explicit client acknowledgement**, never on
 fan-out — a frame put on a writer queue is not a delivery. The prune floor is the minimum cursor

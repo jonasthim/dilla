@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -89,6 +90,36 @@ func instanceKeys(row store.InstanceRow) (ds.InstanceKeys, error) {
 			"`dillad init` writes both")
 	}
 	return k, nil
+}
+
+// frankingKeys is every K_frank the instance has held (kind 1 of key_history), the current one —
+// the id the instance row names — first, then every other one, retired or not, in history order.
+// The readable routes frank under the current key; the report route verifies under whichever key
+// the stored tag names, so a key is never dropped from this list by a rotation (protocol/04
+// "Franking": old keys are kept for verification). An entry without a 32-byte secret is not a key.
+func frankingKeys(row store.InstanceRow) (*api.StaticFrankingKeys, error) {
+	var h keyHistory
+	if err := cborx.Unmarshal(row.KeyHistory, &h); err != nil {
+		return nil, fmt.Errorf("dillad: instances.key_history does not decode: %w", err)
+	}
+	var current *api.FrankingKey
+	var retained []api.FrankingKey
+	for _, e := range h.Entries {
+		if e.Kind != 1 || len(e.KeyID) != len(id.ID{}) || len(e.Secret) != 32 {
+			continue
+		}
+		k := api.FrankingKey{ID: id.ID(e.KeyID), Key: append([]byte(nil), e.Secret...)}
+		if k.ID == row.FrankingKeyID && e.Retired == nil && current == nil {
+			current = &k
+			continue
+		}
+		retained = append(retained, k)
+	}
+	if current == nil {
+		return nil, errors.New("dillad: instances.key_history holds no current franking key " +
+			"under the id the instance row names")
+	}
+	return api.NewStaticFrankingKeys(*current, retained...), nil
 }
 
 // policyFromConfig is ds.DefaultPolicy with the four values dilla.toml carries. internal/ds does not

@@ -140,6 +140,15 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 		return CommitResult{}, err
 	}
 
+	// (1a) an outstanding instance Add whose device or user has become ineligible is voided before
+	// clause 1 is applied, so a commit that leaves it out can land (VoidIneligibleAdds says why no
+	// commit could otherwise). A question the ACL cannot answer voids nothing and is logged: the
+	// clauses below then decide exactly as they would have.
+	if _, verr := d.voidIneligibleAddsLocked(ctx, groupID); verr != nil {
+		d.log().Warn("checking the outstanding Adds' eligibility before a commit failed",
+			"group", groupID.String()[:8], "err", verr)
+	}
+
 	// (2a) invariant 2: the delivery service serves the ratchet tree from its own PublicGroup, so
 	// a committer never uploads one. Accepting-and-ignoring the field would leave the one route a
 	// client could smuggle a tree through unguarded and untested.
@@ -411,13 +420,14 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 				"group", groupID, "err", rerr)
 		}
 	}
-	// And the next slice of a join storm, once the Adds of this commit have landed. Without it a
-	// 1,000-device batch stalls after its first 256.
-	for _, a := range applied {
-		if a.Kind == mlswasi.ProposalAdd {
-			d.drainPendingJoins(ctx, groupID)
-			break
-		}
+	// And the next slice of a join storm, once this commit has landed. Without it a 1,000-device
+	// batch stalls after its first 256. It runs after EVERY accepted commit, not only one that
+	// applied Adds: a commit of Removes, or one after the storm's own Adds were voided, frees room
+	// too, and an empty queue costs one read. The committer's request context is not the drain's —
+	// the commit is durable, and a client that hangs up now must not cut the next slice short.
+	if _, derr := d.drainPendingJoins(context.WithoutCancel(ctx), groupID); derr != nil {
+		d.log().Error("proposing the next slice of a join storm failed; the sweeper retries it",
+			"group", groupID, "err", derr)
 	}
 	return result, nil
 }

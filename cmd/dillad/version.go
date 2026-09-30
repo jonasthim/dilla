@@ -7,6 +7,7 @@ import (
 	"io"
 	"runtime"
 	"runtime/debug"
+	"strings"
 
 	"github.com/jonasthim/dilla/internal/exit"
 )
@@ -21,19 +22,41 @@ func newFlagSet(name string, stderr io.Writer) (*flag.FlagSet, *string) {
 	return fs, cfg
 }
 
-// parse runs fs.Parse and converts its two outcomes into dillad's exit codes.
-// flag.ContinueOnError has ALREADY written the message and the usage block, so
-// nothing here prints them a second time (gap-82 verdict 8).
+// errHelp is what parse returns once it has answered --help: the verb's caller returns it at
+// once, without running the verb, and dispatch turns it into exit 0.
+var errHelp = errors.New("help requested")
+
+// parse runs fs.Parse and converts its outcomes into dillad's exit codes.
+// flag.ContinueOnError writes the message and the usage block itself, to the
+// FlagSet's output, so nothing here prints them a second time (gap-82 verdict
+// 8). A request for help is answered on stdout and only there: the output is
+// pointed at stdout before parsing when one is present, and Parse's ErrHelp
+// becomes errHelp so the verb body never runs (review I15).
 func parse(fs *flag.FlagSet, args []string, stdout io.Writer) error {
+	if wantsHelp(args) {
+		fs.SetOutput(stdout)
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fs.SetOutput(stdout)
-			fs.Usage()
-			return nil
+			return errHelp
 		}
 		return fmt.Errorf("%s: %w", fs.Name(), exit.Usage)
 	}
 	return nil
+}
+
+// wantsHelp reports whether args ask for help before flag parsing stops at "--".
+func wantsHelp(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		name, _, _ := strings.Cut(a, "=")
+		if isHelpFlag(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func runVersion(args []string, stdout, stderr io.Writer) error {

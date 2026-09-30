@@ -14,6 +14,7 @@ type Querier interface {
 	AppendHandshake(ctx context.Context, arg AppendHandshakeParams) error
 	BumpGeneration(ctx context.Context) (int64, error)
 	BumpGroupSeq(ctx context.Context, arg BumpGroupSeqParams) (int64, error)
+	ClearBlobUnreferenced(ctx context.Context, arg ClearBlobUnreferencedParams) error
 	// An adopted heal. The deadline goes with the flag: closeUnhealedGroups reads the pair, and a
 	// healed group that kept its deadline would be one restart away from looking overdue again.
 	ClearEpochUnknown(ctx context.Context, arg ClearEpochUnknownParams) error
@@ -21,35 +22,82 @@ type Querier interface {
 	CloseGroup(ctx context.Context, arg CloseGroupParams) error
 	ConsumeRecoveryCode(ctx context.Context, arg ConsumeRecoveryCodeParams) (int64, error)
 	ConsumeTOTPCounter(ctx context.Context, arg ConsumeTOTPCounterParams) (int64, error)
+	CountBlobRefs(ctx context.Context, arg CountBlobRefsParams) (int64, error)
 	CountForkReporters(ctx context.Context, arg CountForkReportersParams) (int64, error)
 	CountKeyPackages(ctx context.Context, arg CountKeyPackagesParams) (int64, error)
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
+	CountPendingJoins(ctx context.Context, arg CountPendingJoinsParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
 	CountSessionsByDevice(ctx context.Context, arg CountSessionsByDeviceParams) (int64, error)
+	// Channels (Plan 2 task 2, 00005_channels.sql).
+	CreateChannel(ctx context.Context, arg CreateChannelParams) error
+	CreateCommunity(ctx context.Context, arg CreateCommunityParams) error
 	CreateDevice(ctx context.Context, arg CreateDeviceParams) error
 	CreateGroup(ctx context.Context, arg CreateGroupParams) error
 	CreateInstance(ctx context.Context, arg CreateInstanceParams) error
 	CreateInvite(ctx context.Context, arg CreateInviteParams) error
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
+	// P2-D18 (Plan 2 task 11): the admin purge removes every reference to the blob, in every
+	// channel, in one statement.
+	DeleteAllBlobRefs(ctx context.Context, arg DeleteAllBlobRefsParams) (int64, error)
+	DeleteBan(ctx context.Context, arg DeleteBanParams) (int64, error)
+	DeleteBlob(ctx context.Context, arg DeleteBlobParams) (int64, error)
+	DeleteBlobRef(ctx context.Context, arg DeleteBlobRefParams) error
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
+	DeleteChannel(ctx context.Context, arg DeleteChannelParams) (int64, error)
+	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)
+	DeleteChannelsOfCommunity(ctx context.Context, arg DeleteChannelsOfCommunityParams) (int64, error)
+	// Fix wave C3: a kick, ban or leave drops the user from every channel of the community, in the
+	// transaction that removes the membership. A DM has no community and is never matched.
+	DeleteCommunityChannelMembers(ctx context.Context, arg DeleteCommunityChannelMembersParams) (int64, error)
+	DeleteMember(ctx context.Context, arg DeleteMemberParams) (int64, error)
+	DeleteMemberRole(ctx context.Context, arg DeleteMemberRoleParams) (int64, error)
 	DeleteMembers(ctx context.Context, arg DeleteMembersParams) error
 	DeleteOldestSessionForDevice(ctx context.Context, arg DeleteOldestSessionForDeviceParams) error
 	DeleteOtherLastResortKeyPackages(ctx context.Context, arg DeleteOtherLastResortKeyPackagesParams) error
+	DeleteOverwrite(ctx context.Context, arg DeleteOverwriteParams) (int64, error)
+	DeletePendingJoin(ctx context.Context, arg DeletePendingJoinParams) error
 	DeleteProposal(ctx context.Context, arg DeleteProposalParams) error
+	// A zero-length envelope, not an empty CBOR array: the column holds CBOR and a delete leaves none.
+	// The body is emptied so body_tsv recomputes to an empty tsvector and the row stops matching,
+	// while the franking tuple (franking_tag, franking_key_id, sender, created) survives for the report
+	// path.
+	DeleteReadableMessage(ctx context.Context, arg DeleteReadableMessageParams) (int64, error)
 	DeleteRecoveryCodes(ctx context.Context, arg DeleteRecoveryCodesParams) error
+	DeleteRole(ctx context.Context, arg DeleteRoleParams) (int64, error)
 	DeleteSession(ctx context.Context, arg DeleteSessionParams) error
 	DeleteSessionsByDevice(ctx context.Context, arg DeleteSessionsByDeviceParams) (int64, error)
 	DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsByUserParams) (int64, error)
+	// Fix wave I2: a kick, ban or leave drops the user's own (kind 1) overwrites in every channel of
+	// the community, in the transaction that removes the membership.
+	DeleteUserOverwrites(ctx context.Context, arg DeleteUserOverwritesParams) (int64, error)
 	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
+	// A deleted message is not edited: its envelope and body are gone for good. The franking tag and
+	// the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
+	// instance no longer stores could never verify. Plan 2 task 17 moves the rest of the tuple too: the
+	// editing device and the new C, which a report against the edited message is checked against.
+	EditReadableMessage(ctx context.Context, arg EditReadableMessageParams) (int64, error)
+	// Invariant 11's "Live calls end", the voice_sessions half of store.MLS.EndAllVoiceSessions
+	// (P2-D19): the call-group half is mls.sql's EndAllVoiceSessions.
+	EndAllVoiceSessionRows(ctx context.Context, arg EndAllVoiceSessionRowsParams) error
 	// Invariant 11's "Live calls end." A live call IS its call group (R9 puts the call id in the
 	// companion column), and `voice_sessions` is Plan 2's table -- so on a Plan-1 database the whole
 	// of "end every live call" is closing the call groups. Plan 2 task 1 extends the same statement
 	// to `voice_sessions` rather than declaring a second method (deviation B13, P2-D19).
 	EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error
+	EndVoiceSession(ctx context.Context, arg EndVoiceSessionParams) (int64, error)
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
+	GetBan(ctx context.Context, arg GetBanParams) (Bans, error)
+	GetBlob(ctx context.Context, arg GetBlobParams) (Blobs, error)
+	GetBlobRef(ctx context.Context, arg GetBlobRefParams) (BlobRefs, error)
+	// COUNT, not EXISTS: EXISTS is int64 on SQLite and bool on Postgres, and the two Querier
+	// interfaces must stay identical.
+	GetBlobTombstone(ctx context.Context, arg GetBlobTombstoneParams) (int64, error)
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
+	GetChannel(ctx context.Context, arg GetChannelParams) (Channels, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
+	GetCommunity(ctx context.Context, arg GetCommunityParams) (Communities, error)
 	GetCursor(ctx context.Context, arg GetCursorParams) (DeviceCursors, error)
 	GetDevice(ctx context.Context, arg GetDeviceParams) (Devices, error)
 	GetDeviceList(ctx context.Context, arg GetDeviceListParams) (DeviceLists, error)
@@ -57,24 +105,59 @@ type Querier interface {
 	GetInstance(ctx context.Context) (Instances, error)
 	GetInviteByHash(ctx context.Context, arg GetInviteByHashParams) (Invites, error)
 	GetLastResortKeyPackage(ctx context.Context, arg GetLastResortKeyPackageParams) (KeyPackages, error)
+	GetMember(ctx context.Context, arg GetMemberParams) (Members, error)
 	GetOIDCIdentity(ctx context.Context, arg GetOIDCIdentityParams) (id.ID, error)
 	GetPasswordCredential(ctx context.Context, arg GetPasswordCredentialParams) (string, error)
 	GetProposal(ctx context.Context, arg GetProposalParams) (MlsPendingProposals, error)
+	GetReadState(ctx context.Context, arg GetReadStateParams) (int64, error)
 	GetReport(ctx context.Context, arg GetReportParams) (Reports, error)
+	GetRole(ctx context.Context, arg GetRoleParams) (Roles, error)
 	GetSessionByHash(ctx context.Context, arg GetSessionByHashParams) (Sessions, error)
 	GetSetting(ctx context.Context, arg GetSettingParams) ([]byte, error)
 	GetTOTP(ctx context.Context, arg GetTOTPParams) (TotpSecrets, error)
 	GetUser(ctx context.Context, arg GetUserParams) (Users, error)
 	GetUserByUsername(ctx context.Context, arg GetUserByUsernameParams) (Users, error)
+	GetVoiceSession(ctx context.Context, arg GetVoiceSessionParams) (VoiceSessions, error)
 	GetWebauthnCredential(ctx context.Context, arg GetWebauthnCredentialParams) (WebauthnCredentials, error)
 	GetWebauthnUserByHandle(ctx context.Context, arg GetWebauthnUserByHandleParams) (id.ID, error)
 	GetWebauthnUserHandle(ctx context.Context, arg GetWebauthnUserHandleParams) ([]byte, error)
 	GroupsForDevice(ctx context.Context, arg GroupsForDeviceParams) ([]id.ID, error)
+	// Plan 2's P2-D3 (task 4): the open groups bound to one target, of one kind, over
+	// mls_groups_by_target. A membership change finds the text and call groups of a channel
+	// here instead of scanning every open group of the instance.
+	GroupsForTarget(ctx context.Context, arg GroupsForTargetParams) ([]MlsGroups, error)
 	InsertAudit(ctx context.Context, arg InsertAuditParams) error
+	// Fix wave C7: blobs.store_max_bytes. Every row counts, referenced or not: an orphaned or
+	// unreferenced blob's file is on disk until the sweeper collects it. The cast keeps SUM's
+	// NUMERIC an int64, as UserBlobBytes does.
+	InstanceBlobBytes(ctx context.Context) (int64, error)
+	// The slowmode gate's read. A deleted message still counts: deleting the last message must not
+	// reset the gate, or delete-and-repost would bypass slowmode.
+	LastReadableMessageAt(ctx context.Context, arg LastReadableMessageAtParams) (int64, error)
 	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
+	ListBackups(ctx context.Context, arg ListBackupsParams) ([]Backups, error)
+	ListBans(ctx context.Context, arg ListBansParams) ([]Bans, error)
+	// Channels are tombstoned, never removed, so the ON DELETE CASCADE on blob_refs never fires:
+	// the sweeper drops a deleted channel's references itself.
+	ListBlobRefsOfDeletedChannels(ctx context.Context, arg ListBlobRefsOfDeletedChannelsParams) ([]BlobRefs, error)
+	// Plan 2 task 11, R28: the policy of every live community that still holds a reference in a
+	// live channel, so the sweeper parses one policy per community rather than one per reference.
+	ListBlobRetentionPolicies(ctx context.Context) ([]ListBlobRetentionPoliciesRow, error)
+	// Plan 2 task 12: the backup's walk over every blob row, in blob_id byte order (bytea compares
+	// bytewise), resumed after the last id of the previous page. An empty after sorts first.
+	ListBlobs(ctx context.Context, arg ListBlobsParams) ([]Blobs, error)
+	ListChannelMembers(ctx context.Context, arg ListChannelMembersParams) ([]id.ID, error)
+	ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error)
+	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
+	// participant of, newest first, ties broken by id.
+	ListChannelsForUser(ctx context.Context, arg ListChannelsForUserParams) ([]Channels, error)
+	ListCollectableBlobs(ctx context.Context, arg ListCollectableBlobsParams) ([]Blobs, error)
+	ListCommunities(ctx context.Context, arg ListCommunitiesParams) ([]Communities, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
+	// A community's references created strictly before the retention cutoff, oldest first.
+	ListExpiredBlobRefs(ctx context.Context, arg ListExpiredBlobRefsParams) ([]BlobRefs, error)
 	// The retention walk, and deliberately NOT `ListOpenGroups`: invariant 10 caps application
 	// ciphertext at thirty days for every group, and a group invariant 11 closed is still ciphertext
 	// on the disk. Filtering on `closed_at IS NULL` here would mean a closed group's blobs are never
@@ -86,19 +169,47 @@ type Querier interface {
 	ListInvites(ctx context.Context) ([]Invites, error)
 	ListInvitesByCommunity(ctx context.Context, arg ListInvitesByCommunityParams) ([]Invites, error)
 	ListLiveProposals(ctx context.Context, arg ListLiveProposalsParams) ([]MlsPendingProposals, error)
+	ListLiveVoiceSessions(ctx context.Context, arg ListLiveVoiceSessionsParams) ([]VoiceSessions, error)
+	ListMemberRoles(ctx context.Context, arg ListMemberRolesParams) ([]id.ID, error)
 	ListMembers(ctx context.Context, arg ListMembersParams) ([]MlsMembers, error)
+	ListMembersOfCommunity(ctx context.Context, arg ListMembersOfCommunityParams) ([]Members, error)
 	ListOpenGroups(ctx context.Context, arg ListOpenGroupsParams) ([]MlsGroups, error)
+	ListOverwrites(ctx context.Context, arg ListOverwritesParams) ([]ChannelOverwrites, error)
+	ListPendingJoinGroups(ctx context.Context, arg ListPendingJoinGroupsParams) ([]id.ID, error)
+	ListPendingJoins(ctx context.Context, arg ListPendingJoinsParams) ([]id.ID, error)
+	// Who message.plain reaches: the channel's materialised members (task 7's channel_members, which
+	// holds exactly the users the resolver grants view_channel) who are still members of its
+	// community, so a kicked, banned or departed user drops out before any re-materialisation.
+	ListReadableAudience(ctx context.Context, arg ListReadableAudienceParams) ([]id.ID, error)
+	ListReadableMessages(ctx context.Context, arg ListReadableMessagesParams) ([]ListReadableMessagesRow, error)
+	// GET /v1/reports (Plan 2 task 17): the queue, newest first, ties broken by id.
+	ListReports(ctx context.Context, arg ListReportsParams) ([]Reports, error)
+	ListRoles(ctx context.Context, arg ListRolesParams) ([]Roles, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
 	ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error)
+	// The join and the ban both take this lock before they read or write the
+	// membership, so a join's ban check and its member insert cannot interleave with
+	// a ban under READ COMMITTED. FOR NO KEY UPDATE: two lockers conflict, while the
+	// FOR KEY SHARE a foreign-key check on members or channels takes does not.
+	LockCommunity(ctx context.Context, arg LockCommunityParams) (id.ID, error)
 	// Invariant 11's first half, as ONE statement rather than a paged loop: a restore runs once and
 	// correctness, not latency, governs it, while a loop that stopped at a fixed batch would leave
 	// every group past the batch serving state the restored database no longer matches. Closed groups
 	// are skipped -- a closed group has nothing left to heal.
 	MarkAllGroupsEpochUnknown(ctx context.Context, arg MarkAllGroupsEpochUnknownParams) error
-	// The highest seq PruneAppMessages is about to delete with the same arguments, or 0. The store runs
-	// it in PruneAppMessages' transaction and raises pruned_below to it before the DELETE, so the
-	// high-water records exactly what went, whichever trigger took it.
+	// Sets the mark only when no reference is left, and only when it is not already set, so a
+	// repeated delete cannot push collection back.
+	MarkBlobUnreferenced(ctx context.Context, arg MarkBlobUnreferencedParams) error
+	// The highest seq PruneAppMessages' DELIVERY triggers are about to delete with the same arguments,
+	// or 0. The store runs it in PruneAppMessages' transaction and raises pruned_below to it before the
+	// DELETE, so the high-water records exactly what delivery retention took.
+	//
+	// The archival trigger is deliberately NOT in this predicate (Plan 2 task 8's retention ruling):
+	// `expires` is not monotone in seq -- a community that shortens its retention makes newer messages
+	// expire before older ones -- so a mark raised to the highest expired seq would stand above
+	// messages that still exist, and the catch-up would answer E_PRUNED for a range it can serve. An
+	// archival deletion removes the row for every device alike; it never moves the mark.
 	MaxPrunableAppMessageSeq(ctx context.Context, arg MaxPrunableAppMessageSeqParams) (int64, error)
 	// The retention floor: the lowest seq an ELIGIBLE device has acknowledged in this group, or 0
 	// when no eligible cursor exists. A device is ineligible when it is revoked, when its user is
@@ -109,6 +220,7 @@ type Querier interface {
 	// counts as eligible and so HOLDS the floor, which is the conservative direction. Holding costs
 	// storage; dropping costs ciphertext a device never received.
 	MinCursor(ctx context.Context, arg MinCursorParams) (int64, error)
+	NextChannelSeq(ctx context.Context, arg NextChannelSeqParams) (int64, error)
 	OldestHandshakeSeq(ctx context.Context, arg OldestHandshakeSeqParams) (int64, error)
 	// Invariant 10 has TWO independent deletion triggers (R28/D14); a row goes when EITHER fires.
 	//   (1) DELIVERY retention: every ELIGIBLE cursor has passed the row (cursor_floor), or the row
@@ -129,21 +241,57 @@ type Querier interface {
 	PurgeAllKeyPackages(ctx context.Context) (int64, error)
 	PurgeKeyPackagesKeepingLastResort(ctx context.Context) (int64, error)
 	PutAppMessage(ctx context.Context, arg PutAppMessageParams) error
+	// One row per (user, kind, device, chunk); a re-upload of the same chunk replaces it.
+	PutBackup(ctx context.Context, arg PutBackupParams) error
+	// Bans (Plan 2 task 4, 00007_bans.sql).
+	PutBan(ctx context.Context, arg PutBanParams) error
+	// Blobs, blob references and tombstones (Plan 2 task 10, 00010_blobs.sql). Every column in a
+	// statement with a subquery is qualified: sqlc's analyser calls a bare blob_id ambiguous as soon
+	// as a second table is in scope (gap-47 section 19.4, C11).
+	// Content addressing makes a second insert of the same id the same object, so it is a no-op
+	// rather than a conflict: two uploads of the same bytes may race to here.
+	PutBlob(ctx context.Context, arg PutBlobParams) error
+	// One reference per (blob, channel); a repeat keeps the first uploader.
+	PutBlobRef(ctx context.Context, arg PutBlobRefParams) error
+	// The first purge's record stands.
+	PutBlobTombstone(ctx context.Context, arg PutBlobTombstoneParams) error
 	PutCeremony(ctx context.Context, arg PutCeremonyParams) error
+	// Channel members (Plan 2 task 6, 00008_channel_members.sql).
+	PutChannelMember(ctx context.Context, arg PutChannelMemberParams) error
 	PutCursor(ctx context.Context, arg PutCursorParams) error
 	PutDeviceList(ctx context.Context, arg PutDeviceListParams) error
 	PutEpochTree(ctx context.Context, arg PutEpochTreeParams) error
 	PutForkReport(ctx context.Context, arg PutForkReportParams) error
 	PutGroupState(ctx context.Context, arg PutGroupStateParams) error
 	PutKeyPackage(ctx context.Context, arg PutKeyPackageParams) error
+	PutMember(ctx context.Context, arg PutMemberParams) error
 	PutMemberLeaf(ctx context.Context, arg PutMemberLeafParams) error
+	PutMemberRole(ctx context.Context, arg PutMemberRoleParams) error
 	PutOIDCIdentity(ctx context.Context, arg PutOIDCIdentityParams) error
+	// Channel overwrites (Plan 2 task 3, 00006_overwrites.sql).
+	PutOverwrite(ctx context.Context, arg PutOverwriteParams) error
 	PutPasswordCredential(ctx context.Context, arg PutPasswordCredentialParams) error
 	PutProposal(ctx context.Context, arg PutProposalParams) error
+	// Monotone: a stale tab that reports an older position must not un-read the channel.
+	PutReadState(ctx context.Context, arg PutReadStateParams) error
+	// Server-readable channels (Plan 2 task 8, 00009_readable.sql). Search is NOT here: it is
+	// hand-written database/sql in search.go, for symmetry with SQLite, where sqlc cannot type it at
+	// all (gap-69 sections 5.1 and 5.2).
+	//
+	// Every read names its columns: body_tsv exists for the index and is never selected, and the two
+	// engines' Querier interfaces must stay identical (schema_test.go).
+	PutReadableMessage(ctx context.Context, arg PutReadableMessageParams) (int64, error)
 	PutRecoveryCode(ctx context.Context, arg PutRecoveryCodeParams) error
 	PutReport(ctx context.Context, arg PutReportParams) error
+	PutRole(ctx context.Context, arg PutRoleParams) error
 	PutSetting(ctx context.Context, arg PutSettingParams) error
 	PutTOTP(ctx context.Context, arg PutTOTPParams) error
+	// Voice sessions (Plan 2 task 16, P2-D22, 00011_voice.sql).
+	// A call is keyed by its call group's call id (R9), so the next call of the same group reopens
+	// the ended row: the room, the group and the start are rewritten and ended is cleared. A live
+	// row is left exactly as it is, so two devices starting the same call at once both land in the
+	// one room the first wrote; the caller reads the row back to learn which.
+	PutVoiceSession(ctx context.Context, arg PutVoiceSessionParams) error
 	PutWebauthnCredential(ctx context.Context, arg PutWebauthnCredentialParams) error
 	// DO NOTHING, not DO UPDATE: a user handle is minted once and never rotated.
 	// The authenticator stores the handle it saw at registration, so overwriting it
@@ -153,6 +301,9 @@ type Querier interface {
 	PutWelcome(ctx context.Context, arg PutWelcomeParams) error
 	PutWelcomePayload(ctx context.Context, arg PutWelcomePayloadParams) error
 	QuarantineDevice(ctx context.Context, arg QuarantineDeviceParams) error
+	// pending_joins (Plan 1 follow-up card 8, Plan 2 task 7): one device waiting for a slice of a join
+	// storm. A device already queued keeps its row and its place.
+	QueuePendingJoin(ctx context.Context, arg QueuePendingJoinParams) error
 	// Runs in PruneHandshakes' transaction, BEFORE the DELETE with the same cutoff: every group whose
 	// handshakes the DELETE is about to take records the highest seq it loses. MONOTONE by the `<`.
 	RaiseHandshakesPrunedThrough(ctx context.Context, arg RaiseHandshakesPrunedThroughParams) error
@@ -177,6 +328,7 @@ type Querier interface {
 	SetGeneration(ctx context.Context, arg SetGenerationParams) error
 	SetGroupHealing(ctx context.Context, arg SetGroupHealingParams) error
 	SetUserDisabled(ctx context.Context, arg SetUserDisabledParams) error
+	SoftDeleteCommunity(ctx context.Context, arg SoftDeleteCommunityParams) (int64, error)
 	// FOR UPDATE SKIP LOCKED is the one difference from the SQLite form: on Postgres two concurrent
 	// takes for one device read the same snapshot, and a join storm makes that routine.
 	TakeKeyPackage(ctx context.Context, arg TakeKeyPackageParams) (KeyPackages, error)
@@ -184,8 +336,24 @@ type Querier interface {
 	TombstoneUser(ctx context.Context, arg TombstoneUserParams) error
 	TouchDevice(ctx context.Context, arg TouchDeviceParams) error
 	TouchSession(ctx context.Context, arg TouchSessionParams) error
+	// kind, community_id, seq and created are not written: a channel's kind and home
+	// are immutable, and seq moves only through NextChannelSeq.
+	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (int64, error)
+	UpdateCommunityMeta(ctx context.Context, arg UpdateCommunityMetaParams) (int64, error)
+	// The version is MONOTONE: two writers that read the same version both compute
+	// the same successor, and the second must not land a different policy under a
+	// number clients already hold. Zero rows is either an unknown community or a
+	// lost race; the adapter tells the two apart.
+	UpdateCommunityPolicy(ctx context.Context, arg UpdateCommunityPolicyParams) (int64, error)
 	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error
 	UpdateWebauthnCredential(ctx context.Context, arg UpdateWebauthnCredentialParams) error
+	// The quota counts each distinct blob a user uploaded once, however many
+	// channels they published it into. SUM over BIGINT is NUMERIC on Postgres; the
+	// cast keeps it int64 like the SQLite twin.
+	UserBlobBytes(ctx context.Context, arg UserBlobBytesParams) (int64, error)
+	// Whether the user already references the blob in some channel, so the bytes already count
+	// toward their quota. COUNT, not EXISTS, for the reason GetBlobTombstone gives.
+	UserReferencesBlob(ctx context.Context, arg UserReferencesBlobParams) (int64, error)
 	VoidProposal(ctx context.Context, arg VoidProposalParams) error
 }
 

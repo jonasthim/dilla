@@ -26,6 +26,10 @@ func CheckChannelModeForTest(d *DS, ctx context.Context, b Binding) error {
 	return d.checkChannelMode(ctx, b)
 }
 
+// ReconcileLeavesForTest is the sweeper's leaf reconcile on its own, without the rest of Sweep
+// (whose inactivity pass would also propose Removes over the fixture's devices).
+func ReconcileLeavesForTest(d *DS, ctx context.Context) (int, error) { return d.reconcileLeaves(ctx) }
+
 // ACLForTest and DeviceListsForTest are the seams New defaulted, which is the only way to see
 // that a DS built without them is built with the conservative Plan-1 stubs rather than with
 // nothing at all.
@@ -147,11 +151,18 @@ func CheckKeyPackageLifetimeForTest(now int64, notAfter uint64, maxLifetime time
 	return checkKeyPackageLifetime(now, notAfter, maxLifetime)
 }
 
+// StillEligibleForTest is stillEligible, the one-device form of the drain's eligibility rule.
+func StillEligibleForTest(d *DS, ctx context.Context, groupID, deviceID id.ID, now int64) (bool, error) {
+	return d.stillEligible(ctx, groupID, deviceID, now)
+}
+
 // PendingJoinsForTest is how many devices of a join storm are waiting for the next commit.
 func PendingJoinsForTest(d *DS, groupID id.ID) int {
-	d.pendingMu.Lock()
-	defer d.pendingMu.Unlock()
-	return len(d.pending[groupID])
+	n, err := d.opts.Store.CountPendingJoins(context.Background(), groupID)
+	if err != nil {
+		panic(err)
+	}
+	return int(n)
 }
 
 // ------------------------------------------------------------------- task 24

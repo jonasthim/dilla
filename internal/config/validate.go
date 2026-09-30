@@ -3,9 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -164,7 +167,13 @@ func (c *Config) Validate() error {
 		}
 		if c.TURN.RelayIP == "" {
 			add("turn.relay_ip is required when turn.enabled is true")
+		} else if _, err := netip.ParseAddr(c.TURN.RelayIP); err != nil && c.TURN.RelayIP != RelayIPAuto {
+			add("turn.relay_ip %q is neither an IP address of this host nor %q", c.TURN.RelayIP, RelayIPAuto)
 		}
+	}
+	if c.TURN.PublicURL != "" && !validTURNURL(c.TURN.PublicURL) {
+		add("turn.public_url %q is not a turn: or turns: URL with a host and a port, e.g. \"turns:turn.example.org:5349?transport=tcp\"",
+			c.TURN.PublicURL)
 	}
 	if c.TURN.ProxyProtocol && c.TURN.Listen == "" {
 		add("turn.proxy_protocol requires turn.listen")
@@ -176,6 +185,18 @@ func (c *Config) Validate() error {
 		if len(c.LiveKit.STUNServers) == 0 {
 			add("livekit.stun_servers is empty after defaulting; LiveKit would append its own public STUN hosts")
 		}
+	}
+	// Reserved until wired: dillad renders LiveKit's YAML itself, and a key that never reaches it must
+	// fail loudly rather than be read and ignored.
+	if c.LiveKit.ExtraConfigFile != "" {
+		add("livekit.extra_config_file is reserved and not read yet; remove it")
+	}
+	if c.LiveKit.MaxPublishers != defaultMaxPublishers {
+		add("livekit.max_publishers is reserved: LiveKit v1.13.7 has no publisher cap, so only the default %d is accepted",
+			defaultMaxPublishers)
+	}
+	if c.LiveKit.UseExternalIP {
+		add("livekit.use_external_ip is reserved and must stay false: livekit.node_ip is the address LiveKit advertises")
 	}
 	if c.Retention.HandshakeDays > 30 || c.Retention.HandshakeDays < 1 {
 		add("retention.handshake_days is %d; the range is 1..30 (protocol/02 § Retention)", c.Retention.HandshakeDays)
@@ -279,6 +300,24 @@ func (c *Config) Validate() error {
 		add("doctor.clock_skew_max is %s; HTTP-date has one-second granularity, so anything under 2s is noise", c.Doctor.ClockSkewMax.Value())
 	}
 	return errors.Join(problems...)
+}
+
+// validTURNURL is RFC 7065's shape as clients take it: "turn:" or "turns:", a host (an IPv6 literal
+// in brackets), a numeric port, and an optional "?transport=..." query.
+func validTURNURL(s string) bool {
+	rest, ok := strings.CutPrefix(s, "turns:")
+	if !ok {
+		if rest, ok = strings.CutPrefix(s, "turn:"); !ok {
+			return false
+		}
+	}
+	hostport, _, _ := strings.Cut(rest, "?")
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil || host == "" || strings.ContainsAny(host, "/@ ") {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n > 0 && n < 65536
 }
 
 // secretFile checks a *_file key: present, readable, mode 0600, at least minBytes bytes.

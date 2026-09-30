@@ -5,6 +5,10 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 -- name: GetReport :one
 SELECT * FROM reports WHERE id = $1;
 
+-- name: ListReports :many
+-- GET /v1/reports (Plan 2 task 17): the queue, newest first, ties broken by id.
+SELECT * FROM reports ORDER BY created DESC, id DESC LIMIT sqlc.arg(max_rows)::bigint;
+
 -- name: UpdateReportStatus :exec
 UPDATE reports SET status = $1, verification_result = $2 WHERE id = $3;
 

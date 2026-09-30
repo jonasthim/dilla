@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,6 +105,67 @@ func TestNewConfigAcceptsTheYAMLInStrictMode(t *testing.T) {
 	}
 	if conf.TURN.Enabled {
 		t.Error("turn.enabled is true; R18 and the spec's System architecture item 4 require it off")
+	}
+}
+
+// I13 (fix wave): the livekit.* keys dilla.toml carries reach LiveKit's parsed config.
+// advertise_internal_ip keeps the local host candidate beside node_ip's public one (so relay
+// pairing stays on-host), stun_servers replaces LiveKit's Google/Twilio fallback in every join
+// response, and max_voice_participants is the room cap. A zero cap renders no room key at all, so
+// LiveKit's own room defaults (auto_create among them) survive either way.
+func TestTheRTCKeysReachLiveKitsConfig(t *testing.T) {
+	c := testConfig()
+	c.NodeIP = "203.0.113.7"
+	c.AdvertiseInternalIP = true
+	c.STUNServers = []string{"chat.example:3478", "[2001:db8::1]:3478"}
+	c.MaxParticipants = 25
+	y, err := c.YAML()
+	if err != nil {
+		t.Fatalf("YAML: %v", err)
+	}
+	conf, err := config.NewConfig(y, true, nil, nil)
+	if err != nil {
+		t.Fatalf("config.NewConfig(strict): %v\n%s", err, y)
+	}
+	if !conf.RTC.AdvertiseInternalIP {
+		t.Error("rtc.advertise_internal_ip did not reach LiveKit")
+	}
+	if !reflect.DeepEqual(conf.RTC.STUNServers, c.STUNServers) {
+		t.Errorf("rtc.stun_servers = %v, want %v", conf.RTC.STUNServers, c.STUNServers)
+	}
+	if conf.Room.MaxParticipants != 25 {
+		t.Errorf("room.max_participants = %d, want 25", conf.Room.MaxParticipants)
+	}
+	if !conf.Room.AutoCreate {
+		t.Error("room.auto_create is false: rendering the room table dropped LiveKit's default")
+	}
+
+	c.AdvertiseInternalIP, c.STUNServers, c.MaxParticipants = false, nil, 0
+	y, err = c.YAML()
+	if err != nil {
+		t.Fatalf("YAML: %v", err)
+	}
+	if strings.Contains(y, "stun_servers") || strings.Contains(y, "room:") {
+		t.Errorf("an empty STUN list or a zero cap rendered a key:\n%s", y)
+	}
+	conf, err = config.NewConfig(y, true, nil, nil)
+	if err != nil {
+		t.Fatalf("config.NewConfig(strict): %v", err)
+	}
+	if conf.RTC.AdvertiseInternalIP || conf.Room.MaxParticipants != 0 {
+		t.Errorf("advertise_internal_ip = %t, max_participants = %d, want false and 0",
+			conf.RTC.AdvertiseInternalIP, conf.Room.MaxParticipants)
+	}
+}
+
+// A STUN entry is written into YAML, so one that could break out of its list item is refused.
+func TestYAMLRejectsAMalformedSTUNServer(t *testing.T) {
+	for _, bad := range []string{"", "host:3478\n  node_ip: 10.0.0.1", "a b:1"} {
+		c := testConfig()
+		c.STUNServers = []string{bad}
+		if _, err := c.YAML(); err == nil {
+			t.Errorf("YAML accepted the STUN server %q", bad)
+		}
 	}
 }
 
@@ -349,4 +412,53 @@ func TestStartAbortedByTheDeadlineLeavesNothingListening(t *testing.T) {
 		t.Errorf("Start error = %v, want the startup-deadline error", err)
 	}
 	nothingListensOn(t, net.JoinHostPort(c.BindAddress, fmt.Sprint(c.Port)), 3*time.Second)
+}
+
+// I11 (fix wave): ending a call closes its room. DeleteRoom disconnects a participant still in the
+// room, and a room LiveKit does not know (never opened, or already closed) is not an error: the call
+// is over either way.
+func TestDeleteRoomDisconnectsItsParticipants(t *testing.T) {
+	c := testConfig()
+	c.Port = 7900
+	c.UDPPort = 7902
+	srv, err := Start(context.Background(), c)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Stop(context.Background()); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	}()
+
+	if err := srv.DeleteRoom(t.Context(), "never-opened"); err != nil {
+		t.Fatalf("DeleteRoom of a room LiveKit never had = %v, want nil", err)
+	}
+
+	const room = "dilla-call"
+	tok, err := srv.Token(room, "bob")
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	gone := make(chan struct{})
+	var once sync.Once
+	bob, err := lksdk.ConnectToRoomWithToken(srv.URL(), tok, &lksdk.RoomCallback{
+		OnDisconnected: func() { once.Do(func() { close(gone) }) },
+	})
+	if err != nil {
+		t.Fatalf("bob join: %v", err)
+	}
+	defer bob.Disconnect()
+
+	if err := srv.DeleteRoom(t.Context(), room); err != nil {
+		t.Fatalf("DeleteRoom: %v", err)
+	}
+	select {
+	case <-gone:
+	case <-time.After(15 * time.Second):
+		t.Fatal("bob is still connected 15s after his room was deleted")
+	}
+	if err := srv.DeleteRoom(t.Context(), room); err != nil {
+		t.Fatalf("a second DeleteRoom of the closed room = %v, want nil", err)
+	}
 }

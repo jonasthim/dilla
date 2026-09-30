@@ -192,11 +192,13 @@ type Options struct {
 	// The three injected seams interfaces.md §6.2 names. Each has a Plan-1 default, and each
 	// default is the conservative one: the rule runs, against a source that cannot yet answer.
 	//
-	// Channels is invariant 1's channel-mode source. nil means PermissiveChannels{}: the channels
-	// table arrives with Plan 2 task 2 (NV-B5).
+	// Channels is invariant 1's channel-mode source and the registration ACL. nil means a source
+	// that refuses every registration; the composition root injects api.StructureChannels, which
+	// reads the channels table Plan 2 task 2 created (NV-B5, closed).
 	Channels Channels
-	// ACL is invariant 4's eligibility source. nil means DenyUnlessMember{Store}: the permission
-	// resolver arrives with Plan 2 task 3 (NV-B6).
+	// ACL is invariant 4's eligibility source. nil means DenyUnlessMember{Store}, the conservative
+	// default; the composition root injects api.ResolverACL, the permission resolver over roles
+	// and channel overwrites (Plan 2 task 3, NV-B6 closed).
 	ACL ACL
 	// DeviceLists decodes and verifies a user's signed device list for invariant 4's DSK clause.
 	// nil means NewDeviceLists(Store, Wasm), which verifies the stored list in the guest (NV-B8,
@@ -215,6 +217,12 @@ type DS struct {
 	// in SQL: the lock keeps two commits for the same epoch from both passing validation, and the
 	// epoch comparison inside the transaction is what makes it durable.
 	groupLocks sync.Map // id.ID -> *sync.Mutex
+	// targetLocks serialises the registration of a channel's one text or call group (lockTarget).
+	targetLocks sync.Map // targetKey -> *sync.Mutex
+
+	// reconcileAfter is where the sweeper's leaf reconcile resumes (reconcileLeaves).
+	reconcileMu    sync.Mutex
+	reconcileAfter id.ID
 
 	states *stateCache
 
@@ -237,12 +245,6 @@ type DS struct {
 	// touched.
 	supersedeMu sync.Mutex
 	supersede   map[id.ID][]byte
-
-	// pending is the tail of a join storm: the devices ProposeAddBatch could not fit into this
-	// epoch's 256 Adds, waiting for the next commit. It is in memory because `pending_joins` has
-	// no table and `store.Repository` no methods yet — see queuePendingJoins for the deviation.
-	pendingMu sync.Mutex
-	pending   map[id.ID][]id.ID
 
 	// elections is invariant 7's in-flight committer round, one per group. It is in memory on
 	// purpose: an election decided while everybody was away is stale by definition, and the
@@ -275,7 +277,7 @@ func New(o Options) (*DS, error) {
 	}
 	o.Policy = normalisePolicy(o.Policy)
 	if o.Channels == nil {
-		o.Channels = PermissiveChannels{}
+		o.Channels = closedChannels{}
 	}
 	if o.ACL == nil {
 		o.ACL = DenyUnlessMember{Store: o.Store}

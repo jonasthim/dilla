@@ -281,8 +281,9 @@ func TestMLSMessagesAndCursorsConformance(t *testing.T) {
 // Invariant 10's two high-waters record EXACTLY what retention deleted, per group and per stream,
 // on both engines: the catch-up's E_PRUNED is decided against them (deviation B20's exact floor).
 // A prune that deletes nothing moves nothing, a later prune never walks a mark back, and each
-// message trigger — the cursor floor, the delivery window and an archival expiry — records the
-// highest seq it took.
+// DELIVERY trigger — the cursor floor and the delivery window — records the highest seq it took.
+// An archival expiry deletes without moving the mark (Plan 2 task 8's retention ruling, see
+// TestAnArchivalExpiryNeverRaisesThePrunedFloor).
 func TestRetentionHighWatersRecordExactlyWhatWasDeleted(t *testing.T) {
 	ctx := context.Background()
 	for name, repo := range engines(t) {
@@ -326,8 +327,10 @@ func TestRetentionHighWatersRecordExactlyWhatWasDeleted(t *testing.T) {
 			if err != nil || n != 3 {
 				t.Fatalf("PruneAppMessages = %d, %v; want seqs 3, 4 and 8", n, err)
 			}
-			if msgs, _ := groupMarks(ctx, t, repo, young.GroupID); msgs != 8 {
-				t.Errorf("pruned_below = %d, want 8, the highest seq deleted", msgs)
+			// 4, not 8: seq 6 survives, and a mark at 8 would refuse a catch-up from 5 with
+			// E_PRUNED although everything it asks for that still exists is there.
+			if msgs, _ := groupMarks(ctx, t, repo, young.GroupID); msgs != 4 {
+				t.Errorf("pruned_below = %d, want 4, the highest seq a delivery trigger deleted", msgs)
 			}
 			rows, err := repo.ListAppMessages(ctx, young.GroupID, 0, 10)
 			if err != nil || len(rows) != 1 || rows[0].Seq != 6 {
@@ -337,11 +340,60 @@ func TestRetentionHighWatersRecordExactlyWhatWasDeleted(t *testing.T) {
 			if n, err := repo.PruneAppMessages(ctx, young.GroupID, 1, 10*day, 60*day); err != nil || n != 0 {
 				t.Fatalf("second PruneAppMessages = %d, %v", n, err)
 			}
-			if msgs, _ := groupMarks(ctx, t, repo, young.GroupID); msgs != 8 {
+			if msgs, _ := groupMarks(ctx, t, repo, young.GroupID); msgs != 4 {
 				t.Errorf("pruned_below walked back to %d", msgs)
 			}
 			if msgs, _ := groupMarks(ctx, t, repo, old.GroupID); msgs != 0 {
 				t.Errorf("a group whose messages were never pruned has pruned_below = %d", msgs)
+			}
+		})
+	}
+}
+
+// The retention ruling of Plan 2 task 8: a per-message archival expiry must never create a hole
+// below surviving seqs in the pruned floor. `expires` is not monotone in seq — a community that
+// shortens its retention makes newer messages expire before older ones — so a floor raised to the
+// highest seq an expiry took would stand ABOVE messages that still exist, and the catch-up would
+// answer E_PRUNED for a range it can serve. The choice made: archival deletions are exempt from
+// pruned_below. They remove rows; they never move the mark. A catch-up across an expired message
+// simply does not return it — the policy deleted it for every device alike, and there is nothing a
+// resync could recover.
+func TestAnArchivalExpiryNeverRaisesThePrunedFloor(t *testing.T) {
+	ctx := context.Background()
+	for name, repo := range engines(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedGroup(ctx, t, repo, 1_000)
+			early := int64(1_500)
+			// The NEWEST message expires first, the older two are retained indefinitely.
+			putMessage(ctx, t, repo, g.GroupID, 1, 1_000, nil)
+			putMessage(ctx, t, repo, g.GroupID, 2, 1_000, nil)
+			putMessage(ctx, t, repo, g.GroupID, 3, 1_000, &early)
+
+			n, err := repo.PruneAppMessages(ctx, g.GroupID, 0, 0, 2_000)
+			if err != nil || n != 1 {
+				t.Fatalf("PruneAppMessages = %d, %v; want the expired seq 3 alone", n, err)
+			}
+			if msgs, _ := groupMarks(ctx, t, repo, g.GroupID); msgs != 0 {
+				t.Fatalf("pruned_below = %d after an archival expiry; seqs 1 and 2 survive below it", msgs)
+			}
+			rows, err := repo.ListAppMessages(ctx, g.GroupID, 1, 10)
+			if err != nil || len(rows) != 2 || rows[0].Seq != 1 || rows[1].Seq != 2 {
+				t.Fatalf("survivors = %v, %v; want seqs 1 and 2", rows, err)
+			}
+
+			// A delivery trigger in the same call still records exactly what IT took: the cursor
+			// floor takes seq 1, an expiry takes seq 4, and the mark is 1 — seq 2 still survives.
+			putMessage(ctx, t, repo, g.GroupID, 4, 1_000, &early)
+			n, err = repo.PruneAppMessages(ctx, g.GroupID, 1, 0, 2_000)
+			if err != nil || n != 2 {
+				t.Fatalf("second PruneAppMessages = %d, %v; want seqs 1 and 4", n, err)
+			}
+			if msgs, _ := groupMarks(ctx, t, repo, g.GroupID); msgs != 1 {
+				t.Fatalf("pruned_below = %d, want 1, the highest seq the cursor floor took", msgs)
+			}
+			rows, err = repo.ListAppMessages(ctx, g.GroupID, 2, 10)
+			if err != nil || len(rows) != 1 || rows[0].Seq != 2 {
+				t.Fatalf("survivors = %v, %v; want seq 2", rows, err)
 			}
 		})
 	}

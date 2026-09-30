@@ -48,3 +48,37 @@ func httpGet(t *testing.T, url string) (*http.Response, error) {
 	}
 	return http.DefaultClient.Do(req)
 }
+
+// Wrapped is how the composition root mounts a handler group that registers bare: every pattern
+// registered through the view reaches the one ServeMux wrapped, the wrapper sees the pattern, and a
+// pattern registered on the plain mux is left alone.
+func TestAWrappedViewWrapsEveryRouteItRegisters(t *testing.T) {
+	m := server.NewMux()
+	var seen []string
+	view := m.Wrapped(func(pattern string, h http.Handler) http.Handler {
+		seen = append(seen, pattern)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Wrapped", pattern)
+			h.ServeHTTP(w, r)
+		})
+	})
+	ok := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }
+	view.HandleFunc("GET /v1/wrapped", ok)
+	view.Handle("POST /v1/wrapped", http.HandlerFunc(ok))
+	m.HandleFunc("GET /v1/plain", ok)
+	if len(seen) != 2 || seen[0] != "GET /v1/wrapped" || seen[1] != "POST /v1/wrapped" {
+		t.Fatalf("the wrapper saw %q", seen)
+	}
+	for _, c := range []struct{ method, path, want string }{
+		{http.MethodGet, "/v1/wrapped", "GET /v1/wrapped"},
+		{http.MethodPost, "/v1/wrapped", "POST /v1/wrapped"},
+		{http.MethodGet, "/v1/plain", ""},
+	} {
+		rec := httptest.NewRecorder()
+		m.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), c.method, c.path, nil))
+		if rec.Code != http.StatusNoContent || rec.Header().Get("X-Wrapped") != c.want {
+			t.Errorf("%s %s = %d, X-Wrapped %q, want 204 and %q", c.method, c.path, rec.Code,
+				rec.Header().Get("X-Wrapped"), c.want)
+		}
+	}
+}

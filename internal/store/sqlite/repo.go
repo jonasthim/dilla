@@ -819,6 +819,24 @@ func (r *Repo) GetReport(ctx context.Context, reportID id.ID) (store.ReportRow, 
 	if err != nil {
 		return store.ReportRow{}, wrap(err)
 	}
+	return reportRow(row), nil
+}
+
+// ListReports is the report queue, newest first (Plan 2 task 17).
+func (r *Repo) ListReports(ctx context.Context, limit int32) ([]store.ReportRow, error) {
+	rows, err := r.r.ListReports(ctx, sqlitedb.ListReportsParams{MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ReportRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, reportRow(row))
+	}
+	return out, nil
+}
+
+// reportRow is the one place `reports` becomes store.ReportRow.
+func reportRow(row sqlitedb.Reports) store.ReportRow {
 	return store.ReportRow{
 		ID:                 row.ID,
 		Reporter:           row.Reporter,
@@ -830,7 +848,7 @@ func (r *Repo) GetReport(ctx context.Context, reportID id.ID) (store.ReportRow, 
 		VerificationResult: row.VerificationResult,
 		Status:             int32(row.Status),
 		Created:            row.Created,
-	}, nil
+	}
 }
 
 func (r *Repo) UpdateReportStatus(ctx context.Context, reportID id.ID, status int32, result string) error {
@@ -951,6 +969,20 @@ func (r *Repo) GetGroup(ctx context.Context, groupID id.ID) (store.GroupRow, err
 	return mlsGroupRow(row), nil
 }
 
+// GroupsForTarget is P2-D3 (Plan 2 task 4): the open groups of one kind bound
+// to one target, oldest first.
+func (r *Repo) GroupsForTarget(ctx context.Context, targetID id.ID, kind uint8) ([]store.GroupRow, error) {
+	rows, err := r.r.GroupsForTarget(ctx, sqlitedb.GroupsForTargetParams{TargetID: targetID, Kind: int64(kind)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.GroupRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, mlsGroupRow(row))
+	}
+	return out, nil
+}
+
 func (r *Repo) ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]store.GroupRow, error) {
 	rows, err := r.r.ListOpenGroups(ctx, sqlitedb.ListOpenGroupsParams{GroupID: after, MaxRows: int64(limit)})
 	if err != nil {
@@ -997,8 +1029,17 @@ func (r *Repo) ClearEpochUnknown(ctx context.Context, groupID id.ID) error {
 	return wrap(r.w.ClearEpochUnknown(ctx, sqlitedb.ClearEpochUnknownParams{GroupID: groupID}))
 }
 
+// EndAllVoiceSessions is invariant 11's "Live calls end", in both of its halves and in one
+// transaction: every open call group is closed (Plan 1) and every live voice_sessions row is
+// ended (Plan 2 task 16, P2-D19). Inside a caller's transaction it runs in that one.
 func (r *Repo) EndAllVoiceSessions(ctx context.Context, at int64) error {
-	return wrap(r.w.EndAllVoiceSessions(ctx, sqlitedb.EndAllVoiceSessionsParams{At: at}))
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error { return tx.EndAllVoiceSessions(ctx, at) })
+	}
+	if err := r.w.EndAllVoiceSessions(ctx, sqlitedb.EndAllVoiceSessionsParams{At: at}); err != nil {
+		return wrap(err)
+	}
+	return wrap(r.w.EndAllVoiceSessionRows(ctx, sqlitedb.EndAllVoiceSessionRowsParams{At: at}))
 }
 
 // NextSeq allocates the next number in the group's ONE sequence space, shared by
@@ -1519,6 +1560,7 @@ func (r *Repo) PutAppMessage(ctx context.Context, m store.AppMessageRow) error {
 		Created:        m.Created,
 		Expires:        nullInt64(m.Expires),
 		DeletedAt:      nullInt64(m.DeletedAt),
+		FrankingKeyID:  m.FrankingKeyID,
 	}))
 }
 
@@ -1559,6 +1601,7 @@ func appMessageRow(m sqlitedb.MlsAppMessages) store.AppMessageRow {
 		Created:        m.Created,
 		Expires:        ptrInt64(m.Expires),
 		DeletedAt:      ptrInt64(m.DeletedAt),
+		FrankingKeyID:  m.FrankingKeyID,
 	}
 }
 
@@ -1579,13 +1622,14 @@ func (r *Repo) PruneAppMessages(ctx context.Context, groupID id.ID,
 	cursorFloor uint64, deliveryFloor, now int64) (int64, error) {
 	var n int64
 	err := r.atomically(ctx, func(q *sqlitedb.Queries) error {
-		// The high-water first, from the same predicate the DELETE applies: pruned_below is
-		// then exactly the highest seq this call takes, whichever trigger takes it.
+		// The high-water first, from the DELIVERY half of the predicate the DELETE applies:
+		// pruned_below is then exactly the highest seq delivery retention takes. An archival
+		// expiry deletes without moving it, so the mark never stands above a surviving message
+		// (Plan 2 task 8's retention ruling; see MaxPrunableAppMessageSeq).
 		top, err := q.MaxPrunableAppMessageSeq(ctx, sqlitedb.MaxPrunableAppMessageSeqParams{
 			GroupID:       groupID,
 			CursorFloor:   int64(cursorFloor),
 			DeliveryFloor: deliveryFloor,
-			Now:           now,
 		})
 		if err != nil {
 			return err
@@ -1721,6 +1765,1033 @@ func idPtr(b []byte) (*id.ID, error) {
 	var out id.ID
 	copy(out[:], b)
 	return &out, nil
+}
+
+// ---------------------------------------------------------------- Communities
+//
+// Plan 2 task 1: the slice of store.Structure whose tables 00004_structure.sql
+// ships. internal/store/postgres/repo.go carries the same fifteen methods with
+// the package name changed: policy_json is TEXT on both engines and the three
+// SMALLINT flags are pulled back to int64 by sqlc.yaml, so nothing else differs.
+
+func (r *Repo) CreateCommunity(ctx context.Context, c store.CommunityRow) error {
+	return wrap(r.w.CreateCommunity(ctx, sqlitedb.CreateCommunityParams{
+		ID:                   c.ID,
+		Owner:                c.Owner,
+		Name:                 c.Name,
+		IconBlob:             c.IconBlob,
+		PolicyJson:           string(c.PolicyJSON),
+		PolicyVersion:        int64(c.PolicyVersion),
+		MinAccountAgeSeconds: int64(c.MinAccountAgeSeconds),
+		RequireMod2fa:        int64(c.RequireMod2FA),
+		Created:              c.Created,
+		DeletedAt:            nullInt64(c.DeletedAt),
+	}))
+}
+
+func (r *Repo) GetCommunity(ctx context.Context, communityID id.ID) (store.CommunityRow, error) {
+	row, err := r.r.GetCommunity(ctx, sqlitedb.GetCommunityParams{ID: communityID})
+	if err != nil {
+		return store.CommunityRow{}, wrap(err)
+	}
+	return store.CommunityRow{
+		ID:                   row.ID,
+		Owner:                row.Owner,
+		Name:                 row.Name,
+		IconBlob:             row.IconBlob,
+		PolicyJSON:           []byte(row.PolicyJson),
+		PolicyVersion:        uint64(row.PolicyVersion),
+		MinAccountAgeSeconds: uint64(row.MinAccountAgeSeconds),
+		RequireMod2FA:        uint8(row.RequireMod2fa),
+		Created:              row.Created,
+		DeletedAt:            ptrInt64(row.DeletedAt),
+	}, nil
+}
+
+func (r *Repo) ListCommunities(ctx context.Context, after id.ID, limit int32) ([]store.CommunityRow, error) {
+	rows, err := r.r.ListCommunities(ctx, sqlitedb.ListCommunitiesParams{ID: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.CommunityRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.CommunityRow{
+			ID:                   row.ID,
+			Owner:                row.Owner,
+			Name:                 row.Name,
+			IconBlob:             row.IconBlob,
+			PolicyJSON:           []byte(row.PolicyJson),
+			PolicyVersion:        uint64(row.PolicyVersion),
+			MinAccountAgeSeconds: uint64(row.MinAccountAgeSeconds),
+			RequireMod2FA:        uint8(row.RequireMod2fa),
+			Created:              row.Created,
+			DeletedAt:            ptrInt64(row.DeletedAt),
+		})
+	}
+	return out, nil
+}
+
+func (r *Repo) UpdateCommunityPolicy(ctx context.Context, communityID id.ID, policy []byte, version int64) error {
+	n, err := r.w.UpdateCommunityPolicy(ctx, sqlitedb.UpdateCommunityPolicyParams{
+		PolicyJson:    string(policy),
+		PolicyVersion: version,
+		ID:            communityID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 1 {
+		return nil
+	}
+	// Zero rows: an unknown or deleted community, or a stored version at or
+	// above the one offered. Read through the write handle so a caller inside
+	// a Tx sees its own transaction.
+	if _, err := r.w.GetCommunity(ctx, sqlitedb.GetCommunityParams{ID: communityID}); err != nil {
+		return wrap(err)
+	}
+	return fmt.Errorf("%w: community %s is already at or past policy version %d", store.ErrConflict, communityID, version)
+}
+
+func (r *Repo) UpdateCommunityMeta(ctx context.Context, communityID id.ID, name string, minAge uint64, requireMod2FA uint8) error {
+	n, err := r.w.UpdateCommunityMeta(ctx, sqlitedb.UpdateCommunityMetaParams{
+		Name:                 name,
+		MinAccountAgeSeconds: int64(minAge),
+		RequireMod2fa:        int64(requireMod2FA),
+		ID:                   communityID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) SoftDeleteCommunity(ctx context.Context, communityID id.ID, at int64) error {
+	n, err := r.w.SoftDeleteCommunity(ctx, sqlitedb.SoftDeleteCommunityParams{
+		DeletedAt: sql.NullInt64{Int64: at, Valid: true},
+		ID:        communityID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// LockCommunity reads the live community row inside the write transaction.
+// SQLite needs no row lock: the transaction is BEGIN IMMEDIATE on the
+// one-connection write pool, so it already excludes every other writer.
+func (r *Repo) LockCommunity(ctx context.Context, communityID id.ID) error {
+	if !r.inTx {
+		return errors.New("store: LockCommunity outside a transaction")
+	}
+	_, err := r.w.LockCommunity(ctx, sqlitedb.LockCommunityParams{ID: communityID})
+	return wrap(err)
+}
+
+func (r *Repo) PutMember(ctx context.Context, m store.MemberOfCommunityRow) error {
+	return wrap(r.w.PutMember(ctx, sqlitedb.PutMemberParams{
+		CommunityID: m.CommunityID, UserID: m.UserID, Joined: m.Joined, Nick: m.Nick,
+	}))
+}
+
+func (r *Repo) GetMember(ctx context.Context, communityID, userID id.ID) (store.MemberOfCommunityRow, error) {
+	row, err := r.r.GetMember(ctx, sqlitedb.GetMemberParams{CommunityID: communityID, UserID: userID})
+	if err != nil {
+		// wrap turns sql.ErrNoRows into store.ErrNotFound, which is what every
+		// membership gate in internal/api tests with errors.Is.
+		return store.MemberOfCommunityRow{}, wrap(err)
+	}
+	return store.MemberOfCommunityRow{
+		CommunityID: row.CommunityID, UserID: row.UserID, Joined: row.Joined, Nick: row.Nick,
+	}, nil
+}
+
+func (r *Repo) DeleteMember(ctx context.Context, communityID, userID id.ID) error {
+	n, err := r.w.DeleteMember(ctx, sqlitedb.DeleteMemberParams{CommunityID: communityID, UserID: userID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) ListMembersOfCommunity(ctx context.Context, communityID, after id.ID, limit int32) ([]store.MemberOfCommunityRow, error) {
+	rows, err := r.r.ListMembersOfCommunity(ctx, sqlitedb.ListMembersOfCommunityParams{
+		CommunityID: communityID, UserID: after, MaxRows: int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.MemberOfCommunityRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.MemberOfCommunityRow{
+			CommunityID: row.CommunityID, UserID: row.UserID, Joined: row.Joined, Nick: row.Nick,
+		})
+	}
+	return out, nil
+}
+
+func (r *Repo) PutRole(ctx context.Context, role store.RoleRow) error {
+	return wrap(r.w.PutRole(ctx, sqlitedb.PutRoleParams{
+		ID: role.ID, CommunityID: role.CommunityID, Name: role.Name,
+		Color: int64(role.Color), Position: int64(role.Position),
+		Allow: int64(role.Allow), Deny: int64(role.Deny),
+		Hoist: int64(role.Hoist), Mentionable: int64(role.Mentionable),
+		Created: role.Created,
+	}))
+}
+
+func roleRow(row sqlitedb.Roles) store.RoleRow {
+	return store.RoleRow{
+		ID: row.ID, CommunityID: row.CommunityID, Name: row.Name,
+		Color: uint64(row.Color), Position: uint64(row.Position),
+		Allow: uint64(row.Allow), Deny: uint64(row.Deny),
+		Hoist: uint8(row.Hoist), Mentionable: uint8(row.Mentionable),
+		Created: row.Created,
+	}
+}
+
+func (r *Repo) GetRole(ctx context.Context, roleID id.ID) (store.RoleRow, error) {
+	row, err := r.r.GetRole(ctx, sqlitedb.GetRoleParams{ID: roleID})
+	if err != nil {
+		return store.RoleRow{}, wrap(err)
+	}
+	return roleRow(row), nil
+}
+
+func (r *Repo) ListRoles(ctx context.Context, communityID id.ID) ([]store.RoleRow, error) {
+	rows, err := r.r.ListRoles(ctx, sqlitedb.ListRolesParams{CommunityID: communityID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.RoleRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, roleRow(row))
+	}
+	return out, nil
+}
+
+func (r *Repo) PutMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error {
+	return wrap(r.w.PutMemberRole(ctx, sqlitedb.PutMemberRoleParams{
+		CommunityID: communityID, UserID: userID, RoleID: roleID,
+	}))
+}
+
+func (r *Repo) DeleteMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error {
+	n, err := r.w.DeleteMemberRole(ctx, sqlitedb.DeleteMemberRoleParams{
+		CommunityID: communityID, UserID: userID, RoleID: roleID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) ListMemberRoles(ctx context.Context, communityID, userID id.ID) ([]id.ID, error) {
+	rows, err := r.r.ListMemberRoles(ctx, sqlitedb.ListMemberRolesParams{
+		CommunityID: communityID, UserID: userID,
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return rows, nil
+}
+
+// ---------------------------------------------------------------- Channels
+//
+// Plan 2 task 2: the slice of store.Structure whose table 00005_channels.sql
+// ships. The other adapter carries the same seven methods with the package name
+// changed: settings_json is TEXT on both engines and the three SMALLINT enums
+// are pulled back to int64 by sqlc.yaml, so nothing else differs.
+
+func (r *Repo) CreateChannel(ctx context.Context, c store.ChannelRow) error {
+	return wrap(r.w.CreateChannel(ctx, sqlitedb.CreateChannelParams{
+		ID:                c.ID,
+		CommunityID:       c.CommunityID,
+		Kind:              int64(c.Kind),
+		Mode:              int64(c.Mode),
+		Visibility:        int64(c.Visibility),
+		ParentID:          c.ParentID,
+		Name:              c.Name,
+		Topic:             c.Topic,
+		Position:          int64(c.Position),
+		SettingsJson:      settingsJSON(c.SettingsJSON),
+		HostPolicyVersion: int64(c.HostPolicyVersion),
+		SlowmodeSeconds:   int64(c.SlowmodeSeconds),
+		Seq:               int64(c.Seq),
+		Created:           c.Created,
+		DeletedAt:         nullInt64(c.DeletedAt),
+	}))
+}
+
+// settingsJSON is the stored form of a channel's settings document: `{}` when
+// the row carries none, because the column is NOT NULL.
+func settingsJSON(b []byte) string {
+	if len(b) == 0 {
+		return "{}"
+	}
+	return string(b)
+}
+
+func channelRow(row sqlitedb.Channels) store.ChannelRow {
+	return store.ChannelRow{
+		ID:                row.ID,
+		CommunityID:       row.CommunityID,
+		Kind:              uint8(row.Kind),
+		Mode:              uint8(row.Mode),
+		Visibility:        uint8(row.Visibility),
+		ParentID:          row.ParentID,
+		Name:              row.Name,
+		Topic:             row.Topic,
+		Position:          uint64(row.Position),
+		SettingsJSON:      []byte(row.SettingsJson),
+		HostPolicyVersion: uint64(row.HostPolicyVersion),
+		SlowmodeSeconds:   uint64(row.SlowmodeSeconds),
+		Seq:               uint64(row.Seq),
+		Created:           row.Created,
+		DeletedAt:         ptrInt64(row.DeletedAt),
+	}
+}
+
+func (r *Repo) GetChannel(ctx context.Context, channelID id.ID) (store.ChannelRow, error) {
+	row, err := r.r.GetChannel(ctx, sqlitedb.GetChannelParams{ID: channelID})
+	if err != nil {
+		return store.ChannelRow{}, wrap(err)
+	}
+	return channelRow(row), nil
+}
+
+func (r *Repo) ListChannels(ctx context.Context, communityID id.ID) ([]store.ChannelRow, error) {
+	rows, err := r.r.ListChannels(ctx, sqlitedb.ListChannelsParams{CommunityID: &communityID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ChannelRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, channelRow(row))
+	}
+	return out, nil
+}
+
+// UpdateChannel deliberately does not write kind, community_id, seq or created:
+// a channel's kind and home are immutable, and seq moves only through
+// NextChannelSeq.
+func (r *Repo) UpdateChannel(ctx context.Context, c store.ChannelRow) error {
+	n, err := r.w.UpdateChannel(ctx, sqlitedb.UpdateChannelParams{
+		Mode:              int64(c.Mode),
+		Visibility:        int64(c.Visibility),
+		ParentID:          c.ParentID,
+		Name:              c.Name,
+		Topic:             c.Topic,
+		Position:          int64(c.Position),
+		SettingsJson:      settingsJSON(c.SettingsJSON),
+		HostPolicyVersion: int64(c.HostPolicyVersion),
+		SlowmodeSeconds:   int64(c.SlowmodeSeconds),
+		ID:                c.ID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) DeleteChannel(ctx context.Context, channelID id.ID, at int64) error {
+	n, err := r.w.DeleteChannel(ctx, sqlitedb.DeleteChannelParams{
+		DeletedAt: sql.NullInt64{Int64: at, Valid: true},
+		ID:        channelID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) DeleteChannelsOfCommunity(ctx context.Context, communityID id.ID, at int64) (int64, error) {
+	n, err := r.w.DeleteChannelsOfCommunity(ctx, sqlitedb.DeleteChannelsOfCommunityParams{
+		DeletedAt:   sql.NullInt64{Int64: at, Valid: true},
+		CommunityID: &communityID,
+	})
+	return n, wrap(err)
+}
+
+func (r *Repo) NextChannelSeq(ctx context.Context, channelID id.ID) (uint64, error) {
+	seq, err := r.w.NextChannelSeq(ctx, sqlitedb.NextChannelSeqParams{ID: channelID})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return uint64(seq), nil
+}
+
+func (r *Repo) DeleteRole(ctx context.Context, communityID, roleID id.ID) error {
+	n, err := r.w.DeleteRole(ctx, sqlitedb.DeleteRoleParams{ID: roleID, CommunityID: communityID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------- Overwrites
+//
+// Plan 2 task 3: the slice of store.Structure whose table 00006_overwrites.sql
+// ships. target_kind is SMALLINT on Postgres and pulled back to int64 by
+// sqlc.yaml, so both adapters carry the same three methods.
+
+func (r *Repo) PutOverwrite(ctx context.Context, o store.OverwriteRow) error {
+	return wrap(r.w.PutOverwrite(ctx, sqlitedb.PutOverwriteParams{
+		ChannelID:  o.ChannelID,
+		TargetKind: int64(o.TargetKind),
+		TargetID:   o.TargetID,
+		Allow:      int64(o.Allow),
+		Deny:       int64(o.Deny),
+	}))
+}
+
+func (r *Repo) ListOverwrites(ctx context.Context, channelID id.ID) ([]store.OverwriteRow, error) {
+	rows, err := r.r.ListOverwrites(ctx, sqlitedb.ListOverwritesParams{ChannelID: channelID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.OverwriteRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.OverwriteRow{
+			ChannelID:  row.ChannelID,
+			TargetKind: uint8(row.TargetKind),
+			TargetID:   row.TargetID,
+			Allow:      uint64(row.Allow),
+			Deny:       uint64(row.Deny),
+		})
+	}
+	return out, nil
+}
+
+func (r *Repo) DeleteOverwrite(ctx context.Context, channelID id.ID, targetKind uint8, targetID id.ID) error {
+	n, err := r.w.DeleteOverwrite(ctx, sqlitedb.DeleteOverwriteParams{
+		ChannelID: channelID, TargetKind: int64(targetKind), TargetID: targetID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------- Bans
+//
+// Plan 2 task 4: the slice of store.Structure whose table 00007_bans.sql ships,
+// with P2-D10's listing.
+
+func (r *Repo) PutBan(ctx context.Context, b store.BanRow) error {
+	return wrap(r.w.PutBan(ctx, sqlitedb.PutBanParams{
+		CommunityID: b.CommunityID,
+		UserID:      b.UserID,
+		Reason:      b.Reason,
+		ByUser:      b.ByUser,
+		Created:     b.Created,
+		Expires:     nullInt64(b.Expires),
+	}))
+}
+
+func banRow(row sqlitedb.Bans) store.BanRow {
+	return store.BanRow{
+		CommunityID: row.CommunityID,
+		UserID:      row.UserID,
+		Reason:      row.Reason,
+		ByUser:      row.ByUser,
+		Created:     row.Created,
+		Expires:     ptrInt64(row.Expires),
+	}
+}
+
+func (r *Repo) GetBan(ctx context.Context, communityID, userID id.ID) (store.BanRow, error) {
+	row, err := r.r.GetBan(ctx, sqlitedb.GetBanParams{CommunityID: communityID, UserID: userID})
+	if err != nil {
+		return store.BanRow{}, wrap(err)
+	}
+	return banRow(row), nil
+}
+
+func (r *Repo) ListBans(ctx context.Context, communityID id.ID) ([]store.BanRow, error) {
+	rows, err := r.r.ListBans(ctx, sqlitedb.ListBansParams{CommunityID: communityID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BanRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, banRow(row))
+	}
+	return out, nil
+}
+
+func (r *Repo) DeleteBan(ctx context.Context, communityID, userID id.ID) error {
+	n, err := r.w.DeleteBan(ctx, sqlitedb.DeleteBanParams{CommunityID: communityID, UserID: userID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// PutChannelMember keeps the first row of a pair: a second call is a no-op.
+func (r *Repo) PutChannelMember(ctx context.Context, channelID, userID id.ID, at int64) error {
+	return wrap(r.w.PutChannelMember(ctx, sqlitedb.PutChannelMemberParams{
+		ChannelID: channelID, UserID: userID, Added: at,
+	}))
+}
+
+func (r *Repo) DeleteUserOverwrites(ctx context.Context, communityID, userID id.ID) (int64, error) {
+	n, err := r.w.DeleteUserOverwrites(ctx, sqlitedb.DeleteUserOverwritesParams{
+		UserID: userID, CommunityID: &communityID,
+	})
+	return n, wrap(err)
+}
+
+func (r *Repo) DeleteCommunityChannelMembers(ctx context.Context, communityID, userID id.ID) (int64, error) {
+	n, err := r.w.DeleteCommunityChannelMembers(ctx, sqlitedb.DeleteCommunityChannelMembersParams{
+		UserID: userID, CommunityID: &communityID,
+	})
+	return n, wrap(err)
+}
+
+func (r *Repo) DeleteChannelMember(ctx context.Context, channelID, userID id.ID) error {
+	n, err := r.w.DeleteChannelMember(ctx, sqlitedb.DeleteChannelMemberParams{
+		ChannelID: channelID, UserID: userID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) ListChannelMembers(ctx context.Context, channelID id.ID) ([]id.ID, error) {
+	ids, err := r.r.ListChannelMembers(ctx, sqlitedb.ListChannelMembersParams{ChannelID: channelID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return ids, nil
+}
+
+// ListChannelsForUser is P2-D11: the live DMs and group DMs of userID.
+func (r *Repo) ListChannelsForUser(ctx context.Context, userID id.ID) ([]store.ChannelRow, error) {
+	rows, err := r.r.ListChannelsForUser(ctx, sqlitedb.ListChannelsForUserParams{UserID: userID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ChannelRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, channelRow(row))
+	}
+	return out, nil
+}
+
+// QueuePendingJoins is the pending-join queue's write (Plan 1 follow-up card 8): every device of
+// the batch in one transaction, so a storm is queued whole or not at all.
+func (r *Repo) QueuePendingJoins(ctx context.Context, groupID id.ID, devices []id.ID, at int64) error {
+	if len(devices) == 0 {
+		return nil
+	}
+	return wrap(r.atomically(ctx, func(q *sqlitedb.Queries) error {
+		for _, d := range devices {
+			if err := q.QueuePendingJoin(ctx, sqlitedb.QueuePendingJoinParams{
+				GroupID: groupID, DeviceID: d, Queued: at,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+}
+
+// ListPendingJoins reads the oldest `limit` devices and removes nothing: a device leaves the queue
+// through DeletePendingJoins once the drain has resolved it, never when it is read.
+func (r *Repo) ListPendingJoins(ctx context.Context, groupID id.ID, limit int32) ([]id.ID, error) {
+	devices, err := r.r.ListPendingJoins(ctx, sqlitedb.ListPendingJoinsParams{GroupID: groupID, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return devices, nil
+}
+
+// DeletePendingJoins removes the named devices from the group's queue, in one transaction. A
+// device that is not queued is not an error.
+func (r *Repo) DeletePendingJoins(ctx context.Context, groupID id.ID, devices []id.ID) error {
+	if len(devices) == 0 {
+		return nil
+	}
+	return wrap(r.atomically(ctx, func(q *sqlitedb.Queries) error {
+		for _, d := range devices {
+			if err := q.DeletePendingJoin(ctx, sqlitedb.DeletePendingJoinParams{GroupID: groupID, DeviceID: d}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+}
+
+func (r *Repo) CountPendingJoins(ctx context.Context, groupID id.ID) (int64, error) {
+	n, err := r.r.CountPendingJoins(ctx, sqlitedb.CountPendingJoinsParams{GroupID: groupID})
+	return n, wrap(err)
+}
+
+func (r *Repo) ListPendingJoinGroups(ctx context.Context, after id.ID, limit int32) ([]id.ID, error) {
+	ids, err := r.r.ListPendingJoinGroups(ctx, sqlitedb.ListPendingJoinGroupsParams{GroupID: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return ids, nil
+}
+
+// ---------------------------------------------------------------- Readable
+//
+// 007_readable.sql (Plan 2 task 8). SearchReadable is hand-written in search.go.
+
+// PutReadableMessage ignores m.ID: the rowid is the store's to assign, and it is
+// what the FTS index is content-mapped to.
+func (r *Repo) PutReadableMessage(ctx context.Context, m store.ReadableMessageRow) (int64, error) {
+	rowID, err := r.w.PutReadableMessage(ctx, sqlitedb.PutReadableMessageParams{
+		ChannelID:      m.ChannelID,
+		ChannelHex:     m.ChannelHex,
+		Seq:            int64(m.Seq),
+		Sender:         m.Sender,
+		Envelope:       m.Envelope,
+		Body:           m.Body,
+		FrankingTag:    m.FrankingTag,
+		FrankingKeyID:  m.FrankingKeyID,
+		MentionCount:   int64(m.MentionCount),
+		Created:        m.Created,
+		Edited:         nullInt64(m.Edited),
+		Deleted:        nullInt64(m.Deleted),
+		UploaderDevice: m.UploaderDevice,
+		CommitmentC:    m.CommitmentC,
+	})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return rowID, nil
+}
+
+func (r *Repo) ListReadableMessages(ctx context.Context, channelID id.ID, fromSeq uint64, limit int32) ([]store.ReadableMessageRow, error) {
+	rows, err := r.r.ListReadableMessages(ctx, sqlitedb.ListReadableMessagesParams{
+		ChannelID: channelID,
+		Seq:       int64(fromSeq),
+		MaxRows:   int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ReadableMessageRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.ReadableMessageRow{
+			ID:             row.ID,
+			ChannelID:      row.ChannelID,
+			ChannelHex:     row.ChannelHex,
+			Seq:            uint64(row.Seq),
+			Sender:         row.Sender,
+			Envelope:       row.Envelope,
+			Body:           row.Body,
+			FrankingTag:    row.FrankingTag,
+			FrankingKeyID:  row.FrankingKeyID,
+			MentionCount:   uint64(row.MentionCount),
+			Created:        row.Created,
+			Edited:         ptrInt64(row.Edited),
+			Deleted:        ptrInt64(row.Deleted),
+			UploaderDevice: row.UploaderDevice,
+			CommitmentC:    row.CommitmentC,
+		})
+	}
+	return out, nil
+}
+
+func (r *Repo) EditReadableMessage(ctx context.Context, channelID id.ID, seq uint64,
+	envelope []byte, body string, f store.ReadableFranking, at int64,
+) error {
+	n, err := r.w.EditReadableMessage(ctx, sqlitedb.EditReadableMessageParams{
+		Envelope:       envelope,
+		Body:           body,
+		FrankingTag:    f.Tag,
+		FrankingKeyID:  f.KeyID,
+		UploaderDevice: f.UploaderDevice,
+		CommitmentC:    f.CommitmentC,
+		Edited:         sql.NullInt64{Int64: at, Valid: true},
+		ChannelID:      channelID,
+		Seq:            int64(seq),
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) DeleteReadableMessage(ctx context.Context, channelID id.ID, seq uint64, at int64) error {
+	n, err := r.w.DeleteReadableMessage(ctx, sqlitedb.DeleteReadableMessageParams{
+		Deleted:   sql.NullInt64{Int64: at, Valid: true},
+		ChannelID: channelID,
+		Seq:       int64(seq),
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// PutReadState is monotone in SQL (`MAX(stored, new)`).
+func (r *Repo) PutReadState(ctx context.Context, userID, channelID id.ID, lastReadSeq uint64) error {
+	return wrap(r.w.PutReadState(ctx, sqlitedb.PutReadStateParams{
+		UserID:      userID,
+		ChannelID:   channelID,
+		LastReadSeq: int64(lastReadSeq),
+	}))
+}
+
+func (r *Repo) GetReadState(ctx context.Context, userID, channelID id.ID) (uint64, error) {
+	seq, err := r.r.GetReadState(ctx, sqlitedb.GetReadStateParams{UserID: userID, ChannelID: channelID})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return uint64(seq), nil
+}
+
+func (r *Repo) LastReadableMessageAt(ctx context.Context, channelID, userID id.ID) (int64, error) {
+	at, err := r.r.LastReadableMessageAt(ctx, sqlitedb.LastReadableMessageAtParams{ChannelID: channelID, Sender: userID})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return at, nil
+}
+
+func (r *Repo) ListReadableAudience(ctx context.Context, channelID id.ID) ([]id.ID, error) {
+	ids, err := r.r.ListReadableAudience(ctx, sqlitedb.ListReadableAudienceParams{ChannelID: channelID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return ids, nil
+}
+
+// ---------------------------------------------------------------- Blobs
+//
+// Plan 2 task 10: 00010_blobs.sql's blobs, blob_refs and blob_tombstones, with
+// P2-D16's ClearBlobUnreferenced and P2-D17's GetBlobRef.
+
+func blobRow(row sqlitedb.Blobs) store.BlobRow {
+	return store.BlobRow{
+		BlobID:     row.BlobID,
+		Size:       uint64(row.Size),
+		StorageRef: row.StorageRef,
+		Created:    row.Created,
+		UnrefSince: ptrInt64(row.UnrefSince),
+	}
+}
+
+func (r *Repo) PutBlob(ctx context.Context, b store.BlobRow) error {
+	return wrap(r.w.PutBlob(ctx, sqlitedb.PutBlobParams{
+		BlobID:     b.BlobID,
+		Size:       int64(b.Size),
+		StorageRef: b.StorageRef,
+		Created:    b.Created,
+		UnrefSince: nullInt64(b.UnrefSince),
+	}))
+}
+
+func (r *Repo) GetBlob(ctx context.Context, blobID []byte) (store.BlobRow, error) {
+	row, err := r.r.GetBlob(ctx, sqlitedb.GetBlobParams{BlobID: blobID})
+	if err != nil {
+		return store.BlobRow{}, wrap(err)
+	}
+	return blobRow(row), nil
+}
+
+func (r *Repo) PutBlobRef(ctx context.Context, blobID []byte, channelID, uploaderDevice id.ID, mime string, created int64) error {
+	return wrap(r.w.PutBlobRef(ctx, sqlitedb.PutBlobRefParams{
+		BlobID:         blobID,
+		ChannelID:      channelID,
+		UploaderDevice: uploaderDevice,
+		Mime:           mime,
+		Created:        created,
+	}))
+}
+
+func (r *Repo) GetBlobRef(ctx context.Context, blobID []byte, channelID id.ID) (store.BlobRefRow, error) {
+	row, err := r.r.GetBlobRef(ctx, sqlitedb.GetBlobRefParams{BlobID: blobID, ChannelID: channelID})
+	if err != nil {
+		return store.BlobRefRow{}, wrap(err)
+	}
+	return store.BlobRefRow{
+		BlobID:         row.BlobID,
+		ChannelID:      row.ChannelID,
+		UploaderDevice: row.UploaderDevice,
+		Mime:           row.Mime,
+		Created:        row.Created,
+	}, nil
+}
+
+func (r *Repo) DeleteBlobRef(ctx context.Context, blobID []byte, channelID id.ID) error {
+	return wrap(r.w.DeleteBlobRef(ctx, sqlitedb.DeleteBlobRefParams{BlobID: blobID, ChannelID: channelID}))
+}
+
+func (r *Repo) CountBlobRefs(ctx context.Context, blobID []byte) (int64, error) {
+	n, err := r.r.CountBlobRefs(ctx, sqlitedb.CountBlobRefsParams{BlobID: blobID})
+	return n, wrap(err)
+}
+
+func (r *Repo) MarkBlobUnreferenced(ctx context.Context, blobID []byte, at int64) error {
+	return wrap(r.w.MarkBlobUnreferenced(ctx, sqlitedb.MarkBlobUnreferencedParams{
+		At:     sql.NullInt64{Int64: at, Valid: true},
+		BlobID: blobID,
+	}))
+}
+
+func (r *Repo) ClearBlobUnreferenced(ctx context.Context, blobID []byte) error {
+	return wrap(r.w.ClearBlobUnreferenced(ctx, sqlitedb.ClearBlobUnreferencedParams{BlobID: blobID}))
+}
+
+func (r *Repo) ListCollectableBlobs(ctx context.Context, before int64, limit int32) ([]store.BlobRow, error) {
+	rows, err := r.r.ListCollectableBlobs(ctx, sqlitedb.ListCollectableBlobsParams{Before: before, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BlobRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, blobRow(row))
+	}
+	return out, nil
+}
+
+// ListBlobs passes an empty blob for a nil after: database/sql sends a nil
+// []byte as NULL, and `blob_id > NULL` selects nothing.
+func (r *Repo) ListBlobs(ctx context.Context, after []byte, limit int32) ([]store.BlobRow, error) {
+	if after == nil {
+		after = []byte{}
+	}
+	rows, err := r.r.ListBlobs(ctx, sqlitedb.ListBlobsParams{After: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BlobRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, blobRow(row))
+	}
+	return out, nil
+}
+
+func (r *Repo) DeleteBlob(ctx context.Context, blobID []byte) error {
+	n, err := r.w.DeleteBlob(ctx, sqlitedb.DeleteBlobParams{BlobID: blobID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) PutBlobTombstone(ctx context.Context, blobID []byte, reason string, by id.ID, at int64) error {
+	return wrap(r.w.PutBlobTombstone(ctx, sqlitedb.PutBlobTombstoneParams{
+		BlobID:  blobID,
+		Reason:  reason,
+		ByUser:  by,
+		Created: at,
+	}))
+}
+
+func (r *Repo) GetBlobTombstone(ctx context.Context, blobID []byte) (bool, error) {
+	n, err := r.r.GetBlobTombstone(ctx, sqlitedb.GetBlobTombstoneParams{BlobID: blobID})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return n > 0, nil
+}
+
+func (r *Repo) UserBlobBytes(ctx context.Context, userID id.ID) (int64, error) {
+	n, err := r.r.UserBlobBytes(ctx, sqlitedb.UserBlobBytesParams{UserID: userID})
+	return n, wrap(err)
+}
+
+func (r *Repo) UserReferencesBlob(ctx context.Context, userID id.ID, blobID []byte) (bool, error) {
+	n, err := r.r.UserReferencesBlob(ctx, sqlitedb.UserReferencesBlobParams{BlobID: blobID, UserID: userID})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return n > 0, nil
+}
+
+func (r *Repo) InstanceBlobBytes(ctx context.Context) (int64, error) {
+	n, err := r.r.InstanceBlobBytes(ctx)
+	return n, wrap(err)
+}
+
+func (r *Repo) DeleteAllBlobRefs(ctx context.Context, blobID []byte) (int64, error) {
+	n, err := r.w.DeleteAllBlobRefs(ctx, sqlitedb.DeleteAllBlobRefsParams{BlobID: blobID})
+	return n, wrap(err)
+}
+
+func (r *Repo) ListBlobRetentionPolicies(ctx context.Context) ([]store.BlobRetentionRow, error) {
+	rows, err := r.r.ListBlobRetentionPolicies(ctx)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BlobRetentionRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.BlobRetentionRow{CommunityID: row.ID, PolicyJSON: []byte(row.PolicyJson)})
+	}
+	return out, nil
+}
+
+func (r *Repo) ListExpiredBlobRefs(ctx context.Context, communityID id.ID, before int64, limit int32) ([]store.BlobRefRow, error) {
+	rows, err := r.r.ListExpiredBlobRefs(ctx, sqlitedb.ListExpiredBlobRefsParams{
+		CommunityID: communityID, Before: before, MaxRows: int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return blobRefRows(rows), nil
+}
+
+func (r *Repo) ListBlobRefsOfDeletedChannels(ctx context.Context, limit int32) ([]store.BlobRefRow, error) {
+	rows, err := r.r.ListBlobRefsOfDeletedChannels(ctx, sqlitedb.ListBlobRefsOfDeletedChannelsParams{MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return blobRefRows(rows), nil
+}
+
+func blobRefRows(rows []sqlitedb.BlobRefs) []store.BlobRefRow {
+	out := make([]store.BlobRefRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.BlobRefRow{
+			BlobID:         row.BlobID,
+			ChannelID:      row.ChannelID,
+			UploaderDevice: row.UploaderDevice,
+			Mime:           row.Mime,
+			Created:        row.Created,
+		})
+	}
+	return out
+}
+
+// ---------------------------------------------------------------- OpsBackups
+//
+// Plan 2 task 10 (P2-D5): the backups table ships in 00010_blobs.sql, so its
+// two methods land here rather than with task 12's instance archive.
+
+func (r *Repo) PutBackup(ctx context.Context, b store.BackupRow) error {
+	return wrap(r.w.PutBackup(ctx, sqlitedb.PutBackupParams{
+		UserID:      b.UserID,
+		Kind:        int64(b.Kind),
+		DeviceID:    b.DeviceID,
+		ChunkSeq:    int64(b.ChunkSeq),
+		BlobID:      b.BlobID,
+		ManifestSig: b.ManifestSig,
+		Created:     b.Created,
+	}))
+}
+
+func (r *Repo) ListBackups(ctx context.Context, userID id.ID, kind int32) ([]store.BackupRow, error) {
+	rows, err := r.r.ListBackups(ctx, sqlitedb.ListBackupsParams{UserID: userID, Kind: int64(kind)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BackupRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.BackupRow{
+			UserID:      row.UserID,
+			Kind:        uint64(row.Kind),
+			DeviceID:    row.DeviceID,
+			ChunkSeq:    uint64(row.ChunkSeq),
+			BlobID:      row.BlobID,
+			ManifestSig: row.ManifestSig,
+			Created:     row.Created,
+		})
+	}
+	return out, nil
+}
+
+// Voice sessions (Plan 2 task 16, P2-D22, 00011_voice.sql).
+
+func voiceSessionRow(row sqlitedb.VoiceSessions) store.VoiceSessionRow {
+	return store.VoiceSessionRow{
+		CallID:      row.CallID,
+		ChannelID:   row.ChannelID,
+		GroupID:     row.GroupID,
+		LivekitRoom: row.LivekitRoom,
+		Started:     row.Started,
+		Ended:       ptrInt64(row.Ended),
+	}
+}
+
+// PutVoiceSession records a call, or reopens an ended one: a call is keyed by its call group's
+// call id (R9), so the next call of the same group rewrites the row and clears ended. A live row
+// is left as it is.
+func (r *Repo) PutVoiceSession(ctx context.Context, v store.VoiceSessionRow) error {
+	return wrap(r.w.PutVoiceSession(ctx, sqlitedb.PutVoiceSessionParams{
+		CallID:      v.CallID,
+		ChannelID:   v.ChannelID,
+		GroupID:     v.GroupID,
+		LivekitRoom: v.LivekitRoom,
+		Started:     v.Started,
+	}))
+}
+
+func (r *Repo) GetVoiceSession(ctx context.Context, callID id.ID) (store.VoiceSessionRow, error) {
+	row, err := r.r.GetVoiceSession(ctx, sqlitedb.GetVoiceSessionParams{CallID: callID})
+	if err != nil {
+		return store.VoiceSessionRow{}, wrap(err)
+	}
+	return voiceSessionRow(row), nil
+}
+
+// EndVoiceSession ends a live call; ErrNotFound when there is no such call or it has ended.
+func (r *Repo) EndVoiceSession(ctx context.Context, callID id.ID, at int64) error {
+	n, err := r.w.EndVoiceSession(ctx, sqlitedb.EndVoiceSessionParams{At: at, CallID: callID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) ListLiveVoiceSessions(ctx context.Context, channelID id.ID) ([]store.VoiceSessionRow, error) {
+	rows, err := r.r.ListLiveVoiceSessions(ctx, sqlitedb.ListLiveVoiceSessionsParams{ChannelID: channelID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.VoiceSessionRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, voiceSessionRow(row))
+	}
+	return out, nil
 }
 
 var _ store.Repository = (*Repo)(nil)

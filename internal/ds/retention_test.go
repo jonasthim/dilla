@@ -179,14 +179,23 @@ func TestArchivalRetentionIsIndependentOfDeliveryRetention(t *testing.T) {
 	if _, err := h.ds.Sweep(ctx); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	// The table itself, not the catch-up: a catch-up from 0 still wants the expired seq and is
-	// E_PRUNED now that the high-water records every trigger's deletions.
 	rows, err := h.repo.ListAppMessages(ctx, g.id, 0, 10)
 	if err != nil {
 		t.Fatalf("ListAppMessages: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Seq != kept.Seq {
 		t.Fatalf("got %v, want only the message with expires = NULL (retained)", rows)
+	}
+	// And the catch-up: the expired message is NEWER than the retained one, so a floor raised to
+	// its seq would stand above a message that still exists. Plan 2 task 8's retention ruling
+	// exempts archival deletions from the floor, so the catch-up serves the survivor instead of
+	// answering E_PRUNED for a range it can serve.
+	got, err := h.ds.Messages(ctx, g.id, g.session, kept.Seq, 10)
+	if err != nil {
+		t.Fatalf("a catch-up from the retained message = %v; an archival expiry above it must not prune it", err)
+	}
+	if len(got) != 1 || got[0].Seq != kept.Seq {
+		t.Fatalf("catch-up = %v, want the retained message alone", got)
 	}
 }
 

@@ -31,6 +31,9 @@ sql:
           # `mls_welcomes.welcome_id` is the third surrogate key (004_mls.sql) and
           # matches `*.*_id`, which would type it id.ID and break every scan.
           - { column: "mls_welcomes.welcome_id", go_type: { type: "int64" } }
+          # `readable_messages.id` is the fourth (007_readable.sql, Plan 2 task 8): the explicit
+          # rowid the FTS5 index is content-mapped to, which `*.id` would type id.ID.
+          - { column: "readable_messages.id", go_type: { type: "int64" } }
           - { column: "*.cred_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.blob_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.code_hash",   go_type: { type: "byte", slice: true } }
@@ -52,6 +55,15 @@ sql:
           - { column: "mls_groups.community_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "mls_groups.call_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          # 006a_channels.sql (Plan 2 task 2): a DM has no community, a top-level
+          # channel no parent.
+          - { column: "channels.community_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "channels.parent_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          # 006f_voice.sql (Plan 2 task 16): a call recorded before its group is known.
+          - { column: "voice_sessions.group_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           # 3. the NOT NULL wildcards.
           - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
@@ -80,6 +92,10 @@ sql:
           # `mls_welcomes.welcome_id` is the third surrogate key (004_mls.sql) and
           # matches `*.*_id`, which would type it id.ID and break every scan.
           - { column: "mls_welcomes.welcome_id", go_type: { type: "int64" } }
+          - { column: "readable_messages.id", go_type: { type: "int64" } }
+          # body_tsv is the index's input and no query selects it; typed so the model is not
+          # interface{} (gap-69 §5.3: a db_type tsvector override is ignored, a column one works).
+          - { column: "readable_messages.body_tsv", go_type: { type: "string" } }
           - { column: "*.cred_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.blob_id",     go_type: { type: "byte", slice: true } }
           - { column: "*.code_hash",   go_type: { type: "byte", slice: true } }
@@ -108,6 +124,18 @@ sql:
           - { column: "mls_pending_proposals.kind",        go_type: { type: "int64" } }
           - { column: "mls_pending_proposals.origin",      go_type: { type: "int64" } }
           - { column: "key_packages.last_resort",          go_type: { type: "int64" } }
+          # 006_structure.sql (Plan 2 task 1).
+          - { column: "communities.require_mod_2fa",       go_type: { type: "int64" } }
+          - { column: "roles.hoist",                       go_type: { type: "int64" } }
+          - { column: "roles.mentionable",                 go_type: { type: "int64" } }
+          # 006a_channels.sql (Plan 2 task 2).
+          - { column: "channels.kind",                     go_type: { type: "int64" } }
+          - { column: "channels.mode",                     go_type: { type: "int64" } }
+          - { column: "channels.visibility",               go_type: { type: "int64" } }
+          # 006b_overwrites.sql (Plan 2 task 3).
+          - { column: "channel_overwrites.target_kind",    go_type: { type: "int64" } }
+          # 008_blobs.sql (Plan 2 task 10).
+          - { column: "backups.kind",                      go_type: { type: "int64" } }
           - { column: "invites.community_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "invites.created_by",
@@ -121,6 +149,13 @@ sql:
           - { column: "mls_groups.community_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "mls_groups.call_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "channels.community_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "channels.parent_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          # 006f_voice.sql (Plan 2 task 16): a call recorded before its group is known.
+          - { column: "voice_sessions.group_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
           - { column: "*.*_id",            go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }

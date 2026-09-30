@@ -1,6 +1,7 @@
 package ds_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -112,6 +113,29 @@ func TestMessageCTReachesTheUploaderAndTheResponseCarriesSeq(t *testing.T) {
 		t.Fatalf("franking tag is %d bytes, want 32", len(out.FrankingTag))
 	}
 	h.expectDeviceFrames(t, g.device, "message.ct")
+}
+
+// Plan 2 task 17 (P2-D21): the stored row names the franking key its tag was made under, and the
+// stored tuple recomputes to the stored tag under that key, which is exactly what a report checks.
+func TestAnUploadRecordsTheFrankingKeyItWasTaggedUnder(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	out, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	row, err := h.repo.GetAppMessage(context.Background(), g.id, out.Seq)
+	if err != nil {
+		t.Fatalf("GetAppMessage: %v", err)
+	}
+	keys := testInstanceKeys(t)
+	if row.FrankingKeyID != keys.FrankingKeyID {
+		t.Fatalf("franking_key_id = %v, want the instance's current key %v", row.FrankingKeyID, keys.FrankingKeyID)
+	}
+	want := ds.FrankingTag(keys.FrankingKey, g.id, row.Epoch, row.Seq, row.UploaderDevice, row.CommitmentC, uint64(row.Created))
+	if !bytes.Equal(row.FrankingTag, want) || !bytes.Equal(out.FrankingTag, want) {
+		t.Fatal("the stored tuple does not recompute to the stored tag under the recorded key")
+	}
 }
 
 // R29: only the uploading user's devices may delete, and a tombstone keeps everything but the

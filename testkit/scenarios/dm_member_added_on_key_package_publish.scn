@@ -1,0 +1,14 @@
+# protocol/09 § DMs through the composition root (fix wave I19): a group DM's participant whose
+# device holds no KeyPackage when the DM's text group is registered cannot be added then - the
+# registration's own sync (AfterRegister) finds nothing to propose for it - and is added once it
+# publishes: the KeyPackage route's AfterKeyPackages hook runs SyncUserDMs, which proposes the
+# device. The instance runs the production seams. `advance_clock 0s` waits for the registration's
+# hook, so the Add the Go harness then finds for bob's device is the publish hook's. The Go
+# harness asserts that instance Add in the store (a scenario verb cannot wait for it).
+instance dilla
+client alice
+client bob key_packages=none
+channel d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7 members=alice,bob
+group dm kind=text target=d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7 community=none creator=alice
+advance_clock 0s
+publish_key_packages bob 2

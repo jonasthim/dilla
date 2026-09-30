@@ -110,3 +110,45 @@ func TestAnInstanceWithoutItsKeysDoesNotStart(t *testing.T) {
 		}
 	}
 }
+
+// The franking keys the readable and report routes hold are every kind-1 entry of the history,
+// the current one (the id the instance row names) first and every retired one kept (Plan 2 task
+// 17): a report against a message franked before a rotation must still find the key it was made
+// under. Entries of another kind, or with no 32-byte secret, are not franking keys.
+func TestTheFrankingKeysAreEveryKindOneEntryCurrentFirst(t *testing.T) {
+	sender, current, older, oldest := id.New(), id.New(), id.New(), id.New()
+	retired := uint64(5)
+	row := store.InstanceRow{
+		InstanceID: id.New(), ExternalSenderKeyID: sender, FrankingKeyID: current,
+		KeyHistory: keyHistoryFor(t,
+			[]any{uint64(1), oldest, []byte{}, bytes.Repeat([]byte{0x0a}, 32), uint64(1), retired},
+			[]any{uint64(0), sender, make([]byte, 32), bytes.Repeat([]byte{0x01}, 32), uint64(2), nil},
+			[]any{uint64(1), older, []byte{}, bytes.Repeat([]byte{0x0b}, 32), uint64(2), retired},
+			[]any{uint64(1), current, []byte{}, bytes.Repeat([]byte{0x0c}, 32), uint64(3), nil},
+			[]any{uint64(1), id.New(), []byte{}, []byte{0x0d}, uint64(3), nil},
+		),
+	}
+	keys, err := frankingKeys(row)
+	if err != nil {
+		t.Fatalf("frankingKeys: %v", err)
+	}
+	gotID, gotKey := keys.Current()
+	if gotID != current || !bytes.Equal(gotKey, bytes.Repeat([]byte{0x0c}, 32)) {
+		t.Fatalf("Current() = %v %x, want the key the instance row names", gotID, gotKey)
+	}
+	all := keys.All()
+	if len(all) != 3 || all[0].ID != current || all[1].ID != oldest || all[2].ID != older {
+		t.Fatalf("All() = %v, want current, then the two retired keys in history order", all)
+	}
+	if k, ok := keys.ByID(oldest); !ok || !bytes.Equal(k, bytes.Repeat([]byte{0x0a}, 32)) {
+		t.Fatalf("ByID(the oldest retired key) = %x %v", k, ok)
+	}
+	if _, ok := keys.ByID(sender); ok {
+		t.Fatal("the external-sender key was offered as a franking key")
+	}
+
+	row.FrankingKeyID = id.New()
+	if _, err := frankingKeys(row); err == nil {
+		t.Fatal("a history without the current franking key was accepted")
+	}
+}

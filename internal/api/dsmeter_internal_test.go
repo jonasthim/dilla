@@ -107,3 +107,22 @@ func TestKeyPackageFetchesAreBucketedPerRequesterAndTarget(t *testing.T) {
 		t.Errorf("another requester: %v", err)
 	}
 }
+
+// A Plan 2 route is metered on the class its pattern names: a read for GET and HEAD, the message
+// bucket for the readable upload (the one route that is the plaintext twin of POST
+// /v1/groups/{id}/message), and the write bucket for every other change.
+func TestAPlanTwoRouteIsMeteredOnTheClassItsPatternNames(t *testing.T) {
+	for pattern, want := range map[string]string{
+		"GET /v1/communities/{id}":              dsClassRead,
+		"HEAD /v1/channels/{id}/blobs/{b}":      dsClassRead,
+		"POST /v1/channels/{id}/messages":       dsClassMessage,
+		"PATCH /v1/channels/{id}/messages/{s}":  dsClassWrite,
+		"PUT /v1/channels/{id}/blobs/{blob_id}": dsClassWrite,
+		"POST /v1/communities":                  dsClassWrite,
+		"DELETE /v1/admin/blobs/{blob_id}":      dsClassWrite,
+	} {
+		if got := routeClass(pattern); got != want {
+			t.Errorf("routeClass(%q) = %q, want %q", pattern, got, want)
+		}
+	}
+}

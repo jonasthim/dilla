@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,9 +16,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
 
@@ -39,30 +45,66 @@ func fileJournalMode(ctx context.Context, path string) (string, error) {
 	return strings.ToLower(mode), nil
 }
 
-// runDoctor checks configuration, database, wasi artifact and clock without
-// starting the server: config parse plus Validate, db.PingContext plus the
-// goose schema version, the pragma read-back, the data directory's mode and
-// ownership, the wasi artifact load plus dilla_abi, and clock skew against
-// doctor.clock_peers. It prints one line per leg and exits exit.Unavailable if
-// any leg is red.
+// doctorHTTPClient is the client the clock leg samples with. A variable so a
+// test can point it elsewhere; five seconds bounds one peer.
+var doctorHTTPClient = &http.Client{Timeout: 5 * time.Second}
+
+// doctorWasi is the wasi leg's probe, a variable so a test can stand in for the
+// artifact a `go test` binary never has beside it.
+var doctorWasi = doctorWasiLeg
+
+// peerList is a repeatable --clock-peer flag.
+type peerList []string
+
+func (p *peerList) String() string     { return strings.Join(*p, ",") }
+func (p *peerList) Set(v string) error { *p = append(*p, v); return nil }
+
+// runDoctor is the full check inventory, in this order: config (parse plus
+// Validate), database (db.PingContext plus the goose schema version), pragmas,
+// data_dir (mode and ownership), wasi (artifact load plus dilla_abi), clock
+// (skew against doctor.clock_peers), certificate, turn, udp and blobs. It
+// prints ops.Report's stable text, one line per leg, and exits exit.Unavailable
+// if any leg is red; a yellow leg alone exits 0.
+//
+// doctor takes no data-directory lock, because it must be runnable against a
+// live instance: it opens the database the way serve does and reads the
+// certificate and the blob tree without writing to either.
 func runDoctor(args []string, stdout, stderr io.Writer) error {
-	fs, cfgPath := newFlagSet("doctor", stderr)
-	if err := parse(fs, args, stdout); err != nil {
+	flags, cfgPath := newFlagSet("doctor", stderr)
+	var clockPeers peerList
+	flags.Var(&clockPeers, "clock-peer", "an HTTPS origin to read the Date header from; repeatable, replaces doctor.clock_peers")
+	quiet := flags.Bool("quiet", false, "print only the legs that are not OK (for a container health check)")
+	if err := parse(flags, args, stdout); err != nil {
 		return err
+	}
+
+	var report ops.Report
+	add := func(l ops.Leg) { report.Legs = append(report.Legs, l) }
+	fail := func(leg string, err error) { add(ops.Leg{Name: leg, Status: ops.Red, Detail: err.Error()}) }
+	finish := func() error {
+		out := report
+		if *quiet {
+			out = ops.Report{}
+			for _, l := range report.Legs {
+				if l.Status != ops.Green {
+					out.Legs = append(out.Legs, l)
+				}
+			}
+		}
+		fmt.Fprint(stdout, out.Text())
+		if report.Worst() == ops.Red {
+			return fmt.Errorf("doctor: one or more checks failed: %w", exit.Unavailable)
+		}
+		return nil
 	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		fmt.Fprintf(stdout, "config: FAIL: %v\n", err)
+		fail("config", err)
+		_ = finish()
 		return err
 	}
-	fmt.Fprintln(stdout, "config: ok")
-
-	healthy := true
-	fail := func(leg string, err error) {
-		healthy = false
-		fmt.Fprintf(stdout, "%s: FAIL: %v\n", leg, err)
-	}
+	add(ops.Leg{Name: "config", Status: ops.Green, Detail: "parsed and validated"})
 
 	ctx := context.Background()
 
@@ -97,7 +139,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) error {
 		} else if version, err := repo.SchemaVersion(ctx); err != nil {
 			fail("database", err)
 		} else {
-			fmt.Fprintf(stdout, "database: ok (schema version %d)\n", version)
+			add(ops.Leg{Name: "database", Status: ops.Green, Detail: fmt.Sprintf("schema version %d", version)})
 		}
 
 		// Pragma leg, half 2: busy_timeout, foreign_keys and synchronous are
@@ -110,11 +152,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) error {
 
 	switch {
 	case cfg.DB.Driver != "sqlite":
-		fmt.Fprintln(stdout, "pragmas: skipped (not sqlite)")
+		add(ops.Leg{Name: "pragmas", Status: ops.Green, Detail: "skipped (not sqlite)"})
 	case pragmaErr != nil:
 		fail("pragmas", pragmaErr)
 	default:
-		fmt.Fprintln(stdout, "pragmas: ok")
+		add(ops.Leg{Name: "pragmas", Status: ops.Green, Detail: "journal_mode, busy_timeout, foreign_keys and synchronous as required"})
 	}
 
 	// Leg 4: the data directory's mode and ownership. StateDirectoryMode=0700
@@ -124,27 +166,105 @@ func runDoctor(args []string, stdout, stderr io.Writer) error {
 	} else if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		fail("data_dir", fmt.Errorf("%s has mode %04o; group and world must have no access", cfg.Instance.DataDir, perm))
 	} else {
-		fmt.Fprintln(stdout, "data_dir: ok")
+		add(ops.Leg{Name: "data_dir", Status: ops.Green, Detail: fmt.Sprintf("%s mode %04o", cfg.Instance.DataDir, perm)})
 	}
 
 	// Leg 5: the wasi artifact load plus dilla_abi.
-	if info, err := doctorWasiLeg(ctx); err != nil {
+	if info, err := doctorWasi(ctx); err != nil {
 		fail("wasi", err)
 	} else {
-		fmt.Fprintf(stdout, "wasi: ok (abi_version=%d core_version=%s)\n", info.ABIVersion, info.CoreVersion)
+		add(ops.Leg{Name: "wasi", Status: ops.Green, Detail: fmt.Sprintf("abi_version=%d core_version=%s", info.ABIVersion, info.CoreVersion)})
 	}
 
-	// Leg 6: clock skew against doctor.clock_peers.
-	if skew, peer, err := doctorClockLeg(ctx, cfg.Doctor.ClockPeers, cfg.Doctor.ClockSkewMax.Value()); err != nil {
-		fail("clock", err)
-	} else {
-		fmt.Fprintf(stdout, "clock: ok (skew %s against %s)\n", skew, peer)
+	// Leg 6: clock skew, the median over doctor.clock_peers. serve never gates
+	// on it: a booting LXC with no network yet must still start.
+	peers := cfg.Doctor.ClockPeers
+	if len(clockPeers) > 0 {
+		peers = clockPeers
 	}
+	add(ops.ClockLeg(ctx, doctorHTTPClient, peers, cfg.Doctor.ClockSkewMax.Value()))
 
-	if !healthy {
-		return fmt.Errorf("doctor: one or more checks failed: %w", exit.Unavailable)
+	add(doctorCertificateLeg(ctx, cfg))
+	add(doctorTURNLeg(ctx, cfg))
+	add(ops.UDPLeg(*cfg))
+	add(doctorBlobsLeg(ctx, cfg, repo))
+
+	return finish()
+}
+
+// doctorCertificateLeg looks at the certificate certmagic holds on disk. It
+// never asks certmagic to obtain one, so it is safe beside a live serve; the
+// last renewal error lives in that process's memory and is not visible here.
+func doctorCertificateLeg(ctx context.Context, cfg *config.Config) ops.Leg {
+	if cfg.BehindProxy() {
+		return ops.Leg{Name: "certificate", Status: ops.Green, Detail: "tls.mode is behind_proxy: the proxy terminates TLS"}
 	}
-	return nil
+	name := cfg.Instance.Domain
+	if cfg.TLS.Mode == config.TLSModeACMEIP {
+		name = cfg.Instance.PublicIP.String()
+	}
+	return ops.CertificateLeg(ctx, name, &tls.Config{
+		GetCertificate: ops.CertificateFromStorage(cfg.TLS.StorageDir, name),
+		MinVersion:     tls.VersionTLS12,
+	}, "")
+}
+
+// doctorTURNLeg allocates against the TURN listener the configuration names:
+// turn.listen in behind_proxy mode, where it is its own plain TCP listener, and
+// otherwise the instance's own 443, where TURN shares the port behind the TLS
+// demux and is reached over TLS.
+func doctorTURNLeg(ctx context.Context, cfg *config.Config) ops.Leg {
+	const name = "turn"
+	switch {
+	case !cfg.TURN.Enabled:
+		// Yellow, not red: turn.enabled = false is a legitimate topology (a LAN
+		// plus one forwarded UDP port), not a fault.
+		return ops.Leg{Name: name, Status: ops.Yellow,
+			Detail: "turn.enabled is false: no relay is offered, so voice needs direct UDP reachability"}
+	case !cfg.Doctor.TURNProbe:
+		return ops.Leg{Name: name, Status: ops.Green, Detail: "skipped: doctor.turn_probe is false"}
+	case cfg.TURN.ProxyProtocol:
+		return ops.Leg{Name: name, Status: ops.Yellow,
+			Detail: "turn.proxy_protocol is true: the listener refuses a connection without a PROXY header, so doctor cannot probe it directly",
+			Fix:    "allocate through the proxy from another network"}
+	}
+	secret, err := ops.ReadSecret(cfg.TURN.SharedSecretFile)
+	if err != nil {
+		return ops.Leg{Name: name, Status: ops.Red, Detail: "turn.shared_secret_file: " + err.Error(),
+			Fix: "run dillad init, or create the file with 32 random bytes at mode 0600"}
+	}
+	listen := cfg.TURN.Listen
+	if !cfg.BehindProxy() {
+		host := cfg.Instance.Domain
+		if cfg.TLS.Mode == config.TLSModeACMEIP {
+			host = cfg.Instance.PublicIP.String()
+		}
+		_, port, err := net.SplitHostPort(cfg.Server.Listen)
+		if err != nil || port == "" {
+			port = "443"
+		}
+		listen = "tls://" + net.JoinHostPort(host, port)
+	}
+	return ops.TURNLeg(ctx, listen, cfg.TURN.Realm, secret)
+}
+
+// doctorBlobsLeg cross-checks the blob rows against the blob tree. It never
+// creates the blob directory: a directory serve has not made yet is an
+// instance that has not stored an attachment.
+func doctorBlobsLeg(ctx context.Context, cfg *config.Config, repo store.Repository) ops.Leg {
+	const name = "blobs"
+	if repo == nil {
+		return ops.Leg{Name: name, Status: ops.Yellow, Detail: "skipped: the database did not open"}
+	}
+	if _, err := os.Stat(cfg.Blobs.Dir); errors.Is(err, fs.ErrNotExist) {
+		return ops.Leg{Name: name, Status: ops.Yellow, Detail: cfg.Blobs.Dir + " does not exist yet: serve creates it"}
+	}
+	bs, err := blob.Open(cfg.Blobs.Dir, cfg.Blobs.Backend)
+	if err != nil {
+		return ops.Leg{Name: name, Status: ops.Red, Detail: err.Error()}
+	}
+	defer func() { _ = bs.Close() }()
+	return ops.BlobConsistencyLeg(ctx, repo, bs)
 }
 
 // doctorWasiLeg loads dilla-core-wasi from the conventional path next to the
@@ -167,48 +287,4 @@ func doctorWasiLeg(ctx context.Context) (mlswasi.ABIInfo, error) {
 	}
 	defer func() { _ = rt.Close(ctx) }()
 	return rt.ABI(ctx)
-}
-
-// doctorClockLeg fetches the Date header from the first configured peer that
-// answers and reports the skew against the local wall clock. The peers are
-// alternatives, not a quorum: doctor.clock_peers defaults to the ACME CA plus
-// two well-known HTTPS hosts (config.Derive), and any one of them answering is
-// enough to judge the local clock.
-func doctorClockLeg(ctx context.Context, peers []string, maxSkew time.Duration) (time.Duration, string, error) {
-	if len(peers) == 0 {
-		return 0, "", errors.New("doctor.clock_peers is empty")
-	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	var lastErr error
-	for _, peer := range peers {
-		req, err := http.NewRequestWithContext(ctx, http.MethodHead, peer, nil)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		dateHeader := resp.Header.Get("Date")
-		_ = resp.Body.Close()
-		remote, err := http.ParseTime(dateHeader)
-		if err != nil {
-			lastErr = fmt.Errorf("%s: no parseable Date header", peer)
-			continue
-		}
-		skew := time.Since(remote)
-		if skew < 0 {
-			skew = -skew
-		}
-		if skew > maxSkew {
-			return skew, peer, fmt.Errorf("%s reports a clock skew of %s, over the %s ceiling", peer, skew, maxSkew)
-		}
-		return skew, peer, nil
-	}
-	if lastErr != nil {
-		return 0, "", fmt.Errorf("no configured clock peer answered: %w", lastErr)
-	}
-	return 0, "", errors.New("no configured clock peer answered")
 }

@@ -9,6 +9,9 @@ import { checkWorkflow } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 
+// The go job's test step: every package but internal/ds, which go-ds runs (CI budget, fix wave).
+const GO_TEST = 'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
+
 const GOOD = `name: ci
 on:
   push:
@@ -79,8 +82,19 @@ jobs:
           path: internal/mlswasi/testdata
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
-      - run: go test -race -shuffle=on -timeout 15m ./...
+      - run: go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
+
+  go-ds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [rust-wasi]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...
 
   go-harness:
     runs-on: ubuntu-latest
@@ -136,7 +150,7 @@ jobs:
         env:
           POSTGRES_INITDB_ARGS: --locale-provider=builtin --builtin-locale=C.UTF-8
     steps:
-      - run: go test -race ./internal/store/...
+      - run: go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...
         env:
           DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
 
@@ -149,6 +163,33 @@ jobs:
           name: dillad-binaries
           path: dist/
           if-no-files-found: error
+
+  image:
+    runs-on: ubuntu-latest
+    needs: [go, go-ds, go-lint, rust-wasi]
+    permissions: { contents: read, packages: write }
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.6.0
+      - uses: docker/metadata-action@v6.2.0
+        id: meta
+        with:
+          images: ghcr.io/\${{ github.repository }}/dillad
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+      - uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          provenance: mode=max
+          sbom: true
 `;
 
 function fixture(body) {
@@ -245,8 +286,8 @@ test('a go-harness job whose needs: lists the two edges in the other order passe
 // The go job has no testkit binary: requiring one there would fail every run.
 test('a go job that requires the testkit it does not download is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 15m ./...\n',
-      "      - run: go test -race -shuffle=on -timeout 15m ./...\n        env:\n          DILLA_TESTKIT_REQUIRED: '1'\n")),
+    fixture(GOOD.replace(`      - run: ${GO_TEST}\n`,
+      `      - run: ${GO_TEST}\n        env:\n          DILLA_TESTKIT_REQUIRED: '1'\n`)),
   );
   assert.ok(problems.some((p) => p.includes('go-harness\'s')), problems.join('\n'));
 });
@@ -310,9 +351,41 @@ test('a go-harness job that stopped requiring the testkit is reported', () => {
 // The wildcard is what picks up every new internal/... package without a workflow edit.
 test('a go job whose test step is narrowed to a package list is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('go test -race -shuffle=on -timeout 15m ./...', 'go test -race -shuffle=on -timeout 15m ./internal/store/...')),
+    fixture(GOOD.replace(GO_TEST, 'go test -race -shuffle=on -timeout 15m ./internal/store/...')),
   );
   assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
+});
+
+// CI budget (fix wave): the go job leaves out internal/ds and nothing else, and go-ds runs it.
+test('a go job that leaves out more than internal/ds is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('grep -vx github.com/jonasthim/dilla/internal/ds', 'grep -v -e /internal/ds -e /internal/api')),
+  );
+  assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
+});
+
+test('a workflow without the go-ds job is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/  go-ds:[\s\S]*?\n\n/, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "go-ds"')), problems.join('\n'));
+});
+
+test('a go-ds job that stopped running internal/ds is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...\n', '')),
+  );
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('./internal/ds/...')), problems.join('\n'));
+});
+
+test('a go-ds job without needs: rust-wasi is reported', () => {
+  const start = GOOD.indexOf('  go-ds:\n');
+  const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [rust-wasi]\n', ''))));
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('rust-wasi')), problems.join('\n'));
+});
+
+test('an image job that does not wait for go-ds is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi]', 'needs: [go, go-lint, rust-wasi]')));
+  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-ds"')), problems.join('\n'));
 });
 
 for (const [job, needle] of [
@@ -324,6 +397,9 @@ for (const [job, needle] of [
   ['go-postgres', 'postgres:18.6-alpine3.24'],
   ['go-postgres', '--locale-provider=builtin --builtin-locale=C.UTF-8'],
   ['go-postgres', 'DILLA_TEST_PG'],
+  // I7 (fix wave): internal/ops holds the only Postgres backup, restore and heal tests; a step that
+  // drops it skips them in every job. The -timeout is explicit so a slow package fails by name.
+  ['go-postgres', 'go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...'],
   ['go-release', 'if-no-files-found: error'],
 ]) {
   test(`a ${job} job that lost "${needle}" is reported`, () => {
@@ -368,7 +444,7 @@ test('a go job that lost the pinned-module-graph build is reported', () => {
 
 test('a go job that stopped running the race-detector tests is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 15m ./...\n', '')),
+    fixture(GOOD.replace(`      - run: ${GO_TEST}\n`, '')),
   );
   assert.ok(problems.some((p) => p.includes('-race')), problems.join('\n'));
 });
@@ -399,4 +475,68 @@ test('the CLI reports problems in a workflow at the given root, run from elsewhe
   const result = runCli(root, cwd);
   assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
   assert.match(result.stderr, /deny/);
+});
+
+// Task 18: the image job.
+test('a workflow without the image job is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/  image:[\s\S]*$/, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "image"')), problems.join('\n'));
+});
+
+for (const needle of [
+  'docker/setup-buildx-action@v4.4.1',
+  'docker/login-action@v4.6.0',
+  'docker/metadata-action@v6.2.0',
+  'docker/build-push-action@v7.4.0',
+  'platforms: linux/amd64,linux/arm64',
+  'actions/checkout@v7',
+  'actions/download-artifact@v8',
+  'path: internal/mlswasi/testdata',
+  'provenance: mode=max',
+  'sbom: true',
+  'timeout-minutes: 30',
+  // I16 (fix wave): metadata-action generates `latest` only for tag events, so without this line a
+  // push to main publishes `:main` alone and Compose's `:latest` pull fails with "manifest unknown".
+  'type=raw,value=latest,enable={{is_default_branch}}',
+]) {
+  test(`an image job that lost "${needle}" is reported`, () => {
+    const start = GOOD.indexOf('  image:\n');
+    const body = GOOD.slice(start);
+    assert.ok(body.includes(needle), 'fixture sanity: ' + needle);
+    const gutted = body.split('\n').filter((l) => !l.includes(needle)).join('\n');
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => gutted)));
+    assert.ok(problems.some((p) => p.includes('"image"') && p.includes(needle)), problems.join('\n'));
+  });
+}
+
+test('setup-qemu-action anywhere in the workflow is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - uses: docker/setup-buildx-action@v4.4.1\n', '      - uses: docker/setup-qemu-action@v4\n      - uses: docker/setup-buildx-action@v4.4.1\n')),
+  );
+  assert.ok(problems.some((p) => p.includes('setup-qemu-action')), problems.join('\n'));
+});
+
+// `go` is a prefix of `go-lint`: an image job that waits only for go-lint and rust-wasi must still be
+// reported as not waiting for go.
+test('an image job that does not wait for the go job is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi]', 'needs: [go-ds, go-lint, rust-wasi]')));
+  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go"')), problems.join('\n'));
+});
+
+test('an image job that does not wait for go-lint is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi]', 'needs: [go, go-ds, rust-wasi]')));
+  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-lint"')), problems.join('\n'));
+});
+
+// The rule that covers a job added tomorrow: no job is named in REQUIRED_STEPS, yet its upload-artifact
+// step is still held to the fail-closed setting.
+test('an upload-artifact step in any job without if-no-files-found: error is reported', () => {
+  const extra = '\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@v7\n        with:\n          name: x\n          path: y\n      - run: echo after\n';
+  const problems = checkWorkflow(fixture(GOOD + extra));
+  assert.deepEqual(
+    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')),
+    ['actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed'],
+  );
+  // The same step with the setting is clean.
+  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))), []);
 });

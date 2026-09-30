@@ -13,6 +13,8 @@ import (
 // that cannot prune reports zero and logs, it does not fail a request path.
 type SweepReport struct {
 	ProposalsVoided  int
+	JoinsDrained     int // Adds the sweeper proposed from stalled join storms (pending_joins)
+	LeavesReconciled int // Removes for leaves whose user the ACL no longer admits (reconcileLeaves)
 	InactiveRemoved  int
 	HandshakesPruned int64
 	MessagesPruned   int64
@@ -29,7 +31,10 @@ type SweepReport struct {
 // per message in `expires`, where NULL means retained. It is compared against NOW, never against
 // the delivery floor, and it never deletes a row that set no expiry: the two halves are
 // independent triggers and either one alone deletes. Nothing in Plan 1 writes `expires` — `Upload`
-// writes NULL — so this half fires only once Plan 2's community policy fills the column.
+// writes NULL — so this half fires only once Plan 2's community policy fills the column. An
+// archival deletion never raises the group's E_PRUNED high-water (Plan 2 task 8's retention
+// ruling): `expires` need not be monotone in seq, and the mark must never stand above a message
+// that survives.
 //
 // The sweep PAGES: `sweepPage` (task 21) is how many groups one query reads, and the loop runs
 // until a short page. A fixed batch from the zero id would mean only the first N groups are ever
@@ -49,6 +54,23 @@ func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 		return report, err
 	}
 	report.ProposalsVoided = voided
+
+	// After the void, which frees the room a voided Add held: a join storm no commit re-drives —
+	// its Adds voided by invariant 6's TTL, or its tail carried across a restart — takes its next
+	// slice here.
+	drained, err := d.drainStalledJoins(ctx)
+	if err != nil {
+		return report, err
+	}
+	report.JoinsDrained = drained
+
+	// A membership change whose Removes were never issued is caught here, a page of groups a
+	// tick (fix wave C3).
+	reconciled, err := d.reconcileLeaves(ctx)
+	if err != nil {
+		return report, err
+	}
+	report.LeavesReconciled = reconciled
 
 	removed, err := d.removeInactive(ctx)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -46,6 +47,15 @@ type Server struct {
 	ownsWasm bool
 	gw       *gateway.Gateway
 	ds       *ds.DS
+	// groups is the mounted delivery-service route group. Shutdown drains its AfterRegister runs
+	// (a channel group being populated after its 201) before it stops the delivery service they
+	// issue proposals through.
+	groups *api.Groups
+
+	// blobs is the attachment store Plan 2's blob and admin routes use; ownsBlobs records that New
+	// opened it, so Shutdown closes it.
+	blobs     *blob.Store
+	ownsBlobs bool
 
 	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
 	// Shutdown calls before it stops the gateway.
@@ -55,6 +65,24 @@ type Server struct {
 
 	shutdownOnce sync.Once
 	shutdownErr  error
+}
+
+// deliverySeams is the channel source and the ACL New gives the delivery service. Invariant 1's
+// channel mode and the registration ACL read the channels, communities and members tables
+// (api.StructureChannels, Plan 2 task 2, which replaced Plan 1's ds.PermissiveChannels, NV-B5);
+// invariant 4's eligibility clause is the permission resolver over roles and channel overwrites
+// (api.ResolverACL, Plan 2 task 3, which replaced Plan 1's ds.DenyUnlessMember, NV-B6). A harness
+// may inject either through Options; production passes neither.
+func deliverySeams(o Options) (ds.Channels, ds.ACL) {
+	channels := o.Channels
+	if channels == nil {
+		channels = api.StructureChannels{Repo: o.Repo}
+	}
+	acl := o.ACL
+	if acl == nil {
+		acl = api.ResolverACL{Repo: o.Repo}
+	}
+	return channels, acl
 }
 
 // New builds the server. It reads the instance row once — the instance id is in
@@ -69,6 +97,16 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		return nil, fmt.Errorf("dillad: read instance row (has `dillad init` run?): %w", err)
 	}
 	keys, err := instanceKeys(instance)
+	if err != nil {
+		return nil, err
+	}
+	// Every K_frank the instance has held, current first (Plan 2 task 17): the readable routes
+	// frank under the current one and the report route verifies under whichever one a tag names.
+	franking, err := frankingKeys(instance)
+	if err != nil {
+		return nil, err
+	}
+	calls, err := callsConfig(o.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -124,10 +162,22 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 		ownsWasm = true
 	}
+	blobs, ownsBlobs := o.Blobs, false
 	closeWasmOnError := func() {
 		if ownsWasm {
 			_ = wasm.Close(context.Background())
 		}
+		if ownsBlobs {
+			_ = blobs.Close()
+		}
+	}
+	if blobs == nil {
+		blobs, err = blob.Open(o.Config.Blobs.Dir, o.Config.Blobs.Backend)
+		if err != nil {
+			closeWasmOnError()
+			return nil, fmt.Errorf("dillad: open the blob store %s: %w", o.Config.Blobs.Dir, err)
+		}
+		ownsBlobs = true
 	}
 
 	// The gateway, then the delivery service: ds holds *gateway.Gateway, and
@@ -168,6 +218,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		FramesPerSecond: float64(o.Config.Gateway.FrameBurst),
 		FrameBurst:      o.Config.Gateway.FrameBurstMax,
 	})
+	channels, acl := deliverySeams(o)
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,
 		Wasm:     wasm,
@@ -177,14 +228,25 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Metrics:  o.Metrics,
 		Keys:     keys,
 		Policy:   policy,
-		Channels: o.Channels, // nil: ds.PermissiveChannels (NV-B5)
-		ACL:      o.ACL,      // nil: ds.DenyUnlessMember (NV-B6)
+		Channels: channels,
+		ACL:      acl,
 		// The device lists are verified in the guest (NV-B8, deviation B32).
 		DeviceLists: ds.NewDeviceLists(o.Repo, wasm),
 	})
 	if err != nil {
 		closeWasmOnError()
 		return nil, err
+	}
+	// A `dillad restore` left pending finishes here (invariant 11): the CLI ran the restore's SQL
+	// with no delivery service, and OnRestore — the same call the in-process path makes — re-arms
+	// every heal window from this start. It runs BEFORE Start, so the sweeper never closes a group
+	// on a deadline that ran out while the instance was down.
+	if finished, err := delivery.FinishRestore(ctx); err != nil {
+		closeWasmOnError()
+		return nil, fmt.Errorf("dillad: finish the pending restore: %w", err)
+	} else if finished {
+		o.Log.Warn("finished a restore: every group is epoch-unknown until a member heals it",
+			"generation", instance.Generation, "heal_window", policy.HealWindow.String())
 	}
 
 	// Revoking a device closes its sockets in the same breath as its sessions
@@ -197,6 +259,14 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// POST /v1/gateway/ticket mints from the gateway's own store; a second
 	// store would mint tickets the upgrade has never heard of.
 	deps.Tickets = gw.Tickets()
+	// A device is proposed into a DM only once its user's signed list names it (invariant 4), and
+	// pairing publishes the KeyPackages before the list: the list's publish is the second trigger.
+	deps.AfterDeviceList = func(ctx context.Context, userID id.ID) {
+		if err := api.SyncUserDMs(ctx, o.Repo, delivery, userID, o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "bringing a user's DMs in line after a device-list publish failed",
+				"user", userID, "err", err)
+		}
+	}
 
 	mux := server.NewMux()
 	api.Register(mux, deps)
@@ -215,6 +285,28 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// Every delivery-service route is metered per device session from [limits.rate], on the
 	// same limiter the unauthenticated routes use (its keys are class-prefixed).
 	groups := &api.Groups{DS: delivery, Limiter: limiter}
+	// A channel's freshly registered group is populated by batched delivery-service Adds (Plan 2
+	// task 7, protocol/01 § Joining: "creating a private channel … is done by the DS issuing Add
+	// proposals in batches"). Groups runs the hook after the 201 is flushed, on its own goroutine
+	// under a context the request's cancellation does not reach, and Shutdown drains it. The
+	// registration has already succeeded, so a failure is logged; the next membership change of
+	// the channel re-derives it.
+	groups.AfterRegister = func(ctx context.Context, groupID id.ID) {
+		if err := api.SyncRegisteredGroup(ctx, o.Repo, delivery, groupID,
+			o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "populating a registered group failed", "group", groupID, "err", err)
+		}
+	}
+	// A device that published its KeyPackages may now be Added where it could not be before: a
+	// DM's group is populated only with devices that hold one (Plan 2 task 6). The hook runs after
+	// the 201, as AfterRegister does, and a failure is logged; the DM's next membership change
+	// re-derives it.
+	groups.AfterKeyPackages = func(ctx context.Context, userID, _ id.ID) {
+		if err := api.SyncUserDMs(ctx, o.Repo, delivery, userID, o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "bringing a user's DMs in line after a KeyPackage publish failed",
+				"user", userID, "err", err)
+		}
+	}
 	groups.Register(mux, sessions)          // rows 1-3
 	groups.RegisterSequencer(mux, sessions) // rows 4-7, 19
 	groups.RegisterRecovery(mux, sessions)  // rows 8-9
@@ -225,6 +317,21 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		MaxCiphertextBytes: o.Config.Limits.MaxCiphertextBytes,
 		Limiter:            limiter,
 	}).Register(mux, sessions) // rows 11, 17, 18 and the cursor
+
+	// Plan 2: communities, channels and their members, roles, bans, community invites, DMs,
+	// readable channels, blobs, reports, calls and the admin routes (routes.go), behind the same
+	// session middleware and [limits.rate] meter as the routes above; then LiveKit's signalling
+	// paths when this process runs an SFU.
+	mountPlanTwo(mux, planTwo{
+		o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
+		blobs: blobs, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
+	})
+	if o.SFU != nil {
+		if err := mountRTC(mux, o.SFU, o.Config.Server.TrustedProxyCIDRs); err != nil {
+			closeWasmOnError()
+			return nil, err
+		}
+	}
 
 	if err := delivery.Start(ctx); err != nil {
 		closeWasmOnError()
@@ -267,45 +374,33 @@ func New(ctx context.Context, o Options) (*Server, error) {
 
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
-		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery,
+		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery, groups: groups,
+		blobs: blobs, ownsBlobs: ownsBlobs,
 		throttle: throttle, limiter: limiter,
 	}
-	s.httpSrv = &http.Server{
-		Handler: h,
-		// Never zero: net/http reads that as "no limit", and a client trickling a header holds a
-		// connection open for as long as it likes. The commit route adds a body deadline of its
-		// own (api.withReadDeadline); ReadTimeout stays unset because the gateway upgrade shares
-		// the listener.
-		ReadHeaderTimeout: readHeaderTimeout(o.Config.Server.ReadHeaderTimeout.Value()),
-		IdleTimeout:       o.Config.Server.IdleTimeout.Value(),
-		// WriteTimeout is deliberately unset: the gateway's per-connection write
-		// deadlines live in its writer goroutine, and hijacking clears the
-		// server deadline anyway.
-	}
-	// h2c is stdlib in Go 1.27 — Server.Protocols plus SetUnencryptedHTTP2 —
-	// and x/net/http2/h2c is banned precisely because this field replaces it
-	// (facts-http-gateway §4.1). Without it Go's default for a non-TLS listener
-	// is HTTP/1 only, so a front proxy configured for unencrypted HTTP/2
-	// (`h2c://` in Traefik) cannot reach the API in behind_proxy mode.
-	//
-	// Caveat from the same fact: the /gateway route must stay HTTP/1.1, because
-	// a WebSocket upgrade is an HTTP/1.1 mechanism. A proxy's gateway service
-	// therefore stays `http://` even when its API service is `h2c://`.
-	protocols := new(http.Protocols)
-	protocols.SetHTTP1(true)
-	protocols.SetUnencryptedHTTP2(true)
-	s.httpSrv.Protocols = protocols
+	// One http.Server for whichever listener tls.mode chooses (Plan 2 task 16):
+	// ReadHeaderTimeout is never zero, ReadTimeout and WriteTimeout stay unset
+	// because the gateway's WebSocket shares the listener and keeps its own
+	// deadlines, and the protocols follow the listener — HTTP/1.1 plus stdlib
+	// h2c behind a proxy (facts-http-gateway §4.1), HTTP/1.1 plus h2 over TLS on
+	// the direct listener. /gateway stays HTTP/1.1 either way: a WebSocket
+	// upgrade is an HTTP/1.1 mechanism, and GODEBUG=http2xconnect stays unset.
+	s.httpSrv = server.NewHTTPServer(h, o.Config)
 	o.Health.Gate("db").Set(true, "")
 	o.Health.Gate("schema").Set(true, "")
 	// The wasi runtime is built (or was handed in) and the delivery service it validates in has
 	// started its watchdog and sweeper, which is what the heal machinery of invariant 11 runs on.
 	o.Health.Gate("wasi").Set(true, "")
 	o.Health.Gate("heal").Set(true, "")
-	// Plan 1 runs neither the SFU nor the ACME client: both gates belong to Plan 2, which sets
-	// them from the subsystems it starts. Left red they would keep /readyz at 503 for the life of
-	// every Plan 1 instance.
-	o.Health.Gate("livekit").Set(true, "not run until Plan 2")
-	o.Health.Gate("tls").Set(true, "not run until Plan 2")
+	// The composition root starts neither the SFU nor the ACME client: `dillad serve` does, and
+	// sets these two gates from the subsystems it starts — only when they are configured (Plan 2
+	// task 16). An in-process host (the test harness, dilladtest) runs neither, and left red the
+	// gates would keep its /readyz at 503 forever. An SFU handed in through Options.SFU was started
+	// by serve, which has already set its gate.
+	if o.SFU == nil {
+		o.Health.Gate("livekit").Set(true, "not started by the composition root")
+	}
+	o.Health.Gate("tls").Set(true, "not started by the composition root")
 	// The gateway's maintenance loop: 4009 for an overdue heartbeat and the resume window's
 	// expiry, every heartbeat interval on the instance clock, with the login throttle, the rate
 	// limiter's idle buckets and the expired sessions swept on the same tick. Without it a
@@ -337,6 +432,12 @@ func (s *Server) Sessions() *auth.Sessions { return s.sessions }
 func (s *Server) DS() *ds.DS                { return s.ds }
 func (s *Server) Gateway() *gateway.Gateway { return s.gw }
 func (s *Server) Now() time.Time            { return s.o.Clock.Now() }
+
+// DrainHooks waits until every post-answer hook the group routes started (AfterRegister and
+// AfterKeyPackages) has returned, or ctx ends. Shutdown does the same before it
+// stops the delivery service; a harness calls it to order a scenario's next step after the
+// proposals a registration or a publish issues.
+func (s *Server) DrainHooks(ctx context.Context) error { return s.groups.Drain(ctx) }
 
 // CommitCount is the delivery service's own accepted-commit counter. A
 // scenario that asserts "at most four commits for 1,000 devices" needs the
@@ -391,6 +492,11 @@ func (s *Server) shutdown(ctx context.Context) error {
 	if serr := s.httpSrv.Shutdown(ctx); serr != nil {
 		keep(s.httpSrv.Close())
 	}
+	// No request is being served any more, so no AfterRegister run can start; the ones still
+	// populating a registered group finish before the delivery service they propose through stops.
+	if gerr := s.groups.Drain(ctx); gerr != nil {
+		keep(fmt.Errorf("dillad: wait for the registered groups being populated: %w", gerr))
+	}
 	if s.maintenance != nil {
 		s.maintenance()
 	}
@@ -403,6 +509,11 @@ func (s *Server) shutdown(ctx context.Context) error {
 	if s.ownsWasm {
 		if werr := s.wasm.Close(ctx); werr != nil {
 			keep(fmt.Errorf("dillad: close the wasm runtime: %w", werr))
+		}
+	}
+	if s.ownsBlobs {
+		if berr := s.blobs.Close(); berr != nil {
+			keep(fmt.Errorf("dillad: close the blob store: %w", berr))
 		}
 	}
 	if s.o.closeRepo {
@@ -457,15 +568,6 @@ func scrapeToken(o Options) (string, error) {
 		"every scrape of this instance will be refused until one is",
 		"path", o.Config.Metrics.Path)
 	return hex.EncodeToString(buf), nil
-}
-
-// readHeaderTimeout is server.read_header_timeout, or its 10 s default when a programmatic
-// configuration left it zero.
-func readHeaderTimeout(d time.Duration) time.Duration {
-	if d <= 0 {
-		return 10 * time.Second
-	}
-	return d
 }
 
 // ReadHeaderTimeout is the listener's header deadline.

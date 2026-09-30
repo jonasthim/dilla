@@ -1,0 +1,22 @@
+# Keep the build context to what `go build ./cmd/dillad` and the wasi COPY need.
+# internal/mlswasi/testdata/dilla_core_wasi.wasm is deliberately NOT listed: the
+# Dockerfile copies it into the image.
+.git
+.github
+.claude
+.superpowers
+.playwright-mcp
+node_modules
+**/node_modules
+target
+dist
+data
+e2e
+packages
+core
+docs
+/dillad
+*.db
+*.sqlite
+.env
+.env.*

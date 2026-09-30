@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,9 +39,23 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// servePlain puts c in behind_proxy mode on a plain listener at listen, with
+// neither the SFU nor the TURN relay: the serve tests drive the drain, the lock
+// and the restore over plain HTTP, and an acme_* mode would put the 443 TLS
+// demux and an ACME order in front of them (Plan 2 task 16). The direct-TLS
+// front has tests of its own.
+func servePlain(c *config.Config, listen string) {
+	c.TLS.Mode = config.TLSModeBehindProxy
+	c.Server.PlainListen = listen
+	c.Server.TrustedProxyCIDRs = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	c.TURN.Enabled = false
+	c.LiveKit.Enabled = false
+}
+
 // bootstrapServeConfig runs `dillad init` into a temporary directory and
-// rewrites server.listen so the kernel picks the port; runServe then prints the
-// chosen address, which is the only place to read it from.
+// rewrites the config onto a plain listener where the kernel picks the port;
+// runServe then prints the chosen address, which is the only place to read it
+// from.
 func bootstrapServeConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -53,7 +68,7 @@ func bootstrapServeConfig(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	c.Server.Listen = "127.0.0.1:0"
+	servePlain(c, "127.0.0.1:0")
 	f, err := os.OpenFile(cfgPath, os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		t.Fatalf("reopen dilla.toml: %v", err)
@@ -186,4 +201,48 @@ func probe(addr string) error {
 		return fmt.Errorf("GET /healthz = %d", res.StatusCode)
 	}
 	return nil
+}
+
+// `dillad serve` opens the blob store, removes the .tmp-* files an interrupted
+// upload left behind before the listener accepts anything, starts the blob
+// sweeper, and stops the sweeper again before it returns (Plan 2 task 11).
+func TestServeSweepsInterruptedUploadsAtStart(t *testing.T) {
+	cfgPath := bootstrapServeConfig(t)
+	c, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	leftover := filepath.Join(c.Blobs.Dir, "att", "ab", "cd", "abcd.tmp-crashed")
+	if err := os.MkdirAll(filepath.Dir(leftover), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(leftover, []byte("half an upload"), 0o600); err != nil {
+		t.Fatalf("write leftover: %v", err)
+	}
+
+	var stdout, stderr syncBuffer
+	served := make(chan error, 1)
+	go func() { served <- dispatch([]string{"serve", "--config=" + cfgPath}, &stdout, &stderr) }()
+	addr := waitForListenAddr(t, &stdout, served)
+	if err := probe(addr); err != nil {
+		t.Fatalf("probe /healthz: %v", err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Fatalf("the interrupted upload survived start-up: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "removed interrupted uploads") {
+		t.Fatalf("serve did not log the sweep: %s", stderr.String())
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("SIGTERM: %v", err)
+	}
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("serve never returned: the sweeper was not stopped")
+	}
 }

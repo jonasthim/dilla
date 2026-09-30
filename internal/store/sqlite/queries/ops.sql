@@ -5,6 +5,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 -- name: GetReport :one
 SELECT * FROM reports WHERE id = ?;
 
+-- name: ListReports :many
+-- GET /v1/reports (Plan 2 task 17): the queue, newest first, ties broken by id.
+SELECT * FROM reports ORDER BY created DESC, id DESC LIMIT sqlc.arg(max_rows);
+
 -- name: UpdateReportStatus :exec
 UPDATE reports SET status = ?, verification_result = ? WHERE id = ?;
 

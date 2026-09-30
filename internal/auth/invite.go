@@ -33,6 +33,22 @@ func HashInviteCode(canonical string) []byte {
 	return sum[:]
 }
 
+// MatchInviteCode returns the hashes to look up for a user-typed code: one per
+// candidate CanonicalizeInviteCode produces (a typed 1 is an I or an L), in the
+// same order. At most 16 for a code carrying four 1s. The plan's spelling
+// InviteHash is HashInviteCode here, the name Plan 1 shipped.
+func MatchInviteCode(typed string) ([][]byte, error) {
+	forms, err := CanonicalizeInviteCode(typed)
+	if err != nil {
+		return nil, err
+	}
+	out := make([][]byte, 0, len(forms))
+	for _, f := range forms {
+		out = append(out, HashInviteCode(f))
+	}
+	return out, nil
+}
+
 // CanonicalizeInviteCode turns what a human typed into the candidates to look
 // up: hyphens and spaces stripped, upper-cased, and the base32 alphabet's four
 // missing digits mapped to the letters they look like. 0 and 8 are unambiguous

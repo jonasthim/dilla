@@ -19,6 +19,93 @@ type AuditLog struct {
 	At     int64
 }
 
+type Backups struct {
+	UserID      id.ID
+	Kind        int64
+	DeviceID    id.ID
+	ChunkSeq    int64
+	BlobID      []byte
+	ManifestSig []byte
+	Created     int64
+}
+
+type Bans struct {
+	CommunityID id.ID
+	UserID      id.ID
+	Reason      string
+	ByUser      id.ID
+	Created     int64
+	Expires     sql.NullInt64
+}
+
+type BlobRefs struct {
+	BlobID         []byte
+	ChannelID      id.ID
+	UploaderDevice id.ID
+	Mime           string
+	Created        int64
+}
+
+type BlobTombstones struct {
+	BlobID  []byte
+	Reason  string
+	ByUser  id.ID
+	Created int64
+}
+
+type Blobs struct {
+	BlobID     []byte
+	Size       int64
+	StorageRef string
+	Created    int64
+	UnrefSince sql.NullInt64
+}
+
+type ChannelMembers struct {
+	ChannelID id.ID
+	UserID    id.ID
+	Added     int64
+}
+
+type ChannelOverwrites struct {
+	ChannelID  id.ID
+	TargetKind int64
+	TargetID   id.ID
+	Allow      int64
+	Deny       int64
+}
+
+type Channels struct {
+	ID                id.ID
+	CommunityID       *id.ID
+	Kind              int64
+	Mode              int64
+	Visibility        int64
+	ParentID          *id.ID
+	Name              string
+	Topic             string
+	Position          int64
+	SettingsJson      string
+	HostPolicyVersion int64
+	SlowmodeSeconds   int64
+	Seq               int64
+	Created           int64
+	DeletedAt         sql.NullInt64
+}
+
+type Communities struct {
+	ID                   id.ID
+	Owner                id.ID
+	Name                 string
+	IconBlob             []byte
+	PolicyJson           string
+	PolicyVersion        int64
+	MinAccountAgeSeconds int64
+	RequireMod2fa        int64
+	Created              int64
+	DeletedAt            sql.NullInt64
+}
+
 type DeviceCursors struct {
 	DeviceID  id.ID
 	GroupID   id.ID
@@ -108,6 +195,19 @@ type LoginAttempts struct {
 	At     int64
 }
 
+type MemberRoles struct {
+	CommunityID id.ID
+	UserID      id.ID
+	RoleID      id.ID
+}
+
+type Members struct {
+	CommunityID id.ID
+	UserID      id.ID
+	Joined      int64
+	Nick        string
+}
+
 type MlsAppMessages struct {
 	GroupID        id.ID
 	Seq            int64
@@ -120,6 +220,7 @@ type MlsAppMessages struct {
 	Created        int64
 	Expires        sql.NullInt64
 	DeletedAt      sql.NullInt64
+	FrankingKeyID  id.ID
 }
 
 type MlsEpochTrees struct {
@@ -224,6 +325,41 @@ type PasswordCredentials struct {
 	Updated int64
 }
 
+type PendingJoins struct {
+	GroupID  id.ID
+	DeviceID id.ID
+	Queued   int64
+}
+
+type ReadState struct {
+	UserID      id.ID
+	ChannelID   id.ID
+	LastReadSeq int64
+}
+
+type ReadableMessages struct {
+	ID             int64
+	ChannelID      id.ID
+	ChannelHex     string
+	Seq            int64
+	Sender         id.ID
+	Envelope       []byte
+	Body           string
+	FrankingTag    []byte
+	FrankingKeyID  id.ID
+	MentionCount   int64
+	Created        int64
+	Edited         sql.NullInt64
+	Deleted        sql.NullInt64
+	UploaderDevice id.ID
+	CommitmentC    []byte
+}
+
+type ReadableMessagesFts struct {
+	Body       string
+	ChannelHex string
+}
+
 type RecoveryCodes struct {
 	UserID   id.ID
 	CodeHash []byte
@@ -242,6 +378,19 @@ type Reports struct {
 	VerificationResult string
 	Status             int64
 	Created            int64
+}
+
+type Roles struct {
+	ID          id.ID
+	CommunityID id.ID
+	Name        string
+	Color       int64
+	Position    int64
+	Allow       int64
+	Deny        int64
+	Hoist       int64
+	Mentionable int64
+	Created     int64
 }
 
 type Sessions struct {
@@ -279,6 +428,15 @@ type Users struct {
 	Created    int64
 	DisabledAt sql.NullInt64
 	DeletedAt  sql.NullInt64
+}
+
+type VoiceSessions struct {
+	CallID      id.ID
+	ChannelID   id.ID
+	GroupID     *id.ID
+	LivekitRoom string
+	Started     int64
+	Ended       sql.NullInt64
 }
 
 type WebauthnCeremonies struct {

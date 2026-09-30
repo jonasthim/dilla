@@ -315,12 +315,16 @@ func TestACommitForADecidedEpochIsFourZeroNineCarryingTheWinnerAndTheProposals(t
 // ------------------------------------------------------------------ harness
 
 type groupsAPI struct {
-	mux     *server.Mux
-	deps    api.Deps
-	ds      *ds.DS // the same delivery service the mounted routes hold
+	mux  *server.Mux
+	deps api.Deps
+	ds   *ds.DS // the same delivery service the mounted routes hold
+	// groups is the mounted *api.Groups, for a test that sets one of its hooks before its first
+	// request.
+	groups  *api.Groups
 	groupID id.ID
 	fixture apiFixture
 	session string // an enrolled session that is NOT one of the group's leaves
+	user    id.ID  // the user that session authenticates
 	// clk is the DELIVERY SERVICE's clock, which is not deps.Clock: the guest validates the
 	// fixture's KeyPackage lifetimes against it, and a test that needs a group old enough to have
 	// been swept advances this one and leaves the session clock alone.
@@ -329,7 +333,28 @@ type groupsAPI struct {
 
 // newGroupsAPI mounts the delivery-service routes on the same mux, repository and sessions the
 // rest of internal/api's tests use, over a real delivery service and the real wasm core.
+//
+// Its channel source admits the fixture's registration: the one committed fixture's binding names
+// no community (a DM-shaped text group) and its target is no DM channel, which the real source,
+// api.StructureChannels, refuses since task 6. dschannels_test.go drives the real source through
+// the same harness with newGroupsAPIWith, with and without a DM channel at the target.
 func newGroupsAPI(t *testing.T) *groupsAPI {
+	t.Helper()
+	return newGroupsAPIWith(t, func(store.Repository) ds.Channels { return openChannels{} })
+}
+
+// openChannels is a channel source with no channel rows that admits every registration.
+type openChannels struct{}
+
+func (openChannels) Channel(context.Context, id.ID) (visibility, mode uint8, err error) {
+	return 0, 0, ds.ErrNoChannel
+}
+
+func (openChannels) MayRegister(context.Context, id.ID, ds.Binding) error { return nil }
+
+// newGroupsAPIWith is newGroupsAPI over the channel source channels builds from the harness's own
+// repository.
+func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels) *groupsAPI {
 	t.Helper()
 	handler, deps := newTestAPI(t)
 	mux, ok := handler.(*server.Mux)
@@ -361,7 +386,7 @@ func newGroupsAPI(t *testing.T) *groupsAPI {
 	}
 	d, err := ds.New(ds.Options{
 		Store: deps.Repo, Wasm: wasm, Gateway: gw, Clock: clk,
-		Policy: ds.DefaultPolicy(), Keys: keys,
+		Policy: ds.DefaultPolicy(), Keys: keys, Channels: channels(deps.Repo),
 	})
 	if err != nil {
 		t.Fatalf("ds.New: %v", err)
@@ -386,9 +411,10 @@ func newGroupsAPI(t *testing.T) *groupsAPI {
 	// Task 27's two heal routes, endpoints 13 and 14.
 	groups.RegisterHeal(mux, deps.Sessions)
 
-	_, _, token := seedAPISession(t, deps)
+	user, _, token := seedAPISession(t, deps)
 	return &groupsAPI{
-		mux: mux, deps: deps, ds: d, groupID: f.groupID, fixture: f, session: token, clk: clk,
+		mux: mux, deps: deps, ds: d, groups: groups, groupID: f.groupID, fixture: f, session: token,
+		user: user.ID, clk: clk,
 	}
 }
 
@@ -674,5 +700,109 @@ func TestResyncCarriesTheDeliveryServicesRefusal(t *testing.T) {
 	}
 	if got := errorCode(t, res); got != string(server.CodeCommitInvalid) {
 		t.Fatalf("code = %s, want %s", got, server.CodeCommitInvalid)
+	}
+}
+
+// A registration the delivery service accepted is handed to AfterRegister, which is how the
+// composition root populates a private channel's new group (SyncRegisteredGroup); a refused one
+// is not.
+//
+// The hook runs AFTER the 201: populating a channel of a thousand members is a thousand
+// permission resolutions and up to 256 Adds built in the guest, which the registrant must not
+// wait for, and the proposals and the commit_needed election it fans out to the creator must not
+// overtake the answer that tells the creator the group exists (protocol/02, POST /v1/groups).
+// Here the hook blocks until the test has read the 201; a handler that ran it first would never
+// answer.
+func TestAnAcceptedRegistrationIsHandedToAfterRegisterAfterThe201(t *testing.T) {
+	h := newGroupsAPI(t)
+	answered := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(answered) }) })
+	var mu sync.Mutex
+	var got []id.ID
+	var hookCtxErr error
+	h.groups.AfterRegister = func(ctx context.Context, groupID id.ID) {
+		<-answered
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, groupID)
+		hookCtxErr = ctx.Err()
+	}
+
+	reqCtx, cancelReq := context.WithCancel(t.Context())
+	res := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequestWithContext(reqCtx, http.MethodPost, "/v1/groups", bytes.NewReader(h.createBody(t)))
+		req.Header.Set("Content-Type", "application/cbor")
+		req.Header.Set("Authorization", "Bearer "+h.session)
+		rec := httptest.NewRecorder()
+		h.mux.ServeHTTP(rec, req)
+		res <- rec
+	}()
+	select {
+	case rec := <-res:
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("POST /v1/groups did not answer while AfterRegister was still running: " +
+			"the 201 must be written before the group is populated")
+	}
+	// The request is over, and its context with it; the hook's work is not.
+	cancelReq()
+	once.Do(func() { close(answered) })
+
+	if err := h.groups.Drain(t.Context()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	mu.Lock()
+	if len(got) != 1 || got[0] != h.groupID {
+		t.Fatalf("AfterRegister saw %v, want exactly [%s]", got, h.groupID)
+	}
+	if hookCtxErr != nil {
+		t.Fatalf("the hook's context ended with the request: %v", hookCtxErr)
+	}
+	mu.Unlock()
+
+	if res := h.do(t, http.MethodPost, "/v1/groups", h.session, h.createBody(t)); res.Code == http.StatusCreated {
+		t.Fatal("a second registration of the same group was accepted")
+	}
+	if err := h.groups.Drain(t.Context()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("a refused registration reached AfterRegister: %v", got)
+	}
+}
+
+// Drain is what shutdown waits on: it returns once every hook it started has finished, and gives
+// up with the context's error when the grace runs out first.
+func TestDrainWaitsForAfterRegisterAndHonoursItsDeadline(t *testing.T) {
+	h := newGroupsAPI(t)
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	finished := make(chan struct{})
+	h.groups.AfterRegister = func(context.Context, id.ID) {
+		<-release
+		close(finished)
+	}
+	h.mustCreate(t)
+
+	short, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if err := h.groups.Drain(short); err == nil {
+		t.Fatal("Drain returned nil while a hook was still running")
+	}
+	once.Do(func() { close(release) })
+	if err := h.groups.Drain(t.Context()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	select {
+	case <-finished:
+	default:
+		t.Fatal("Drain returned before the hook finished")
 	}
 }

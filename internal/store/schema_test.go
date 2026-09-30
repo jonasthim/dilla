@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
 	"github.com/jonasthim/dilla/internal/store/postgres/pgdb"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
@@ -167,7 +169,9 @@ func TestGooseUpDownUpOnPostgres(t *testing.T) {
 	if dsn == "" {
 		t.Skip("DILLA_TEST_PG is unset: no local Postgres server on this box; CI's postgres service container runs this test")
 	}
-	db, err := sql.Open("pgx", dsn)
+	// Down drops every table, so this runs in a database of its own, never the one
+	// the other Postgres legs might be using.
+	db, err := sql.Open("pgx", freshPostgresDSN(t, dsn))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -204,6 +208,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 	defer rows.Close()
 	seen := 0
 	names := make([]string, 0, 17)
+	var fts []string
 	for rows.Next() {
 		var name, ddl string
 		if err := rows.Scan(&name, &ddl); err != nil {
@@ -212,6 +217,14 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 		if name == "goose_db_version" {
 			// goose's own table cannot be STRICT: its tstamp column is TIMESTAMP,
 			// which STRICT does not permit (gap-67 §2.3).
+			continue
+		}
+		// The FTS5 index of 007_readable.sql (Plan 2 task 8) is a virtual table,
+		// and FTS5 creates its own untyped shadow tables beside it (_data, _idx,
+		// _docsize, _config); none of them can be STRICT and none is dilla's to
+		// type. They are collected and asserted separately below.
+		if name == "readable_messages_fts" || strings.HasPrefix(name, "readable_messages_fts_") {
+			fts = append(fts, name)
 			continue
 		}
 		seen++
@@ -230,23 +243,50 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 	}
 	sort.Strings(names)
 	if !reflect.DeepEqual(names, wantTables) {
-		t.Fatalf("tables = %v, want the set 001/002/003/004/005/009 declare: %v", names, wantTables)
+		t.Fatalf("tables = %v, want the set 001/002/003/004/005/006/009 declare: %v", names, wantTables)
 	}
 	if seen != len(wantTables) {
-		t.Fatalf("%d dilla tables found; 001/002/003/004/005/009 declare %d", seen, len(wantTables))
+		t.Fatalf("%d dilla tables found; 001/002/003/004/005/006/009 declare %d", seen, len(wantTables))
+	}
+	sort.Strings(fts)
+	wantFTS := []string{"readable_messages_fts", "readable_messages_fts_config", "readable_messages_fts_data",
+		"readable_messages_fts_docsize", "readable_messages_fts_idx"}
+	if !reflect.DeepEqual(fts, wantFTS) {
+		t.Fatalf("FTS5 tables = %v, want the external-content index and its four shadow tables %v", fts, wantFTS)
 	}
 }
 
-// wantTables is the exact set 001/002/003/004/005/009 declare, sorted, so that a
+// wantTables is the exact set 001/002/003/004/005/006/009 declare, sorted, so that a
 // dropped or renamed table is caught and not just a change in the count. Task 19
-// added 004_mls.sql's twelve; task 23 added 005_messages.sql's one.
+// added 004_mls.sql's twelve; task 23 added 005_messages.sql's one; Plan 2 task 1
+// added 006_structure.sql's four (communities, members, roles, member_roles); Plan 2
+// task 2 added 006a_channels.sql's channels; Plan 2 task 3 added 006b_overwrites.sql's
+// channel_overwrites; Plan 2 task 4 added 006c_bans.sql's bans; Plan 2 task 6 added
+// 006d_channel_members.sql's channel_members; Plan 2 task 7 added 006e_pending_joins.sql's
+// pending_joins (Plan 1 follow-up card 8); Plan 2 task 8 added 007_readable.sql's readable_messages
+// and read_state (its FTS5 index is asserted on its own, because a virtual table is not STRICT);
+// Plan 2 task 10 added 008_blobs.sql's blobs, blob_refs, blob_tombstones and backups; Plan 2
+// task 16 added 006f_voice.sql's voice_sessions.
 var wantTables = []string{
-	"audit_log", "device_cursors", "device_lists", "devices", "fork_reports",
+	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "channel_members", "channel_overwrites", "channels", "communities", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invites", "key_packages", "login_attempts",
+	"member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
 	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "oidc_identities",
-	"password_credentials", "recovery_codes", "reports", "sessions", "totp_secrets", "users",
-	"webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
+	"password_credentials", "pending_joins", "read_state", "readable_messages", "recovery_codes", "reports", "roles", "sessions", "totp_secrets", "users",
+	"voice_sessions", "webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
+}
+
+// DumpTables must name every schema table exactly once. LoadPostgres truncates only the
+// tables it lists, so a table with a foreign key into a listed one that is itself missing
+// makes every Postgres restore fail ("cannot truncate a table referenced in a foreign key
+// constraint"), and the Postgres dump silently leaves its rows out (C5: voice_sessions).
+func TestDumpTablesNamesEverySchemaTable(t *testing.T) {
+	got := slices.Clone(store.DumpTables)
+	sort.Strings(got)
+	if !slices.Equal(got, wantTables) {
+		t.Fatalf("sorted DumpTables = %v\nwant the schema's tables %v", got, wantTables)
+	}
 }
 
 // The two AUTOINCREMENT surrogate keys must survive sqlc's `*.id` wildcard as

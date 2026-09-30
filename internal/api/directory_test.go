@@ -95,6 +95,41 @@ func TestPublishAndTakeAKeyPackageOverTheMux(t *testing.T) {
 	}
 }
 
+// An accepted publish hands (user, device) to AfterKeyPackages once the 201 is written, so the
+// composition root can propose the device into the DMs it could not be Added to while it held no
+// KeyPackage (Plan 2 task 6); Drain waits for the run, and a refused publish reaches no hook.
+func TestAnAcceptedPublishIsHandedToAfterKeyPackages(t *testing.T) {
+	h := newGroupsAPI(t)
+	token, device := h.keyPackageOwnerToken(t)
+	type seen struct{ user, device id.ID }
+	got := make(chan seen, 4)
+	h.groups.AfterKeyPackages = func(ctx context.Context, user, dev id.ID) {
+		if ctx.Err() != nil {
+			t.Errorf("the hook's context has already ended: %v", ctx.Err())
+		}
+		got <- seen{user, dev}
+	}
+	if res := h.do(t, http.MethodPost, "/v1/keypackages", token, mustCBOR(t, []any{[][]byte{{0x00}}, nil})); res.Code == http.StatusCreated {
+		t.Fatal("a malformed KeyPackage was accepted")
+	}
+	res := h.do(t, http.MethodPost, "/v1/keypackages", token, mustCBOR(t, []any{[][]byte{apiKeyPackageFixture(t)}, nil}))
+	if res.Code != http.StatusCreated {
+		t.Fatalf("publish: status = %d, want 201: %s", res.Code, res.Body.String())
+	}
+	if err := h.groups.Drain(t.Context()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	close(got)
+	var all []seen
+	for s := range got {
+		all = append(all, s)
+	}
+	_, user := apiKeyPackageIdentity(t)
+	if len(all) != 1 || all[0].user != user || all[0].device != device {
+		t.Fatalf("AfterKeyPackages saw %v, want exactly one run for (%s, %s)", all, user, device)
+	}
+}
+
 // Row 15's items are the seven-element [welcome_id, group_id, epoch, commit_seq, blob,
 // ratchet_tree, tree_hash]; row 16 is 204 and is what marks one delivered — the GET does not.
 func TestTheWelcomeQueueIsServedAndOnlyTheDeleteMarksItDelivered(t *testing.T) {

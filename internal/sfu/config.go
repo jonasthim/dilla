@@ -25,6 +25,7 @@ package sfu
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -42,6 +43,17 @@ type Config struct {
 	EnableLoopbackCandidate bool   // true
 	APIKey                  string // "dillad"
 	APISecret               string // >= 32 characters
+	// AdvertiseInternalIP makes LiveKit offer its local host candidate beside
+	// node_ip's, so relay pairing through the co-located TURN stays on-host
+	// (livekit.advertise_internal_ip, spec "Ports and TURN, made true").
+	AdvertiseInternalIP bool
+	// STUNServers is rtc.stun_servers ("host:port" each). A non-empty list
+	// replaces the Google/Twilio STUN hosts LiveKit otherwise puts into every
+	// join response.
+	STUNServers []string
+	// MaxParticipants is room.max_participants (livekit.max_voice_participants);
+	// 0 renders no room table and leaves LiveKit's own unlimited default.
+	MaxParticipants uint32
 }
 
 // DefaultConfig returns the loopback spike configuration. APISecret is empty:
@@ -81,6 +93,21 @@ func (c Config) YAML() (string, error) {
 	fmt.Fprintf(&b, "  enable_loopback_candidate: %t\n", c.EnableLoopbackCandidate)
 	fmt.Fprintf(&b, "  udp_port: %d\n", c.UDPPort)
 	fmt.Fprintf(&b, "  tcp_port: %d\n", c.TCPPort)
+	if c.AdvertiseInternalIP {
+		b.WriteString("  advertise_internal_ip: true\n")
+	}
+	if len(c.STUNServers) > 0 {
+		b.WriteString("  stun_servers:\n")
+		for _, s := range c.STUNServers {
+			if err := validSTUNServer(s); err != nil {
+				return "", err
+			}
+			fmt.Fprintf(&b, "    - %q\n", s)
+		}
+	}
+	if c.MaxParticipants > 0 {
+		fmt.Fprintf(&b, "room:\n  max_participants: %d\n", c.MaxParticipants)
+	}
 	// R18 and spec line 415 name turn.enabled: false explicitly. It is also
 	// LiveKit's own default (DefaultConfig.TURN.Enabled == false,
 	// livekit-server@v1.13.7/pkg/config/config.go:597-603), so this changes no
@@ -89,4 +116,14 @@ func (c Config) YAML() (string, error) {
 	// (same file, line 272), so strict mode accepts the key.
 	b.WriteString("turn:\n  enabled: false\n")
 	return b.String(), nil
+}
+
+// validSTUNServer refuses an rtc.stun_servers entry that is not a plain
+// "host:port": the value is written into YAML, and LiveKit expects that shape.
+func validSTUNServer(s string) error {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil || host == "" || port == "" || strings.ContainsAny(s, " \t\r\n\"'#") {
+		return fmt.Errorf("sfu: stun server %q is not host:port", s)
+	}
+	return nil
 }

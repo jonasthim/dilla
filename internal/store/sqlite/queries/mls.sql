@@ -22,6 +22,14 @@ ORDER BY group_id LIMIT sqlc.arg(max_rows);
 SELECT * FROM mls_groups WHERE group_id > ?
 ORDER BY group_id LIMIT sqlc.arg(max_rows);
 
+-- name: GroupsForTarget :many
+-- Plan 2's P2-D3 (task 4): the open groups bound to one target, of one kind, over
+-- mls_groups_by_target. A membership change finds the text and call groups of a channel
+-- here instead of scanning every open group of the instance.
+SELECT * FROM mls_groups
+WHERE target_id = ? AND kind = ? AND closed_at IS NULL
+ORDER BY created, group_id;
+
 -- name: CloseGroup :exec
 UPDATE mls_groups SET closed_at = ? WHERE group_id = ?;
 
@@ -202,3 +210,23 @@ SELECT count(*) FROM fork_reports WHERE group_id = ? AND seq = ?;
 
 -- name: QuarantineDevice :exec
 UPDATE devices SET quarantined_at = ?, quarantine_reason = ? WHERE id = ?;
+
+-- name: QueuePendingJoin :exec
+-- pending_joins (Plan 1 follow-up card 8, Plan 2 task 7): one device waiting for a slice of a join
+-- storm. A device already queued keeps its row and its place.
+INSERT INTO pending_joins (group_id, device_id, queued) VALUES (?, ?, ?)
+ON CONFLICT (group_id, device_id) DO NOTHING;
+
+-- name: ListPendingJoins :many
+SELECT device_id FROM pending_joins WHERE group_id = ?
+ORDER BY queued, device_id LIMIT sqlc.arg(max_rows);
+
+-- name: DeletePendingJoin :exec
+DELETE FROM pending_joins WHERE group_id = ? AND device_id = ?;
+
+-- name: CountPendingJoins :one
+SELECT count(*) FROM pending_joins WHERE group_id = ?;
+
+-- name: ListPendingJoinGroups :many
+SELECT DISTINCT group_id FROM pending_joins WHERE group_id > ?
+ORDER BY group_id LIMIT sqlc.arg(max_rows);

@@ -1,12 +1,15 @@
 package gateway
 
 import (
+	"context"
+	"errors"
 	"math/rand/v2"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // heartbeatPolicy is the liveness contract of protocol/02: the client beats every
@@ -68,4 +71,50 @@ func rebaseDeadline(p cbor.RawMessage, waited time.Duration) (cbor.RawMessage, e
 		return nil, err
 	}
 	return CommitNeededPayload(epoch, refs, deadline, round)
+}
+
+// sessionReader is the second optional store method the gateway calls (deviceToucher is the
+// first): store.Repository's GetSessionByHash. It is not part of Store, so the narrow interface -
+// and every double that satisfies it - is unchanged, and a store without it skips the check.
+type sessionReader interface {
+	GetSessionByHash(ctx context.Context, tokenHash []byte, now int64) (store.SessionRow, error)
+}
+
+// sweepSessions is the other half of protocol/02 §2.2 point 6. `dillad admin` is a separate process
+// from `dillad serve`: disabling a user or revoking a device there deletes the session rows and
+// cannot close a socket, because it holds no handle on this registry. What makes the socket end is
+// this check, made once per ready connection on every liveness tick (one query by the unique
+// token-hash index, on a tick that already walks every connection for the heartbeat deadline):
+// a connection whose session no longer resolves - deleted by an operator, pruned, or past its hard
+// expiry - is closed 4004 session_revoked, which is not resumable, so the token it holds dies with
+// the socket. A live socket therefore outlives its revocation by at most one heartbeat interval,
+// never indefinitely.
+//
+// A store error is not a revocation. A database that cannot answer must not disconnect every client
+// at once, so the connection stays and the next tick asks again.
+func (g *Gateway) sweepSessions(ctx context.Context) {
+	sessions, ok := g.opts.Store.(sessionReader)
+	if !ok {
+		return
+	}
+	now := g.opts.Clock.Now().Unix()
+	for _, c := range g.reg.all() {
+		c.mu.Lock()
+		ready := c.state == stateReady
+		hash := c.tokenHash
+		c.mu.Unlock()
+		if !ready || len(hash) == 0 {
+			continue
+		}
+		if _, err := sessions.GetSessionByHash(ctx, hash, now); !errors.Is(err, store.ErrNotFound) {
+			if err != nil && g.opts.Log != nil {
+				g.opts.Log.Warn("reading a connection's session failed; leaving it open",
+					"device", c.deviceID.String()[:8], "err", err)
+			}
+			continue
+		}
+		// 4004 is not resumable, so closeConn marks the connection before suspend looks.
+		g.closeConn(c, CloseSessionRevoked, "session ended")
+		g.suspend(c)
+	}
 }

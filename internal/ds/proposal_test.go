@@ -494,9 +494,128 @@ func TestProposeAddIssuesAnExternalAddAndConsumesTheKeyPackage(t *testing.T) {
 		t.Error("the row must keep the KeyPackage the proposal was built from, for the re-issue")
 	}
 
-	// The KeyPackage is consumed: a second Add for the same device has nothing to use.
-	if err := h.ds.ProposeAdd(ctx, reg.GroupID, joiner, id.New()); err == nil {
-		t.Error("the KeyPackage was not consumed: a second ProposeAdd reused it")
+	// A second Add for the same device while the first is outstanding is a no-op: the action is
+	// already in flight, so nothing is proposed and no second KeyPackage is spent.
+	if err := h.ds.ProposeAdd(ctx, reg.GroupID, joiner, id.New()); err != nil {
+		t.Errorf("a repeated ProposeAdd for an outstanding Add must be a no-op, got %v", err)
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, true); len(rows) != 1 {
+		t.Errorf("%d proposal rows after the repeat, want 1: the device was proposed twice", len(rows))
+	}
+}
+
+// Two Adds for one signature key make every commit that carries them invalid (OpenMLS:
+// DuplicateSignatureKey), so the delivery service never issues the second: a device whose Add is
+// outstanding is not proposed again, and a device that is already a current leaf is refused. The
+// kick_with_outstanding_add_production_acl scenario found the race between a channel-membership
+// sync and an admit on CI.
+func TestProposeAddNeverIssuesTwoAddsForOneDeviceAndRefusesACurrentMember(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, creator := h.mustRegister(t)
+	joiner := h.deviceWithKeyPackage(t)
+
+	for i := range 3 {
+		if err := h.ds.ProposeAdd(ctx, reg.GroupID, joiner, id.New()); err != nil {
+			t.Fatalf("ProposeAdd #%d: %v", i+1, err)
+		}
+	}
+	rows, err := h.repo.ListProposals(ctx, reg.GroupID, 6, true)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("%d Add proposals for one device, want exactly 1", len(rows))
+	}
+
+	err = h.ds.ProposeAdd(ctx, reg.GroupID, creator.DeviceID, id.New())
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_INVALID_REQUEST" {
+		t.Fatalf("an Add for a current member: got %v, want E_INVALID_REQUEST", err)
+	}
+	if !errors.Is(err, ds.ErrAlreadyMember) {
+		t.Fatalf("an Add for a current member: %v does not match ds.ErrAlreadyMember", err)
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, true); len(rows) != 1 {
+		t.Fatalf("%d proposal rows after refusing a current member, want 1", len(rows))
+	}
+}
+
+// C4 (fix wave): a device its user's newest signed list does not name is never proposed, and its
+// KeyPackage is not spent. A member commit could satisfy neither checkAddedMember (which refuses
+// the Add) nor clause 1 (which refuses leaving it out), so proposing it froze the group until the
+// Add voided, and took the KeyPackage the device's own pairing needed. Once the user publishes a
+// list that names the device, it is proposed.
+func TestProposeAddRefusesADeviceAbsentFromItsUsersSignedDeviceList(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	laptop := h.deviceWithKeyPackageListed(t, false)
+	before, err := h.repo.CountKeyPackages(ctx, laptop, h.clk.Now().Unix())
+	if err != nil || before != 1 {
+		t.Fatalf("CountKeyPackages before = %d, %v; want the one fixture package", before, err)
+	}
+
+	err = h.ds.ProposeAdd(ctx, reg.GroupID, laptop, id.New())
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_INVALID_REQUEST" {
+		t.Fatalf("ProposeAdd of an unlisted device = %v, want E_INVALID_REQUEST", err)
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, true); len(rows) != 0 {
+		t.Fatalf("%d proposals stored for an unlisted device, want 0", len(rows))
+	}
+	if n, _ := h.repo.CountKeyPackages(ctx, laptop, h.clk.Now().Unix()); n != before {
+		t.Fatalf("the unlisted device's KeyPackages went from %d to %d: the refusal spent one", before, n)
+	}
+
+	// Pairing step 5: the user publishes the list that names the laptop.
+	dev, err := h.repo.GetDevice(ctx, laptop)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	blob := signedDeviceList(t, testSSK(0x6b), dev.UserID, []listEntry{
+		{DeviceID: laptop[:], DSKPub: dev.DSKPub, AddedAt: 2},
+	})
+	if err := h.repo.PutDeviceList(ctx, store.DeviceListRow{
+		UserID: dev.UserID, Version: 2, Blob: blob, SSKSignature: blob[len(blob)-64:],
+		PrevHash: make([]byte, 32), Created: h.clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("PutDeviceList v2: %v", err)
+	}
+	if err := h.ds.ProposeAdd(ctx, reg.GroupID, laptop, id.New()); err != nil {
+		t.Fatalf("ProposeAdd once listed: %v", err)
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, false); len(rows) != 1 {
+		t.Fatalf("%d proposals once listed, want 1", len(rows))
+	}
+}
+
+// The join-storm drain applies the same clause: an unlisted device is dropped from the queue
+// without spending its KeyPackage, and the listed device beside it is proposed.
+func TestProposeAddBatchDropsAnUnlistedDeviceWithoutSpendingItsKeyPackage(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	unlisted := h.deviceWithKeyPackageListed(t, false)
+	listed := h.eligibleDeviceWithKeyPackage(t)
+	if row, err := h.repo.GetDevice(ctx, unlisted); err == nil {
+		h.acl.allow(row.UserID)
+	}
+	if err := h.ds.ProposeAddBatch(ctx, reg.GroupID, []id.ID{unlisted, listed}); err != nil {
+		t.Fatalf("ProposeAddBatch: %v", err)
+	}
+	rows, err := h.repo.ListProposals(ctx, reg.GroupID, 6, false)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	if len(rows) != 1 || rows[0].TargetDevice == nil || *rows[0].TargetDevice != listed {
+		t.Fatalf("outstanding Adds = %+v, want exactly the listed device's", rows)
+	}
+	if n, _ := h.repo.CountKeyPackages(ctx, unlisted, h.clk.Now().Unix()); n != 1 {
+		t.Fatalf("the unlisted device has %d KeyPackages left, want its 1", n)
+	}
+	if got := ds.PendingJoinsForTest(h.ds, reg.GroupID); got != 0 {
+		t.Fatalf("%d devices still queued, want 0: the unlisted one is dropped, not retried", got)
 	}
 }
 
@@ -541,8 +660,20 @@ func TestProposeAddBatchSkipsAnUnusableKeyPackageAndKeepsGoing(t *testing.T) {
 	ctx := context.Background()
 	reg, _ := h.mustRegister(t)
 
-	good := h.deviceWithKeyPackage(t)
-	bad := id.New() // no KeyPackage at all
+	good := h.eligibleDeviceWithKeyPackage(t)
+	// bad is eligible in every respect the drain checks — a live device of an admitted user with
+	// an available KeyPackage — but its KeyPackage does not validate, so the guest refuses the Add.
+	bad := h.eligibleDeviceWithKeyPackage(t)
+	if _, err := h.repo.TakeKeyPackage(ctx, bad, h.clk.Now().Unix()); err != nil {
+		t.Fatalf("TakeKeyPackage: %v", err)
+	}
+	junk := id.New()
+	if err := h.repo.PutKeyPackages(ctx, bad, []store.KeyPackageRow{{
+		DeviceID: bad, KPRef: junk[:], Blob: []byte{0x00, 0x01}, Expires: h.clk.Now().Unix() + 86_400,
+		Created: h.clk.Now().Unix(),
+	}}); err != nil {
+		t.Fatalf("PutKeyPackages: %v", err)
+	}
 	if err := h.ds.ProposeAddBatch(ctx, reg.GroupID, []id.ID{bad, good}); err != nil {
 		t.Fatalf("ProposeAddBatch: %v", err)
 	}
@@ -613,6 +744,179 @@ func TestReissueForAnUnknownActionIsNotFound(t *testing.T) {
 	var dsErr *ds.Error
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
 		t.Fatalf("got %v, want E_NOT_FOUND", err)
+	}
+}
+
+// ------------------------------------------ C2: an Add whose user became ineligible
+
+// putAddFor stores one outstanding instance Add row at the fixture epoch targeting device. The
+// eligibility sweep reads SQL rows only, and the committed fixture's one KeyPackage can back just
+// one real Add per group (a second would carry the same proposal ref).
+func (h *dsHarness) putAddFor(t *testing.T, groupID, device id.ID) []byte {
+	t.Helper()
+	ref := id.New()
+	if err := h.repo.PutProposal(context.Background(), store.ProposalRow{
+		GroupID: groupID, Ref: ref[:], Epoch: 6, Kind: 1, Origin: 0, TargetDevice: &device,
+		ActionID: id.New(), IssuedAt: h.clk.Now().Unix(), TTL: 86400,
+	}); err != nil {
+		t.Fatalf("PutProposal: %v", err)
+	}
+	return ref[:]
+}
+
+// voidAtOf reads one proposal's void_at at the fixture epoch; found is false when the row is gone.
+func (h *dsHarness) voidAtOf(t *testing.T, groupID id.ID, ref []byte) (voidAt *int64, found bool) {
+	t.Helper()
+	rows, err := h.repo.ListProposals(context.Background(), groupID, 6, true)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	for _, r := range rows {
+		if bytes.Equal(r.Ref, ref) {
+			return r.VoidAt, true
+		}
+	}
+	return nil, false
+}
+
+// A kick while Bob's Add is outstanding: clause 1 refuses every member commit that leaves the Add
+// out and checkAddedMember refuses every commit that includes it, so without a void the group is
+// frozen until the 24-hour TTL. VoidIneligibleAdds voids exactly the Adds whose user the ACL no
+// longer admits, or whose device is gone, and leaves an eligible user's Add outstanding.
+func TestVoidIneligibleAddsVoidsOnlyTheAddsNoCommitCouldCarry(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	bob := h.eligibleDeviceWithKeyPackage(t)
+	carol := h.eligibleDeviceWithKeyPackage(t)
+	bobAdd := h.putAddFor(t, reg.GroupID, bob)
+	carolAdd := h.putAddFor(t, reg.GroupID, carol)
+	goneAdd := h.putAddFor(t, reg.GroupID, id.New()) // a device the instance no longer knows
+
+	bobRow, err := h.repo.GetDevice(ctx, bob)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	h.acl.revoke(bobRow.UserID) // the kick
+	if err := h.ds.VoidIneligibleAdds(ctx, reg.GroupID); err != nil {
+		t.Fatalf("VoidIneligibleAdds: %v", err)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, bobAdd); !ok || v == nil {
+		t.Fatalf("the kicked user's Add: void_at %v (found %v), want it voided", v, ok)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, goneAdd); !ok || v == nil {
+		t.Fatalf("the unknown device's Add: void_at %v (found %v), want it voided", v, ok)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, carolAdd); !ok || v != nil {
+		t.Fatalf("the eligible user's Add: void_at %v (found %v), want it outstanding", v, ok)
+	}
+}
+
+// The commit path runs the same void before invariant 4's clauses, so a change the api layer never
+// reported (a role revoked for a user in the storm's in-flight slice) is caught by the next commit
+// attempt. The commit here is refused structurally; the Add is void all the same.
+func TestACommitAttemptVoidsAnOutstandingAddWhoseUserBecameIneligible(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+	bob := h.eligibleDeviceWithKeyPackage(t)
+	bobAdd := h.putAddFor(t, reg.GroupID, bob)
+	bobRow, err := h.repo.GetDevice(ctx, bob)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	h.acl.revoke(bobRow.UserID)
+
+	if _, err := h.ds.Commit(ctx, session, reg.GroupID, ds.CommitRequest{
+		Epoch: 6, Commit: []byte{0x00, 0x01}, GroupInfo: dsFixture(t).groupInfo,
+	}); err == nil {
+		t.Fatal("a two-byte commit was accepted")
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, bobAdd); !ok || v == nil {
+		t.Fatalf("after a commit attempt the ineligible Add has void_at %v (found %v), want it voided", v, ok)
+	}
+}
+
+// The re-issue drops an Add whose user is no longer eligible instead of re-proposing it with a
+// fresh TTL, which would restart the freeze on a proposal no commit can satisfy.
+func TestAReissuedAddIsDroppedWhenItsUserIsNoLongerEligible(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	bob := h.eligibleDeviceWithKeyPackage(t)
+	action := id.New()
+	if err := h.ds.ProposeAdd(ctx, reg.GroupID, bob, action); err != nil {
+		t.Fatalf("ProposeAdd: %v", err)
+	}
+	// A second KeyPackage, so a re-issue would have one to spend.
+	h.seedKeyPackages(t, bob, 1, 80*24*time.Hour)
+	bobRow, err := h.repo.GetDevice(ctx, bob)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	h.acl.revoke(bobRow.UserID)
+
+	if err := h.ds.ReissueFor(ctx, reg.GroupID, action); err != nil {
+		t.Fatalf("ReissueFor: %v", err)
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, true); len(rows) != 0 {
+		t.Fatalf("%d proposal rows after re-issuing an ineligible Add, want 0: %+v", len(rows), rows)
+	}
+}
+
+// An outstanding Add for a device its user's newest signed list no longer names (not revoked) is
+// an Add no commit can carry: checkAddedMember refuses the commit that includes it and clause 1
+// refuses the one that omits it. The void pass catches it the same way it catches an ACL change.
+func TestAnOutstandingAddForADeviceDroppedFromItsSignedListIsVoided(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	bob := h.eligibleDeviceWithKeyPackage(t)
+	carol := h.eligibleDeviceWithKeyPackage(t)
+	bobAdd := h.putAddFor(t, reg.GroupID, bob)
+	carolAdd := h.putAddFor(t, reg.GroupID, carol)
+
+	// Both are listed: nothing is voided.
+	if err := h.ds.VoidIneligibleAdds(ctx, reg.GroupID); err != nil {
+		t.Fatalf("VoidIneligibleAdds: %v", err)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, bobAdd); !ok || v != nil {
+		t.Fatalf("a listed device's Add: void_at %v (found %v), want it outstanding", v, ok)
+	}
+
+	// Bob's user publishes a newer list that names another device only.
+	bobRow, err := h.repo.GetDevice(ctx, bob)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	other := id.New()
+	blob := signedDeviceList(t, testSSK(0x6b), bobRow.UserID, []listEntry{
+		{DeviceID: other[:], DSKPub: bytes.Repeat([]byte{9}, 32), AddedAt: 2},
+	})
+	if err := h.repo.PutDeviceList(ctx, store.DeviceListRow{
+		UserID: bobRow.UserID, Version: 2, Blob: blob,
+		SSKSignature: blob[len(blob)-64:], PrevHash: make([]byte, 32), Created: h.clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("PutDeviceList: %v", err)
+	}
+
+	if err := h.ds.VoidIneligibleAdds(ctx, reg.GroupID); err != nil {
+		t.Fatalf("VoidIneligibleAdds: %v", err)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, bobAdd); !ok || v == nil {
+		t.Fatalf("the delisted device's Add: void_at %v (found %v), want it voided", v, ok)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, carolAdd); !ok || v != nil {
+		t.Fatalf("the still-listed device's Add: void_at %v (found %v), want it outstanding", v, ok)
+	}
+	rows, err := h.repo.ListProposals(ctx, reg.GroupID, 6, false)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	for _, r := range rows {
+		if bytes.Equal(r.Ref, bobAdd) {
+			t.Fatalf("the voided Add is still among the proposals a commit must carry")
+		}
 	}
 }
 
@@ -704,25 +1008,40 @@ func (h *dsHarness) bareGroup(t *testing.T) id.ID {
 // fixture's committed KeyPackage for it. `key_packages.device_id` references `devices(id)`, so the
 // two rows are not optional. The blob is real material a real `validate_key_package` accepts; only
 // the identities are the test's.
+//
+// The user's signed device list names the device, as it does for every device a real user has
+// finished pairing: the delivery service proposes an Add only for a listed device (invariant 4's
+// device-list clause, checked before the KeyPackage is spent).
 func (h *dsHarness) deviceWithKeyPackage(t *testing.T) id.ID {
+	t.Helper()
+	return h.deviceWithKeyPackageListed(t, true)
+}
+
+// deviceWithKeyPackageListed is deviceWithKeyPackage with the device named in its user's signed
+// device list or not: listed == false is a device that enrolled and published its KeyPackages
+// before its user published the list that names it (protocol/03 § Pairing, steps 2 and 5). The
+// user's list then names only another device.
+func (h *dsHarness) deviceWithKeyPackageListed(t *testing.T, listed bool) id.ID {
 	t.Helper()
 	ctx := context.Background()
 	now := h.clk.Now().Unix()
 	user := id.New()
-	if err := h.repo.CreateUser(ctx, store.UserRow{
-		ID: user, Username: "u" + user.String()[:12], Display: "joiner", Kind: 0,
-		UMKPub: bytes.Repeat([]byte{1}, 32), SSKPub: bytes.Repeat([]byte{2}, 32),
-		SigUMKSSK: bytes.Repeat([]byte{3}, 64), Created: now,
-	}); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
+	ssk := testSSK(0x6b)
+	h.userWithSSK(t, user, ssk)
 	device := id.New()
+	dsk := bytes.Repeat([]byte{4}, 32)
 	if err := h.repo.CreateDevice(ctx, store.DeviceRow{
-		ID: device, UserID: user, DSKPub: bytes.Repeat([]byte{4}, 32),
+		ID: device, UserID: user, DSKPub: dsk,
 		Tier: 0, SignerTier: 0, CredentialBlob: []byte{0xf6}, LastSeen: now, Created: now,
 	}); err != nil {
 		t.Fatalf("CreateDevice: %v", err)
 	}
+	entry := listEntry{DeviceID: device[:], DSKPub: dsk, AddedAt: 1}
+	if !listed {
+		other := id.New()
+		entry = listEntry{DeviceID: other[:], DSKPub: bytes.Repeat([]byte{5}, 32), AddedAt: 1}
+	}
+	h.publishDeviceList(t, user, signedDeviceList(t, ssk, user, []listEntry{entry}))
 	ref := id.New()
 	if err := h.repo.PutKeyPackages(ctx, device, []store.KeyPackageRow{{
 		DeviceID: device, KPRef: ref[:], Blob: fixtureFile(t, "key_package.mls"), LastResort: 0,

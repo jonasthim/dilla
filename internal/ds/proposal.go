@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -33,12 +34,33 @@ func (d *DS) proposeAddLocked(ctx context.Context, groupID, deviceID, actionID i
 	if err != nil {
 		return err
 	}
-	kp, err := d.opts.Store.TakeKeyPackage(ctx, deviceID, d.now())
-	if errors.Is(err, store.ErrNotFound) {
-		return errInvalid("no usable KeyPackage for that device")
-	}
+	// Invariant 6's "validate before proposing", for the target itself. A device that is already
+	// a current leaf is refused, and a device whose Add is already outstanding at this epoch is
+	// not proposed twice: two Adds for one signature key make every commit that carries them
+	// invalid (OpenMLS refuses the commit with DuplicateSignatureKey, so the group freezes) and
+	// would spend a second KeyPackage. The check runs under the group lock, so two proposers
+	// racing for one device (a channel-membership sync and an admit, say) cannot both pass it;
+	// the second is a no-op, because the action it asks for is already in flight.
+	members, err := d.opts.Store.ListMembers(ctx, groupID)
 	if err != nil {
 		return err
+	}
+	for _, m := range members {
+		if m.RemovedEpoch == nil && m.DeviceID == deviceID {
+			refusal := errInvalid("the device is already a member of the group")
+			refusal.cause = ErrAlreadyMember
+			return refusal
+		}
+	}
+	outstanding, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
+	if err != nil {
+		return err
+	}
+	for _, p := range outstanding {
+		if p.Origin == 0 && p.VoidAt == nil && p.Kind == uint8(mlswasi.ProposalAdd) &&
+			p.TargetDevice != nil && *p.TargetDevice == deviceID {
+			return nil
+		}
 	}
 
 	inst, err := d.opts.Wasm.Acquire(ctx)
@@ -46,6 +68,23 @@ func (d *DS) proposeAddLocked(ctx context.Context, groupID, deviceID, actionID i
 		return err
 	}
 	defer inst.Release()
+
+	// Invariant 4's device-list clause, checked BEFORE a KeyPackage is spent (invariant 6's
+	// "before proposing"). A device that enrolled and published its KeyPackages before its user's
+	// new signed list names it (protocol/03 § Pairing, steps 2 and 5) would otherwise be proposed:
+	// every member commit that includes the Add is refused by checkAddedMember, every commit that
+	// omits it is refused by clause 1, and the group is frozen until the Add voids, having also
+	// spent the KeyPackage the pairing needed.
+	if err := d.checkListedDevice(ctx, inst, deviceID); err != nil {
+		return err
+	}
+	kp, err := d.opts.Store.TakeKeyPackage(ctx, deviceID, d.now())
+	if errors.Is(err, store.ErrNotFound) {
+		return errInvalid("no usable KeyPackage for that device")
+	}
+	if err != nil {
+		return err
+	}
 
 	if _, err := inst.ValidateKeyPackage(ctx, kp.Blob); err != nil {
 		return errInvalid("the stored KeyPackage no longer validates: " + err.Error())
@@ -62,6 +101,37 @@ func (d *DS) proposeAddLocked(ctx context.Context, groupID, deviceID, actionID i
 		Origin:       0,
 		ActionID:     actionID,
 	})
+}
+
+// checkListedDevice answers errInvalid unless the device exists, is live, and its DSK is in the
+// newest signed device list of its user, verified in v (the guest the caller holds). It is the
+// same test checkAddedMember applies to the commit that will carry the Add, so an Add the delivery
+// service proposes is one a member can commit. A list the verifier cannot reach at all
+// (ErrDeviceListUnavailable) is returned as is: that is "cannot answer", not "not listed".
+func (d *DS) checkListedDevice(ctx context.Context, v DeviceListVerifier, deviceID id.ID) error {
+	dev, err := d.opts.Store.GetDevice(ctx, deviceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errInvalid("the device is unknown to this instance")
+	}
+	if err != nil {
+		return err
+	}
+	if dev.RevokedAt != nil || dev.QuarantinedAt != nil {
+		return errInvalid("the device is revoked or quarantined")
+	}
+	entries, err := d.opts.DeviceLists.Entries(ctx, v, dev.UserID)
+	if err != nil {
+		if errors.Is(err, ErrDeviceListUnavailable) || ctx.Err() != nil {
+			return err
+		}
+		return errInvalid("no verifiable signed device list for the device's user: " + err.Error())
+	}
+	for _, dsk := range entries {
+		if bytes.Equal(dsk, dev.DSKPub) {
+			return nil
+		}
+	}
+	return errInvalid("the device's DSK is not in its user's newest signed device list")
 }
 
 // ProposeRemove issues an external Remove. A target leaf that is already gone is dropped rather
@@ -109,153 +179,167 @@ func (d *DS) proposeRemoveLocked(ctx context.Context, groupID id.ID, leaf uint32
 	})
 }
 
-// ProposeAddBatch adds many devices at once. At most MaxAddsPerCommit (256) Adds are outstanding
-// for one commit; the rest wait for the next epoch, which is what keeps a 1,000-device private
-// channel to four commits rather than one commit OpenMLS cannot build.
+// ProposeAddBatch adds many devices to one group, at most MaxAddsPerCommit (256) Adds per commit,
+// until every device still eligible is in: protocol/01 § Joining's "the creator's device commits
+// at most 256 Adds per commit, each producing one Welcome, until all eligible devices are
+// members".
+//
+// The batch is QUEUED WHOLE, durably, and then drained: the first slice is proposed now, into
+// whatever room the group's current epoch has left, and each later slice by the commit that
+// applies the one before it (commit step 9) or, when no commit comes, by the sweeper. It cannot
+// loop "propose 256, request a commit, propose 256" in one call: the instance does not commit, a
+// member does, asynchronously, and a second slice proposed before the first is committed would sit
+// at the same epoch and push one commit past the cap the batching exists to keep.
+//
+// Plan 2 task 7's brief rewrote this method as that loop; it is this form instead because of the
+// sentence above. What the brief wanted from the loop is kept: PlanBatches splits and de-duplicates
+// the batch, and stillEligible's rule (eligibleNow) is re-read for every device when its slice is
+// drained, so a device revoked, or a user whose role was revoked, while the storm runs is dropped
+// from the rest of it rather than added by a batch planned before the change.
+//
+// The queue is `pending_joins` (Plan 1 follow-up card 8, deviation B22, ruling 43): a restart
+// between two slices loses nothing.
 func (d *DS) ProposeAddBatch(ctx context.Context, groupID id.ID, devices []id.ID) error {
+	// The per-group lock is taken once for the whole call, exactly as every other write path on
+	// *DS takes it: the room a slice may take is read from the group's outstanding Adds, and two
+	// drains interleaving on one group would both see the same room.
 	unlock := d.lock(groupID)
 	defer unlock()
 
-	// The outstanding count is read at the GROUP'S CURRENT EPOCH, not at literal epoch 0: past
-	// epoch 0 a `ListProposals(…, 0, …)` sees nothing, `room` is always the full 256, and
-	// successive calls push straight past MaxAddsPerCommit — which is the one thing the batching
-	// exists to prevent.
-	row, err := d.opts.Store.GetGroup(ctx, groupID)
-	if errors.Is(err, store.ErrNotFound) {
+	if _, err := d.opts.Store.GetGroup(ctx, groupID); errors.Is(err, store.ErrNotFound) {
 		return errNotFound("group")
-	}
-	if err != nil {
+	} else if err != nil {
 		return err
 	}
-	room := d.opts.Policy.MaxAddsPerCommit
-	outstanding, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
-	if err != nil {
+	plan := PlanBatches(devices, d.opts.Policy.MaxAddsPerCommit)
+	if err := d.opts.Store.QueuePendingJoins(ctx, groupID, slices.Concat(plan.Batches...), d.now()); err != nil {
 		return err
 	}
-	for _, o := range outstanding {
-		if o.Origin == 0 && o.VoidAt == nil && o.Kind == uint8(mlswasi.ProposalAdd) {
-			room--
-		}
-	}
-	// ONE election for the whole batch, not one per device. invariant 7 elects a single committer
-	// and has the others back off; a batch that elected per proposal walked beginRound's rotation
-	// 256 times and told a third of the online devices, concurrently, that each was the committer.
-	// The window stays open until the batch returns; the single RequestCommit below is the
-	// explicit call, which suppressElections deliberately does not suppress, so the one frame the
-	// batch sends names the whole ref set and goes to the lowest-index online device.
-	defer d.suppressElections(groupID)()
+	_, err := d.drainPendingJoins(ctx, groupID)
+	return err
+}
 
-	remainder := make([]id.ID, 0, len(devices))
-	issued := 0
-	for i, device := range devices {
-		if room <= 0 {
-			remainder = append(remainder, devices[i:]...)
-			break
-		}
-		if err := d.proposeAddLocked(ctx, groupID, device, id.New()); err != nil {
-			// One unusable KeyPackage must not sink the batch: the device is skipped and the join
-			// storm continues. The skipped device is picked up by the next batch.
-			d.log().Warn("batched add skipped", "device", device.String()[:8], "err", err)
-			continue
-		}
-		issued++
-		room--
+// drainPendingJoins proposes the next slice of the group's join storm: as many queued devices as
+// the group's epoch has room for, each re-checked by eligibleNow when it is taken. It runs with the
+// group lock already held — by ProposeAddBatch, by the commit path after a merge (withGroup has
+// returned by then), and by the sweeper — so it calls only the lock-free proposal bodies.
+//
+// A device that is no longer eligible, or whose Add the guest or the directory refuses, is DROPPED
+// from the queue and logged, never re-queued: it would only be refused again, and a device that
+// becomes eligible later is queued again by the membership change that made it so
+// (api.SyncGroupMembers). A device the check cannot ANSWER for — a store or ACL fault, or the
+// context ending — stays queued, with every device of the slice after it, and the drain stops: a
+// transient fault must not silently shorten a storm.
+//
+// The queue is READ, not taken: a device's row is deleted only once the device is resolved —
+// after its Add is stored, or once it has been judged ineligible or refused. So a process that
+// dies in the middle of a slice (a restart, an OOM kill) leaves every device it had not resolved
+// in pending_joins for the sweeper, where a take-then-propose would have lost them; no error path
+// runs on a crash. Dying between the Add's store and the row's delete is harmless too: the
+// restarted drain finds the outstanding Add (eligibleNow's pending check) and drops the row
+// without spending a second KeyPackage.
+//
+// It elects once for the whole slice, exactly as the batch it drains would: the commit that
+// applied this epoch's Adds is followed by ONE mls.commit_needed for the next slice, never by one
+// per Add.
+func (d *DS) drainPendingJoins(ctx context.Context, groupID id.ID) (int, error) {
+	queued, err := d.opts.Store.CountPendingJoins(ctx, groupID)
+	if err != nil || queued == 0 {
+		return 0, err
 	}
+	release := d.suppressElections(groupID)
+	issued, err := d.drainSlice(ctx, groupID)
+	release()
 	if issued > 0 {
 		// Logged, not returned, for storeInstanceProposal's own reason: every proposal of the
-		// batch is already durable and fanned out, and a failed election is re-run by the
+		// slice is already durable and fanned out, and a failed election is re-run by the
 		// watchdog's next tick.
-		if err := d.RequestCommit(ctx, groupID); err != nil {
-			d.log().Error("electing a committer for a batch of instance proposals failed",
-				"group", groupID.String()[:8], "err", err)
+		if rerr := d.RequestCommit(ctx, groupID); rerr != nil {
+			d.log().Error("electing a committer for a slice of a join storm failed",
+				"group", groupID.String()[:8], "err", rerr)
 		}
 	}
-	// The remainder is KEPT, not dropped. Nothing else re-invokes this method, so a dropped tail
-	// means a 1,000-device join storm stalls after its first 256 and `join_storm_256_batched` can
-	// never complete.
-	if len(remainder) > 0 {
-		d.queuePendingJoins(groupID, remainder)
-	}
-	return nil
+	return issued, err
 }
 
-// queuePendingJoins and takePendingJoins hold the tail of a join storm between commits.
-//
-// DEVIATION from the task brief, forced by the schema: the brief writes these through
-// `store.QueuePendingJoins` / `store.TakePendingJoins` over a `pending_joins` table it calls "a 1b
-// table (task 19's schema)". Neither the methods nor the table exist — `store.MLS` (deviation B13)
-// names the pair but task 3 did not declare it and `00002_mls.sql` creates no such table — and
-// adding a migration, two sqlc query sets and two adapters is well outside a task whose Files are
-// three new files in `internal/ds`. The queue therefore lives in this process.
-//
-// THE LOSS IS SILENT, and that is the cost to weigh. A restart between a 1,000-device
-// `ProposeAddBatch` and the next commit drops every device still waiting: nothing logs it, nothing
-// retries it, no row records that they were ever queued, and they are proposed again only if some
-// caller happens to issue another `ProposeAddBatch` for the same devices. The chaos scenario
-// `join_storm_256_batched` therefore cannot be satisfied durably, and Plan 2's materialised
-// private channel — which consumes `ds.ProposeAddBatch` — inherits it. This is an unassigned
-// prerequisite, not a design choice: deviation B13 already names `QueuePendingJoins` /
-// `TakePendingJoins` for `store.MLS`; the migration, the two sqlc query sets and the two adapters
-// are owned by TASK 23 (deviation B22, ruling 43), the last task in this plan that lands a
-// migration pair. These two functions are deliberately the single seam, so that swap is a
-// two-function change with no other caller to touch.
-func (d *DS) queuePendingJoins(groupID id.ID, devices []id.ID) {
-	d.pendingMu.Lock()
-	defer d.pendingMu.Unlock()
-	if d.pending == nil {
-		d.pending = map[id.ID][]id.ID{}
-	}
-	seen := map[id.ID]struct{}{}
-	for _, existing := range d.pending[groupID] {
-		seen[existing] = struct{}{}
-	}
-	for _, device := range devices {
-		if _, ok := seen[device]; ok {
-			continue // PRIMARY KEY (group_id, device_id) in the durable form
-		}
-		seen[device] = struct{}{}
-		d.pending[groupID] = append(d.pending[groupID], device)
-	}
-}
-
-func (d *DS) takePendingJoins(groupID id.ID, limit int) []id.ID {
-	d.pendingMu.Lock()
-	defer d.pendingMu.Unlock()
-	queued := d.pending[groupID]
-	if len(queued) == 0 {
-		return nil
-	}
-	if limit > len(queued) {
-		limit = len(queued)
-	}
-	taken := queued[:limit:limit]
-	if rest := queued[limit:]; len(rest) > 0 {
-		d.pending[groupID] = rest
-	} else {
-		delete(d.pending, groupID)
-	}
-	return taken
-}
-
-// drainPendingJoins proposes the next slice of a join storm. The commit path calls it after a
-// merge that applied Adds, with the group lock already held and withGroup already returned, so it
-// uses the lock-free body.
-// It elects once for the whole slice, exactly as ProposeAddBatch does: the commit that applied
-// this epoch's Adds is followed by ONE mls.commit_needed for the next 256, never by 256 of them.
-func (d *DS) drainPendingJoins(ctx context.Context, groupID id.ID) {
-	defer d.suppressElections(groupID)()
+func (d *DS) drainSlice(ctx context.Context, groupID id.ID) (int, error) {
+	now := d.now()
 	issued := 0
-	for _, device := range d.takePendingJoins(groupID, d.opts.Policy.MaxAddsPerCommit) {
-		if err := d.proposeAddLocked(ctx, groupID, device, id.New()); err != nil {
-			d.log().Warn("queued add skipped", "device", device.String()[:8], "err", err)
-			continue
+	for {
+		snap, err := d.groupSnapshot(ctx, groupID)
+		if err != nil {
+			return issued, err
 		}
-		issued++
+		room := d.opts.Policy.MaxAddsPerCommit - snap.adds
+		if room <= 0 {
+			return issued, nil
+		}
+		queued, err := d.opts.Store.ListPendingJoins(ctx, groupID, int32(room)) //nolint:gosec // G115: room is at most MaxAddsPerCommit
+		if err != nil || len(queued) == 0 {
+			return issued, err
+		}
+		for _, device := range queued {
+			ok, err := d.eligibleNow(ctx, snap, groupID, device, now)
+			if err == nil && ctx.Err() != nil {
+				err = ctx.Err()
+			}
+			if err != nil {
+				// Unanswered: this device and the rest of the slice are still queued.
+				return issued, err
+			}
+			if !ok {
+				d.log().Info("queued add dropped: the device is no longer eligible",
+					"group", groupID.String()[:8], "device", device.String()[:8])
+			} else if err := d.proposeAddLocked(ctx, groupID, device, id.New()); err != nil {
+				if ctx.Err() != nil {
+					return issued, ctx.Err()
+				}
+				if errors.Is(err, ErrDeviceListUnavailable) {
+					// Unanswered, not refused: the device stays queued.
+					return issued, err
+				}
+				// One unusable KeyPackage must not sink the slice: the device is skipped and the
+				// storm continues.
+				d.log().Warn("queued add skipped", "group", groupID.String()[:8],
+					"device", device.String()[:8], "err", err)
+			} else {
+				snap.pending[device] = true
+				issued++
+			}
+			// Resolved one way or the other: only now does the device leave the queue.
+			if err := d.opts.Store.DeletePendingJoins(ctx, groupID, []id.ID{device}); err != nil {
+				return issued, err
+			}
+		}
+		// Every device dropped or skipped left its room free; the loop reads the next ones into
+		// it, so a slice is filled while the queue holds eligible devices.
 	}
-	if issued > 0 {
-		if err := d.RequestCommit(ctx, groupID); err != nil {
-			d.log().Error("electing a committer for the next slice of a join storm failed",
-				"group", groupID.String()[:8], "err", err)
+}
+
+// drainStalledJoins is the sweeper's half of the drain: every group holding a queue gets one
+// drain, under its lock. It is what re-drives a storm no commit re-drives — one whose outstanding
+// Adds were voided (invariant 6's TTL), and one in flight across a restart. A group whose epoch has
+// no room issues nothing.
+func (d *DS) drainStalledJoins(ctx context.Context) (int, error) {
+	drained := 0
+	after := id.ID{}
+	for {
+		groups, err := d.opts.Store.ListPendingJoinGroups(ctx, after, sweepPage)
+		if err != nil {
+			return drained, err
+		}
+		for _, groupID := range groups {
+			after = groupID
+			unlock := d.lock(groupID)
+			n, err := d.drainPendingJoins(ctx, groupID)
+			unlock()
+			drained += n
+			if err != nil {
+				d.log().Error("draining a stalled join storm failed", "group", groupID.String()[:8], "err", err)
+			}
+		}
+		if len(groups) < sweepPage {
+			return drained, nil
 		}
 	}
 }
@@ -335,7 +419,7 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 	// A fresh instance proposal is what invariant 7's election exists to get committed, so the
 	// election is held here, the moment the proposal is durable — UNLESS a batch window is open.
 	// This function is the sink of every issuing path, single and batched alike (ProposeAdd,
-	// ProposeRemove, reissue, and each device of ProposeAddBatch and drainPendingJoins), and
+	// ProposeRemove, reissue, and each device of a join storm's slice in drainPendingJoins), and
 	// invariant 7 elects ONE committer per round: a batch therefore suppresses the per-proposal
 	// election and makes one call of its own when the whole batch is durable.
 	//
@@ -363,6 +447,93 @@ func (d *DS) Void(ctx context.Context, groupID id.ID, ref []byte) error {
 		}
 	}
 	return nil
+}
+
+// VoidIneligibleAdds voids every outstanding instance Add at the group's current epoch whose
+// device is gone, revoked or quarantined, or whose user the channel ACL no longer admits.
+//
+// Such an Add is a deadlock, not a delay: clause 1 of invariant 4 refuses every member commit that
+// leaves it out, and checkAddedMember refuses every member commit that includes it (the add_acl
+// clause), so no commit can land and the group answers 425 until the Add's TTL voids it (24 h for
+// a text group), longer when a re-issue restarts the clock. A kick, a ban, a leave, a role revoked
+// mid-storm or a group-DM participant removed while their Add is outstanding all reach it. A void
+// proposal MAY be omitted, so voiding it is what lets the next member commit through.
+//
+// The api layer calls it for every group a user is being removed from; commitLocked also runs it
+// before invariant 4's clauses, so a change the api layer did not see is caught at the next commit.
+func (d *DS) VoidIneligibleAdds(ctx context.Context, groupID id.ID) error {
+	unlock := d.lock(groupID)
+	defer unlock()
+	_, err := d.voidIneligibleAddsLocked(ctx, groupID)
+	return err
+}
+
+// voidIneligibleAddsLocked is VoidIneligibleAdds with the group lock already held. It answers how
+// many Adds it voided. An eligibility question it cannot answer stops it with the error: an Add is
+// voided only on a definite "no".
+func (d *DS) voidIneligibleAddsLocked(ctx context.Context, groupID id.ID) (int, error) {
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, errNotFound("group")
+	}
+	if err != nil {
+		return 0, err
+	}
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
+	if err != nil {
+		return 0, err
+	}
+	voided := 0
+	for _, r := range rows {
+		if r.Origin != 0 || r.VoidAt != nil || mlswasi.ProposalKind(r.Kind) != mlswasi.ProposalAdd || r.TargetDevice == nil {
+			continue
+		}
+		ok, err := d.addStillEligible(ctx, groupID, *r.TargetDevice)
+		if err != nil {
+			return voided, err
+		}
+		if ok {
+			continue
+		}
+		if err := d.opts.Store.VoidProposal(ctx, groupID, r.Ref, d.now()); err != nil {
+			return voided, err
+		}
+		if d.opts.Metrics != nil {
+			d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(r.Kind)).Dec()
+		}
+		d.log().Info("an outstanding Add was voided: its device or user is no longer eligible",
+			"group", groupID.String()[:8], "device", r.TargetDevice.String()[:8])
+		voided++
+	}
+	return voided, nil
+}
+
+// addStillEligible is the part of invariant 4's Add clause that can change after the Add was
+// proposed: the device must still be live, still named in its user's newest signed device list,
+// and its user still admitted by the channel ACL.
+func (d *DS) addStillEligible(ctx context.Context, groupID, deviceID id.ID) (bool, error) {
+	dev, err := d.opts.Store.GetDevice(ctx, deviceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if dev.RevokedAt != nil || dev.QuarantinedAt != nil {
+		return false, nil
+	}
+	// The device-list clause: the same test checkAddedMember applies to the commit that would
+	// carry the Add (checkListedDevice acquires its own guest, and no caller holds one here). A
+	// list that no longer names the device, or that does not verify, is a definite "no"; a list
+	// the verifier cannot reach at all is "cannot answer" and stops the pass.
+	if err := d.checkListedDevice(ctx, nil, deviceID); err != nil {
+		var dsErr *Error
+		if errors.As(err, &dsErr) && dsErr.Code == errInvalid("").Code {
+			return false, nil
+		}
+		return false, err
+	}
+	return d.opts.ACL.Eligible(ctx, groupID, dev.UserID)
 }
 
 // kindOfProposal reads one row's kind, for the gauge that has to go back down again.
@@ -434,6 +605,16 @@ func (d *DS) reissue(ctx context.Context, groupID id.ID, old store.ProposalRow) 
 	case mlswasi.ProposalAdd:
 		if old.TargetDevice == nil {
 			return nil
+		}
+		// An Add whose device or user is no longer eligible is dropped, never re-proposed: a
+		// fresh copy would be exactly the Add no commit can satisfy (VoidIneligibleAdds), with a
+		// fresh TTL.
+		ok, err := d.addStillEligible(ctx, groupID, *old.TargetDevice)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return d.opts.Store.DeleteProposals(ctx, groupID, [][]byte{old.Ref})
 		}
 		return d.reissueVia(groupID, old.Ref, func() error {
 			return d.proposeAddLocked(ctx, groupID, *old.TargetDevice, old.ActionID)

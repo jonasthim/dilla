@@ -220,8 +220,8 @@ func (h *dsHarness) restartDS() {
 }
 
 // channel declares the visibility and mode the injected Channels source reports for the fixture's
-// target, and returns that target. Plan 1 has no `channels` table (NV-B5), so invariant 1's input
-// is an injected seam here exactly as it is in production until Plan 2 task 2 replaces it.
+// target, and returns that target. Invariant 1's input is an injected seam here exactly as it is
+// in production, where api.StructureChannels reads it from the `channels` table.
 func (h *dsHarness) channel(t *testing.T, visibility, mode uint8) id.ID {
 	t.Helper()
 	target := dsFixture(t).targetID
@@ -279,11 +279,33 @@ func (h *dsHarness) memberSession(t *testing.T, groupID id.ID, leaf uint32) auth
 	return auth.Session{}
 }
 
-// fakeChannels is the Plan-1 stand-in for `store.Structure`: the `channels` table arrives with
-// Plan 2 task 2 (NV-B5), so invariant 1's input is injected. It is not a mock of the delivery
-// service — it is the other side of a seam the production build also injects.
+// fakeChannels is the delivery service's own tests' channel source. Production injects
+// api.StructureChannels over the real `channels` table (Plan 2 task 2); these tests use the one
+// committed fixture, whose binding names no community, so invariant 1's input and the
+// registration ACL's verdict are declared here instead. It is not a mock of the delivery
+// service — it is the other side of a seam the production build also injects, and
+// internal/api/dschannels_test.go drives the real implementation through the real Register.
 type fakeChannels struct {
 	modes map[id.ID][2]uint8
+	// refuse is what MayRegister answers; nil admits every registration.
+	refuse error
+	// asked records each MayRegister question, so a test can assert who was asked about.
+	asked []registrationQuestion
+	// recreate is what MayRecreate answers; nil admits the re-creation of a group whose heal is
+	// pending (invariant 11).
+	recreate error
+}
+
+func (f *fakeChannels) MayRecreate(context.Context, id.ID, ds.Binding) error { return f.recreate }
+
+type registrationQuestion struct {
+	user    id.ID
+	binding ds.Binding
+}
+
+func (f *fakeChannels) MayRegister(_ context.Context, userID id.ID, b ds.Binding) error {
+	f.asked = append(f.asked, registrationQuestion{user: userID, binding: b})
+	return f.refuse
 }
 
 func (f *fakeChannels) Channel(_ context.Context, targetID id.ID) (visibility, mode uint8, err error) {

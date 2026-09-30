@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/livekit/livekit-server/pkg/config"
@@ -12,7 +13,12 @@ import (
 	"github.com/livekit/livekit-server/pkg/service"
 	"github.com/livekit/livekit-server/pkg/telemetry/prometheus"
 	"github.com/livekit/protocol/auth"
+	"github.com/livekit/protocol/livekit"
+	"github.com/twitchtv/twirp"
 )
+
+// adminTokenTTL bounds the short-lived RoomService token DeleteRoom signs for itself.
+const adminTokenTTL = time.Minute
 
 // tokenTTL matches the spec's one-hour, leaf-gated JWT.
 const tokenTTL = time.Hour
@@ -178,6 +184,39 @@ func (s *Server) Token(room, identity string) (string, error) {
 		SetValidFor(tokenTTL).
 		SetVideoGrant(grant).
 		ToJWT()
+}
+
+// DeleteRoom closes room and disconnects every participant still in it, through LiveKit's own
+// RoomService API on the loopback HTTP port with a one-minute token carrying roomCreate (the grant
+// LiveKit's DeleteRoom checks). A room LiveKit does not know — never joined, already empty and
+// reaped, or deleted before — answers twirp's not_found, which is success here: the call is over
+// either way.
+func (s *Server) DeleteRoom(ctx context.Context, room string) error {
+	if room == "" {
+		return errors.New("sfu: room must be set")
+	}
+	tok, err := auth.NewAccessToken(s.cfg.APIKey, s.cfg.APISecret).
+		SetVideoGrant(&auth.VideoGrant{RoomCreate: true}).
+		SetValidFor(adminTokenTTL).
+		ToJWT()
+	if err != nil {
+		return fmt.Errorf("sfu: room service token: %w", err)
+	}
+	h := make(http.Header)
+	h.Set("Authorization", "Bearer "+tok)
+	ctx, err = twirp.WithHTTPRequestHeaders(ctx, h)
+	if err != nil {
+		return fmt.Errorf("sfu: room service headers: %w", err)
+	}
+	client := livekit.NewRoomServiceProtobufClient(s.HTTPURL(), http.DefaultClient)
+	if _, err := client.DeleteRoom(ctx, &livekit.DeleteRoomRequest{Room: room}); err != nil {
+		var te twirp.Error
+		if errors.As(err, &te) && te.Code() == twirp.NotFound {
+			return nil
+		}
+		return fmt.Errorf("sfu: delete room %q: %w", room, err)
+	}
+	return nil
 }
 
 // Stop shuts the server down and waits for Start to return.

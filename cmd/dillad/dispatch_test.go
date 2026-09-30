@@ -71,6 +71,43 @@ func TestHelpGoesToStdoutAndExitsZero(t *testing.T) {
 	}
 }
 
+// I15 (fix wave): --help on any verb prints that verb's usage once, on stdout, exits 0 and runs
+// nothing: no backup archive in the working directory, no error from a verb body that went on.
+// backup gets a real config, so a verb that ran on would write its archive; the others get a
+// missing one, so a verb that ran on would fail rather than serve.
+func TestHelpOnEveryVerbPrintsUsageOnceAndRunsNothing(t *testing.T) {
+	cfg := bootstrapServeConfig(t)
+	missing := "--config=" + filepath.Join(t.TempDir(), "missing.toml")
+	for _, args := range [][]string{
+		{"serve", missing, "--help"},
+		{"init", "--help"},
+		{"migrate", "up", missing, "--help"},
+		{"migrate", "status", missing, "-h"},
+		{"doctor", missing, "--help"},
+		{"version", "--help"},
+		{"backup", "--config=" + cfg, "--help"},
+		{"backup", "verify", "--help"},
+		{"restore", "--config=" + cfg, "--help"},
+	} {
+		t.Run(strings.Join(args[:len(args)-1], " "), func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			out, errBuf, err := run(t, args...)
+			if err != nil {
+				t.Fatalf("%v = %v, want nil (exit 0)", args, err)
+			}
+			if n := strings.Count(out, "Usage of dillad"); n != 1 {
+				t.Errorf("%v printed the usage %d times on stdout, want once:\n%s", args, n, out)
+			}
+			if errBuf != "" {
+				t.Errorf("%v wrote to stderr: %q", args, errBuf)
+			}
+			if entries, _ := os.ReadDir("."); len(entries) != 0 {
+				t.Errorf("%v left %d files in the working directory: the verb ran", args, len(entries))
+			}
+		})
+	}
+}
+
 func TestUnknownFlagGoesToStderrAndExitsTwo(t *testing.T) {
 	_, errBuf, err := run(t, "serve", "--nope")
 	var code exit.Code
@@ -85,18 +122,21 @@ func TestUnknownFlagGoesToStderrAndExitsTwo(t *testing.T) {
 	}
 }
 
-func TestReservedVerbsExitThree(t *testing.T) {
-	for _, name := range []string{"backup", "restore", "admin"} {
-		t.Run(name, func(t *testing.T) {
-			_, errBuf, err := run(t, name)
-			var code exit.Code
-			if !errors.As(err, &code) || code != exit.NotImplemented {
-				t.Fatalf("%s gave %v, want exit.NotImplemented (3)", name, err)
-			}
-			if !strings.Contains(errBuf+err.Error(), "not in this build") {
-				t.Fatalf("%s did not say it is not in this build: %q / %v", name, errBuf, err)
-			}
-		})
+// admin was the last reserved verb ("not in this build", exit 3); it is a dispatcher now, so the
+// bare verb is a usage error with the admin usage block, and nothing answers exit 3 any more.
+func TestAdminIsDispatchedNotReserved(t *testing.T) {
+	_, errBuf, err := run(t, "admin")
+	var code exit.Code
+	if !errors.As(err, &code) || code != exit.Usage {
+		t.Fatalf("admin gave %v, want exit.Usage (2)", err)
+	}
+	if !strings.Contains(errBuf, "usage: dillad admin") {
+		t.Fatalf("admin did not print its usage block: %q", errBuf)
+	}
+	for name, v := range verbs() {
+		if v.run == nil {
+			t.Fatalf("verb %s has no handler", name)
+		}
 	}
 }
 
@@ -113,6 +153,15 @@ func TestInitBootstrapsAndRefusesASecondRun(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("dilla.toml has mode %04o, want 0600", perm)
+	}
+	// I12 (fix wave): the relay binds a local interface address resolved at serve, never the public
+	// IP, which bridged Docker and a NATed LXC cannot bind.
+	written, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load dilla.toml: %v", err)
+	}
+	if written.TURN.RelayIP != "auto" {
+		t.Fatalf("init wrote turn.relay_ip = %q, want \"auto\"", written.TURN.RelayIP)
 	}
 	if !strings.Contains(out, "https://chat.example/i/") {
 		t.Fatalf("init did not print one invite link: %q", out)

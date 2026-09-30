@@ -13,11 +13,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/dillad/dilladtest"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 func newHost(t *testing.T) *dilladtest.Host {
@@ -206,6 +208,74 @@ func TestTheChannelRouteRecordsWhatInvariantOneReads(t *testing.T) {
 	}
 }
 
+// `channel … members=` also writes the channel row, community-less, and its channel_members: the
+// shape api.SyncRegisteredGroup reads when the channel's text group is registered, so a scenario
+// can drive "creating a private channel" (protocol/01 § Joining) through the wired instance. An
+// empty members list writes neither, as before.
+func TestTheChannelRouteWritesTheChannelAndItsMembersWhenNamed(t *testing.T) {
+	h := newHost(t)
+	control := httptest.NewServer(dilladtest.ControlHandler(h))
+	t.Cleanup(control.Close)
+	ctx := context.Background()
+	repo := h.Server().Repo()
+	var users []string
+	var want []id.ID
+	for _, name := range []string{"alice", "bob"} {
+		u := id.New()
+		if err := repo.CreateUser(ctx, store.UserRow{
+			ID: u, Username: name, Display: name, UMKPub: make([]byte, 32), SSKPub: make([]byte, 32),
+			SigUMKSSK: make([]byte, 64), Created: 1,
+		}); err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+		users = append(users, u.String())
+		want = append(want, u)
+	}
+
+	bare := id.New()
+	if status := postJSON(t, control.URL+"/debug/channel", map[string]any{
+		"target": bare.String(), "visibility": "private", "mode": "e2ee", "members": []string{},
+	}); status != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", status)
+	}
+	if _, err := repo.GetChannel(ctx, bare); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a channel named without members got a row: %v", err)
+	}
+
+	target := id.New()
+	for range 2 { // naming it twice is not a conflict
+		if status := postJSON(t, control.URL+"/debug/channel", map[string]any{
+			"target": target.String(), "visibility": "private", "mode": "e2ee", "members": users,
+		}); status != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", status)
+		}
+	}
+	ch, err := repo.GetChannel(ctx, target)
+	if err != nil {
+		t.Fatalf("GetChannel: %v", err)
+	}
+	if ch.CommunityID != nil || ch.Visibility != dilladtest.VisibilityPrivate || ch.Mode != dilladtest.ModeE2EE {
+		t.Fatalf("channel row = %+v, want a community-less private e2ee channel", ch)
+	}
+	got, err := repo.ListChannelMembers(ctx, target)
+	if err != nil {
+		t.Fatalf("ListChannelMembers: %v", err)
+	}
+	slices.SortFunc(got, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	slices.SortFunc(want, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	if !slices.Equal(got, want) {
+		t.Fatalf("channel_members = %v, want %v", got, want)
+	}
+	if v, m, err := h.Channels().Channel(ctx, target); err != nil || v != 0 || m != 0 {
+		t.Fatalf("Channel = %d, %d, %v; invariant 1's source must still record it", v, m, err)
+	}
+	if status := postJSON(t, control.URL+"/debug/channel", map[string]any{
+		"target": id.New().String(), "visibility": "private", "mode": "e2ee", "members": []string{"zz"},
+	}); status != http.StatusBadRequest {
+		t.Fatalf("a malformed member id: status = %d, want 400", status)
+	}
+}
+
 // GET /debug/state carries the counters and the three things scenarios read: the two lists and the
 // external-sender key every text and call group needs.
 func TestTheStateRouteCarriesTheListsAndTheExternalSenderKey(t *testing.T) {
@@ -233,6 +303,46 @@ func TestTheStateRouteCarriesTheListsAndTheExternalSenderKey(t *testing.T) {
 	}
 	if _, ok := state["now_unix"].(float64); !ok {
 		t.Error("now_unix is missing")
+	}
+}
+
+// GET /debug/conn answers both sides of one device in one group; for a device and a group the
+// instance has never seen, that is no connection, no fan-out membership and no group. A malformed
+// id is a 400.
+func TestTheConnRouteReportsBothSidesOfADeviceInAGroup(t *testing.T) {
+	h := newHost(t)
+	control := httptest.NewServer(dilladtest.ControlHandler(h))
+	t.Cleanup(control.Close)
+
+	device, group := id.New(), id.New()
+	res, err := httpGet(t, control.URL+"/debug/conn?device="+device.String()+"&group="+group.String())
+	if err != nil {
+		t.Fatalf("GET /debug/conn: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	var report dilladtest.ConnReport
+	if err := json.NewDecoder(res.Body).Decode(&report); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	gw := report.Gateway
+	if gw.Device != device.String() || gw.Group != group.String() || len(gw.Conns) != 0 ||
+		gw.InMembers || gw.Leaf != nil {
+		t.Errorf("gateway side = %+v, want the ids echoed and nothing else", gw)
+	}
+	if report.DS.Found || len(report.DS.Leaves) != 0 {
+		t.Errorf("ds side = %+v, want an unknown group", report.DS)
+	}
+
+	bad, err := httpGet(t, control.URL+"/debug/conn?device=zz&group="+group.String())
+	if err != nil {
+		t.Fatalf("GET /debug/conn: %v", err)
+	}
+	defer bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a malformed device id: status = %d, want 400", bad.StatusCode)
 	}
 }
 

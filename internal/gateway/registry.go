@@ -20,16 +20,46 @@ type registry struct {
 	members  map[id.ID][]id.ID          // group -> member devices, written by the DS after a merge
 	leaves   map[id.ID]map[id.ID]uint32 // group -> device -> leaf index
 	bots     map[id.ID]struct{}
+	// byChannel is the channel-keyed index beside the group-, device- and user-keyed ones (Plan 2
+	// task 8, P2-D14): readable channel -> the USERS its message.plain frames reach, written by
+	// the api layer from channel_members. It names users, not connections, for the reason members
+	// names devices: a connection that opens, resumes or closes needs no bookkeeping here, and a
+	// second device of a subscribed user is reached the moment it is live.
+	byChannel map[id.ID][]id.ID
 }
 
 func newRegistry() *registry {
 	return &registry{
-		byDevice: map[id.ID][]*conn{},
-		byUser:   map[id.ID][]*conn{},
-		members:  map[id.ID][]id.ID{},
-		leaves:   map[id.ID]map[id.ID]uint32{},
-		bots:     map[id.ID]struct{}{},
+		byDevice:  map[id.ID][]*conn{},
+		byUser:    map[id.ID][]*conn{},
+		members:   map[id.ID][]id.ID{},
+		leaves:    map[id.ID]map[id.ID]uint32{},
+		bots:      map[id.ID]struct{}{},
+		byChannel: map[id.ID][]id.ID{},
 	}
+}
+
+// setChannelMembers replaces a channel's audience. An empty audience removes the entry, so a
+// channel nobody may read holds no memory here.
+func (r *registry) setChannelMembers(ch id.ID, users []id.ID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(users) == 0 {
+		delete(r.byChannel, ch)
+		return
+	}
+	r.byChannel[ch] = slices.Clone(users)
+}
+
+// connsOfChannel is every live connection of every user in the channel's audience.
+func (r *registry) connsOfChannel(ch id.ID) []*conn {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []*conn
+	for _, user := range r.byChannel[ch] {
+		out = append(out, r.byUser[user]...)
+	}
+	return out
 }
 
 func (r *registry) add(c *conn) {
@@ -99,6 +129,16 @@ func (r *registry) all() []*conn {
 		out = append(out, list...)
 	}
 	return out
+}
+
+// memberOf reports, for Gateway.Debug, whether device is in the group's fan-out list, how long
+// that list is, and the leaf index recorded for the device (ok false when none is).
+func (r *registry) memberOf(g, device id.ID) (in bool, size int, leaf uint32, ok bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	members := r.members[g]
+	leaf, ok = r.leaves[g][device]
+	return slices.Contains(members, device), len(members), leaf, ok
 }
 
 func (r *registry) setMembers(g id.ID, devices []id.ID) {

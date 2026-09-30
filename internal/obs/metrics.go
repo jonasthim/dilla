@@ -34,6 +34,15 @@ type Metrics struct {
 	StoreTxDuration      *prometheus.HistogramVec
 	BlobBytes            prometheus.Counter
 	RateLimitedTotal     *prometheus.CounterVec
+	// The blob sweeper and the admin purge (Plan 2 task 11).
+	BlobGCRuns      *prometheus.CounterVec
+	BlobGCDeleted   prometheus.Counter
+	BlobGCBytes     prometheus.Counter
+	BlobRefsExpired *prometheus.CounterVec
+	BlobPurges      prometheus.Counter
+	// dillad doctor's two operational signals (Plan 2 task 15).
+	CertRenewalFailures prometheus.Counter
+	ClockSkewSeconds    prometheus.Gauge
 }
 
 // NewMetrics takes the gatherer explicitly rather than type-asserting the
@@ -78,6 +87,21 @@ func NewMetrics(r prometheus.Registerer, g prometheus.Gatherer) *Metrics {
 		prometheus.CounterOpts{Name: "dilla_blob_bytes_total", Help: "Blob bytes accepted."})
 	m.RateLimitedTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "dilla_rate_limited_total", Help: "Refusals by rate-limit class."}, []string{"class"})
+	m.BlobGCRuns = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "dilla_blob_gc_runs_total", Help: "Blob sweeper passes by result."}, []string{"result"})
+	m.BlobGCDeleted = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_blob_gc_deleted_total", Help: "Unreferenced blobs the sweeper unlinked."})
+	m.BlobGCBytes = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_blob_gc_bytes_total", Help: "Ciphertext bytes the sweeper reclaimed."})
+	m.BlobRefsExpired = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "dilla_blob_refs_expired_total", Help: "Blob references the sweeper dropped, by reason (retention, channel_deleted)."},
+		[]string{"reason"})
+	m.BlobPurges = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_blob_purges_total", Help: "Blobs an instance admin purged."})
+	m.CertRenewalFailures = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_cert_renewal_failures_total", Help: "ACME issuance or renewal attempts that failed; the last certificate keeps being served."})
+	m.ClockSkewSeconds = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "dilla_clock_skew_seconds", Help: "Median local clock offset against the doctor.clock_peers HTTPS origins; positive means the local clock is ahead."})
 	r.MustRegister(m.collectors()...)
 	return m
 }
@@ -88,6 +112,8 @@ func (m *Metrics) collectors() []prometheus.Collector {
 		m.GatewayQueueOverflow, m.DSCommits, m.DSCommitDuration, m.DSProposals,
 		m.PendingRemovalAge, m.FrozenGroups, m.ElectionRounds, m.WasiCalls,
 		m.WasiDuration, m.StoreTxDuration, m.BlobBytes, m.RateLimitedTotal,
+		m.BlobGCRuns, m.BlobGCDeleted, m.BlobGCBytes, m.BlobRefsExpired, m.BlobPurges,
+		m.CertRenewalFailures, m.ClockSkewSeconds,
 	}
 }
 
@@ -105,6 +131,46 @@ func (m *Metrics) ObserveHTTP(route, method string, status int, d time.Duration)
 }
 
 func (m *Metrics) RateLimited(class string) { m.RateLimitedTotal.WithLabelValues(class).Inc() }
+
+// BlobSweep records one sweeper pass. Like the other blob recorders it is safe
+// on a nil *Metrics, so a sweeper or admin handler built without metrics (a
+// test, a CLI verb) needs no stand-in.
+func (m *Metrics) BlobSweep(err error) {
+	if m == nil {
+		return
+	}
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	m.BlobGCRuns.WithLabelValues(result).Inc()
+}
+
+// BlobCollected records one blob the sweeper unlinked and its size.
+func (m *Metrics) BlobCollected(size uint64) {
+	if m == nil {
+		return
+	}
+	m.BlobGCDeleted.Inc()
+	m.BlobGCBytes.Add(float64(size))
+}
+
+// BlobRefExpired records one reference the sweeper dropped; reason is
+// "retention" or "channel_deleted".
+func (m *Metrics) BlobRefExpired(reason string) {
+	if m == nil {
+		return
+	}
+	m.BlobRefsExpired.WithLabelValues(reason).Inc()
+}
+
+// BlobPurged records one admin purge.
+func (m *Metrics) BlobPurged() {
+	if m == nil {
+		return
+	}
+	m.BlobPurges.Inc()
+}
 
 func statusClass(status int) string {
 	switch {

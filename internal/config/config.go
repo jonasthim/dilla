@@ -151,6 +151,10 @@ type TURN struct {
 	CredentialTTL        Duration `toml:"credential_ttl"`
 	AllocationsPerDevice int      `toml:"allocations_per_device"`
 	ProxyProtocol        bool     `toml:"proxy_protocol"`
+	// PublicURL is the relay URL clients are handed instead of the derived one ("turns:" on
+	// server.listen's port, or "turn:" on turn.listen's behind a proxy): set it when the port the
+	// world reaches differs from the listen port, or when a proxy terminates TLS for the relay.
+	PublicURL string `toml:"public_url"`
 }
 
 type LiveKit struct {

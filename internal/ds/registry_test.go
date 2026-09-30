@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // Invariant 1: a text group is refused for an invite or discoverable channel and for a
@@ -83,6 +86,96 @@ func TestTheChannelModeRuleIgnoresATargetThatIsNotAChannel(t *testing.T) {
 	}
 }
 
+// The registration ACL (Plan 1 follow-up card 14, closed by Plan 2 task 2): Register asks the
+// channel source whether the SESSION's user may register a group under this binding, and maps
+// the two refusals to the protocol's codes. A source that cannot answer is a refusal too, never
+// a pass.
+func TestRegisterAsksTheChannelSourceWhoMayRegister(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		refuse     error
+		wantCode   string
+		wantStatus int
+	}{
+		{"admitted", nil, "", 0},
+		{"not a member", fmt.Errorf("%w: not a member", ds.ErrNotEligible), "E_FORBIDDEN", http.StatusForbidden},
+		{"a binding that names no registrable target", fmt.Errorf("%w: wrong community", ds.ErrBindingTarget), "E_BINDING_INVALID", http.StatusBadRequest},
+		{"a source that cannot answer", errors.New("database is closed"), "", 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newDSHarness(t)
+			h.channels.refuse = c.refuse
+			req := h.registerRequest(t, h.channel(t, 0, 0))
+			req.Session.UserID = id.New()
+			_, err := h.ds.Register(context.Background(), req)
+
+			if len(h.channels.asked) != 1 {
+				t.Fatalf("MayRegister was asked %d times, want once", len(h.channels.asked))
+			}
+			q := h.channels.asked[0]
+			if q.user != req.Session.UserID {
+				t.Errorf("MayRegister was asked about %v, want the session's user %v", q.user, req.Session.UserID)
+			}
+			if q.binding != dsFixture(t).binding {
+				t.Errorf("MayRegister was asked about %+v, want the decoded binding %+v", q.binding, dsFixture(t).binding)
+			}
+
+			switch {
+			case c.refuse == nil:
+				if err != nil {
+					t.Fatalf("Register: %v", err)
+				}
+				return
+			case c.wantCode == "":
+				// Not a *ds.Error: the HTTP layer answers E_INTERNAL, and nothing is written.
+				var dsErr *ds.Error
+				if err == nil || errors.As(err, &dsErr) {
+					t.Fatalf("got %v, want the source's own error", err)
+				}
+			default:
+				var dsErr *ds.Error
+				if !errors.As(err, &dsErr) || dsErr.Code != c.wantCode || dsErr.Status != c.wantStatus {
+					t.Fatalf("got %v, want %d %s", err, c.wantStatus, c.wantCode)
+				}
+			}
+			if n := h.countRows(t, "mls_groups"); n != 0 {
+				t.Fatalf("a refused registration wrote %d group rows", n)
+			}
+		})
+	}
+}
+
+// Invariant 1's mode refusal comes first: a text group on a readable channel is E_MODE_READABLE
+// whoever asks, and the ACL is not consulted for a registration that is refused anyway.
+func TestTheModeRuleIsCheckedBeforeTheRegistrationACL(t *testing.T) {
+	h := newDSHarness(t)
+	h.channels.refuse = fmt.Errorf("%w: not a member", ds.ErrNotEligible)
+	_, err := h.ds.Register(context.Background(), h.registerRequest(t, h.channel(t, 0, 1)))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_MODE_READABLE" {
+		t.Fatalf("got %v, want E_MODE_READABLE", err)
+	}
+}
+
+// A delivery service built with no channel source refuses every registration: the default is
+// the conservative one, as ACL's and DeviceLists' are.
+func TestADeliveryServiceWithNoChannelSourceRefusesRegistration(t *testing.T) {
+	h := newDSHarness(t)
+	d, err := ds.New(ds.Options{
+		Store: h.repo, Wasm: h.wasm, Gateway: h.gw, Clock: h.clk, Keys: testInstanceKeys(t),
+		Policy: ds.DefaultPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("ds.New: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+	_, err = d.Register(context.Background(), h.registerRequest(t, dsFixture(t).targetID))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" || dsErr.Status != http.StatusForbidden {
+		t.Fatalf("got %v, want 403 E_FORBIDDEN", err)
+	}
+}
+
 func TestRegisterRefusesADuplicateGroupID(t *testing.T) {
 	h := newDSHarness(t)
 	req := h.registerRequest(t, h.channel(t, 0, 0))
@@ -92,6 +185,66 @@ func TestRegisterRefusesADuplicateGroupID(t *testing.T) {
 	var dsErr *ds.Error
 	if _, err := h.ds.Register(context.Background(), req); !errors.As(err, &dsErr) || dsErr.Code != "E_GROUP_EXISTS" {
 		t.Fatalf("got %v, want E_GROUP_EXISTS", err)
+	}
+}
+
+// rivalGroup stores another open group of the fixture's kind (text) on the fixture's target, as a
+// member who registered first would have left it; epochUnknown marks it as a restore leaves it.
+func (h *dsHarness) rivalGroup(t *testing.T, epochUnknown bool) id.ID {
+	t.Helper()
+	ctx := context.Background()
+	gid := id.New()
+	if err := h.repo.CreateGroup(ctx, store.GroupRow{
+		GroupID: gid, Binding: []byte{0xf6}, Kind: 0, TargetID: dsFixture(t).targetID,
+		Ciphersuite: 1, Epoch: 3, Created: h.clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if epochUnknown {
+		if err := h.repo.MarkAllGroupsEpochUnknown(ctx, h.clk.Now().Add(24*time.Hour).Unix()); err != nil {
+			t.Fatalf("MarkAllGroupsEpochUnknown: %v", err)
+		}
+	}
+	return gid
+}
+
+// C1 (fix wave): one text group per end-to-end-encrypted channel and one call group per voice
+// channel (protocol/01 § Group kinds). A second registration for a target that already has an
+// open group of the kind forks the channel (text) or hijacks the live call (call), and every
+// registration starts an Add storm that spends one KeyPackage of every eligible device.
+func TestRegisterRefusesASecondOpenGroupForOneTarget(t *testing.T) {
+	h := newDSHarness(t)
+	rival := h.rivalGroup(t, false)
+	_, err := h.ds.Register(context.Background(), h.registerRequest(t, h.channel(t, 0, 0)))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_GROUP_EXISTS" || dsErr.Status != http.StatusConflict {
+		t.Fatalf("a second text group for the target: %v, want 409 E_GROUP_EXISTS", err)
+	}
+	if _, err := h.repo.GetGroup(context.Background(), dsFixture(t).groupID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the refused group was stored: %v", err)
+	}
+	if groups, _ := h.repo.GroupsForTarget(context.Background(), dsFixture(t).targetID, 0); len(groups) != 1 || groups[0].GroupID != rival {
+		t.Fatalf("open groups for the target = %+v, want only the first", groups)
+	}
+}
+
+// Invariant 11's one exception: while every open group of the target is epoch-unknown (a restore
+// whose heal is pending), the channel owner's device may re-create the group. Anyone the channel
+// source does not name is still refused.
+func TestRegisterAdmitsTheOwnersReCreationOfAnEpochUnknownGroup(t *testing.T) {
+	refused := newDSHarness(t)
+	refused.rivalGroup(t, true)
+	refused.channels.recreate = fmt.Errorf("%w: not the channel owner", ds.ErrNotEligible)
+	_, err := refused.ds.Register(context.Background(), refused.registerRequest(t, refused.channel(t, 0, 0)))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_GROUP_EXISTS" {
+		t.Fatalf("a non-owner's re-creation: %v, want E_GROUP_EXISTS", err)
+	}
+
+	h := newDSHarness(t)
+	h.rivalGroup(t, true)
+	if _, err := h.ds.Register(context.Background(), h.registerRequest(t, h.channel(t, 0, 0))); err != nil {
+		t.Fatalf("the owner's re-creation of an epoch-unknown group: %v", err)
 	}
 }
 

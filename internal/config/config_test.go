@@ -52,6 +52,16 @@ func writeSecrets(t *testing.T, dir string) {
 	}
 }
 
+// writeSecretFile writes a 32-byte secret file and returns its path.
+func writeSecretFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(p, []byte(strings.Repeat("s", 32)), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	return p
+}
+
 func loadTestdata(t *testing.T, name string) (*config.Config, error) {
 	t.Helper()
 	dir := t.TempDir()
@@ -285,6 +295,69 @@ func TestValidationRules(t *testing.T) {
 		c.Auth.Password.HashMemoryBudgetMiB = 256
 		if err := c.Validate(); err == nil {
 			t.Fatal("argon2_memory_kib above the hash memory budget accepted")
+		}
+	})
+	// I13 (fix wave): a livekit.* key that never reaches LiveKit is refused rather than silently
+	// ignored. LiveKit v1.13.7 has no publisher cap and dillad renders its own YAML, so only the
+	// defaults of max_publishers, extra_config_file and use_external_ip are accepted until they are
+	// wired.
+	t.Run("livekit keys that reach nothing are refused", func(t *testing.T) {
+		for name, set := range map[string]func(*config.Config){
+			"extra_config_file": func(c *config.Config) { c.LiveKit.ExtraConfigFile = "/etc/dilla/livekit.yaml" },
+			"max_publishers":    func(c *config.Config) { c.LiveKit.MaxPublishers = 4 },
+			"use_external_ip":   func(c *config.Config) { c.LiveKit.UseExternalIP = true },
+		} {
+			c := base()
+			set(c)
+			c.Derive()
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), "livekit."+name) {
+				t.Errorf("livekit.%s set: Validate = %v, want an error naming the key", name, err)
+			}
+		}
+		c := base()
+		c.Derive()
+		if err := c.Validate(); err != nil {
+			t.Fatalf("the defaults: %v", err)
+		}
+	})
+	// I12 (fix wave): turn.relay_ip is an IP address or "auto"; anything else is refused at load, not
+	// at the first Allocate.
+	t.Run("turn.relay_ip is an address or auto", func(t *testing.T) {
+		for relay, ok := range map[string]bool{"auto": true, "10.0.0.5": true, "2001:db8::5": true, "chat.example": false} {
+			c := base()
+			c.TURN.Enabled = true
+			c.TURN.SharedSecretFile = writeSecretFile(t)
+			c.TURN.RelayIP = relay
+			c.Derive()
+			err := c.Validate()
+			if ok && err != nil {
+				t.Errorf("relay_ip %q refused: %v", relay, err)
+			}
+			if !ok && (err == nil || !strings.Contains(err.Error(), "turn.relay_ip")) {
+				t.Errorf("relay_ip %q: Validate = %v, want an error naming turn.relay_ip", relay, err)
+			}
+		}
+	})
+	// I14 (fix wave): turn.public_url is a turn: or turns: URL with a host and a port, or empty.
+	t.Run("turn.public_url is a TURN URL", func(t *testing.T) {
+		for u, ok := range map[string]bool{
+			"": true, "turns:turn.example:5349?transport=tcp": true, "turn:[2001:db8::1]:3478?transport=tcp": true,
+			"https://turn.example": false, "turns:turn.example": false, "turn:turn.example:x": false, "turns::5349": false,
+		} {
+			c := base()
+			c.TURN.Enabled = true
+			c.TURN.SharedSecretFile = writeSecretFile(t)
+			c.TURN.RelayIP = "auto"
+			c.TURN.PublicURL = u
+			c.Derive()
+			err := c.Validate()
+			if ok && err != nil {
+				t.Errorf("public_url %q refused: %v", u, err)
+			}
+			if !ok && (err == nil || !strings.Contains(err.Error(), "turn.public_url")) {
+				t.Errorf("public_url %q: Validate = %v, want an error naming turn.public_url", u, err)
+			}
 		}
 	})
 	t.Run("a zero rate limit is refused", func(t *testing.T) {
