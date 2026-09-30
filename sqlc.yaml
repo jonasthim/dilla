@@ -131,6 +131,8 @@ sql:
           - { column: "channels.visibility",               go_type: { type: "int64" } }
           # 006b_overwrites.sql (Plan 2 task 3).
           - { column: "channel_overwrites.target_kind",    go_type: { type: "int64" } }
+          # 008_blobs.sql (Plan 2 task 10).
+          - { column: "backups.kind",                      go_type: { type: "int64" } }
           - { column: "invites.community_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "invites.created_by",

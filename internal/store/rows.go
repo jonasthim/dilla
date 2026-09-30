@@ -460,6 +460,18 @@ type BlobRow struct {
 	UnrefSince *int64
 }
 
+// BlobRefRow mirrors `blob_refs` (Plan 2 task 10, P2-D17, P2-D24): one
+// channel's publication of one blob. UploaderDevice is the device that made the
+// reference; its user is the one the quota charges and the only one who may
+// delete the reference.
+type BlobRefRow struct {
+	BlobID         []byte
+	ChannelID      id.ID
+	UploaderDevice id.ID
+	Mime           string
+	Created        int64
+}
+
 // BackupRow mirrors `backups` (interfaces.md §4.3), whose table is 008_blobs.sql
 // and therefore Plan 2 task 10's to ship.
 // DeviceID is NOT NULL with the all-zero id meaning "not device scoped"

@@ -451,6 +451,47 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
 - **Read state** never moves backwards and never past the channel's newest `seq`: a lower value
   is ignored and a higher one is lowered to it.
 
+### Blobs
+
+An attachment's ciphertext (`04` § Envelope, `attachments`) is stored under its own SHA-256, `blob_id`, and
+published into a channel by a **reference**. The reference is the access rule: a blob is read only
+through a channel that holds a reference to it and that the caller may read. Every route is `E`,
+works for a text channel of either mode, a voice channel and a DM, and answers `404 E_NOT_FOUND`
+to a caller who may not view the channel, as for an unknown one; a category holds no attachments
+(`403 E_FORBIDDEN`). `{blob_id}` is 64 lowercase hex characters (§ Identifiers). Bodies are raw
+octets, `Content-Type: application/octet-stream`, never CBOR; the `PUT` answer and every refusal
+are CBOR as everywhere else.
+
+| Method and path | Request | Response | Permission |
+|---|---|---|---|
+| `PUT /v1/channels/{id}/blobs/{blob_id}` | the ciphertext | `201 [blob_id(bstr 32), size(uint)]` when the bytes are new, `200` with the same body when they were already stored | `attach_files` |
+| `GET /v1/channels/{id}/blobs/{blob_id}` | — | `200` the ciphertext, or `206` for a `Range` request | `read_history` |
+| `HEAD /v1/channels/{id}/blobs/{blob_id}` | — | `200` with the `GET` headers and no body | `read_history` |
+
+- **Uploading.** The instance hashes the body while it writes it and keeps it only when the digest
+  equals `{blob_id}`; otherwise the answer is `422 E_INVALID_REQUEST` and nothing is stored. The
+  body is hashed even when the blob is already stored: the upload is the proof that the caller
+  holds the bytes, so knowing a `blob_id` is never enough to publish it into another channel, and
+  a forward re-uploads. A `PUT` into a channel that already holds a reference to the blob adds
+  nothing. A body over `blobs.max_blob_bytes` is `413 E_TOO_LARGE`; a `Content-Type` other than
+  `application/octet-stream` is `415 E_INVALID_REQUEST`; bytes an instance administrator removed
+  are `410 E_PRUNED`, because content addressing would otherwise hand the removed name straight
+  back.
+- **Quota.** `blobs.quota_bytes_per_user` bounds the ciphertext bytes of the distinct blobs a user
+  references, from any of their devices; a blob in several channels counts once. An upload that
+  would pass it is `507 E_STORAGE_FULL`, and so is any upload once it is reached.
+- **Reading.** `GET` answers `404 E_NOT_FOUND` whenever this channel holds no reference, even when
+  the bytes exist, so the answer never says that an unreachable blob exists; `HEAD` has the same
+  rule. The response carries `Content-Type: application/octet-stream`,
+  `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`,
+  `Content-Security-Policy: default-src 'none'; sandbox`, `Cross-Origin-Resource-Policy:
+  same-origin`, `Cache-Control: private, max-age=31536000, immutable`, `Accept-Ranges: bytes`,
+  `ETag: "<blob_id hex>"` and `Repr-Digest: sha-256=:<base64 of blob_id>:`, and no
+  `Last-Modified`. `Range`, `If-Range`, `If-Match` and `If-None-Match` follow RFC 9110; an
+  unsatisfiable range is `416` with a plain-text body, without the `ETag` and `Cache-Control`.
+- **Deleting** a reference is the uploader's (`DELETE` above, § Communities and content); the
+  bytes go only when no reference is left anywhere and `blobs.gc_grace` has passed.
+
 ## Permissions
 
 A permission set is a 64-bit unsigned integer; `roles.allow`, `roles.deny` and a channel

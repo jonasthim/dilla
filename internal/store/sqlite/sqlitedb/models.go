@@ -19,6 +19,16 @@ type AuditLog struct {
 	At     int64
 }
 
+type Backups struct {
+	UserID      id.ID
+	Kind        int64
+	DeviceID    id.ID
+	ChunkSeq    int64
+	BlobID      []byte
+	ManifestSig []byte
+	Created     int64
+}
+
 type Bans struct {
 	CommunityID id.ID
 	UserID      id.ID
@@ -26,6 +36,29 @@ type Bans struct {
 	ByUser      id.ID
 	Created     int64
 	Expires     sql.NullInt64
+}
+
+type BlobRefs struct {
+	BlobID         []byte
+	ChannelID      id.ID
+	UploaderDevice id.ID
+	Mime           string
+	Created        int64
+}
+
+type BlobTombstones struct {
+	BlobID  []byte
+	Reason  string
+	ByUser  id.ID
+	Created int64
+}
+
+type Blobs struct {
+	BlobID     []byte
+	Size       int64
+	StorageRef string
+	Created    int64
+	UnrefSince sql.NullInt64
 }
 
 type ChannelMembers struct {

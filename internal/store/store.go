@@ -28,8 +28,8 @@ var (
 // part 00006_overwrites.sql ships), Plan 2 task 4 adds Bans (the part
 // 00007_bans.sql ships), Plan 2 task 6 adds ChannelMembers (the part
 // 00008_channel_members.sql ships), Plan 2 task 8 adds Readable with
-// 00009_readable.sql, and Plan 2's later tasks add the rest of Structure, Blobs
-// and OpsBackups.
+// 00009_readable.sql, Plan 2 task 10 adds Blobs and OpsBackups with
+// 00010_blobs.sql, and Plan 2's later tasks add the rest of Structure.
 type Repository interface {
 	Tx(ctx context.Context, fn func(Repository) error) error
 	Close() error
@@ -51,6 +51,9 @@ type Repository interface {
 	ChannelMembers
 	// Plan 2 task 8 (P2-D23) — 00009_readable.sql
 	Readable
+	// Plan 2 task 10 (P2-D23, P2-D5) — 00010_blobs.sql
+	Blobs
+	OpsBackups
 }
 
 type Instance interface {
@@ -485,14 +488,30 @@ type ReadableSearchHit struct {
 	Created   int64
 }
 
-// Blobs is 008_blobs.sql, implemented from Plan 2 task 10 onward.
+// Blobs is 008_blobs.sql, implemented from Plan 2 task 10 onward. A channel
+// never deletes a blob, only its reference (gap-47 §0): the row goes when the
+// last reference has been gone for the grace window, and blob_refs' ON DELETE
+// RESTRICT makes DeleteBlob fail while any reference stands.
+//
+// PutBlob, PutBlobRef and PutBlobTombstone are idempotent: the id is the hash of
+// the bytes, so a second insert names the same object and keeps the first row.
+// DeleteBlobRef of an absent reference is not an error; DeleteBlob of an absent
+// row is ErrNotFound. MarkBlobUnreferenced sets unref_since only when no
+// reference is left and it is not already set.
 type Blobs interface {
 	PutBlob(ctx context.Context, b BlobRow) error
 	GetBlob(ctx context.Context, blobID []byte) (BlobRow, error)
 	PutBlobRef(ctx context.Context, blobID []byte, channelID, uploaderDevice id.ID, mime string, created int64) error
+	// GetBlobRef is P2-D17: the GET's "404, never 403" rule reads the reference
+	// in the requested channel, and task 11's uploader-only DELETE reads its
+	// uploader. ErrNotFound when the channel holds no reference.
+	GetBlobRef(ctx context.Context, blobID []byte, channelID id.ID) (BlobRefRow, error)
 	DeleteBlobRef(ctx context.Context, blobID []byte, channelID id.ID) error
 	CountBlobRefs(ctx context.Context, blobID []byte) (int64, error)
 	MarkBlobUnreferenced(ctx context.Context, blobID []byte, at int64) error
+	// ClearBlobUnreferenced is P2-D16: every PUT that creates a reference
+	// clears unref_since in the same transaction (gap-47 §8.3).
+	ClearBlobUnreferenced(ctx context.Context, blobID []byte) error
 	ListCollectableBlobs(ctx context.Context, before int64, limit int32) ([]BlobRow, error)
 	DeleteBlob(ctx context.Context, blobID []byte) error
 	PutBlobTombstone(ctx context.Context, blobID []byte, reason string, by id.ID, at int64) error

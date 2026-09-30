@@ -174,6 +174,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"CountBlobRefs", "DeleteBlob", "DeleteBlobRef", "GetBlob", "GetBlobTombstone",
 			"ListCollectableBlobs", "MarkBlobUnreferenced", "PutBlob", "PutBlobRef",
 			"PutBlobTombstone", "UserBlobBytes",
+			// Plan 2 task 10: P2-D16's ClearBlobUnreferenced, and P2-D17's
+			// GetBlobRef, which the GET's "404 without a reference here" rule needs.
+			"ClearBlobUnreferenced", "GetBlobRef",
 		}},
 		{"Ops", reflect.TypeOf((*store.Ops)(nil)).Elem(), []string{
 			"Audit", "GetReport", "ListAudit", "PutReport", "SchemaVersion",
@@ -246,6 +249,9 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(),
 		// Plan 2 task 8: Readable joins with 00009_readable.sql.
 		reflect.TypeOf((*store.Readable)(nil)).Elem(),
+		// Plan 2 task 10: Blobs and OpsBackups join with 00010_blobs.sql (P2-D5).
+		reflect.TypeOf((*store.Blobs)(nil)).Elem(),
+		reflect.TypeOf((*store.OpsBackups)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)
@@ -284,6 +290,7 @@ func TestDeferredRowTypesAreDeclared(t *testing.T) {
 		"VoiceSessionRow":      store.VoiceSessionRow{},
 		"ReadableMessageRow":   store.ReadableMessageRow{},
 		"BlobRow":              store.BlobRow{},
+		"BlobRefRow":           store.BlobRefRow{},
 		"BackupRow":            store.BackupRow{},
 		"ReadableSearchQuery":  store.ReadableSearchQuery{},
 		"ReadableSearchHit":    store.ReadableSearchHit{},

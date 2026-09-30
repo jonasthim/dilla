@@ -81,6 +81,11 @@ var DumpTables = []string{
 	// says a backup holds. COPY TO leaves out the generated body_tsv, and the restore
 	// recomputes it.
 	"readable_messages", "read_state",
+	// 008_blobs.sql, appended by Plan 2 task 10. blobs before blob_refs, which names it with
+	// ON DELETE RESTRICT and whose other parent is channels; blob_tombstones has no parent, and
+	// backups' parent is users. A restore that dropped blob_tombstones would let a purged blob be
+	// uploaded again under its old name.
+	"blobs", "blob_refs", "blob_tombstones", "backups",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

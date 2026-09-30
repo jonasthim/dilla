@@ -2426,4 +2426,163 @@ func (r *Repo) ListReadableAudience(ctx context.Context, channelID id.ID) ([]id.
 	return ids, nil
 }
 
+// ---------------------------------------------------------------- Blobs
+//
+// Plan 2 task 10: 00010_blobs.sql's blobs, blob_refs and blob_tombstones, with
+// P2-D16's ClearBlobUnreferenced and P2-D17's GetBlobRef.
+
+func blobRow(row sqlitedb.Blobs) store.BlobRow {
+	return store.BlobRow{
+		BlobID:     row.BlobID,
+		Size:       uint64(row.Size),
+		StorageRef: row.StorageRef,
+		Created:    row.Created,
+		UnrefSince: ptrInt64(row.UnrefSince),
+	}
+}
+
+func (r *Repo) PutBlob(ctx context.Context, b store.BlobRow) error {
+	return wrap(r.w.PutBlob(ctx, sqlitedb.PutBlobParams{
+		BlobID:     b.BlobID,
+		Size:       int64(b.Size),
+		StorageRef: b.StorageRef,
+		Created:    b.Created,
+		UnrefSince: nullInt64(b.UnrefSince),
+	}))
+}
+
+func (r *Repo) GetBlob(ctx context.Context, blobID []byte) (store.BlobRow, error) {
+	row, err := r.r.GetBlob(ctx, sqlitedb.GetBlobParams{BlobID: blobID})
+	if err != nil {
+		return store.BlobRow{}, wrap(err)
+	}
+	return blobRow(row), nil
+}
+
+func (r *Repo) PutBlobRef(ctx context.Context, blobID []byte, channelID, uploaderDevice id.ID, mime string, created int64) error {
+	return wrap(r.w.PutBlobRef(ctx, sqlitedb.PutBlobRefParams{
+		BlobID:         blobID,
+		ChannelID:      channelID,
+		UploaderDevice: uploaderDevice,
+		Mime:           mime,
+		Created:        created,
+	}))
+}
+
+func (r *Repo) GetBlobRef(ctx context.Context, blobID []byte, channelID id.ID) (store.BlobRefRow, error) {
+	row, err := r.r.GetBlobRef(ctx, sqlitedb.GetBlobRefParams{BlobID: blobID, ChannelID: channelID})
+	if err != nil {
+		return store.BlobRefRow{}, wrap(err)
+	}
+	return store.BlobRefRow{
+		BlobID:         row.BlobID,
+		ChannelID:      row.ChannelID,
+		UploaderDevice: row.UploaderDevice,
+		Mime:           row.Mime,
+		Created:        row.Created,
+	}, nil
+}
+
+func (r *Repo) DeleteBlobRef(ctx context.Context, blobID []byte, channelID id.ID) error {
+	return wrap(r.w.DeleteBlobRef(ctx, sqlitedb.DeleteBlobRefParams{BlobID: blobID, ChannelID: channelID}))
+}
+
+func (r *Repo) CountBlobRefs(ctx context.Context, blobID []byte) (int64, error) {
+	n, err := r.r.CountBlobRefs(ctx, sqlitedb.CountBlobRefsParams{BlobID: blobID})
+	return n, wrap(err)
+}
+
+func (r *Repo) MarkBlobUnreferenced(ctx context.Context, blobID []byte, at int64) error {
+	return wrap(r.w.MarkBlobUnreferenced(ctx, sqlitedb.MarkBlobUnreferencedParams{
+		At:     sql.NullInt64{Int64: at, Valid: true},
+		BlobID: blobID,
+	}))
+}
+
+func (r *Repo) ClearBlobUnreferenced(ctx context.Context, blobID []byte) error {
+	return wrap(r.w.ClearBlobUnreferenced(ctx, sqlitedb.ClearBlobUnreferencedParams{BlobID: blobID}))
+}
+
+func (r *Repo) ListCollectableBlobs(ctx context.Context, before int64, limit int32) ([]store.BlobRow, error) {
+	rows, err := r.r.ListCollectableBlobs(ctx, sqlitedb.ListCollectableBlobsParams{Before: before, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BlobRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, blobRow(row))
+	}
+	return out, nil
+}
+
+func (r *Repo) DeleteBlob(ctx context.Context, blobID []byte) error {
+	n, err := r.w.DeleteBlob(ctx, sqlitedb.DeleteBlobParams{BlobID: blobID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) PutBlobTombstone(ctx context.Context, blobID []byte, reason string, by id.ID, at int64) error {
+	return wrap(r.w.PutBlobTombstone(ctx, sqlitedb.PutBlobTombstoneParams{
+		BlobID:  blobID,
+		Reason:  reason,
+		ByUser:  by,
+		Created: at,
+	}))
+}
+
+func (r *Repo) GetBlobTombstone(ctx context.Context, blobID []byte) (bool, error) {
+	n, err := r.r.GetBlobTombstone(ctx, sqlitedb.GetBlobTombstoneParams{BlobID: blobID})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return n > 0, nil
+}
+
+func (r *Repo) UserBlobBytes(ctx context.Context, userID id.ID) (int64, error) {
+	n, err := r.r.UserBlobBytes(ctx, sqlitedb.UserBlobBytesParams{UserID: userID})
+	return n, wrap(err)
+}
+
+// ---------------------------------------------------------------- OpsBackups
+//
+// Plan 2 task 10 (P2-D5): the backups table ships in 00010_blobs.sql, so its
+// two methods land here rather than with task 12's instance archive.
+
+func (r *Repo) PutBackup(ctx context.Context, b store.BackupRow) error {
+	return wrap(r.w.PutBackup(ctx, sqlitedb.PutBackupParams{
+		UserID:      b.UserID,
+		Kind:        int64(b.Kind),
+		DeviceID:    b.DeviceID,
+		ChunkSeq:    int64(b.ChunkSeq),
+		BlobID:      b.BlobID,
+		ManifestSig: b.ManifestSig,
+		Created:     b.Created,
+	}))
+}
+
+func (r *Repo) ListBackups(ctx context.Context, userID id.ID, kind int32) ([]store.BackupRow, error) {
+	rows, err := r.r.ListBackups(ctx, sqlitedb.ListBackupsParams{UserID: userID, Kind: int64(kind)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BackupRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.BackupRow{
+			UserID:      row.UserID,
+			Kind:        uint64(row.Kind),
+			DeviceID:    row.DeviceID,
+			ChunkSeq:    uint64(row.ChunkSeq),
+			BlobID:      row.BlobID,
+			ManifestSig: row.ManifestSig,
+			Created:     row.Created,
+		})
+	}
+	return out, nil
+}
+
 var _ store.Repository = (*Repo)(nil)

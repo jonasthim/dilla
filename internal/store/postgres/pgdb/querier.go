@@ -14,6 +14,7 @@ type Querier interface {
 	AppendHandshake(ctx context.Context, arg AppendHandshakeParams) error
 	BumpGeneration(ctx context.Context) (int64, error)
 	BumpGroupSeq(ctx context.Context, arg BumpGroupSeqParams) (int64, error)
+	ClearBlobUnreferenced(ctx context.Context, arg ClearBlobUnreferencedParams) error
 	// An adopted heal. The deadline goes with the flag: closeUnhealedGroups reads the pair, and a
 	// healed group that kept its deadline would be one restart away from looking overdue again.
 	ClearEpochUnknown(ctx context.Context, arg ClearEpochUnknownParams) error
@@ -21,6 +22,7 @@ type Querier interface {
 	CloseGroup(ctx context.Context, arg CloseGroupParams) error
 	ConsumeRecoveryCode(ctx context.Context, arg ConsumeRecoveryCodeParams) (int64, error)
 	ConsumeTOTPCounter(ctx context.Context, arg ConsumeTOTPCounterParams) (int64, error)
+	CountBlobRefs(ctx context.Context, arg CountBlobRefsParams) (int64, error)
 	CountForkReporters(ctx context.Context, arg CountForkReportersParams) (int64, error)
 	CountKeyPackages(ctx context.Context, arg CountKeyPackagesParams) (int64, error)
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
@@ -37,6 +39,8 @@ type Querier interface {
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
 	DeleteBan(ctx context.Context, arg DeleteBanParams) (int64, error)
+	DeleteBlob(ctx context.Context, arg DeleteBlobParams) (int64, error)
+	DeleteBlobRef(ctx context.Context, arg DeleteBlobRefParams) error
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
 	DeleteChannel(ctx context.Context, arg DeleteChannelParams) (int64, error)
 	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)
@@ -71,6 +75,11 @@ type Querier interface {
 	EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
 	GetBan(ctx context.Context, arg GetBanParams) (Bans, error)
+	GetBlob(ctx context.Context, arg GetBlobParams) (Blobs, error)
+	GetBlobRef(ctx context.Context, arg GetBlobRefParams) (BlobRefs, error)
+	// COUNT, not EXISTS: EXISTS is int64 on SQLite and bool on Postgres, and the two Querier
+	// interfaces must stay identical.
+	GetBlobTombstone(ctx context.Context, arg GetBlobTombstoneParams) (int64, error)
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
 	GetChannel(ctx context.Context, arg GetChannelParams) (Channels, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
@@ -109,12 +118,14 @@ type Querier interface {
 	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
+	ListBackups(ctx context.Context, arg ListBackupsParams) ([]Backups, error)
 	ListBans(ctx context.Context, arg ListBansParams) ([]Bans, error)
 	ListChannelMembers(ctx context.Context, arg ListChannelMembersParams) ([]id.ID, error)
 	ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error)
 	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
 	// participant of, newest first, ties broken by id.
 	ListChannelsForUser(ctx context.Context, arg ListChannelsForUserParams) ([]Channels, error)
+	ListCollectableBlobs(ctx context.Context, arg ListCollectableBlobsParams) ([]Blobs, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
 	// The retention walk, and deliberately NOT `ListOpenGroups`: invariant 10 caps application
 	// ciphertext at thirty days for every group, and a group invariant 11 closed is still ciphertext
@@ -153,6 +164,9 @@ type Querier interface {
 	// every group past the batch serving state the restored database no longer matches. Closed groups
 	// are skipped -- a closed group has nothing left to heal.
 	MarkAllGroupsEpochUnknown(ctx context.Context, arg MarkAllGroupsEpochUnknownParams) error
+	// Sets the mark only when no reference is left, and only when it is not already set, so a
+	// repeated delete cannot push collection back.
+	MarkBlobUnreferenced(ctx context.Context, arg MarkBlobUnreferencedParams) error
 	// The highest seq PruneAppMessages' DELIVERY triggers are about to delete with the same arguments,
 	// or 0. The store runs it in PruneAppMessages' transaction and raises pruned_below to it before the
 	// DELETE, so the high-water records exactly what delivery retention took.
@@ -193,8 +207,20 @@ type Querier interface {
 	PurgeAllKeyPackages(ctx context.Context) (int64, error)
 	PurgeKeyPackagesKeepingLastResort(ctx context.Context) (int64, error)
 	PutAppMessage(ctx context.Context, arg PutAppMessageParams) error
+	// One row per (user, kind, device, chunk); a re-upload of the same chunk replaces it.
+	PutBackup(ctx context.Context, arg PutBackupParams) error
 	// Bans (Plan 2 task 4, 00007_bans.sql).
 	PutBan(ctx context.Context, arg PutBanParams) error
+	// Blobs, blob references and tombstones (Plan 2 task 10, 00010_blobs.sql). Every column in a
+	// statement with a subquery is qualified: sqlc's analyser calls a bare blob_id ambiguous as soon
+	// as a second table is in scope (gap-47 section 19.4, C11).
+	// Content addressing makes a second insert of the same id the same object, so it is a no-op
+	// rather than a conflict: two uploads of the same bytes may race to here.
+	PutBlob(ctx context.Context, arg PutBlobParams) error
+	// One reference per (blob, channel); a repeat keeps the first uploader.
+	PutBlobRef(ctx context.Context, arg PutBlobRefParams) error
+	// The first purge's record stands.
+	PutBlobTombstone(ctx context.Context, arg PutBlobTombstoneParams) error
 	PutCeremony(ctx context.Context, arg PutCeremonyParams) error
 	// Channel members (Plan 2 task 6, 00008_channel_members.sql).
 	PutChannelMember(ctx context.Context, arg PutChannelMemberParams) error
@@ -281,6 +307,10 @@ type Querier interface {
 	UpdateCommunityPolicy(ctx context.Context, arg UpdateCommunityPolicyParams) (int64, error)
 	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error
 	UpdateWebauthnCredential(ctx context.Context, arg UpdateWebauthnCredentialParams) error
+	// The quota counts each distinct blob a user uploaded once, however many
+	// channels they published it into. SUM over BIGINT is NUMERIC on Postgres; the
+	// cast keeps it int64 like the SQLite twin.
+	UserBlobBytes(ctx context.Context, arg UserBlobBytesParams) (int64, error)
 	VoidProposal(ctx context.Context, arg VoidProposalParams) error
 }
 

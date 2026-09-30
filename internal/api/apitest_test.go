@@ -151,6 +151,45 @@ func (e *env) Do(method, path, token string, body any) (int, []byte) {
 	return resp.StatusCode, out
 }
 
+// DoRaw sends one request with an arbitrary content type and body (a blob's raw
+// octets, which are the one exception to the CBOR rule) and returns the status
+// and the raw response body.
+func (e *env) DoRaw(method, path, token, contentType string, body []byte) (int, []byte) {
+	e.t.Helper()
+	var headers map[string]string
+	if contentType != "" {
+		headers = map[string]string{"Content-Type": contentType}
+	}
+	resp := e.Request(e.t, method, path, token, headers, body)
+	defer resp.Body.Close()
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		e.t.Fatalf("ReadAll: %v", err)
+	}
+	return resp.StatusCode, out
+}
+
+// Request sends one request with the given extra headers and body and returns
+// the *http.Response, so a test can assert headers; the caller closes the body.
+func (e *env) Request(t *testing.T, method, path, token string, headers map[string]string, body []byte) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), method, e.Srv.URL+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := e.Srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do %s %s: %v", method, path, err)
+	}
+	return resp
+}
+
 // ErrCode decodes an E_* error body and returns its code.
 func (e *env) ErrCode(body []byte) string {
 	e.t.Helper()
