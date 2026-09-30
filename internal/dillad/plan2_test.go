@@ -255,6 +255,7 @@ func TestThePlanTwoFlowRunsThroughTheCompositionRoot(t *testing.T) {
 type upstreamSFU struct{ url string }
 
 func (u upstreamSFU) Token(room, identity string) (string, error) { return room + "/" + identity, nil }
+func (u upstreamSFU) DeleteRoom(context.Context, string) error    { return nil }
 func (u upstreamSFU) HTTPURL() string                             { return u.url }
 
 // With an SFU (`dillad serve` with livekit.enabled), New mounts LiveKit's signalling paths on the

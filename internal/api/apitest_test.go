@@ -366,9 +366,24 @@ func ptr[T any](v T) *T { return &v }
 // internal/sfu's own test's business, and the epoch gate in front of it is
 // this file's.
 type stubSFU struct {
-	mu    sync.Mutex
-	calls [][2]string // (room, identity)
-	fail  error
+	mu         sync.Mutex
+	calls      [][2]string // (room, identity)
+	fail       error
+	deleted    []string // rooms DeleteRoom was asked to close
+	deleteFail error
+}
+
+func (s *stubSFU) DeleteRoom(_ context.Context, room string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleted = append(s.deleted, room)
+	return s.deleteFail
+}
+
+func (s *stubSFU) deletedRooms() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.deleted...)
 }
 
 func (s *stubSFU) Token(room, identity string) (string, error) {

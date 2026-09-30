@@ -166,6 +166,50 @@ func TestEndingACallMarksTheVoiceSession(t *testing.T) {
 	}
 }
 
+// I11 (fix wave): protocol/09 says DELETE ends the call for everyone, so the LiveKit room the call
+// was handed out in is closed, not merely marked ended: a participant still connected to it cannot
+// stay in a room the next call no longer shares. An already-ended call closes nothing again.
+func TestEndingACallClosesItsLiveKitRoom(t *testing.T) {
+	e, ch, tok, group, sfu := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	callID := decodeCall(t, body).CallID
+	row, _ := e.Repo.GetVoiceSession(t.Context(), callID)
+	if status, _ := e.Do(http.MethodDelete, "/v1/calls/"+callID.String(), tok, nil); status != http.StatusNoContent {
+		t.Fatalf("DELETE call = %d, want 204", status)
+	}
+	if got := sfu.deletedRooms(); len(got) != 1 || got[0] != row.LivekitRoom {
+		t.Fatalf("rooms closed = %v, want the call's room %q", got, row.LivekitRoom)
+	}
+	if status, _ := e.Do(http.MethodDelete, "/v1/calls/"+callID.String(), tok, nil); status != http.StatusNoContent {
+		t.Fatalf("a second DELETE = %d, want 204", status)
+	}
+	if got := sfu.deletedRooms(); len(got) != 1 {
+		t.Fatalf("rooms closed after a repeat DELETE = %v, want still only the one", got)
+	}
+}
+
+// The call is over in dilla's record whatever the SFU answers: a room that will not close is logged,
+// and the DELETE is still 204 with the voice session ended.
+func TestARoomThatWillNotCloseStillEndsTheCall(t *testing.T) {
+	e, ch, tok, group, sfu := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	callID := decodeCall(t, body).CallID
+	sfu.mu.Lock()
+	sfu.deleteFail = errors.New("sfu down")
+	sfu.mu.Unlock()
+	if status, _ := e.Do(http.MethodDelete, "/v1/calls/"+callID.String(), tok, nil); status != http.StatusNoContent {
+		t.Fatalf("DELETE with a failing room close = %d, want 204", status)
+	}
+	if row, _ := e.Repo.GetVoiceSession(t.Context(), callID); row.Ended == nil {
+		t.Fatal("the voice session was not ended")
+	}
+	if got := sfu.deletedRooms(); len(got) != 1 {
+		t.Fatalf("rooms asked to close = %v, want one attempt", got)
+	}
+}
+
 // A second device starting the call that is already live joins it: the same
 // call id and the same room, answered 200 rather than 201.
 func TestASecondDeviceJoinsTheLiveCall(t *testing.T) {
@@ -242,7 +286,7 @@ func TestALiveCallIsGatedOnTheGroupItWasOpenedOn(t *testing.T) {
 // A live call whose group has been closed (a failed heal's re-creation) cannot go on: the next
 // start from a leaf of the channel's current call group ends it and opens a fresh call there.
 func TestACallWhoseGroupClosedIsReplacedOnTheCurrentGroup(t *testing.T) {
-	e, ch, tok, group, _ := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	e, ch, tok, group, sfu := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
 	dev := deviceOf(t, e, tok)
 	seedLeaf(t, e, group, dev, 3, nil)
 	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
@@ -265,6 +309,10 @@ func TestACallWhoseGroupClosedIsReplacedOnTheCurrentGroup(t *testing.T) {
 	after, _ := e.Repo.GetVoiceSession(t.Context(), first.CallID)
 	if after.Ended != nil || after.GroupID == nil || *after.GroupID != next || after.LivekitRoom == before.LivekitRoom {
 		t.Fatalf("voice_sessions row = %+v after %+v, want a fresh live room on the current group", after, before)
+	}
+	// The stale call is ended, so its room is closed like any ended call's.
+	if got := sfu.deletedRooms(); len(got) != 1 || got[0] != before.LivekitRoom {
+		t.Fatalf("rooms closed = %v, want the stale call's room %q", got, before.LivekitRoom)
 	}
 }
 

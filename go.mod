@@ -27,6 +27,7 @@ require (
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/tetratelabs/wazero v1.12.0
+	github.com/twitchtv/twirp v8.1.3+incompatible
 	golang.org/x/crypto v0.57.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/text v0.42.0
@@ -126,7 +127,6 @@ require (
 	github.com/thoas/go-funk v0.9.3 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/tomnomnom/linkheader v0.0.0-20250811210735-e5fe3b51442e // indirect
-	github.com/twitchtv/twirp v8.1.3+incompatible // indirect
 	github.com/ua-parser/uap-go v0.0.0-20260529044130-17c35e68e58c // indirect
 	github.com/urfave/cli/v3 v3.10.1 // indirect
 	github.com/urfave/negroni/v3 v3.1.1 // indirect

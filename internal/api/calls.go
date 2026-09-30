@@ -17,12 +17,18 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 )
 
-// CallTokens mints a LiveKit room-join JWT. In production it is
-// internal/sfu.(*Server).Token, whose grants are the spec's speak, video and
-// stream permissions; the gate in front of it is this file's.
+// CallTokens is the SFU the call routes drive. In production it is
+// internal/sfu.(*Server): Token mints a LiveKit room-join JWT whose grants are
+// the spec's speak, video and stream permissions (the gate in front of it is
+// this file's), and DeleteRoom closes a room and disconnects everyone still in
+// it, answering nil for a room the SFU does not know.
 type CallTokens interface {
 	Token(room, identity string) (string, error)
+	DeleteRoom(ctx context.Context, room string) error
 }
+
+// roomCloseTimeout bounds the SFU call that closes an ended call's room.
+const roomCloseTimeout = 5 * time.Second
 
 // CallsConfig is what the call routes hand a client besides the token.
 type CallsConfig struct {
@@ -154,6 +160,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, err)
 			return
 		}
+		h.closeRoom(r, prev.LivekitRoom)
 	}
 
 	// PutVoiceSession leaves a live call as it is, so the row read back
@@ -267,7 +274,25 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	// protocol/09: DELETE ends the call for everyone, so the room is closed too and every
+	// participant still in it is disconnected; the next call opens a fresh room.
+	h.closeRoom(r, row.LivekitRoom)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// closeRoom closes an ended call's LiveKit room. The call is already over in the record, so a
+// failure is logged and never turns the answer into an error; the room's tokens expire within
+// their one-hour TTL regardless. The close runs on a context detached from the request, so a
+// client that hangs up once it has sent the DELETE cannot leave the room open.
+func (h *Calls) closeRoom(r *http.Request, room string) {
+	if h.sfu == nil || room == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), roomCloseTimeout)
+	defer cancel()
+	if err := h.sfu.DeleteRoom(ctx, room); err != nil {
+		h.log.WarnContext(ctx, "closing an ended call's LiveKit room failed", "room", room, "err", err)
+	}
 }
 
 // channel is the {id} a caller may place a call in: a channel it can see (404

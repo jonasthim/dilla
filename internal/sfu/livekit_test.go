@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -349,4 +350,53 @@ func TestStartAbortedByTheDeadlineLeavesNothingListening(t *testing.T) {
 		t.Errorf("Start error = %v, want the startup-deadline error", err)
 	}
 	nothingListensOn(t, net.JoinHostPort(c.BindAddress, fmt.Sprint(c.Port)), 3*time.Second)
+}
+
+// I11 (fix wave): ending a call closes its room. DeleteRoom disconnects a participant still in the
+// room, and a room LiveKit does not know (never opened, or already closed) is not an error: the call
+// is over either way.
+func TestDeleteRoomDisconnectsItsParticipants(t *testing.T) {
+	c := testConfig()
+	c.Port = 7900
+	c.UDPPort = 7902
+	srv, err := Start(context.Background(), c)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Stop(context.Background()); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	}()
+
+	if err := srv.DeleteRoom(t.Context(), "never-opened"); err != nil {
+		t.Fatalf("DeleteRoom of a room LiveKit never had = %v, want nil", err)
+	}
+
+	const room = "dilla-call"
+	tok, err := srv.Token(room, "bob")
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	gone := make(chan struct{})
+	var once sync.Once
+	bob, err := lksdk.ConnectToRoomWithToken(srv.URL(), tok, &lksdk.RoomCallback{
+		OnDisconnected: func() { once.Do(func() { close(gone) }) },
+	})
+	if err != nil {
+		t.Fatalf("bob join: %v", err)
+	}
+	defer bob.Disconnect()
+
+	if err := srv.DeleteRoom(t.Context(), room); err != nil {
+		t.Fatalf("DeleteRoom: %v", err)
+	}
+	select {
+	case <-gone:
+	case <-time.After(15 * time.Second):
+		t.Fatal("bob is still connected 15s after his room was deleted")
+	}
+	if err := srv.DeleteRoom(t.Context(), room); err != nil {
+		t.Fatalf("a second DeleteRoom of the closed room = %v, want nil", err)
+	}
 }

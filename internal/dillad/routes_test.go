@@ -1,6 +1,7 @@
 package dillad
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -72,6 +73,7 @@ func TestTheCallsConfigNamesTheRelayTheModeRuns(t *testing.T) {
 type fakeSFU struct{ url string }
 
 func (f fakeSFU) Token(room, identity string) (string, error) { return room + "/" + identity, nil }
+func (f fakeSFU) DeleteRoom(context.Context, string) error    { return nil }
 func (f fakeSFU) HTTPURL() string                             { return f.url }
 
 // /rtc and everything under it reach the SFU unchanged, with the client address the trusted-proxy
