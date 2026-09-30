@@ -28,6 +28,8 @@ export const REQUIRED_JOBS = [
   'go-sqlc',
   'go-postgres',
   'go-release',
+  // Plan 2 task 18: the multi-arch container image, built on every run and pushed from main.
+  'image',
 ];
 
 /**
@@ -128,6 +130,26 @@ const REQUIRED_STEPS = {
     'DILLA_TEST_PG',
   ],
   'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error'],
+  // Task 18. The pins are the versions P2-11 resolved against the registries and the marketplace
+  // release lists; `actions/checkout@v7` and `runs-on: ubuntu-latest` are the house style of every
+  // other job. The download of rust-wasi's artifact is load-bearing: dillad loads the wasi core from
+  // beside its binary and the Dockerfile copies it out of the build context, so without the download
+  // the build fails (fail-closed) rather than shipping an image that cannot start.
+  image: [
+    'runs-on: ubuntu-latest',
+    'actions/checkout@v7',
+    'actions/download-artifact@v8',
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'docker/setup-buildx-action@v4.4.1',
+    'docker/login-action@v4.6.0',
+    'docker/metadata-action@v6.2.0',
+    'docker/build-push-action@v7.4.0',
+    'platforms: linux/amd64,linux/arm64',
+    'provenance: mode=max',
+    'sbom: true',
+    'timeout-minutes: 30',
+  ],
 };
 
 /**
@@ -139,6 +161,28 @@ function assertTestStepIsNotNarrowed(workflow, fail) {
   const line = 'go test -race -shuffle=on -timeout 15m ./...';
   if (!workflow.includes(line)) {
     fail(`the go job's test step must be exactly "${line}"`);
+  }
+}
+
+/**
+ * Every `actions/upload-artifact` step sets `if-no-files-found: error` (Global Constraints: CI is
+ * fail-closed). The per-job REQUIRED_STEPS pin it for the jobs that exist today; this rule is the
+ * one that covers a job added tomorrow. A step is its `- ` list item and every line indented deeper.
+ */
+function assertEveryUploadFailsOnNoFiles(text, problems) {
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!/uses:\s*actions\/upload-artifact@/.test(lines[i])) continue;
+    // The step's own indent: the column of its `- ` marker, which may be on this line or above it.
+    let start = i;
+    while (start > 0 && !/^\s*- /.test(lines[start])) start--;
+    const indent = /^(\s*)- /.exec(lines[start])?.[1].length ?? 0;
+    let end = i + 1;
+    while (end < lines.length && lines[end].trim() !== '' && !new RegExp(`^\\s{0,${indent}}\\S`).test(lines[end])) end++;
+    const step = lines.slice(start, end).join('\n');
+    if (!/if-no-files-found:\s*error/.test(step)) {
+      problems.push(`ci.yml:${i + 1}: actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed`);
+    }
   }
 }
 
@@ -195,6 +239,22 @@ export function checkWorkflow(root) {
   }
 
   assertTestStepIsNotNarrowed(text, (msg) => problems.push(`ci.yml: ${msg}`));
+  assertEveryUploadFailsOnNoFiles(text, problems);
+
+  // Task 18. The Dockerfile cross-compiles with GOOS/GOARCH from a $BUILDPLATFORM builder, so
+  // nothing runs under emulation and setup-qemu-action would only add a slow, useless step.
+  if (text.includes('setup-qemu-action')) {
+    problems.push('ci.yml: setup-qemu-action is not needed: the image cross-compiles from $BUILDPLATFORM');
+  }
+  if ('image' in jobs) {
+    // A push of an image nobody tested would be a release of untested code: the two Go gates come first.
+    // rust-wasi is named too, because the job downloads its artifact.
+    for (const need of ['go', 'go-lint', 'rust-wasi']) {
+      if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs.image)) {
+        problems.push(`ci.yml: job "image" must list "${need}" in its needs:`);
+      }
+    }
+  }
 
   // Plan B task 8 owns the `go` job; this plan owns `rust-wasi`. `actions/download-artifact@v8`
   // fetches from the same workflow run, so GitHub schedules `go` after `rust-wasi` only if a `needs:`

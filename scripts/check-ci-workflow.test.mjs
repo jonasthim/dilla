@@ -149,6 +149,28 @@ jobs:
           name: dillad-binaries
           path: dist/
           if-no-files-found: error
+
+  image:
+    runs-on: ubuntu-latest
+    needs: [go, go-lint, rust-wasi]
+    permissions: { contents: read, packages: write }
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.6.0
+      - uses: docker/metadata-action@v6.2.0
+        id: meta
+      - uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          provenance: mode=max
+          sbom: true
 `;
 
 function fixture(body) {
@@ -399,4 +421,65 @@ test('the CLI reports problems in a workflow at the given root, run from elsewhe
   const result = runCli(root, cwd);
   assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
   assert.match(result.stderr, /deny/);
+});
+
+// Task 18: the image job.
+test('a workflow without the image job is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/  image:[\s\S]*$/, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "image"')), problems.join('\n'));
+});
+
+for (const needle of [
+  'docker/setup-buildx-action@v4.4.1',
+  'docker/login-action@v4.6.0',
+  'docker/metadata-action@v6.2.0',
+  'docker/build-push-action@v7.4.0',
+  'platforms: linux/amd64,linux/arm64',
+  'actions/checkout@v7',
+  'actions/download-artifact@v8',
+  'path: internal/mlswasi/testdata',
+  'provenance: mode=max',
+  'sbom: true',
+  'timeout-minutes: 30',
+]) {
+  test(`an image job that lost "${needle}" is reported`, () => {
+    const start = GOOD.indexOf('  image:\n');
+    const body = GOOD.slice(start);
+    assert.ok(body.includes(needle), 'fixture sanity: ' + needle);
+    const gutted = body.split('\n').filter((l) => !l.includes(needle)).join('\n');
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => gutted)));
+    assert.ok(problems.some((p) => p.includes('"image"') && p.includes(needle)), problems.join('\n'));
+  });
+}
+
+test('setup-qemu-action anywhere in the workflow is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - uses: docker/setup-buildx-action@v4.4.1\n', '      - uses: docker/setup-qemu-action@v4\n      - uses: docker/setup-buildx-action@v4.4.1\n')),
+  );
+  assert.ok(problems.some((p) => p.includes('setup-qemu-action')), problems.join('\n'));
+});
+
+// `go` is a prefix of `go-lint`: an image job that waits only for go-lint and rust-wasi must still be
+// reported as not waiting for go.
+test('an image job that does not wait for the go job is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-lint, rust-wasi]', 'needs: [go-lint, rust-wasi]')));
+  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go"')), problems.join('\n'));
+});
+
+test('an image job that does not wait for go-lint is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-lint, rust-wasi]', 'needs: [go, rust-wasi]')));
+  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-lint"')), problems.join('\n'));
+});
+
+// The rule that covers a job added tomorrow: no job is named in REQUIRED_STEPS, yet its upload-artifact
+// step is still held to the fail-closed setting.
+test('an upload-artifact step in any job without if-no-files-found: error is reported', () => {
+  const extra = '\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@v7\n        with:\n          name: x\n          path: y\n      - run: echo after\n';
+  const problems = checkWorkflow(fixture(GOOD + extra));
+  assert.deepEqual(
+    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')),
+    ['actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed'],
+  );
+  // The same step with the setting is clean.
+  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))), []);
 });

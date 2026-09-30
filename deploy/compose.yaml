@@ -1,0 +1,30 @@
+# dillad, single container. The image is the one CI publishes; pin it to a digest
+# in production and update deliberately.
+services:
+  dillad:
+    image: ghcr.io/jonasthim/dilla/dillad:latest
+    restart: unless-stopped
+    # Bridged, not host: Docker sets net.ipv4.ip_unprivileged_port_start only for
+    # private networks, so a HOST-networked container running as UID 65532 cannot
+    # bind 443 and fails with "permission denied". If you do switch to
+    # network_mode: host, add:
+    #   sysctls: { net.ipv4.ip_unprivileged_port_start: "0" }
+    ports:
+      - "443:443/tcp"
+      - "7882:7882/udp"
+    volumes:
+      # The data directory MUST already be owned 65532:65532 on the host:
+      #   sudo chown -R 65532:65532 ./data
+      # distroless has no shell, so there is no entrypoint script to chown it at
+      # start, and the container will exit with a permission error instead.
+      - ./data:/var/lib/dilla
+      - ./dilla.toml:/etc/dilla/dilla.toml:ro
+    healthcheck:
+      # dillad serves /healthz itself; the image has no shell and no curl, so the
+      # check runs the binary.
+      test: ["CMD", "/usr/local/bin/dillad", "doctor", "--config=/etc/dilla/dilla.toml", "--quiet"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    stop_grace_period: 45s

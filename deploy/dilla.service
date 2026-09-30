@@ -1,0 +1,53 @@
+[Unit]
+Description=dilla server (dillad)
+Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/local/bin/dillad serve --config=%E/dilla/dilla.toml
+Restart=on-failure
+RestartSec=5s
+# exit.Config (78) means the operator must fix dilla.toml; restarting would loop.
+RestartPreventExitStatus=78
+# WatchdogSec is deliberately NOT set: dillad sends READY=1 and nothing else over
+# NOTIFY_SOCKET, so a watchdog would have systemd abort a healthy service after
+# the first interval.
+# ACME issuance plus goose migrations plus the pre-migration VACUUM INTO can
+# exceed the 90 s default on a large SQLite file.
+TimeoutStartSec=300s
+TimeoutStopSec=45s
+
+User=dillad
+Group=dillad
+StateDirectory=dillad
+# The default is 0755; this directory holds instances.key_history, the franking
+# key and the database.
+StateDirectoryMode=0700
+ConfigurationDirectory=dilla
+UMask=0077
+
+# How a non-root process binds 443/tcp.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# MemoryDenyWriteExecute is deliberately NOT set: wazero's compiler back end
+# writes and then executes generated machine code, so setting it would make the
+# MLS path fail at runtime rather than at start. A blind copy of a hardening
+# template is exactly how that regression arrives.
+
+[Install]
+WantedBy=multi-user.target
