@@ -1,13 +1,17 @@
 package ds_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
+	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
 
 func TestPlanBatchesNeverExceedsTheCommitCap(t *testing.T) {
@@ -113,6 +117,102 @@ func TestAJoinStormTailSurvivesARestart(t *testing.T) {
 	if got := ds.PendingJoinsForTest(h.ds, reg.GroupID); got != len(devices) {
 		t.Fatalf("after a restart %d devices are waiting, want %d: the tail of the storm was lost",
 			got, len(devices))
+	}
+}
+
+// queuedDevices is the group's pending_joins rows, in the order a drain reads them, straight from
+// the database file: what a restarted instance would find.
+func (h *dsHarness) queuedDevices(t *testing.T, groupID id.ID) []id.ID {
+	t.Helper()
+	db, err := sqlite.OpenRead(h.path)
+	if err != nil {
+		t.Fatalf("sqlite.OpenRead: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	rows, err := db.QueryContext(t.Context(),
+		"SELECT device_id FROM pending_joins WHERE group_id = ? ORDER BY queued, device_id", groupID)
+	if err != nil {
+		t.Fatalf("reading pending_joins: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []id.ID
+	for rows.Next() {
+		var d id.ID
+		if err := rows.Scan(&d); err != nil {
+			t.Fatalf("scanning pending_joins: %v", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("reading pending_joins: %v", err)
+	}
+	return out
+}
+
+// A drain that dies in the middle of a slice — a restart, an OOM kill — after it read the slice
+// and before it proposed every device in it loses none of the devices it had not yet resolved:
+// a device leaves pending_joins only once its Add is stored or it has been judged ineligible, so
+// the rows the dead drain never reached are still there for the sweeper after the restart.
+// Requeue-on-error covers only a fault the code sees; a crash runs no error path.
+func TestADrainThatDiesMidSliceLeavesTheUnresolvedDevicesQueued(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	placeholders := h.fillTheCommit(t, reg.GroupID)
+
+	devices := make([]id.ID, 5)
+	for i := range devices {
+		devices[i] = h.eligibleDeviceWithKeyPackage(t)
+	}
+	if err := h.ds.ProposeAddBatch(ctx, reg.GroupID, devices); err != nil {
+		t.Fatalf("ProposeAddBatch: %v", err)
+	}
+	// Queued in one second, so the drain reads them in device-id order.
+	order := slices.Clone(devices)
+	slices.SortFunc(order, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	if got := h.queuedDevices(t, reg.GroupID); !slices.Equal(got, order) {
+		t.Fatalf("queued %v, want all five in device-id order %v", got, order)
+	}
+
+	// The process dies while the drain asks about the third device of the slice: the first two
+	// are resolved by then (the first proposed, the second resolved one way or the other), the
+	// last three are not.
+	third, err := h.repo.GetDevice(ctx, order[2])
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	h.acl.mu.Lock()
+	h.acl.crashOn = &third.UserID
+	h.acl.mu.Unlock()
+	if err := h.repo.DeleteProposals(ctx, reg.GroupID, placeholders); err != nil {
+		t.Fatalf("DeleteProposals: %v", err)
+	}
+	func() {
+		defer func() {
+			r := recover()
+			if err, ok := r.(error); !ok || !errors.Is(err, errSimulatedCrash) {
+				t.Fatalf("the drain ended with %v, want the simulated crash", r)
+			}
+		}()
+		_ = h.ds.ProposeAddBatch(ctx, reg.GroupID, nil)
+	}()
+	h.acl.mu.Lock()
+	h.acl.crashOn = nil
+	h.acl.mu.Unlock()
+
+	if got := h.queuedDevices(t, reg.GroupID); !slices.Equal(got, order[2:]) {
+		t.Fatalf("after the crash pending_joins holds %v, want the three devices the drain never "+
+			"resolved %v: a device left the queue before its Add was stored", got, order[2:])
+	}
+	adds := h.outstandingAdds(t, reg.GroupID)
+	if len(adds) == 0 || *adds[0].TargetDevice != order[0] {
+		t.Fatalf("%d outstanding Adds, want the first device's: the drain did run before it died", len(adds))
+	}
+
+	// And the restarted instance still has them to drain.
+	h.restartDS()
+	if got := ds.PendingJoinsForTest(h.ds, reg.GroupID); got != 3 {
+		t.Fatalf("after the restart %d devices are waiting, want 3", got)
 	}
 }
 

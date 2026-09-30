@@ -2260,27 +2260,30 @@ func (r *Repo) QueuePendingJoins(ctx context.Context, groupID id.ID, devices []i
 	}))
 }
 
-// TakePendingJoins reads the oldest `limit` devices and deletes exactly those, in one transaction,
-// so two takes never hand out one device twice.
-func (r *Repo) TakePendingJoins(ctx context.Context, groupID id.ID, limit int32) ([]id.ID, error) {
-	var out []id.ID
-	err := r.atomically(ctx, func(q *sqlitedb.Queries) error {
-		devices, err := q.ListPendingJoins(ctx, sqlitedb.ListPendingJoinsParams{GroupID: groupID, MaxRows: int64(limit)})
-		if err != nil {
-			return err
-		}
+// ListPendingJoins reads the oldest `limit` devices and removes nothing: a device leaves the queue
+// through DeletePendingJoins once the drain has resolved it, never when it is read.
+func (r *Repo) ListPendingJoins(ctx context.Context, groupID id.ID, limit int32) ([]id.ID, error) {
+	devices, err := r.r.ListPendingJoins(ctx, sqlitedb.ListPendingJoinsParams{GroupID: groupID, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return devices, nil
+}
+
+// DeletePendingJoins removes the named devices from the group's queue, in one transaction. A
+// device that is not queued is not an error.
+func (r *Repo) DeletePendingJoins(ctx context.Context, groupID id.ID, devices []id.ID) error {
+	if len(devices) == 0 {
+		return nil
+	}
+	return wrap(r.atomically(ctx, func(q *sqlitedb.Queries) error {
 		for _, d := range devices {
 			if err := q.DeletePendingJoin(ctx, sqlitedb.DeletePendingJoinParams{GroupID: groupID, DeviceID: d}); err != nil {
 				return err
 			}
 		}
-		out = devices
 		return nil
-	})
-	if err != nil {
-		return nil, wrap(err)
-	}
-	return out, nil
+	}))
 }
 
 func (r *Repo) CountPendingJoins(ctx context.Context, groupID id.ID) (int64, error) {

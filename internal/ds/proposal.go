@@ -159,8 +159,16 @@ func (d *DS) ProposeAddBatch(ctx context.Context, groupID id.ID, devices []id.ID
 // from the queue and logged, never re-queued: it would only be refused again, and a device that
 // becomes eligible later is queued again by the membership change that made it so
 // (api.SyncGroupMembers). A device the check cannot ANSWER for — a store or ACL fault, or the
-// context ending — is put back, with every device of the slice after it, and the drain stops: a
+// context ending — stays queued, with every device of the slice after it, and the drain stops: a
 // transient fault must not silently shorten a storm.
+//
+// The queue is READ, not taken: a device's row is deleted only once the device is resolved —
+// after its Add is stored, or once it has been judged ineligible or refused. So a process that
+// dies in the middle of a slice (a restart, an OOM kill) leaves every device it had not resolved
+// in pending_joins for the sweeper, where a take-then-propose would have lost them; no error path
+// runs on a crash. Dying between the Add's store and the row's delete is harmless too: the
+// restarted drain finds the outstanding Add (eligibleNow's pending check) and drops the row
+// without spending a second KeyPackage.
 //
 // It elects once for the whole slice, exactly as the batch it drains would: the commit that
 // applied this epoch's Adds is followed by ONE mls.commit_needed for the next slice, never by one
@@ -197,50 +205,41 @@ func (d *DS) drainSlice(ctx context.Context, groupID id.ID) (int, error) {
 		if room <= 0 {
 			return issued, nil
 		}
-		taken, err := d.opts.Store.TakePendingJoins(ctx, groupID, int32(room)) //nolint:gosec // G115: room is at most MaxAddsPerCommit
-		if err != nil || len(taken) == 0 {
+		queued, err := d.opts.Store.ListPendingJoins(ctx, groupID, int32(room)) //nolint:gosec // G115: room is at most MaxAddsPerCommit
+		if err != nil || len(queued) == 0 {
 			return issued, err
 		}
-		for i, device := range taken {
+		for _, device := range queued {
 			ok, err := d.eligibleNow(ctx, snap, groupID, device, now)
 			if err == nil && ctx.Err() != nil {
 				err = ctx.Err()
 			}
 			if err != nil {
-				d.requeuePendingJoins(ctx, groupID, taken[i:])
+				// Unanswered: this device and the rest of the slice are still queued.
 				return issued, err
 			}
 			if !ok {
 				d.log().Info("queued add dropped: the device is no longer eligible",
 					"group", groupID.String()[:8], "device", device.String()[:8])
-				continue
-			}
-			if err := d.proposeAddLocked(ctx, groupID, device, id.New()); err != nil {
+			} else if err := d.proposeAddLocked(ctx, groupID, device, id.New()); err != nil {
 				if ctx.Err() != nil {
-					d.requeuePendingJoins(ctx, groupID, taken[i:])
 					return issued, ctx.Err()
 				}
 				// One unusable KeyPackage must not sink the slice: the device is skipped and the
 				// storm continues.
 				d.log().Warn("queued add skipped", "group", groupID.String()[:8],
 					"device", device.String()[:8], "err", err)
-				continue
+			} else {
+				snap.pending[device] = true
+				issued++
 			}
-			snap.pending[device] = true
-			issued++
+			// Resolved one way or the other: only now does the device leave the queue.
+			if err := d.opts.Store.DeletePendingJoins(ctx, groupID, []id.ID{device}); err != nil {
+				return issued, err
+			}
 		}
-		// Every device dropped or skipped left its room free; the loop takes the next ones into
+		// Every device dropped or skipped left its room free; the loop reads the next ones into
 		// it, so a slice is filled while the queue holds eligible devices.
-	}
-}
-
-// requeuePendingJoins puts devices a drain took but could not judge back in the queue. It writes
-// under a context the caller's cancellation cannot reach, because the cancellation is usually why
-// they are being put back.
-func (d *DS) requeuePendingJoins(ctx context.Context, groupID id.ID, devices []id.ID) {
-	if err := d.opts.Store.QueuePendingJoins(context.WithoutCancel(ctx), groupID, devices, d.now()); err != nil {
-		d.log().Error("putting a join storm's devices back in the queue failed; they are lost",
-			"group", groupID.String()[:8], "devices", len(devices), "err", err)
 	}
 }
 

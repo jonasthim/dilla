@@ -89,8 +89,10 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// The pending-join queue: deviation B13 names QueuePendingJoins/TakePendingJoins,
 			// and Plan 2 task 7 (Plan 1 follow-up card 8) lands them with the length its tests
 			// and the debug state read and the paged walk the sweeper re-drives a stalled
-			// storm from.
-			"CountPendingJoins", "ListPendingJoinGroups", "QueuePendingJoins", "TakePendingJoins",
+			// storm from. Its fix round 1 splits the take into a read and a delete, so a
+			// device leaves the queue only once the drain has resolved it.
+			"CountPendingJoins", "DeletePendingJoins", "ListPendingJoinGroups",
+			"ListPendingJoins", "QueuePendingJoins",
 		}},
 		{"Messages", reflect.TypeOf((*store.Messages)(nil)).Elem(), []string{
 			"GetAppMessage", "ListAppMessages", "PruneAppMessages", "PutAppMessage",

@@ -27,12 +27,23 @@ type fakeACL struct {
 	deny     ds.DenyUnlessMember
 	mu       sync.Mutex
 	eligible map[id.ID]bool
+	// crashOn, when set, is a user whose eligibility question panics: the process dying in the
+	// middle of a drain, after the slice was read and before the device was proposed. Nothing the
+	// drain defers runs for it except the unwinding itself, which is what a kill leaves behind.
+	crashOn *id.ID
 }
+
+// errSimulatedCrash is what the crashOn panic carries.
+var errSimulatedCrash = errors.New("simulated crash in the middle of a drain")
 
 func (a *fakeACL) Eligible(ctx context.Context, groupID, userID id.ID) (bool, error) {
 	a.mu.Lock()
 	ok := a.eligible[userID]
+	crash := a.crashOn != nil && *a.crashOn == userID
 	a.mu.Unlock()
+	if crash {
+		panic(errSimulatedCrash)
+	}
 	if ok {
 		return true, nil
 	}

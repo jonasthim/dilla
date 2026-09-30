@@ -227,12 +227,17 @@ type MLS interface {
 	// one commit may carry, durable so a restart between two slices loses no device.
 	//
 	// QueuePendingJoins queues devices for groupID at `at`. A device already queued keeps its row
-	// and its place. TakePendingJoins removes and returns the oldest `limit` devices, ties broken
-	// by device id, in one transaction. CountPendingJoins is the queue's length, and
-	// ListPendingJoinGroups pages the groups holding a queue by group id after `after`, one row per
-	// group, for the sweeper that re-drives a stalled storm.
+	// and its place. ListPendingJoins READS the oldest `limit` devices, ties broken by device id,
+	// and removes nothing: a drain deletes a device's row with DeletePendingJoins only once the
+	// device is resolved (its Add stored, or judged ineligible), so a process that dies in the
+	// middle of a slice leaves every unresolved device queued. (B13 named a take-and-delete pair;
+	// Plan 2 task 7 fix round 1 split it, because a take commits the delete before the Adds exist.)
+	// CountPendingJoins is the queue's length, and ListPendingJoinGroups pages the groups holding
+	// a queue by group id after `after`, one row per group, for the sweeper that re-drives a
+	// stalled storm.
 	QueuePendingJoins(ctx context.Context, groupID id.ID, devices []id.ID, at int64) error
-	TakePendingJoins(ctx context.Context, groupID id.ID, limit int32) ([]id.ID, error)
+	ListPendingJoins(ctx context.Context, groupID id.ID, limit int32) ([]id.ID, error)
+	DeletePendingJoins(ctx context.Context, groupID id.ID, devices []id.ID) error
 	CountPendingJoins(ctx context.Context, groupID id.ID) (int64, error)
 	ListPendingJoinGroups(ctx context.Context, after id.ID, limit int32) ([]id.ID, error)
 }

@@ -45,23 +45,38 @@ func TestPendingJoinsQueueDurablyAndDrainInOrder(t *testing.T) {
 			}
 			want := append(byID(early), byID(late)...)
 
-			first, err := repo.TakePendingJoins(ctx, g.GroupID, 4)
+			first, err := repo.ListPendingJoins(ctx, g.GroupID, 4)
 			if err != nil {
-				t.Fatalf("TakePendingJoins: %v", err)
+				t.Fatalf("ListPendingJoins: %v", err)
 			}
 			if !slices.Equal(first, want[:4]) {
-				t.Fatalf("first take = %x, want %x", first, want[:4])
+				t.Fatalf("first read = %x, want %x", first, want[:4])
 			}
-			// A take REMOVES what it returns: the next one starts after it.
-			rest, err := repo.TakePendingJoins(ctx, g.GroupID, 4)
+			// A read removes NOTHING: a drain that dies after reading a slice must leave every
+			// device it had not resolved in the queue.
+			if again, err := repo.ListPendingJoins(ctx, g.GroupID, 4); err != nil || !slices.Equal(again, want[:4]) {
+				t.Fatalf("a second read = %x, %v; want the same %x", again, err, want[:4])
+			}
+			// A device leaves only when it is deleted, one resolved device at a time or several.
+			if err := repo.DeletePendingJoins(ctx, g.GroupID, first[:1]); err != nil {
+				t.Fatalf("DeletePendingJoins: %v", err)
+			}
+			if err := repo.DeletePendingJoins(ctx, g.GroupID, first[1:]); err != nil {
+				t.Fatalf("DeletePendingJoins: %v", err)
+			}
+			rest, err := repo.ListPendingJoins(ctx, g.GroupID, 4)
 			if err != nil {
-				t.Fatalf("TakePendingJoins: %v", err)
+				t.Fatalf("ListPendingJoins: %v", err)
 			}
 			if !slices.Equal(rest, want[4:]) {
-				t.Fatalf("second take = %x, want %x", rest, want[4:])
+				t.Fatalf("after the deletes = %x, want %x", rest, want[4:])
 			}
-			if got, err := repo.TakePendingJoins(ctx, g.GroupID, 4); err != nil || len(got) != 0 {
-				t.Fatalf("a drained queue took %x, %v; want nothing", got, err)
+			// Deleting a device that is not queued is not an error.
+			if err := repo.DeletePendingJoins(ctx, g.GroupID, append(rest, first[0])); err != nil {
+				t.Fatalf("DeletePendingJoins (with one already gone): %v", err)
+			}
+			if got, err := repo.ListPendingJoins(ctx, g.GroupID, 4); err != nil || len(got) != 0 {
+				t.Fatalf("a drained queue read %x, %v; want nothing", got, err)
 			}
 			if n, err := repo.CountPendingJoins(ctx, other.GroupID); err != nil || n != 1 {
 				t.Fatalf("the other group's queue = %d, %v; want its own 1", n, err)
