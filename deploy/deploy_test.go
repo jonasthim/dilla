@@ -55,7 +55,9 @@ func TestTheUnitCarriesTheRequiredDirectives(t *testing.T) {
 		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
 		"NoNewPrivileges=yes",
 		"ProtectSystem=strict",
-		"RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
+		// AF_NETLINK (C8, fix wave): net.Interfaces, LiveKit's SFU setup and pion's stdnet read the
+		// interface list over netlink; without it serve cannot start with the default config.
+		"RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK",
 		"TimeoutStartSec=300s",
 	} {
 		if !strings.Contains(unit, want) {

@@ -41,7 +41,11 @@ ProtectProc=invisible
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is required, not optional: Go's net.Interfaces reads the interface
+# addresses over netlink, and LiveKit's SFU setup and pion/turn's network both
+# call it. Without it serve fails at start with "netlinkrib: address family not
+# supported by protocol".
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictSUIDSGID=yes
 LockPersonality=yes
 # MemoryDenyWriteExecute is deliberately NOT set: wazero's compiler back end
