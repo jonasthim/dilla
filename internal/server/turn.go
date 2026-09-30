@@ -66,7 +66,12 @@ func StartTURN(c config.TURN, ln net.Listener, peers []netip.Addr, clk clock.Clo
 	if secret == "" {
 		return nil, turnConfigError{errors.New("turn: turn.shared_secret_file is empty")}
 	}
-	relayIP, err := ResolveRelayIP(c.RelayIP)
+	// peers[0] is livekit.node_ip (cmd/dillad turnPeers): the family "auto" must stay in.
+	var prefer netip.Addr
+	if len(peers) > 0 {
+		prefer = peers[0]
+	}
+	relayIP, err := ResolveRelayIP(c.RelayIP, prefer)
 	if err != nil {
 		return nil, err
 	}
@@ -126,10 +131,11 @@ func IsTURNConfigError(err error) bool {
 
 // ResolveRelayIP is the address relay sockets bind for turn.relay_ip: an IP address as written,
 // or, for "auto", this host's own address — the source address of its outbound route, else its
-// first non-loopback, non-link-local interface address. "auto" exists because the public IP is not
+// first non-loopback, non-link-local interface address, in prefer's address family (livekit.node_ip;
+// chooseRelayIP says what happens without one). "auto" exists because the public IP is not
 // a local address on bridged Docker or a NATed LXC, where binding it fails every Allocate; it is
 // resolved here, at serve, because `dillad init` may run in another container than serve.
-func ResolveRelayIP(s string) (net.IP, error) {
+func ResolveRelayIP(s string, prefer netip.Addr) (net.IP, error) {
 	if s != config.RelayIPAuto {
 		ip := net.ParseIP(s)
 		if ip == nil {
@@ -139,23 +145,63 @@ func ResolveRelayIP(s string) (net.IP, error) {
 	}
 	// A UDP "connect" sends nothing; it only asks the kernel which source address the route to a
 	// public destination would use. 192.0.2.1 (TEST-NET-1) is never answered, only routed.
+	var probed net.IP
 	if c, err := (&net.Dialer{}).DialContext(context.Background(), "udp4", "192.0.2.1:9"); err == nil {
 		a, ok := c.LocalAddr().(*net.UDPAddr)
 		_ = c.Close()
 		if ok && !a.IP.IsUnspecified() && !a.IP.IsLoopback() {
-			return a.IP, nil
+			probed = a.IP
 		}
 	}
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil, fmt.Errorf("turn: turn.relay_ip auto: list interface addresses: %w", err)
 	}
+	return chooseRelayIP(probed, addrs, prefer)
+}
+
+// chooseRelayIP is the "auto" decision once the host has been asked: probed is the route probe's
+// source address (nil when the probe failed), addrs the interface addresses, prefer the family
+// anchor. The relay socket and the SFU peers it reaches must share an address family, so the
+// choice stays in prefer's family (livekit.node_ip); with no prefer it stays in the probe's family,
+// and with neither it takes the first usable address. A host with no address of the family is a
+// configuration error: the operator names one in turn.relay_ip.
+func chooseRelayIP(probed net.IP, addrs []net.Addr, prefer netip.Addr) (net.IP, error) {
+	isV4 := func(ip net.IP) bool { return ip.To4() != nil }
+	anchor := ""
+	switch {
+	case prefer.IsValid():
+		anchor = "livekit.node_ip"
+		prefer = prefer.Unmap()
+	case probed != nil:
+		prefer, _ = netip.AddrFromSlice(probed)
+		prefer = prefer.Unmap()
+		anchor = "the route's source address"
+	}
+	if prefer.IsValid() {
+		sameFamily := func(ip net.IP) bool { return isV4(ip) == prefer.Is4() }
+		if probed != nil && sameFamily(probed) {
+			return probed, nil
+		}
+		for _, a := range addrs {
+			if ipn, ok := a.(*net.IPNet); ok && sameFamily(ipn.IP) && !ipn.IP.IsLoopback() && !ipn.IP.IsLinkLocalUnicast() {
+				return ipn.IP, nil
+			}
+		}
+		family := "IPv6"
+		if prefer.Is4() {
+			family = "IPv4"
+		}
+		return nil, turnConfigError{fmt.Errorf(
+			"turn: turn.relay_ip auto: %s is %s but this host has no non-loopback %s address; set turn.relay_ip",
+			anchor, prefer, family)}
+	}
 	for _, a := range addrs {
 		if ipn, ok := a.(*net.IPNet); ok && !ipn.IP.IsLoopback() && !ipn.IP.IsLinkLocalUnicast() {
 			return ipn.IP, nil
 		}
 	}
-	return nil, errors.New("turn: turn.relay_ip auto: this host has no non-loopback address; set turn.relay_ip")
+	return nil, turnConfigError{errors.New("turn: turn.relay_ip auto: this host has no non-loopback address; set turn.relay_ip")}
 }
 
 // peerFilter admits a CreatePermission or ChannelBind only for a peer IP in

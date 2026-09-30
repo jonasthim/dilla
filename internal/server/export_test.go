@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"net"
+	"net/netip"
 
 	"github.com/pion/transport/v4"
 	"github.com/pion/turn/v5"
@@ -37,4 +39,9 @@ func FailTURNNetForTest(err error) (restore func()) {
 // EmitForTest drives the certmagic OnEvent hook BuildTLS installed.
 func (t *TLS) EmitForTest(ctx context.Context, event string, data map[string]any) error {
 	return t.magic.OnEvent(ctx, event, data)
+}
+
+// ChooseRelayIPForTest is the "auto" decision over a probe result and interface addresses.
+func ChooseRelayIPForTest(probed net.IP, addrs []net.Addr, prefer netip.Addr) (net.IP, error) {
+	return chooseRelayIP(probed, addrs, prefer)
 }

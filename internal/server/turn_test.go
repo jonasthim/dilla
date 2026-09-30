@@ -308,12 +308,56 @@ func TestWithoutAnSFUTheRelayAdmitsNoPeer(t *testing.T) {
 	}
 }
 
+// M4: when the IPv4 route probe fails, the "auto" fallback stays in node_ip's address family (or,
+// with no node_ip, in the family of the address that did resolve) and is a config error when the
+// host has no address of that family.
+func TestAutoRelayIPKeepsNodeIPsAddressFamily(t *testing.T) {
+	ipn := func(s string) net.Addr {
+		p := netip.MustParsePrefix(s)
+		return &net.IPNet{IP: p.Addr().AsSlice(), Mask: net.CIDRMask(p.Bits(), p.Addr().BitLen())}
+	}
+	v6, v4 := ipn("2001:db8::5/64"), ipn("10.0.0.5/24")
+	for _, tc := range []struct {
+		name   string
+		probed net.IP
+		addrs  []net.Addr
+		prefer string
+		want   string // "" = a config error
+	}{
+		{"v4 node, v6 listed first", nil, []net.Addr{v6, v4}, "203.0.113.7", "10.0.0.5"},
+		{"v6 node, v4 listed first", nil, []net.Addr{v4, v6}, "2001:db8::1", "2001:db8::5"},
+		{"v4 node, only v6 on the host", nil, []net.Addr{ipn("127.0.0.1/8"), v6}, "203.0.113.7", ""},
+		{"v6 node, only v4 on the host", nil, []net.Addr{v4}, "2001:db8::1", ""},
+		{"no node_ip, first usable wins", nil, []net.Addr{v6, v4}, "", "2001:db8::5"},
+		{"v4 probe of the node's family wins", net.ParseIP("10.9.9.9"), []net.Addr{v6}, "203.0.113.7", "10.9.9.9"},
+		{"v4 probe against a v6 node is not taken", net.ParseIP("10.9.9.9"), []net.Addr{v6}, "2001:db8::1", "2001:db8::5"},
+		{"link-local and loopback never count", nil, []net.Addr{ipn("fe80::1/64"), ipn("::1/128")}, "2001:db8::1", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var prefer netip.Addr
+			if tc.prefer != "" {
+				prefer = netip.MustParseAddr(tc.prefer)
+			}
+			got, err := server.ChooseRelayIPForTest(tc.probed, tc.addrs, prefer)
+			if tc.want == "" {
+				if err == nil || !server.IsTURNConfigError(err) {
+					t.Fatalf("got %v, %v; want a config error", got, err)
+				}
+				return
+			}
+			if err != nil || got.String() != tc.want {
+				t.Fatalf("got %v, %v; want %s", got, err, tc.want)
+			}
+		})
+	}
+}
+
 // I12 (fix wave): turn.relay_ip = "auto" is what init writes, because the public IP is not a local
 // address on bridged Docker or a NATed LXC and every Allocate would fail to bind there. "auto" is
 // the source address of this host's outbound route (or its first non-loopback interface address),
 // which the relay can bind; an explicit IP is taken as written.
 func TestAnAutoRelayIPIsALocalAddressTheRelayBinds(t *testing.T) {
-	ip, err := server.ResolveRelayIP("auto")
+	ip, err := server.ResolveRelayIP("auto", netip.Addr{})
 	if err != nil {
 		t.Fatalf(`ResolveRelayIP("auto"): %v`, err)
 	}
@@ -322,10 +366,10 @@ func TestAnAutoRelayIPIsALocalAddressTheRelayBinds(t *testing.T) {
 		t.Fatalf("the auto relay address %s is not bindable: %v", ip, err)
 	}
 	_ = pc.Close()
-	if got, err := server.ResolveRelayIP("203.0.113.7"); err != nil || got.String() != "203.0.113.7" {
+	if got, err := server.ResolveRelayIP("203.0.113.7", netip.Addr{}); err != nil || got.String() != "203.0.113.7" {
 		t.Errorf("an explicit relay_ip = %v, %v", got, err)
 	}
-	if _, err := server.ResolveRelayIP("chat.example"); err == nil {
+	if _, err := server.ResolveRelayIP("chat.example", netip.Addr{}); err == nil {
 		t.Error("a relay_ip that is neither an IP nor auto was accepted")
 	}
 
