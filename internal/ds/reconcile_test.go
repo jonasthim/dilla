@@ -14,6 +14,52 @@ import (
 // it: the ACL only gates Adds and joins, and the inactivity sweep skips active devices. So the
 // sweeper reconciles: every live leaf of an open text or call group whose user the ACL no longer
 // admits gets an instance Remove, once, and an eligible user's leaves are left alone.
+// The reconcile asks about every leaf holder of every open channel group each sweep. Answered one
+// user at a time, an ACL that reads the group's members per question (ds.DenyUnlessMember, which
+// api.ResolverACL falls back to for groups it has no rule for) costs O(leaves²) store reads a
+// group: on the 1,500-leaf fixture that was ~7 s of every -race sweep, most of internal/ds's run
+// time. An ACL that implements ds.BatchACL is asked once per group instead.
+func TestTheReconcileAsksABatchACLOncePerGroup(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	h.mustRegister(t)
+	singles, batches := h.acl.questions()
+	if _, err := ds.ReconcileLeavesForTest(h.ds, ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	s, b := h.acl.questions()
+	if s-singles != 0 || b-batches != 1 {
+		t.Fatalf("the reconcile asked %d single questions and %d batches, want 0 and 1", s-singles, b-batches)
+	}
+}
+
+// DenyUnlessMember's batch answer is its single answer for each user: a live leaf holder is
+// eligible, anyone else is not.
+func TestDenyUnlessMemberAnswersABatchLikeItsSingles(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	member := h.memberSession(t, reg.GroupID, 5).UserID
+	stranger := id.New()
+	acl := ds.DenyUnlessMember{Store: h.repo}
+	got, err := acl.EligibleUsers(ctx, reg.GroupID, []id.ID{member, stranger})
+	if err != nil {
+		t.Fatalf("EligibleUsers: %v", err)
+	}
+	for _, u := range []id.ID{member, stranger} {
+		single, err := acl.Eligible(ctx, reg.GroupID, u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got[u] != single {
+			t.Errorf("user %s: batch %t, single %t", u, got[u], single)
+		}
+	}
+	if !got[member] || got[stranger] {
+		t.Fatalf("batch = %v, want the member eligible and the stranger not", got)
+	}
+}
+
 func TestTheSweeperRemovesTheLeavesOfAUserWhoLostAccess(t *testing.T) {
 	h := newDSHarness(t)
 	ctx := context.Background()

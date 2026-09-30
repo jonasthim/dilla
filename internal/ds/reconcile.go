@@ -5,6 +5,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // reconcilePage is how many open groups one sweep tick reconciles. The sweeper ticks every minute
@@ -60,6 +61,31 @@ func (d *DS) reconcileLeaves(ctx context.Context) (int, error) {
 	return proposed, nil
 }
 
+// leafHoldersEligible is the ACL's verdict for every user holding a live leaf in members: one
+// question per group from a BatchACL, one per distinct user otherwise.
+func (d *DS) leafHoldersEligible(ctx context.Context, groupID id.ID, members []store.MemberRow) (map[id.ID]bool, error) {
+	var users []id.ID
+	seen := map[id.ID]bool{}
+	for _, m := range members {
+		if m.RemovedEpoch == nil && !seen[m.UserID] {
+			seen[m.UserID] = true
+			users = append(users, m.UserID)
+		}
+	}
+	if b, ok := d.opts.ACL.(BatchACL); ok {
+		return b.EligibleUsers(ctx, groupID, users)
+	}
+	eligible := make(map[id.ID]bool, len(users))
+	for _, u := range users {
+		ok, err := d.opts.ACL.Eligible(ctx, groupID, u)
+		if err != nil {
+			return nil, err
+		}
+		eligible[u] = ok
+	}
+	return eligible, nil
+}
+
 // reconcileGroupLocked is reconcileLeaves for one group, with its lock held. It first voids the
 // outstanding Adds no commit could carry (VoidIneligibleAdds), so the Removes it issues land in a
 // group that can commit them, and elects one committer for the whole batch.
@@ -88,20 +114,12 @@ func (d *DS) reconcileGroupLocked(ctx context.Context, groupID id.ID) (int, erro
 			pendingRemove[*p.TargetLeaf] = true
 		}
 	}
-	eligible := map[id.ID]bool{}
+	eligible, err := d.leafHoldersEligible(ctx, groupID, members)
+	if err != nil {
+		return 0, err // cannot answer: remove nobody
+	}
 	anyEligible := false
-	for _, m := range members {
-		if m.RemovedEpoch != nil {
-			continue
-		}
-		if _, asked := eligible[m.UserID]; asked {
-			continue
-		}
-		ok, err := d.opts.ACL.Eligible(ctx, groupID, m.UserID)
-		if err != nil {
-			return 0, err // cannot answer: remove nobody
-		}
-		eligible[m.UserID] = ok
+	for _, ok := range eligible {
 		anyEligible = anyEligible || ok
 	}
 	if !anyEligible {

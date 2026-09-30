@@ -26,6 +26,16 @@ type ACL interface {
 	Eligible(ctx context.Context, groupID, userID id.ID) (bool, error)
 }
 
+// BatchACL is an ACL that can also answer for many users of one group in one call, with the same
+// verdict Eligible gives each. The sweeper's reconcile asks about every leaf holder of a group;
+// answered one user at a time by an ACL that reads the group's members per question
+// (DenyUnlessMember), that is O(leaves²) store reads a group. An ACL without it is asked per user.
+type BatchACL interface {
+	EligibleUsers(ctx context.Context, groupID id.ID, users []id.ID) (map[id.ID]bool, error)
+}
+
+var _ BatchACL = DenyUnlessMember{}
+
 // DenyUnlessMember is the Plan-1 ACL: a user is eligible only where the instance can already see
 // them as a member of the group. That admits the ordinary re-add of a device belonging to a user
 // already in the group and refuses everything else (NV-B6). It is the default of a DS built with
@@ -44,4 +54,23 @@ func (a DenyUnlessMember) Eligible(ctx context.Context, groupID, userID id.ID) (
 		}
 	}
 	return false, nil
+}
+
+// EligibleUsers is Eligible for each of users, over one read of the group's members.
+func (a DenyUnlessMember) EligibleUsers(ctx context.Context, groupID id.ID, users []id.ID) (map[id.ID]bool, error) {
+	members, err := a.Store.ListMembers(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	live := make(map[id.ID]bool, len(members))
+	for _, m := range members {
+		if m.RemovedEpoch == nil {
+			live[m.UserID] = true
+		}
+	}
+	out := make(map[id.ID]bool, len(users))
+	for _, u := range users {
+		out[u] = live[u]
+	}
+	return out, nil
 }

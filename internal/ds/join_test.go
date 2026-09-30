@@ -33,6 +33,39 @@ type fakeACL struct {
 	crashOn *id.ID
 	// forbidden users are ineligible whatever else holds (forbid).
 	forbidden map[id.ID]bool
+	// singles and batches count the questions asked one user at a time and a group at a time.
+	singles, batches int
+}
+
+// EligibleUsers is ds.BatchACL: the same answer Eligible gives each user, with the membership half
+// read once for the whole batch.
+func (a *fakeACL) EligibleUsers(ctx context.Context, groupID id.ID, users []id.ID) (map[id.ID]bool, error) {
+	a.mu.Lock()
+	a.batches++
+	a.mu.Unlock()
+	base, err := a.deny.EligibleUsers(ctx, groupID, users)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[id.ID]bool, len(users))
+	for _, u := range users {
+		a.mu.Lock()
+		ok, forbidden := a.eligible[u], a.forbidden[u]
+		crash := a.crashOn != nil && *a.crashOn == u
+		a.mu.Unlock()
+		if crash && !forbidden {
+			panic(errSimulatedCrash)
+		}
+		out[u] = !forbidden && (ok || base[u])
+	}
+	return out, nil
+}
+
+// questions reports how many questions were asked one user at a time and a group at a time.
+func (a *fakeACL) questions() (singles, batches int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.singles, a.batches
 }
 
 // errSimulatedCrash is what the crashOn panic carries.
@@ -40,6 +73,7 @@ var errSimulatedCrash = errors.New("simulated crash in the middle of a drain")
 
 func (a *fakeACL) Eligible(ctx context.Context, groupID, userID id.ID) (bool, error) {
 	a.mu.Lock()
+	a.singles++
 	ok := a.eligible[userID]
 	crash := a.crashOn != nil && *a.crashOn == userID
 	forbidden := a.forbidden[userID]
