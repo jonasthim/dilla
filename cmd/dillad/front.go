@@ -225,6 +225,36 @@ func startTURN(d frontDeps, f *front, ln net.Listener) error {
 	return nil
 }
 
+// sfuConfig maps [livekit] onto the SFU's config: every key config.Validate accepts reaches LiveKit
+// (livekit.max_voice_participants as the room cap), and the reserved ones Validate refuses
+// (extra_config_file, a non-default max_publishers, use_external_ip) have nowhere to go. An unset
+// node_ip is loopback, which needs the loopback candidate.
+func sfuConfig(lk config.LiveKit, secret string) sfu.Config {
+	nodeIP := lk.NodeIP
+	if nodeIP == "" {
+		nodeIP = "127.0.0.1"
+	}
+	loopback := false
+	if a, err := netip.ParseAddr(nodeIP); err == nil {
+		loopback = a.IsLoopback()
+	}
+	return sfu.Config{
+		Port:        lk.Port,
+		BindAddress: lk.BindAddress,
+		NodeIP:      nodeIP,
+		UDPPort:     lk.UDPPort,
+		TCPPort:     lk.TCPPort,
+		// On a loopback-only node LiveKit gathers no host candidate without it
+		// (internal/sfu's package comment).
+		EnableLoopbackCandidate: loopback,
+		APIKey:                  lk.APIKey,
+		APISecret:               strings.TrimSpace(secret),
+		AdvertiseInternalIP:     lk.AdvertiseInternalIP,
+		STUNServers:             lk.STUNServers,
+		MaxParticipants:         uint32(max(lk.MaxVoiceParticipants, 0)), //nolint:gosec // clamped at 0
+	}
+}
+
 // startSFU runs LiveKit v1.13.7 in this process through internal/sfu, on
 // livekit.bind_address, when livekit.enabled. Its readiness gate is red until
 // the SFU accepts connections. A failure stops serve: an instance configured
@@ -249,26 +279,7 @@ func startSFU(ctx context.Context, d frontDeps) (*sfu.Server, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("serve: livekit.api_secret_file: %w: %w", err, exit.Config)
 	}
-	nodeIP := lk.NodeIP
-	if nodeIP == "" {
-		nodeIP = "127.0.0.1"
-	}
-	loopback := false
-	if a, err := netip.ParseAddr(nodeIP); err == nil {
-		loopback = a.IsLoopback()
-	}
-	s, err := sfu.Start(ctx, sfu.Config{
-		Port:        lk.Port,
-		BindAddress: lk.BindAddress,
-		NodeIP:      nodeIP,
-		UDPPort:     lk.UDPPort,
-		TCPPort:     lk.TCPPort,
-		// On a loopback-only node LiveKit gathers no host candidate without it
-		// (internal/sfu's package comment).
-		EnableLoopbackCandidate: loopback,
-		APIKey:                  lk.APIKey,
-		APISecret:               strings.TrimSpace(string(body)),
-	})
+	s, err := sfu.Start(ctx, sfuConfig(lk, string(body)))
 	if err != nil {
 		gate.Set(false, err.Error())
 		return nil, nil, fmt.Errorf("serve: %w: %w", err, exit.Unavailable)

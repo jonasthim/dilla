@@ -287,6 +287,30 @@ func TestValidationRules(t *testing.T) {
 			t.Fatal("argon2_memory_kib above the hash memory budget accepted")
 		}
 	})
+	// I13 (fix wave): a livekit.* key that never reaches LiveKit is refused rather than silently
+	// ignored. LiveKit v1.13.7 has no publisher cap and dillad renders its own YAML, so only the
+	// defaults of max_publishers, extra_config_file and use_external_ip are accepted until they are
+	// wired.
+	t.Run("livekit keys that reach nothing are refused", func(t *testing.T) {
+		for name, set := range map[string]func(*config.Config){
+			"extra_config_file": func(c *config.Config) { c.LiveKit.ExtraConfigFile = "/etc/dilla/livekit.yaml" },
+			"max_publishers":    func(c *config.Config) { c.LiveKit.MaxPublishers = 4 },
+			"use_external_ip":   func(c *config.Config) { c.LiveKit.UseExternalIP = true },
+		} {
+			c := base()
+			set(c)
+			c.Derive()
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), "livekit."+name) {
+				t.Errorf("livekit.%s set: Validate = %v, want an error naming the key", name, err)
+			}
+		}
+		c := base()
+		c.Derive()
+		if err := c.Validate(); err != nil {
+			t.Fatalf("the defaults: %v", err)
+		}
+	})
 	t.Run("a zero rate limit is refused", func(t *testing.T) {
 		c := base()
 		c.Limits.Rate.MessageBurst = 0

@@ -373,3 +373,34 @@ func TestServeRefusesAnUnknownLiveKitMode(t *testing.T) {
 		t.Fatalf("serve with livekit.mode = external: %v", err)
 	}
 }
+
+// I13 (fix wave): every livekit.* key dilla.toml validates reaches the SFU's config, not only the
+// ports and the key pair.
+func TestTheSFUConfigCarriesTheLiveKitKeys(t *testing.T) {
+	lk := config.Default().LiveKit
+	lk.NodeIP = "203.0.113.7"
+	lk.STUNServers = []string{"chat.example:3478"}
+	lk.MaxVoiceParticipants = 12
+	got := sfuConfig(lk, "  secret\n")
+	if got.NodeIP != "203.0.113.7" || got.EnableLoopbackCandidate {
+		t.Errorf("node ip %q, loopback candidate %t; want the public ip without the loopback candidate",
+			got.NodeIP, got.EnableLoopbackCandidate)
+	}
+	if !got.AdvertiseInternalIP {
+		t.Error("advertise_internal_ip (default true) did not reach the SFU config")
+	}
+	if len(got.STUNServers) != 1 || got.STUNServers[0] != "chat.example:3478" {
+		t.Errorf("stun servers = %v, want [chat.example:3478]", got.STUNServers)
+	}
+	if got.MaxParticipants != 12 {
+		t.Errorf("max participants = %d, want livekit.max_voice_participants 12", got.MaxParticipants)
+	}
+	if got.APISecret != "secret" || got.APIKey != lk.APIKey {
+		t.Errorf("key pair = %q/%q", got.APIKey, got.APISecret)
+	}
+	lk.NodeIP, lk.AdvertiseInternalIP = "", false
+	got = sfuConfig(lk, "secret")
+	if got.NodeIP != "127.0.0.1" || !got.EnableLoopbackCandidate || got.AdvertiseInternalIP {
+		t.Errorf("unset node_ip: %+v, want 127.0.0.1 with the loopback candidate and no internal ip", got)
+	}
+}

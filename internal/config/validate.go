@@ -177,6 +177,18 @@ func (c *Config) Validate() error {
 			add("livekit.stun_servers is empty after defaulting; LiveKit would append its own public STUN hosts")
 		}
 	}
+	// Reserved until wired: dillad renders LiveKit's YAML itself, and a key that never reaches it must
+	// fail loudly rather than be read and ignored.
+	if c.LiveKit.ExtraConfigFile != "" {
+		add("livekit.extra_config_file is reserved and not read yet; remove it")
+	}
+	if c.LiveKit.MaxPublishers != defaultMaxPublishers {
+		add("livekit.max_publishers is reserved: LiveKit v1.13.7 has no publisher cap, so only the default %d is accepted",
+			defaultMaxPublishers)
+	}
+	if c.LiveKit.UseExternalIP {
+		add("livekit.use_external_ip is reserved and must stay false: livekit.node_ip is the address LiveKit advertises")
+	}
 	if c.Retention.HandshakeDays > 30 || c.Retention.HandshakeDays < 1 {
 		add("retention.handshake_days is %d; the range is 1..30 (protocol/02 § Retention)", c.Retention.HandshakeDays)
 	}
