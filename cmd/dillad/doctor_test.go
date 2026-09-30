@@ -113,10 +113,13 @@ func TestDoctorExitsZeroOnAYellowOnlyReport(t *testing.T) {
 	if strings.Contains(out, "FAIL") {
 		t.Fatalf("a red leg in a report that exited 0:\n%s", out)
 	}
-	// The report is the stable form: two runs are byte-identical (it carries
-	// no timestamps), so a runbook can diff them.
+	// The report is the stable form: two runs are identical (it carries no
+	// timestamps), so a runbook can diff them. The one measured value is the
+	// clock leg's median skew, which an HTTP Date header's one-second
+	// resolution makes read 0s or 1s from run to run, so it is masked.
 	again, _, _ := run(t, "doctor", "--config="+cfgPath)
-	if again != out {
+	median := regexp.MustCompile(`\(median [^)]*\)`)
+	if median.ReplaceAllString(again, "(median)") != median.ReplaceAllString(out, "(median)") {
 		t.Fatalf("two runs differ:\n%s\n---\n%s", out, again)
 	}
 }
