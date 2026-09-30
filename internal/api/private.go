@@ -197,6 +197,57 @@ func syncChannelEligibility(ctx context.Context, repo store.Repository, dsvc DS,
 	return errors.Join(errs...)
 }
 
+// materialiseJoiner adds a user who has just joined a community to
+// channel_members of every channel of it that carries no MLS group — a
+// server-readable text channel — and that the resolver lets them view, the
+// verdict EligibleUsers gives. For such a channel channel_members IS the live
+// audience of message.plain (store.ListReadableAudience), and nothing else
+// re-derives it until a role, overwrite or visibility change does.
+//
+// A channel that can carry a text or call group is left alone: its
+// channel_members drives SyncGroupMembers' proposals, and the joiner enters its
+// group by external commit (protocol/01), so writing the row without the Adds
+// would only make syncChannelEligibility skip the channel on a later grant.
+// Batch-Adding on join is task 7's separate follow-up.
+//
+// PutChannelMember is idempotent, so a repeat is harmless. It MUST NOT run
+// inside a Tx.
+func materialiseJoiner(ctx context.Context, repo store.Repository, communityID, userID id.ID, now int64) error {
+	channels, err := repo.ListChannels(ctx, communityID)
+	if err != nil {
+		return err
+	}
+	res := NewResolver(repo)
+	var add []id.ID
+	var errs []error
+	for _, ch := range channels {
+		if ch.Kind == ChannelCategory || ch.DeletedAt != nil || TextGroupAllowed(ch) || CallGroupAllowed(ch) {
+			continue
+		}
+		bits, err := res.Resolve(ctx, userID, ch)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if bits.Has(PermViewChannel) {
+			add = append(add, ch.ID)
+		}
+	}
+	if len(add) > 0 {
+		if err := repo.Tx(ctx, func(tx store.Repository) error {
+			for _, ch := range add {
+				if err := tx.PutChannelMember(ctx, ch, userID, now); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // materialiseChannel re-derives one channel by id after a change that can move
 // anyone's eligibility in it (an overwrite, a visibility change). It MUST NOT
 // run inside a Tx.

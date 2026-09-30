@@ -364,6 +364,41 @@ func TestAPostFansOutMessagePlainToTheChannelAudience(t *testing.T) {
 	}
 }
 
+// A user who joins AFTER the readable channel exists is in its audience at once:
+// the join materialises them into channel_members of every channel they are
+// eligible for, so they receive op 32 without waiting for a role, overwrite or
+// visibility change to re-derive the channel.
+func TestAMemberWhoJoinsAfterTheChannelExistsReceivesMessagePlain(t *testing.T) {
+	f := newReadableFixture(t)
+	e := f.e
+	ch := readableChannel(t, e, f.cid, f.ownerTok)
+	// A second readable channel @everyone may not view: the joiner stays out of it.
+	hidden := readableChannel(t, e, f.cid, f.ownerTok)
+	putEveryoneOverwrite(t, e, f.cid, hidden, f.ownerTok, 0, uint64(api.PermViewChannel))
+	joiner, joinerTok := e.NewUser("joiner")
+	joinCommunity(t, e, f.cid, joinerTok)
+
+	members, err := e.Repo.ListChannelMembers(t.Context(), ch)
+	if err != nil || !slices.Contains(members, joiner) {
+		t.Fatalf("channel_members after the join = %v (%v); want the joiner in it", members, err)
+	}
+	if members, err := e.Repo.ListChannelMembers(t.Context(), hidden); err != nil || slices.Contains(members, joiner) {
+		t.Fatalf("channel_members of a channel the joiner may not view = %v (%v); want the joiner out of it", members, err)
+	}
+	postReadable(t, e, ch, f.ownerTok, envelope0(t, "welcome"))
+	got := f.fan.delivered()
+	if len(got) != 1 || !slices.Contains(got[0].audience, joiner) {
+		t.Fatalf("delivered %d frames, audience %v; want the joiner in it", len(got), got)
+	}
+	// Joining again is idempotent and leaves the audience as it is.
+	joinCommunity(t, e, f.cid, joinerTok)
+	postReadable(t, e, ch, joinerTok, envelope0(t, "thanks"))
+	got = f.fan.delivered()
+	if len(got) != 2 || !slices.Contains(got[1].audience, joiner) || !slices.Contains(got[1].audience, userOf(t, e, f.ownerTok)) {
+		t.Fatalf("second delivery audience = %v; want the owner and the joiner", got[len(got)-1].audience)
+	}
+}
+
 // Slowmode: a member inside the window is 429 with the wait; the owner (every
 // permission, bypass_slowmode included) is not held; the window passes.
 func TestSlowmodeHoldsAMemberAndNotTheBypass(t *testing.T) {

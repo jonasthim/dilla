@@ -374,6 +374,8 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 	// between the two would find no member to delete and the join would then
 	// write one: a banned member of the community, whom the Add and join ACL
 	// treats as eligible.
+	joined := false
+	now := c.clk.Now().Unix()
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.LockCommunity(r.Context(), cid); err != nil {
 			return notFound(err)
@@ -400,12 +402,27 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 		if err := c.admitByInvite(r.Context(), tx, row, hashes); err != nil {
 			return err
 		}
-		return tx.PutMember(r.Context(), store.MemberOfCommunityRow{
-			CommunityID: cid, UserID: s.UserID, Joined: c.clk.Now().Unix(), Nick: nick,
-		})
+		if err := tx.PutMember(r.Context(), store.MemberOfCommunityRow{
+			CommunityID: cid, UserID: s.UserID, Joined: now, Nick: nick,
+		}); err != nil {
+			return err
+		}
+		joined = true
+		return nil
 	}); err != nil {
 		c.fail(w, r, "join", err)
 		return
+	}
+	// A new member enters channel_members of every group-less channel they may
+	// view (materialiseJoiner), so a server-readable channel's live
+	// message.plain reaches a member who joined after the channel existed.
+	// After the commit, like every materialiser; a failure is logged, not
+	// answered: the membership stands, and the next change to a channel
+	// re-derives it.
+	if joined {
+		if err := materialiseJoiner(r.Context(), c.repo, cid, s.UserID, now); err != nil {
+			c.log.ErrorContext(r.Context(), "materialise joiner", "community", cid, "user", s.UserID, "err", err)
+		}
 	}
 	if err := server.EncodeBody(w, http.StatusOK, []id.ID{cid}); err != nil {
 		c.log.Error("encode join", "err", err)
