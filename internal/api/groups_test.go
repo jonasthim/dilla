@@ -321,6 +321,7 @@ type groupsAPI struct {
 	groupID id.ID
 	fixture apiFixture
 	session string // an enrolled session that is NOT one of the group's leaves
+	user    id.ID  // the user that session authenticates
 	// clk is the DELIVERY SERVICE's clock, which is not deps.Clock: the guest validates the
 	// fixture's KeyPackage lifetimes against it, and a test that needs a group old enough to have
 	// been swept advances this one and leaves the session clock alone.
@@ -329,7 +330,28 @@ type groupsAPI struct {
 
 // newGroupsAPI mounts the delivery-service routes on the same mux, repository and sessions the
 // rest of internal/api's tests use, over a real delivery service and the real wasm core.
+//
+// Its channel source admits the fixture's registration: the one committed fixture's binding names
+// no community (a DM-shaped text group), and the real source, api.StructureChannels, refuses DMs
+// until task 6 creates their membership. dschannels_test.go drives the real source through the
+// same harness with newGroupsAPIWith.
 func newGroupsAPI(t *testing.T) *groupsAPI {
+	t.Helper()
+	return newGroupsAPIWith(t, func(store.Repository) ds.Channels { return openChannels{} })
+}
+
+// openChannels is a channel source with no channel rows that admits every registration.
+type openChannels struct{}
+
+func (openChannels) Channel(context.Context, id.ID) (visibility, mode uint8, err error) {
+	return 0, 0, ds.ErrNoChannel
+}
+
+func (openChannels) MayRegister(context.Context, id.ID, ds.Binding) error { return nil }
+
+// newGroupsAPIWith is newGroupsAPI over the channel source channels builds from the harness's own
+// repository.
+func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels) *groupsAPI {
 	t.Helper()
 	handler, deps := newTestAPI(t)
 	mux, ok := handler.(*server.Mux)
@@ -361,7 +383,7 @@ func newGroupsAPI(t *testing.T) *groupsAPI {
 	}
 	d, err := ds.New(ds.Options{
 		Store: deps.Repo, Wasm: wasm, Gateway: gw, Clock: clk,
-		Policy: ds.DefaultPolicy(), Keys: keys,
+		Policy: ds.DefaultPolicy(), Keys: keys, Channels: channels(deps.Repo),
 	})
 	if err != nil {
 		t.Fatalf("ds.New: %v", err)
@@ -386,9 +408,10 @@ func newGroupsAPI(t *testing.T) *groupsAPI {
 	// Task 27's two heal routes, endpoints 13 and 14.
 	groups.RegisterHeal(mux, deps.Sessions)
 
-	_, _, token := seedAPISession(t, deps)
+	user, _, token := seedAPISession(t, deps)
 	return &groupsAPI{
-		mux: mux, deps: deps, ds: d, groupID: f.groupID, fixture: f, session: token, clk: clk,
+		mux: mux, deps: deps, ds: d, groupID: f.groupID, fixture: f, session: token,
+		user: user.ID, clk: clk,
 	}
 }
 

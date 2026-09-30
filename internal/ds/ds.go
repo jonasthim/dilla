@@ -192,8 +192,9 @@ type Options struct {
 	// The three injected seams interfaces.md §6.2 names. Each has a Plan-1 default, and each
 	// default is the conservative one: the rule runs, against a source that cannot yet answer.
 	//
-	// Channels is invariant 1's channel-mode source. nil means PermissiveChannels{}: the channels
-	// table arrives with Plan 2 task 2 (NV-B5).
+	// Channels is invariant 1's channel-mode source and the registration ACL. nil means a source
+	// that refuses every registration; the composition root injects api.StructureChannels, which
+	// reads the channels table Plan 2 task 2 created (NV-B5, closed).
 	Channels Channels
 	// ACL is invariant 4's eligibility source. nil means DenyUnlessMember{Store}: the permission
 	// resolver arrives with Plan 2 task 3 (NV-B6).
@@ -275,7 +276,7 @@ func New(o Options) (*DS, error) {
 	}
 	o.Policy = normalisePolicy(o.Policy)
 	if o.Channels == nil {
-		o.Channels = PermissiveChannels{}
+		o.Channels = closedChannels{}
 	}
 	if o.ACL == nil {
 		o.ACL = DenyUnlessMember{Store: o.Store}

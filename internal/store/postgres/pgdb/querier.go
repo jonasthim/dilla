@@ -26,6 +26,8 @@ type Querier interface {
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
 	CountSessionsByDevice(ctx context.Context, arg CountSessionsByDeviceParams) (int64, error)
+	// Channels (Plan 2 task 2, 00005_channels.sql).
+	CreateChannel(ctx context.Context, arg CreateChannelParams) error
 	CreateCommunity(ctx context.Context, arg CreateCommunityParams) error
 	CreateDevice(ctx context.Context, arg CreateDeviceParams) error
 	CreateGroup(ctx context.Context, arg CreateGroupParams) error
@@ -34,6 +36,8 @@ type Querier interface {
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
+	DeleteChannel(ctx context.Context, arg DeleteChannelParams) (int64, error)
+	DeleteChannelsOfCommunity(ctx context.Context, arg DeleteChannelsOfCommunityParams) (int64, error)
 	DeleteMember(ctx context.Context, arg DeleteMemberParams) (int64, error)
 	DeleteMemberRole(ctx context.Context, arg DeleteMemberRoleParams) (int64, error)
 	DeleteMembers(ctx context.Context, arg DeleteMembersParams) error
@@ -52,6 +56,7 @@ type Querier interface {
 	EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
+	GetChannel(ctx context.Context, arg GetChannelParams) (Channels, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
 	GetCommunity(ctx context.Context, arg GetCommunityParams) (Communities, error)
 	GetCursor(ctx context.Context, arg GetCursorParams) (DeviceCursors, error)
@@ -80,6 +85,7 @@ type Querier interface {
 	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
+	ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
 	// The retention walk, and deliberately NOT `ListOpenGroups`: invariant 10 caps application
 	// ciphertext at thirty days for every group, and a group invariant 11 closed is still ciphertext
@@ -118,6 +124,7 @@ type Querier interface {
 	// counts as eligible and so HOLDS the floor, which is the conservative direction. Holding costs
 	// storage; dropping costs ciphertext a device never received.
 	MinCursor(ctx context.Context, arg MinCursorParams) (int64, error)
+	NextChannelSeq(ctx context.Context, arg NextChannelSeqParams) (int64, error)
 	OldestHandshakeSeq(ctx context.Context, arg OldestHandshakeSeqParams) (int64, error)
 	// Invariant 10 has TWO independent deletion triggers (R28/D14); a row goes when EITHER fires.
 	//   (1) DELIVERY retention: every ELIGIBLE cursor has passed the row (cursor_floor), or the row
@@ -197,6 +204,9 @@ type Querier interface {
 	TombstoneUser(ctx context.Context, arg TombstoneUserParams) error
 	TouchDevice(ctx context.Context, arg TouchDeviceParams) error
 	TouchSession(ctx context.Context, arg TouchSessionParams) error
+	// kind, community_id, seq and created are not written: a channel's kind and home
+	// are immutable, and seq moves only through NextChannelSeq.
+	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (int64, error)
 	UpdateCommunityMeta(ctx context.Context, arg UpdateCommunityMetaParams) (int64, error)
 	// The version is MONOTONE: two writers that read the same version both compute
 	// the same successor, and the second must not land a different policy under a

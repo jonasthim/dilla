@@ -19,6 +19,24 @@ type AuditLog struct {
 	At     int64
 }
 
+type Channels struct {
+	ID                id.ID
+	CommunityID       *id.ID
+	Kind              int64
+	Mode              int64
+	Visibility        int64
+	ParentID          *id.ID
+	Name              string
+	Topic             string
+	Position          int64
+	SettingsJson      string
+	HostPolicyVersion int64
+	SlowmodeSeconds   int64
+	Seq               int64
+	Created           int64
+	DeletedAt         sql.NullInt64
+}
+
 type Communities struct {
 	ID                   id.ID
 	Owner                id.ID

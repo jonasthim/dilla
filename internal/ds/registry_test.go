@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -80,6 +81,96 @@ func TestTheChannelModeRuleIgnoresATargetThatIsNotAChannel(t *testing.T) {
 	b.TargetID = id.New() // never declared to the Channels source
 	if err := ds.CheckChannelModeForTest(h.ds, context.Background(), b); err != nil {
 		t.Fatalf("a target with no channel row was refused: %v", err)
+	}
+}
+
+// The registration ACL (Plan 1 follow-up card 14, closed by Plan 2 task 2): Register asks the
+// channel source whether the SESSION's user may register a group under this binding, and maps
+// the two refusals to the protocol's codes. A source that cannot answer is a refusal too, never
+// a pass.
+func TestRegisterAsksTheChannelSourceWhoMayRegister(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		refuse     error
+		wantCode   string
+		wantStatus int
+	}{
+		{"admitted", nil, "", 0},
+		{"not a member", fmt.Errorf("%w: not a member", ds.ErrNotEligible), "E_FORBIDDEN", http.StatusForbidden},
+		{"a binding that names no registrable target", fmt.Errorf("%w: wrong community", ds.ErrBindingTarget), "E_BINDING_INVALID", http.StatusBadRequest},
+		{"a source that cannot answer", errors.New("database is closed"), "", 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newDSHarness(t)
+			h.channels.refuse = c.refuse
+			req := h.registerRequest(t, h.channel(t, 0, 0))
+			req.Session.UserID = id.New()
+			_, err := h.ds.Register(context.Background(), req)
+
+			if len(h.channels.asked) != 1 {
+				t.Fatalf("MayRegister was asked %d times, want once", len(h.channels.asked))
+			}
+			q := h.channels.asked[0]
+			if q.user != req.Session.UserID {
+				t.Errorf("MayRegister was asked about %v, want the session's user %v", q.user, req.Session.UserID)
+			}
+			if q.binding != dsFixture(t).binding {
+				t.Errorf("MayRegister was asked about %+v, want the decoded binding %+v", q.binding, dsFixture(t).binding)
+			}
+
+			switch {
+			case c.refuse == nil:
+				if err != nil {
+					t.Fatalf("Register: %v", err)
+				}
+				return
+			case c.wantCode == "":
+				// Not a *ds.Error: the HTTP layer answers E_INTERNAL, and nothing is written.
+				var dsErr *ds.Error
+				if err == nil || errors.As(err, &dsErr) {
+					t.Fatalf("got %v, want the source's own error", err)
+				}
+			default:
+				var dsErr *ds.Error
+				if !errors.As(err, &dsErr) || dsErr.Code != c.wantCode || dsErr.Status != c.wantStatus {
+					t.Fatalf("got %v, want %d %s", err, c.wantStatus, c.wantCode)
+				}
+			}
+			if n := h.countRows(t, "mls_groups"); n != 0 {
+				t.Fatalf("a refused registration wrote %d group rows", n)
+			}
+		})
+	}
+}
+
+// Invariant 1's mode refusal comes first: a text group on a readable channel is E_MODE_READABLE
+// whoever asks, and the ACL is not consulted for a registration that is refused anyway.
+func TestTheModeRuleIsCheckedBeforeTheRegistrationACL(t *testing.T) {
+	h := newDSHarness(t)
+	h.channels.refuse = fmt.Errorf("%w: not a member", ds.ErrNotEligible)
+	_, err := h.ds.Register(context.Background(), h.registerRequest(t, h.channel(t, 0, 1)))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_MODE_READABLE" {
+		t.Fatalf("got %v, want E_MODE_READABLE", err)
+	}
+}
+
+// A delivery service built with no channel source refuses every registration: the default is
+// the conservative one, as ACL's and DeviceLists' are.
+func TestADeliveryServiceWithNoChannelSourceRefusesRegistration(t *testing.T) {
+	h := newDSHarness(t)
+	d, err := ds.New(ds.Options{
+		Store: h.repo, Wasm: h.wasm, Gateway: h.gw, Clock: h.clk, Keys: testInstanceKeys(t),
+		Policy: ds.DefaultPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("ds.New: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+	_, err = d.Register(context.Background(), h.registerRequest(t, dsFixture(t).targetID))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" || dsErr.Status != http.StatusForbidden {
+		t.Fatalf("got %v, want 403 E_FORBIDDEN", err)
 	}
 }
 

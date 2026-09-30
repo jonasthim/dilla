@@ -1929,4 +1929,135 @@ func (r *Repo) ListMemberRoles(ctx context.Context, communityID, userID id.ID) (
 	return rows, nil
 }
 
+// ---------------------------------------------------------------- Channels
+//
+// Plan 2 task 2: the slice of store.Structure whose table 00005_channels.sql
+// ships. The other adapter carries the same seven methods with the package name
+// changed: settings_json is TEXT on both engines and the three SMALLINT enums
+// are pulled back to int64 by sqlc.yaml, so nothing else differs.
+
+func (r *Repo) CreateChannel(ctx context.Context, c store.ChannelRow) error {
+	return wrap(r.w.CreateChannel(ctx, sqlitedb.CreateChannelParams{
+		ID:                c.ID,
+		CommunityID:       c.CommunityID,
+		Kind:              int64(c.Kind),
+		Mode:              int64(c.Mode),
+		Visibility:        int64(c.Visibility),
+		ParentID:          c.ParentID,
+		Name:              c.Name,
+		Topic:             c.Topic,
+		Position:          int64(c.Position),
+		SettingsJson:      settingsJSON(c.SettingsJSON),
+		HostPolicyVersion: int64(c.HostPolicyVersion),
+		SlowmodeSeconds:   int64(c.SlowmodeSeconds),
+		Seq:               int64(c.Seq),
+		Created:           c.Created,
+		DeletedAt:         nullInt64(c.DeletedAt),
+	}))
+}
+
+// settingsJSON is the stored form of a channel's settings document: `{}` when
+// the row carries none, because the column is NOT NULL.
+func settingsJSON(b []byte) string {
+	if len(b) == 0 {
+		return "{}"
+	}
+	return string(b)
+}
+
+func channelRow(row sqlitedb.Channels) store.ChannelRow {
+	return store.ChannelRow{
+		ID:                row.ID,
+		CommunityID:       row.CommunityID,
+		Kind:              uint8(row.Kind),
+		Mode:              uint8(row.Mode),
+		Visibility:        uint8(row.Visibility),
+		ParentID:          row.ParentID,
+		Name:              row.Name,
+		Topic:             row.Topic,
+		Position:          uint64(row.Position),
+		SettingsJSON:      []byte(row.SettingsJson),
+		HostPolicyVersion: uint64(row.HostPolicyVersion),
+		SlowmodeSeconds:   uint64(row.SlowmodeSeconds),
+		Seq:               uint64(row.Seq),
+		Created:           row.Created,
+		DeletedAt:         ptrInt64(row.DeletedAt),
+	}
+}
+
+func (r *Repo) GetChannel(ctx context.Context, channelID id.ID) (store.ChannelRow, error) {
+	row, err := r.r.GetChannel(ctx, sqlitedb.GetChannelParams{ID: channelID})
+	if err != nil {
+		return store.ChannelRow{}, wrap(err)
+	}
+	return channelRow(row), nil
+}
+
+func (r *Repo) ListChannels(ctx context.Context, communityID id.ID) ([]store.ChannelRow, error) {
+	rows, err := r.r.ListChannels(ctx, sqlitedb.ListChannelsParams{CommunityID: &communityID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ChannelRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, channelRow(row))
+	}
+	return out, nil
+}
+
+// UpdateChannel deliberately does not write kind, community_id, seq or created:
+// a channel's kind and home are immutable, and seq moves only through
+// NextChannelSeq.
+func (r *Repo) UpdateChannel(ctx context.Context, c store.ChannelRow) error {
+	n, err := r.w.UpdateChannel(ctx, sqlitedb.UpdateChannelParams{
+		Mode:              int64(c.Mode),
+		Visibility:        int64(c.Visibility),
+		ParentID:          c.ParentID,
+		Name:              c.Name,
+		Topic:             c.Topic,
+		Position:          int64(c.Position),
+		SettingsJson:      settingsJSON(c.SettingsJSON),
+		HostPolicyVersion: int64(c.HostPolicyVersion),
+		SlowmodeSeconds:   int64(c.SlowmodeSeconds),
+		ID:                c.ID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) DeleteChannel(ctx context.Context, channelID id.ID, at int64) error {
+	n, err := r.w.DeleteChannel(ctx, sqlitedb.DeleteChannelParams{
+		DeletedAt: sql.NullInt64{Int64: at, Valid: true},
+		ID:        channelID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) DeleteChannelsOfCommunity(ctx context.Context, communityID id.ID, at int64) (int64, error) {
+	n, err := r.w.DeleteChannelsOfCommunity(ctx, sqlitedb.DeleteChannelsOfCommunityParams{
+		DeletedAt:   sql.NullInt64{Int64: at, Valid: true},
+		CommunityID: &communityID,
+	})
+	return n, wrap(err)
+}
+
+func (r *Repo) NextChannelSeq(ctx context.Context, channelID id.ID) (uint64, error) {
+	seq, err := r.w.NextChannelSeq(ctx, sqlitedb.NextChannelSeqParams{ID: channelID})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return uint64(seq), nil
+}
+
 var _ store.Repository = (*Repo)(nil)

@@ -23,8 +23,9 @@ var (
 // The embed list grows as the schema does, one named step per task (ID1):
 // task 19 step 1a adds MLS with 00002_mls.sql, task 23 step 1a adds Messages and
 // Cursors with 00003_messages.sql, Plan 2 task 1 step 9 adds Communities (the
-// part of Structure whose tables 00004_structure.sql ships), and Plan 2's later
-// tasks add the rest of Structure, Readable, Blobs and OpsBackups.
+// part of Structure whose tables 00004_structure.sql ships), Plan 2 task 2 adds
+// Channels (the part 00005_channels.sql ships), and Plan 2's later tasks add the
+// rest of Structure, Readable, Blobs and OpsBackups.
 type Repository interface {
 	Tx(ctx context.Context, fn func(Repository) error) error
 	Close() error
@@ -39,6 +40,7 @@ type Repository interface {
 	Messages    // added HERE — ID1; its table is 00003_messages.sql, written in step 1
 	Cursors     // added HERE — ID1; device_cursors ships with 00002_mls.sql, its queries here
 	Communities // Plan 2 task 1 step 9 (P2-D23) — 00004_structure.sql
+	Channels    // Plan 2 task 2 (P2-D23) — 00005_channels.sql
 }
 
 type Instance interface {
@@ -246,14 +248,11 @@ type Cursors interface {
 // embeds and Repository embeds on its own. Structure's method set is §4.1's
 // plus the plan's additions; a later task that ships the rest of it either
 // embeds its own slice the same way or, once every method exists, swaps
-// Communities for Structure in Repository's embed list.
+// Communities for Structure in Repository's embed list. Task 2's slice is
+// Channels.
 type Structure interface {
 	Communities
-	CreateChannel(ctx context.Context, c ChannelRow) error
-	GetChannel(ctx context.Context, channelID id.ID) (ChannelRow, error)
-	ListChannels(ctx context.Context, communityID id.ID) ([]ChannelRow, error)
-	UpdateChannel(ctx context.Context, c ChannelRow) error
-	DeleteChannel(ctx context.Context, channelID id.ID, at int64) error
+	Channels
 	PutOverwrite(ctx context.Context, o OverwriteRow) error
 	ListOverwrites(ctx context.Context, channelID id.ID) ([]OverwriteRow, error)
 	PutChannelMember(ctx context.Context, channelID, userID id.ID, at int64) error
@@ -302,6 +301,30 @@ type Communities interface {
 	// list each member's roles and the permission resolver needs the set a user
 	// holds, which deriving from ListRoles would make a full scan per member.
 	ListMemberRoles(ctx context.Context, communityID, userID id.ID) ([]id.ID, error)
+}
+
+// Channels is the part of Structure whose table is 00005_channels.sql (Plan 2
+// task 2): §4.1's five channel methods plus P2-D8's two.
+type Channels interface {
+	CreateChannel(ctx context.Context, c ChannelRow) error
+	// GetChannel answers ErrNotFound for a deleted channel too.
+	GetChannel(ctx context.Context, channelID id.ID) (ChannelRow, error)
+	// ListChannels is the community's live channels ordered by position, ties
+	// broken by id, so the order is the same on both engines and every call.
+	ListChannels(ctx context.Context, communityID id.ID) ([]ChannelRow, error)
+	// UpdateChannel writes mode, visibility, parent, name, topic, position,
+	// settings, host policy version and slow mode. Kind, community, seq and
+	// created are immutable here. ErrNotFound is an unknown or deleted channel.
+	UpdateChannel(ctx context.Context, c ChannelRow) error
+	// DeleteChannel tombstones the channel; a second call is ErrNotFound.
+	DeleteChannel(ctx context.Context, channelID id.ID, at int64) error
+	// DeleteChannelsOfCommunity (P2-D8) tombstones every live channel of the
+	// community in one statement and returns how many it tombstoned.
+	DeleteChannelsOfCommunity(ctx context.Context, communityID id.ID, at int64) (int64, error)
+	// NextChannelSeq (P2-D8) is the per-channel sequencer: it raises
+	// channels.seq by one and returns the new value. ErrNotFound is an unknown or
+	// deleted channel.
+	NextChannelSeq(ctx context.Context, channelID id.ID) (uint64, error)
 }
 
 // Readable is 007_readable.sql, implemented from Plan 2 task 8 onward.

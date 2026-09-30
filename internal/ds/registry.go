@@ -88,6 +88,11 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 	if err := d.checkChannelMode(ctx, binding); err != nil {
 		return RegisterResult{}, err
 	}
+	// The registration ACL runs after the mode rule, so a text group on a readable channel is
+	// E_MODE_READABLE whoever registers it, and before anything is written.
+	if err := d.checkRegistrant(ctx, r.Session.UserID, binding); err != nil {
+		return RegisterResult{}, err
+	}
 
 	row := store.GroupRow{
 		GroupID: r.GroupID,
@@ -148,25 +153,66 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 	return RegisterResult{GroupID: r.GroupID, NextSeq: row.Seq + 1}, nil
 }
 
-// Channels is the sliver of `store.Structure` invariant 1 needs. It is an injected interface, not
-// a `store.Repository` call, because `store.Structure` and its `channels` table arrive in Plan 2
-// (`interfaces.md` §4.1: "declared by Plan 1 and implemented from Plan 2 task 1 onward"; the
-// table is created by `006_structure.sql`). Calling `d.opts.Store.GetChannel` here would not
-// compile against a Plan-1 `store.Repository`, and against a Plan-1 database it would fail with
-// `no such table: channels` — not `store.ErrNotFound` — so every Register would 500.
-//
-// Plan 1 injects `PermissiveChannels{}`, which reports "no channel row" for everything; Plan 2
-// task 2 — the task that creates the channels table, not its task 1, which creates communities —
-// replaces it with the real `store.Structure` and greens the mode tests. NV-B5 tracks the
-// hand-over.
+// Channels is the sliver of the community structure registration needs: invariant 1's channel
+// mode, and the registration ACL. It is an injected interface, not a `store.Repository` call,
+// because the delivery service deliberately does not learn the channel vocabulary (kinds,
+// visibilities, communities, membership): that lives in internal/api, whose
+// `api.StructureChannels` is the production implementation over the `channels`, `communities`
+// and `members` tables (Plan 2 task 2, which retired Plan 1's `PermissiveChannels` stub, NV-B5).
+// The composition root injects it; a DS built without one refuses every registration.
 type Channels interface {
 	// Channel returns the channel's visibility and mode, or ErrNoChannel when the target is not a
 	// channel at all (a DM or a pairing group has no channel row).
 	Channel(ctx context.Context, targetID id.ID) (visibility, mode uint8, err error)
+	// MayRegister is the registration ACL (Plan 1 follow-up card 14, "any enrolled device may
+	// register any group"): may userID register a group bound by b? nil admits. An error wrapping
+	// ErrNotEligible refuses with 403 E_FORBIDDEN, one wrapping ErrBindingTarget with 400
+	// E_BINDING_INVALID, and any other error means "the source cannot answer", which Register
+	// returns as it is — a refusal, never a pass.
+	MayRegister(ctx context.Context, userID id.ID, b Binding) error
 }
 
-// ErrNoChannel is what a Channels implementation returns for a target that is not a channel.
-var ErrNoChannel = errors.New("ds: no channel row")
+var (
+	// ErrNoChannel is what a Channels implementation returns for a target that is not a channel.
+	ErrNoChannel = errors.New("ds: no channel row")
+	// ErrNotEligible is MayRegister's "this user may not register this group": not a member of
+	// the community the binding names, for instance.
+	ErrNotEligible = errors.New("not eligible to register this group")
+	// ErrBindingTarget is MayRegister's "the binding names no target this group kind can be
+	// registered for": a channel of another community, a text group on a voice channel, or a
+	// community text group whose target is not a channel at all.
+	ErrBindingTarget = errors.New("the binding names no registrable target")
+)
+
+// closedChannels is the channel source of a delivery service built without one: no target is a
+// channel, and nobody may register anything. Plan 1 shipped a permissive stub here, because it
+// had no channels table to read; the table exists now, so the default is the conservative one,
+// as ACL's and DeviceLists' are.
+type closedChannels struct{}
+
+func (closedChannels) Channel(context.Context, id.ID) (visibility, mode uint8, err error) {
+	return 0, 0, ErrNoChannel
+}
+
+func (closedChannels) MayRegister(context.Context, id.ID, Binding) error {
+	return fmt.Errorf("%w: this delivery service has no channel source", ErrNotEligible)
+}
+
+// checkRegistrant is the registration ACL's call site: it asks the channel source and maps its
+// two refusals onto the protocol's codes.
+func (d *DS) checkRegistrant(ctx context.Context, userID id.ID, b Binding) error {
+	err := d.opts.Channels.MayRegister(ctx, userID, b)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrNotEligible):
+		return errForbidden(err.Error())
+	case errors.Is(err, ErrBindingTarget):
+		return errBinding(err.Error())
+	default:
+		return err
+	}
+}
 
 // checkChannelMode is invariant 1's refusal. A call group is allowed on any channel; a text group
 // is refused when the channel's visibility is invite or discoverable, or its mode is readable.

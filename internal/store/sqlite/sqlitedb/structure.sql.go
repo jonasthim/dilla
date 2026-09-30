@@ -12,6 +12,54 @@ import (
 	id "github.com/jonasthim/dilla/internal/id"
 )
 
+const createChannel = `-- name: CreateChannel :exec
+
+INSERT INTO channels (id, community_id, kind, mode, visibility, parent_id, name, topic,
+                      position, settings_json, host_policy_version, slowmode_seconds,
+                      seq, created, deleted_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type CreateChannelParams struct {
+	ID                id.ID
+	CommunityID       *id.ID
+	Kind              int64
+	Mode              int64
+	Visibility        int64
+	ParentID          *id.ID
+	Name              string
+	Topic             string
+	Position          int64
+	SettingsJson      string
+	HostPolicyVersion int64
+	SlowmodeSeconds   int64
+	Seq               int64
+	Created           int64
+	DeletedAt         sql.NullInt64
+}
+
+// Channels (Plan 2 task 2, 00005_channels.sql).
+func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) error {
+	_, err := q.db.ExecContext(ctx, createChannel,
+		arg.ID,
+		arg.CommunityID,
+		arg.Kind,
+		arg.Mode,
+		arg.Visibility,
+		arg.ParentID,
+		arg.Name,
+		arg.Topic,
+		arg.Position,
+		arg.SettingsJson,
+		arg.HostPolicyVersion,
+		arg.SlowmodeSeconds,
+		arg.Seq,
+		arg.Created,
+		arg.DeletedAt,
+	)
+	return err
+}
+
 const createCommunity = `-- name: CreateCommunity :exec
 INSERT INTO communities (id, owner, name, icon_blob, policy_json, policy_version,
                          min_account_age_seconds, require_mod_2fa, created, deleted_at)
@@ -47,6 +95,40 @@ func (q *Queries) CreateCommunity(ctx context.Context, arg CreateCommunityParams
 	return err
 }
 
+const deleteChannel = `-- name: DeleteChannel :execrows
+UPDATE channels SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL
+`
+
+type DeleteChannelParams struct {
+	DeletedAt sql.NullInt64
+	ID        id.ID
+}
+
+func (q *Queries) DeleteChannel(ctx context.Context, arg DeleteChannelParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteChannel, arg.DeletedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteChannelsOfCommunity = `-- name: DeleteChannelsOfCommunity :execrows
+UPDATE channels SET deleted_at = ? WHERE community_id = ? AND deleted_at IS NULL
+`
+
+type DeleteChannelsOfCommunityParams struct {
+	DeletedAt   sql.NullInt64
+	CommunityID *id.ID
+}
+
+func (q *Queries) DeleteChannelsOfCommunity(ctx context.Context, arg DeleteChannelsOfCommunityParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteChannelsOfCommunity, arg.DeletedAt, arg.CommunityID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteMember = `-- name: DeleteMember :execrows
 DELETE FROM members WHERE community_id = ? AND user_id = ?
 `
@@ -80,6 +162,39 @@ func (q *Queries) DeleteMemberRole(ctx context.Context, arg DeleteMemberRolePara
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const getChannel = `-- name: GetChannel :one
+SELECT id, community_id, kind, mode, visibility, parent_id, name, topic, position,
+       settings_json, host_policy_version, slowmode_seconds, seq, created, deleted_at
+FROM channels WHERE id = ? AND deleted_at IS NULL
+`
+
+type GetChannelParams struct {
+	ID id.ID
+}
+
+func (q *Queries) GetChannel(ctx context.Context, arg GetChannelParams) (Channels, error) {
+	row := q.db.QueryRowContext(ctx, getChannel, arg.ID)
+	var i Channels
+	err := row.Scan(
+		&i.ID,
+		&i.CommunityID,
+		&i.Kind,
+		&i.Mode,
+		&i.Visibility,
+		&i.ParentID,
+		&i.Name,
+		&i.Topic,
+		&i.Position,
+		&i.SettingsJson,
+		&i.HostPolicyVersion,
+		&i.SlowmodeSeconds,
+		&i.Seq,
+		&i.Created,
+		&i.DeletedAt,
+	)
+	return i, err
 }
 
 const getCommunity = `-- name: GetCommunity :one
@@ -158,6 +273,57 @@ func (q *Queries) GetRole(ctx context.Context, arg GetRoleParams) (Roles, error)
 		&i.Created,
 	)
 	return i, err
+}
+
+const listChannels = `-- name: ListChannels :many
+SELECT id, community_id, kind, mode, visibility, parent_id, name, topic, position,
+       settings_json, host_policy_version, slowmode_seconds, seq, created, deleted_at
+FROM channels
+WHERE community_id = ? AND deleted_at IS NULL
+ORDER BY position, id
+`
+
+type ListChannelsParams struct {
+	CommunityID *id.ID
+}
+
+func (q *Queries) ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error) {
+	rows, err := q.db.QueryContext(ctx, listChannels, arg.CommunityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Channels{}
+	for rows.Next() {
+		var i Channels
+		if err := rows.Scan(
+			&i.ID,
+			&i.CommunityID,
+			&i.Kind,
+			&i.Mode,
+			&i.Visibility,
+			&i.ParentID,
+			&i.Name,
+			&i.Topic,
+			&i.Position,
+			&i.SettingsJson,
+			&i.HostPolicyVersion,
+			&i.SlowmodeSeconds,
+			&i.Seq,
+			&i.Created,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listMemberRoles = `-- name: ListMemberRoles :many
@@ -277,6 +443,21 @@ func (q *Queries) ListRoles(ctx context.Context, arg ListRolesParams) ([]Roles, 
 	return items, nil
 }
 
+const nextChannelSeq = `-- name: NextChannelSeq :one
+UPDATE channels SET seq = seq + 1 WHERE id = ? AND deleted_at IS NULL RETURNING seq
+`
+
+type NextChannelSeqParams struct {
+	ID id.ID
+}
+
+func (q *Queries) NextChannelSeq(ctx context.Context, arg NextChannelSeqParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, nextChannelSeq, arg.ID)
+	var seq int64
+	err := row.Scan(&seq)
+	return seq, err
+}
+
 const putMember = `-- name: PutMember :exec
 INSERT INTO members (community_id, user_id, joined, nick)
 VALUES (?, ?, ?, ?)
@@ -366,6 +547,47 @@ type SoftDeleteCommunityParams struct {
 
 func (q *Queries) SoftDeleteCommunity(ctx context.Context, arg SoftDeleteCommunityParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, softDeleteCommunity, arg.DeletedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateChannel = `-- name: UpdateChannel :execrows
+UPDATE channels
+SET mode = ?, visibility = ?, parent_id = ?, name = ?, topic = ?, position = ?,
+    settings_json = ?, host_policy_version = ?, slowmode_seconds = ?
+WHERE id = ? AND deleted_at IS NULL
+`
+
+type UpdateChannelParams struct {
+	Mode              int64
+	Visibility        int64
+	ParentID          *id.ID
+	Name              string
+	Topic             string
+	Position          int64
+	SettingsJson      string
+	HostPolicyVersion int64
+	SlowmodeSeconds   int64
+	ID                id.ID
+}
+
+// kind, community_id, seq and created are not written: a channel's kind and home
+// are immutable, and seq moves only through NextChannelSeq.
+func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateChannel,
+		arg.Mode,
+		arg.Visibility,
+		arg.ParentID,
+		arg.Name,
+		arg.Topic,
+		arg.Position,
+		arg.SettingsJson,
+		arg.HostPolicyVersion,
+		arg.SlowmodeSeconds,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}

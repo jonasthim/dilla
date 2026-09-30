@@ -72,3 +72,40 @@ DELETE FROM member_roles WHERE community_id = ? AND user_id = ? AND role_id = ?;
 
 -- name: ListMemberRoles :many
 SELECT role_id FROM member_roles WHERE community_id = ? AND user_id = ? ORDER BY role_id;
+
+-- Channels (Plan 2 task 2, 00005_channels.sql).
+
+-- name: CreateChannel :exec
+INSERT INTO channels (id, community_id, kind, mode, visibility, parent_id, name, topic,
+                      position, settings_json, host_policy_version, slowmode_seconds,
+                      seq, created, deleted_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetChannel :one
+SELECT id, community_id, kind, mode, visibility, parent_id, name, topic, position,
+       settings_json, host_policy_version, slowmode_seconds, seq, created, deleted_at
+FROM channels WHERE id = ? AND deleted_at IS NULL;
+
+-- name: ListChannels :many
+SELECT id, community_id, kind, mode, visibility, parent_id, name, topic, position,
+       settings_json, host_policy_version, slowmode_seconds, seq, created, deleted_at
+FROM channels
+WHERE community_id = ? AND deleted_at IS NULL
+ORDER BY position, id;
+
+-- name: UpdateChannel :execrows
+-- kind, community_id, seq and created are not written: a channel's kind and home
+-- are immutable, and seq moves only through NextChannelSeq.
+UPDATE channels
+SET mode = ?, visibility = ?, parent_id = ?, name = ?, topic = ?, position = ?,
+    settings_json = ?, host_policy_version = ?, slowmode_seconds = ?
+WHERE id = ? AND deleted_at IS NULL;
+
+-- name: DeleteChannel :execrows
+UPDATE channels SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL;
+
+-- name: DeleteChannelsOfCommunity :execrows
+UPDATE channels SET deleted_at = ? WHERE community_id = ? AND deleted_at IS NULL;
+
+-- name: NextChannelSeq :one
+UPDATE channels SET seq = seq + 1 WHERE id = ? AND deleted_at IS NULL RETURNING seq;

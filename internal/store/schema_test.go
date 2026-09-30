@@ -240,9 +240,10 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // wantTables is the exact set 001/002/003/004/005/006/009 declare, sorted, so that a
 // dropped or renamed table is caught and not just a change in the count. Task 19
 // added 004_mls.sql's twelve; task 23 added 005_messages.sql's one; Plan 2 task 1
-// added 006_structure.sql's four (communities, members, roles, member_roles).
+// added 006_structure.sql's four (communities, members, roles, member_roles); Plan 2
+// task 2 added 006a_channels.sql's channels.
 var wantTables = []string{
-	"audit_log", "communities", "device_cursors", "device_lists", "devices", "fork_reports",
+	"audit_log", "channels", "communities", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invites", "key_packages", "login_attempts",
 	"member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",

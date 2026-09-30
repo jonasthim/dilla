@@ -17,7 +17,7 @@ import (
 // disagree with the client that produced it.
 //
 // It is declared here, with its Plan-1 implementation, because ds.Options names the seam (the same
-// reason as ACL and PermissiveChannels).
+// reason as ACL and Channels).
 type DeviceLists interface {
 	// Entries verifies the user's newest stored list against the user's ssk_pub and returns the
 	// dsk_pub of every entry that is not revoked. A missing list, or one that does not verify, is

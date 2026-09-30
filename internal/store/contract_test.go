@@ -108,6 +108,14 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// UpdateCommunityMeta and SoftDeleteCommunity are Plan 2's P2-D7, GetRole
 			// is P2-D9 (task 3's, written in task 1 for the role-grant route).
 			"GetMember", "GetRole", "SoftDeleteCommunity", "UpdateCommunityMeta",
+			// §4.1 plus two more, reached through the embedded Channels: P2-D8's
+			// one-statement community tombstone and per-channel sequencer.
+			"DeleteChannelsOfCommunity", "NextChannelSeq",
+		}},
+		// Channels is the slice of Structure Plan 2 task 2's table supports.
+		{"Channels", reflect.TypeOf((*store.Channels)(nil)).Elem(), []string{
+			"CreateChannel", "DeleteChannel", "DeleteChannelsOfCommunity", "GetChannel",
+			"ListChannels", "NextChannelSeq", "UpdateChannel",
 		}},
 		// Communities is the slice of Structure Plan 2 task 1's tables support; it
 		// is what Repository embeds until the rest of Structure exists (P2-D23).
@@ -191,6 +199,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		// the slice of Structure whose tables exist; the rest of Structure (channels,
 		// overwrites, bans, channel members, voice sessions) lands with its tables.
 		reflect.TypeOf((*store.Communities)(nil)).Elem(),
+		// Plan 2 task 2: Channels joins with 00005_channels.sql.
+		reflect.TypeOf((*store.Channels)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

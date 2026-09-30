@@ -70,7 +70,7 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 
 | Method and path | Auth | Request | Response | Errors |
 |---|---|---|---|---|
-| `POST /v1/groups` | E | `[group_id(bstr16), binding(bstr), group_info(bstr), ratchet_tree(bstr)]` | `201 [group_id, next_seq]` | `E_BINDING_INVALID`, `E_MODE_READABLE`, `E_GROUP_EXISTS` |
+| `POST /v1/groups` | E | `[group_id(bstr16), binding(bstr), group_info(bstr), ratchet_tree(bstr)]` | `201 [group_id, next_seq]` | `E_BINDING_INVALID`, `E_MODE_READABLE`, `E_GROUP_EXISTS`, `E_FORBIDDEN` |
 | `GET /v1/groups/{id}/info` | E | — | `[epoch, group_info, tree_hash, next_seq]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/tree` | E | — | `[epoch, ratchet_tree, tree_hash]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/handshakes?from=&limit=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
@@ -236,7 +236,16 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
 1. **Registration.** A group is registered with its `dilla_binding`. The DS refuses a `text` group
    for a channel whose visibility is `invite` or `discoverable`, or whose mode is `readable`
    (`403 E_MODE_READABLE`). `call` groups exist for every voice session regardless of the channel's
-   text mode.
+   text mode. Registration is also gated on the registering session's user: a `text` or `call`
+   group bound to a community channel needs that channel to be of the binding's `community_id` and
+   of a kind that carries the group (a `text` group on a text channel, a `call` group on a voice
+   channel) and the user to be a member of the community; a community `text` group whose target is
+   not a channel of it is refused, and a community `call` group whose target is not a channel (the
+   call itself) needs membership of that community. A `text` or `call` group with no
+   `community_id` (a DM or group DM) needs the user to be a member of the DM; until the instance
+   records DM membership it refuses every such group. A binding that names no such target is
+   `400 E_BINDING_INVALID`; a user who may not register it is `403 E_FORBIDDEN`. `pairing` and
+   `interaction` groups are not channel groups and are not gated here.
 2. **Tree service.** The DS keeps a `PublicGroup` per group. Committers upload a GroupInfo
    **without** the ratchet tree; the DS serves the tree from its own `PublicGroup`, and a joiner
    MUST verify `tree_hash` in the GroupInfo against the served tree before joining.

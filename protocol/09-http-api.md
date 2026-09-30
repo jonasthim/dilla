@@ -185,6 +185,45 @@ optional; `{}` is every default.
 | `retention_days` | uint ≤ 36500 | `0` | **archival** retention (`02` § Retention): days an application message every cursor has passed is kept; `0` keeps it indefinitely |
 | `delivery_retention_days` | uint ≤ 30 | `0` | **delivery** retention: `0` is the instance's 30 days; a community may shorten it, never lengthen it |
 
+### Channels
+
+Every route below is `E`. A channel of a community the caller is not a member of answers
+`404 E_NOT_FOUND` exactly as an unknown or deleted one does. Until the permission resolver lands,
+creating, changing and deleting a channel are the community owner's alone (`403 E_FORBIDDEN` for
+any other member).
+
+| Method and path | Request | Response |
+|---|---|---|
+| `POST /v1/communities/{id}/channels` | `[kind(uint), mode(uint), visibility(uint), parent_id(bstr16\|null), name(tstr), topic(tstr), position(uint), slowmode_seconds(uint)]` | `201 [channel_id(bstr16), mode(uint), visibility(uint)]` |
+| `GET /v1/channels/{id}` | — | `[channel_id, community_id(bstr16\|null), kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq]` |
+| `PATCH /v1/channels/{id}` | `[name(tstr\|null), topic(tstr\|null), mode(uint\|null), visibility(uint\|null), parent_id(bstr16\|null), position(uint\|null), slowmode_seconds(uint\|null)]` | `204` |
+| `DELETE /v1/channels/{id}` | — | `204` |
+
+| field | values |
+|---|---|
+| `kind` | `0` text, `1` voice, `2` category, `3` DM, `4` group DM. `3` and `4` are not created through a community (`400`) |
+| `mode` | `0` end-to-end encrypted, `1` server-readable |
+| `visibility` | `0` private, `1` invite, `2` discoverable |
+
+- A channel whose visibility is `invite` or `discoverable` is **server-readable**. Creating one
+  with `mode = 0` is not an error: the instance stores `mode = 1` and answers it, and the client
+  labels the channel from the answer. A `PATCH` that would make a visible channel end-to-end
+  encrypted is `400 E_INVALID_REQUEST`; make it private first. `mode` and `visibility` may not
+  change in the same `PATCH` (`400`), because the order they were applied in would decide the
+  outcome. This is the rule `02`'s invariant 1 enforces on registration: an MLS `text` group is
+  refused for such a channel (`403 E_MODE_READABLE`), while a voice channel's `call` groups exist
+  whatever its mode.
+- A category is always top level. `parent_id` names a live category of the same community; a text
+  or voice channel under a text channel, a nested category and a foreign or deleted parent are
+  `400`. In a `PATCH`, null leaves the parent alone and the all-zero id moves the channel to the top
+  level. Deleting a category moves its channels to the top level.
+- `name` is 1–100 bytes and `topic` at most 1024 bytes of UTF-8, with no control character (a
+  topic may carry line breaks and tabs). `position` is at most 2 147 483 647 and
+  `slowmode_seconds` at most 21 600. A community's channels are ordered by `position`, ties broken
+  by `channel_id` (bytewise), the same on every engine.
+- `seq` is the channel's own sequence, which the server-readable message path advances.
+- Deleting a community deletes its channels in the same transaction.
+
 ## Rate limits
 
 Every bucket is in-process, keyed by `(class, subject)` where subject is the device session, the

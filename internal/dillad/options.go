@@ -53,8 +53,8 @@ type Options struct {
 	// ACL is invariant 4's eligibility source; nil means ds.DenyUnlessMember
 	// until Plan 2 task 3's permission resolver (NV-B6).
 	ACL ds.ACL
-	// Channels is invariant 1's channel-mode source; nil means the permissive
-	// stub until Plan 2 task 2 creates the channels table (NV-B5).
+	// Channels is invariant 1's channel-mode source and the registration
+	// ACL; nil means api.StructureChannels over the repository (Plan 2 task 2).
 	Channels ds.Channels
 
 	// closeRepo records that New opened the repository itself, so Shutdown

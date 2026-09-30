@@ -168,6 +168,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		FramesPerSecond: float64(o.Config.Gateway.FrameBurst),
 		FrameBurst:      o.Config.Gateway.FrameBurstMax,
 	})
+	// Invariant 1's channel mode and the registration ACL read the channels, communities and
+	// members tables (Plan 2 task 2; this replaced Plan 1's ds.PermissiveChannels, NV-B5). A
+	// harness may inject its own source through Options.Channels.
+	channels := o.Channels
+	if channels == nil {
+		channels = api.StructureChannels{Repo: o.Repo}
+	}
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,
 		Wasm:     wasm,
@@ -177,8 +184,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Metrics:  o.Metrics,
 		Keys:     keys,
 		Policy:   policy,
-		Channels: o.Channels, // nil: ds.PermissiveChannels (NV-B5)
-		ACL:      o.ACL,      // nil: ds.DenyUnlessMember (NV-B6)
+		Channels: channels,
+		ACL:      o.ACL, // nil: ds.DenyUnlessMember (NV-B6)
 		// The device lists are verified in the guest (NV-B8, deviation B32).
 		DeviceLists: ds.NewDeviceLists(o.Repo, wasm),
 	})

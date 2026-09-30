@@ -53,6 +53,12 @@ sql:
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "mls_groups.call_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          # 006a_channels.sql (Plan 2 task 2): a DM has no community, a top-level
+          # channel no parent.
+          - { column: "channels.community_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "channels.parent_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           # 3. the NOT NULL wildcards.
           - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
           - { column: "*.*_id",            go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
@@ -112,6 +118,10 @@ sql:
           - { column: "communities.require_mod_2fa",       go_type: { type: "int64" } }
           - { column: "roles.hoist",                       go_type: { type: "int64" } }
           - { column: "roles.mentionable",                 go_type: { type: "int64" } }
+          # 006a_channels.sql (Plan 2 task 2).
+          - { column: "channels.kind",                     go_type: { type: "int64" } }
+          - { column: "channels.mode",                     go_type: { type: "int64" } }
+          - { column: "channels.visibility",               go_type: { type: "int64" } }
           - { column: "invites.community_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "invites.created_by",
@@ -125,6 +135,10 @@ sql:
           - { column: "mls_groups.community_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "mls_groups.call_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "channels.community_id",
+              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "channels.parent_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
           - { column: "*.*_id",            go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }

@@ -59,6 +59,10 @@ var DumpTables = []string{
 	// community before its members and roles, and both of those before the
 	// member_roles rows that reference a (member, role) pair.
 	"communities", "members", "roles", "member_roles",
+	// 006a_channels.sql, appended by Plan 2 task 2. Its parent is communities; its
+	// self-reference (parent_id) is checked at the end of the one COPY statement
+	// that replays the table, so the rows' order within it does not matter.
+	"channels",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

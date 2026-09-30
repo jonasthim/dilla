@@ -87,11 +87,12 @@ const (
 	ModeReadable           uint8 = 1
 )
 
-// ChannelModes is the harness's channel-mode source (ds.Channels): the channels a scenario named
-// with `channel <target> …`, and "no channel row" for every other target, as
-// ds.PermissiveChannels answers everything in Plan 1. It is how invariant 1's E_MODE_READABLE is
-// reachable end to end before Plan 2 task 2 creates the channels table (NV-B5); the rule itself,
-// ds.checkChannelMode, is the delivery service's own.
+// ChannelModes is the harness's channel source (ds.Channels): the channels a scenario named with
+// `channel <target> …`, and "no channel row" for every other target. It is how invariant 1's
+// E_MODE_READABLE is reachable end to end from a scenario, which registers groups against
+// targets it invents rather than against channels created through the API; the rule itself,
+// ds.checkChannelMode, is the delivery service's own. Production injects api.StructureChannels
+// over the channels table instead (Plan 2 task 2).
 type ChannelModes struct {
 	mu       sync.RWMutex
 	channels map[id.ID][2]uint8
@@ -117,6 +118,12 @@ func (c *ChannelModes) Channel(_ context.Context, target id.ID) (visibility, mod
 	}
 	return ch[0], ch[1], nil
 }
+
+// MayRegister is ds.Channels' registration ACL, and admits everyone, as AllowEveryone does for
+// invariant 4: a scenario's groups are bound to targets it invents, with no community or
+// membership rows behind them, and what the scenarios exercise is the delivery service's
+// protocol, not the community structure. internal/api/dschannels_test.go pins the real ACL.
+func (c *ChannelModes) MayRegister(context.Context, id.ID, ds.Binding) error { return nil }
 
 // Host is one initialised instance behind a stable public handler. Restore replaces the server
 // underneath the handler, as `dillad restore` followed by a restart replaces the process, so the

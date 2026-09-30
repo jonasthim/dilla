@@ -518,9 +518,13 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	now := c.clk.Now().Unix()
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
-		// Task 2 extends this with the channel tombstones and the MLS group
-		// closes; at task 1 there are no channels yet.
 		if err := tx.SoftDeleteCommunity(r.Context(), row.ID, now); err != nil {
+			return err
+		}
+		// The community's channels go with it, in the same transaction. Their
+		// MLS groups are closed by the delivery service, which owns mls_groups:
+		// task 4 wires ds.Close in here once GroupsForTarget exists (P2-D3).
+		if _, err := tx.DeleteChannelsOfCommunity(r.Context(), row.ID, now); err != nil {
 			return err
 		}
 		return tx.Audit(r.Context(), store.AuditRow{
