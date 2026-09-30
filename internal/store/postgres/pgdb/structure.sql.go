@@ -254,6 +254,27 @@ func (q *Queries) DeleteRole(ctx context.Context, arg DeleteRoleParams) (int64, 
 	return result.RowsAffected()
 }
 
+const deleteUserOverwrites = `-- name: DeleteUserOverwrites :execrows
+DELETE FROM channel_overwrites
+WHERE target_kind = 1 AND target_id = $1
+  AND channel_id IN (SELECT id FROM channels WHERE community_id = $2)
+`
+
+type DeleteUserOverwritesParams struct {
+	UserID      id.ID
+	CommunityID *id.ID
+}
+
+// Fix wave I2: a kick, ban or leave drops the user's own (kind 1) overwrites in every channel of
+// the community, in the transaction that removes the membership.
+func (q *Queries) DeleteUserOverwrites(ctx context.Context, arg DeleteUserOverwritesParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteUserOverwrites, arg.UserID, arg.CommunityID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const endAllVoiceSessionRows = `-- name: EndAllVoiceSessionRows :exec
 UPDATE voice_sessions SET ended = $1::bigint WHERE ended IS NULL
 `

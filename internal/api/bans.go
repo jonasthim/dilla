@@ -107,8 +107,13 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 		if err := tx.DeleteMember(r.Context(), m.community, m.target); err != nil && !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
-		// The user's channel_members rows go with the membership, so no channel still
-		// lists a banned user (the readable audience, GET channel members, the sync).
+		// The user's own channel overwrites and channel_members rows go with the
+		// membership: an overwrite must not reopen a channel on a later rejoin, and
+		// no channel may still list a banned user (the readable audience, GET
+		// channel members, the sync).
+		if _, err := tx.DeleteUserOverwrites(r.Context(), m.community, m.target); err != nil {
+			return err
+		}
 		if _, err := tx.DeleteCommunityChannelMembers(r.Context(), m.community, m.target); err != nil {
 			return err
 		}

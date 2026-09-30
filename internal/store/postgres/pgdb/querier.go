@@ -69,6 +69,9 @@ type Querier interface {
 	DeleteSession(ctx context.Context, arg DeleteSessionParams) error
 	DeleteSessionsByDevice(ctx context.Context, arg DeleteSessionsByDeviceParams) (int64, error)
 	DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsByUserParams) (int64, error)
+	// Fix wave I2: a kick, ban or leave drops the user's own (kind 1) overwrites in every channel of
+	// the community, in the transaction that removes the membership.
+	DeleteUserOverwrites(ctx context.Context, arg DeleteUserOverwritesParams) (int64, error)
 	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
 	// A deleted message is not edited: its envelope and body are gone for good. The franking tag and
 	// the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the

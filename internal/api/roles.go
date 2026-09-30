@@ -687,7 +687,7 @@ type overwritePath struct {
 	have Bits // the actor's bits IN this channel
 }
 
-func (h *Roles) overwriteTarget(r *http.Request) (overwritePath, error) {
+func (h *Roles) overwriteTarget(r *http.Request, deleting bool) (overwritePath, error) {
 	s, err := enrolledSession(r)
 	if err != nil {
 		return overwritePath{}, err
@@ -745,10 +745,16 @@ func (h *Roles) overwriteTarget(r *http.Request) (overwritePath, error) {
 		targetPos = role.Position
 	case overwriteUser:
 		if _, err := h.repo.GetMember(r.Context(), cid, o.tgt); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
+			if !errors.Is(err, store.ErrNotFound) {
+				return overwritePath{}, err
+			}
+			if !deleting {
 				return overwritePath{}, server.Errorf(server.CodeNotFound, "not a member")
 			}
-			return overwritePath{}, err
+			// A user overwrite that outlived its member (one written before a
+			// kick, ban or leave dropped them with the membership) can still be
+			// deleted: a non-member holds no role, so their rank is 0.
+			break
 		}
 		target, err := LoadSnapshot(r.Context(), h.repo, cid, o.tgt, nil)
 		if err != nil {
@@ -774,7 +780,7 @@ type putOverwriteReq struct {
 // deny name only defined, channel-scoped bits the actor holds in the channel,
 // and never the same bit twice.
 func (h *Roles) putOverwrite(w http.ResponseWriter, r *http.Request) {
-	o, err := h.overwriteTarget(r)
+	o, err := h.overwriteTarget(r, false)
 	if err != nil {
 		h.fail(w, r, "put overwrite", err)
 		return
@@ -835,7 +841,7 @@ func (h *Roles) putOverwrite(w http.ResponseWriter, r *http.Request) {
 // deleteOverwrite is DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}:
 // 204, or 404 when there is no such overwrite.
 func (h *Roles) deleteOverwrite(w http.ResponseWriter, r *http.Request) {
-	o, err := h.overwriteTarget(r)
+	o, err := h.overwriteTarget(r, true)
 	if err != nil {
 		h.fail(w, r, "delete overwrite", err)
 		return

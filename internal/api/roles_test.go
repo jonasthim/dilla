@@ -250,6 +250,72 @@ func TestARoleGrantCannotHandOutChannelAccessTheGranterLacks(t *testing.T) {
 	grant(t, e, cid, stafferTok, victim, helpers, http.StatusNoContent)
 }
 
+// I2 (fix wave): a user overwrite is written for a member and ends with the membership. After a
+// kick or a leave, rejoining must not find the private channel the overwrite opened; and an
+// overwrite that outlived its member (written before this fix) can still be deleted.
+func TestAUserOverwriteEndsWithTheMembership(t *testing.T) {
+	for _, how := range []string{"kick", "leave"} {
+		t.Run(how, func(t *testing.T) {
+			e, cid, ownerTok := channelEnv(t)
+			api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+			private, _, _ := newChannel(t, e, cid, ownerTok, 0, 0, 0, "secret")
+			roles, _ := e.Repo.ListRoles(t.Context(), cid)
+			if status, _ := e.Do(http.MethodPut,
+				"/v1/channels/"+private.String()+"/overwrites/0/"+roles[0].ID.String(), ownerTok,
+				[]any{uint64(0), uint64(api.PermViewChannel)}); status != http.StatusNoContent {
+				t.Fatal("PUT @everyone deny failed")
+			}
+			user, userTok := e.NewUser("insider")
+			joinCommunity(t, e, cid, userTok)
+			owPath := "/v1/channels/" + private.String() + "/overwrites/1/" + user.String()
+			if status, _ := e.Do(http.MethodPut, owPath, ownerTok,
+				[]any{uint64(api.PermViewChannel), uint64(0)}); status != http.StatusNoContent {
+				t.Fatal("PUT user overwrite failed")
+			}
+			if status, _ := e.Do(http.MethodGet, "/v1/channels/"+private.String(), userTok, nil); status != http.StatusOK {
+				t.Fatalf("the insider's GET of the private channel = %d, want 200", status)
+			}
+
+			switch how {
+			case "kick":
+				if status, _ := e.Do(http.MethodDelete, "/v1/communities/"+cid.String()+"/members/"+user.String(), ownerTok, nil); status != http.StatusNoContent {
+					t.Fatal("kick failed")
+				}
+			case "leave":
+				if status, _ := e.Do(http.MethodPost, "/v1/communities/"+cid.String()+"/leave", userTok, []any{}); status != http.StatusNoContent {
+					t.Fatal("leave failed")
+				}
+			}
+			if ow, _ := e.Repo.ListOverwrites(t.Context(), private); len(ow) != 1 {
+				t.Fatalf("after the %s the channel's overwrites are %+v, want only @everyone's", how, ow)
+			}
+			joinCommunity(t, e, cid, userTok)
+			if status, _ := e.Do(http.MethodGet, "/v1/channels/"+private.String(), userTok, nil); status != http.StatusNotFound {
+				t.Fatalf("after the %s and a rejoin the private channel = %d, want 404", how, status)
+			}
+		})
+	}
+
+	// A stale overwrite from before the fix: its target is not a member, and the owner may still
+	// delete it (the target's rank is taken as 0). A PUT for a non-member stays 404.
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	private, _, _ := newChannel(t, e, cid, ownerTok, 0, 0, 0, "secret")
+	gone := id.New()
+	if err := e.Repo.PutOverwrite(t.Context(), store.OverwriteRow{
+		ChannelID: private, TargetKind: 1, TargetID: gone, Allow: uint64(api.PermViewChannel),
+	}); err != nil {
+		t.Fatalf("PutOverwrite: %v", err)
+	}
+	owPath := "/v1/channels/" + private.String() + "/overwrites/1/" + gone.String()
+	if status, _ := e.Do(http.MethodPut, owPath, ownerTok, []any{uint64(0), uint64(0)}); status != http.StatusNotFound {
+		t.Fatalf("PUT for a non-member = %d, want 404", status)
+	}
+	if status, body := e.Do(http.MethodDelete, owPath, ownerTok, nil); status != http.StatusNoContent {
+		t.Fatalf("DELETE of a stale user overwrite = %d %s, want 204", status, e.ErrCode(body))
+	}
+}
+
 // createRole posts one role to /v1/communities/{id}/roles as tok and returns its
 // id. Its body is [name, color, position, allow, deny, hoist, mentionable].
 func createRole(t *testing.T, e *env, cid id.ID, tok, name string, position uint64, allow api.Bits) id.ID {

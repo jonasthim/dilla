@@ -125,6 +125,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// §4.1 plus P2-D9's two deletes (task 3), reached through the embedded
 			// Communities (DeleteRole) and Overwrites (DeleteOverwrite).
 			"DeleteOverwrite", "DeleteRole",
+			// Fix wave I2, reached through the embedded Overwrites.
+			"DeleteUserOverwrites",
 			// §4.1 plus P2-D10's listing (task 4), reached through the embedded Bans.
 			"ListBans",
 			// Task 4 fix round 1, reached through the embedded Communities: the
@@ -159,7 +161,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		}},
 		// Overwrites is the slice of Structure Plan 2 task 3's table supports.
 		{"Overwrites", reflect.TypeOf((*store.Overwrites)(nil)).Elem(), []string{
-			"DeleteOverwrite", "ListOverwrites", "PutOverwrite",
+			"DeleteOverwrite", "DeleteUserOverwrites", "ListOverwrites", "PutOverwrite",
 		}},
 		// Channels is the slice of Structure Plan 2 task 2's table supports.
 		{"Channels", reflect.TypeOf((*store.Channels)(nil)).Elem(), []string{

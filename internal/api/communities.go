@@ -630,6 +630,9 @@ func (c *Communities) removeMember(w http.ResponseWriter, r *http.Request) {
 		if err := tx.DeleteMember(r.Context(), m.community, m.target); err != nil {
 			return err
 		}
+		if _, err := tx.DeleteUserOverwrites(r.Context(), m.community, m.target); err != nil {
+			return err
+		}
 		if _, err := tx.DeleteCommunityChannelMembers(r.Context(), m.community, m.target); err != nil {
 			return err
 		}
@@ -674,6 +677,9 @@ func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
 	// one transaction, as for a kick.
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.DeleteMember(r.Context(), row.ID, s.UserID); err != nil {
+			return err
+		}
+		if _, err := tx.DeleteUserOverwrites(r.Context(), row.ID, s.UserID); err != nil {
 			return err
 		}
 		_, err := tx.DeleteCommunityChannelMembers(r.Context(), row.ID, s.UserID)

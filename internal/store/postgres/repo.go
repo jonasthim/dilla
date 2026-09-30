@@ -2266,6 +2266,13 @@ func (r *Repo) PutChannelMember(ctx context.Context, channelID, userID id.ID, at
 	}))
 }
 
+func (r *Repo) DeleteUserOverwrites(ctx context.Context, communityID, userID id.ID) (int64, error) {
+	n, err := r.w.DeleteUserOverwrites(ctx, pgdb.DeleteUserOverwritesParams{
+		UserID: userID, CommunityID: &communityID,
+	})
+	return n, wrap(err)
+}
+
 func (r *Repo) DeleteCommunityChannelMembers(ctx context.Context, communityID, userID id.ID) (int64, error) {
 	n, err := r.w.DeleteCommunityChannelMembers(ctx, pgdb.DeleteCommunityChannelMembersParams{
 		UserID: userID, CommunityID: &communityID,

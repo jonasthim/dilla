@@ -433,6 +433,10 @@ type Overwrites interface {
 	// DeleteOverwrite is P2-D9: DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}.
 	// ErrNotFound when there was no such overwrite.
 	DeleteOverwrite(ctx context.Context, channelID id.ID, targetKind uint8, targetID id.ID) error
+	// DeleteUserOverwrites removes userID's own (kind 1) overwrites in every channel of
+	// communityID and answers how many went: a kick, ban or leave runs it with the membership
+	// delete, so a user overwrite never outlives the membership it was written for (fix wave I2).
+	DeleteUserOverwrites(ctx context.Context, communityID, userID id.ID) (int64, error)
 }
 
 // Bans is the part of Structure whose table is 00007_bans.sql (Plan 2 task 4):

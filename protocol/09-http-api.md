@@ -327,7 +327,10 @@ the kick needs `kick_members` (§ Permissions); `403 E_FORBIDDEN` otherwise.
   group of the community's channels. Each freezes its group (`02` invariant 5) until a member
   commits it, so a user kicked while offline cannot read past the epoch that removes them; a
   `Remove` whose leaf is already gone is dropped (`02` invariant 6). The user's channel membership
-  rows for the community go in the same transaction as the membership. The `Remove`s do not depend
+  rows and their own (kind 1) channel overwrites for the community go in the same transaction as
+  the membership, so a later rejoin starts from the roles and `@everyone` alone. A kind-1
+  overwrite whose target is not a member can still be deleted (the target's rank counts as 0);
+  writing one still needs a member. The `Remove`s do not depend
   on the request: a client that disconnects after the `204` (or before it) does not cut them short,
   and a `Remove` that is still never issued is proposed by the instance's sweep, which, a page of
   groups at a time, proposes a `Remove` for every live leaf of an open `text` or `call` group whose

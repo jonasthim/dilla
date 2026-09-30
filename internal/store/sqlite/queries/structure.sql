@@ -138,6 +138,13 @@ ON CONFLICT (channel_id, target_kind, target_id) DO UPDATE SET
 -- name: DeleteOverwrite :execrows
 DELETE FROM channel_overwrites WHERE channel_id = ? AND target_kind = ? AND target_id = ?;
 
+-- name: DeleteUserOverwrites :execrows
+-- Fix wave I2: a kick, ban or leave drops the user's own (kind 1) overwrites in every channel of
+-- the community, in the transaction that removes the membership.
+DELETE FROM channel_overwrites
+WHERE target_kind = 1 AND target_id = sqlc.arg(user_id)
+  AND channel_id IN (SELECT id FROM channels WHERE community_id = sqlc.arg(community_id));
+
 -- name: ListOverwrites :many
 SELECT channel_id, target_kind, target_id, allow, deny
 FROM channel_overwrites WHERE channel_id = ? ORDER BY target_kind, target_id;

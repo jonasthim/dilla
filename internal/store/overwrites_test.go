@@ -10,6 +10,48 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 )
 
+// I2 (fix wave): a user's channel overwrites end with their membership. DeleteUserOverwrites
+// removes the user's kind-1 overwrites in every channel of one community and nothing else: not a
+// role overwrite with the same id, not another user's, not another community's.
+func TestDeleteUserOverwritesIsScopedToOneUserAndCommunity(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			a, b := seedCommunity(ctx, t, repo), seedCommunity(ctx, t, repo)
+			a1, a2, b1 := channelIn(a, 0, 0, 0, "a1", 0), channelIn(a, 0, 0, 0, "a2", 1), channelIn(b, 0, 0, 0, "b1", 0)
+			for _, ch := range []store.ChannelRow{a1, a2, b1} {
+				if err := repo.CreateChannel(ctx, ch); err != nil {
+					t.Fatalf("CreateChannel: %v", err)
+				}
+			}
+			u, v := id.New(), id.New()
+			for _, o := range []store.OverwriteRow{
+				{ChannelID: a1.ID, TargetKind: 1, TargetID: u, Allow: 1},
+				{ChannelID: a2.ID, TargetKind: 1, TargetID: u, Deny: 2},
+				{ChannelID: a1.ID, TargetKind: 0, TargetID: u, Allow: 4}, // a role row with the same id
+				{ChannelID: a1.ID, TargetKind: 1, TargetID: v, Allow: 1},
+				{ChannelID: b1.ID, TargetKind: 1, TargetID: u, Allow: 1},
+			} {
+				if err := repo.PutOverwrite(ctx, o); err != nil {
+					t.Fatalf("PutOverwrite: %v", err)
+				}
+			}
+			n, err := repo.DeleteUserOverwrites(ctx, a, u)
+			if err != nil || n != 2 {
+				t.Fatalf("DeleteUserOverwrites = %d, %v; want 2", n, err)
+			}
+			for _, c := range []struct {
+				ch   id.ID
+				want int
+			}{{a1.ID, 2}, {a2.ID, 0}, {b1.ID, 1}} {
+				if got, err := repo.ListOverwrites(ctx, c.ch); err != nil || len(got) != c.want {
+					t.Fatalf("ListOverwrites(%s) = %+v, %v; want %d rows", c.ch, got, err, c.want)
+				}
+			}
+		})
+	}
+}
+
 // Plan 2 task 3: channel_overwrites and the role delete, on both engines.
 func TestOverwriteRoundTrip(t *testing.T) {
 	for engine, repo := range engines(t) {
