@@ -70,7 +70,11 @@ func dispatch(args []string, stdout, stderr io.Writer) error {
 		usage(stderr)
 		return exit.Usage
 	}
-	return v.run(args[1:], stdout, stderr)
+	if err := v.run(args[1:], stdout, stderr); !errors.Is(err, errHelp) {
+		return err
+	}
+	// The verb printed its usage for --help and did nothing else: exit 0.
+	return nil
 }
 
 func main() {

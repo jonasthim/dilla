@@ -71,6 +71,43 @@ func TestHelpGoesToStdoutAndExitsZero(t *testing.T) {
 	}
 }
 
+// I15 (fix wave): --help on any verb prints that verb's usage once, on stdout, exits 0 and runs
+// nothing: no backup archive in the working directory, no error from a verb body that went on.
+// backup gets a real config, so a verb that ran on would write its archive; the others get a
+// missing one, so a verb that ran on would fail rather than serve.
+func TestHelpOnEveryVerbPrintsUsageOnceAndRunsNothing(t *testing.T) {
+	cfg := bootstrapServeConfig(t)
+	missing := "--config=" + filepath.Join(t.TempDir(), "missing.toml")
+	for _, args := range [][]string{
+		{"serve", missing, "--help"},
+		{"init", "--help"},
+		{"migrate", "up", missing, "--help"},
+		{"migrate", "status", missing, "-h"},
+		{"doctor", missing, "--help"},
+		{"version", "--help"},
+		{"backup", "--config=" + cfg, "--help"},
+		{"backup", "verify", "--help"},
+		{"restore", "--config=" + cfg, "--help"},
+	} {
+		t.Run(strings.Join(args[:len(args)-1], " "), func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			out, errBuf, err := run(t, args...)
+			if err != nil {
+				t.Fatalf("%v = %v, want nil (exit 0)", args, err)
+			}
+			if n := strings.Count(out, "Usage of dillad"); n != 1 {
+				t.Errorf("%v printed the usage %d times on stdout, want once:\n%s", args, n, out)
+			}
+			if errBuf != "" {
+				t.Errorf("%v wrote to stderr: %q", args, errBuf)
+			}
+			if entries, _ := os.ReadDir("."); len(entries) != 0 {
+				t.Errorf("%v left %d files in the working directory: the verb ran", args, len(entries))
+			}
+		})
+	}
+}
+
 func TestUnknownFlagGoesToStderrAndExitsTwo(t *testing.T) {
 	_, errBuf, err := run(t, "serve", "--nope")
 	var code exit.Code
