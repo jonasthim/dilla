@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -44,6 +45,44 @@ func devicesOf(t *testing.T, e *env, user id.ID) []id.ID {
 	return out
 }
 
+// closeToEveryoneButRole makes ch a private channel: @everyone is denied view on it and role is
+// allowed it. Every new community gives @everyone view, so without the deny every member is
+// eligible whatever roles they hold, and a test about roles would test nothing.
+func closeToEveryoneButRole(t *testing.T, e *env, cid, ch id.ID, ownerTok string, role id.ID) {
+	t.Helper()
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	var everyone id.ID
+	for _, r := range roles {
+		if r.Position == 0 {
+			everyone = r.ID
+		}
+	}
+	for _, o := range []struct {
+		target      id.ID
+		allow, deny uint64
+	}{
+		{everyone, 0, uint64(api.PermViewChannel)},
+		{role, uint64(api.PermViewChannel), 0},
+	} {
+		if status, body := e.Do(http.MethodPut,
+			"/v1/channels/"+ch.String()+"/overwrites/0/"+o.target.String(), ownerTok,
+			[]any{o.allow, o.deny}); status != http.StatusNoContent {
+			t.Fatalf("PUT overwrite = %d (%x)", status, body)
+		}
+	}
+}
+
+// What this test pins about PRODUCTION code is the materialiser: EligibleUsers resolves the role
+// (and the @everyone deny) for a thousand members, channel_members holds exactly the insiders and
+// the owner, and SyncGroupMembers hands every insider's device to ONE ProposeAddBatch call. The
+// split into four commits of at most 256 is the recording double's contract (it runs
+// ds.PlanBatches and counts a commit per batch), so `Commits == 4` checks that the call carried
+// all 1,000 devices, not how the delivery service commits them: that is pinned against the real
+// service by internal/ds's batch tests and, with real clients and real commits, by
+// internal/testkit's TestAThousandDeviceJoinStormCompletesInExactlyFourCommits.
 func TestAPrivateChannelInA1000MemberCommunityBatchesAt256(t *testing.T) {
 	e, cid, ownerTok := channelEnv(t)
 	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
@@ -51,13 +90,15 @@ func TestAPrivateChannelInA1000MemberCommunityBatchesAt256(t *testing.T) {
 
 	role := createRole(t, e, cid, ownerTok, "insiders", 10, api.PermViewChannel|api.PermSendMessages)
 	seedCommunityOfSize(t, e, cid, ownerTok, role, 1000)
+	// A member without the role, with a device that could be added: the channel is private, so
+	// the deny on @everyone keeps them out.
+	outsider, outsiderTok := e.NewUser("outsider")
+	joinCommunity(t, e, cid, outsiderTok)
+	outsiderDevice := seedDevices(t, e, outsider, 1)[0]
+	seedKeyPackage(t, e, outsiderDevice)
 
 	ch, _, _ := newChannel(t, e, cid, ownerTok, 0, 0, 0, "secret")
-	if status, _ := e.Do(http.MethodPut,
-		"/v1/channels/"+ch.String()+"/overwrites/0/"+role.String(), ownerTok,
-		[]any{uint64(api.PermViewChannel), uint64(0)}); status != http.StatusNoContent {
-		t.Fatal("PUT role overwrite failed")
-	}
+	closeToEveryoneButRole(t, e, cid, ch, ownerTok, role)
 	group := seedTextGroup(t, e, ch, cid)
 
 	if err := api.MaterialiseChannelMembers(t.Context(), e.Repo, dsvc,
@@ -71,6 +112,9 @@ func TestAPrivateChannelInA1000MemberCommunityBatchesAt256(t *testing.T) {
 	}
 	if len(members) != 1001 { // 1000 plus the owner
 		t.Fatalf("channel_members = %d, want 1001", len(members))
+	}
+	if slices.Contains(members, outsider) {
+		t.Fatal("a member without the role is in a private channel's channel_members")
 	}
 	// 1000, not 1001: channel_members holds the owner too, but channelEnv's owner
 	// device published no KeyPackage, and SyncGroupMembers skips any device with
@@ -88,23 +132,25 @@ func TestAPrivateChannelInA1000MemberCommunityBatchesAt256(t *testing.T) {
 		if slices.Contains(ownerDevices, a.Device) {
 			t.Fatal("the owner's device was proposed although it published no KeyPackage")
 		}
+		if a.Device == outsiderDevice {
+			t.Fatal("the device of a member without the role was proposed for a private channel")
+		}
 	}
+	// The double's contract (see above): one batch call of 1,000 devices is four batches.
 	if dsvc.Commits != 4 {
 		t.Fatalf("commit requests = %d; 1000 devices at 256 per commit is 4", dsvc.Commits)
 	}
 }
 
+// As above, `Commits == 2` is the recording double's split of the one batch call; what production
+// code decides here is that exactly the 300 new insiders are handed over.
 func TestARoleGrantThatOpensTheChannelTo300MoreBatchesTheSameWay(t *testing.T) {
 	e, cid, ownerTok := channelEnv(t)
 	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
 	dsvc := &recordingDS{}
 	role := createRole(t, e, cid, ownerTok, "insiders", 10, api.PermViewChannel)
 	ch, _, _ := newChannel(t, e, cid, ownerTok, 0, 0, 0, "secret")
-	if status, _ := e.Do(http.MethodPut,
-		"/v1/channels/"+ch.String()+"/overwrites/0/"+role.String(), ownerTok,
-		[]any{uint64(api.PermViewChannel), uint64(0)}); status != http.StatusNoContent {
-		t.Fatal("PUT role overwrite failed")
-	}
+	closeToEveryoneButRole(t, e, cid, ch, ownerTok, role)
 	seedTextGroup(t, e, ch, cid)
 	if err := api.MaterialiseChannelMembers(t.Context(), e.Repo, dsvc, mustChannel(t, e, ch), e.Clk.Now().Unix()); err != nil {
 		t.Fatalf("first materialise: %v", err)
@@ -123,17 +169,20 @@ func TestARoleGrantThatOpensTheChannelTo300MoreBatchesTheSameWay(t *testing.T) {
 	}
 }
 
+// A role revoked between two batches of a join storm drops the user from the batches still to
+// come. The revoke goes through the PRODUCTION route (DELETE …/roles/{role_id}), whose resolver and
+// materialiser must find that the user no longer sees the channel — which they can only because
+// @everyone is denied view on it — and take the user out of channel_members. The between-batch
+// re-read of channel_members is the recording double's contract (it stands in for the delivery
+// service's eligibility re-check); the real re-check, over the channel ACL, is pinned by
+// internal/ds's TestADrainDropsWhatStoppedBeingEligibleSinceTheBatchWasPlanned.
 func TestAMemberRemovedMidBatchIsDroppedFromTheRest(t *testing.T) {
 	e, cid, ownerTok := channelEnv(t)
 	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
 	role := createRole(t, e, cid, ownerTok, "insiders", 10, api.PermViewChannel)
 	users := seedCommunityOfSize(t, e, cid, ownerTok, role, 300)
 	ch, _, _ := newChannel(t, e, cid, ownerTok, 0, 0, 0, "secret")
-	if status, _ := e.Do(http.MethodPut,
-		"/v1/channels/"+ch.String()+"/overwrites/0/"+role.String(), ownerTok,
-		[]any{uint64(api.PermViewChannel), uint64(0)}); status != http.StatusNoContent {
-		t.Fatal("PUT role overwrite failed")
-	}
+	closeToEveryoneButRole(t, e, cid, ch, ownerTok, role)
 	seedTextGroup(t, e, ch, cid)
 
 	// The victim must be in the LAST batch, or the test is a coin flip: batch
@@ -143,12 +192,23 @@ func TestAMemberRemovedMidBatchIsDroppedFromTheRest(t *testing.T) {
 	// The member whose user_id sorts last is in the final batch by construction.
 	victim := slices.MaxFunc(users, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
 	first := slices.MinFunc(users, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	var once sync.Once
+	revokeStatus := 0
 	dsvc := &recordingDS{Repo: e.Repo, OnCommit: func() {
-		_ = e.Repo.DeleteMemberRole(t.Context(), cid, victim, role)
-		_ = e.Repo.DeleteChannelMember(t.Context(), ch, victim)
+		once.Do(func() {
+			revokeStatus, _ = e.Do(http.MethodDelete,
+				"/v1/communities/"+cid.String()+"/members/"+victim.String()+"/roles/"+role.String(),
+				ownerTok, nil)
+		})
 	}}
 	if err := api.MaterialiseChannelMembers(t.Context(), e.Repo, dsvc, mustChannel(t, e, ch), e.Clk.Now().Unix()); err != nil {
 		t.Fatalf("MaterialiseChannelMembers: %v", err)
+	}
+	if revokeStatus != http.StatusNoContent {
+		t.Fatalf("the revoke between the batches answered %d, want 204", revokeStatus)
+	}
+	if members, _ := e.Repo.ListChannelMembers(t.Context(), ch); slices.Contains(members, victim) {
+		t.Fatal("the revoke route left the victim in channel_members: the channel is not private")
 	}
 	victimDevices := devicesOf(t, e, victim)
 	for _, a := range dsvc.Adds {
@@ -176,26 +236,7 @@ func privateChannel(t *testing.T, e *env, cid id.ID, ownerTok string) (ch, role,
 	t.Helper()
 	role = createRole(t, e, cid, ownerTok, "insiders", 10, api.PermViewChannel)
 	ch, _, _ = newChannel(t, e, cid, ownerTok, 0, 0, 0, "secret")
-	roles, err := e.Repo.ListRoles(t.Context(), cid)
-	if err != nil {
-		t.Fatalf("ListRoles: %v", err)
-	}
-	var everyone id.ID
-	for _, r := range roles {
-		if r.Position == 0 {
-			everyone = r.ID
-		}
-	}
-	for target, bits := range map[id.ID][2]uint64{
-		everyone: {0, uint64(api.PermViewChannel)},
-		role:     {uint64(api.PermViewChannel), 0},
-	} {
-		if status, body := e.Do(http.MethodPut,
-			"/v1/channels/"+ch.String()+"/overwrites/0/"+target.String(), ownerTok,
-			[]any{bits[0], bits[1]}); status != http.StatusNoContent {
-			t.Fatalf("PUT overwrite = %d (%x)", status, body)
-		}
-	}
+	closeToEveryoneButRole(t, e, cid, ch, ownerTok, role)
 	return ch, role, seedTextGroup(t, e, ch, cid)
 }
 

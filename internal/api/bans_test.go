@@ -79,6 +79,12 @@ func (d *recordingDS) ProposeRemove(_ context.Context, g id.ID, leaf uint32, _ i
 // ProposeAddBatch records the batch the way the delivery service issues it: ds.PlanBatches at 256
 // per commit, one commit request per non-empty batch, and — when Repo is set — every later batch
 // re-checked against channel_members first.
+//
+// The split, the Commits counter and the re-check are THIS DOUBLE's contract, not production code:
+// an internal/api assertion on them shows only what api handed to ProposeAddBatch (which devices,
+// in one call) and, through OnCommit, what production code did to channel_members between two
+// batches. The real batching and the real eligibility re-check are pinned in internal/ds
+// (batch_test.go) and, with real commits, in internal/testkit.
 func (d *recordingDS) ProposeAddBatch(ctx context.Context, g id.ID, devices []id.ID) error {
 	for i, batch := range ds.PlanBatches(devices, ds.DefaultPolicy().MaxAddsPerCommit).Batches {
 		if i > 0 && d.Repo != nil {
