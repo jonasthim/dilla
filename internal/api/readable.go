@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -122,9 +123,14 @@ type envelopeRequest struct {
 // indexedBody is what readable_messages.body holds for an envelope: the text a
 // message or an edit carries. A reaction's emoji and a pin's empty body are not
 // search content.
+//
+// Every NUL is removed: Postgres TEXT cannot hold 0x00 (SQLSTATE 22021), so
+// the same message would otherwise store on SQLite and fail with a 500 on
+// Postgres (fix wave I8). The envelope itself, which franking covers, is stored
+// as sent.
 func indexedBody(typ uint8, body string) string {
 	if typ == EnvMessage || typ == EnvEdit {
-		return body
+		return strings.ReplaceAll(body, "\x00", "")
 	}
 	return ""
 }

@@ -607,6 +607,34 @@ func TestSearchCoversTheReadableChannelsTheCallerMayRead(t *testing.T) {
 
 // PATCH and DELETE on /v1/channels/{id}/messages/{seq}: only the author edits,
 // only the author deletes (R29, task 9), and the index follows both.
+// I8 (fix wave): Postgres TEXT cannot hold 0x00 (SQLSTATE 22021), and the envelope parser accepts a
+// body containing one, so the same POST was 200 on SQLite and 500 on Postgres. The search column
+// holds the body with every NUL removed, for a POST and for an edit; the stored envelope (BYTEA, and
+// what franking covers) is untouched.
+func TestANULNeverReachesTheSearchColumn(t *testing.T) {
+	f := newReadableFixture(t)
+	e := f.e
+	ch := readableChannel(t, e, f.cid, f.ownerTok)
+	env := envelope0(t, "a\x00b")
+	seq := postReadable(t, e, ch, f.ownerTok, env)
+	rows, err := e.Repo.ListReadableMessages(t.Context(), ch, seq, 1)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListReadableMessages = %+v, %v", rows, err)
+	}
+	if rows[0].Body != "ab" || !bytes.Equal(rows[0].Envelope, env) {
+		t.Fatalf("stored body %q (envelope kept: %v), want \"ab\" and the envelope as sent",
+			rows[0].Body, bytes.Equal(rows[0].Envelope, env))
+	}
+	path := fmt.Sprintf("/v1/channels/%s/messages/%d", ch, seq)
+	if status, body := e.Do(http.MethodPatch, path, f.ownerTok, []any{envelopeOf(t, 1, "c\x00\x00d")}); status != http.StatusNoContent {
+		t.Fatalf("edit = %d (%x)", status, body)
+	}
+	rows, _ = e.Repo.ListReadableMessages(t.Context(), ch, seq, 1)
+	if rows[0].Body != "cd" {
+		t.Fatalf("edited body %q, want \"cd\"", rows[0].Body)
+	}
+}
+
 func TestEditAndDeleteByPath(t *testing.T) {
 	f := newReadableFixture(t)
 	e := f.e
