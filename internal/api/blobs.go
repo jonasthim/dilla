@@ -54,6 +54,10 @@ const octetStream = "application/octet-stream"
 // uploader over blobs.quota_bytes_per_user.
 var errQuota = errors.New("api: blob quota exceeded")
 
+// errTombstoned aborts the reference transaction when an administrator purged
+// the bytes while the upload was streaming.
+var errTombstoned = errors.New("api: the blob was purged during the upload")
+
 // channel parses {id} and {blob_id} — both before the database or the
 // filesystem is touched (protocol/09 § Identifiers) — and loads the channel for
 // a caller holding every bit of want. A caller who may not view the channel gets
@@ -162,6 +166,16 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
+		// The tombstone again, now inside the transaction that would write the
+		// reference: a purge that committed while the body was streaming must not
+		// be undone by it (fix wave I9).
+		tomb, err := tx.GetBlobTombstone(r.Context(), blobID)
+		if err != nil {
+			return err
+		}
+		if tomb {
+			return errTombstoned
+		}
 		// P2-D16, gap-47 §8.3: a reference created inside the grace window saves
 		// the blob from the sweeper.
 		if err := tx.ClearBlobUnreferenced(r.Context(), blobID); err != nil {
@@ -186,6 +200,16 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, errTombstoned) {
+			// The purge's own unlink may have run before this upload wrote the
+			// file; purged bytes stay removed, so they go now, row or none.
+			if derr := b.store.Delete(blobID); derr != nil {
+				b.log.ErrorContext(r.Context(), "remove purged bytes an upload rewrote",
+					"blob_id", hex.EncodeToString(blobID), "err", derr)
+			}
+			server.WriteError(w, server.Errorf(server.CodePruned, "these bytes were removed by the server operator"))
+			return
+		}
 		if created {
 			b.orphan(r.Context(), blobID, n, now)
 		}
