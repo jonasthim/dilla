@@ -215,8 +215,8 @@ optional; `{}` is every default.
 |---|---|---|---|
 | `join` | `"open"` or `"invite"` | `"open"` | whether a join needs a community invite |
 | `screening` | bool | `false` | membership screening; stored and served, **not enforced** by this version |
-| `retention_days` | uint ≤ 36500 | `0` | **archival** retention (`02` § Retention): days an application message every cursor has passed is kept; `0` keeps it indefinitely |
-| `delivery_retention_days` | uint ≤ 30 | `0` | **delivery** retention: `0` is the instance's 30 days; a community may shorten it, never lengthen it |
+| `retention_days` | uint ≤ 36500 | `0` | **archival** retention (`02` § Retention): days an application message every cursor has passed is kept; `0` keeps it indefinitely. In this version it is enforced for attachments only (§ Blobs expires a reference older than it); no message is deleted by it yet |
+| `delivery_retention_days` | uint ≤ 30 | `0` | **delivery** retention: `0` is the instance's 30 days; a community may shorten it, never lengthen it. In this version it is stored and served but not enforced: every community gets the instance's 30 days |
 
 ### Channels
 

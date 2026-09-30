@@ -844,11 +844,20 @@ type CommunityPolicy struct {
 	// RetentionDays is ARCHIVAL retention (R28, protocol/02 § Retention): how
 	// long application messages every cursor has passed are kept. 0 means
 	// indefinitely, the default.
+	//
+	// ENFORCED FOR ATTACHMENTS ONLY in this version (fix wave I5, controller
+	// ruling): the blob sweeper expires blob references older than it
+	// (protocol/09 § Blobs). No message, ciphertext or server-readable, is
+	// deleted by it yet; that is the plan's follow-up card 9.
 	RetentionDays uint64 `json:"retention_days"`
 	// DeliveryRetentionDays shortens DELIVERY retention, the window a device
 	// that was away can still fetch in. 0 means the instance's own 30 days; a
 	// community may shorten it and never lengthen it, because protocol/02
 	// forbids a handshake window past 30 days.
+	//
+	// STORED AND SERVED, NOT ENFORCED in this version (fix wave I5): delivery
+	// retention is the instance's 30 days for every community until follow-up
+	// card 9 lands.
 	DeliveryRetentionDays uint64 `json:"delivery_retention_days"`
 }
 
