@@ -48,6 +48,14 @@ WHERE blobs.unref_since IS NOT NULL AND blobs.unref_since < CAST(sqlc.arg(before
 ORDER BY blobs.unref_since
 LIMIT sqlc.arg(max_rows);
 
+-- name: ListBlobs :many
+-- Plan 2 task 12: the backup's walk over every blob row, in blob_id byte order, resumed after
+-- the last id of the previous page. An empty after (X'') sorts below every 32-byte id.
+SELECT blobs.blob_id, blobs.size, blobs.storage_ref, blobs.created, blobs.unref_since FROM blobs
+WHERE blobs.blob_id > sqlc.arg(after)
+ORDER BY blobs.blob_id
+LIMIT sqlc.arg(max_rows);
+
 -- name: DeleteBlob :execrows
 DELETE FROM blobs WHERE blob_id = ?;
 

@@ -513,6 +513,10 @@ type Blobs interface {
 	// clears unref_since in the same transaction (gap-47 §8.3).
 	ClearBlobUnreferenced(ctx context.Context, blobID []byte) error
 	ListCollectableBlobs(ctx context.Context, before int64, limit int32) ([]BlobRow, error)
+	// ListBlobs is Plan 2 task 12's backup walk: every blob row whose id sorts
+	// strictly after `after` (nil starts at the beginning), in blob_id byte
+	// order, at most limit.
+	ListBlobs(ctx context.Context, after []byte, limit int32) ([]BlobRow, error)
 	DeleteBlob(ctx context.Context, blobID []byte) error
 	PutBlobTombstone(ctx context.Context, blobID []byte, reason string, by id.ID, at int64) error
 	GetBlobTombstone(ctx context.Context, blobID []byte) (bool, error)

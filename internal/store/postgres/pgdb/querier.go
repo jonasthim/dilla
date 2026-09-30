@@ -129,6 +129,9 @@ type Querier interface {
 	// Plan 2 task 11, R28: the policy of every live community that still holds a reference in a
 	// live channel, so the sweeper parses one policy per community rather than one per reference.
 	ListBlobRetentionPolicies(ctx context.Context) ([]ListBlobRetentionPoliciesRow, error)
+	// Plan 2 task 12: the backup's walk over every blob row, in blob_id byte order (bytea compares
+	// bytewise), resumed after the last id of the previous page. An empty after sorts first.
+	ListBlobs(ctx context.Context, arg ListBlobsParams) ([]Blobs, error)
 	ListChannelMembers(ctx context.Context, arg ListChannelMembersParams) ([]id.ID, error)
 	ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error)
 	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a

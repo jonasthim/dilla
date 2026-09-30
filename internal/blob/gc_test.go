@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -434,5 +435,36 @@ func TestRunSweepsEveryIntervalUntilCancelled(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return after its context ended")
+	}
+}
+
+// gap-47 §8.4: a backup in flight pins the sweeper's cutoff to its start. The
+// snapshot still names a blob whose last reference went after the backup
+// started, and collecting it would put a false gap in the archive.
+func TestASweepDuringABackupCollectsNothing(t *testing.T) {
+	h := newGCHarness(t)
+	payload := []byte("snapshotted")
+	sum := sha256.Sum256(payload)
+	ch := h.NewChannel()
+	h.Upload(sum[:], payload, ch)
+	started := h.Clock.Now().Unix()
+	if err := h.Repo.PutSetting(t.Context(), "last_backup_started", []byte(strconv.FormatInt(started, 10)), started); err != nil {
+		t.Fatalf("PutSetting: %v", err)
+	}
+	h.DeleteRef(sum[:], ch)
+	h.Clock.Advance(gcGrace + time.Hour)
+	if n, err := h.Sweeper.SweepOnce(t.Context()); err != nil || n != 0 {
+		t.Fatalf("SweepOnce during a backup = (%d, %v), want (0, nil)", n, err)
+	}
+	if _, err := h.Store.Stat(sum[:]); err != nil {
+		t.Fatalf("the file the snapshot names was unlinked: %v", err)
+	}
+
+	// The backup finishes and clears the mark: the next pass collects it.
+	if err := h.Repo.PutSetting(t.Context(), "last_backup_started", []byte{}, h.Clock.Now().Unix()); err != nil {
+		t.Fatalf("PutSetting: %v", err)
+	}
+	if n, err := h.Sweeper.SweepOnce(t.Context()); err != nil || n != 1 {
+		t.Fatalf("SweepOnce after the backup = (%d, %v), want (1, nil)", n, err)
 	}
 }

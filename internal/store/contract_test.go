@@ -182,6 +182,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// community retention policy, R28, and deleted channels).
 			"DeleteAllBlobRefs", "ListBlobRetentionPolicies", "ListExpiredBlobRefs",
 			"ListBlobRefsOfDeletedChannels",
+			// Plan 2 task 12: the backup walks every blob row in blob_id order.
+			"ListBlobs",
 		}},
 		{"Ops", reflect.TypeOf((*store.Ops)(nil)).Elem(), []string{
 			"Audit", "GetReport", "ListAudit", "PutReport", "SchemaVersion",

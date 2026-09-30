@@ -3,7 +3,9 @@ package blob
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/clock"
@@ -16,6 +18,11 @@ import (
 // sweepBatch references of deleted channels, sweepBatch references past a
 // retention policy, and sweepBatch collected blobs.
 const sweepBatch = 256
+
+// LastBackupStartedKey is the instance_settings key `dillad backup` writes
+// (decimal unix seconds) before it takes its snapshot and empties when it is
+// done. While it is set, the sweeper collects nothing unreferenced after it.
+const LastBackupStartedKey = "last_backup_started"
 
 // maxRetentionDays mirrors the policy validator's bound (api.ParseCommunityPolicy):
 // a century, so days * 86400 stays far inside an int64 even for a stored
@@ -106,6 +113,18 @@ func (s *Sweeper) sweep(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	cutoff := now.Add(-s.grace).Unix()
+	// A backup in flight pins the cutoff to its start (gap-47 §8.4; Plan 2 task
+	// 12 writes the setting before its snapshot and clears it when it is done):
+	// a blob that lost its last reference after the snapshot was taken is still
+	// referenced BY the snapshot, and collecting it would put a gap in an
+	// archive that claims to be complete. An empty value is "no backup running".
+	if raw, err := s.repo.GetSetting(ctx, LastBackupStartedKey); err == nil {
+		if started, perr := strconv.ParseInt(string(raw), 10, 64); perr == nil && started < cutoff {
+			cutoff = started
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return 0, err
+	}
 	rows, err := s.repo.ListCollectableBlobs(ctx, cutoff, sweepBatch)
 	if err != nil {
 		return 0, err

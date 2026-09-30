@@ -2519,6 +2519,23 @@ func (r *Repo) ListCollectableBlobs(ctx context.Context, before int64, limit int
 	return out, nil
 }
 
+// ListBlobs passes an empty bytea for a nil after: database/sql sends a nil
+// []byte as NULL, and `blob_id > NULL` selects nothing.
+func (r *Repo) ListBlobs(ctx context.Context, after []byte, limit int32) ([]store.BlobRow, error) {
+	if after == nil {
+		after = []byte{}
+	}
+	rows, err := r.r.ListBlobs(ctx, pgdb.ListBlobsParams{After: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BlobRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, blobRow(row))
+	}
+	return out, nil
+}
+
 func (r *Repo) DeleteBlob(ctx context.Context, blobID []byte) error {
 	n, err := r.w.DeleteBlob(ctx, pgdb.DeleteBlobParams{BlobID: blobID})
 	if err != nil {

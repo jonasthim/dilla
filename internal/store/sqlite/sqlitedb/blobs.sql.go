@@ -276,6 +276,49 @@ func (q *Queries) ListBlobRetentionPolicies(ctx context.Context) ([]ListBlobRete
 	return items, nil
 }
 
+const listBlobs = `-- name: ListBlobs :many
+SELECT blobs.blob_id, blobs.size, blobs.storage_ref, blobs.created, blobs.unref_since FROM blobs
+WHERE blobs.blob_id > ?1
+ORDER BY blobs.blob_id
+LIMIT ?2
+`
+
+type ListBlobsParams struct {
+	After   []byte
+	MaxRows int64
+}
+
+// Plan 2 task 12: the backup's walk over every blob row, in blob_id byte order, resumed after
+// the last id of the previous page. An empty after (X”) sorts below every 32-byte id.
+func (q *Queries) ListBlobs(ctx context.Context, arg ListBlobsParams) ([]Blobs, error) {
+	rows, err := q.db.QueryContext(ctx, listBlobs, arg.After, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Blobs{}
+	for rows.Next() {
+		var i Blobs
+		if err := rows.Scan(
+			&i.BlobID,
+			&i.Size,
+			&i.StorageRef,
+			&i.Created,
+			&i.UnrefSince,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCollectableBlobs = `-- name: ListCollectableBlobs :many
 SELECT blobs.blob_id, blobs.size, blobs.storage_ref, blobs.created, blobs.unref_since FROM blobs
 WHERE blobs.unref_since IS NOT NULL AND blobs.unref_since < CAST(?1 AS INTEGER)

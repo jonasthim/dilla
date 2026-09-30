@@ -3,7 +3,9 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/id"
@@ -340,6 +342,69 @@ func TestBlobReferenceExpiryAndPurge(t *testing.T) {
 			}
 			if n, err := repo.DeleteAllBlobRefs(ctx, x); err != nil || n != 0 {
 				t.Fatalf("DeleteAllBlobRefs again = %d, %v; want 0", n, err)
+			}
+		})
+	}
+}
+
+// Plan 2 task 12: ListBlobs is the backup's walk over the blob table, in
+// blob_id byte order, resumed after the last id of the previous page.
+func TestListBlobsWalksInBlobIDOrder(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			// Random ids, so the Postgres leg's shared database may hold other
+			// rows: the assertions are about the relative order of these three.
+			ids := make([][]byte, 3)
+			for i := range ids {
+				ids[i] = make([]byte, 32)
+				if _, err := rand.Read(ids[i]); err != nil {
+					t.Fatalf("rand: %v", err)
+				}
+				if err := repo.PutBlob(ctx, store.BlobRow{
+					BlobID: ids[i], Size: uint64(i + 1), StorageRef: "fs:x", Created: int64(10 + i),
+				}); err != nil {
+					t.Fatalf("PutBlob: %v", err)
+				}
+			}
+			slices.SortFunc(ids, bytes.Compare)
+			var seen [][]byte
+			var after []byte
+			for {
+				page, err := repo.ListBlobs(ctx, after, 2)
+				if err != nil {
+					t.Fatalf("ListBlobs: %v", err)
+				}
+				if len(page) > 2 {
+					t.Fatalf("ListBlobs returned %d rows, limit 2", len(page))
+				}
+				if len(page) == 0 {
+					break
+				}
+				for _, row := range page {
+					if after != nil && bytes.Compare(row.BlobID, after) <= 0 {
+						t.Fatalf("ListBlobs after %x returned %x", after, row.BlobID)
+					}
+					for _, want := range ids {
+						if bytes.Equal(row.BlobID, want) {
+							seen = append(seen, row.BlobID)
+						}
+					}
+				}
+				after = page[len(page)-1].BlobID
+			}
+			if len(seen) != 3 {
+				t.Fatalf("the walk saw %d of the three blobs", len(seen))
+			}
+			for i := range ids {
+				if !bytes.Equal(seen[i], ids[i]) {
+					t.Fatalf("walk order %x, want %x", seen, ids)
+				}
+			}
+			// An empty `after` starts at the beginning.
+			first, err := repo.ListBlobs(ctx, nil, 1)
+			if err != nil || len(first) != 1 {
+				t.Fatalf("ListBlobs(nil, 1) = %v, %v", first, err)
 			}
 		})
 	}

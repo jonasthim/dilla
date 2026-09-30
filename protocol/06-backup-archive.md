@@ -75,3 +75,23 @@ first.
    then steps from "download the manifest".
 3. A chunk that fails to decrypt or whose `blob_id` mismatches is reported to the user as a gap
    with its `device_id` and `chunk_seq`; restore continues with the rest.
+
+## Operator note: the instance backup
+
+Informative. Everything above is the per-user backup, which clients encrypt and the instance
+cannot read. `dillad backup` is a different thing: the operator's archive of the whole instance,
+written by the server for `dillad restore`, and it carries the objects above only as the
+ciphertext the instance already stores.
+
+> Backups hold no end-to-end-encrypted plaintext: they contain ciphertext, server-readable channel content, revealed report envelopes, TLS material and the instance keys.
+
+The archive is one gzip-compressed PAX tar whose member order is part of the format (format
+version 1): `dilla-backup/MANIFEST.json` first, then the database snapshot
+(`db/dilla.sqlite`, a `VACUUM INTO` copy, or `db/dilla.dump`, the Postgres logical dump),
+`config/dilla.toml`, `keys/instance.json` (the instance keys of `03-identity.md` and the ACME
+account key), `README.txt`, and the attachment blobs as `blobs/<aa>/<bb>/<blob_id hex>` in byte
+order. The manifest records every other member's path, size and SHA-256 in that order, plus the
+format, goose schema version, engine and instance `generation`; `dillad backup verify` checks all
+of them, and an archive whose schema is newer than the binary is refused. Headers and the gzip
+header carry no host state, so two backups of an unchanged instance at the same instant are
+byte-identical.
