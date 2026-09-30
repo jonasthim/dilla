@@ -11,23 +11,25 @@ import (
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
 // Admin serves the instance-admin routes of protocol/09 § Admin: the blob purge,
-// the audit log and disabling a user. Every route requires an enrolled session
-// whose user carries the instance-admin flag (users.flags bit 0, NV8); Register
-// mounts the handlers bare, as Blobs does, and each checks both itself.
-//
-// GET /v1/admin/diagnostics is not registered here yet: its body is the
-// `dillad doctor` report (P2-5), whose type ops.Report is Plan 2 task 15's.
+// the audit log, disabling a user and the diagnostics report. Every route
+// requires an enrolled session whose user carries the instance-admin flag
+// (users.flags bit 0, NV8); Register mounts the handlers bare, as Blobs does,
+// and each checks both itself.
 type Admin struct {
 	repo    store.Repository
 	store   *blob.Store
 	clk     clock.Clock
 	log     *slog.Logger
 	metrics *obs.Metrics
+	// diagnose runs the `dillad doctor` legs a running instance can answer
+	// (P2-5); nil answers GET /v1/admin/diagnostics with 501.
+	diagnose func(context.Context) ops.Report
 }
 
 // NewAdmin wires the admin routes over the repository and the blob store the
@@ -42,10 +44,52 @@ func (a *Admin) WithMetrics(m *obs.Metrics) *Admin {
 	return a
 }
 
+// WithDiagnostics sets the report GET /v1/admin/diagnostics answers and
+// returns a. The composition root passes the doctor legs that hold inside the
+// serving process (internal/dillad); the ones that need a network probe stay
+// `dillad doctor`'s.
+func (a *Admin) WithDiagnostics(run func(context.Context) ops.Report) *Admin {
+	a.diagnose = run
+	return a
+}
+
 func (a *Admin) Register(mux *server.Mux) {
 	mux.HandleFunc("DELETE /v1/admin/blobs/{blob_id}", a.purgeBlob)
 	mux.HandleFunc("GET /v1/admin/audit", a.audit)
 	mux.HandleFunc("POST /v1/admin/users/{id}/disable", a.disableUser)
+	mux.HandleFunc("GET /v1/admin/diagnostics", a.diagnostics)
+}
+
+// diagnosticsLeg is one element of the diagnostics body: `[name(tstr),
+// status(uint), detail(tstr), fix(tstr)]`, status 0 OK, 1 WARN, 2 FAIL — the
+// data `dillad doctor` prints, in the order the legs ran (P2-5).
+type diagnosticsLeg struct {
+	_      struct{} `cbor:",toarray"`
+	Name   string
+	Status uint64
+	Detail string
+	Fix    string
+}
+
+// diagnostics is GET /v1/admin/diagnostics. The report runs only after the
+// admin gate, so a caller who may not read it cannot make the instance run it.
+func (a *Admin) diagnostics(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.adminSession(r); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if a.diagnose == nil {
+		server.WriteError(w, notImplemented("this instance runs no diagnostics report"))
+		return
+	}
+	report := a.diagnose(r.Context())
+	out := make([]diagnosticsLeg, 0, len(report.Legs))
+	for _, l := range report.Legs {
+		out = append(out, diagnosticsLeg{Name: l.Name, Status: uint64(l.Status), Detail: l.Detail, Fix: l.Fix})
+	}
+	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
+		a.log.WarnContext(r.Context(), "write diagnostics", "err", err)
+	}
 }
 
 // The bounds of the admin bodies.

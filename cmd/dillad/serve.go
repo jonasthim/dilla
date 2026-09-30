@@ -216,10 +216,28 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	sweeper := blob.NewSweeper(repo, blobStore, clock.System(), cfg.Blobs.GCGrace.Value(),
 		cfg.Blobs.GCInterval.Value(), log).WithMetrics(metrics)
 
-	srv, err := dillad.New(ctx, dillad.Options{
+	// The in-process SFU when livekit.enabled (Plan 2 task 16). It starts before the composition
+	// root, which builds the call routes over its token mint and proxies /rtc to it, and it stops
+	// after the drain below — its deferred stop runs after front.close.
+	fd := frontDeps{cfg: cfg, log: log, health: health, metrics: metrics, stdout: stdout}
+	sfuServer, stopSFU, err := startSFU(ctx, fd)
+	if err != nil {
+		return err
+	}
+	defer stopSFU()
+
+	// The composition root mounts every route of both plans. It shares serve's blob store, the one
+	// the sweeper above collects from, and the SFU when there is one: a nil *sfu.Server must not
+	// become a non-nil dillad.SFU.
+	opts := dillad.Options{
 		Config: cfg, Repo: repo, Clock: clock.System(), Log: log,
 		Metrics: metrics, Health: health, ScrapeToken: os.Getenv(metricsTokenEnv),
-	})
+		Blobs: blobStore,
+	}
+	if sfuServer != nil {
+		opts.SFU = sfuServer
+	}
+	srv, err := dillad.New(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("serve: %w: %w", err, exit.Software)
 	}
@@ -229,10 +247,10 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 
 	// The listener tls.mode chooses (Plan 2 task 16): server.plain_listen
 	// behind a proxy, or server.listen through the 443 TLS/STUN demux with
-	// certmagic's certificate; the TURN relay when turn.enabled; and the
-	// in-process SFU when livekit.enabled. front.close runs after the drain
-	// below has finished, and before the repository closes.
-	fr, err := openFront(ctx, runCtx, frontDeps{cfg: cfg, log: log, health: health, metrics: metrics, stdout: stdout})
+	// certmagic's certificate; and the TURN relay when turn.enabled.
+	// front.close runs after the drain below has finished, and before the
+	// repository closes.
+	fr, err := openFront(ctx, runCtx, fd)
 	if err != nil {
 		_ = srv.Shutdown(context.Background())
 		return err

@@ -259,6 +259,27 @@ func (d *DMs) fail(w http.ResponseWriter, r *http.Request, what string, err erro
 	server.WriteError(w, err)
 }
 
+// SyncUserDMs runs SyncGroupMembers over every live DM and group DM userID is a
+// participant of. SyncGroupMembers proposes only a device that holds an
+// available KeyPackage, so a device that had none when its DM's group was
+// populated is left out until something re-syncs the DM; the composition root
+// calls this after every accepted POST /v1/keypackages (Groups.AfterKeyPackages),
+// which is that something. It MUST NOT run inside a Tx. Every DM is attempted;
+// the refusals are returned together.
+func SyncUserDMs(ctx context.Context, repo store.Repository, dsvc DS, userID id.ID, now int64) error {
+	dms, err := repo.ListChannelsForUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, ch := range dms {
+		if err := SyncGroupMembers(ctx, repo, dsvc, ch, now); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // SyncGroupMembers brings the groups bound to ch in line with channel_members:
 // in each open text group, every device of an eligible user that holds an
 // available KeyPackage and is neither a live leaf nor the target of an

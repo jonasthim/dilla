@@ -18,6 +18,7 @@ import (
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -499,5 +500,59 @@ func TestAPurgeIsCounted(t *testing.T) {
 	}
 	if got != 1 {
 		t.Fatalf("dilla_blob_purges_total = %v, want 1", got)
+	}
+}
+
+type diagnosticsLeg struct {
+	_      struct{} `cbor:",toarray"`
+	Name   string
+	Status uint64
+	Detail string
+	Fix    string
+}
+
+// GET /v1/admin/diagnostics answers the doctor report the composition root runs (P2-5):
+// [[name, status, detail, fix]] in leg order, status 0 OK, 1 WARN, 2 FAIL. It is instance-admin
+// only, and an Admin built without a report answers 501 rather than an empty report that would
+// read as "nothing checked, nothing wrong".
+func TestDiagnosticsAnswersTheDoctorReportToAnInstanceAdmin(t *testing.T) {
+	e, _, tok := channelEnv(t)
+	bs, err := blob.Open(t.TempDir(), "fs")
+	if err != nil {
+		t.Fatalf("blob.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = bs.Close() })
+	calls := 0
+	api.NewAdmin(e.Repo, bs, e.Clk, slog.New(slog.DiscardHandler)).
+		WithDiagnostics(func(context.Context) ops.Report {
+			calls++
+			return ops.Report{Legs: []ops.Leg{
+				{Name: "database", Status: ops.Green, Detail: "schema version 12"},
+				{Name: "blobs", Status: ops.Red, Detail: "1 missing file", Fix: "dillad admin blob purge"},
+			}}
+		}).Register(e.Mux)
+	adminTok := e.NewInstanceAdmin("root")
+
+	if status, body := e.Do(http.MethodGet, "/v1/admin/diagnostics", tok, nil); status != http.StatusForbidden ||
+		e.ErrCode(body) != "E_FORBIDDEN" || calls != 0 {
+		t.Fatalf("diagnostics for a non-admin = %d (%d runs), want 403 before the report runs", status, calls)
+	}
+	status, body := e.Do(http.MethodGet, "/v1/admin/diagnostics", adminTok, nil)
+	if status != http.StatusOK {
+		t.Fatalf("diagnostics = %d (%x)", status, body)
+	}
+	var legs []diagnosticsLeg
+	if err := cborx.Unmarshal(body, &legs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(legs) != 2 || legs[0].Name != "database" || legs[0].Status != 0 || legs[0].Detail != "schema version 12" ||
+		legs[1].Name != "blobs" || legs[1].Status != 2 || legs[1].Fix != "dillad admin blob purge" {
+		t.Fatalf("diagnostics = %+v", legs)
+	}
+
+	bare := newEnv(t)
+	api.NewAdmin(bare.Repo, bs, bare.Clk, slog.New(slog.DiscardHandler)).Register(bare.Mux)
+	if status, _ := bare.Do(http.MethodGet, "/v1/admin/diagnostics", bare.NewInstanceAdmin("root"), nil); status != http.StatusNotImplemented {
+		t.Fatalf("diagnostics with no report wired = %d, want 501", status)
 	}
 }

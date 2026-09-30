@@ -27,9 +27,10 @@ import (
 const handshakeTimeout = 10 * time.Second
 
 // front is what tls.mode puts in front of the composition root's handler: the
-// listener http.Server serves, the TURN relay when turn.enabled, the ACME
-// state in the direct-TLS modes and the in-process SFU when livekit.enabled.
-// close releases all of it; it runs after the HTTP drain.
+// listener http.Server serves, the TURN relay when turn.enabled and the ACME
+// state in the direct-TLS modes. close releases all of it; it runs after the
+// HTTP drain. The in-process SFU is started before the composition root
+// (startSFU), because the call routes and /rtc are built over it.
 type front struct {
 	http    net.Listener
 	closers []func()
@@ -65,21 +66,19 @@ type frontDeps struct {
 //     the background once the listener is up, because TLS-ALPN-01 is answered
 //     on it; the tls readiness gate is red until one is held.
 //
-// The livekit and tls gates are touched only when their subsystem is
-// configured here; otherwise they keep what the composition root set.
+// The tls gate is touched only in the direct-TLS modes; otherwise it keeps
+// what the composition root set.
 func openFront(ctx, runCtx context.Context, d frontDeps) (*front, error) {
 	f := &front{}
-	err := startSFU(ctx, d, f)
-	if err == nil {
-		if d.cfg.BehindProxy() {
-			err = openBehindProxy(ctx, d, f)
-		} else {
-			err = openDirectTLS(ctx, runCtx, d, f)
-		}
+	var err error
+	if d.cfg.BehindProxy() {
+		err = openBehindProxy(ctx, d, f)
+	} else {
+		err = openDirectTLS(ctx, runCtx, d, f)
 	}
 	if err != nil {
-		// Whatever did start is released: a half-open front would leave the SFU's
-		// ports or the demux's listener bound past a failed start.
+		// Whatever did start is released: a half-open front would leave the TURN
+		// relay or the demux's listener bound past a failed start.
 		f.close()
 		return nil, err
 	}
@@ -231,19 +230,24 @@ func startTURN(d frontDeps, f *front, ln net.Listener) error {
 // the SFU accepts connections. A failure stops serve: an instance configured
 // for voice that silently has none is worse than one that says why it did not
 // start.
-func startSFU(ctx context.Context, d frontDeps, f *front) error {
+//
+// It runs before the composition root, which builds the call routes over the
+// SFU's token mint and proxies /rtc to it, and returns the running SFU (nil
+// when livekit.enabled is false) with the function that stops it; serve runs
+// that after the HTTP drain.
+func startSFU(ctx context.Context, d frontDeps) (*sfu.Server, func(), error) {
 	lk := d.cfg.LiveKit
 	if !lk.Enabled {
-		return nil
+		return nil, func() {}, nil
 	}
 	if lk.Mode != "in_process" {
-		return fmt.Errorf("serve: livekit.mode %q is not supported; the one mode is in_process: %w", lk.Mode, exit.Config)
+		return nil, nil, fmt.Errorf("serve: livekit.mode %q is not supported; the one mode is in_process: %w", lk.Mode, exit.Config)
 	}
 	gate := d.health.Gate("livekit")
 	gate.Set(false, "starting the in-process SFU")
 	body, err := os.ReadFile(lk.APISecretFile)
 	if err != nil {
-		return fmt.Errorf("serve: livekit.api_secret_file: %w: %w", err, exit.Config)
+		return nil, nil, fmt.Errorf("serve: livekit.api_secret_file: %w: %w", err, exit.Config)
 	}
 	nodeIP := lk.NodeIP
 	if nodeIP == "" {
@@ -267,15 +271,14 @@ func startSFU(ctx context.Context, d frontDeps, f *front) error {
 	})
 	if err != nil {
 		gate.Set(false, err.Error())
-		return fmt.Errorf("serve: %w: %w", err, exit.Unavailable)
+		return nil, nil, fmt.Errorf("serve: %w: %w", err, exit.Unavailable)
 	}
 	gate.Set(true, "in-process SFU on "+s.URL())
-	f.closers = append(f.closers, func() {
+	return s, func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		if err := s.Stop(stopCtx); err != nil && !errors.Is(err, context.Canceled) {
 			d.log.Warn("stopping the SFU", "err", err)
 		}
-	})
-	return nil
+	}, nil
 }

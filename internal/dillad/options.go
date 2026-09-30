@@ -10,6 +10,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -35,10 +36,19 @@ type Options struct {
 	Health      *obs.Health      // optional: obs.NewHealth(Clock)
 	ScrapeToken string
 
-	// Extra runs after the 1a routes are registered and is how parts 1b and 2
-	// mount their handler groups. Each function gets the same *server.Mux the
-	// composition root built (deviation ID14).
+	// Extra runs after every route New mounts itself — Plan 1's and Plan 2's —
+	// and gets the same *server.Mux (deviation ID14). The production binary
+	// passes none; it is the seam a test mounts a route of its own through.
 	Extra []func(*server.Mux)
+
+	// Plan 2. Blobs is the attachment store the blob and admin routes read
+	// and unlink from; nil means New opens blobs.dir itself and closes it on
+	// Shutdown, while a store passed in stays the caller's (`dillad serve`
+	// passes the one its garbage collector sweeps). SFU is the in-process
+	// LiveKit serve started when livekit.enabled; nil means no SFU, so /rtc is
+	// not mounted and a call that would open answers 501.
+	Blobs *blob.Store
+	SFU   SFU
 
 	// Part 1b (deviation B17). Wasm is the wasi runtime the delivery service
 	// validates every handshake in; nil means New compiles one from CorePath

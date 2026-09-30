@@ -112,6 +112,14 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	// An instance with livekit.enabled = false has no SFU to mint a room token
+	// from. The route is still mounted, so every gate above answers as it does
+	// elsewhere; a call that would open is 501, before any voice session is
+	// recorded for a room nobody can join.
+	if h.sfu == nil {
+		server.WriteError(w, notImplemented("this instance runs no SFU (livekit.enabled is false)"))
+		return
+	}
 
 	// R9: the call is keyed by the call group's call id. PutVoiceSession leaves a
 	// live call as it is, so the row read back afterwards is the one call every

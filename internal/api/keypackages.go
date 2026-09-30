@@ -12,6 +12,7 @@ package api
 // answers E_PROVISIONAL_OUTSIDE_PAIRING when it reaches past it.
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -71,6 +72,11 @@ func (h *Groups) publishKeyPackages(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := server.EncodeBody(w, http.StatusCreated, publishResponse{Count: uint64(n)}); err != nil { //nolint:gosec // G115: a count of stored rows, never negative
 		server.WriteError(w, err)
+		return
+	}
+	if h.AfterKeyPackages != nil {
+		user, device := session.UserID, session.DeviceID
+		h.runAfter(w, r, func(ctx context.Context) { h.AfterKeyPackages(ctx, user, device) })
 	}
 }
 

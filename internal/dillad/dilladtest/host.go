@@ -209,6 +209,9 @@ func hostConfig(o HostOptions) *config.Config {
 		c.Log.Level = "warn"
 	}
 	c.Limits.Rate.Enabled = false
+	// The harness runs no TURN relay, and writes no turn.shared_secret_file for one: the call
+	// routes New mounts would otherwise read that file to mint relay credentials.
+	c.TURN.Enabled = false
 	c.Derive()
 	return c
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // callResponse is POST /v1/channels/{id}/calls's five elements.
@@ -247,6 +249,31 @@ func TestASFUFailureIsAnInternalError(t *testing.T) {
 	sfu.fail = errors.New("sfu down")
 	if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{}); status != http.StatusInternalServerError {
 		t.Fatalf("an SFU failure = %d, want 500", status)
+	}
+}
+
+// An instance with no SFU (livekit.enabled = false) still mounts the call routes, because the
+// composition root mounts every route protocol/09 lists: a start that passes every gate is then 501
+// and records no voice session, since there is no room to hand out; a request refused by an earlier
+// gate keeps its own answer.
+func TestAnInstanceWithoutAnSFUAnswersNotImplemented(t *testing.T) {
+	e, cid, tok := channelEnv(t)
+	ch, _, status := newChannel(t, e, cid, tok, 1 /* voice */, 1, 2, "voice")
+	if status != http.StatusCreated {
+		t.Fatalf("voice channel = %d", status)
+	}
+	api.NewCalls(e.Repo, api.NewResolver(e.Repo), nil, api.CallsConfig{}, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
+	group := seedCallGroup(t, e, ch, cid, callGroupEpoch)
+	if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{}); status != http.StatusForbidden {
+		t.Fatalf("a device that is no leaf = %d, want the leaf gate's 403", status)
+	}
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if status != http.StatusNotImplemented {
+		t.Fatalf("a call on an instance with no SFU = %d (%x), want 501", status, body)
+	}
+	if _, err := e.Repo.GetVoiceSession(t.Context(), ch); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a refused start recorded a voice session: %v", err)
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -51,6 +52,11 @@ type Server struct {
 	// issue proposals through.
 	groups *api.Groups
 
+	// blobs is the attachment store Plan 2's blob and admin routes use; ownsBlobs records that New
+	// opened it, so Shutdown closes it.
+	blobs     *blob.Store
+	ownsBlobs bool
+
 	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
 	// Shutdown calls before it stops the gateway.
 	throttle    *auth.Throttle
@@ -73,6 +79,16 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		return nil, fmt.Errorf("dillad: read instance row (has `dillad init` run?): %w", err)
 	}
 	keys, err := instanceKeys(instance)
+	if err != nil {
+		return nil, err
+	}
+	// Every K_frank the instance has held, current first (Plan 2 task 17): the readable routes
+	// frank under the current one and the report route verifies under whichever one a tag names.
+	franking, err := frankingKeys(instance)
+	if err != nil {
+		return nil, err
+	}
+	calls, err := callsConfig(o.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -128,10 +144,22 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 		ownsWasm = true
 	}
+	blobs, ownsBlobs := o.Blobs, false
 	closeWasmOnError := func() {
 		if ownsWasm {
 			_ = wasm.Close(context.Background())
 		}
+		if ownsBlobs {
+			_ = blobs.Close()
+		}
+	}
+	if blobs == nil {
+		blobs, err = blob.Open(o.Config.Blobs.Dir, o.Config.Blobs.Backend)
+		if err != nil {
+			closeWasmOnError()
+			return nil, fmt.Errorf("dillad: open the blob store %s: %w", o.Config.Blobs.Dir, err)
+		}
+		ownsBlobs = true
 	}
 
 	// The gateway, then the delivery service: ds holds *gateway.Gateway, and
@@ -256,6 +284,16 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			o.Log.ErrorContext(ctx, "populating a registered group failed", "group", groupID, "err", err)
 		}
 	}
+	// A device that published its KeyPackages may now be Added where it could not be before: a
+	// DM's group is populated only with devices that hold one (Plan 2 task 6). The hook runs after
+	// the 201, as AfterRegister does, and a failure is logged; the DM's next membership change
+	// re-derives it.
+	groups.AfterKeyPackages = func(ctx context.Context, userID, _ id.ID) {
+		if err := api.SyncUserDMs(ctx, o.Repo, delivery, userID, o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "bringing a user's DMs in line after a KeyPackage publish failed",
+				"user", userID, "err", err)
+		}
+	}
 	groups.Register(mux, sessions)          // rows 1-3
 	groups.RegisterSequencer(mux, sessions) // rows 4-7, 19
 	groups.RegisterRecovery(mux, sessions)  // rows 8-9
@@ -266,6 +304,21 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		MaxCiphertextBytes: o.Config.Limits.MaxCiphertextBytes,
 		Limiter:            limiter,
 	}).Register(mux, sessions) // rows 11, 17, 18 and the cursor
+
+	// Plan 2: communities, channels and their members, roles, bans, community invites, DMs,
+	// readable channels, blobs, reports, calls and the admin routes (routes.go), behind the same
+	// session middleware and [limits.rate] meter as the routes above; then LiveKit's signalling
+	// paths when this process runs an SFU.
+	mountPlanTwo(mux, planTwo{
+		o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
+		blobs: blobs, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
+	})
+	if o.SFU != nil {
+		if err := mountRTC(mux, o.SFU, o.Config.Server.TrustedProxyCIDRs); err != nil {
+			closeWasmOnError()
+			return nil, err
+		}
+	}
 
 	if err := delivery.Start(ctx); err != nil {
 		closeWasmOnError()
@@ -309,6 +362,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
 		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery, groups: groups,
+		blobs: blobs, ownsBlobs: ownsBlobs,
 		throttle: throttle, limiter: limiter,
 	}
 	// One http.Server for whichever listener tls.mode chooses (Plan 2 task 16):
@@ -328,8 +382,11 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// The composition root starts neither the SFU nor the ACME client: `dillad serve` does, and
 	// sets these two gates from the subsystems it starts — only when they are configured (Plan 2
 	// task 16). An in-process host (the test harness, dilladtest) runs neither, and left red the
-	// gates would keep its /readyz at 503 forever.
-	o.Health.Gate("livekit").Set(true, "not started by the composition root")
+	// gates would keep its /readyz at 503 forever. An SFU handed in through Options.SFU was started
+	// by serve, which has already set its gate.
+	if o.SFU == nil {
+		o.Health.Gate("livekit").Set(true, "not started by the composition root")
+	}
 	o.Health.Gate("tls").Set(true, "not started by the composition root")
 	// The gateway's maintenance loop: 4009 for an overdue heartbeat and the resume window's
 	// expiry, every heartbeat interval on the instance clock, with the login throttle, the rate
@@ -433,6 +490,11 @@ func (s *Server) shutdown(ctx context.Context) error {
 	if s.ownsWasm {
 		if werr := s.wasm.Close(ctx); werr != nil {
 			keep(fmt.Errorf("dillad: close the wasm runtime: %w", werr))
+		}
+	}
+	if s.ownsBlobs {
+		if berr := s.blobs.Close(); berr != nil {
+			keep(fmt.Errorf("dillad: close the blob store: %w", berr))
 		}
 	}
 	if s.o.closeRepo {

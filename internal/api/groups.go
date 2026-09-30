@@ -47,8 +47,14 @@ type Groups struct {
 	// outside any transaction; a failure is the hook's to log, because the registration itself has
 	// succeeded.
 	AfterRegister func(ctx context.Context, groupID id.ID)
+	// AfterKeyPackages, when set, runs after the delivery service stored a device's KeyPackages,
+	// the same way AfterRegister does: after the 201, on its own goroutine, under a context the
+	// request's cancellation does not reach, drained by Drain. SyncGroupMembers proposes only a
+	// device that holds an available KeyPackage, so the composition root uses it to bring the
+	// device's DMs in line once it has one (Plan 2 task 6).
+	AfterKeyPackages func(ctx context.Context, userID, deviceID id.ID)
 
-	// afterRegister counts the AfterRegister runs still in flight, for Drain.
+	// afterRegister counts the AfterRegister and AfterKeyPackages runs still in flight, for Drain.
 	afterRegister inFlight
 
 	// commitsInFlight holds the devices with a POST /commit upload in progress (commitguard.go).
@@ -182,20 +188,26 @@ func (h *Groups) create(w http.ResponseWriter, r *http.Request) {
 	// proposals and a commit_needed election out to the creator, which must not overtake the
 	// answer that tells it the group exists, and populating a large channel is work the
 	// registrant does not wait for. A writer that cannot flush still answers when the handler
-	// returns, which is at once, because the hook runs on its own goroutine.
-	_ = http.NewResponseController(w).Flush()
-	// The request's cancellation must not reach the hook: the group exists whether or not the
-	// client is still connected.
-	ctx := context.WithoutCancel(r.Context())
+	// returns, which is at once, because the hook runs on its own goroutine. The request's
+	// cancellation must not reach the hook: the group exists whether or not the client is still
+	// connected.
 	groupID := out.GroupID
+	h.runAfter(w, r, func(ctx context.Context) { h.AfterRegister(ctx, groupID) })
+}
+
+// runAfter runs hook on a goroutine counted for Drain, once the answer is flushed, under a context
+// the request's cancellation does not reach.
+func (h *Groups) runAfter(w http.ResponseWriter, r *http.Request, hook func(ctx context.Context)) {
+	_ = http.NewResponseController(w).Flush()
+	ctx := context.WithoutCancel(r.Context())
 	h.afterRegister.start()
 	go func() {
 		defer h.afterRegister.done()
-		h.AfterRegister(ctx, groupID)
+		hook(ctx)
 	}()
 }
 
-// Drain waits until every AfterRegister run the handler started has returned, or until ctx ends,
+// Drain waits until every AfterRegister and AfterKeyPackages run the handler started has returned, or until ctx ends,
 // whichever is first; it answers ctx's error in the second case. Shutdown calls it after the HTTP
 // server has stopped taking requests (so no new run can start) and before the delivery service
 // stops, because a run is still issuing that service's proposals.

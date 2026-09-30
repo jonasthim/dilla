@@ -106,6 +106,39 @@ func TestAGroupDMCapsAtItsConfiguredSize(t *testing.T) {
 	}
 }
 
+// A device that had no KeyPackage when its DM's group was populated is proposed once it publishes
+// one: the composition root runs SyncUserDMs for the publishing user after every accepted POST
+// /v1/keypackages (Plan 2 task 6), over every DM that user is a participant of, and a DM the user
+// is not in is left alone.
+func TestSyncUserDMsProposesADeviceThatHasSincePublished(t *testing.T) {
+	e, dsvc := dmEnv(t)
+	alice, aliceTok := e.NewUser("alice")
+	bob, _ := e.NewUser("bob")
+	_, carolTok := e.NewUser("carol")
+	late := seedDevices(t, e, bob, 1)[0]
+	ch, _ := openDM(t, e, aliceTok, bob)
+	group := seedTextGroup(t, e, ch, id.ID{})
+	other, _ := openDM(t, e, carolTok, alice)
+	seedTextGroup(t, e, other, id.ID{})
+	if err := api.SyncGroupMembers(t.Context(), e.Repo, dsvc, mustChannel(t, e, ch), e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("SyncGroupMembers: %v", err)
+	}
+	for _, a := range dsvc.Adds {
+		if a.Device == late {
+			t.Fatal("a device with no KeyPackage was proposed")
+		}
+	}
+	dsvc.Reset()
+
+	seedKeyPackage(t, e, late)
+	if err := api.SyncUserDMs(t.Context(), e.Repo, dsvc, bob, e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("SyncUserDMs: %v", err)
+	}
+	if len(dsvc.Adds) != 1 || dsvc.Adds[0].Group != group || dsvc.Adds[0].Device != late {
+		t.Fatalf("Adds = %+v, want exactly bob's late device into the DM's group", dsvc.Adds)
+	}
+}
+
 func TestEveryRecipientDeviceIsAddedAndGetsAWelcome(t *testing.T) {
 	e, dsvc := dmEnv(t)
 	_, aliceTok := e.NewUser("alice")

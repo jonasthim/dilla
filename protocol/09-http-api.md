@@ -527,8 +527,12 @@ who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown one.
   `404 E_NOT_FOUND`.
 - **The token.** `token` is a LiveKit room-join JWT for the call's room, valid for one hour, whose
   identity is the device id, with publish, subscribe and data grants. `livekit_url` is where the
-  client connects with it. A call gets a fresh room each time it is opened, so a device of the
-  previous call cannot remain in the next one.
+  client connects with it: `wss://` and the instance's own host (its public IP in `acme_ip`), whose
+  `/rtc` paths the instance proxies to its in-process SFU, which listens only on
+  `livekit.bind_address`. A call gets a fresh room each time it is opened, so a device of the
+  previous call cannot remain in the next one. An instance that runs no SFU (`livekit.enabled =
+  false`) still answers every refusal above, and a start that passes them is
+  `501 E_INTERNAL` with no call recorded.
 - **Relays.** `ice_servers` is the `RTCIceServer` list for the client's peer connection: one entry
   when the instance runs its TURN relay, with a fresh ephemeral credential — `username` is
   `"<expiry>:<device_id>"` (unix seconds, `turn.credential_ttl` ahead) and `credential` is
@@ -611,8 +615,15 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
   session of every device of that user; `[0]` clears `disabled_at`. Any other value is
   `400 E_INVALID_REQUEST`, an unknown user `404 E_NOT_FOUND`. The audit action is `user.disable`
   or `user.enable` with the user id in hex as `target`.
-- `GET /v1/admin/diagnostics` answers the `dillad doctor` report; its body is defined with the
-  report.
+- **Diagnostics.** `GET /v1/admin/diagnostics` answers `200 [[name(tstr), status(uint),
+  detail(tstr), fix(tstr)]]`, the `dillad doctor` legs the running instance can answer itself,
+  under doctor's names and in doctor's order: `database` (the schema version), `data_dir` (its
+  mode), `wasi` (the core the delivery service validates in), `udp` and `blobs` (every referenced
+  file present, no stray files). `status` is 0 OK, 1 WARN, 2 FAIL; `fix` is the operator's next
+  step or `""`. The legs that probe the network or need a process of their own — the config
+  parse, the SQLite pragmas, clock skew, the certificate and a TURN allocation — are only
+  `dillad doctor`'s, so an admin request never makes the instance dial out. The report runs only
+  after the admin check.
 
 Informative: the operator's own surface is `dillad admin <noun> <verb>`, run at a shell on the
 instance's host and acting as the operator, who is not a `users` row. `user list|show|disable|
