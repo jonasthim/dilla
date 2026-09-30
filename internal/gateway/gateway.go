@@ -393,7 +393,8 @@ func (g *Gateway) suspend(c *conn) {
 	// WARN, not INFO: a suspended connection stops receiving fan-out, so when a device later
 	// reports "nothing arrived" this line is the one that says the instance stopped sending.
 	if g.opts.Log != nil {
-		g.opts.Log.Warn("gateway: connection suspended", "device", c.deviceID.String()[:8],
+		// The FULL id: harness device ids share a zero prefix, so eight digits name no one.
+		g.opts.Log.Warn("gateway: connection suspended", "device", c.deviceID.String(),
 			"resumable", resumable)
 	}
 }

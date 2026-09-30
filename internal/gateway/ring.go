@@ -90,6 +90,17 @@ func (r *ring) replayable(n uint64) ([]byte, bool) {
 	return nil, false
 }
 
+// stats reports the ring's size and its lowest and highest n as they stand, WITHOUT evicting: a
+// diagnostic read must not change what a resume would replay.
+func (r *ring) stats() (frames, bytes int, floor, top uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.entries) > 0 {
+		floor, top = r.entries[0].n, r.entries[len(r.entries)-1].n
+	}
+	return len(r.entries), r.bytes, floor, top
+}
+
 // since returns every frame after lastN, oldest first.
 func (r *ring) since(lastN uint64) [][]byte {
 	r.mu.Lock()

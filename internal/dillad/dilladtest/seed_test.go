@@ -306,6 +306,46 @@ func TestTheStateRouteCarriesTheListsAndTheExternalSenderKey(t *testing.T) {
 	}
 }
 
+// GET /debug/conn answers both sides of one device in one group; for a device and a group the
+// instance has never seen, that is no connection, no fan-out membership and no group. A malformed
+// id is a 400.
+func TestTheConnRouteReportsBothSidesOfADeviceInAGroup(t *testing.T) {
+	h := newHost(t)
+	control := httptest.NewServer(dilladtest.ControlHandler(h))
+	t.Cleanup(control.Close)
+
+	device, group := id.New(), id.New()
+	res, err := httpGet(t, control.URL+"/debug/conn?device="+device.String()+"&group="+group.String())
+	if err != nil {
+		t.Fatalf("GET /debug/conn: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	var report dilladtest.ConnReport
+	if err := json.NewDecoder(res.Body).Decode(&report); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	gw := report.Gateway
+	if gw.Device != device.String() || gw.Group != group.String() || len(gw.Conns) != 0 ||
+		gw.InMembers || gw.Leaf != nil {
+		t.Errorf("gateway side = %+v, want the ids echoed and nothing else", gw)
+	}
+	if report.DS.Found || len(report.DS.Leaves) != 0 {
+		t.Errorf("ds side = %+v, want an unknown group", report.DS)
+	}
+
+	bad, err := httpGet(t, control.URL+"/debug/conn?device=zz&group="+group.String())
+	if err != nil {
+		t.Fatalf("GET /debug/conn: %v", err)
+	}
+	defer bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a malformed device id: status = %d, want 400", bad.StatusCode)
+	}
+}
+
 // httpGet is http.Get bound to the test's context.
 func httpGet(t *testing.T, url string) (*http.Response, error) {
 	t.Helper()

@@ -13,6 +13,7 @@ import (
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
@@ -308,7 +309,96 @@ func ControlHandler(h *Host) http.Handler {
 		}
 		writeJSON(w, state)
 	})
+	mux.HandleFunc("GET /debug/conn", func(w http.ResponseWriter, r *http.Request) {
+		var ids [2]id.ID
+		for i, key := range []string{"device", "group"} {
+			parsed, err := id.Parse(r.URL.Query().Get(key))
+			if err != nil {
+				http.Error(w, key+": "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			ids[i] = parsed
+		}
+		report, err := Conn(r.Context(), h.Server(), ids[0], ids[1])
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, report)
+	})
 	return mux
+}
+
+// ConnReport is what GET /debug/conn answers: both sides of one device in one group, for a
+// scenario whose client stopped receiving with its socket open. Gateway is the live connections'
+// state and the fan-out list (gateway.Gateway.Debug); DS is what the delivery service's store says
+// the device should have been sent.
+type ConnReport struct {
+	Gateway gateway.DebugReport `json:"gateway"`
+	DS      ConnDSReport        `json:"ds"`
+}
+
+// ConnDSReport is the delivery service's side of ConnReport. Found is false when the group does
+// not exist, and every other field is then zero.
+type ConnDSReport struct {
+	Found bool   `json:"found"`
+	Epoch uint64 `json:"epoch"`
+	Seq   uint64 `json:"seq"`
+	// Leaves is every mls_members row of the device in the group, removed ones included.
+	Leaves []ConnLeaf `json:"leaves"`
+	// Outstanding counts the group's non-void proposals at its current epoch.
+	Outstanding int `json:"outstanding"`
+	// CursorSeq and CursorEpoch are the cursor the device last acknowledged (zero when it has
+	// acknowledged nothing).
+	CursorSeq   uint64 `json:"cursor_seq"`
+	CursorEpoch uint64 `json:"cursor_epoch"`
+}
+
+// ConnLeaf is one mls_members row.
+type ConnLeaf struct {
+	Leaf         uint32  `json:"leaf"`
+	AddedEpoch   uint64  `json:"added_epoch"`
+	RemovedEpoch *uint64 `json:"removed_epoch"`
+}
+
+// Conn assembles a ConnReport. It only reads.
+func Conn(ctx context.Context, s *dillad.Server, device, group id.ID) (ConnReport, error) {
+	out := ConnReport{Gateway: s.Gateway().Debug(device, group), DS: ConnDSReport{Leaves: []ConnLeaf{}}}
+	repo := s.Repo()
+	row, err := repo.GetGroup(ctx, group)
+	if errors.Is(err, store.ErrNotFound) {
+		return out, nil
+	}
+	if err != nil {
+		return out, err
+	}
+	out.DS.Found, out.DS.Epoch, out.DS.Seq = true, row.Epoch, row.Seq
+	members, err := repo.ListMembers(ctx, group)
+	if err != nil {
+		return out, err
+	}
+	for _, m := range members {
+		if m.DeviceID == device {
+			out.DS.Leaves = append(out.DS.Leaves, ConnLeaf{
+				Leaf: m.LeafIndex, AddedEpoch: m.AddedEpoch, RemovedEpoch: m.RemovedEpoch,
+			})
+		}
+	}
+	proposals, err := repo.ListProposals(ctx, group, row.Epoch, false)
+	if err != nil {
+		return out, err
+	}
+	for _, p := range proposals {
+		if p.VoidAt == nil {
+			out.DS.Outstanding++
+		}
+	}
+	cursor, err := repo.GetCursor(ctx, device, group)
+	if err != nil {
+		return out, err
+	}
+	out.DS.CursorSeq, out.DS.CursorEpoch = cursor.LastSeq, cursor.LastEpoch
+	return out, nil
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {

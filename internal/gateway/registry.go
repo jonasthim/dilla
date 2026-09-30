@@ -131,6 +131,16 @@ func (r *registry) all() []*conn {
 	return out
 }
 
+// memberOf reports, for Gateway.Debug, whether device is in the group's fan-out list, how long
+// that list is, and the leaf index recorded for the device (ok false when none is).
+func (r *registry) memberOf(g, device id.ID) (in bool, size int, leaf uint32, ok bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	members := r.members[g]
+	leaf, ok = r.leaves[g][device]
+	return slices.Contains(members, device), len(members), leaf, ok
+}
+
 func (r *registry) setMembers(g id.ID, devices []id.ID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

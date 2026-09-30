@@ -1478,9 +1478,23 @@ impl DeliveryService for HttpDs {
     /// what the socket held when the device went offline stays queued, and what the instance
     /// sends meanwhile is fetched by the catch-up when the device comes back, which is
     /// `DsStub::drain`'s "an offline device's queue is left untouched".
+    /// The client's side, then the instance's (`GET /debug/conn` on the test host's control
+    /// listener): the device's live connections with their writers' enqueued and written counts,
+    /// its place in the group's fan-out list, and the group's epoch and seq. A failed
+    /// `expect_decrypts` prints both, so a device that stopped receiving says which side stopped.
+    /// Without a control listener the instance's side is the reason it is missing.
     fn diagnostics(&self, g: &GroupId) -> String {
+        let server = control_get(&format!(
+            "/debug/conn?device={}&group={}",
+            self.device.to_hex(),
+            hex::encode(g)
+        ))
+        .map_or_else(
+            |e| format!("unavailable: {e}"),
+            |body| String::from_utf8_lossy(&body).trim().to_owned(),
+        );
         format!(
-            "socket {}, reconnects {}, lost {:?}, frames accepted {}, delivered seq for the group {:?}, last n {}",
+            "socket {}, reconnects {}, lost {:?}, frames accepted {}, delivered seq for the group {:?}, last n {}; server {server}",
             if self.ws.is_some() { "open" } else { "closed" },
             self.reconnects,
             self.lost,

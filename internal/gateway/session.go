@@ -610,7 +610,7 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 		typ, b, err := s.read(ctx)
 		if err != nil {
 			if g.opts.Log != nil {
-				g.opts.Log.Warn("gateway: read loop ended", "device", c.deviceID.String()[:8],
+				g.opts.Log.Warn("gateway: read loop ended", "device", c.deviceID.String(),
 					"err", err.Error())
 			}
 			return
