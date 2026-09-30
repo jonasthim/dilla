@@ -266,3 +266,74 @@ func TestPostgresRestoreLoadsTheDumpAndArmsTheHeal(t *testing.T) {
 		t.Fatal("the empty database did not receive the archived instance")
 	}
 }
+
+// The load and the heal are ONE transaction on Postgres: a heal that fails
+// after the dump has loaded leaves the database exactly as it was, never the
+// archive at its old generation with no group epoch-unknown (invariant 11).
+func TestPostgresAFailedHealLeavesTheDatabaseUntouched(t *testing.T) {
+	base := os.Getenv("DILLA_TEST_PG")
+	if base == "" {
+		t.Skip("DILLA_TEST_PG is unset: Postgres tests run in CI's service container")
+	}
+	ctx := t.Context()
+	dsn := freshPostgres(t, base)
+	db, err := postgres.Open(dsn, 4, time.Hour)
+	if err != nil {
+		t.Fatalf("postgres Open: %v", err)
+	}
+	p, err := goose.NewProvider(goose.DialectPostgres, db, pgmigrations.FS)
+	if err != nil {
+		t.Fatalf("postgres provider: %v", err)
+	}
+	if _, err := p.Up(ctx); err != nil {
+		t.Fatalf("postgres up: %v", err)
+	}
+	repo := postgres.New(db)
+	t.Cleanup(func() { _ = repo.Close() })
+	clk := clock.NewFake(time.Unix(1_790_000_000, 0))
+	now := clk.Now().Unix()
+	if err := repo.CreateInstance(ctx, store.InstanceRow{
+		InstanceID: id.New(), ExternalSenderKeyID: id.New(), KeyHistory: []byte{0x82, 0x01, 0x80},
+		FrankingKeyID: id.New(), Generation: 1, PolicyVersion: 1, Created: now,
+	}); err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	for i := range 3 {
+		if err := repo.Audit(ctx, store.AuditRow{Action: "pg.seed", Target: strconv.Itoa(i), At: now}); err != nil {
+			t.Fatalf("Audit: %v", err)
+		}
+	}
+	c := postgresConfig(t, dsn)
+	var buf bytes.Buffer
+	if _, err := ops.Backup(ctx, c, repo, ops.BackupOptions{Out: &buf, Clock: clk}); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	for i := range 4 {
+		if err := repo.Audit(ctx, store.AuditRow{Action: "pg.after", Target: strconv.Itoa(i), At: now}); err != nil {
+			t.Fatalf("Audit: %v", err)
+		}
+	}
+
+	ops.SetBeforeHealCommit(t, func() error { return errors.New("injected: the heal transaction fails") })
+	_, err = ops.Restore(ctx, c, ops.RestoreOptions{From: bytes.NewReader(buf.Bytes()), Clock: clk})
+	if err == nil || !strings.Contains(err.Error(), "injected") {
+		t.Fatalf("Restore with a failing heal = %v, want the injected error", err)
+	}
+	if strings.Contains(err.Error(), "already holds the archive") {
+		t.Fatalf("a failed heal claims the database was replaced: %v", err)
+	}
+	audit, err := repo.ListAudit(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(audit) != 7 {
+		t.Fatalf("%d audit rows after a failed restore, want the live 7: the load committed without its heal", len(audit))
+	}
+	in, err := repo.GetInstance(ctx)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if in.Generation != 1 {
+		t.Fatalf("generation = %d after a failed restore, want 1", in.Generation)
+	}
+}

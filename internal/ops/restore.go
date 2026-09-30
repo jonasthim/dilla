@@ -88,6 +88,10 @@ var afterSwap func(dataDir string)
 // make one fail.
 var swapRename = os.Rename
 
+// beforeHealCommit is a test hook: it runs as the heal transaction's last
+// statement, and an error it returns rolls the transaction back.
+var beforeHealCommit func() error
+
 // maxKeysBytes bounds keys/instance.json, which Restore reads into memory.
 const maxKeysBytes = 16 << 20
 
@@ -783,15 +787,14 @@ func (r *restorer) apply(ctx context.Context) error {
 
 // applyPostgres brings the live database to the archive's schema (an empty
 // database is migrated up to it; a newer one is refused, since a binary COPY
-// cannot land in columns it does not name), loads the dump in one transaction
-// and runs the heal transaction on it.
+// cannot land in columns it does not name), then loads the dump and arms the
+// heal in ONE transaction.
 func (r *restorer) applyPostgres(ctx context.Context) error {
 	db, err := postgres.Open(r.cfg.DB.DSN, r.cfg.DB.MaxOpenConns, r.cfg.DB.ConnMaxLifetime.Value())
 	if err != nil {
 		return fmt.Errorf("ops: restore: open the database: %w: %w", err, exit.Unavailable)
 	}
-	repo := postgres.New(db)
-	defer func() { _ = repo.Close() }()
+	defer func() { _ = db.Close() }()
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgresmigrations.FS)
 	if err != nil {
 		return fmt.Errorf("ops: restore: migrations: %w: %w", err, exit.Software)
@@ -815,52 +818,69 @@ func (r *restorer) applyPostgres(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ops: restore: %w: %w", err, exit.IOErr)
 	}
-	err = store.LoadPostgres(ctx, r.cfg.DB.DSN, f)
-	_ = f.Close()
-	if err != nil {
+	defer func() { _ = f.Close() }()
+	// The load and the heal are ONE transaction: a heal that fails rolls the
+	// load back with it, so the database never holds the archive at its old
+	// generation with no group epoch-unknown (invariant 11).
+	var healErr error
+	err = postgres.LoadDump(ctx, db, f, func(tx store.Repository) error {
+		healErr = r.heal(ctx, tx)
+		return healErr
+	})
+	switch {
+	case err == nil:
+		return nil
+	case healErr != nil:
+		return fmt.Errorf("ops: restore: %w (the load rolled back with it: the database is unchanged): %w", healErr, exit.IOErr)
+	default:
 		return fmt.Errorf("ops: restore: load the dump: %w: %w", err, exit.Data)
 	}
-	return r.armHeal(ctx, repo)
 }
 
-// armHeal is invariant 11's restore half as ONE transaction, the same
-// statements ds.OnRestore runs, plus the two settings only a restore owns.
+// armHeal runs heal as ONE transaction on repo.
 func (r *restorer) armHeal(ctx context.Context, repo store.Repository) error {
-	gen := r.plan.GenerationNew
-	err := repo.Tx(ctx, func(tx store.Repository) error {
-		if err := tx.SetGeneration(ctx, gen); err != nil {
-			return fmt.Errorf("set the generation: %w", err)
-		}
-		if err := tx.MarkAllGroupsEpochUnknown(ctx, r.plan.HealDeadline); err != nil {
-			return fmt.Errorf("mark every group epoch-unknown: %w", err)
-		}
-		if err := tx.EndAllVoiceSessions(ctx, r.now.Unix()); err != nil {
-			return fmt.Errorf("end the live calls: %w", err)
-		}
-		n, err := tx.PurgeKeyPackages(ctx, true)
-		if err != nil {
-			return fmt.Errorf("purge the KeyPackages: %w", err)
-		}
-		r.plan.KeyPackagesPurged = n
-		// Every SQLite snapshot carries the backup's own pin: left, it would
-		// hold the restored sweeper at the backup's start for good.
-		if err := tx.PutSetting(ctx, blob.LastBackupStartedKey, []byte{}, r.now.Unix()); err != nil {
-			return fmt.Errorf("clear %s: %w", blob.LastBackupStartedKey, err)
-		}
-		if err := tx.PutSetting(ctx, ds.RestorePendingKey, []byte(strconv.FormatUint(gen, 10)), r.now.Unix()); err != nil {
-			return fmt.Errorf("record the pending restore: %w", err)
-		}
-		in, err := tx.GetInstance(ctx)
-		if err != nil {
-			return err
-		}
-		if in.Generation != gen {
-			return fmt.Errorf("the generation is %d after setting it to %d", in.Generation, gen)
-		}
-		return nil
-	})
-	if err != nil {
+	if err := repo.Tx(ctx, func(tx store.Repository) error { return r.heal(ctx, tx) }); err != nil {
 		return fmt.Errorf("ops: restore: %w: %w", err, exit.IOErr)
+	}
+	return nil
+}
+
+// heal is invariant 11's restore half, the same statements ds.OnRestore runs
+// plus the two settings only a restore owns. tx must be a transaction: the
+// statements move together or not at all.
+func (r *restorer) heal(ctx context.Context, tx store.Repository) error {
+	gen := r.plan.GenerationNew
+	if err := tx.SetGeneration(ctx, gen); err != nil {
+		return fmt.Errorf("set the generation: %w", err)
+	}
+	if err := tx.MarkAllGroupsEpochUnknown(ctx, r.plan.HealDeadline); err != nil {
+		return fmt.Errorf("mark every group epoch-unknown: %w", err)
+	}
+	if err := tx.EndAllVoiceSessions(ctx, r.now.Unix()); err != nil {
+		return fmt.Errorf("end the live calls: %w", err)
+	}
+	n, err := tx.PurgeKeyPackages(ctx, true)
+	if err != nil {
+		return fmt.Errorf("purge the KeyPackages: %w", err)
+	}
+	r.plan.KeyPackagesPurged = n
+	// Every SQLite snapshot carries the backup's own pin: left, it would hold
+	// the restored sweeper at the backup's start for good.
+	if err := tx.PutSetting(ctx, blob.LastBackupStartedKey, []byte{}, r.now.Unix()); err != nil {
+		return fmt.Errorf("clear %s: %w", blob.LastBackupStartedKey, err)
+	}
+	if err := tx.PutSetting(ctx, ds.RestorePendingKey, []byte(strconv.FormatUint(gen, 10)), r.now.Unix()); err != nil {
+		return fmt.Errorf("record the pending restore: %w", err)
+	}
+	in, err := tx.GetInstance(ctx)
+	if err != nil {
+		return err
+	}
+	if in.Generation != gen {
+		return fmt.Errorf("the generation is %d after setting it to %d", in.Generation, gen)
+	}
+	if beforeHealCommit != nil {
+		return beforeHealCommit()
 	}
 	return nil
 }

@@ -256,11 +256,17 @@ func CountCopyRows(r io.Reader) (int64, error) {
 	}
 }
 
-// LoadPostgres replays a DumpPostgres stream into the database at dsn, in ONE
-// transaction: every dilla table the schema holds is emptied in one TRUNCATE,
-// then each table the stream names is refilled with COPY FROM STDIN in the
-// stream's order, which is DumpTables' parents-before-children order. Either
-// the whole archive lands or nothing changes.
+// LoadPostgres replays a DumpPostgres stream into db, in ONE transaction: every
+// dilla table the schema holds is emptied in one TRUNCATE, then each table the
+// stream names is refilled with COPY FROM STDIN in the stream's order, which is
+// DumpTables' parents-before-children order. then, when it is not nil, runs on
+// the same transaction before it commits, so what it writes lands with the
+// archive or not at all: `dillad restore` arms invariant 11's heal there, and a
+// heal that fails leaves the database exactly as it was, never the archive at
+// its old generation. Either everything lands or nothing changes.
+//
+// db must be a pgx (pgx/v5/stdlib) pool: the COPY runs on the transaction's own
+// connection through database/sql's Conn.Raw, since database/sql has no COPY.
 //
 // The target must already be at the archive's schema version: a binary COPY
 // carries no column names, so a table whose columns differ from the dump's
@@ -269,22 +275,22 @@ func CountCopyRows(r io.Reader) (int64, error) {
 // documentation), so each identity sequence is then moved past its table's
 // highest value; a generated column (readable_messages.body_tsv) is left out by
 // COPY in both directions and recomputed as the row lands.
-func LoadPostgres(ctx context.Context, dsn string, r io.Reader) error {
-	conn, err := pgx.Connect(ctx, dsn)
+func LoadPostgres(ctx context.Context, db *sql.DB, r io.Reader, then func(tx *sql.Tx) error) error {
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("store: connect for load: %w", err)
 	}
-	defer func() { _ = conn.Close(ctx) }()
-	tx, err := conn.Begin(ctx)
+	defer func() { _ = conn.Close() }()
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store: begin load: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
 	present := make([]string, 0, len(DumpTables))
 	for _, table := range DumpTables {
 		var ok bool
-		if err := tx.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&ok); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&ok); err != nil {
 			return fmt.Errorf("store: look up %s: %w", table, err)
 		}
 		if ok {
@@ -292,16 +298,23 @@ func LoadPostgres(ctx context.Context, dsn string, r io.Reader) error {
 		}
 	}
 	if len(present) > 0 {
-		if _, err := tx.Exec(ctx, `TRUNCATE `+strings.Join(present, ", ")); err != nil {
+		if _, err := tx.ExecContext(ctx, `TRUNCATE `+strings.Join(present, ", ")); err != nil {
 			return fmt.Errorf("store: empty the tables: %w", err)
 		}
 	}
 	err = ReadDump(r, func(table string, payload io.Reader) error {
 		q := `COPY ` + pgx.Identifier{table}.Sanitize() + ` FROM STDIN (FORMAT binary)`
-		if _, err := tx.Conn().PgConn().CopyFrom(ctx, payload, q); err != nil {
-			return fmt.Errorf("store: copy %s: %w", table, err)
-		}
-		return nil
+		// tx was begun on this connection, so the COPY runs inside it.
+		return conn.Raw(func(driverConn any) error {
+			pc, ok := driverConn.(interface{ Conn() *pgx.Conn })
+			if !ok {
+				return fmt.Errorf("store: copy %s: the connection is a %T, not pgx's", table, driverConn)
+			}
+			if _, err := pc.Conn().PgConn().CopyFrom(ctx, payload, q); err != nil {
+				return fmt.Errorf("store: copy %s: %w", table, err)
+			}
+			return nil
+		})
 	})
 	if err != nil {
 		return err
@@ -309,39 +322,54 @@ func LoadPostgres(ctx context.Context, dsn string, r io.Reader) error {
 	if err := resetIdentities(ctx, tx); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if then != nil {
+		if err := then(tx); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit the load: %w", err)
+	}
+	return nil
 }
 
 // resetIdentities moves every dilla table's identity sequence past the highest
 // value COPY wrote, so the next INSERT does not collide with a restored row.
-func resetIdentities(ctx context.Context, tx pgx.Tx) error {
-	rows, err := tx.Query(ctx, `SELECT table_name, column_name FROM information_schema.columns
-		WHERE table_schema = current_schema() AND is_identity = 'YES' ORDER BY table_name, column_name`)
+func resetIdentities(ctx context.Context, tx *sql.Tx) error {
+	ids, err := identityColumns(ctx, tx)
 	if err != nil {
 		return fmt.Errorf("store: list identity columns: %w", err)
 	}
-	type identity struct{ table, column string }
-	var ids []identity
+	for _, c := range ids {
+		table, column := pgx.Identifier{c.table}.Sanitize(), pgx.Identifier{c.column}.Sanitize()
+		// Both names are DumpTables' own, read back from information_schema and quoted.
+		q := `SELECT setval(pg_get_serial_sequence($1, $2), COALESCE((SELECT MAX(` + column + `) FROM ` + table + `), 0) + 1, false)` //nolint:gosec // G202: quoted identifiers of dilla's own tables, never input
+		if _, err := tx.ExecContext(ctx, q, c.table, c.column); err != nil {
+			return fmt.Errorf("store: move the %s.%s sequence: %w", c.table, c.column, err)
+		}
+	}
+	return nil
+}
+
+type identityColumn struct{ table, column string }
+
+// identityColumns lists the identity columns of the DumpTables tables.
+func identityColumns(ctx context.Context, tx *sql.Tx) ([]identityColumn, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT table_name, column_name FROM information_schema.columns
+		WHERE table_schema = current_schema() AND is_identity = 'YES' ORDER BY table_name, column_name`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []identityColumn
 	for rows.Next() {
-		var c identity
+		var c identityColumn
 		if err := rows.Scan(&c.table, &c.column); err != nil {
-			rows.Close()
-			return fmt.Errorf("store: list identity columns: %w", err)
+			return nil, err
 		}
 		if slices.Contains(DumpTables, c.table) {
 			ids = append(ids, c)
 		}
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("store: list identity columns: %w", err)
-	}
-	for _, c := range ids {
-		table, column := pgx.Identifier{c.table}.Sanitize(), pgx.Identifier{c.column}.Sanitize()
-		q := `SELECT setval(pg_get_serial_sequence($1, $2), COALESCE((SELECT MAX(` + column + `) FROM ` + table + `), 0) + 1, false)`
-		if _, err := tx.Exec(ctx, q, c.table, c.column); err != nil {
-			return fmt.Errorf("store: move the %s.%s sequence: %w", c.table, c.column, err)
-		}
-	}
-	return nil
+	return ids, rows.Err()
 }

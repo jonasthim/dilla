@@ -129,7 +129,9 @@ table, and writes nothing.
   instance `generation` is set above both the live and the archived one, so it never moves
   backwards; every open group becomes epoch-unknown with a heal deadline 24 hours out; live calls
   end; every KeyPackage that is not last-resort is purged. The next `dillad serve` start finishes
-  the restore and measures the 24 hours from that start.
+  the restore and measures the 24 hours from that start. On Postgres, where the database is loaded
+  in place, the load and these statements are one transaction: a failure in either leaves the
+  database as it was, never holding the archive without its new generation and heal.
 - **What the operator will see:** live calls ended, every client resyncs on its next request, and a
   group whose members upload no member-signed GroupInfo within 24 hours is closed and re-created by
   the channel owner's device.

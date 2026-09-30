@@ -423,6 +423,29 @@ func TestRestoreArmsTheHealOnEveryOpenGroup(t *testing.T) {
 	}
 }
 
+// On SQLite the heal runs on the staged copy before the swap: a heal that fails
+// leaves the live instance exactly as it was, with nothing left behind.
+func TestAFailedHealLeavesTheInstanceUntouched(t *testing.T) {
+	h := newOpsHarness(t)
+	h.SeedRows(3)
+	archive := h.backup(t)
+	h.SeedRows(2)
+	before := h.Generation(t)
+	ops.SetBeforeHealCommit(t, func() error { return errors.New("injected: the heal transaction fails") })
+	_, err := h.restore(t, archive, ops.RestoreOptions{})
+	var code exit.Code
+	if !errors.As(err, &code) || code != exit.IOErr || !strings.Contains(err.Error(), "injected") {
+		t.Fatalf("restore with a failing heal = %v, want exit.IOErr", err)
+	}
+	if h.Generation(t) != before {
+		t.Fatal("a failed heal changed the live generation")
+	}
+	if n := countMessages(t, h.restored(t), h.group); n != 5 {
+		t.Fatalf("%d messages after a failed heal, want the live 5", n)
+	}
+	assertNoLeftovers(t, h.Cfg.Instance.DataDir)
+}
+
 // failRestoredDBMove makes the swap's last move, the restored database into
 // place, fail; every other rename runs, unless also refuses it.
 func failRestoredDBMove(t *testing.T, h *opsHarness, also func(from, to string) error) {
