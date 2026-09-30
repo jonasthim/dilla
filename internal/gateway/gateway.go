@@ -544,7 +544,8 @@ func (g *Gateway) OnlineIn(groupID id.ID) []OnlineDevice {
 	return g.reg.onlineIn(groupID, g.opts.Clock.Now(), g.opts.IdleClose)
 }
 
-// sweepLiveness closes every connection whose heartbeat is overdue. It runs on Run's ticker in
+// sweepLiveness closes every connection whose heartbeat is overdue (4009) and every one whose
+// session row is gone (4004, sweepSessions). It runs on Run's ticker in
 // production and is called directly by tests driving a clock.Fake.
 func (g *Gateway) sweepLiveness() {
 	now := g.opts.Clock.Now()
@@ -559,6 +560,7 @@ func (g *Gateway) sweepLiveness() {
 			g.suspend(c)
 		}
 	}
+	g.sweepSessions(context.Background())
 	g.sweepSuspended()
 }
 

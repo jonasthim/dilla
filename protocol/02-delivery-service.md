@@ -51,7 +51,13 @@ Every endpoint in this document requires a **device session**. A device session 
    oldest is evicted.
 6. **Revocation.** Accepting a signed device list that revokes a device MUST delete that device's
    session rows and close its gateway connections in the same transaction. Setting
-   `users.disabled_at` does the same for every device of that user.
+   `users.disabled_at` does the same for every device of that user. Every instance process that
+   serves the gateway also re-reads each ready connection's session row once per
+   `gateway.heartbeat_interval`, and closes a connection whose session no longer resolves (deleted,
+   pruned or past its expiry) with close `4004 session_revoked`, which is not resumable. A session
+   deleted by a process that holds no handle on the gateway (the `dillad admin` command line) thus
+   ends its live connections within one heartbeat interval, not instantly. A store that cannot
+   answer is not a revocation: the connection stays and the next tick asks again.
 7. The sole exception to the proof rule above is `POST /v1/accounts`, which creates the device and
    its first session in the same transaction: the device's key is the one being registered, so there
    is no prior key to prove possession of. Every later session for that device goes through the
