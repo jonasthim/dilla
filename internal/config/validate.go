@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"runtime"
 	"slices"
@@ -164,6 +165,8 @@ func (c *Config) Validate() error {
 		}
 		if c.TURN.RelayIP == "" {
 			add("turn.relay_ip is required when turn.enabled is true")
+		} else if _, err := netip.ParseAddr(c.TURN.RelayIP); err != nil && c.TURN.RelayIP != RelayIPAuto {
+			add("turn.relay_ip %q is neither an IP address of this host nor %q", c.TURN.RelayIP, RelayIPAuto)
 		}
 	}
 	if c.TURN.ProxyProtocol && c.TURN.Listen == "" {

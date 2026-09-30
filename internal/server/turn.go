@@ -64,9 +64,12 @@ func StartTURN(c config.TURN, ln net.Listener, peers []netip.Addr, clk clock.Clo
 	if secret == "" {
 		return nil, errors.New("turn: turn.shared_secret_file is empty")
 	}
-	relayIP := net.ParseIP(c.RelayIP)
-	if relayIP == nil {
-		return nil, fmt.Errorf("turn: turn.relay_ip %q is not an IP address", c.RelayIP)
+	relayIP, err := ResolveRelayIP(c.RelayIP)
+	if err != nil {
+		return nil, err
+	}
+	if c.RelayIP == config.RelayIPAuto {
+		log.Info("turn.relay_ip auto resolved", "relay_ip", relayIP.String())
 	}
 	perDevice := c.AllocationsPerDevice
 	if perDevice <= 0 {
@@ -93,6 +96,40 @@ func StartTURN(c config.TURN, ln net.Listener, peers []netip.Addr, clk clock.Clo
 		return nil, fmt.Errorf("turn: %w", err)
 	}
 	return &TURN{srv: srv, quota: q}, nil
+}
+
+// ResolveRelayIP is the address relay sockets bind for turn.relay_ip: an IP address as written,
+// or, for "auto", this host's own address — the source address of its outbound route, else its
+// first non-loopback, non-link-local interface address. "auto" exists because the public IP is not
+// a local address on bridged Docker or a NATed LXC, where binding it fails every Allocate; it is
+// resolved here, at serve, because `dillad init` may run in another container than serve.
+func ResolveRelayIP(s string) (net.IP, error) {
+	if s != config.RelayIPAuto {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			return nil, fmt.Errorf("turn: turn.relay_ip %q is not an IP address or %q", s, config.RelayIPAuto)
+		}
+		return ip, nil
+	}
+	// A UDP "connect" sends nothing; it only asks the kernel which source address the route to a
+	// public destination would use. 192.0.2.1 (TEST-NET-1) is never answered, only routed.
+	if c, err := (&net.Dialer{}).DialContext(context.Background(), "udp4", "192.0.2.1:9"); err == nil {
+		a, ok := c.LocalAddr().(*net.UDPAddr)
+		_ = c.Close()
+		if ok && !a.IP.IsUnspecified() && !a.IP.IsLoopback() {
+			return a.IP, nil
+		}
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, fmt.Errorf("turn: turn.relay_ip auto: list interface addresses: %w", err)
+	}
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && !ipn.IP.IsLoopback() && !ipn.IP.IsLinkLocalUnicast() {
+			return ipn.IP, nil
+		}
+	}
+	return nil, errors.New("turn: turn.relay_ip auto: this host has no non-loopback address; set turn.relay_ip")
 }
 
 // peerFilter admits a CreatePermission or ChannelBind only for a peer IP in

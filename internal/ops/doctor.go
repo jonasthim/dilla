@@ -304,6 +304,13 @@ func humanDays(d time.Duration) string {
 func TURNLeg(ctx context.Context, listen, realm, secret string) Leg {
 	const name = "turn"
 	relayed, err := turnAllocate(ctx, listen, realm, secret)
+	if err != nil && strings.Contains(err.Error(), "error 508") {
+		// 508 Insufficient Capacity after a good credential: the relay socket did not bind, which is
+		// what a turn.relay_ip that is no address of this host (EADDRNOTAVAIL) looks like from here.
+		return Leg{Name: name, Status: Red, Detail: fmt.Sprintf("no allocation on %s: %v", listen, err),
+			Fix: "the relay could not bind turn.relay_ip: set it to \"auto\" or to an address of one of this host's " +
+				"interfaces (on bridged Docker or a NATed LXC the public IP is not one), then restart dillad"}
+	}
 	if err != nil {
 		return Leg{Name: name, Status: Red, Detail: fmt.Sprintf("no allocation on %s: %v", listen, err),
 			Fix: "make sure turn.enabled is true, dillad is running, turn.shared_secret_file matches, and the port is reachable"}

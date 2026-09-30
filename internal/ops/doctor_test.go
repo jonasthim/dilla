@@ -342,6 +342,11 @@ func TestTheCertificateIsReadFromCertmagicStorageWithoutContactingACME(t *testin
 // authentication dillad uses (time-windowed REST credentials over a shared secret).
 func startTURN(t *testing.T, realm, secret string) string {
 	t.Helper()
+	return startTURNRelayingOn(t, realm, secret, "127.0.0.1")
+}
+
+func startTURNRelayingOn(t *testing.T, realm, secret, relayIP string) string {
+	t.Helper()
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -352,7 +357,7 @@ func startTURN(t *testing.T, realm, secret string) string {
 		ListenerConfigs: []turn.ListenerConfig{{
 			Listener: ln,
 			RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
-				RelayAddress: net.ParseIP("127.0.0.1"), Address: "127.0.0.1",
+				RelayAddress: net.ParseIP(relayIP), Address: relayIP,
 			},
 		}},
 	})
@@ -373,6 +378,18 @@ func TestTheTURNLegAllocatesAgainstARealServer(t *testing.T) {
 	leg = ops.TURNLeg(t.Context(), addr, "chat.example", "a different secret")
 	if leg.Status != ops.Red || leg.Fix == "" {
 		t.Fatalf("a wrong shared secret = %v (%s) fix=%q", leg.Status, leg.Detail, leg.Fix)
+	}
+}
+
+// I12 (fix wave): a relay_ip that is no address of this host (the public IP on bridged Docker or a
+// NATed LXC) lets the server start and authenticate, and every Allocate then fails to bind its relay
+// socket: pion answers 508. The leg's fix names turn.relay_ip, not the secret or the port.
+func TestTheTURNLegNamesRelayIPWhenTheRelayCannotBind(t *testing.T) {
+	addr := startTURNRelayingOn(t, "chat.example", "s3cret-shared-secret", "203.0.113.10")
+	leg := ops.TURNLeg(t.Context(), addr, "chat.example", "s3cret-shared-secret")
+	if leg.Status != ops.Red || !strings.Contains(leg.Fix, "turn.relay_ip") {
+		t.Fatalf("a relay_ip the host cannot bind = %v (%s) fix=%q, want red with a fix naming turn.relay_ip",
+			leg.Status, leg.Detail, leg.Fix)
 	}
 }
 

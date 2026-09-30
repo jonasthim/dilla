@@ -117,6 +117,15 @@ func TestInitBootstrapsAndRefusesASecondRun(t *testing.T) {
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("dilla.toml has mode %04o, want 0600", perm)
 	}
+	// I12 (fix wave): the relay binds a local interface address resolved at serve, never the public
+	// IP, which bridged Docker and a NATed LXC cannot bind.
+	written, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load dilla.toml: %v", err)
+	}
+	if written.TURN.RelayIP != "auto" {
+		t.Fatalf("init wrote turn.relay_ip = %q, want \"auto\"", written.TURN.RelayIP)
+	}
 	if !strings.Contains(out, "https://chat.example/i/") {
 		t.Fatalf("init did not print one invite link: %q", out)
 	}

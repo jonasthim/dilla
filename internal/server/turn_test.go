@@ -307,6 +307,46 @@ func TestWithoutAnSFUTheRelayAdmitsNoPeer(t *testing.T) {
 	}
 }
 
+// I12 (fix wave): turn.relay_ip = "auto" is what init writes, because the public IP is not a local
+// address on bridged Docker or a NATed LXC and every Allocate would fail to bind there. "auto" is
+// the source address of this host's outbound route (or its first non-loopback interface address),
+// which the relay can bind; an explicit IP is taken as written.
+func TestAnAutoRelayIPIsALocalAddressTheRelayBinds(t *testing.T) {
+	ip, err := server.ResolveRelayIP("auto")
+	if err != nil {
+		t.Fatalf(`ResolveRelayIP("auto"): %v`, err)
+	}
+	pc, err := (&net.ListenConfig{}).ListenPacket(t.Context(), "udp", net.JoinHostPort(ip.String(), "0"))
+	if err != nil {
+		t.Fatalf("the auto relay address %s is not bindable: %v", ip, err)
+	}
+	_ = pc.Close()
+	if got, err := server.ResolveRelayIP("203.0.113.7"); err != nil || got.String() != "203.0.113.7" {
+		t.Errorf("an explicit relay_ip = %v, %v", got, err)
+	}
+	if _, err := server.ResolveRelayIP("chat.example"); err == nil {
+		t.Error("a relay_ip that is neither an IP nor auto was accepted")
+	}
+
+	const secret = "0123456789abcdef0123456789abcdef"
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv, err := server.StartTURN(config.TURN{
+		Enabled: true, Realm: "chat.example.test", RelayIP: "auto",
+		SharedSecretFile: writeFile(t, "turn.secret", secret), CredentialTTL: "1h", AllocationsPerDevice: 2,
+	}, ln, nil, clock.System(), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf(`StartTURN with relay_ip "auto": %v`, err)
+	}
+	defer srv.Close()
+	relay := plainTURNClient(t, ln.Addr().String(), secret)
+	if host, _, _ := net.SplitHostPort(relay.LocalAddr().String()); host != ip.String() {
+		t.Errorf("relayed address %s, want one on the auto address %s", relay.LocalAddr(), ip)
+	}
+}
+
 func TestStartTURNRefusesAMissingSecret(t *testing.T) {
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {

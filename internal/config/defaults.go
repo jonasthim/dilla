@@ -85,6 +85,10 @@ func Default() *Config {
 	return c
 }
 
+// RelayIPAuto is the turn.relay_ip value `dillad init` writes: serve binds relay sockets on this
+// host's own address (internal/server.ResolveRelayIP), never on a public IP the host may not hold.
+const RelayIPAuto = "auto"
+
 // defaultMaxPublishers is livekit.max_publishers' default, the spec's 25/10 sizing. It is the only
 // value Validate accepts until a publisher cap reaches LiveKit.
 const defaultMaxPublishers = 10

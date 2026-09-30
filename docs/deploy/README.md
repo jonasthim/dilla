@@ -70,6 +70,10 @@ The traps, in the order people meet them:
   "permission denied" on 443. Keep the bridged network and the `ports:` mapping, or, if you must use
   host networking, add `sysctls: { net.ipv4.ip_unprivileged_port_start: "0" }`.
 - **Only 443/tcp and 7882/udp are published.** A firewall in front of the host must allow both.
+- **Keep `turn.relay_ip = "auto"`.** init writes it, and serve binds the relay on the container's
+  own address. The public IP is not an address of a bridged container, so setting it there makes
+  every relay allocation fail; `dillad doctor` then shows the `turn` leg red with a fix naming
+  `turn.relay_ip`.
 - **Update deliberately.** The CA bundle in the image is fixed when the image is built; pin the
   image by digest and pull a new build rather than floating `:latest`.
 
@@ -126,6 +130,8 @@ link=$(./proxmox-lxc.sh --domain chat.example.org --public-ip 203.0.113.10 --agr
 stdout is the bootstrap invite link and nothing else; every progress line goes to stderr. It
 downloads `dillad-linux-<arch>` and `dilla_core_wasi.wasm` from `--release-url`, or takes local
 copies with `--binary` and `--core`. Forward 443/tcp and 7882/udp from the host to the container.
+A NATed container does not hold the public IP either, so leave `turn.relay_ip = "auto"` as init
+wrote it: the relay binds the container's own address.
 
 ## 4. Backup and restore
 

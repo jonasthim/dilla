@@ -52,6 +52,16 @@ func writeSecrets(t *testing.T, dir string) {
 	}
 }
 
+// writeSecretFile writes a 32-byte secret file and returns its path.
+func writeSecretFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(p, []byte(strings.Repeat("s", 32)), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	return p
+}
+
 func loadTestdata(t *testing.T, name string) (*config.Config, error) {
 	t.Helper()
 	dir := t.TempDir()
@@ -309,6 +319,24 @@ func TestValidationRules(t *testing.T) {
 		c.Derive()
 		if err := c.Validate(); err != nil {
 			t.Fatalf("the defaults: %v", err)
+		}
+	})
+	// I12 (fix wave): turn.relay_ip is an IP address or "auto"; anything else is refused at load, not
+	// at the first Allocate.
+	t.Run("turn.relay_ip is an address or auto", func(t *testing.T) {
+		for relay, ok := range map[string]bool{"auto": true, "10.0.0.5": true, "2001:db8::5": true, "chat.example": false} {
+			c := base()
+			c.TURN.Enabled = true
+			c.TURN.SharedSecretFile = writeSecretFile(t)
+			c.TURN.RelayIP = relay
+			c.Derive()
+			err := c.Validate()
+			if ok && err != nil {
+				t.Errorf("relay_ip %q refused: %v", relay, err)
+			}
+			if !ok && (err == nil || !strings.Contains(err.Error(), "turn.relay_ip")) {
+				t.Errorf("relay_ip %q: Validate = %v, want an error naming turn.relay_ip", relay, err)
+			}
 		}
 	})
 	t.Run("a zero rate limit is refused", func(t *testing.T) {

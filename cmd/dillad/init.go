@@ -93,7 +93,9 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("init: write livekit secret: %w: %w", err, exit.CantCreate)
 	}
 	c.TURN.SharedSecretFile = turnSecret
-	c.TURN.RelayIP = addr.String()
+	// Not the public IP: on bridged Docker or a NATed LXC it is no local address, and every
+	// Allocate would fail to bind there. serve resolves "auto" on the host it runs on.
+	c.TURN.RelayIP = config.RelayIPAuto
 	c.LiveKit.APISecretFile = livekitSecret
 	c.Derive()
 
