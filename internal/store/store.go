@@ -222,6 +222,19 @@ type MLS interface {
 	PutForkReport(ctx context.Context, f ForkReportRow) error
 	CountForkReporters(ctx context.Context, groupID id.ID, seq uint64) (int64, error)
 	QuarantineDevice(ctx context.Context, deviceID id.ID, at int64, reason string) error
+	// The pending-join queue (deviation B13 names the pair, B22 / ruling 43 defers it, Plan 1
+	// follow-up card 8 hands it to Plan 2 task 7): the tail of a join storm beyond the 256 Adds
+	// one commit may carry, durable so a restart between two slices loses no device.
+	//
+	// QueuePendingJoins queues devices for groupID at `at`. A device already queued keeps its row
+	// and its place. TakePendingJoins removes and returns the oldest `limit` devices, ties broken
+	// by device id, in one transaction. CountPendingJoins is the queue's length, and
+	// ListPendingJoinGroups pages the groups holding a queue by group id after `after`, one row per
+	// group, for the sweeper that re-drives a stalled storm.
+	QueuePendingJoins(ctx context.Context, groupID id.ID, devices []id.ID, at int64) error
+	TakePendingJoins(ctx context.Context, groupID id.ID, limit int32) ([]id.ID, error)
+	CountPendingJoins(ctx context.Context, groupID id.ID) (int64, error)
+	ListPendingJoinGroups(ctx context.Context, after id.ID, limit int32) ([]id.ID, error)
 }
 
 // Messages is 005_messages.sql, implemented from task 23 onward.

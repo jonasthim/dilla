@@ -119,6 +119,21 @@ func (q *Queries) CountKeyPackages(ctx context.Context, arg CountKeyPackagesPara
 	return count, err
 }
 
+const countPendingJoins = `-- name: CountPendingJoins :one
+SELECT count(*) FROM pending_joins WHERE group_id = $1
+`
+
+type CountPendingJoinsParams struct {
+	GroupID id.ID
+}
+
+func (q *Queries) CountPendingJoins(ctx context.Context, arg CountPendingJoinsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPendingJoins, arg.GroupID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createGroup = `-- name: CreateGroup :exec
 INSERT INTO mls_groups (group_id, binding, kind, community_id, target_id, call_id, ciphersuite,
                         epoch, seq, group_info_blob, tree_hash, public_group_state,
@@ -201,6 +216,20 @@ type DeleteOtherLastResortKeyPackagesParams struct {
 
 func (q *Queries) DeleteOtherLastResortKeyPackages(ctx context.Context, arg DeleteOtherLastResortKeyPackagesParams) error {
 	_, err := q.db.ExecContext(ctx, deleteOtherLastResortKeyPackages, arg.DeviceID, arg.KpRef)
+	return err
+}
+
+const deletePendingJoin = `-- name: DeletePendingJoin :exec
+DELETE FROM pending_joins WHERE group_id = $1 AND device_id = $2
+`
+
+type DeletePendingJoinParams struct {
+	GroupID  id.ID
+	DeviceID id.ID
+}
+
+func (q *Queries) DeletePendingJoin(ctx context.Context, arg DeletePendingJoinParams) error {
+	_, err := q.db.ExecContext(ctx, deletePendingJoin, arg.GroupID, arg.DeviceID)
 	return err
 }
 
@@ -755,6 +784,72 @@ func (q *Queries) ListOpenGroups(ctx context.Context, arg ListOpenGroupsParams) 
 	return items, nil
 }
 
+const listPendingJoinGroups = `-- name: ListPendingJoinGroups :many
+SELECT DISTINCT group_id FROM pending_joins WHERE group_id > $1
+ORDER BY group_id LIMIT $2::bigint
+`
+
+type ListPendingJoinGroupsParams struct {
+	GroupID id.ID
+	MaxRows int64
+}
+
+func (q *Queries) ListPendingJoinGroups(ctx context.Context, arg ListPendingJoinGroupsParams) ([]id.ID, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingJoinGroups, arg.GroupID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []id.ID{}
+	for rows.Next() {
+		var group_id id.ID
+		if err := rows.Scan(&group_id); err != nil {
+			return nil, err
+		}
+		items = append(items, group_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingJoins = `-- name: ListPendingJoins :many
+SELECT device_id FROM pending_joins WHERE group_id = $1
+ORDER BY queued, device_id LIMIT $2::bigint
+`
+
+type ListPendingJoinsParams struct {
+	GroupID id.ID
+	MaxRows int64
+}
+
+func (q *Queries) ListPendingJoins(ctx context.Context, arg ListPendingJoinsParams) ([]id.ID, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingJoins, arg.GroupID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []id.ID{}
+	for rows.Next() {
+		var device_id id.ID
+		if err := rows.Scan(&device_id); err != nil {
+			return nil, err
+		}
+		items = append(items, device_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWelcomes = `-- name: ListWelcomes :many
 SELECT mls_welcomes.welcome_id, mls_welcomes.device_id, mls_welcomes.group_id, mls_welcomes.epoch,
        mls_welcomes.commit_seq, mls_welcomes.blob_sha256, mls_welcomes.created,
@@ -1158,6 +1253,24 @@ type QuarantineDeviceParams struct {
 
 func (q *Queries) QuarantineDevice(ctx context.Context, arg QuarantineDeviceParams) error {
 	_, err := q.db.ExecContext(ctx, quarantineDevice, arg.QuarantinedAt, arg.QuarantineReason, arg.ID)
+	return err
+}
+
+const queuePendingJoin = `-- name: QueuePendingJoin :exec
+INSERT INTO pending_joins (group_id, device_id, queued) VALUES ($1, $2, $3)
+ON CONFLICT (group_id, device_id) DO NOTHING
+`
+
+type QueuePendingJoinParams struct {
+	GroupID  id.ID
+	DeviceID id.ID
+	Queued   int64
+}
+
+// pending_joins (Plan 1 follow-up card 8, Plan 2 task 7): one device waiting for a slice of a join
+// storm. A device already queued keeps its row and its place.
+func (q *Queries) QueuePendingJoin(ctx context.Context, arg QueuePendingJoinParams) error {
+	_, err := q.db.ExecContext(ctx, queuePendingJoin, arg.GroupID, arg.DeviceID, arg.Queued)
 	return err
 }
 

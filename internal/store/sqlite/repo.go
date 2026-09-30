@@ -2242,4 +2242,58 @@ func (r *Repo) ListChannelsForUser(ctx context.Context, userID id.ID) ([]store.C
 	return out, nil
 }
 
+// QueuePendingJoins is the pending-join queue's write (Plan 1 follow-up card 8): every device of
+// the batch in one transaction, so a storm is queued whole or not at all.
+func (r *Repo) QueuePendingJoins(ctx context.Context, groupID id.ID, devices []id.ID, at int64) error {
+	if len(devices) == 0 {
+		return nil
+	}
+	return wrap(r.atomically(ctx, func(q *sqlitedb.Queries) error {
+		for _, d := range devices {
+			if err := q.QueuePendingJoin(ctx, sqlitedb.QueuePendingJoinParams{
+				GroupID: groupID, DeviceID: d, Queued: at,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+}
+
+// TakePendingJoins reads the oldest `limit` devices and deletes exactly those, in one transaction,
+// so two takes never hand out one device twice.
+func (r *Repo) TakePendingJoins(ctx context.Context, groupID id.ID, limit int32) ([]id.ID, error) {
+	var out []id.ID
+	err := r.atomically(ctx, func(q *sqlitedb.Queries) error {
+		devices, err := q.ListPendingJoins(ctx, sqlitedb.ListPendingJoinsParams{GroupID: groupID, MaxRows: int64(limit)})
+		if err != nil {
+			return err
+		}
+		for _, d := range devices {
+			if err := q.DeletePendingJoin(ctx, sqlitedb.DeletePendingJoinParams{GroupID: groupID, DeviceID: d}); err != nil {
+				return err
+			}
+		}
+		out = devices
+		return nil
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return out, nil
+}
+
+func (r *Repo) CountPendingJoins(ctx context.Context, groupID id.ID) (int64, error) {
+	n, err := r.r.CountPendingJoins(ctx, sqlitedb.CountPendingJoinsParams{GroupID: groupID})
+	return n, wrap(err)
+}
+
+func (r *Repo) ListPendingJoinGroups(ctx context.Context, after id.ID, limit int32) ([]id.ID, error) {
+	ids, err := r.r.ListPendingJoinGroups(ctx, sqlitedb.ListPendingJoinGroupsParams{GroupID: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return ids, nil
+}
+
 var _ store.Repository = (*Repo)(nil)

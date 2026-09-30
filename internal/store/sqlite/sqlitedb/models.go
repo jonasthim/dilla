@@ -291,6 +291,12 @@ type PasswordCredentials struct {
 	Updated int64
 }
 
+type PendingJoins struct {
+	GroupID  id.ID
+	DeviceID id.ID
+	Queued   int64
+}
+
 type RecoveryCodes struct {
 	UserID   id.ID
 	CodeHash []byte

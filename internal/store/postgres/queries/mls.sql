@@ -213,3 +213,23 @@ SELECT count(*) FROM fork_reports WHERE group_id = $1 AND seq = $2;
 
 -- name: QuarantineDevice :exec
 UPDATE devices SET quarantined_at = $1, quarantine_reason = $2 WHERE id = $3;
+
+-- name: QueuePendingJoin :exec
+-- pending_joins (Plan 1 follow-up card 8, Plan 2 task 7): one device waiting for a slice of a join
+-- storm. A device already queued keeps its row and its place.
+INSERT INTO pending_joins (group_id, device_id, queued) VALUES ($1, $2, $3)
+ON CONFLICT (group_id, device_id) DO NOTHING;
+
+-- name: ListPendingJoins :many
+SELECT device_id FROM pending_joins WHERE group_id = $1
+ORDER BY queued, device_id LIMIT sqlc.arg(max_rows)::bigint;
+
+-- name: DeletePendingJoin :exec
+DELETE FROM pending_joins WHERE group_id = $1 AND device_id = $2;
+
+-- name: CountPendingJoins :one
+SELECT count(*) FROM pending_joins WHERE group_id = $1;
+
+-- name: ListPendingJoinGroups :many
+SELECT DISTINCT group_id FROM pending_joins WHERE group_id > $1
+ORDER BY group_id LIMIT sqlc.arg(max_rows)::bigint;

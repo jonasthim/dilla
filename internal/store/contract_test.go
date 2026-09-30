@@ -86,6 +86,11 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"PutKeyPackages", "PutProposal", "PutWelcomePayload", "PutWelcomes",
 			"QuarantineDevice", "ReissueProposal", "ReplaceMembers", "TakeKeyPackage",
 			"VoidProposal",
+			// The pending-join queue: deviation B13 names QueuePendingJoins/TakePendingJoins,
+			// and Plan 2 task 7 (Plan 1 follow-up card 8) lands them with the length its tests
+			// and the debug state read and the paged walk the sweeper re-drives a stalled
+			// storm from.
+			"CountPendingJoins", "ListPendingJoinGroups", "QueuePendingJoins", "TakePendingJoins",
 		}},
 		{"Messages", reflect.TypeOf((*store.Messages)(nil)).Elem(), []string{
 			"GetAppMessage", "ListAppMessages", "PruneAppMessages", "PutAppMessage",

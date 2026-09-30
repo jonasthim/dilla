@@ -24,6 +24,7 @@ type Querier interface {
 	CountForkReporters(ctx context.Context, arg CountForkReportersParams) (int64, error)
 	CountKeyPackages(ctx context.Context, arg CountKeyPackagesParams) (int64, error)
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
+	CountPendingJoins(ctx context.Context, arg CountPendingJoinsParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
 	CountSessionsByDevice(ctx context.Context, arg CountSessionsByDeviceParams) (int64, error)
 	// Channels (Plan 2 task 2, 00005_channels.sql).
@@ -46,6 +47,7 @@ type Querier interface {
 	DeleteOldestSessionForDevice(ctx context.Context, arg DeleteOldestSessionForDeviceParams) error
 	DeleteOtherLastResortKeyPackages(ctx context.Context, arg DeleteOtherLastResortKeyPackagesParams) error
 	DeleteOverwrite(ctx context.Context, arg DeleteOverwriteParams) (int64, error)
+	DeletePendingJoin(ctx context.Context, arg DeletePendingJoinParams) error
 	DeleteProposal(ctx context.Context, arg DeleteProposalParams) error
 	DeleteRecoveryCodes(ctx context.Context, arg DeleteRecoveryCodesParams) error
 	DeleteRole(ctx context.Context, arg DeleteRoleParams) (int64, error)
@@ -117,6 +119,8 @@ type Querier interface {
 	ListMembersOfCommunity(ctx context.Context, arg ListMembersOfCommunityParams) ([]Members, error)
 	ListOpenGroups(ctx context.Context, arg ListOpenGroupsParams) ([]MlsGroups, error)
 	ListOverwrites(ctx context.Context, arg ListOverwritesParams) ([]ChannelOverwrites, error)
+	ListPendingJoinGroups(ctx context.Context, arg ListPendingJoinGroupsParams) ([]id.ID, error)
+	ListPendingJoins(ctx context.Context, arg ListPendingJoinsParams) ([]id.ID, error)
 	ListRoles(ctx context.Context, arg ListRolesParams) ([]Roles, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
@@ -197,6 +201,9 @@ type Querier interface {
 	PutWelcome(ctx context.Context, arg PutWelcomeParams) error
 	PutWelcomePayload(ctx context.Context, arg PutWelcomePayloadParams) error
 	QuarantineDevice(ctx context.Context, arg QuarantineDeviceParams) error
+	// pending_joins (Plan 1 follow-up card 8, Plan 2 task 7): one device waiting for a slice of a join
+	// storm. A device already queued keeps its row and its place.
+	QueuePendingJoin(ctx context.Context, arg QueuePendingJoinParams) error
 	// Runs in PruneHandshakes' transaction, BEFORE the DELETE with the same cutoff: every group whose
 	// handshakes the DELETE is about to take records the highest seq it loses. MONOTONE by the `<`.
 	RaiseHandshakesPrunedThrough(ctx context.Context, arg RaiseHandshakesPrunedThroughParams) error

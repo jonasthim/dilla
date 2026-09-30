@@ -72,6 +72,10 @@ var DumpTables = []string{
 	// and users; a restore that dropped it would lose every DM's participant list,
 	// which is stored nowhere else.
 	"channel_members",
+	// 006e_pending_joins.sql, appended by Plan 2 task 7 (Plan 1 follow-up card 8). Its parent
+	// is mls_groups; a dump that dropped it would stall every join storm in flight at the
+	// backup, with no row left to say which devices were still waiting.
+	"pending_joins",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.
