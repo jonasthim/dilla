@@ -240,12 +240,6 @@ type DS struct {
 	supersedeMu sync.Mutex
 	supersede   map[id.ID][]byte
 
-	// pending is the tail of a join storm: the devices ProposeAddBatch could not fit into this
-	// epoch's 256 Adds, waiting for the next commit. It is in memory because `pending_joins` has
-	// no table and `store.Repository` no methods yet — see queuePendingJoins for the deviation.
-	pendingMu sync.Mutex
-	pending   map[id.ID][]id.ID
-
 	// elections is invariant 7's in-flight committer round, one per group. It is in memory on
 	// purpose: an election decided while everybody was away is stale by definition, and the
 	// instance re-elects on the first device that reaches READY.

@@ -13,6 +13,7 @@ import (
 // that cannot prune reports zero and logs, it does not fail a request path.
 type SweepReport struct {
 	ProposalsVoided  int
+	JoinsDrained     int // Adds the sweeper proposed from stalled join storms (pending_joins)
 	InactiveRemoved  int
 	HandshakesPruned int64
 	MessagesPruned   int64
@@ -49,6 +50,15 @@ func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 		return report, err
 	}
 	report.ProposalsVoided = voided
+
+	// After the void, which frees the room a voided Add held: a join storm no commit re-drives —
+	// its Adds voided by invariant 6's TTL, or its tail carried across a restart — takes its next
+	// slice here.
+	drained, err := d.drainStalledJoins(ctx)
+	if err != nil {
+		return report, err
+	}
+	report.JoinsDrained = drained
 
 	removed, err := d.removeInactive(ctx)
 	if err != nil {

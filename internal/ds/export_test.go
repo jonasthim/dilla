@@ -147,11 +147,18 @@ func CheckKeyPackageLifetimeForTest(now int64, notAfter uint64, maxLifetime time
 	return checkKeyPackageLifetime(now, notAfter, maxLifetime)
 }
 
+// StillEligibleForTest is stillEligible, the one-device form of the drain's eligibility rule.
+func StillEligibleForTest(d *DS, ctx context.Context, groupID, deviceID id.ID, now int64) (bool, error) {
+	return d.stillEligible(ctx, groupID, deviceID, now)
+}
+
 // PendingJoinsForTest is how many devices of a join storm are waiting for the next commit.
 func PendingJoinsForTest(d *DS, groupID id.ID) int {
-	d.pendingMu.Lock()
-	defer d.pendingMu.Unlock()
-	return len(d.pending[groupID])
+	n, err := d.opts.Store.CountPendingJoins(context.Background(), groupID)
+	if err != nil {
+		panic(err)
+	}
+	return int(n)
 }
 
 // ------------------------------------------------------------------- task 24

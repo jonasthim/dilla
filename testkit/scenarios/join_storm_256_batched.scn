@@ -1,8 +1,10 @@
 # protocol/01 § Joining: a private channel opened to 1,000 devices is populated by instance Add
 # proposals in batches, at most 256 per commit, so the storm completes in four commits (256, 256,
-# 256, 232). The instance keeps the batch - ProposeAddBatch holds 256 outstanding and issues the
-# next slice when a commit applies them - and the Go harness asserts the commit count from the
-# instance's own counter. Every joiner enters by the Welcome of the commit that added it.
+# 256, 232). The instance keeps the batch - ProposeAddBatch queues it in pending_joins, proposes
+# 256, and each accepted commit drains the next slice, re-checking every device's eligibility -
+# and the Go harness asserts exactly four commits from the instance's own counter, one
+# mls_welcome_payloads row per commit and an empty queue. Every joiner enters by the Welcome of
+# the commit that added it.
 instance dilla
 client owner
 group chat kind=text target=dededededededededededededededede community=none creator=owner

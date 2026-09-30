@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/store/sqlite"
 	"github.com/jonasthim/dilla/internal/testkit"
 )
 
@@ -197,16 +198,42 @@ func TestTheControlListenerAdvancesTheClockAndReportsItBack(t *testing.T) {
 	}
 }
 
-// join_storm_256_batched: a 1,000-device private channel completes in at most four commits.
-func TestAThousandDeviceJoinStormCompletesInAtMostFourCommits(t *testing.T) {
-	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir()})
+// join_storm_256_batched: a 1,000-device private channel completes in exactly four commits (256,
+// 256, 256, 232), each writing exactly one Welcome payload row, and leaves nothing queued.
+//
+// Exactly four, not "at most": every joiner has to be in for the scenario to pass, so fewer
+// commits would mean one of them carried more than 256 Adds — the cap this scenario exists for.
+// The Welcome-row count is Plan 2 task 7's "one Welcome per commit" asserted where real commits
+// write real rows; a recording double could only count its own increments.
+func TestAThousandDeviceJoinStormCompletesInExactlyFourCommits(t *testing.T) {
+	dir := t.TempDir()
+	h := testkit.Start(t, testkit.Options{DataDir: dir})
 	t.Cleanup(h.Stop)
 	result := h.Run(t, filepath.Join("..", "..", "testkit", "scenarios", "join_storm_256_batched.scn"))
 	if result.Err != nil {
 		t.Fatalf("scenario: %v\nstdout:\n%s\nstderr:\n%s", result.Err, result.Stdout, result.Stderr)
 	}
-	if commits := h.CommitCount(); commits > 4 {
-		t.Fatalf("%d commits for 1,000 devices, want at most 4 (256 Adds per commit)", commits)
+	commits := h.CommitCount()
+	if commits != 4 {
+		t.Fatalf("%d commits for 1,000 devices, want exactly 4 (256 Adds per commit)", commits)
+	}
+	db, err := sqlite.OpenRead(filepath.Join(dir, "dilla.db"))
+	if err != nil {
+		t.Fatalf("sqlite.OpenRead: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	count := func(table string) int {
+		var n int
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		return n
+	}
+	if n := count("mls_welcome_payloads"); n != commits {
+		t.Fatalf("mls_welcome_payloads holds %d rows, want one per commit (%d)", n, commits)
+	}
+	if n := count("pending_joins"); n != 0 {
+		t.Fatalf("pending_joins still holds %d devices after the storm completed", n)
 	}
 }
 

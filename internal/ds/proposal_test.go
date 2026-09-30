@@ -541,8 +541,20 @@ func TestProposeAddBatchSkipsAnUnusableKeyPackageAndKeepsGoing(t *testing.T) {
 	ctx := context.Background()
 	reg, _ := h.mustRegister(t)
 
-	good := h.deviceWithKeyPackage(t)
-	bad := id.New() // no KeyPackage at all
+	good := h.eligibleDeviceWithKeyPackage(t)
+	// bad is eligible in every respect the drain checks — a live device of an admitted user with
+	// an available KeyPackage — but its KeyPackage does not validate, so the guest refuses the Add.
+	bad := h.eligibleDeviceWithKeyPackage(t)
+	if _, err := h.repo.TakeKeyPackage(ctx, bad, h.clk.Now().Unix()); err != nil {
+		t.Fatalf("TakeKeyPackage: %v", err)
+	}
+	junk := id.New()
+	if err := h.repo.PutKeyPackages(ctx, bad, []store.KeyPackageRow{{
+		DeviceID: bad, KPRef: junk[:], Blob: []byte{0x00, 0x01}, Expires: h.clk.Now().Unix() + 86_400,
+		Created: h.clk.Now().Unix(),
+	}}); err != nil {
+		t.Fatalf("PutKeyPackages: %v", err)
+	}
 	if err := h.ds.ProposeAddBatch(ctx, reg.GroupID, []id.ID{bad, good}); err != nil {
 		t.Fatalf("ProposeAddBatch: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -109,153 +110,164 @@ func (d *DS) proposeRemoveLocked(ctx context.Context, groupID id.ID, leaf uint32
 	})
 }
 
-// ProposeAddBatch adds many devices at once. At most MaxAddsPerCommit (256) Adds are outstanding
-// for one commit; the rest wait for the next epoch, which is what keeps a 1,000-device private
-// channel to four commits rather than one commit OpenMLS cannot build.
+// ProposeAddBatch adds many devices to one group, at most MaxAddsPerCommit (256) Adds per commit,
+// until every device still eligible is in: protocol/01 § Joining's "the creator's device commits
+// at most 256 Adds per commit, each producing one Welcome, until all eligible devices are
+// members".
+//
+// The batch is QUEUED WHOLE, durably, and then drained: the first slice is proposed now, into
+// whatever room the group's current epoch has left, and each later slice by the commit that
+// applies the one before it (commit step 9) or, when no commit comes, by the sweeper. It cannot
+// loop "propose 256, request a commit, propose 256" in one call: the instance does not commit, a
+// member does, asynchronously, and a second slice proposed before the first is committed would sit
+// at the same epoch and push one commit past the cap the batching exists to keep.
+//
+// Plan 2 task 7's brief rewrote this method as that loop; it is this form instead because of the
+// sentence above. What the brief wanted from the loop is kept: PlanBatches splits and de-duplicates
+// the batch, and stillEligible's rule (eligibleNow) is re-read for every device when its slice is
+// drained, so a device revoked, or a user whose role was revoked, while the storm runs is dropped
+// from the rest of it rather than added by a batch planned before the change.
+//
+// The queue is `pending_joins` (Plan 1 follow-up card 8, deviation B22, ruling 43): a restart
+// between two slices loses nothing.
 func (d *DS) ProposeAddBatch(ctx context.Context, groupID id.ID, devices []id.ID) error {
+	// The per-group lock is taken once for the whole call, exactly as every other write path on
+	// *DS takes it: the room a slice may take is read from the group's outstanding Adds, and two
+	// drains interleaving on one group would both see the same room.
 	unlock := d.lock(groupID)
 	defer unlock()
 
-	// The outstanding count is read at the GROUP'S CURRENT EPOCH, not at literal epoch 0: past
-	// epoch 0 a `ListProposals(…, 0, …)` sees nothing, `room` is always the full 256, and
-	// successive calls push straight past MaxAddsPerCommit — which is the one thing the batching
-	// exists to prevent.
-	row, err := d.opts.Store.GetGroup(ctx, groupID)
-	if errors.Is(err, store.ErrNotFound) {
+	if _, err := d.opts.Store.GetGroup(ctx, groupID); errors.Is(err, store.ErrNotFound) {
 		return errNotFound("group")
-	}
-	if err != nil {
+	} else if err != nil {
 		return err
 	}
-	room := d.opts.Policy.MaxAddsPerCommit
-	outstanding, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
-	if err != nil {
+	plan := PlanBatches(devices, d.opts.Policy.MaxAddsPerCommit)
+	if err := d.opts.Store.QueuePendingJoins(ctx, groupID, slices.Concat(plan.Batches...), d.now()); err != nil {
 		return err
 	}
-	for _, o := range outstanding {
-		if o.Origin == 0 && o.VoidAt == nil && o.Kind == uint8(mlswasi.ProposalAdd) {
-			room--
-		}
-	}
-	// ONE election for the whole batch, not one per device. invariant 7 elects a single committer
-	// and has the others back off; a batch that elected per proposal walked beginRound's rotation
-	// 256 times and told a third of the online devices, concurrently, that each was the committer.
-	// The window stays open until the batch returns; the single RequestCommit below is the
-	// explicit call, which suppressElections deliberately does not suppress, so the one frame the
-	// batch sends names the whole ref set and goes to the lowest-index online device.
-	defer d.suppressElections(groupID)()
+	_, err := d.drainPendingJoins(ctx, groupID)
+	return err
+}
 
-	remainder := make([]id.ID, 0, len(devices))
-	issued := 0
-	for i, device := range devices {
-		if room <= 0 {
-			remainder = append(remainder, devices[i:]...)
-			break
-		}
-		if err := d.proposeAddLocked(ctx, groupID, device, id.New()); err != nil {
-			// One unusable KeyPackage must not sink the batch: the device is skipped and the join
-			// storm continues. The skipped device is picked up by the next batch.
-			d.log().Warn("batched add skipped", "device", device.String()[:8], "err", err)
-			continue
-		}
-		issued++
-		room--
+// drainPendingJoins proposes the next slice of the group's join storm: as many queued devices as
+// the group's epoch has room for, each re-checked by eligibleNow when it is taken. It runs with the
+// group lock already held — by ProposeAddBatch, by the commit path after a merge (withGroup has
+// returned by then), and by the sweeper — so it calls only the lock-free proposal bodies.
+//
+// A device that is no longer eligible, or whose Add the guest or the directory refuses, is DROPPED
+// from the queue and logged, never re-queued: it would only be refused again, and a device that
+// becomes eligible later is queued again by the membership change that made it so
+// (api.SyncGroupMembers). A device the check cannot ANSWER for — a store or ACL fault, or the
+// context ending — is put back, with every device of the slice after it, and the drain stops: a
+// transient fault must not silently shorten a storm.
+//
+// It elects once for the whole slice, exactly as the batch it drains would: the commit that
+// applied this epoch's Adds is followed by ONE mls.commit_needed for the next slice, never by one
+// per Add.
+func (d *DS) drainPendingJoins(ctx context.Context, groupID id.ID) (int, error) {
+	queued, err := d.opts.Store.CountPendingJoins(ctx, groupID)
+	if err != nil || queued == 0 {
+		return 0, err
 	}
+	release := d.suppressElections(groupID)
+	issued, err := d.drainSlice(ctx, groupID)
+	release()
 	if issued > 0 {
 		// Logged, not returned, for storeInstanceProposal's own reason: every proposal of the
-		// batch is already durable and fanned out, and a failed election is re-run by the
+		// slice is already durable and fanned out, and a failed election is re-run by the
 		// watchdog's next tick.
-		if err := d.RequestCommit(ctx, groupID); err != nil {
-			d.log().Error("electing a committer for a batch of instance proposals failed",
-				"group", groupID.String()[:8], "err", err)
+		if rerr := d.RequestCommit(ctx, groupID); rerr != nil {
+			d.log().Error("electing a committer for a slice of a join storm failed",
+				"group", groupID.String()[:8], "err", rerr)
 		}
 	}
-	// The remainder is KEPT, not dropped. Nothing else re-invokes this method, so a dropped tail
-	// means a 1,000-device join storm stalls after its first 256 and `join_storm_256_batched` can
-	// never complete.
-	if len(remainder) > 0 {
-		d.queuePendingJoins(groupID, remainder)
-	}
-	return nil
+	return issued, err
 }
 
-// queuePendingJoins and takePendingJoins hold the tail of a join storm between commits.
-//
-// DEVIATION from the task brief, forced by the schema: the brief writes these through
-// `store.QueuePendingJoins` / `store.TakePendingJoins` over a `pending_joins` table it calls "a 1b
-// table (task 19's schema)". Neither the methods nor the table exist — `store.MLS` (deviation B13)
-// names the pair but task 3 did not declare it and `00002_mls.sql` creates no such table — and
-// adding a migration, two sqlc query sets and two adapters is well outside a task whose Files are
-// three new files in `internal/ds`. The queue therefore lives in this process.
-//
-// THE LOSS IS SILENT, and that is the cost to weigh. A restart between a 1,000-device
-// `ProposeAddBatch` and the next commit drops every device still waiting: nothing logs it, nothing
-// retries it, no row records that they were ever queued, and they are proposed again only if some
-// caller happens to issue another `ProposeAddBatch` for the same devices. The chaos scenario
-// `join_storm_256_batched` therefore cannot be satisfied durably, and Plan 2's materialised
-// private channel — which consumes `ds.ProposeAddBatch` — inherits it. This is an unassigned
-// prerequisite, not a design choice: deviation B13 already names `QueuePendingJoins` /
-// `TakePendingJoins` for `store.MLS`; the migration, the two sqlc query sets and the two adapters
-// are owned by TASK 23 (deviation B22, ruling 43), the last task in this plan that lands a
-// migration pair. These two functions are deliberately the single seam, so that swap is a
-// two-function change with no other caller to touch.
-func (d *DS) queuePendingJoins(groupID id.ID, devices []id.ID) {
-	d.pendingMu.Lock()
-	defer d.pendingMu.Unlock()
-	if d.pending == nil {
-		d.pending = map[id.ID][]id.ID{}
-	}
-	seen := map[id.ID]struct{}{}
-	for _, existing := range d.pending[groupID] {
-		seen[existing] = struct{}{}
-	}
-	for _, device := range devices {
-		if _, ok := seen[device]; ok {
-			continue // PRIMARY KEY (group_id, device_id) in the durable form
-		}
-		seen[device] = struct{}{}
-		d.pending[groupID] = append(d.pending[groupID], device)
-	}
-}
-
-func (d *DS) takePendingJoins(groupID id.ID, limit int) []id.ID {
-	d.pendingMu.Lock()
-	defer d.pendingMu.Unlock()
-	queued := d.pending[groupID]
-	if len(queued) == 0 {
-		return nil
-	}
-	if limit > len(queued) {
-		limit = len(queued)
-	}
-	taken := queued[:limit:limit]
-	if rest := queued[limit:]; len(rest) > 0 {
-		d.pending[groupID] = rest
-	} else {
-		delete(d.pending, groupID)
-	}
-	return taken
-}
-
-// drainPendingJoins proposes the next slice of a join storm. The commit path calls it after a
-// merge that applied Adds, with the group lock already held and withGroup already returned, so it
-// uses the lock-free body.
-// It elects once for the whole slice, exactly as ProposeAddBatch does: the commit that applied
-// this epoch's Adds is followed by ONE mls.commit_needed for the next 256, never by 256 of them.
-func (d *DS) drainPendingJoins(ctx context.Context, groupID id.ID) {
-	defer d.suppressElections(groupID)()
+func (d *DS) drainSlice(ctx context.Context, groupID id.ID) (int, error) {
+	now := d.now()
 	issued := 0
-	for _, device := range d.takePendingJoins(groupID, d.opts.Policy.MaxAddsPerCommit) {
-		if err := d.proposeAddLocked(ctx, groupID, device, id.New()); err != nil {
-			d.log().Warn("queued add skipped", "device", device.String()[:8], "err", err)
-			continue
+	for {
+		snap, err := d.groupSnapshot(ctx, groupID)
+		if err != nil {
+			return issued, err
 		}
-		issued++
+		room := d.opts.Policy.MaxAddsPerCommit - snap.adds
+		if room <= 0 {
+			return issued, nil
+		}
+		taken, err := d.opts.Store.TakePendingJoins(ctx, groupID, int32(room)) //nolint:gosec // G115: room is at most MaxAddsPerCommit
+		if err != nil || len(taken) == 0 {
+			return issued, err
+		}
+		for i, device := range taken {
+			ok, err := d.eligibleNow(ctx, snap, groupID, device, now)
+			if err == nil && ctx.Err() != nil {
+				err = ctx.Err()
+			}
+			if err != nil {
+				d.requeuePendingJoins(ctx, groupID, taken[i:])
+				return issued, err
+			}
+			if !ok {
+				d.log().Info("queued add dropped: the device is no longer eligible",
+					"group", groupID.String()[:8], "device", device.String()[:8])
+				continue
+			}
+			if err := d.proposeAddLocked(ctx, groupID, device, id.New()); err != nil {
+				if ctx.Err() != nil {
+					d.requeuePendingJoins(ctx, groupID, taken[i:])
+					return issued, ctx.Err()
+				}
+				// One unusable KeyPackage must not sink the slice: the device is skipped and the
+				// storm continues.
+				d.log().Warn("queued add skipped", "group", groupID.String()[:8],
+					"device", device.String()[:8], "err", err)
+				continue
+			}
+			snap.pending[device] = true
+			issued++
+		}
+		// Every device dropped or skipped left its room free; the loop takes the next ones into
+		// it, so a slice is filled while the queue holds eligible devices.
 	}
-	if issued > 0 {
-		if err := d.RequestCommit(ctx, groupID); err != nil {
-			d.log().Error("electing a committer for the next slice of a join storm failed",
-				"group", groupID.String()[:8], "err", err)
+}
+
+// requeuePendingJoins puts devices a drain took but could not judge back in the queue. It writes
+// under a context the caller's cancellation cannot reach, because the cancellation is usually why
+// they are being put back.
+func (d *DS) requeuePendingJoins(ctx context.Context, groupID id.ID, devices []id.ID) {
+	if err := d.opts.Store.QueuePendingJoins(context.WithoutCancel(ctx), groupID, devices, d.now()); err != nil {
+		d.log().Error("putting a join storm's devices back in the queue failed; they are lost",
+			"group", groupID.String()[:8], "devices", len(devices), "err", err)
+	}
+}
+
+// drainStalledJoins is the sweeper's half of the drain: every group holding a queue gets one
+// drain, under its lock. It is what re-drives a storm no commit re-drives — one whose outstanding
+// Adds were voided (invariant 6's TTL), and one in flight across a restart. A group whose epoch has
+// no room issues nothing.
+func (d *DS) drainStalledJoins(ctx context.Context) (int, error) {
+	drained := 0
+	after := id.ID{}
+	for {
+		groups, err := d.opts.Store.ListPendingJoinGroups(ctx, after, sweepPage)
+		if err != nil {
+			return drained, err
+		}
+		for _, groupID := range groups {
+			after = groupID
+			unlock := d.lock(groupID)
+			n, err := d.drainPendingJoins(ctx, groupID)
+			unlock()
+			drained += n
+			if err != nil {
+				d.log().Error("draining a stalled join storm failed", "group", groupID.String()[:8], "err", err)
+			}
+		}
+		if len(groups) < sweepPage {
+			return drained, nil
 		}
 	}
 }
@@ -335,7 +347,7 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 	// A fresh instance proposal is what invariant 7's election exists to get committed, so the
 	// election is held here, the moment the proposal is durable — UNLESS a batch window is open.
 	// This function is the sink of every issuing path, single and batched alike (ProposeAdd,
-	// ProposeRemove, reissue, and each device of ProposeAddBatch and drainPendingJoins), and
+	// ProposeRemove, reissue, and each device of a join storm's slice in drainPendingJoins), and
 	// invariant 7 elects ONE committer per round: a batch therefore suppresses the per-proposal
 	// election and makes one call of its own when the whole batch is durable.
 	//

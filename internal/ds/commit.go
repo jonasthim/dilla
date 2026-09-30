@@ -411,13 +411,14 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 				"group", groupID, "err", rerr)
 		}
 	}
-	// And the next slice of a join storm, once the Adds of this commit have landed. Without it a
-	// 1,000-device batch stalls after its first 256.
-	for _, a := range applied {
-		if a.Kind == mlswasi.ProposalAdd {
-			d.drainPendingJoins(ctx, groupID)
-			break
-		}
+	// And the next slice of a join storm, once this commit has landed. Without it a 1,000-device
+	// batch stalls after its first 256. It runs after EVERY accepted commit, not only one that
+	// applied Adds: a commit of Removes, or one after the storm's own Adds were voided, frees room
+	// too, and an empty queue costs one read. The committer's request context is not the drain's —
+	// the commit is durable, and a client that hangs up now must not cut the next slice short.
+	if _, derr := d.drainPendingJoins(context.WithoutCancel(ctx), groupID); derr != nil {
+		d.log().Error("proposing the next slice of a join storm failed; the sweeper retries it",
+			"group", groupID, "err", derr)
 	}
 	return result, nil
 }

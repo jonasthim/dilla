@@ -216,7 +216,8 @@ func TestProposeAddBatchElectsOnceForTheWholeBatch(t *testing.T) {
 	h.online(g.members[0], g.members[1])
 	h.setLeaves(g, map[int]uint32{0: 1, 1: 2})
 
-	joiner := h.deviceWithKeyPackage(t)
+	// The channel ACL admits the joiner: a batch proposes no device its commit would be refused for.
+	joiner := h.eligibleDeviceWithKeyPackage(t)
 
 	rows, inWindow := 0, 0
 	h.repo.observeProposals(func(store.ProposalRow) {
