@@ -49,6 +49,17 @@ pub struct HttpDs {
     /// `hello`'s heartbeat interval; the client beats at half of it.
     heartbeat: Duration,
     last_beat: Instant,
+    /// Heartbeats sent on this connection that no `heartbeat_ack` has answered yet. The gateway
+    /// answers every heartbeat in order, so a connection that stays open while acks stop coming
+    /// back is one that has stopped delivering: `pump` drops it after `ack_timeout` without
+    /// progress, and the next `drain` reopens it and catches up — what a real client does.
+    unacked: u32,
+    /// Since when the oldest unanswered heartbeat has waited without the socket delivering
+    /// anything: reset by every frame read and by a pump after a pause longer than the timeout
+    /// (the silence while the client was not listening is not the connection's).
+    ack_since: Instant,
+    /// When the last `pump` finished reading.
+    last_pump: Instant,
     /// The highest replay `n` received, which every heartbeat acknowledges.
     last_n: u64,
     /// The highest per-group `seq` delivered as a handshake or a message, per group. A reconnect
@@ -65,6 +76,8 @@ pub struct HttpDs {
     reconnects: u64,
     lost: Vec<String>,
     accepted: u64,
+    /// How many connections were dropped because a heartbeat went unacknowledged.
+    missed_acks: u64,
 }
 
 /// What `redeem_invite` returns: the identifiers the instance minted.
@@ -637,12 +650,16 @@ impl HttpDs {
             online: true,
             heartbeat: Duration::from_secs(30),
             last_beat: Instant::now(),
+            unacked: 0,
+            ack_since: Instant::now(),
+            last_pump: Instant::now(),
             last_n: 0,
             delivered: BTreeMap::new(),
             connected_before: false,
             reconnects: 0,
             lost: Vec::new(),
             accepted: 0,
+            missed_acks: 0,
             expires: 0,
         };
         ds.open_socket()?;
@@ -811,6 +828,9 @@ impl HttpDs {
         read_timeout(&mut socket, PUMP_WAIT)?;
         self.heartbeat = Duration::from_millis(heartbeat_ms.max(1_000));
         self.last_beat = Instant::now();
+        self.unacked = 0;
+        self.ack_since = Instant::now();
+        self.last_pump = Instant::now();
         self.last_n = 0;
         self.ws = Some(socket);
         // A reconnect is a fresh identify with an empty replay ring, so what arrived while the
@@ -932,9 +952,25 @@ impl HttpDs {
         });
         if let Some(ws) = self.ws.as_mut() {
             ws.send(Message::Binary(beat.into())).map_err(transport)?;
+            if self.unacked == 0 {
+                self.ack_since = Instant::now();
+            }
+            self.unacked += 1;
         }
         self.last_beat = Instant::now();
         Ok(())
+    }
+
+    /// How long a heartbeat may go unanswered, with the socket delivering nothing, before the
+    /// connection is treated as dead: half the heartbeat interval, between 5 and 15 seconds.
+    fn ack_timeout(&self) -> Duration {
+        (self.heartbeat / 2).clamp(Duration::from_secs(5), Duration::from_secs(15))
+    }
+
+    /// A `heartbeat_ack` answers the oldest heartbeat still outstanding.
+    fn acked(&mut self) {
+        self.unacked = self.unacked.saturating_sub(1);
+        self.ack_since = Instant::now();
     }
 
     /// Reads every frame that is already buffered, without blocking on an empty socket.
@@ -945,10 +981,17 @@ impl HttpDs {
     /// partially read frame in tungstenite's own buffer for the next pump.
     ///
     /// A connection the instance closes (`invalid_session`, `reconnect`, a close frame, a reset)
-    /// is dropped here; the next `drain` reopens it while the scenario has the device online.
+    /// is dropped here; the next `drain` reopens it while the scenario has the device online. So
+    /// is one that stays open but stops delivering: a heartbeat left unanswered for `ack_timeout`
+    /// of reading with nothing arriving (protocol/02's liveness, seen from the client's side).
     fn pump(&mut self) -> Result<(), DsError> {
         if self.ws.is_none() {
             return Ok(());
+        }
+        // Silence while this client was busy elsewhere is not the connection's fault: the ack
+        // may be sitting behind a backlog the socket has not been asked for yet.
+        if self.unacked > 0 && self.last_pump.elapsed() >= self.ack_timeout() {
+            self.ack_since = Instant::now();
         }
         if self.last_beat.elapsed() >= self.heartbeat / 2 {
             self.send_heartbeat()?;
@@ -961,18 +1004,29 @@ impl HttpDs {
                 Ok(Message::Binary(bytes)) => {
                     let (n, inbound) = decode_frame(&bytes)?;
                     self.last_n = self.last_n.max(n);
+                    // The socket is delivering, so an ack still owed is only queued behind this.
+                    self.ack_since = Instant::now();
                     match inbound {
                         Inbound::Frame(frame) => self.accept(frame),
                         Inbound::Closing(reason) => self.socket_lost(format!("closing: {reason}")),
-                        Inbound::Hello { .. }
-                        | Inbound::Ready
-                        | Inbound::HeartbeatAck
-                        | Inbound::Ignored => {}
+                        Inbound::HeartbeatAck => self.acked(),
+                        Inbound::Hello { .. } | Inbound::Ready | Inbound::Ignored => {}
                     }
                 }
                 Ok(Message::Close(frame)) => self.socket_lost(format!("close frame: {frame:?}")),
                 Ok(_) => {}
-                Err(e) if is_timeout(&e) => return Ok(()),
+                Err(e) if is_timeout(&e) => {
+                    self.last_pump = Instant::now();
+                    let timeout = self.ack_timeout();
+                    if self.unacked > 0 && self.ack_since.elapsed() >= timeout {
+                        self.missed_acks += 1;
+                        let unacked = self.unacked;
+                        self.socket_lost(format!(
+                            "no heartbeat_ack within {timeout:?} ({unacked} unanswered)"
+                        ));
+                    }
+                    return Ok(());
+                }
                 Err(
                     e @ (tungstenite::Error::ConnectionClosed
                     | tungstenite::Error::AlreadyClosed
@@ -988,6 +1042,9 @@ impl HttpDs {
     /// meanwhile. The gateway handles one connection's frames in order, so on return every frame
     /// this client sent before the heartbeat has been handled — which is what makes a following
     /// control-listener call (an `advance_clock` that runs the watchdog) see a `commit_ack`.
+    ///
+    /// It waits for every heartbeat still outstanding, not the first ack: an ack owed to an
+    /// earlier `pump`'s heartbeat answers that one, not this barrier's.
     fn barrier(&mut self) -> Result<(), DsError> {
         self.send_heartbeat()?;
         let deadline = Instant::now() + HANDSHAKE_WAIT;
@@ -1001,8 +1058,14 @@ impl HttpDs {
                 Ok(Message::Binary(bytes)) => {
                     let (n, inbound) = decode_frame(&bytes)?;
                     self.last_n = self.last_n.max(n);
+                    self.ack_since = Instant::now();
                     match inbound {
-                        Inbound::HeartbeatAck => return Ok(()),
+                        Inbound::HeartbeatAck => {
+                            self.acked();
+                            if self.unacked == 0 {
+                                return Ok(());
+                            }
+                        }
                         Inbound::Frame(frame) => self.accept(frame),
                         Inbound::Closing(reason) => {
                             self.ws = None;
@@ -1494,9 +1557,11 @@ impl DeliveryService for HttpDs {
             |body| String::from_utf8_lossy(&body).trim().to_owned(),
         );
         format!(
-            "socket {}, reconnects {}, lost {:?}, frames accepted {}, delivered seq for the group {:?}, last n {}; server {server}",
+            "socket {}, reconnects {}, missed acks {}, heartbeats unanswered {}, lost {:?}, frames accepted {}, delivered seq for the group {:?}, last n {}; server {server}",
             if self.ws.is_some() { "open" } else { "closed" },
             self.reconnects,
+            self.missed_acks,
+            self.unacked,
             self.lost,
             self.accepted,
             self.delivered.get(g),
@@ -1886,12 +1951,16 @@ mod tests {
             online: true,
             heartbeat: Duration::from_secs(30),
             last_beat: Instant::now(),
+            unacked: 0,
+            ack_since: Instant::now(),
+            last_pump: Instant::now(),
             last_n: 0,
             delivered: BTreeMap::new(),
             connected_before: true,
             reconnects: 0,
             lost: Vec::new(),
             accepted: 0,
+            missed_acks: 0,
             expires: 0,
         }
     }
@@ -2029,47 +2098,52 @@ mod tests {
     /// A throwaway HTTP/1.1 origin, one request per connection, answering from `route` and
     /// recording every `METHOD path` it served.
     fn origin(route: fn(&str, &str) -> (u16, Vec<u8>)) -> (String, Seen) {
-        use std::io::{BufRead, BufReader, Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let seen: Seen = Default::default();
         let log = std::sync::Arc::clone(&seen);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { return };
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                let mut length = 0usize;
-                loop {
-                    let mut header = String::new();
-                    reader.read_line(&mut header).unwrap();
-                    if header.trim().is_empty() {
-                        break;
-                    }
-                    if let Some((name, value)) = header.split_once(':')
-                        && name.eq_ignore_ascii_case("content-length")
-                    {
-                        length = value.trim().parse().unwrap();
-                    }
-                }
-                let mut body = vec![0u8; length];
-                reader.read_exact(&mut body).unwrap();
-                let mut parts = line.split_whitespace();
-                let method = parts.next().unwrap_or_default().to_owned();
-                let path = parts.next().unwrap_or_default().to_owned();
-                log.lock().unwrap().push(format!("{method} {path}"));
-                let (status, out) = route(&method, &path);
-                let head = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: application/cbor\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n",
-                    out.len()
-                );
-                stream.write_all(head.as_bytes()).unwrap();
-                stream.write_all(&out).unwrap();
+                let Ok(stream) = stream else { return };
+                answer(stream, route, &log);
             }
         });
         (base, seen)
+    }
+
+    /// Answers one HTTP/1.1 request on `stream` from `route`, recording `METHOD path` in `log`.
+    fn answer(mut stream: TcpStream, route: fn(&str, &str) -> (u16, Vec<u8>), log: &Seen) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let mut length = 0usize;
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header).unwrap();
+            if header.trim().is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0u8; length];
+        reader.read_exact(&mut body).unwrap();
+        let mut parts = line.split_whitespace();
+        let method = parts.next().unwrap_or_default().to_owned();
+        let path = parts.next().unwrap_or_default().to_owned();
+        log.lock().unwrap().push(format!("{method} {path}"));
+        let (status, out) = route(&method, &path);
+        let head = format!(
+            "HTTP/1.1 {status} X\r\nContent-Type: application/cbor\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+            out.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(&out).unwrap();
     }
 
     /// A device learns of a group from `register_group`, a Welcome row or its own external commit
@@ -2145,5 +2219,244 @@ mod tests {
         });
         ds.welcomes().unwrap();
         assert_eq!(ds.delivered.get(WELCOMED.as_slice()), Some(&8));
+    }
+
+    fn heartbeat_ack() -> Vec<u8> {
+        encode(|e| {
+            e.array(4).uint(7).uint(0).null();
+            e.array(1).uint(1_758_659_640);
+        })
+    }
+
+    /// Answers every binary frame on `ws` with a `heartbeat_ack` until the client lets go.
+    fn ack_every_frame(mut ws: WebSocket<TcpStream>) {
+        while let Ok(message) = ws.read() {
+            if matches!(message, Message::Binary(_))
+                && ws.send(Message::Binary(heartbeat_ack().into())).is_err()
+            {
+                return;
+            }
+        }
+    }
+
+    /// Pumps until no heartbeat is outstanding, or fails after a few seconds.
+    fn pump_until_acked(ds: &mut HttpDs) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ds.unacked > 0 {
+            assert!(Instant::now() < deadline, "the heartbeat was never acked");
+            ds.pump().unwrap();
+        }
+    }
+
+    fn a_minute_ago() -> Instant {
+        Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .expect("a monotonic clock older than a minute")
+    }
+
+    /// A heartbeat is outstanding from the moment it is sent until its `heartbeat_ack` is read,
+    /// and an answered heartbeat leaves the connection alone.
+    #[test]
+    fn an_acknowledged_heartbeat_keeps_the_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let gateway = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            ack_every_frame(tungstenite::accept(stream).unwrap());
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        let (mut socket, _) = tungstenite::client(format!("ws://{addr}/gateway"), stream).unwrap();
+        read_timeout(&mut socket, PUMP_WAIT).unwrap();
+        let mut ds = connected(&format!("http://{addr}"), Some(socket));
+
+        ds.last_beat = a_minute_ago();
+        ds.pump().unwrap();
+        assert!(ds.unacked <= 1, "one heartbeat sent");
+        pump_until_acked(&mut ds);
+        assert!(ds.ws.is_some(), "an answered heartbeat keeps the socket");
+        assert!(ds.lost.is_empty(), "nothing lost: {:?}", ds.lost);
+        assert_eq!(ds.missed_acks, 0);
+        assert_eq!(ds.ack_timeout(), Duration::from_secs(15));
+
+        ds.set_online(false).unwrap();
+        gateway.join().unwrap();
+    }
+
+    const STALLED: [u8; 16] = [0x05; 16];
+
+    /// The HTTP side of `an_unanswered_heartbeat_reopens_and_catches_up`: `STALLED` holds one
+    /// message the stalled connection never carried, seq 5.
+    fn stalled_instance(method: &str, path: &str) -> (u16, Vec<u8>) {
+        let at = format!("/v1/groups/{}/", hex::encode(STALLED));
+        match method {
+            "GET" if path.starts_with(&format!("{at}handshakes?from=5&")) => (
+                200,
+                encode(|e| {
+                    e.array(0);
+                }),
+            ),
+            "GET" if path.starts_with(&format!("{at}messages?from=5&")) => (
+                200,
+                encode(|e| {
+                    e.array(1);
+                    e.array(8)
+                        .uint(5)
+                        .uint(2)
+                        .bytes(&[0xaa; 16])
+                        .bytes(&[4])
+                        .null()
+                        .bytes(&[0xbb; 32])
+                        .uint(1_758_659_640)
+                        .uint(0);
+                }),
+            ),
+            _ => (500, Vec::new()),
+        }
+    }
+
+    /// A connection that stays open but stops delivering — the instance wrote every frame, the
+    /// client reads nothing and no `heartbeat_ack` comes back — is dropped once the ack is overdue,
+    /// and the next `drain` reopens it with a fresh identify and catches up over rows 4 and 12.
+    #[test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "tungstenite's accept_hdr callback fixes its error type as an HTTP response"
+    )]
+    fn an_unanswered_heartbeat_reopens_and_catches_up() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen: Seen = Default::default();
+        let log = std::sync::Arc::clone(&seen);
+        std::thread::spawn(move || {
+            let mut upgrades = 0;
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let mut head = [0u8; 12];
+                while stream.peek(&mut head).unwrap() < head.len() {}
+                if &head != b"GET /gateway" {
+                    answer(stream, stalled_instance, &log);
+                    continue;
+                }
+                upgrades += 1;
+                // `open_socket` asks for the subprotocol, and tungstenite holds the answer to it.
+                let echo =
+                    |request: &tungstenite::handshake::server::Request,
+                     mut response: tungstenite::handshake::server::Response| {
+                        if let Some(asked) = request.headers().get("Sec-WebSocket-Protocol") {
+                            response
+                                .headers_mut()
+                                .insert("Sec-WebSocket-Protocol", asked.clone());
+                        }
+                        Ok(response)
+                    };
+                let mut ws = tungstenite::accept_hdr(stream, echo).unwrap();
+                if upgrades == 1 {
+                    // The stalled connection: open, reading, answering nothing.
+                    std::thread::spawn(move || while ws.read().is_ok() {});
+                    continue;
+                }
+                let hello = encode(|e| {
+                    e.array(4).uint(0).uint(0).null();
+                    e.array(9)
+                        .array(1)
+                        .uint(1)
+                        .array(1)
+                        .uint(1)
+                        .array(1)
+                        .uint(1)
+                        .uint(30_000)
+                        .uint(131_584)
+                        .bytes(&[0x11; 16])
+                        .uint(1)
+                        .uint(2_000)
+                        .uint(500);
+                });
+                let ready = encode(|e| {
+                    e.array(4).uint(3).uint(0).null();
+                    e.array(0);
+                });
+                ws.send(Message::Binary(hello.into())).unwrap();
+                ws.read().unwrap(); // identify
+                ws.send(Message::Binary(ready.into())).unwrap();
+                std::thread::spawn(move || ack_every_frame(ws));
+            }
+        });
+
+        let stream = TcpStream::connect(addr).unwrap();
+        let (mut socket, _) = tungstenite::client(format!("ws://{addr}/gateway"), stream).unwrap();
+        read_timeout(&mut socket, PUMP_WAIT).unwrap();
+        let mut ds = connected(&format!("http://{addr}"), Some(socket));
+        ds.delivered.insert(STALLED.to_vec(), 4);
+
+        ds.last_beat = a_minute_ago();
+        ds.pump().unwrap();
+        assert_eq!(ds.unacked, 1, "the heartbeat is outstanding");
+        assert!(ds.ws.is_some(), "not yet overdue");
+
+        // The ack has now waited past the timeout with nothing arriving.
+        ds.ack_since = a_minute_ago();
+        let frames = ds.drain().unwrap();
+
+        assert_eq!(ds.missed_acks, 1);
+        assert!(
+            ds.lost
+                .first()
+                .is_some_and(|why| why.starts_with("no heartbeat_ack within 15s")),
+            "{:?}",
+            ds.lost
+        );
+        assert_eq!(ds.reconnects, 1, "the drain reopened the connection");
+        assert!(ds.ws.is_some());
+        assert_eq!(ds.unacked, 0, "a fresh connection owes nothing");
+        assert_eq!(
+            frames.iter().filter_map(seq_of).collect::<Vec<_>>(),
+            vec![5],
+            "the catch-up brings in what the stalled connection held back"
+        );
+        let served = seen.lock().unwrap().clone();
+        let g = hex::encode(STALLED);
+        assert!(
+            served.contains(&format!(
+                "GET /v1/groups/{g}/handshakes?from=5&limit={HANDSHAKE_PAGE}"
+            )),
+            "{served:#?}"
+        );
+
+        // The reopened connection answers its heartbeats.
+        ds.last_beat = a_minute_ago();
+        ds.pump().unwrap();
+        pump_until_acked(&mut ds);
+        assert!(ds.ws.is_some());
+        assert_eq!(ds.missed_acks, 1);
+    }
+
+    /// A pump after a pause longer than the ack timeout starts the wait afresh: the ack may be
+    /// queued behind a backlog the client simply has not read yet.
+    #[test]
+    fn a_pause_in_pumping_is_not_a_missed_ack() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let gateway = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            while ws.read().is_ok() {}
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        let (mut socket, _) = tungstenite::client(format!("ws://{addr}/gateway"), stream).unwrap();
+        read_timeout(&mut socket, PUMP_WAIT).unwrap();
+        let mut ds = connected(&format!("http://{addr}"), Some(socket));
+
+        ds.last_beat = a_minute_ago();
+        ds.pump().unwrap();
+        assert_eq!(ds.unacked, 1);
+        // The heartbeat went out a minute ago, and this client has not pumped since.
+        ds.ack_since = a_minute_ago();
+        ds.last_pump = a_minute_ago();
+        ds.pump().unwrap();
+        assert!(ds.ws.is_some(), "lost {:?}", ds.lost);
+        assert_eq!(ds.missed_acks, 0);
+
+        ds.set_online(false).unwrap();
+        gateway.join().unwrap();
     }
 }
