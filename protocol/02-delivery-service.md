@@ -323,7 +323,11 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     message in `expires`, where an absent value means "retained". An instance MAY shorten either
     half per community policy; it MUST NOT lengthen the handshake window beyond 30 days without also
     lengthening client-side past-epoch retention, which this version does not allow. Cursors are per
-    device.
+    device. Only a **delivery** deletion moves the `E_PRUNED` high-water of a stream; an archival
+    deletion never does. `expires` need not grow with `seq` (a community that shortens its policy
+    makes newer messages expire before older ones), so a high-water raised to an expired `seq`
+    would stand above messages that still exist and refuse a catch-up the instance can serve. A
+    catch-up across an archivally deleted message simply does not return it.
 11. **Restore.** `dillad restore` bumps the instance `generation`; every group becomes
     epoch-unknown and every response carries the new generation. A member heals a group by
     `POST /v1/groups/{id}/heal`, uploading its member-signed GroupInfo together with its handshake
@@ -436,7 +440,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 404 | `E_NOT_FOUND` | no such group, device, message or blob | none |
 | 409 | `E_GROUP_EXISTS` | this `group_id` is already registered | mint a new `group_id` |
 | 409 | `E_COMMIT_CONFLICT` | another commit won this epoch | discard the pending commit, process the winner, retry |
-| 410 | `E_PRUNED` | retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest deleted `seq` of each stream, so the answer is exact) | resync; mark older messages "undecryptable (too old)" |
+| 410 | `E_PRUNED` | delivery retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest `seq` delivery retention deleted from each stream, so the answer is exact; an archival deletion is not recorded, invariant 10) | resync; mark older messages "undecryptable (too old)" |
 | 410 | `E_INVITE_INVALID` | the invite is expired, exhausted or revoked | none |
 | 413 | `E_TOO_LARGE` | the object exceeds the instance limit | split or attach |
 | 422 | `E_COMMIT_INVALID` | structural or policy failure; `rule` names the clause | do not retry unchanged; resync if behind |

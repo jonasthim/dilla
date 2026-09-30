@@ -254,7 +254,10 @@ type Messages interface {
 	// now - MessageRetention) and archival retention (`expires` against `now`, where NULL means
 	// retained indefinitely). Deviation D14: three parameters, not two, and `now` is not the
 	// delivery floor. In the same transaction it raises the group's PrunedBelow to the highest
-	// seq it deletes, so the high-water is exact whichever trigger fired.
+	// seq the DELIVERY triggers delete, so the high-water is exact for delivery retention. An
+	// archival deletion never moves it (Plan 2 task 8's retention ruling): `expires` is not
+	// monotone in seq, so a mark raised to an expired seq could stand above surviving messages
+	// and turn a servable catch-up into E_PRUNED.
 	PruneAppMessages(ctx context.Context, groupID id.ID, cursorFloor uint64, deliveryFloor, now int64) (int64, error)
 	// RaisePrunedBelow raises the group's MONOTONE message high-water (`mls_groups.pruned_below`)
 	// to `below`; a lower value is ignored. PruneAppMessages calls it itself with the exact seq it

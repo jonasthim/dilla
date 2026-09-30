@@ -112,27 +112,26 @@ const maxPrunableAppMessageSeq = `-- name: MaxPrunableAppMessageSeq :one
 SELECT CAST(COALESCE(MAX(seq), 0) AS BIGINT) AS max_seq FROM mls_app_messages
  WHERE group_id = ?1
    AND ((CAST(?2 AS INTEGER) > 0 AND seq <= CAST(?2 AS INTEGER))
-        OR created < CAST(?3 AS INTEGER)
-        OR (expires IS NOT NULL AND expires <= CAST(?4 AS INTEGER)))
+        OR created < CAST(?3 AS INTEGER))
 `
 
 type MaxPrunableAppMessageSeqParams struct {
 	GroupID       id.ID
 	CursorFloor   int64
 	DeliveryFloor int64
-	Now           int64
 }
 
-// The highest seq PruneAppMessages is about to delete with the same arguments, or 0. The store runs
-// it in PruneAppMessages' transaction and raises pruned_below to it before the DELETE, so the
-// high-water records exactly what went, whichever trigger took it.
+// The highest seq PruneAppMessages' DELIVERY triggers are about to delete with the same arguments,
+// or 0. The store runs it in PruneAppMessages' transaction and raises pruned_below to it before the
+// DELETE, so the high-water records exactly what delivery retention took.
+//
+// The archival trigger is deliberately NOT in this predicate (Plan 2 task 8's retention ruling):
+// `expires` is not monotone in seq -- a community that shortens its retention makes newer messages
+// expire before older ones -- so a mark raised to the highest expired seq would stand above
+// messages that still exist, and the catch-up would answer E_PRUNED for a range it can serve. An
+// archival deletion removes the row for every device alike; it never moves the mark.
 func (q *Queries) MaxPrunableAppMessageSeq(ctx context.Context, arg MaxPrunableAppMessageSeqParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, maxPrunableAppMessageSeq,
-		arg.GroupID,
-		arg.CursorFloor,
-		arg.DeliveryFloor,
-		arg.Now,
-	)
+	row := q.db.QueryRowContext(ctx, maxPrunableAppMessageSeq, arg.GroupID, arg.CursorFloor, arg.DeliveryFloor)
 	var max_seq int64
 	err := row.Scan(&max_seq)
 	return max_seq, err

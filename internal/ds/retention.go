@@ -30,7 +30,10 @@ type SweepReport struct {
 // per message in `expires`, where NULL means retained. It is compared against NOW, never against
 // the delivery floor, and it never deletes a row that set no expiry: the two halves are
 // independent triggers and either one alone deletes. Nothing in Plan 1 writes `expires` — `Upload`
-// writes NULL — so this half fires only once Plan 2's community policy fills the column.
+// writes NULL — so this half fires only once Plan 2's community policy fills the column. An
+// archival deletion never raises the group's E_PRUNED high-water (Plan 2 task 8's retention
+// ruling): `expires` need not be monotone in seq, and the mark must never stand above a message
+// that survives.
 //
 // The sweep PAGES: `sweepPage` (task 21) is how many groups one query reads, and the loop runs
 // until a short page. A fixed batch from the zero id would mean only the first N groups are ever

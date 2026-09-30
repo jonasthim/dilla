@@ -33,14 +33,19 @@ DELETE FROM mls_app_messages
         OR (expires IS NOT NULL AND expires <= sqlc.arg(now)::bigint));
 
 -- name: MaxPrunableAppMessageSeq :one
--- The highest seq PruneAppMessages is about to delete with the same arguments, or 0. The store runs
--- it in PruneAppMessages' transaction and raises pruned_below to it before the DELETE, so the
--- high-water records exactly what went, whichever trigger took it.
+-- The highest seq PruneAppMessages' DELIVERY triggers are about to delete with the same arguments,
+-- or 0. The store runs it in PruneAppMessages' transaction and raises pruned_below to it before the
+-- DELETE, so the high-water records exactly what delivery retention took.
+--
+-- The archival trigger is deliberately NOT in this predicate (Plan 2 task 8's retention ruling):
+-- `expires` is not monotone in seq -- a community that shortens its retention makes newer messages
+-- expire before older ones -- so a mark raised to the highest expired seq would stand above
+-- messages that still exist, and the catch-up would answer E_PRUNED for a range it can serve. An
+-- archival deletion removes the row for every device alike; it never moves the mark.
 SELECT CAST(COALESCE(MAX(seq), 0) AS BIGINT) AS max_seq FROM mls_app_messages
  WHERE group_id = sqlc.arg(group_id)
    AND ((sqlc.arg(cursor_floor)::bigint > 0 AND seq <= sqlc.arg(cursor_floor)::bigint)
-        OR created < sqlc.arg(delivery_floor)::bigint
-        OR (expires IS NOT NULL AND expires <= sqlc.arg(now)::bigint));
+        OR created < sqlc.arg(delivery_floor)::bigint);
 
 -- name: RaisePrunedBelow :exec
 -- The record of what the DELIVERY-CURSOR trigger above actually deleted at, kept on the group

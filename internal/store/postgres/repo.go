@@ -1596,13 +1596,14 @@ func (r *Repo) PruneAppMessages(ctx context.Context, groupID id.ID,
 	cursorFloor uint64, deliveryFloor, now int64) (int64, error) {
 	var n int64
 	err := r.atomically(ctx, func(q *pgdb.Queries) error {
-		// The high-water first, from the same predicate the DELETE applies: pruned_below is
-		// then exactly the highest seq this call takes, whichever trigger takes it.
+		// The high-water first, from the DELIVERY half of the predicate the DELETE applies:
+		// pruned_below is then exactly the highest seq delivery retention takes. An archival
+		// expiry deletes without moving it, so the mark never stands above a surviving message
+		// (Plan 2 task 8's retention ruling; see MaxPrunableAppMessageSeq).
 		top, err := q.MaxPrunableAppMessageSeq(ctx, pgdb.MaxPrunableAppMessageSeqParams{
 			GroupID:       groupID,
 			CursorFloor:   int64(cursorFloor),
 			DeliveryFloor: deliveryFloor,
-			Now:           now,
 		})
 		if err != nil {
 			return err
