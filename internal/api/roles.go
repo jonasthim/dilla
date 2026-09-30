@@ -46,10 +46,22 @@ type Roles struct {
 	rpID string // auth.webauthn.rp_id, §6.4 — see requireSecondFactor
 	log  *slog.Logger
 	res  *Resolver
+	// dsvc receives the Adds and Removes a role or overwrite change turns into
+	// (task 7): private channels are populated by batched delivery-service Adds.
+	dsvc DS
 }
 
 func NewRoles(repo store.Repository, clk clock.Clock, rpID string, log *slog.Logger) *Roles {
 	return &Roles{repo: repo, clk: clk, rpID: rpID, log: log, res: NewResolver(repo)}
+}
+
+// WithDS sets the delivery service a role or overwrite change proposes its Adds
+// and Removes to, and returns h. Without one the routes still materialise
+// channel_members and log errNoDS for the proposals they could not issue: the
+// composition root always sets it.
+func (h *Roles) WithDS(dsvc DS) *Roles {
+	h.dsvc = dsvc
+	return h
 }
 
 func (h *Roles) Register(mux *server.Mux) {
@@ -586,9 +598,10 @@ func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
 	// The eligibility materialiser runs AFTER the transaction commits, never
 	// inside it: it calls the delivery service, which writes through the same
 	// single-writer pool (§4.7 SetMaxOpenConns(1)) and would deadlock against the
-	// open transaction. Task 7 gives it its body; a failure here is logged and
-	// re-driven, because channel_members is derived state.
-	if err := syncChannelEligibility(r.Context(), h.repo, g.cid, g.target, now); err != nil {
+	// open transaction. A failure here is logged, not answered: the grant stands,
+	// channel_members is derived state, and the next change to the channel
+	// re-derives it.
+	if err := syncChannelEligibility(r.Context(), h.repo, h.dsvc, g.cid, g.target, now); err != nil {
 		h.log.ErrorContext(r.Context(), "sync channel eligibility", "community", g.cid, "user", g.target, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -615,7 +628,7 @@ func (h *Roles) revoke(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "revoke role", err)
 		return
 	}
-	if err := syncChannelEligibility(r.Context(), h.repo, g.cid, g.target, now); err != nil {
+	if err := syncChannelEligibility(r.Context(), h.repo, h.dsvc, g.cid, g.target, now); err != nil {
 		h.log.ErrorContext(r.Context(), "sync channel eligibility", "community", g.cid, "user", g.target, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -771,7 +784,7 @@ func (h *Roles) putOverwrite(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "put overwrite", err)
 		return
 	}
-	if err := materialiseChannelMembers(r.Context(), h.repo, o.ch.ID, now); err != nil {
+	if err := materialiseChannel(r.Context(), h.repo, h.dsvc, o.ch.ID, now); err != nil {
 		h.log.ErrorContext(r.Context(), "materialise channel members", "channel", o.ch.ID, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -798,7 +811,7 @@ func (h *Roles) deleteOverwrite(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "delete overwrite", err)
 		return
 	}
-	if err := materialiseChannelMembers(r.Context(), h.repo, o.ch.ID, now); err != nil {
+	if err := materialiseChannel(r.Context(), h.repo, h.dsvc, o.ch.ID, now); err != nil {
 		h.log.ErrorContext(r.Context(), "materialise channel members", "channel", o.ch.ID, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -814,26 +827,10 @@ func (h *Roles) materialiseCommunity(ctx context.Context, communityID id.ID, now
 		return
 	}
 	for _, ch := range channels {
-		if err := materialiseChannelMembers(ctx, h.repo, ch.ID, now); err != nil {
+		if err := MaterialiseChannelMembers(ctx, h.repo, h.dsvc, ch, now); err != nil {
 			h.log.ErrorContext(ctx, "materialise channel members", "channel", ch.ID, "err", err)
 		}
 	}
-}
-
-// syncChannelEligibility rewrites channel_members for one user across every
-// private channel of the community, from the resolver's verdict. Task 7 gives it
-// its body and its delivery-service side; here it is a no-op so that the call
-// sites are already in place.
-func syncChannelEligibility(ctx context.Context, repo store.Repository, communityID, userID id.ID, now int64) error {
-	return nil
-}
-
-// materialiseChannelMembers rewrites one channel's channel_members from the
-// resolver's verdict for every member of its community. Task 7 gives it its
-// body and its delivery-service side (the batched Adds and Removes); here it is
-// a no-op so that the call sites are already in place.
-func materialiseChannelMembers(ctx context.Context, repo store.Repository, channelID id.ID, now int64) error {
-	return nil
 }
 
 // fail writes err as the client's refusal, logging anything that is not a

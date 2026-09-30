@@ -148,7 +148,6 @@ func TestNoRoleCanBeMovedToPositionZero(t *testing.T) {
 }
 
 func TestRemovingARoleThatOpenedAPrivateChannelSchedulesRemoves(t *testing.T) {
-	t.Skip("channel_members lands in task 7")
 	e, cid, ownerTok := channelEnv(t)
 	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
 	ch, _, _ := newChannel(t, e, cid, ownerTok, 0, 0 /* e2ee */, 0 /* private */, "secret")
@@ -157,6 +156,17 @@ func TestRemovingARoleThatOpenedAPrivateChannelSchedulesRemoves(t *testing.T) {
 		"/v1/channels/"+ch.String()+"/overwrites/0/"+role.String(), ownerTok,
 		[]any{uint64(api.PermViewChannel), uint64(0)}); status != http.StatusNoContent {
 		t.Fatal("PUT role overwrite failed")
+	}
+	// The channel is private: @everyone, which every new community grants
+	// PermViewChannel, is denied it here, so the role is what opens it.
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil || len(roles) == 0 || roles[0].Position != 0 {
+		t.Fatalf("ListRoles = %+v, %v; want @everyone first", roles, err)
+	}
+	if status, _ := e.Do(http.MethodPut,
+		"/v1/channels/"+ch.String()+"/overwrites/0/"+roles[0].ID.String(), ownerTok,
+		[]any{uint64(0), uint64(api.PermViewChannel)}); status != http.StatusNoContent {
+		t.Fatal("PUT @everyone overwrite failed")
 	}
 	member, memberTok := e.NewUser("insider")
 	joinCommunity(t, e, cid, memberTok)
@@ -227,9 +237,8 @@ func mustChannel(t *testing.T, e *env, ch id.ID) store.ChannelRow {
 	return row
 }
 
-// listChannelMembers reads channel_members through the store once a task has
-// added ListChannelMembers to store.Repository (task 7's table). Until then the
-// one test that calls it is skipped, and this reports the method missing.
+// listChannelMembers reads channel_members through the store (task 6's table,
+// which task 7's materialiser writes for a community channel).
 func listChannelMembers(t *testing.T, e *env, ch id.ID) ([]id.ID, error) {
 	t.Helper()
 	lister, ok := e.Repo.(interface {

@@ -229,6 +229,17 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// Every delivery-service route is metered per device session from [limits.rate], on the
 	// same limiter the unauthenticated routes use (its keys are class-prefixed).
 	groups := &api.Groups{DS: delivery, Limiter: limiter}
+	// A channel's freshly registered group is populated by batched delivery-service Adds (Plan 2
+	// task 7, protocol/01 § Joining: "creating a private channel … is done by the DS issuing Add
+	// proposals in batches"). The registration has already succeeded, so a failure is logged; the
+	// next membership change of the channel re-derives it. The request's cancellation does not
+	// reach it: the group exists whether or not the client waits for the answer.
+	groups.AfterRegister = func(ctx context.Context, groupID id.ID) {
+		if err := api.SyncRegisteredGroup(context.WithoutCancel(ctx), o.Repo, delivery, groupID,
+			o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "populating a registered group failed", "group", groupID, "err", err)
+		}
+	}
 	groups.Register(mux, sessions)          // rows 1-3
 	groups.RegisterSequencer(mux, sessions) // rows 4-7, 19
 	groups.RegisterRecovery(mux, sessions)  // rows 8-9

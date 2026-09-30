@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -38,6 +39,12 @@ type Groups struct {
 	// Limiter meters every route per device session from `[limits.rate]` (dsmeter.go); nil
 	// meters nothing.
 	Limiter *server.RateLimiter
+	// AfterRegister, when set, runs after the delivery service accepted a registration and before
+	// the 201 is written. The composition root sets it to SyncRegisteredGroup (Plan 2 task 7): a
+	// channel's new text group is populated by batched delivery-service Adds, which is protocol/01
+	// § Joining's "creating a private channel". It runs outside any transaction; a failure is the
+	// hook's to log, because the registration itself has succeeded.
+	AfterRegister func(ctx context.Context, groupID id.ID)
 
 	// commitsInFlight holds the devices with a POST /commit upload in progress (commitguard.go).
 	commitsInFlight sync.Map
@@ -157,6 +164,9 @@ func (h *Groups) create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		server.WriteError(w, dsError(err))
 		return
+	}
+	if h.AfterRegister != nil {
+		h.AfterRegister(r.Context(), out.GroupID)
 	}
 	if err := server.EncodeBody(w, http.StatusCreated,
 		createGroupResponse{GroupID: out.GroupID, NextSeq: out.NextSeq}); err != nil {

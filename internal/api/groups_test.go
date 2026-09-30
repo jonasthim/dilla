@@ -315,9 +315,12 @@ func TestACommitForADecidedEpochIsFourZeroNineCarryingTheWinnerAndTheProposals(t
 // ------------------------------------------------------------------ harness
 
 type groupsAPI struct {
-	mux     *server.Mux
-	deps    api.Deps
-	ds      *ds.DS // the same delivery service the mounted routes hold
+	mux  *server.Mux
+	deps api.Deps
+	ds   *ds.DS // the same delivery service the mounted routes hold
+	// groups is the mounted *api.Groups, for a test that sets one of its hooks before its first
+	// request.
+	groups  *api.Groups
 	groupID id.ID
 	fixture apiFixture
 	session string // an enrolled session that is NOT one of the group's leaves
@@ -410,7 +413,7 @@ func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels)
 
 	user, _, token := seedAPISession(t, deps)
 	return &groupsAPI{
-		mux: mux, deps: deps, ds: d, groupID: f.groupID, fixture: f, session: token,
+		mux: mux, deps: deps, ds: d, groups: groups, groupID: f.groupID, fixture: f, session: token,
 		user: user.ID, clk: clk,
 	}
 }
@@ -697,5 +700,25 @@ func TestResyncCarriesTheDeliveryServicesRefusal(t *testing.T) {
 	}
 	if got := errorCode(t, res); got != string(server.CodeCommitInvalid) {
 		t.Fatalf("code = %s, want %s", got, server.CodeCommitInvalid)
+	}
+}
+
+// A registration the delivery service accepted is handed to AfterRegister, which is how the
+// composition root populates a private channel's new group (SyncRegisteredGroup); a refused one
+// is not.
+func TestAnAcceptedRegistrationIsHandedToAfterRegister(t *testing.T) {
+	h := newGroupsAPI(t)
+	var got []id.ID
+	h.groups.AfterRegister = func(_ context.Context, groupID id.ID) { got = append(got, groupID) }
+
+	h.mustCreate(t)
+	if len(got) != 1 || got[0] != h.groupID {
+		t.Fatalf("AfterRegister saw %v, want exactly [%s]", got, h.groupID)
+	}
+	if res := h.do(t, http.MethodPost, "/v1/groups", h.session, h.createBody(t)); res.Code == http.StatusCreated {
+		t.Fatal("a second registration of the same group was accepted")
+	}
+	if len(got) != 1 {
+		t.Fatalf("a refused registration reached AfterRegister: %v", got)
 	}
 }

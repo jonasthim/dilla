@@ -351,6 +351,14 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, "create channel", err)
 		return
 	}
+	// channel_members is derived from the resolver from the channel's first
+	// moment, so GET /v1/channels/{id}/members answers for it before any group
+	// exists. After the commit, never inside it (task 7). The channel has no
+	// group yet, so nothing is proposed: registering its text group is what
+	// populates that (SyncRegisteredGroup).
+	if err := MaterialiseChannelMembers(r.Context(), c.repo, c.dsvc, row, row.Created); err != nil {
+		c.log.ErrorContext(r.Context(), "materialise channel members", "channel", row.ID, "err", err)
+	}
 	if err := server.EncodeBody(w, http.StatusCreated, createChannelResp{
 		ChannelID: row.ID, Mode: uint64(row.Mode), Visibility: uint64(row.Visibility),
 	}); err != nil {
@@ -505,6 +513,7 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 		visibility = &v
 	}
 	now := c.clk.Now().Unix()
+	var updated store.ChannelRow
 	// The row is read again inside the transaction and the request applied to
 	// that, so two concurrent PATCHes of different fields both land.
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
@@ -542,6 +551,7 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 		if err := tx.UpdateChannel(r.Context(), row); err != nil {
 			return notFound(err)
 		}
+		updated = row
 		return tx.Audit(r.Context(), store.AuditRow{
 			Actor: &s.UserID, Action: "channel.update", Target: row.ID.String(),
 			Detail: row.Name, At: now,
@@ -549,6 +559,13 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		c.fail(w, r, "patch channel", err)
 		return
+	}
+	// A visibility change re-derives who may be a leaf of the channel's groups
+	// (task 7), after the commit and never inside it.
+	if visibility != nil {
+		if err := MaterialiseChannelMembers(r.Context(), c.repo, c.dsvc, updated, now); err != nil {
+			c.log.ErrorContext(r.Context(), "materialise channel members", "channel", updated.ID, "err", err)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

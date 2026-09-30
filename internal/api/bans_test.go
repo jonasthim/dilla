@@ -38,6 +38,23 @@ type recordingDS struct {
 	}
 	Adds   []struct{ Group, Device id.ID }
 	Closed []id.ID
+	// Commits counts the commit requests ProposeAddBatch makes: one per non-empty batch of at
+	// most 256 Adds, as ds.PlanBatches splits it (task 7).
+	Commits int
+	// OnCommit, when set, runs after each batch's commit request — the moment a membership change
+	// can land between two batches of a join storm.
+	OnCommit func()
+	// Repo, when set, is what ProposeAddBatch re-reads between batches: a device whose user is no
+	// longer in the group's channel_members is dropped from the batches still to come, as the
+	// delivery service's own drain drops a device that stopped being eligible.
+	Repo store.Repository
+}
+
+// Reset forgets every recorded call.
+func (d *recordingDS) Reset() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.Removes, d.Adds, d.Closed, d.Commits = nil, nil, nil, 0
 }
 
 var _ api.DS = (*recordingDS)(nil)
@@ -59,13 +76,57 @@ func (d *recordingDS) ProposeRemove(_ context.Context, g id.ID, leaf uint32, _ i
 	return nil
 }
 
+// ProposeAddBatch records the batch the way the delivery service issues it: ds.PlanBatches at 256
+// per commit, one commit request per non-empty batch, and — when Repo is set — every later batch
+// re-checked against channel_members first.
 func (d *recordingDS) ProposeAddBatch(ctx context.Context, g id.ID, devices []id.ID) error {
-	for _, dev := range devices {
-		if err := d.ProposeAdd(ctx, g, dev, id.New()); err != nil {
-			return err
+	for i, batch := range ds.PlanBatches(devices, ds.DefaultPolicy().MaxAddsPerCommit).Batches {
+		if i > 0 && d.Repo != nil {
+			var err error
+			if batch, err = d.stillMembers(ctx, g, batch); err != nil {
+				return err
+			}
+		}
+		for _, dev := range batch {
+			if err := d.ProposeAdd(ctx, g, dev, id.New()); err != nil {
+				return err
+			}
+		}
+		if len(batch) == 0 {
+			continue
+		}
+		d.mu.Lock()
+		d.Commits++
+		d.mu.Unlock()
+		if d.OnCommit != nil {
+			d.OnCommit()
 		}
 	}
 	return nil
+}
+
+// stillMembers keeps the devices of batch whose user is still in the channel_members of the
+// channel group g is bound to.
+func (d *recordingDS) stillMembers(ctx context.Context, g id.ID, batch []id.ID) ([]id.ID, error) {
+	row, err := d.Repo.GetGroup(ctx, g)
+	if err != nil {
+		return nil, err
+	}
+	members, err := d.Repo.ListChannelMembers(ctx, row.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	kept := make([]id.ID, 0, len(batch))
+	for _, dev := range batch {
+		device, err := d.Repo.GetDevice(ctx, dev)
+		if err != nil {
+			return nil, err
+		}
+		if slices.Contains(members, device.UserID) {
+			kept = append(kept, dev)
+		}
+	}
+	return kept, nil
 }
 
 func (d *recordingDS) Close(_ context.Context, g id.ID) error {
