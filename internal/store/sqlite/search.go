@@ -9,7 +9,15 @@ import (
 // searchSQL never aliases readable_messages_fts: `snippet(f, …)` and
 // `WHERE f MATCH …` both fail with `no such column: f` (gap-69 §2.8). Column 0
 // is body and column 1 is channel_hex, so the snippet takes 0 and bm25 weights
-// channel_hex at zero. Ties in rank break on the newer seq, as on Postgres.
+// channel_hex at zero.
+//
+// The ORDER BY is the reported bm25 expression itself, never the FTS5 `rank`
+// column: rank is bm25 with every column weighted 1.0, and every hit matches its
+// channel's hex token, whose IDF grows as the channel shrinks. Ordering by rank
+// therefore favoured small channels, disagreed with the score each hit reports,
+// and let LIMIT drop a better hit (TestHitsAreBestFirstByTheReportedScore). bm25
+// is negative-is-better, so ascending is best first; ties break on the newer
+// seq, as on Postgres.
 const searchSQL = `
 SELECT m.channel_id, m.seq, m.sender, m.created,
        snippet(readable_messages_fts, 0, '[', ']', '…', 12),
@@ -19,7 +27,7 @@ JOIN readable_messages m ON m.id = readable_messages_fts.rowid
 WHERE readable_messages_fts MATCH ?
   AND m.deleted IS NULL
   AND (? = 0 OR m.seq < ?)
-ORDER BY readable_messages_fts.rank, m.seq DESC
+ORDER BY bm25(readable_messages_fts, 1.0, 0.0), m.seq DESC
 LIMIT ?`
 
 // SearchReadable is hand-written database/sql: sqlc can type neither the FTS5

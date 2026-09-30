@@ -215,6 +215,55 @@ func TestTheSnippetMarksTheMatch(t *testing.T) {
 	}
 }
 
+// Hits are best first by the Score they report (protocol/09 "Hits are best
+// first, ties broken by the newer seq"), and Limit keeps the best. The two
+// channels differ in size on purpose: every SQLite hit also matches its
+// channel's hex token, whose IDF grows as the channel shrinks, so an ordering
+// by any rank that weights channel_hex above zero favours the small channel's
+// weaker body match over the big channel's stronger one.
+func TestHitsAreBestFirstByTheReportedScore(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			cid := seedCommunity(ctx, t, repo)
+			sender := seedUser(ctx, t, repo).ID
+			big, small := channelIn(cid, 0, 1, 2, "big", 0), channelIn(cid, 0, 1, 2, "small", 1)
+			for _, ch := range []store.ChannelRow{big, small} {
+				if err := repo.CreateChannel(ctx, ch); err != nil {
+					t.Fatalf("CreateChannel: %v", err)
+				}
+			}
+			for range 40 {
+				putReadable(t, repo, big.ID, sender, "filler chatter", 0)
+			}
+			// Measured on SQLite: FTS5's default rank puts the small channel's
+			// message first (-4.12 against -2.70), while the body-only bm25 the
+			// hit reports puts the big channel's first (2.70 against 1.88).
+			strong := putReadable(t, repo, big.ID, sender, "needle needle and some more words here", 0)
+			putReadable(t, repo, small.ID, sender, "a needle in a short note", 0)
+			q, _ := store.ParseQuery("needle")
+			scope := []id.ID{big.ID, small.ID}
+			hits, err := repo.SearchReadable(ctx, store.ReadableSearchQuery{ChannelIDs: scope, Query: q, Limit: 10})
+			if err != nil || len(hits) != 2 {
+				t.Fatalf("SearchReadable = %d hits, %v; want 2", len(hits), err)
+			}
+			for i := 1; i < len(hits); i++ {
+				if hits[i].Score > hits[i-1].Score {
+					t.Fatalf("hit %d scores %v above hit %d's %v: hits are not best first",
+						i, hits[i].Score, i-1, hits[i-1].Score)
+				}
+			}
+			if hits[0].ChannelID != big.ID || hits[0].Seq != strong {
+				t.Fatalf("best hit = channel %s seq %d, want the big channel's seq %d", hits[0].ChannelID, hits[0].Seq, strong)
+			}
+			top, err := repo.SearchReadable(ctx, store.ReadableSearchQuery{ChannelIDs: scope, Query: q, Limit: 1})
+			if err != nil || len(top) != 1 || top[0].ChannelID != big.ID || top[0].Seq != strong {
+				t.Fatalf("Limit 1 = %+v, %v; want only the best hit, the big channel's seq %d", top, err, strong)
+			}
+		})
+	}
+}
+
 // BeforeSeq pages backwards: only hits strictly below it come back.
 func TestBeforeSeqPagesBackwards(t *testing.T) {
 	for engine, repo := range engines(t) {
