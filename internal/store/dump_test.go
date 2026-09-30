@@ -118,6 +118,7 @@ func TestDumpPostgresWritesTheContainerFormat(t *testing.T) {
 		t.Skip("DILLA_TEST_PG is unset: Postgres tests run in CI's service container")
 	}
 	ctx := context.Background()
+	dsn = freshPostgresDSN(t, dsn)
 
 	db, err := postgres.Open(dsn, 8, time.Hour)
 	if err != nil {

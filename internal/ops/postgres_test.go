@@ -31,6 +31,9 @@ func TestPostgresBackupArchivesTheDumpAndVerifies(t *testing.T) {
 		t.Skip("DILLA_TEST_PG is unset: Postgres tests run in CI's service container")
 	}
 	ctx := t.Context()
+	// A database of the test's own: migrating the shared CI database here raced the
+	// store packages' own migrations ("relation instances already exists").
+	dsn = freshPostgres(t, dsn)
 	db, err := postgres.Open(dsn, 8, time.Hour)
 	if err != nil {
 		t.Fatalf("postgres Open: %v", err)

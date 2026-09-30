@@ -169,7 +169,9 @@ func TestGooseUpDownUpOnPostgres(t *testing.T) {
 	if dsn == "" {
 		t.Skip("DILLA_TEST_PG is unset: no local Postgres server on this box; CI's postgres service container runs this test")
 	}
-	db, err := sql.Open("pgx", dsn)
+	// Down drops every table, so this runs in a database of its own, never the one
+	// the other Postgres legs might be using.
+	db, err := sql.Open("pgx", freshPostgresDSN(t, dsn))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
