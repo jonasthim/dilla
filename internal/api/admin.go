@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -51,8 +50,6 @@ func (a *Admin) Register(mux *server.Mux) {
 
 // The bounds of the admin bodies.
 const (
-	// maxPurgeReasonBytes bounds the reason a purge records in the audit log.
-	maxPurgeReasonBytes = 1024
 	// defaultAuditLimit and maxAuditLimit bound one GET /v1/admin/audit page.
 	defaultAuditLimit = 100
 	maxAuditLimit     = 1000
@@ -126,38 +123,24 @@ func (a *Admin) purgeBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	// A NUL is legal in a Go string and in a SQLite TEXT column but refused by
 	// Postgres, so it is refused on both engines alike.
-	if req.Reason == "" || len(req.Reason) > maxPurgeReasonBytes || strings.ContainsRune(req.Reason, 0) {
+	if !blob.ValidPurgeReason(req.Reason) {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
-			"reason must be 1..%d bytes with no NUL", maxPurgeReasonBytes))
+			"reason must be 1..%d bytes with no NUL", blob.MaxPurgeReasonBytes))
 		return
 	}
-	now := a.clk.Now().Unix()
-	target := hex.EncodeToString(blobID)
-	if err := a.repo.Tx(r.Context(), func(tx store.Repository) error {
-		// The first purge's tombstone stands; a second purge still audits.
-		if err := tx.PutBlobTombstone(r.Context(), blobID, req.Reason, admin, now); err != nil {
-			return err
-		}
-		// DeleteAllBlobRefs returns (int64, error) — P2-D18 — so the count is
-		// discarded explicitly; a single-value call does not compile.
-		if _, err := tx.DeleteAllBlobRefs(r.Context(), blobID); err != nil {
-			return err
-		}
-		if err := tx.DeleteBlob(r.Context(), blobID); err != nil && !errors.Is(err, store.ErrNotFound) {
-			return err
-		}
-		return tx.Audit(r.Context(), store.AuditRow{
-			Actor: &admin, Action: "blob.purge", Target: target, Detail: req.Reason, At: now,
-		})
-	}); err != nil {
+	res, err := blob.Purge(r.Context(), a.repo, a.store, blob.PurgeRequest{
+		BlobID: blobID, Reason: req.Reason, By: admin, At: a.clk.Now().Unix(),
+	})
+	if err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	if err := a.store.Delete(blobID); err != nil {
+	target := hex.EncodeToString(blobID)
+	if res.UnlinkErr != nil {
 		// The row and every reference are gone and the tombstone refuses the bytes
 		// on every route, so a file left behind is unreachable; dillad doctor
 		// reports it as an orphan.
-		a.log.ErrorContext(r.Context(), "unlink purged blob", "blob_id", target, "err", err)
+		a.log.ErrorContext(r.Context(), "unlink purged blob", "blob_id", target, "err", res.UnlinkErr)
 	}
 	a.metrics.BlobPurged()
 	a.log.InfoContext(r.Context(), "blob purged", "blob_id", target)
