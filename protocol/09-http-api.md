@@ -576,7 +576,9 @@ who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown one.
   refused with STUN error 486 until one ends. The relay reaches only the instance's own SFU (its
   `livekit.node_ip`, and with `livekit.advertise_internal_ip` the host's interface addresses LiveKit
   also offers): a `CreatePermission` or `ChannelBind` for any other peer is refused with STUN
-  error 403, and with LiveKit off every one is.
+  error 403, and with LiveKit off every one is. The filter is by IP address only: every port of an
+  admitted address stays reachable through the relay, the SFU's own and any other service bound on
+  those addresses, including `127.0.0.1` when `livekit.node_ip` is unset.
 - **Ending.** `DELETE` ends the call for everyone and is kept to its participants. A restore ends
   every live call (`02` invariant 11).
 

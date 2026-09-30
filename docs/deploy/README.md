@@ -25,6 +25,19 @@ In every mode except `behind_proxy`, TURN shares 443 with the web server: a demu
 of the TLS listener hands STUN to the relay and everything else to HTTPS. Only 443/tcp and
 7882/udp (LiveKit's media port) need to be open.
 
+### What the TURN relay can reach
+
+The relay is restricted to the host's own SFU: it refuses a `CreatePermission` or `ChannelBind` for
+any peer address that is not `livekit.node_ip` (plus, with `livekit.advertise_internal_ip`, the
+host's interface addresses LiveKit also offers), and it refuses all of them when LiveKit is off. The
+filter is by IP address only, not by port. Every UDP port on an admitted address is therefore
+reachable by any call participant holding a relay credential, not just LiveKit's 7882: any other
+service bound on those addresses (a `0.0.0.0` listener, a Docker bridge address) is exposed, and
+when `livekit.node_ip` is unset the admitted address is `127.0.0.1`, which exposes every loopback
+UDP service. So set `livekit.node_ip` to the address the world reaches the SFU on, keep other
+services off the admitted addresses (bind them to an address that is not admitted), or firewall
+them.
+
 ### The `behind_proxy` TURN consequence
 
 A TLS-terminating proxy cannot forward the TURN traffic that shares 443, so in `behind_proxy` mode
