@@ -246,7 +246,10 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   change in the same `PATCH` (`400`), because the order they were applied in would decide the
   outcome. This is the rule `02`'s invariant 1 enforces on registration: an MLS `text` group is
   refused for such a channel (`403 E_MODE_READABLE`), while a voice channel's `call` groups exist
-  whatever its mode.
+  whatever its mode. A `PATCH` that takes an end-to-end-encrypted text channel out of end-to-end
+  encryption (to `mode = 1`, or to a visibility that forces it) closes the channel's open `text`
+  group after the change commits, and from then on no `Add` or join is admitted to it; its `call`
+  group, if any, is untouched.
 - A category is always top level. `parent_id` names a live category of the same community; a text
   or voice channel under a text channel, a nested category and a foreign or deleted parent are
   `400`. In a `PATCH`, null leaves the parent alone and the all-zero id moves the channel to the top

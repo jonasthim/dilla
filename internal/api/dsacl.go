@@ -77,6 +77,13 @@ func (a ResolverACL) Eligible(ctx context.Context, groupID, userID id.ID) (bool,
 	// A DM's participants hold its bits and nobody else does (Resolver.resolveDM),
 	// so a participant's devices can be added before any of them holds a leaf,
 	// and a removed participant's cannot.
+	//
+	// A text group whose channel no longer carries one (a PATCH to readable, or
+	// to a visibility that forces it) admits nobody: the channel's content is
+	// server-readable now, and the group is being closed (fix wave I3).
+	if g.Kind == groupText && !TextGroupAllowed(ch) {
+		return false, nil
+	}
 	bits, err := NewResolver(a.Repo).Resolve(ctx, userID, ch)
 	if err != nil {
 		return false, err

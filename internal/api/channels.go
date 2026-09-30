@@ -514,6 +514,7 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	now := c.clk.Now().Unix()
 	var updated store.ChannelRow
+	var toClose []id.ID
 	// The row is read again inside the transaction and the request applied to
 	// that, so two concurrent PATCHes of different fields both land.
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
@@ -521,6 +522,7 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return notFound(err)
 		}
+		before := row
 		if req.Name != nil {
 			row.Name = *req.Name
 		}
@@ -552,6 +554,18 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 			return notFound(err)
 		}
 		updated = row
+		// A channel that stops being end-to-end encrypted is never allowed an MLS
+		// text group, so its open text groups are closed after the commit. Only
+		// the text kind: a voice channel's call group is untouched.
+		if TextGroupAllowed(before) && !TextGroupAllowed(row) {
+			groups, err := tx.GroupsForTarget(r.Context(), row.ID, groupText)
+			if err != nil {
+				return err
+			}
+			for _, g := range groups {
+				toClose = append(toClose, g.GroupID)
+			}
+		}
 		return tx.Audit(r.Context(), store.AuditRow{
 			Actor: &s.UserID, Action: "channel.update", Target: row.ID.String(),
 			Detail: row.Name, At: now,
@@ -559,6 +573,10 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		c.fail(w, r, "patch channel", err)
 		return
+	}
+	if err := closeGroups(afterCommit(r), c.dsvc, toClose); err != nil {
+		c.log.ErrorContext(r.Context(), "close the text group of a channel that left end-to-end encryption",
+			"channel", updated.ID, "err", err)
 	}
 	// A visibility change re-derives who may be a leaf of the channel's groups
 	// (task 7), after the commit and never inside it.

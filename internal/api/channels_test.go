@@ -70,6 +70,52 @@ func TestInviteAndDiscoverableChannelsAreForcedReadable(t *testing.T) {
 	}
 }
 
+// I3 (fix wave): a channel that stops being end-to-end encrypted is never allowed an MLS text
+// group (spec, trust boundaries; protocol/01). A PATCH to mode=readable, or to a visibility that
+// forces it, closes the channel's open text group after the commit, and the ACL admits nobody to
+// a text group whose channel carries none, so no Add or join lands in it. A voice channel's call
+// group is not a text group and survives a visibility change.
+func TestLeavingEndToEndEncryptionClosesTheTextGroup(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		patch []any
+	}{
+		{"mode=readable", []any{nil, nil, uint64(1), nil, nil, nil, nil}},
+		{"visibility=discoverable", []any{nil, nil, nil, uint64(2), nil, nil, nil}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, cid, tok := channelEnv(t)
+			ch, _, _ := newChannel(t, e, cid, tok, 0, 0, 0, "secret")
+			group := seedTextGroup(t, e, ch, cid)
+			owner := e.sess[tok].UserID
+			seedMember(t, e, group, owner, 0)
+			if ok, err := (api.ResolverACL{Repo: e.Repo}).Eligible(t.Context(), group, owner); err != nil || !ok {
+				t.Fatalf("before the PATCH the owner is eligible = %v, %v; want true", ok, err)
+			}
+			if status, body := e.Do(http.MethodPatch, "/v1/channels/"+ch.String(), tok, c.patch); status != http.StatusNoContent {
+				t.Fatalf("PATCH %s = %d (%x)", c.name, status, body)
+			}
+			if closed := e.DS.closed(); len(closed) != 1 || closed[0] != group {
+				t.Fatalf("closed groups = %v, want the text group %s", closed, group)
+			}
+			if ok, err := (api.ResolverACL{Repo: e.Repo}).Eligible(t.Context(), group, owner); err != nil || ok {
+				t.Fatalf("after the PATCH the owner is eligible for the text group = %v, %v; want false", ok, err)
+			}
+		})
+	}
+
+	e, cid, tok := channelEnv(t)
+	voice, _, _ := newChannel(t, e, cid, tok, 1, 0, 0, "call")
+	seedGroupOfKind(t, e, voice, cid, 1)
+	if status, _ := e.Do(http.MethodPatch, "/v1/channels/"+voice.String(), tok,
+		[]any{nil, nil, nil, uint64(2), nil, nil, nil}); status != http.StatusNoContent {
+		t.Fatal("PATCH of the voice channel's visibility failed")
+	}
+	if closed := e.DS.closed(); len(closed) != 0 {
+		t.Fatalf("a voice channel's visibility change closed %v, want its call group left open", closed)
+	}
+}
+
 func TestPatchToE2EEOnAVisibleChannelIsRefused(t *testing.T) {
 	e, cid, tok := channelEnv(t)
 	chID, _, _ := newChannel(t, e, cid, tok, 0, 1, 2, "public")
