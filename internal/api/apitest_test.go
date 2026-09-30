@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/pressly/goose/v3"
 
+	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -272,6 +274,44 @@ func userOf(t *testing.T, e *env, tok string) id.ID {
 		t.Fatalf("no session for token %q", tok)
 	}
 	return s.UserID
+}
+
+// codeOf is the E_* code of a *server.Error, or "" for nil or any other error.
+func codeOf(err error) string {
+	var se *server.Error
+	if !errors.As(err, &se) {
+		return ""
+	}
+	return string(se.Code)
+}
+
+// repoRoot is the repository root: go test runs in the package directory.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("repo root: %v", err)
+	}
+	return root
+}
+
+// attsToAny spells attachments as protocol/04's 8-element arrays, an empty list
+// as an empty array (never null).
+func attsToAny(atts []api.Attachment) []any {
+	out := make([]any, 0, len(atts))
+	for _, a := range atts {
+		out = append(out, []any{a.BlobID, a.Key, a.Nonce, a.Size, a.Mime, a.W, a.H, a.Thumb})
+	}
+	return out
+}
+
+// prevsToAny spells previews as protocol/04's 4-element arrays.
+func prevsToAny(prevs []api.Preview) []any {
+	out := make([]any, 0, len(prevs))
+	for _, p := range prevs {
+		out = append(out, []any{p.URL, p.Title, p.Description, p.Image})
+	}
+	return out
 }
 
 // ptr returns a pointer to a copy of v.

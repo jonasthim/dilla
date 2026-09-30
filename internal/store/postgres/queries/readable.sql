@@ -19,9 +19,11 @@ WHERE channel_id = $1 AND seq >= $2
 ORDER BY seq LIMIT sqlc.arg(max_rows)::bigint;
 
 -- name: EditReadableMessage :execrows
--- A deleted message is not edited: its envelope and body are gone for good.
-UPDATE readable_messages SET envelope = $1, body = $2, edited = $3
-WHERE channel_id = $4 AND seq = $5 AND deleted IS NULL;
+-- A deleted message is not edited: its envelope and body are gone for good. The franking tag and
+-- the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
+-- instance no longer stores could never verify.
+UPDATE readable_messages SET envelope = $1, body = $2, franking_tag = $3, franking_key_id = $4, edited = $5
+WHERE channel_id = $6 AND seq = $7 AND deleted IS NULL;
 
 -- name: DeleteReadableMessage :execrows
 -- A zero-length envelope, not an empty CBOR array: the column holds CBOR and a delete leaves none.

@@ -388,17 +388,37 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
 | `POST /v1/channels/{id}/messages` | `[envelope(bstr)]` | `[seq(uint), franking_tag(bstr 32), recv_ts(uint)]` | `send_messages`; `pin_messages` for a type 5 or 6 envelope, `add_reactions` for a type 3 or 4 |
 | `GET /v1/channels/{id}/messages?from=&limit=` | — | `[[seq, sender(bstr16), envelope(bstr), franking_tag(bstr 32), created, edited\|null, deleted\|null]]` | `read_history` |
 | `PATCH /v1/channels/{id}/messages/{seq}` | `[envelope(bstr)]` | `204` | the author, with `send_messages` |
-| `DELETE /v1/channels/{id}/messages/{seq}` | — | `204` | the author, or `manage_messages` |
+| `DELETE /v1/channels/{id}/messages/{seq}` | — | `204` | the author only (`403 E_NOT_UPLOADER` for anyone else) |
 | `GET /v1/channels/{id}/search?q=&limit=&before=` | — | `[[channel_id, seq, sender, snippet(tstr), score_micros(uint), created]]` | `read_history` |
 | `PUT /v1/channels/{id}/read-state` | `[last_read_seq(uint)]` | `204` | `view_channel` |
 
 - **Posting.** `seq` is the channel's own sequence (`GET /v1/channels/{id}` element 10), one step
-  per message; `recv_ts` is the instance's clock and is the message's `created`. The envelope must
-  be a nine-element deterministic CBOR array whose `type` is a uint, whose `body` is a text string
-  and whose `k_f` is 32 bytes (`400 E_ENVELOPE_SHAPE`); a `type` above 6 is `400 E_ENVELOPE_TYPE`,
-  and so is an edit (1) or a delete (2) on `POST`, which have the `PATCH` and `DELETE` verbs. The
-  body cap is 96 KiB (§ Rate limits). Only a message's (type 0) or an edit's (type 1) `body` is
-  search content.
+  per message; `recv_ts` is the instance's clock and is the message's `created`. The instance is a
+  receiver in `04`'s sense and refuses exactly what a client refuses, storing nothing partial: an
+  envelope that is not a nine-element deterministic CBOR array, or any element of the wrong major
+  type or length — `msg_id` and a non-null `thread_id` or `reply_to` 16 bytes, `k_f` 32, an
+  attachment's `blob_id` 32, `key` 32 and `nonce` 12, an attachment an eight-element and a preview a
+  four-element array — is `400 E_ENVELOPE_SHAPE`; a `type` above 6 is `400 E_ENVELOPE_TYPE`; and any
+  bound of `04`'s § Envelope limits (`body` per type, 4 attachments, 2 previews, `mime`, `thumb`,
+  `url`, `title`, `description`, preview `image`) is `400 E_ENVELOPE_LIMIT`. The body cap is 96 KiB
+  (§ Rate limits). Only a message's (type 0) or an edit's (type 1) `body` is search content, and only
+  there does the instance count mentions: the number of distinct `<@…>` targets (a 32-hex-digit user
+  or role id, `everyone` or `here`), stored with the message for moderation.
+- **Message references.** On a server-readable channel an envelope's `reply_to` and `thread_id`
+  carry the target's channel `seq` as a big-endian uint64 in the low eight bytes, with the high
+  eight bytes zero; in an end-to-end encrypted group they carry the target's `msg_id` unchanged,
+  because there the server has no key to resolve (`04` § Envelope).
+- **Envelope types.** A reaction (3, 4) needs `add_reactions` and a pin or unpin (5, 6) needs
+  `pin_messages`; both are appended like a message, and clients fold them. An edit (1) or a delete
+  (2) on `POST` is the alias of `PATCH` or `DELETE` on the `seq` its `reply_to` names: it is applied
+  in place, not appended, and answers `204` with no body. Without a `reply_to`, or with one whose
+  high eight bytes are not zero, it is `400 E_ENVELOPE_SHAPE`. An alias delete, being a `POST`,
+  also needs `send_messages`.
+- **Editing** is the author's alone (`403 E_FORBIDDEN` for anyone else) and takes a type 0 or 1
+  envelope (`400 E_ENVELOPE_TYPE` otherwise). The instance re-franks the new envelope: `T` is
+  recomputed over its `C`, the editing device and the edit's time, which the message records as
+  `edited`, under the current franking key, and the key id is recorded with it. A tag over the
+  replaced bytes could never verify.
 - **Slow mode.** Inside `slowmode_seconds` of the caller's previous message in the channel, a post
   is `429 E_RATE_LIMITED` with `retry_after_ms` the time left; `bypass_slowmode` is exempt. A
   deleted message still counts, so deleting and reposting does not reset the wait.
@@ -408,8 +428,10 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
   instance records which of its franking keys made the tag, so a report still verifies after a
   rotation.
 - **Deleting** tombstones the message: its envelope becomes empty, it leaves the search index, and
-  `GET` lists it with its `deleted` time; the franking tag stays for a report. An unknown or already
-  deleted `seq` is `404`, and so is an edit of a deleted message. `{seq}` that is not a decimal uint
+  `GET` lists it with its `deleted` time; the franking tag stays for a report. Delete-for-everyone is
+  the uploader's alone: anyone else, `manage_messages` or not, is `403 E_NOT_UPLOADER` (moderator
+  deletion needs a signed moderation event, which this version does not define). An unknown or
+  already deleted `seq` is `404`, and so is an edit of a deleted message. `{seq}` that is not a decimal uint
   is `400 E_INVALID_REQUEST`.
 - **Live delivery.** Every accepted post, edit and delete is sent as `message.plain` (op 32, `02`)
   to every live connection of every user who may view the channel and is still a member of its

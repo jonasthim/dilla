@@ -2361,13 +2361,17 @@ func (r *Repo) ListReadableMessages(ctx context.Context, channelID id.ID, fromSe
 	return out, nil
 }
 
-func (r *Repo) EditReadableMessage(ctx context.Context, channelID id.ID, seq uint64, envelope []byte, body string, at int64) error {
+func (r *Repo) EditReadableMessage(ctx context.Context, channelID id.ID, seq uint64,
+	envelope []byte, body string, frankingTag []byte, frankingKeyID id.ID, at int64,
+) error {
 	n, err := r.w.EditReadableMessage(ctx, pgdb.EditReadableMessageParams{
-		Envelope:  envelope,
-		Body:      body,
-		Edited:    sql.NullInt64{Int64: at, Valid: true},
-		ChannelID: channelID,
-		Seq:       int64(seq),
+		Envelope:      envelope,
+		Body:          body,
+		FrankingTag:   frankingTag,
+		FrankingKeyID: frankingKeyID,
+		Edited:        sql.NullInt64{Int64: at, Valid: true},
+		ChannelID:     channelID,
+		Seq:           int64(seq),
 	})
 	if err != nil {
 		return wrap(err)

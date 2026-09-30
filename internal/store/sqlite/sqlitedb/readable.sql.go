@@ -35,23 +35,29 @@ func (q *Queries) DeleteReadableMessage(ctx context.Context, arg DeleteReadableM
 }
 
 const editReadableMessage = `-- name: EditReadableMessage :execrows
-UPDATE readable_messages SET envelope = ?, body = ?, edited = ?
+UPDATE readable_messages SET envelope = ?, body = ?, franking_tag = ?, franking_key_id = ?, edited = ?
 WHERE channel_id = ? AND seq = ? AND deleted IS NULL
 `
 
 type EditReadableMessageParams struct {
-	Envelope  []byte
-	Body      string
-	Edited    sql.NullInt64
-	ChannelID id.ID
-	Seq       int64
+	Envelope      []byte
+	Body          string
+	FrankingTag   []byte
+	FrankingKeyID id.ID
+	Edited        sql.NullInt64
+	ChannelID     id.ID
+	Seq           int64
 }
 
-// A deleted message is not edited: its envelope and body are gone for good.
+// A deleted message is not edited: its envelope and body are gone for good. The franking tag and
+// the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
+// instance no longer stores could never verify.
 func (q *Queries) EditReadableMessage(ctx context.Context, arg EditReadableMessageParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, editReadableMessage,
 		arg.Envelope,
 		arg.Body,
+		arg.FrankingTag,
+		arg.FrankingKeyID,
 		arg.Edited,
 		arg.ChannelID,
 		arg.Seq,

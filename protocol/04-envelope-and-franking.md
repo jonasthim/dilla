@@ -38,6 +38,13 @@ tombstone honoured by clients (the DS also deletes its server copy on request fr
 `reaction add/remove` toggles `body` for the sender on `reply_to`; `pin/unpin` require the
 channel's pin permission in the receiver's role snapshot, otherwise they are ignored.
 
+On a **server-readable channel** (`09-http-api.md` § Readable channels) the instance stores the
+envelope in the clear and keys each message by the channel's own `seq`, not by `msg_id`. There, an
+envelope's `reply_to` and `thread_id` carry the target's channel `seq` as a big-endian uint64 in the
+low eight bytes, with the high eight bytes zero; in an end-to-end encrypted group they carry the
+target's `msg_id` unchanged, because there the server has no key to resolve. The element's shape
+(a 16-byte `bstr` or null) is the same in both.
+
 ## Deterministic CBOR
 
 RFC 8949 §4.2.1 core deterministic encoding: shortest integer form, definite lengths, no maps,

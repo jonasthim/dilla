@@ -19,8 +19,10 @@ WHERE channel_id = ? AND seq >= ?
 ORDER BY seq LIMIT sqlc.arg(max_rows);
 
 -- name: EditReadableMessage :execrows
--- A deleted message is not edited: its envelope and body are gone for good.
-UPDATE readable_messages SET envelope = ?, body = ?, edited = ?
+-- A deleted message is not edited: its envelope and body are gone for good. The franking tag and
+-- the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
+-- instance no longer stores could never verify.
+UPDATE readable_messages SET envelope = ?, body = ?, franking_tag = ?, franking_key_id = ?, edited = ?
 WHERE channel_id = ? AND seq = ? AND deleted IS NULL;
 
 -- name: DeleteReadableMessage :execrows

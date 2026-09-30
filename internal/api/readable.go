@@ -2,16 +2,14 @@ package api
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
 
-	"github.com/fxamacker/cbor/v2"
-
 	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -27,18 +25,6 @@ const maxEnvelopeBody = 96 * 1024
 
 // readBody is the cap of the one small body on these routes, PUT read-state.
 const readBody = 64 * 1024
-
-// Envelope types, protocol/04. Task 9 gives the edit, delete, pin and reaction
-// types their full semantics; this task stores what it can append.
-const (
-	envTypeMessage = 0
-	envTypeEdit    = 1
-	envTypeDelete  = 2
-	envTypeUnpin   = 6
-	envTypeReactA  = 3
-	envTypeReactR  = 4
-	envTypePin     = 5
-)
 
 // listPage and listMax bound GET /v1/channels/{id}/messages.
 const (
@@ -80,8 +66,8 @@ func NewReadable(repo store.Repository, res *Resolver, fan Fanout, keys Franking
 func (h *Readable) Register(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/channels/{id}/messages", h.post)
 	mux.HandleFunc("GET /v1/channels/{id}/messages", h.list)
-	// The canonical spelling of an edit and a delete. Task 9 adds the
-	// type-1/type-2 envelope alias on POST, which lands in the same
+	// The canonical spelling of an edit and a delete. A type-1 or type-2
+	// envelope on POST is the alias (P2-D15), which lands in the same
 	// applyEdit/applyDelete.
 	mux.HandleFunc("PATCH /v1/channels/{id}/messages/{seq}", h.patch)
 	mux.HandleFunc("DELETE /v1/channels/{id}/messages/{seq}", h.delete)
@@ -133,44 +119,11 @@ type envelopeRequest struct {
 	Envelope []byte
 }
 
-// envelopeFields reads the three elements this task needs out of an envelope —
-// type (2), body (5) and k_f (8) — checking only their shapes; task 9's
-// ParseEnvelope does the full validation and replaces this once it lands.
-func envelopeFields(envelope []byte) (typ uint64, body string, kf []byte, err error) {
-	var raw []cbor.RawMessage
-	if err := cborx.Unmarshal(envelope, &raw); err != nil || len(raw) != envelopeElements {
-		return 0, "", nil, server.Errorf(server.CodeEnvelopeShape,
-			"envelope must be a %d-element deterministic CBOR array", envelopeElements)
-	}
-	if err := cborx.ExpectMajor(raw[2], cborx.MajorUint); err != nil {
-		return 0, "", nil, server.Errorf(server.CodeEnvelopeShape, "type must be a uint")
-	}
-	if err := cborx.Unmarshal(raw[2], &typ); err != nil {
-		return 0, "", nil, server.Errorf(server.CodeEnvelopeShape, "type must be a uint")
-	}
-	if typ > envTypeUnpin {
-		return 0, "", nil, server.Errorf(server.CodeEnvelopeType, "unknown envelope type %d", typ)
-	}
-	if err := cborx.ExpectMajor(raw[5], cborx.MajorText); err != nil {
-		return 0, "", nil, server.Errorf(server.CodeEnvelopeShape, "body must be a text string")
-	}
-	if err := cborx.Unmarshal(raw[5], &body); err != nil {
-		return 0, "", nil, server.Errorf(server.CodeEnvelopeShape, "body must be a text string")
-	}
-	if err := cborx.ExpectMajor(raw[8], cborx.MajorBytes); err != nil {
-		return 0, "", nil, server.Errorf(server.CodeEnvelopeShape, "k_f must be 32 bytes")
-	}
-	if err := cborx.Unmarshal(raw[8], &kf); err != nil || len(kf) != 32 {
-		return 0, "", nil, server.Errorf(server.CodeEnvelopeShape, "k_f must be 32 bytes")
-	}
-	return typ, body, kf, nil
-}
-
 // indexedBody is what readable_messages.body holds for an envelope: the text a
 // message or an edit carries. A reaction's emoji and a pin's empty body are not
 // search content.
-func indexedBody(typ uint64, body string) string {
-	if typ == envTypeMessage || typ == envTypeEdit {
+func indexedBody(typ uint8, body string) string {
+	if typ == EnvMessage || typ == EnvEdit {
 		return body
 	}
 	return ""
@@ -184,7 +137,8 @@ type postResponse struct {
 }
 
 // post appends one envelope: POST /v1/channels/{id}/messages [envelope] ->
-// [seq, franking_tag, recv_ts].
+// [seq, franking_tag, recv_ts]. A type-1 or type-2 envelope is the alias of
+// PATCH or DELETE on the seq its reply_to names (P2-D15) and answers 204.
 func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 	s, ch, bits, err := h.channel(r, PermSendMessages)
 	if err != nil {
@@ -196,22 +150,43 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "post readable message", err)
 		return
 	}
-	typ, body, kf, err := envelopeFields(req.Envelope)
+	env, err := ParseEnvelope(req.Envelope)
 	if err != nil {
 		h.fail(w, r, "post readable message", err)
 		return
 	}
-	switch typ {
-	case envTypeEdit, envTypeDelete:
-		h.fail(w, r, "post readable message", server.Errorf(server.CodeEnvelopeType,
-			"an edit or a delete goes through PATCH or DELETE /v1/channels/{id}/messages/{seq}"))
+	switch env.Type {
+	case EnvMessage:
+		// The ordinary append below.
+	case EnvEdit, EnvDelete:
+		// The ALIAS path. The canonical spelling is PATCH or DELETE
+		// /v1/channels/{id}/messages/{seq}, which take the target from the path;
+		// here the target is the seq reply_to carries. An edit is applied in
+		// place, not appended: readable history is the server's own record, so
+		// a second row would show the old text forever.
+		seq, err := targetSeq(env)
+		if err == nil {
+			if env.Type == EnvEdit {
+				err = h.applyEdit(r.Context(), ch, s, seq, env, req.Envelope)
+			} else {
+				err = h.applyDelete(r.Context(), ch, s, seq)
+			}
+		}
+		if err != nil {
+			h.fail(w, r, "post readable message", err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 		return
-	case envTypePin, envTypeUnpin:
+	case EnvPin, EnvUnpin:
+		// Appended like a message; clients read the channel's pin set from
+		// the envelope stream, as protocol/04 describes.
 		if !bits.Has(PermPinMessages) {
 			h.fail(w, r, "post readable message", server.Errorf(server.CodeForbidden, "missing permission"))
 			return
 		}
-	case envTypeReactA, envTypeReactR:
+	case EnvReactionAdd, EnvReactionRemove:
+		// Also appended; the client folds them.
 		if !bits.Has(PermAddReactions) {
 			h.fail(w, r, "post readable message", server.Errorf(server.CodeForbidden, "missing permission"))
 			return
@@ -219,7 +194,7 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 	}
 	// protocol/04's C, from the envelope and the k_f it carries in the clear.
 	// Task 17 recomputes exactly this when it verifies a report.
-	c, err := Commitment(req.Envelope, kf)
+	c, err := Commitment(req.Envelope, env.KF)
 	if err != nil {
 		h.fail(w, r, "post readable message", err)
 		return
@@ -246,8 +221,8 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 		tag = Tag(key, ch.ID, 0 /* no epoch on a readable channel */, seq, s.DeviceID, c, now)
 		_, err = tx.PutReadableMessage(r.Context(), store.ReadableMessageRow{
 			ChannelID: ch.ID, ChannelHex: ch.ID.String(), Seq: seq, Sender: s.UserID,
-			Envelope: req.Envelope, Body: indexedBody(typ, body), FrankingTag: tag,
-			FrankingKeyID: keyID, MentionCount: 0, Created: now,
+			Envelope: req.Envelope, Body: indexedBody(env.Type, env.Body), FrankingTag: tag,
+			FrankingKeyID: keyID, MentionCount: uint64(env.MentionCount), Created: now, //nolint:gosec // G115: a count of distinct mentions, never negative
 		})
 		return err
 	})
@@ -385,7 +360,12 @@ func (h *Readable) patch(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "edit readable message", err)
 		return
 	}
-	if err := h.applyEdit(r.Context(), ch, s, seq, req.Envelope); err != nil {
+	env, err := ParseEnvelope(req.Envelope)
+	if err != nil {
+		h.fail(w, r, "edit readable message", err)
+		return
+	}
+	if err := h.applyEdit(r.Context(), ch, s, seq, env, req.Envelope); err != nil {
 		h.fail(w, r, "edit readable message", err)
 		return
 	}
@@ -394,7 +374,7 @@ func (h *Readable) patch(w http.ResponseWriter, r *http.Request) {
 
 // delete is DELETE /v1/channels/{id}/messages/{seq} -> 204.
 func (h *Readable) delete(w http.ResponseWriter, r *http.Request) {
-	s, ch, bits, err := h.channel(r, PermViewChannel)
+	s, ch, _, err := h.channel(r, PermViewChannel)
 	if err != nil {
 		h.fail(w, r, "delete readable message", err)
 		return
@@ -404,7 +384,7 @@ func (h *Readable) delete(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "delete readable message", err)
 		return
 	}
-	if err := h.applyDelete(r.Context(), ch, s, bits, seq); err != nil {
+	if err := h.applyDelete(r.Context(), ch, s, seq); err != nil {
 		h.fail(w, r, "delete readable message", err)
 		return
 	}
@@ -424,15 +404,17 @@ func (h *Readable) target(ctx context.Context, ch store.ChannelRow, seq uint64) 
 }
 
 // applyEdit replaces the envelope and the indexed body of the author's own
-// message. Task 9 gives it the full envelope validation and moves the franking
-// tuple with the bytes (EditReadableMessage grows the tag and key-id parameters
-// there); until then an edited message keeps the tag of its original upload.
-func (h *Readable) applyEdit(ctx context.Context, ch store.ChannelRow, s auth.Session, seq uint64, envelope []byte) error {
-	typ, body, _, err := envelopeFields(envelope)
-	if err != nil {
-		return err
-	}
-	if typ != envTypeMessage && typ != envTypeEdit {
+// message. It is reached from PATCH /v1/channels/{id}/messages/{seq}
+// (canonical) and from a type-1 envelope on POST (the P2-D15 alias); both give
+// it the target seq and the already validated envelope.
+//
+// The franking tag is RECOMPUTED over the new bytes, by the editing device, at
+// the edit's time (which the row records as edited), under the current key, and
+// the key id moves with it. Keeping the upload's tag would leave a tag that
+// commits to text the instance no longer stores, so a report against an edited
+// message could never verify.
+func (h *Readable) applyEdit(ctx context.Context, ch store.ChannelRow, s auth.Session, seq uint64, env Envelope, envelope []byte) error {
+	if env.Type != EnvMessage && env.Type != EnvEdit {
 		return server.Errorf(server.CodeEnvelopeType, "an edit carries a type-0 or type-1 envelope")
 	}
 	row, err := h.target(ctx, ch, seq)
@@ -442,30 +424,60 @@ func (h *Readable) applyEdit(ctx context.Context, ch store.ChannelRow, s auth.Se
 	if row.Sender != s.UserID {
 		return server.Errorf(server.CodeForbidden, "only the author may edit a message")
 	}
-	if err := h.repo.EditReadableMessage(ctx, ch.ID, seq, envelope, body, h.clk.Now().Unix()); err != nil {
+	c, err := Commitment(envelope, env.KF)
+	if err != nil {
+		return err
+	}
+	now := h.clk.Now().Unix()
+	keyID, key := h.keys.Current()
+	tag := Tag(key, ch.ID, 0 /* no epoch on a readable channel */, seq, s.DeviceID, c, now)
+	if err := h.repo.EditReadableMessage(ctx, ch.ID, seq, envelope, indexedBody(env.Type, env.Body), tag, keyID, now); err != nil {
 		return notFound(err)
 	}
-	h.deliver(ctx, ch.ID, seq, row.Sender, envelope, row.FrankingTag, 1, 0)
+	h.deliver(ctx, ch.ID, seq, row.Sender, envelope, tag, 1, 0)
 	return nil
 }
 
 // applyDelete tombstones the row: the envelope and the body are emptied, so the
 // message leaves the search index, while the franking tuple survives for the
-// report path of task 17. The author may delete their own message; anyone else
-// needs manage_messages.
-func (h *Readable) applyDelete(ctx context.Context, ch store.ChannelRow, s auth.Session, bits Bits, seq uint64) error {
+// report path of task 17. Delete-for-everyone is the uploader's alone (R29):
+// anyone else, manage_messages or not, is 403 E_NOT_UPLOADER. Moderator
+// deletion needs a signed moderation event, which is follow-up card 2.
+func (h *Readable) applyDelete(ctx context.Context, ch store.ChannelRow, s auth.Session, seq uint64) error {
 	row, err := h.target(ctx, ch, seq)
 	if err != nil {
 		return err
 	}
-	if row.Sender != s.UserID && !bits.Has(PermManageMessages) {
-		return server.Errorf(server.CodeForbidden, "missing permission")
+	if row.Sender != s.UserID {
+		return server.Errorf(server.CodeNotUploader, "only the author may delete a message")
 	}
 	if err := h.repo.DeleteReadableMessage(ctx, ch.ID, seq, h.clk.Now().Unix()); err != nil {
 		return notFound(err)
 	}
 	h.deliver(ctx, ch.ID, seq, row.Sender, nil, row.FrankingTag, 0, 1)
 	return nil
+}
+
+// targetSeq reads the target of a type-1 or type-2 envelope on the alias path.
+// On a server-readable channel reply_to carries the target's channel seq as a
+// big-endian uint64 in the low eight bytes, the high eight zero (P2-D15): the
+// instance keys a readable message by (channel, seq) and holds no msg_id index.
+// A missing reference, or one whose high bytes are set (a msg_id, which only an
+// end-to-end encrypted group uses), is E_ENVELOPE_SHAPE.
+func targetSeq(env Envelope) (uint64, error) {
+	if env.ReplyTo == nil {
+		return 0, server.Errorf(server.CodeEnvelopeShape, "an edit or a delete names its target's seq in reply_to")
+	}
+	ref := *env.ReplyTo
+	if binary.BigEndian.Uint64(ref[:8]) != 0 {
+		return 0, server.Errorf(server.CodeEnvelopeShape,
+			"on a server-readable channel reply_to carries the target's seq in its low eight bytes, not a msg_id")
+	}
+	seq := binary.BigEndian.Uint64(ref[8:])
+	if seq > math.MaxInt64 {
+		return 0, server.Errorf(server.CodeNotFound, "no such message")
+	}
+	return seq, nil
 }
 
 type searchItem struct {

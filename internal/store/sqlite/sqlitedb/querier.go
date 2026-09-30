@@ -59,7 +59,9 @@ type Querier interface {
 	DeleteSessionsByDevice(ctx context.Context, arg DeleteSessionsByDeviceParams) (int64, error)
 	DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsByUserParams) (int64, error)
 	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
-	// A deleted message is not edited: its envelope and body are gone for good.
+	// A deleted message is not edited: its envelope and body are gone for good. The franking tag and
+	// the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
+	// instance no longer stores could never verify.
 	EditReadableMessage(ctx context.Context, arg EditReadableMessageParams) (int64, error)
 	// Invariant 11's "Live calls end." A live call IS its call group (R9 puts the call id in the
 	// companion column), and `voice_sessions` is Plan 2's table -- so on a Plan-1 database the whole

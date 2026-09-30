@@ -275,11 +275,12 @@ func TestTheReadableRoutesAreGated(t *testing.T) {
 			t.Fatalf("%s: %d %s, want 400 E_ENVELOPE_*", name, status, code)
 		}
 	}
-	// An edit or a delete has its own verb.
+	// An edit or a delete on POST is the P2-D15 alias and must name its target's
+	// seq in reply_to (task 9); without one it is malformed.
 	for _, typ := range []uint64{1, 2} {
 		status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", f.ownerTok, []any{envelopeOf(t, typ, "")})
-		if status != http.StatusBadRequest || e.ErrCode(body) != "E_ENVELOPE_TYPE" {
-			t.Fatalf("a type-%d envelope on POST = %d %s, want 400 E_ENVELOPE_TYPE", typ, status, e.ErrCode(body))
+		if status != http.StatusBadRequest || e.ErrCode(body) != "E_ENVELOPE_SHAPE" {
+			t.Fatalf("a type-%d envelope on POST with no reply_to = %d %s, want 400 E_ENVELOPE_SHAPE", typ, status, e.ErrCode(body))
 		}
 	}
 }
@@ -605,7 +606,7 @@ func TestSearchCoversTheReadableChannelsTheCallerMayRead(t *testing.T) {
 }
 
 // PATCH and DELETE on /v1/channels/{id}/messages/{seq}: only the author edits,
-// the author or a manage_messages holder deletes, and the index follows both.
+// only the author deletes (R29, task 9), and the index follows both.
 func TestEditAndDeleteByPath(t *testing.T) {
 	f := newReadableFixture(t)
 	e := f.e
@@ -642,11 +643,14 @@ func TestEditAndDeleteByPath(t *testing.T) {
 		t.Fatalf("a malformed seq = %d, want 400", status)
 	}
 
-	// A second member without manage_messages cannot delete it; the author can.
+	// Nobody but the uploader deletes it: neither a second member nor the owner,
+	// who holds manage_messages (R29); the author can.
 	_, otherTok := e.NewUser("other")
 	joinCommunity(t, e, f.cid, otherTok)
-	if status, _ := e.Do(http.MethodDelete, path, otherTok, nil); status != http.StatusForbidden {
-		t.Fatalf("a delete by a non-author without manage_messages = %d, want 403", status)
+	for _, tok := range []string{otherTok, f.ownerTok} {
+		if status, body := e.Do(http.MethodDelete, path, tok, nil); status != http.StatusForbidden || e.ErrCode(body) != "E_NOT_UPLOADER" {
+			t.Fatalf("a delete by a non-author = %d %s, want 403 E_NOT_UPLOADER", status, e.ErrCode(body))
+		}
 	}
 	if status, _ := e.Do(http.MethodDelete, path, memberTok, nil); status != http.StatusNoContent {
 		t.Fatalf("the author's delete = %d", status)

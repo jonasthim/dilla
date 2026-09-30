@@ -127,11 +127,12 @@ func TestEditAndDeleteUpdateTheIndex(t *testing.T) {
 			if err != nil || len(before) != 1 {
 				t.Fatalf("setup: %d hits, %v", len(before), err)
 			}
-			// Six arguments (P2-D13) and a real CBOR envelope: the column holds
-			// deterministic CBOR (P2-D27), and the body is a separate indexed
-			// column that the store cannot derive from the envelope.
+			// P2-D13's body parameter, task 9's tag and key id, and a real CBOR
+			// envelope: the column holds deterministic CBOR (P2-D27), and the body
+			// is a separate indexed column that the store cannot derive from the
+			// envelope.
 			if err := repo.EditReadableMessage(t.Context(), before[0].ChannelID, before[0].Seq,
-				testEnvelope(t, "edited body"), "edited body", 2000); err != nil {
+				testEnvelope(t, "edited body"), "edited body", make([]byte, 32), id.New(), 2000); err != nil {
 				t.Fatalf("EditReadableMessage: %v", err)
 			}
 			after, _ := repo.SearchReadable(t.Context(), store.ReadableSearchQuery{
@@ -375,16 +376,21 @@ func TestReadableMessagesRoundTrip(t *testing.T) {
 				t.Fatalf("LastReadableMessageAt(stranger) = %v, want ErrNotFound", err)
 			}
 
+			// An edit moves the franking tuple with the bytes: a new tag, made
+			// under whichever key is current at the edit (task 9).
 			edited := testEnvelope(t, "hello again")
-			if err := repo.EditReadableMessage(ctx, ch.ID, 1, edited, "hello again", 1_700_000_100); err != nil {
+			editTag := bytes.Repeat([]byte{0x5e}, 32)
+			editKeyID := id.New()
+			if err := repo.EditReadableMessage(ctx, ch.ID, 1, edited, "hello again", editTag, editKeyID, 1_700_000_100); err != nil {
 				t.Fatalf("EditReadableMessage: %v", err)
 			}
-			if err := repo.EditReadableMessage(ctx, ch.ID, 9, edited, "x", 1); !errors.Is(err, store.ErrNotFound) {
+			if err := repo.EditReadableMessage(ctx, ch.ID, 9, edited, "x", editTag, editKeyID, 1); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("EditReadableMessage(unknown seq) = %v, want ErrNotFound", err)
 			}
 			rows, _ = repo.ListReadableMessages(ctx, ch.ID, 1, 1)
 			if !bytes.Equal(rows[0].Envelope, edited) || rows[0].Body != "hello again" ||
-				rows[0].Edited == nil || *rows[0].Edited != 1_700_000_100 {
+				!bytes.Equal(rows[0].FrankingTag, editTag) || rows[0].FrankingKeyID != editKeyID ||
+				rows[0].Created != 1_700_000_000 || rows[0].Edited == nil || *rows[0].Edited != 1_700_000_100 {
 				t.Fatalf("after edit = %+v", rows[0])
 			}
 
@@ -394,14 +400,14 @@ func TestReadableMessagesRoundTrip(t *testing.T) {
 			rows, _ = repo.ListReadableMessages(ctx, ch.ID, 1, 1)
 			// The envelope and body are gone; the franking tuple survives for a report.
 			if len(rows[0].Envelope) != 0 || rows[0].Body != "" || rows[0].Deleted == nil ||
-				*rows[0].Deleted != 1_700_000_200 || len(rows[0].FrankingTag) != 32 ||
-				rows[0].FrankingKeyID != keyID || rows[0].Sender != sender {
+				*rows[0].Deleted != 1_700_000_200 || !bytes.Equal(rows[0].FrankingTag, editTag) ||
+				rows[0].FrankingKeyID != editKeyID || rows[0].Sender != sender {
 				t.Fatalf("after delete = %+v", rows[0])
 			}
 			if err := repo.DeleteReadableMessage(ctx, ch.ID, 1, 1); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("a second delete = %v, want ErrNotFound", err)
 			}
-			if err := repo.EditReadableMessage(ctx, ch.ID, 1, edited, "revived", 1); !errors.Is(err, store.ErrNotFound) {
+			if err := repo.EditReadableMessage(ctx, ch.ID, 1, edited, "revived", editTag, editKeyID, 1); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("an edit of a deleted message = %v, want ErrNotFound", err)
 			}
 			// Deleting the last message does not reset the slowmode gate.

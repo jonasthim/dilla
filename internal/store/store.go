@@ -432,9 +432,12 @@ type Readable interface {
 	ListReadableMessages(ctx context.Context, channelID id.ID, fromSeq uint64, limit int32) ([]ReadableMessageRow, error)
 	// EditReadableMessage is P2-D13: body is a parameter of its own, because
 	// the indexed column cannot be filled from the envelope without the store
-	// parsing envelopes, which is internal/api's job. ErrNotFound for an unknown
-	// or deleted message.
-	EditReadableMessage(ctx context.Context, channelID id.ID, seq uint64, envelope []byte, body string, at int64) error
+	// parsing envelopes, which is internal/api's job. Plan 2 task 9 adds the
+	// franking tag and the id of the key that made it: an edit re-franks the new
+	// bytes, and a tag that committed to text the row no longer holds could
+	// never verify. ErrNotFound for an unknown or deleted message.
+	EditReadableMessage(ctx context.Context, channelID id.ID, seq uint64,
+		envelope []byte, body string, frankingTag []byte, frankingKeyID id.ID, at int64) error
 	// DeleteReadableMessage empties the envelope and the body (so the row leaves
 	// the index) and keeps the franking tuple. ErrNotFound for an unknown or an
 	// already deleted message.
