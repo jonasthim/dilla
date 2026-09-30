@@ -43,8 +43,10 @@ type Querier interface {
 	DeleteMembers(ctx context.Context, arg DeleteMembersParams) error
 	DeleteOldestSessionForDevice(ctx context.Context, arg DeleteOldestSessionForDeviceParams) error
 	DeleteOtherLastResortKeyPackages(ctx context.Context, arg DeleteOtherLastResortKeyPackagesParams) error
+	DeleteOverwrite(ctx context.Context, arg DeleteOverwriteParams) (int64, error)
 	DeleteProposal(ctx context.Context, arg DeleteProposalParams) error
 	DeleteRecoveryCodes(ctx context.Context, arg DeleteRecoveryCodesParams) error
+	DeleteRole(ctx context.Context, arg DeleteRoleParams) (int64, error)
 	DeleteSession(ctx context.Context, arg DeleteSessionParams) error
 	DeleteSessionsByDevice(ctx context.Context, arg DeleteSessionsByDeviceParams) (int64, error)
 	DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsByUserParams) (int64, error)
@@ -102,6 +104,7 @@ type Querier interface {
 	ListMembers(ctx context.Context, arg ListMembersParams) ([]MlsMembers, error)
 	ListMembersOfCommunity(ctx context.Context, arg ListMembersOfCommunityParams) ([]Members, error)
 	ListOpenGroups(ctx context.Context, arg ListOpenGroupsParams) ([]MlsGroups, error)
+	ListOverwrites(ctx context.Context, arg ListOverwritesParams) ([]ChannelOverwrites, error)
 	ListRoles(ctx context.Context, arg ListRolesParams) ([]Roles, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
@@ -156,6 +159,8 @@ type Querier interface {
 	PutMemberLeaf(ctx context.Context, arg PutMemberLeafParams) error
 	PutMemberRole(ctx context.Context, arg PutMemberRoleParams) error
 	PutOIDCIdentity(ctx context.Context, arg PutOIDCIdentityParams) error
+	// Channel overwrites (Plan 2 task 3, 00006_overwrites.sql).
+	PutOverwrite(ctx context.Context, arg PutOverwriteParams) error
 	PutPasswordCredential(ctx context.Context, arg PutPasswordCredentialParams) error
 	PutProposal(ctx context.Context, arg PutProposalParams) error
 	PutRecoveryCode(ctx context.Context, arg PutRecoveryCodeParams) error

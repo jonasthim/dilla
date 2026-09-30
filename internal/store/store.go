@@ -24,8 +24,9 @@ var (
 // task 19 step 1a adds MLS with 00002_mls.sql, task 23 step 1a adds Messages and
 // Cursors with 00003_messages.sql, Plan 2 task 1 step 9 adds Communities (the
 // part of Structure whose tables 00004_structure.sql ships), Plan 2 task 2 adds
-// Channels (the part 00005_channels.sql ships), and Plan 2's later tasks add the
-// rest of Structure, Readable, Blobs and OpsBackups.
+// Channels (the part 00005_channels.sql ships), Plan 2 task 3 adds Overwrites (the
+// part 00006_overwrites.sql ships), and Plan 2's later tasks add the rest of
+// Structure, Readable, Blobs and OpsBackups.
 type Repository interface {
 	Tx(ctx context.Context, fn func(Repository) error) error
 	Close() error
@@ -41,6 +42,7 @@ type Repository interface {
 	Cursors     // added HERE — ID1; device_cursors ships with 00002_mls.sql, its queries here
 	Communities // Plan 2 task 1 step 9 (P2-D23) — 00004_structure.sql
 	Channels    // Plan 2 task 2 (P2-D23) — 00005_channels.sql
+	Overwrites  // Plan 2 task 3 (P2-D23) — 00006_overwrites.sql
 }
 
 type Instance interface {
@@ -249,12 +251,11 @@ type Cursors interface {
 // plus the plan's additions; a later task that ships the rest of it either
 // embeds its own slice the same way or, once every method exists, swaps
 // Communities for Structure in Repository's embed list. Task 2's slice is
-// Channels.
+// Channels, task 3's Overwrites.
 type Structure interface {
 	Communities
 	Channels
-	PutOverwrite(ctx context.Context, o OverwriteRow) error
-	ListOverwrites(ctx context.Context, channelID id.ID) ([]OverwriteRow, error)
+	Overwrites
 	PutChannelMember(ctx context.Context, channelID, userID id.ID, at int64) error
 	DeleteChannelMember(ctx context.Context, channelID, userID id.ID) error
 	ListChannelMembers(ctx context.Context, channelID id.ID) ([]id.ID, error)
@@ -295,6 +296,10 @@ type Communities interface {
 	// GetRole is P2-D9, written in task 1 because the role-grant route needs it.
 	GetRole(ctx context.Context, roleID id.ID) (RoleRow, error)
 	ListRoles(ctx context.Context, communityID id.ID) ([]RoleRow, error)
+	// DeleteRole is P2-D9: DELETE /v1/roles/{id}. The role's grants go with it
+	// (member_roles cascades). ErrNotFound is an unknown role or one of another
+	// community.
+	DeleteRole(ctx context.Context, communityID, roleID id.ID) error
 	PutMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
 	DeleteMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
 	// ListMemberRoles is Plan 2's P2-D7b: GET /v1/communities/{id}/members must
@@ -325,6 +330,20 @@ type Channels interface {
 	// channels.seq by one and returns the new value. ErrNotFound is an unknown or
 	// deleted channel.
 	NextChannelSeq(ctx context.Context, channelID id.ID) (uint64, error)
+}
+
+// Overwrites is the part of Structure whose table is 00006_overwrites.sql (Plan
+// 2 task 3): §4.1's two overwrite methods plus P2-D9's delete.
+type Overwrites interface {
+	// PutOverwrite is an upsert on (channel, target kind, target): a second
+	// call replaces allow and deny.
+	PutOverwrite(ctx context.Context, o OverwriteRow) error
+	// ListOverwrites is the channel's overwrites ordered by (target_kind,
+	// target_id), so the order is the same on both engines.
+	ListOverwrites(ctx context.Context, channelID id.ID) ([]OverwriteRow, error)
+	// DeleteOverwrite is P2-D9: DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}.
+	// ErrNotFound when there was no such overwrite.
+	DeleteOverwrite(ctx context.Context, channelID id.ID, targetKind uint8, targetID id.ID) error
 }
 
 // Readable is 007_readable.sql, implemented from Plan 2 task 8 onward.

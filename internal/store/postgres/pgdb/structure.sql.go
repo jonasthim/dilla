@@ -164,6 +164,41 @@ func (q *Queries) DeleteMemberRole(ctx context.Context, arg DeleteMemberRolePara
 	return result.RowsAffected()
 }
 
+const deleteOverwrite = `-- name: DeleteOverwrite :execrows
+DELETE FROM channel_overwrites WHERE channel_id = $1 AND target_kind = $2 AND target_id = $3
+`
+
+type DeleteOverwriteParams struct {
+	ChannelID  id.ID
+	TargetKind int64
+	TargetID   id.ID
+}
+
+func (q *Queries) DeleteOverwrite(ctx context.Context, arg DeleteOverwriteParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteOverwrite, arg.ChannelID, arg.TargetKind, arg.TargetID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteRole = `-- name: DeleteRole :execrows
+DELETE FROM roles WHERE id = $1 AND community_id = $2
+`
+
+type DeleteRoleParams struct {
+	ID          id.ID
+	CommunityID id.ID
+}
+
+func (q *Queries) DeleteRole(ctx context.Context, arg DeleteRoleParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteRole, arg.ID, arg.CommunityID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getChannel = `-- name: GetChannel :one
 SELECT id, community_id, kind, mode, visibility, parent_id, name, topic, position,
        settings_json, host_policy_version, slowmode_seconds, seq, created, deleted_at
@@ -400,6 +435,44 @@ func (q *Queries) ListMembersOfCommunity(ctx context.Context, arg ListMembersOfC
 	return items, nil
 }
 
+const listOverwrites = `-- name: ListOverwrites :many
+SELECT channel_id, target_kind, target_id, allow, deny
+FROM channel_overwrites WHERE channel_id = $1 ORDER BY target_kind, target_id
+`
+
+type ListOverwritesParams struct {
+	ChannelID id.ID
+}
+
+func (q *Queries) ListOverwrites(ctx context.Context, arg ListOverwritesParams) ([]ChannelOverwrites, error) {
+	rows, err := q.db.QueryContext(ctx, listOverwrites, arg.ChannelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelOverwrites{}
+	for rows.Next() {
+		var i ChannelOverwrites
+		if err := rows.Scan(
+			&i.ChannelID,
+			&i.TargetKind,
+			&i.TargetID,
+			&i.Allow,
+			&i.Deny,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoles = `-- name: ListRoles :many
 SELECT id, community_id, name, color, position, allow, deny, hoist, mentionable, created
 FROM roles WHERE community_id = $1 ORDER BY position, id
@@ -495,6 +568,34 @@ type PutMemberRoleParams struct {
 
 func (q *Queries) PutMemberRole(ctx context.Context, arg PutMemberRoleParams) error {
 	_, err := q.db.ExecContext(ctx, putMemberRole, arg.CommunityID, arg.UserID, arg.RoleID)
+	return err
+}
+
+const putOverwrite = `-- name: PutOverwrite :exec
+
+INSERT INTO channel_overwrites (channel_id, target_kind, target_id, allow, deny)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (channel_id, target_kind, target_id) DO UPDATE SET
+  allow = excluded.allow, deny = excluded.deny
+`
+
+type PutOverwriteParams struct {
+	ChannelID  id.ID
+	TargetKind int64
+	TargetID   id.ID
+	Allow      int64
+	Deny       int64
+}
+
+// Channel overwrites (Plan 2 task 3, 00006_overwrites.sql).
+func (q *Queries) PutOverwrite(ctx context.Context, arg PutOverwriteParams) error {
+	_, err := q.db.ExecContext(ctx, putOverwrite,
+		arg.ChannelID,
+		arg.TargetKind,
+		arg.TargetID,
+		arg.Allow,
+		arg.Deny,
+	)
 	return err
 }
 

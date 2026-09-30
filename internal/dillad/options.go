@@ -50,8 +50,8 @@ type Options struct {
 	// means CoreFileName beside the dillad binary, the path `dillad doctor`
 	// checks (deviation B35: dilla.toml has no [mls] table).
 	CorePath string
-	// ACL is invariant 4's eligibility source; nil means ds.DenyUnlessMember
-	// until Plan 2 task 3's permission resolver (NV-B6).
+	// ACL is invariant 4's eligibility source; nil means api.ResolverACL, the
+	// permission resolver over the repository (Plan 2 task 3, NV-B6 closed).
 	ACL ds.ACL
 	// Channels is invariant 1's channel-mode source and the registration
 	// ACL; nil means api.StructureChannels over the repository (Plan 2 task 2).

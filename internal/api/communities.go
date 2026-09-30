@@ -201,7 +201,7 @@ type patchCommunityReq struct {
 }
 
 func (c *Communities) patch(w http.ResponseWriter, r *http.Request) {
-	row, s, err := c.ownerOnly(r)
+	row, s, err := c.managerOnly(r)
 	if err != nil {
 		c.fail(w, r, "patch community", err)
 		return
@@ -404,8 +404,25 @@ func (c *Communities) memberOnly(r *http.Request) (store.CommunityRow, auth.Sess
 	return row, s, nil
 }
 
-// ownerOnly is memberOnly plus ownership. Task 3's resolver widens it to
-// PermManageCommunity.
+// managerOnly is memberOnly plus PermManageCommunity, which the owner always
+// holds. It gates PATCH; deleting the community stays the owner's (ownerOnly).
+func (c *Communities) managerOnly(r *http.Request) (store.CommunityRow, auth.Session, error) {
+	row, s, err := c.memberOnly(r)
+	if err != nil {
+		return row, s, err
+	}
+	snap, err := LoadSnapshot(r.Context(), c.repo, row.ID, s.UserID, nil)
+	if err != nil {
+		return row, s, notFound(err)
+	}
+	if !snap.Resolve(s.UserID).Has(PermManageCommunity) {
+		return row, s, server.Errorf(server.CodeForbidden, "manage community")
+	}
+	return row, s, nil
+}
+
+// ownerOnly is memberOnly plus ownership: deleting the community, and removing
+// a member until task 4 gives that its own permission (PermKickMembers).
 func (c *Communities) ownerOnly(r *http.Request) (store.CommunityRow, auth.Session, error) {
 	row, s, err := c.memberOnly(r)
 	if err != nil {

@@ -68,11 +68,13 @@ type HostOptions struct {
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
 //
-// Plan 1 ships ds.DenyUnlessMember, which admits a user only where the instance can already see
-// them in the group, because the permission resolver is Plan 2 task 3's. Under it no scenario can
-// add a second user to anything, so the harness — and only the harness — answers the one question
-// Plan 2 will answer from roles. It is not a mock of the delivery service: invariant 4's other
-// clauses (the signed device list, the structural validation, the GroupInfo epoch) still run.
+// Production injects api.ResolverACL (Plan 2 task 3), which answers from roles and channel
+// overwrites and, for a group with no community, keeps Plan 1's ds.DenyUnlessMember: a user is
+// eligible only where the instance can already see them in the group. The scenarios' groups are
+// not bound to community channels, so under it no scenario could add a second user to anything;
+// the harness — and only the harness — answers that one question itself. It is not a mock of the
+// delivery service: invariant 4's other clauses (the signed device list, the structural
+// validation, the GroupInfo epoch) still run.
 type AllowEveryone struct{}
 
 func (AllowEveryone) Eligible(context.Context, id.ID, id.ID) (bool, error) { return true, nil }

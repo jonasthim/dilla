@@ -2065,4 +2065,62 @@ func (r *Repo) NextChannelSeq(ctx context.Context, channelID id.ID) (uint64, err
 	return uint64(seq), nil
 }
 
+func (r *Repo) DeleteRole(ctx context.Context, communityID, roleID id.ID) error {
+	n, err := r.w.DeleteRole(ctx, pgdb.DeleteRoleParams{ID: roleID, CommunityID: communityID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------- Overwrites
+//
+// Plan 2 task 3: the slice of store.Structure whose table 00006_overwrites.sql
+// ships. target_kind is SMALLINT on Postgres and pulled back to int64 by
+// sqlc.yaml, so both adapters carry the same three methods.
+
+func (r *Repo) PutOverwrite(ctx context.Context, o store.OverwriteRow) error {
+	return wrap(r.w.PutOverwrite(ctx, pgdb.PutOverwriteParams{
+		ChannelID:  o.ChannelID,
+		TargetKind: int64(o.TargetKind),
+		TargetID:   o.TargetID,
+		Allow:      int64(o.Allow),
+		Deny:       int64(o.Deny),
+	}))
+}
+
+func (r *Repo) ListOverwrites(ctx context.Context, channelID id.ID) ([]store.OverwriteRow, error) {
+	rows, err := r.r.ListOverwrites(ctx, pgdb.ListOverwritesParams{ChannelID: channelID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.OverwriteRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.OverwriteRow{
+			ChannelID:  row.ChannelID,
+			TargetKind: uint8(row.TargetKind),
+			TargetID:   row.TargetID,
+			Allow:      uint64(row.Allow),
+			Deny:       uint64(row.Deny),
+		})
+	}
+	return out, nil
+}
+
+func (r *Repo) DeleteOverwrite(ctx context.Context, channelID id.ID, targetKind uint8, targetID id.ID) error {
+	n, err := r.w.DeleteOverwrite(ctx, pgdb.DeleteOverwriteParams{
+		ChannelID: channelID, TargetKind: int64(targetKind), TargetID: targetID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 var _ store.Repository = (*Repo)(nil)

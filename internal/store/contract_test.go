@@ -111,6 +111,13 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// §4.1 plus two more, reached through the embedded Channels: P2-D8's
 			// one-statement community tombstone and per-channel sequencer.
 			"DeleteChannelsOfCommunity", "NextChannelSeq",
+			// §4.1 plus P2-D9's two deletes (task 3), reached through the embedded
+			// Communities (DeleteRole) and Overwrites (DeleteOverwrite).
+			"DeleteOverwrite", "DeleteRole",
+		}},
+		// Overwrites is the slice of Structure Plan 2 task 3's table supports.
+		{"Overwrites", reflect.TypeOf((*store.Overwrites)(nil)).Elem(), []string{
+			"DeleteOverwrite", "ListOverwrites", "PutOverwrite",
 		}},
 		// Channels is the slice of Structure Plan 2 task 2's table supports.
 		{"Channels", reflect.TypeOf((*store.Channels)(nil)).Elem(), []string{
@@ -120,7 +127,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		// Communities is the slice of Structure Plan 2 task 1's tables support; it
 		// is what Repository embeds until the rest of Structure exists (P2-D23).
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
-			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "GetCommunity",
+			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity",
 			"GetMember", "GetRole", "ListMemberRoles", "ListMembersOfCommunity", "ListRoles",
 			"PutMember", "PutMemberRole", "PutRole", "SoftDeleteCommunity",
 			"UpdateCommunityMeta", "UpdateCommunityPolicy",
@@ -201,6 +208,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.Communities)(nil)).Elem(),
 		// Plan 2 task 2: Channels joins with 00005_channels.sql.
 		reflect.TypeOf((*store.Channels)(nil)).Elem(),
+		// Plan 2 task 3: Overwrites joins with 00006_overwrites.sql.
+		reflect.TypeOf((*store.Overwrites)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

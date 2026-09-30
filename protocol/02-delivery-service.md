@@ -239,9 +239,11 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    text mode. Registration is also gated on the registering session's user: a `text` or `call`
    group bound to a community channel needs that channel to be of the binding's `community_id` and
    of a kind that carries the group (a `text` group on a text channel, a `call` group on a voice
-   channel) and the user to be a member of the community; a community `text` group whose target is
-   not a channel of it is refused, and a community `call` group whose target is not a channel (the
-   call itself) needs membership of that community. A `text` or `call` group with no
+   channel) and the user to hold, in that channel (`09` § Permissions, overwrites applied),
+   `view_channel` for a `text` group and `view_channel` and `connect` for a `call` group; a
+   community `text` group whose target is not a channel of it is refused, and a community `call`
+   group whose target is not a channel (the call itself) needs the user to be a member of that
+   community holding both bits community-wide. A `text` or `call` group with no
    `community_id` (a DM or group DM) needs the user to be a member of the DM; until the instance
    records DM membership it refuses every such group. A binding that names no such target is
    `400 E_BINDING_INVALID`; a user who may not register it is `403 E_FORBIDDEN`. `pairing` and
@@ -255,7 +257,9 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    external commit; it references every outstanding non-void DS proposal (invariant 6); it
    contains no `Update` from the committer; every member-originated `Remove` targets the
    committer's own user; every `Add` carries a credential whose user is eligible under the channel's
-   ACL and whose DSK is in the newest signed device list the DS holds; the `PublicGroup` validates
+   ACL (for a community group, the same permission invariant 1 asks of a registrant, resolved
+   through `09` § Permissions; for any other group, being in it already) and whose DSK is in the
+   newest signed device list the DS holds; the `PublicGroup` validates
    it structurally; and the uploaded GroupInfo's epoch is `n + 1`. Otherwise `422 E_COMMIT_INVALID`.
 5. **Freeze.** While any DS proposal is outstanding for a group, application messages get
    `425 E_COMMIT_REQUIRED`, and external commits get `425 E_COMMIT_REQUIRED` too — **unless no member

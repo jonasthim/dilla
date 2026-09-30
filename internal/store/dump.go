@@ -63,6 +63,8 @@ var DumpTables = []string{
 	// self-reference (parent_id) is checked at the end of the one COPY statement
 	// that replays the table, so the rows' order within it does not matter.
 	"channels",
+	// 006b_overwrites.sql, appended by Plan 2 task 3. Its parent is channels.
+	"channel_overwrites",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

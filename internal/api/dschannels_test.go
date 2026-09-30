@@ -153,6 +153,14 @@ func TestLeavingACommunityEndsTheRightToRegisterInIt(t *testing.T) {
 	if err := e.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: cid, UserID: member, Joined: 1}); err != nil {
 		t.Fatalf("PutMember: %v", err)
 	}
+	// Every community has @everyone at position 0 (POST /v1/communities makes
+	// it); a member's right to register reads it through the resolver (task 3).
+	if err := e.Repo.PutRole(ctx, store.RoleRow{
+		ID: id.New(), CommunityID: cid, Name: "@everyone", Position: 0,
+		Allow: uint64(api.PermViewChannel | api.PermConnect), Created: 1,
+	}); err != nil {
+		t.Fatalf("PutRole: %v", err)
+	}
 	ch := store.ChannelRow{
 		ID: id.New(), CommunityID: &cid, Name: "general", SettingsJSON: []byte(`{}`),
 		HostPolicyVersion: 1, Created: 1,

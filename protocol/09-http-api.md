@@ -155,8 +155,8 @@ community answers `404` to everyone.
 
 - The creator is the **owner** and the first member, and the community starts with one role,
   `@everyone`, at position 0, whose id is `role_everyone`. The owner can neither leave nor be
-  removed. Until the permission resolver lands, `PATCH`, `DELETE`, member removal and role grants
-  are the owner's alone (`403 E_FORBIDDEN` for any other member).
+  removed. `PATCH` needs `manage_community` (§ Permissions); `DELETE` and member removal are the
+  owner's alone (`403 E_FORBIDDEN` for any other member). Role grants are § Roles'.
 - `name` is 1–255 bytes of UTF-8 with no control character. `require_mod_2fa` is 0 or 1.
   `min_account_age_seconds` is at most 3 153 600 000 (a century); 0 means no gate.
 - `policy` is the **policy document** below, and `policy_version` starts at 1 and grows by one on
@@ -187,10 +187,11 @@ optional; `{}` is every default.
 
 ### Channels
 
-Every route below is `E`. A channel of a community the caller is not a member of answers
-`404 E_NOT_FOUND` exactly as an unknown or deleted one does. Until the permission resolver lands,
-creating, changing and deleting a channel are the community owner's alone (`403 E_FORBIDDEN` for
-any other member).
+Every route below is `E`. A channel the caller may not view (§ Permissions: `view_channel` in that
+channel, overwrites applied), a channel of a community the caller is not a member of included,
+answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a channel needs
+`manage_channels` community-wide; changing and deleting one need it in that channel
+(`403 E_FORBIDDEN` otherwise).
 
 | Method and path | Request | Response |
 |---|---|---|
@@ -223,6 +224,87 @@ any other member).
   by `channel_id` (bytewise), the same on every engine.
 - `seq` is the channel's own sequence, which the server-readable message path advances.
 - Deleting a community deletes its channels in the same transaction.
+
+### Roles
+
+Every route below is `E`, and every one needs `manage_roles` community-wide (for an overwrite, in
+that channel); a caller who is not a member of the community answers `404 E_NOT_FOUND`.
+
+| Method and path | Request | Response |
+|---|---|---|
+| `POST /v1/communities/{id}/roles` | `[name(tstr), color(uint), position(uint), allow(uint), deny(uint), hoist(uint), mentionable(uint)]` | `201 [role_id(bstr16)]` |
+| `PATCH /v1/roles/{id}` | the same seven fields, each `\|null`; null leaves a field alone | `204` |
+| `DELETE /v1/roles/{id}` | — | `204` |
+| `PUT /v1/communities/{id}/members/{user_id}/roles/{role_id}` | `[]` | `204` |
+| `DELETE /v1/communities/{id}/members/{user_id}/roles/{role_id}` | — | `204`; `404` when the member does not hold the role |
+| `PUT /v1/channels/{id}/overwrites/{kind}/{target_id}` | `[allow(uint), deny(uint)]` | `204` |
+| `DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}` | — | `204`; `404` when there is no such overwrite |
+
+- **Rank.** A role's `position` orders it; higher is more senior. The owner is above every role;
+  anyone else acts only on roles strictly below their own highest role. Creating, changing,
+  moving, deleting, granting and revoking a role at or above it is `403 E_FORBIDDEN`.
+- **No new authority.** A role's `allow` and `deny`, and an overwrite's, may name only bits the
+  caller holds (for an overwrite, in that channel); a grant or revoke of a role that carries a bit
+  the caller does not hold is refused the same way. `403 E_FORBIDDEN`.
+- **`@everyone`** is the role at position 0, created with the community and held by every member.
+  No other role may be created at or moved to position 0, `@everyone` is never moved, deleted,
+  granted or revoked, and all of these are `400 E_INVALID_REQUEST`; its fields and bits may be
+  changed like any other role's.
+- `name` is 1–100 bytes of UTF-8 with no control character, `color` is at most `0xFFFFFF`
+  (24-bit RGB), `position` is 1 to 2 147 483 647, `hoist` and `mentionable` are 0 or 1, and a
+  community holds at most 250 roles. A bit outside § Permissions' table is `400`.
+- `require_mod_2fa` (§ Communities) additionally gates a grant.
+- **Overwrites.** `{kind}` is `0` (the target is a role of the channel's community) or `1` (the
+  target is a member of it); anything else is `400`, and an unknown target is `404`. An overwrite
+  may not allow and deny the same bit, nor carry a community-wide bit (§ Permissions), both `400`.
+  A second `PUT` for the same target replaces the pair.
+
+## Permissions
+
+A permission set is a 64-bit unsigned integer; `roles.allow`, `roles.deny` and a channel
+overwrite's `allow` and `deny` all carry it. The values are fixed and never renumbered, because a
+stored row is a number, not a name. Bit 62 and above are never used, because `allow` and `deny`
+are stored in a signed 64-bit integer on Postgres. A stored bit outside this table is ignored.
+
+| bit | name | scope |
+|---|---|---|
+| 0 | `view_channel` | channel |
+| 1 | `send_messages` | channel |
+| 2 | `manage_messages` | channel |
+| 3 | `pin_messages` | channel |
+| 4 | `attach_files` | channel |
+| 5 | `add_reactions` | channel |
+| 6 | `read_history` | channel |
+| 7 | `connect` | channel |
+| 8 | `speak` | channel |
+| 9 | `video` | channel |
+| 10 | `screen_share` | channel |
+| 11 | `create_invite` | channel |
+| 12 | `kick_members` | community |
+| 13 | `ban_members` | community |
+| 14 | `manage_channels` | channel |
+| 15 | `manage_roles` | community |
+| 16 | `manage_community` | community |
+| 17 | `view_audit_log` | community |
+| 18 | `mention_everyone` | channel |
+| 19 | `bypass_slowmode` | channel |
+| 20 | `administrator` | community |
+| 21 | `mute_members` | channel |
+| 22 | `move_members` | channel |
+| 23 | `manage_nicknames` | community |
+
+A **community** bit is about the community, not one channel: a channel overwrite can neither grant
+nor remove it. `@everyone` is the role at position 0 and applies to every member; no other role may
+be created at or moved to position 0. A user's permissions in a channel resolve in this order:
+
+1. The community owner holds every bit.
+2. Starting from none, `@everyone` and then each role the user holds, in ascending `position`
+   (ties broken by role id, bytewise), apply their `deny` and then their `allow`.
+3. `administrator` in the result means every bit; without `view_channel`, no bit at all.
+4. The channel's role overwrites for the roles applied in step 2, in the same order, then the
+   user's own overwrite, apply their `deny` and then their `allow`; community bits keep their
+   value from step 2.
+5. `administrator` means every bit; without `view_channel`, no bit at all.
 
 ## Rate limits
 

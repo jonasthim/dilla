@@ -109,3 +109,21 @@ UPDATE channels SET deleted_at = $1 WHERE community_id = $2 AND deleted_at IS NU
 
 -- name: NextChannelSeq :one
 UPDATE channels SET seq = seq + 1 WHERE id = $1 AND deleted_at IS NULL RETURNING seq;
+
+-- name: DeleteRole :execrows
+DELETE FROM roles WHERE id = $1 AND community_id = $2;
+
+-- Channel overwrites (Plan 2 task 3, 00006_overwrites.sql).
+
+-- name: PutOverwrite :exec
+INSERT INTO channel_overwrites (channel_id, target_kind, target_id, allow, deny)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (channel_id, target_kind, target_id) DO UPDATE SET
+  allow = excluded.allow, deny = excluded.deny;
+
+-- name: DeleteOverwrite :execrows
+DELETE FROM channel_overwrites WHERE channel_id = $1 AND target_kind = $2 AND target_id = $3;
+
+-- name: ListOverwrites :many
+SELECT channel_id, target_kind, target_id, allow, deny
+FROM channel_overwrites WHERE channel_id = $1 ORDER BY target_kind, target_id;

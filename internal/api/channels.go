@@ -76,14 +76,16 @@ func CallGroupAllowed(c store.ChannelRow) bool {
 // a community, read, patch and delete one. Every body is a fixed-position CBOR
 // array (protocol/09 § Channels). Register mounts the handlers bare, as
 // Communities does, and each handler requires an enrolled session itself.
+// Every permission decision is the resolver's (perm.go).
 type Channels struct {
 	repo store.Repository
 	clk  clock.Clock
 	log  *slog.Logger
+	res  *Resolver
 }
 
 func NewChannels(repo store.Repository, clk clock.Clock, log *slog.Logger) *Channels {
-	return &Channels{repo: repo, clk: clk, log: log}
+	return &Channels{repo: repo, clk: clk, log: log, res: NewResolver(repo)}
 }
 
 func (c *Channels) Register(mux *server.Mux) {
@@ -138,8 +140,14 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, "create channel", notFound(err))
 		return
 	}
-	// Task 3 replaces this owner check with perm.Resolve(... PermManageChannels).
-	if com.Owner != s.UserID {
+	// There is no channel yet, so there are no overwrites to apply: the
+	// community-wide bits decide.
+	snap, err := LoadSnapshot(r.Context(), c.repo, cid, s.UserID, nil)
+	if err != nil {
+		c.fail(w, r, "create channel", notFound(err))
+		return
+	}
+	if !snap.Resolve(s.UserID).Has(PermManageChannels) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "manage channels"))
 		return
 	}
@@ -481,8 +489,8 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// visible loads {id} for a member of its community. Task 3 narrows it to
-// perm.Resolve(...) & PermViewChannel.
+// visible loads {id} for a caller who holds PermViewChannel in it. Anyone else,
+// a non-member included, gets the 404 an unknown channel gets.
 func (c *Channels) visible(r *http.Request) (store.ChannelRow, auth.Session, error) {
 	s, err := enrolledSession(r)
 	if err != nil {
@@ -501,26 +509,26 @@ func (c *Channels) visible(r *http.Request) (store.ChannelRow, auth.Session, err
 		// creates. Until then nobody is shown one (P2-D31's ordering constraint).
 		return store.ChannelRow{}, s, server.Errorf(server.CodeNotFound, "no such object")
 	}
-	if _, err := c.repo.GetMember(r.Context(), *row.CommunityID, s.UserID); err != nil {
-		// A non-member must not learn that the channel exists.
-		return store.ChannelRow{}, s, notFound(err)
+	// Require answers 404 to a non-member and to a member an overwrite has
+	// taken the channel from: neither learns that it exists.
+	if err := c.res.Require(r.Context(), s.UserID, row, PermViewChannel); err != nil {
+		return store.ChannelRow{}, s, err
 	}
 	return row, s, nil
 }
 
-// manageable is visible plus the right to manage channels. Task 3 replaces the
-// owner check with perm.Resolve(... PermManageChannels).
+// manageable is visible plus PermManageChannels in that channel, overwrites
+// applied.
 func (c *Channels) manageable(r *http.Request) (store.ChannelRow, auth.Session, error) {
 	row, s, err := c.visible(r)
 	if err != nil {
 		return row, s, err
 	}
-	com, err := c.repo.GetCommunity(r.Context(), *row.CommunityID)
-	if err != nil {
-		return row, s, notFound(err)
+	if row.CommunityID == nil {
+		return row, s, server.Errorf(server.CodeForbidden, "a DM has no manager")
 	}
-	if com.Owner != s.UserID {
-		return row, s, server.Errorf(server.CodeForbidden, "manage channels")
+	if err := c.res.Require(r.Context(), s.UserID, row, PermManageChannels); err != nil {
+		return row, s, err
 	}
 	return row, s, nil
 }

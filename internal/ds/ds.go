@@ -196,8 +196,9 @@ type Options struct {
 	// that refuses every registration; the composition root injects api.StructureChannels, which
 	// reads the channels table Plan 2 task 2 created (NV-B5, closed).
 	Channels Channels
-	// ACL is invariant 4's eligibility source. nil means DenyUnlessMember{Store}: the permission
-	// resolver arrives with Plan 2 task 3 (NV-B6).
+	// ACL is invariant 4's eligibility source. nil means DenyUnlessMember{Store}, the conservative
+	// default; the composition root injects api.ResolverACL, the permission resolver over roles
+	// and channel overwrites (Plan 2 task 3, NV-B6 closed).
 	ACL ACL
 	// DeviceLists decodes and verifies a user's signed device list for invariant 4's DSK clause.
 	// nil means NewDeviceLists(Store, Wasm), which verifies the stored list in the guest (NV-B8,

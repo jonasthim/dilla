@@ -19,6 +19,14 @@ type AuditLog struct {
 	At     int64
 }
 
+type ChannelOverwrites struct {
+	ChannelID  id.ID
+	TargetKind int64
+	TargetID   id.ID
+	Allow      int64
+	Deny       int64
+}
+
 type Channels struct {
 	ID                id.ID
 	CommunityID       *id.ID

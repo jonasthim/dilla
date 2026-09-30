@@ -175,6 +175,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if channels == nil {
 		channels = api.StructureChannels{Repo: o.Repo}
 	}
+	// Invariant 4's eligibility clause is the permission resolver over roles and channel
+	// overwrites (Plan 2 task 3; this replaced Plan 1's ds.DenyUnlessMember, NV-B6). A harness may
+	// inject its own through Options.ACL.
+	acl := o.ACL
+	if acl == nil {
+		acl = api.ResolverACL{Repo: o.Repo}
+	}
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,
 		Wasm:     wasm,
@@ -185,7 +192,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Keys:     keys,
 		Policy:   policy,
 		Channels: channels,
-		ACL:      o.ACL, // nil: ds.DenyUnlessMember (NV-B6)
+		ACL:      acl,
 		// The device lists are verified in the guest (NV-B8, deviation B32).
 		DeviceLists: ds.NewDeviceLists(o.Repo, wasm),
 	})

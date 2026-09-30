@@ -51,12 +51,14 @@ func (c StructureChannels) Channel(ctx context.Context, targetID id.ID) (uint8, 
 //   - text and call: when the target is a live channel, the binding's
 //     community_id must be the channel's, the channel's kind must carry that
 //     group kind (a text group on a text channel, a call group on a voice
-//     channel; a DM carries both), and the user must be a member of the
-//     community. A text group whose binding names a community but whose target
-//     is not a channel of it is refused. A call group's target may be the call
+//     channel; a DM carries both), and the user must hold, in that channel and
+//     through the permission resolver, what ResolverACL requires of a joiner:
+//     PermViewChannel for a text group, PermViewChannel|PermConnect for a call
+//     group. A text group whose binding names a community but whose target is
+//     not a channel of it is refused. A call group's target may be the call
 //     rather than the channel (R9 puts the call id there, and voice_sessions is
 //     task 16's table), so a community call group whose target is not a channel
-//     needs only a live community and membership of it.
+//     needs a live community and the two call bits community-wide.
 //   - text and call with no community: a DM or group DM. Their membership is
 //     channel_members, which task 6 creates; until then they are refused, which
 //     is the conservative answer, not a permanent one.
@@ -98,7 +100,23 @@ func (c StructureChannels) MayRegister(ctx context.Context, userID id.ID, b ds.B
 	case b.Kind == groupCall && row.Kind != ChannelVoice:
 		return fmt.Errorf("%w: a call group is bound to a voice channel", ds.ErrBindingTarget)
 	}
-	return c.member(ctx, *row.CommunityID, userID)
+	bits, err := NewResolver(c.Repo).Resolve(ctx, userID, row)
+	if err != nil {
+		return err
+	}
+	if !bits.Has(groupBits(b.Kind)) {
+		return fmt.Errorf("%w: not permitted in this channel", ds.ErrNotEligible)
+	}
+	return nil
+}
+
+// groupBits is what a channel group of kind needs, the same set ResolverACL
+// requires of a joiner.
+func groupBits(kind uint8) Bits {
+	if kind == groupCall {
+		return callGroupBits
+	}
+	return textGroupBits
 }
 
 // mayRegisterWithoutChannel is MayRegister for a text or call group whose target
@@ -116,16 +134,12 @@ func (c StructureChannels) mayRegisterWithoutChannel(ctx context.Context, userID
 		}
 		return err
 	}
-	return c.member(ctx, *b.CommunityID, userID)
-}
-
-// member is the membership half of every community rule.
-func (c StructureChannels) member(ctx context.Context, communityID, userID id.ID) error {
-	if _, err := c.Repo.GetMember(ctx, communityID, userID); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return fmt.Errorf("%w: not a member of the channel's community", ds.ErrNotEligible)
-		}
+	ok, err := communityHas(ctx, c.Repo, *b.CommunityID, userID, groupBits(b.Kind))
+	if err != nil {
 		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: not a member of the community, or not permitted to call in it", ds.ErrNotEligible)
 	}
 	return nil
 }

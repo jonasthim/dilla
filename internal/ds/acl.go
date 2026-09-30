@@ -9,10 +9,12 @@ import (
 
 // ACL is the eligibility half of invariant 4's Add clause: "a credential whose user is eligible
 // under the channel's ACL". The resolver is Plan 2's — permissions live with the structure tables
-// — so the clause is an injected seam and Plan 1 supplies DenyUnlessMember, which admits a user
-// only where the instance can already see them in the group. That is deliberately conservative: a
-// permissive stub would leave a security clause of invariant 4 silently unimplemented, which is
-// the one outcome worse than a strict one. NV-B6 names Plan 2 task 3 as the step that replaces it.
+// — so the clause is an injected seam. The composition root injects api.ResolverACL, the
+// permission resolver over roles and channel overwrites (Plan 2 task 3, NV-B6 closed); a DS built
+// without one falls back to DenyUnlessMember, which admits a user only where the instance can
+// already see them in the group. That default is deliberately conservative: a permissive one
+// would leave a security clause of invariant 4 silently unimplemented, which is the one outcome
+// worse than a strict one.
 //
 // It is declared here, with its Plan-1 stub, because ds.Options names the seam (deviation D16),
 // so the package does not build without it. Task 20's brief
@@ -26,8 +28,9 @@ type ACL interface {
 
 // DenyUnlessMember is the Plan-1 ACL: a user is eligible only where the instance can already see
 // them as a member of the group. That admits the ordinary re-add of a device belonging to a user
-// already in the group and refuses everything else (NV-B6). Plan 2 task 3 replaces it with the
-// permission resolver.
+// already in the group and refuses everything else (NV-B6). It is the default of a DS built with
+// no ACL, and api.ResolverACL still answers with it for the groups the resolver has no rule for
+// yet (DMs until task 6, pairing and interaction groups).
 type DenyUnlessMember struct{ Store store.Repository }
 
 func (a DenyUnlessMember) Eligible(ctx context.Context, groupID, userID id.ID) (bool, error) {
