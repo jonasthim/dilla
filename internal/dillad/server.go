@@ -67,6 +67,24 @@ type Server struct {
 	shutdownErr  error
 }
 
+// deliverySeams is the channel source and the ACL New gives the delivery service. Invariant 1's
+// channel mode and the registration ACL read the channels, communities and members tables
+// (api.StructureChannels, Plan 2 task 2, which replaced Plan 1's ds.PermissiveChannels, NV-B5);
+// invariant 4's eligibility clause is the permission resolver over roles and channel overwrites
+// (api.ResolverACL, Plan 2 task 3, which replaced Plan 1's ds.DenyUnlessMember, NV-B6). A harness
+// may inject either through Options; production passes neither.
+func deliverySeams(o Options) (ds.Channels, ds.ACL) {
+	channels := o.Channels
+	if channels == nil {
+		channels = api.StructureChannels{Repo: o.Repo}
+	}
+	acl := o.ACL
+	if acl == nil {
+		acl = api.ResolverACL{Repo: o.Repo}
+	}
+	return channels, acl
+}
+
 // New builds the server. It reads the instance row once — the instance id is in
 // every session signature preimage and the generation is in every response
 // header, and neither changes without a restart or a restore.
@@ -200,20 +218,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		FramesPerSecond: float64(o.Config.Gateway.FrameBurst),
 		FrameBurst:      o.Config.Gateway.FrameBurstMax,
 	})
-	// Invariant 1's channel mode and the registration ACL read the channels, communities and
-	// members tables (Plan 2 task 2; this replaced Plan 1's ds.PermissiveChannels, NV-B5). A
-	// harness may inject its own source through Options.Channels.
-	channels := o.Channels
-	if channels == nil {
-		channels = api.StructureChannels{Repo: o.Repo}
-	}
-	// Invariant 4's eligibility clause is the permission resolver over roles and channel
-	// overwrites (Plan 2 task 3; this replaced Plan 1's ds.DenyUnlessMember, NV-B6). A harness may
-	// inject its own through Options.ACL.
-	acl := o.ACL
-	if acl == nil {
-		acl = api.ResolverACL{Repo: o.Repo}
-	}
+	channels, acl := deliverySeams(o)
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,
 		Wasm:     wasm,

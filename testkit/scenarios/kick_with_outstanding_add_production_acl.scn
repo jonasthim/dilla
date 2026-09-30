@@ -1,5 +1,6 @@
 # Invariants 5 and 6 through Plan 2's real ACL (fix wave I6, C2 and C3): the instance runs
-# api.ResolverACL and api.StructureChannels, and the channel is a text channel of a community.
+# api.ResolverACL and api.StructureChannels, and the channel is a text channel of a community. A
+# group bound to that community but to no channel of it is refused at registration.
 # carol holds an outstanding instance Add when she is kicked from the community, and bob is kicked
 # while he is offline, both through DELETE /v1/communities/{cid}/members/{user}. The kick voids
 # carol's Add (she is no longer eligible) and proposes the Remove of bob's leaf, which freezes the
@@ -16,6 +17,7 @@ client dave
 channel c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4 visibility=private mode=e2ee community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 members=alice
 group chat kind=text target=c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4 community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 creator=alice
 channel c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4 community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 members=bob,carol,dave
+expect_reject E_BINDING_INVALID group rogue kind=text target=c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9 community=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 creator=carol
 join bob chat via=welcome
 join dave chat via=welcome
 sync bob
