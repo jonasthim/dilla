@@ -13,6 +13,8 @@ crate-type = ["rlib"]
 [features]
 default = []
 vectors = ["dep:serde_json"]
+# Test hooks the dilla-testkit drives and no client may ship: DillaGroup::requeue_member_removes_last.
+testkit = []
 
 [dependencies]
 # MLS - pinned by the spec; openmls 0.9.0 rust-version = 1.91.0.

@@ -686,6 +686,52 @@ impl DillaGroup {
         Ok(())
     }
 
+    /// Testkit only (feature `testkit`): re-queues every member `Remove` that shares its leaf with a
+    /// queued instance `Remove` BEHIND that instance `Remove`, bypassing `store_pending_proposal`'s
+    /// ordering rule. It is the queue a committer not built on this crate may hold — a replay, or a
+    /// client that queues in arrival order from a listing — under which OpenMLS commits the
+    /// member's `Remove` instead of the instance's; the delivery service must accept that commit
+    /// (protocol/02 invariant 4 clause 1). Answers how many proposals it moved.
+    #[cfg(feature = "testkit")]
+    pub fn requeue_member_removes_last(
+        &mut self,
+        provider: &DillaProvider,
+    ) -> Result<usize, MlsError> {
+        let instance_leaves: Vec<LeafNodeIndex> = self
+            .group
+            .pending_proposals()
+            .filter(|p| matches!(p.sender(), Sender::External(_)))
+            .filter_map(|p| match p.proposal() {
+                Proposal::Remove(r) => Some(r.removed()),
+                _ => None,
+            })
+            .collect();
+        let moved: Vec<QueuedProposal> = self
+            .group
+            .pending_proposals()
+            .filter(|p| {
+                matches!(p.sender(), Sender::Member(_))
+                    && matches!(p.proposal(), Proposal::Remove(r) if instance_leaves.contains(&r.removed()))
+            })
+            .cloned()
+            .collect();
+        let group = &mut self.group;
+        provider.storage().transaction(|| {
+            for p in &moved {
+                group
+                    .remove_pending_proposal(provider.storage(), p.proposal_reference_ref())
+                    .map_err(openmls)?;
+            }
+            for p in moved.iter().cloned() {
+                group
+                    .store_pending_proposal(provider.storage(), p)
+                    .map_err(MlsError::Storage)?;
+            }
+            Ok::<(), MlsError>(())
+        })?;
+        Ok(moved.len())
+    }
+
     /// Takes this device's own pending `Remove` of its own leaf (`leave`) back out of its queue. A
     /// delivery service refuses that proposal with `E_INVALID_REQUEST` ("a removal of this leaf is
     /// already pending") when the instance is already removing the leaf (protocol/02 invariant 6):

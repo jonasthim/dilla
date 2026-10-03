@@ -192,6 +192,72 @@ func TestAMemberCommitMustBeSignedByTheUploadingDevicesOwnLeaf(t *testing.T) {
 	}
 }
 
+// I1, (3a) of the task-9 review: an outstanding instance Remove of leaf L is satisfied by a commit
+// that applies ANY Remove of L — the instance's own, or a member's that passes clause 3 against its
+// authenticated proposer. Within one epoch L holds exactly the device the instance Remove recorded,
+// so either Remove removes that device. Without it a committer whose queue holds the instance's
+// Remove ahead of the member's own (OpenMLS commits the later of two Removes of one leaf) is refused
+// until the TTL and charged a lost round per refusal.
+//
+// commits/08 is leaf 0's commit removing leaf 1 by value (leaves 0 and 1 are one user, so clause 3
+// passes); it carries no instance proposal. No GroupInfo at epoch 7 exists for it, so a commit that
+// clears clause 1 is refused by the GroupInfo clause instead: that rule is what "clause 1 passed"
+// looks like here. The accepted path runs end to end in call_remove_member_remove_committed.scn.
+func TestAnyAppliedRemoveOfTheLeafSatisfiesTheInstanceRemove(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		leaf   uint32
+		device func(t *testing.T, h *dsHarness, g id.ID) id.ID
+		rule   string
+	}{
+		{
+			name: "the member's Remove of the instance Remove's own leaf",
+			leaf: 1,
+			device: func(t *testing.T, h *dsHarness, g id.ID) id.ID {
+				return h.memberSession(t, g, 1).DeviceID
+			},
+			rule: "group_info_epoch",
+		},
+		{
+			name: "a Remove of a different leaf",
+			leaf: 2,
+			device: func(t *testing.T, h *dsHarness, g id.ID) id.ID {
+				return h.memberSession(t, g, 2).DeviceID
+			},
+			rule: "outstanding_proposals",
+		},
+		{
+			// Defence in depth: a row whose recorded device is not the one at its leaf at this
+			// epoch is never treated as satisfied by a Remove of that leaf.
+			name:   "an instance Remove recording a device the leaf does not hold",
+			leaf:   1,
+			device: func(*testing.T, *dsHarness, id.ID) id.ID { return id.New() },
+			rule:   "outstanding_proposals",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newDSHarness(t)
+			ctx := context.Background()
+			reg, session := h.mustRegister(t)
+			ref, leaf, device := id.New(), c.leaf, c.device(t, h, reg.GroupID)
+			if err := h.repo.PutProposal(ctx, store.ProposalRow{
+				GroupID: reg.GroupID, Ref: ref[:], Epoch: 6, Kind: uint8(mlswasi.ProposalRemove),
+				TargetLeaf: &leaf, TargetDevice: &device, Origin: 0, ActionID: id.New(),
+				IssuedAt: h.clk.Now().Unix(), TTL: 30,
+			}); err != nil {
+				t.Fatalf("PutProposal: %v", err)
+			}
+			_, err := h.ds.Commit(ctx, session, reg.GroupID, ds.CommitRequest{
+				Epoch: 6, Commit: fixtureFile(t, "commits/08.mls"), GroupInfo: dsFixture(t).groupInfo,
+			})
+			var dsErr *ds.Error
+			if !errors.As(err, &dsErr) || dsErr.Rule != c.rule {
+				t.Fatalf("commits/08 with an instance Remove of leaf %d outstanding: got %v, want rule %q", c.leaf, err, c.rule)
+			}
+		})
+	}
+}
+
 // F: the call evictor hears only about devices a committed epoch removed — a refused commit queues
 // nothing.
 func TestARefusedCommitEvictsNobody(t *testing.T) {

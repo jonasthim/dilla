@@ -1,0 +1,29 @@
+# I1 of the dilla-media task-9 review, (3a): any committed Remove of a leaf satisfies the instance's
+# outstanding Remove of that leaf (protocol/02 invariant 4 clause 1).
+#
+# carol posts her own Remove, then is kicked: the instance issues its Remove on top of hers. alice's
+# queue holds carol's Remove BEHIND the instance's (`member_removes_last`), the order a committer
+# not built on dilla-core may hold, so OpenMLS commits carol's Remove and leaves the instance's
+# unreferenced. Before the fix clause 1 refused that commit with outstanding_proposals until the
+# TTL, and charged the committer a lost round each time. Now it is accepted: carol's leaf is gone,
+# the instance's row is deleted with the commit, and nothing is re-issued at the new epoch. The Go
+# test that runs this reads the instance afterwards.
+instance dilla
+client alice
+client bob
+client carol
+group call kind=call target=e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6 community=none creator=alice
+join bob call via=external
+sync alice
+join carol call via=external
+sync alice
+sync bob
+leave carol call
+kick alice carol
+expect_425 send alice call the kick is issued over carol's own remove
+sync alice
+commit alice call member_removes_last
+sync bob
+kick alice carol
+send alice call carol is out
+expect_decrypts bob call carol is out

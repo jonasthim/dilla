@@ -233,8 +233,10 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 			return errForbidden("a member commit must be signed by the uploading device's own leaf")
 		}
 
-		// (5) invariant 4's clauses over the applied list.
-		if err := d.checkAppliedProposals(ctx, g, groupID, row, s, processed, o); err != nil {
+		// (5) invariant 4's clauses over the applied list. satisfied is every outstanding instance
+		// Remove the commit did not reference but removes the device of all the same (clause 1).
+		satisfied, err := d.checkAppliedProposals(ctx, g, groupID, row, s, processed, o)
+		if err != nil {
 			return err
 		}
 
@@ -345,10 +347,15 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 			if err != nil {
 				return err
 			}
-			refs := make([][]byte, 0, len(processed.Applied))
+			// The applied refs, and every instance Remove a member's Remove of the same leaf
+			// satisfied (clause 1): that row is done with exactly as if it had been referenced, and
+			// left non-void at the old epoch it would be read by a later re-issue (reissueAll,
+			// redriveCallRemovesLocked) as work still owed.
+			refs := make([][]byte, 0, len(processed.Applied)+len(satisfied))
 			for _, a := range processed.Applied {
 				refs = append(refs, a.ProposalRef)
 			}
+			refs = append(refs, satisfied...)
 			if err := tx.DeleteProposals(ctx, groupID, refs); err != nil {
 				return err
 			}
@@ -421,9 +428,11 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 	d.clearElection(groupID)
 
 	// (9) invariant 5's tail, with the group lock still held and withGroup returned. A commit can
-	// only OMIT an outstanding instance proposal through the nobody-online exception above, so
-	// the re-issue runs exactly on that path: every proposal the commit did not reference is
-	// re-signed for the new epoch, keeping its action_id, and the freeze stays.
+	// only OMIT an outstanding instance proposal through the nobody-online exception above (an
+	// instance Remove a member commit satisfied by another Remove of its leaf was deleted with the
+	// commit, and is owed nothing), so the re-issue runs exactly on that path: every proposal the
+	// commit did not reference is re-signed for the new epoch, keeping its action_id, and the
+	// freeze stays.
 	if o.external {
 		if rerr := d.reissueOmitted(ctx, groupID, oldEpoch, applied); rerr != nil {
 			d.log().Error("re-issuing the proposals an external commit omitted failed",
@@ -471,17 +480,40 @@ func (d *DS) takeStaleAfterFailedMerge(groupID id.ID) bool {
 }
 
 // checkAppliedProposals is invariant 4's clauses over the applied list. The clause numbers are
-// protocol/02's own.
-func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, groupID id.ID, row store.GroupRow, s Session, p mlswasi.Processed, o commitOptions) error {
+// protocol/02's own. It answers the refs of the outstanding instance Removes the commit satisfied
+// without referencing them (clause 1), which the commit's transaction deletes with the applied ones.
+func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, groupID id.ID, row store.GroupRow, s Session, p mlswasi.Processed, o commitOptions) ([][]byte, error) {
 	outstanding, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	applied := map[string]struct{}{}
+	removed := map[uint32]struct{}{}
 	for _, a := range p.Applied {
 		applied[string(a.ProposalRef)] = struct{}{}
+		if a.Kind == mlswasi.ProposalRemove && a.TargetLeaf != nil {
+			removed[*a.TargetLeaf] = struct{}{}
+		}
 	}
-	// Clause 1: every outstanding non-void DS proposal is referenced.
+	var satisfied [][]byte
+	// Clause 1: every outstanding non-void DS proposal is referenced — or, for a DS Remove, the
+	// commit applies another Remove of its leaf (I1 of the task-9 review).
+	//
+	// THE REMOVE CASE. OpenMLS commits only the later of two Removes of one leaf in the committer's
+	// queue order, so a committer that holds the DS's Remove of leaf L ahead of a member's own Remove
+	// of L commits the member's. Refusing that commit would refuse every such committer until the
+	// TTL — 24 h in a text group — and charge each a lost round, until three of them removed the
+	// committer itself; the member being removed sets the trap just by posting its own Remove before
+	// the kick lands, which it may. Within one epoch L holds exactly the device the DS's Remove
+	// recorded, so any Remove of L removes that device: the outcome is the one the DS's Remove has.
+	// The member's Remove has already passed clause 3 (below) against the proposer the PublicGroup
+	// authenticated, or the whole commit is refused. A member proposal still never stands in for
+	// the DS's without being committed: this counts only a Remove THIS commit applies.
+	//
+	// The recorded device must still be the one at L at this epoch; a row recording another device
+	// (or none) is not satisfied this way, only by its own ref.
+	//
+	// THE EXEMPTION (deviation B21, ruling 42). An external commit cannot reference the instance's
 	//
 	// THE EXEMPTION (deviation B21, ruling 42). An external commit cannot reference the instance's
 	// outstanding proposals — it is built by a device that is not in the epoch — and there are
@@ -499,7 +531,7 @@ func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, gr
 	// which only `Resync` sets, is what decides case 2.
 	exemptFromClause1, err := d.clause1Exempt(ctx, groupID, row.Epoch, o)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, pending := range outstanding {
 		if pending.Origin != 0 || pending.VoidAt != nil {
@@ -508,10 +540,18 @@ func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, gr
 		if exemptFromClause1 {
 			continue
 		}
-		if _, ok := applied[string(pending.Ref)]; !ok {
-			return errCommitInvalid("outstanding_proposals",
+		if _, ok := applied[string(pending.Ref)]; ok {
+			continue
+		}
+		ok, err := d.removeSatisfiedBy(ctx, groupID, pending, removed)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, errCommitInvalid("outstanding_proposals",
 				fmt.Sprintf("the commit does not reference the outstanding proposal %x", pending.Ref))
 		}
+		satisfied = append(satisfied, pending.Ref)
 	}
 	for _, a := range p.Applied {
 		switch a.Kind {
@@ -519,7 +559,7 @@ func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, gr
 			// Clause 2: no Update from the committer. A committer who wants to rotate its own
 			// leaf uses the commit's UpdatePath, which is not a proposal.
 			if a.SenderLeaf != nil && p.SenderLeaf != nil && *a.SenderLeaf == *p.SenderLeaf {
-				return errCommitInvalid("committer_update", "the commit carries the committer's own Update")
+				return nil, errCommitInvalid("committer_update", "the commit carries the committer's own Update")
 			}
 		case mlswasi.ProposalRemove:
 			// Clause 3: every member-originated Remove targets its proposer's own user — the
@@ -537,29 +577,46 @@ func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, gr
 			}
 			target, err := d.userOfLeaf(ctx, groupID, *a.TargetLeaf)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			owner, err := d.userOfLeaf(ctx, groupID, *a.SenderLeaf)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if target != owner {
-				return errCommitInvalid("member_remove_scope",
+				return nil, errCommitInvalid("member_remove_scope",
 					"a member-originated Remove may only target its proposer's own user")
 			}
 		case mlswasi.ProposalAdd:
 			// Clause 4: the added KeyPackage validates, its user is eligible and its DSK is in
 			// the newest device list.
 			if err := d.checkAddedMember(ctx, g, groupID, a); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
 	if o.external {
 		// R25: an external commit may remove nobody but the joiner's own prior leaf.
-		return d.checkExternalCommitScope(ctx, groupID, s, p.Applied)
+		return satisfied, d.checkExternalCommitScope(ctx, groupID, s, p.Applied)
 	}
-	return nil
+	return satisfied, nil
+}
+
+// removeSatisfiedBy reports whether the outstanding instance proposal pending is a Remove whose leaf
+// the commit removes anyway (removed holds the applied Removes' target leaves) while that leaf still
+// holds the device pending recorded. Clause 1's Remove case; the comment there says why.
+func (d *DS) removeSatisfiedBy(ctx context.Context, groupID id.ID, pending store.ProposalRow, removed map[uint32]struct{}) (bool, error) {
+	if mlswasi.ProposalKind(pending.Kind) != mlswasi.ProposalRemove || pending.TargetLeaf == nil || pending.TargetDevice == nil {
+		return false, nil
+	}
+	if _, ok := removed[*pending.TargetLeaf]; !ok {
+		return false, nil
+	}
+	device, present, err := d.deviceAtLeaf(ctx, groupID, *pending.TargetLeaf)
+	if err != nil {
+		return false, err
+	}
+	return present && device == *pending.TargetDevice, nil
 }
 
 // clause1Exempt answers whether this commit may omit the instance's outstanding proposals. The

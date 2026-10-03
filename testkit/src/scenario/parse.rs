@@ -115,6 +115,10 @@ pub enum Stmt {
     Commit {
         actor: String,
         group: Option<String>,
+        /// `commit <actor> <group> member_removes_last`: the committer queues a member's own Remove
+        /// behind the instance's Remove of the same leaf, so OpenMLS commits the member's
+        /// (protocol/02 invariant 4 clause 1's Remove case).
+        member_removes_last: bool,
     },
     /// `leave <client> <group>`: the client proposes its own Remove (protocol/01 "Leaving"); another
     /// member's commit applies it.
@@ -612,9 +616,25 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
         // to assert on state only the test host can see.
         "commit" => {
             need(1)?;
+            let member_removes_last = match args.get(2) {
+                None => false,
+                Some(&"member_removes_last") => true,
+                Some(other) => {
+                    return Err(err(
+                        line_no,
+                        format!(
+                            "commit takes `member_removes_last` after the group, got {other:?}"
+                        ),
+                    ));
+                }
+            };
+            if args.len() > 3 {
+                return Err(err(line_no, "commit takes at most 3 arguments"));
+            }
             Stmt::Commit {
                 actor: args[0].to_owned(),
                 group: args.get(1).map(|g| (*g).to_owned()),
+                member_removes_last,
             }
         }
         "leave" => {
@@ -1069,6 +1089,7 @@ expect_reject E_BINDING join bob chat
             Stmt::Commit {
                 actor: "alice".into(),
                 group: None,
+                member_removes_last: false,
             }
         );
         assert_eq!(
@@ -1076,9 +1097,20 @@ expect_reject E_BINDING join bob chat
             Stmt::Commit {
                 actor: "alice".into(),
                 group: Some("call".into()),
+                member_removes_last: false,
+            }
+        );
+        assert_eq!(
+            one("commit alice call member_removes_last").unwrap(),
+            Stmt::Commit {
+                actor: "alice".into(),
+                group: Some("call".into()),
+                member_removes_last: true,
             }
         );
         refused("commit", "commit needs 1");
+        refused("commit alice call sideways", "member_removes_last");
+        refused("commit alice call member_removes_last x", "at most 3");
     }
 
     #[test]

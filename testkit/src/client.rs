@@ -655,11 +655,38 @@ impl TestClient {
         ds: &mut dyn DeliveryService,
         group_id: &[u8],
     ) -> Result<(), TestkitError> {
+        self.commit_with(ds, group_id, false)
+    }
+
+    /// `commit` by a committer whose queue holds a member's `Remove` BEHIND the instance's `Remove`
+    /// of the same leaf (`commit <actor> <group> member_removes_last`): OpenMLS then commits the
+    /// member's, which is what a client not following dilla-core's queue rule sends. Fails when
+    /// the queue holds no such pair, so a scenario cannot pass without exercising it.
+    pub fn commit_member_removes_last(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+    ) -> Result<(), TestkitError> {
+        self.commit_with(ds, group_id, true)
+    }
+
+    fn commit_with(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        member_removes_last: bool,
+    ) -> Result<(), TestkitError> {
         self.absorb_proposals(ds, group_id)?;
         let group = self
             .groups
             .get_mut(group_id)
             .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        if member_removes_last && group.requeue_member_removes_last(&self.provider)? == 0 {
+            return Err(TestkitError::Scenario(
+                "member_removes_last: no member Remove shares its leaf with a queued instance Remove"
+                    .into(),
+            ));
+        }
         let bundle = group.self_update(&self.provider, &self.signer)?;
         // A queued instance Add makes the commit carry a Welcome, addressed by `self_update` to
         // the device the Add names; the instance stores it for that device (row 15).

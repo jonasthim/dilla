@@ -458,10 +458,21 @@ impl Runner {
                 control_post(path, &format!("{{\"name\":{}}}", json_string(name)))?;
                 Ok(())
             }
-            Stmt::Commit { actor, group } => {
+            Stmt::Commit {
+                actor,
+                group,
+                member_removes_last,
+            } => {
                 if let Some(group) = group {
                     let id = self.group(group)?.id.clone();
-                    return self.with_client(actor, |committer, ds| committer.commit(ds, &id));
+                    let reorder = *member_removes_last;
+                    return self.with_client(actor, |committer, ds| {
+                        if reorder {
+                            committer.commit_member_removes_last(ds, &id)
+                        } else {
+                            committer.commit(ds, &id)
+                        }
+                    });
                 }
                 self.with_client(actor, |committer, ds| {
                     let groups = committer.group_ids();

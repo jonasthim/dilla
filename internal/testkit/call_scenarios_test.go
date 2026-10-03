@@ -17,16 +17,81 @@ import (
 // re-drive of a voided call Remove, against a real instance with real clients: the commit-path
 // halves no DS unit test can reach with the committed fixture.
 func TestTheCallRemoveScenariosRunGreen(t *testing.T) {
-	for _, name := range []string{"call_remove_dedupe.scn", "call_remove_redrive.scn", "call_remove_refused_leave.scn"} {
+	for _, name := range []string{
+		"call_remove_dedupe.scn", "call_remove_redrive.scn", "call_remove_refused_leave.scn",
+		"call_remove_member_remove_committed.scn",
+	} {
 		t.Run(name, func(t *testing.T) {
 			h, result := runCallScenario(t, name)
 			if result.Steps == 0 {
 				t.Fatal("the scenario ran no steps")
 			}
-			if name == "call_remove_refused_leave.scn" {
+			switch name {
+			case "call_remove_refused_leave.scn":
 				assertTheKickStillStands(t, h)
+			case "call_remove_member_remove_committed.scn":
+				assertTheMemberRemoveSatisfiedTheKick(t, h)
 			}
 		})
+	}
+}
+
+// theCallGroup is the one open call group a call scenario leaves on the instance.
+func theCallGroup(t *testing.T, h *testkit.Harness) store.GroupRow {
+	t.Helper()
+	groups, err := h.Repo().ListOpenGroups(context.Background(), id.ID{}, 64)
+	if err != nil {
+		t.Fatalf("ListOpenGroups: %v", err)
+	}
+	var call *store.GroupRow
+	for i := range groups {
+		if groups[i].Kind == 1 {
+			call = &groups[i]
+		}
+	}
+	if call == nil {
+		t.Fatal("no call group on the instance")
+	}
+	return *call
+}
+
+// assertTheMemberRemoveSatisfiedTheKick is (3a) of the task-9 review, read from the instance after
+// call_remove_member_remove_committed.scn: alice's commit applied carol's own Remove, not the
+// instance's, and was accepted. The instance's Remove was deleted with the commit — no row is left
+// at the epoch the commit left behind, void or not, for a re-issue to read — nothing was issued at
+// the new epoch, carol holds no leaf, and the election the kick started is over: the committer won
+// its round and was charged none.
+func assertTheMemberRemoveSatisfiedTheKick(t *testing.T, h *testkit.Harness) {
+	t.Helper()
+	ctx := context.Background()
+	repo := h.Repo()
+	call := theCallGroup(t, h)
+	for _, epoch := range []uint64{call.Epoch - 1, call.Epoch} {
+		rows, err := repo.ListProposals(ctx, call.GroupID, epoch, true)
+		if err != nil {
+			t.Fatalf("ListProposals(%d): %v", epoch, err)
+		}
+		for _, r := range rows {
+			if r.Origin == 0 {
+				t.Fatalf("an instance proposal is left at epoch %d (the call is at %d): %+v", epoch, call.Epoch, r)
+			}
+		}
+	}
+	members, err := repo.ListMembers(ctx, call.GroupID)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	current := 0
+	for _, m := range members {
+		if m.RemovedEpoch == nil {
+			current++
+		}
+	}
+	if current != 2 {
+		t.Fatalf("%d current members of the call, want alice and bob: %+v", current, members)
+	}
+	if n := h.DS().OpenElections(); n != 0 {
+		t.Fatalf("%d open elections, want none: the commit won the kick's round", n)
 	}
 }
 
@@ -54,19 +119,7 @@ func assertTheKickStillStands(t *testing.T, h *testkit.Harness) {
 	t.Helper()
 	ctx := context.Background()
 	repo := h.Repo()
-	groups, err := repo.ListOpenGroups(ctx, id.ID{}, 64)
-	if err != nil {
-		t.Fatalf("ListOpenGroups: %v", err)
-	}
-	var call *store.GroupRow
-	for i := range groups {
-		if groups[i].Kind == 1 {
-			call = &groups[i]
-		}
-	}
-	if call == nil {
-		t.Fatal("no call group on the instance")
-	}
+	call := theCallGroup(t, h)
 	rows, err := repo.ListProposals(ctx, call.GroupID, call.Epoch, true)
 	if err != nil {
 		t.Fatalf("ListProposals: %v", err)

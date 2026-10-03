@@ -281,8 +281,14 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    epoch gets `409 E_COMMIT_CONFLICT` with the winning commit and the current outstanding proposals.
 4. **Commit validity.** A Commit is accepted only if: it is signed by a current leaf — the leaf of
    the device uploading it (`403 E_FORBIDDEN` otherwise) — or is a valid external commit; it
-   references every outstanding non-void DS proposal (invariant 6); it
-   contains no `Update` from the committer; every member-originated `Remove` targets its proposer's
+   references every outstanding non-void DS proposal (invariant 6), except that an outstanding
+   non-void DS `Remove` of leaf `L` is also satisfied when the commit applies any other `Remove`
+   of `L` — a member's own `Remove`, which the clause on member-originated `Remove`s below measures
+   against its proposer — while `L` still holds the device the DS `Remove` recorded (OpenMLS
+   commits only the later of two `Remove`s of one leaf in the committer's queue, so a committer
+   holding the DS's first commits the member's; the device removed is the same). The DS deletes a
+   `Remove` satisfied this way with the commit, as it does a referenced one, and never re-issues it;
+   it contains no `Update` from the committer; every member-originated `Remove` targets its proposer's
    own user (the committer's for a `Remove` the commit carries, the proposing member's for a member
    `Remove` proposal it references — how a member leaves, `01-groups.md`), the proposer being the
    sender the `PublicGroup` authenticated; every `Add` carries a
@@ -403,7 +409,9 @@ Added for the remote delivery service:
 - `restore_snapshot <name>` — the test host restores it through `dillad restore`'s own code and
   restarts the instance, which finishes the restore at start as `dillad serve` does.
 - `commit <actor> [<group>]` — the actor commits for the current epoch of every group it is in, or
-  of that one group.
+  of that one group. `commit <actor> <group> member_removes_last` queues a member's own `Remove`
+  behind the instance's `Remove` of the same leaf first, so the commit applies the member's
+  (invariant 4); the step fails when the actor holds no such pair.
 - `leave <client> <group>` — the client posts its own `Remove` proposal (`01-groups.md`, how a
   member leaves); another member's commit applies it. When the instance is already removing the
   leaf, the refusal (invariant 6, "a removal of this leaf is already pending") is the client being
