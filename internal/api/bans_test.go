@@ -36,6 +36,9 @@ type recordingDS struct {
 		Group id.ID
 		Leaf  uint32
 	}
+	// LeafDevices is the device each leaf Remove in Removes named (ProposeRemoveOf), the zero id
+	// for one issued through the bare ProposeRemove.
+	LeafDevices []id.ID
 	// DeviceRemoves is every call-group Remove, which RemoveUserFromChannelGroups issues by device.
 	DeviceRemoves []struct{ Group, Device id.ID }
 	Adds          []struct{ Group, Device id.ID }
@@ -59,7 +62,7 @@ func (d *recordingDS) Reset() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.Removes, d.Adds, d.Closed, d.Voided, d.Commits = nil, nil, nil, nil, 0
-	d.DeviceRemoves = nil
+	d.DeviceRemoves, d.LeafDevices = nil, nil
 }
 
 func (d *recordingDS) VoidIneligibleAdds(_ context.Context, g id.ID) error {
@@ -92,6 +95,27 @@ func (d *recordingDS) ProposeRemove(_ context.Context, g id.ID, leaf uint32, _ i
 		Leaf  uint32
 	}{g, leaf})
 	return nil
+}
+
+// ProposeRemoveOf records a leaf Remove like ProposeRemove, plus the device it names in
+// LeafDevices, parallel to Removes.
+func (d *recordingDS) ProposeRemoveOf(ctx context.Context, g id.ID, leaf uint32, dev, a id.ID) error {
+	if err := d.ProposeRemove(ctx, g, leaf, a); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for len(d.LeafDevices) < len(d.Removes)-1 {
+		d.LeafDevices = append(d.LeafDevices, id.ID{}) // a bare ProposeRemove named no device
+	}
+	d.LeafDevices = append(d.LeafDevices, dev)
+	return nil
+}
+
+func (d *recordingDS) leafDevices() []id.ID {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.LeafDevices)
 }
 
 func (d *recordingDS) ProposeRemoveDevice(_ context.Context, g, dev, _ id.ID) error {
@@ -197,9 +221,10 @@ func TestBanRemovesMembershipAndIssuesDSRemoves(t *testing.T) {
 	target, targetTok := e.NewUser("troll")
 	joinCommunity(t, e, cid, targetTok)
 
-	// An MLS text group bound to that channel, with the target at leaf 3.
+	// An MLS text group bound to that channel, with the target's device at leaf 3.
 	group := seedTextGroup(t, e, ch, cid)
-	seedMember(t, e, group, target, 3)
+	device := id.New()
+	seedMemberDevice(t, e, group, target, device, 3)
 
 	path := "/v1/communities/" + cid.String() + "/bans/" + target.String()
 	if status, body := e.Do(http.MethodPut, path, ownerTok,
@@ -212,6 +237,11 @@ func TestBanRemovesMembershipAndIssuesDSRemoves(t *testing.T) {
 	}
 	if got := dsvc.removes(); len(got) != 1 || got[0].Group != group || got[0].Leaf != 3 {
 		t.Fatalf("Removes = %+v, want one for leaf 3 of %x", got, group)
+	}
+	// m1 of the task-9 review: the leaf was read outside the delivery service's group lock, so the
+	// Remove names the device it is for, and a leaf reused meanwhile is refused, not redirected.
+	if got := dsvc.leafDevices(); len(got) != 1 || got[0] != device {
+		t.Fatalf("the text-group Remove named %v, want the device at leaf 3, %s", got, device)
 	}
 	// Re-joining is refused while the ban stands.
 	if status, body := e.Do(http.MethodPost, "/v1/communities/"+cid.String()+"/join", targetTok, []any{nil}); status != http.StatusForbidden {

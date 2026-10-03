@@ -277,6 +277,20 @@ func SweepCallProposalsForTest(d *DS, ctx context.Context) (int, error) {
 	return d.sweepCallProposals(ctx)
 }
 
+// MarkCallWorkForTest puts a group in the call sweeper's set, as storeInstanceProposal does.
+func MarkCallWorkForTest(d *DS, groupID id.ID) { d.markCallWork(groupID) }
+
+// CallWorkForTest is the call sweeper's set, in no particular order.
+func CallWorkForTest(d *DS) []id.ID {
+	d.callWorkMu.Lock()
+	defer d.callWorkMu.Unlock()
+	out := make([]id.ID, 0, len(d.callWork))
+	for g := range d.callWork {
+		out = append(out, g)
+	}
+	return out
+}
+
 // RedriveCallRemovesForTest is the call re-drive from fromEpoch's voided instance Removes into
 // curEpoch, under the group lock as both callers run it. The fixture never advances an epoch, so a
 // cross-epoch re-drive — the one commitLocked step (9) runs — is reached through this seam with

@@ -381,7 +381,8 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 			return txErr
 		}
 		// The devices this commit took out of a call group leave the call's room once the group lock
-		// is released (commit's deferred flushEvictions; G29).
+		// is released (commit's deferred flushEvictions; G29). Only here, after the transaction has
+		// committed: TestARefusedCommitEvictsNobody fails a transaction after its last statement.
 		d.queueEviction(groupID, members.removed)
 
 		// (8) fan out. Everything reachable from here runs with the group lock ALREADY HELD by

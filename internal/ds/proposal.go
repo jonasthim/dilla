@@ -163,7 +163,42 @@ func (d *DS) ProposeRemove(ctx context.Context, groupID id.ID, leaf uint32, acti
 	return d.proposeRemoveLocked(ctx, groupID, leaf, actionID)
 }
 
+// ProposeRemoveOf is ProposeRemove for a caller that read the leaf outside the group lock and knows
+// which device it meant (m1 of the task-9 review): the Remove is issued only while deviceID still
+// holds leaf, and is otherwise refused exactly as a Remove of a leaf that is gone. MLS reuses a blank
+// leaf, so a leaf index read before the lock can name another device by the time the lock is held —
+// one commit can remove the device and add another at its index — and a Remove by index alone would
+// then remove the newcomer.
+func (d *DS) ProposeRemoveOf(ctx context.Context, groupID id.ID, leaf uint32, deviceID, actionID id.ID) error {
+	unlock := d.lock(groupID)
+	defer unlock()
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errNotFound("group")
+	}
+	if err != nil {
+		return err
+	}
+	standing, err := d.instanceRemoveOutstanding(ctx, groupID, row.Epoch, leaf)
+	if err != nil || standing {
+		return err
+	}
+	return d.proposeRemoveOfLocked(ctx, groupID, leaf, &deviceID, actionID)
+}
+
 func (d *DS) proposeRemoveLocked(ctx context.Context, groupID id.ID, leaf uint32, actionID id.ID) error {
+	return d.proposeRemoveOfLocked(ctx, groupID, leaf, nil, actionID)
+}
+
+// errRemoveTargetGone is the cause of the refusal of a Remove whose leaf no longer holds the device
+// it was meant for — no device at all, or another one. ProposeRemoveDevice reads it as "nothing to
+// remove".
+var errRemoveTargetGone = errors.New("ds: the Remove target is no longer at its leaf")
+
+// proposeRemoveOfLocked proposes removing leaf with the group lock held. With expect set, the device
+// at leaf must be *expect or the Remove is refused (errRemoveTargetGone), never aimed at whoever
+// holds the leaf instead.
+func (d *DS) proposeRemoveOfLocked(ctx context.Context, groupID id.ID, leaf uint32, expect *id.ID, actionID id.ID) error {
 	row, err := d.opts.Store.GetGroup(ctx, groupID)
 	if errors.Is(err, store.ErrNotFound) {
 		return errNotFound("group")
@@ -178,8 +213,10 @@ func (d *DS) proposeRemoveLocked(ctx context.Context, groupID id.ID, leaf uint32
 	if err != nil {
 		return err
 	}
-	if !present {
-		return errInvalid("the Remove target is no longer a member; the action is dropped")
+	if !present || (expect != nil && device != *expect) {
+		gone := errInvalid("the Remove target is no longer a member; the action is dropped")
+		gone.cause = errRemoveTargetGone
+		return gone
 	}
 	inst, err := d.opts.Wasm.Acquire(ctx)
 	if err != nil {
@@ -241,8 +278,10 @@ func (d *DS) removeStillTargets(ctx context.Context, groupID id.ID, old store.Pr
 // second instance Remove would leave the first unreferenced and invariant 4's clause 1 would refuse
 // every commit until its TTL. A member's own Remove of the leaf never stands in for the instance's:
 // it is not mandatory for a commit, freezes nothing and elects nobody, so the instance issues its
-// Remove on top of it and the commit applies the instance's (the later), leaving the member's
-// unreferenced, which clause 1 allows.
+// Remove on top of it. Whichever of the two the commit applies removes the device, and clause 1
+// counts the instance's as satisfied by an applied Remove of its leaf.
+//
+// The Remove is built for deviceID only: proposeRemoveOfLocked checks it still holds the leaf.
 func (d *DS) ProposeRemoveDevice(ctx context.Context, groupID, deviceID, actionID id.ID) error {
 	unlock := d.lock(groupID)
 	defer unlock()
@@ -265,7 +304,13 @@ func (d *DS) ProposeRemoveDevice(ctx context.Context, groupID, deviceID, actionI
 	if err != nil || standing {
 		return err
 	}
-	return d.proposeRemoveLocked(ctx, groupID, leaf, actionID)
+	if err := d.proposeRemoveOfLocked(ctx, groupID, leaf, &deviceID, actionID); err != nil {
+		if errors.Is(err, errRemoveTargetGone) {
+			return nil // the device left the leaf: there is nothing to remove
+		}
+		return err
+	}
+	return nil
 }
 
 // instanceRemoveOutstanding reports whether a non-void INSTANCE Remove of leaf stands at epoch. A
@@ -788,7 +833,7 @@ func (d *DS) reissue(ctx context.Context, groupID id.ID, old store.ProposalRow) 
 			return d.opts.Store.DeleteProposals(ctx, groupID, [][]byte{old.Ref})
 		}
 		return d.reissueVia(groupID, old.Ref, func() error {
-			return d.proposeRemoveLocked(ctx, groupID, *old.TargetLeaf, old.ActionID)
+			return d.proposeRemoveOfLocked(ctx, groupID, *old.TargetLeaf, old.TargetDevice, old.ActionID)
 		})
 	default:
 		return nil
@@ -894,6 +939,10 @@ const callSweepBudget = 256
 // not the instance's open groups: those are walked once, on the first tick after a start, to find
 // the work a previous process left behind. Every instance proposal issued into a call group marks
 // its group (storeInstanceProposal), and a group leaves the set once it has none left.
+//
+// A group whose sweep fails is logged and kept in the set, and the tick goes on to the rest of its
+// slice: nextCallWork has already moved the cursor past the whole slice, so stopping at the failure
+// would leave every group behind it for a full rotation (m4 of the task-9 review).
 func (d *DS) sweepCallProposals(ctx context.Context) (int, error) {
 	if err := d.seedCallWork(ctx); err != nil {
 		return 0, err
@@ -903,7 +952,9 @@ func (d *DS) sweepCallProposals(ctx context.Context) (int, error) {
 		n, more, err := d.sweepCallGroup(ctx, groupID)
 		voided += n
 		if err != nil {
-			return voided, err
+			d.log().Error("sweeping a call group's proposals failed; the next tick retries it",
+				"group", groupID.String()[:8], "err", err)
+			continue
 		}
 		if !more {
 			d.unmarkCallWork(groupID)

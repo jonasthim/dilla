@@ -198,11 +198,13 @@ expect_frame mls.commit_needed
 }
 
 /// The verbs only the test host's control listener can answer fail loudly against the stub,
-/// rather than passing vacuously.
+/// rather than passing vacuously. `leave` is one of them: the stub issues no instance Removes, so it
+/// can never answer the E_REMOVE_PENDING refusal a leave is written to meet.
 #[test]
 fn the_control_listener_verbs_are_refused_by_the_stub() {
     for verb in [
         "kick alice bob",
+        "leave alice chat",
         "snapshot before",
         "restore_snapshot before",
         "expect_quarantined bob",

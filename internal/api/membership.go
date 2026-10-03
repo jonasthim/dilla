@@ -15,9 +15,14 @@ import (
 type DS interface {
 	ProposeAdd(ctx context.Context, groupID, deviceID, actionID id.ID) error
 	ProposeRemove(ctx context.Context, groupID id.ID, leaf uint32, actionID id.ID) error
+	// ProposeRemoveOf is ProposeRemove for a leaf read outside the delivery service's group lock:
+	// the Remove is issued only while deviceID still holds leaf, and is refused like a Remove of a
+	// leaf that is gone otherwise, so a leaf reused in between never redirects it.
+	ProposeRemoveOf(ctx context.Context, groupID id.ID, leaf uint32, deviceID, actionID id.ID) error
 	// ProposeRemoveDevice proposes removing deviceID's leaf, resolving it under the group lock, and
-	// drops the action when the device holds no leaf or a Remove of that leaf already stands
-	// (DEV-45). The call paths use it: a call leaf is short-lived and races the device's own Remove.
+	// drops the action when the device holds no leaf or an instance Remove of that leaf already
+	// stands (DEV-45). The call paths use it: a call leaf is short-lived and races the device's own
+	// Remove.
 	ProposeRemoveDevice(ctx context.Context, groupID, deviceID, actionID id.ID) error
 	ProposeAddBatch(ctx context.Context, groupID id.ID, devices []id.ID) error
 	Close(ctx context.Context, groupID id.ID) error
@@ -85,7 +90,9 @@ func RemoveUserFromChannelGroups(ctx context.Context, repo store.Repository, dsv
 					// DEV-45: by device, under the group lock, never stacked on a standing instance Remove.
 					err = dsvc.ProposeRemoveDevice(ctx, g.GroupID, m.DeviceID, id.New())
 				} else {
-					err = dsvc.ProposeRemove(ctx, g.GroupID, m.LeafIndex, id.New())
+					// The leaf was read above, outside the group lock: the Remove names the device
+					// it is for, so a leaf reused since then is refused rather than redirected.
+					err = dsvc.ProposeRemoveOf(ctx, g.GroupID, m.LeafIndex, m.DeviceID, id.New())
 				}
 				if err != nil {
 					errs = append(errs, err)

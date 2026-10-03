@@ -342,6 +342,76 @@ type failingRepo struct {
 	// openGroupPages counts ListOpenGroups calls: the call sweeper's per-tick work must not grow with
 	// the number of open groups on the instance.
 	openGroupPages atomic.Int64
+	// broken holds the groups whose GetGroup fails, on the outer repository only: one call group
+	// whose sweep fails must not stop the call sweeper's tick.
+	broken sync.Map
+	// readHooks runs once, after the next ListMembers of its group returns: the window between a
+	// caller's read of the member set and its next statement, in which a commit can reuse a leaf.
+	readHooks map[id.ID]func(context.Context)
+	// deletedProposals records that this transaction's repository reached DeleteProposals, so the
+	// "TxCommit" fault fails only the transaction of a commit that ran all the way through.
+	deletedProposals bool
+}
+
+// breakGroup makes the store's GetGroup of groupID fail.
+func (r *failingRepo) breakGroup(groupID id.ID) { r.broken.Store(groupID, true) }
+
+// reuseLeafAfterNextRead hands leaf to newcomer in mls_members right after the next ListMembers of
+// groupID returns — what a commit that removed the leaf's device and added another at its index
+// leaves behind.
+func (r *failingRepo) reuseLeafAfterNextRead(t *testing.T, groupID id.ID, leaf uint32, newcomer id.ID) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.readHooks == nil {
+		r.readHooks = map[id.ID]func(context.Context){}
+	}
+	r.readHooks[groupID] = func(ctx context.Context) {
+		row, err := r.Repository.GetGroup(ctx, groupID)
+		if err != nil {
+			t.Errorf("GetGroup: %v", err)
+			return
+		}
+		members, err := r.Repository.ListMembers(ctx, groupID)
+		if err != nil {
+			t.Errorf("ListMembers: %v", err)
+			return
+		}
+		for i := range members {
+			if members[i].LeafIndex == leaf {
+				members[i].DeviceID = newcomer
+			}
+		}
+		if err := r.Repository.ReplaceMembers(ctx, groupID, row.Epoch, members); err != nil {
+			t.Errorf("ReplaceMembers: %v", err)
+		}
+	}
+}
+
+func (r *failingRepo) takeReadHook(groupID id.ID) func(context.Context) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	hook := r.readHooks[groupID]
+	delete(r.readHooks, groupID)
+	return hook
+}
+
+func (r *failingRepo) ListMembers(ctx context.Context, groupID id.ID) ([]store.MemberRow, error) {
+	rows, err := r.Repository.ListMembers(ctx, groupID)
+	if err == nil {
+		if hook := r.takeReadHook(groupID); hook != nil {
+			hook(ctx)
+		}
+	}
+	return rows, err
+}
+
+func (r *failingRepo) DeleteProposals(ctx context.Context, groupID id.ID, refs [][]byte) error {
+	if r.take("DeleteProposals") {
+		return errInjected
+	}
+	r.deletedProposals = true
+	return r.Repository.DeleteProposals(ctx, groupID, refs)
 }
 
 // markCall makes the store report groupID as a call group.
@@ -356,6 +426,9 @@ func (r *failingRepo) isCall(groupID id.ID) bool {
 }
 
 func (r *failingRepo) GetGroup(ctx context.Context, groupID id.ID) (store.GroupRow, error) {
+	if _, broken := r.broken.Load(groupID); broken {
+		return store.GroupRow{}, errInjected
+	}
 	row, err := r.Repository.GetGroup(ctx, groupID)
 	if err == nil && r.isCall(groupID) {
 		row.Kind = 1
@@ -451,6 +524,12 @@ func (r *failingRepo) Tx(ctx context.Context, fn func(store.Repository) error) e
 		// did not consume goes back, so failNextTx("X") before a call that never reaches X does
 		// not silently disarm.
 		r.failNext(sub.snapshotFailOn())
+		// "TxCommit" fails a transaction whose every statement succeeded, at the commit: the
+		// rollback after the last statement of a commit's transaction. Returning an error from the
+		// closure is what makes the real store roll it back.
+		if err == nil && sub.deletedProposals && r.take("TxCommit") {
+			return errInjected
+		}
 		return err
 	})
 }

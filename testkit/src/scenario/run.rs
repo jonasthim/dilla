@@ -488,6 +488,18 @@ impl Runner {
                 })
             }
             Stmt::Leave { client, group } => {
+                // The stub issues no instance proposals, so it never holds the instance Remove a
+                // leave can race and never answers E_REMOVE_PENDING: a leave scenario against it
+                // would pass without ever meeting the refusal it is written for (m7 of the task-9
+                // review). It is refused as `kick` is.
+                if !self.is_remote() {
+                    return Err(DsError::Unsupported(
+                        "DsStub does not model instance-originated proposals, so it cannot refuse \
+                         a leave with E_REMOVE_PENDING (invariant 6); use `ds <url>`"
+                            .into(),
+                    )
+                    .into());
+                }
                 let id = self.group(group)?.id.clone();
                 self.with_client(client, |leaver, ds| leaver.leave(ds, &id))
             }
