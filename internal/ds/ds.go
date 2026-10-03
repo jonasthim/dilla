@@ -264,6 +264,16 @@ type DS struct {
 	evictMu   sync.Mutex
 	evictions map[id.ID][]id.ID
 
+	// callWork is the set of call groups with instance proposals the call sweeper must look at
+	// (markCallWork, sweepCallProposals), so its tick costs the call groups that have work rather
+	// than every open group of the instance. It is in memory: the sweeper's first tick after a start
+	// walks the open groups once to fill it (callWorkSeeded), and callWorkAfter is the round-robin
+	// cursor when more groups have work than one tick visits.
+	callWorkMu     sync.Mutex
+	callWork       map[id.ID]struct{}
+	callWorkSeeded bool
+	callWorkAfter  id.ID
+
 	// elections is invariant 7's in-flight committer round, one per group. It is in memory on
 	// purpose: an election decided while everybody was away is stale by definition, and the
 	// instance re-elects on the first device that reaches READY.

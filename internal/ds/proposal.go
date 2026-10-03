@@ -583,6 +583,9 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 	// and answering the caller an error now would say the proposal failed when it did not. A
 	// failed election is not lost either — the watchdog re-elects on its own tick, and so does the
 	// next proposal.
+	if row.Kind == groupKindCall {
+		d.markCallWork(groupID) // the call sweeper voids and re-drives it (sweepCallProposals)
+	}
 	if !d.electionsSuppressed(groupID) {
 		if err := d.RequestCommit(ctx, groupID); err != nil {
 			d.log().Error("electing a committer for a fresh instance proposal failed",
@@ -841,20 +844,16 @@ func proposalLabel(kind uint8) string {
 }
 
 // sweepProposals voids every proposal past its TTL and reports how many it voided; in a call group
-// it then re-drives the voided Removes whose device still holds the leaf (F9). It runs on the one-minute
-// Sweep, and sweepCallProposals runs the call-group half every Policy.ProposalSweepInterval. The TTL
-// is evaluated here and nowhere else: every reader consults the stored VoidAt.
+// it then re-drives the voided Removes whose device still holds the leaf (F9). It runs on the
+// one-minute Sweep, and sweepCallProposals runs the call-group half every
+// Policy.ProposalSweepInterval. The TTL is evaluated here and nowhere else: every reader consults
+// the stored VoidAt.
 //
 // It PAGES to completion rather than reading one fixed batch from the zero id. `ListOpenGroups`
 // takes an `after` cursor; a constant `id.ID{}` start with a fixed limit means only the first N
 // groups are ever swept, so on an instance with more groups than the batch the tail's proposals
 // never void — and nothing else voids them.
-func (d *DS) sweepProposals(ctx context.Context) (int, error) { return d.sweep(ctx, false) }
-
-// sweepCallProposals is sweepProposals over call groups only (DEV-49).
-func (d *DS) sweepCallProposals(ctx context.Context) (int, error) { return d.sweep(ctx, true) }
-
-func (d *DS) sweep(ctx context.Context, callsOnly bool) (int, error) {
+func (d *DS) sweepProposals(ctx context.Context) (int, error) {
 	voided := 0
 	after := id.ID{}
 	for {
@@ -867,36 +866,19 @@ func (d *DS) sweep(ctx context.Context, callsOnly bool) (int, error) {
 		}
 		for _, g := range groups {
 			after = g.GroupID
-			if g.Kind != groupKindCall {
-				if callsOnly {
-					continue
-				}
-				n, err := d.voidExpired(ctx, g.GroupID, g.Epoch)
+			if g.Kind == groupKindCall {
+				n, more, err := d.sweepCallGroup(ctx, g.GroupID)
 				voided += n
 				if err != nil {
 					return voided, err
 				}
+				if more {
+					d.markCallWork(g.GroupID) // a restart's call sweeper may not have found it yet
+				}
 				continue
 			}
-			// A call group is swept under its lock: the one-minute Sweep and the call sweeper can meet
-			// here, and the re-drive must read the voids it re-drives. The epoch is read again under
-			// the lock: a commit that landed after the page was listed has already re-driven what it
-			// left behind (commitLocked step 9), and re-driving the listed epoch's voids again would
-			// stack a second Remove of one leaf at the new epoch.
-			unlock := d.lock(g.GroupID)
-			epoch := g.Epoch
-			if cur, gerr := d.opts.Store.GetGroup(ctx, g.GroupID); gerr == nil {
-				epoch = cur.Epoch
-			}
-			n, err := d.voidExpired(ctx, g.GroupID, epoch)
+			n, err := d.voidExpired(ctx, g.GroupID, g.Epoch)
 			voided += n
-			if err == nil {
-				if rerr := d.redriveCallRemovesLocked(ctx, g.GroupID, epoch, epoch); rerr != nil {
-					d.log().Error("re-driving a voided call Remove failed; the next sweep retries it",
-						"group", g.GroupID.String()[:8], "err", rerr)
-				}
-			}
-			unlock()
 			if err != nil {
 				return voided, err
 			}
@@ -905,6 +887,143 @@ func (d *DS) sweep(ctx context.Context, callsOnly bool) (int, error) {
 			return voided, nil
 		}
 	}
+}
+
+// callSweepBudget bounds how many call groups one call-sweeper tick visits. The groups past it are
+// visited on the next tick, round robin (nextCallWork).
+const callSweepBudget = 256
+
+// sweepCallProposals is sweepProposals over the call groups with instance work (DEV-49). Its cost
+// per tick is the call groups that have instance proposals outstanding, at most callSweepBudget,
+// not the instance's open groups: those are walked once, on the first tick after a start, to find
+// the work a previous process left behind. Every instance proposal issued into a call group marks
+// its group (storeInstanceProposal), and a group leaves the set once it has none left.
+func (d *DS) sweepCallProposals(ctx context.Context) (int, error) {
+	if err := d.seedCallWork(ctx); err != nil {
+		return 0, err
+	}
+	voided := 0
+	for _, groupID := range d.nextCallWork(callSweepBudget) {
+		n, more, err := d.sweepCallGroup(ctx, groupID)
+		voided += n
+		if err != nil {
+			return voided, err
+		}
+		if !more {
+			d.unmarkCallWork(groupID)
+		}
+	}
+	return voided, nil
+}
+
+// sweepCallGroup voids one call group's expired proposals and re-drives its voided Removes, under the
+// group lock — the lock order of every other writer: the group lock, then the guest's handle lock
+// inside storeInstanceProposal. The one-minute Sweep and the call sweeper can meet here, and the
+// re-drive must read the voids it re-drives. The epoch is read under the lock: a commit that landed
+// meanwhile has already re-driven what it left behind (commitLocked step 9), and re-driving an older
+// epoch's voids again would stack a second Remove of one leaf at the new epoch. more reports whether
+// the group still has a non-void instance proposal, so the call sweeper keeps visiting it.
+func (d *DS) sweepCallGroup(ctx context.Context, groupID id.ID) (voided int, more bool, err error) {
+	unlock := d.lock(groupID)
+	defer unlock()
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, true, err
+	}
+	if row.ClosedAt != nil || row.Kind != groupKindCall {
+		return 0, false, nil
+	}
+	voided, err = d.voidExpired(ctx, groupID, row.Epoch)
+	if err != nil {
+		return voided, true, err
+	}
+	if rerr := d.redriveCallRemovesLocked(ctx, groupID, row.Epoch, row.Epoch); rerr != nil {
+		d.log().Error("re-driving a voided call Remove failed; the next sweep retries it",
+			"group", groupID.String()[:8], "err", rerr)
+		return voided, true, nil
+	}
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
+	if err != nil {
+		return voided, true, err
+	}
+	for _, r := range rows {
+		if r.Origin == 0 && r.VoidAt == nil {
+			return voided, true, nil
+		}
+	}
+	return voided, false, nil
+}
+
+// markCallWork puts a call group in the call sweeper's set.
+func (d *DS) markCallWork(groupID id.ID) {
+	d.callWorkMu.Lock()
+	defer d.callWorkMu.Unlock()
+	if d.callWork == nil {
+		d.callWork = map[id.ID]struct{}{}
+	}
+	d.callWork[groupID] = struct{}{}
+}
+
+func (d *DS) unmarkCallWork(groupID id.ID) {
+	d.callWorkMu.Lock()
+	defer d.callWorkMu.Unlock()
+	delete(d.callWork, groupID)
+}
+
+// seedCallWork walks the open groups once per process and marks every open call group; the first
+// tick then visits each and keeps those with instance work.
+func (d *DS) seedCallWork(ctx context.Context) error {
+	d.callWorkMu.Lock()
+	seeded := d.callWorkSeeded
+	d.callWorkMu.Unlock()
+	if seeded {
+		return nil
+	}
+	after := id.ID{}
+	for {
+		groups, err := d.opts.Store.ListOpenGroups(ctx, after, sweepPage)
+		if err != nil {
+			return err
+		}
+		for _, g := range groups {
+			after = g.GroupID
+			if g.Kind == groupKindCall {
+				d.markCallWork(g.GroupID)
+			}
+		}
+		if len(groups) < sweepPage {
+			break
+		}
+	}
+	d.callWorkMu.Lock()
+	d.callWorkSeeded = true
+	d.callWorkMu.Unlock()
+	return nil
+}
+
+// nextCallWork is up to limit groups of the set in id order, starting after the last group the
+// previous tick reached, so a set larger than limit is visited in turn.
+func (d *DS) nextCallWork(limit int) []id.ID {
+	d.callWorkMu.Lock()
+	defer d.callWorkMu.Unlock()
+	all := make([]id.ID, 0, len(d.callWork))
+	for g := range d.callWork {
+		all = append(all, g)
+	}
+	slices.SortFunc(all, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	if len(all) <= limit {
+		return all
+	}
+	start, found := slices.BinarySearchFunc(all, d.callWorkAfter, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	if found {
+		start++
+	}
+	out := append(slices.Clone(all[start:]), all[:start]...)[:limit]
+	d.callWorkAfter = out[len(out)-1]
+	return out
 }
 
 // voidExpired voids the group's proposals at epoch whose TTL has passed.

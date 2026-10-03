@@ -156,10 +156,24 @@ func TestEachCommitValidityClauseHasItsOwnRule(t *testing.T) {
 			name: "a member Remove targeting another user",
 			rule: "member_remove_scope",
 			mut: func(t *testing.T, h *dsHarness, g id.ID, s *auth.Session, req *ds.CommitRequest) {
-				// commits/08 removes leaf 1. The clause is written against the COMMITTING
-				// session's user, so the committer here is a member of another user.
+				// commits/08 is leaf 0's commit removing leaf 1 by value, uploaded by leaf 0's own
+				// device. A by-value Remove is the committer's, and the committer is the leaf the
+				// PublicGroup authenticated. The fixture gives leaves 0 and 1 one user (a device
+				// revocation, which is allowed), so the instance's record is told leaf 1 is another
+				// user's: the clause reads the owners from mls_members.
 				req.Commit = fixtureFile(t, "commits/08.mls")
-				*s = h.memberSessionOfAnotherUser(t, g, 1)
+				members, err := h.repo.ListMembers(context.Background(), g)
+				if err != nil {
+					t.Fatalf("ListMembers: %v", err)
+				}
+				for i := range members {
+					if members[i].LeafIndex == 1 {
+						members[i].UserID = id.New()
+					}
+				}
+				if err := h.repo.ReplaceMembers(context.Background(), g, 6, members); err != nil {
+					t.Fatalf("ReplaceMembers: %v", err)
+				}
 			},
 		},
 		{

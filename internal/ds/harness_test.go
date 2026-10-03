@@ -339,6 +339,9 @@ type failingRepo struct {
 	// group, and the call-group rules — the 30 s TTL, the re-drive, the call sweep, the evictor — are
 	// keyed on GroupRow.Kind; the override is the only way to reach them with real MLS state.
 	calls *sync.Map
+	// openGroupPages counts ListOpenGroups calls: the call sweeper's per-tick work must not grow with
+	// the number of open groups on the instance.
+	openGroupPages atomic.Int64
 }
 
 // markCall makes the store report groupID as a call group.
@@ -361,6 +364,7 @@ func (r *failingRepo) GetGroup(ctx context.Context, groupID id.ID) (store.GroupR
 }
 
 func (r *failingRepo) ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]store.GroupRow, error) {
+	r.openGroupPages.Add(1)
 	rows, err := r.Repository.ListOpenGroups(ctx, after, limit)
 	for i := range rows {
 		if r.isCall(rows[i].GroupID) {

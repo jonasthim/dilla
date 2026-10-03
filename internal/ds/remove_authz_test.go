@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -170,5 +171,90 @@ func TestAReDriveNeverRemovesADifferentDeviceAtAReusedLeaf(t *testing.T) {
 	got := h.instanceRemovesOf(t, reg.GroupID, 3)
 	if len(got) != 1 || got[0].ActionID != action || got[0].TargetDevice == nil || *got[0].TargetDevice != stillThere {
 		t.Fatalf("leaf 3: %+v, want one re-driven Remove with its action id and device", got)
+	}
+}
+
+// F: a member commit is signed by the uploading device's own leaf. Invariant 4's clause 3 measures
+// a by-value Remove against the committer, and the committer is the leaf the PublicGroup
+// authenticated, never the session that happened to upload the bytes.
+func TestAMemberCommitMustBeSignedByTheUploadingDevicesOwnLeaf(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	// commits/08 is leaf 0's commit removing leaf 1 by value; leaf 1's own device uploads it.
+	other := h.memberSession(t, reg.GroupID, 1)
+	_, err := h.ds.Commit(ctx, other, reg.GroupID, ds.CommitRequest{
+		Epoch: 6, Commit: fixtureFile(t, "commits/08.mls"), GroupInfo: dsFixture(t).groupInfo,
+	})
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+		t.Fatalf("another leaf's commit uploaded by leaf 1's device: got %v, want E_FORBIDDEN", err)
+	}
+}
+
+// F: the call evictor hears only about devices a committed epoch removed — a refused commit queues
+// nothing.
+func TestARefusedCommitEvictsNobody(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+	h.repo.markCall(reg.GroupID)
+	var mu sync.Mutex
+	var got [][]id.ID
+	h.restartWithEvictor(func(_ context.Context, _ id.ID, removed []id.ID) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, removed)
+	})
+	// commits/08 removes leaf 1; its GroupInfo is epoch 6's, so it is refused after staging.
+	if _, err := h.ds.Commit(ctx, session, reg.GroupID, ds.CommitRequest{
+		Epoch: 6, Commit: fixtureFile(t, "commits/08.mls"), GroupInfo: dsFixture(t).groupInfo,
+	}); err == nil {
+		t.Fatal("the fixture commit was accepted")
+	}
+	ds.FlushEvictionsForTest(h.ds, ctx, reg.GroupID)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 0 {
+		t.Fatalf("a refused commit evicted %v", got)
+	}
+}
+
+// F: the call sweeper's work per tick does not grow with the instance. It visits the call groups
+// that have instance work outstanding, not every open group, and still voids and re-drives within
+// its interval; after a restart its first tick finds the call groups again.
+func TestTheCallSweeperVisitsOnlyCallGroupsWithInstanceWork(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	h.repo.markCall(reg.GroupID)
+	if _, err := ds.SweepCallProposalsForTest(h.ds, ctx); err != nil { // the first tick seeds
+		t.Fatalf("sweep: %v", err)
+	}
+	if err := h.ds.ProposeRemoveDevice(ctx, reg.GroupID, h.memberSession(t, reg.GroupID, 1).DeviceID, id.New()); err != nil {
+		t.Fatal(err)
+	}
+	h.clk.Advance(31 * time.Second)
+	before := h.repo.openGroupPages.Load()
+	if _, err := ds.SweepCallProposalsForTest(h.ds, ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if walked := h.repo.openGroupPages.Load() - before; walked != 0 {
+		t.Errorf("the call sweep listed open groups %d times, want 0 after its first tick", walked)
+	}
+	rows := h.proposals(t, reg.GroupID, true)
+	if len(rows) != 1 || rows[0].VoidAt != nil || rows[0].IssuedAt != h.clk.Now().Unix() {
+		t.Fatalf("rows %+v, want the Remove voided and re-driven by the call sweep", rows)
+	}
+
+	// A restart forgets which groups had work; the new sweeper's first tick finds them again.
+	h.restartDS()
+	h.clk.Advance(31 * time.Second)
+	if _, err := ds.SweepCallProposalsForTest(h.ds, ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	rows = h.proposals(t, reg.GroupID, true)
+	if len(rows) != 1 || rows[0].VoidAt != nil || rows[0].IssuedAt != h.clk.Now().Unix() {
+		t.Fatalf("rows %+v after a restart, want the Remove re-driven by the first call sweep", rows)
 	}
 }

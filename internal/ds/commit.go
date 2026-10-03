@@ -225,6 +225,12 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 			}
 		} else if processed.SenderLeaf == nil {
 			return errCommitInvalid("structural", "a member commit must name its leaf")
+		} else if leaf, lerr := d.leafOf(ctx, groupID, s.DeviceID); lerr != nil || leaf != *processed.SenderLeaf {
+			// The committer is the leaf the PublicGroup authenticated, and the session uploading
+			// it must be that leaf's device, as Proposal requires of a member proposal: the
+			// clauses below scope a Remove to its proposer's user, the log records the uploader
+			// as the sender, and neither may be another member relaying someone else's commit.
+			return errForbidden("a member commit must be signed by the uploading device's own leaf")
 		}
 
 		// (5) invariant 4's clauses over the applied list.
@@ -522,6 +528,10 @@ func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, gr
 			// (protocol/01 "Leaving", DEV-47): a device cannot commit its own removal, so it
 			// proposes it and another member commits it. Proposal already refused a member proposal
 			// that removes anybody else.
+			//
+			// The proposer is the sender the PublicGroup authenticated for that proposal — OpenMLS
+			// attributes a by-value proposal to the committer's own leaf and a referenced one to
+			// the leaf that signed it — never a value the uploading client supplied.
 			if a.SenderLeaf == nil || a.TargetLeaf == nil {
 				continue // an instance Remove, which invariant 6 governs instead
 			}
@@ -529,11 +539,9 @@ func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, gr
 			if err != nil {
 				return err
 			}
-			owner := s.UserID
-			if p.SenderLeaf != nil && *a.SenderLeaf != *p.SenderLeaf {
-				if owner, err = d.userOfLeaf(ctx, groupID, *a.SenderLeaf); err != nil {
-					return err
-				}
+			owner, err := d.userOfLeaf(ctx, groupID, *a.SenderLeaf)
+			if err != nil {
+				return err
 			}
 			if target != owner {
 				return errCommitInvalid("member_remove_scope",
