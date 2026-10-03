@@ -172,6 +172,13 @@ type LiveKit struct {
 	APISecretFile        string   `toml:"api_secret_file"`
 	MaxVoiceParticipants int      `toml:"max_voice_participants"`
 	MaxPublishers        int      `toml:"max_publishers"`
+	WebhookListen        string   `toml:"webhook_listen"`
+	VP9                  bool     `toml:"vp9"`
+	MaxShareBitrateKbps  int      `toml:"max_share_bitrate_kbps"`
+	MaxAudioBitrateKbps  int      `toml:"max_audio_bitrate_kbps"`
+	LimitNumTracks       int      `toml:"limit_num_tracks"`
+	LimitBytesPerSec     int      `toml:"limit_bytes_per_sec"`
+	IPsExcludes          []string `toml:"ips_excludes"`
 	ExtraConfigFile      string   `toml:"extra_config_file"`
 }
 

@@ -397,3 +397,73 @@ func TestConfigDoesNotImplementLogValuerByAccident(t *testing.T) {
 		t.Fatal("*Config implements slog.LogValuer; R20 requires the explicit Redacted() call")
 	}
 }
+
+// dilla-media task 8: the new [livekit] keys, their defaults and their ranges.
+func TestTheLiveKitMediaKeys(t *testing.T) {
+	d := config.Default().LiveKit
+	if d.WebhookListen != "127.0.0.1:7883" || d.VP9 || d.MaxShareBitrateKbps != 2500 || d.MaxAudioBitrateKbps != 64 ||
+		d.LimitNumTracks != 0 || d.LimitBytesPerSec != 0 || len(d.IPsExcludes) != 0 {
+		t.Fatalf("defaults = %+v", d)
+	}
+	valid := func(t *testing.T) *config.Config {
+		t.Helper()
+		c := base()
+		c.Instance.PublicIP = netipMustParse(t, "203.0.113.7")
+		c.TURN.Enabled = false
+		c.LiveKit.APISecretFile = writeSecretFile(t)
+		c.Derive()
+		return c
+	}
+	if err := valid(t).Validate(); err != nil {
+		t.Fatalf("the defaults: %v", err)
+	}
+	for name, set := range map[string]func(*config.Config){
+		"livekit.webhook_listen not loopback":     func(c *config.Config) { c.LiveKit.WebhookListen = "0.0.0.0:7883" },
+		"livekit.webhook_listen without a port":   func(c *config.Config) { c.LiveKit.WebhookListen = "127.0.0.1" },
+		"livekit.webhook_listen a hostname":       func(c *config.Config) { c.LiveKit.WebhookListen = "dilla.example:7883" },
+		"livekit.max_share_bitrate_kbps too low":  func(c *config.Config) { c.LiveKit.MaxShareBitrateKbps = 99 },
+		"livekit.max_share_bitrate_kbps too high": func(c *config.Config) { c.LiveKit.MaxShareBitrateKbps = 20001 },
+		"livekit.max_audio_bitrate_kbps too low":  func(c *config.Config) { c.LiveKit.MaxAudioBitrateKbps = 15 },
+		"livekit.max_audio_bitrate_kbps too high": func(c *config.Config) { c.LiveKit.MaxAudioBitrateKbps = 511 },
+		"livekit.limit_num_tracks negative":       func(c *config.Config) { c.LiveKit.LimitNumTracks = -1 },
+		"livekit.limit_num_tracks above int32":    func(c *config.Config) { c.LiveKit.LimitNumTracks = 1 << 31 },
+		"livekit.limit_bytes_per_sec negative":    func(c *config.Config) { c.LiveKit.LimitBytesPerSec = -1 },
+		"livekit.ips_excludes not a prefix":       func(c *config.Config) { c.LiveKit.IPsExcludes = []string{"172.17.0.1"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := valid(t)
+			set(c)
+			key, _, _ := strings.Cut(name, " ")
+			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("Validate = %v, want an error naming %s", err, key)
+			}
+		})
+	}
+	for name, set := range map[string]func(*config.Config){
+		"localhost":            func(c *config.Config) { c.LiveKit.WebhookListen = "localhost:7883" },
+		"IPv6 loopback":        func(c *config.Config) { c.LiveKit.WebhookListen = "[::1]:7883" },
+		"port 0 (tests)":       func(c *config.Config) { c.LiveKit.WebhookListen = "127.0.0.1:0" },
+		"a Docker exclude":     func(c *config.Config) { c.LiveKit.IPsExcludes = []string{"172.17.0.0/16", "fd00::/8"} },
+		"the VP9 flag":         func(c *config.Config) { c.LiveKit.VP9 = true },
+		"host limits":          func(c *config.Config) { c.LiveKit.LimitNumTracks, c.LiveKit.LimitBytesPerSec = 4000, 125_000_000 },
+		"bitrates at the ends": func(c *config.Config) { c.LiveKit.MaxShareBitrateKbps, c.LiveKit.MaxAudioBitrateKbps = 100, 510 },
+	} {
+		t.Run("accepted: "+name, func(t *testing.T) {
+			c := valid(t)
+			set(c)
+			if err := c.Validate(); err != nil {
+				t.Fatalf("Validate = %v", err)
+			}
+		})
+	}
+	// A webhook listener nothing would start: a non-default webhook_listen with LiveKit off.
+	c := valid(t)
+	c.LiveKit.Enabled = false
+	if err := c.Validate(); err != nil {
+		t.Fatalf("LiveKit off with the default webhook_listen: %v", err)
+	}
+	c.LiveKit.WebhookListen = "127.0.0.1:9999"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "livekit.webhook_listen") {
+		t.Fatalf("LiveKit off with webhook_listen set: Validate = %v, want a refusal naming the key", err)
+	}
+}

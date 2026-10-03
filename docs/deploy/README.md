@@ -64,6 +64,47 @@ public_url = "turns:turn.example.org:5349?transport=tcp"
 
 Set `turn.public_url` whenever the port the world reaches differs from `turn.listen`'s, TLS or not.
 
+### LiveKit
+
+dillad renders LiveKit's configuration itself from `[livekit]`; there is no LiveKit YAML to edit.
+What it fixes, and the keys that change it:
+
+- **Codecs.** Opus (no RED, no PCMU/PCMA), VP8 and H.264; dilla's clients publish H.264 only as
+  Constrained Baseline with `packetization-mode=1`. (LiveKit cannot be limited to that profile in
+  its own configuration without refusing H.264 altogether, so the restriction lives in the
+  clients.) Every call is end-to-end encrypted frame by frame, so nothing else could be decrypted
+  on the other side anyway. `livekit.vp9 = true` adds VP9 profile 0; leave it off until the VP9
+  follow-up says otherwise. AV1 and H.265 are never offered.
+- **No TCP fallback.** LiveKit's own TCP fallback is off and `livekit.tcp_port` stays 0: a client
+  that cannot reach UDP 7882 relays through TURN/TLS on 443 instead.
+- **STUN.** `livekit.stun_servers` defaults to `<instance.domain>:3478` and is never served: it only
+  keeps LiveKit from advertising Google's and Twilio's STUN servers to clients, which use the ICE
+  servers dillad's calls route hands them.
+- **Webhooks.** LiveKit reports joins, leaves and publications to dillad on
+  `livekit.webhook_listen` (default `127.0.0.1:7883`), which must be a loopback address; it is
+  signed with LiveKit's own API key. A non-default value while `livekit.enabled = false` is
+  refused: nothing would listen there.
+- **Host limits.** `livekit.limit_num_tracks` and `livekit.limit_bytes_per_sec` (bytes, not bits)
+  are LiveKit's node-wide join gates, unset by default. They refuse new joins once reached, so size
+  them generously: one 25-person voice call is about 600 forwarded tracks.
+- **Publish caps.** `livekit.max_audio_bitrate_kbps` (64) and `livekit.max_share_bitrate_kbps`
+  (2500) are handed to clients with every call token.
+- **Docker with a bridge network.** LiveKit offers every interface address as a candidate,
+  including the container's `172.x` bridge address, which no client can reach. List the bridge
+  range so LiveKit leaves it out:
+
+  ```toml
+  [livekit]
+  ips_excludes = ["172.16.0.0/12"]
+  ```
+
+  With `network_mode: host` this is not needed.
+- **Logs and metrics.** LiveKit's and pion's logs appear in dillad's own log (pion's only at
+  ERROR); LiveKit's `livekit_*` metrics appear on dillad's `/metrics` beside `dilla_*`.
+- **If LiveKit stops.** The in-process SFU cannot be restarted inside a running dillad: the
+  `livekit` readiness gate turns red and dillad exits with status 69 (`EX_UNAVAILABLE`), and the
+  systemd unit or the container's restart policy starts it again.
+
 ## 2. Compose
 
 The image is `ghcr.io/jonasthim/dilla/dillad`, built for linux/amd64 and linux/arm64 on distroless

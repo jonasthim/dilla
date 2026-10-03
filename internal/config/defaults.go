@@ -5,6 +5,9 @@ import (
 	"runtime"
 )
 
+// DefaultWebhookListen is the loopback destination for LiveKit webhooks.
+const DefaultWebhookListen = "127.0.0.1:7883"
+
 // Default returns the struct that is pre-populated BEFORE decoding, so deleting
 // any line from dilla.toml leaves behaviour unchanged (gap-74 §2.4). Three
 // values here are a ruling's rather than the gap file's: max_ciphertext_bytes
@@ -29,6 +32,7 @@ func Default() *Config {
 		Enabled: true, Mode: "in_process", BindAddress: "127.0.0.1", Port: 7880,
 		UDPPort: 7882, TCPPort: 0, AdvertiseInternalIP: true, APIKey: "dilla",
 		MaxVoiceParticipants: 25, MaxPublishers: defaultMaxPublishers,
+		WebhookListen: DefaultWebhookListen, MaxShareBitrateKbps: 2500, MaxAudioBitrateKbps: 64,
 	}
 	c.DB = DB{
 		Driver: "sqlite", Path: "/var/lib/dilla/dilla.db", ConnMaxLifetime: "0s",

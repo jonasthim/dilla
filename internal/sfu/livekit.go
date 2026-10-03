@@ -4,16 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/routing"
 	"github.com/livekit/livekit-server/pkg/service"
 	"github.com/livekit/livekit-server/pkg/telemetry/prometheus"
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 	"github.com/twitchtv/twirp"
 )
 
@@ -32,7 +36,15 @@ var startTimeout = 15 * time.Second
 type Server struct {
 	cfg    Config
 	server *service.LivekitServer
-	errCh  chan error
+	// errCh carries LivekitServer.Start's result. Start reads it while booting; after boot only
+	// watch reads it.
+	errCh chan error
+	// exited is closed once LivekitServer.Start has returned after boot; exitErr is its result.
+	exited  chan struct{}
+	exitErr error
+	// done receives one error when Start returned without Stop (DEV-42 a).
+	done     chan error
+	stopping atomic.Bool
 }
 
 // Start boots the SFU. LivekitServer.Start blocks on <-s.doneChan, so it runs in
@@ -66,6 +78,13 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 	if err := conf.LoadTURNSecrets(); err != nil {
 		return nil, fmt.Errorf("sfu: turn secrets: %w", err)
 	}
+	// LiveKit and pion read the logger as transports are built during initialization.
+	// Installing this bridge does not replace slog.Default.
+	sink := slog.DiscardHandler
+	if c.Log != nil {
+		sink = c.Log.Handler()
+	}
+	logger.SetLogger(logger.LogRLogger(logr.FromSlogHandler(NewLogBridge(sink))), "livekit")
 	node, err := routing.NewLocalNode(conf)
 	if err != nil {
 		return nil, fmt.Errorf("sfu: local node: %w", err)
@@ -80,7 +99,7 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 		return nil, fmt.Errorf("sfu: initialize: %w", err)
 	}
 
-	s := &Server{cfg: c, server: srv, errCh: make(chan error, 1)}
+	s := &Server{cfg: c, server: srv, errCh: make(chan error, 1), exited: make(chan struct{}), done: make(chan error, 1)}
 	go func() { s.errCh <- s.server.Start() }()
 
 	addr := net.JoinHostPort(c.BindAddress, fmt.Sprint(c.Port))
@@ -97,6 +116,7 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 			conn, err := (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext(ctx, "tcp", addr)
 			if err == nil {
 				_ = conn.Close()
+				go s.watch()
 				return s, nil
 			}
 		}
@@ -106,6 +126,23 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// watch reports an unrequested post-boot LiveKit exit to dillad.
+func (s *Server) watch() {
+	err := <-s.errCh
+	s.exitErr = err
+	close(s.exited)
+	if s.stopping.Load() {
+		return
+	}
+	if err == nil {
+		err = errors.New("sfu: LiveKit's server returned without a Stop")
+	}
+	s.done <- err
+}
+
+// Done delivers one error if LiveKit exits after boot without Stop.
+func (s *Server) Done() <-chan error { return s.done }
 
 // abortPollInterval and abortPollLimit bound the wait inside abort:
 // 100 × 50 ms = 5 s, far past LiveKit's deliberate 100 ms sleep.
@@ -221,11 +258,12 @@ func (s *Server) DeleteRoom(ctx context.Context, room string) error {
 
 // Stop shuts the server down and waits for Start to return.
 func (s *Server) Stop(ctx context.Context) error {
+	s.stopping.Store(true)
 	s.server.Stop(true)
 	select {
-	case err := <-s.errCh:
-		if err != nil && !errors.Is(err, net.ErrClosed) {
-			return fmt.Errorf("sfu: server: %w", err)
+	case <-s.exited:
+		if s.exitErr != nil && !errors.Is(s.exitErr, net.ErrClosed) {
+			return fmt.Errorf("sfu: server: %w", s.exitErr)
 		}
 		return nil
 	case <-ctx.Done():

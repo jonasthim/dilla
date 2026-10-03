@@ -312,7 +312,38 @@ func sfuConfig(lk config.LiveKit, secret string) sfu.Config {
 		AdvertiseInternalIP:     lk.AdvertiseInternalIP,
 		STUNServers:             lk.STUNServers,
 		MaxParticipants:         uint32(max(lk.MaxVoiceParticipants, 0)), //nolint:gosec // clamped at 0
+		AutoCreate:              true,
+		EmptyTimeout:            300,
+		DepartureTimeout:        20,
+		VP9:                     lk.VP9,
+		WebhookURL:              webhookURL(lk.WebhookListen),
+		LimitNumTracks:          int32(lk.LimitNumTracks),     //nolint:gosec // Validate bounds it to 0..MaxInt32
+		LimitBytesPerSec:        float32(lk.LimitBytesPerSec), // LiveKit's config type
+		IPsExcludes:             lk.IPsExcludes,
 	}
+}
+
+func webhookURL(listen string) string {
+	if listen == "" {
+		return ""
+	}
+	return "http://" + listen + sfu.WebhookPath
+}
+
+// watchSFU reports a post-boot SFU exit and marks readiness red.
+func watchSFU(ctx context.Context, done <-chan error, gate *obs.Gate, log *slog.Logger) <-chan error {
+	out := make(chan error, 1)
+	go func() {
+		defer close(out)
+		select {
+		case err := <-done:
+			gate.Set(false, "the in-process SFU exited: "+err.Error())
+			log.Error("the in-process SFU exited; dillad exits for its supervisor to restart it", "err", err)
+			out <- err
+		case <-ctx.Done():
+		}
+	}()
+	return out
 }
 
 // startSFU runs LiveKit v1.13.7 in this process through internal/sfu, on
@@ -339,7 +370,9 @@ func startSFU(ctx context.Context, d frontDeps) (*sfu.Server, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("serve: livekit.api_secret_file: %w: %w", err, exit.Config)
 	}
-	s, err := sfu.Start(ctx, sfuConfig(lk, string(body)))
+	sc := sfuConfig(lk, string(body))
+	sc.Log = d.log
+	s, err := sfu.Start(ctx, sc)
 	if err != nil {
 		gate.Set(false, err.Error())
 		return nil, nil, fmt.Errorf("serve: %w: %w", err, exit.Unavailable)

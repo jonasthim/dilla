@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -28,9 +29,11 @@ import (
 	"github.com/caddyserver/certmagic"
 	"github.com/pion/turn/v5"
 
+	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/server"
 )
@@ -259,6 +262,7 @@ func freeUDPPort(t *testing.T) int {
 // the livekit readiness gate is green only once it accepts connections; serve
 // stops it on the way out.
 func TestServeStartsTheSFU(t *testing.T) {
+	t.Setenv(metricsTokenEnv, "dilla-media-task-8-metrics-probe")
 	cfgPath := bootstrapServeConfig(t)
 	port := freeTCPPort(t)
 	rewriteConfig(t, cfgPath, func(c *config.Config) {
@@ -291,6 +295,20 @@ func TestServeStartsTheSFU(t *testing.T) {
 	}
 	if code, body, err := get(client, "http://"+addr+"/rtc/validate"); err != nil || code == http.StatusNotFound {
 		t.Fatalf("GET /rtc/validate through serve = %d %q %v, want LiveKit's answer", code, body, err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer dilla-media-task-8-metrics-probe")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	metricsBody, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(metricsBody, []byte("# TYPE livekit_room_total ")) || !bytes.Contains(metricsBody, []byte("# TYPE dilla_gateway_connections ")) {
+		t.Fatalf("/metrics = %d; want livekit_room_total and dilla_gateway_connections in one scrape", resp.StatusCode)
 	}
 	stopServe(t, served)
 	if _, _, err := get(&http.Client{Timeout: time.Second}, fmt.Sprintf("http://127.0.0.1:%d/", port)); err == nil {
@@ -459,5 +477,60 @@ func TestTheSFUConfigCarriesTheLiveKitKeys(t *testing.T) {
 	got = sfuConfig(lk, "secret")
 	if got.NodeIP != "127.0.0.1" || !got.EnableLoopbackCandidate || got.AdvertiseInternalIP {
 		t.Errorf("unset node_ip: %+v, want 127.0.0.1 with the loopback candidate and no internal ip", got)
+	}
+	lk = config.Default().LiveKit
+	lk.VP9 = true
+	lk.WebhookListen = "127.0.0.1:7883"
+	lk.LimitNumTracks, lk.LimitBytesPerSec = 4000, 125_000_000
+	lk.IPsExcludes = []string{"172.17.0.0/16"}
+	got = sfuConfig(lk, "secret")
+	if !got.VP9 || got.WebhookURL != "http://127.0.0.1:7883/livekit/webhook" {
+		t.Errorf("vp9 %t, webhook %q", got.VP9, got.WebhookURL)
+	}
+	if got.LimitNumTracks != 4000 || got.LimitBytesPerSec != 125_000_000 || len(got.IPsExcludes) != 1 {
+		t.Errorf("limits %d/%v, excludes %v", got.LimitNumTracks, got.LimitBytesPerSec, got.IPsExcludes)
+	}
+	if !got.AutoCreate || got.EmptyTimeout != 300 || got.DepartureTimeout != 20 {
+		t.Errorf("room: auto_create %t, timeouts %d/%d", got.AutoCreate, got.EmptyTimeout, got.DepartureTimeout)
+	}
+	lk.Enabled, lk.WebhookListen = true, ""
+	if got = sfuConfig(lk, "secret"); got.WebhookURL != "" {
+		t.Errorf("an empty webhook_listen rendered webhook %q", got.WebhookURL)
+	}
+}
+
+// DEV-42 (a): a post-boot SFU exit turns the livekit gate red and is handed to serve, which exits
+// exit.Unavailable for systemd to restart dillad; an ending serve stops the watcher quietly.
+func TestAnSFUExitTurnsTheGateRedAndEndsServe(t *testing.T) {
+	health := obs.NewHealth(clock.System())
+	gate := health.Gate("livekit")
+	gate.Set(true, "in-process SFU on ws://127.0.0.1:7880")
+	done := make(chan error, 1)
+	died := watchSFU(t.Context(), done, gate, slog.New(slog.DiscardHandler))
+	done <- errors.New("http: Server closed")
+	select {
+	case err, ok := <-died:
+		if !ok || err == nil {
+			t.Fatalf("watchSFU delivered %v, %t", err, ok)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchSFU did not report the exit")
+	}
+	rec := httptest.NewRecorder()
+	health.Readiness().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil))
+	if rec.Code == http.StatusOK || !strings.Contains(rec.Body.String(), "livekit") {
+		t.Fatalf("/readyz = %d %s, want the livekit gate red", rec.Code, rec.Body.String())
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	quiet := watchSFU(ctx, make(chan error), obs.NewHealth(clock.System()).Gate("livekit"), slog.New(slog.DiscardHandler))
+	cancel()
+	select {
+	case err, ok := <-quiet:
+		if ok {
+			t.Fatalf("a cancelled watcher delivered %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a cancelled watcher did not close its channel")
 	}
 }

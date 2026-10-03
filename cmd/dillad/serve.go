@@ -197,7 +197,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 
 	log := obs.NewLogger(cfg.Log, stderr)
 	reg := prometheus.NewRegistry()
-	metrics := obs.NewMetrics(reg, reg)
+	metrics := obs.NewMetrics(reg, prometheus.Gatherers{reg, prometheus.DefaultGatherer})
 	health := obs.NewHealth(clock.System())
 
 	// The blob store, its start-up sweep of interrupted uploads and the
@@ -244,6 +244,16 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	sfuExit := make(chan error, 1)
+	if sfuServer != nil {
+		died := watchSFU(runCtx, sfuServer.Done(), health.Gate("livekit"), log)
+		go func() {
+			if err, ok := <-died; ok {
+				sfuExit <- err
+				stop()
+			}
+		}()
+	}
 
 	// The listener tls.mode chooses (Plan 2 task 16): server.plain_listen
 	// behind a proxy, or server.listen through the 443 TLS/STUN demux with
@@ -352,6 +362,11 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	default:
 		// Serve returned for a reason other than a signal; no drain was
 		// started and the goroutine is still parked on runCtx.
+	}
+	select {
+	case err := <-sfuExit:
+		return fmt.Errorf("serve: the in-process SFU exited: %w: %w", err, exit.Unavailable)
+	default:
 	}
 	return nil
 }

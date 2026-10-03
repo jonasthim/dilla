@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -198,6 +199,29 @@ func (c *Config) Validate() error {
 	if c.LiveKit.UseExternalIP {
 		add("livekit.use_external_ip is reserved and must stay false: livekit.node_ip is the address LiveKit advertises")
 	}
+	if err := validWebhookListen(c.LiveKit.WebhookListen); err != nil {
+		add("livekit.webhook_listen: %v", err)
+	}
+	if !c.LiveKit.Enabled && c.LiveKit.WebhookListen != DefaultWebhookListen {
+		add("livekit.webhook_listen is set while livekit.enabled is false: no SFU would post to it and no receiver would start")
+	}
+	if v := c.LiveKit.MaxShareBitrateKbps; v < 100 || v > 20000 {
+		add("livekit.max_share_bitrate_kbps is %d; the range is 100..20000", v)
+	}
+	if v := c.LiveKit.MaxAudioBitrateKbps; v < 16 || v > 510 {
+		add("livekit.max_audio_bitrate_kbps is %d; the range is 16..510 (Opus)", v)
+	}
+	if v := c.LiveKit.LimitNumTracks; v < 0 || v > math.MaxInt32 {
+		add("livekit.limit_num_tracks is %d; the range is 0..%d", v, math.MaxInt32)
+	}
+	if c.LiveKit.LimitBytesPerSec < 0 {
+		add("livekit.limit_bytes_per_sec is %d; it cannot be negative", c.LiveKit.LimitBytesPerSec)
+	}
+	for _, p := range c.LiveKit.IPsExcludes {
+		if _, err := netip.ParsePrefix(p); err != nil {
+			add("livekit.ips_excludes entry %q is not a CIDR prefix such as \"172.17.0.0/16\"", p)
+		}
+	}
 	if c.Retention.HandshakeDays > 30 || c.Retention.HandshakeDays < 1 {
 		add("retention.handshake_days is %d; the range is 1..30 (protocol/02 § Retention)", c.Retention.HandshakeDays)
 	}
@@ -334,6 +358,25 @@ func secretFile(path string, minBytes int) error {
 	}
 	if info.Size() < int64(minBytes) {
 		return fmt.Errorf("%s is %d bytes; at least %d are required", path, info.Size(), minBytes)
+	}
+	return nil
+}
+
+// validWebhookListen: a loopback IP literal or localhost, with a port. LiveKit signs every webhook,
+// but the receiver is loopback-only so nothing off the host can even try.
+func validWebhookListen(v string) error {
+	host, port, err := net.SplitHostPort(v)
+	if err != nil {
+		return fmt.Errorf("%q is not host:port", v)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 0 || n > 65535 {
+		return fmt.Errorf("%q has no valid port", v)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if a, err := netip.ParseAddr(host); err != nil || !a.IsLoopback() {
+		return fmt.Errorf("%q is not a loopback address (127.0.0.0/8, ::1 or localhost)", v)
 	}
 	return nil
 }

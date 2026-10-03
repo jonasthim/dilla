@@ -1,22 +1,36 @@
 package sfu
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/routing"
+	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/pion/webrtc/v4"
+	pmedia "github.com/pion/webrtc/v4/pkg/media"
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/jonasthim/dilla/internal/obs"
 )
 
 func testConfig() Config {
@@ -112,7 +126,7 @@ func TestNewConfigAcceptsTheYAMLInStrictMode(t *testing.T) {
 // advertise_internal_ip keeps the local host candidate beside node_ip's public one (so relay
 // pairing stays on-host), stun_servers replaces LiveKit's Google/Twilio fallback in every join
 // response, and max_voice_participants is the room cap. A zero cap renders no room key at all, so
-// LiveKit's own room defaults (auto_create among them) survive either way.
+// LiveKit's room defaults are rendered explicitly; only the cap is conditional.
 func TestTheRTCKeysReachLiveKitsConfig(t *testing.T) {
 	c := testConfig()
 	c.NodeIP = "203.0.113.7"
@@ -145,7 +159,7 @@ func TestTheRTCKeysReachLiveKitsConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("YAML: %v", err)
 	}
-	if strings.Contains(y, "stun_servers") || strings.Contains(y, "room:") {
+	if strings.Contains(y, "stun_servers") || strings.Contains(y, "max_participants") {
 		t.Errorf("an empty STUN list or a zero cap rendered a key:\n%s", y)
 	}
 	conf, err = config.NewConfig(y, true, nil, nil)
@@ -217,6 +231,12 @@ func TestPrometheusInitPrecedesInitializeServer(t *testing.T) {
 	}
 	if !strings.Contains(text, "go s.server.Start()") && !strings.Contains(text, "go func()") {
 		t.Error("LivekitServer.Start blocks on <-s.doneChan; it must run in its own goroutine")
+	}
+	if setIdx := strings.Index(text, "logger.SetLogger("); setIdx < 0 || setIdx > serverIdx {
+		t.Error("the log bridge must be installed before service.InitializeServer")
+	}
+	if strings.Contains(text, "InitLoggerFromConfig(") {
+		t.Error("config.InitLoggerFromConfig replaces slog.Default")
 	}
 }
 
@@ -493,5 +513,431 @@ func TestDeleteRoomDisconnectsItsParticipants(t *testing.T) {
 	}
 	if err := srv.DeleteRoom(t.Context(), room); err != nil {
 		t.Fatalf("a second DeleteRoom of the closed room = %v, want nil", err)
+	}
+}
+
+// The default configuration renders exactly interfaces.md b.9 with no conditional key: the golden is
+// the contract a LiveKit upgrade is read against.
+func TestTheDefaultYAMLIsTheVerifiedShape(t *testing.T) {
+	y, err := testConfig().YAML()
+	if err != nil {
+		t.Fatalf("YAML: %v", err)
+	}
+	const want = `port: 7880
+bind_addresses:
+  - 127.0.0.1
+keys:
+  dilla: "dilla-spike-secret-0123456789abcdef"
+rtc:
+  node_ip: 127.0.0.1
+  use_external_ip: false
+  enable_loopback_candidate: true
+  udp_port: 7882
+  tcp_port: 0
+  advertise_internal_ip: true
+  use_ice_lite: false
+  allow_tcp_fallback: false
+audio:
+  active_level: 35
+  min_percentile: 40
+  update_interval: 400
+  smooth_intervals: 2
+  active_red_encoding: false
+room:
+  auto_create: true
+  empty_timeout: 300
+  departure_timeout: 20
+  enabled_codecs:
+    - mime: audio/opus
+    - mime: video/VP8
+    - mime: video/H264
+    - mime: video/rtx
+turn:
+  enabled: false
+`
+	if y != want {
+		t.Fatalf("default YAML:\n%s\nwant:\n%s", y, want)
+	}
+}
+
+// Every conditional key, rendered and read back through LiveKit's strict parser.
+func TestEveryConditionalKeyReachesLiveKit(t *testing.T) {
+	c := testConfig()
+	c.MaxParticipants = 25
+	c.VP9 = true
+	c.WebhookURL = "http://127.0.0.1:7883" + WebhookPath
+	c.LimitNumTracks = 4000
+	c.LimitBytesPerSec = 125_000_000
+	c.IPsExcludes = []string{"172.17.0.0/16", "fd00::/8"}
+	y, err := c.YAML()
+	if err != nil {
+		t.Fatalf("YAML: %v", err)
+	}
+	for _, block := range []string{
+		"room:\n  auto_create: true\n  max_participants: 25\n",
+		"    - mime: video/VP9\n      fmtp_line: \"profile-id=0\"\n    - mime: video/rtx\n",
+		"  ips:\n    excludes:\n      - \"172.17.0.0/16\"\n      - \"fd00::/8\"\n",
+		"limit:\n  num_tracks: 4000\n  bytes_per_sec: 125000000\n",
+		"webhook:\n  api_key: dilla\n  urls:\n    - \"http://127.0.0.1:7883/livekit/webhook\"\n  filter_params:\n    include_events:\n" +
+			"      - room_started\n      - room_finished\n      - participant_joined\n      - participant_left\n" +
+			"      - participant_connection_aborted\n      - track_published\n      - track_unpublished\n",
+	} {
+		if !strings.Contains(y, block) {
+			t.Errorf("YAML lacks\n%s\nin\n%s", block, y)
+		}
+	}
+	conf, err := config.NewConfig(y, true, nil, nil)
+	if err != nil {
+		t.Fatalf("config.NewConfig(strict): %v\n%s", err, y)
+	}
+	if err := conf.ValidateKeys(); err != nil {
+		t.Fatalf("ValidateKeys: %v", err)
+	}
+	// The webhook is signed with a key of the keys map, the same field, or InitializeServer fails
+	// with ErrWebHookMissingAPIKey.
+	if conf.WebHook.APIKey != c.APIKey || conf.Keys[c.APIKey] == "" {
+		t.Errorf("webhook.api_key = %q, keys = %v; want the keys map's own key %q", conf.WebHook.APIKey, conf.Keys, c.APIKey)
+	}
+	if !conf.Room.AutoCreate || conf.Room.EmptyTimeout != 300 || conf.Room.DepartureTimeout != 20 {
+		t.Errorf("room = %+v", conf.Room)
+	}
+	if conf.Limit.NumTracks != 4000 || conf.Limit.BytesPerSec != 125_000_000 {
+		t.Errorf("limit = %+v", conf.Limit)
+	}
+	if len(conf.Room.EnabledCodecs) != 5 {
+		t.Errorf("enabled_codecs = %+v, want opus, VP8, H264, VP9, rtx", conf.Room.EnabledCodecs)
+	}
+	if conf.RTC.AllowTCPFallback == nil || *conf.RTC.AllowTCPFallback {
+		t.Error("rtc.allow_tcp_fallback must be rendered false: unset is true, and tcp_port 0 leaves no TCP pair")
+	}
+	for _, refused := range []func(*Config){
+		func(c *Config) { c.WebhookURL = "http://127.0.0.1:7883/x\"\n  urls: [evil]" },
+		func(c *Config) { c.IPsExcludes = []string{"172.17.0.0/16\n  - x"} },
+	} {
+		bad := testConfig()
+		refused(&bad)
+		if _, err := bad.YAML(); err == nil {
+			t.Errorf("YAML accepted a value that breaks out of its line: %+v", bad)
+		}
+	}
+}
+
+// LiveKit's strict mode refuses the six spellings G22 probed; the renderer must use the real keys.
+func TestStrictModeRefusesTheSixWrongSpellings(t *testing.T) {
+	for _, c := range []struct{ yaml, want string }{
+		{"rtc:\n  ice_lite: true\n", "field ice_lite not found in type config.RTCConfig"},
+		{"audio:\n  red_encoding: true\n", "field red_encoding not found in type sfu.AudioConfig"},
+		{"room:\n  enabled_codec: []\n", "field enabled_codec not found in type config.RoomConfig"},
+		{"room:\n  enabled_codecs:\n    - mime: video/H264\n      fmtp: x\n", "field fmtp not found in type config.CodecSpec"},
+		{"limit:\n  max_tracks: 1\n", "field max_tracks not found in type config.LimitConfig"},
+		{"webhook:\n  client_timeout: 5s\n", "field client_timeout not found in type webhook.WebHookConfig"},
+	} {
+		_, err := config.NewConfig(c.yaml, true, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%q: %v, want an error containing %q", c.yaml, err, c.want)
+		}
+	}
+}
+
+// G38: LiveKit's own HTTP-serve failure path calls Stop(true) on itself; Done must report that,
+// and must report nothing when dillad stops the server.
+func TestDoneReportsAnExitNobodyAskedFor(t *testing.T) {
+	c := testConfig()
+	c.Port, c.UDPPort = 7904, 7906
+	srv, err := Start(t.Context(), c)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	srv.server.Stop(true)
+	select {
+	case err := <-srv.Done():
+		if err == nil {
+			t.Fatal("Done delivered a nil error")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Done delivered nothing 20 s after LiveKit stopped itself")
+	}
+	if err := srv.Stop(context.Background()); err != nil {
+		t.Errorf("Stop after the exit: %v", err)
+	}
+
+	c.Port, c.UDPPort = 7908, 7910
+	srv, err = Start(t.Context(), c)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := srv.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case err := <-srv.Done():
+		t.Fatalf("Done delivered %v after a deliberate Stop", err)
+	case <-time.After(time.Second):
+	}
+}
+
+// everyCodec is what a publisher offers so the SFU's answer shows exactly what it accepts.
+var everyCodec = []livekit.Codec{
+	{Mime: "audio/opus"}, {Mime: "audio/red"}, {Mime: "audio/PCMU"}, {Mime: "audio/PCMA"},
+	{Mime: "video/VP8"}, {Mime: "video/VP9", FmtpLine: "profile-id=0"}, {Mime: "video/VP9", FmtpLine: "profile-id=1"},
+	{Mime: "video/AV1"}, {Mime: "video/H265"},
+	// First of the H.264 entries on purpose: the SDK moves the first codec whose mime matches the
+	// track's to the front of the transceiver's preferences (localparticipant.go:116-123), and LiveKit
+	// answers an m-section that leads with packetization-mode 0 with VP8 (plan review 2026-10-03).
+	{Mime: "video/H264", FmtpLine: h264Fmtp},
+	{Mime: "video/H264", FmtpLine: "packetization-mode=0"},
+	{Mime: "video/H264", FmtpLine: "profile-level-id=640032"},
+}
+
+type sdpCodec struct{ kind, name, fmtp string }
+
+// answerCodecs reads every rtpmap of an SDP with its media kind and its fmtp line.
+func answerCodecs(sdp string) []sdpCodec {
+	type rtpmap struct{ kind, pt, name string }
+	var maps []rtpmap
+	fmtp := map[string]string{}
+	kind := ""
+	for _, line := range strings.Split(sdp, "\r\n") {
+		switch {
+		case strings.HasPrefix(line, "m="):
+			kind, _, _ = strings.Cut(strings.TrimPrefix(line, "m="), " ")
+		case strings.HasPrefix(line, "a=rtpmap:"):
+			pt, rest, _ := strings.Cut(strings.TrimPrefix(line, "a=rtpmap:"), " ")
+			name, _, _ := strings.Cut(rest, "/")
+			maps = append(maps, rtpmap{kind: kind, pt: pt, name: strings.ToLower(name)})
+		case strings.HasPrefix(line, "a=fmtp:"):
+			pt, rest, _ := strings.Cut(strings.TrimPrefix(line, "a=fmtp:"), " ")
+			fmtp[kind+"/"+pt] = rest
+		}
+	}
+	out := make([]sdpCodec, 0, len(maps))
+	for _, m := range maps {
+		out = append(out, sdpCodec{kind: m.kind, name: m.name, fmtp: fmtp[m.kind+"/"+m.pt]})
+	}
+	return out
+}
+
+// SP-31 server half: whatever a publisher offers, the SFU answers only with the dilla codecs —
+// Opus without RED, PCMU or PCMA; VP8; H.264 (packetization-mode 1, 42e01f, for a publisher that
+// prefers it — MD-29); VP9 profile 0 only with the flag; never AV1 or H.265 — and an H.264
+// publication stays H.264 in LiveKit's own track state instead of falling back to VP8.
+func TestTheSFUOfferCarriesOnlyTheDillaCodecs(t *testing.T) {
+	if raceEnabled {
+		t.Skip("upstream livekit-server data race in updateRidsFromSDP; runs in the non-race step")
+	}
+	for _, vp9 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("vp9=%t", vp9), func(t *testing.T) {
+			c := testConfig()
+			c.VP9 = vp9
+			c.Port, c.UDPPort = 7912, 7914
+			if vp9 {
+				c.Port, c.UDPPort = 7916, 7918
+			}
+			srv, err := Start(t.Context(), c)
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer func() { _ = srv.Stop(context.Background()) }()
+			tok, err := srv.Token("sp31", "publisher")
+			if err != nil {
+				t.Fatal(err)
+			}
+			room, err := lksdk.ConnectToRoomWithToken(srv.URL(), tok, &lksdk.RoomCallback{}, lksdk.WithCodecs(everyCodec))
+			if err != nil {
+				t.Fatalf("join: %v", err)
+			}
+			defer room.Disconnect()
+			publish := func(name string, capability webrtc.RTPCodecCapability, source livekit.TrackSource) *lksdk.LocalTrackPublication {
+				t.Helper()
+				track, err := lksdk.NewLocalTrack(capability)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for range 20 {
+					pub, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{Name: name, Source: source})
+					if err == nil {
+						return pub
+					}
+					t.Logf("publish %s: %v (retrying)", name, err)
+					time.Sleep(500 * time.Millisecond)
+				}
+				t.Fatalf("publish %s: no success in 20 tries", name)
+				return nil
+			}
+			publish("mic", webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}, livekit.TrackSource_MICROPHONE)
+			publish("camera", webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000}, livekit.TrackSource_CAMERA)
+			screen := publish("screen", webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000, SDPFmtpLine: h264Fmtp}, livekit.TrackSource_SCREEN_SHARE)
+			want := 3
+			if vp9 {
+				publish("vp9", webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP9, ClockRate: 90000, SDPFmtpLine: "profile-id=0"}, livekit.TrackSource_UNKNOWN)
+				want = 4
+			}
+			var got []sdpCodec
+			deadline := time.Now().Add(15 * time.Second)
+			for {
+				if d := room.LocalParticipant.GetPublisherPeerConnection().RemoteDescription(); d != nil &&
+					strings.Count(d.SDP, "\r\nm=audio")+strings.Count(d.SDP, "\r\nm=video") >= want {
+					got = answerCodecs(d.SDP)
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("no answer with %d media sections within 15 s", want)
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			t.Logf("SP-31 server half vp9=%t answer codecs: %v", vp9, got)
+			seen := map[string]bool{}
+			for _, cd := range got {
+				seen[cd.kind+"/"+cd.name] = true
+				switch cd.kind + "/" + cd.name {
+				case "audio/opus", "video/vp8", "video/rtx":
+				case "video/h264":
+					if !strings.Contains(cd.fmtp, "packetization-mode=1") || !strings.Contains(cd.fmtp, "profile-level-id=42e01f") {
+						t.Errorf("H.264 answered with %q, want packetization-mode=1 and 42e01f only", cd.fmtp)
+					}
+				case "video/vp9":
+					if !vp9 || !strings.Contains(cd.fmtp, "profile-id=0") {
+						t.Errorf("VP9 %q answered with the flag %t", cd.fmtp, vp9)
+					}
+				default:
+					t.Errorf("the SFU answered %s/%s %q", cd.kind, cd.name, cd.fmtp)
+				}
+			}
+			for _, need := range []string{"audio/opus", "video/vp8", "video/h264"} {
+				if !seen[need] {
+					t.Errorf("the answer lacks %s", need)
+				}
+			}
+			if vp9 && !seen["video/vp9"] {
+				t.Error("the VP9 flag is on and the answer lacks VP9")
+			}
+			// MD-29: AddTrack must not have fallen back to VP8 for the H.264 screen track (an
+			// fmtp-restricted H.264 entry makes it). The TrackInfo is LiveKit's AddTrack answer.
+			if ti := screen.TrackInfo(); ti == nil || len(ti.Codecs) == 0 || !strings.EqualFold(ti.Codecs[0].MimeType, "video/H264") {
+				t.Errorf("LiveKit took the H.264 screen track as %v: AddTrack fell back to another codec", ti.GetCodecs())
+			}
+		})
+	}
+}
+
+// countingHandler counts records at INFO and above by the first two segments of their logger.
+type countingHandler struct {
+	mu     *sync.Mutex
+	counts map[string]int
+	attrs  []slog.Attr
+}
+
+func (h countingHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelInfo }
+func (h countingHandler) WithAttrs(as []slog.Attr) slog.Handler {
+	h.attrs = append(slices.Clone(h.attrs), as...)
+	return h
+}
+func (h countingHandler) WithGroup(string) slog.Handler { return h }
+func (h countingHandler) Handle(_ context.Context, r slog.Record) error {
+	name := "-"
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "logger" {
+			parts := strings.SplitN(a.Value.String(), "/", 3)
+			name = strings.Join(parts[:min(2, len(parts))], "/")
+		}
+		return true
+	})
+	h.mu.Lock()
+	h.counts[name]++
+	h.mu.Unlock()
+	return nil
+}
+
+// SP-37: with three publishing participants, LiveKit's log volume through the bridge stays bounded.
+// 15 s rather than the task map's 20 keeps this package's slowest test inside the go job's per-test
+// budget; the counts per logger are printed for the commit's measurement file.
+func TestTheLiveKitLogVolumeStaysBounded(t *testing.T) {
+	var mu sync.Mutex
+	counts := map[string]int{}
+	c := testConfig()
+	c.Port, c.UDPPort = 7920, 7922
+	c.Log = slog.New(countingHandler{mu: &mu, counts: counts})
+	srv, err := Start(t.Context(), c)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop(context.Background()) }()
+	silence := []byte{0xf8, 0xff, 0xfe}
+	var stop atomic.Bool
+	defer stop.Store(true)
+	for i := range 3 {
+		tok, err := srv.Token("sp37", fmt.Sprintf("p%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		room, err := lksdk.ConnectToRoomWithToken(srv.URL(), tok, &lksdk.RoomCallback{})
+		if err != nil {
+			t.Fatalf("join %d: %v", i, err)
+		}
+		defer room.Disconnect()
+		track, err := lksdk.NewLocalTrack(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{Name: "mic", Source: livekit.TrackSource_MICROPHONE}); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+		go func() {
+			for !stop.Load() {
+				_ = track.WriteSample(pmedia.Sample{Data: silence, Duration: 20 * time.Millisecond}, nil)
+				time.Sleep(20 * time.Millisecond)
+			}
+		}()
+	}
+	time.Sleep(15 * time.Second)
+	mu.Lock()
+	defer mu.Unlock()
+	names := make([]string, 0, len(counts))
+	total := 0
+	for name, n := range counts {
+		names = append(names, name)
+		total += n
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		t.Logf("SP-37 logger=%s lines=%d", name, counts[name])
+	}
+	t.Logf("SP-37 total=%d over 15s with 3 publishers", total)
+	if total > 900 {
+		t.Errorf("%d log lines at INFO and above in 15 s (ceiling 900, 20 a second)", total)
+	}
+}
+
+// DEV-58: one /metrics over dillad's registry and the default one LiveKit registers on, with no
+// family clash (a clash would answer 500 under promhttp's default HTTPErrorOnError).
+func TestOneMetricsEndpointServesLiveKitAndDilla(t *testing.T) {
+	c := testConfig()
+	c.Port, c.UDPPort = 7924, 7926
+	srv, err := Start(t.Context(), c)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop(context.Background()) }()
+	reg := prometheus.NewRegistry()
+	m := obs.NewMetrics(reg, prometheus.Gatherers{reg, prometheus.DefaultGatherer})
+	ts := httptest.NewServer(m.Handler(false, ""))
+	defer ts.Close()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/metrics = %d: %s", resp.StatusCode, body)
+	}
+	for _, family := range []string{"livekit_room_total", "dilla_gateway_connections", "go_goroutines"} {
+		if !bytes.Contains(body, []byte("# TYPE "+family+" ")) {
+			t.Errorf("/metrics lacks %s", family)
+		}
 	}
 }
