@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -18,13 +17,14 @@ import (
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
-	"github.com/twitchtv/twirp"
 )
 
 // adminTokenTTL bounds the short-lived RoomService token DeleteRoom signs for itself.
 const adminTokenTTL = time.Minute
 
-// tokenTTL matches the spec's one-hour, leaf-gated JWT.
+// tokenTTL bounds when a call token may first be used to join. It does not bound a session: LiveKit
+// re-mints a connected participant's token every five minutes from its CURRENT grants
+// (roommanager.go:62-63, 1146-1170), so only DeleteRoom or RemoveParticipants ends one.
 const tokenTTL = time.Hour
 
 // startTimeout bounds how long Start waits for the HTTP listener. It is a var,
@@ -200,27 +200,29 @@ func (s *Server) HTTPURL() string {
 	return "http://" + net.JoinHostPort(s.cfg.BindAddress, fmt.Sprint(s.cfg.Port))
 }
 
-// Token mints a room-join JWT for one identity. The identity is the dilla
-// device id in production; the grants mirror the spec's speak/video/stream
-// permissions.
-func (s *Server) Token(room, identity string) (string, error) {
+// Token mints a room-join JWT for identity (the dilla device id in production) whose grants are
+// exactly perm — PublishGrant's mirror of speak/video/screen_share, never a data grant — and whose
+// participant attributes are attrs (DEV-07's dilla.vdec). perm goes through UpdateFromPermission,
+// the same conversion a live UpdateParticipant applies, so a minted grant and a pushed one cannot
+// drift.
+func (s *Server) Token(room, identity string, perm *livekit.ParticipantPermission, attrs map[string]string) (string, error) {
 	if room == "" || identity == "" {
 		return "", errors.New("sfu: room and identity must both be set")
 	}
-	yes := true
-	grant := &auth.VideoGrant{
-		RoomJoin:       true,
-		Room:           room,
-		CanPublish:     &yes,
-		CanSubscribe:   &yes,
-		CanPublishData: &yes,
+	if perm == nil {
+		return "", errors.New("sfu: a room token needs a permission")
 	}
-	return auth.NewAccessToken(s.cfg.APIKey, s.cfg.APISecret).
+	grant := &auth.VideoGrant{RoomJoin: true, Room: room}
+	grant.UpdateFromPermission(perm)
+	t := auth.NewAccessToken(s.cfg.APIKey, s.cfg.APISecret).
 		SetIdentity(identity).
 		SetName(identity).
 		SetValidFor(tokenTTL).
-		SetVideoGrant(grant).
-		ToJWT()
+		SetVideoGrant(grant)
+	if len(attrs) > 0 {
+		t = t.SetAttributes(attrs)
+	}
+	return t.ToJWT()
 }
 
 // DeleteRoom closes room and disconnects every participant still in it, through LiveKit's own
@@ -232,23 +234,12 @@ func (s *Server) DeleteRoom(ctx context.Context, room string) error {
 	if room == "" {
 		return errors.New("sfu: room must be set")
 	}
-	tok, err := auth.NewAccessToken(s.cfg.APIKey, s.cfg.APISecret).
-		SetVideoGrant(&auth.VideoGrant{RoomCreate: true}).
-		SetValidFor(adminTokenTTL).
-		ToJWT()
+	rs, ctx, err := s.roomServiceFor(ctx, &auth.VideoGrant{RoomCreate: true})
 	if err != nil {
-		return fmt.Errorf("sfu: room service token: %w", err)
+		return err
 	}
-	h := make(http.Header)
-	h.Set("Authorization", "Bearer "+tok)
-	ctx, err = twirp.WithHTTPRequestHeaders(ctx, h)
-	if err != nil {
-		return fmt.Errorf("sfu: room service headers: %w", err)
-	}
-	client := livekit.NewRoomServiceProtobufClient(s.HTTPURL(), http.DefaultClient)
-	if _, err := client.DeleteRoom(ctx, &livekit.DeleteRoomRequest{Room: room}); err != nil {
-		var te twirp.Error
-		if errors.As(err, &te) && te.Code() == twirp.NotFound {
+	if _, err := rs.DeleteRoom(ctx, &livekit.DeleteRoomRequest{Room: room}); err != nil {
+		if isTwirpNotFound(err) {
 			return nil
 		}
 		return fmt.Errorf("sfu: delete room %q: %w", room, err)

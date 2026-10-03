@@ -6,26 +6,51 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
+	"github.com/livekit/protocol/livekit"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
-// CallTokens is the SFU the call routes drive. In production it is
-// internal/sfu.(*Server): Token mints a LiveKit room-join JWT whose grants are
-// the spec's speak, video and stream permissions (the gate in front of it is
-// this file's), and DeleteRoom closes a room and disconnects everyone still in
-// it, answering nil for a room the SFU does not know.
+// CallTokens is the SFU the call routes drive; internal/sfu.(*Server) is one. Token mints a
+// room-join JWT whose grants are exactly the permission it is handed (sfu.PublishGrant's mirror of
+// speak, video and screen_share) — the gates in front of it are this file's. CreateRoom opens a room
+// before any token for it exists (room.auto_create is false). UpdatePermission pushes a complete
+// permission to a connected participant, answering sfu.ErrNoParticipant for one the room does not
+// hold. RemoveParticipants disconnects a device and its "#" shadows. Participants is the room's list
+// for the advisory E_CALL_FULL count. DeleteRoom closes a room and disconnects everyone in it,
+// answering nil for a room the SFU does not know.
 type CallTokens interface {
-	Token(room, identity string) (string, error)
+	Token(room, identity string, perm *livekit.ParticipantPermission, attrs map[string]string) (string, error)
 	DeleteRoom(ctx context.Context, room string) error
+	CreateRoom(ctx context.Context, room string) error
+	UpdatePermission(ctx context.Context, room, identity string, perm *livekit.ParticipantPermission) error
+	RemoveParticipants(ctx context.Context, room string, device id.ID) error
+	Participants(ctx context.Context, room string) ([]*livekit.ParticipantInfo, error)
 }
+
+// CallCounters is the metric surface the call routes move; *obs.Metrics is one. Both counters are
+// label-free.
+type CallCounters interface {
+	CallFull()
+	ShareRefused()
+}
+
+// vdecAttribute is the participant attribute that carries a device's video decode list (DEV-07),
+// the calls request's vdec written into its token.
+const vdecAttribute = "dilla.vdec"
+
+// defaultMaxSharers is livekit.max_publishers' default, applied when CallsConfig leaves it at zero.
+const defaultMaxSharers = 10
 
 // roomCloseTimeout bounds the SFU call that closes an ended call's room.
 const roomCloseTimeout = 5 * time.Second
@@ -42,31 +67,51 @@ type CallsConfig struct {
 	TURNURLs []string
 	// CredentialTTL is turn.credential_ttl.
 	CredentialTTL time.Duration
+	// MaxVoiceParticipants is livekit.max_voice_participants, the advisory E_CALL_FULL count's
+	// limit; 0 counts nothing. LiveKit's room.max_participants stays authoritative.
+	MaxVoiceParticipants int
+	// MaxPublishers is livekit.max_publishers: how many devices of one call may hold a sharing slot.
+	MaxPublishers int
+	// MaxAudioBitrateKbps and MaxShareBitrateKbps are livekit.max_audio_bitrate_kbps and
+	// livekit.max_share_bitrate_kbps, handed to clients in the calls response's caps (DEV-26).
+	MaxAudioBitrateKbps int
+	MaxShareBitrateKbps int
+	// VP9 is livekit.vp9 (F4: default off), the caps element's third field.
+	VP9 bool
 }
 
-// Calls serves protocol/09's two voice routes. Register mounts the handlers
-// bare, as the other Plan 2 route groups do, and each requires an enrolled
-// session itself.
+// Calls serves protocol/09 § Voice. Register mounts the handlers bare, as the other Plan 2 route
+// groups do, and each requires an enrolled session itself.
 type Calls struct {
-	repo store.Repository
-	res  *Resolver
-	sfu  CallTokens
-	cfg  CallsConfig
-	clk  clock.Clock
-	log  *slog.Logger
+	repo     store.Repository
+	res      *Resolver
+	sfu      CallTokens
+	cfg      CallsConfig
+	clk      clock.Clock
+	log      *slog.Logger
+	leases   *shareLeases
+	counters CallCounters
 }
 
-// NewCalls wires the call routes over the SFU's token mint.
+// NewCalls wires the call routes over the SFU.
 func NewCalls(repo store.Repository, res *Resolver, sfu CallTokens, cfg CallsConfig, clk clock.Clock, log *slog.Logger) *Calls {
-	return &Calls{repo: repo, res: res, sfu: sfu, cfg: cfg, clk: clk, log: log}
+	return &Calls{repo: repo, res: res, sfu: sfu, cfg: cfg, clk: clk, log: log, leases: newShareLeases()}
+}
+
+// WithCounters sets the label-free counters the routes move and returns h.
+func (h *Calls) WithCounters(c CallCounters) *Calls {
+	h.counters = c
+	return h
 }
 
 func (h *Calls) Register(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/channels/{id}/calls", h.start)
 	mux.HandleFunc("DELETE /v1/calls/{call_id}", h.end)
+	mux.HandleFunc("POST /v1/calls/{call_id}/share", h.share)
+	mux.HandleFunc("DELETE /v1/calls/{call_id}/share", h.unshare)
 }
 
-// callResponse is `[call_id, group_id, livekit_url, token, ice_servers]`.
+// callResponse is `[call_id, group_id, livekit_url, token, ice_servers, caps]`.
 type callResponse struct {
 	_          struct{} `cbor:",toarray"`
 	CallID     id.ID
@@ -74,6 +119,15 @@ type callResponse struct {
 	LiveKitURL string
 	Token      string
 	ICEServers []iceServer
+	Caps       callCaps
+}
+
+// callCaps is `[max_audio_bitrate_bps, max_share_bitrate_bps, vp9]` (DEV-26, MD-10).
+type callCaps struct {
+	_                  struct{} `cbor:",toarray"`
+	MaxAudioBitrateBPS uint64
+	MaxShareBitrateBPS uint64
+	VP9                uint64
 }
 
 // iceServer is `[urls([tstr]), username(tstr), credential(tstr)]`: the three
@@ -85,17 +139,18 @@ type iceServer struct {
 	Credential string
 }
 
-// start is POST /v1/channels/{id}/calls `[]`: 201 with a fresh call, or 200
-// joining the call already live in the channel's call group.
+// start is POST /v1/channels/{id}/calls `[]` or `[vdec]`: 201 with a fresh call, or 200 joining the
+// call already live in the channel's call group.
 //
-// The gate is the spec's: a token is minted only for a device whose leaf is
-// present in the call group's CURRENT epoch — added at or before it and not
-// removed. A device that has not yet joined the group's current epoch
-// (a leaf added in a later epoch the instance has recorded ahead of its own
-// epoch, or none at all) and a removed one are refused E_LEAF_NOT_CURRENT, so
-// a device that could not decrypt the call's media keys cannot join its room.
+// The gate is the spec's: a token is minted only for a device whose leaf is present in the call
+// group's CURRENT epoch — added at or before it and not removed. A device that has not yet joined
+// the group's current epoch and a removed one are refused E_LEAF_NOT_CURRENT, so a device that
+// could not decrypt the call's media keys cannot join its room. Then the room is opened in the SFU
+// (DEV-44), the advisory participant count may refuse E_CALL_FULL (DEV-01), and the token's grants
+// mirror the device's speak/video/screen_share, the video sources only while it holds a sharing
+// slot (DEV-02, DEV-03).
 func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
-	s, ch, err := h.channel(r)
+	s, ch, bits, err := h.channel(r)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -105,8 +160,9 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if len(body) != 0 {
-		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the body is the empty array"))
+	vdec, err := decodeVdec(body)
+	if err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	group, err := h.callGroup(r.Context(), ch)
@@ -114,11 +170,9 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	// R9: the call is keyed by the call group's call id, which every call group
-	// of the channel shares. While a call is live, the group it was opened on
-	// (voice_sessions.group_id) is the one its token gate reads: a newer call
-	// group of the channel neither locks that call's leaves out nor lets its
-	// own leaves into that call's room.
+	// R9: the call is keyed by the call group's call id, which every call group of the channel
+	// shares. While a call is live, the group it was opened on (voice_sessions.group_id) is the one
+	// its token gate reads.
 	callID := callIDOfGroup(group)
 	now := h.clk.Now().Unix()
 	prev, err := h.repo.GetVoiceSession(r.Context(), callID)
@@ -134,9 +188,8 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		case gerr == nil && recorded.ClosedAt == nil:
 			group = recorded
 		case gerr == nil || errors.Is(gerr, store.ErrNotFound):
-			// The live call's group is closed or gone, so that call cannot go on:
-			// once this request passes the gates it ends it and opens the next
-			// call on the channel's newest call group.
+			// The live call's group is closed or gone, so that call cannot go on: once this request
+			// passes the gates it ends it and opens the next call on the channel's newest call group.
 			live, endStale = false, true
 		default:
 			server.WriteError(w, gerr)
@@ -147,10 +200,9 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	// An instance with livekit.enabled = false has no SFU to mint a room token
-	// from. The route is still mounted, so every gate above answers as it does
-	// elsewhere; a call that would open is 501, before any voice session is
-	// recorded for a room nobody can join.
+	// An instance with livekit.enabled = false has no SFU to mint a room token from: every gate
+	// above answers as it does elsewhere, and a call that would open is 501, before any voice
+	// session is recorded for a room nobody can join.
 	if h.sfu == nil {
 		server.WriteError(w, notImplemented("this instance runs no SFU (livekit.enabled is false)"))
 		return
@@ -160,19 +212,15 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, err)
 			return
 		}
+		h.leases.dropCall(callID)
 		h.closeRoom(r, prev.LivekitRoom)
 	}
 
-	// PutVoiceSession leaves a live call as it is, so the row read back
-	// afterwards is the one call every device of this group lands in, however
-	// many start it at once.
+	// PutVoiceSession leaves a live call as it is, so the row read back afterwards is the one call
+	// every device of this group lands in, however many start it at once.
 	groupID := group.GroupID
-	// A fresh room per call, so a device from the previous call of the same
-	// group cannot linger in this one.
+	// A fresh room per call, so a device from the previous call cannot linger in this one.
 	room := fmt.Sprintf("%s-%d", callID, now)
-	// 201 when this request opens the call, 200 when it joins one under way.
-	// Two devices opening the same call in the same instant may both be told
-	// 201; both are still handed the one room the store kept.
 	status := http.StatusCreated
 	if live {
 		status = http.StatusOK
@@ -188,9 +236,8 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	// Another device may have opened the call on another call group of the
-	// channel between the read above and the write: the room belongs to the
-	// group the row names, so that is the group this device must be a leaf of.
+	// Another device may have opened the call on another call group of the channel between the read
+	// above and the write: the room belongs to the group the row names.
 	if row.GroupID != nil && *row.GroupID != groupID {
 		kept, err := h.repo.GetGroup(r.Context(), *row.GroupID)
 		if err != nil {
@@ -203,7 +250,23 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		}
 		groupID = kept.GroupID
 	}
-	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String())
+	// DEV-44: the SFU never creates a room on a join (room.auto_create: false), so every start opens
+	// it first. CreateRoom is idempotent on a live room, and re-opens one LiveKit reaped (20 s after
+	// the last leave, 300 s when nobody joined) while the row was still live.
+	if err := h.sfu.CreateRoom(r.Context(), row.LivekitRoom); err != nil {
+		h.log.ErrorContext(r.Context(), "opening a LiveKit room failed", "room", row.LivekitRoom, "err", err)
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not open the room"))
+		return
+	}
+	if h.callFull(r.Context(), row.LivekitRoom, s.DeviceID) {
+		server.WriteError(w, server.Errorf(server.CodeCallFull, "the call is full"))
+		return
+	}
+	var attrs map[string]string
+	if vdec != "" {
+		attrs = map[string]string{vdecAttribute: vdec}
+	}
+	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), h.grantFor(bits, callID, s.DeviceID), attrs)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "minting a LiveKit token failed", "err", err)
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not mint a token"))
@@ -211,7 +274,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := server.EncodeBody(w, status, callResponse{
 		CallID: callID, GroupID: groupID, LiveKitURL: h.cfg.LiveKitURL, Token: token,
-		ICEServers: h.iceServers(s.DeviceID),
+		ICEServers: h.iceServers(s.DeviceID), Caps: h.caps(),
 	}); err != nil {
 		h.log.WarnContext(r.Context(), "write call response", "err", err)
 	}
@@ -275,15 +338,19 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// protocol/09: DELETE ends the call for everyone, so the room is closed too and every
-	// participant still in it is disconnected; the next call opens a fresh room.
+	// participant still in it is disconnected; the next call opens a fresh room. The next call keeps
+	// this call id (R9), so the sharing slots go with this one.
+	h.leases.dropCall(callID)
 	h.closeRoom(r, row.LivekitRoom)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // closeRoom closes an ended call's LiveKit room. The call is already over in the record, so a
-// failure is logged and never turns the answer into an error; the room's tokens expire within
-// their one-hour TTL regardless. The close runs on a context detached from the request, so a
-// client that hangs up once it has sent the DELETE cannot leave the room open.
+// failure is logged and never turns the answer into an error. A failure matters: LiveKit re-mints a
+// connected participant's token every five minutes, so a room that stays open keeps its
+// participants until a later DeleteRoom; room.auto_create is false, so nobody can rejoin it once it
+// is gone. The close runs on a context detached from the request, so a client that hangs up once it
+// has sent the DELETE cannot leave the room open.
 func (h *Calls) closeRoom(r *http.Request, room string) {
 	if h.sfu == nil || room == "" {
 		return
@@ -295,36 +362,36 @@ func (h *Calls) closeRoom(r *http.Request, room string) {
 	}
 }
 
-// channel is the {id} a caller may place a call in: a channel it can see (404
-// otherwise, as for an unknown one), that carries calls (400 otherwise) and in
-// which it holds connect (403 otherwise).
-func (h *Calls) channel(r *http.Request) (auth.Session, store.ChannelRow, error) {
+// channel is the {id} a caller may place a call in: a channel it can see (404 otherwise, as for an
+// unknown one), that carries calls (400 otherwise) and in which it holds connect (403 otherwise),
+// with the caller's resolved bits there.
+func (h *Calls) channel(r *http.Request) (auth.Session, store.ChannelRow, Bits, error) {
 	s, err := enrolledSession(r)
 	if err != nil {
-		return s, store.ChannelRow{}, err
+		return s, store.ChannelRow{}, 0, err
 	}
 	chID, err := server.PathID(r, "id")
 	if err != nil {
-		return s, store.ChannelRow{}, err
+		return s, store.ChannelRow{}, 0, err
 	}
 	ch, err := h.repo.GetChannel(r.Context(), chID)
 	if err != nil {
-		return s, store.ChannelRow{}, notFound(err)
+		return s, store.ChannelRow{}, 0, notFound(err)
 	}
 	bits, err := h.res.Resolve(r.Context(), s.UserID, ch)
 	if err != nil {
-		return s, store.ChannelRow{}, err
+		return s, store.ChannelRow{}, 0, err
 	}
 	if !bits.Has(PermViewChannel) {
-		return s, store.ChannelRow{}, server.Errorf(server.CodeNotFound, "no such object")
+		return s, store.ChannelRow{}, 0, server.Errorf(server.CodeNotFound, "no such object")
 	}
 	if !CallGroupAllowed(ch) {
-		return s, store.ChannelRow{}, server.Errorf(server.CodeInvalidRequest, "this channel carries no calls")
+		return s, store.ChannelRow{}, 0, server.Errorf(server.CodeInvalidRequest, "this channel carries no calls")
 	}
 	if !bits.Has(PermConnect) {
-		return s, store.ChannelRow{}, server.Errorf(server.CodeForbidden, "missing permission")
+		return s, store.ChannelRow{}, 0, server.Errorf(server.CodeForbidden, "missing permission")
 	}
-	return s, ch, nil
+	return s, ch, bits, nil
 }
 
 // callGroup is the channel's open call group, the newest when a restore's
@@ -385,4 +452,126 @@ func (h *Calls) iceServers(dev id.ID) []iceServer {
 	}
 	user, pass := server.TURNCredential(h.cfg.TURNSecret, dev, ttl, h.clk.Now())
 	return []iceServer{{URLs: h.cfg.TURNURLs, Username: user, Credential: pass}}
+}
+
+// videoDecoders are the names a vdec list may carry (protocol/05's negotiable video codecs).
+var videoDecoders = map[string]bool{"vp8": true, "h264": true, "vp9": true}
+
+// decodeVdec is the calls request body: [] or [vdec], vdec being the comma-separated lowercase
+// decoders of the requesting device, each at most once (MD-10).
+func decodeVdec(body []cbor.RawMessage) (string, error) {
+	switch len(body) {
+	case 0:
+		return "", nil
+	case 1:
+	default:
+		return "", server.Errorf(server.CodeInvalidRequest, "the body is [] or [vdec]")
+	}
+	var vdec string
+	if err := cborx.Unmarshal(body[0], &vdec); err != nil {
+		return "", server.Errorf(server.CodeInvalidRequest, "vdec is a text string")
+	}
+	seen := map[string]bool{}
+	for _, name := range strings.Split(vdec, ",") {
+		if !videoDecoders[name] || seen[name] {
+			return "", server.Errorf(server.CodeInvalidRequest,
+				"vdec is a comma-separated list of vp8, h264 and vp9, each at most once")
+		}
+		seen[name] = true
+	}
+	return vdec, nil
+}
+
+// caps is the calls response's sixth element: the bitrate ceilings a client applies to its publish
+// options, in bits per second, and whether VP9 is enabled at all (DEV-26, F4).
+func (h *Calls) caps() callCaps {
+	c := callCaps{
+		MaxAudioBitrateBPS: uint64(max(h.cfg.MaxAudioBitrateKbps, 0)) * 1000,
+		MaxShareBitrateBPS: uint64(max(h.cfg.MaxShareBitrateKbps, 0)) * 1000,
+	}
+	if h.cfg.VP9 {
+		c.VP9 = 1
+	}
+	return c
+}
+
+// grantFor is dev's permission in the call: its speak/video/screen_share bits, the video sources
+// only while it holds a sharing slot of the call (ruling F1).
+func (h *Calls) grantFor(bits Bits, callID, dev id.ID) *livekit.ParticipantPermission {
+	leased := h.leases.held(callID, dev)
+	return sfu.PublishGrant(bits.Has(PermSpeak), bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased)
+}
+
+// callFull is the advisory E_CALL_FULL count (DEV-01, gap G27): the room's participants other than
+// the caller's own device and its "#" shadows (a rejoin replaces the old session before LiveKit's
+// own count), disconnected ones, agents and egress. It fails open: LiveKit's room.max_participants
+// is the authoritative cap, and a device that passes this count in a race gets LiveKit's upgrade
+// refusal instead.
+func (h *Calls) callFull(ctx context.Context, room string, dev id.ID) bool {
+	limit := h.cfg.MaxVoiceParticipants
+	if limit <= 0 {
+		return false
+	}
+	parts, err := h.sfu.Participants(ctx, room)
+	if err != nil {
+		h.log.WarnContext(ctx, "counting a call's participants failed; minting anyway", "room", room, "err", err)
+		return false
+	}
+	self := dev.String()
+	n := 0
+	for _, p := range parts {
+		identity := p.GetIdentity()
+		if identity == self || strings.HasPrefix(identity, self+"#") {
+			continue
+		}
+		if p.GetState() == livekit.ParticipantInfo_DISCONNECTED {
+			continue
+		}
+		if k := p.GetKind(); k == livekit.ParticipantInfo_AGENT || k == livekit.ParticipantInfo_EGRESS {
+			continue
+		}
+		n++
+	}
+	if n < limit {
+		return false
+	}
+	if h.counters != nil {
+		h.counters.CallFull()
+	}
+	return true
+}
+
+// CurrentLeafOfRoom is the /rtc join gate (DEV-25, DEV-44): room must be the live room of a call —
+// "<call_id hex>-<unix>", equal to voice_sessions.livekit_room with the call not ended — and device a
+// current leaf of the call group that room was opened on. A malformed or stale room is false, not
+// an error; only a store failure is.
+func (h *Calls) CurrentLeafOfRoom(ctx context.Context, room string, device id.ID) (bool, error) {
+	callHex, _, ok := strings.Cut(room, "-")
+	if !ok {
+		return false, nil
+	}
+	callID, err := id.Parse(callHex)
+	if err != nil {
+		return false, nil //nolint:nilerr // a room name that is no call's is a refusal, not a failure
+	}
+	row, err := h.repo.GetVoiceSession(ctx, callID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if row.Ended != nil || row.LivekitRoom != room {
+		return false, nil
+	}
+	err = h.requireLeafOfCall(ctx, row, device)
+	var se *server.Error
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &se):
+		return false, nil
+	default:
+		return false, err
+	}
 }

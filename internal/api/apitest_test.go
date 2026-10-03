@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
+	"github.com/livekit/protocol/livekit"
 	"github.com/pressly/goose/v3"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -24,6 +25,7 @@ import (
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
@@ -362,15 +364,48 @@ func prevsToAny(prevs []api.Preview) []any {
 // ptr returns a pointer to a copy of v.
 func ptr[T any](v T) *T { return &v }
 
-// stubSFU stands in for internal/sfu.(*Server).Token: the JWT's contents are
-// internal/sfu's own test's business, and the epoch gate in front of it is
-// this file's.
+// mint is one token stubSFU minted.
+type mint struct {
+	Room, Identity string
+	Perm           *livekit.ParticipantPermission
+	Attrs          map[string]string
+}
+
+// permUpdate is one UpdatePermission stubSFU was asked for.
+type permUpdate struct {
+	Room, Identity string
+	Perm           *livekit.ParticipantPermission
+}
+
+// stubSFU stands in for internal/sfu.(*Server): the JWT's contents are internal/sfu's own test's
+// business, and the gates in front of it are this file's.
 type stubSFU struct {
 	mu         sync.Mutex
-	calls      [][2]string // (room, identity)
+	mints      []mint
 	fail       error
 	deleted    []string // rooms DeleteRoom was asked to close
 	deleteFail error
+	created    []string // rooms CreateRoom was asked to open
+	createFail error
+	updates    []permUpdate
+	updateFail error
+	absent     map[string]bool  // identities UpdatePermission answers sfu.ErrNoParticipant for
+	onUpdate   func(permUpdate) // runs after the update is recorded, outside the lock
+	removed    [][2]string      // (room, device) RemoveParticipants was asked for
+	present    map[string][]*livekit.ParticipantInfo
+	listFail   error
+}
+
+var _ api.CallTokens = (*stubSFU)(nil)
+
+func (s *stubSFU) Token(room, identity string, perm *livekit.ParticipantPermission, attrs map[string]string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail != nil {
+		return "", s.fail
+	}
+	s.mints = append(s.mints, mint{Room: room, Identity: identity, Perm: perm, Attrs: attrs})
+	return "jwt-for-" + identity, nil
 }
 
 func (s *stubSFU) DeleteRoom(_ context.Context, room string) error {
@@ -380,26 +415,89 @@ func (s *stubSFU) DeleteRoom(_ context.Context, room string) error {
 	return s.deleteFail
 }
 
+func (s *stubSFU) CreateRoom(_ context.Context, room string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.created = append(s.created, room)
+	return s.createFail
+}
+
+func (s *stubSFU) UpdatePermission(_ context.Context, room, identity string, perm *livekit.ParticipantPermission) error {
+	s.mu.Lock()
+	u := permUpdate{Room: room, Identity: identity, Perm: perm}
+	s.updates = append(s.updates, u)
+	hook, fail, absent := s.onUpdate, s.updateFail, s.absent[identity]
+	s.mu.Unlock()
+	if hook != nil {
+		hook(u)
+	}
+	if absent {
+		return sfu.ErrNoParticipant
+	}
+	return fail
+}
+
+func (s *stubSFU) RemoveParticipants(_ context.Context, room string, device id.ID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.removed = append(s.removed, [2]string{room, device.String()})
+	return nil
+}
+
+func (s *stubSFU) Participants(_ context.Context, room string) ([]*livekit.ParticipantInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listFail != nil {
+		return nil, s.listFail
+	}
+	return s.present[room], nil
+}
+
 func (s *stubSFU) deletedRooms() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.deleted...)
 }
 
-func (s *stubSFU) Token(room, identity string) (string, error) {
+func (s *stubSFU) createdRooms() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.fail != nil {
-		return "", s.fail
-	}
-	s.calls = append(s.calls, [2]string{room, identity})
-	return "jwt-for-" + identity, nil
+	return append([]string(nil), s.created...)
 }
 
+// minted is every token as (room, identity), in mint order.
 func (s *stubSFU) minted() [][2]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([][2]string(nil), s.calls...)
+	out := make([][2]string, 0, len(s.mints))
+	for _, m := range s.mints {
+		out = append(out, [2]string{m.Room, m.Identity})
+	}
+	return out
+}
+
+func (s *stubSFU) lastMint() mint {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.mints) == 0 {
+		return mint{}
+	}
+	return s.mints[len(s.mints)-1]
+}
+
+func (s *stubSFU) permUpdates() []permUpdate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]permUpdate(nil), s.updates...)
+}
+
+func (s *stubSFU) setPresent(room string, parts ...*livekit.ParticipantInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.present == nil {
+		s.present = map[string][]*livekit.ParticipantInfo{}
+	}
+	s.present[room] = parts
 }
 
 const (
@@ -422,14 +520,23 @@ func callEnv(t *testing.T) (*env, id.ID, string, id.ID) {
 
 func callEnvWith(t *testing.T, cfg api.CallsConfig) (*env, id.ID, string, id.ID, *stubSFU) {
 	t.Helper()
+	e, ch, tok, group, stub, _ := callEnvCalls(t, cfg)
+	return e, ch, tok, group, stub
+}
+
+// callEnvCalls is callEnvWith that also hands back the mounted *api.Calls, for the tests that drive
+// SyncCallGrants and the call events through it.
+func callEnvCalls(t *testing.T, cfg api.CallsConfig) (*env, id.ID, string, id.ID, *stubSFU, *api.Calls) {
+	t.Helper()
 	e, cid, tok := channelEnv(t)
 	ch, _, status := newChannel(t, e, cid, tok, 1 /* voice */, 1, 2, "voice")
 	if status != http.StatusCreated {
 		t.Fatalf("voice channel = %d", status)
 	}
-	sfu := &stubSFU{}
-	api.NewCalls(e.Repo, api.NewResolver(e.Repo), sfu, cfg, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
-	return e, ch, tok, seedCallGroup(t, e, ch, cid, callGroupEpoch), sfu
+	stub := &stubSFU{}
+	calls := api.NewCalls(e.Repo, api.NewResolver(e.Repo), stub, cfg, e.Clk, slog.New(slog.DiscardHandler))
+	calls.Register(e.Mux)
+	return e, ch, tok, seedCallGroup(t, e, ch, cid, callGroupEpoch), stub, calls
 }
 
 // seedCallGroup writes one open call group row bound to the channel at the

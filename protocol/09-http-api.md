@@ -532,12 +532,14 @@ are CBOR as everywhere else.
 A call happens in a voice channel, a DM or a group DM, and its media keys come from the channel's
 **call group** (`01`, group kind 1), which its clients register as for any group. A call is keyed by
 the call group's call id (`mls_groups.call_id`, the channel id for a call group the instance
-registered), so every device of the group lands in the same call. Both routes are `E`; a caller
-who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown one.
+registered), so every device of the group lands in the same call. Every route below is `E`; a
+caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown one.
 
 | Method and path | Request | Response | Permission |
 |---|---|---|---|
-| `POST /v1/channels/{id}/calls` | `[]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]])]` when the call is opened, `200` with the same body when it is already live | `connect`, and a current leaf of the call group |
+| `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; `409 E_CALL_FULL` | `connect`, and a current leaf of the call group |
+| `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room | `video` or `screen_share`, and a current leaf of the call's group |
+| `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
 | `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended | `view_channel`, and a current leaf of the call's group |
 
 - **The leaf gate.** A token is minted only for a device whose leaf is in the call group's
@@ -550,14 +552,50 @@ who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown one.
   never merely the newest open call group of the channel: a leaf of any other call group is
   `403 E_LEAF_NOT_CURRENT` for that call. A live call whose group has been closed ends at the next
   start that passes the gate, which opens a fresh call on the channel's current call group.
-- **The token.** `token` is a LiveKit room-join JWT for the call's room, valid for one hour, whose
-  identity is the device id, with publish, subscribe and data grants. `livekit_url` is where the
-  client connects with it: `wss://` and the instance's own host (its public IP in `acme_ip`), whose
-  `/rtc` paths the instance proxies to its in-process SFU, which listens only on
-  `livekit.bind_address`. A call gets a fresh room each time it is opened, so a device of the
-  previous call cannot remain in the next one. An instance that runs no SFU (`livekit.enabled =
-  false`) still answers every refusal above, and a start that passes them is
-  `501 E_INTERNAL` with no call recorded.
+- **Capacity.** A start that finds `livekit.max_voice_participants` other devices already in the
+  call's room is `409 E_CALL_FULL`. The count leaves out the caller's own device (a rejoin replaces
+  its old session), disconnected participants and non-device participants; it is advisory and
+  fails open when the SFU cannot answer. The SFU's own room cap is authoritative: a device that
+  passes the count in a race with another is refused by the SFU's WebSocket upgrade (HTTP 500), and
+  a client shows "could not join the call" for that.
+- **The token.** `token` is a LiveKit room-join JWT for the call's room whose identity is the device
+  id. It grants subscribe, never data, and publish exactly for the sources the device's permissions
+  in the channel allow: `speak` the microphone, `video` the camera, `screen_share` the screen and its
+  audio — the camera and screen sources only while the device holds a sharing slot (below). A device
+  with none of them is listen-only. When the request carries `vdec` — the device's video decoders,
+  comma-separated from `vp8`, `h264` and `vp9`, each at most once (any other spelling is
+  `400 E_INVALID_REQUEST`) — the token carries it as the participant attribute `dilla.vdec`, which
+  the other devices read to choose a codec every subscriber can decode. The token can be used to
+  join for one hour; it does **not** bound a session, because the SFU re-issues a connected
+  participant's token every five minutes from its current grants, so a change of the device's
+  permissions or sharing slot reaches a live session at once, and only the end of the call or the
+  device's removal ends one. `livekit_url` is where the client connects with it: `wss://` and the
+  instance's own host (its public IP in `acme_ip`), whose `/rtc` paths the instance proxies to its
+  in-process SFU, which listens only on `livekit.bind_address`. Every start opens the call's room in
+  the SFU first and the SFU never opens one on a join, so a token for a room the instance has closed
+  is refused by the SFU (HTTP 404). A call gets a fresh room each time it is opened, so a device of
+  the previous call cannot remain in the next one. `caps` is what the client applies to its publish
+  options: `livekit.max_audio_bitrate_kbps` and `livekit.max_share_bitrate_kbps` in bits per second,
+  and `vp9` 1 when `livekit.vp9` is on, else 0. An instance that runs no SFU (`livekit.enabled =
+  false`) still answers every refusal above, and a start that passes them is `501 E_INTERNAL` with
+  no call recorded.
+- **Sharing.** A device takes a **sharing slot** before it publishes its camera or its screen: one
+  slot per device covers camera, screen and screen audio together, screen audio never needs one of
+  its own, and the microphone never does. At most `livekit.max_publishers` devices of a call hold a
+  slot; the next `POST …/share` is `409 E_CALL_SHARERS_FULL`, decided by the instance alone, so of
+  two devices racing for the last slot exactly one wins. The instance pushes the device's complete
+  new permission to the SFU before it answers `204`; the client publishes only after the SFU's
+  permission update shows the new source. `DELETE …/share` takes the camera and screen sources away
+  first and frees the slot after. The slot is also freed when the device stops its last camera or
+  screen track, leaves the call, or loses both `video` and `screen_share`; a permission change
+  during a call is pushed to the SFU at once.
+- **The signalling proxy.** The `/rtc` paths admit only `GET` (anything else is `405`). The access
+  token — the `access_token` query parameter or a `Bearer` header — must be one the instance minted
+  (`403 E_FORBIDDEN` otherwise), for a device, and that device must be a current leaf of the live
+  call whose room the token names (`403 E_LEAF_NOT_CURRENT` otherwise), so a device the call group
+  has removed cannot rejoin with a token the SFU re-issued to it. The instance removes a `publish`
+  query parameter and the `CF-Connecting-IP` and `X-Real-IP` headers before the request reaches the
+  SFU, and `X-Forwarded-For` carries only the client address the instance resolved.
 - **Relays.** `ice_servers` is the `RTCIceServer` list for the client's peer connection: one entry
   when the instance runs its TURN relay, with a fresh ephemeral credential — `username` is
   `"<expiry>:<device_id>"` (unix seconds, `turn.credential_ttl` ahead) and `credential` is

@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"net/http"
 
+	"github.com/livekit/protocol/livekit"
+
 	"github.com/jonasthim/dilla/internal/sfu"
 )
 
@@ -68,9 +70,9 @@ func (h *Host) mountSFU(mux *http.ServeMux) {
 		var body struct {
 			Room     string `json:"room"`
 			Identity string `json:"identity"`
-			// Create asks for the room to exist before the token is used. LiveKit creates a room
-			// on its first join while room.auto_create is true, which it is until task 10 turns
-			// it off and makes this field call CreateRoom; until then it changes nothing.
+			// Create asks for the room to exist before the token is used: room.auto_create is
+			// false (task 10, MD-16), so LiveKit refuses a join to a room nobody opened with
+			// CreateRoom. A test that wants that refusal leaves it false.
 			Create bool `json:"create"`
 		}
 		if !decode(w, r, &body) {
@@ -80,7 +82,17 @@ func (h *Host) mountSFU(mux *http.ServeMux) {
 			http.Error(w, "room and identity are both required", http.StatusBadRequest)
 			return
 		}
-		token, err := h.sfu.Token(body.Room, body.Identity)
+		if body.Create {
+			if err := h.sfu.CreateRoom(r.Context(), body.Room); err != nil {
+				http.Error(w, "create room: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		// A raw debug token carries every grant, data included (MD-13: the canary and the harness
+		// smoke connect straight to LiveKit, never through the /rtc gate).
+		token, err := h.sfu.Token(body.Room, body.Identity, &livekit.ParticipantPermission{
+			CanSubscribe: true, CanPublish: true, CanPublishData: true,
+		}, nil)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -358,7 +358,10 @@ func TestGoPublisherToGoSubscriberDecryptsThroughTheSFU(t *testing.T) {
 			}()
 		},
 	}}
-	bobTok, err := srv.Token(room, hex.EncodeToString(bob[:]))
+	if err := srv.CreateRoom(ctx, room); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	bobTok, err := srv.Token(room, hex.EncodeToString(bob[:]), sfu.PublishGrant(true, true, true), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +372,7 @@ func TestGoPublisherToGoSubscriberDecryptsThroughTheSFU(t *testing.T) {
 	close(ready)
 	t.Cleanup(bobRoom.Disconnect)
 
-	aliceTok, err := srv.Token(room, hex.EncodeToString(alice[:]))
+	aliceTok, err := srv.Token(room, hex.EncodeToString(alice[:]), sfu.PublishGrant(true, true, true), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -80,6 +80,9 @@ func TestTheTestSFUAdvertisesInternalAddresses(t *testing.T) {
 			t.Errorf("the harness SFU YAML lacks %q:\n%s", want, yaml)
 		}
 	}
+	if !strings.Contains(yaml, "auto_create: false") {
+		t.Error("the test SFU auto-creates rooms")
+	}
 }
 
 // GET /debug/sfu and POST /debug/sfu/token exist on the control listener only; the public

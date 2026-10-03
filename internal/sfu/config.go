@@ -74,8 +74,9 @@ type Config struct {
 	STUNServers []string
 	// MaxParticipants is room.max_participants; 0 renders none.
 	MaxParticipants uint32
-	// AutoCreate is room.auto_create. It stays true until task 10 opens every room with CreateRoom
-	// before minting a token for it (MD-16, DEV-44).
+	// AutoCreate is room.auto_create. dillad renders it false: every call start opens its room with
+	// CreateRoom before minting a token for it (MD-16, DEV-44), so a token cannot resurrect a room
+	// the instance deleted.
 	AutoCreate bool
 	// EmptyTimeout and DepartureTimeout are room.empty_timeout and room.departure_timeout, seconds:
 	// a room nobody joined closes 300 s after creation, a room everybody left 20 s after the last
@@ -108,7 +109,7 @@ func DefaultConfig() Config {
 		EnableLoopbackCandidate: true,
 		APIKey:                  "dilla",
 		AdvertiseInternalIP:     true,
-		AutoCreate:              true,
+		AutoCreate:              false, // DEV-44 / MD-16: rooms exist only once CreateRoom opened them (dilla-media task 10)
 		EmptyTimeout:            300,
 		DepartureTimeout:        20,
 	}

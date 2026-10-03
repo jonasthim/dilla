@@ -322,12 +322,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// readable channels, blobs, reports, calls and the admin routes (routes.go), behind the same
 	// session middleware and [limits.rate] meter as the routes above; then LiveKit's signalling
 	// paths when this process runs an SFU.
-	mountPlanTwo(mux, planTwo{
+	callRoutes := mountPlanTwo(mux, planTwo{
 		o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
 		blobs: blobs, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
 	})
 	if o.SFU != nil {
-		if err := mountRTC(mux, o.SFU, o.Config.Server.TrustedProxyCIDRs); err != nil {
+		if err := mountRTC(mux, o.SFU, callRoutes, o.Config.Server.TrustedProxyCIDRs); err != nil {
 			closeWasmOnError()
 			return nil, err
 		}

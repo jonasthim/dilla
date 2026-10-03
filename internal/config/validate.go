@@ -192,9 +192,10 @@ func (c *Config) Validate() error {
 	if c.LiveKit.ExtraConfigFile != "" {
 		add("livekit.extra_config_file is reserved and not read yet; remove it")
 	}
-	if c.LiveKit.MaxPublishers != defaultMaxPublishers {
-		add("livekit.max_publishers is reserved: LiveKit v1.13.7 has no publisher cap, so only the default %d is accepted",
-			defaultMaxPublishers)
+	// The publisher lease (dilla-media task 10) enforces any cap up to the room's own.
+	if c.LiveKit.MaxPublishers < 1 || c.LiveKit.MaxPublishers > c.LiveKit.MaxVoiceParticipants {
+		add("livekit.max_publishers is %d; the range is 1..livekit.max_voice_participants (%d)",
+			c.LiveKit.MaxPublishers, c.LiveKit.MaxVoiceParticipants)
 	}
 	if c.LiveKit.UseExternalIP {
 		add("livekit.use_external_ip is reserved and must stay false: livekit.node_ip is the address LiveKit advertises")

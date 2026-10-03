@@ -286,9 +286,11 @@ func startTURN(d frontDeps, f *front, ln net.Listener) error {
 }
 
 // sfuConfig maps [livekit] onto the SFU's config: every key config.Validate accepts reaches LiveKit
-// (livekit.max_voice_participants as the room cap), and the reserved ones Validate refuses
-// (extra_config_file, a non-default max_publishers, use_external_ip) have nowhere to go. An unset
-// node_ip is loopback, which needs the loopback candidate.
+// (livekit.max_voice_participants as the room cap) or the call routes (livekit.max_publishers is
+// the publisher lease's, callsConfig), and the reserved ones Validate refuses (extra_config_file,
+// use_external_ip) have nowhere to go. An unset node_ip is loopback, which needs the loopback
+// candidate. room.auto_create is false (DEV-44, MD-16): the call route opens each room with
+// CreateRoom before it mints a token for it.
 func sfuConfig(lk config.LiveKit, secret string) sfu.Config {
 	nodeIP := lk.NodeIP
 	if nodeIP == "" {
@@ -312,7 +314,7 @@ func sfuConfig(lk config.LiveKit, secret string) sfu.Config {
 		AdvertiseInternalIP:     lk.AdvertiseInternalIP,
 		STUNServers:             lk.STUNServers,
 		MaxParticipants:         uint32(max(lk.MaxVoiceParticipants, 0)), //nolint:gosec // clamped at 0
-		AutoCreate:              true,
+		AutoCreate:              false,
 		EmptyTimeout:            300,
 		DepartureTimeout:        20,
 		VP9:                     lk.VP9,

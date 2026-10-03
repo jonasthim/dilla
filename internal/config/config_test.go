@@ -298,13 +298,11 @@ func TestValidationRules(t *testing.T) {
 		}
 	})
 	// I13 (fix wave): a livekit.* key that never reaches LiveKit is refused rather than silently
-	// ignored. LiveKit v1.13.7 has no publisher cap and dillad renders its own YAML, so only the
-	// defaults of max_publishers, extra_config_file and use_external_ip are accepted until they are
-	// wired.
+	// ignored. dillad renders its own YAML, so only the defaults of extra_config_file and
+	// use_external_ip are accepted until they are wired.
 	t.Run("livekit keys that reach nothing are refused", func(t *testing.T) {
 		for name, set := range map[string]func(*config.Config){
 			"extra_config_file": func(c *config.Config) { c.LiveKit.ExtraConfigFile = "/etc/dilla/livekit.yaml" },
-			"max_publishers":    func(c *config.Config) { c.LiveKit.MaxPublishers = 4 },
 			"use_external_ip":   func(c *config.Config) { c.LiveKit.UseExternalIP = true },
 		} {
 			c := base()
@@ -319,6 +317,22 @@ func TestValidationRules(t *testing.T) {
 		c.Derive()
 		if err := c.Validate(); err != nil {
 			t.Fatalf("the defaults: %v", err)
+		}
+	})
+	// dilla-media task 10: the publisher lease enforces livekit.max_publishers, so any cap from one
+	// device up to the room's own is accepted.
+	t.Run("livekit.max_publishers is within the room cap", func(t *testing.T) {
+		for publishers, ok := range map[int]bool{0: false, 1: true, 4: true, 25: true, 26: false} {
+			c := base()
+			c.LiveKit.MaxPublishers = publishers
+			c.Derive()
+			err := c.Validate()
+			if ok && err != nil {
+				t.Errorf("max_publishers %d refused: %v", publishers, err)
+			}
+			if !ok && (err == nil || !strings.Contains(err.Error(), "livekit.max_publishers")) {
+				t.Errorf("max_publishers %d: Validate = %v, want an error naming the key", publishers, err)
+			}
 		}
 	})
 	// I12 (fix wave): turn.relay_ip is an IP address or "auto"; anything else is refused at load, not

@@ -88,6 +88,7 @@ func TestMetricNamesAreTheDocumentedSet(t *testing.T) {
 		"dilla_blob_gc_runs_total", "dilla_blob_gc_deleted_total", "dilla_blob_gc_bytes_total",
 		"dilla_blob_refs_expired_total", "dilla_blob_purges_total",
 		"dilla_cert_renewal_failures_total", "dilla_clock_skew_seconds",
+		"dilla_call_full_total", "dilla_call_share_refusals_total",
 	}
 	families, err := reg.Gather()
 	if err != nil {
@@ -138,4 +139,42 @@ func TestTheBlobRecordersAreNilSafe(t *testing.T) {
 	m.BlobCollected(1)
 	m.BlobRefExpired("retention")
 	m.BlobPurged()
+}
+
+// counterValue reads one label-free counter out of a registry. It gathers rather than calling
+// prometheus/testutil, a module this go.mod does not require (internal/gateway's metrics_test.go
+// reads its gauge the same way).
+func counterValue(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() == name {
+			if len(f.GetMetric()) != 1 {
+				t.Fatalf("%s has %d series, want 1", name, len(f.GetMetric()))
+			}
+			return f.GetMetric()[0].GetCounter().GetValue()
+		}
+	}
+	t.Fatalf("%s is not in the registry", name)
+	return 0
+}
+
+func TestTheCallCountersCount(t *testing.T) {
+	reg := prometheus.NewPedanticRegistry()
+	m := obs.NewMetrics(reg, reg)
+	m.CallFull()
+	m.ShareRefused()
+	m.ShareRefused()
+	if got := counterValue(t, reg, "dilla_call_full_total"); got != 1 {
+		t.Errorf("dilla_call_full_total = %v", got)
+	}
+	if got := counterValue(t, reg, "dilla_call_share_refusals_total"); got != 2 {
+		t.Errorf("dilla_call_share_refusals_total = %v", got)
+	}
+	var none *obs.Metrics
+	none.CallFull()
+	none.ShareRefused()
 }

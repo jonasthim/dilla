@@ -58,6 +58,8 @@ func TestEveryCodeMapsToItsStatusAndArrayShape(t *testing.T) {
 		{server.Errorf(server.CodeNotFound, ""), 404, 3},
 		{server.Errorf(server.CodeGroupExists, ""), 409, 3},
 		{server.Errorf(server.CodeRemovePending, ""), 409, 3},
+		{server.Errorf(server.CodeCallFull, ""), 409, 3},
+		{server.Errorf(server.CodeCallSharersFull, ""), 409, 3},
 		{server.Errorf(server.CodePruned, ""), 410, 3},
 		{server.Errorf(server.CodeInviteInvalid, ""), 410, 3},
 		{server.Errorf(server.CodeTooLarge, ""), 413, 3},

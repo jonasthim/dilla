@@ -507,6 +507,8 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 409 | `E_GROUP_EXISTS` | this `group_id` is already registered | mint a new `group_id` |
 | 409 | `E_COMMIT_CONFLICT` | another commit won this epoch | discard the pending commit, process the winner, retry |
 | 409 | `E_REMOVE_PENDING` | the instance is already removing this leaf (invariant 6); the member's own `Remove` of it is refused | you are being removed: withdraw the proposal, do not retry |
+| 409 | `E_CALL_FULL` | the call already has `livekit.max_voice_participants` devices | show "This call is full"; the user may retry later |
+| 409 | `E_CALL_SHARERS_FULL` | the call already has `livekit.max_publishers` devices sharing camera or screen | show that sharing is full; retry after a sharer stops |
 | 410 | `E_PRUNED` | delivery retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest `seq` delivery retention deleted from each stream, so the answer is exact; an archival deletion is not recorded, invariant 10) | resync; mark older messages "undecryptable (too old)" |
 | 410 | `E_INVITE_INVALID` | the invite is expired, exhausted or revoked | none |
 | 413 | `E_TOO_LARGE` | the object exceeds the instance limit | split or attach |
@@ -520,7 +522,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 A **syntactically invalid** identifier in a path is `400 E_INVALID_REQUEST`; a syntactically valid
 but unknown one is `404 E_NOT_FOUND`.
 
-That is **25 rows**: this file's original eighteen plus `E_VERSION`, `E_PROVISIONAL_OUTSIDE_PAIRING`
+That is **28 rows**: this file's original eighteen plus `E_VERSION`, `E_PROVISIONAL_OUTSIDE_PAIRING`
 and `E_INTERNAL` (deviation ID12), plus the four Plan 2 consumes — `E_ENVELOPE_SHAPE`,
 `E_ENVELOPE_TYPE`, `E_ENVELOPE_LIMIT` and `E_CHANNEL_MODE` (deviation ID12 as amended; controller
 ruling 2026-09-24). The first three are Plan 1a's own Go code — `server.CodeVersion`,
@@ -528,7 +530,13 @@ ruling 2026-09-24). The first three are Plan 1a's own Go code — `server.CodeVe
 `checkErrorVocabulary` diffs this table against `internal/server/errors.go` in both directions, so
 the three could not have been left out without CI failing.
 
-The last four are declared **here**, in the one task that owns the vocabulary, even though their
+Three more came later. `E_REMOVE_PENDING` is invariant 6's refusal of a member's own `Remove` of a
+leaf the instance is already removing (plan dilla-media task 9). `E_CALL_FULL` and
+`E_CALL_SHARERS_FULL` are the call routes' capacity refusals (`09` § Voice, plan dilla-media
+task 10): the first answers the advisory participant count at token time, the second the publisher
+lease. Neither of those two is a delivery-service code.
+
+The four Plan 2 consumes are declared **here**, in the one task that owns the vocabulary, even though their
 only call sites are Plan 2's. The three `E_ENVELOPE_*` codes are 400 and mirror the Rust envelope
 module's own codes and the `protocol/vectors/` reject corpus one-for-one: a server-readable
 channel's instance **is** a receiver in `protocol/04`'s sense, so it refuses exactly what a client

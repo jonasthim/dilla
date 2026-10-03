@@ -29,6 +29,11 @@ const (
 	CodeNotFound        Code = "E_NOT_FOUND"
 	CodeGroupExists     Code = "E_GROUP_EXISTS"
 	CodeCommitConflict  Code = "E_COMMIT_CONFLICT"
+	// The call routes' two capacity refusals (dilla-media task 10): the advisory participant count
+	// at token time and the publisher lease. Both are 409: "full" is the call's state, not an
+	// authorization failure or a server overload.
+	CodeCallFull        Code = "E_CALL_FULL"
+	CodeCallSharersFull Code = "E_CALL_SHARERS_FULL"
 	// CodeRemovePending is a member's own Remove of a leaf the instance is already removing
 	// (protocol/02 invariant 6): the member is being removed, withdraws its proposal and does not
 	// retry.
@@ -100,7 +105,7 @@ func (e *Error) Status() int {
 		return http.StatusForbidden
 	case CodeNotFound:
 		return http.StatusNotFound
-	case CodeGroupExists, CodeCommitConflict, CodeRemovePending:
+	case CodeGroupExists, CodeCommitConflict, CodeRemovePending, CodeCallFull, CodeCallSharersFull:
 		return http.StatusConflict
 	case CodePruned, CodeInviteInvalid:
 		return http.StatusGone

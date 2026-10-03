@@ -93,8 +93,8 @@ func Default() *Config {
 // host's own address (internal/server.ResolveRelayIP), never on a public IP the host may not hold.
 const RelayIPAuto = "auto"
 
-// defaultMaxPublishers is livekit.max_publishers' default, the spec's 25/10 sizing. It is the only
-// value Validate accepts until a publisher cap reaches LiveKit.
+// defaultMaxPublishers is livekit.max_publishers' default, the spec's 25/10 sizing; the publisher
+// lease enforces it.
 const defaultMaxPublishers = 10
 
 // LetsEncryptProductionCA is certmagic's production directory, spelled out here

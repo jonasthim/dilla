@@ -150,8 +150,8 @@ func TestTheRTCKeysReachLiveKitsConfig(t *testing.T) {
 	if conf.Room.MaxParticipants != 25 {
 		t.Errorf("room.max_participants = %d, want 25", conf.Room.MaxParticipants)
 	}
-	if !conf.Room.AutoCreate {
-		t.Error("room.auto_create is false: rendering the room table dropped LiveKit's default")
+	if conf.Room.AutoCreate {
+		t.Error("room.auto_create is true: rooms must exist only once CreateRoom opened them (MD-16)")
 	}
 
 	c.AdvertiseInternalIP, c.STUNServers, c.MaxParticipants = false, nil, 0
@@ -336,11 +336,17 @@ func TestTwoParticipantsExchangeADataMessage(t *testing.T) {
 	}()
 
 	const room = "dilla-spike"
-	aliceToken, err := srv.Token(room, "alice")
+	if err := srv.CreateRoom(ctx, room); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	// Test-only: call tokens never carry a data grant (DEV-61, TestTheCallTokenCannotPublishData);
+	// this permission exists so the data path itself stays proven.
+	dataPerm := &livekit.ParticipantPermission{CanSubscribe: true, CanPublish: true, CanPublishData: true}
+	aliceToken, err := srv.Token(room, "alice", dataPerm, nil)
 	if err != nil {
 		t.Fatalf("Token(alice): %v", err)
 	}
-	bobToken, err := srv.Token(room, "bob")
+	bobToken, err := srv.Token(room, "bob", dataPerm, nil)
 	if err != nil {
 		t.Fatalf("Token(bob): %v", err)
 	}
@@ -489,7 +495,10 @@ func TestDeleteRoomDisconnectsItsParticipants(t *testing.T) {
 	}
 
 	const room = "dilla-call"
-	tok, err := srv.Token(room, "bob")
+	if err := srv.CreateRoom(t.Context(), room); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	tok, err := srv.Token(room, "bob", PublishGrant(true, false, false), nil)
 	if err != nil {
 		t.Fatalf("Token: %v", err)
 	}
@@ -544,7 +553,7 @@ audio:
   smooth_intervals: 2
   active_red_encoding: false
 room:
-  auto_create: true
+  auto_create: false
   empty_timeout: 300
   departure_timeout: 20
   enabled_codecs:
@@ -574,7 +583,7 @@ func TestEveryConditionalKeyReachesLiveKit(t *testing.T) {
 		t.Fatalf("YAML: %v", err)
 	}
 	for _, block := range []string{
-		"room:\n  auto_create: true\n  max_participants: 25\n",
+		"room:\n  auto_create: false\n  max_participants: 25\n",
 		"    - mime: video/VP9\n      fmtp_line: \"profile-id=0\"\n    - mime: video/rtx\n",
 		"  ips:\n    excludes:\n      - \"172.17.0.0/16\"\n      - \"fd00::/8\"\n",
 		"limit:\n  num_tracks: 4000\n  bytes_per_sec: 125000000\n",
@@ -598,7 +607,7 @@ func TestEveryConditionalKeyReachesLiveKit(t *testing.T) {
 	if conf.WebHook.APIKey != c.APIKey || conf.Keys[c.APIKey] == "" {
 		t.Errorf("webhook.api_key = %q, keys = %v; want the keys map's own key %q", conf.WebHook.APIKey, conf.Keys, c.APIKey)
 	}
-	if !conf.Room.AutoCreate || conf.Room.EmptyTimeout != 300 || conf.Room.DepartureTimeout != 20 {
+	if conf.Room.AutoCreate || conf.Room.EmptyTimeout != 300 || conf.Room.DepartureTimeout != 20 {
 		t.Errorf("room = %+v", conf.Room)
 	}
 	if conf.Limit.NumTracks != 4000 || conf.Limit.BytesPerSec != 125_000_000 {
@@ -738,7 +747,10 @@ func TestTheSFUOfferCarriesOnlyTheDillaCodecs(t *testing.T) {
 				t.Fatalf("Start: %v", err)
 			}
 			defer func() { _ = srv.Stop(context.Background()) }()
-			tok, err := srv.Token("sp31", "publisher")
+			if err := srv.CreateRoom(t.Context(), "sp31"); err != nil {
+				t.Fatalf("CreateRoom: %v", err)
+			}
+			tok, err := srv.Token("sp31", "publisher", PublishGrant(true, true, true), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -865,8 +877,11 @@ func TestTheLiveKitLogVolumeStaysBounded(t *testing.T) {
 	silence := []byte{0xf8, 0xff, 0xfe}
 	var stop atomic.Bool
 	defer stop.Store(true)
+	if err := srv.CreateRoom(t.Context(), "sp37"); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
 	for i := range 3 {
-		tok, err := srv.Token("sp37", fmt.Sprintf("p%d", i))
+		tok, err := srv.Token("sp37", fmt.Sprintf("p%d", i), PublishGrant(true, true, true), nil)
 		if err != nil {
 			t.Fatal(err)
 		}

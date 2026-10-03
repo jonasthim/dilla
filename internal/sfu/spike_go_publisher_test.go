@@ -155,7 +155,12 @@ func spikeServer(t *testing.T) (*Server, Config) {
 
 func spikeJoin(t *testing.T, srv *Server, room, identity string, cb *lksdk.RoomCallback) *lksdk.Room {
 	t.Helper()
-	tok, err := srv.Token(room, identity)
+	// room.auto_create is false (task 10): the room exists only once CreateRoom opened it, which is
+	// idempotent, so every join may ask.
+	if err := srv.CreateRoom(t.Context(), room); err != nil {
+		t.Fatalf("CreateRoom(%s): %v", room, err)
+	}
+	tok, err := srv.Token(room, identity, PublishGrant(true, true, true), nil)
 	if err != nil {
 		t.Fatalf("Token(%s): %v", identity, err)
 	}

@@ -7,11 +7,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
+	"github.com/livekit/protocol/livekit"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
@@ -19,21 +21,22 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 )
 
-// callResponse is POST /v1/channels/{id}/calls's five elements.
+// callResponse is POST /v1/channels/{id}/calls's six elements.
 type callResponse struct {
 	CallID     id.ID
 	GroupID    id.ID
 	LiveKitURL string
 	Token      string
 	ICE        [][]cbor.RawMessage
+	Caps       []uint64
 }
 
 func decodeCall(t *testing.T, body []byte) callResponse {
 	t.Helper()
 	var out []cbor.RawMessage
 	mustUnmarshalBody(t, body, &out)
-	if len(out) != 5 {
-		t.Fatalf("call response has %d elements, want 5: %x", len(out), body)
+	if len(out) != 6 {
+		t.Fatalf("call response has %d elements, want 6: %x", len(out), body)
 	}
 	var r callResponse
 	mustUnmarshal(t, out[0], &r.CallID)
@@ -41,6 +44,7 @@ func decodeCall(t *testing.T, body []byte) callResponse {
 	mustUnmarshal(t, out[2], &r.LiveKitURL)
 	mustUnmarshal(t, out[3], &r.Token)
 	mustUnmarshal(t, out[4], &r.ICE)
+	mustUnmarshal(t, out[5], &r.Caps)
 	return r
 }
 
@@ -404,4 +408,177 @@ func ownerCommunityOf(t *testing.T, e *env, ch id.ID) id.ID {
 		t.Fatalf("GetChannel: %v", err)
 	}
 	return *row.CommunityID
+}
+
+// joinedMember is a second user of the voice channel's community, with one device that is a leaf of
+// group, and its bearer token.
+func joinedMember(t *testing.T, e *env, ch, group id.ID, name string) (id.ID, id.ID, string) {
+	t.Helper()
+	user, tok := e.NewUser(name)
+	joinCommunity(t, e, ownerCommunityOf(t, e, ch), tok)
+	dev := deviceOf(t, e, tok)
+	seedLeaf(t, e, group, dev, 3, nil)
+	return user, dev, tok
+}
+
+func denyInChannel(t *testing.T, e *env, ch, user id.ID, deny api.Bits) {
+	t.Helper()
+	if err := e.Repo.PutOverwrite(t.Context(), store.OverwriteRow{
+		ChannelID: ch, TargetKind: 1 /* user */, TargetID: user, Deny: uint64(deny),
+	}); err != nil {
+		t.Fatalf("PutOverwrite: %v", err)
+	}
+}
+
+// G26: the token mirrors speak/video/screen_share per source; video sources only with a slot.
+func TestTheTokenMirrorsTheMembersPermissions(t *testing.T) {
+	e, ch, tok, group, stub := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	if status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{}); status != http.StatusCreated {
+		t.Fatalf("owner start = %d %s", status, e.ErrCode(body))
+	}
+	if got := stub.lastMint().Perm; !slices.Equal(got.GetCanPublishSources(), []livekit.TrackSource{livekit.TrackSource_MICROPHONE}) ||
+		!got.GetCanPublish() || got.GetCanPublishData() || !got.GetCanSubscribe() {
+		t.Fatalf("the owner's token = %+v, want the microphone only until a slot is held", got)
+	}
+	member, _, memberTok := joinedMember(t, e, ch, group, "member")
+	denyInChannel(t, e, ch, member, api.PermSpeak|api.PermScreenShare)
+	if status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", memberTok, []any{}); status != http.StatusOK {
+		t.Fatalf("member start = %d %s", status, e.ErrCode(body))
+	}
+	if got := stub.lastMint().Perm; got.GetCanPublish() || got.GetCanPublishSources() != nil || !got.GetCanSubscribe() {
+		t.Fatalf("a member without speak and no slot = %+v, want listen-only with no source list", got)
+	}
+}
+
+// DEV-07 / MD-10: the decode list reaches the token as the dilla.vdec attribute.
+func TestTheDecodeListReachesTheTokenAsAnAttribute(t *testing.T) {
+	e, ch, tok, group, stub := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	path := "/v1/channels/" + ch.String() + "/calls"
+	if status, _ := e.Do(http.MethodPost, path, tok, []any{"vp8,h264"}); status != http.StatusCreated {
+		t.Fatalf("start with vdec = %d", status)
+	}
+	if got := stub.lastMint().Attrs["dilla.vdec"]; got != "vp8,h264" {
+		t.Fatalf("dilla.vdec = %q", got)
+	}
+	if status, _ := e.Do(http.MethodPost, path, tok, []any{}); status != http.StatusOK || stub.lastMint().Attrs != nil {
+		t.Fatalf("start without vdec = %d, attributes %v; want 200 and none", status, stub.lastMint().Attrs)
+	}
+	for _, bad := range []any{"vp8,av1", "VP8", "vp8,vp8", "", uint64(1)} {
+		if status, body := e.Do(http.MethodPost, path, tok, []any{bad}); status != http.StatusBadRequest || e.ErrCode(body) != "E_INVALID_REQUEST" {
+			t.Errorf("vdec %v = %d %s, want 400 E_INVALID_REQUEST", bad, status, e.ErrCode(body))
+		}
+	}
+	if status, _ := e.Do(http.MethodPost, path, tok, []any{"vp8", "h264"}); status != http.StatusBadRequest {
+		t.Errorf("a two-element body = %d, want 400", status)
+	}
+}
+
+// DEV-26 / MD-10: the caps element carries the bitrate ceilings in bits per second and the VP9 flag.
+func TestTheCallResponseCarriesTheCaps(t *testing.T) {
+	for _, vp9 := range []bool{false, true} {
+		e, ch, tok, group, _ := callEnvWith(t, api.CallsConfig{
+			LiveKitURL: testLiveKitURL, MaxAudioBitrateKbps: 64, MaxShareBitrateKbps: 2500, VP9: vp9,
+		})
+		seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+		_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+		want := []uint64{64_000, 2_500_000, 0}
+		if vp9 {
+			want[2] = 1
+		}
+		if got := decodeCall(t, body).Caps; !slices.Equal(got, want) {
+			t.Errorf("caps with vp9=%v = %v, want %v", vp9, got, want)
+		}
+	}
+}
+
+// DEV-44: every start opens the room in the SFU before minting, on 201 and 200 alike; a room that
+// will not open mints nothing.
+func TestEveryStartCreatesTheRoomBeforeMinting(t *testing.T) {
+	e, ch, tok, group, stub := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	path := "/v1/channels/" + ch.String() + "/calls"
+	e.Do(http.MethodPost, path, tok, []any{})
+	e.Do(http.MethodPost, path, tok, []any{})
+	minted := stub.minted()
+	if got := stub.createdRooms(); len(got) != 2 || got[0] != minted[0][0] || got[1] != minted[0][0] {
+		t.Fatalf("rooms created = %v, want the call's room twice (%v)", got, minted)
+	}
+	stub.mu.Lock()
+	stub.createFail = errors.New("sfu down")
+	stub.mu.Unlock()
+	if status, _ := e.Do(http.MethodPost, path, tok, []any{}); status != http.StatusInternalServerError {
+		t.Fatalf("a room that will not open = %d, want 500", status)
+	}
+	if len(stub.minted()) != 2 {
+		t.Fatal("a token was minted for a room the SFU did not open")
+	}
+}
+
+// DEV-01: the advisory count refuses 409 E_CALL_FULL; it skips the caller's own device and its "#"
+// shadows, disconnected participants, agents and egress, and fails open when the SFU cannot answer.
+func TestAFullCallIsRefusedWithECallFull(t *testing.T) {
+	e, ch, tok, group, stub := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL, MaxVoiceParticipants: 2})
+	dev := deviceOf(t, e, tok)
+	seedLeaf(t, e, group, dev, 3, nil)
+	path := "/v1/channels/" + ch.String() + "/calls"
+	_, body := e.Do(http.MethodPost, path, tok, []any{})
+	room := stub.minted()[0][0]
+	other := func(identity string) *livekit.ParticipantInfo { return &livekit.ParticipantInfo{Identity: identity} }
+	stub.setPresent(room,
+		other(dev.String()), other(dev.String()+"#x"), other(id.New().String()),
+		&livekit.ParticipantInfo{Identity: id.New().String(), State: livekit.ParticipantInfo_DISCONNECTED},
+		&livekit.ParticipantInfo{Identity: "agent", Kind: livekit.ParticipantInfo_AGENT},
+		&livekit.ParticipantInfo{Identity: "egress", Kind: livekit.ParticipantInfo_EGRESS},
+	)
+	if status, _ := e.Do(http.MethodPost, path, tok, []any{}); status != http.StatusOK {
+		t.Fatalf("a rejoin counting one other = %d, want 200", status)
+	}
+	user := userOf(t, e, tok)
+	phone := seedDevices(t, e, user, 1)[0]
+	e.sess["phone"] = auth.Session{UserID: user, DeviceID: phone, Scope: auth.ScopeEnrolled}
+	seedLeaf(t, e, group, phone, 3, nil)
+	stub.setPresent(room, other(dev.String()), other(id.New().String()))
+	status, resp := e.Do(http.MethodPost, path, "phone", []any{})
+	if status != http.StatusConflict || e.ErrCode(resp) != "E_CALL_FULL" {
+		t.Fatalf("a third device in a call of two = %d %s, want 409 E_CALL_FULL (%x)", status, e.ErrCode(resp), body)
+	}
+	stub.mu.Lock()
+	stub.listFail = errors.New("sfu down")
+	stub.mu.Unlock()
+	if status, _ := e.Do(http.MethodPost, path, "phone", []any{}); status != http.StatusOK {
+		t.Fatalf("a count that fails = %d, want the fail-open 200", status)
+	}
+}
+
+func TestCurrentLeafOfRoomIsTheGateTheProxyReads(t *testing.T) {
+	e, ch, tok, group, stub, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	dev := deviceOf(t, e, tok)
+	seedLeaf(t, e, group, dev, 3, nil)
+	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	callID := decodeCall(t, body).CallID
+	room := stub.minted()[0][0]
+	for _, tc := range []struct {
+		name string
+		room string
+		dev  id.ID
+		want bool
+	}{
+		{"the call's room and a leaf", room, dev, true},
+		{"another device", room, id.New(), false},
+		{"an older room of the call", callID.String() + "-1", dev, false},
+		{"a room that is no call", "not-a-call", dev, false},
+	} {
+		got, err := calls.CurrentLeafOfRoom(t.Context(), tc.room, tc.dev)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: CurrentLeafOfRoom = %v, %v; want %v", tc.name, got, err, tc.want)
+		}
+	}
+	if err := e.Repo.EndVoiceSession(t.Context(), callID, e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("EndVoiceSession: %v", err)
+	}
+	if got, _ := calls.CurrentLeafOfRoom(t.Context(), room, dev); got {
+		t.Error("an ended call's room still admits its leaves")
+	}
 }

@@ -473,6 +473,9 @@ func TestTheSFUConfigCarriesTheLiveKitKeys(t *testing.T) {
 	if got.APISecret != "secret" || got.APIKey != lk.APIKey {
 		t.Errorf("key pair = %q/%q", got.APIKey, got.APISecret)
 	}
+	if got.AutoCreate {
+		t.Error("sfuConfig renders room.auto_create: true")
+	}
 	lk.NodeIP, lk.AdvertiseInternalIP = "", false
 	got = sfuConfig(lk, "secret")
 	if got.NodeIP != "127.0.0.1" || !got.EnableLoopbackCandidate || got.AdvertiseInternalIP {
@@ -490,8 +493,9 @@ func TestTheSFUConfigCarriesTheLiveKitKeys(t *testing.T) {
 	if got.LimitNumTracks != 4000 || got.LimitBytesPerSec != 125_000_000 || len(got.IPsExcludes) != 1 {
 		t.Errorf("limits %d/%v, excludes %v", got.LimitNumTracks, got.LimitBytesPerSec, got.IPsExcludes)
 	}
-	if !got.AutoCreate || got.EmptyTimeout != 300 || got.DepartureTimeout != 20 {
-		t.Errorf("room: auto_create %t, timeouts %d/%d", got.AutoCreate, got.EmptyTimeout, got.DepartureTimeout)
+	if got.AutoCreate || got.EmptyTimeout != 300 || got.DepartureTimeout != 20 {
+		t.Errorf("room: auto_create %t, timeouts %d/%d; want false (task 10, MD-16), 300/20",
+			got.AutoCreate, got.EmptyTimeout, got.DepartureTimeout)
 	}
 	lk.Enabled, lk.WebhookListen = true, ""
 	if got = sfuConfig(lk, "secret"); got.WebhookURL != "" {
