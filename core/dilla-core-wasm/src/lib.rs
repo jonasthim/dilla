@@ -294,9 +294,12 @@ pub fn sframe_derive(
     })
 }
 
+/// A raw KID from JavaScript is held to the same rule as a received one: 2^24 or more is
+/// `E_SFRAME_NON_CANONICAL_KID` (protocol/05 "Frame format").
 #[wasm_bindgen]
 pub fn sframe_header(kid: u64, ctr: u64) -> Result<Box<[u8]>, JsError> {
-    Ok(encode_header(Kid::from_raw(kid), Ctr::from_raw(ctr)).into_boxed_slice())
+    let kid = Kid::canonical(kid).map_err(|e| JsError::new(e.code()))?;
+    Ok(encode_header(kid, Ctr::from_raw(ctr)).into_boxed_slice())
 }
 
 #[wasm_bindgen]

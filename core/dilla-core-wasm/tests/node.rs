@@ -320,6 +320,22 @@ fn a_rekeyed_sender_is_held_as_unknown_until_its_epoch_is_installed() {
     );
 }
 
+/// An Opus frame from Bob (leaf 1, epoch 7) whose KID also has bit 24 set, sealed under the key
+/// that KID derives: a receiver that did not check the KID's range would authenticate it.
+fn non_canonical_frame() -> Vec<u8> {
+    use dilla_core::sframe::{Codec, Ctr, FrameKey, Kid, protect};
+    let kid = Kid::from_raw((1 << 24) | Kid::new(1, 7).value());
+    let ctr = Ctr::new(0, 0, 0).unwrap();
+    protect(
+        &FrameKey::derive(&BASE, kid),
+        kid,
+        ctr,
+        Codec::Opus,
+        &unhex("fc01"),
+    )
+    .unwrap()
+}
+
 #[wasm_bindgen_test]
 fn media_errors_are_bare_codes() {
     let mut bob = MediaSender::new(&BASE, 1, 7, 7).unwrap();
@@ -371,6 +387,31 @@ fn media_errors_are_bare_codes() {
         (
             sframe_derive(&BASE, 65_536, 0).err().unwrap(),
             "E_SFRAME_LEAF_RANGE",
+        ),
+        // A raw KID from JavaScript goes through the same canonical check as a received one.
+        (
+            sframe_header(1 << 24, 0).err().unwrap(),
+            "E_SFRAME_NON_CANONICAL_KID",
+        ),
+        // Bob's KID (leaf 1, epoch 7) with bit 24 set: refused while parsing, not held.
+        (
+            alice
+                .decrypt(0, &non_canonical_frame(), &BOB, 0, 1_010.0)
+                .unwrap_err(),
+            "E_SFRAME_NON_CANONICAL_KID",
+        ),
+        // Bob's KID 0x000107 in three bytes instead of two.
+        (
+            alice
+                .decrypt(
+                    0,
+                    &unhex(&format!("a0000107{}", "00".repeat(17))),
+                    &BOB,
+                    0,
+                    1_010.0,
+                )
+                .unwrap_err(),
+            "E_SFRAME_NON_MINIMAL_HEADER",
         ),
     ] {
         assert_eq!(message(got), want);

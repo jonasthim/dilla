@@ -58,16 +58,34 @@ pub const LABEL_KEY: &[u8] = b"SFrame 1.0 Secret key ";
 pub const LABEL_SALT: &[u8] = b"SFrame 1.0 Secret salt ";
 
 /// `(leaf_index << 8) | (epoch mod 256)`. `leaf_index` is capped at 2^16, so a KID uses 24 bits.
+///
+/// `from_raw` takes any 64-bit value, because RFC 9605's header codec and its Appendix C vectors
+/// do; a received KID becomes a dilla KID only through `Kid::canonical` (protocol/05 "Frame
+/// format": a KID of 2^24 or more is `E_SFRAME_NON_CANONICAL_KID`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Kid(u64);
 
 impl Kid {
+    /// The largest dilla-sframe/1 KID: leaf 2^16 - 1, epoch byte 255.
+    pub const MAX: u64 = 0xff_ffff;
+
     pub fn new(leaf_index: u16, epoch: u64) -> Self {
         Self((u64::from(leaf_index) << 8) | (epoch % 256))
     }
 
     pub const fn from_raw(v: u64) -> Self {
         Self(v)
+    }
+
+    /// A KID read off the wire or handed in by a caller: `NonCanonicalKid` unless it is
+    /// `(leaf_index << 8) | epoch_low` for a 16-bit leaf, i.e. below 2^24. Without this check one
+    /// sender would have 2^40 accepted spellings of its KID, each deriving a different key.
+    pub const fn canonical(v: u64) -> Result<Self, SframeError> {
+        if v > Self::MAX {
+            Err(SframeError::NonCanonicalKid)
+        } else {
+            Ok(Self(v))
+        }
     }
 
     pub const fn value(self) -> u64 {

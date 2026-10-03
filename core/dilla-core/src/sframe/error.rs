@@ -14,6 +14,10 @@ pub enum SframeError {
     TruncatedHeader,
     #[error("E_SFRAME_NON_MINIMAL_HEADER")]
     NonMinimalHeader,
+    /// A KID of 2^24 or more: not `(leaf_index << 8) | (epoch mod 256)` for any 16-bit leaf. Refused
+    /// while parsing, before any key is derived, and never held.
+    #[error("E_SFRAME_NON_CANONICAL_KID")]
+    NonCanonicalKid,
     #[error("E_SFRAME_TRUNCATED_FRAME")]
     TruncatedFrame,
     #[error("E_SFRAME_MALFORMED_PREFIX")]
@@ -50,9 +54,10 @@ pub enum SframeError {
 
 impl SframeError {
     /// Every variant, in declaration order. The tests pin the count and the code strings.
-    pub const ALL: [SframeError; 18] = [
+    pub const ALL: [SframeError; 19] = [
         SframeError::TruncatedHeader,
         SframeError::NonMinimalHeader,
+        SframeError::NonCanonicalKid,
         SframeError::TruncatedFrame,
         SframeError::MalformedPrefix,
         SframeError::UnsupportedCodec,
@@ -76,6 +81,7 @@ impl SframeError {
         match self {
             SframeError::TruncatedHeader => "E_SFRAME_TRUNCATED_HEADER",
             SframeError::NonMinimalHeader => "E_SFRAME_NON_MINIMAL_HEADER",
+            SframeError::NonCanonicalKid => "E_SFRAME_NON_CANONICAL_KID",
             SframeError::TruncatedFrame => "E_SFRAME_TRUNCATED_FRAME",
             SframeError::MalformedPrefix => "E_SFRAME_MALFORMED_PREFIX",
             SframeError::UnsupportedCodec => "E_SFRAME_UNSUPPORTED_CODEC",
@@ -101,13 +107,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_eighteen_codes_are_the_published_strings() {
+    fn the_nineteen_codes_are_the_published_strings() {
         let codes: Vec<&str> = SframeError::ALL.iter().map(|e| e.code()).collect();
         assert_eq!(
             codes,
             [
                 "E_SFRAME_TRUNCATED_HEADER",
                 "E_SFRAME_NON_MINIMAL_HEADER",
+                "E_SFRAME_NON_CANONICAL_KID",
                 "E_SFRAME_TRUNCATED_FRAME",
                 "E_SFRAME_MALFORMED_PREFIX",
                 "E_SFRAME_UNSUPPORTED_CODEC",

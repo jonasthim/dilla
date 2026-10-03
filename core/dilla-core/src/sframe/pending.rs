@@ -169,4 +169,31 @@ mod tests {
         p.push(0, frame(5, 1));
         assert_eq!(drain(&mut p, &mut r, 1), (vec![1], 1));
     }
+
+    /// A non-canonical KID or a non-minimal header is a hard parse error: dropped and counted,
+    /// never held, even while the epoch its low byte names is not installed yet.
+    #[test]
+    fn a_non_canonical_kid_or_non_minimal_header_is_dropped_not_held() {
+        let mut r = KeyRing::new();
+        r.install_epoch(4, BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 0);
+        let mut p = PendingFrames::new(UNKNOWN_KID_BUFFER_MS, UNKNOWN_KID_BUFFER_FRAMES);
+        // KID (1 << 24) | (1 << 8) | 5: epoch 5 is not installed, yet this is not UnknownKid.
+        let kid = Kid::from_raw((1 << 24) | Kid::new(1, 5).value());
+        let ctr = Ctr::new(0, 0, 0).unwrap();
+        let non_canonical = protect(
+            &FrameKey::derive(&BASE, kid),
+            kid,
+            ctr,
+            Codec::Opus,
+            &[0xfc],
+        )
+        .unwrap();
+        // KID 0x000105 spelled in three bytes, then a CTR and a tag's worth of bytes.
+        let mut non_minimal = vec![0xa0, 0x00, 0x01, 0x05];
+        non_minimal.extend_from_slice(&[0u8; 17]);
+        p.push(0, non_canonical);
+        p.push(0, non_minimal);
+        assert_eq!(drain(&mut p, &mut r, 1), (vec![], 2));
+        assert!(p.is_empty());
+    }
 }

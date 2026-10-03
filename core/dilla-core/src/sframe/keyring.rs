@@ -5,6 +5,8 @@
 //! (installing an epoch evicts any held one with the same `epoch mod 256`, RFC 9605 section 5.2),
 //! and is then bound, in that epoch, to the device the track belongs to.
 
+use std::collections::HashMap;
+
 use zeroize::Zeroizing;
 
 use super::{
@@ -71,8 +73,12 @@ struct EpochEntry {
     own_leaf: Option<u16>,
     roster: Vec<(u16, [u8; 16])>,
     superseded_at_ms: Option<u64>,
-    cache: Vec<(Kid, FrameKey)>,
-    replay: Vec<((u16, u8, u8), ReplayWindow)>,
+    /// One key per sending leaf: a canonical KID is `(leaf << 8) | epoch mod 256`, and the epoch
+    /// is this entry's, so the leaf names the KID. A key is derived only for a leaf that passed
+    /// the roster, sender and own-KID checks, so the cache never outgrows the roster.
+    cache: HashMap<u16, FrameKey>,
+    /// Committed only after the AEAD, so only authenticated `(leaf, slot, layer)`s get a window.
+    replay: HashMap<(u16, u8, u8), ReplayWindow>,
 }
 
 #[derive(Default)]
@@ -83,6 +89,9 @@ pub struct KeyRing {
     /// `StaleEpoch` (dropped) rather than `UnknownKid` (held). Remembered for two retention
     /// periods, which no honest sender can wrap 256 epochs inside.
     retired: Vec<(u64, u64)>,
+    /// How many frame keys this ring has derived, for the tests that pin when derivation happens.
+    #[cfg(test)]
+    derived: usize,
 }
 
 impl KeyRing {
@@ -125,8 +134,8 @@ impl KeyRing {
             own_leaf,
             roster: roster.to_vec(),
             superseded_at_ms: if newest { None } else { Some(now_ms) },
-            cache: Vec::new(),
-            replay: Vec::new(),
+            cache: HashMap::new(),
+            replay: HashMap::new(),
         };
         let at = self
             .epochs
@@ -155,8 +164,9 @@ impl KeyRing {
     }
 
     /// Authenticates one received frame for the track whose participant is `expected_device`
-    /// and whose LiveKit source maps to `expected_slot`. The order is protocol/05's: parse,
-    /// resolve the KID to its exact epoch (`UnknownKid` — the only error a caller may hold the
+    /// and whose LiveKit source maps to `expected_slot`. The order is protocol/05's: parse
+    /// (`TruncatedHeader`, `NonMinimalHeader`, then `NonCanonicalKid` for a KID of 2^24 or more —
+    /// all before any key is looked up or derived), resolve the KID to its exact epoch (`UnknownKid` — the only error a caller may hold the
     /// frame for — or `StaleEpoch`), the leaf in that epoch's roster (`LeafNotInEpoch`), the
     /// roster's device for that leaf against the track's (`SenderMismatch`; a device holding two
     /// leaves in one epoch is refused too), own KID (`OwnKid`), replay (`Replay`), AEAD
@@ -198,35 +208,33 @@ impl KeyRing {
             return Err(SframeError::OwnKid);
         }
         let window_key = (leaf, ctr.slot(), ctr.layer());
-        let window = entry
+        entry
             .replay
-            .iter()
-            .find(|(k, _)| *k == window_key)
-            .map(|(_, w)| *w)
-            .unwrap_or_default();
-        window.check(ctr.seq())?;
-        if !entry.cache.iter().any(|(k, _)| *k == kid) {
-            let key = FrameKey::derive(&entry.base_key, kid);
-            entry.cache.push((kid, key));
-        }
-        let key = &entry
-            .cache
-            .iter()
-            .find(|(k, _)| *k == kid)
-            .expect("derived above")
-            .1;
+            .get(&window_key)
+            .copied()
+            .unwrap_or_default()
+            .check(ctr.seq())?;
+        // `kid` is canonical (the parse refused anything else) and this entry's epoch byte, so it
+        // is `Kid::new(leaf, entry.epoch)`: one key per leaf, derived once.
+        let key = match entry.cache.entry(leaf) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                #[cfg(test)]
+                {
+                    self.derived += 1;
+                }
+                v.insert(FrameKey::derive(&entry.base_key, kid))
+            }
+        };
         let (_, _, plain) = open_frame(key, prefix, &unescaped)?;
         if ctr.slot() != expected_slot as u8 {
             return Err(SframeError::SlotMismatch);
         }
-        match entry.replay.iter_mut().find(|(k, _)| *k == window_key) {
-            Some((_, w)) => w.commit(ctr.seq()),
-            None => {
-                let mut w = ReplayWindow::default();
-                w.commit(ctr.seq());
-                entry.replay.push((window_key, w));
-            }
-        }
+        entry
+            .replay
+            .entry(window_key)
+            .or_default()
+            .commit(ctr.seq());
         Ok(Decrypted {
             kid,
             ctr,
@@ -446,6 +454,71 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    /// Every key the ring holds, over all epochs.
+    fn cached_keys(r: &KeyRing) -> usize {
+        r.epochs.iter().map(|e| e.cache.len()).sum()
+    }
+
+    /// A frame from `leaf` in `epoch` whose KID has `high` set above bit 24, sealed under the key
+    /// that KID derives: exactly what a naive receiver would authenticate.
+    fn non_canonical_frame(leaf: u16, epoch: u64, high: u64, seq: u64) -> Vec<u8> {
+        let kid = Kid::from_raw(Kid::new(leaf, epoch).value() | (high << 24));
+        let ctr = Ctr::new(Slot::Microphone as u8, 0, seq).unwrap();
+        protect(
+            &FrameKey::derive(&base(epoch), kid),
+            kid,
+            ctr,
+            Codec::Opus,
+            OPUS,
+        )
+        .unwrap()
+    }
+
+    /// The same leaf and epoch byte with any bit above 24 set is not a second spelling of Bob's
+    /// KID: it is refused while parsing, as a hard error the hold never keeps, before the ring
+    /// derives or caches a key for it.
+    #[test]
+    fn a_kid_of_two_to_the_24_or_more_is_refused_before_any_key_is_derived() {
+        let mut r = ring_at(5, 0);
+        for high in [1u64, 2, 0xff, 0xff_ffff_ffff] {
+            assert_eq!(
+                from_bob(&mut r, &non_canonical_frame(1, 5, high, high), 0),
+                Err(SframeError::NonCanonicalKid),
+                "kid with {high:#x} above bit 24"
+            );
+        }
+        assert_eq!(cached_keys(&r), 0, "no key was cached");
+        assert_eq!(r.derived, 0, "no key was derived");
+        // Bob's canonical KID still works, and costs exactly one key.
+        assert!(from_bob(&mut r, &frame(1, 5, Slot::Microphone, 0), 0).is_ok());
+        assert_eq!((cached_keys(&r), r.derived), (1, 1));
+    }
+
+    /// The cache is bounded by the roster: one key per sending leaf per epoch, however many frames
+    /// (and however many KID spellings) arrive.
+    #[test]
+    fn many_frames_from_n_senders_never_hold_more_than_n_keys() {
+        let mut r = ring_at(5, 0);
+        for seq in 0..200u64 {
+            assert!(from_bob(&mut r, &frame(1, 5, Slot::Microphone, seq), 0).is_ok());
+            assert!(
+                r.decrypt(
+                    Codec::Opus,
+                    &frame(2, 5, Slot::Microphone, seq),
+                    Some(&CAROL),
+                    Slot::Microphone,
+                    0
+                )
+                .is_ok()
+            );
+            let _ = from_bob(&mut r, &non_canonical_frame(1, 5, seq + 1, 1_000 + seq), 0);
+            // A replayed frame reaches the key lookup's neighbourhood too.
+            let _ = from_bob(&mut r, &frame(1, 5, Slot::Microphone, seq), 0);
+            assert!(cached_keys(&r) <= 2, "after seq {seq}: {}", cached_keys(&r));
+        }
+        assert_eq!((cached_keys(&r), r.derived), (2, 2));
     }
 
     #[test]

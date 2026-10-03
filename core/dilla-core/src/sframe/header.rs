@@ -183,6 +183,44 @@ mod tests {
         }
     }
 
+    /// The sender always emits the minimal form, and the receiver accepts only that one: at every
+    /// byte-length boundary of a dilla KID (and the same shape for the CTR), `encode_header` uses
+    /// the inline field for 0-7 and otherwise the fewest bytes, and every longer re-spelling of the
+    /// same value decodes as `NonMinimalHeader`.
+    #[test]
+    fn encode_is_minimal_and_every_longer_spelling_is_refused() {
+        const BOUNDARIES: [u64; 7] = [0, 7, 8, 0xff, 0x100, 0xffff, 0xff_ffff];
+        let spell = |v: u64, len: usize| -> Vec<u8> { v.to_be_bytes()[8 - len..].to_vec() };
+        for v in BOUNDARIES {
+            let minimal = if v <= 7 { 0 } else { min_len(v) };
+            // KID = v, CTR = 0.
+            let kid_hdr = encode_header(Kid::from_raw(v), Ctr::from_raw(0));
+            assert_eq!(kid_hdr.len(), 1 + minimal, "kid {v}");
+            assert_eq!(decode_header(&kid_hdr).map(|(k, _, _)| k.value()), Ok(v));
+            // CTR = v, KID = 0.
+            let ctr_hdr = encode_header(Kid::from_raw(0), Ctr::from_raw(v));
+            assert_eq!(ctr_hdr.len(), 1 + minimal, "ctr {v}");
+            assert_eq!(decode_header(&ctr_hdr).map(|(_, c, _)| c.value()), Ok(v));
+            for len in (minimal + 1).max(1)..=8 {
+                let field = u8::try_from(len - 1).unwrap();
+                let mut kid_long = vec![0x80 | (field << 4)];
+                kid_long.extend(spell(v, len));
+                assert_eq!(
+                    decode_header(&kid_long),
+                    Err(SframeError::NonMinimalHeader),
+                    "kid {v} in {len} bytes"
+                );
+                let mut ctr_long = vec![0x08 | field];
+                ctr_long.extend(spell(v, len));
+                assert_eq!(
+                    decode_header(&ctr_long),
+                    Err(SframeError::NonMinimalHeader),
+                    "ctr {v} in {len} bytes"
+                );
+            }
+        }
+    }
+
     #[test]
     fn decode_rejects_a_truncated_header() {
         let bytes = encode_header(Kid::from_raw(0x100), Ctr::from_raw(0x100));
@@ -196,8 +234,10 @@ mod tests {
         }
     }
 
-    /// The twelve header rows of `sframe.json`'s `rejects` (interfaces.md d.6), plus the reading
-    /// order: `8800` is a non-minimal KID *and* a truncated CTR, and the KID is read first.
+    /// The thirteen truncated or non-minimal header rows of `sframe.json`'s `rejects`
+    /// (interfaces.md d.6), plus the reading order: `8800` is a non-minimal KID *and* a truncated
+    /// CTR, and the KID is read first. (Its three non-canonical-KID rows are valid RFC 9605
+    /// headers; `peek_kid_ctr` refuses them, see frame.rs.)
     #[test]
     fn decode_rejects_every_non_minimal_and_truncated_header_in_reading_order() {
         for (h, want) in [
@@ -213,6 +253,7 @@ mod tests {
             ("0900ff", SframeError::NonMinimalHeader),
             ("f00000000000000000", SframeError::NonMinimalHeader),
             ("0f0000000000000008", SframeError::NonMinimalHeader),
+            ("a0000129", SframeError::NonMinimalHeader),
             ("8800", SframeError::NonMinimalHeader),
         ] {
             assert_eq!(decode_header(&unhex(h)), Err(want), "{h:?}");

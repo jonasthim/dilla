@@ -45,12 +45,15 @@ pub fn encrypt_frame(
 }
 
 /// The KID, the counter and the header length of an unescaped frame, without decrypting: what a
-/// receiver needs to pick the key.
+/// receiver needs to pick the key. This is the dilla-sframe/1 parse (protocol/05 "Receiver
+/// rules", step 1): RFC 9605's strict header decode (truncation, then minimality, KID before
+/// CTR), then `NonCanonicalKid` for a KID of 2^24 or more — before any key can be derived for it.
 pub fn peek_kid_ctr(prefix_len: usize, frame: &[u8]) -> Result<(Kid, Ctr, usize), SframeError> {
     let rest = frame
         .get(prefix_len..)
         .ok_or(SframeError::MalformedPrefix)?;
-    decode_header(rest)
+    let (kid, ctr, len) = decode_header(rest)?;
+    Ok((Kid::canonical(kid.value())?, ctr, len))
 }
 
 /// Opens an unescaped frame under `key` and returns its KID, counter and `P || plaintext`.
@@ -257,6 +260,35 @@ mod tests {
         assert_eq!(
             open(Codec::Vp8, &unhex("5002009d012a8002e0")),
             Err(SframeError::MalformedPrefix)
+        );
+    }
+
+    /// `decode_header` is RFC 9605's codec and reads any 64-bit KID (Appendix C.1 has them);
+    /// `peek_kid_ctr` is the dilla-sframe/1 receiver's parse and refuses a KID of 2^24 or more,
+    /// after the strict header checks and before anyone can derive a key for it.
+    #[test]
+    fn peek_refuses_a_kid_of_two_to_the_24_or_more() {
+        for (h, want) in [
+            ("a0ffffff", Ok(0xff_ffff)),
+            ("b001000000", Err(SframeError::NonCanonicalKid)),
+            ("b001000129", Err(SframeError::NonCanonicalKid)),
+            ("f0ffffffffffffffff", Err(SframeError::NonCanonicalKid)),
+            // Strictness comes first: a non-minimal or truncated header keeps its own code.
+            ("b000000129", Err(SframeError::NonMinimalHeader)),
+            ("b0010001", Err(SframeError::TruncatedHeader)),
+        ] {
+            let bytes = unhex(h);
+            assert_eq!(
+                peek_kid_ctr(0, &bytes).map(|(k, _, _)| k.value()),
+                want,
+                "{h}"
+            );
+        }
+        assert!(decode_header(&unhex("b001000000")).is_ok(), "the RFC codec");
+        // The same with a prefix in front: the KID is read after it.
+        assert_eq!(
+            peek_kid_ctr(2, &unhex("fc00b001000000")).map(|(k, _, _)| k.value()),
+            Err(SframeError::NonCanonicalKid)
         );
     }
 
