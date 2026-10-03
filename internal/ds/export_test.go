@@ -80,7 +80,11 @@ func CommitExternalForTest(d *DS, ctx context.Context, s Session, groupID id.ID,
 // external sender — so the refusals that happen AFTER the queue has been written cannot be reached
 // through `Proposal` with committed material.
 func QueueMemberProposalForTest(d *DS, ctx context.Context, g *mlswasi.PublicGroup, s Session, groupID id.ID, blob []byte) ([]byte, mlswasi.ProposalDetail, error) {
-	return d.queueMemberProposal(ctx, g, s, groupID, blob)
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if err != nil {
+		return nil, mlswasi.ProposalDetail{}, err
+	}
+	return d.queueMemberProposal(ctx, g, s, groupID, row.Epoch, blob)
 }
 
 // ------------------------------------------------------------------- task 21
@@ -273,15 +277,12 @@ func SweepCallProposalsForTest(d *DS, ctx context.Context) (int, error) {
 	return d.sweepCallProposals(ctx)
 }
 
-// VoidInstanceRemovesForTest is what accepting a member's Remove of leaf does to the instance's own
-// Removes of it, in one transaction. No committed fixture holds a member-signed Remove, so the
-// rule is driven here and end to end in testkit/scenarios/call_remove_dedupe.scn.
-func VoidInstanceRemovesForTest(d *DS, ctx context.Context, groupID id.ID, epoch uint64, leaf uint32) (int, error) {
-	var n int
-	err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
-		var err error
-		n, err = d.voidInstanceRemovesTx(ctx, tx, groupID, epoch, leaf)
-		return err
-	})
-	return n, err
+// RedriveCallRemovesForTest is the call re-drive from fromEpoch's voided instance Removes into
+// curEpoch, under the group lock as both callers run it. The fixture never advances an epoch, so a
+// cross-epoch re-drive — the one commitLocked step (9) runs — is reached through this seam with
+// rows a test wrote at an earlier epoch.
+func RedriveCallRemovesForTest(d *DS, ctx context.Context, groupID id.ID, fromEpoch, curEpoch uint64) error {
+	unlock := d.lock(groupID)
+	defer unlock()
+	return d.redriveCallRemovesLocked(ctx, groupID, fromEpoch, curEpoch)
 }

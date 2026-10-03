@@ -131,11 +131,12 @@ func TestTheSweeperLeavesAGroupWithNoEligibleMemberAlone(t *testing.T) {
 	}
 }
 
-// A leaf whose member already proposed its own Remove (a member leaving) gets no instance Remove
-// from the reconcile: OpenMLS keeps only the later of two Removes of one leaf, so a second would
-// leave one unreferenced, and in a text group invariant 4's clause 1 would then refuse every commit
-// until the 24 h TTL voids it (the plan review's open minor on dilla-media task 9).
-func TestTheSweeperIssuesNoRemoveForALeafWhoseMemberRemoveStands(t *testing.T) {
+// D(iii): a member the ACL no longer admits is removed by the instance even while its own
+// self-Remove is outstanding. A member Remove is not mandatory for a commit, freezes nothing and
+// elects nobody, so letting it stand in for the instance's would let a banned member keep it posted
+// and stay in the group. The instance's Remove is issued on top of it: OpenMLS keeps the later of
+// two Removes of one leaf, so the commit applies the instance's and leaves the member's unreferenced.
+func TestTheSweeperRemovesAnIneligibleMemberEvenWhileItsOwnRemoveStands(t *testing.T) {
 	h := newDSHarness(t)
 	ctx := context.Background()
 	reg, _ := h.mustRegister(t)
@@ -152,23 +153,16 @@ func TestTheSweeperIssuesNoRemoveForALeafWhoseMemberRemoveStands(t *testing.T) {
 			want[m.LeafIndex] = true
 		}
 	}
-	h.putMemberRemove(t, reg.GroupID, 5, 86400) // leaf 5 is leaving on its own
-	delete(want, 5)
+	h.putMemberRemove(t, reg.GroupID, 5, 86400) // leaf 5 keeps its own Remove posted
 
 	n, err := ds.ReconcileLeavesForTest(h.ds, ctx)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if n != len(want) {
-		t.Fatalf("reconcile proposed %d Removes, want %d (none for the leaf that is leaving)", n, len(want))
+		t.Fatalf("reconcile proposed %d Removes, want %d (one for every leaf of the banned user)", n, len(want))
 	}
-	rows, err := h.repo.ListProposals(ctx, reg.GroupID, 6, false)
-	if err != nil {
-		t.Fatalf("ListProposals: %v", err)
-	}
-	for _, r := range rows {
-		if r.Origin == 0 && r.TargetLeaf != nil && *r.TargetLeaf == 5 {
-			t.Fatalf("reconcile stacked an instance Remove on leaf 5's own Remove: %+v", r)
-		}
+	if got := h.instanceRemovesOf(t, reg.GroupID, 5); len(got) != 1 {
+		t.Fatalf("%d instance Removes of leaf 5, want 1: its own Remove stood in for the instance's", len(got))
 	}
 }

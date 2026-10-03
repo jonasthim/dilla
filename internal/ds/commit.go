@@ -433,9 +433,9 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 		d.log().Error("proposing the next slice of a join storm failed; the sweeper retries it",
 			"group", groupID, "err", derr)
 	}
-	// F9, a call group's epoch boundary: a voided instance Remove this commit left out — voided by the
-	// TTL, or by its member's own Remove, which a commit may leave out too — whose leaf survived is
-	// re-driven at the new epoch. The sweep re-drives within an epoch and never reads the old one.
+	// F9, a call group's epoch boundary: a voided instance Remove this commit left out — voided by its
+	// TTL — whose device still holds the same leaf is re-driven at the new epoch. The sweep re-drives
+	// within an epoch and never reads the old one.
 	if row.Kind == groupKindCall {
 		if rerr := d.redriveCallRemovesLocked(context.WithoutCancel(ctx), groupID, oldEpoch, result.Epoch); rerr != nil {
 			d.log().Error("re-driving the call Removes a commit left out failed",
@@ -784,7 +784,6 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 	}
 
 	var seq uint64
-	var voidedRemoves int
 	err = d.withGroup(ctx, groupID, func(g *mlswasi.PublicGroup) error {
 		processed, err := g.Process(ctx, blob)
 		if err != nil {
@@ -796,7 +795,7 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 		if processed.SenderLeaf == nil || *processed.SenderLeaf != leaf {
 			return errForbidden("a member proposal must be signed by the sending device's own leaf")
 		}
-		ref, detail, err := d.queueMemberProposal(ctx, g, s, groupID, blob)
+		ref, detail, err := d.queueMemberProposal(ctx, g, s, groupID, row.Epoch, blob)
 		if err != nil {
 			return err
 		}
@@ -830,15 +829,6 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 			}); err != nil {
 				return err
 			}
-			// DEV-45: a member's own Remove voids the instance's Remove of the same leaf, so the two are
-			// never both live and the commit that carries the member's may omit the instance's.
-			if detail.Kind == mlswasi.ProposalRemove && detail.TargetLeaf != nil {
-				n, err := d.voidInstanceRemovesTx(ctx, tx, groupID, row.Epoch, *detail.TargetLeaf)
-				if err != nil {
-					return err
-				}
-				voidedRemoves = n
-			}
 			return persistState(ctx, tx, groupID, g, row.GroupInfoBlob)
 		})
 		if txErr != nil {
@@ -860,9 +850,6 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 	if err != nil {
 		return 0, err
 	}
-	if voidedRemoves > 0 && d.opts.Metrics != nil {
-		d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(uint8(mlswasi.ProposalRemove))).Sub(float64(voidedRemoves))
-	}
 	if d.opts.Gateway != nil {
 		p, err := gateway.HandshakePayload(seq, row.Epoch, handshakeProposal, &leaf, blob)
 		if err == nil {
@@ -883,7 +870,7 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 // inverted — and it stays there until the group is evicted, so an enrolled member grows the queue
 // by one entry per refused request. The commit path guards its own equivalent with Discard; this
 // is that guard.
-func (d *DS) queueMemberProposal(ctx context.Context, g *mlswasi.PublicGroup, s Session, groupID id.ID, blob []byte) ([]byte, mlswasi.ProposalDetail, error) {
+func (d *DS) queueMemberProposal(ctx context.Context, g *mlswasi.PublicGroup, s Session, groupID id.ID, epoch uint64, blob []byte) ([]byte, mlswasi.ProposalDetail, error) {
 	ref, err := g.ProposalPut(ctx, 0, blob)
 	if err != nil {
 		return nil, mlswasi.ProposalDetail{}, err
@@ -910,6 +897,19 @@ func (d *DS) queueMemberProposal(ctx context.Context, g *mlswasi.PublicGroup, s 
 		}
 		if target != s.UserID {
 			return nil, mlswasi.ProposalDetail{}, errForbidden("a member may only Remove its own user's devices")
+		}
+		// A member proposal never cancels, voids, blocks or stands in for an instance proposal.
+		// A member Remove is not mandatory for a commit (invariant 4 clause 1 covers instance
+		// proposals), freezes nothing and elects nobody, so a member whose leaf the instance is
+		// already removing — a kick, a ban, an eviction — who could post its own Remove of that
+		// leaf would make OpenMLS keep the later of the two and keep its leaf by never having it
+		// committed. It is refused instead; the client reads the refusal as "I am being removed".
+		pending, err := d.instanceRemoveOutstanding(ctx, groupID, epoch, *detail.TargetLeaf)
+		if err != nil {
+			return nil, mlswasi.ProposalDetail{}, err
+		}
+		if pending {
+			return nil, mlswasi.ProposalDetail{}, errInvalid(removalPendingDetail)
 		}
 	default:
 		return nil, mlswasi.ProposalDetail{}, errForbidden(

@@ -81,7 +81,7 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `GET /v1/groups/{id}/tree` | E | — | `[epoch, ratchet_tree, tree_hash]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/handshakes?from=&limit=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
 | `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
-| `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN` |
+| `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_INVALID_REQUEST` |
 | `POST /v1/groups/{id}/message` | E | `[epoch, private_message(bstr)]` | `[seq, franking_tag(bstr32), recv_ts]` | `E_COMMIT_REQUIRED`, `E_LEAF_NOT_CURRENT`, `E_TOO_LARGE`, `E_COMMITMENT_INVALID` |
 | `POST /v1/groups/{id}/resync` | E | `[external_commit(bstr), group_info(bstr)]` | `[seq, epoch]` | `E_COMMIT_INVALID`, `E_FORBIDDEN` (freeze-exempt, invariant 5) |
 | `POST /v1/groups/{id}/fork-report` | E | `[epoch, seq, reason(tstr)]` | `202 []` | `E_NOT_FOUND` |
@@ -313,13 +313,19 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    seconds, so a call proposal is void 30–35 s after it was issued, and a voided DS `Remove` whose
    target leaf is still present is re-issued with the same `action_id` instead of being dropped: in
    a call group a void lifts the freeze but leaves the member decrypting media, and only a commit
-   removes it. A DS `Remove` that names a device rather than a leaf (a device that left a call, or a
-   kick) resolves the leaf under the group lock and is dropped when the device holds no leaf or when
-   a non-void `Remove` of that leaf, from the DS or from the member itself, is already outstanding.
-   Accepting a member's own `Remove` voids any outstanding DS `Remove` of the same leaf, so the
-   commit that carries the member's may omit the DS's. The underlying action is retried with a
-   fresh KeyPackage, or
-   dropped if the target leaf is already gone. Before proposing an Add the DS also checks invariant
+   removes it. A DS `Remove` records the device holding its leaf when it is issued, and is re-issued
+   only while that same device still holds the leaf: MLS reuses blank leaves, and a `Remove` re-aimed
+   by index alone would remove whoever joined there since. A DS `Remove` that names a device rather
+   than a leaf (a device that left a call, or a kick) resolves the leaf under the group lock and is
+   dropped when the device holds no leaf or when a non-void DS `Remove` of that leaf is already
+   outstanding. A member proposal never cancels, voids, blocks or replaces a DS proposal: a
+   member's own `Remove` is not mandatory for a commit, does not freeze the group and starts no
+   election, so it never counts as the DS's. The DS issues its `Remove` of a leaf regardless of the
+   member's own `Remove` of it — a commit then applies the DS's and leaves the member's
+   unreferenced, which this invariant allows — and refuses a member's own `Remove` of a leaf whose
+   DS `Remove` is outstanding with `400 E_INVALID_REQUEST`, detail "a removal of this leaf is
+   already pending", which the member reads as "I am being removed". The underlying action is
+   retried with a fresh KeyPackage, or dropped if the target leaf is already gone. Before proposing an Add the DS also checks invariant
    4's device-list clause (the device's DSK is in its user's newest signed device list) and leaves
    an unlisted device unproposed, its KeyPackage unspent. An outstanding DS Add whose device is
    revoked or quarantined, or whose user is no longer eligible under the channel ACL, is marked void
@@ -397,7 +403,9 @@ Added for the remote delivery service:
 - `commit <actor> [<group>]` — the actor commits for the current epoch of every group it is in, or
   of that one group.
 - `leave <client> <group>` — the client posts its own `Remove` proposal (`01-groups.md`, how a
-  member leaves); another member's commit applies it.
+  member leaves); another member's commit applies it. When the instance is already removing the
+  leaf, the refusal (invariant 6, "a removal of this leaf is already pending") is the client being
+  removed, not a failure: the client withdraws its proposal and the step passes.
 - `join_many <group> <count>` — `count` new clients join, at most 256 Adds per commit.
 - `expect_decrypts_all <actor>` — everything the actor received since its last such assertion decrypts.
 - `expect_quarantined <actor>` — the instance reports the actor's device quarantined (invariant 9).

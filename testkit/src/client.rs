@@ -7,8 +7,8 @@
 //! construction.
 
 use crate::ds::{
-    CommitRequest, DeliveryService, Device, HandshakeItem, HealRequest, NewAccount, RegisterGroup,
-    ResyncRequest,
+    CommitRequest, DeliveryService, Device, DsError, HandshakeItem, HealRequest, NewAccount,
+    RegisterGroup, ResyncRequest,
 };
 use crate::{Frame, TestkitError};
 use dilla_core::envelope::{Envelope, EnvelopeType};
@@ -616,6 +616,13 @@ impl TestClient {
     /// Proposes this device's removal from `group_id` (`leave <client> <group>`): the member Remove
     /// proposal of protocol/01 "Leaving", posted to `POST /v1/groups/{id}/proposal`. Another
     /// member's commit applies it.
+    ///
+    /// When the instance is already removing this leaf (a kick, a ban, an eviction), the delivery
+    /// service refuses the proposal with `E_INVALID_REQUEST`, "a removal of this leaf is already
+    /// pending" (protocol/02 invariant 6). That is not a failure of the leave: the device is being
+    /// removed, by the instance's own Remove. The refused proposal is withdrawn from this client's
+    /// queue — no other member holds it — and the leave succeeds. Any other refusal withdraws it too
+    /// and is returned.
     pub fn leave(
         &mut self,
         ds: &mut dyn DeliveryService,
@@ -627,8 +634,17 @@ impl TestClient {
             .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
         let epoch = group.epoch();
         let proposal = group.leave(&self.provider, &self.signer)?;
-        ds.post_proposal(group_id, epoch, serialize(&proposal)?)?;
-        Ok(())
+        match ds.post_proposal(group_id, epoch, serialize(&proposal)?) {
+            Ok(_) => Ok(()),
+            Err(refused) => {
+                group.withdraw_leave(&self.provider)?;
+                if is_removal_pending(&refused) {
+                    Ok(())
+                } else {
+                    Err(refused.into())
+                }
+            }
+        }
     }
 
     /// Commits for the group's current epoch: a self-update, which also carries every proposal
@@ -1075,11 +1091,45 @@ fn with_authenticated_data_len(message: &[u8], len: usize) -> Result<Vec<u8>, Te
     Ok(out)
 }
 
+/// The delivery service's refusal of a member's own `Remove` of a leaf the instance is already
+/// removing (protocol/02 invariant 6): `E_INVALID_REQUEST` with this detail. A leaving client reads
+/// it as "I am being removed".
+const REMOVAL_PENDING: &str = "a removal of this leaf is already pending";
+
+fn is_removal_pending(e: &DsError) -> bool {
+    matches!(e, DsError::Remote { code: "E_INVALID_REQUEST", detail, .. } if detail == REMOVAL_PENDING)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dilla_core::ids::InstanceId;
     use dilla_core::mls::GroupKind;
+
+    #[test]
+    fn only_the_removal_pending_refusal_reads_as_being_removed() {
+        let pending = DsError::Remote {
+            status: 400,
+            code: "E_INVALID_REQUEST",
+            detail: REMOVAL_PENDING.into(),
+        };
+        assert!(is_removal_pending(&pending));
+        for other in [
+            DsError::Remote {
+                status: 400,
+                code: "E_INVALID_REQUEST",
+                detail: "something else".into(),
+            },
+            DsError::Remote {
+                status: 403,
+                code: "E_FORBIDDEN",
+                detail: REMOVAL_PENDING.into(),
+            },
+            DsError::LeafNotCurrent,
+        ] {
+            assert!(!is_removal_pending(&other), "{other:?}");
+        }
+    }
 
     /// A real application message of a one-member text group, serialized as it is uploaded.
     fn an_application_message() -> Vec<u8> {

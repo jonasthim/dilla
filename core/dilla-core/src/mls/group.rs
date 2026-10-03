@@ -638,16 +638,78 @@ impl DillaGroup {
     ///
     /// `MlsGroup::store_pending_proposal` takes the **storage** and writes the queued proposal, so it
     /// runs inside a transaction like every other state change.
+    ///
+    /// A member's `Remove` never displaces the instance's `Remove` of the same leaf (protocol/01,
+    /// "Client policy for proposals from members"). When both are queued, OpenMLS commits only the
+    /// LATER of the two in this queue's order (`ProposalQueue::filter_proposals` keeps one proposal
+    /// per removed leaf, and a later `Remove` has priority over an earlier one), and the delivery
+    /// service refuses a commit that leaves the instance's out. The delivery service's own order is
+    /// always the member's first — it refuses a member's `Remove` of a leaf the instance is already
+    /// removing — but a client may receive them out of that order (a `GET /proposals` listing, a
+    /// replay), so a member's `Remove` that arrives after the instance's is queued in front of it:
+    /// the instance's is taken out and queued again behind it. Both stay queued, so a commit that
+    /// references either one can still be processed.
     pub fn store_pending_proposal(
         &mut self,
         provider: &DillaProvider,
         proposal: QueuedProposal,
     ) -> Result<(), MlsError> {
+        let behind: Vec<QueuedProposal> = match (proposal.proposal(), proposal.sender()) {
+            (Proposal::Remove(remove), Sender::Member(_)) => self
+                .group
+                .pending_proposals()
+                .filter(|p| {
+                    matches!(p.sender(), Sender::External(_))
+                        && matches!(p.proposal(), Proposal::Remove(r) if r.removed() == remove.removed())
+                })
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        };
         let group = &mut self.group;
         provider.storage().transaction(|| {
+            for p in &behind {
+                group
+                    .remove_pending_proposal(provider.storage(), p.proposal_reference_ref())
+                    .map_err(openmls)?;
+            }
             group
                 .store_pending_proposal(provider.storage(), proposal)
-                .map_err(MlsError::Storage)
+                .map_err(MlsError::Storage)?;
+            for p in behind {
+                group
+                    .store_pending_proposal(provider.storage(), p)
+                    .map_err(MlsError::Storage)?;
+            }
+            Ok::<(), MlsError>(())
+        })?;
+        Ok(())
+    }
+
+    /// Takes this device's own pending `Remove` of its own leaf (`leave`) back out of its queue. A
+    /// delivery service refuses that proposal with `E_INVALID_REQUEST` ("a removal of this leaf is
+    /// already pending") when the instance is already removing the leaf (protocol/02 invariant 6):
+    /// the device is being removed, and the refused proposal, which no other member holds, must not
+    /// stay queued — OpenMLS refuses to send an application message while a proposal is pending.
+    pub fn withdraw_leave(&mut self, provider: &DillaProvider) -> Result<(), MlsError> {
+        let own = self.group.own_leaf_index();
+        let refs: Vec<openmls::ciphersuite::hash_ref::ProposalRef> = self
+            .group
+            .pending_proposals()
+            .filter(|p| {
+                matches!(p.sender(), Sender::Member(l) if *l == own)
+                    && matches!(p.proposal(), Proposal::Remove(r) if r.removed() == own)
+            })
+            .map(|p| p.proposal_reference_ref().clone())
+            .collect();
+        let group = &mut self.group;
+        provider.storage().transaction(|| {
+            for r in &refs {
+                group
+                    .remove_pending_proposal(provider.storage(), r)
+                    .map_err(openmls)?;
+            }
+            Ok::<(), MlsError>(())
         })?;
         Ok(())
     }
@@ -1013,5 +1075,213 @@ mod media_tests {
             .process_message(&bob_p, message)
             .expect("bob accepts the commit that applies his own leave");
         assert!(matches!(processed, DillaProcessed::StagedCommit(_)));
+    }
+
+    /// One device of a group, with what it signs with.
+    struct Party {
+        p: DillaProvider,
+        s: SignatureKeyPair,
+        g: DillaGroup,
+    }
+
+    fn protocol(message: &MlsMessageOut) -> ProtocolMessage {
+        let bytes = message.tls_serialize_detached().expect("serialize");
+        MlsMessageIn::tls_deserialize_exact(&bytes)
+            .expect("deserialize")
+            .try_into_protocol_message()
+            .expect("a protocol message")
+    }
+
+    fn received(party: &mut Party, message: &MlsMessageOut) -> QueuedProposal {
+        match party.g.process_message(&party.p, protocol(message)) {
+            Ok(DillaProcessed::Proposal(q)) => *q,
+            other => panic!("not a proposal: {other:?}"),
+        }
+    }
+
+    /// alice (leaf 0), bob (leaf 1) and carol (leaf 2) in a call group whose external sender is the
+    /// instance, with bob's own Remove of his leaf (`leave`, already in bob's own queue) and the
+    /// instance's Remove of the same leaf, both at the current epoch.
+    fn two_removes_of_bob() -> (Party, Party, Party, MlsMessageOut, MlsMessageOut) {
+        let (alice_p, alice_s, alice_c) = member(0xaa, 0x01);
+        let (bob_p, bob_s, bob_c) = member(0xbb, 0x02);
+        let (carol_p, carol_s, carol_c) = member(0xcc, 0x03);
+        let instance = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+        let b = call_binding();
+        let senders = crate::mls::external_senders(instance.public().into(), &b.instance_id);
+        let mut alice = DillaGroup::create(
+            &alice_p,
+            &alice_s,
+            alice_c,
+            GroupId::from_slice(&[0x46; 16]),
+            b.clone(),
+            Some(senders),
+        )
+        .expect("create");
+        let bob_kp = build_key_package(&bob_p, &bob_s, bob_c, false).expect("key package");
+        let carol_kp = build_key_package(&carol_p, &carol_s, carol_c, false).expect("key package");
+        let bundle = alice
+            .add_members(
+                &alice_p,
+                &alice_s,
+                &[bob_kp.key_package().clone(), carol_kp.key_package().clone()],
+            )
+            .expect("add");
+        alice.merge_pending_commit(&alice_p).expect("merge");
+        let tree = alice.export_ratchet_tree();
+        let mut joined = bundle.welcomes.iter().map(|(_, w)| {
+            let MlsMessageBodyIn::Welcome(welcome) = wire(w.clone()) else {
+                panic!("not a Welcome");
+            };
+            welcome
+        });
+        let (bob_w, carol_w) = (
+            joined.next().expect("bob's"),
+            joined.next().expect("carol's"),
+        );
+        let mut bob = DillaGroup::join_from_welcome(&bob_p, bob_w, tree.clone().into(), &b)
+            .expect("bob joins");
+        let carol =
+            DillaGroup::join_from_welcome(&carol_p, carol_w, tree.into(), &b).expect("carol joins");
+        assert_eq!(bob.own_leaf_index().u32(), 1);
+
+        let leave = bob.leave(&bob_p, &bob_s).expect("leave");
+        let kick = crate::public_group::external_propose_remove(
+            LeafNodeIndex::new(1),
+            alice.group_id().clone(),
+            GroupEpoch::from(alice.epoch()),
+            &instance,
+        )
+        .expect("the instance's Remove");
+        (
+            Party {
+                p: alice_p,
+                s: alice_s,
+                g: alice,
+            },
+            Party {
+                p: bob_p,
+                s: bob_s,
+                g: bob,
+            },
+            Party {
+                p: carol_p,
+                s: carol_s,
+                g: carol,
+            },
+            leave,
+            kick,
+        )
+    }
+
+    /// The Removes a commit this party staged carries, by sender.
+    fn staged_removes(party: &Party) -> Vec<Sender> {
+        party
+            .g
+            .group
+            .pending_commit()
+            .expect("a staged commit")
+            .queued_proposals()
+            .filter(|q| matches!(q.proposal(), Proposal::Remove(_)))
+            .map(|q| q.sender().clone())
+            .collect()
+    }
+
+    /// The fact the delivery service's dedupe rests on (task-9 security fix, B): with two Removes of
+    /// one leaf queued, OpenMLS 0.9.0 does not refuse to commit — it commits exactly one of them, the
+    /// LATER in queue order, and leaves the other out. Measured on the raw `MlsGroup` queue, in both
+    /// orders.
+    #[test]
+    fn openmls_commits_only_the_later_of_two_removes_of_one_leaf() {
+        for member_first in [true, false] {
+            let (mut alice, _bob, _carol, leave, kick) = two_removes_of_bob();
+            let member = received(&mut alice, &leave);
+            let instance = received(&mut alice, &kick);
+            let order = if member_first {
+                [member, instance]
+            } else {
+                [instance, member]
+            };
+            let group = &mut alice.g.group;
+            let storage = alice.p.storage();
+            storage
+                .transaction(|| {
+                    for q in order {
+                        group
+                            .store_pending_proposal(storage, q)
+                            .map_err(MlsError::Storage)?;
+                    }
+                    Ok::<(), MlsError>(())
+                })
+                .expect("queue");
+            alice.g.self_update(&alice.p, &alice.s).expect("commit");
+            let removes = staged_removes(&alice);
+            assert_eq!(removes.len(), 1, "one Remove of the leaf is committed");
+            assert_eq!(
+                matches!(removes[0], Sender::External(_)),
+                member_first,
+                "the later Remove is the one committed (member first: {member_first})"
+            );
+        }
+    }
+
+    /// protocol/01's client rule over that fact: a member's Remove never displaces the instance's
+    /// Remove of the same leaf, whichever this client received first, and a receiver holding both
+    /// accepts the commit and drops the leaf.
+    #[test]
+    fn the_instance_remove_is_committed_over_a_member_remove_in_either_arrival_order() {
+        for member_first in [true, false] {
+            let (mut alice, _bob, mut carol, leave, kick) = two_removes_of_bob();
+            let member = received(&mut alice, &leave);
+            let instance = received(&mut alice, &kick);
+            let order = if member_first {
+                [member, instance]
+            } else {
+                [instance, member]
+            };
+            for q in order {
+                alice.g.store_pending_proposal(&alice.p, q).expect("queue");
+            }
+            let commit = alice.g.self_update(&alice.p, &alice.s).expect("commit");
+            let removes = staged_removes(&alice);
+            assert_eq!(removes.len(), 1);
+            assert!(
+                matches!(removes[0], Sender::External(_)),
+                "the instance's Remove is committed (member first: {member_first})"
+            );
+
+            for message in [&leave, &kick] {
+                let q = received(&mut carol, message);
+                carol.g.store_pending_proposal(&carol.p, q).expect("queue");
+            }
+            let DillaProcessed::StagedCommit(staged) = carol
+                .g
+                .process_message(&carol.p, protocol(&commit.commit))
+                .expect("carol accepts the commit")
+            else {
+                panic!("not a commit");
+            };
+            carol
+                .g
+                .merge_staged_commit(&carol.p, *staged)
+                .expect("merge");
+            assert_eq!(rows(&carol.g), [(0, 0x01), (2, 0x03)]);
+        }
+    }
+
+    /// A leaver whose own Remove the delivery service refused ("a removal of this leaf is already
+    /// pending") takes that proposal back and keeps the instance's.
+    #[test]
+    fn withdraw_leave_takes_back_only_the_devices_own_remove() {
+        let (_alice, mut bob, _carol, _leave, kick) = two_removes_of_bob();
+        let instance = received(&mut bob, &kick);
+        bob.g
+            .store_pending_proposal(&bob.p, instance)
+            .expect("queue");
+        assert_eq!(bob.g.group.pending_proposals().count(), 2);
+        bob.g.withdraw_leave(&bob.p).expect("withdraw");
+        let left: Vec<_> = bob.g.group.pending_proposals().collect();
+        assert_eq!(left.len(), 1);
+        assert!(matches!(left[0].sender(), Sender::External(_)));
     }
 }

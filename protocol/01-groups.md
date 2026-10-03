@@ -81,7 +81,12 @@ Client policy for proposals from members:
 - `Remove`: accept only if the target leaf belongs to the proposer's own user — the committer's for
   a `Remove` carried in the commit (device revocation), the proposing member's for a `Remove`
   proposal the commit references (a member leaving, below); reject otherwise
-  (`E_MEMBER_REMOVE_FORBIDDEN`). Removing other users is the instance's job, bound to roles.
+  (`E_MEMBER_REMOVE_FORBIDDEN`). Removing other users is the instance's job, bound to roles. A
+  member's `Remove` never cancels or stands in for the instance's `Remove` of the same leaf: a
+  committer holding both commits the instance's. RFC 9420 allows one `Remove` per leaf in a commit,
+  and OpenMLS commits the later of two queued for one leaf, so a client queues a member's `Remove`
+  in front of an instance `Remove` of the same leaf it already holds, whatever order it received
+  them in, and keeps both queued.
 - `Add`: accept only in `pairing` (first join of the second leaf) and `interaction` groups (the
   user's device adding the bot device or a new own device); reject in `text` and `call` groups.
 - `GroupContextExtensions`, `ReInit`, `PreSharedKey`: reject.
@@ -106,7 +111,12 @@ The `Remove` proposal inside an external commit MUST target only a leaf with the
 - A member leaves a channel or a call by a `Remove` **proposal** of its own leaf, which another
   member commits — a device cannot commit its own removal (RFC 9420 forbids a committer removing
   itself) — or is removed by the DS. A client leaving a call posts that proposal before it
-  disconnects from the SFU.
+  disconnects from the SFU. A member proposal never cancels, voids, blocks or replaces a DS
+  proposal: when the DS is already removing the leaf (a kick, a ban, an eviction) it refuses the
+  member's own `Remove` with `E_INVALID_REQUEST` ("a removal of this leaf is already pending"),
+  which the client reads as "I am being removed" and answers by withdrawing its refused proposal;
+  and the DS issues its own `Remove` of a leaf regardless of the member's own `Remove` of it
+  (`02-delivery-service.md`, invariant 6).
 
 ## Cadence
 

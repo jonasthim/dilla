@@ -39,9 +39,9 @@ func (h *dsHarness) proposals(t *testing.T, groupID id.ID, includeVoid bool) []s
 	return rows
 }
 
-// DEV-45: a device-addressed Remove resolves the leaf under the group lock and is dropped when the
-// device holds no leaf or when any non-void Remove of that leaf — the instance's or the member's
-// own — already stands.
+// DEV-45, as corrected by the security fix: a device-addressed Remove resolves the leaf under the
+// group lock and is dropped when the device holds no leaf or when a non-void INSTANCE Remove of that
+// leaf already stands. A member's own Remove of the leaf does not stand in for it.
 func TestProposeRemoveDeviceDropsDuplicatesAndGoneDevices(t *testing.T) {
 	h := newDSHarness(t)
 	ctx := context.Background()
@@ -62,8 +62,9 @@ func TestProposeRemoveDeviceDropsDuplicatesAndGoneDevices(t *testing.T) {
 	if err := h.ds.ProposeRemoveDevice(ctx, reg.GroupID, id.New(), id.New()); err != nil {
 		t.Fatalf("ProposeRemoveDevice of a device with no leaf: %v", err)
 	}
-	if n := len(h.proposals(t, reg.GroupID, false)); n != 2 {
-		t.Fatalf("%d live proposals, want 2: the duplicates and the gone device were proposed", n)
+	// The instance's Remove of leaf 1, leaf 2's own Remove and the instance's Remove issued over it.
+	if n := len(h.proposals(t, reg.GroupID, false)); n != 3 {
+		t.Fatalf("%d live proposals, want 3: a duplicate or the gone device was proposed, or leaf 2's own Remove stood in for the instance's", n)
 	}
 	action := id.New()
 	if err := h.ds.ProposeRemoveDevice(ctx, reg.GroupID, dev(3), action); err != nil {
@@ -77,41 +78,6 @@ func TestProposeRemoveDeviceDropsDuplicatesAndGoneDevices(t *testing.T) {
 	}
 	if fresh == nil || fresh.Origin != 0 || fresh.TargetLeaf == nil || *fresh.TargetLeaf != 3 {
 		t.Fatalf("the fresh Remove = %+v, want an instance Remove of leaf 3 with the action id", fresh)
-	}
-}
-
-// DEV-45: accepting a member's own Remove voids the instance's Remove of the same leaf, so a commit
-// carrying the member's Remove may omit the instance's (OpenMLS keeps only the later of two Removes
-// of one leaf, and clause 1 refused the commit that dropped the instance's).
-func TestAMemberRemoveVoidsTheInstanceRemoveOfTheSameLeaf(t *testing.T) {
-	h := newDSHarness(t)
-	ctx := context.Background()
-	reg, _ := h.mustRegister(t)
-	for _, leaf := range []uint32{1, 2} {
-		if err := h.ds.ProposeRemove(ctx, reg.GroupID, leaf, id.New()); err != nil {
-			t.Fatalf("ProposeRemove(%d): %v", leaf, err)
-		}
-	}
-	member := h.putMemberRemove(t, reg.GroupID, 1, 30)
-	n, err := ds.VoidInstanceRemovesForTest(h.ds, ctx, reg.GroupID, 6, 1)
-	if err != nil || n != 1 {
-		t.Fatalf("voided %d, %v; want the one instance Remove of leaf 1", n, err)
-	}
-	for _, r := range h.proposals(t, reg.GroupID, true) {
-		switch {
-		case bytes.Equal(r.Ref, member):
-			if r.VoidAt != nil {
-				t.Error("the member's own Remove was voided")
-			}
-		case *r.TargetLeaf == 1:
-			if r.VoidAt == nil {
-				t.Error("the instance Remove of leaf 1 is still live")
-			}
-		case *r.TargetLeaf == 2:
-			if r.VoidAt != nil {
-				t.Error("the instance Remove of leaf 2 was voided")
-			}
-		}
 	}
 }
 
@@ -148,7 +114,9 @@ func TestAVoidedCallRemoveIsReDrivenWithItsActionID(t *testing.T) {
 	}
 }
 
-func TestNoReDriveWhenTheLeafIsGoneAMemberRemoveStandsOrTheGroupIsText(t *testing.T) {
+// No re-drive when the leaf is gone or the group is a text group; a member's own Remove of the leaf
+// does not stop one, because a member proposal never stands in for an instance proposal.
+func TestNoReDriveWhenTheLeafIsGoneOrTheGroupIsTextButOverAMemberRemove(t *testing.T) {
 	h := newDSHarness(t)
 	ctx := context.Background()
 	reg, _ := h.mustRegister(t)
@@ -165,10 +133,11 @@ func TestNoReDriveWhenTheLeafIsGoneAMemberRemoveStandsOrTheGroupIsText(t *testin
 	if _, err := ds.SweepProposalsForTest(h.ds, ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	for _, r := range h.proposals(t, reg.GroupID, true) {
-		if r.Origin == 0 && r.VoidAt == nil {
-			t.Errorf("an instance Remove of leaf %d was re-driven", *r.TargetLeaf)
-		}
+	if n := len(h.instanceRemovesOf(t, reg.GroupID, 1)); n != 0 {
+		t.Errorf("leaf 1 is gone, yet %d instance Removes of it were re-driven", n)
+	}
+	if n := len(h.instanceRemovesOf(t, reg.GroupID, 2)); n != 1 {
+		t.Errorf("%d instance Removes of leaf 2 after the sweep, want 1: its own Remove stopped the re-drive", n)
 	}
 
 	text := newDSHarness(t)

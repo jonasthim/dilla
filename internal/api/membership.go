@@ -82,7 +82,7 @@ func RemoveUserFromChannelGroups(ctx context.Context, repo store.Repository, dsv
 				}
 				var err error
 				if kind == groupCall {
-					// DEV-45: by device, under the group lock, never stacked on a standing Remove.
+					// DEV-45: by device, under the group lock, never stacked on a standing instance Remove.
 					err = dsvc.ProposeRemoveDevice(ctx, g.GroupID, m.DeviceID, id.New())
 				} else {
 					err = dsvc.ProposeRemove(ctx, g.GroupID, m.LeafIndex, id.New())

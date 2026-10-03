@@ -135,7 +135,10 @@ func (d *DS) checkListedDevice(ctx context.Context, v DeviceListVerifier, device
 }
 
 // ProposeRemove issues an external Remove. A target leaf that is already gone is dropped rather
-// than proposed (invariant 6's second half).
+// than proposed (invariant 6's second half), and so is one the instance is already removing: a
+// second instance Remove of one leaf would leave the first unreferenced (OpenMLS keeps the later of
+// two Removes of one leaf), and clause 1 would refuse every commit until its TTL. A member's own
+// Remove of the leaf does not count: the instance's is issued on top of it.
 //
 // Like ProposeAdd it is a thin locking wrapper over a lock-free body. d.lock hands out a plain
 // per-group sync.Mutex, which is not reentrant, and both re-issue entry points already hold it:
@@ -146,6 +149,17 @@ func (d *DS) checkListedDevice(ctx context.Context, v DeviceListVerifier, device
 func (d *DS) ProposeRemove(ctx context.Context, groupID id.ID, leaf uint32, actionID id.ID) error {
 	unlock := d.lock(groupID)
 	defer unlock()
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errNotFound("group")
+	}
+	if err != nil {
+		return err
+	}
+	standing, err := d.instanceRemoveOutstanding(ctx, groupID, row.Epoch, leaf)
+	if err != nil || standing {
+		return err
+	}
 	return d.proposeRemoveLocked(ctx, groupID, leaf, actionID)
 }
 
@@ -157,7 +171,14 @@ func (d *DS) proposeRemoveLocked(ctx context.Context, groupID id.ID, leaf uint32
 	if err != nil {
 		return err
 	}
-	if _, err := d.userOfLeaf(ctx, groupID, leaf); err != nil {
+	// The device holding the leaf NOW, under the group lock, is the one this Remove is for. It is
+	// recorded on the row: MLS reuses a blank leaf, so a later re-issue by leaf alone could remove
+	// whoever joined at the index after this device left (removeStillTargets).
+	device, present, err := d.deviceAtLeaf(ctx, groupID, leaf)
+	if err != nil {
+		return err
+	}
+	if !present {
 		return errInvalid("the Remove target is no longer a member; the action is dropped")
 	}
 	inst, err := d.opts.Wasm.Acquire(ctx)
@@ -172,19 +193,60 @@ func (d *DS) proposeRemoveLocked(ctx context.Context, groupID id.ID, leaf uint32
 		return err
 	}
 	return d.storeInstanceProposal(ctx, groupID, row, blob, store.ProposalRow{
-		Kind:       uint8(mlswasi.ProposalRemove),
-		TargetLeaf: &leaf,
-		Origin:     0,
-		ActionID:   actionID,
+		Kind:         uint8(mlswasi.ProposalRemove),
+		TargetLeaf:   &leaf,
+		TargetDevice: &device,
+		Origin:       0,
+		ActionID:     actionID,
 	})
+}
+
+// removalPendingDetail is the refusal a member gets for its own Remove of a leaf the instance is
+// already removing (Proposal): the client reads it as "I am being removed", not as a failure.
+const removalPendingDetail = "a removal of this leaf is already pending"
+
+// deviceAtLeaf answers which device holds leaf in the group's current member set.
+func (d *DS) deviceAtLeaf(ctx context.Context, groupID id.ID, leaf uint32) (id.ID, bool, error) {
+	members, err := d.opts.Store.ListMembers(ctx, groupID)
+	if err != nil {
+		return id.ID{}, false, err
+	}
+	for _, m := range members {
+		if m.LeafIndex == leaf && m.RemovedEpoch == nil {
+			return m.DeviceID, true, nil
+		}
+	}
+	return id.ID{}, false, nil
+}
+
+// removeStillTargets reports whether an instance Remove issued as old still names the device that
+// holds its leaf now. A Remove that recorded its device is re-issued only onto that device; one that
+// recorded none (written before devices were recorded) only within the epoch it was issued in, where
+// no commit can have moved anybody onto the leaf.
+func (d *DS) removeStillTargets(ctx context.Context, groupID id.ID, old store.ProposalRow) (bool, error) {
+	device, present, err := d.deviceAtLeaf(ctx, groupID, *old.TargetLeaf)
+	if err != nil || !present {
+		return false, err
+	}
+	if old.TargetDevice != nil {
+		return device == *old.TargetDevice, nil
+	}
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if err != nil {
+		return false, err
+	}
+	return old.Epoch == row.Epoch, nil
 }
 
 // ProposeRemoveDevice proposes removing deviceID's leaf (DEV-45). The leaf is resolved under the
 // group lock — a leaf read outside it can name another device once its index is reused — and the
-// action is dropped, answering nil, when the device holds no leaf or when a non-void Remove of that
-// leaf already stands, the instance's or the member's own: OpenMLS keeps only the later of two
-// Removes of one leaf, so a second would leave the first unreferenced and invariant 4's clause 1
-// would refuse every commit until its TTL.
+// action is dropped, answering nil, when the device holds no leaf or when a non-void INSTANCE
+// Remove of that leaf already stands: OpenMLS keeps only the later of two Removes of one leaf, so a
+// second instance Remove would leave the first unreferenced and invariant 4's clause 1 would refuse
+// every commit until its TTL. A member's own Remove of the leaf never stands in for the instance's:
+// it is not mandatory for a commit, freezes nothing and elects nobody, so the instance issues its
+// Remove on top of it and the commit applies the instance's (the later), leaving the member's
+// unreferenced, which clause 1 allows.
 func (d *DS) ProposeRemoveDevice(ctx context.Context, groupID, deviceID, actionID id.ID) error {
 	unlock := d.lock(groupID)
 	defer unlock()
@@ -203,54 +265,44 @@ func (d *DS) ProposeRemoveDevice(ctx context.Context, groupID, deviceID, actionI
 		}
 		return err
 	}
-	standing, err := d.removeOutstanding(ctx, groupID, row.Epoch, leaf)
+	standing, err := d.instanceRemoveOutstanding(ctx, groupID, row.Epoch, leaf)
 	if err != nil || standing {
 		return err
 	}
 	return d.proposeRemoveLocked(ctx, groupID, leaf, actionID)
 }
 
-// removeOutstanding reports whether a non-void Remove of leaf, from either origin, stands at epoch.
-func (d *DS) removeOutstanding(ctx context.Context, groupID id.ID, epoch uint64, leaf uint32) (bool, error) {
+// instanceRemoveOutstanding reports whether a non-void INSTANCE Remove of leaf stands at epoch. A
+// member's own Remove is deliberately not counted: a member proposal never cancels, blocks or stands
+// in for an instance proposal.
+func (d *DS) instanceRemoveOutstanding(ctx context.Context, groupID id.ID, epoch uint64, leaf uint32) (bool, error) {
 	rows, err := d.opts.Store.ListProposals(ctx, groupID, epoch, false)
 	if err != nil {
 		return false, err
 	}
 	for _, r := range rows {
-		if mlswasi.ProposalKind(r.Kind) == mlswasi.ProposalRemove && r.TargetLeaf != nil && *r.TargetLeaf == leaf {
+		if isInstanceRemoveOf(r, leaf) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// voidInstanceRemovesTx voids, inside the caller's transaction, every non-void instance Remove of
-// leaf at epoch. Accepting a member's own Remove of leaf calls it (DEV-45): the two can then never
-// both be live, and a commit that carries the member's may omit the instance's.
-func (d *DS) voidInstanceRemovesTx(ctx context.Context, tx store.Repository, groupID id.ID, epoch uint64, leaf uint32) (int, error) {
-	rows, err := tx.ListProposals(ctx, groupID, epoch, false)
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, r := range rows {
-		if r.Origin != 0 || mlswasi.ProposalKind(r.Kind) != mlswasi.ProposalRemove || r.TargetLeaf == nil || *r.TargetLeaf != leaf {
-			continue
-		}
-		if err := tx.VoidProposal(ctx, groupID, r.Ref, d.now()); err != nil {
-			return n, err
-		}
-		n++
-	}
-	return n, nil
+// isInstanceRemoveOf is a non-void instance Remove of leaf.
+func isInstanceRemoveOf(r store.ProposalRow, leaf uint32) bool {
+	return r.Origin == 0 && r.VoidAt == nil && mlswasi.ProposalKind(r.Kind) == mlswasi.ProposalRemove &&
+		r.TargetLeaf != nil && *r.TargetLeaf == leaf
 }
 
 // redriveCallRemovesLocked re-issues, keeping its action_id, every voided instance Remove at
-// fromEpoch whose leaf is still a member and which no non-void Remove at curEpoch already covers
-// (F9, DEV-50). In a call group a void lifts the freeze but leaves the member decrypting; only a
-// commit removes it, so the instance asks again. The sweep calls it with fromEpoch == curEpoch; the
-// commit path calls it with the epoch a commit left behind, whose voided rows no sweep reads again.
-// The group lock is held.
+// fromEpoch whose device still holds its leaf and which no non-void INSTANCE Remove at curEpoch
+// already covers (F9, DEV-50). In a call group a void lifts the freeze but leaves the member
+// decrypting; only a commit removes it, so the instance asks again. A member's own Remove of the
+// leaf does not cover it: a member proposal never stands in for an instance proposal. The device
+// check is reissue's (removeStillTargets): MLS reuses blank leaves, so a Remove re-issued by leaf
+// alone after its device left could remove whoever joined at the index since. The sweep calls it
+// with fromEpoch == curEpoch; the commit path calls it with the epoch a commit left behind, whose
+// voided rows no sweep reads again. The group lock is held.
 func (d *DS) redriveCallRemovesLocked(ctx context.Context, groupID id.ID, fromEpoch, curEpoch uint64) error {
 	from, err := d.opts.Store.ListProposals(ctx, groupID, fromEpoch, true)
 	if err != nil {
@@ -264,7 +316,7 @@ func (d *DS) redriveCallRemovesLocked(ctx context.Context, groupID id.ID, fromEp
 	}
 	live := map[uint32]bool{}
 	for _, r := range cur {
-		if r.VoidAt == nil && mlswasi.ProposalKind(r.Kind) == mlswasi.ProposalRemove && r.TargetLeaf != nil {
+		if r.TargetLeaf != nil && isInstanceRemoveOf(r, *r.TargetLeaf) {
 			live[*r.TargetLeaf] = true
 		}
 	}
@@ -273,13 +325,8 @@ func (d *DS) redriveCallRemovesLocked(ctx context.Context, groupID id.ID, fromEp
 			r.TargetLeaf == nil || live[*r.TargetLeaf] {
 			continue
 		}
-		if _, err := d.userOfLeaf(ctx, groupID, *r.TargetLeaf); err != nil {
-			var dsErr *Error
-			if errors.As(err, &dsErr) {
-				continue // the leaf is gone: the Remove is satisfied
-			}
-			return err
-		}
+		// reissue drops (deletes) a Remove whose device no longer holds the leaf, and re-issues the
+		// rest onto the device they were issued for.
 		if err := d.reissue(ctx, groupID, r); err != nil {
 			return err
 		}
@@ -732,8 +779,13 @@ func (d *DS) reissue(ctx context.Context, groupID id.ID, old store.ProposalRow) 
 		if old.TargetLeaf == nil {
 			return nil
 		}
-		if _, err := d.userOfLeaf(ctx, groupID, *old.TargetLeaf); err != nil {
-			// The leaf is already gone: the action is satisfied, not retried.
+		still, err := d.removeStillTargets(ctx, groupID, old)
+		if err != nil {
+			return err
+		}
+		if !still {
+			// The device it was for no longer holds the leaf: the action is satisfied, not retried,
+			// and never re-aimed at whoever holds the index now.
 			return d.opts.Store.DeleteProposals(ctx, groupID, [][]byte{old.Ref})
 		}
 		return d.reissueVia(groupID, old.Ref, func() error {
@@ -789,7 +841,7 @@ func proposalLabel(kind uint8) string {
 }
 
 // sweepProposals voids every proposal past its TTL and reports how many it voided; in a call group
-// it then re-drives the voided Removes whose leaf is still present (F9). It runs on the one-minute
+// it then re-drives the voided Removes whose device still holds the leaf (F9). It runs on the one-minute
 // Sweep, and sweepCallProposals runs the call-group half every Policy.ProposalSweepInterval. The TTL
 // is evaluated here and nowhere else: every reader consults the stored VoidAt.
 //
