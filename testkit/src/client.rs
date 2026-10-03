@@ -618,8 +618,8 @@ impl TestClient {
     /// member's commit applies it.
     ///
     /// When the instance is already removing this leaf (a kick, a ban, an eviction), the delivery
-    /// service refuses the proposal with `E_INVALID_REQUEST`, "a removal of this leaf is already
-    /// pending" (protocol/02 invariant 6). That is not a failure of the leave: the device is being
+    /// service refuses the proposal with `409 E_REMOVE_PENDING` (protocol/02 invariant 6), matched
+    /// on the code. That is not a failure of the leave: the device is being
     /// removed, by the instance's own Remove. The refused proposal is withdrawn from this client's
     /// queue — no other member holds it — and the leave succeeds. Any other refusal withdraws it too
     /// and is returned.
@@ -1119,12 +1119,10 @@ fn with_authenticated_data_len(message: &[u8], len: usize) -> Result<Vec<u8>, Te
 }
 
 /// The delivery service's refusal of a member's own `Remove` of a leaf the instance is already
-/// removing (protocol/02 invariant 6): `E_INVALID_REQUEST` with this detail. A leaving client reads
-/// it as "I am being removed".
-const REMOVAL_PENDING: &str = "a removal of this leaf is already pending";
-
+/// removing (protocol/02 invariant 6): `409 E_REMOVE_PENDING`. A leaving client reads it as "I am
+/// being removed". It is matched on the code alone; the detail is for people and may change.
 fn is_removal_pending(e: &DsError) -> bool {
-    matches!(e, DsError::Remote { code: "E_INVALID_REQUEST", detail, .. } if detail == REMOVAL_PENDING)
+    e.code() == "E_REMOVE_PENDING"
 }
 
 #[cfg(test)]
@@ -1135,22 +1133,29 @@ mod tests {
 
     #[test]
     fn only_the_removal_pending_refusal_reads_as_being_removed() {
-        let pending = DsError::Remote {
-            status: 400,
-            code: "E_INVALID_REQUEST",
-            detail: REMOVAL_PENDING.into(),
-        };
-        assert!(is_removal_pending(&pending));
+        for pending in [
+            "a removal of this leaf is already pending",
+            "",
+            "anything at all",
+        ] {
+            let pending = DsError::from_code(
+                409,
+                "E_REMOVE_PENDING",
+                pending,
+                crate::ds::ErrorExtras::default(),
+            );
+            assert!(is_removal_pending(&pending), "{pending:?}");
+        }
         for other in [
             DsError::Remote {
                 status: 400,
                 code: "E_INVALID_REQUEST",
-                detail: "something else".into(),
+                detail: "a removal of this leaf is already pending".into(),
             },
             DsError::Remote {
                 status: 403,
                 code: "E_FORBIDDEN",
-                detail: REMOVAL_PENDING.into(),
+                detail: "a removal of this leaf is already pending".into(),
             },
             DsError::LeafNotCurrent,
         ] {

@@ -2,7 +2,7 @@
 # cannot post its own Remove of that leaf. Before the fix carol's own Remove voided the instance's,
 # which lifted the freeze, ended the election and left nothing forcing a commit: a kicked member who
 # kept re-posting its self-Remove stayed in the call, decrypting media. Now the delivery service
-# refuses it (E_INVALID_REQUEST, "a removal of this leaf is already pending"); the testkit's leave
+# refuses it (409 E_REMOVE_PENDING); the testkit's leave
 # verb reads that refusal as "I am being removed", withdraws its own proposal and goes on. The call
 # stays frozen. The Go test that runs this asserts the instance's Remove is still the one non-void
 # proposal, that no member proposal reached the log and that the election stands.

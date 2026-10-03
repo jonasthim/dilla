@@ -19,16 +19,20 @@ import (
 type Code string
 
 const (
-	CodeInvalidRequest    Code = "E_INVALID_REQUEST"
-	CodeBindingInvalid    Code = "E_BINDING_INVALID"
-	CodeUnauthenticated   Code = "E_UNAUTHENTICATED"
-	CodeForbidden         Code = "E_FORBIDDEN"
-	CodeLeafNotCurrent    Code = "E_LEAF_NOT_CURRENT"
-	CodeModeReadable      Code = "E_MODE_READABLE"
-	CodeNotUploader       Code = "E_NOT_UPLOADER"
-	CodeNotFound          Code = "E_NOT_FOUND"
-	CodeGroupExists       Code = "E_GROUP_EXISTS"
-	CodeCommitConflict    Code = "E_COMMIT_CONFLICT"
+	CodeInvalidRequest  Code = "E_INVALID_REQUEST"
+	CodeBindingInvalid  Code = "E_BINDING_INVALID"
+	CodeUnauthenticated Code = "E_UNAUTHENTICATED"
+	CodeForbidden       Code = "E_FORBIDDEN"
+	CodeLeafNotCurrent  Code = "E_LEAF_NOT_CURRENT"
+	CodeModeReadable    Code = "E_MODE_READABLE"
+	CodeNotUploader     Code = "E_NOT_UPLOADER"
+	CodeNotFound        Code = "E_NOT_FOUND"
+	CodeGroupExists     Code = "E_GROUP_EXISTS"
+	CodeCommitConflict  Code = "E_COMMIT_CONFLICT"
+	// CodeRemovePending is a member's own Remove of a leaf the instance is already removing
+	// (protocol/02 invariant 6): the member is being removed, withdraws its proposal and does not
+	// retry.
+	CodeRemovePending     Code = "E_REMOVE_PENDING"
 	CodePruned            Code = "E_PRUNED"
 	CodeInviteInvalid     Code = "E_INVITE_INVALID"
 	CodeTooLarge          Code = "E_TOO_LARGE"
@@ -96,7 +100,7 @@ func (e *Error) Status() int {
 		return http.StatusForbidden
 	case CodeNotFound:
 		return http.StatusNotFound
-	case CodeGroupExists, CodeCommitConflict:
+	case CodeGroupExists, CodeCommitConflict, CodeRemovePending:
 		return http.StatusConflict
 	case CodePruned, CodeInviteInvalid:
 		return http.StatusGone

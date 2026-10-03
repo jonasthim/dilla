@@ -35,7 +35,7 @@ func (h *dsHarness) instanceRemovesOf(t *testing.T, groupID id.ID, leaf uint32) 
 }
 
 // D(i): with an instance Remove of leaf L outstanding, the member at L posting its own Remove of L
-// is refused — E_INVALID_REQUEST, "a removal of this leaf is already pending" — and taken back out of
+// is refused — 409 E_REMOVE_PENDING, which the client branches on — and taken back out of
 // the guest's queue; the instance's Remove is still non-void and the group still frozen. Proposal's
 // leaf check refuses every committed proposal (the fixture's one is the instance's own Remove of
 // leaf 0), so the shape decision is driven through the seam with leaf 0's own session: to the
@@ -60,8 +60,8 @@ func TestAMembersOwnRemoveOfALeafTheInstanceIsRemovingIsRefused(t *testing.T) {
 	if err := ds.WithGroupForTest(h.ds, ctx, reg.GroupID, func(g *mlswasi.PublicGroup) error {
 		_, _, err := ds.QueueMemberProposalForTest(h.ds, ctx, g, session, reg.GroupID, fixtureFile(t, "remove_leaf0.mls"))
 		var dsErr *ds.Error
-		if !errors.As(err, &dsErr) || dsErr.Code != "E_INVALID_REQUEST" || dsErr.Detail != "a removal of this leaf is already pending" {
-			t.Errorf("leaf 0's own Remove while the instance removes leaf 0: got %v, want E_INVALID_REQUEST (already pending)", err)
+		if !errors.As(err, &dsErr) || dsErr.Code != "E_REMOVE_PENDING" || dsErr.Status != 409 {
+			t.Errorf("leaf 0's own Remove while the instance removes leaf 0: got %v, want 409 E_REMOVE_PENDING", err)
 		}
 		queued, err := g.ProposalList(ctx)
 		if err != nil {

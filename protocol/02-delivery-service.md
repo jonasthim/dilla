@@ -80,8 +80,8 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `GET /v1/groups/{id}/info` | E | — | `[epoch, group_info, tree_hash, next_seq]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/tree` | E | — | `[epoch, ratchet_tree, tree_hash]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/handshakes?from=&limit=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
-| `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
-| `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_INVALID_REQUEST` |
+| `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
+| `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_INVALID_REQUEST`, `E_REMOVE_PENDING` |
 | `POST /v1/groups/{id}/message` | E | `[epoch, private_message(bstr)]` | `[seq, franking_tag(bstr32), recv_ts]` | `E_COMMIT_REQUIRED`, `E_LEAF_NOT_CURRENT`, `E_TOO_LARGE`, `E_COMMITMENT_INVALID` |
 | `POST /v1/groups/{id}/resync` | E | `[external_commit(bstr), group_info(bstr)]` | `[seq, epoch]` | `E_COMMIT_INVALID`, `E_FORBIDDEN` (freeze-exempt, invariant 5) |
 | `POST /v1/groups/{id}/fork-report` | E | `[epoch, seq, reason(tstr)]` | `202 []` | `E_NOT_FOUND` |
@@ -317,22 +317,31 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
 6. **Void.** Before proposing, the DS validates a KeyPackage (lifetime not expired, capabilities
    include `0xF001`, not consumed) and a Remove target (leaf still present). A DS proposal older
    than its TTL — 30 seconds in `call` groups, 24 hours in `text` groups — is marked **void**; a
-   Commit MAY omit void proposals. In `call` groups the DS sweeps for expired proposals every 5
-   seconds, so a call proposal is void 30–35 s after it was issued, and a voided DS `Remove` whose
+   Commit MAY omit void proposals. In `call` groups the DS sweeps the call groups that have DS
+   proposals outstanding every 5 seconds, at most 256 of them per sweep in turn, so a call proposal
+   is void within one sweep rotation after its 30 s TTL (30–35 s while at most 256 call groups have
+   work; a group whose sweep fails is retried on the next sweep and holds up no other), and a voided DS `Remove` whose
    target leaf is still present is re-issued with the same `action_id` instead of being dropped: in
    a call group a void lifts the freeze but leaves the member decrypting media, and only a commit
    removes it. A DS `Remove` records the device holding its leaf when it is issued, and is re-issued
    only while that same device still holds the leaf: MLS reuses blank leaves, and a `Remove` re-aimed
-   by index alone would remove whoever joined there since. A DS `Remove` that names a device rather
-   than a leaf (a device that left a call, or a kick) resolves the leaf under the group lock and is
+   by index alone would remove whoever joined there since. A DS `Remove` that recorded no device
+   (one written before devices were recorded) is re-issued only within the epoch it was issued in,
+   and never across epochs. A DS `Remove` that names a device rather
+   than a leaf (a device that left a call, a kick, or the committer election's removal of a
+   candidate) resolves the leaf under the group lock and is
    dropped when the device holds no leaf or when a non-void DS `Remove` of that leaf is already
-   outstanding. A member proposal never cancels, voids, blocks or replaces a DS proposal: a
+   outstanding. A DS `Remove` that names a leaf is likewise dropped while a non-void DS `Remove` of
+   that leaf is outstanding; one whose leaf was read before the group lock names the device it
+   expects too, and is refused like a `Remove` of a leaf that is gone when another device holds the
+   leaf by then. A member proposal never cancels, voids, blocks or replaces a DS proposal: a
    member's own `Remove` is not mandatory for a commit, does not freeze the group and starts no
-   election, so it never counts as the DS's. The DS issues its `Remove` of a leaf regardless of the
-   member's own `Remove` of it — a commit then applies the DS's and leaves the member's
-   unreferenced, which this invariant allows — and refuses a member's own `Remove` of a leaf whose
-   DS `Remove` is outstanding with `400 E_INVALID_REQUEST`, detail "a removal of this leaf is
-   already pending", which the member reads as "I am being removed". The underlying action is
+   election, so it never counts as the DS's while it is only proposed. The DS issues its `Remove`
+   of a leaf regardless of the member's own `Remove` of it — a commit then applies one of the two
+   and leaves the other unreferenced, and invariant 4 counts the DS's as satisfied when the one
+   applied is the member's — and refuses a member's own `Remove` of a leaf whose DS `Remove` is
+   outstanding with `409 E_REMOVE_PENDING`, which the member reads as "I am being removed": it
+   withdraws the proposal and does not retry. The underlying action is
    retried with a fresh KeyPackage, or dropped if the target leaf is already gone. Before proposing an Add the DS also checks invariant
    4's device-list clause (the device's DSK is in its user's newest signed device list) and leaves
    an unlisted device unproposed, its KeyPackage unspent. An outstanding DS Add whose device is
@@ -414,8 +423,10 @@ Added for the remote delivery service:
   (invariant 4); the step fails when the actor holds no such pair.
 - `leave <client> <group>` — the client posts its own `Remove` proposal (`01-groups.md`, how a
   member leaves); another member's commit applies it. When the instance is already removing the
-  leaf, the refusal (invariant 6, "a removal of this leaf is already pending") is the client being
-  removed, not a failure: the client withdraws its proposal and the step passes.
+  leaf, the refusal (invariant 6, `409 E_REMOVE_PENDING`, matched on the code) is the client being
+  removed, not a failure: the client withdraws its proposal and the step passes. The testkit's
+  in-memory delivery service issues no instance proposals and so cannot answer that refusal; it
+  refuses the statement (as it does `kick`) rather than let a leave scenario pass without it.
 - `join_many <group> <count>` — `count` new clients join, at most 256 Adds per commit.
 - `expect_decrypts_all <actor>` — everything the actor received since its last such assertion decrypts.
 - `expect_quarantined <actor>` — the instance reports the actor's device quarantined (invariant 9).
@@ -495,6 +506,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 404 | `E_NOT_FOUND` | no such group, device, message or blob | none |
 | 409 | `E_GROUP_EXISTS` | this `group_id` is already registered | mint a new `group_id` |
 | 409 | `E_COMMIT_CONFLICT` | another commit won this epoch | discard the pending commit, process the winner, retry |
+| 409 | `E_REMOVE_PENDING` | the instance is already removing this leaf (invariant 6); the member's own `Remove` of it is refused | you are being removed: withdraw the proposal, do not retry |
 | 410 | `E_PRUNED` | delivery retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest `seq` delivery retention deleted from each stream, so the answer is exact; an archival deletion is not recorded, invariant 10) | resync; mark older messages "undecryptable (too old)" |
 | 410 | `E_INVITE_INVALID` | the invite is expired, exhausted or revoked | none |
 | 413 | `E_TOO_LARGE` | the object exceeds the instance limit | split or attach |

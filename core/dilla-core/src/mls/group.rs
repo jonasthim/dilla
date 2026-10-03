@@ -733,8 +733,8 @@ impl DillaGroup {
     }
 
     /// Takes this device's own pending `Remove` of its own leaf (`leave`) back out of its queue. A
-    /// delivery service refuses that proposal with `E_INVALID_REQUEST` ("a removal of this leaf is
-    /// already pending") when the instance is already removing the leaf (protocol/02 invariant 6):
+    /// delivery service refuses that proposal with `409 E_REMOVE_PENDING` when the instance is
+    /// already removing the leaf (protocol/02 invariant 6):
     /// the device is being removed, and the refused proposal, which no other member holds, must not
     /// stay queued — OpenMLS refuses to send an application message while a proposal is pending.
     pub fn withdraw_leave(&mut self, provider: &DillaProvider) -> Result<(), MlsError> {

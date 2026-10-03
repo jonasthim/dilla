@@ -968,13 +968,14 @@ func (d *DS) queueMemberProposal(ctx context.Context, g *mlswasi.PublicGroup, s 
 		// proposals), freezes nothing and elects nobody, so a member whose leaf the instance is
 		// already removing — a kick, a ban, an eviction — who could post its own Remove of that
 		// leaf would make OpenMLS keep the later of the two and keep its leaf by never having it
-		// committed. It is refused instead; the client reads the refusal as "I am being removed".
+		// committed. It is refused instead, with 409 E_REMOVE_PENDING, which the client reads as
+		// "I am being removed".
 		pending, err := d.instanceRemoveOutstanding(ctx, groupID, epoch, *detail.TargetLeaf)
 		if err != nil {
 			return nil, mlswasi.ProposalDetail{}, err
 		}
 		if pending {
-			return nil, mlswasi.ProposalDetail{}, errInvalid(removalPendingDetail)
+			return nil, mlswasi.ProposalDetail{}, errRemovePending()
 		}
 	default:
 		return nil, mlswasi.ProposalDetail{}, errForbidden(

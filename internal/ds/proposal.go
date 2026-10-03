@@ -201,10 +201,6 @@ func (d *DS) proposeRemoveLocked(ctx context.Context, groupID id.ID, leaf uint32
 	})
 }
 
-// removalPendingDetail is the refusal a member gets for its own Remove of a leaf the instance is
-// already removing (Proposal): the client reads it as "I am being removed", not as a failure.
-const removalPendingDetail = "a removal of this leaf is already pending"
-
 // deviceAtLeaf answers which device holds leaf in the group's current member set.
 func (d *DS) deviceAtLeaf(ctx context.Context, groupID id.ID, leaf uint32) (id.ID, bool, error) {
 	members, err := d.opts.Store.ListMembers(ctx, groupID)

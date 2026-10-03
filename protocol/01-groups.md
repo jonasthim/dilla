@@ -115,8 +115,8 @@ The `Remove` proposal inside an external commit MUST target only a leaf with the
   itself) — or is removed by the DS. A client leaving a call posts that proposal before it
   disconnects from the SFU. A member proposal never cancels, voids, blocks or replaces a DS
   proposal: when the DS is already removing the leaf (a kick, a ban, an eviction) it refuses the
-  member's own `Remove` with `E_INVALID_REQUEST` ("a removal of this leaf is already pending"),
-  which the client reads as "I am being removed" and answers by withdrawing its refused proposal;
+  member's own `Remove` with `409 E_REMOVE_PENDING`, which the client reads as "I am being removed"
+  and answers by withdrawing its refused proposal, without retrying;
   and the DS issues its own `Remove` of a leaf regardless of the member's own `Remove` of it
   (`02-delivery-service.md`, invariant 6).
 
