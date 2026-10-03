@@ -1,0 +1,60 @@
+// Fake capture sources for the media tests. Chromium reads a Y4M and a WAV through
+// --use-file-for-fake-video-capture / --use-file-for-fake-audio-capture (media_switches.cc at
+// 153.0.8010.12); Firefox has its own fake devices (640x480@30 and a 1 kHz tone) and takes prefs,
+// never `permissions` ("Unknown permission: camera").
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const W = 320, H = 240, FPS = 20, SECONDS = 2;
+const RATE = 48_000;
+
+/** Y4M frames with a moving gradient (so the encoder emits delta frames), and a 1 kHz mono tone. */
+export function writeFixtures(dir: string): { y4m: string; wav: string } {
+  mkdirSync(dir, { recursive: true });
+  const y4m = join(dir, 'fake-320x240.y4m');
+  const wav = join(dir, 'fake-1khz-48k.wav');
+  const frameBytes = W * H * 3 / 2;
+  const header = Buffer.from(`YUV4MPEG2 W${W} H${H} F${FPS}:1 Ip A1:1 C420jpeg\n`);
+  const y4mSize = header.length + FPS * SECONDS * (6 + frameBytes);
+  if (!existsSync(y4m) || statSync(y4m).size !== y4mSize) {
+    const parts: Buffer[] = [header];
+    for (let f = 0; f < FPS * SECONDS; f++) {
+      const frame = Buffer.alloc(frameBytes, 128);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) frame[y * W + x] = (x + y + f * 8) & 0xff;
+      parts.push(Buffer.from('FRAME\n'), frame);
+    }
+    writeFileSync(y4m, Buffer.concat(parts));
+  }
+  const samples = RATE * SECONDS;
+  const wavSize = 44 + samples * 2;
+  if (!existsSync(wav) || statSync(wav).size !== wavSize) {
+    const b = Buffer.alloc(wavSize);
+    b.write('RIFF', 0); b.writeUInt32LE(wavSize - 8, 4); b.write('WAVE', 8);
+    b.write('fmt ', 12); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
+    b.writeUInt32LE(RATE, 24); b.writeUInt32LE(RATE * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34);
+    b.write('data', 36); b.writeUInt32LE(samples * 2, 40);
+    for (let i = 0; i < samples; i++) b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 1000 * i) / RATE) * 0.5 * 32767), 44 + i * 2);
+    writeFileSync(wav, b);
+  }
+  return { y4m, wav };
+}
+
+/** The five Chromium switches of interfaces.md (f). */
+export function chromiumMediaArgs(f: { y4m: string; wav: string }): string[] {
+  return [
+    '--use-fake-device-for-media-stream',
+    '--use-fake-ui-for-media-stream',
+    `--use-file-for-fake-video-capture=${f.y4m}`,
+    `--use-file-for-fake-audio-capture=${f.wav}`,
+    '--autoplay-policy=no-user-gesture-required',
+  ];
+}
+
+/** The three Firefox prefs of interfaces.md (f), plus autoplay for the WebAudio observers. */
+export const FIREFOX_MEDIA_PREFS: Record<string, boolean | number> = {
+  'media.navigator.streams.fake': true,
+  'media.navigator.permission.disabled': true,
+  'media.devices.unfocused.enabled': true,
+  'media.autoplay.default': 0,
+  'media.autoplay.block-webaudio': false,
+};

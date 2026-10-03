@@ -326,6 +326,7 @@ func ControlHandler(h *Host) http.Handler {
 		}
 		writeJSON(w, report)
 	})
+	h.mountSFU(mux)
 	return mux
 }
 

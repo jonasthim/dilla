@@ -27,15 +27,25 @@ func main() {
 	dataDir := flag.String("data-dir", "", "instance data directory (default: a temp directory)")
 	core := flag.String("core", "", "the wasm32-wasip1 dilla_core_wasi.wasm (default: beside this binary)")
 	logLevel := flag.String("log-level", "warn", "the instance log level: debug, info, warn or error")
+	withSFU := flag.Bool("sfu", false, "start an in-process LiveKit beside the instance (browser media tests)")
+	sfuPort := flag.Int("sfu-port", dilladtest.DefaultSFUPort, "the in-process LiveKit's signalling port")
+	sfuUDPPort := flag.Int("sfu-udp-port", dilladtest.DefaultSFUUDPPort, "the in-process LiveKit's ICE/UDP port")
 	flag.Parse()
 
-	if err := run(*public, *control, *dataDir, *core, *logLevel); err != nil {
+	sfu := sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort}
+	if err := run(*public, *control, *dataDir, *core, *logLevel, sfu); err != nil {
 		fmt.Fprintln(os.Stderr, "dilla-testhost:", err)
 		os.Exit(1)
 	}
 }
 
-func run(public, control, dataDir, core, logLevel string) error {
+// sfuOptions are the -sfu flags: whether the host starts an in-process LiveKit, and on which ports.
+type sfuOptions struct {
+	enabled       bool
+	port, udpPort int
+}
+
+func run(public, control, dataDir, core, logLevel string, sfu sfuOptions) error {
 	if dataDir == "" {
 		dir, err := os.MkdirTemp("", "dilla-testhost-")
 		if err != nil {
@@ -59,6 +69,7 @@ func run(public, control, dataDir, core, logLevel string) error {
 	// fifteen scenarios cross a TTL, retention or heal boundary and none of them can wait for it.
 	host, err := dilladtest.NewHost(ctx, dilladtest.HostOptions{
 		DataDir: dataDir, CorePath: core, LogLevel: logLevel,
+		SFU: sfu.enabled, SFUPort: sfu.port, SFUUDPPort: sfu.udpPort,
 	})
 	if err != nil {
 		return err
@@ -85,6 +96,9 @@ func run(public, control, dataDir, core, logLevel string) error {
 
 	fmt.Printf("public  http://%s\n", publicLn.Addr())
 	fmt.Printf("control http://%s\n", controlLn.Addr())
+	if s := host.SFU(); s != nil {
+		fmt.Printf("sfu     %s\n", s.URL())
+	}
 	fmt.Printf("run a scenario with:\n  DILLA_TESTKIT_CONTROL=http://%s DILLA_TESTKIT_INVITE=%s \\\n"+
 		"    dilla-testkit run testkit/scenarios/<name>.scn --ds http://%s\n",
 		controlLn.Addr(), host.Invite(), publicLn.Addr())
