@@ -1,15 +1,27 @@
 //! `dilla-sframe/1`: the RFC 9605 key schedule, KID and CTR packing and header codec for suite
 //! 0x0004 (AES_128_GCM_SHA256_128), as pinned by protocol/05-media-frames.md.
 //!
-//! Week 1 covers exactly what protocol/vectors/sframe.json pins. The codec-prefix parsers for
-//! Opus, VP8, VP9 and H.264 and the RBSP escaping arrive when the format is exercised end to end;
-//! `dilla-sframe/1` freezes at the end of W5, never on paper.
+//! The frame cipher: seal and open over `P || H || C || T` with AAD `H || P`, the four codec
+//! prefix rules, H.264 canonicalisation and the seeded RBSP escape, and the non-wire
+//! `SframeError` vocabulary protocol/05 publishes. The vectors in `protocol/vectors/sframe.json`
+//! pin every byte of it.
 
 mod ctr;
+mod error;
+mod frame;
+mod h264;
 mod header;
+mod prefix;
 
 pub use ctr::{Ctr, MAX_SEQ, Slot, nonce};
+pub use error::SframeError;
+pub use frame::{encrypt_frame, open_frame, peek_kid_ctr, protect, unescape_protected};
+pub use h264::{
+    bytes_covering_h264_pps, canonicalize_h264, check_prefix_sps, check_sps_vui, rbsp_escape,
+    rbsp_unescape, trailing_zeros,
+};
 pub use header::{decode_header, encode_header};
+pub use prefix::{VP8_DELTA_PREFIX, VP8_KEY_PREFIX, prefix_len};
 
 use crate::identity::hkdf_sha256;
 
@@ -19,6 +31,8 @@ pub const SFRAME_SUITE: u16 = 0x0004;
 pub const NK: usize = 16;
 /// Nonce and salt length in bytes.
 pub const NN: usize = 12;
+/// AEAD tag length in bytes (RFC 9605 Table 1, suite 0x0004).
+pub const NT: usize = 16;
 /// A receiver MUST reject a KID that would resolve against an epoch more than this many commits
 /// ago (protocol/05 "Rotation").
 pub const KID_EPOCH_WINDOW: u64 = 255;
@@ -59,6 +73,51 @@ impl Kid {
 pub struct SframeKeys {
     pub key: [u8; NK],
     pub salt: [u8; NN],
+}
+
+/// The codec a frame carries. The numbers are the wasm surface's `codec: u8`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Codec {
+    Opus = 0,
+    Vp8 = 1,
+    Vp9 = 2,
+    H264 = 3,
+}
+
+impl Codec {
+    /// `UnsupportedCodec` for anything else: AV1 and H.265 have no number at media_version 1.
+    pub fn from_u8(v: u8) -> Result<Codec, SframeError> {
+        match v {
+            0 => Ok(Codec::Opus),
+            1 => Ok(Codec::Vp8),
+            2 => Ok(Codec::Vp9),
+            3 => Ok(Codec::H264),
+            _ => Err(SframeError::UnsupportedCodec),
+        }
+    }
+}
+
+/// One KID's AES-128-GCM key and salt, zeroed when dropped. `SframeKeys` stays `Copy` for the
+/// vectors; everything that holds a key for longer than one call holds a `FrameKey`.
+#[derive(zeroize::ZeroizeOnDrop)]
+pub struct FrameKey {
+    key: [u8; NK],
+    salt: [u8; NN],
+}
+
+impl FrameKey {
+    pub fn derive(base_key: &[u8; NK], kid: Kid) -> Self {
+        use zeroize::Zeroize as _;
+        let mut keys = derive_keys(base_key, kid);
+        let out = Self {
+            key: keys.key,
+            salt: keys.salt,
+        };
+        keys.key.zeroize();
+        keys.salt.zeroize();
+        out
+    }
 }
 
 /// `HKDF-Extract(salt = "", IKM = base_key)` (RFC 9605 section 4.4.2).

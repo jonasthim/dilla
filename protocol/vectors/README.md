@@ -7,7 +7,7 @@ committed files differ from the generator output.
 |---|---|---|
 | `envelope.json` | `04-envelope-and-franking.md` | `cbor`, `length`, `commitment` per case |
 | `franking.json` | `04-envelope-and-franking.md` | `tag` per case from `instance_franking_key` |
-| `sframe.json` | `05-media-frames.md` | `kid`, `key`, `salt`, `ctr`, `nonce`, `header` per case |
+| `sframe.json` | `05-media-frames.md` | `kid`, `key`, `salt`, `ctr`, `nonce`, `header` per case; `header` and `decode` per `rfc9605_c1` entry; `key`, `salt`, `nonce`, `frame` and `open` of `rfc9605_c3`; `prefix_len`, `frame` and `open` per `media_frames` entry; `out` and `roundtrip` per `escapes` entry; refusal of every entry of `rejects` with the named `E_SFRAME_*` code |
 | `identity.json` | `03-identity.md` | `safety_number.digits`, `sas.digits`, `recovery_key.base32`, `k_header`, `k_backup`, `credential_identity.cbor`, and both Ed25519 signatures |
 | `frames.json` | `02-delivery-service.md` | `frame` per case from `[op, n, group_id, payload]`, and refusal of every entry of `rejects` with the named `E_FRAME_*` code |
 

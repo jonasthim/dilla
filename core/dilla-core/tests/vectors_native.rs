@@ -19,12 +19,14 @@ fn every_suite_passes() {
 #[test]
 fn each_suite_reports_the_expected_number_of_cases() {
     // 4 envelope cases x 3 fields; the franking file's own `envelope_cbor` -> commitment, plus
-    // 3 franking cases x 1 field; 4 sframe cases x 6 fields; 8 identity cases (5 identity fields,
+    // 3 franking cases x 1 field; sframe: 4 key-schedule cases x 6 fields, 34 RFC 9605 C.1 headers
+    // x 2, the C.3 frame x 5, 4 media frames x 3 and 8 escapes x 2 (24 + 68 + 5 + 12 + 16 = 125);
+    // 8 identity cases (5 identity fields,
     // the credential CBOR, and the two credential signatures checked separately - interfaces.md
     // section 2.9); the reject corpus.
     assert_eq!(run_envelope().cases.len(), 12);
     assert_eq!(run_franking().cases.len(), 4);
-    assert_eq!(run_sframe().cases.len(), 24);
+    assert_eq!(run_sframe().cases.len(), 125);
     assert_eq!(run_identity().cases.len(), 8);
     // The gateway frame corpus: one case per opcode of protocol/02's catalogue plus the second
     // `mls.handshake` (instance-sent, `sender = null`), checked as one `frame` field each. Pinned
@@ -33,16 +35,24 @@ fn each_suite_reports_the_expected_number_of_cases() {
     // The reject suite is pinned exactly, not `>=`: 33 deterministic-CBOR corpus inputs, 3
     // envelope decode refusals, 2 body-limit refusals, every `rejects` entry of envelope.json
     // (9 today: interfaces.md §2.8's tightened per-field limits, one case per bound plus the
-    // pre-existing delete tombstone with a non-empty body), and the short `authenticated_data`.
+    // pre-existing delete tombstone with a non-empty body), the short `authenticated_data`, and
+    // sframe.json's 18 `rejects` (12 header, 5 AEAD, 1 codec prefix).
     // A `>=` here would let a vector-file reject case silently stop being run.
     let rejects = run_rejects();
-    assert_eq!(rejects.cases.len(), 48);
+    assert_eq!(rejects.cases.len(), 66);
     assert!(
         rejects
             .cases
             .iter()
             .any(|c| c.case == "envelope reject: delete tombstone with a non-empty body"),
         "envelope.json's reject vectors must be driven by the runner"
+    );
+    assert!(
+        rejects
+            .cases
+            .iter()
+            .any(|c| c.case == "sframe reject: prefix byte changed" && c.actual == "E_SFRAME_AUTH"),
+        "sframe.json's reject vectors must be driven by the runner"
     );
     for suite in [
         run_envelope(),

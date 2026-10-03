@@ -86,6 +86,24 @@ rejects	reaction body over 32 bytes	validate
 rejects	reserved ai (1c)	cbor
 rejects	reserved ai (1d)	cbor
 rejects	reserved ai (1e)	cbor
+rejects	sframe reject: first ciphertext bit flipped	open
+rejects	sframe reject: header ctr byte changed	open
+rejects	sframe reject: non-minimal ctr 0	decode
+rejects	sframe reject: non-minimal ctr 7	decode
+rejects	sframe reject: non-minimal ctr 8 in eight bytes	decode
+rejects	sframe reject: non-minimal ctr with a leading zero byte	decode
+rejects	sframe reject: non-minimal kid 0 in eight bytes	decode
+rejects	sframe reject: non-minimal kid 5	decode
+rejects	sframe reject: non-minimal kid 7	decode
+rejects	sframe reject: non-minimal kid with a leading zero byte	decode
+rejects	sframe reject: prefix byte changed	open
+rejects	sframe reject: tag bit flipped	open
+rejects	sframe reject: tag truncated to 15 bytes	open
+rejects	sframe reject: truncated header: ctr one byte short	decode
+rejects	sframe reject: truncated header: empty	decode
+rejects	sframe reject: truncated header: extended kid and ctr missing	decode
+rejects	sframe reject: truncated header: extended kid missing	decode
+rejects	sframe reject: vp8 key frame shorter than 10 bytes	open
 rejects	tag (c001)	cbor
 rejects	tag (c11a514b67b0)	cbor
 rejects	tag (d8ff01)	cbor
@@ -95,6 +113,107 @@ rejects	trailing bytes (83010203ff)	cbor
 rejects	trailing bytes (83010203ffffffff)	cbor
 rejects	truncated bstr (5820)	cbor
 rejects	undefined (f7)	cbor
+sframe	c1 kid 0 ctr 0	decode
+sframe	c1 kid 0 ctr 0	header
+sframe	c1 kid 0 ctr 1	decode
+sframe	c1 kid 0 ctr 1	header
+sframe	c1 kid 0 ctr 1099511627775	decode
+sframe	c1 kid 0 ctr 1099511627775	header
+sframe	c1 kid 0 ctr 1099511627776	decode
+sframe	c1 kid 0 ctr 1099511627776	header
+sframe	c1 kid 0 ctr 16777215	decode
+sframe	c1 kid 0 ctr 16777215	header
+sframe	c1 kid 0 ctr 16777216	decode
+sframe	c1 kid 0 ctr 16777216	header
+sframe	c1 kid 0 ctr 18446744073709551615	decode
+sframe	c1 kid 0 ctr 18446744073709551615	header
+sframe	c1 kid 0 ctr 255	decode
+sframe	c1 kid 0 ctr 255	header
+sframe	c1 kid 0 ctr 256	decode
+sframe	c1 kid 0 ctr 256	header
+sframe	c1 kid 0 ctr 281474976710655	decode
+sframe	c1 kid 0 ctr 281474976710655	header
+sframe	c1 kid 0 ctr 281474976710656	decode
+sframe	c1 kid 0 ctr 281474976710656	header
+sframe	c1 kid 0 ctr 4294967295	decode
+sframe	c1 kid 0 ctr 4294967295	header
+sframe	c1 kid 0 ctr 4294967296	decode
+sframe	c1 kid 0 ctr 4294967296	header
+sframe	c1 kid 0 ctr 65535	decode
+sframe	c1 kid 0 ctr 65535	header
+sframe	c1 kid 0 ctr 65536	decode
+sframe	c1 kid 0 ctr 65536	header
+sframe	c1 kid 0 ctr 72057594037927935	decode
+sframe	c1 kid 0 ctr 72057594037927935	header
+sframe	c1 kid 0 ctr 72057594037927936	decode
+sframe	c1 kid 0 ctr 72057594037927936	header
+sframe	c1 kid 1 ctr 0	decode
+sframe	c1 kid 1 ctr 0	header
+sframe	c1 kid 1099511627775 ctr 0	decode
+sframe	c1 kid 1099511627775 ctr 0	header
+sframe	c1 kid 1099511627776 ctr 0	decode
+sframe	c1 kid 1099511627776 ctr 0	header
+sframe	c1 kid 16777215 ctr 0	decode
+sframe	c1 kid 16777215 ctr 0	header
+sframe	c1 kid 16777216 ctr 0	decode
+sframe	c1 kid 16777216 ctr 0	header
+sframe	c1 kid 18446744073709551615 ctr 0	decode
+sframe	c1 kid 18446744073709551615 ctr 0	header
+sframe	c1 kid 18446744073709551615 ctr 18446744073709551615	decode
+sframe	c1 kid 18446744073709551615 ctr 18446744073709551615	header
+sframe	c1 kid 255 ctr 0	decode
+sframe	c1 kid 255 ctr 0	header
+sframe	c1 kid 256 ctr 0	decode
+sframe	c1 kid 256 ctr 0	header
+sframe	c1 kid 281474976710655 ctr 0	decode
+sframe	c1 kid 281474976710655 ctr 0	header
+sframe	c1 kid 281474976710656 ctr 0	decode
+sframe	c1 kid 281474976710656 ctr 0	header
+sframe	c1 kid 4294967295 ctr 0	decode
+sframe	c1 kid 4294967295 ctr 0	header
+sframe	c1 kid 4294967296 ctr 0	decode
+sframe	c1 kid 4294967296 ctr 0	header
+sframe	c1 kid 65535 ctr 0	decode
+sframe	c1 kid 65535 ctr 0	header
+sframe	c1 kid 65536 ctr 0	decode
+sframe	c1 kid 65536 ctr 0	header
+sframe	c1 kid 72057594037927935 ctr 0	decode
+sframe	c1 kid 72057594037927935 ctr 0	header
+sframe	c1 kid 72057594037927936 ctr 0	decode
+sframe	c1 kid 72057594037927936 ctr 0	header
+sframe	c3	frame
+sframe	c3	key
+sframe	c3	nonce
+sframe	c3	open
+sframe	c3	salt
+sframe	escape 0 seed 0	out
+sframe	escape 0 seed 0	roundtrip
+sframe	escape 1 seed 0	out
+sframe	escape 1 seed 0	roundtrip
+sframe	escape 2 seed 0	out
+sframe	escape 2 seed 0	roundtrip
+sframe	escape 3 seed 1	out
+sframe	escape 3 seed 1	roundtrip
+sframe	escape 4 seed 1	out
+sframe	escape 4 seed 1	roundtrip
+sframe	escape 5 seed 2	out
+sframe	escape 5 seed 2	roundtrip
+sframe	escape 6 seed 2	out
+sframe	escape 6 seed 2	roundtrip
+sframe	escape 7 seed 0	out
+sframe	escape 7 seed 0	roundtrip
+sframe	frame h264 sps pps idr escaped	frame
+sframe	frame h264 sps pps idr escaped	open
+sframe	frame h264 sps pps idr escaped	prefix_len
+sframe	frame opus mic	frame
+sframe	frame opus mic	open
+sframe	frame opus mic	prefix_len
+sframe	frame vp8 delta camera	frame
+sframe	frame vp8 delta camera	open
+sframe	frame vp8 delta camera	prefix_len
+sframe	frame vp8 key 640x480 layer 2	frame
+sframe	frame vp8 key 640x480 layer 2	open
+sframe	frame vp8 key 640x480 layer 2	prefix_len
 sframe	leaf 0 epoch 41	ctr
 sframe	leaf 0 epoch 41	header
 sframe	leaf 0 epoch 41	key

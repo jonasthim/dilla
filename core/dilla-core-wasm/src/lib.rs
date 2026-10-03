@@ -23,7 +23,7 @@ use dilla_core::identity::{
     safety_number as core_safety_number, sas as core_sas,
 };
 use dilla_core::ids::{DeviceId, MsgId, UserId};
-use dilla_core::sframe::{Ctr, Kid, NK, NN, derive_keys, encode_header};
+use dilla_core::sframe::{Ctr, Kid, NK, NN, SframeError, derive_keys, encode_header};
 use serde_json::{Map, Value, json};
 use wasm_bindgen::prelude::*;
 
@@ -280,8 +280,8 @@ pub fn sframe_derive(
     epoch: u64,
 ) -> Result<SframeKeysJs, JsError> {
     let base = fixed::<NK>(base_key, "base_key")?;
-    let leaf = u16::try_from(leaf_index)
-        .map_err(|_| err("E_UNSUPPORTED_SUITE", "leaf_index must be below 2^16"))?;
+    let leaf =
+        u16::try_from(leaf_index).map_err(|_| JsError::new(SframeError::LeafOutOfRange.code()))?;
     let keys = derive_keys(&base, Kid::new(leaf, epoch));
     Ok(SframeKeysJs {
         key: keys.key,

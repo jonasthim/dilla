@@ -24,19 +24,23 @@ const goldenPath = "testdata/vectors_suites.golden"
 //     commitment, recv_ts, tag — no name; run_franking emits "case <i>".
 //   - sframe.json cases are keyed leaf_index, epoch, kid, key, salt, slot,
 //     layer, seq, ctr, nonce, header — no name; run_sframe emits
-//     "leaf <n> epoch <n>".
+//     "leaf <n> epoch <n>". Its rfc9605_c1, rfc9605_c3, media_frames and
+//     escapes sections are named "c1 kid <k> ctr <c>", "c3", "frame <name>" and
+//     "escape <i> seed <s>", and its rejects "sframe reject: <name>" (run_rejects);
+//     the golden pins every one of those names.
 //   - identity.json has no `cases` key at all; its top level is version,
 //     description, safety_number, sas, recovery_key, credential_identity, and
 //     run_identity emits those last four as case names.
 const envelopeVectors = "../../protocol/vectors/envelope.json"
 
-// The per-suite case counts, pinned by Plan A task 8's own
-// `each_suite_reports_the_expected_number_of_cases`: 4 envelope cases x 3 fields,
-// 3 franking cases x 1 field plus the franking file's own envelope_cbor ->
-// commitment case, 4 sframe cases x 6 fields, 5 identity fields plus the
-// credential CBOR and the two credential signatures, and the 48-input reject
-// corpus. interfaces.md §6 task 4 requires "the same per-suite case counts as
-// the native and Node runs", which is exactly this table — 96 assertions.
+// The per-suite case counts are pinned to the native and Node runners.
+// 4 envelope cases x 3 fields; 3 franking cases x 1 field plus the franking file's own envelope_cbor ->
+// commitment case, sframe's 4 key-schedule cases x 6 fields plus 34 RFC 9605 C.1
+// headers x 2, the C.3 frame x 5, 4 media frames x 3 and 8 escapes x 2 (125), 5
+// identity fields plus the credential CBOR and the two credential signatures, and
+// the 66-input reject corpus. interfaces.md §6 task 4 requires "the same per-suite
+// case counts as the native and Node runs", which is exactly this table — 240
+// assertions.
 //
 // The reject corpus went from 40 to 48 in commit 39ab8fa, which tightened the envelope limits of
 // interfaces.md §2.8 and grew envelope.json's `rejects` array from one case to nine. That commit
@@ -46,18 +50,21 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 //
 // Plan B task 17 added the sixth suite: protocol/vectors/frames.json's 25 gateway-frame accept
 // cases, one `frame` field each, re-encoded by the core's own deterministic-CBOR writer.
+//
+// The dilla-media plan's task 4 grew sframe.json by its rfc9605_c1, rfc9605_c3, media_frames,
+// escapes and rejects sections: sframe 24 -> 125, rejects 48 -> 66, total 121 -> 240.
 var wantSuiteCases = map[string]int{
 	"envelope": 12,
 	"franking": 4,
-	"sframe":   24,
+	"sframe":   125,
 	"identity": 8,
 	"frames":   25,
-	"rejects":  48,
+	"rejects":  66,
 }
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 121
+const wantTotalCases = 240
 
 // The four case names run_identity emits, one per sub-object of identity.json.
 var wantIdentityCases = []string{"credential_identity", "recovery_key", "safety_number", "sas"}
