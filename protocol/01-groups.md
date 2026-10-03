@@ -78,9 +78,10 @@ Client policy for proposals from the external sender:
 Client policy for proposals from members:
 
 - `Update`: accept.
-- `Remove`: accept only if the target leaf belongs to the committer's own user (device revocation);
-  reject otherwise (`E_MEMBER_REMOVE_FORBIDDEN`). Removing other users is the instance's job, bound
-  to roles.
+- `Remove`: accept only if the target leaf belongs to the proposer's own user — the committer's for
+  a `Remove` carried in the commit (device revocation), the proposing member's for a `Remove`
+  proposal the commit references (a member leaving, below); reject otherwise
+  (`E_MEMBER_REMOVE_FORBIDDEN`). Removing other users is the instance's job, bound to roles.
 - `Add`: accept only in `pairing` (first join of the second leaf) and `interaction` groups (the
   user's device adding the bot device or a new own device); reject in `text` and `call` groups.
 - `GroupContextExtensions`, `ReInit`, `PreSharedKey`: reject.
@@ -102,16 +103,19 @@ The `Remove` proposal inside an external commit MUST target only a leaf with the
 - Creating a private channel, or granting a role that opens a channel to many members, is done by
   the DS issuing Add proposals in batches: the creator's device commits at most 256 Adds per
   commit, each producing one Welcome, until all eligible devices are members.
-- A member leaves a channel or a call by a `Remove` of its own leaves in a commit, or is removed
-  by the DS.
+- A member leaves a channel or a call by a `Remove` **proposal** of its own leaf, which another
+  member commits — a device cannot commit its own removal (RFC 9420 forbids a committer removing
+  itself) — or is removed by the DS. A client leaving a call posts that proposal before it
+  disconnects from the SFU.
 
 ## Cadence
 
 - **Update cadence (post-compromise security):** a device in a `text` group sends an `Update`
   proposal at most every `24h × max(1, ceil(leaves / 64))` and only if it has sent at least one
-  application message since its last `Update`. The DS batches proposals into one commit per
-  `max(60 s, leaves × 1 s)` (see 02, invariant 7). In `call` groups a device updates every 60
-  minutes; the DS commits at most once per minute.
+  application message since its last `Update`. In `call` groups a device rotates its leaf at least
+  every 60 minutes, by an empty commit with an UpdatePath or an `Update` proposal another member
+  commits; this is a client obligation the DS does not check. The DS never commits: it elects one
+  committer per round for its own proposals (02, invariant 7).
 - **Inactivity:** a device that has not connected for **90 days** is removed from every group by a
   DS `Remove` proposal (founder decision 2026-09-23). It rejoins by external commit.
 - **Epoch rotation on membership change:** every Add or Remove is a new epoch; senders MUST NOT

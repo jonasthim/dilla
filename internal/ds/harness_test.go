@@ -83,7 +83,7 @@ func newDSHarness(t *testing.T) *dsHarness {
 	// vanishes with its first connection.
 	path := filepath.Join(t.TempDir(), "dilla.db")
 	base := openMigratedSQLite(t, path)
-	repo := &failingRepo{Repository: base, welcomeReads: &atomic.Int64{}}
+	repo := &failingRepo{Repository: base, welcomeReads: &atomic.Int64{}, calls: &sync.Map{}}
 
 	h := &dsHarness{t: t, path: path, clk: clk, repo: repo, calls: map[string]int64{}}
 
@@ -335,6 +335,57 @@ type failingRepo struct {
 	// this number and about nothing visible on the wire. It is a pointer so the sub-repository Tx
 	// builds counts into the same total.
 	welcomeReads *atomic.Int64
+	// calls marks groups the store reports as call groups (kind 1). The committed fixture is a text
+	// group, and the call-group rules — the 30 s TTL, the re-drive, the call sweep, the evictor — are
+	// keyed on GroupRow.Kind; the override is the only way to reach them with real MLS state.
+	calls *sync.Map
+}
+
+// markCall makes the store report groupID as a call group.
+func (r *failingRepo) markCall(groupID id.ID) { r.calls.Store(groupID, true) }
+
+func (r *failingRepo) isCall(groupID id.ID) bool {
+	if r.calls == nil {
+		return false
+	}
+	_, ok := r.calls.Load(groupID)
+	return ok
+}
+
+func (r *failingRepo) GetGroup(ctx context.Context, groupID id.ID) (store.GroupRow, error) {
+	row, err := r.Repository.GetGroup(ctx, groupID)
+	if err == nil && r.isCall(groupID) {
+		row.Kind = 1
+	}
+	return row, err
+}
+
+func (r *failingRepo) ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]store.GroupRow, error) {
+	rows, err := r.Repository.ListOpenGroups(ctx, after, limit)
+	for i := range rows {
+		if r.isCall(rows[i].GroupID) {
+			rows[i].Kind = 1
+		}
+	}
+	return rows, err
+}
+
+// restartWithEvictor rebuilds the delivery service over the same store with a call evictor.
+func (h *dsHarness) restartWithEvictor(e ds.CallEvictor) {
+	h.t.Helper()
+	if err := h.ds.Shutdown(context.Background()); err != nil {
+		h.t.Fatalf("Shutdown: %v", err)
+	}
+	d, err := ds.New(ds.Options{
+		Store: h.repo, Wasm: h.wasm, Gateway: h.gw, Clock: h.clk,
+		Keys: testInstanceKeys(h.t), Policy: ds.DefaultPolicy(), Channels: h.channels,
+		ACL: h.acl, CallEvictor: e,
+	})
+	if err != nil {
+		h.t.Fatalf("ds.New: %v", err)
+	}
+	h.t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+	h.ds = d
 }
 
 var errInjected = errors.New("injected failure")
@@ -389,7 +440,7 @@ func (r *failingRepo) Tx(ctx context.Context, fn func(store.Repository) error) e
 	return r.Repository.Tx(ctx, func(tx store.Repository) error {
 		sub := &failingRepo{
 			Repository: tx, failOn: r.snapshotFailOn(), onPut: r.snapshotOnPut(),
-			welcomeReads: r.welcomeReads,
+			welcomeReads: r.welcomeReads, calls: r.calls,
 		}
 		err := fn(sub)
 		// The sub-repository owns the injection for the duration of the transaction; whatever it

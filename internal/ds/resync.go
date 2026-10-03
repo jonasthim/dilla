@@ -33,6 +33,7 @@ type ResyncRequest struct {
 // would read the group row unlocked too. Every read that feeds commit's epoch comparison happens
 // under the same lock acquisition.
 func (d *DS) Resync(ctx context.Context, s Session, groupID id.ID, r ResyncRequest) (CommitResult, error) {
+	defer d.flushEvictions(ctx, groupID) // after the unlock below: defers run last-in, first-out
 	unlock := d.lock(groupID)
 	defer unlock()
 	return d.resyncLocked(ctx, s, groupID, r)

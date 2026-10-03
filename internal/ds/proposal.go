@@ -179,6 +179,115 @@ func (d *DS) proposeRemoveLocked(ctx context.Context, groupID id.ID, leaf uint32
 	})
 }
 
+// ProposeRemoveDevice proposes removing deviceID's leaf (DEV-45). The leaf is resolved under the
+// group lock — a leaf read outside it can name another device once its index is reused — and the
+// action is dropped, answering nil, when the device holds no leaf or when a non-void Remove of that
+// leaf already stands, the instance's or the member's own: OpenMLS keeps only the later of two
+// Removes of one leaf, so a second would leave the first unreferenced and invariant 4's clause 1
+// would refuse every commit until its TTL.
+func (d *DS) ProposeRemoveDevice(ctx context.Context, groupID, deviceID, actionID id.ID) error {
+	unlock := d.lock(groupID)
+	defer unlock()
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errNotFound("group")
+	}
+	if err != nil {
+		return err
+	}
+	leaf, err := d.leafOf(ctx, groupID, deviceID)
+	if err != nil {
+		var dsErr *Error
+		if errors.As(err, &dsErr) && dsErr.Code == errLeafNotCurrent().Code {
+			return nil // no leaf: the device is not in the group, and there is nothing to remove
+		}
+		return err
+	}
+	standing, err := d.removeOutstanding(ctx, groupID, row.Epoch, leaf)
+	if err != nil || standing {
+		return err
+	}
+	return d.proposeRemoveLocked(ctx, groupID, leaf, actionID)
+}
+
+// removeOutstanding reports whether a non-void Remove of leaf, from either origin, stands at epoch.
+func (d *DS) removeOutstanding(ctx context.Context, groupID id.ID, epoch uint64, leaf uint32) (bool, error) {
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, epoch, false)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range rows {
+		if mlswasi.ProposalKind(r.Kind) == mlswasi.ProposalRemove && r.TargetLeaf != nil && *r.TargetLeaf == leaf {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// voidInstanceRemovesTx voids, inside the caller's transaction, every non-void instance Remove of
+// leaf at epoch. Accepting a member's own Remove of leaf calls it (DEV-45): the two can then never
+// both be live, and a commit that carries the member's may omit the instance's.
+func (d *DS) voidInstanceRemovesTx(ctx context.Context, tx store.Repository, groupID id.ID, epoch uint64, leaf uint32) (int, error) {
+	rows, err := tx.ListProposals(ctx, groupID, epoch, false)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range rows {
+		if r.Origin != 0 || mlswasi.ProposalKind(r.Kind) != mlswasi.ProposalRemove || r.TargetLeaf == nil || *r.TargetLeaf != leaf {
+			continue
+		}
+		if err := tx.VoidProposal(ctx, groupID, r.Ref, d.now()); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// redriveCallRemovesLocked re-issues, keeping its action_id, every voided instance Remove at
+// fromEpoch whose leaf is still a member and which no non-void Remove at curEpoch already covers
+// (F9, DEV-50). In a call group a void lifts the freeze but leaves the member decrypting; only a
+// commit removes it, so the instance asks again. The sweep calls it with fromEpoch == curEpoch; the
+// commit path calls it with the epoch a commit left behind, whose voided rows no sweep reads again.
+// The group lock is held.
+func (d *DS) redriveCallRemovesLocked(ctx context.Context, groupID id.ID, fromEpoch, curEpoch uint64) error {
+	from, err := d.opts.Store.ListProposals(ctx, groupID, fromEpoch, true)
+	if err != nil {
+		return err
+	}
+	cur := from
+	if curEpoch != fromEpoch {
+		if cur, err = d.opts.Store.ListProposals(ctx, groupID, curEpoch, false); err != nil {
+			return err
+		}
+	}
+	live := map[uint32]bool{}
+	for _, r := range cur {
+		if r.VoidAt == nil && mlswasi.ProposalKind(r.Kind) == mlswasi.ProposalRemove && r.TargetLeaf != nil {
+			live[*r.TargetLeaf] = true
+		}
+	}
+	for _, r := range from {
+		if r.VoidAt == nil || r.Origin != 0 || mlswasi.ProposalKind(r.Kind) != mlswasi.ProposalRemove ||
+			r.TargetLeaf == nil || live[*r.TargetLeaf] {
+			continue
+		}
+		if _, err := d.userOfLeaf(ctx, groupID, *r.TargetLeaf); err != nil {
+			var dsErr *Error
+			if errors.As(err, &dsErr) {
+				continue // the leaf is gone: the Remove is satisfied
+			}
+			return err
+		}
+		if err := d.reissue(ctx, groupID, r); err != nil {
+			return err
+		}
+		live[*r.TargetLeaf] = true
+	}
+	return nil
+}
+
 // ProposeAddBatch adds many devices to one group, at most MaxAddsPerCommit (256) Adds per commit,
 // until every device still eligible is in: protocol/01 § Joining's "the creator's device commits
 // at most 256 Adds per commit, each producing one Welcome, until all eligible devices are
@@ -679,16 +788,21 @@ func proposalLabel(kind uint8) string {
 	}
 }
 
-// sweepProposals voids every proposal past its TTL and reports how many it voided. It runs on the
-// retention sweeper's tick (task 26) and is called directly by tests driving a clock.Fake: TTLs
-// are evaluated lazily at decision points, never with a timer armed for 24 hours.
+// sweepProposals voids every proposal past its TTL and reports how many it voided; in a call group
+// it then re-drives the voided Removes whose leaf is still present (F9). It runs on the one-minute
+// Sweep, and sweepCallProposals runs the call-group half every Policy.ProposalSweepInterval. The TTL
+// is evaluated here and nowhere else: every reader consults the stored VoidAt.
 //
 // It PAGES to completion rather than reading one fixed batch from the zero id. `ListOpenGroups`
 // takes an `after` cursor; a constant `id.ID{}` start with a fixed limit means only the first N
 // groups are ever swept, so on an instance with more groups than the batch the tail's proposals
 // never void — and nothing else voids them.
-func (d *DS) sweepProposals(ctx context.Context) (int, error) {
-	now := d.now()
+func (d *DS) sweepProposals(ctx context.Context) (int, error) { return d.sweep(ctx, false) }
+
+// sweepCallProposals is sweepProposals over call groups only (DEV-49).
+func (d *DS) sweepCallProposals(ctx context.Context) (int, error) { return d.sweep(ctx, true) }
+
+func (d *DS) sweep(ctx context.Context, callsOnly bool) (int, error) {
 	voided := 0
 	after := id.ID{}
 	for {
@@ -700,26 +814,66 @@ func (d *DS) sweepProposals(ctx context.Context) (int, error) {
 			return voided, nil
 		}
 		for _, g := range groups {
-			rows, err := d.opts.Store.ListProposals(ctx, g.GroupID, g.Epoch, false)
+			after = g.GroupID
+			if g.Kind != groupKindCall {
+				if callsOnly {
+					continue
+				}
+				n, err := d.voidExpired(ctx, g.GroupID, g.Epoch)
+				voided += n
+				if err != nil {
+					return voided, err
+				}
+				continue
+			}
+			// A call group is swept under its lock: the one-minute Sweep and the call sweeper can meet
+			// here, and the re-drive must read the voids it re-drives. The epoch is read again under
+			// the lock: a commit that landed after the page was listed has already re-driven what it
+			// left behind (commitLocked step 9), and re-driving the listed epoch's voids again would
+			// stack a second Remove of one leaf at the new epoch.
+			unlock := d.lock(g.GroupID)
+			epoch := g.Epoch
+			if cur, gerr := d.opts.Store.GetGroup(ctx, g.GroupID); gerr == nil {
+				epoch = cur.Epoch
+			}
+			n, err := d.voidExpired(ctx, g.GroupID, epoch)
+			voided += n
+			if err == nil {
+				if rerr := d.redriveCallRemovesLocked(ctx, g.GroupID, epoch, epoch); rerr != nil {
+					d.log().Error("re-driving a voided call Remove failed; the next sweep retries it",
+						"group", g.GroupID.String()[:8], "err", rerr)
+				}
+			}
+			unlock()
 			if err != nil {
 				return voided, err
 			}
-			for _, r := range rows {
-				if r.VoidAt != nil || now < r.IssuedAt+int64(r.TTL) { //nolint:gosec // G115: a proposal TTL in seconds, at most a few days
-					continue
-				}
-				if err := d.opts.Store.VoidProposal(ctx, g.GroupID, r.Ref, now); err != nil {
-					return voided, err
-				}
-				if d.opts.Metrics != nil {
-					d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(r.Kind)).Dec()
-				}
-				voided++
-			}
-			after = g.GroupID
 		}
 		if len(groups) < sweepPage {
 			return voided, nil
 		}
 	}
+}
+
+// voidExpired voids the group's proposals at epoch whose TTL has passed.
+func (d *DS) voidExpired(ctx context.Context, groupID id.ID, epoch uint64) (int, error) {
+	now := d.now()
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, epoch, false)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range rows {
+		if r.VoidAt != nil || now < r.IssuedAt+int64(r.TTL) { //nolint:gosec // G115: a proposal TTL in seconds, at most a few days
+			continue
+		}
+		if err := d.opts.Store.VoidProposal(ctx, groupID, r.Ref, now); err != nil {
+			return n, err
+		}
+		if d.opts.Metrics != nil {
+			d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(r.Kind)).Dec()
+		}
+		n++
+	}
+	return n, nil
 }

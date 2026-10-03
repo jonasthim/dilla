@@ -36,8 +36,10 @@ type recordingDS struct {
 		Group id.ID
 		Leaf  uint32
 	}
-	Adds   []struct{ Group, Device id.ID }
-	Closed []id.ID
+	// DeviceRemoves is every call-group Remove, which RemoveUserFromChannelGroups issues by device.
+	DeviceRemoves []struct{ Group, Device id.ID }
+	Adds          []struct{ Group, Device id.ID }
+	Closed        []id.ID
 	// Voided is every group VoidIneligibleAdds was asked about, in call order (C2).
 	Voided []id.ID
 	// Commits counts the commit requests ProposeAddBatch makes: one per non-empty batch of at
@@ -57,6 +59,7 @@ func (d *recordingDS) Reset() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.Removes, d.Adds, d.Closed, d.Voided, d.Commits = nil, nil, nil, nil, 0
+	d.DeviceRemoves = nil
 }
 
 func (d *recordingDS) VoidIneligibleAdds(_ context.Context, g id.ID) error {
@@ -89,6 +92,19 @@ func (d *recordingDS) ProposeRemove(_ context.Context, g id.ID, leaf uint32, _ i
 		Leaf  uint32
 	}{g, leaf})
 	return nil
+}
+
+func (d *recordingDS) ProposeRemoveDevice(_ context.Context, g, dev, _ id.ID) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.DeviceRemoves = append(d.DeviceRemoves, struct{ Group, Device id.ID }{g, dev})
+	return nil
+}
+
+func (d *recordingDS) deviceRemoves() []struct{ Group, Device id.ID } {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.DeviceRemoves)
 }
 
 // ProposeAddBatch records the batch the way the delivery service issues it: ds.PlanBatches at 256
@@ -450,6 +466,11 @@ func TestKickAndLeaveIssueDSRemoves(t *testing.T) {
 	seedMember(t, e, tg, kicked, 2) // a second device
 	seedMember(t, e, tg, bystander, 3)
 	seedMember(t, e, cg, kicked, 4)
+	cgMembers, err := e.Repo.ListMembers(t.Context(), cg)
+	if err != nil || len(cgMembers) != 1 {
+		t.Fatalf("call group members %+v, %v", cgMembers, err)
+	}
+	callDevice := cgMembers[0].DeviceID
 	seedMember(t, e, tg, leaver, 5)
 	// A leaf of the kicked user an earlier commit already removed.
 	members, _ := e.Repo.ListMembers(t.Context(), tg)
@@ -473,7 +494,7 @@ func TestKickAndLeaveIssueDSRemoves(t *testing.T) {
 		Leaf  uint32
 	}
 	got := e.DS.removes()
-	want := []rm{{tg, 1}, {tg, 2}, {cg, 4}}
+	want := []rm{{tg, 1}, {tg, 2}}
 	if len(got) != len(want) {
 		t.Fatalf("Removes after the kick = %+v, want %+v", got, want)
 	}
@@ -482,12 +503,16 @@ func TestKickAndLeaveIssueDSRemoves(t *testing.T) {
 			t.Fatalf("Removes after the kick = %+v, missing %+v", got, w)
 		}
 	}
+	// The call leaf is removed by device (DEV-45).
+	if dr := e.DS.deviceRemoves(); len(dr) != 1 || dr[0].Group != cg || dr[0].Device != callDevice {
+		t.Fatalf("device Removes after the kick = %+v, want the call leaf's device in %x", dr, cg)
+	}
 
 	if status, _ := e.Do(http.MethodPost, "/v1/communities/"+cid.String()+"/leave", leaverTok, []any{}); status != http.StatusNoContent {
 		t.Fatal("leave failed")
 	}
 	got = e.DS.removes()
-	if len(got) != 4 || got[3] != (rm{tg, 5}) {
+	if len(got) != 3 || got[2] != (rm{tg, 5}) {
 		t.Fatalf("Removes after the leave = %+v, want one more for leaf 5", got)
 	}
 }

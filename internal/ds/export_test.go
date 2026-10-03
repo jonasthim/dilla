@@ -2,6 +2,7 @@ package ds
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/id"
@@ -234,4 +235,53 @@ func ReissueAllUnderLockForTest(d *DS, ctx context.Context, groupID id.ID, epoch
 	unlock := d.lock(groupID)
 	defer unlock()
 	return d.reissueAll(ctx, groupID, epoch)
+}
+
+// ------------------------------------------------------------------- dilla-media task 9
+
+// ReplaceMembersForTest runs replaceMembersTx for a group of the given kind in one transaction and
+// queues its removed devices, exactly as every member-set writer does after its transaction.
+func ReplaceMembersForTest(d *DS, ctx context.Context, groupID id.ID, kind uint8, state mlswasi.GroupState) error {
+	var view memberView
+	if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		var err error
+		view, err = d.replaceMembersTx(ctx, tx, groupID, kind, state)
+		return err
+	}); err != nil {
+		return err
+	}
+	d.queueEviction(groupID, view.removed)
+	return nil
+}
+
+// FlushEvictionsForTest is the flush every member-set entry point defers past its unlock.
+func FlushEvictionsForTest(d *DS, ctx context.Context, groupID id.ID) { d.flushEvictions(ctx, groupID) }
+
+// GroupLockFreeForTest reports whether nobody holds groupID's lock right now.
+func GroupLockFreeForTest(d *DS, groupID id.ID) bool {
+	v, _ := d.groupLocks.LoadOrStore(groupID, &sync.Mutex{})
+	mu, _ := v.(*sync.Mutex)
+	if mu.TryLock() {
+		mu.Unlock()
+		return true
+	}
+	return false
+}
+
+// SweepCallProposalsForTest is one pass of the call sweeper.
+func SweepCallProposalsForTest(d *DS, ctx context.Context) (int, error) {
+	return d.sweepCallProposals(ctx)
+}
+
+// VoidInstanceRemovesForTest is what accepting a member's Remove of leaf does to the instance's own
+// Removes of it, in one transaction. No committed fixture holds a member-signed Remove, so the
+// rule is driven here and end to end in testkit/scenarios/call_remove_dedupe.scn.
+func VoidInstanceRemovesForTest(d *DS, ctx context.Context, groupID id.ID, epoch uint64, leaf uint32) (int, error) {
+	var n int
+	err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		var err error
+		n, err = d.voidInstanceRemovesTx(ctx, tx, groupID, epoch, leaf)
+		return err
+	})
+	return n, err
 }

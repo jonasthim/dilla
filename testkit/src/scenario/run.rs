@@ -458,18 +458,28 @@ impl Runner {
                 control_post(path, &format!("{{\"name\":{}}}", json_string(name)))?;
                 Ok(())
             }
-            Stmt::Commit { actor } => self.with_client(actor, |committer, ds| {
-                let groups = committer.group_ids();
-                if groups.is_empty() {
-                    return Err(TestkitError::Scenario(format!(
-                        "{actor} is in no group to commit to"
-                    )));
+            Stmt::Commit { actor, group } => {
+                if let Some(group) = group {
+                    let id = self.group(group)?.id.clone();
+                    return self.with_client(actor, |committer, ds| committer.commit(ds, &id));
                 }
-                for group_id in groups {
-                    committer.commit(ds, &group_id)?;
-                }
-                Ok(())
-            }),
+                self.with_client(actor, |committer, ds| {
+                    let groups = committer.group_ids();
+                    if groups.is_empty() {
+                        return Err(TestkitError::Scenario(format!(
+                            "{actor} is in no group to commit to"
+                        )));
+                    }
+                    for group_id in groups {
+                        committer.commit(ds, &group_id)?;
+                    }
+                    Ok(())
+                })
+            }
+            Stmt::Leave { client, group } => {
+                let id = self.group(group)?.id.clone();
+                self.with_client(client, |leaver, ds| leaver.leave(ds, &id))
+            }
             Stmt::JoinMany {
                 group,
                 count,
@@ -1032,10 +1042,11 @@ fn actor_of(stmt: &Stmt) -> Option<&str> {
         | Stmt::ForkReport { client, .. }
         | Stmt::Heal { client, .. }
         | Stmt::AckCommit { client }
+        | Stmt::Leave { client, .. }
         | Stmt::PublishKeyPackages { client, .. } => Some(client),
         Stmt::Remove { actor, .. }
         | Stmt::Kick { actor, .. }
-        | Stmt::Commit { actor }
+        | Stmt::Commit { actor, .. }
         | Stmt::ExpectDecryptsAll { actor } => Some(actor),
         Stmt::ExpectReject { inner, .. } => actor_of(inner),
         _ => None,

@@ -404,6 +404,21 @@ impl DillaGroup {
         })
     }
 
+    /// Proposes the removal of this device's own leaf (protocol/01 "Leaving", DEV-47). A device
+    /// cannot commit its own removal — OpenMLS refuses that commit with `CannotRemoveSelf` — so it
+    /// posts this proposal to `POST /v1/groups/{id}/proposal` and another member's commit applies
+    /// it. The device keeps its group state until that commit arrives.
+    pub fn leave(
+        &mut self,
+        provider: &DillaProvider,
+        signer: &SignatureKeyPair,
+    ) -> Result<MlsMessageOut, MlsError> {
+        let group = &mut self.group;
+        Ok(provider
+            .storage()
+            .transaction(|| group.leave_group(provider, signer).map_err(openmls))?)
+    }
+
     /// Builds and stages one commit through `MlsGroup::commit_builder`, asking it for the
     /// GroupInfo of the epoch the commit creates.
     ///
@@ -934,5 +949,69 @@ mod media_tests {
         );
         assert_eq!(m.own_leaf, 0);
         assert_eq!(m.roster, alice.roster());
+    }
+
+    /// DEV-47: a member leaves by a Remove *proposal* of its own leaf, which another member commits;
+    /// OpenMLS refuses a commit that removes its own committer.
+    #[test]
+    fn a_leave_is_a_remove_proposal_another_member_commits() {
+        let (alice_p, alice_s, alice_c) = member(0xaa, 0x01);
+        let (bob_p, bob_s, bob_c) = member(0xbb, 0x02);
+        let b = call_binding();
+        let mut alice = DillaGroup::create(
+            &alice_p,
+            &alice_s,
+            alice_c,
+            GroupId::from_slice(&[0x45; 16]),
+            b.clone(),
+            None,
+        )
+        .expect("create");
+        let bob_kp = build_key_package(&bob_p, &bob_s, bob_c, false).expect("key package");
+        let bundle = alice
+            .add_members(&alice_p, &alice_s, &[bob_kp.key_package().clone()])
+            .expect("add");
+        alice.merge_pending_commit(&alice_p).expect("merge");
+        let MlsMessageBodyIn::Welcome(welcome) = wire(bundle.welcomes[0].1.clone()) else {
+            panic!("not a Welcome");
+        };
+        let mut bob =
+            DillaGroup::join_from_welcome(&bob_p, welcome, alice.export_ratchet_tree().into(), &b)
+                .expect("join");
+
+        let proposal = bob.leave(&bob_p, &bob_s).expect("leave");
+        let bytes = proposal.tls_serialize_detached().expect("serialize");
+        let message = MlsMessageIn::tls_deserialize_exact(&bytes)
+            .expect("deserialize")
+            .try_into_protocol_message()
+            .expect("a protocol message");
+        let DillaProcessed::Proposal(queued) =
+            alice.process_message(&alice_p, message).expect("process")
+        else {
+            panic!("bob's leave is not a proposal");
+        };
+        match queued.proposal() {
+            Proposal::Remove(r) => assert_eq!(r.removed().u32(), 1),
+            other => panic!("bob's leave proposes {other:?}"),
+        }
+        alice
+            .store_pending_proposal(&alice_p, *queued)
+            .expect("queue");
+        let commit = alice.self_update(&alice_p, &alice_s).expect("commit");
+        alice.merge_pending_commit(&alice_p).expect("merge");
+        assert_eq!(rows(&alice), [(0, 0x01)]);
+
+        // The receiver's policy measures a referenced member Remove against its proposer (bob),
+        // not the committer (alice): before that change every member refused this commit with
+        // E_MEMBER_REMOVE_FORBIDDEN, so a member could never leave.
+        let bytes = commit.commit.tls_serialize_detached().expect("serialize");
+        let message = MlsMessageIn::tls_deserialize_exact(&bytes)
+            .expect("deserialize")
+            .try_into_protocol_message()
+            .expect("a protocol message");
+        let processed = bob
+            .process_message(&bob_p, message)
+            .expect("bob accepts the commit that applies his own leave");
+        assert!(matches!(processed, DillaProcessed::StagedCommit(_)));
     }
 }

@@ -281,8 +281,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    epoch gets `409 E_COMMIT_CONFLICT` with the winning commit and the current outstanding proposals.
 4. **Commit validity.** A Commit is accepted only if: it is signed by a current leaf or is a valid
    external commit; it references every outstanding non-void DS proposal (invariant 6); it
-   contains no `Update` from the committer; every member-originated `Remove` targets the
-   committer's own user; every `Add` carries a credential whose user is eligible under the channel's
+   contains no `Update` from the committer; every member-originated `Remove` targets its proposer's
+   own user (the committer's for a `Remove` the commit carries, the proposing member's for a member
+   `Remove` proposal it references — how a member leaves, `01-groups.md`); every `Add` carries a
+   credential whose user is eligible under the channel's
    ACL (for a community group, the same permission invariant 1 asks of a registrant, resolved
    through `09` § Permissions; for a DM or group DM, being one of its participants; for any other
    group, being in it already) and whose DSK is in the
@@ -307,7 +309,16 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
 6. **Void.** Before proposing, the DS validates a KeyPackage (lifetime not expired, capabilities
    include `0xF001`, not consumed) and a Remove target (leaf still present). A DS proposal older
    than its TTL — 30 seconds in `call` groups, 24 hours in `text` groups — is marked **void**; a
-   Commit MAY omit void proposals. The underlying action is retried with a fresh KeyPackage, or
+   Commit MAY omit void proposals. In `call` groups the DS sweeps for expired proposals every 5
+   seconds, so a call proposal is void 30–35 s after it was issued, and a voided DS `Remove` whose
+   target leaf is still present is re-issued with the same `action_id` instead of being dropped: in
+   a call group a void lifts the freeze but leaves the member decrypting media, and only a commit
+   removes it. A DS `Remove` that names a device rather than a leaf (a device that left a call, or a
+   kick) resolves the leaf under the group lock and is dropped when the device holds no leaf or when
+   a non-void `Remove` of that leaf, from the DS or from the member itself, is already outstanding.
+   Accepting a member's own `Remove` voids any outstanding DS `Remove` of the same leaf, so the
+   commit that carries the member's may omit the DS's. The underlying action is retried with a
+   fresh KeyPackage, or
    dropped if the target leaf is already gone. Before proposing an Add the DS also checks invariant
    4's device-list clause (the device's DSK is in its user's newest signed device list) and leaves
    an unlisted device unproposed, its KeyPackage unspent. An outstanding DS Add whose device is
@@ -383,7 +394,10 @@ Added for the remote delivery service:
   backup`'s own code.
 - `restore_snapshot <name>` — the test host restores it through `dillad restore`'s own code and
   restarts the instance, which finishes the restore at start as `dillad serve` does.
-- `commit <actor>` — the actor commits for the current epoch of every group it is in.
+- `commit <actor> [<group>]` — the actor commits for the current epoch of every group it is in, or
+  of that one group.
+- `leave <client> <group>` — the client posts its own `Remove` proposal (`01-groups.md`, how a
+  member leaves); another member's commit applies it.
 - `join_many <group> <count>` — `count` new clients join, at most 256 Adds per commit.
 - `expect_decrypts_all <actor>` — everything the actor received since its last such assertion decrypts.
 - `expect_quarantined <actor>` — the instance reports the actor's device quarantined (invariant 9).

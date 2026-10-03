@@ -174,3 +174,23 @@ func (d *DS) runSweeper(ctx context.Context) {
 		}
 	}
 }
+
+// runCallSweeper runs sweepCallProposals every Policy.ProposalSweepInterval. It reads the DS's
+// clock, which is the wall clock in production, so a test drives it with clock.Fake.Advance.
+func (d *DS) runCallSweeper(ctx context.Context) {
+	for {
+		t := d.opts.Clock.NewTimer(d.opts.Policy.ProposalSweepInterval)
+		select {
+		case <-d.stop:
+			t.Stop()
+			return
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C():
+			if _, err := d.sweepCallProposals(ctx); err != nil {
+				d.log().Error("call proposal sweep failed", "err", err)
+			}
+		}
+	}
+}

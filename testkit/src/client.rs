@@ -613,6 +613,24 @@ impl TestClient {
         self.upload_commit(ds, group_id, bundle, Vec::new())
     }
 
+    /// Proposes this device's removal from `group_id` (`leave <client> <group>`): the member Remove
+    /// proposal of protocol/01 "Leaving", posted to `POST /v1/groups/{id}/proposal`. Another
+    /// member's commit applies it.
+    pub fn leave(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+    ) -> Result<(), TestkitError> {
+        let group = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        let epoch = group.epoch();
+        let proposal = group.leave(&self.provider, &self.signer)?;
+        ds.post_proposal(group_id, epoch, serialize(&proposal)?)?;
+        Ok(())
+    }
+
     /// Commits for the group's current epoch: a self-update, which also carries every proposal
     /// this client holds for the epoch. This is what lets a scenario drive invariant 3 without an
     /// implicit commit hiding inside `send`.

@@ -184,6 +184,7 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	if s.Scope != auth.ScopeEnrolled {
 		return CommitResult{}, errForbidden("a heal needs an enrolled session")
 	}
+	defer d.flushEvictions(ctx, groupID) // after the unlock below: defers run last-in, first-out
 	unlock := d.lock(groupID)
 	defer unlock()
 
@@ -324,7 +325,7 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 			return err
 		}
 		var mErr error
-		if members, mErr = d.replaceMembersTx(ctx, tx, groupID, state); mErr != nil {
+		if members, mErr = d.replaceMembersTx(ctx, tx, groupID, row.Kind, state); mErr != nil {
 			return mErr
 		}
 		return tx.ClearEpochUnknown(ctx, groupID)
@@ -332,6 +333,9 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	if err != nil {
 		return CommitResult{}, err
 	}
+	// The devices the heal's adopted tree no longer holds leave the call's room once the group lock
+	// is released (the deferred flushEvictions above; G29).
+	d.queueEviction(groupID, members.removed)
 
 	// The member set the heal adopted is the one invariant 7 elects a committer over and the one
 	// every fan-out addresses. Register republishes both after it writes `mls_members`, and a heal
@@ -482,7 +486,7 @@ func (d *DS) replayHealTail(ctx context.Context, groupID id.ID, g *mlswasi.Publi
 // replayHealCommit is invariant 4 over one replayed commit, then the merge.
 //
 // The clauses that are about the commit's CONTENT run here exactly as the commit path runs them:
-// no Update from the committer, a member-originated Remove only of the committer's own user, every
+// no Update from the committer, a member-originated Remove only of its proposer's own user, every
 // Add's device known, unrevoked, in its user's newest signed device list and eligible under the
 // channel ACL, and an external commit's Remove only of the joiner's own previous leaf. The
 // identities come from the rebuilt tree as it stood before the commit — the committer is whoever
@@ -553,16 +557,26 @@ func (d *DS) checkHealedCommit(ctx context.Context, g DeviceListVerifier, groupI
 				return errCommitInvalid("committer_update", "the commit carries the committer's own Update")
 			}
 		case mlswasi.ProposalRemove:
-			// Clause 3: every member-originated Remove targets the committer's own user. An
+			// Clause 3: every member-originated Remove targets its proposer's own user. An
 			// instance Remove (no sender leaf) is invariant 6's, and an external commit's own
 			// Remove is checked after the merge, where the joiner can be seen.
 			if a.SenderLeaf == nil || a.TargetLeaf == nil || committer == nil {
 				continue
 			}
+			// The proposer's own user, as commitLocked's clause 3: a member's referenced Remove of
+			// its own leaf (DEV-47) is scoped to that member, not to the committer.
+			owner := committer.user
+			if *a.SenderLeaf != *p.SenderLeaf {
+				proposer, ok := leaves[*a.SenderLeaf]
+				if !ok {
+					return errCommitInvalid("member_remove_scope", "a Remove in the tail names a proposer the group does not hold")
+				}
+				owner = proposer.user
+			}
 			target, ok := leaves[*a.TargetLeaf]
-			if !ok || target.user != committer.user {
+			if !ok || target.user != owner {
 				return errCommitInvalid("member_remove_scope",
-					"a member-originated Remove may only target the committer's own user")
+					"a member-originated Remove may only target its proposer's own user")
 			}
 		case mlswasi.ProposalAdd:
 			// Clause 4: the added device is known, unrevoked, listed and eligible.

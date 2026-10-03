@@ -1,0 +1,43 @@
+# DEV-45, SP-22 (b): a member's own Remove and the instance's Remove of the same call leaf, in both
+# orders, followed by another member's commit. OpenMLS keeps only the later of two Removes of one
+# leaf, so before dilla-media task 9 the first order ended in 422 outstanding_proposals until the
+# instance's Remove voided at the call TTL. Now carol's own Remove voids the instance's (order 1),
+# and the instance drops its device-addressed Remove of dave's leaf because dave's own stands
+# (order 2): alice's commit is accepted both times, bob's client accepts it (a referenced member
+# Remove is measured against its proposer), and both are out.
+#
+# "Out" is checked through the instance, not by the leaver sending: a client holding its own
+# pending Remove cannot create an application message (OpenMLS refuses with PendingProposal). A
+# repeated kick of a device that still held a leaf would leave a Remove outstanding — re-driven
+# from the old epoch or freshly proposed — and the send after it would answer 425; a kick of a
+# device that is gone is dropped, and the send goes through.
+instance dilla
+client alice
+client bob
+client carol
+client dave
+group call kind=call target=e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2 community=none creator=alice
+join bob call via=external
+sync alice
+join carol call via=external
+sync alice
+sync bob
+join dave call via=external
+sync alice
+sync bob
+sync carol
+kick alice carol
+leave carol call
+commit alice call
+sync bob
+sync dave
+kick alice carol
+send alice call carol is out after order one
+expect_decrypts bob call carol is out after order one
+leave dave call
+kick alice dave
+commit alice call
+sync bob
+kick alice dave
+send alice call carol and dave are out
+expect_decrypts bob call carol and dave are out

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/jonasthim/dilla/internal/auth"
@@ -28,6 +29,7 @@ type RegisterResult struct {
 // Register is invariant 1. group_id is 16 bytes chosen by the creating device; the registry
 // enforces uniqueness and binds it to the dilla_binding the GroupInfo carries.
 func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, error) {
+	defer d.flushEvictions(ctx, r.GroupID) // after the unlock below: defers run last-in, first-out
 	unlock := d.lock(r.GroupID)
 	defer unlock()
 
@@ -145,12 +147,14 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 			return err
 		}
 		var mErr error
-		members, mErr = d.replaceMembersTx(ctx, tx, r.GroupID, state)
+		members, mErr = d.replaceMembersTx(ctx, tx, r.GroupID, binding.Kind, state)
 		return mErr
 	})
 	if err != nil {
 		return RegisterResult{}, err
 	}
+	// Always empty for a fresh group; the writer is treated like the other member-set writers.
+	d.queueEviction(r.GroupID, members.removed)
 
 	if d.opts.Gateway != nil {
 		d.opts.Gateway.SetGroupMembers(r.GroupID, members.devices)
@@ -317,13 +321,24 @@ func (d *DS) checkChannelMode(ctx context.Context, b Binding) error {
 type memberView struct {
 	devices []id.ID
 	leaves  map[id.ID]uint32
+	// removed is, for a call group, every device that held a leaf before this write and holds none
+	// after it — read before mls_members is rewritten, because a removed device has no row
+	// afterwards and a resync's Remove of a device's old leaf is not a removal of the device (G29).
+	removed []id.ID
 }
 
 // replaceMembersTx rewrites mls_members from the PublicGroup's own view inside the caller's
-// transaction and returns the fan-out list. The credential identity is the core's ten-element
-// CredentialIdentity CBOR (`core/dilla-core/src/identity/credential.rs:28-42`), decoded by
-// decodeCredentialIdentity.
-func (d *DS) replaceMembersTx(ctx context.Context, tx store.Repository, groupID id.ID, state mlswasi.GroupState) (memberView, error) {
+// transaction and returns the fan-out list and, for a call group (kind), the removed devices. The
+// credential identity is the core's ten-element CredentialIdentity CBOR
+// (`core/dilla-core/src/identity/credential.rs:28-42`), decoded by decodeCredentialIdentity.
+func (d *DS) replaceMembersTx(ctx context.Context, tx store.Repository, groupID id.ID, kind uint8, state mlswasi.GroupState) (memberView, error) {
+	var before []store.MemberRow
+	if kind == groupKindCall {
+		var err error
+		if before, err = tx.ListMembers(ctx, groupID); err != nil {
+			return memberView{}, err
+		}
+	}
 	rows := make([]store.MemberRow, 0, len(state.Members))
 	view := memberView{leaves: map[id.ID]uint32{}}
 	for _, m := range state.Members {
@@ -344,6 +359,11 @@ func (d *DS) replaceMembersTx(ctx context.Context, tx store.Repository, groupID 
 	}
 	if err := tx.ReplaceMembers(ctx, groupID, state.Epoch, rows); err != nil {
 		return memberView{}, err
+	}
+	for _, m := range before {
+		if _, still := view.leaves[m.DeviceID]; !still && !slices.Contains(view.removed, m.DeviceID) {
+			view.removed = append(view.removed, m.DeviceID)
+		}
 	}
 	return view, nil
 }

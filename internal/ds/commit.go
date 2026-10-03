@@ -119,6 +119,7 @@ func (d *DS) commitPreflight(ctx context.Context, s Session, groupID id.ID, epoc
 }
 
 func (d *DS) commit(ctx context.Context, s Session, groupID id.ID, c CommitRequest, o commitOptions) (CommitResult, error) {
+	defer d.flushEvictions(ctx, groupID) // after the unlock below: defers run last-in, first-out
 	unlock := d.lock(groupID)
 	defer unlock()
 	return d.commitLocked(ctx, s, groupID, c, o)
@@ -334,7 +335,7 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 					return err
 				}
 			}
-			members, err = d.replaceMembersTx(ctx, tx, groupID, state)
+			members, err = d.replaceMembersTx(ctx, tx, groupID, row.Kind, state)
 			if err != nil {
 				return err
 			}
@@ -366,6 +367,9 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 			}
 			return txErr
 		}
+		// The devices this commit took out of a call group leave the call's room once the group lock
+		// is released (commit's deferred flushEvictions; G29).
+		d.queueEviction(groupID, members.removed)
 
 		// (8) fan out. Everything reachable from here runs with the group lock ALREADY HELD by
 		// commit, so it must be lock-free: the re-issue below and drainPendingJoins call only the
@@ -428,6 +432,15 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 	if _, derr := d.drainPendingJoins(context.WithoutCancel(ctx), groupID); derr != nil {
 		d.log().Error("proposing the next slice of a join storm failed; the sweeper retries it",
 			"group", groupID, "err", derr)
+	}
+	// F9, a call group's epoch boundary: a voided instance Remove this commit left out — voided by the
+	// TTL, or by its member's own Remove, which a commit may leave out too — whose leaf survived is
+	// re-driven at the new epoch. The sweep re-drives within an epoch and never reads the old one.
+	if row.Kind == groupKindCall {
+		if rerr := d.redriveCallRemovesLocked(context.WithoutCancel(ctx), groupID, oldEpoch, result.Epoch); rerr != nil {
+			d.log().Error("re-driving the call Removes a commit left out failed",
+				"group", groupID, "err", rerr)
+		}
 	}
 	return result, nil
 }
@@ -503,7 +516,12 @@ func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, gr
 				return errCommitInvalid("committer_update", "the commit carries the committer's own Update")
 			}
 		case mlswasi.ProposalRemove:
-			// Clause 3: every member-originated Remove targets the committer's own user.
+			// Clause 3: every member-originated Remove targets its proposer's own user — the
+			// committer's for a Remove the commit carries by value, the proposing member's for a
+			// member Remove proposal the commit references. The second is how a member leaves
+			// (protocol/01 "Leaving", DEV-47): a device cannot commit its own removal, so it
+			// proposes it and another member commits it. Proposal already refused a member proposal
+			// that removes anybody else.
 			if a.SenderLeaf == nil || a.TargetLeaf == nil {
 				continue // an instance Remove, which invariant 6 governs instead
 			}
@@ -511,9 +529,15 @@ func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, gr
 			if err != nil {
 				return err
 			}
-			if target != s.UserID {
+			owner := s.UserID
+			if p.SenderLeaf != nil && *a.SenderLeaf != *p.SenderLeaf {
+				if owner, err = d.userOfLeaf(ctx, groupID, *a.SenderLeaf); err != nil {
+					return err
+				}
+			}
+			if target != owner {
 				return errCommitInvalid("member_remove_scope",
-					"a member-originated Remove may only target the committer's own user")
+					"a member-originated Remove may only target its proposer's own user")
 			}
 		case mlswasi.ProposalAdd:
 			// Clause 4: the added KeyPackage validates, its user is eligible and its DSK is in
@@ -760,6 +784,7 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 	}
 
 	var seq uint64
+	var voidedRemoves int
 	err = d.withGroup(ctx, groupID, func(g *mlswasi.PublicGroup) error {
 		processed, err := g.Process(ctx, blob)
 		if err != nil {
@@ -805,6 +830,15 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 			}); err != nil {
 				return err
 			}
+			// DEV-45: a member's own Remove voids the instance's Remove of the same leaf, so the two are
+			// never both live and the commit that carries the member's may omit the instance's.
+			if detail.Kind == mlswasi.ProposalRemove && detail.TargetLeaf != nil {
+				n, err := d.voidInstanceRemovesTx(ctx, tx, groupID, row.Epoch, *detail.TargetLeaf)
+				if err != nil {
+					return err
+				}
+				voidedRemoves = n
+			}
 			return persistState(ctx, tx, groupID, g, row.GroupInfoBlob)
 		})
 		if txErr != nil {
@@ -825,6 +859,9 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 	}
 	if err != nil {
 		return 0, err
+	}
+	if voidedRemoves > 0 && d.opts.Metrics != nil {
+		d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(uint8(mlswasi.ProposalRemove))).Sub(float64(voidedRemoves))
 	}
 	if d.opts.Gateway != nil {
 		p, err := gateway.HandshakePayload(seq, row.Epoch, handshakeProposal, &leaf, blob)
@@ -975,7 +1012,7 @@ func (d *DS) winningCommit(ctx context.Context, groupID id.ID, epoch uint64) ([]
 }
 
 func (d *DS) proposalTTL(groupKind uint8) time.Duration {
-	if groupKind == 1 { // call
+	if groupKind == groupKindCall {
 		return d.opts.Policy.ProposalTTLCall
 	}
 	return d.opts.Policy.ProposalTTLText

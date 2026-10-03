@@ -1,0 +1,22 @@
+# F9, DEV-50: a call-group Remove the 30 s TTL voids while its leaf is still present is re-driven by
+# the instance with the same action, so the call stays frozen and the member is still removed by the
+# next commit. A void alone would lift the freeze and leave carol decrypting the call.
+instance dilla
+client alice
+client bob
+client carol
+group call kind=call target=e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3 community=none creator=alice
+join bob call via=external
+sync alice
+join carol call via=external
+sync alice
+sync bob
+kick alice carol
+expect_425 send alice call before the removal is committed
+advance_clock 31s
+expect_425 send alice call the re-driven remove still holds the call
+commit alice call
+sync bob
+expect_reject E_LEAF_NOT_CURRENT send carol call am I still in the call
+send alice call carol is out
+expect_decrypts bob call carol is out

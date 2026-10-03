@@ -20,7 +20,7 @@ const reconcilePage = 64
 // ACL gates only Adds and joins, commit and upload check only leaf currency, and the inactivity
 // sweep skips active devices. So each tick takes the next page of open text and call groups and,
 // in each, proposes an instance Remove for every live leaf whose user the ACL no longer admits and
-// that no outstanding instance Remove already targets.
+// that no outstanding Remove — the instance's, or the member's own — already targets.
 //
 // A group the ACL admits nobody to is left alone: it is the leftover of a deleted channel whose
 // Close was lost, and emptying it leaf by leaf would only queue Removes nobody could commit.
@@ -108,9 +108,13 @@ func (d *DS) reconcileGroupLocked(ctx context.Context, groupID id.ID) (int, erro
 	if err != nil {
 		return 0, err
 	}
+	// A leaf with ANY non-void Remove outstanding is skipped: the instance's own, or the member's
+	// own self-Remove (a member leaving, protocol/01). OpenMLS keeps only the later of two Removes of
+	// one leaf, so stacking an instance Remove on a member's would leave one unreferenced, and clause
+	// 1 would refuse every commit until its TTL — 24 h in a text group (DEV-45).
 	pendingRemove := map[uint32]bool{}
 	for _, p := range outstanding {
-		if p.Origin == 0 && p.VoidAt == nil && mlswasi.ProposalKind(p.Kind) == mlswasi.ProposalRemove && p.TargetLeaf != nil {
+		if p.VoidAt == nil && mlswasi.ProposalKind(p.Kind) == mlswasi.ProposalRemove && p.TargetLeaf != nil {
 			pendingRemove[*p.TargetLeaf] = true
 		}
 	}

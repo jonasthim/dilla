@@ -15,6 +15,10 @@ import (
 type DS interface {
 	ProposeAdd(ctx context.Context, groupID, deviceID, actionID id.ID) error
 	ProposeRemove(ctx context.Context, groupID id.ID, leaf uint32, actionID id.ID) error
+	// ProposeRemoveDevice proposes removing deviceID's leaf, resolving it under the group lock, and
+	// drops the action when the device holds no leaf or a Remove of that leaf already stands
+	// (DEV-45). The call paths use it: a call leaf is short-lived and races the device's own Remove.
+	ProposeRemoveDevice(ctx context.Context, groupID, deviceID, actionID id.ID) error
 	ProposeAddBatch(ctx context.Context, groupID id.ID, devices []id.ID) error
 	Close(ctx context.Context, groupID id.ID) error
 	// VoidIneligibleAdds voids the group's outstanding instance Adds whose device or user is no
@@ -76,7 +80,14 @@ func RemoveUserFromChannelGroups(ctx context.Context, repo store.Repository, dsv
 				if m.UserID != userID || m.RemovedEpoch != nil {
 					continue
 				}
-				if err := dsvc.ProposeRemove(ctx, g.GroupID, m.LeafIndex, id.New()); err != nil {
+				var err error
+				if kind == groupCall {
+					// DEV-45: by device, under the group lock, never stacked on a standing Remove.
+					err = dsvc.ProposeRemoveDevice(ctx, g.GroupID, m.DeviceID, id.New())
+				} else {
+					err = dsvc.ProposeRemove(ctx, g.GroupID, m.LeafIndex, id.New())
+				}
+				if err != nil {
 					errs = append(errs, err)
 				}
 			}

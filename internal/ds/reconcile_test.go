@@ -130,3 +130,45 @@ func TestTheSweeperLeavesAGroupWithNoEligibleMemberAlone(t *testing.T) {
 		t.Fatalf("reconcile over a group nobody may be in proposed %d (%v), want 0", n, err)
 	}
 }
+
+// A leaf whose member already proposed its own Remove (a member leaving) gets no instance Remove
+// from the reconcile: OpenMLS keeps only the later of two Removes of one leaf, so a second would
+// leave one unreferenced, and in a text group invariant 4's clause 1 would then refuse every commit
+// until the 24 h TTL voids it (the plan review's open minor on dilla-media task 9).
+func TestTheSweeperIssuesNoRemoveForALeafWhoseMemberRemoveStands(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	banned := h.memberSession(t, reg.GroupID, 5).UserID
+	h.acl.forbid(banned)
+
+	members, err := h.repo.ListMembers(ctx, reg.GroupID)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	want := map[uint32]bool{}
+	for _, m := range members {
+		if m.UserID == banned && m.RemovedEpoch == nil {
+			want[m.LeafIndex] = true
+		}
+	}
+	h.putMemberRemove(t, reg.GroupID, 5, 86400) // leaf 5 is leaving on its own
+	delete(want, 5)
+
+	n, err := ds.ReconcileLeavesForTest(h.ds, ctx)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if n != len(want) {
+		t.Fatalf("reconcile proposed %d Removes, want %d (none for the leaf that is leaving)", n, len(want))
+	}
+	rows, err := h.repo.ListProposals(ctx, reg.GroupID, 6, false)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	for _, r := range rows {
+		if r.Origin == 0 && r.TargetLeaf != nil && *r.TargetLeaf == 5 {
+			t.Fatalf("reconcile stacked an instance Remove on leaf 5's own Remove: %+v", r)
+		}
+	}
+}
