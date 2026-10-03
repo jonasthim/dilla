@@ -13,6 +13,9 @@ pub mod probe;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod store;
 
+// Ungated: `MediaSender`/`MediaReceiver` use no browser API, so they build natively too.
+mod media;
+
 use dilla_core::ProtocolError;
 use dilla_core::envelope::{
     Attachment, Envelope, EnvelopeType, FrankingTagInput, Preview,
@@ -26,6 +29,8 @@ use dilla_core::ids::{DeviceId, MsgId, UserId};
 use dilla_core::sframe::{Ctr, Kid, NK, NN, SframeError, derive_keys, encode_header};
 use serde_json::{Map, Value, json};
 use wasm_bindgen::prelude::*;
+
+pub use media::*;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use probe::probe_persistence;

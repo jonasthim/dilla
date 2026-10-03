@@ -114,6 +114,23 @@ pub struct DillaGroup {
     binding: DillaBinding,
 }
 
+/// One leaf of a call group as the media key ring needs it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RosterEntry {
+    pub leaf_index: u32,
+    pub device_id: DeviceId,
+    pub user_id: UserId,
+}
+
+/// One call-group epoch's media keys: the SFrame base key, this device's leaf and the roster,
+/// all read from the same epoch (`DillaGroup::media_epoch`).
+pub struct MediaEpoch {
+    pub epoch: u64,
+    pub base_key: zeroize::Zeroizing<[u8; NK]>,
+    pub own_leaf: u32,
+    pub roster: Vec<RosterEntry>,
+}
+
 fn openmls<E: core::fmt::Debug>(e: E) -> MlsError {
     MlsError::OpenMls(format!("{e:?}"))
 }
@@ -703,6 +720,46 @@ impl DillaGroup {
         Ok(out)
     }
 
+    /// Every leaf of this client's tree whose credential decodes, as `(leaf, device, user)`, in
+    /// leaf order. A device's leaf is not stable across epochs (a resync lands at the leftmost
+    /// free index; a Remove frees an index for the next joiner), so a roster is only meaningful
+    /// together with the epoch it was read in.
+    pub fn roster(&self) -> Vec<RosterEntry> {
+        self.group
+            .members()
+            .filter_map(|m| {
+                let basic = BasicCredential::try_from(m.credential).ok()?;
+                let id = crate::identity::CredentialIdentity::decode(basic.identity()).ok()?;
+                Some(RosterEntry {
+                    leaf_index: m.index.u32(),
+                    device_id: id.device_id,
+                    user_id: id.user_id,
+                })
+            })
+            .collect()
+    }
+
+    /// The leaves `d` holds in this epoch: empty when it is not a member. More than one is legal
+    /// for OpenMLS and refused by the media key ring.
+    pub fn leaf_of_device(&self, d: &DeviceId) -> Vec<u32> {
+        self.roster()
+            .into_iter()
+            .filter(|e| &e.device_id == d)
+            .map(|e| e.leaf_index)
+            .collect()
+    }
+
+    /// What the media worker installs per call-group epoch, read in one call so the base key and
+    /// the roster are of the same epoch: snapshot it before merging the next commit.
+    pub fn media_epoch(&self, provider: &DillaProvider) -> Result<MediaEpoch, MlsError> {
+        Ok(MediaEpoch {
+            epoch: self.epoch(),
+            base_key: zeroize::Zeroizing::new(self.sframe_base_key(provider)?),
+            own_leaf: self.own_leaf_index().u32(),
+            roster: self.roster(),
+        })
+    }
+
     /// The GroupInfo a committer uploads: **without** the ratchet tree, because the DS serves the
     /// tree from its own `PublicGroup` (DS invariant 2).
     ///
@@ -721,5 +778,161 @@ impl DillaGroup {
 
     pub fn export_ratchet_tree(&self) -> RatchetTree {
         self.group.export_ratchet_tree()
+    }
+}
+
+/// The roster and the media epoch over a real call group: create, Add, Remove, external join.
+/// Native only, like `tests/mls_roundtrip.rs`: the provider is an in-memory SQLite connection.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod media_tests {
+    use super::*;
+    use crate::identity::{CredentialIdentity, Kind, SignerTier, SskSigner, Tier, UmkSigner};
+    use crate::ids::InstanceId;
+    use crate::mls::{CIPHERSUITE, build_key_package};
+    use std::sync::{Arc, Mutex};
+    use tls_codec::{Deserialize as _, Serialize as _};
+
+    fn provider() -> DillaProvider {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        let p = DillaProvider::new(Arc::new(Mutex::new(conn)));
+        p.storage().migrate().expect("migrate");
+        p
+    }
+
+    fn member(user: u8, device: u8) -> (DillaProvider, SignatureKeyPair, CredentialWithKey) {
+        let umk = UmkSigner::from_bytes(&[user; 32]);
+        let ssk = SskSigner::from_bytes(&[user.wrapping_add(0x40); 32]);
+        let identity = CredentialIdentity {
+            v: 1,
+            umk_pub: umk.public(),
+            user_id: UserId::from_bytes([user; 16]),
+            device_id: DeviceId::from_bytes([device; 16]),
+            kind: Kind::User,
+            tier: Tier::Native,
+            signer_tier: SignerTier::Native,
+            ssk_pub: ssk.public(),
+            sig_umk_ssk: umk.sign_ssk(&ssk.public()),
+            sig_ssk_dev: [0u8; 64],
+        };
+        let keys = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(identity.encode()).into(),
+            signature_key: keys.public().into(),
+        };
+        let p = provider();
+        keys.store(p.storage()).expect("store signer");
+        (p, keys, credential)
+    }
+
+    fn call_binding() -> DillaBinding {
+        DillaBinding {
+            v: 1,
+            instance_id: InstanceId::from_bytes([0x11; 16]),
+            community_id: None,
+            target_id: [0x33; 16],
+            kind: GroupKind::Call,
+            policy_version: 1,
+            e2ee_version: 1,
+            media_version: GroupKind::Call.media_version(),
+        }
+    }
+
+    fn wire(message: MlsMessageOut) -> MlsMessageBodyIn {
+        let bytes = message.tls_serialize_detached().expect("serialize");
+        MlsMessageIn::tls_deserialize_exact(&bytes)
+            .expect("deserialize")
+            .extract()
+    }
+
+    fn rows(g: &DillaGroup) -> Vec<(u32, u8)> {
+        g.roster()
+            .iter()
+            .map(|e| (e.leaf_index, e.device_id.as_bytes()[0]))
+            .collect()
+    }
+
+    #[test]
+    fn the_roster_follows_add_remove_and_an_external_join() {
+        let (alice_p, alice_s, alice_c) = member(0xaa, 0x01);
+        let (bob_p, bob_s, bob_c) = member(0xbb, 0x02);
+        let (carol_p, carol_s, carol_c) = member(0xcc, 0x03);
+        let b = call_binding();
+        let mut alice = DillaGroup::create(
+            &alice_p,
+            &alice_s,
+            alice_c,
+            GroupId::from_slice(&[0x44; 16]),
+            b.clone(),
+            None,
+        )
+        .expect("create");
+        assert_eq!(rows(&alice), [(0, 0x01)]);
+        assert_eq!(alice.roster()[0].user_id, UserId::from_bytes([0xaa; 16]));
+
+        let bob_kp = build_key_package(&bob_p, &bob_s, bob_c, false).expect("key package");
+        alice
+            .add_members(&alice_p, &alice_s, &[bob_kp.key_package().clone()])
+            .expect("add");
+        alice.merge_pending_commit(&alice_p).expect("merge");
+        assert_eq!(rows(&alice), [(0, 0x01), (1, 0x02)]);
+        assert_eq!(alice.leaf_of_device(&DeviceId::from_bytes([0x02; 16])), [1]);
+
+        alice
+            .remove_members(&alice_p, &alice_s, &[LeafNodeIndex::new(1)])
+            .expect("remove");
+        alice.merge_pending_commit(&alice_p).expect("merge");
+        assert_eq!(rows(&alice), [(0, 0x01)]);
+        assert!(
+            alice
+                .leaf_of_device(&DeviceId::from_bytes([0x02; 16]))
+                .is_empty()
+        );
+
+        // Carol joins by external commit and lands on the index Bob's Remove freed.
+        let MlsMessageBodyIn::GroupInfo(info) = wire(
+            alice
+                .export_group_info(&alice_p, &alice_s)
+                .expect("group info"),
+        ) else {
+            panic!("not a GroupInfo");
+        };
+        let (carol, _, _) = DillaGroup::join_by_external_commit(
+            &carol_p,
+            &carol_s,
+            carol_c,
+            info,
+            alice.export_ratchet_tree().into(),
+            &b,
+        )
+        .expect("external join");
+        assert_eq!(rows(&carol), [(0, 0x01), (1, 0x03)]);
+        assert_eq!(carol.own_leaf_index().u32(), 1);
+        assert!(
+            carol
+                .leaf_of_device(&DeviceId::from_bytes([0x99; 16]))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_media_epoch_is_the_exporter_key_own_leaf_and_roster_of_one_epoch() {
+        let (alice_p, alice_s, alice_c) = member(0xaa, 0x01);
+        let alice = DillaGroup::create(
+            &alice_p,
+            &alice_s,
+            alice_c,
+            GroupId::from_slice(&[0x45; 16]),
+            call_binding(),
+            None,
+        )
+        .expect("create");
+        let m = alice.media_epoch(&alice_p).expect("media epoch");
+        assert_eq!(m.epoch, alice.epoch());
+        assert_eq!(
+            *m.base_key,
+            alice.sframe_base_key(&alice_p).expect("base key")
+        );
+        assert_eq!(m.own_leaf, 0);
+        assert_eq!(m.roster, alice.roster());
     }
 }

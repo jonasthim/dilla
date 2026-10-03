@@ -88,31 +88,87 @@ PPS, the IDR header and the one slice-header byte that covers `pic_parameter_set
   `key = HKDF-Expand(sframe_secret, "SFrame 1.0 Secret key " || KID(8, big-endian) || 0x0004, 16)`;
   `salt = HKDF-Expand(sframe_secret, "SFrame 1.0 Secret salt " || KID(8) || 0x0004, 12)`.
 - Every member derives every other member's key from the shared `base_key` and the sender's
-  `KID`; a member MUST NOT accept a frame whose `leaf_index` is not in the current or previous
-  epoch's tree.
+  `KID`. Which frames a member accepts is "Receiver rules" below.
 
 ## Counter partition
 
 `CTR` is a 64-bit value: `slot (8 bits) || layer (4 bits) || seq (52 bits)`. Slots: 0 microphone,
-1 camera, 2 screen video, 3 screen audio; further slots reserved. `seq` starts at 0 per (KID, slot,
-layer) and increments per frame. A sender MUST stop sending and rekey (send an MLS `Update`) when
-`seq` reaches 2^52 − 1; it MUST NOT wrap. `nonce = salt XOR CTR` (CTR big-endian, left-padded to
+1 camera, 2 screen video, 3 screen audio; further slots reserved. `seq` starts at 0 per
+`(epoch, KID, slot, layer)` and increments per frame. A sender MUST stop and rekey (send an MLS
+`Update`) rather than use a `seq` above 2^52 − 1 (`E_SFRAME_COUNTER_EXHAUSTED`); it MUST NOT wrap. A
+layer above 15 is `E_SFRAME_LAYER_RANGE`. `nonce = salt XOR CTR` (CTR big-endian, left-padded to
 12 bytes).
+
+## Sender uniqueness
+
+A `(KID, CTR)` pair MUST seal exactly one frame (RFC 9605 §4.3, §7.4). A device's KID is fixed
+within an epoch, so three rules keep its counters unique across worker restarts, reloads and tabs:
+
+- **N1.** A sender created after its device committed epoch `e_C` — the external commit or own-leaf
+  resync that began this sender's life in the call — encrypts only in epochs at or above `e_C`; an
+  older epoch is `E_SFRAME_STALE_EPOCH`. A restarted worker therefore never reuses a counter an
+  earlier worker spent: it commits a new epoch first.
+- **N2.** A browser publishes in a call only while it holds the Web Lock
+  `dilla-media:<instance_id>:<call_group_id>`, requested with `mode: 'exclusive'` and
+  `ifAvailable: true`, never `steal`. A tab that does not get it does not publish.
+- **N3.** `seq` runs per `(epoch, KID, slot, layer)` for the whole life of the sender and is never
+  reset by a rekey or by a transform being re-created.
 
 ## Rotation
 
-- A new epoch (any Commit) gives every sender a new KID for the new epoch and new keys. Senders
-  switch to the new epoch's keys as soon as they have processed the Commit.
-- Receivers keep the previous epoch's keys for **10 seconds** after processing a Commit, then
-  delete them. Frames with an unknown KID are buffered for at most **2 seconds** and then dropped
-  and counted; they are never rendered.
+- A new epoch (any Commit) gives every sender a new KID and new keys. Senders switch to the new
+  epoch's keys as soon as they have processed the Commit.
+- Receivers keep **every** epoch superseded less than **10 seconds** ago — a join storm makes
+  several inside 10 s — each timed from the receiver's own processing of the Commit that superseded
+  it, together with that epoch's roster. Installing an epoch evicts any held epoch with the same
+  `epoch mod 256` (RFC 9605 §5.2); installing an epoch already held changes nothing and keeps its
+  replay windows. A frame whose KID names an epoch the receiver dropped is `E_SFRAME_STALE_EPOCH`.
+- A frame whose KID names an epoch the receiver has not installed yet (`E_SFRAME_UNKNOWN_KID`) is
+  held; no other failure ever is. The hold is one strict FIFO per receiving track, at most
+  **2 000 ms** and **256 frames**: while anything is held, later frames of that track queue behind
+  it, because an encoded-transform writer drops a frame older than the last one it wrote. The hold
+  drains when an epoch is installed and on a timer; a frame past either limit is dropped and
+  counted. Held frames are never rendered unless they authenticate.
 - Because `KID` carries only `epoch mod 256`, a receiver MUST bind a KID to the exact epoch it
   learned it in and reject a KID that it would have to resolve against an epoch more than 255
   commits ago.
 - A removed member cannot decrypt frames after the Commit that removed it, because it does not
-  have the new epoch's `exporter_secret`. Between the DS proposal and the Commit (bounded by the
-  30-second call TTL in `02-delivery-service.md`), the removed member still decrypts; the UI shows
-  "removal pending" during that window.
+  have the new epoch's `exporter_secret`; until that Commit it still decrypts. The window is bounded
+  by the Commit, not by the 30-second proposal TTL: the DS re-drives a voided Remove of a `call`
+  group whose leaf is still present (`02-delivery-service.md`, invariant 6). The UI shows "removal
+  pending" until the epoch changes.
+
+## Receiver rules
+
+A receiving track's expected device is its LiveKit participant identity parsed as a `device_id`
+(exactly 32 lowercase hex digits). An identity that does not parse, including any containing `#`,
+is an **unverified stream** and is never played. A track whose kind does not match its source
+(audio with microphone or screen-share audio, video with camera or screen share) is dropped. The
+track's slot comes from its LiveKit `TrackSource`: `MICROPHONE` (2) → 0, `CAMERA` (1) → 1,
+`SCREEN_SHARE` (3) → 2, `SCREEN_SHARE_AUDIO` (4) → 3; `UNKNOWN` (0) is refused.
+
+Every received frame is checked in this order. The first failure names its code, and only
+`E_SFRAME_UNKNOWN_KID` is held:
+
+1. Compute the codec prefix, unescape (H.264) and decode the header strictly.
+2. Resolve the KID to its exact held epoch: none → `E_SFRAME_UNKNOWN_KID`; one this receiver
+   dropped → `E_SFRAME_STALE_EPOCH`.
+3. The KID's leaf MUST be in that epoch's roster (`E_SFRAME_LEAF_NOT_IN_EPOCH`) and MUST be the
+   leaf of the track's device in that epoch (`E_SFRAME_SENDER_MISMATCH`); a device holding more than
+   one leaf in one epoch is refused the same way. Leaf indices move on a resync and are reused after
+   a Remove, so this binding is per epoch.
+4. The KID's leaf MUST NOT be the receiver's own leaf in that epoch (`E_SFRAME_OWN_KID`; RFC 9605
+   §4.4.1: a key is usable for encryption or decryption, never both).
+5. Replay: a window of **128** counters per `(leaf, slot, layer)` and epoch, checked before the
+   AEAD: a counter already accepted, or more than 127 below the highest accepted, is
+   `E_SFRAME_REPLAY`. The window does not assume in-order arrival.
+6. AEAD: `E_SFRAME_AUTH`, dropped at once (the tag comparison is constant-time).
+7. The authenticated `ctr.slot` MUST equal the track's slot (`E_SFRAME_SLOT_MISMATCH`).
+8. Only then is the counter recorded in the replay window.
+
+A participant whose device is in no held roster yet — a joiner whose external commit this receiver
+has not processed — is shown as joining, not as unverified, for as long as its frames can still be
+held.
 
 ## Authenticity
 

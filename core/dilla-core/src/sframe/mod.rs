@@ -11,7 +11,10 @@ mod error;
 mod frame;
 mod h264;
 mod header;
+mod keyring;
+mod pending;
 mod prefix;
+mod sender;
 
 pub use ctr::{Ctr, MAX_SEQ, Slot, nonce};
 pub use error::SframeError;
@@ -21,7 +24,10 @@ pub use h264::{
     rbsp_unescape, trailing_zeros,
 };
 pub use header::{decode_header, encode_header};
+pub use keyring::{Decrypted, KeyRing, ReplayWindow};
+pub use pending::PendingFrames;
 pub use prefix::{VP8_DELTA_PREFIX, VP8_KEY_PREFIX, prefix_len};
+pub use sender::{SenderCounters, SframeSender};
 
 use crate::identity::hkdf_sha256;
 
@@ -36,6 +42,14 @@ pub const NT: usize = 16;
 /// A receiver MUST reject a KID that would resolve against an epoch more than this many commits
 /// ago (protocol/05 "Rotation").
 pub const KID_EPOCH_WINDOW: u64 = 255;
+/// A receiver keeps every epoch superseded less than this long ago (protocol/05 "Rotation").
+pub const OLD_EPOCH_RETENTION_MS: u64 = 10_000;
+/// The longest a frame under a not-yet-installed epoch is held before it is dropped and counted.
+pub const UNKNOWN_KID_BUFFER_MS: u64 = 2_000;
+/// The most frames one receiving track holds for a not-yet-installed epoch.
+pub const UNKNOWN_KID_BUFFER_FRAMES: usize = 256;
+/// The anti-replay window per (leaf, slot, layer) and epoch; RFC 3711's minimum is 64.
+pub const REPLAY_WINDOW: u64 = 128;
 /// The MLS exporter label the call group's base key is derived under.
 pub const LABEL_BASE_KEY: &str = "SFrame 1.0 Base Key";
 /// Note the trailing space: it is part of the label.
@@ -73,6 +87,19 @@ impl Kid {
 pub struct SframeKeys {
     pub key: [u8; NK],
     pub salt: [u8; NN],
+}
+
+impl Slot {
+    /// The wasm surface's `slot: u8`. Anything above 3 is `SlotMismatch`: no track source maps there.
+    pub fn from_u8(v: u8) -> Result<Slot, SframeError> {
+        match v {
+            0 => Ok(Slot::Microphone),
+            1 => Ok(Slot::Camera),
+            2 => Ok(Slot::ScreenVideo),
+            3 => Ok(Slot::ScreenAudio),
+            _ => Err(SframeError::SlotMismatch),
+        }
+    }
 }
 
 /// The codec a frame carries. The numbers are the wasm surface's `codec: u8`.
