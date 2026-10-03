@@ -26,23 +26,28 @@ import (
 // speak, video and screen_share) — the gates in front of it are this file's. CreateRoom opens a room
 // before any token for it exists (room.auto_create is false). UpdatePermission pushes a complete
 // permission to a connected participant, answering sfu.ErrNoParticipant for one the room does not
-// hold. RemoveParticipants disconnects a device and its "#" shadows. Participants is the room's list
-// for the advisory E_CALL_FULL count. DeleteRoom closes a room and disconnects everyone in it,
-// answering nil for a room the SFU does not know.
+// hold. RemoveParticipants disconnects a device and its "#" shadows; RemoveParticipant disconnects
+// one participant by its exact identity (one that is no device). Participants is the room's list
+// for the advisory E_CALL_FULL count and the grant sync. DeleteRoom closes a room and disconnects
+// everyone in it, answering nil for a room the SFU does not know.
 type CallTokens interface {
 	Token(room, identity string, perm *livekit.ParticipantPermission, attrs map[string]string) (string, error)
 	DeleteRoom(ctx context.Context, room string) error
 	CreateRoom(ctx context.Context, room string) error
 	UpdatePermission(ctx context.Context, room, identity string, perm *livekit.ParticipantPermission) error
 	RemoveParticipants(ctx context.Context, room string, device id.ID) error
+	RemoveParticipant(ctx context.Context, room, identity string) error
 	Participants(ctx context.Context, room string) ([]*livekit.ParticipantInfo, error)
 }
 
-// CallCounters is the metric surface the call routes move; *obs.Metrics is one. Both counters are
+// CallCounters is the metric surface the call routes move; *obs.Metrics is one. Every counter is
 // label-free.
 type CallCounters interface {
 	CallFull()
 	ShareRefused()
+	// CallCut counts a participant the grant sync took out of a call room: a device whose user lost
+	// view_channel or connect, or an identity that is no device.
+	CallCut()
 }
 
 // vdecAttribute is the participant attribute that carries a device's video decode list (DEV-07),

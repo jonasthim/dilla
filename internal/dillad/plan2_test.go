@@ -266,6 +266,7 @@ func (u upstreamSFU) UpdatePermission(context.Context, string, string, *livekit.
 	return nil
 }
 func (u upstreamSFU) RemoveParticipants(context.Context, string, id.ID) error { return nil }
+func (u upstreamSFU) RemoveParticipant(context.Context, string, string) error { return nil }
 func (u upstreamSFU) Participants(context.Context, string) ([]*livekit.ParticipantInfo, error) {
 	return nil, nil
 }

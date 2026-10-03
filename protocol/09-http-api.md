@@ -589,6 +589,12 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   first and frees the slot after. The slot is also freed when the device stops its last camera or
   screen track, leaves the call, or loses both `video` and `screen_share`; a permission change
   during a call is pushed to the SFU at once.
+- **Losing access.** A device whose user loses `view_channel` or `connect` in the channel during a
+  call is disconnected from the call's room at once, before the call group's `Remove` of its leaf is
+  committed, and its sharing slot is freed; the signalling proxy refuses its rejoin meanwhile. When
+  the instance cannot resolve a participant's permissions, it takes every publish grant away from
+  that participant rather than leave the old one in place. A participant whose identity is no device
+  of the instance is removed from a call's room.
 - **The signalling proxy.** The `/rtc` paths admit only `GET` (anything else is `405`). The access
   token — the `access_token` query parameter or a `Bearer` header — must be one the instance minted
   (`403 E_FORBIDDEN` otherwise), for a device, and that device must be a current leaf of the live

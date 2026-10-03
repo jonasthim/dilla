@@ -118,6 +118,7 @@ func (f fakeSFU) UpdatePermission(context.Context, string, string, *livekit.Part
 	return nil
 }
 func (f fakeSFU) RemoveParticipants(context.Context, string, id.ID) error { return nil }
+func (f fakeSFU) RemoveParticipant(context.Context, string, string) error { return nil }
 func (f fakeSFU) Participants(context.Context, string) ([]*livekit.ParticipantInfo, error) {
 	return nil, nil
 }

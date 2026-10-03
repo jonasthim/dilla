@@ -46,6 +46,7 @@ type Metrics struct {
 	// The call routes (dilla-media task 10). Label-free.
 	CallFullTotal          prometheus.Counter
 	CallShareRefusalsTotal prometheus.Counter
+	CallCutsTotal          prometheus.Counter
 }
 
 // NewMetrics takes the gatherer explicitly rather than type-asserting the
@@ -109,6 +110,8 @@ func NewMetrics(r prometheus.Registerer, g prometheus.Gatherer) *Metrics {
 		prometheus.CounterOpts{Name: "dilla_call_full_total", Help: "Call starts refused E_CALL_FULL by the advisory participant count."})
 	m.CallShareRefusalsTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "dilla_call_share_refusals_total", Help: "Share requests refused E_CALL_SHARERS_FULL at livekit.max_publishers."})
+	m.CallCutsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_call_cuts_total", Help: "Participants a permission change cut from a call room: a device that lost view_channel or connect, or an identity that is no device."})
 	r.MustRegister(m.collectors()...)
 	return m
 }
@@ -121,7 +124,7 @@ func (m *Metrics) collectors() []prometheus.Collector {
 		m.WasiDuration, m.StoreTxDuration, m.BlobBytes, m.RateLimitedTotal,
 		m.BlobGCRuns, m.BlobGCDeleted, m.BlobGCBytes, m.BlobRefsExpired, m.BlobPurges,
 		m.CertRenewalFailures, m.ClockSkewSeconds,
-		m.CallFullTotal, m.CallShareRefusalsTotal,
+		m.CallFullTotal, m.CallShareRefusalsTotal, m.CallCutsTotal,
 	}
 }
 
@@ -194,6 +197,14 @@ func (m *Metrics) ShareRefused() {
 		return
 	}
 	m.CallShareRefusalsTotal.Inc()
+}
+
+// CallCut records one participant a permission change cut from a call room.
+func (m *Metrics) CallCut() {
+	if m == nil {
+		return
+	}
+	m.CallCutsTotal.Inc()
 }
 
 func statusClass(status int) string {

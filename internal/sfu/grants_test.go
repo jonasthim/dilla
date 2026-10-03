@@ -454,17 +454,29 @@ func TestRemoveParticipantsTakesTheDeviceAndItsShadows(t *testing.T) {
 	join(dev.String())
 	join(dev.String() + "#shadow")
 	join(other.String())
-	sfuEventually(t, "three participants listed", 5*time.Second, func() bool {
+	join("intruder")
+	sfuEventually(t, "four participants listed", 5*time.Second, func() bool {
 		parts, err := srv.Participants(t.Context(), room)
-		return err == nil && len(parts) == 3
+		return err == nil && len(parts) == 4
 	})
 	if err := srv.RemoveParticipants(t.Context(), room, dev); err != nil {
 		t.Fatalf("RemoveParticipants: %v", err)
+	}
+	sfuEventually(t, "the other device and the intruder left", 5*time.Second, func() bool {
+		parts, err := srv.Participants(t.Context(), room)
+		return err == nil && len(parts) == 2
+	})
+	// RemoveParticipant takes exactly one identity; one already gone is not an error.
+	if err := srv.RemoveParticipant(t.Context(), room, "intruder"); err != nil {
+		t.Fatalf("RemoveParticipant: %v", err)
 	}
 	sfuEventually(t, "only the other device left", 5*time.Second, func() bool {
 		parts, err := srv.Participants(t.Context(), room)
 		return err == nil && len(parts) == 1 && parts[0].GetIdentity() == other.String()
 	})
+	if err := srv.RemoveParticipant(t.Context(), room, "intruder"); err != nil {
+		t.Fatalf("RemoveParticipant of an identity already gone: %v", err)
+	}
 	if parts, err := srv.Participants(t.Context(), "no-such-room"); err != nil || len(parts) != 0 {
 		t.Fatalf("Participants of an unknown room = %v, %v; want none and no error", parts, err)
 	}

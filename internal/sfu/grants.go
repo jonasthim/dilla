@@ -184,6 +184,23 @@ func (s *Server) RemoveParticipants(ctx context.Context, room string, device id.
 	return errors.Join(errs...)
 }
 
+// RemoveParticipant disconnects the one participant of room whose identity is exactly identity — a
+// participant that is no device of this instance, which the grant sync takes out of a call room. A
+// participant that left in the meantime is not an error.
+func (s *Server) RemoveParticipant(ctx context.Context, room, identity string) error {
+	if room == "" || identity == "" {
+		return errors.New("sfu: room and identity must both be set")
+	}
+	rs, ctx, err := s.roomServiceFor(ctx, &auth.VideoGrant{RoomAdmin: true, Room: room})
+	if err != nil {
+		return err
+	}
+	if _, err := rs.RemoveParticipant(ctx, &livekit.RoomParticipantIdentity{Room: room, Identity: identity}); err != nil && !isTwirpNotFound(err) {
+		return fmt.Errorf("sfu: remove %q from %q: %w", identity, room, err)
+	}
+	return nil
+}
+
 // VerifyToken checks that token is a room-join token this server signed and answers its identity and
 // room: the /rtc proxy's join gate (DEV-25) reads both before LiveKit ever sees the request.
 func (s *Server) VerifyToken(token string) (identity, room string, err error) {
