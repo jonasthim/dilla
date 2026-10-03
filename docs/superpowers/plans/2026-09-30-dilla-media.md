@@ -464,7 +464,7 @@ The controller's rulings (`rulings.md`, 2026-09-30) and the DEV rulings of `ruli
 |---|---|---|---|
 | SP-05 VP8 1-byte delta prefix through LiveKit, mixed engines | 2 | VP8 prefix stays `key → 10, delta → 1`, or the measured fallback — **measured:** key 10, delta 1 held (docs/spikes/2026-10-vp8-prefix.md) | 4 |
 | SP-04 H.264 AAD stability | 3 | Ship the H.264 `media_frames` entry (125/66/240) or not (122/66/237); prefix through `pps_id` confirmed; whether delta frames carry an SPS — **measured:** shipped (docs/spikes/2026-10-h264-aad.md) | 4 |
-| SP-15 Go publisher/decryptor smoke | 6 | `internal/media` publish/decrypt shapes; `WriteSample` p99 budget; whether the H.264 access-unit builder is required | 7 |
+| SP-15 Go publisher/decryptor smoke | 6 | File tracks + `WithFrameEncryptor` + `Encryption_CUSTOM` for Ogg/IVF; `NewLocalTrack` + `StartWrite(h264AUProvider)` for H.264; own `samplebuilder` decrypt loop with per-reason counters; `WriteSample` p99 = 187.729µs (budget 5 ms); the H.264 access-unit builder is required (the file reader hands bare NALs) — `docs/spikes/2026-10-go-publisher.md` | 7 |
 | SP-21 webhooks end to end | 11 | Receiver on a separate loopback listener; event latency and ordering; behaviour on 5xx; the `api_key` mismatch error path | 12 |
 | SP-01 transform API | 14 | Chromium attach API (default `createEncodedStreams`); Firefox `MediaTrackAdded` attach leaks 0 frames | 17 |
 | SP-02 key-frame recovery | 15 | Hold parameters for video (2000 ms / 256); `sendKeyFrameRequest()` after a drop on the script path; the bound protocol/05 states | 17 |
