@@ -247,19 +247,52 @@ func TestNothingInTheModuleImportsTheCgoMediaPackage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go list -deps -test ./...: %v\n%s", err, out)
 	}
-	const forbidden = "github.com/livekit/server-sdk-go/v2/pkg/media"
+	forbidden := []string{
+		"github.com/livekit/server-sdk-go/v2/pkg/media",
+		"github.com/livekit/media-sdk",
+		"gopkg.in/hraban/opus.v2",
+	}
 	for _, line := range strings.Split(string(out), "\n") {
 		// Under -test a package built for a test binary is listed as
 		// "<import path> [<test package>.test]"; compare the import path alone.
 		path, _, _ := strings.Cut(strings.TrimSpace(line), " ")
-		if path == forbidden {
-			t.Fatalf("%s is in the module's transitive import set; it needs cgo and libopus "+
-				"headers, so CGO_ENABLED=0 go build ./cmd/dillad would stop working", forbidden)
+		for _, f := range forbidden {
+			if path == f || strings.HasPrefix(path, f+"/") {
+				t.Fatalf("%s is in the module's transitive import set; it needs cgo and libopus "+
+					"headers, so CGO_ENABLED=0 go build ./cmd/dillad would stop working", path)
+			}
 		}
 	}
 	if !strings.Contains(string(out), "github.com/livekit/server-sdk-go/v2\n") {
 		t.Error("go list -deps -test ./... does not mention server-sdk-go/v2 at all; the check " +
 			"passed vacuously, so the package list or the working directory is wrong")
+	}
+}
+
+// The release binary never holds frame keys or imports the media adapters.
+func TestDilladDoesNotImportTheMediaPackages(t *testing.T) {
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		root := os.Getenv("GOROOT")
+		if root == "" {
+			t.Fatalf("cannot locate the go tool: %v", err)
+		}
+		goTool = filepath.Join(root, "bin", "go")
+	}
+	cmd := exec.CommandContext(t.Context(), goTool, "list", "-deps", "./cmd/dillad")
+	cmd.Dir = "../.."
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list -deps ./cmd/dillad: %v\n%s", err, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		switch strings.TrimSpace(line) {
+		case "github.com/jonasthim/dilla/internal/sframe", "github.com/jonasthim/dilla/internal/media":
+			t.Errorf("cmd/dillad imports %s", strings.TrimSpace(line))
+		}
+	}
+	if !strings.Contains(string(out), "github.com/jonasthim/dilla/internal/sfu\n") {
+		t.Error("go list -deps ./cmd/dillad does not list internal/sfu; the check passed vacuously")
 	}
 }
 

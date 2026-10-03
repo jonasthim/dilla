@@ -1,0 +1,86 @@
+package media
+
+import (
+	"bytes"
+	"errors"
+	"maps"
+	"sync"
+
+	"github.com/jonasthim/dilla/internal/sframe"
+)
+
+// Counters is what a subscriber decrypted and dropped, by reason: an E_SFRAME_* code, "sif" for
+// LiveKit's own injected frames, or "other". The zero value is ready to use, and one Counters may
+// be shared by every decryptor of a participant.
+type Counters struct {
+	mu        sync.Mutex
+	decrypted uint64
+	dropped   map[string]uint64
+}
+
+func (c *Counters) addDecrypted() {
+	c.mu.Lock()
+	c.decrypted++
+	c.mu.Unlock()
+}
+
+func (c *Counters) addDropped(reason string) {
+	c.mu.Lock()
+	if c.dropped == nil {
+		c.dropped = map[string]uint64{}
+	}
+	c.dropped[reason]++
+	c.mu.Unlock()
+}
+
+// Snapshot copies the counters; dropped is never nil.
+func (c *Counters) Snapshot() (decrypted uint64, dropped map[string]uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	dropped = maps.Clone(c.dropped)
+	if dropped == nil {
+		dropped = map[string]uint64{}
+	}
+	return c.decrypted, dropped
+}
+
+// FrameDecryptor is one subscribed track's e2eetypes.FrameDecryptor: the participant's key ring,
+// the track's codec, the device its identity names and the slot its source maps to.
+type FrameDecryptor struct {
+	ring     *sframe.KeyRing
+	codec    sframe.Codec
+	device   [16]byte
+	slot     sframe.Slot
+	sif      []byte
+	counters *Counters
+}
+
+// NewFrameDecryptor makes a track's decryptor; a nil counters gets a private Counters.
+func NewFrameDecryptor(r *sframe.KeyRing, c sframe.Codec, expectedDevice [16]byte, slot sframe.Slot, sif []byte, counters *Counters) *FrameDecryptor {
+	if counters == nil {
+		counters = &Counters{}
+	}
+	return &FrameDecryptor{ring: r, codec: c, device: expectedDevice, slot: slot, sif: bytes.Clone(sif), counters: counters}
+}
+
+// DecryptFrame answers P || plaintext, or (nil, nil) for a frame it drops — the SDK's "drop this
+// frame" — after counting it. The SIF suffix is tested before anything is parsed (DEV-13): LiveKit's
+// Opus silence begins with f8, which reads as an SFrame config byte.
+func (d *FrameDecryptor) DecryptFrame(payload []byte) ([]byte, error) {
+	if len(d.sif) > 0 && bytes.HasSuffix(payload, d.sif) {
+		d.counters.addDropped("sif")
+		return nil, nil
+	}
+	dec, err := d.ring.Decrypt(d.codec, payload, &d.device, d.slot)
+	if err != nil {
+		var code sframe.Error
+		if errors.As(err, &code) {
+			d.counters.addDropped(string(code))
+		} else {
+			d.counters.addDropped("other")
+		}
+		return nil, nil
+	}
+	d.counters.addDecrypted()
+	return dec.Frame, nil
+}
