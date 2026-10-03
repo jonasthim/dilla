@@ -144,6 +144,11 @@ export async function sframeVectors() {
     ['non-minimal ctr with a leading zero byte', '0900ff', 'E_SFRAME_NON_MINIMAL_HEADER'],
     ['non-minimal kid 0 in eight bytes', 'f00000000000000000', 'E_SFRAME_NON_MINIMAL_HEADER'],
     ['non-minimal ctr 8 in eight bytes', '0f0000000000000008', 'E_SFRAME_NON_MINIMAL_HEADER'],
+    ['non-minimal kid: leaf 1 epoch 41 in three bytes', 'a0000129', 'E_SFRAME_NON_MINIMAL_HEADER'],
+    // Valid RFC 9605 headers whose KID is no dilla KID: 2^24 or more (protocol/05 "Frame format").
+    ['non-canonical kid 2^24', hex(encodeSframeHeader(1n << 24n, 0n)), 'E_SFRAME_NON_CANONICAL_KID'],
+    ['non-canonical kid: leaf 1 epoch 41 with bit 24 set', hex(encodeSframeHeader((1n << 24n) | kid(1, 41), 0n)), 'E_SFRAME_NON_CANONICAL_KID'],
+    ['non-canonical kid 2^64 - 1', hex(encodeSframeHeader((1n << 64n) - 1n, 0n)), 'E_SFRAME_NON_CANONICAL_KID'],
   ];
   // The AEAD rows tamper with the VP8 key-frame vector: prefix 10 bytes, header 11 bytes.
   const good = fromHex(media_frames[2].frame);
@@ -159,6 +164,10 @@ export async function sframeVectors() {
     ...headerRejects.map(([name, header, error]) => ({ name, header, error })),
     ...frameRejects.map(([name, frame, error]) => ({ name, codec: 'vp8', leaf_index: 3, epoch: 297, frame, error })),
     { name: 'vp8 key frame shorter than 10 bytes', codec: 'vp8', frame: '5002009d012a8002e0', error: 'E_SFRAME_MALFORMED_PREFIX' },
+    // The opus vector's frame, but sealed under its KID with bit 24 set and that KID's own key: a
+    // receiver that derived a key for it would authenticate it. It must be refused before that.
+    { name: 'opus frame sealed under a non-canonical kid', codec: 'opus',
+      frame: hex(await protect(baseKey, (1n << 24n) | kid(0, 41), counter(0, 0, 0), 'opus', fromHex(frameInputs[0].input))), error: 'E_SFRAME_NON_CANONICAL_KID' },
   ];
 
   return { version: 1, suite: SUITE, description: 'dilla-sframe/1 (05-media-frames.md): base_key = MLS-Exporter("SFrame 1.0 Base Key", "", 16); key/salt per RFC 9605 §4.4.2; CTR = slot(8)|layer(4)|seq(52); nonce = salt XOR CTR; header per RFC 9605 §4.3. rfc9605_c1/rfc9605_c3 = RFC 9605 appendix C; media_frames = P || H || C || T with AAD H || P after the codec prefix rule (H.264: canonical start codes, seeded RBSP escape); escapes = seeded WriteRbsp; rejects = inputs a receiver must refuse with the named code.',

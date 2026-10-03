@@ -91,6 +91,20 @@ export function decodeSframeHeader(b: Uint8Array): { kid: bigint; ctr: bigint; l
   return { kid, ctr, length: at };
 }
 
+/** The largest dilla-sframe/1 KID: leaf 2^16 - 1, epoch byte 255. */
+export const KID_MAX = 0xffffffn;
+
+/**
+ * The dilla-sframe/1 receiver's parse (05-media-frames.md "Receiver rules", step 1): the strict
+ * RFC 9605 header decode, then E_SFRAME_NON_CANONICAL_KID for a KID of 2^24 or more, before any
+ * key is derived for it.
+ */
+export function parseDillaHeader(b: Uint8Array): { kid: bigint; ctr: bigint; length: number } {
+  const h = decodeSframeHeader(b);
+  if (h.kid > KID_MAX) throw new SframeError('E_SFRAME_NON_CANONICAL_KID');
+  return h;
+}
+
 /** The number of `00` bytes ending `prefix`, capped at 2. */
 export function trailingZeros(prefix: Uint8Array): number {
   let n = 0;
@@ -246,7 +260,7 @@ export async function unprotect(baseKey: Uint8Array, codec: Codec, frame: Uint8A
   const prefix = prefixLen(codec, frame);
   const p = frame.subarray(0, prefix);
   const x = codec === 'h264' ? concat(p, rbspUnescape(trailingZeros(p), frame.subarray(prefix))) : frame;
-  const { kid: k } = decodeSframeHeader(x.subarray(prefix));
+  const { kid: k } = parseDillaHeader(x.subarray(prefix));
   const { key, salt } = await deriveFrameKeys(baseKey, k);
   return openFrame(key, salt, prefix, x).plain;
 }

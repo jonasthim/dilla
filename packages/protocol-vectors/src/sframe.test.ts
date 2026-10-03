@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   kid, deriveFrameKeys, counter, nonce, encodeSframeHeader, SUITE, decodeSframeHeader, prefixLen, canonicalizeH264,
-  rbspEscape, rbspUnescape, trailingZeros, encryptFrame, openFrame, protect, unprotect, SframeError, type Codec,
+  rbspEscape, rbspUnescape, trailingZeros, encryptFrame, openFrame, protect, unprotect, SframeError, parseDillaHeader, type Codec,
 } from './sframe.ts';
 import { hex, fromHex, concat } from './bytes.ts';
 
@@ -106,6 +106,19 @@ describe('the frame cipher reference (protocol/05 "Frame format")', () => {
       [flip(20), 'E_SFRAME_AUTH'], [good.subarray(0, 36), 'E_SFRAME_TRUNCATED_FRAME']] as const) {
       expect(await codeOf(() => unprotect(BASE, 'vp8', f))).toBe(code);
     }
+  });
+
+  it('refuses a KID of 2^24 or more after the strict decode, which still reads it', async () => {
+    for (const [h, code] of [
+      ['a0ffffff', 'accepted'], ['b001000000', 'E_SFRAME_NON_CANONICAL_KID'], ['b001000129', 'E_SFRAME_NON_CANONICAL_KID'],
+      ['f0ffffffffffffffff', 'E_SFRAME_NON_CANONICAL_KID'], ['a0000129', 'E_SFRAME_NON_MINIMAL_HEADER'], ['b0010001', 'E_SFRAME_TRUNCATED_HEADER'],
+    ] as const) {
+      expect(await codeOf(() => parseDillaHeader(fromHex(h)))).toBe(code);
+    }
+    expect(decodeSframeHeader(fromHex('b001000000')).kid).toBe(1n << 24n);
+    // Sealed under the non-canonical KID's own key: only the range check refuses it.
+    const sealed = await protect(BASE, (1n << 24n) | kid(0, 41), counter(0, 0, 0), 'opus', fromHex('fc01'));
+    expect(await codeOf(() => unprotect(BASE, 'opus', sealed))).toBe('E_SFRAME_NON_CANONICAL_KID');
   });
 });
 

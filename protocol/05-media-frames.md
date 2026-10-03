@@ -27,7 +27,21 @@ byte-compatible with DAVE.
   bytes. A receiver MUST refuse a header that is not minimally encoded — an extended field holding
   0-7, or a field longer than one byte with a leading `00` — with `E_SFRAME_NON_MINIMAL_HEADER`,
   checking in reading order (the config byte, the KID field, the CTR field; truncation before
-  minimality). Every header of RFC 9605 Appendix C.1 decodes.
+  minimality). Every header of RFC 9605 Appendix C.1 decodes. RFC 9605 §4.3 has senders use the
+  minimal form; dilla-sframe/1 makes it mandatory for receivers, so every KID and CTR has exactly
+  one accepted spelling.
+- **Canonical KID.** A dilla KID is `(leaf_index << 8) | (epoch mod 256)` with `leaf_index` < 2^16,
+  so it is below 2^24 ("Key schedule"). A header whose KID is 2^24 or more is a valid RFC 9605
+  header but no dilla KID: a receiver MUST refuse it with `E_SFRAME_NON_CANONICAL_KID` as part of
+  decoding the header, after the minimality checks and before it resolves an epoch, looks up a key
+  or derives one. The reason is that the key schedule hashes all 64 bits of the KID while the
+  epoch and roster checks read only the low 24, so without this rule one sender would have 2^40
+  spellings of its KID that pass every check up to the AEAD, each costing the receiver an HKDF
+  derivation and a cached key — unbounded work and memory for anyone who can put frames on a
+  track, the SFU included, and two implementations could disagree on which spellings they accept.
+  A receiver therefore holds at most one key per leaf of each held epoch's roster. The code is a
+  parse failure: the frame is dropped and counted, never held. A sender only ever emits
+  `Kid(leaf_index, epoch)`, and an API that takes a raw KID refuses one of 2^24 or more the same way.
 - Overhead per frame: `1 + len(KID) + len(CTR) + 16` bytes, at most 28 before H.264 escaping; on
   slot 1 or above the CTR is always 8 bytes.
 
@@ -83,7 +97,8 @@ PPS, the IDR header and the one slice-header byte that covers `pic_parameter_set
 - `base_key = MLS-Exporter("SFrame 1.0 Base Key", "", 16)` from the `call` group's current epoch,
   where `MLS-Exporter(Label, Context, Length) = ExpandWithLabel(DeriveSecret(exporter_secret,
   Label), "exported", Hash(Context), Length)` (RFC 9420 §8.5).
-- `KID = (leaf_index << 8) | (epoch mod 256)` (24 bits used; `leaf_index` < 2^16).
+- `KID = (leaf_index << 8) | (epoch mod 256)` (24 bits used; `leaf_index` < 2^16). A received KID
+  of 2^24 or more is refused before any derivation ("Frame format", canonical KID).
 - `sframe_secret = HKDF-Extract(salt = "", IKM = base_key)` (RFC 9605 §4.4.2; the Appendix C.3 vector for suite 0x0004 is the check);
   `key = HKDF-Expand(sframe_secret, "SFrame 1.0 Secret key " || KID(8, big-endian) || 0x0004, 16)`;
   `salt = HKDF-Expand(sframe_secret, "SFrame 1.0 Secret salt " || KID(8) || 0x0004, 12)`.
@@ -150,7 +165,9 @@ track's slot comes from its LiveKit `TrackSource`: `MICROPHONE` (2) → 0, `CAME
 Every received frame is checked in this order. The first failure names its code, and only
 `E_SFRAME_UNKNOWN_KID` is held:
 
-1. Compute the codec prefix, unescape (H.264) and decode the header strictly.
+1. Compute the codec prefix, unescape (H.264) and decode the header strictly, including the
+   canonical-KID rule (`E_SFRAME_TRUNCATED_HEADER`, `E_SFRAME_NON_MINIMAL_HEADER`,
+   `E_SFRAME_NON_CANONICAL_KID`). Nothing before this step derives a key.
 2. Resolve the KID to its exact held epoch: none → `E_SFRAME_UNKNOWN_KID`; one this receiver
    dropped → `E_SFRAME_STALE_EPOCH`.
 3. The KID's leaf MUST be in that epoch's roster (`E_SFRAME_LEAF_NOT_IN_EPOCH`) and MUST be the
@@ -188,6 +205,7 @@ implementation names a failure the same way. They are not `02`'s `E_*` vocabular
 |---|---|---|
 | `E_SFRAME_TRUNCATED_HEADER` | the header ends before its KID or CTR field does | receiver |
 | `E_SFRAME_NON_MINIMAL_HEADER` | an extended field holds 0-7, or a multi-byte field has a leading `00` | receiver |
+| `E_SFRAME_NON_CANONICAL_KID` | the KID is 2^24 or more, so it is no `(leaf_index << 8) \| (epoch mod 256)` | receiver, and any API that takes a raw KID |
 | `E_SFRAME_TRUNCATED_FRAME` | fewer than 16 bytes follow the header | receiver |
 | `E_SFRAME_MALFORMED_PREFIX` | the codec prefix cannot be computed (short VP8 key frame, no start code, NAL type 0/24-31, slice header overrun, `pic_parameter_set_id` > 255) | both |
 | `E_SFRAME_UNSUPPORTED_CODEC` | a codec with no prefix rule, or an H.264 first VCL NAL of type 2-4 or 19-21 | both |
@@ -220,5 +238,7 @@ every section and refuses every reject with the named code:
   with escaping): `prefix_len` from the input bytes, `frame` from the sender's path, and opening
   `frame` back to `input`;
 - `escapes`: the seeded `WriteRbsp` and its inverse;
-- `rejects`: 12 headers, 5 tampered or truncated frames and 1 malformed prefix, each with its
-  `E_SFRAME_*` code.
+- `rejects`: 13 truncated or non-minimal headers, 3 headers whose KID is 2^24 or more, 5 tampered
+  or truncated frames, 1 malformed prefix and 1 frame sealed under a non-canonical KID with that
+  KID's own key, each with its `E_SFRAME_*` code. A header row is refused by the receiver's header
+  step (step 1 of "Receiver rules"), a frame row by the receiver's path up to the AEAD.

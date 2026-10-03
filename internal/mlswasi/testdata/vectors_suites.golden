@@ -88,6 +88,9 @@ rejects	reserved ai (1d)	cbor
 rejects	reserved ai (1e)	cbor
 rejects	sframe reject: first ciphertext bit flipped	open
 rejects	sframe reject: header ctr byte changed	open
+rejects	sframe reject: non-canonical kid 2^24	decode
+rejects	sframe reject: non-canonical kid 2^64 - 1	decode
+rejects	sframe reject: non-canonical kid: leaf 1 epoch 41 with bit 24 set	decode
 rejects	sframe reject: non-minimal ctr 0	decode
 rejects	sframe reject: non-minimal ctr 7	decode
 rejects	sframe reject: non-minimal ctr 8 in eight bytes	decode
@@ -96,6 +99,8 @@ rejects	sframe reject: non-minimal kid 0 in eight bytes	decode
 rejects	sframe reject: non-minimal kid 5	decode
 rejects	sframe reject: non-minimal kid 7	decode
 rejects	sframe reject: non-minimal kid with a leading zero byte	decode
+rejects	sframe reject: non-minimal kid: leaf 1 epoch 41 in three bytes	decode
+rejects	sframe reject: opus frame sealed under a non-canonical kid	open
 rejects	sframe reject: prefix byte changed	open
 rejects	sframe reject: tag bit flipped	open
 rejects	sframe reject: tag truncated to 15 bytes	open

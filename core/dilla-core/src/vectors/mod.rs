@@ -701,15 +701,16 @@ pub fn run_rejects() -> SuiteReport {
         ));
     }
 
-    // sframe.json's `rejects` (protocol/05 "Errors"): header rows are decoded, frame rows go
-    // through the receiver's whole path. Expected is the file's `error`; actual is the code the
-    // core refuses with, or "accepted".
+    // sframe.json's `rejects` (protocol/05 "Errors"): header rows go through the receiver's parse
+    // (`peek_kid_ctr`: the strict RFC 9605 decode, then the KID < 2^24 rule), frame rows through
+    // the receiver's whole path. Expected is the file's `error`; actual is the code the core
+    // refuses with, or "accepted".
     let sframe: Value = serde_json::from_str(SFRAME_JSON).unwrap_or(Value::Null);
     let sframe_base = unhex_n::<NK>(sframe["base_key"].as_str().unwrap_or(""));
     for case in sframe["rejects"].as_array().unwrap_or(&Vec::new()) {
         let name = format!("sframe reject: {}", case["name"].as_str().unwrap_or("?"));
         let (field, outcome) = match case["header"].as_str() {
-            Some(header) => ("decode", decode_header(&unhex(header)).map(|_| ())),
+            Some(header) => ("decode", peek_kid_ctr(0, &unhex(header)).map(|_| ())),
             None => (
                 "open",
                 open_vector_frame(

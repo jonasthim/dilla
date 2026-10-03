@@ -38,8 +38,8 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // commitment case, sframe's 4 key-schedule cases x 6 fields plus 34 RFC 9605 C.1
 // headers x 2, the C.3 frame x 5, 4 media frames x 3 and 8 escapes x 2 (125), 5
 // identity fields plus the credential CBOR and the two credential signatures, and
-// the 66-input reject corpus. interfaces.md §6 task 4 requires "the same per-suite
-// case counts as the native and Node runs", which is exactly this table — 240
+// the 71-input reject corpus. interfaces.md §6 task 4 requires "the same per-suite
+// case counts as the native and Node runs", which is exactly this table — 245
 // assertions.
 //
 // The reject corpus went from 40 to 48 in commit 39ab8fa, which tightened the envelope limits of
@@ -53,18 +53,21 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 //
 // The dilla-media plan's task 4 grew sframe.json by its rfc9605_c1, rfc9605_c3, media_frames,
 // escapes and rejects sections: sframe 24 -> 125, rejects 48 -> 66, total 121 -> 240.
+//
+// The KID fix added five sframe rejects (a non-minimal three-byte KID, three headers whose KID is
+// 2^24 or more, and an Opus frame sealed under such a KID): rejects 66 -> 71, total 240 -> 245.
 var wantSuiteCases = map[string]int{
 	"envelope": 12,
 	"franking": 4,
 	"sframe":   125,
 	"identity": 8,
 	"frames":   25,
-	"rejects":  66,
+	"rejects":  71,
 }
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 240
+const wantTotalCases = 245
 
 // The four case names run_identity emits, one per sub-object of identity.json.
 var wantIdentityCases = []string{"credential_identity", "recovery_key", "safety_number", "sas"}

@@ -36,10 +36,25 @@ fn each_suite_reports_the_expected_number_of_cases() {
     // envelope decode refusals, 2 body-limit refusals, every `rejects` entry of envelope.json
     // (9 today: interfaces.md §2.8's tightened per-field limits, one case per bound plus the
     // pre-existing delete tombstone with a non-empty body), the short `authenticated_data`, and
-    // sframe.json's 18 `rejects` (12 header, 5 AEAD, 1 codec prefix).
+    // sframe.json's 23 `rejects` (13 non-minimal or truncated headers, 3 headers with a KID of
+    // 2^24 or more, 5 AEAD, 1 codec prefix, 1 frame sealed under a non-canonical KID).
     // A `>=` here would let a vector-file reject case silently stop being run.
     let rejects = run_rejects();
-    assert_eq!(rejects.cases.len(), 66);
+    assert_eq!(rejects.cases.len(), 71);
+    for name in [
+        "sframe reject: non-canonical kid 2^24",
+        "sframe reject: non-canonical kid: leaf 1 epoch 41 with bit 24 set",
+        "sframe reject: non-canonical kid 2^64 - 1",
+        "sframe reject: opus frame sealed under a non-canonical kid",
+    ] {
+        assert!(
+            rejects
+                .cases
+                .iter()
+                .any(|c| c.case == name && c.actual == "E_SFRAME_NON_CANONICAL_KID"),
+            "{name} must be refused as non-canonical"
+        );
+    }
     assert!(
         rejects
             .cases

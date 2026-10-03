@@ -406,6 +406,26 @@
       "error": "E_SFRAME_NON_MINIMAL_HEADER"
     },
     {
+      "name": "non-minimal kid: leaf 1 epoch 41 in three bytes",
+      "header": "a0000129",
+      "error": "E_SFRAME_NON_MINIMAL_HEADER"
+    },
+    {
+      "name": "non-canonical kid 2^24",
+      "header": "b001000000",
+      "error": "E_SFRAME_NON_CANONICAL_KID"
+    },
+    {
+      "name": "non-canonical kid: leaf 1 epoch 41 with bit 24 set",
+      "header": "b001000129",
+      "error": "E_SFRAME_NON_CANONICAL_KID"
+    },
+    {
+      "name": "non-canonical kid 2^64 - 1",
+      "header": "f0ffffffffffffffff",
+      "error": "E_SFRAME_NON_CANONICAL_KID"
+    },
+    {
       "name": "tag bit flipped",
       "codec": "vp8",
       "leaf_index": 3,
@@ -450,6 +470,12 @@
       "codec": "vp8",
       "frame": "5002009d012a8002e0",
       "error": "E_SFRAME_MALFORMED_PREFIX"
+    },
+    {
+      "name": "opus frame sealed under a non-canonical kid",
+      "codec": "opus",
+      "frame": "b001000029cf9c501a9130473806082f9a88abc9cdd47709a8da6f222375",
+      "error": "E_SFRAME_NON_CANONICAL_KID"
     }
   ]
 }
