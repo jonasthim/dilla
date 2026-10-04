@@ -32563,6 +32563,7 @@ Claude-Session: https://claude.ai/code/session_01ATX5KV2uNfihoyAMASpNjz"
 10. **Monthly livekit-client upgrade** — owner: dilla-media follow-up. Gated by the schema contract and the `implements BaseE2EEManager` check (DEV-66).
 11. **Client-reported mute/deaf (`voice_state` bits 1–2)** — owner: dilla-web. A client→server path for `self_mute`/`self_deaf`.
 12. **Playback via WebAudio with per-user volume (spec L502)** — owner: dilla-web. Route every remote audio track through livekit-client's `webAudioMix` with a per-user `GainNode` and a persisted volume per user; acceptance includes SP-36's AEC3 residual-echo comparison (NV-4) and, if NV-10's fallback was taken, the real `getDisplayMedia` screen leg behind a user click.
+13. **Cap and rate-limit device enrolment per user** — owner: dilla-web wave / protocol/03. No cap exists today; one account enrolling and revoking devices at will can inflate per-device server state (the relay's cut map gates its entries on a credential mint for this reason, task 13 fix), so enrolment gets a per-user cap and rate limit and no per-device server state can be inflated by one account.
 
 ## Assembly notes
 

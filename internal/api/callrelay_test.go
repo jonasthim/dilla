@@ -18,12 +18,19 @@ import (
 type fakeRelay struct {
 	mu      sync.Mutex
 	revoked []id.ID
+	minted  []id.ID
 }
 
 func (f *fakeRelay) Revoke(device id.ID, _ time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.revoked = append(f.revoked, device)
+}
+
+func (f *fakeRelay) Minted(device id.ID, _ time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.minted = append(f.minted, device)
 }
 
 func (f *fakeRelay) has(device id.ID) bool {
@@ -157,6 +164,25 @@ func TestEveryCutFromACallRoomRevokesTheRelay(t *testing.T) {
 			t.Fatal("an evicted device kept the relay")
 		}
 	})
+}
+
+// Commit review (cut-map amplification): a start that mints a relay credential tells the relay,
+// which records cuts only for devices that can hold one.
+func TestAStartTellsTheRelayItMintedACredential(t *testing.T) {
+	e, ch, tok, group, _, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL,
+		TURNSecret: "0123456789abcdef", TURNURLs: []string{"turns:chat.example.test:443?transport=tcp"}, CredentialTTL: time.Hour})
+	relay := &fakeRelay{}
+	calls.WithRelay(relay)
+	dev := deviceOf(t, e, tok)
+	seedLeaf(t, e, group, dev, 3, nil)
+	if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{}); status != http.StatusCreated {
+		t.Fatalf("start = %d", status)
+	}
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+	if !slices.Equal(relay.minted, []id.ID{dev}) {
+		t.Fatalf("minted = %v, want the starting device %s", relay.minted, dev)
+	}
 }
 
 // BarredDevices is the relay's store lookup: barred as the call routes say; an id with no device

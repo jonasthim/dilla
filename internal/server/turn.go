@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/logging"
@@ -196,8 +197,8 @@ func (g *countingRelay) AllocatePacketConn(conf turn.AllocateListenerConfig) (ne
 	c := &countingConn{PacketConn: conn, m: g.m}
 	if conf.UserID != "" {
 		c.dev, c.rev = deviceOf(conf.UserID), g.rev
-		if allocateHook != nil {
-			allocateHook(c.dev)
+		if hook := allocateHook.Load(); hook != nil {
+			(*hook)(c.dev)
 		}
 		if !g.rev.track(c.dev, c) {
 			// A cut that may cover this allocation's credential landed after the auth handler let the
@@ -215,7 +216,7 @@ func (g *countingRelay) AllocatePacketConn(conf turn.AllocateListenerConfig) (ne
 var errCutWhileAllocating = errors.New("turn: the device was cut while it allocated")
 
 // allocateHook, when set (tests only), runs after a relay socket is bound and before it is tracked.
-var allocateHook func(dev string)
+var allocateHook atomic.Pointer[func(dev string)]
 
 // AllocateListener refuses a TCP allocation and frees the slot pion took for it.
 func (g *countingRelay) AllocateListener(conf turn.AllocateListenerConfig) (net.Listener, net.Addr, error) {

@@ -27,7 +27,10 @@ const (
 	// past relayCutsWarn the map grows with a WARN, and a cut that finds maxRelayCuts live cuts
 	// already held fails closed: it raises the floor (RelayRevocations.floor) to its time, which
 	// refuses every device's credentials issued at or before it — a relay reconnect for everyone,
-	// logged at WARN and counted, rather than a forgotten revocation.
+	// logged at WARN and counted, rather than a forgotten revocation. A cut is recorded only for a
+	// device that can hold a relay credential (a mint within turn.credential_ttl, a relay socket or a
+	// pending Allocate: Revoke), because devices per user are not capped and one member revoking its
+	// own devices must not be able to fill the map and reset the relay for everyone.
 	relayCutsWarn = 4096
 	maxRelayCuts  = 65536
 	// pendingAllocateWindow is how long the issue time of an authenticated Allocate is held for the
@@ -87,6 +90,14 @@ type RelayRevocations struct {
 	floor     int64
 	overflows uint64
 	maxCuts   int
+	// mints is device → the last time a relay credential was minted for it (Minted), kept for
+	// ttl (turn.credential_ttl; 0 disables the gate: every cut is recorded). started is when this
+	// process began, before which it saw no mint; mintsFullUntil, while in the future, is a window
+	// in which a mint could not be recorded. Both make Revoke record every cut (fail closed).
+	mints          map[string]int64
+	ttl            int64
+	started        time.Time
+	mintsFullUntil time.Time
 
 	barred   BarredLookup
 	log      *slog.Logger
@@ -104,7 +115,57 @@ func NewRelayRevocations(maxAllocationAge time.Duration, clk clock.Clock) *Relay
 		clk: clk, keep: int64(maxAllocationAge / time.Second), log: slog.New(slog.DiscardHandler),
 		cuts: map[string]int64{}, socks: map[string]map[*countingConn]struct{}{},
 		pending: map[string]pendingAllocate{}, maxCuts: maxRelayCuts,
+		mints: map[string]int64{}, started: clk.Now(),
 	}
+}
+
+// WithCredentialTTL turns on the mint gate (Revoke) with turn.credential_ttl, and returns r.
+func (r *RelayRevocations) WithCredentialTTL(ttl time.Duration) *RelayRevocations {
+	r.ttl = int64(ttl / time.Second)
+	return r
+}
+
+// Minted records that a relay credential was minted for device at at — the call routes call it
+// where they mint one for a start, which needs a session, a current leaf and connect.
+func (r *RelayRevocations) Minted(device id.ID, at time.Time) {
+	now := r.clk.Now()
+	dev := device.String()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.mints[dev]; !ok && len(r.mints) >= r.maxCuts {
+		for d, t := range r.mints {
+			if now.Unix() > t+r.ttl {
+				delete(r.mints, d)
+			}
+		}
+		if len(r.mints) >= r.maxCuts {
+			// Cannot record it: every cut is recorded until this credential has expired.
+			r.mintsFullUntil = now.Add(time.Duration(r.ttl)*time.Second + time.Second)
+			return
+		}
+	}
+	r.mints[dev] = max(r.mints[dev], at.Unix())
+}
+
+// mayHoldCredentialLocked reports whether dev may hold a relay credential a cut would refuse: a
+// mint within turn.credential_ttl, a relay socket, or a pending Allocate — or the gate cannot tell
+// (off, the process younger than one TTL, or a mint it could not record), which records the cut.
+func (r *RelayRevocations) mayHoldCredentialLocked(dev string) bool {
+	now := r.clk.Now()
+	if r.ttl <= 0 || now.Sub(r.started) <= time.Duration(r.ttl)*time.Second || now.Before(r.mintsFullUntil) {
+		return true
+	}
+	if t, ok := r.mints[dev]; ok {
+		if now.Unix() <= t+r.ttl {
+			return true
+		}
+		delete(r.mints, dev)
+	}
+	if len(r.socks[dev]) > 0 {
+		return true
+	}
+	p, ok := r.pending[dev]
+	return ok && now.Sub(p.last) <= pendingAllocateWindow
 }
 
 // pendingAllocate is what the relay holds about a device's authenticated Allocates whose relay
@@ -160,7 +221,8 @@ func (r *RelayRevocations) WithBarred(b BarredLookup, log *slog.Logger) *RelayRe
 
 // Revoke cuts device from the relay as of at: every credential of it issued at or before at is
 // refused from now on, and its relay sockets are closed. It takes a lock, writes a map and closes
-// sockets, and never blocks on anything else, so a request path may call it.
+// sockets, and never blocks on anything else, so a request path may call it. A device that cannot
+// hold a relay credential (mayHoldCredentialLocked) gets no cut entry: there is nothing to refuse.
 func (r *RelayRevocations) Revoke(device id.ID, at time.Time) {
 	r.revoke(device.String(), at.Unix())
 }
@@ -168,7 +230,7 @@ func (r *RelayRevocations) Revoke(device id.ID, at time.Time) {
 func (r *RelayRevocations) revoke(dev string, at int64) {
 	r.mu.Lock()
 	recorded := true
-	if prev, ok := r.cuts[dev]; !ok || at > prev {
+	if prev, ok := r.cuts[dev]; (!ok || at > prev) && (ok || r.mayHoldCredentialLocked(dev)) {
 		if !ok && len(r.cuts) >= min(relayCutsWarn, r.maxCuts) {
 			r.dropExpiredCutsLocked()
 		}

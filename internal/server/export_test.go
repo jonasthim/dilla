@@ -74,15 +74,15 @@ func (r *RelayRevocations) OverflowsForTest() uint64 {
 func ParkAllocateForTest(dev string) (parked <-chan struct{}, release chan<- struct{}, restore func()) {
 	p, rel := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	prev := allocateHook
-	allocateHook = func(d string) {
+	hook := func(d string) {
 		if d != dev {
 			return
 		}
 		once.Do(func() { close(p) })
 		<-rel
 	}
-	return p, rel, func() { allocateHook = prev }
+	prev := allocateHook.Swap(&hook)
+	return p, rel, func() { allocateHook.Store(prev) }
 }
 
 // TURNHandlersForTest is the quota and event pair StartTURN installs over a fresh quota of

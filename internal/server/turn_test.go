@@ -779,18 +779,59 @@ func TestABurstOfCutsNeverForgetsALiveCut(t *testing.T) {
 	}
 }
 
+// Commit review (amplification): a cut is recorded only for a device that can hold a relay
+// credential. Revoking 100 000 devices that never had one minted leaves the cut map empty and the
+// floor unset; a device whose credential was minted is cut and refused; while the process is
+// younger than one credential TTL (it saw no mint before it started) every cut is recorded.
+func TestOnlyADeviceThatCanHoldACredentialGetsACut(t *testing.T) {
+	start := time.Unix(1_790_000_000, 0)
+	clk := clock.NewFake(start)
+	rev := server.NewRelayRevocations(2*time.Hour, clk).WithCredentialTTL(time.Hour)
+	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
+	young := id.New()
+	rev.Revoke(young, clk.Now())
+	if n := rev.RelayCutsForTest(); n != 1 {
+		t.Fatalf("a cut inside the first credential TTL after start = %d entries, want it recorded", n)
+	}
+	clk.Advance(2*time.Hour + time.Minute) // past the start window, and past young's cut
+	bystander := id.New()
+	bystanderOld, _ := server.TURNCredential("s3cret", bystander, time.Hour, clk.Now())
+	clk.Advance(time.Second)
+	for range 100_000 {
+		rev.Revoke(id.New(), clk.Now())
+	}
+	if n := rev.RelayCutsForTest(); n > 1 {
+		t.Fatalf("revoking devices that never minted a credential left %d cut entries", n)
+	}
+	if rev.OverflowsForTest() != 0 {
+		t.Fatal("revoking devices that never minted a credential raised the floor")
+	}
+	if _, _, ok := auth(&turn.RequestAttributes{Username: bystanderOld, Method: stun.MethodRefresh}); !ok {
+		t.Fatal("a bystander's credential was refused after cuts of devices that never minted")
+	}
+	minted := id.New()
+	mintedCred, _ := server.TURNCredential("s3cret", minted, time.Hour, clk.Now())
+	rev.Minted(minted, clk.Now())
+	clk.Advance(time.Second)
+	rev.Revoke(minted, clk.Now())
+	if _, _, ok := auth(&turn.RequestAttributes{Username: mintedCred, Method: stun.MethodRefresh}); ok {
+		t.Fatal("a device that minted a credential and was cut kept it")
+	}
+}
+
 // Commit review fail-open finding: a cut that finds the map full of live cuts fails closed. It
 // raises the floor to its time, so its own device's old credential is refused, every other
 // device's old credential too (they re-fetch), and credentials issued after the floor work; it is
 // counted and logged at WARN, and the floor expires like a cut.
 func TestAnOverflowingCutRaisesTheFloorForEveryDevice(t *testing.T) {
-	start := time.Unix(1_790_000_000, 0)
-	clk := clock.NewFake(start)
+	clk := clock.NewFake(time.Unix(1_790_000_000, 0))
 	var mu sync.Mutex
 	var logged strings.Builder
-	rev := server.NewRelayRevocations(2*time.Hour, clk).
+	rev := server.NewRelayRevocations(2*time.Hour, clk).WithCredentialTTL(time.Hour).
 		WithBarred(&fakeBarred{}, slog.New(slog.NewTextHandler(lockedWriter{&mu, &logged}, nil)))
 	rev.SetMaxCutsForTest(3)
+	clk.Advance(time.Hour + time.Minute) // past the start window: only devices that minted get a cut
+	start := clk.Now()
 	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
 	ok := func(user string) bool {
 		_, _, ok := auth(&turn.RequestAttributes{Username: user, Method: stun.MethodRefresh})
@@ -799,8 +840,12 @@ func TestAnOverflowingCutRaisesTheFloorForEveryDevice(t *testing.T) {
 	overflowing, unrelated := id.New(), id.New()
 	overflowingOld, _ := server.TURNCredential("s3cret", overflowing, time.Hour, start)
 	unrelatedOld, _ := server.TURNCredential("s3cret", unrelated, time.Hour, start)
+	rev.Minted(overflowing, start)
+	rev.Minted(unrelated, start)
 	for range 3 {
-		rev.Revoke(id.New(), clk.Now())
+		dev := id.New()
+		rev.Minted(dev, clk.Now())
+		rev.Revoke(dev, clk.Now())
 	}
 	clk.Advance(time.Second)
 	if !ok(unrelatedOld) {

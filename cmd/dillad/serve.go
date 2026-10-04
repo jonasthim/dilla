@@ -225,7 +225,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// call routes: a cut device loses its relay allocations, and the relay asks the store, after
 	// authenticating a request, whether a device another process revoked is barred.
 	relayRev := server.NewRelayRevocations(max(cfg.TURN.MaxAllocationAge.Value(), cfg.TURN.CredentialTTL.Value()), clock.System()).
-		WithBarred(api.BarredDevices{Repo: repo}, log)
+		WithBarred(api.BarredDevices{Repo: repo}, log).WithCredentialTTL(cfg.TURN.CredentialTTL.Value())
 	fd := frontDeps{cfg: cfg, log: log, health: health, metrics: metrics, stdout: stdout, relay: relayRev}
 	// The SFU's webhook listener is bound before the SFU starts, so LiveKit's webhook URL names the
 	// port it got, and served once the composition root exists (dilla-media task 12).

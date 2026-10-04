@@ -206,9 +206,11 @@ type Calls struct {
 }
 
 // RelayRevoker cuts a device from the TURN relay as of at; *server.RelayRevocations is one. Revoke
-// closes sockets and writes a map, and never blocks on the store or the SFU.
+// closes sockets and writes a map, and never blocks on the store or the SFU. Minted tells it a
+// relay credential was minted for device, which is what makes a later cut worth recording.
 type RelayRevoker interface {
 	Revoke(device id.ID, at time.Time)
+	Minted(device id.ID, at time.Time)
 }
 
 // WithRelay sets the relay revocation state the cuts feed and returns h.
@@ -679,7 +681,11 @@ func (h *Calls) iceServers(dev id.ID) []iceServer {
 	if ttl <= 0 {
 		ttl = time.Hour
 	}
-	user, pass := server.TURNCredential(h.cfg.TURNSecret, dev, ttl, h.clk.Now())
+	now := h.clk.Now()
+	user, pass := server.TURNCredential(h.cfg.TURNSecret, dev, ttl, now)
+	if h.relay != nil {
+		h.relay.Minted(dev, now) // a later cut of dev now has a credential to refuse
+	}
 	return []iceServer{{URLs: h.cfg.TURNURLs, Username: user, Credential: pass}}
 }
 
