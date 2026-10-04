@@ -6,6 +6,7 @@ const h = vi.hoisted(() => {
   const state = {
     order: [] as string[], rooms: [] as any[], managers: [] as any[],
     enableOnConnect: true, support: { ok: true, path: 'insertable-streams' } as any,
+    ignoreManager: false, installError: null as Error | null,
   };
   class FakeEmitter {
     l = new Map<string, Array<(...a: any[]) => void>>();
@@ -16,10 +17,19 @@ const h = vi.hoisted(() => {
   class FakeRoom extends FakeEmitter {
     isE2EEEnabled = false;
     localParticipant = { identity: 'a1'.repeat(16) };
-    engine = { rtcConfig: { iceTransportPolicy: 'all' } as RTCConfiguration };
+    engine: { rtcConfig: RTCConfiguration; e2eeManager?: unknown } = { rtcConfig: { iceTransportPolicy: 'all' } };
     connectArgs: unknown[] = [];
     opts: any;
-    constructor(opts: any) { super(); this.opts = opts; state.rooms.push(this); state.order.push('new Room'); }
+    constructor(opts: any) {
+      super();
+      this.opts = opts;
+      // Room.setupE2EE (Room.ts:506-517): `encryption` wins over `e2ee`; the engine gets the chosen manager.
+      const chosen = opts.encryption ?? opts.e2ee;
+      if (!state.ignoreManager && chosen !== undefined) this.engine.e2eeManager = chosen.e2eeManager;
+      state.rooms.push(this);
+      state.order.push('new Room');
+    }
+    get hasE2EESetup(): boolean { return this.engine.e2eeManager !== undefined; }
     async setE2EEEnabled(v: boolean): Promise<void> { state.order.push(`setE2EEEnabled(${v})`); }
     async connect(...args: unknown[]): Promise<void> {
       state.order.push('connect');
@@ -32,7 +42,10 @@ const h = vi.hoisted(() => {
   }
   class FakeManager {
     worker: unknown;
-    installEpoch = vi.fn(async () => { state.order.push('installEpoch'); });
+    installEpoch = vi.fn(async () => {
+      state.order.push('installEpoch');
+      if (state.installError !== null) throw state.installError;
+    });
     dispose = vi.fn(() => { state.order.push('dispose'); });
     constructor(worker: unknown) { this.worker = worker; state.managers.push(this); }
   }
@@ -58,6 +71,8 @@ beforeEach(() => {
   h.state.managers.length = 0;
   h.state.enableOnConnect = true;
   h.state.support = { ok: true, path: 'insertable-streams' };
+  h.state.ignoreManager = false;
+  h.state.installError = null;
   h.createMediaWorker.mockClear();
   held.clear();
   vi.stubGlobal('navigator', {
@@ -82,7 +97,7 @@ describe('joinCall (DEV-27)', () => {
     expect(h.state.rooms[0].isE2EEEnabled).toBe(true);
   });
 
-  it('builds Room with e2ee: { e2eeManager } and the dilla publish defaults; the caller cannot replace the manager', async () => {
+  it('builds Room with e2ee: { e2eeManager } and the dilla publish defaults', async () => {
     await joinCall(options({ roomOptions: { e2ee: undefined, adaptiveStream: true } }));
     const room = h.state.rooms[0];
     expect(room.opts.e2ee.e2eeManager).toBe(h.state.managers[0]);
@@ -90,6 +105,42 @@ describe('joinCall (DEV-27)', () => {
     expect(room.opts.publishDefaults).toMatchObject({
       audioPreset: { maxBitrate: 64_000, priority: 'high' }, dtx: true, red: false, forceStereo: false, videoCodec: 'vp8', simulcast: true, backupCodec: false,
     });
+  });
+
+  it('roomOptions cannot replace the manager, turn dynacast, RED or backup codecs on, or add frame metadata (I1)', async () => {
+    const other = { e2eeManager: { isDataChannelEncryptionEnabled: false } };
+    await joinCall(options({
+      roomOptions: {
+        encryption: other, e2ee: other, dynacast: true, frameMetadata: {}, packetTrailer: {}, expSignalLatency: 5,
+        publishDefaults: { red: true, backupCodec: true, videoCodec: 'h264' }, disconnectOnPageLeave: false,
+      } as any,
+    }));
+    const opts = h.state.rooms[0].opts;
+    expect(opts.e2ee.e2eeManager).toBe(h.state.managers[0]);
+    expect(Object.keys(opts)).not.toEqual(expect.arrayContaining(['encryption']));
+    for (const k of ['encryption', 'frameMetadata', 'packetTrailer', 'expSignalLatency']) expect(opts, k).not.toHaveProperty(k);
+    expect(opts.dynacast).toBe(false);
+    expect(opts.disconnectOnPageLeave).toBe(false); // a whitelisted key still reaches Room
+    expect(opts.publishDefaults).toMatchObject({ red: false, backupCodec: false, videoCodec: 'h264', dtx: true, audioPreset: { maxBitrate: 64_000, priority: 'high' } });
+    expect(h.state.rooms[0].engine.e2eeManager).toBe(h.state.managers[0]);
+  });
+
+  it('refuses the join, and cleans up, when the Room does not use the dilla manager (I1)', async () => {
+    h.state.ignoreManager = true;
+    await expect(joinCall(options())).rejects.toThrow('E_E2EE_REQUIRED: the Room does not use the dilla E2EE manager');
+    expect(h.state.order).not.toContain('setE2EEEnabled(true)');
+    expect(h.state.order).not.toContain('connect');
+    expect(h.state.order.slice(-3)).toEqual(['dispose', 'disconnect', 'terminate']);
+    await vi.waitFor(() => expect(held.size).toBe(0));
+  });
+
+  it('rejects and releases the Web Lock when the worker never becomes ready (I2)', async () => {
+    h.state.installError = new Error('E_WASM: the worker did not answer init');
+    await expect(joinCall(options())).rejects.toThrow('E_WASM');
+    expect(h.state.order).toEqual(['installEpoch', 'dispose', 'terminate']);
+    await vi.waitFor(() => expect(held.size).toBe(0));
+    h.state.installError = null;
+    await expect(joinCall(options())).resolves.toBeDefined(); // the call group is not stuck at E_CALL_IN_OTHER_TAB
   });
 
   it('always passes iceServers (also []) and max-bundle (DEV-52, DEV-54)', async () => {

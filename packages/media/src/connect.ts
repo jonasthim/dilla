@@ -11,6 +11,7 @@ export interface JoinCallOptions {
   iceServers: IceServerTuple[];
   epoch: EpochKeys;
   lock: { instanceId: string; callGroupId: string };
+  /** Only the CALLER_ROOM_OPTIONS keys are used; every other key is ignored (I1). */
   roomOptions?: Partial<RoomOptions>;
 }
 
@@ -37,6 +38,49 @@ export const ROOM_DEFAULTS: Partial<RoomOptions> = {
     backupCodec: false,
   },
 };
+
+/**
+ * I1 (task 17 review): the only RoomOptions a caller may set. Everything else is dilla's: `e2ee` and `encryption`
+ * (Room.setupE2EE prefers `encryption` over `e2ee`, Room.ts:506-517, so either could replace the manager), `dynacast`
+ * (multi-codec simulcast needs it), `frameMetadata` / `packetTrailer` (they append bytes to frames, Room.ts:539-543,
+ * 2562-2563) and anything livekit-client adds later. publishDefaults is merged over ROOM_DEFAULTS', and its `red`
+ * and `backupCodec` are forced off after the merge (DEV-08, DEV-09).
+ */
+export const CALLER_ROOM_OPTIONS = [
+  'adaptiveStream', 'audioCaptureDefaults', 'videoCaptureDefaults', 'publishDefaults', 'audioOutput',
+  'stopLocalTrackOnUnpublish', 'reconnectPolicy', 'disconnectOnPageLeave', 'webAudioMix', 'loggerName',
+  'singlePeerConnection', 'dataStream',
+] as const satisfies ReadonlyArray<keyof RoomOptions>;
+
+/** The RoomOptions joinCall builds Room with: ROOM_DEFAULTS, the caller's whitelisted keys, then the forced values. */
+export function dillaRoomOptions(manager: DillaE2EEManager, caller: Partial<RoomOptions> = {}): RoomOptions {
+  const allowed: Partial<RoomOptions> = {};
+  for (const key of CALLER_ROOM_OPTIONS) {
+    if (Object.hasOwn(caller, key) && caller[key] !== undefined) (allowed as Record<string, unknown>)[key] = caller[key];
+  }
+  return {
+    ...ROOM_DEFAULTS,
+    ...allowed,
+    publishDefaults: { ...ROOM_DEFAULTS.publishDefaults, ...allowed.publishDefaults, red: false, backupCodec: false },
+    dynacast: false,
+    // e2ee: (the deprecated key) on purpose (G11, DEV-11): with `encryption` absent Room.setupE2EE sets
+    // isDataChannelEncryptionEnabled = false (Room.ts:509-515), and LocalParticipant keeps its Safari < 17.2
+    // simulcast guard, which reads roomOptions.e2ee. No caller key can reach it: `encryption` is not whitelisted.
+    e2ee: { e2eeManager: manager },
+  };
+}
+
+/**
+ * I1: Room must use exactly this manager. Room.hasE2EESetup (Room.ts:247-249) is true when a manager was set up, and
+ * Room hands that manager to its engine (Room.ts:374, 613; RTCEngine.ts:162 `e2eeManager`), so the engine's manager
+ * must be ours; anything else and the join is refused.
+ */
+export function assertDillaManager(room: Room, manager: DillaE2EEManager): void {
+  const engine = (room as unknown as { engine?: { e2eeManager?: unknown } }).engine;
+  if (!room.hasE2EESetup || engine?.e2eeManager !== manager) {
+    throw new Error('E_E2EE_REQUIRED: the Room does not use the dilla E2EE manager');
+  }
+}
 
 export function toRtcIceServers(list: IceServerTuple[]): RTCIceServer[] {
   return list.map(([urls, username, credential]) => ({ urls, username, credential }));
@@ -108,9 +152,11 @@ export async function joinCall(o: JoinCallOptions): Promise<CallSession> {
     }
   };
   try {
+    // Rejects with E_WASM when the worker errors or never answers init (INIT_TIMEOUT_MS): the catch below then
+    // disposes, terminates the worker and releases the Web Lock (I2).
     await manager.installEpoch(o.epoch);
-    // e2ee: (deprecated key) on purpose, last, so roomOptions cannot replace the manager (G11).
-    room = new Room({ ...ROOM_DEFAULTS, ...o.roomOptions, e2ee: { e2eeManager: manager } });
+    room = new Room(dillaRoomOptions(manager, o.roomOptions));
+    assertDillaManager(room, manager);
     await room.setE2EEEnabled(true);
     const connectOptions: RoomConnectOptions = {
       autoSubscribe: true,
