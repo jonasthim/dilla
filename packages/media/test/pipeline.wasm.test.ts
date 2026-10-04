@@ -22,8 +22,15 @@ beforeAll(() => {
 
 const hex = (s: string): Uint8Array => Uint8Array.from((s.match(/../g) ?? []).map((b) => Number.parseInt(b, 16)));
 
-function frame(bytes: Uint8Array, type?: 'key' | 'delta', ssrc = 1111, spatialIndex = 0): EncodedFrameLike {
-  return { data: bytes.slice().buffer, type, getMetadata: () => ({ synchronizationSource: ssrc, spatialIndex }) };
+function frame(bytes: Uint8Array, type?: 'key' | 'delta', ssrc = 1111, spatialIndex = 0, mimeType?: string): EncodedFrameLike {
+  return { data: bytes.slice().buffer, type, getMetadata: () => ({ synchronizationSource: ssrc, spatialIndex, mimeType }) };
+}
+
+const MIME: Record<MediaCodec, string> = { opus: 'audio/opus', vp8: 'video/VP8', vp9: 'video/VP9', h264: 'video/H264' };
+
+/** A sender-side frame: it carries its codec in getMetadata().mimeType, which is what the encoder reads (C1). */
+function ef(h: TrackHandle, bytes: Uint8Array, type?: 'key' | 'delta', ssrc = 1111): EncodedFrameLike {
+  return frame(bytes, type, ssrc, 0, MIME[h.opts.codec]);
 }
 
 class Sink {
@@ -56,7 +63,7 @@ function decoder(p: Pipeline, sink: Sink, slot: SlotId, codec: MediaCodec, ident
 
 function encrypt(p: Pipeline, h: TrackHandle, sink: Sink, bytes: Uint8Array, type?: 'key' | 'delta'): Uint8Array {
   const before = sink.out.length;
-  p.frame(h, frame(bytes, type));
+  p.frame(h, ef(h, bytes, type));
   expect(sink.out.length).toBe(before + 1);
   return sink.out[sink.out.length - 1];
 }
@@ -274,8 +281,8 @@ describe('the dilla-media/1 pipeline over the real wasm', () => {
     install(A.p, 7n, 0);
     const sa = new Sink();
     const enc = encoder(A.p, sa, 0, 'opus');
-    A.p.frame(enc, frame(hex('fc01')));
-    A.p.frame(enc, frame(hex('fc02')));
+    A.p.frame(enc, ef(enc, hex('fc01')));
+    A.p.frame(enc, ef(enc, hex('fc02')));
     expect(sa.out).toHaveLength(0);
     expect(A.posted.filter((m) => m.kind === 'seqExhausted')).toEqual([{ kind: 'seqExhausted', slot: 0, layer: 0 }]);
     expect(A.posted.filter((m) => m.kind === 'rekeyNeeded')).toEqual([{ kind: 'rekeyNeeded', reason: 'seqExhausted' }]);
@@ -286,7 +293,7 @@ describe('the dilla-media/1 pipeline over the real wasm', () => {
     install(A.p, 7n, 0);
     const sa = new Sink();
     const enc = encoder(A.p, sa, 1, 'vp8');
-    for (let ssrc = 1; ssrc <= 18; ssrc++) A.p.frame(enc, frame(hex('310102030405060708'), 'delta', ssrc));
+    for (let ssrc = 1; ssrc <= 18; ssrc++) A.p.frame(enc, ef(enc, hex('310102030405060708'), 'delta', ssrc));
     expect(sa.out).toHaveLength(16);
     expect(A.posted.filter((m) => m.kind === 'rekeyNeeded')).toEqual([{ kind: 'rekeyNeeded', reason: 'layerSpace' }]);
   });
@@ -295,18 +302,18 @@ describe('the dilla-media/1 pipeline over the real wasm', () => {
     const A = worker();
     const sa = new Sink();
     const enc = encoder(A.p, sa, 0, 'opus');
-    A.p.frame(enc, frame(hex('fc01')));
+    A.p.frame(enc, ef(enc, hex('fc01')));
     expect(sa.out).toHaveLength(0);
     expect(A.posted.some((m) => m.kind === 'error' && m.code === 'E_NO_EPOCH')).toBe(true);
     install(A.p, 7n, 0);
-    A.p.frame(enc, frame(hex('fc02')));
+    A.p.frame(enc, ef(enc, hex('fc02')));
     expect(sa.out).toHaveLength(1);
     A.p.handle({ kind: 'clearKeys' });
     install(A.p, 7n, 0);
-    A.p.frame(enc, frame(hex('fc03')));
+    A.p.frame(enc, ef(enc, hex('fc03')));
     expect(sa.out).toHaveLength(1);
     install(A.p, 8n, 0);
-    A.p.frame(enc, frame(hex('fc04')));
+    A.p.frame(enc, ef(enc, hex('fc04')));
     expect(sa.out).toHaveLength(2);
     expect(peekKidHex('opus', sa.out[1])).toBe(kidHex(0, 8n));
   });

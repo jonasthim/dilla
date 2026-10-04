@@ -1,4 +1,4 @@
-import type { DillaTransformOptions, ToWorker } from '../protocol';
+import type { DillaBlockOptions, DillaTransformOptions, ToWorker } from '../protocol';
 
 // The worker speaks dilla-media/1 only (interfaces.md c.6). livekit-client posts nothing to a custom manager's
 // worker (DEV-12); should one of its E2EE worker messages (init with keyProviderOptions, setKey, ratchetRequest,
@@ -15,12 +15,19 @@ const isSlot = (v: unknown): boolean => v === 0 || v === 1 || v === 2 || v === 3
 const isCodec = (v: unknown): boolean => v === 'opus' || v === 'vp8' || v === 'vp9' || v === 'h264';
 const isEncryption = (v: unknown): boolean => v === 0 || v === 1 || v === 2;
 const isStream = (v: unknown, method: 'getReader' | 'getWriter'): boolean => isObj(v) && typeof v[method] === 'function';
+const stripKeys = (o: Obj, ...keys: string[]): Obj => Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)));
 
 export function isTransformOptions(o: unknown): o is DillaTransformOptions {
-  return isObj(o) && o.dilla === 1 && (o.side === 'encode' || o.side === 'decode')
+  return isObj(o) && o.dilla === 1 && (o.side === 'encode' || o.side === 'decode') && o.block === undefined
     && isStr(o.trackId) && isStr(o.participantIdentity) && isSlot(o.slot) && isCodec(o.codec)
     && (o.encryption === undefined || isEncryption(o.encryption));
 }
+
+export function isBlockOptions(o: unknown): o is DillaBlockOptions {
+  return isObj(o) && o.dilla === 1 && (o.side === 'encode' || o.side === 'decode') && isStr(o.trackId) && o.block === true;
+}
+
+const isOptions = (o: unknown): boolean => isTransformOptions(o) || isBlockOptions(o);
 
 /** Returns `m` when it is a well-formed dilla-media/1 message, else null (the worker ignores it). */
 export function parseToWorker(m: unknown): ToWorker | null {
@@ -37,10 +44,10 @@ export function parseToWorker(m: unknown): ToWorker | null {
     case 'setSifTrailer':
       return m.trailer instanceof Uint8Array ? (m as ToWorker) : null;
     case 'attach':
-      return isObj(m.data) && isTransformOptions(m.data) && isStream(m.data.readable, 'getReader') && isStream(m.data.writable, 'getWriter')
+      return isObj(m.data) && isOptions(stripKeys(m.data, 'readable', 'writable')) && isStream(m.data.readable, 'getReader') && isStream(m.data.writable, 'getWriter')
         ? (m as ToWorker) : null;
     case 'retarget':
-      return isObj(m.data) && isStr(m.data.previousTrackId) && isTransformOptions(m.data) ? (m as ToWorker) : null;
+      return isObj(m.data) && isStr(m.data.previousTrackId) && isOptions(stripKeys(m.data, 'previousTrackId')) ? (m as ToWorker) : null;
     case 'mapTrack':
       return isStr(m.trackId) && isStr(m.participantIdentity) && isSlot(m.slot) && isCodec(m.codec) && isEncryption(m.encryption)
         ? (m as ToWorker) : null;

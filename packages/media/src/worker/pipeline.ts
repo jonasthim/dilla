@@ -1,4 +1,4 @@
-import type { DillaMediaStats, DillaTransformOptions, DropReason, FromWorker, MediaCodec, ToWorker } from '../protocol';
+import type { DillaBlockOptions, DillaMediaStats, DillaTransformOptions, DropReason, FromWorker, ToWorker } from '../protocol';
 import { CODEC_NUMBER, codecFromMime, codecKind, hexToBytes, isDeviceIdentity, slotKind } from '../slots';
 import { LayerAllocator } from './layers';
 import { PendingQueue } from './pending';
@@ -30,6 +30,8 @@ export interface CryptoFactory {
 export interface TrackHandle {
   trackId: string;
   opts: DillaTransformOptions;
+  /** A blocking transform (DillaBlockOptions): every frame is dropped as `blocked`, whatever else happens. */
+  blocked: boolean;
   mapped: boolean;
   sink: FrameSink;
   requestKeyFrame?: () => Promise<unknown>;
@@ -52,7 +54,7 @@ const ERROR_INTERVAL_MS = 1_000; // c.6: errors are posted at most once per seco
 // until detached; the bound only stops a stream of never-attached ids from growing the map.
 const MAX_MAPPINGS = 512;
 // Drops after which a video decoder stalls until a key frame; never sif or noneFlagged (SP-02 decision 2).
-const KEY_FRAME_REASONS: ReadonlySet<DropReason> = new Set<DropReason>(['bufferTimeout', 'unknownKid', 'aeadFail', 'expiredKid', 'parse']);
+const KEY_FRAME_REASONS: ReadonlySet<DropReason> = new Set<DropReason>(['bufferTimeout', 'unknownKid', 'aeadFail', 'expiredKid', 'parse', 'internal']);
 
 type ErrorCode = DropReason | 'E_NO_EPOCH' | 'E_BAD_OPTIONS' | 'E_WASM';
 type Mapping = Pick<Extract<ToWorker, { kind: 'mapTrack' }>, 'participantIdentity' | 'slot' | 'codec' | 'encryption'>;
@@ -78,6 +80,22 @@ export function dropReasonOf(code: string): DropReason {
 }
 
 const errorCode = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * The drop reason of a cipher failure. Only a bare dilla-sframe/1 code is read as one; a wasm trap
+ * (RuntimeError "unreachable"), a JS exception or a thrown non-Error is `internal`. Either way the frame is dropped:
+ * nothing but a successful encrypt or an authenticated decrypt ever reaches a sink.
+ */
+function failureReason(err: unknown): DropReason {
+  const code = errorCode(err);
+  return code.startsWith('E_SFRAME_') ? dropReasonOf(code) : 'internal';
+}
+
+function blockedOpts(o: DillaBlockOptions): DillaTransformOptions {
+  return { dilla: 1, side: o.side, trackId: o.trackId, participantIdentity: '', slot: 0, codec: 'opus' };
+}
+
+const isBlock = (o: DillaTransformOptions | DillaBlockOptions): o is DillaBlockOptions => 'block' in o && o.block === true;
 
 function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
   return u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength ? (u8.buffer as ArrayBuffer) : (u8.slice().buffer as ArrayBuffer);
@@ -127,24 +145,39 @@ export class Pipeline {
     }
   }
 
-  addTrack(opts: DillaTransformOptions, sink: FrameSink, requestKeyFrame?: () => Promise<unknown>): TrackHandle {
+  addTrack(o: DillaTransformOptions | DillaBlockOptions, sink: FrameSink, requestKeyFrame?: () => Promise<unknown>): TrackHandle {
+    const blocked = isBlock(o);
+    const opts = blocked ? blockedOpts(o) : o;
     const h: TrackHandle = {
-      trackId: opts.trackId, opts, mapped: isMapped(opts), sink, requestKeyFrame,
+      trackId: opts.trackId, opts, blocked, mapped: !blocked && isMapped(opts), sink, requestKeyFrame,
       fifo: new PendingQueue(), stoppedEpoch: null, lastKeyFrameRequest: Number.NEGATIVE_INFINITY, awaitingKeyFrame: false,
     };
-    this.applyMapping(h);
+    if (!blocked) this.applyMapping(h);
     this.tracks.set(opts.trackId, h);
     this.deps.post({ kind: 'attached', trackId: opts.trackId, side: opts.side });
     return h;
   }
 
   frame(h: TrackHandle, frame: EncodedFrameLike): void {
+    if (h.blocked) {
+      this.drop(h, 'blocked');
+      return;
+    }
     if (h.opts.side === 'encode') {
       const out = this.encode(h, frame);
       if (out !== null) h.sink.enqueue(out);
       return;
     }
     this.decode(h, frame);
+  }
+
+  /**
+   * The transform callback caught `err` from frame(): the frame is dropped (it was never enqueued, since every
+   * enqueue is the last step of a successful path) and counted, and the stream stays open for the next frame.
+   */
+  fault(h: TrackHandle, err: unknown): void {
+    this.log('warn', `frame on ${h.trackId}: ${errorCode(err)}`);
+    this.drop(h, 'internal');
   }
 
   tick(): void {
@@ -175,7 +208,16 @@ export class Pipeline {
     if (h.stoppedEpoch === epoch) return null;
     const meta = frame.getMetadata();
     const audio = slotKind(h.opts.slot) === 'audio';
-    const codec: MediaCodec = audio ? 'opus' : (codecFromMime(meta.mimeType, 'video') ?? h.opts.codec);
+    // C1 step 2 (task 17 fix round 1): the codec is the frame's own, never the attach-time label, which the SFU
+    // can choose (JoinResponse.enabledPublishCodecs, LocalParticipant.ts:1052-1060). A frame whose codec has no
+    // dilla-sframe/1 prefix rule (AV1, H.265, RED, PCMU, …), or that names none, is dropped (DEV-06 "refuses anything
+    // but opus/vp8/vp9/h264"). Measured, task 17 fix round 1: Chromium 153 and Firefox 155 set mimeType on every
+    // sender-side audio and video frame (VP8, VP9, H.264, AV1 and Opus).
+    const codec = codecFromMime(meta.mimeType, audio ? 'audio' : 'video');
+    if (codec === null) {
+      this.drop(h, 'unsupportedCodec');
+      return null;
+    }
     const kid = (BigInt(this.selfLeaf) << 8n) | (epoch & 0xffn);
     let layer = 0;
     if (!audio) {
@@ -200,7 +242,7 @@ export class Pipeline {
         this.deps.post({ kind: 'seqExhausted', slot: h.opts.slot, layer });
         this.deps.post({ kind: 'rekeyNeeded', reason: 'seqExhausted' });
       } else {
-        this.log('warn', `encrypt ${h.trackId}: ${code}`);
+        this.drop(h, failureReason(err)); // never the frame: its data is still the plaintext
       }
       return null;
     }
@@ -240,8 +282,7 @@ export class Pipeline {
       frame.data = toArrayBuffer(out);
       return 'ok';
     } catch (err) {
-      const code = errorCode(err);
-      return code === 'E_SFRAME_UNKNOWN_KID' ? 'hold' : dropReasonOf(code);
+      return errorCode(err) === 'E_SFRAME_UNKNOWN_KID' ? 'hold' : failureReason(err);
     }
   }
 
@@ -254,7 +295,8 @@ export class Pipeline {
   }
 
   private hold(h: TrackHandle, frame: EncodedFrameLike): void {
-    if (h.fifo.push(this.deps.now(), frame) !== undefined) this.drop(h, 'unknownKid');
+    const evicted = h.fifo.push(this.deps.now(), frame, frame.data.byteLength).length;
+    for (let i = 0; i < evicted; i++) this.drop(h, 'unknownKid');
   }
 
   private drain(h: TrackHandle): void {
@@ -292,29 +334,38 @@ export class Pipeline {
 
   private installEpoch(m: Extract<ToWorker, { kind: 'installEpoch' }>): void {
     const now = this.deps.now();
+    // The wasm entry points zero the key slice they are given (M4), and wasm-bindgen copies a `&mut [u8]` back into
+    // the caller's array, so each call gets its own copy; every copy and the transferred key are zeroed here.
+    const copies: Uint8Array[] = [];
+    const key = (): Uint8Array => {
+      const c = m.baseKey.slice();
+      copies.push(c);
+      return c;
+    };
     try {
       const leaves = Uint32Array.from(m.roster.map((r) => r.leaf));
       const devices = new Uint8Array(16 * m.roster.length);
       m.roster.forEach((r, i) => devices.set(hexToBytes(r.deviceId), 16 * i));
-      this.receiver.install_epoch(m.epoch, m.baseKey, leaves, devices, m.selfLeaf, now);
+      this.receiver.install_epoch(m.epoch, key(), leaves, devices, m.selfLeaf, now);
       if (this.sender === null) {
         if (m.epoch >= this.minNextSenderEpoch) {
-          this.sender = this.deps.crypto.newSender(m.baseKey, m.selfLeaf, m.epoch, m.epoch); // N1: min_epoch = first epoch seen
+          this.sender = this.deps.crypto.newSender(key(), m.selfLeaf, m.epoch, m.epoch); // N1: min_epoch = first epoch seen
           this.senderEpoch = m.epoch;
           this.selfLeaf = m.selfLeaf;
         } else {
           this.log('warn', `no sender for epoch ${m.epoch}: this worker already encrypted in it`);
         }
       } else if (this.senderEpoch === null || m.epoch > this.senderEpoch) {
-        this.sender.rekey(m.baseKey, m.selfLeaf, m.epoch);
+        this.sender.rekey(key(), m.selfLeaf, m.epoch);
         this.senderEpoch = m.epoch;
         this.selfLeaf = m.selfLeaf;
       }
     } catch (err) {
-      this.error('E_WASM');
+      this.error('E_WASM', undefined, undefined, m.epoch);
       this.log('error', `installEpoch ${m.epoch}: ${errorCode(err)}`);
       return;
     } finally {
+      for (const c of copies) c.fill(0);
       m.baseKey.fill(0);
     }
     if (!this.epochs.some((e) => e.epoch === m.epoch)) {
@@ -340,20 +391,28 @@ export class Pipeline {
     for (const h of this.tracks.values()) this.dropHeld(h);
   }
 
-  private retarget(previousTrackId: string, opts: DillaTransformOptions): void {
+  /**
+   * Re-points the handle of a reused createEncodedStreams sender or receiver. Full options upgrade a blocked handle;
+   * block options, or options for the other side, block it.
+   */
+  private retarget(previousTrackId: string, o: DillaTransformOptions | DillaBlockOptions): void {
     const h = this.tracks.get(previousTrackId);
     if (h === undefined) {
-      this.error('E_BAD_OPTIONS', opts.trackId);
+      this.error('E_BAD_OPTIONS', o.trackId);
       return;
     }
     this.tracks.delete(previousTrackId);
     this.dropHeld(h);
+    const block = isBlock(o) || o.side !== h.opts.side;
+    if (!isBlock(o) && o.side !== h.opts.side) this.error('E_BAD_OPTIONS', o.trackId);
+    const opts = isBlock(o) ? blockedOpts(o) : block ? blockedOpts({ dilla: 1, side: h.opts.side, trackId: o.trackId, block: true }) : o;
     h.trackId = opts.trackId;
     h.opts = opts;
-    h.mapped = isMapped(opts);
+    h.blocked = block;
+    h.mapped = !block && isMapped(opts);
     h.stoppedEpoch = null;
     h.awaitingKeyFrame = false;
-    this.applyMapping(h);
+    if (!block) this.applyMapping(h);
     this.tracks.set(opts.trackId, h);
   }
 
@@ -400,13 +459,19 @@ export class Pipeline {
     this.stats.knownKids = kids;
   }
 
-  private error(code: ErrorCode, trackId?: string, participantIdentity?: string): void {
+  private error(code: ErrorCode, trackId?: string, participantIdentity?: string, epoch?: bigint): void {
+    const identity = participantIdentity === '' ? undefined : participantIdentity;
+    if (epoch !== undefined) {
+      // Never rate-limited: the manager settles the pending installEpoch of exactly this epoch with it.
+      this.deps.post({ kind: 'error', code, trackId, participantIdentity: identity, epoch });
+      return;
+    }
     const key = `${code}:${trackId ?? ''}`;
     const now = this.deps.now();
     const last = this.lastError.get(key);
     if (last !== undefined && now - last < ERROR_INTERVAL_MS) return;
     this.lastError.set(key, now);
-    this.deps.post({ kind: 'error', code, trackId, participantIdentity: participantIdentity === '' ? undefined : participantIdentity });
+    this.deps.post({ kind: 'error', code, trackId, participantIdentity: identity });
   }
 
   private log(level: 'error' | 'warn' | 'info' | 'debug', msg: string): void {

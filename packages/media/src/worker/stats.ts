@@ -2,7 +2,7 @@ import type { DillaMediaStats, DropReason, MediaCodec } from '../protocol';
 
 export const DROP_REASONS: readonly DropReason[] = [
   'parse', 'unknownKid', 'bufferTimeout', 'aeadFail', 'foreignLeaf', 'senderMismatch', 'ownKid',
-  'slotMismatch', 'replay', 'expiredKid', 'sif', 'noneFlagged', 'noVclNal', 'unsupportedCodec',
+  'slotMismatch', 'replay', 'expiredKid', 'sif', 'noneFlagged', 'noVclNal', 'unsupportedCodec', 'blocked', 'internal',
 ];
 
 export function newStats(): DillaMediaStats {

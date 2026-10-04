@@ -1,5 +1,7 @@
 // dilla-media/1: the main-thread ↔ dilla-media-worker message contract (interfaces.md c.6, verbatim).
-// Worker invariants: no enable/disable message; encrypt everything given, pass nothing through; SIF suffix
+// Worker invariants: no enable/disable message; encrypt everything given, pass nothing through; the send codec is
+// each frame's own (getMetadata().mimeType), and a frame with no prefix rule is dropped; options the worker does
+// not recognise, and DillaBlockOptions, block the transform (every frame discarded); SIF suffix
 // test before SFrame parse; a NONE-flagged publication drops all frames; GCM and CUSTOM both mean
 // dilla-sframe/1 (never test == GCM); seq per (epoch, KID, slot, layer) survives transform re-creation.
 // This is not livekit-client's E2EE worker protocol: livekit-client posts nothing to a custom manager's worker
@@ -18,8 +20,24 @@ export interface DillaTransformOptions {
   trackId: string;
   participantIdentity: string; // device_id hex, 32 lowercase
   slot: SlotId;
+  // decode: the publication's codec. encode: informational only; the encoder takes the codec of every frame from
+  // that frame's own getMetadata().mimeType and drops a frame with no prefix rule (C1, task 17 fix round 1).
   codec: MediaCodec;
   encryption?: 0 | 1 | 2; // decode: pub.trackInfo.encryption
+}
+
+/**
+ * A transform that never forwards a frame: the manager attaches it wherever it cannot build DillaTransformOptions
+ * (an unknown source, a kind that does not match its source), so no sender or receiver it has seen is ever left
+ * without a transform. The worker reads and discards every frame (counted as `blocked`). Any transform options the
+ * worker does not recognise are treated the same way. On the createEncodedStreams path a later `retarget` with
+ * full options may upgrade a blocked handle of a reused sender; a `retarget` with block options blocks one.
+ */
+export interface DillaBlockOptions {
+  dilla: 1;
+  side: Side;
+  trackId: string;
+  block: true;
 }
 
 export type ToWorker =
@@ -34,8 +52,8 @@ export type ToWorker =
     } // roster per epoch (G14); snapshot taken with the base key before merge
   | { kind: 'clearKeys' }
   | { kind: 'setSifTrailer'; trailer: Uint8Array } // replace; 43-52 B; empty ignored
-  | { kind: 'attach'; data: DillaTransformOptions & { readable: ReadableStream; writable: WritableStream } } // Chromium createEncodedStreams path
-  | { kind: 'retarget'; data: { previousTrackId: string } & DillaTransformOptions }
+  | { kind: 'attach'; data: (DillaTransformOptions | DillaBlockOptions) & { readable: ReadableStream; writable: WritableStream } } // Chromium createEncodedStreams path
+  | { kind: 'retarget'; data: { previousTrackId: string } & (DillaTransformOptions | DillaBlockOptions) }
   | { kind: 'mapTrack'; trackId: string; participantIdentity: string; slot: SlotId; codec: MediaCodec; encryption: 0 | 1 | 2 } // metadata after early attach
   | { kind: 'detach'; trackId: string }
   | { kind: 'stats'; id: number };
@@ -47,17 +65,21 @@ export type FromWorker =
   | { kind: 'attached'; trackId: string; side: Side }
   | { kind: 'seqExhausted'; slot: SlotId; layer: number } // encoder stopped → manager triggers MLS Update
   | { kind: 'rekeyNeeded'; reason: 'layerSpace' | 'seqExhausted' }
-  | { kind: 'error'; code: DropReason | 'E_NO_EPOCH' | 'E_BAD_OPTIONS' | 'E_WASM'; participantIdentity?: string; trackId?: string } // ≤1/s per (code, trackId)
+  // ≤1/s per (code, trackId). `epoch` names the installEpoch that failed; an E_WASM with neither `trackId` nor
+  // `epoch` is worker-wide (the wasm never loaded): the manager then fails every pending call.
+  | { kind: 'error'; code: DropReason | 'E_NO_EPOCH' | 'E_BAD_OPTIONS' | 'E_WASM'; participantIdentity?: string; trackId?: string; epoch?: bigint }
   | { kind: 'stats'; id: number; data: DillaMediaStats }
   | { kind: 'log'; level: 'error' | 'warn' | 'info' | 'debug'; msg: string };
 
 export type DropReason =
   | 'parse' | 'unknownKid' | 'bufferTimeout' | 'aeadFail' | 'foreignLeaf' /* LeafNotInEpoch */ | 'senderMismatch'
-  | 'ownKid' | 'slotMismatch' | 'replay' | 'expiredKid' | 'sif' | 'noneFlagged' | 'noVclNal' | 'unsupportedCodec';
+  | 'ownKid' | 'slotMismatch' | 'replay' | 'expiredKid' | 'sif' | 'noneFlagged' | 'noVclNal' | 'unsupportedCodec'
+  | 'blocked' /* a frame of a blocking transform */ | 'internal' /* the pipeline threw on this frame */;
 
 export interface DillaMediaStats {
   encrypted: Record<string /* kid hex */, Record<SlotId, number>>;
   decrypted: Record<string, number>; // AEAD-verified only
+  // Both sides: an encoder counts unsupportedCodec (a frame whose own codec has no prefix rule), blocked and internal.
   dropped: Record<DropReason, number>;
   passedThrough: 0;
   currentEpoch: string;
