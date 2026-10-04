@@ -203,10 +203,15 @@ func TestTheCallCountersCount(t *testing.T) {
 	if got := gaugeValue(t, reg, "dilla_call_grant_repairs_pending"); got != 3 {
 		t.Errorf("dilla_call_grant_repairs_pending = %v", got)
 	}
+	m.CallsLive(3)
+	if got := gaugeValue(t, reg, "dilla_call_live"); got != 3 {
+		t.Errorf("dilla_call_live = %v", got)
+	}
 	var none *obs.Metrics
 	none.CallFull()
 	none.ShareRefused()
 	none.CallCut()
 	none.CallGrantRetry()
 	none.CallRepairsPending(1)
+	none.CallsLive(1)
 }

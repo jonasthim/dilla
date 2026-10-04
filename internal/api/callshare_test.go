@@ -183,7 +183,7 @@ func TestATokenCarriesTheBaseGrantOnlyEvenForASharer(t *testing.T) {
 // A call keeps its call id from one call to the next (R9), so ending a call drops its sharing slots:
 // the next call of the channel starts with every slot free and no device holding video sources.
 func TestEndingACallDropsItsSharingSlots(t *testing.T) {
-	e, stub, callID, tok, _ := shareEnv(t, 1, 1)
+	e, stub, callID, tok, devs := shareEnv(t, 1, 1)
 	share := "/v1/calls/" + callID.String() + "/share"
 	if status, _ := e.Do(http.MethodPost, share, tok, []any{}); status != http.StatusNoContent {
 		t.Fatalf("owner share = %d", status)
@@ -196,6 +196,11 @@ func TestEndingACallDropsItsSharingSlots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetVoiceSession: %v", err)
 	}
+	// Ending a call closes its call group (DEV-46): the next call is on a freshly registered one,
+	// which keeps the channel's call id.
+	next := seedCallGroup(t, e, row.ChannelID, ownerCommunityOf(t, e, row.ChannelID), callGroupEpoch)
+	seedLeaf(t, e, next, deviceOf(t, e, tok), 3, nil)
+	seedLeaf(t, e, next, devs[0], 3, nil)
 	status, body := e.Do(http.MethodPost, "/v1/channels/"+row.ChannelID.String()+"/calls", tok, []any{})
 	if status != http.StatusCreated || decodeCall(t, body).CallID != callID {
 		t.Fatalf("the next call = %d, want 201 on the same call id", status)

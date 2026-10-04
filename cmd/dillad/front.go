@@ -7,11 +7,13 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/pires/go-proxyproto"
 
 	"github.com/jonasthim/dilla/internal/clock"
@@ -330,6 +332,54 @@ func webhookURL(listen string) string {
 		return ""
 	}
 	return "http://" + listen + sfu.WebhookPath
+}
+
+// listenWebhook binds livekit.webhook_listen before the SFU starts, when LiveKit is enabled, and
+// writes the bound address back into the config: sfuConfig renders LiveKit's webhook URL from it, so
+// a port 0 (tests) reaches LiveKit as the port the kernel chose. serveWebhook serves the listener
+// once the composition root exists; until then LiveKit's POSTs wait in the accept queue.
+func listenWebhook(ctx context.Context, d frontDeps) (net.Listener, error) {
+	lk := d.cfg.LiveKit
+	if !lk.Enabled || lk.WebhookListen == "" {
+		return nil, nil
+	}
+	ln, err := listen(ctx, d, "livekit.webhook_listen", lk.WebhookListen)
+	if err != nil {
+		return nil, err
+	}
+	d.cfg.LiveKit.WebhookListen = ln.Addr().String()
+	return ln, nil
+}
+
+// serveWebhook serves exactly POST /livekit/webhook on ln (SP-21): sfu.NewWebhookHandler verifies
+// under the SFU's own key and hands each event to sink on its worker. The returned stop shuts the
+// listener down and drains the worker. A nil ln (LiveKit off) serves nothing.
+func serveWebhook(d frontDeps, ln net.Listener, sink func(context.Context, *livekit.WebhookEvent)) (func(), error) {
+	if ln == nil {
+		return func() {}, nil
+	}
+	body, err := os.ReadFile(d.cfg.LiveKit.APISecretFile)
+	if err != nil {
+		_ = ln.Close()
+		return nil, fmt.Errorf("serve: livekit.api_secret_file: %w: %w", err, exit.Config)
+	}
+	h := sfu.NewWebhookHandler(d.cfg.LiveKit.APIKey, strings.TrimSpace(string(body)), sink, d.log)
+	mux := http.NewServeMux()
+	mux.Handle("POST "+sfu.WebhookPath, h)
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: handshakeTimeout}
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			d.log.Error("the LiveKit webhook listener stopped", "err", err)
+		}
+	}()
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+		if c, ok := h.(io.Closer); ok {
+			_ = c.Close()
+		}
+	}, nil
 }
 
 // watchSFU reports a post-boot SFU exit and marks readiness red.

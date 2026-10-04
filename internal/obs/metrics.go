@@ -49,6 +49,8 @@ type Metrics struct {
 	CallCutsTotal           prometheus.Counter
 	CallGrantRetriesTotal   prometheus.Counter
 	CallRepairsPendingGauge prometheus.Gauge
+	// The call events (dilla-media task 12).
+	CallLive prometheus.Gauge
 }
 
 // NewMetrics takes the gatherer explicitly rather than type-asserting the
@@ -118,6 +120,8 @@ func NewMetrics(r prometheus.Registerer, g prometheus.Gatherer) *Metrics {
 		prometheus.CounterOpts{Name: "dilla_call_grant_retries_total", Help: "Retries of a call participant's cut or demotion that had not landed in the SFU."})
 	m.CallRepairsPendingGauge = prometheus.NewGauge(
 		prometheus.GaugeOpts{Name: "dilla_call_grant_repairs_pending", Help: "Call participants' cuts or demotions not yet landed in the SFU, across every call."})
+	m.CallLive = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "dilla_call_live", Help: "Calls with at least one device in their room, as the SFU's webhooks report them."})
 	r.MustRegister(m.collectors()...)
 	return m
 }
@@ -131,6 +135,7 @@ func (m *Metrics) collectors() []prometheus.Collector {
 		m.BlobGCRuns, m.BlobGCDeleted, m.BlobGCBytes, m.BlobRefsExpired, m.BlobPurges,
 		m.CertRenewalFailures, m.ClockSkewSeconds,
 		m.CallFullTotal, m.CallShareRefusalsTotal, m.CallCutsTotal, m.CallGrantRetriesTotal, m.CallRepairsPendingGauge,
+		m.CallLive,
 	}
 }
 
@@ -227,6 +232,14 @@ func (m *Metrics) CallRepairsPending(n int) {
 		return
 	}
 	m.CallRepairsPendingGauge.Set(float64(n))
+}
+
+// CallsLive sets dilla_call_live. Safe on a nil *Metrics.
+func (m *Metrics) CallsLive(n int) {
+	if m == nil {
+		return
+	}
+	m.CallLive.Set(float64(n))
 }
 
 func statusClass(status int) string {

@@ -33,6 +33,18 @@ type shareLeases struct {
 	byCall  map[id.ID]map[id.ID]slot
 	pending map[id.ID]map[string]pendingRepair
 	locks   map[id.ID]*callLock
+	// penalties is ruling F11's per-call state (dilla-media task 12): the devices of a call's room
+	// that published media that is not dilla-sframe/1, with their strike count. A penalised device's
+	// permission is listen-only wherever one is computed — reconcile, grantFor, the token mint and
+	// the /rtc gate — so neither the room sweep nor a grant sync re-grants it, and it lasts as long
+	// as the room.
+	penalties map[id.ID]map[id.ID]penalty
+}
+
+// penalty is one device's F11 strikes in the room of a call they were counted in.
+type penalty struct {
+	room    string
+	strikes int
 }
 
 // callLock is one call's lock: a one-slot channel, so taking it can give up when the caller's
@@ -59,14 +71,47 @@ type pendingRepair struct {
 	// DropSlot is set when the repair must also free the device's sharing slot (an unshare or a
 	// cut), so a retry never pushes the video sources back.
 	DropSlot bool
+	// Cut is set when the repair is a removal from the room whatever the device's entitlement: the
+	// delivery service's eviction of a removed device and F11's removal of a repeat offender
+	// (dilla-media task 12), which a retry must not turn into a permission push.
+	Cut bool
 }
 
 func newShareLeases() *shareLeases {
 	return &shareLeases{
-		byCall:  map[id.ID]map[id.ID]slot{},
-		pending: map[id.ID]map[string]pendingRepair{},
-		locks:   map[id.ID]*callLock{},
+		byCall:    map[id.ID]map[id.ID]slot{},
+		pending:   map[id.ID]map[string]pendingRepair{},
+		locks:     map[id.ID]*callLock{},
+		penalties: map[id.ID]map[id.ID]penalty{},
 	}
+}
+
+// strike counts one F11 violation of dev in call's room and answers its strikes there; strikes of
+// another room of the call are forgotten first. The caller holds call's lock.
+func (l *shareLeases) strike(call id.ID, room string, dev id.ID) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	m := l.penalties[call]
+	if m == nil {
+		m = map[id.ID]penalty{}
+		l.penalties[call] = m
+	}
+	p := m[dev]
+	if p.room != room {
+		p = penalty{room: room}
+	}
+	p.strikes++
+	m[dev] = p
+	return p.strikes
+}
+
+// penalised reports whether dev was struck in call's room (F11): its permission there is
+// listen-only.
+func (l *shareLeases) penalised(call id.ID, room string, dev id.ID) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	p, ok := l.penalties[call][dev]
+	return ok && p.room == room && p.strikes > 0
 }
 
 // errCallBusy is a call lock that could not be taken within its bound or before the caller's
@@ -162,6 +207,14 @@ func (l *shareLeases) dropStaleLocked(call id.ID, room string) {
 	if len(l.byCall[call]) == 0 {
 		delete(l.byCall, call)
 	}
+	for dev, p := range l.penalties[call] {
+		if p.room != room {
+			delete(l.penalties[call], dev)
+		}
+	}
+	if len(l.penalties[call]) == 0 {
+		delete(l.penalties, call)
+	}
 }
 
 // release frees dev's slot of call. The caller holds call's lock.
@@ -174,8 +227,8 @@ func (l *shareLeases) release(call, dev id.ID) {
 	}
 }
 
-// markPending records that identity's repair in call did not land; a DropSlot already recorded
-// stays. The caller holds call's lock.
+// markPending records that identity's repair in call did not land; a DropSlot or Cut already
+// recorded for the same room stays. The caller holds call's lock.
 func (l *shareLeases) markPending(call id.ID, identity string, r pendingRepair) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -186,6 +239,7 @@ func (l *shareLeases) markPending(call id.ID, identity string, r pendingRepair) 
 	}
 	if prev, ok := m[identity]; ok && prev.Room == r.Room {
 		r.DropSlot = r.DropSlot || prev.DropSlot
+		r.Cut = r.Cut || prev.Cut
 	}
 	m[identity] = r
 }
@@ -219,30 +273,40 @@ func (l *shareLeases) isPending(call, dev id.ID) bool {
 	return ok
 }
 
-// trackedCalls is every call with a repair outstanding or a slot held: the retry loop drives the
-// first and drops both for a call that has ended.
+// trackedCalls is every call with a repair outstanding, a slot held or an F11 penalty recorded: the
+// retry loop drives the first and drops all three for a call that has ended.
 func (l *shareLeases) trackedCalls() []id.ID {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	out := make([]id.ID, 0, len(l.pending)+len(l.byCall))
-	for call := range l.pending {
-		out = append(out, call)
-	}
-	for call := range l.byCall {
-		if _, ok := l.pending[call]; !ok {
-			out = append(out, call)
+	out := make([]id.ID, 0, len(l.pending)+len(l.byCall)+len(l.penalties))
+	seen := make(map[id.ID]bool, cap(out))
+	for _, m := range []map[id.ID]bool{keysOf(l.pending), keysOf(l.byCall), keysOf(l.penalties)} {
+		for call := range m {
+			if !seen[call] {
+				seen[call] = true
+				out = append(out, call)
+			}
 		}
 	}
 	return out
 }
 
-// dropCall forgets every slot and repair of call: the call is over and its room closed. The caller
-// holds call's lock.
+func keysOf[V any](m map[id.ID]V) map[id.ID]bool {
+	out := make(map[id.ID]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
+}
+
+// dropCall forgets every slot, repair and F11 penalty of call: the call is over and its room
+// closed. The caller holds call's lock.
 func (l *shareLeases) dropCall(call id.ID) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.byCall, call)
 	delete(l.pending, call)
+	delete(l.penalties, call)
 }
 
 func (h *Calls) maxPublishers() int {
@@ -380,6 +444,12 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.requireLeafOfCall(ctx, cur, s.DeviceID); err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	// F11: a device that published media that is not dilla-sframe/1 in this room is listen-only
+	// for as long as the room lasts.
+	if h.leases.penalised(cur.CallID, cur.LivekitRoom, s.DeviceID) {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device published media that is not dilla-sframe/1 in this call"))
 		return
 	}
 	limit := h.maxPublishers()

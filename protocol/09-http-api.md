@@ -593,9 +593,10 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   first and frees the slot after. The slot is also freed when the device loses both `video` and
   `screen_share`, when it is cut from the call, when a share or a permission push finds it no longer
   in the room, and when the call ends; a slot belongs to the room it was taken in and never carries
-  into a later call. A device that stops its last camera or screen track, or leaves the room, without
-  `DELETE …/share` keeps its slot until one of those happens; freeing it on the SFU's own track and
-  departure events is a later change. A permission change during a call is pushed to the SFU at once.
+  into a later call. The instance also frees the slot when its SFU reports that the device stopped
+  its last camera and screen track (the camera and screen sources are taken away first) or left the
+  room; those reports can be late or lost, so a device that stops sharing sends `DELETE …/share`
+  itself. A permission change during a call is pushed to the SFU at once.
 - **Losing access.** A device is **barred** from every call when the device is revoked or
   quarantined (`02` invariant 9) or its user is disabled or deleted: a start answers it
   `403 E_FORBIDDEN` and mints nothing, a share answers `403 E_FORBIDDEN`, and the signalling proxy
@@ -671,8 +672,33 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   error 403, and with LiveKit off every one is. The filter is by IP address only: every port of an
   admitted address stays reachable through the relay, the SFU's own and any other service bound on
   those addresses, including `127.0.0.1` when `livekit.node_ip` is unset.
-- **Ending.** `DELETE` ends the call for everyone and is kept to its participants. A restore ends
-  every live call (`02` invariant 11).
+- **Media that is not dilla's.** Every track a device publishes must be `dilla-sframe/1` (`05`) and
+  of its source's kind (audio for the microphone and screen audio, video for the camera and the
+  screen). The first track the SFU reports otherwise — flagged unencrypted, or of the wrong kind —
+  makes the device listen-only for the rest of the call's room: every publish permission is taken
+  away (which unpublishes its tracks), its sharing slot is freed, a start mints it a listen-only
+  token, the signalling proxy admits it listen-only, and a share answers `403 E_FORBIDDEN`. A second
+  such track disconnects it from the room.
+- **Ending.** `DELETE` ends the call for everyone and is kept to its participants. A call also ends
+  when the SFU closes its room — 20 seconds after the last participant leaves, or 300 seconds after
+  it was opened when nobody joined — and when a start finds its call group closed. Ending a call
+  ends its voice session, closes its room (disconnecting everyone still in it), **closes its call
+  group**, frees every sharing slot and sends `voice_state` with `flags` 0 (`02` § Gateway frames)
+  for every device still in it; the next call registers a fresh call group (`01`), and a start
+  before one is registered is `404 E_NOT_FOUND`. A restore ends every live call (`02` invariant 11).
+- **Leaving.** A device leaves a call by posting its self-Remove proposal to the call group (`01`
+  § Joining) and only then disconnecting from the SFU. The instance learns of the leave from the
+  SFU — under a millisecond after a graceful disconnect on loopback, and 20–22 seconds after a crash
+  or a lost network (the SFU's ICE timeout plus its cleanup; `docs/spikes/2026-10-livekit-webhooks.md`
+  measured 20.4–21.9 seconds with a killed client) — and the SFU's reports can arrive up to about 45
+  seconds late after the instance's receiver was briefly unavailable, or not at all. On that report
+  the instance frees the device's sharing slot and proposes its own `Remove` of the device's leaf,
+  whether or not the device posted one (whichever of the two is committed removes it, `02`
+  invariant 6); a leave of a session the device has already replaced by rejoining, and a leave the
+  SFU reports after the call has ended, change nothing. A device the call group removes is
+  disconnected from the room as soon as the commit is accepted, a removal the SFU does not take is
+  retried like any other pending removal, the room sweep disconnects any participant that is no
+  current leaf of the call group, and the signalling proxy refuses its rejoin.
 
 ### Reports
 

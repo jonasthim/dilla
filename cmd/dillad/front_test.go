@@ -6,9 +6,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -27,7 +29,11 @@ import (
 	"time"
 
 	"github.com/caddyserver/certmagic"
+	lkauth "github.com/livekit/protocol/auth"
+	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/webhook"
 	"github.com/pion/turn/v5"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
@@ -36,6 +42,7 @@ import (
 	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/sfu"
 )
 
 // rewriteConfig loads cfgPath, applies tune and writes it back.
@@ -536,5 +543,85 @@ func TestAnSFUExitTurnsTheGateRedAndEndsServe(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("a cancelled watcher did not close its channel")
+	}
+}
+
+// The webhook listener binds livekit.webhook_listen (writing a :0 port back for sfuConfig), serves
+// only POST /livekit/webhook, and hands a verified event to the sink; an unsigned one is 401.
+func TestTheWebhookListenerHandsVerifiedEventsToTheSink(t *testing.T) {
+	const secret = "dilla-webhook-secret-0123456789abcdef"
+	secretFile := filepath.Join(t.TempDir(), "livekit.secret")
+	if err := os.WriteFile(secretFile, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.LiveKit.Enabled = true
+	cfg.LiveKit.WebhookListen = "127.0.0.1:0"
+	cfg.LiveKit.APIKey = "dilla"
+	cfg.LiveKit.APISecretFile = secretFile
+	d := frontDeps{cfg: cfg, log: slog.New(slog.DiscardHandler), stdout: io.Discard}
+	ln, err := listenWebhook(t.Context(), d)
+	if err != nil {
+		t.Fatalf("listenWebhook: %v", err)
+	}
+	if cfg.LiveKit.WebhookListen == "127.0.0.1:0" {
+		t.Fatal("the bound address was not written back into livekit.webhook_listen")
+	}
+	if got := sfuConfig(cfg.LiveKit, secret).WebhookURL; got != "http://"+cfg.LiveKit.WebhookListen+sfu.WebhookPath {
+		t.Fatalf("LiveKit's webhook URL = %q, want the bound port", got)
+	}
+	got := make(chan *livekit.WebhookEvent, 1)
+	stop, err := serveWebhook(d, ln, func(_ context.Context, ev *livekit.WebhookEvent) { got <- ev })
+	if err != nil {
+		t.Fatalf("serveWebhook: %v", err)
+	}
+	defer stop()
+
+	target := "http://" + cfg.LiveKit.WebhookListen + sfu.WebhookPath
+	post := func(sign bool) int {
+		body, _ := protojson.Marshal(&livekit.WebhookEvent{Event: webhook.EventRoomFinished, Id: "EV_1",
+			Room: &livekit.Room{Name: "room-1"}})
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, target, bytes.NewReader(body))
+		req.Header.Set("Content-Type", webhook.ContentType)
+		if sign {
+			sum := sha256.Sum256(body)
+			tok, _ := lkauth.NewAccessToken("dilla", secret).SetValidFor(5 * time.Minute).
+				SetSha256(base64.StdEncoding.EncodeToString(sum[:])).ToJWT()
+			req.Header.Set("Authorization", tok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if status := post(false); status != http.StatusUnauthorized {
+		t.Fatalf("an unsigned webhook = %d, want 401", status)
+	}
+	if status := post(true); status != http.StatusOK {
+		t.Fatalf("a signed webhook = %d, want 200", status)
+	}
+	select {
+	case ev := <-got:
+		if ev.GetEvent() != webhook.EventRoomFinished || ev.GetRoom().GetName() != "room-1" {
+			t.Fatalf("the sink got %+v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sink never got the event")
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET %s = %d, want 405", sfu.WebhookPath, resp.StatusCode)
+	}
+
+	cfg.LiveKit.Enabled = false
+	if ln, err := listenWebhook(t.Context(), d); ln != nil || err != nil {
+		t.Fatalf("with LiveKit off listenWebhook = %v, %v; want nothing", ln, err)
 	}
 }

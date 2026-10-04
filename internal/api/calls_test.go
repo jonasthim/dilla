@@ -160,13 +160,23 @@ func TestEndingACallMarksTheVoiceSession(t *testing.T) {
 	if status, _ := e.Do(http.MethodDelete, "/v1/calls/"+callID.String(), tok, nil); status != http.StatusNoContent {
 		t.Fatal("a second DELETE of an ended call failed")
 	}
-	// The next call of the same call group reopens the row in a fresh room.
-	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	// DEV-46: ending a call closed its call group, so the next call needs a fresh one; once it is
+	// registered the call reopens the row in a fresh room.
+	status, resp := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if status != http.StatusNotFound || e.ErrCode(resp) != "E_NOT_FOUND" {
+		t.Fatalf("a start after the call ended = %d %s, want 404: its call group is closed", status, e.ErrCode(resp))
+	}
+	if g, err := e.Repo.GetGroup(t.Context(), group); err != nil || g.ClosedAt == nil {
+		t.Fatalf("the ended call's group = %+v (%v), want it closed", g, err)
+	}
+	next := seedCallGroup(t, e, ch, ownerCommunityOf(t, e, ch), callGroupEpoch)
+	seedLeaf(t, e, next, deviceOf(t, e, tok), 3, nil)
+	status, body = e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
 	if status != http.StatusCreated {
 		t.Fatalf("the next call = %d", status)
 	}
 	again, _ := e.Repo.GetVoiceSession(t.Context(), decodeCall(t, body).CallID)
-	if again.Ended != nil || again.LivekitRoom == row.LivekitRoom {
+	if again.Ended != nil || again.LivekitRoom == row.LivekitRoom || again.GroupID == nil || *again.GroupID != next {
 		t.Fatalf("the next call = %+v, after %+v", again, row)
 	}
 }

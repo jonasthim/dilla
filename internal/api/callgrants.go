@@ -151,12 +151,15 @@ func (h *Calls) reconcileRoom(ctx context.Context, d grantDeps, ch store.Channel
 //   - an identity that is no device of this instance (a "#" shadow, a foreign name, an id naming no
 //     device) is removed by its exact identity, whatever userID scopes;
 //   - a device whose lookup or resolution fails is pushed the no-publish grant;
-//   - a barred device (revoked, quarantined, or of a disabled or deleted user) and a device whose
-//     user lost view_channel or connect are cut from the room at once with every "#" shadow of it
-//     (the leaf Remove still follows through the delivery service);
+//   - a barred device (revoked, quarantined, or of a disabled or deleted user), a device whose
+//     user lost view_channel or connect, and a device that is no current leaf of the call group
+//     (a Remove of its leaf has been committed: the delivery service's evictor, G29) are cut from
+//     the room at once with every "#" shadow of it (the leaf Remove still follows through the
+//     delivery service where it has not already);
 //   - otherwise the device is pushed its complete permission, the camera and screen sources only
-//     while it holds a slot of this room and dropSlot is false; a device that keeps neither video
-//     nor screen_share (or dropSlot) loses its slot once the push landed.
+//     while it holds a slot of this room and dropSlot is false, and nothing at all while it is
+//     penalised for publishing media that is not dilla-sframe/1 (F11); a device that keeps neither
+//     video nor screen_share (or dropSlot, or a penalty) loses its slot once the push landed.
 //
 // A cut or push that does not land is recorded as a pending repair and the error returned; the slot
 // stays held while it is pending, and the token mint and the /rtc gate refuse the device for the
@@ -164,58 +167,60 @@ func (h *Calls) reconcileRoom(ctx context.Context, d grantDeps, ch store.Channel
 // loses its slot.
 func (h *Calls) reconcile(ctx context.Context, d grantDeps, ch store.ChannelRow, row store.VoiceSessionRow,
 	identity string, userID *id.ID, dropSlot bool) error {
+	_, err := h.reconcileOutcome(ctx, d, ch, row, identity, userID, dropSlot)
+	return err
+}
+
+// reconcileOutcome is reconcile that also reports whether the participant was cut from the room
+// (removed, or its removal left pending) rather than kept with a permission.
+func (h *Calls) reconcileOutcome(ctx context.Context, d grantDeps, ch store.ChannelRow, row store.VoiceSessionRow,
+	identity string, userID *id.ID, dropSlot bool) (bool, error) {
 	pending := func(err error, drop bool) error {
 		h.leases.markPending(row.CallID, identity, pendingRepair{Room: row.LivekitRoom, DropSlot: drop})
 		return err
 	}
 	dev, err := id.Parse(identity)
 	if err != nil {
-		return h.cutIdentity(ctx, d, row, identity, pending)
+		return true, h.cutIdentity(ctx, d, row, identity, pending)
 	}
 	dv, err := d.repo.GetDevice(ctx, dev)
 	if errors.Is(err, store.ErrNotFound) {
-		return h.cutIdentity(ctx, d, row, identity, pending)
+		return true, h.cutIdentity(ctx, d, row, identity, pending)
 	}
 	if err != nil {
-		return pending(errors.Join(fmt.Errorf("device %s: %w", dev, err), h.pushNone(ctx, d, row, dev)), dropSlot)
+		return false, pending(errors.Join(fmt.Errorf("device %s: %w", dev, err), h.pushNone(ctx, d, row, dev)), dropSlot)
 	}
 	_, wasPending := h.leases.pendingOf(row.CallID)[identity]
 	if userID != nil && dv.UserID != *userID && !wasPending {
-		return nil
+		return false, nil
 	}
 	bar, err := barred(ctx, d.repo, dv)
 	if err != nil {
-		return pending(errors.Join(fmt.Errorf("device %s: %w", dev, err), h.pushNone(ctx, d, row, dev)), dropSlot)
+		return false, pending(errors.Join(fmt.Errorf("device %s: %w", dev, err), h.pushNone(ctx, d, row, dev)), dropSlot)
 	}
 	var bits Bits
+	leaf := false
 	if !bar {
 		if bits, err = d.res.Resolve(ctx, dv.UserID, ch); err != nil {
-			return pending(errors.Join(fmt.Errorf("device %s: %w", dev, err), h.pushNone(ctx, d, row, dev)), dropSlot)
+			return false, pending(errors.Join(fmt.Errorf("device %s: %w", dev, err), h.pushNone(ctx, d, row, dev)), dropSlot)
+		}
+		if leaf, err = leafOfCall(ctx, d.repo, row, dev); err != nil {
+			return false, pending(errors.Join(fmt.Errorf("device %s: %w", dev, err), h.pushNone(ctx, d, row, dev)), dropSlot)
 		}
 	}
-	if bar || !bits.Has(PermViewChannel) || !bits.Has(PermConnect) {
-		rctx, cancel := sfuCtx(ctx)
-		err := d.tokens.RemoveParticipants(rctx, row.LivekitRoom, dev)
-		cancel()
-		if err != nil {
-			return pending(errors.Join(fmt.Errorf("cut device %s: %w", dev, err), h.pushNone(ctx, d, row, dev)), true)
-		}
-		h.leases.release(row.CallID, dev)
-		h.leases.clearPending(row.CallID, identity)
-		if h.counters != nil {
-			h.counters.CallCut()
-		}
-		return nil
+	if bar || !leaf || !bits.Has(PermViewChannel) || !bits.Has(PermConnect) {
+		return true, h.removeDevice(ctx, d, row, dev, false)
 	}
-	leased := h.leases.held(row.CallID, row.LivekitRoom, dev) && !dropSlot
-	keepsSlot := (bits.Has(PermVideo) || bits.Has(PermScreenShare)) && !dropSlot
-	perm := sfu.PublishGrant(bits.Has(PermSpeak), bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased)
+	penalised := h.leases.penalised(row.CallID, row.LivekitRoom, dev)
+	leased := h.leases.held(row.CallID, row.LivekitRoom, dev) && !dropSlot && !penalised
+	keepsSlot := (bits.Has(PermVideo) || bits.Has(PermScreenShare)) && !dropSlot && !penalised
+	perm := sfu.PublishGrant(bits.Has(PermSpeak) && !penalised, bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased)
 	pctx, cancel := sfuCtx(ctx)
 	err = d.tokens.UpdatePermission(pctx, row.LivekitRoom, identity, perm)
 	cancel()
 	if err != nil {
 		if !errors.Is(err, sfu.ErrNoParticipant) {
-			return pending(fmt.Errorf("push the permission of %s: %w", dev, err), dropSlot)
+			return false, pending(fmt.Errorf("push the permission of %s: %w", dev, err), dropSlot || penalised)
 		}
 		keepsSlot = false // the room no longer holds it: it publishes nothing
 	}
@@ -223,7 +228,57 @@ func (h *Calls) reconcile(ctx context.Context, d grantDeps, ch store.ChannelRow,
 		h.leases.release(row.CallID, dev)
 	}
 	h.leases.clearPending(row.CallID, identity)
+	return false, nil
+}
+
+// removeDevice disconnects dev and every "#" shadow of it from row's room, frees its slot and clears
+// its repair. A removal the SFU does not take falls back to the no-publish push and is a pending
+// repair that drops the slot; cut marks it as a removal a retry repeats whatever the device's
+// entitlement (an eviction, F11's repeat). The caller holds the call's lock.
+func (h *Calls) removeDevice(ctx context.Context, d grantDeps, row store.VoiceSessionRow, dev id.ID, cut bool) error {
+	rctx, cancel := sfuCtx(ctx)
+	err := d.tokens.RemoveParticipants(rctx, row.LivekitRoom, dev)
+	cancel()
+	if err != nil {
+		h.leases.markPending(row.CallID, dev.String(), pendingRepair{Room: row.LivekitRoom, DropSlot: true, Cut: cut})
+		return errors.Join(fmt.Errorf("cut device %s: %w", dev, err), h.pushNone(ctx, d, row, dev))
+	}
+	h.leases.release(row.CallID, dev)
+	h.leases.clearPending(row.CallID, dev.String())
+	if h.counters != nil {
+		h.counters.CallCut()
+	}
 	return nil
+}
+
+// leafOfCall reports whether dev holds a leaf of the call group row's call was opened on in the
+// group's current epoch — requireCurrentLeaf's rule, so the room keeps exactly the devices the
+// /rtc gate would admit. A call with no group, a group that is gone and an epoch-unknown group hold
+// no leaf.
+func leafOfCall(ctx context.Context, repo store.Repository, row store.VoiceSessionRow, dev id.ID) (bool, error) {
+	if row.GroupID == nil {
+		return false, nil
+	}
+	group, err := repo.GetGroup(ctx, *row.GroupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if group.EpochUnknown {
+		return false, nil
+	}
+	members, err := repo.ListMembers(ctx, group.GroupID)
+	if err != nil {
+		return false, err
+	}
+	for _, m := range members {
+		if m.DeviceID == dev && m.RemovedEpoch == nil && m.AddedEpoch <= group.Epoch {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // cutIdentity removes a participant that is no device of this instance by its exact identity.
@@ -282,9 +337,14 @@ func (h *Calls) drainPending(ctx context.Context, d grantDeps, ch store.ChannelR
 		}
 		h.log.WarnContext(ctx, "retrying a call grant repair", "device", identity, "room", r.Room, "drop_slot", r.DropSlot)
 		var err error
-		if identity == roomResync {
+		dev, perr := id.Parse(identity)
+		switch {
+		case identity == roomResync:
 			err = h.reconcileRoom(ctx, d, ch, row, nil, retried, nil)
-		} else {
+		case r.Cut && perr == nil:
+			retried[identity] = true
+			err = h.removeDevice(ctx, d, row, dev, true)
+		default:
 			retried[identity] = true
 			err = h.reconcile(ctx, d, ch, row, identity, nil, r.DropSlot)
 		}

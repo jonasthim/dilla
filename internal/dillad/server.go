@@ -51,6 +51,9 @@ type Server struct {
 	// (a channel group being populated after its 201) before it stops the delivery service they
 	// issue proposals through.
 	groups *api.Groups
+	// events is the dispatcher of the SFU's webhooks and the delivery service's call evictor
+	// (dilla-media task 12).
+	events *api.CallEvents
 
 	// blobs is the attachment store Plan 2's blob and admin routes use; ownsBlobs records that New
 	// opened it, so Shutdown closes it.
@@ -231,6 +234,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			callRoutes.CutDevice(ctx, device)
 		}
 	}
+	// The call events (dilla-media task 12) are built over the call routes further down; the delivery
+	// service's call evictor reaches them through this variable, which is assigned before
+	// delivery.Start and so before any commit can run the evictor.
+	var events *api.CallEvents
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,
 		Wasm:     wasm,
@@ -247,6 +254,14 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		// A fork-quarantined device is queued to be cut from every live call; the hook only enqueues,
 		// so the fork-report path never waits on the SFU (dilla-media task 10).
 		OnQuarantine: cutFromCalls,
+		// G29: a device a commit, a heal or a registry replacement took out of a call group leaves the
+		// call's room at once. The evictor runs after the group lock is released and goes through the
+		// call's own lock (dilla-media task 12).
+		CallEvictor: func(ctx context.Context, groupID id.ID, removed []id.ID) {
+			if events != nil {
+				events.Evict(ctx, groupID, removed)
+			}
+		},
 	})
 	if err != nil {
 		closeWasmOnError()
@@ -354,6 +369,16 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			return nil, err
 		}
 	}
+	// The SFU's webhooks drive the call lifecycle through these (dilla-media task 12); `dillad serve`
+	// hands Handle to its loopback webhook listener. They are built even without an SFU: the call
+	// routes end calls through them. An interface holding a nil SFU is not a nil interface, so it is
+	// handed over only when there is one.
+	var callSFU api.CallTokens
+	if o.SFU != nil {
+		callSFU = o.SFU
+	}
+	events = api.NewCallEvents(o.Repo, api.NewResolver(o.Repo), delivery, callSFU, callRoutes, gw, o.Clock, o.Log).
+		WithGauge(o.Metrics)
 
 	if err := delivery.Start(ctx); err != nil {
 		closeWasmOnError()
@@ -396,7 +421,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
-		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery, groups: groups,
+		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery, groups: groups, events: events,
 		blobs: blobs, ownsBlobs: ownsBlobs,
 		throttle: throttle, limiter: limiter,
 	}
@@ -456,7 +481,12 @@ func (s *Server) Sessions() *auth.Sessions { return s.sessions }
 
 // DS returns the delivery service New built. It is one of three harness accessors of
 // deviation B17 (with Gateway and Now): plain getters over what New built.
-func (s *Server) DS() *ds.DS                { return s.ds }
+func (s *Server) DS() *ds.DS { return s.ds }
+
+// CallEvents is the dispatcher of the SFU's webhooks (dilla-media task 12); `dillad serve` serves its
+// Handle on livekit.webhook_listen.
+func (s *Server) CallEvents() *api.CallEvents { return s.events }
+
 func (s *Server) Gateway() *gateway.Gateway { return s.gw }
 func (s *Server) Now() time.Time            { return s.o.Clock.Now() }
 

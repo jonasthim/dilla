@@ -33,6 +33,9 @@ func TestACallsRoomNameNeverRepeatsWithinASecond(t *testing.T) {
 		if status, _ := e.Do(http.MethodDelete, "/v1/calls/"+callID.String(), tok, nil); status != http.StatusNoContent {
 			t.Fatalf("end %d = %d", i, status)
 		}
+		// Ending a call closes its call group (DEV-46): the next call is on a freshly registered one.
+		next := seedCallGroup(t, e, ch, ownerCommunityOf(t, e, ch), callGroupEpoch)
+		seedLeaf(t, e, next, deviceOf(t, e, tok), 3, nil)
 	}
 	if rooms[0] == rooms[1] {
 		t.Fatalf("two calls within one second share the room %q", rooms[0])

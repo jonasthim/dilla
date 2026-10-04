@@ -214,6 +214,22 @@ dense on every device of its audience; `group_id` is null.
 | 49 | `typing` | `[user_id(bstr 16), device_id(bstr 16), typing(uint), expires_ts(uint)]` |
 | 50 | `voice_state` | `[user_id(bstr 16), device_id(bstr 16), call_id(bstr 16), flags(uint)]` |
 
+`voice_state` is produced by the instance alone, from what its SFU reports about a call's room
+(`09` § Voice), and goes to every device of every user who may view the call's channel — for a DM
+or group DM, its participants. `call_id` is the call's id. `flags` is a bit set:
+
+| bit | name | set while |
+|---|---|---|
+| 0 | `in_call` | the device is in the call's room |
+| 1 | `self_mute` | reserved for the device's own mute state; no client→server path carries it in this version, so it is 0 |
+| 2 | `self_deaf` | reserved for the device's own deafen state; 0 in this version |
+| 3 | `video` | the device publishes a camera track |
+| 4 | `screen` | the device publishes a screen-share track |
+
+`flags` 0 means the device has left the call; when a call ends, every device still in it is sent
+one. Every other bit is reserved and 0. The SFU's reports can arrive late or not at all, so
+`voice_state` is advisory: it never decides who may join or publish.
+
 Opcodes 64–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
 outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored. A frame of
 the wrong element count for its opcode is `E_FRAME_SHAPE`; a frame that fails the deterministic

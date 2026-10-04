@@ -128,13 +128,13 @@ func sfuCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, sfuCallTimeout)
 }
 
-// dropCall forgets an ended call's slots and repairs under its lock. The call is already over in the
-// record, so a lock that cannot be taken is logged and left to the retry loop, which drops both for
-// an ended call; the wait does not end with the request.
-func (h *Calls) dropCall(r *http.Request, call id.ID) {
-	_, unlock, err := h.lock(context.WithoutCancel(r.Context()), call, callLockWaitBackground, callHoldBackground)
+// dropCall forgets an ended call's slots, repairs and F11 penalties under its lock. The call is
+// already over in the record, so a lock that cannot be taken is logged and left to the retry loop,
+// which drops them for an ended call; the wait does not end with the caller's context.
+func (h *Calls) dropCall(ctx context.Context, call id.ID) {
+	_, unlock, err := h.lock(context.WithoutCancel(ctx), call, callLockWaitBackground, callHoldBackground)
 	if err != nil {
-		h.log.WarnContext(r.Context(), "dropping an ended call's sharing slots is left to the retry loop", "call", call, "err", err)
+		h.log.WarnContext(ctx, "dropping an ended call's sharing slots is left to the retry loop", "call", call, "err", err)
 		return
 	}
 	h.leases.dropCall(call)
@@ -192,6 +192,13 @@ type Calls struct {
 	cutUsers   map[id.ID]bool
 	cutWake    chan struct{}
 	cutPasses  atomic.Int64
+
+	// events and dsvc are set by NewCallEvents (dilla-media task 12): a call that ends closes its
+	// call group through the delivery service — which also drops the group's cached state — and
+	// announces voice_state 0 to the devices the SFU's webhooks reported in the room. Without them
+	// (a test, an instance built without the call events) the group is closed on the store.
+	events *CallEvents
+	dsvc   DS
 }
 
 // NewCalls wires the call routes over the SFU.
@@ -317,12 +324,10 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if endStale {
-		if err := h.repo.EndVoiceSession(r.Context(), callID, now); err != nil && !errors.Is(err, store.ErrNotFound) {
+		if err := h.endCall(context.WithoutCancel(r.Context()), callID, prev.LivekitRoom, "stale_group"); err != nil {
 			server.WriteError(w, err)
 			return
 		}
-		h.dropCall(r, callID)
-		h.closeRoom(r, prev.LivekitRoom)
 	}
 
 	// PutVoiceSession leaves a live call as it is, so the row read back afterwards is the one call
@@ -387,7 +392,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	if vdec != "" {
 		attrs = map[string]string{vdecAttribute: vdec}
 	}
-	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), baseGrant(bits), attrs)
+	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), h.admitGrant(bits, row, s.DeviceID), attrs)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "minting a LiveKit token failed", "err", err)
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not mint a token"))
@@ -457,17 +462,13 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if err := h.repo.EndVoiceSession(r.Context(), callID, h.clk.Now().Unix()); err != nil &&
-		!errors.Is(err, store.ErrNotFound) {
-		// ErrNotFound is a DELETE that raced another: the call is over either way.
+	// protocol/09: DELETE ends the call for everyone — the room is closed, every participant still in
+	// it disconnected, and the call group closed, so the next call registers a fresh one. The next
+	// call keeps this call id (R9), so the sharing slots go with this one.
+	if err := h.endCall(context.WithoutCancel(r.Context()), callID, row.LivekitRoom, "delete"); err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	// protocol/09: DELETE ends the call for everyone, so the room is closed too and every
-	// participant still in it is disconnected; the next call opens a fresh room. The next call keeps
-	// this call id (R9), so the sharing slots go with this one.
-	h.dropCall(r, callID)
-	h.closeRoom(r, row.LivekitRoom)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -475,16 +476,76 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 // failure is logged and never turns the answer into an error. A failure matters: LiveKit re-mints a
 // connected participant's token every five minutes, so a room that stays open keeps its
 // participants until a later DeleteRoom; room.auto_create is false, so nobody can rejoin it once it
-// is gone. The close runs on a context detached from the request, so a client that hangs up once it
-// has sent the DELETE cannot leave the room open.
-func (h *Calls) closeRoom(r *http.Request, room string) {
+// is gone (the room sweep retries a close that failed). The close runs on a context detached from
+// the caller's, so a client that hangs up once it has sent the DELETE cannot leave the room open.
+func (h *Calls) closeRoom(ctx context.Context, room string) {
 	if h.sfu == nil || room == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), roomCloseTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), roomCloseTimeout)
 	defer cancel()
 	if err := h.sfu.DeleteRoom(ctx, room); err != nil {
 		h.log.WarnContext(ctx, "closing an ended call's LiveKit room failed", "room", room, "err", err)
+	}
+}
+
+// endCall ends one call (DEV-46, gap G30): DELETE /v1/calls/{call_id}, the room_finished webhook,
+// and a start that finds the live call's group closed all come here. It is keyed on the room: an
+// event for an older room of the same call, or for a call already over, changes nothing. In order it
+// ends the voice session, drops every sharing slot, repair and F11 penalty of the call under its
+// lock, deletes the room (disconnecting everyone still in it), closes the call group — so the next
+// call registers a fresh group and no device of this one stays a leaf of it, instead of a Remove for
+// every leaf that no member could commit (OpenMLS refuses a commit removing its own committer) — and
+// announces voice_state 0 for every device the call events saw in the room. The group is closed
+// after the call's lock is released: nothing under a call's lock calls the delivery service.
+func (h *Calls) endCall(ctx context.Context, callID id.ID, room string, reason string) error {
+	row, err := h.repo.GetVoiceSession(ctx, callID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if row.Ended != nil || row.LivekitRoom != room {
+		return nil
+	}
+	if err := h.repo.EndVoiceSession(ctx, callID, h.clk.Now().Unix()); err != nil && !errors.Is(err, store.ErrNotFound) {
+		// ErrNotFound is an end that raced another: the call is over either way.
+		return err
+	}
+	h.dropCall(ctx, callID)
+	h.closeRoom(ctx, room)
+	if row.GroupID != nil {
+		h.closeCallGroup(ctx, *row.GroupID)
+	}
+	if h.events != nil {
+		h.events.ended(ctx, row)
+	}
+	h.log.InfoContext(ctx, "call ended", "call_id", callID.String(), "reason", reason)
+	return nil
+}
+
+// closeCallGroup closes an ended call's group, through the delivery service when the call events
+// handed one over and on the store otherwise. A group already closed (the stale-group path) is left
+// as it is; a failure is logged, because the call is over in the record either way.
+func (h *Calls) closeCallGroup(ctx context.Context, groupID id.ID) {
+	g, err := h.repo.GetGroup(ctx, groupID)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			h.log.WarnContext(ctx, "reading an ended call's group failed", "group_id", groupID.String(), "err", err)
+		}
+		return
+	}
+	if g.ClosedAt != nil {
+		return
+	}
+	if h.dsvc != nil {
+		err = h.dsvc.Close(ctx, groupID)
+	} else {
+		err = h.repo.CloseGroup(ctx, groupID, h.clk.Now().Unix())
+	}
+	if err != nil {
+		h.log.WarnContext(ctx, "closing an ended call's group failed", "group_id", groupID.String(), "err", err)
 	}
 }
 
@@ -622,10 +683,23 @@ func (h *Calls) caps() callCaps {
 }
 
 // grantFor is dev's permission in the call: its speak/video/screen_share bits, the video sources
-// only while it holds a sharing slot of the call (ruling F1).
+// only while it holds a sharing slot of the call (ruling F1), and nothing while it is penalised in
+// the call's room for publishing media that is not dilla-sframe/1 (ruling F11).
 func (h *Calls) grantFor(bits Bits, row store.VoiceSessionRow, dev id.ID) *livekit.ParticipantPermission {
+	if h.leases.penalised(row.CallID, row.LivekitRoom, dev) {
+		return sfu.PublishGrant(false, false, false)
+	}
 	leased := h.leases.held(row.CallID, row.LivekitRoom, dev)
 	return sfu.PublishGrant(bits.Has(PermSpeak), bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased)
+}
+
+// admitGrant is what dev's token for row's room is minted with and what the /rtc gate admits: the
+// base grant, or listen-only while dev is penalised in that room (ruling F11).
+func (h *Calls) admitGrant(bits Bits, row store.VoiceSessionRow, dev id.ID) *livekit.ParticipantPermission {
+	if h.leases.penalised(row.CallID, row.LivekitRoom, dev) {
+		return sfu.PublishGrant(false, false, false)
+	}
+	return baseGrant(bits)
 }
 
 // callFull is the advisory E_CALL_FULL count (DEV-01, gap G27): the room's participants other than
@@ -737,7 +811,7 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 	if !bits.Has(PermViewChannel) || !bits.Has(PermConnect) {
 		return nil, server.Errorf(server.CodeForbidden, "your device may no longer join this call")
 	}
-	return baseGrant(bits), nil
+	return h.admitGrant(bits, row, device), nil
 }
 
 // barred reports whether dv may take part in no call at all: the device is revoked or quarantined,

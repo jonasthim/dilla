@@ -220,6 +220,18 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// root, which builds the call routes over its token mint and proxies /rtc to it, and it stops
 	// after the drain below — its deferred stop runs after front.close.
 	fd := frontDeps{cfg: cfg, log: log, health: health, metrics: metrics, stdout: stdout}
+	// The SFU's webhook listener is bound before the SFU starts, so LiveKit's webhook URL names the
+	// port it got, and served once the composition root exists (dilla-media task 12).
+	whln, err := listenWebhook(ctx, fd)
+	if err != nil {
+		return err
+	}
+	webhookServed := false
+	defer func() {
+		if whln != nil && !webhookServed {
+			_ = whln.Close()
+		}
+	}()
 	sfuServer, stopSFU, err := startSFU(ctx, fd)
 	if err != nil {
 		return err
@@ -241,6 +253,14 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("serve: %w: %w", err, exit.Software)
 	}
+	// LiveKit's webhooks drive the call lifecycle from here on; the listener stops before the SFU.
+	stopWebhook, err := serveWebhook(fd, whln, srv.CallEvents().Handle)
+	if err != nil {
+		_ = srv.Shutdown(context.Background())
+		return err
+	}
+	webhookServed = true
+	defer stopWebhook()
 
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
