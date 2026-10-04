@@ -41,16 +41,29 @@ func findNALUs(buf []byte) []nalu {
 
 // canonicalizeH264 rebuilds frame as concat(00 00 00 01 || nal) over its FindNaluIndices NALs —
 // leading bytes dropped, trailing zeros kept, exactly as a libwebrtc receiver re-emits it — and
-// returns the clear prefix length of the rebuilt frame.
+// returns the clear prefix length of the rebuilt frame. Access unit delimiters (9) and filler data
+// (12) before the first VCL NAL are dropped: pion's packetiser drops both (codecs/h264_packet.go), so
+// a receiver's P would lack them and every such frame would fail ErrAuth (protocol/05 H.264 rule 2).
+// After the first VCL NAL everything is ciphertext and is kept. The Rust core does the same.
 func canonicalizeH264(frame []byte) ([]byte, int, error) {
 	nalus := findNALUs(frame)
 	if len(nalus) == 0 {
 		return nil, 0, ErrMalformedPrefix
 	}
 	out := make([]byte, 0, len(frame)+len(nalus))
+	inPrefix := true
 	for _, n := range nalus {
+		nal := frame[n.payload:n.end]
+		if len(nal) > 0 {
+			switch t := nal[0] & 0x1f; {
+			case inPrefix && (t == 9 || t == 12):
+				continue
+			case (t >= 1 && t <= 5) || (t >= 19 && t <= 21):
+				inPrefix = false
+			}
+		}
 		out = append(out, 0, 0, 0, 1)
-		out = append(out, frame[n.payload:n.end]...)
+		out = append(out, nal...)
 	}
 	p, err := h264PrefixLen(out)
 	if err != nil {

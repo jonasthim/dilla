@@ -364,6 +364,11 @@ fn media_errors_are_bare_codes() {
                 .unwrap_err(),
             "E_BAD_OPTIONS",
         ),
+        // CRYPTO-10: an empty identity is not "no sender binding".
+        (
+            alice.decrypt(0, &sealed, &[], 0, 1_010.0).unwrap_err(),
+            "E_BAD_OPTIONS",
+        ),
         (
             bob.encrypt(1, 1, 0, &unhex("5002")).unwrap_err(),
             "E_SFRAME_MALFORMED_PREFIX",

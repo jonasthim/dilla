@@ -149,10 +149,12 @@ What it fixes, and the keys that change it:
   yet and has not been measured through LiveKit. AV1 and H.265 are never offered.
 - **Loopback only.** `livekit.bind_address` (default `127.0.0.1`) must be a loopback IP literal
   (`127.0.0.1`, `::1`); a hostname such as `localhost`, `0.0.0.0` or a LAN address is refused at
-  start. Clients reach LiveKit only through dillad's `/rtc` proxy, which checks every join. A load
-  rig or any other direct LiveKit client on another host reaches signalling through an ssh tunnel
-  to loopback (`ssh -L 7880:127.0.0.1:7880 <host>`), with media direct on UDP — never by binding
-  LiveKit to a LAN address.
+  start. Clients reach LiveKit only through dillad's `/rtc` proxy, which checks every join. A
+  direct LiveKit client on another host reaches signalling through an ssh tunnel to loopback
+  (`ssh -L 7880:127.0.0.1:7880 <host>`), with media direct on UDP — never by binding LiveKit to a
+  LAN address. The capacity load rig cannot use a production dillad at all: its call routes delete
+  every LiveKit room no call opened within 30 s, and `/metrics` needs the scrape token. The rig
+  runs against a `dilla-testhost -sfu` on the host instead (`docs/spikes/2026-10-capacity.md`).
 - **No TCP fallback.** LiveKit's own TCP fallback is off and `livekit.tcp_port` stays 0: a client
   that cannot reach UDP 7882 relays through TURN/TLS on 443 instead.
 - **STUN.** `livekit.stun_servers` defaults to `<instance.domain>:3478` and is never served: it only

@@ -67,6 +67,49 @@ func sfuHost(t *testing.T, withSFU bool) *Host {
 	return h
 }
 
+// RIGS-02: the host's /metrics answers the scrape token it was given (dilla-testhost passes
+// DILLA_METRICS_TOKEN), so the capacity rig's LAN and VPS-hop legs can read the SFU counters, and
+// refuses a scrape without it. Without a token the host keeps dillad's refusal of every scrape.
+func TestTheHostServesMetricsToItsScrapeTokenOnly(t *testing.T) {
+	core, err := filepath.Abs(filepath.Join("..", "..", "mlswasi", "testdata", "dilla_core_wasi.wasm"))
+	if err != nil {
+		t.Fatalf("core path: %v", err)
+	}
+	const token = "rig-scrape-token-0123456789"
+	for _, tc := range []struct {
+		hostToken string
+		want      map[string]int // bearer -> status
+	}{
+		{token, map[string]int{"": http.StatusUnauthorized, "wrong": http.StatusUnauthorized, token: http.StatusOK}},
+		{"", map[string]int{"": http.StatusUnauthorized, token: http.StatusUnauthorized}},
+	} {
+		h, err := NewHost(context.Background(), HostOptions{DataDir: t.TempDir(), CorePath: core, ScrapeToken: tc.hostToken})
+		if err != nil {
+			t.Fatalf("NewHost: %v", err)
+		}
+		public := httptest.NewServer(h.Handler())
+		for bearer, want := range tc.want {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, public.URL+"/metrics", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bearer != "" {
+				req.Header.Set("Authorization", "Bearer "+bearer)
+			}
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET /metrics: %v", err)
+			}
+			_ = res.Body.Close()
+			if res.StatusCode != want {
+				t.Errorf("host token %q, bearer %q: %d, want %d", tc.hostToken, bearer, res.StatusCode, want)
+			}
+		}
+		public.Close()
+		_ = h.Close(context.Background())
+	}
+}
+
 // The YAML the harness SFU renders carries the two settings Firefox needs: node_ip on loopback
 // and advertise_internal_ip (G35 run A1), never sfu.DefaultConfig()'s AdvertiseInternalIP false.
 func TestTheTestSFUAdvertisesInternalAddresses(t *testing.T) {

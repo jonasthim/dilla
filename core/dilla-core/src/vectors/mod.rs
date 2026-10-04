@@ -19,9 +19,9 @@ use crate::identity::{
 };
 use crate::ids::{DeviceId, MsgId, UserId};
 use crate::sframe::{
-    Codec, Ctr, FrameKey, Kid, NK, SframeError, decode_header, derive_keys, encode_header,
-    encrypt_frame, nonce, open_frame, peek_kid_ctr, prefix_len, protect, rbsp_escape,
-    rbsp_unescape, unescape_protected,
+    Codec, Ctr, FrameKey, KeyRing, Kid, NK, SframeError, SframeSender, Slot, decode_header,
+    derive_keys, encode_header, encrypt_frame, nonce, open_frame, peek_kid_ctr, prefix_len,
+    protect, rbsp_escape, rbsp_unescape, unescape_protected,
 };
 use serde_json::Value;
 
@@ -357,11 +357,19 @@ pub fn run_sframe() -> SuiteReport {
         .unwrap_or_else(|e| e.code().to_owned()),
     ));
 
-    // One frame per codec rule: the prefix rule, the sender's whole path, the receiver's.
+    // One frame per codec rule: the prefix rule, the sender's whole path, the receiver's. A row
+    // whose sender rewrites the input (H.264 canonicalisation) carries `canonical`: the prefix is
+    // computed over it and the receiver opens to it.
     for f in doc["media_frames"].as_array().unwrap_or(&Vec::new()) {
         let name = format!("frame {}", f["name"].as_str().unwrap_or("?"));
         let codec = codec_of(&f["codec"]);
         let input = unhex(f["input"].as_str().unwrap_or(""));
+        let opened = if f["canonical"].is_null() {
+            &f["input"]
+        } else {
+            &f["canonical"]
+        };
+        let canonical = unhex(opened.as_str().unwrap_or(""));
         let kid = Kid::new(
             u16::try_from(int(&f["leaf_index"])).unwrap_or(0),
             int(&f["epoch"]),
@@ -377,7 +385,7 @@ pub fn run_sframe() -> SuiteReport {
             "prefix_len",
             expect_int(&f["prefix_len"]),
             codec
-                .and_then(|c| prefix_len(c, &input))
+                .and_then(|c| prefix_len(c, &canonical))
                 .map(|n| n.to_string())
                 .unwrap_or_else(|e| e.code().to_owned()),
         ));
@@ -393,7 +401,7 @@ pub fn run_sframe() -> SuiteReport {
         cases.push(CaseReport::compare(
             name,
             "open",
-            expect_str(&f["input"]),
+            expect_str(opened),
             open_vector_frame(&base_key, &f["codec"], f["frame"].as_str().unwrap_or(""))
                 .map(|plain| hex(&plain))
                 .unwrap_or_else(|e| e.code().to_owned()),
@@ -425,10 +433,88 @@ pub fn run_sframe() -> SuiteReport {
             )),
         ));
     }
+
+    // Scripted key-ring runs: one case per `decrypt` step, expected `ok` or the code.
+    for script in doc["receiver"].as_array().unwrap_or(&Vec::new()) {
+        let name = script["name"].as_str().unwrap_or("?");
+        let mut ring = KeyRing::new();
+        for (i, step) in script["steps"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .enumerate()
+        {
+            if step["op"].as_str() == Some("install") {
+                let roster: Vec<(u16, [u8; 16])> = step["roster"]
+                    .as_array()
+                    .unwrap_or(&Vec::new())
+                    .iter()
+                    .map(|m| {
+                        (
+                            u16::try_from(int(&m[0])).unwrap_or(u16::MAX),
+                            unhex_n::<16>(m[1].as_str().unwrap_or("")),
+                        )
+                    })
+                    .collect();
+                let own = step["own_leaf"]
+                    .as_i64()
+                    .and_then(|l| u16::try_from(l).ok());
+                ring.install_epoch(
+                    int(&step["epoch"]),
+                    &unhex_n::<NK>(step["base_key"].as_str().unwrap_or("")),
+                    &roster,
+                    own,
+                    int(&step["now"]),
+                );
+                continue;
+            }
+            let device = unhex_n::<16>(step["device"].as_str().unwrap_or(""));
+            let outcome = codec_of(&step["codec"]).and_then(|codec| {
+                let slot =
+                    Slot::from_u8(u8::try_from(int(&step["track_slot"])).unwrap_or(u8::MAX))?;
+                ring.decrypt(
+                    codec,
+                    &unhex(step["frame"].as_str().unwrap_or("")),
+                    Some(&device),
+                    slot,
+                    int(&step["now"]),
+                )
+            });
+            cases.push(CaseReport::compare(
+                format!("receiver {name} step {i}"),
+                "result",
+                expect_str(&step["expect"]),
+                match outcome {
+                    Ok(_) => "ok",
+                    Err(e) => e.code(),
+                },
+            ));
+        }
+    }
     SuiteReport {
         name: "sframe",
         cases,
     }
+}
+
+/// What a fresh sender (leaf 1, epoch 41, floor 41) refuses for one `sender_rejects` row: the
+/// encryption of `input` on (`slot`, `layer`), or for a row with `seq` the counter itself.
+fn sender_refusal(base_key: &[u8; NK], row: &Value) -> Result<(), SframeError> {
+    let slot = u8::try_from(int(&row["slot"])).unwrap_or(u8::MAX);
+    let layer = u8::try_from(int(&row["layer"])).unwrap_or(u8::MAX);
+    if !row["seq"].is_null() {
+        return Ctr::new(slot, layer, int(&row["seq"])).map(|_| ());
+    }
+    let codec = codec_of(&row["codec"])?;
+    let slot = Slot::from_u8(slot)?;
+    SframeSender::new(base_key, 1, 41, 41)?
+        .encrypt(
+            codec,
+            slot,
+            layer,
+            &unhex(row["input"].as_str().unwrap_or("")),
+        )
+        .map(|_| ())
 }
 
 /// `"opus" | "vp8" | "vp9" | "h264"` as the vector files spell a codec.
@@ -726,6 +812,21 @@ pub fn run_rejects() -> SuiteReport {
             field,
             expect_str(&case["error"]),
             match outcome {
+                Ok(()) => "accepted",
+                Err(e) => e.code(),
+            },
+        ));
+    }
+    // sframe.json's `sender_rejects`: what a sender refuses to emit.
+    for case in sframe["sender_rejects"].as_array().unwrap_or(&Vec::new()) {
+        cases.push(CaseReport::compare(
+            format!(
+                "sframe sender reject: {}",
+                case["name"].as_str().unwrap_or("?")
+            ),
+            "encrypt",
+            expect_str(&case["error"]),
+            match sender_refusal(&sframe_base, case) {
                 Ok(()) => "accepted",
                 Err(e) => e.code(),
             },

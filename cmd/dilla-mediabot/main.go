@@ -45,30 +45,67 @@ type config struct {
 }
 
 type report struct {
-	Published map[string]string `json:"published"`
-	Decrypted uint64            `json:"decrypted"`
-	Dropped   map[string]uint64 `json:"dropped"`
+	Published   map[string]string `json:"published"`
+	Decrypted   uint64            `json:"decrypted"`
+	EmptyFrames uint64            `json:"empty_frames"`
+	Dropped     map[string]uint64 `json:"dropped"`
 }
 
 func deviceID(s string) ([16]byte, error) {
-	var d [16]byte
-	if len(s) != 32 || strings.ToLower(s) != s {
+	d, ok := media.DeviceID(s)
+	if !ok {
 		return d, fmt.Errorf("%q is not 32 lowercase hex", s)
-	}
-	if _, err := hex.Decode(d[:], []byte(s)); err != nil {
-		return d, fmt.Errorf("%q: %w", s, err)
 	}
 	return d, nil
 }
 
-func parseFlags(args []string, stderr io.Writer) (config, error) {
+// readBaseKey reads the base key from path, or from stdin for "-": 32 lowercase hex and nothing
+// else but surrounding white space. A file must be readable by its owner only (RIGS-10: a key on
+// the command line is readable by every local user in /proc/<pid>/cmdline). No error names the key.
+func readBaseKey(path string, stdin io.Reader) ([16]byte, error) {
+	var key [16]byte
+	var raw []byte
+	switch path {
+	case "":
+		return key, errors.New(`-base-key-file is required ("-" reads the key from stdin)`)
+	case "-":
+		b, err := io.ReadAll(io.LimitReader(stdin, 256))
+		if err != nil {
+			return key, fmt.Errorf("-base-key-file -: %w", err)
+		}
+		raw = b
+	default:
+		info, err := os.Stat(path)
+		if err != nil {
+			return key, fmt.Errorf("-base-key-file: %w", err)
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			return key, fmt.Errorf("-base-key-file %s is mode %#o: it must be readable by its owner only (chmod 600)", path, info.Mode().Perm())
+		}
+		// #nosec G304 -- the operator names the key file; its mode was checked above.
+		if raw, err = os.ReadFile(path); err != nil {
+			return key, fmt.Errorf("-base-key-file: %w", err)
+		}
+	}
+	s := strings.TrimSpace(string(raw))
+	clear(raw)
+	if len(s) != 32 || strings.ToLower(s) != s {
+		return key, errors.New("-base-key-file must hold the base key as 32 lowercase hex")
+	}
+	if _, err := hex.Decode(key[:], []byte(s)); err != nil {
+		return [16]byte{}, errors.New("-base-key-file must hold the base key as 32 lowercase hex")
+	}
+	return key, nil
+}
+
+func parseFlags(args []string, stdin io.Reader, stderr io.Writer) (config, error) {
 	fs := flag.NewFlagSet("dilla-mediabot", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	url := fs.String("url", "", "LiveKit signalling URL (the calls route's livekit_url)")
 	token := fs.String("token", "", "the room token")
-	baseKey := fs.String("base-key", "", "the call group's dilla-sframe/1 base key, 32 lowercase hex")
+	baseKeyFile := fs.String("base-key-file", "", `file holding the call group's dilla-sframe/1 base key as 32 lowercase hex, mode 0600; "-" reads it from stdin`)
 	leaf := fs.Int("leaf", -1, "this device's leaf index")
-	epoch := fs.Uint64("epoch", 0, "the epoch -base-key belongs to")
+	epoch := fs.Uint64("epoch", 0, "the epoch the base key belongs to")
 	minEpoch := fs.Uint64("min-epoch", 0, "N1: encrypt only at or after this epoch (default: -epoch)")
 	roster := fs.String("roster", "", "the epoch's roster as leaf:device_hex,…")
 	publish := fs.String("publish", "", "comma list of opus, vp8, h264")
@@ -83,11 +120,11 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	if c.URL == "" || c.Token == "" {
 		return config{}, errors.New("-url and -token are required")
 	}
-	key, err := hex.DecodeString(*baseKey)
-	if err != nil || len(key) != 16 || strings.ToLower(*baseKey) != *baseKey {
-		return config{}, errors.New("-base-key must be 32 lowercase hex")
+	key, err := readBaseKey(*baseKeyFile, stdin)
+	if err != nil {
+		return config{}, err
 	}
-	copy(c.BaseKey[:], key)
+	c.BaseKey = key
 	if *leaf < 0 || *leaf > 65535 {
 		return config{}, errors.New("-leaf must be 0…65535")
 	}
@@ -131,34 +168,6 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 		}
 	}
 	return c, nil
-}
-
-func codecOf(mime string) (sframe.Codec, bool) {
-	switch strings.ToLower(mime) {
-	case strings.ToLower(webrtc.MimeTypeOpus):
-		return sframe.Opus, true
-	case strings.ToLower(webrtc.MimeTypeVP8):
-		return sframe.VP8, true
-	case strings.ToLower(webrtc.MimeTypeVP9):
-		return sframe.VP9, true
-	case strings.ToLower(webrtc.MimeTypeH264):
-		return sframe.H264, true
-	}
-	return 0, false
-}
-
-func slotOf(s livekit.TrackSource) (sframe.Slot, bool) {
-	switch s {
-	case livekit.TrackSource_MICROPHONE:
-		return sframe.Mic, true
-	case livekit.TrackSource_CAMERA:
-		return sframe.Camera, true
-	case livekit.TrackSource_SCREEN_SHARE:
-		return sframe.ScreenVideo, true
-	case livekit.TrackSource_SCREEN_SHARE_AUDIO:
-		return sframe.ScreenAudio, true
-	}
-	return 0, false
 }
 
 // publishRetrying retries a video publication for up to 20 s: camera and screen need the call's
@@ -223,13 +232,10 @@ func run(ctx context.Context, c config) (report, error) {
 			if !c.Subscribe {
 				return
 			}
-			dev, err := deviceID(rp.Identity())
-			if err != nil || dev != c.ExpectDevice {
-				return
-			}
-			codec, ok := codecOf(track.Codec().MimeType)
-			slot, ok2 := slotOf(pub.Source())
-			if !ok || !ok2 {
+			// protocol/05 receiver rules: a strict device_id identity, and a kind that matches
+			// the source (media.TrackBinding, shared with the load rig).
+			dev, codec, slot, ok := media.TrackBinding(rp.Identity(), track.Kind(), track.Codec().MimeType, pub.Source())
+			if !ok || dev != c.ExpectDevice {
 				return
 			}
 			go func() {
@@ -291,11 +297,11 @@ func run(ctx context.Context, c config) (report, error) {
 	case <-time.After(c.Duration):
 	}
 	decrypted, dropped := counters.Snapshot()
-	return report{Published: published, Decrypted: decrypted, Dropped: dropped}, nil
+	return report{Published: published, Decrypted: decrypted, EmptyFrames: counters.EmptyFrames(), Dropped: dropped}, nil
 }
 
 func main() {
-	c, err := parseFlags(os.Args[1:], os.Stderr)
+	c, err := parseFlags(os.Args[1:], os.Stdin, os.Stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		os.Exit(0)
 	}

@@ -45,9 +45,13 @@ func (s *Sender) Rekey(baseKey [16]byte, leaf uint16, epoch uint64) {
 }
 
 // Encrypt checks the frame's codec shape first, so a refused frame spends no counter, then takes
-// the next counter and runs Protect. An H.264 frame whose prefix carries an SPS a libwebrtc receiver
-// would rewrite is ErrNonCanonicalSPS.
+// the next counter and runs Protect. A reserved slot (above ScreenAudio) is ErrSlotMismatch before
+// anything else, as the wasm sender's slot parse is. An H.264 frame whose prefix carries an SPS a
+// libwebrtc receiver would rewrite is ErrNonCanonicalSPS.
 func (s *Sender) Encrypt(c Codec, slot Slot, layer uint8, frame []byte) ([]byte, error) {
+	if slot > ScreenAudio {
+		return nil, ErrSlotMismatch
+	}
 	if c == H264 {
 		canonical, p, err := canonicalizeH264(frame)
 		if err != nil {

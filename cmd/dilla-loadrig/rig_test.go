@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/jonasthim/dilla/internal/media"
+	"github.com/jonasthim/dilla/internal/sframe"
 	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/sfu/sfutest"
 )
@@ -129,14 +133,199 @@ func TestAudioSubscriptionsReadTheCurrentGaugeAfterAPreviousRoom(t *testing.T) {
 	}
 }
 
+// decrypt counts n frames of publisher j's track at viewer v, through the decryptor's own path: n
+// frames sealed by j and opened on v's ring.
+func decrypt(t *testing.T, v *viewer, j int, n int) {
+	t.Helper()
+	key := [16]byte{0x0a}
+	roster := []sframe.RosterEntry{{Leaf: 0, Device: deviceOf(0)}, {Leaf: 1, Device: deviceOf(1)}, {Leaf: 2, Device: deviceOf(2)}, {Leaf: 9, Device: deviceOf(9)}}
+	ring := sframe.NewKeyRing(nil)
+	ring.InstallEpoch(rigEpoch, key, roster, 9)
+	sender, err := sframe.NewSender(key, uint16(j), rigEpoch, rigEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := media.NewFrameDecryptor(ring, sframe.Opus, deviceOf(j), sframe.Mic, nil, v.counters(deviceOf(j)))
+	for range n {
+		sealed, err := sender.Encrypt(sframe.Opus, sframe.Mic, 0, []byte{0xfc, 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out, _ := dec.DecryptFrame(sealed); out == nil {
+			t.Fatal("the test frame did not decrypt")
+		}
+	}
+}
+
+func baselines(viewers []*viewer) []tally {
+	out := make([]tally, len(viewers))
+	for i, v := range viewers {
+		out[i] = v.tally()
+	}
+	return out
+}
+
 func TestEveryExpectedViewerMustDecryptDuringTheHold(t *testing.T) {
 	c := Cell{Name: "one-share", Participants: 3, Sharers: 1}
-	counters := []*media.Counters{{}, {}, {}}
-	if err := verifyViewerActivity(c, counters, []uint64{0, 0, 0}); err == nil || !strings.Contains(err.Error(), "participant 1") {
+	viewers := []*viewer{newViewer(), newViewer(), newViewer()}
+	decrypt(t, viewers[2], 0, 1)
+	if err := verifyViewerActivity(c, viewers, baselines([]*viewer{newViewer(), newViewer(), newViewer()})); err == nil || !strings.Contains(err.Error(), "participant 1") {
 		t.Fatalf("a viewer with no decrypted frames was accepted: %v", err)
 	}
-	if err := verifyViewerActivity(Cell{Name: "empty", Participants: 1}, counters[:1], []uint64{0}); err != nil {
+	if err := verifyViewerActivity(Cell{Name: "empty", Participants: 1}, viewers[:1], baselines(viewers[:1])); err != nil {
 		t.Fatalf("a room without a published track needs no viewer frames: %v", err)
+	}
+}
+
+// The parked per-track item: with two publishers, a viewer that decrypts only one of their tracks
+// fails the cell, and frames decrypted before the hold's baseline do not count.
+func TestEveryViewerMustDecryptEveryPublishersTrackDuringTheHold(t *testing.T) {
+	c := Cell{Name: "two-talkers", Participants: 3, Talkers: 2}
+	viewers := []*viewer{newViewer(), newViewer(), newViewer()}
+	decrypt(t, viewers[0], 1, 3)
+	decrypt(t, viewers[1], 0, 3)
+	decrypt(t, viewers[2], 0, 3) // viewer 2 hears talker 0 only
+	before := baselines([]*viewer{newViewer(), newViewer(), newViewer()})
+	err := verifyViewerActivity(c, viewers, before)
+	if err == nil || !strings.Contains(err.Error(), "participant 2 decrypted no frames of participant 1's track") {
+		t.Fatalf("a viewer missing one publisher's track was accepted: %v", err)
+	}
+	decrypt(t, viewers[2], 1, 1)
+	if err := verifyViewerActivity(c, viewers, before); err != nil {
+		t.Fatalf("every track moved: %v", err)
+	}
+	// Taken now, the baseline already holds every frame: nothing moved during the "hold".
+	if err := verifyViewerActivity(c, viewers, baselines(viewers)); err == nil {
+		t.Fatal("frames from before the hold counted")
+	}
+}
+
+// The parked drop item: a non-sif drop during the hold fails the cell and names the code; SIF frames
+// and drops from before the hold do not.
+func TestADropDuringTheHoldFailsTheCellByCode(t *testing.T) {
+	before := map[string]uint64{"sif": 3, "E_SFRAME_AUTH": 1}
+	if err := holdDrops("c", before, map[string]uint64{"sif": 40, "E_SFRAME_AUTH": 1}); err != nil {
+		t.Fatalf("only SIF frames and an earlier drop: %v", err)
+	}
+	err := holdDrops("c", before, map[string]uint64{"sif": 40, "E_SFRAME_AUTH": 3, "E_SFRAME_REPLAY": 1})
+	if err == nil || !strings.Contains(err.Error(), "E_SFRAME_AUTH ×2") || !strings.Contains(err.Error(), "E_SFRAME_REPLAY ×1") || strings.Contains(err.Error(), "sif") {
+		t.Fatalf("holdDrops = %v", err)
+	}
+}
+
+// RIGS-02: the scrape sends the token as a Bearer token; a 401 is an error that names the flag and
+// never the token.
+func TestTheMetricsScrapeSendsTheTokenAndNamesTheFlagOn401(t *testing.T) {
+	const token = "scrape-token-for-the-test-0123"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(scrape0))
+	}))
+	t.Cleanup(srv.Close)
+	if s, err := HTTPMetrics(srv.URL, token)(t.Context()); err != nil || len(s) == 0 {
+		t.Fatalf("with the token: %d samples, %v", len(s), err)
+	}
+	for _, wrong := range []string{"", "not-the-token"} {
+		_, err := HTTPMetrics(srv.URL, wrong)(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "-metrics-token") || !strings.Contains(err.Error(), "401") {
+			t.Fatalf("token %q: %v, want a 401 naming -metrics-token", wrong, err)
+		}
+		if wrong != "" && strings.Contains(err.Error(), wrong) {
+			t.Fatalf("the error repeats the token: %v", err)
+		}
+	}
+}
+
+// RIGS-01: against a dilla-testhost the rig opens its room and mints every token through the
+// control listener's POST /debug/sfu/token (the room created once, as a debug room the call-room
+// sweep never sees), and joins the URL the host reports.
+func TestTestHostRoomsOpenAndJoinThroughTheControlListener(t *testing.T) {
+	type call struct {
+		Room, Identity string
+		Create         bool
+	}
+	var calls []call
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/debug/sfu/token" {
+			http.NotFound(w, r)
+			return
+		}
+		var c call
+		if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		calls = append(calls, c)
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": "ws://127.0.0.1:7880", "http_url": "http://127.0.0.1:7880", "token": "jwt-" + c.Identity})
+	}))
+	t.Cleanup(srv.Close)
+	rooms := TestHostRooms{Control: srv.URL + "/"}
+	closeRoom, err := rooms.Open(t.Context(), "rig-x-1", 5)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	closeRoom()
+	url, token, err := rooms.Join(t.Context(), "rig-x-1", "0123456789abcdef0123456789abcdef")
+	if err != nil || url != "ws://127.0.0.1:7880" || token != "jwt-0123456789abcdef0123456789abcdef" {
+		t.Fatalf("Join = %q, %q, %v", url, token, err)
+	}
+	if len(calls) != 2 || !calls[0].Create || calls[0].Room != "rig-x-1" || calls[1].Create || calls[1].Room != "rig-x-1" {
+		t.Fatalf("calls = %+v, want one create then one join", calls)
+	}
+	if _, _, err := (TestHostRooms{Control: srv.URL + "/nothing-here"}).Join(t.Context(), "r", "i"); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Fatalf("a wrong control URL: %v", err)
+	}
+}
+
+// RIGS-11: every cell draws its own random base key; the rig has no fixed key and no key flag.
+func TestEachCellDrawsAFreshRandomBaseKey(t *testing.T) {
+	a, err := newCellKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := newCellKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b || a == ([16]byte{}) || a == [16]byte{0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a} {
+		t.Fatalf("two cell keys %x and %x", a, b)
+	}
+}
+
+// RIGS-06: the in-process LiveKit names the loopback sentinel as its STUN server, so it hands its
+// participants no public STUN host.
+func TestTheLocalSFUHandsOutNoPublicSTUNServer(t *testing.T) {
+	yaml, err := localSFUConfig().YAML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(yaml, "stun_servers:\n") || !strings.Contains(yaml, stunSentinel) {
+		t.Fatalf("the -local-sfu YAML names no STUN sentinel:\n%s", yaml)
+	}
+}
+
+// The parked -out item: the table header goes only into a new or empty file, so a re-run appends
+// rows under the header that is already there.
+func TestOutWritesTheHeaderOnlyIntoANewFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "rows.md")
+	for i, want := range []bool{true, false} {
+		f, header, err := openOut(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header != want {
+			t.Fatalf("open %d: header %v, want %v", i, header, want)
+		}
+		if _, err := f.WriteString("| row |\n"); err != nil {
+			t.Fatal(err)
+		}
+		_ = f.Close()
+	}
+	if b, _ := os.ReadFile(p); string(b) != "| row |\n| row |\n" {
+		t.Fatalf("file = %q", b)
 	}
 }
 
@@ -180,6 +369,7 @@ func TestALoopbackCellDecryptsEverything(t *testing.T) {
 	cfg := sfu.DefaultConfig()
 	cfg.Port, cfg.UDPPort = sfutest.FreePorts(t)
 	cfg.APISecret = strings.Repeat("r", 32)
+	cfg.STUNServers = []string{stunSentinel} // RIGS-06
 	srv, err := sfu.Start(ctx, cfg)
 	if err != nil {
 		t.Fatalf("sfu.Start: %v", err)
@@ -194,16 +384,12 @@ func TestALoopbackCellDecryptsEverything(t *testing.T) {
 	t.Cleanup(func() { _ = metrics.Close() })
 
 	testdata := filepath.Join("..", "..", "internal", "media", "testdata")
-	var key [16]byte
-	for i := range key {
-		key[i] = 0x0a
-	}
 	o := Options{
-		LiveKitURL: srv.URL(), LiveKitHTTP: srv.HTTPURL(), APIKey: cfg.APIKey, APISecret: cfg.APISecret,
-		Metrics: HTTPMetrics("http://" + ln.Addr().String() + "/metrics"), Files: LocalReader, Iface: "lo", DilladPID: os.Getpid(),
+		Rooms:   LocalRooms{URL: srv.URL(), HTTPURL: srv.HTTPURL(), APIKey: cfg.APIKey, APISecret: cfg.APISecret},
+		Metrics: HTTPMetrics("http://"+ln.Addr().String()+"/metrics", ""), Files: LocalReader, Iface: "lo", DilladPID: os.Getpid(),
 		VoiceFile:  filepath.Join(testdata, "tone.ogg"),
 		ShareFiles: map[Layer]string{LayerQ: filepath.Join(testdata, "bars.ivf"), LayerH: filepath.Join(testdata, "bars.ivf"), LayerF: filepath.Join(testdata, "bars.ivf")},
-		BaseKey:    key, Warmup: 2 * time.Second, Hold: 6 * time.Second, AllowShortHold: true,
+		Warmup:     2 * time.Second, Hold: 6 * time.Second, AllowShortHold: true,
 	}
 	res, err := RunCell(ctx, o, Cell{Name: "loopback", Participants: 5, Talkers: 2, Sharers: 1, Layer: LayerF})
 	if err != nil {

@@ -61,16 +61,26 @@ fn find_nalus(buf: &[u8]) -> Vec<Nalu> {
 
 /// `frame` rebuilt as `concat(00 00 00 01 || nal)` over its `FindNaluIndices` NALs, and the clear
 /// prefix length of the rebuilt frame. Leading bytes before the first start code are dropped and
-/// trailing zeros are kept, exactly as libwebrtc's receiver re-emits the frame.
+/// trailing zeros are kept, exactly as libwebrtc's receiver re-emits the frame. Access unit
+/// delimiters (type 9) and filler data (type 12) before the first VCL NAL are dropped: an RTP
+/// packetiser may drop them (pion does), and a receiver's `P` would then lack them (protocol/05
+/// H.264 rule 2). After the first VCL NAL everything is ciphertext and is kept.
 pub fn canonicalize_h264(frame: &[u8]) -> Result<(Vec<u8>, usize), SframeError> {
     let nalus = find_nalus(frame);
     if nalus.is_empty() {
         return Err(SframeError::MalformedPrefix);
     }
     let mut out = Vec::with_capacity(frame.len() + nalus.len());
+    let mut in_prefix = true;
     for n in &nalus {
+        let nal = &frame[n.payload..n.end];
+        match nal.first().map(|h| h & 0x1f) {
+            Some(9 | 12) if in_prefix => continue,
+            Some(1..=5 | 19..=21) => in_prefix = false,
+            _ => {}
+        }
         out.extend_from_slice(&START_CODE);
-        out.extend_from_slice(&frame[n.payload..n.end]);
+        out.extend_from_slice(nal);
     }
     let prefix = h264_prefix_len(&out)?;
     Ok((out, prefix))
@@ -493,6 +503,21 @@ mod tests {
             Err(SframeError::MalformedPrefix),
             "garbage first"
         );
+    }
+
+    /// CRYPTO-5's mirror: an access unit delimiter and filler before the first slice leave the
+    /// canonical frame (and so `P`); a filler NAL after the slice is ciphertext and stays.
+    #[test]
+    fn aud_and_filler_before_the_first_slice_are_dropped() {
+        let f =
+            unhex("0000000109f0 000000010cffff 0000000168ce3c80 00000001658884aabb 000000010cff");
+        let (canon, pl) = canonicalize_h264(&f).expect("canonical");
+        assert_eq!(
+            hex(&canon),
+            "0000000168ce3c80".to_owned() + "00000001658884aabb" + "000000010cff"
+        );
+        // The PPS (8 bytes), the IDR's start code, its header and '88 84' (pps_id).
+        assert_eq!(pl, 8 + 4 + 1 + 2);
     }
 
     #[test]

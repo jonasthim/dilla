@@ -743,9 +743,6 @@ impl HttpDs {
         self.expires = expires;
     }
 
-    /// `PUT /v1/users/{user_id}/device-list`: `[version, blob, ssk_signature, prev_hash]`, where
-    /// `blob` is protocol/03's full six-element signed list — the form the instance hands to the
-    /// guest's `device_list_entries` when invariant 4 checks an Add's DSK against it.
     /// Opens or joins the channel's call: the body is `[]`, or `[vdec]` with the comma-separated
     /// decode list dillad writes into the token's `dilla.vdec` attribute (DEV-07).
     pub fn start_call(&self, channel: &[u8; 16], vdec: &str) -> Result<CallStarted, DsError> {
@@ -799,6 +796,9 @@ impl HttpDs {
         )
     }
 
+    /// `PUT /v1/users/{user_id}/device-list`: `[version, blob, ssk_signature, prev_hash]`, where
+    /// `blob` is protocol/03's full six-element signed list — the form the instance hands to the
+    /// guest's `device_list_entries` when invariant 4 checks an Add's DSK against it.
     pub fn put_device_list(&self, user_id: &[u8; 16], list: &DeviceList) -> Result<(), DsError> {
         let body = encode(|e| {
             e.array(4)

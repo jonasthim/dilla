@@ -86,6 +86,10 @@ type HostOptions struct {
 	// local candidate with the loopback-only SFU candidate. Zero keeps the test default.
 	SFUNoInternalIP bool
 	SFUEnableAV1    bool
+	// ScrapeToken is the bearer token /metrics accepts (dillad.Options.ScrapeToken; dilla-testhost
+	// takes it from DILLA_METRICS_TOKEN, as dillad does). Empty keeps dillad's default: a random
+	// token nobody holds, so every scrape is refused.
+	ScrapeToken string
 }
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
@@ -330,10 +334,11 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 		out = os.Stderr
 	}
 	o := dillad.Options{
-		Config: h.cfg,
-		Clock:  h.clk,
-		Wasm:   h.wasm,
-		Log:    obs.NewLogger(h.cfg.Log, out),
+		Config:      h.cfg,
+		Clock:       h.clk,
+		Wasm:        h.wasm,
+		Log:         obs.NewLogger(h.cfg.Log, out),
+		ScrapeToken: h.o.ScrapeToken,
 	}
 	// Left nil under ProductionACL, so New wires api.ResolverACL and api.StructureChannels. (An
 	// interface holding a nil *ChannelModes would not be nil; the fields are simply not set.)

@@ -33,24 +33,27 @@ func depacketizer(mime string) (rtp.Depacketizer, error) {
 }
 
 // frameJoiner keeps all samples with one RTP timestamp together. The last frame is flushed at EOF.
+// started, not a nil frame, marks an open frame, so an empty sample is still finished as a frame.
 type frameJoiner struct {
 	decryptor *FrameDecryptor
 	frame     []byte
 	timestamp uint32
+	started   bool
 }
 
 func (j *frameJoiner) add(data []byte, timestamp uint32) {
-	if j.frame != nil && timestamp != j.timestamp {
+	if j.started && timestamp != j.timestamp {
 		j.finish()
 	}
 	j.frame = append(j.frame, data...)
 	j.timestamp = timestamp
+	j.started = true
 }
 
 func (j *frameJoiner) finish() {
-	if j.frame != nil {
+	if j.started {
 		_, _ = j.decryptor.DecryptFrame(j.frame) // a drop is counted inside; keep reading
-		j.frame = nil
+		j.frame, j.started = nil, false
 	}
 }
 
@@ -69,18 +72,32 @@ func (j *frameJoiner) finish() {
 //     padding a 255-byte zero "payload" is left that parses as a VP8 frame (E_SFRAME_UNKNOWN_KID).
 //     A padded packet carries no media; it still goes in, empty, because the sample builder needs
 //     its sequence number.
+//
+// And one thing it cannot do: an Opus packet with an empty payload (the zero-byte audio DTX frame
+// of protocol/05) fails pion's OpusPacket.Unmarshal, so the builder never emits it. Such a packet is
+// handed to d as its own frame, which counts it as an empty frame on a microphone or screen-audio
+// track (and as a drop on any other), and still goes into the builder for its sequence number.
 func DecryptLoop(ctx context.Context, track *webrtc.TrackRemote, d *FrameDecryptor) error {
-	c := track.Codec()
+	stop := context.AfterFunc(ctx, func() { _ = track.SetReadDeadline(time.Now()) })
+	defer stop()
+	read := func() (*rtp.Packet, error) {
+		pkt, _, err := track.ReadRTP()
+		return pkt, err
+	}
+	return decryptPackets(ctx, read, track.Codec(), d)
+}
+
+// decryptPackets is DecryptLoop over any packet source: read returns io.EOF when the track ends.
+func decryptPackets(ctx context.Context, read func() (*rtp.Packet, error), c webrtc.RTPCodecParameters, d *FrameDecryptor) error {
 	dep, err := depacketizer(c.MimeType)
 	if err != nil {
 		return err
 	}
+	opus := strings.EqualFold(c.MimeType, webrtc.MimeTypeOpus)
 	sb := samplebuilder.New(maxLate, dep, c.ClockRate)
-	stop := context.AfterFunc(ctx, func() { _ = track.SetReadDeadline(time.Now()) })
-	defer stop()
 	joiner := frameJoiner{decryptor: d}
 	for {
-		pkt, _, err := track.ReadRTP()
+		pkt, err := read()
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -100,6 +117,8 @@ func DecryptLoop(ctx context.Context, track *webrtc.TrackRemote, d *FrameDecrypt
 		}
 		if pkt.Padding {
 			pkt.Payload = nil
+		} else if opus && len(pkt.Payload) == 0 {
+			_, _ = d.DecryptFrame([]byte{}) // counted inside: an empty frame, or a drop off an audio slot
 		}
 		sb.Push(pkt)
 		for {

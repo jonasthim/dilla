@@ -79,6 +79,12 @@ describe('the frame cipher reference (protocol/05 "Frame format")', () => {
     expect(c.prefixLen).toBe(c.frame.length - 2);
   });
 
+  it('drops AUD and filler before the first slice and keeps what follows it', () => {
+    const c = canonicalizeH264(fromHex('0000000109f0000000010cffff0000000168ce3c8000000001658884aabb000000010cff'));
+    expect(hex(c.frame)).toBe('0000000168ce3c8000000001658884aabb000000010cff');
+    expect(c.prefixLen).toBe(8 + 4 + 1 + 2);
+  });
+
   it('refuses the H.264 shapes protocol/05 refuses', async () => {
     expect(await codeOf(() => prefixLen('h264', fromHex('000000016742c01e95a0501ec80000000168ce3c80')))).toBe('E_SFRAME_NO_VCL_NAL');
     expect(await codeOf(() => prefixLen('h264', fromHex('000000016742c01e95a0501ec80000000162888421')))).toBe('E_SFRAME_UNSUPPORTED_CODEC');

@@ -87,6 +87,20 @@ rejects	reserved ai (1c)	cbor
 rejects	reserved ai (1d)	cbor
 rejects	reserved ai (1e)	cbor
 rejects	sframe reject: first ciphertext bit flipped	open
+rejects	sframe reject: h264 first vcl nal of type 19	open
+rejects	sframe reject: h264 first vcl nal of type 2	open
+rejects	sframe reject: h264 first vcl nal of type 20	open
+rejects	sframe reject: h264 first vcl nal of type 21	open
+rejects	sframe reject: h264 first vcl nal of type 3	open
+rejects	sframe reject: h264 first vcl nal of type 4	open
+rejects	sframe reject: h264 nal of type 0	open
+rejects	sframe reject: h264 nal of type 24	open
+rejects	sframe reject: h264 nal of type 31	open
+rejects	sframe reject: h264 pic_parameter_set_id 256	open
+rejects	sframe reject: h264 slice header ending inside pic_parameter_set_id	open
+rejects	sframe reject: h264 sps and pps with no slice	open
+rejects	sframe reject: h264 with bytes before the first start code	open
+rejects	sframe reject: h264 with no start code	open
 rejects	sframe reject: header ctr byte changed	open
 rejects	sframe reject: non-canonical kid 2^24	decode
 rejects	sframe reject: non-canonical kid 2^64 - 1	decode
@@ -109,6 +123,12 @@ rejects	sframe reject: truncated header: empty	decode
 rejects	sframe reject: truncated header: extended kid and ctr missing	decode
 rejects	sframe reject: truncated header: extended kid missing	decode
 rejects	sframe reject: vp8 key frame shorter than 10 bytes	open
+rejects	sframe sender reject: h264 sps a libwebrtc receiver would rewrite	encrypt
+rejects	sframe sender reject: h264 with no slice	encrypt
+rejects	sframe sender reject: layer 16	encrypt
+rejects	sframe sender reject: reserved slot 4	encrypt
+rejects	sframe sender reject: sequence number 2^52	encrypt
+rejects	sframe sender reject: vp8 key frame shorter than 10 bytes	encrypt
 rejects	tag (c001)	cbor
 rejects	tag (c11a514b67b0)	cbor
 rejects	tag (d8ff01)	cbor
@@ -207,9 +227,27 @@ sframe	escape 6 seed 2	out
 sframe	escape 6 seed 2	roundtrip
 sframe	escape 7 seed 0	out
 sframe	escape 7 seed 0	roundtrip
+sframe	frame h264 access unit delimiter and filler before the first slice	frame
+sframe	frame h264 access unit delimiter and filler before the first slice	open
+sframe	frame h264 access unit delimiter and filler before the first slice	prefix_len
+sframe	frame h264 idr alone	frame
+sframe	frame h264 idr alone	open
+sframe	frame h264 idr alone	prefix_len
+sframe	frame h264 idr in two slices	frame
+sframe	frame h264 idr in two slices	open
+sframe	frame h264 idr in two slices	prefix_len
+sframe	frame h264 prefix ending in one zero byte	frame
+sframe	frame h264 prefix ending in one zero byte	open
+sframe	frame h264 prefix ending in one zero byte	prefix_len
+sframe	frame h264 sealed tail ending in a zero byte	frame
+sframe	frame h264 sealed tail ending in a zero byte	open
+sframe	frame h264 sealed tail ending in a zero byte	prefix_len
 sframe	frame h264 sps pps idr escaped	frame
 sframe	frame h264 sps pps idr escaped	open
 sframe	frame h264 sps pps idr escaped	prefix_len
+sframe	frame h264 three-byte start codes, leading garbage, trailing zeros	frame
+sframe	frame h264 three-byte start codes, leading garbage, trailing zeros	open
+sframe	frame h264 three-byte start codes, leading garbage, trailing zeros	prefix_len
 sframe	frame opus mic	frame
 sframe	frame opus mic	open
 sframe	frame opus mic	prefix_len
@@ -243,3 +281,33 @@ sframe	leaf 65535 epoch 255	key
 sframe	leaf 65535 epoch 255	kid
 sframe	leaf 65535 epoch 255	nonce
 sframe	leaf 65535 epoch 255	salt
+sframe	receiver a device holding two leaves step 1	result
+sframe	receiver a dropped epoch installed again stays dropped step 2	result
+sframe	receiver a dropped epoch installed again stays dropped step 4	result
+sframe	receiver a late install more than 255 epochs old step 2	result
+sframe	receiver a late install more than 255 epochs old step 3	result
+sframe	receiver a member the newest epoch removed step 2	result
+sframe	receiver a member the newest epoch removed step 3	result
+sframe	receiver a new epoch drops one more than 255 behind it step 2	result
+sframe	receiver a new epoch drops one more than 255 behind it step 3	result
+sframe	receiver a resync that moves a device keeps both kids step 2	result
+sframe	receiver a resync that moves a device keeps both kids step 3	result
+sframe	receiver an epoch with the same low byte evicts the held one step 2	result
+sframe	receiver an epoch with the same low byte evicts the held one step 3	result
+sframe	receiver own kid, leaf, sender and slot bindings step 1	result
+sframe	receiver own kid, leaf, sender and slot bindings step 2	result
+sframe	receiver own kid, leaf, sender and slot bindings step 3	result
+sframe	receiver own kid, leaf, sender and slot bindings step 4	result
+sframe	receiver own kid, leaf, sender and slot bindings step 5	result
+sframe	receiver replay window of 128 step 1	result
+sframe	receiver replay window of 128 step 2	result
+sframe	receiver replay window of 128 step 3	result
+sframe	receiver replay window of 128 step 4	result
+sframe	receiver replay window of 128 step 5	result
+sframe	receiver replay window of 128 step 6	result
+sframe	receiver unknown, held for 10 s, stale for 20 s, then unknown step 1	result
+sframe	receiver unknown, held for 10 s, stale for 20 s, then unknown step 3	result
+sframe	receiver unknown, held for 10 s, stale for 20 s, then unknown step 4	result
+sframe	receiver unknown, held for 10 s, stale for 20 s, then unknown step 5	result
+sframe	receiver unknown, held for 10 s, stale for 20 s, then unknown step 6	result
+sframe	receiver unknown, held for 10 s, stale for 20 s, then unknown step 7	result

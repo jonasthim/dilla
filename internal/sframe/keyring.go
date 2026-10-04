@@ -108,8 +108,11 @@ func NewKeyRing(now func() time.Time) *KeyRing {
 
 // InstallEpoch installs epoch with its base key, its roster and this device's own leaf in it (-1:
 // none). Installing a held epoch is a no-op, so a repeat never resets a replay window. Otherwise it
-// drops every epoch superseded OldEpochRetention ago, evicts a held epoch with the same epoch mod 256
-// (RFC 9605 §5.2) and, when epoch is the newest, marks the previous current epoch superseded now.
+// drops every epoch superseded OldEpochRetention ago; ignores an epoch older than the newest held
+// one that this ring dropped, or that is more than KIDEpochWindow (255) commits behind it, so a late
+// install can neither evict the current epoch nor revive a dropped one; evicts a held epoch with the
+// same epoch mod 256 (RFC 9605 §5.2); and, when epoch is the newest, marks the previous current
+// epoch superseded now and drops every held epoch more than 255 commits behind it.
 func (r *KeyRing) InstallEpoch(epoch uint64, baseKey [16]byte, roster []RosterEntry, ownLeaf int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -120,8 +123,13 @@ func (r *KeyRing) InstallEpoch(epoch uint64, baseKey [16]byte, roster []RosterEn
 	}
 	now := r.now()
 	r.expireLocked(now)
+	if len(r.epochs) > 0 && epoch < r.epochs[0].epoch {
+		if r.epochs[0].epoch-epoch > KIDEpochWindow || slices.ContainsFunc(r.retired, func(x retiredEpoch) bool { return x.epoch == epoch }) {
+			return
+		}
+	}
 	low := epoch % 256
-	r.epochs = slices.DeleteFunc(r.epochs, func(e *epochEntry) bool { return e.epoch%256 == low })
+	r.epochs = r.dropLocked(func(e *epochEntry) bool { return e.epoch%256 == low })
 	r.retired = slices.DeleteFunc(r.retired, func(x retiredEpoch) bool { return x.epoch%256 == low })
 	newest := len(r.epochs) == 0 || epoch > r.epochs[0].epoch
 	if newest {
@@ -130,6 +138,15 @@ func (r *KeyRing) InstallEpoch(epoch uint64, baseKey [16]byte, roster []RosterEn
 				e.superseded, e.supersededAt = true, now
 			}
 		}
+		// protocol/05 "Rotation": a KID never resolves against an epoch more than 255 commits behind
+		// the newest; such an epoch is dropped (and so ErrStaleEpoch).
+		r.epochs = r.dropLocked(func(e *epochEntry) bool {
+			if epoch-e.epoch <= KIDEpochWindow {
+				return false
+			}
+			r.retired = append(r.retired, retiredEpoch{epoch: e.epoch, at: now})
+			return true
+		})
 	}
 	entry := &epochEntry{
 		epoch: epoch, baseKey: baseKey, ownLeaf: ownLeaf, roster: slices.Clone(roster),
@@ -150,24 +167,53 @@ func (r *KeyRing) InstallEpoch(epoch uint64, baseKey [16]byte, roster []RosterEn
 
 // expireLocked drops every epoch superseded OldEpochRetention ago or more, remembering it for two
 // retention periods so a late frame of it is ErrStaleEpoch (dropped) rather than ErrUnknownKID (held).
+// After that a frame of it is ErrUnknownKID (protocol/05 "Rotation" states the bound).
 func (r *KeyRing) expireLocked(now time.Time) {
+	r.epochs = r.dropLocked(func(e *epochEntry) bool {
+		if !e.superseded || now.Sub(e.supersededAt) < OldEpochRetention {
+			return false
+		}
+		r.retired = append(r.retired, retiredEpoch{epoch: e.epoch, at: now})
+		return true
+	})
+	r.retired = slices.DeleteFunc(r.retired, func(x retiredEpoch) bool { return now.Sub(x.at) >= 2*OldEpochRetention })
+}
+
+// dropLocked removes every held epoch gone reports true for, zeroing its base key and derived keys
+// first and clearing the tail of the backing array, so no dropped entry stays reachable from it.
+// Zeroing is best effort: this ring is test, rig and bot tooling (the browser's ring is the Rust
+// core's), and Go may have copied a key elsewhere (a stack, a register spill) before this runs.
+func (r *KeyRing) dropLocked(gone func(*epochEntry) bool) []*epochEntry {
 	keep := r.epochs[:0]
+	n := len(r.epochs)
 	for _, e := range r.epochs {
-		if e.superseded && now.Sub(e.supersededAt) >= OldEpochRetention {
-			r.retired = append(r.retired, retiredEpoch{epoch: e.epoch, at: now})
+		if gone(e) {
+			e.wipe()
 			continue
 		}
 		keep = append(keep, e)
 	}
-	r.epochs = keep
-	r.retired = slices.DeleteFunc(r.retired, func(x retiredEpoch) bool { return now.Sub(x.at) >= 2*OldEpochRetention })
+	clear(r.epochs[len(keep):n])
+	return keep
+}
+
+// wipe zeroes the entry's base key and every key derived from it.
+func (e *epochEntry) wipe() {
+	clear(e.baseKey[:])
+	for leaf, k := range e.keys {
+		clear(k.Key[:])
+		clear(k.Salt[:])
+		e.keys[leaf] = k
+	}
+	clear(e.keys)
 }
 
 // Decrypt authenticates one received frame for the track whose participant is expectedDevice (nil:
 // no binding) and whose LiveKit source maps to expectedSlot. protocol/05's order: parse; resolve the
 // KID to its exact epoch (ErrUnknownKID — the only error a caller may hold a frame for — or
 // ErrStaleEpoch); the leaf in that epoch's roster (ErrLeafNotInEpoch); the roster's device against
-// the track's, refusing a device on two leaves (ErrSenderMismatch); own KID (ErrOwnKID); replay
+// the track's, refusing a device on two leaves and a superseded epoch's frame whose device is not in
+// the newest held roster, a removed member (ErrSenderMismatch); own KID (ErrOwnKID); replay
 // (ErrReplay); AEAD (ErrAuth); the authenticated slot (ErrSlotMismatch); only then the replay window
 // is committed.
 func (r *KeyRing) Decrypt(c Codec, frame []byte, expectedDevice *[16]byte, expectedSlot Slot) (Decrypted, error) {
@@ -184,9 +230,10 @@ func (r *KeyRing) Decrypt(c Codec, frame []byte, expectedDevice *[16]byte, expec
 	}
 	low := kid & 0xff
 	var e *epochEntry
-	for _, cand := range r.epochs {
+	at := -1
+	for i, cand := range r.epochs {
 		if cand.epoch%256 == low {
-			e = cand
+			e, at = cand, i
 			break
 		}
 	}
@@ -220,6 +267,12 @@ func (r *KeyRing) Decrypt(c Codec, frame []byte, expectedDevice *[16]byte, expec
 		if device != *expectedDevice || held != 1 {
 			return Decrypted{}, ErrSenderMismatch
 		}
+	}
+	// protocol/05 "Rotation": a superseded epoch is accepted only from a device that is also in the
+	// newest held roster. A member the newest epoch removed keeps the old epoch's key for the
+	// retention period; without this its frames would still authenticate and render.
+	if at != 0 && !slices.ContainsFunc(r.epochs[0].roster, func(m RosterEntry) bool { return m.Device == device }) {
+		return Decrypted{}, ErrSenderMismatch
 	}
 	if e.ownLeaf >= 0 && e.ownLeaf == int(leaf) {
 		return Decrypted{}, ErrOwnKID

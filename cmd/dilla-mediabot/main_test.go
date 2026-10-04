@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,12 +22,25 @@ const (
 	devB   = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
 )
 
+// keyFile writes the base key the way a caller must: a file only its owner can read.
+func keyFile(t *testing.T, content string, mode os.FileMode) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "base-key")
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, mode); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func TestFlagsParseAWellFormedCommandLine(t *testing.T) {
 	c, err := parseFlags([]string{
-		"-url", "ws://127.0.0.1:7880", "-token", "jwt", "-base-key", keyHex, "-leaf", "1", "-epoch", "7",
+		"-url", "ws://127.0.0.1:7880", "-token", "jwt", "-base-key-file", keyFile(t, keyHex+"\n", 0o600), "-leaf", "1", "-epoch", "7",
 		"-roster", "0:" + devA + ",1:" + devB, "-publish", "opus,vp8,h264", "-subscribe", "-expect-device", devA,
 		"-duration", "3s", "-media", "/m",
-	}, &bytes.Buffer{})
+	}, strings.NewReader(""), &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
@@ -44,15 +58,49 @@ func TestFlagsParseAWellFormedCommandLine(t *testing.T) {
 	}
 }
 
+// RIGS-10: the base key never travels on argv. It comes from stdin ("-") or from a file only its
+// owner can read; the old -base-key flag is gone, and no refusal repeats the key.
+func TestTheBaseKeyComesFromStdinOrAPrivateFileNeverFromArgv(t *testing.T) {
+	base := []string{"-url", "ws://x", "-token", "t", "-leaf", "0", "-epoch", "1", "-roster", "0:" + devA}
+	c, err := parseFlags(append([]string{"-base-key-file", "-"}, base...), strings.NewReader(keyHex+"\n"), &bytes.Buffer{})
+	if err != nil || c.BaseKey[15] != 0x0a {
+		t.Fatalf("key from stdin: %x, %v", c.BaseKey, err)
+	}
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		stdin string
+		want  string
+	}{
+		{"the old flag", append([]string{"-base-key", keyHex}, base...), "", "flag provided but not defined: -base-key"},
+		{"no key", base, "", "-base-key-file is required"},
+		{"a group-readable file", append([]string{"-base-key-file", keyFile(t, keyHex, 0o640)}, base...), "", "must be readable by its owner only"},
+		{"a world-readable file", append([]string{"-base-key-file", keyFile(t, keyHex, 0o604)}, base...), "", "must be readable by its owner only"},
+		{"uppercase on stdin", append([]string{"-base-key-file", "-"}, base...), strings.ToUpper(keyHex), "32 lowercase hex"},
+		{"short key in a file", append([]string{"-base-key-file", keyFile(t, "0a0a", 0o600)}, base...), "", "32 lowercase hex"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseFlags(tc.args, strings.NewReader(tc.stdin), &bytes.Buffer{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("parseFlags = %v, want an error containing %q", err, tc.want)
+			}
+			if strings.Contains(strings.ToLower(err.Error()), keyHex) {
+				t.Fatalf("the refusal repeats the key: %v", err)
+			}
+		})
+	}
+}
+
 func TestFlagsRefuseWhatTheBotCannotUse(t *testing.T) {
-	base := []string{"-url", "ws://x", "-token", "t", "-base-key", keyHex, "-leaf", "0", "-epoch", "1", "-roster", "0:" + devA}
+	kf := keyFile(t, keyHex, 0o600)
+	base := []string{"-url", "ws://x", "-token", "t", "-base-key-file", kf, "-leaf", "0", "-epoch", "1", "-roster", "0:" + devA}
 	for _, tc := range []struct {
 		name string
 		args []string
 		want string
 	}{
-		{"no url", []string{"-token", "t", "-base-key", keyHex, "-leaf", "0", "-roster", "0:" + devA}, "-url and -token are required"},
-		{"short key", append(base[:4:4], "-base-key", "0a0a", "-leaf", "0", "-roster", "0:"+devA), "-base-key must be 32 lowercase hex"},
+		{"no url", []string{"-token", "t", "-base-key-file", kf, "-leaf", "0", "-roster", "0:" + devA}, "-url and -token are required"},
+		{"short key", append(base[:4:4], "-base-key-file", keyFile(t, "0a0a", 0o600), "-leaf", "0", "-roster", "0:"+devA), "-base-key-file must hold the base key as 32 lowercase hex"},
 		{"leaf range", append(append([]string{}, base...), "-leaf", "65536"), "-leaf must be 0…65535"},
 		{"bad roster", append(append([]string{}, base...), "-roster", "x:"+devA), `-roster entry "x:` + devA + `"`},
 		{"unknown codec", append(append([]string{}, base...), "-publish", "av1"), `-publish: unknown "av1"`},
@@ -60,7 +108,7 @@ func TestFlagsRefuseWhatTheBotCannotUse(t *testing.T) {
 		{"min epoch above epoch", append(append([]string{}, base...), "-min-epoch", "2"), "-min-epoch must not exceed -epoch"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseFlags(tc.args, &bytes.Buffer{})
+			_, err := parseFlags(tc.args, strings.NewReader(""), &bytes.Buffer{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("parseFlags(%v) = %v, want an error containing %q", tc.args, err, tc.want)
 			}
@@ -80,6 +128,7 @@ func TestTwoBotsDecryptEachOtherThroughTheSFU(t *testing.T) {
 	cfg := sfu.DefaultConfig()
 	cfg.Port, cfg.UDPPort = sfutest.FreePorts(t)
 	cfg.APISecret = strings.Repeat("m", 32)
+	cfg.STUNServers = []string{"127.0.0.1:3478"} // RIGS-06: no third-party STUN host from a test
 	srv, err := sfu.Start(ctx, cfg)
 	if err != nil {
 		t.Fatalf("sfu.Start: %v", err)

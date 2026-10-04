@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use zeroize::Zeroizing;
 
 use super::{
-    Codec, Ctr, FrameKey, Kid, NK, OLD_EPOCH_RETENTION_MS, REPLAY_WINDOW, SframeError, Slot,
-    open_frame, peek_kid_ctr, unescape_protected,
+    Codec, Ctr, FrameKey, KID_EPOCH_WINDOW, Kid, NK, OLD_EPOCH_RETENTION_MS, REPLAY_WINDOW,
+    SframeError, Slot, open_frame, peek_kid_ctr, unescape_protected,
 };
 
 /// Anti-replay per `(leaf, slot, layer)` and epoch: the highest `seq` accepted and a bitmap of the
@@ -69,7 +69,9 @@ pub struct Decrypted {
 
 struct EpochEntry {
     epoch: u64,
-    base_key: Zeroizing<[u8; NK]>,
+    /// On the heap, written there in place from the caller's reference: moving the entry (an
+    /// insert that shifts or reallocates `epochs`) moves only the pointer, never the key bytes.
+    base_key: Box<Zeroizing<[u8; NK]>>,
     own_leaf: Option<u16>,
     roster: Vec<(u16, [u8; 16])>,
     superseded_at_ms: Option<u64>,
@@ -102,21 +104,32 @@ impl KeyRing {
     /// Installs `epoch` with its base key, its roster `(leaf, device_id)` and this device's own
     /// leaf in it. A no-op when the epoch is already held, so a repeated install never resets a
     /// replay window. Otherwise: drop every epoch superseded `OLD_EPOCH_RETENTION_MS` ago or
-    /// more, evict a held epoch with the same `epoch mod 256`, and — when `epoch` is the newest —
-    /// mark the previous current epoch superseded at `now_ms`.
+    /// more; ignore an epoch older than the newest held one that this ring dropped, or that is
+    /// more than `KID_EPOCH_WINDOW` (255) commits behind it, so a late install can neither evict
+    /// the current epoch nor revive a dropped one; evict a held epoch with the same
+    /// `epoch mod 256`; and — when `epoch` is the newest — mark the previous current epoch
+    /// superseded at `now_ms` and drop every held epoch more than 255 commits behind it.
+    ///
+    /// The key is borrowed: it is copied once, straight into a zeroize-on-drop heap buffer the
+    /// entry owns, so the install leaves no by-value copy of it behind.
     pub fn install_epoch(
         &mut self,
         epoch: u64,
-        base_key: [u8; NK],
+        base_key: &[u8; NK],
         roster: &[(u16, [u8; 16])],
         own_leaf: Option<u16>,
         now_ms: u64,
     ) {
-        let base_key = Zeroizing::new(base_key);
         if self.epochs.iter().any(|e| e.epoch == epoch) {
             return;
         }
         self.expire(now_ms);
+        if let Some(newest) = self.current_epoch()
+            && epoch < newest
+            && (newest - epoch > KID_EPOCH_WINDOW || self.retired.iter().any(|(e, _)| *e == epoch))
+        {
+            return;
+        }
         let low = epoch % 256;
         // RFC 9605 section 5.2: a new epoch evicts any held epoch with the same low byte, and a
         // KID with that byte now names the new epoch, so nothing about the old one is remembered.
@@ -127,7 +140,17 @@ impl KeyRing {
             for e in &mut self.epochs {
                 e.superseded_at_ms.get_or_insert(now_ms);
             }
+            // protocol/05 "Rotation": a KID never resolves against an epoch more than 255
+            // commits behind the newest; such an epoch is dropped (and so `StaleEpoch`).
+            let (keep, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.epochs)
+                .into_iter()
+                .partition(|e| epoch - e.epoch <= KID_EPOCH_WINDOW);
+            self.epochs = keep;
+            self.retired.extend(gone.iter().map(|e| (e.epoch, now_ms)));
         }
+        let mut key = Box::new(Zeroizing::new([0u8; NK]));
+        key.copy_from_slice(base_key);
+        let base_key = key;
         let entry = EpochEntry {
             epoch,
             base_key,
@@ -169,9 +192,10 @@ impl KeyRing {
     /// all before any key is looked up or derived), resolve the KID to its exact epoch (`UnknownKid` — the only error a caller may hold the
     /// frame for — or `StaleEpoch`), the leaf in that epoch's roster (`LeafNotInEpoch`), the
     /// roster's device for that leaf against the track's (`SenderMismatch`; a device holding two
-    /// leaves in one epoch is refused too), own KID (`OwnKid`), replay (`Replay`), AEAD
-    /// (`AuthFailed`), the authenticated slot against the track's (`SlotMismatch`), and only then
-    /// the replay window is committed.
+    /// leaves in one epoch is refused too, and so is a frame of a superseded epoch whose device is
+    /// absent from the newest held epoch's roster: a removed member), own KID (`OwnKid`), replay
+    /// (`Replay`), AEAD (`AuthFailed`), the authenticated slot against the track's
+    /// (`SlotMismatch`), and only then the replay window is committed.
     pub fn decrypt(
         &mut self,
         codec: Codec,
@@ -184,7 +208,7 @@ impl KeyRing {
         let (unescaped, prefix) = unescape_protected(codec, frame)?;
         let (kid, ctr, _) = peek_kid_ctr(prefix, &unescaped)?;
         let low = u64::from(kid.epoch_low());
-        let Some(entry) = self.epochs.iter_mut().find(|e| e.epoch % 256 == low) else {
+        let Some(at) = self.epochs.iter().position(|e| e.epoch % 256 == low) else {
             return Err(if self.retired.iter().any(|(e, _)| e % 256 == low) {
                 SframeError::StaleEpoch
             } else {
@@ -192,18 +216,29 @@ impl KeyRing {
             });
         };
         let leaf = kid.leaf_index();
-        let device = entry
+        let device = self.epochs[at]
             .roster
             .iter()
             .find(|(l, _)| *l == leaf)
             .map(|(_, d)| *d)
             .ok_or(SframeError::LeafNotInEpoch)?;
         if let Some(expected) = expected_device {
-            let leaves = entry.roster.iter().filter(|(_, d)| d == expected).count();
+            let leaves = self.epochs[at]
+                .roster
+                .iter()
+                .filter(|(_, d)| d == expected)
+                .count();
             if device != *expected || leaves != 1 {
                 return Err(SframeError::SenderMismatch);
             }
         }
+        // protocol/05 "Rotation": a superseded epoch is accepted only from a device that is also in
+        // the newest held roster. A member the newest epoch removed keeps the old epoch's key for
+        // the retention period; without this its frames would still authenticate and render.
+        if at != 0 && !self.epochs[0].roster.iter().any(|(_, d)| *d == device) {
+            return Err(SframeError::SenderMismatch);
+        }
+        let entry = &mut self.epochs[at];
         if entry.own_leaf == Some(leaf) {
             return Err(SframeError::OwnKid);
         }
@@ -278,7 +313,7 @@ mod tests {
         let mut r = KeyRing::new();
         r.install_epoch(
             epoch,
-            base(epoch),
+            &base(epoch),
             &[(0, ALICE), (1, BOB), (2, CAROL)],
             Some(0),
             now_ms,
@@ -293,7 +328,7 @@ mod tests {
     #[test]
     fn an_epoch_superseded_less_than_ten_seconds_ago_still_decrypts_and_then_is_stale() {
         let mut r = ring_at(1, 0);
-        r.install_epoch(2, base(2), &[(0, ALICE), (1, BOB)], Some(0), 1_000);
+        r.install_epoch(2, &base(2), &[(0, ALICE), (1, BOB)], Some(0), 1_000);
         assert_eq!(r.current_epoch(), Some(2));
         let old = frame(1, 1, Slot::Microphone, 0);
         let d = from_bob(&mut r, &old, 10_999).expect("inside the retention");
@@ -308,8 +343,8 @@ mod tests {
     #[test]
     fn every_epoch_inside_the_window_is_kept_not_just_the_previous_one() {
         let mut r = ring_at(1, 0);
-        r.install_epoch(2, base(2), &[(0, ALICE), (1, BOB)], Some(0), 100);
-        r.install_epoch(3, base(3), &[(0, ALICE), (1, BOB)], Some(0), 200);
+        r.install_epoch(2, &base(2), &[(0, ALICE), (1, BOB)], Some(0), 100);
+        r.install_epoch(3, &base(3), &[(0, ALICE), (1, BOB)], Some(0), 200);
         for e in [1, 2, 3] {
             assert!(
                 from_bob(&mut r, &frame(1, e, Slot::Microphone, 0), 300).is_ok(),
@@ -321,7 +356,7 @@ mod tests {
     #[test]
     fn an_epoch_with_the_same_low_byte_evicts_the_held_one() {
         let mut r = ring_at(1, 0);
-        r.install_epoch(257, base(257), &[(0, ALICE), (1, BOB)], Some(0), 100);
+        r.install_epoch(257, &base(257), &[(0, ALICE), (1, BOB)], Some(0), 100);
         assert_eq!(r.epochs.len(), 1);
         // KID (1, 1) now names epoch 257, whose key did not seal this frame.
         assert_eq!(
@@ -336,7 +371,13 @@ mod tests {
         let mut r = ring_at(5, 0);
         let f = frame(1, 5, Slot::Microphone, 0);
         assert!(from_bob(&mut r, &f, 10).is_ok());
-        r.install_epoch(5, base(5), &[(0, ALICE), (1, BOB), (2, CAROL)], Some(0), 20);
+        r.install_epoch(
+            5,
+            &base(5),
+            &[(0, ALICE), (1, BOB), (2, CAROL)],
+            Some(0),
+            20,
+        );
         assert_eq!(from_bob(&mut r, &f, 30), Err(SframeError::Replay));
     }
 
@@ -410,7 +451,7 @@ mod tests {
     #[test]
     fn a_device_holding_two_leaves_in_one_epoch_is_refused() {
         let mut r = KeyRing::new();
-        r.install_epoch(5, base(5), &[(0, ALICE), (1, BOB), (3, BOB)], Some(0), 0);
+        r.install_epoch(5, &base(5), &[(0, ALICE), (1, BOB), (3, BOB)], Some(0), 0);
         assert_eq!(
             from_bob(&mut r, &frame(1, 5, Slot::Microphone, 0), 0),
             Err(SframeError::SenderMismatch)
@@ -421,19 +462,26 @@ mod tests {
     fn a_resync_that_moves_a_device_keeps_both_kids_valid_inside_the_window() {
         // Bob is leaf 3 in epoch 5 and, after an external-commit resync, leaf 1 in epoch 6.
         let mut r = KeyRing::new();
-        r.install_epoch(5, base(5), &[(0, ALICE), (3, BOB)], Some(0), 0);
-        r.install_epoch(6, base(6), &[(0, ALICE), (1, BOB)], Some(0), 100);
+        r.install_epoch(5, &base(5), &[(0, ALICE), (3, BOB)], Some(0), 0);
+        r.install_epoch(6, &base(6), &[(0, ALICE), (1, BOB)], Some(0), 100);
         assert!(from_bob(&mut r, &frame(3, 5, Slot::Microphone, 0), 200).is_ok());
         assert!(from_bob(&mut r, &frame(1, 6, Slot::Microphone, 0), 200).is_ok());
     }
 
     #[test]
     fn a_reused_leaf_index_is_bound_to_the_device_of_its_own_epoch() {
-        // Carol held leaf 2 in epoch 5 and was removed; Bob took leaf 2 in epoch 6. A frame under
-        // Bob's epoch-6 KID that arrives on Carol's track is refused.
+        // Carol held leaf 2 in epoch 5 and moved to leaf 3 in epoch 6 (a resync); Bob took leaf 2.
+        // A frame under Bob's epoch-6 KID that arrives on Carol's track is refused, and Carol's
+        // epoch-5 frame under leaf 2 is still hers.
         let mut r = KeyRing::new();
-        r.install_epoch(5, base(5), &[(0, ALICE), (2, CAROL)], Some(0), 0);
-        r.install_epoch(6, base(6), &[(0, ALICE), (2, BOB)], Some(0), 100);
+        r.install_epoch(5, &base(5), &[(0, ALICE), (2, CAROL)], Some(0), 0);
+        r.install_epoch(
+            6,
+            &base(6),
+            &[(0, ALICE), (2, BOB), (3, CAROL)],
+            Some(0),
+            100,
+        );
         assert_eq!(
             r.decrypt(
                 Codec::Opus,
@@ -453,6 +501,21 @@ mod tests {
                 200
             )
             .is_ok()
+        );
+        // Had the commit to epoch 6 removed Carol instead, her epoch-5 frame would be refused
+        // (CRYPTO-1; a_member_the_newest_epoch_removed_is_refused_under_the_old_one).
+        let mut removed = KeyRing::new();
+        removed.install_epoch(5, &base(5), &[(0, ALICE), (2, CAROL)], Some(0), 0);
+        removed.install_epoch(6, &base(6), &[(0, ALICE), (2, BOB)], Some(0), 100);
+        assert_eq!(
+            removed.decrypt(
+                Codec::Opus,
+                &frame(2, 5, Slot::Microphone, 0),
+                Some(&CAROL),
+                Slot::Microphone,
+                200
+            ),
+            Err(SframeError::SenderMismatch)
         );
     }
 
@@ -519,6 +582,120 @@ mod tests {
             assert!(cached_keys(&r) <= 2, "after seq {seq}: {}", cached_keys(&r));
         }
         assert_eq!((cached_keys(&r), r.derived), (2, 2));
+    }
+
+    /// CRYPTO-1: Carol is in epoch 5 and the commit to epoch 6 removed her. Her epoch-5 key still
+    /// works for the retention period, but her epoch-5 frames are refused; Bob, still a member,
+    /// keeps his epoch-5 frames accepted. The mirror is `TestARemovedMembersOldEpochFramesAreRefused`.
+    #[test]
+    fn a_member_the_newest_epoch_removed_is_refused_under_the_old_one() {
+        let mut r = KeyRing::new();
+        r.install_epoch(5, &base(5), &[(0, ALICE), (1, BOB), (2, CAROL)], Some(0), 0);
+        r.install_epoch(6, &base(6), &[(0, ALICE), (1, BOB)], Some(0), 0);
+        assert_eq!(
+            r.decrypt(
+                Codec::Opus,
+                &frame(2, 5, Slot::Microphone, 0),
+                Some(&CAROL),
+                Slot::Microphone,
+                100
+            ),
+            Err(SframeError::SenderMismatch)
+        );
+        assert!(from_bob(&mut r, &frame(1, 5, Slot::Microphone, 0), 100).is_ok());
+        // Without a track binding the rule holds as well.
+        assert_eq!(
+            r.decrypt(
+                Codec::Opus,
+                &frame(2, 5, Slot::Microphone, 1),
+                None,
+                Slot::Microphone,
+                100
+            ),
+            Err(SframeError::SenderMismatch)
+        );
+    }
+
+    /// CRYPTO-3: a dropped epoch is `StaleEpoch` for two retention periods after it was dropped,
+    /// then `UnknownKid` (protocol/05 "Rotation" states the bound).
+    #[test]
+    fn a_dropped_epoch_is_stale_for_twenty_seconds_then_unknown() {
+        let mut r = ring_at(5, 0);
+        r.install_epoch(6, &base(6), &[(0, ALICE), (1, BOB)], Some(0), 0);
+        // Epoch 5 is dropped at 10 000 ms.
+        assert_eq!(
+            from_bob(&mut r, &frame(1, 5, Slot::Microphone, 0), 10_000),
+            Err(SframeError::StaleEpoch)
+        );
+        assert_eq!(
+            from_bob(&mut r, &frame(1, 5, Slot::Microphone, 1), 29_999),
+            Err(SframeError::StaleEpoch)
+        );
+        assert_eq!(
+            from_bob(&mut r, &frame(1, 5, Slot::Microphone, 2), 35_000),
+            Err(SframeError::UnknownKid)
+        );
+    }
+
+    /// CRYPTO-4: an install more than 255 commits behind the newest held epoch is ignored, so it
+    /// cannot evict the current epoch through the same `epoch mod 256`.
+    #[test]
+    fn an_install_more_than_255_epochs_old_neither_evicts_nor_installs() {
+        let mut r = ring_at(300, 0);
+        r.install_epoch(44, &base(44), &[(0, ALICE), (1, BOB)], Some(0), 10);
+        assert_eq!(r.current_epoch(), Some(300));
+        assert!(from_bob(&mut r, &frame(1, 300, Slot::Microphone, 0), 20).is_ok());
+        // KID byte 44 still names epoch 300, whose key did not seal this frame.
+        assert_eq!(
+            from_bob(&mut r, &frame(1, 44, Slot::Microphone, 1), 20),
+            Err(SframeError::AuthFailed)
+        );
+    }
+
+    /// CRYPTO-4: re-installing an epoch this ring dropped does not revive it.
+    #[test]
+    fn a_dropped_epoch_installed_again_stays_dropped() {
+        let mut r = ring_at(5, 0);
+        r.install_epoch(6, &base(6), &[(0, ALICE), (1, BOB)], Some(0), 0);
+        r.expire(10_000);
+        r.install_epoch(5, &base(5), &[(0, ALICE), (1, BOB)], Some(0), 11_000);
+        assert_eq!(
+            from_bob(&mut r, &frame(1, 5, Slot::Microphone, 0), 11_000),
+            Err(SframeError::StaleEpoch)
+        );
+        assert_eq!(r.epochs.len(), 1);
+    }
+
+    /// CRYPTO-4: a new newest epoch drops every held epoch more than 255 commits behind it.
+    #[test]
+    fn a_new_epoch_drops_held_epochs_more_than_255_behind_it() {
+        // 300 - 10 = 290 commits; 300 mod 256 = 44, so no eviction by low byte is involved.
+        let mut r = ring_at(10, 0);
+        r.install_epoch(300, &base(300), &[(0, ALICE), (1, BOB)], Some(0), 100);
+        assert_eq!(
+            from_bob(&mut r, &frame(1, 10, Slot::Microphone, 0), 200),
+            Err(SframeError::StaleEpoch)
+        );
+        assert!(from_bob(&mut r, &frame(1, 300, Slot::Microphone, 0), 200).is_ok());
+    }
+
+    /// The install borrows the key and copies it once into a heap buffer the entry owns: a later
+    /// install that moves or reallocates the entries leaves that buffer where it is, so no further
+    /// copy of the key is made while the epoch is held.
+    #[test]
+    fn the_held_base_key_is_borrowed_into_one_heap_buffer_that_never_moves() {
+        let mut r = ring_at(1, 0);
+        let held: *const [u8; NK] = &**r.epochs[0].base_key;
+        assert_eq!(**r.epochs[0].base_key, base(1));
+        for e in 2..40 {
+            r.install_epoch(e, &base(e), &[(0, ALICE), (1, BOB)], Some(0), 1);
+        }
+        let entry = r
+            .epochs
+            .iter()
+            .find(|e| e.epoch == 1)
+            .expect("epoch 1 held");
+        assert!(std::ptr::eq(&**entry.base_key, held));
     }
 
     #[test]

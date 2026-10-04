@@ -45,7 +45,10 @@ the frame format above; an empty video frame is dropped.
   track, the SFU included, and two implementations could disagree on which spellings they accept.
   A receiver therefore holds at most one key per leaf of each held epoch's roster. The code is a
   parse failure: the frame is dropped and counted, never held. A sender only ever emits
-  `Kid(leaf_index, epoch)`, and an API that takes a raw KID refuses one of 2^24 or more the same way.
+  `Kid(leaf_index, epoch)`. Besides the receive path, the wasm surface's raw-KID entry point
+  (`sframe_header`) refuses a KID of 2^24 or more the same way; the native codec functions that take
+  a raw KID (header encoding, frame sealing, key derivation, in Rust and in Go) do not, because
+  RFC 9605's Appendix C vectors use such KIDs.
 - Overhead per frame: `1 + len(KID) + len(CTR) + 16` bytes, at most 28 before H.264 escaping; on
   slot 1 or above the CTR is always 8 bytes.
 
@@ -69,7 +72,10 @@ it with the same function over the same clear bytes, so it has no length field.
    code belong to no NAL unit.
 2. The sender rewrites the frame as `concat(00 00 00 01 || nal)` over those NAL units (leading bytes
    dropped, trailing zeros kept), because libwebrtc's receiver rebuilds every frame with 4-byte start
-   codes and `P` is authenticated.
+   codes and `P` is authenticated. It also drops every access unit delimiter (type 9) and filler
+   data NAL unit (type 12) before the first VCL NAL unit: an RTP packetiser may drop those two types
+   (pion's does), and a receiver's `P` would then lack them. A publisher that is not libwebrtc gets
+   this from the sender's canonicalisation; nothing after the first VCL NAL unit is touched.
 3. NAL units of types 6-18, 22 and 23 before the first VCL NAL unit are clear. Type 0 or 24-31 is
    `E_SFRAME_MALFORMED_PREFIX`.
 4. The first NAL unit of a type in {1, 2, 3, 4, 5, 19, 20, 21} ends the walk. Types 2-4 and 19-21
@@ -112,7 +118,8 @@ PPS, the IDR header and the one slice-header byte that covers `pic_parameter_set
 ## Counter partition
 
 `CTR` is a 64-bit value: `slot (8 bits) || layer (4 bits) || seq (52 bits)`. Slots: 0 microphone,
-1 camera, 2 screen video, 3 screen audio; further slots reserved. `seq` starts at 0 per
+1 camera, 2 screen video, 3 screen audio; further slots are reserved, and a sender refuses one with
+`E_SFRAME_SLOT_MISMATCH` before it spends a counter. `seq` starts at 0 per
 `(epoch, KID, slot, layer)` and increments per frame. A sender MUST stop and rekey (send an MLS
 `Update`) rather than use a `seq` above 2^52 − 1 (`E_SFRAME_COUNTER_EXHAUSTED`); it MUST NOT wrap. A
 layer above 15 is `E_SFRAME_LAYER_RANGE`. `nonce = salt XOR CTR` (CTR big-endian, left-padded to
@@ -145,13 +152,28 @@ within an epoch, so three rules keep its counters unique across worker restarts,
   several inside 10 s — each timed from the receiver's own processing of the Commit that superseded
   it, together with that epoch's roster. Installing an epoch evicts any held epoch with the same
   `epoch mod 256` (RFC 9605 §5.2); installing an epoch already held changes nothing and keeps its
-  replay windows. A frame whose KID names an epoch the receiver dropped is `E_SFRAME_STALE_EPOCH`.
+  replay windows. An install of an epoch older than the newest held one changes nothing either when
+  the receiver dropped that epoch or when it is more than 255 commits behind the newest, so a late
+  install can neither evict the current epoch nor revive a dropped one; installing a new newest
+  epoch drops every held epoch more than 255 commits behind it. A frame whose KID names an epoch the
+  receiver dropped is `E_SFRAME_STALE_EPOCH` for 20 seconds after the drop, then
+  `E_SFRAME_UNKNOWN_KID` (and so held, then dropped by the hold's limits).
+- A frame of a superseded epoch is accepted only from a device that is also in the newest held
+  epoch's roster; otherwise it is `E_SFRAME_SENDER_MISMATCH`. A member the newest epoch removed
+  still holds the superseded epoch's key for the retention period, and without this rule its own
+  frames would authenticate and render. What remains: with the SFU's help (it binds the stream to a
+  remaining participant's identity) such a member can still forge frames attributed to a
+  participant who is in both rosters, under the superseded epoch, until each receiver drops that
+  epoch (10 seconds after it processed the Commit). `08-threat-model.md` states this.
 - A frame whose KID names an epoch the receiver has not installed yet (`E_SFRAME_UNKNOWN_KID`) is
   held; no other failure ever is. The hold is one strict FIFO per receiving track, at most
   **2 000 ms**, **256 frames** and **8 MiB**: while anything is held, later frames of that track
   queue behind it, because an encoded-transform writer drops a frame older than the last one it
   wrote. The hold drains when an epoch is installed and on a timer; a frame past any limit is
   dropped and counted, the oldest first. Held frames are never rendered unless they authenticate.
+  The Go receiver in this repository (`internal/media`, used by the load rig and the media bot,
+  which never rotate epochs mid-call) does not hold: it drops and counts an `E_SFRAME_UNKNOWN_KID`
+  frame at once, so a Go subscriber stalls until the next key frame across an epoch change.
 - SP-12's three-context loopback call measured a **2 615 ms join visibility window** from an
   existing member's merge of the join Commit to its first decrypted frame from the joiner;
   the joiner's participant became visible after 2 460 ms, and its KID decrypted within 194 ms
@@ -192,8 +214,9 @@ Every received frame is checked in this order. The first failure names its code,
    dropped → `E_SFRAME_STALE_EPOCH`.
 3. The KID's leaf MUST be in that epoch's roster (`E_SFRAME_LEAF_NOT_IN_EPOCH`) and MUST be the
    leaf of the track's device in that epoch (`E_SFRAME_SENDER_MISMATCH`); a device holding more than
-   one leaf in one epoch is refused the same way. Leaf indices move on a resync and are reused after
-   a Remove, so this binding is per epoch.
+   one leaf in one epoch is refused the same way, and so is a frame of a superseded epoch whose
+   device is not in the newest held epoch's roster ("Rotation"). Leaf indices move on a resync and
+   are reused after a Remove, so this binding is per epoch.
 4. The KID's leaf MUST NOT be the receiver's own leaf in that epoch (`E_SFRAME_OWN_KID`; RFC 9605
    §4.4.1: a key is usable for encryption or decryption, never both).
 5. Replay: a window of **128** counters per `(leaf, slot, layer)` and epoch, checked before the
@@ -332,7 +355,7 @@ implementation names a failure the same way. They are not `02`'s `E_*` vocabular
 |---|---|---|
 | `E_SFRAME_TRUNCATED_HEADER` | the header ends before its KID or CTR field does | receiver |
 | `E_SFRAME_NON_MINIMAL_HEADER` | an extended field holds 0-7, or a multi-byte field has a leading `00` | receiver |
-| `E_SFRAME_NON_CANONICAL_KID` | the KID is 2^24 or more, so it is no `(leaf_index << 8) \| (epoch mod 256)` | receiver, and any API that takes a raw KID |
+| `E_SFRAME_NON_CANONICAL_KID` | the KID is 2^24 or more, so it is no `(leaf_index << 8) \| (epoch mod 256)` | receiver, and the wasm surface's `sframe_header` |
 | `E_SFRAME_TRUNCATED_FRAME` | fewer than 16 bytes follow the header | receiver |
 | `E_SFRAME_MALFORMED_PREFIX` | the codec prefix cannot be computed (short VP8 key frame, no start code, NAL type 0/24-31, slice header overrun, `pic_parameter_set_id` > 255) | both |
 | `E_SFRAME_UNSUPPORTED_CODEC` | a codec with no prefix rule, or an H.264 first VCL NAL of type 2-4 or 19-21 | both |
@@ -343,11 +366,11 @@ implementation names a failure the same way. They are not `02`'s `E_*` vocabular
 | `E_SFRAME_COUNTER_EXHAUSTED` | `seq` would pass 2^52 − 1; the sender rekeys | sender |
 | `E_SFRAME_LEAF_RANGE` | a leaf index of 2^16 or more | both |
 | `E_SFRAME_UNKNOWN_KID` | the KID names an epoch this device has not installed yet | receiver (the only code a frame is held for) |
-| `E_SFRAME_STALE_EPOCH` | the KID names an epoch this device dropped, or a sender's epoch is below its floor | both |
+| `E_SFRAME_STALE_EPOCH` | the KID names an epoch this device dropped less than 20 s ago, or a sender's epoch is below its floor | both |
 | `E_SFRAME_LEAF_NOT_IN_EPOCH` | the KID's leaf is not in the roster of the epoch it names | receiver |
-| `E_SFRAME_SENDER_MISMATCH` | the KID's leaf, in its epoch, is not the leaf of the device the track belongs to | receiver |
+| `E_SFRAME_SENDER_MISMATCH` | the KID's leaf, in its epoch, is not the leaf of the device the track belongs to, or a superseded epoch's frame comes from a device not in the newest held roster | receiver |
 | `E_SFRAME_OWN_KID` | the KID is the receiver's own leaf in that epoch | receiver |
-| `E_SFRAME_SLOT_MISMATCH` | the authenticated slot is not the slot of the track's source | receiver |
+| `E_SFRAME_SLOT_MISMATCH` | the authenticated slot is not the slot of the track's source, or a sender is handed a reserved slot (above 3) | both |
 | `E_SFRAME_REPLAY` | the counter was already accepted, or is older than the replay window | receiver |
 
 ## Vectors
@@ -362,10 +385,27 @@ every section and refuses every reject with the named code:
 - `rfc9605_c3`: the Appendix C.3 suite `0x0004` case as a frame (the RFC's metadata is `P`): `key`,
   `salt`, `nonce`, `frame`, and opening `frame` back to `prefix || plaintext`;
 - `media_frames`: one frame per prefix rule (Opus, VP8 delta, VP8 key on layer 2, H.264 SPS+PPS+IDR
-  with escaping): `prefix_len` from the input bytes, `frame` from the sender's path, and opening
-  `frame` back to `input`;
+  with escaping), then six H.264 sender shapes (an IDR alone, an IDR in two slices, three-byte start
+  codes with leading garbage and trailing zeros, a prefix ending in a `00` byte, an access unit
+  delimiter and filler before the first slice, and a frame whose sealed tail ends in `00`):
+  `prefix_len` from the canonical frame, `frame` from the sender's path, and opening `frame` back to
+  `input`, or to `canonical` when the row carries one (the sender rewrote the input). A prefix
+  ending in two `00` bytes cannot occur (the three `ue(v)` fields read an odd number of bits), so
+  seed 2 is pinned by `escapes` alone. VP9 has no frame yet;
 - `escapes`: the seeded `WriteRbsp` and its inverse;
 - `rejects`: 13 truncated or non-minimal headers, 3 headers whose KID is 2^24 or more, 5 tampered
-  or truncated frames, 1 malformed prefix and 1 frame sealed under a non-canonical KID with that
-  KID's own key, each with its `E_SFRAME_*` code. A header row is refused by the receiver's header
-  step (step 1 of "Receiver rules"), a frame row by the receiver's path up to the AEAD.
+  or truncated frames, 1 malformed prefix, 1 frame sealed under a non-canonical KID with that
+  KID's own key, and 14 H.264 frames whose prefix cannot be computed (no slice, a first VCL NAL unit
+  of type 2-4 or 19-21, NAL types 0, 24 and 31, no start code, bytes before the first start code, a
+  slice header ending inside `pic_parameter_set_id`, `pic_parameter_set_id` 256), each with its
+  `E_SFRAME_*` code. A header row is refused by the receiver's header step (step 1 of "Receiver
+  rules"), a frame row by the receiver's path up to the AEAD;
+- `sender_rejects`: 6 inputs a fresh sender (leaf 1, epoch 41) refuses — an SPS a receiver would
+  rewrite, an H.264 frame with no slice, a short VP8 key frame, layer 16, slot 4 — and a counter
+  whose `seq` is 2^52;
+- `receiver`: 10 scripts, each from an empty key ring: `install` steps and `decrypt` steps whose
+  outcome is `ok` or a code. They pin the replay window (127 behind accepted, 128 refused), the own-KID,
+  leaf, sender and slot bindings, a device holding two leaves, `E_SFRAME_UNKNOWN_KID` before an
+  install, the 10-second retention, `E_SFRAME_STALE_EPOCH` for 20 seconds then
+  `E_SFRAME_UNKNOWN_KID`, the same-`epoch mod 256` eviction, the removed-member rule, the late and
+  the repeated install, and a resync that moves a device.

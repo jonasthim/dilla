@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn held_frames_are_released_in_arrival_order_once_their_epoch_arrives() {
         let mut r = KeyRing::new();
-        r.install_epoch(4, BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 0);
+        r.install_epoch(4, &BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 0);
         let mut p = PendingFrames::new(UNKNOWN_KID_BUFFER_MS, UNKNOWN_KID_BUFFER_FRAMES);
         for seq in 0..3 {
             p.push(10, frame(5, seq));
@@ -127,7 +127,7 @@ mod tests {
             "epoch 5 not installed"
         );
         assert_eq!(p.len(), 3);
-        r.install_epoch(5, BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 30);
+        r.install_epoch(5, &BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 30);
         assert_eq!(drain(&mut p, &mut r, 40), (vec![0, 1, 2], 0));
         assert!(p.is_empty());
     }
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn an_unknown_head_blocks_frames_that_could_decrypt() {
         let mut r = KeyRing::new();
-        r.install_epoch(4, BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 0);
+        r.install_epoch(4, &BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 0);
         let mut p = PendingFrames::new(UNKNOWN_KID_BUFFER_MS, UNKNOWN_KID_BUFFER_FRAMES);
         p.push(0, frame(5, 0));
         p.push(0, frame(4, 7));
@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn frames_older_than_the_hold_and_beyond_the_count_are_dropped_and_counted() {
         let mut r = KeyRing::new();
-        r.install_epoch(4, BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 0);
+        r.install_epoch(4, &BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 0);
         let mut p = PendingFrames::new(2_000, 2);
         p.push(0, frame(5, 0));
         p.push(500, frame(5, 1));
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn a_failure_other_than_unknown_kid_is_dropped_not_held() {
         let mut r = KeyRing::new();
-        r.install_epoch(5, BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 0);
+        r.install_epoch(5, &BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 0);
         let mut p = PendingFrames::new(UNKNOWN_KID_BUFFER_MS, UNKNOWN_KID_BUFFER_FRAMES);
         let mut bad = frame(5, 0);
         let last = bad.len() - 1;
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn a_non_canonical_kid_or_non_minimal_header_is_dropped_not_held() {
         let mut r = KeyRing::new();
-        r.install_epoch(4, BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 0);
+        r.install_epoch(4, &BASE, &[(0, [0xa1; 16]), (1, BOB)], Some(0), 0);
         let mut p = PendingFrames::new(UNKNOWN_KID_BUFFER_MS, UNKNOWN_KID_BUFFER_FRAMES);
         // KID (1 << 24) | (1 << 8) | 5: epoch 5 is not installed, yet this is not UnknownKid.
         let kid = Kid::from_raw((1 << 24) | Kid::new(1, 5).value());

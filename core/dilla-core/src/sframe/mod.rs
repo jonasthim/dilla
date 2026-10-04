@@ -152,15 +152,13 @@ pub struct FrameKey {
 }
 
 impl FrameKey {
+    /// Derives straight into the key's own fields, with no intermediate `SframeKeys` copy.
     pub fn derive(base_key: &[u8; NK], kid: Kid) -> Self {
-        use zeroize::Zeroize as _;
-        let mut keys = derive_keys(base_key, kid);
-        let out = Self {
-            key: keys.key,
-            salt: keys.salt,
+        let mut out = Self {
+            key: [0u8; NK],
+            salt: [0u8; NN],
         };
-        keys.key.zeroize();
-        keys.salt.zeroize();
+        derive_into(base_key, kid, &mut out.key, &mut out.salt);
         out
     }
 }
@@ -178,6 +176,14 @@ pub fn sframe_secret(base_key: &[u8; NK]) -> [u8; 32] {
 /// The reference implementation performs Extract and Expand as one HKDF call with an empty salt,
 /// which is what `hkdf_sha256(Some(&[]), base_key, info, out)` does here.
 pub fn derive_keys(base_key: &[u8; NK], kid: Kid) -> SframeKeys {
+    let mut key = [0u8; NK];
+    let mut salt = [0u8; NN];
+    derive_into(base_key, kid, &mut key, &mut salt);
+    SframeKeys { key, salt }
+}
+
+/// `derive_keys` into caller-owned buffers.
+fn derive_into(base_key: &[u8; NK], kid: Kid, key: &mut [u8; NK], salt: &mut [u8; NN]) {
     let mut info_key = Vec::with_capacity(LABEL_KEY.len() + 10);
     info_key.extend_from_slice(LABEL_KEY);
     info_key.extend_from_slice(&kid.value().to_be_bytes());
@@ -188,11 +194,8 @@ pub fn derive_keys(base_key: &[u8; NK], kid: Kid) -> SframeKeys {
     info_salt.extend_from_slice(&kid.value().to_be_bytes());
     info_salt.extend_from_slice(&SFRAME_SUITE.to_be_bytes());
 
-    let mut key = [0u8; NK];
-    let mut salt = [0u8; NN];
-    hkdf_sha256(Some(&[]), base_key, &info_key, &mut key).expect("16 bytes is within the limit");
-    hkdf_sha256(Some(&[]), base_key, &info_salt, &mut salt).expect("12 bytes is within the limit");
-    SframeKeys { key, salt }
+    hkdf_sha256(Some(&[]), base_key, &info_key, key).expect("16 bytes is within the limit");
+    hkdf_sha256(Some(&[]), base_key, &info_salt, salt).expect("12 bytes is within the limit");
 }
 
 #[cfg(test)]

@@ -4,13 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -232,37 +235,130 @@ func SSHReader(target string) Reader {
 // MetricsSource returns dillad's current metrics.
 type MetricsSource func(ctx context.Context) ([]Sample, error)
 
-// HTTPMetrics scrapes a /metrics URL.
-func HTTPMetrics(url string) MetricsSource {
+// HTTPMetrics scrapes a /metrics URL. A non-empty token is sent as `Authorization: Bearer <token>`
+// (metrics.require_admin is on by default, and dilla-testhost takes the token from
+// DILLA_METRICS_TOKEN); no error or log line ever carries it.
+func HTTPMetrics(url, token string) MetricsSource {
 	return func(ctx context.Context) ([]Sample, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, err
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
 		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+		switch resp.StatusCode {
+		case http.StatusOK:
+			return ParseExposition(resp.Body)
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return nil, fmt.Errorf("GET %s: %s: the scrape needs the host's scrape token (-metrics-token, or DILLA_METRICS_TOKEN in the rig's environment)", url, resp.Status)
 		}
-		return ParseExposition(resp.Body)
+		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
 	}
+}
+
+// RoomSource opens each cell's room and mints each participant's join token.
+type RoomSource interface {
+	// Open makes room exist for participants; the returned function removes it where it can.
+	Open(ctx context.Context, room string, participants int) (func(), error)
+	// Join returns the signalling URL and a token that lets identity publish and subscribe in room.
+	Join(ctx context.Context, room, identity string) (url, token string, err error)
+}
+
+// LocalRooms is the in-process LiveKit of a -local-sfu run (and of the tests): RoomService with the
+// SFU's own key and secret.
+type LocalRooms struct {
+	URL, HTTPURL      string
+	APIKey, APISecret string
+}
+
+func (l LocalRooms) Open(ctx context.Context, room string, participants int) (func(), error) {
+	rs := lksdk.NewRoomServiceClient(l.HTTPURL, l.APIKey, l.APISecret)
+	// #nosec G115 -- RunCell bounds participants to 1..25.
+	if _, err := rs.CreateRoom(ctx, &livekit.CreateRoomRequest{Name: room, MaxParticipants: uint32(participants), EmptyTimeout: 300, DepartureTimeout: 20}); err != nil {
+		return nil, fmt.Errorf("create room: %w", err)
+	}
+	return func() { _, _ = rs.DeleteRoom(context.WithoutCancel(ctx), &livekit.DeleteRoomRequest{Room: room}) }, nil
+}
+
+func (l LocalRooms) Join(_ context.Context, room, identity string) (string, string, error) {
+	token, err := mintToken(l.APIKey, l.APISecret, room, identity)
+	return l.URL, token, err
+}
+
+// TestHostRooms opens rooms through a dilla-testhost's control listener (POST /debug/sfu/token),
+// reached through an ssh tunnel to its loopback. Those debug rooms are hidden from the instance's
+// call-room sweep, which deletes every room a call did not open within 30 s — so a production dillad
+// can never host a capacity cell (RIGS-01). The host's in-process LiveKit secret never leaves it:
+// the route mints each token. A debug room is not deleted at the end of a cell (the route has no
+// delete); LiveKit closes it once it is empty.
+type TestHostRooms struct {
+	Control string // e.g. http://127.0.0.1:8444, the ssh-tunnelled control listener
+	Client  *http.Client
+}
+
+func (h TestHostRooms) token(ctx context.Context, room, identity string, create bool) (string, string, error) {
+	body, err := json.Marshal(map[string]any{"room": room, "identity": identity, "create": create})
+	if err != nil {
+		return "", "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(h.Control, "/")+"/debug/sfu/token", bytes.NewReader(body))
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := h.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("test host: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return "", "", fmt.Errorf("test host: POST /debug/sfu/token: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+	}
+	var out struct {
+		URL   string `json:"url"`
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", "", fmt.Errorf("test host: %w", err)
+	}
+	if out.URL == "" || out.Token == "" {
+		return "", "", errors.New("test host: POST /debug/sfu/token answered no url or token (was it started with -sfu?)")
+	}
+	return out.URL, out.Token, nil
+}
+
+func (h TestHostRooms) Open(ctx context.Context, room string, _ int) (func(), error) {
+	if _, _, err := h.token(ctx, room, "dilla-loadrig-open", true); err != nil {
+		return nil, err
+	}
+	return func() {}, nil
+}
+
+func (h TestHostRooms) Join(ctx context.Context, room, identity string) (string, string, error) {
+	return h.token(ctx, room, identity, false)
 }
 
 // Options is one rig run's targets and inputs.
 type Options struct {
-	LiveKitURL, LiveKitHTTP string
-	APIKey, APISecret       string
-	Metrics                 MetricsSource
-	Files                   Reader
-	Iface                   string
-	DilladPID               int
-	VoiceFile               string
-	ShareFiles              map[Layer]string
-	BaseKey                 [16]byte
-	Warmup, Hold            time.Duration
+	Rooms        RoomSource
+	Metrics      MetricsSource
+	Files        Reader
+	Iface        string
+	DilladPID    int
+	VoiceFile    string
+	ShareFiles   map[Layer]string
+	Warmup, Hold time.Duration
 	// AllowShortHold lets a test sample across less than MinHold. Only rig_test.go sets it: a real
 	// measurement over a shorter window can fall between two of LiveKit's 5 s counter steps.
 	AllowShortHold bool
@@ -283,8 +379,13 @@ type Result struct {
 	LossPercent        float64
 	AudioSubscriptions int
 	Decrypted          uint64
+	EmptyFrames        uint64
 	Dropped            map[string]uint64
-	DecryptOKPercent   float64
+	// DecryptOKPercent counts from each participant's join, warm-up included.
+	DecryptOKPercent float64
+	// Measured is true once both samples were taken: the row is real even when RunCell also
+	// returns an error (a drop during the hold, a viewer that decrypted nothing).
+	Measured bool
 }
 
 // Row is the result as one line of TableHeader's table.
@@ -340,24 +441,98 @@ func audioSubscriptions(samples []Sample) int {
 	return int(Sum(samples, "livekit_track_subscribed_total", map[string]string{"kind": "audio"}))
 }
 
-// verifyViewerActivity requires every participant with a remote publisher to
-// decrypt at least one frame during the measured hold, not only during warmup.
-func verifyViewerActivity(c Cell, counters []*media.Counters, before []uint64) error {
+// viewer holds one participant's decrypt counters, one media.Counters per publisher it decrypts
+// (every rig publisher publishes exactly one track), keyed by the publisher's device.
+type viewer struct {
+	mu     sync.Mutex
+	tracks map[[16]byte]*media.Counters
+}
+
+func newViewer() *viewer { return &viewer{tracks: map[[16]byte]*media.Counters{}} }
+
+// counters is the publisher's Counters, made on first use.
+func (v *viewer) counters(publisher [16]byte) *media.Counters {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	c, ok := v.tracks[publisher]
+	if !ok {
+		c = &media.Counters{}
+		v.tracks[publisher] = c
+	}
+	return c
+}
+
+// tally is a viewer's (or a cell's) decrypted frames, empty frames and drops by code.
+type tally struct {
+	decrypted, empty uint64
+	perPublisher     map[[16]byte]uint64
+	dropped          map[string]uint64
+}
+
+func (v *viewer) tally() tally {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	t := tally{perPublisher: map[[16]byte]uint64{}, dropped: map[string]uint64{}}
+	for dev, c := range v.tracks {
+		d, dropped := c.Snapshot()
+		t.decrypted += d
+		t.empty += c.EmptyFrames()
+		t.perPublisher[dev] = d
+		for code, n := range dropped {
+			t.dropped[code] += n
+		}
+	}
+	return t
+}
+
+// verifyViewerActivity requires every participant to decrypt at least one frame of every other
+// participant's published track during the measured hold, not only during warm-up and not just
+// one track of several. What it still does not prove: that delivery was continuous across the hold
+// (one frame per track suffices), and for a DTX publisher it is its encrypted 3-byte silence frames
+// that move the count.
+func verifyViewerActivity(c Cell, viewers []*viewer, before []tally) error {
 	publishers := c.Talkers + c.DTX + c.Sharers
-	for i, counter := range counters {
-		remotePublishers := publishers
-		if i < publishers {
-			remotePublishers--
-		}
-		if remotePublishers <= 0 {
-			continue
-		}
-		decrypted, _ := counter.Snapshot()
-		if decrypted <= before[i] {
-			return fmt.Errorf("%s: participant %d decrypted no frames during the hold", c.Name, i)
+	for i, v := range viewers {
+		now := v.tally()
+		for j := range publishers {
+			if j == i {
+				continue
+			}
+			dev := deviceOf(j)
+			if now.perPublisher[dev] <= before[i].perPublisher[dev] {
+				return fmt.Errorf("%s: participant %d decrypted no frames of participant %d's track during the hold", c.Name, i, j)
+			}
 		}
 	}
 	return nil
+}
+
+// holdDrops is an error naming every drop code other than "sif" (LiveKit's own injected frames)
+// whose count grew between before and after: a frame the rig published that a viewer could not
+// decrypt during the hold.
+func holdDrops(name string, before, after map[string]uint64) error {
+	var codes []string
+	for code, n := range after {
+		if code != "sif" && n > before[code] {
+			codes = append(codes, fmt.Sprintf("%s ×%d", code, n-before[code]))
+		}
+	}
+	if len(codes) == 0 {
+		return nil
+	}
+	slices.Sort(codes)
+	return fmt.Errorf("%s: frames dropped during the hold: %s", name, strings.Join(codes, ", "))
+}
+
+// newCellKey draws a fresh random base key for one cell (RIGS-11): every participant lives in this
+// process, so no key is shared with anything else, and no (key, nonce) pair repeats across cells or
+// runs although every cell's senders start their counters at 0.
+func newCellKey() ([16]byte, error) {
+	var k [16]byte
+	if _, err := rand.Read(k[:]); err != nil {
+		return k, fmt.Errorf("draw the cell's base key: %w", err)
+	}
+	return k, nil
 }
 
 func deviceOf(i int) [16]byte {
@@ -377,57 +552,28 @@ func mintToken(apiKey, apiSecret, room, identity string) (string, error) {
 	return at.ToJWT()
 }
 
-func codecOf(mime string) (sframe.Codec, bool) {
-	switch strings.ToLower(mime) {
-	case strings.ToLower(webrtc.MimeTypeOpus):
-		return sframe.Opus, true
-	case strings.ToLower(webrtc.MimeTypeVP8):
-		return sframe.VP8, true
-	case strings.ToLower(webrtc.MimeTypeVP9):
-		return sframe.VP9, true
-	case strings.ToLower(webrtc.MimeTypeH264):
-		return sframe.H264, true
-	}
-	return 0, false
-}
-
-func slotOf(s livekit.TrackSource) (sframe.Slot, bool) {
-	switch s {
-	case livekit.TrackSource_MICROPHONE:
-		return sframe.Mic, true
-	case livekit.TrackSource_CAMERA:
-		return sframe.Camera, true
-	case livekit.TrackSource_SCREEN_SHARE:
-		return sframe.ScreenVideo, true
-	case livekit.TrackSource_SCREEN_SHARE_AUDIO:
-		return sframe.ScreenAudio, true
-	}
-	return 0, false
-}
-
-// join connects participant i, decrypting every track it is subscribed to with its own key ring.
-func join(ctx context.Context, o Options, room string, i int, roster []sframe.RosterEntry, counters *media.Counters) (*lksdk.Room, error) {
+// join connects participant i, decrypting every track it is subscribed to with its own key ring
+// and that track's own Counters.
+func join(ctx context.Context, o Options, room string, i int, key [16]byte, roster []sframe.RosterEntry, v *viewer) (*lksdk.Room, error) {
 	dev := deviceOf(i)
-	token, err := mintToken(o.APIKey, o.APISecret, room, hex.EncodeToString(dev[:]))
+	url, token, err := o.Rooms.Join(ctx, room, hex.EncodeToString(dev[:]))
 	if err != nil {
 		return nil, err
 	}
 	ring := sframe.NewKeyRing(time.Now)
-	ring.InstallEpoch(rigEpoch, o.BaseKey, roster, i)
+	ring.InstallEpoch(rigEpoch, key, roster, i)
 	var mu sync.Mutex
 	var r *lksdk.Room
 	ready := make(chan struct{})
 	cb := &lksdk.RoomCallback{ParticipantCallback: lksdk.ParticipantCallback{
 		OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-			var from [16]byte
-			if n, err := hex.Decode(from[:], []byte(rp.Identity())); err != nil || n != 16 {
+			// protocol/05 receiver rules: a strict device_id identity (another participant in a
+			// shared room must not end the run) and a kind that matches the source.
+			from, codec, slot, ok := media.TrackBinding(rp.Identity(), track.Kind(), track.Codec().MimeType, pub.Source())
+			if !ok {
 				return
 			}
-			codec, ok := codecOf(track.Codec().MimeType)
-			slot, ok2 := slotOf(pub.Source())
-			if !ok || !ok2 {
-				return
-			}
+			counters := v.counters(from)
 			go func() {
 				select {
 				case <-ready:
@@ -441,7 +587,7 @@ func join(ctx context.Context, o Options, room string, i int, roster []sframe.Ro
 			}()
 		},
 	}}
-	rr, err := lksdk.ConnectToRoomWithToken(o.LiveKitURL, token, cb, lksdk.WithAutoSubscribe(true))
+	rr, err := lksdk.ConnectToRoomWithToken(url, token, cb, lksdk.WithAutoSubscribe(true))
 	if err != nil {
 		return nil, fmt.Errorf("participant %d: %w", i, err)
 	}
@@ -491,12 +637,16 @@ func RunCell(ctx context.Context, o Options, c Cell) (Result, error) {
 		return Result{}, fmt.Errorf("%s: %d roles for %d participants", c.Name, c.Talkers+c.DTX+c.Sharers, c.Participants)
 	}
 	room := fmt.Sprintf("rig-%s-%d", c.Name, time.Now().UnixNano())
-	rs := lksdk.NewRoomServiceClient(o.LiveKitHTTP, o.APIKey, o.APISecret)
-	// #nosec G115 -- Participants was bounded to 1..25 above.
-	if _, err := rs.CreateRoom(ctx, &livekit.CreateRoomRequest{Name: room, MaxParticipants: uint32(c.Participants), EmptyTimeout: 300, DepartureTimeout: 20}); err != nil {
-		return Result{}, fmt.Errorf("create room: %w", err)
+	closeRoom, err := o.Rooms.Open(ctx, room, c.Participants)
+	if err != nil {
+		return Result{}, err
 	}
-	defer func() { _, _ = rs.DeleteRoom(context.WithoutCancel(ctx), &livekit.DeleteRoomRequest{Room: room}) }()
+	defer closeRoom()
+	key, err := newCellKey()
+	if err != nil {
+		return Result{}, err
+	}
+	defer clear(key[:])
 
 	cctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -504,7 +654,7 @@ func RunCell(ctx context.Context, o Options, c Cell) (Result, error) {
 	for i := range roster {
 		roster[i] = sframe.RosterEntry{Leaf: uint16(i), Device: deviceOf(i)}
 	}
-	counters := make([]*media.Counters, c.Participants)
+	viewers := make([]*viewer, c.Participants)
 	rooms := make([]*lksdk.Room, 0, c.Participants)
 	defer func() {
 		for _, r := range rooms {
@@ -512,15 +662,15 @@ func RunCell(ctx context.Context, o Options, c Cell) (Result, error) {
 		}
 	}()
 	for i := range c.Participants {
-		counters[i] = &media.Counters{}
-		r, err := join(cctx, o, room, i, roster, counters[i])
+		viewers[i] = newViewer()
+		r, err := join(cctx, o, room, i, key, roster, viewers[i])
 		if err != nil {
 			return Result{}, err
 		}
 		rooms = append(rooms, r)
 	}
 	for i, r := range rooms {
-		sender, err := sframe.NewSender(o.BaseKey, uint16(i), rigEpoch, rigEpoch)
+		sender, err := sframe.NewSender(key, uint16(i), rigEpoch, rigEpoch)
 		if err != nil {
 			return Result{}, err
 		}
@@ -538,9 +688,13 @@ func RunCell(ctx context.Context, o Options, c Cell) (Result, error) {
 	}
 
 	time.Sleep(o.Warmup)
-	viewerBaseline := make([]uint64, len(counters))
-	for i, counter := range counters {
-		viewerBaseline[i], _ = counter.Snapshot()
+	baseline := make([]tally, len(viewers))
+	held := map[string]uint64{}
+	for i, v := range viewers {
+		baseline[i] = v.tally()
+		for code, n := range baseline[i].dropped {
+			held[code] += n
+		}
 	}
 	s0, err := takeSnapshot(ctx, o)
 	if err != nil {
@@ -556,7 +710,7 @@ func RunCell(ctx context.Context, o Options, c Cell) (Result, error) {
 	delta := func(name string, match map[string]string) float64 {
 		return Sum(s1.metrics, name, match) - Sum(s0.metrics, name, match)
 	}
-	res := Result{Cell: c, Dropped: map[string]uint64{}}
+	res := Result{Cell: c, Dropped: map[string]uint64{}, Measured: true}
 	res.EgressMbps = 8 * delta("livekit_packet_bytes", map[string]string{"direction": "outgoing"}) / dt / 1e6
 	res.IngressMbps = 8 * delta("livekit_packet_bytes", map[string]string{"direction": "incoming"}) / dt / 1e6
 	res.WireTxMbps = 8 * float64(s1.tx-s0.tx) / dt / 1e6
@@ -567,10 +721,11 @@ func RunCell(ctx context.Context, o Options, c Cell) (Result, error) {
 	}
 	res.AudioSubscriptions = audioSubscriptions(s0.metrics)
 	var bad uint64
-	for _, k := range counters {
-		d, dropped := k.Snapshot()
-		res.Decrypted += d
-		for code, n := range dropped {
+	for _, v := range viewers {
+		t := v.tally()
+		res.Decrypted += t.decrypted
+		res.EmptyFrames += t.empty
+		for code, n := range t.dropped {
 			res.Dropped[code] += n
 			if code != "sif" {
 				bad += n
@@ -580,7 +735,10 @@ func RunCell(ctx context.Context, o Options, c Cell) (Result, error) {
 	if res.Decrypted+bad > 0 {
 		res.DecryptOKPercent = 100 * float64(res.Decrypted) / float64(res.Decrypted+bad)
 	}
-	if err := verifyViewerActivity(c, counters, viewerBaseline); err != nil {
+	if err := verifyViewerActivity(c, viewers, baseline); err != nil {
+		return res, err
+	}
+	if err := holdDrops(c.Name, held, res.Dropped); err != nil {
 		return res, err
 	}
 	return res, nil

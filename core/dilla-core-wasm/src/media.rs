@@ -10,9 +10,10 @@
 //! a buffer it allocates in linear memory and hands that buffer over. [`with_key`] lends the
 //! core a reference into that buffer, never a copy, and zeroes it before it is freed (task 17
 //! review M4). The caller's array is not touched; the media worker zeroes its own copies. What
-//! the core does with the key is the core's: `KeyRing` keeps it in a `Zeroizing` for the epoch's
-//! retention, and its by-value parameter and key derivation can leave transient copies in the
-//! wasm stack region that later calls overwrite (protocol/08).
+//! the core does with the key is the core's: `KeyRing` borrows it and copies it once into a
+//! zeroize-on-drop heap buffer for the epoch's retention, and key derivation can leave transient
+//! copies (the HKDF hasher's working state) in the wasm stack region that later calls overwrite
+//! (protocol/08).
 
 use dilla_core::sframe::{Codec, KeyRing, NK, SframeError, SframeSender, Slot};
 use wasm_bindgen::prelude::*;
@@ -39,6 +40,11 @@ fn with_key<T, E>(
     };
     bytes.zeroize();
     out
+}
+
+/// The track's device as `decrypt` requires it: exactly 16 bytes, never "no binding".
+fn expected_device_of(bytes: &[u8]) -> Option<[u8; 16]> {
+    <[u8; 16]>::try_from(bytes).ok()
 }
 
 fn leaf(index: u32) -> Result<u16, JsError> {
@@ -151,10 +157,10 @@ impl MediaReceiver {
                 -1 => None,
                 l => Some(leaf(u32::try_from(l).map_err(|_| bad_options())?)?),
             };
-            // KeyRing takes the key by value and keeps it in a Zeroizing of its own for the
-            // epoch's retention.
+            // KeyRing borrows the key and copies it once into a zeroize-on-drop heap buffer of its
+            // own for the epoch's retention; `with_key` then zeroes the argument buffer.
             self.ring
-                .install_epoch(epoch, *key, &roster, own, ms(now_ms));
+                .install_epoch(epoch, key, &roster, own, ms(now_ms));
             Ok(())
         })
     }
@@ -163,7 +169,9 @@ impl MediaReceiver {
         self.ring.expire(ms(now_ms));
     }
 
-    /// `expected_device`: the track's participant identity as 16 bytes, or empty for none.
+    /// `expected_device`: the track's participant identity as exactly 16 bytes; anything else,
+    /// empty included, is `E_BAD_OPTIONS`. The worker never decrypts a frame without a sender
+    /// binding: only the native `KeyRing` API (tests and vectors) can skip it.
     /// Returns `prefix || plaintext`.
     pub fn decrypt(
         &mut self,
@@ -175,13 +183,9 @@ impl MediaReceiver {
     ) -> Result<Box<[u8]>, JsError> {
         let codec = Codec::from_u8(codec).map_err(code)?;
         let slot = Slot::from_u8(expected_slot).map_err(code)?;
-        let device = match expected_device.len() {
-            0 => None,
-            16 => Some(<[u8; 16]>::try_from(expected_device).map_err(|_| bad_options())?),
-            _ => return Err(bad_options()),
-        };
+        let device = expected_device_of(expected_device).ok_or_else(bad_options)?;
         self.ring
-            .decrypt(codec, frame, device.as_ref(), slot, ms(now_ms))
+            .decrypt(codec, frame, Some(&device), slot, ms(now_ms))
             .map(|d| d.frame.into_boxed_slice())
             .map_err(code)
     }
@@ -189,7 +193,17 @@ impl MediaReceiver {
 
 #[cfg(test)]
 mod tests {
-    use super::with_key;
+    use super::{expected_device_of, with_key};
+
+    /// CRYPTO-10: an empty identity is no longer "no sender binding". `decrypt` maps `None` to
+    /// `E_BAD_OPTIONS` (node.rs checks the code under wasm32).
+    #[test]
+    fn only_a_sixteen_byte_identity_binds_a_track() {
+        for len in [0usize, 3, 15, 17, 32] {
+            assert_eq!(expected_device_of(&vec![0xb2; len]), None, "len {len}");
+        }
+        assert_eq!(expected_device_of(&[0xb2; 16]), Some([0xb2; 16]));
+    }
 
     #[test]
     fn the_argument_buffer_is_lent_by_reference_then_zeroed() {

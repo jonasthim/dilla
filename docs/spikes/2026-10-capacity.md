@@ -1,6 +1,8 @@
-# SP-29 — the 25/10 capacity rig and the first numbers
+# SP-29 — the 25/10 load rig and its first loopback numbers
 
-Date: 2026-10-04 · Commit: `aa32ab3` plus the uncommitted rig · Rig: `cmd/dilla-loadrig` (Go lksdk + `internal/media`)
+Date: 2026-10-04 · Rows measured at `aa32ab3` with the rig as it then stood uncommitted in the working tree; `164dd0f` committed that rig. The measured tree was not kept, so that the committed rig equals the measured one is not verified, and the rows were not re-run at `164dd0f`. The rig has changed since (client-half fix wave, below); the rows are those of the older rig · Rig: `cmd/dilla-loadrig` (Go lksdk + `internal/media`)
+
+**Nothing in this document is a capacity figure.** Every number below is a dev-box loopback run with the rig and the SFU in one process; the founder-LXC and VPS-hop legs have not run.
 
 ## Question
 
@@ -9,10 +11,11 @@ Does one dillad with in-process LiveKit v1.13.7 carry 25 voice participants and 
 ## Rig and interpretation
 
 - Host: Linux 7.2.7-1-cachyos, AMD Ryzen 7 7800X3D (16 logical CPUs), 30 GiB RAM. `GOMAXPROCS=4`. The rig and LiveKit share one process; the CPU and RSS columns therefore include both. `lo` transmit bytes count local traffic, not a physical NIC. No other media or benchmark workload ran during the cells; file inspection and documentation edits did.
-- Go lksdk participants use 32-hex device identities. Every receiver gets the full roster, epoch 1, and the fixed rig base key `0a` × 16. Go viewers decrypt subscribed tracks with `internal/media`. A result's decrypt percentage excludes LiveKit SIF frames from the denominator. Every participant auto-subscribes except to its own tracks.
+- Go lksdk participants use 32-hex device identities. Every receiver gets the full roster and epoch 1. The rows below used the then-fixed rig base key `0a` × 16; the rig now draws a fresh random base key for every cell of every run (every participant lives in the rig process), so no (key, nonce) pair repeats across cells or runs, and it takes no key on its command line. Go viewers decrypt subscribed tracks with `internal/media`. A result's decrypt percentage excludes LiveKit SIF frames from the denominator and counts from each participant's join, warm-up included. Every participant auto-subscribes except to its own tracks.
 - Voice fixture: 90 s Ogg Opus, 64 kbit/s target, 20 ms packets. DTX publishers send one `f8 ff fe` Opus frame every 400 ms, RFC 6464 level 127. This roughly models a silent dilla browser after the zero-byte audio exception: the separately measured Chromium 153 and Firefox 155 silent microphones each sent **4.7 packets/s** (the task 22 prerequisite `dtx-report.md`). The rig's deliberate 400 ms spacing is 2.5 packets/s; it is an approximation, not an exact browser trace. A zero-byte Opus frame is the only audio frame passed without ciphertext; every nonempty fixture frame is encrypted.
 - Shares: single-layer VP8 IVF with `Encryption_CUSTOM` (DEV-40 b): q 480×270 at 150 kbit/s, h 960×540 at 625 kbit/s, f 1920×1080 at 2.5 Mbit/s, all 15 fps. Go simulcast is not used.
 - Each cell warms up 15 s, then samples for 60 s. SFU RTP egress is `8 * sum(rate(livekit_packet_bytes{direction="outgoing"}[30s]))`, implemented as the delta between two `/metrics` scrapes. Ingress is the corresponding incoming delta. Wire transmit comes from `/proc/net/dev`; process CPU from `/proc/<pid>/stat` at USER_HZ 100; RSS from `/proc/<pid>/status`; loss from `livekit_packet_loss_total / livekit_packet_total`. Each table row is printed by the rig without later rounding.
+- Pass check. The rows below passed the older check: every participant with a remote publisher decrypted at least one frame during the hold. The rig now checks per track: every participant must decrypt at least one frame of every other publisher's track during the hold, and a drop of any code other than LiveKit's SIF during the hold fails the cell (the row is still printed). What it still does not prove: that delivery was continuous across the hold (one frame per track suffices), and a DTX publisher's track moves on its encrypted 3-byte silence frames alone.
 
 The loopback command (from the repository root) was:
 
@@ -40,14 +43,24 @@ Generated with `/usr/bin/ffmpeg` n9.0.2 in ignored `target/rig-media/`:
 
 ## Founder LXC, LAN
 
-**Not run here:** no founder LXC address, SSH user, LAN interface or `/metrics` URL is available; the controller also forbids deploying this branch or touching the LXC LiveKit secret. The result is pending (NV-7). A later LAN run first obtains those values from Jonas. LiveKit signalling remains bound to loopback and goes through an SSH tunnel; media goes directly over UDP to the LXC's advertised LAN address.
+**Not run here:** no founder LXC address, SSH user or LAN interface is available, and the controller forbids deploying this branch to the LXC. The result is pending (NV-7). A later LAN run first obtains those values from Jonas.
+
+**Why not the LXC's own dillad.** The commands this section recorded at first (`-lk-url`, `-lk-http`, `-api-secret-file` against the production dillad) cannot work. dillad's call routes sweep LiveKit every 30 s and delete every room whose name is not a call's (`internal/api/callgrants.go`), so each cell's `rig-…` room would lose every participant mid-cell; and dillad's `/metrics` refuses a scrape without `Authorization: Bearer $DILLA_METRICS_TOKEN` (`metrics.require_admin` is on by default), which the rig did not send. The remote legs therefore run against **`dilla-testhost -sfu`**, a test binary of this repository, started on the LXC beside (or instead of) the production service: dillad with an in-process LiveKit, whose control listener opens debug rooms that its room sweep never sees and mints each participant's token, so the rig needs no LiveKit secret. `dilla-testhost` serves `/metrics` to the token in its own `DILLA_METRICS_TOKEN`. It listens on loopback only (public `127.0.0.1:8443`, control `127.0.0.1:8444`, LiveKit signalling `127.0.0.1:7880`); signalling goes through an SSH tunnel to that loopback, and media goes directly over UDP to the LXC's LAN address, which `dilla-testhost`'s LiveKit advertises (`advertise_internal_ip`). The production dillad must not be running a LiveKit on the same ports at the same time. The CPU and RSS columns are then the `dilla-testhost` process: dillad and LiveKit, without the rig.
+
+On the LXC (build `go build -o dilla-testhost ./cmd/dilla-testhost` at the measured commit and put `dilla_core_wasi.wasm` beside it; choose any token):
 
 ```sh
-ssh -N -L 7880:127.0.0.1:7880 <ssh-user>@<lxc-lan-host>
-GOMAXPROCS=4 target/dilla-loadrig -lk-url ws://127.0.0.1:7880 -lk-http http://127.0.0.1:7880 -api-key dilla -api-secret-file <operator-provided-secret-file> -metrics <metrics-url> -ssh <ssh-user>@<lxc-lan-host> -dillad-pid <pid-from-ssh-pidof-dillad> -iface <lan-interface> -voice target/rig-media/voice.ogg -share-q target/rig-media/share-q.ivf -share-h target/rig-media/share-h.ivf -share-f target/rig-media/share-f.ivf -cells all -warmup 15s -hold 60s -location 'founder LXC, LAN' -commit <measured-commit> -out target/capacity-lan.md
+DILLA_METRICS_TOKEN=<scrape-token> ./dilla-testhost -sfu
 ```
 
-The first command stays running in another terminal. Confirm the ICE candidate advertises the LXC LAN address and UDP 7882 reaches it before treating the second command's rows as a LAN measurement. Do not bind LiveKit signalling to a LAN address.
+On the rig host (the token goes in the environment, not on the command line, where every local user could read it):
+
+```sh
+ssh -N -L 7880:127.0.0.1:7880 -L 8443:127.0.0.1:8443 -L 8444:127.0.0.1:8444 <ssh-user>@<lxc-lan-host>
+DILLA_METRICS_TOKEN=<scrape-token> GOMAXPROCS=4 target/dilla-loadrig -testhost http://127.0.0.1:8444 -metrics http://127.0.0.1:8443/metrics -ssh <ssh-user>@<lxc-lan-host> -dillad-pid <pid-from-ssh-pidof-dilla-testhost> -iface <lan-interface> -voice target/rig-media/voice.ogg -share-q target/rig-media/share-q.ivf -share-h target/rig-media/share-h.ivf -share-f target/rig-media/share-f.ivf -cells all -warmup 15s -hold 60s -location 'founder LXC, LAN, dilla-testhost' -commit <measured-commit> -out target/capacity-lan.md
+```
+
+The tunnel stays running in another terminal. Confirm the ICE candidate advertises the LXC LAN address and UDP 7882 reaches it before treating the rows as a LAN measurement. Do not bind LiveKit signalling to a LAN address. These commands were written from the code; they have not been run end to end.
 
 ## Dev box, loopback — not a capacity figure
 
@@ -87,20 +100,20 @@ Both measured voice cells had **600** live audio subscriptions (25 publishers ×
 
 ## VPS hop (F6; follow-up card 6)
 
-**Not run here:** no founder VPS or WAN uplink measurement. The first action is to ask Jonas: “public IP or CGNAT, and upload Mbps?” No answer was supplied for this run. After Jonas supplies the VPS path and uplink, run the same 26-cell command above from the VPS-hop rig host, with its SSH signalling tunnel to the founder LXC, `-location 'founder LXC, VPS hop'`, and `-out target/capacity-vps.md`; retain direct UDP media over the configured VPS forwarding path. The substituted LXC address, SSH user, metrics URL, interface, PID, secret file and measured commit are recorded with that later run.
+**Not run here:** no founder VPS or WAN uplink measurement. The first action is to ask Jonas: “public IP or CGNAT, and upload Mbps?” No answer was supplied for this run. After Jonas supplies the VPS path and uplink, run the LAN leg's commands from the VPS-hop rig host against the same `dilla-testhost -sfu` on the founder LXC (never the production dillad, for the reasons given there), with `-location 'founder LXC, VPS hop, dilla-testhost'` and `-out target/capacity-vps.md`. The substituted LXC address, SSH user, interface, PID and measured commit are recorded with that later run.
 
-From the VPS-hop rig host, after copying the rig binary and the four hashed fixtures there, the command template is:
+From the VPS-hop rig host, after copying the rig binary and the four hashed fixtures there:
 
 ```sh
-ssh -N -L 7880:127.0.0.1:7880 <ssh-user>@<lxc-reachable-from-vps>
-GOMAXPROCS=4 target/dilla-loadrig -lk-url ws://127.0.0.1:7880 -lk-http http://127.0.0.1:7880 -api-key dilla -api-secret-file <operator-provided-secret-file> -metrics <metrics-url> -ssh <ssh-user>@<lxc-reachable-from-vps> -dillad-pid <pid-from-ssh-pidof-dillad> -iface <lan-interface> -voice target/rig-media/voice.ogg -share-q target/rig-media/share-q.ivf -share-h target/rig-media/share-h.ivf -share-f target/rig-media/share-f.ivf -cells all -warmup 15s -hold 60s -location 'founder LXC, VPS hop' -commit <measured-commit> -out target/capacity-vps.md
+ssh -N -L 7880:127.0.0.1:7880 -L 8443:127.0.0.1:8443 -L 8444:127.0.0.1:8444 <ssh-user>@<lxc-reachable-from-vps>
+DILLA_METRICS_TOKEN=<scrape-token> GOMAXPROCS=4 target/dilla-loadrig -testhost http://127.0.0.1:8444 -metrics http://127.0.0.1:8443/metrics -ssh <ssh-user>@<lxc-reachable-from-vps> -dillad-pid <pid-from-ssh-pidof-dilla-testhost> -iface <lan-interface> -voice target/rig-media/voice.ogg -share-q target/rig-media/share-q.ivf -share-h target/rig-media/share-h.ivf -share-f target/rig-media/share-f.ivf -cells all -warmup 15s -hold 60s -location 'founder LXC, VPS hop, dilla-testhost' -commit <measured-commit> -out target/capacity-vps.md
 ```
 
-As with the LAN leg, the tunnel carries signalling only; the configured UDP path carries media. Confirm that ICE selects the intended VPS UDP path before attributing the numbers to that hop.
+As with the LAN leg, the tunnel carries signalling and the scrapes only; media goes over UDP to the address `dilla-testhost`'s LiveKit advertises, which is its own interface address. Over a VPS hop that address must be reachable from the rig host on UDP 7882 (a forwarded port behind the same address, or a VPN); `dilla-testhost` has no setting for another public address, so where that does not hold the leg cannot run as written and is recorded as blocked. Confirm that ICE selects the intended VPS UDP path before attributing the numbers to that hop. These commands have not been run end to end.
 
 ## Pass or fail and decision
 
-All 26 dev-box loopback cells ran for a 60 s hold after 15 s warm-up and printed **100.00% decrypt-ok** and **0.00% LiveKit-reported packet loss**. The final rig also required every participant with a remote publisher to decrypt frames during the hold. Both voice cells had exactly 600 audio downtracks. The maximum printed CPU was 104% and maximum RSS was 424 MiB, but both include the rig and SFU in one process and neither is an LXC capacity observation.
+All 26 dev-box loopback cells ran for a 60 s hold after 15 s warm-up and printed **100.00% decrypt-ok** (counted from join) and **0.00% LiveKit-reported packet loss**. The rig as measured also required every participant with a remote publisher to decrypt frames during the hold (per participant, not yet per track). Both voice cells had exactly 600 audio downtracks. The maximum printed CPU was 104% and maximum RSS was 424 MiB, but both include the rig and SFU in one process and neither is an LXC capacity observation.
 
 **Founder-LXC LAN capacity: pending (NV-7).** The dev-box run proves the rig can execute the 25/10 matrix and checks decryption on loopback; it cannot establish whether the founder LXC holds 25 voice participants or 10 sharers. The LAN and VPS-hop legs are not run here for the reasons above. Follow-up card 6 needs the founder LAN egress of `video-s1-v24-f`, `video-s10-v24-f` and `voice-25t`, plus Jonas’s answer about public IP/CGNAT and upload Mbps. No protocol/09 capacity figure is published from this spike.
 

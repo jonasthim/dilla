@@ -195,11 +195,24 @@ function h264PrefixLen(frame: Uint8Array): number {
   throw new SframeError('E_SFRAME_NO_VCL_NAL');
 }
 
-/** concat(00 00 00 01 || nal) over FindNaluIndices, and the clear prefix of the result. */
+/**
+ * concat(00 00 00 01 || nal) over FindNaluIndices, and the clear prefix of the result. Access unit
+ * delimiters (9) and filler data (12) before the first VCL NAL are dropped (a packetiser may drop
+ * them, and the receiver's P would then lack them); after the first VCL NAL everything is kept.
+ */
 export function canonicalizeH264(frame: Uint8Array): { frame: Uint8Array; prefixLen: number } {
   const nalus = findNalus(frame);
   if (!nalus.length) throw new SframeError('E_SFRAME_MALFORMED_PREFIX');
-  const out = concat(...nalus.map(([, at, end]) => concat(new Uint8Array([0, 0, 0, 1]), frame.subarray(at, end))));
+  const kept: Uint8Array[] = [];
+  let inPrefix = true;
+  for (const [, at, end] of nalus) {
+    const nal = frame.subarray(at, end);
+    const t = nal.length ? nal[0] & 0x1f : -1;
+    if (inPrefix && (t === 9 || t === 12)) continue;
+    if ((t >= 1 && t <= 5) || (t >= 19 && t <= 21)) inPrefix = false;
+    kept.push(concat(new Uint8Array([0, 0, 0, 1]), nal));
+  }
+  const out = concat(...kept);
   return { frame: out, prefixLen: h264PrefixLen(out) };
 }
 

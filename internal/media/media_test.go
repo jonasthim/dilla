@@ -98,6 +98,48 @@ func TestEmptyAudioPassesAdaptersWithoutSpendingCounterOrTouchingKeyRing(t *test
 	}
 }
 
+// RIGS-05: each clause of the pass-through condition is pinned on its own. Only an empty Opus frame
+// on an audio slot (microphone or screen audio) passes; an empty Opus frame on a video slot and an
+// empty frame of another codec on an audio slot are encrypted, refused or dropped, never passed.
+func TestEveryClauseOfTheEmptyAudioExceptionIsPinned(t *testing.T) {
+	sender, err := sframe.NewSender(base, 0, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		codec  sframe.Codec
+		slot   sframe.Slot
+		passes bool
+	}{
+		{"opus on the microphone", sframe.Opus, sframe.Mic, true},
+		{"opus on screen audio", sframe.Opus, sframe.ScreenAudio, true},
+		{"opus on the camera", sframe.Opus, sframe.Camera, false},
+		{"opus on screen video", sframe.Opus, sframe.ScreenVideo, false},
+		{"vp8 on the microphone", sframe.VP8, sframe.Mic, false},
+		{"h264 on screen audio", sframe.H264, sframe.ScreenAudio, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := NewFrameEncryptor(sender, tc.codec, tc.slot, 0).EncryptFrame([]byte{})
+			if passed := err == nil && len(out) == 0; passed != tc.passes {
+				t.Fatalf("encrypt of an empty frame = %x, %v; passed through %v, want %v", out, err, passed, tc.passes)
+			}
+			var counters Counters
+			dec := NewFrameDecryptor(sframe.NewKeyRing(nil), tc.codec, alice, tc.slot, nil, &counters)
+			got, err := dec.DecryptFrame([]byte{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if passed := got != nil; passed != tc.passes {
+				t.Fatalf("decrypt of an empty frame = %x; passed through %v, want %v", got, passed, tc.passes)
+			}
+			if _, dropped := counters.Snapshot(); (counters.EmptyFrames() == 1) != tc.passes || (len(dropped) == 1) == tc.passes {
+				t.Fatalf("empty frames %d, dropped %v", counters.EmptyFrames(), dropped)
+			}
+		})
+	}
+}
+
 // Every codec through the two adapters and back; the replayed copy is dropped and counted, never an
 // error the SDK would act on.
 func TestAFrameRoundTripsThroughTheAdapters(t *testing.T) {
@@ -366,6 +408,7 @@ func TestGoPublisherToGoSubscriberDecryptsThroughTheSFU(t *testing.T) {
 	cfg := sfu.DefaultConfig()
 	cfg.Port, cfg.UDPPort = sfutest.FreePorts(t)
 	cfg.APISecret = strings.Repeat("g", 32)
+	cfg.STUNServers = []string{"127.0.0.1:3478"} // RIGS-06: no third-party STUN host from a test
 	srv, err := sfu.Start(ctx, cfg)
 	if err != nil {
 		t.Fatalf("sfu.Start: %v", err)

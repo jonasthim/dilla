@@ -26,8 +26,9 @@ const goldenPath = "testdata/vectors_suites.golden"
 //     layer, seq, ctr, nonce, header — no name; run_sframe emits
 //     "leaf <n> epoch <n>". Its rfc9605_c1, rfc9605_c3, media_frames and
 //     escapes sections are named "c1 kid <k> ctr <c>", "c3", "frame <name>" and
-//     "escape <i> seed <s>", and its rejects "sframe reject: <name>" (run_rejects);
-//     the golden pins every one of those names.
+//     "escape <i> seed <s>", its receiver scripts "receiver <name> step <i>", its
+//     rejects "sframe reject: <name>" and its sender_rejects "sframe sender reject:
+//     <name>" (run_rejects); the golden pins every one of those names.
 //   - identity.json has no `cases` key at all; its top level is version,
 //     description, safety_number, sas, recovery_key, credential_identity, and
 //     run_identity emits those last four as case names.
@@ -36,10 +37,10 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // The per-suite case counts are pinned to the native and Node runners.
 // 4 envelope cases x 3 fields; 3 franking cases x 1 field plus the franking file's own envelope_cbor ->
 // commitment case, sframe's 4 key-schedule cases x 6 fields plus 34 RFC 9605 C.1
-// headers x 2, the C.3 frame x 5, 4 media frames x 3 and 8 escapes x 2 (125), 5
+// headers x 2, the C.3 frame x 5, 10 media frames x 3, 8 escapes x 2 and 30 receiver-script steps (173), 5
 // identity fields plus the credential CBOR and the two credential signatures, and
-// the 71-input reject corpus. interfaces.md §6 task 4 requires "the same per-suite
-// case counts as the native and Node runs", which is exactly this table — 245
+// the 91-input reject corpus. interfaces.md §6 task 4 requires "the same per-suite
+// case counts as the native and Node runs", which is exactly this table — 313
 // assertions.
 //
 // The reject corpus went from 40 to 48 in commit 39ab8fa, which tightened the envelope limits of
@@ -56,18 +57,22 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 //
 // The KID fix added five sframe rejects (a non-minimal three-byte KID, three headers whose KID is
 // 2^24 or more, and an Opus frame sealed under such a KID): rejects 66 -> 71, total 240 -> 245.
+//
+// The client-half crypto fixes (CRYPTO-2) added six H.264 media frames and ten scripted receiver
+// runs (30 decrypt steps) to sframe, and fourteen H.264 prefix refusals and six sender refusals to
+// rejects: sframe 125 -> 173, rejects 71 -> 91, total 245 -> 313.
 var wantSuiteCases = map[string]int{
 	"envelope": 12,
 	"franking": 4,
-	"sframe":   125,
+	"sframe":   173,
 	"identity": 8,
 	"frames":   25,
-	"rejects":  71,
+	"rejects":  91,
 }
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 245
+const wantTotalCases = 313
 
 // The four case names run_identity emits, one per sub-object of identity.json.
 var wantIdentityCases = []string{"credential_identity", "recovery_key", "safety_number", "sas"}

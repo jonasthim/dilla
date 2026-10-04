@@ -72,11 +72,14 @@ func run(public, control, dataDir, core, logLevel string, sfu sfuOptions) error 
 
 	// A fake clock, because advance_clock is the whole reason this binary exists: five of the
 	// fifteen scenarios cross a TTL, retention or heal boundary and none of them can wait for it.
+	// /metrics accepts DILLA_METRICS_TOKEN as its bearer token, exactly as dillad does, so a load
+	// rig can scrape this host (docs/spikes/2026-10-capacity.md); unset, every scrape is refused.
 	host, err := dilladtest.NewHost(ctx, dilladtest.HostOptions{
 		DataDir: dataDir, CorePath: core, LogLevel: logLevel,
 		SFU: sfu.enabled, SFUPort: sfu.port, SFUUDPPort: sfu.udpPort,
 		SFUNoInternalIP: sfu.noInternalIP,
 		SFUEnableAV1:    sfu.av1,
+		ScrapeToken:     os.Getenv("DILLA_METRICS_TOKEN"),
 	})
 	if err != nil {
 		return err

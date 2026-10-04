@@ -23,6 +23,10 @@ const OldEpochRetention = 10 * time.Second
 // ReplayWindow is the anti-replay window per (leaf, slot, layer) and epoch.
 const ReplayWindow = 128
 
+// KIDEpochWindow is how many commits back a KID may still resolve: a receiver never holds an epoch
+// more than this far behind its newest (protocol/05 "Rotation"; the Rust core's KID_EPOCH_WINDOW).
+const KIDEpochWindow = 255
+
 // Codec is the media codec a frame belongs to; it picks the clear prefix rule.
 type Codec uint8
 
@@ -51,8 +55,12 @@ const (
 // KID is (leaf << 8) | (epoch mod 256), context 0 (protocol/05 "Key IDs").
 func KID(leaf uint16, epoch uint64) uint64 { return uint64(leaf)<<8 | epoch%256 }
 
-// CTR packs slot(8) | layer(4) | seq(52).
+// CTR packs slot(8) | layer(4) | seq(52). A reserved slot (above ScreenAudio) is ErrSlotMismatch,
+// checked first, as the Rust core's Ctr::new does; Sender.Encrypt inherits it.
 func CTR(slot Slot, layer uint8, seq uint64) (uint64, error) {
+	if slot > ScreenAudio {
+		return 0, ErrSlotMismatch
+	}
 	if layer > 0xf {
 		return 0, ErrLayerRange
 	}

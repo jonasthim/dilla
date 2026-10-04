@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // sframe.json as task 4's generator writes it (packages/protocol-vectors/src/generate.ts). Every
@@ -53,6 +54,7 @@ type vectorFile struct {
 		Layer     uint8  `json:"layer"`
 		Seq       uint64 `json:"seq"`
 		Input     string `json:"input"`
+		Canonical string `json:"canonical"`
 		PrefixLen int    `json:"prefix_len"`
 		Frame     string `json:"frame"`
 	} `json:"media_frames"`
@@ -68,6 +70,31 @@ type vectorFile struct {
 		Frame  string  `json:"frame"`
 		Error  string  `json:"error"`
 	} `json:"rejects"`
+	SenderRejects []struct {
+		Name  string  `json:"name"`
+		Codec string  `json:"codec"`
+		Slot  uint8   `json:"slot"`
+		Layer uint8   `json:"layer"`
+		Input string  `json:"input"`
+		Seq   *string `json:"seq"`
+		Error string  `json:"error"`
+	} `json:"sender_rejects"`
+	Receiver []struct {
+		Name  string `json:"name"`
+		Steps []struct {
+			Op        string   `json:"op"`
+			Epoch     uint64   `json:"epoch"`
+			BaseKey   string   `json:"base_key"`
+			Roster    [][2]any `json:"roster"`
+			OwnLeaf   int      `json:"own_leaf"`
+			Now       int64    `json:"now"`
+			Codec     string   `json:"codec"`
+			Frame     string   `json:"frame"`
+			Device    string   `json:"device"`
+			TrackSlot uint8    `json:"track_slot"`
+			Expect    string   `json:"expect"`
+		} `json:"steps"`
+	} `json:"receiver"`
 }
 
 func loadVectors(t *testing.T) vectorFile {
@@ -133,13 +160,87 @@ func openVector(base [16]byte, c Codec, frame []byte) ([]byte, error) {
 
 func TestTheSuitesOfSframeJSONArePresent(t *testing.T) {
 	v := loadVectors(t)
-	if len(v.Cases) != 4 || len(v.C1) != 34 || len(v.Escapes) != 8 || len(v.Rejects) != 23 {
-		t.Fatalf("cases %d, c1 %d, escapes %d, rejects %d; want 4, 34, 8, 23",
+	if len(v.Cases) != 4 || len(v.C1) != 34 || len(v.Escapes) != 8 || len(v.Rejects) != 37 {
+		t.Fatalf("cases %d, c1 %d, escapes %d, rejects %d; want 4, 34, 8, 37",
 			len(v.Cases), len(v.C1), len(v.Escapes), len(v.Rejects))
 	}
-	// MD-2: four media frames when SP-04 shipped the H.264 entry, three when it did not.
-	if n := len(v.Frames); n != 3 && n != 4 {
-		t.Fatalf("%d media frames, want 3 or 4", n)
+	// Pinned exactly (CRYPTO-2): the four codec rules plus six H.264 sender shapes, so a frame that
+	// disappears from the file fails here instead of leaving the runner green.
+	if n := len(v.Frames); n != 10 {
+		t.Fatalf("%d media frames, want 10", n)
+	}
+	steps := 0
+	for _, s := range v.Receiver {
+		for _, st := range s.Steps {
+			if st.Op == "decrypt" {
+				steps++
+			}
+		}
+	}
+	if len(v.SenderRejects) != 6 || len(v.Receiver) != 10 || steps != 30 {
+		t.Fatalf("sender rejects %d, receiver scripts %d with %d decrypt steps; want 6, 10, 30",
+			len(v.SenderRejects), len(v.Receiver), steps)
+	}
+}
+
+// TestTheReceiverScript runs sframe.json's scripted key-ring runs through the Go KeyRing, each from
+// an empty ring with a hand-moved clock: the Rust runner (run_sframe) runs the same steps.
+func TestTheReceiverScript(t *testing.T) {
+	for _, s := range loadVectors(t).Receiver {
+		c := &clock{t: time.Unix(1_790_000_000, 0)}
+		start := c.t
+		r := NewKeyRing(c.now)
+		for i, st := range s.Steps {
+			c.t = start.Add(time.Duration(st.Now) * time.Millisecond)
+			if st.Op == "install" {
+				roster := make([]RosterEntry, 0, len(st.Roster))
+				for _, m := range st.Roster {
+					leaf, _ := m[0].(float64)
+					dev, _ := m[1].(string)
+					var d [16]byte
+					copy(d[:], unhex(t, dev))
+					roster = append(roster, RosterEntry{Leaf: uint16(leaf), Device: d})
+				}
+				r.InstallEpoch(st.Epoch, base16(t, st.BaseKey), roster, st.OwnLeaf)
+				continue
+			}
+			var dev [16]byte
+			copy(dev[:], unhex(t, st.Device))
+			got := "ok"
+			if _, err := r.Decrypt(codecNamed(t, st.Codec), unhex(t, st.Frame), &dev, Slot(st.TrackSlot)); err != nil {
+				var code Error
+				if !errors.As(err, &code) {
+					t.Fatalf("%s step %d: %v is no protocol/05 code", s.Name, i, err)
+				}
+				got = string(code)
+			}
+			if got != st.Expect {
+				t.Errorf("receiver %s step %d: %s, want %s", s.Name, i, got, st.Expect)
+			}
+		}
+	}
+}
+
+// TestTheSenderRejects: a fresh sender (leaf 1, epoch 41, floor 41) refuses each row's input with
+// its code, or, for a row with seq, the counter itself is refused.
+func TestTheSenderRejects(t *testing.T) {
+	v := loadVectors(t)
+	base := base16(t, v.BaseKey)
+	for _, row := range v.SenderRejects {
+		var err error
+		if row.Seq != nil {
+			_, err = CTR(Slot(row.Slot), row.Layer, num(t, *row.Seq))
+		} else {
+			s, serr := NewSender(base, 1, 41, 41)
+			if serr != nil {
+				t.Fatal(serr)
+			}
+			_, err = s.Encrypt(codecNamed(t, row.Codec), Slot(row.Slot), row.Layer, unhex(t, row.Input))
+		}
+		var code Error
+		if !errors.As(err, &code) || string(code) != row.Error {
+			t.Errorf("%s: %v, want %s", row.Name, err, row.Error)
+		}
 	}
 }
 
@@ -209,7 +310,13 @@ func TestTheMediaFrames(t *testing.T) {
 	for _, f := range v.Frames {
 		c := codecNamed(t, f.Codec)
 		input := unhex(t, f.Input)
-		if n, err := PrefixLen(c, input); err != nil || n != f.PrefixLen {
+		// A row whose sender rewrites the input carries `canonical`: the prefix is the canonical
+		// frame's, and the receiver opens to it.
+		canonical := input
+		if f.Canonical != "" {
+			canonical = unhex(t, f.Canonical)
+		}
+		if n, err := PrefixLen(c, canonical); err != nil || n != f.PrefixLen {
 			t.Errorf("%s: PrefixLen = %d, %v, want %d", f.Name, n, err, f.PrefixLen)
 		}
 		kid := KID(f.LeafIndex, f.Epoch)
@@ -222,8 +329,8 @@ func TestTheMediaFrames(t *testing.T) {
 			t.Errorf("%s: Protect = %x, %v, want %s", f.Name, out, err, f.Frame)
 		}
 		plain, err := openVector(base, c, unhex(t, f.Frame))
-		if err != nil || !bytes.Equal(plain, input) {
-			t.Errorf("%s: open = %x, %v, want %s", f.Name, plain, err, f.Input)
+		if err != nil || !bytes.Equal(plain, canonical) {
+			t.Errorf("%s: open = %x, %v, want %x", f.Name, plain, err, canonical)
 		}
 	}
 }

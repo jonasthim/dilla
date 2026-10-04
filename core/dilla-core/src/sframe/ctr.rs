@@ -21,8 +21,12 @@ pub enum Slot {
 pub struct Ctr(u64);
 
 impl Ctr {
-    /// `LayerOutOfRange` on `layer > 0xf`; `CounterExhausted` on `seq > MAX_SEQ`.
+    /// `SlotMismatch` on a reserved slot (above 3, the screen-audio slot); `LayerOutOfRange` on
+    /// `layer > 0xf`; `CounterExhausted` on `seq > MAX_SEQ`. The Go `CTR` checks in the same order.
     pub fn new(slot: u8, layer: u8, seq: u64) -> Result<Self, SframeError> {
+        if slot > Slot::ScreenAudio as u8 {
+            return Err(SframeError::SlotMismatch);
+        }
         if layer > 0xf {
             return Err(SframeError::LayerOutOfRange);
         }
@@ -92,6 +96,21 @@ mod tests {
             Err(SframeError::CounterExhausted)
         );
         assert_eq!(MAX_SEQ, (1u64 << 52) - 1);
+    }
+
+    /// CRYPTO-7's mirror: slots above 3 are reserved, refused before the layer and the sequence,
+    /// exactly as the Go `CTR` refuses them.
+    #[test]
+    fn ctr_refuses_a_reserved_slot_first() {
+        assert!(Ctr::new(3, 0, 0).is_ok());
+        for slot in [4u8, 5, 0xff] {
+            assert_eq!(
+                Ctr::new(slot, 0, 0),
+                Err(SframeError::SlotMismatch),
+                "{slot}"
+            );
+        }
+        assert_eq!(Ctr::new(4, 16, MAX_SEQ + 1), Err(SframeError::SlotMismatch));
     }
 
     #[test]

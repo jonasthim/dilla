@@ -737,10 +737,6 @@ impl TestClient {
         Ok(())
     }
 
-    /// Drains this device's frames and applies everything in order: handshakes first, then the
-    /// application messages of the epoch they belong to. Every frame is also kept, in order, for
-    /// `take_frame`.
-    /// The client's current epoch in `group_id`, or None when it holds no state for the group.
     /// The call group's media epoch (task 5's `DillaGroup::media_epoch`): base key, own leaf and
     /// roster read together from one merged state, which is what the media driver hands a page.
     pub fn media_epoch(
@@ -754,10 +750,14 @@ impl TestClient {
         Ok(group.media_epoch(&self.provider)?)
     }
 
+    /// The client's current epoch in `group_id`, or None when it holds no state for the group.
     pub fn epoch_of(&self, group_id: &[u8]) -> Option<u64> {
         self.groups.get(group_id).map(|g| g.epoch())
     }
 
+    /// Drains this device's frames and applies everything in order: handshakes first, then the
+    /// application messages of the epoch they belong to. Every frame is also kept, in order, for
+    /// `take_frame`.
     pub fn sync(&mut self, ds: &mut dyn DeliveryService) -> Result<Vec<Received>, TestkitError> {
         let frames = ds.drain()?;
         self.frames.extend(frames.iter().cloned());
