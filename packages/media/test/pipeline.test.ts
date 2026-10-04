@@ -220,6 +220,30 @@ describe('blocking transforms (C1 step 1)', () => {
     expect(sink.out).toHaveLength(1);
     expect(p.stats.dropped.blocked).toBe(2);
   });
+
+  // N7 (task 17 re-review, mutant 11): a retarget never moves a handle to the other side. The stream it wraps keeps
+  // its direction (an encoder's input is plaintext, a decoder's output is rendered), so options for the other side
+  // block the handle and are reported.
+  it('a retarget with full options for the other side blocks the handle instead of switching it', () => {
+    const { p, posted } = setup();
+    install(p);
+    const encSink = new Sink();
+    const decSink = new Sink();
+    const e = p.addTrack(enc(0), encSink);
+    const d = p.addTrack({ ...dec('rx-1'), slot: 0 }, decSink);
+    p.handle({ kind: 'retarget', data: { previousTrackId: 'enc-0', ...dec('tx-2') } });
+    p.handle({ kind: 'retarget', data: { previousTrackId: 'rx-1', ...enc(0), trackId: 'rx-2' } });
+    for (let i = 0; i < 3; i++) {
+      p.frame(e, frame([0xfc, i], 'audio/opus'));
+      p.frame(d, frame([0xee, 0x03, i]));
+    }
+    expect(encSink.out).toHaveLength(0);
+    expect(decSink.out).toHaveLength(0);
+    expect(e.opts.side).toBe('encode');
+    expect(d.opts.side).toBe('decode');
+    expect(p.stats.dropped.blocked).toBe(6);
+    expect(posted.filter((m) => m.kind === 'error' && m.code === 'E_BAD_OPTIONS').map((m) => (m as { trackId?: string }).trackId)).toEqual(['tx-2', 'rx-2']);
+  });
 });
 
 // N6 (task 17 re-review): the "verified" signal is counted per mapped device by the decoder itself, after the cipher

@@ -509,6 +509,60 @@ describe('pre-connect buffer and frame metadata requested per publish (N1)', () 
   });
 });
 
+// N7 (task 17 re-review, mutants 3a and 3b): the catches that keep an unexpected throw out of livekit's emit, and
+// stop the track, on the receive path (attachReceiver's own) and inside attach() for both sides.
+describe('unexpected throws during an attach are caught and the track stopped (N7)', () => {
+  it('3a: a throw in attachReceiver outside attach() (a track whose kind getter throws)', () => {
+    const { w, engine, m } = setup();
+    const errors: Error[] = [];
+    m.on('encryptionError', (e: Error) => errors.push(e));
+    const rx = Object.defineProperty({ id: 'rx-1', stop: vi.fn() }, 'kind', { get() { throw new TypeError('kind getter boom'); } });
+    expect(() => engine.emit('mediaTrackAdded', rx, {}, streamsRtp())).not.toThrow();
+    expect(rx.stop).toHaveBeenCalled();
+    expect(w.last('attach')).toBeUndefined();
+    expect(errors.map((e) => e.message)).toEqual(['kind getter boom']);
+  });
+
+  it('3b: a throw inside attach() on a receiver (a createEncodedStreams getter that throws) stops it as "stopped"', () => {
+    const logs: string[] = [];
+    const { engine, m } = setup((_l, msg) => logs.push(msg));
+    const errors: Error[] = [];
+    m.on('encryptionError', (e: Error) => errors.push(e));
+    const rx = remoteTrack('rx-1', 'video');
+    const receiver = Object.defineProperty({}, 'createEncodedStreams', { get() { throw new TypeError('getter boom'); } });
+    expect(() => engine.emit('mediaTrackAdded', rx, {}, receiver)).not.toThrow();
+    expect(rx.stop).toHaveBeenCalled();
+    expect(errors.map((e) => e.message)).toEqual(['E_E2EE_REQUIRED: receiver rx-1 stopped']); // attach() caught it
+    expect(logs).toContainEqual('attach rx-1: getter boom');
+  });
+
+  it('3b: a retarget that cannot be posted, on a reused receiver and a reused sender, stops the track', async () => {
+    const logs: string[] = [];
+    const { w, engine, lp, m } = setup((_l, msg) => logs.push(msg));
+    const errors: Error[] = [];
+    m.on('encryptionError', (e: Error) => errors.push(e));
+    const receiver = streamsRtp();
+    const sender = streamsRtp();
+    engine.emit('mediaTrackAdded', remoteTrack('rx-1', 'video'), {}, receiver);
+    lp.emit('localSenderCreated', sender, localTrack('microphone', 'audio', 'tx-1'));
+    const post = w.postMessage.bind(w);
+    w.postMessage = (msg: any, transfer?: Transferable[]): void => {
+      if (msg.kind === 'retarget') throw new DOMException('the worker is gone', 'InvalidStateError');
+      post(msg, transfer);
+    };
+    const rx2 = remoteTrack('rx-2', 'video');
+    const tx2 = localTrack('microphone', 'audio', 'tx-2');
+    expect(() => engine.emit('mediaTrackAdded', rx2, {}, receiver)).not.toThrow();
+    expect(() => lp.emit('localSenderCreated', sender, tx2)).not.toThrow();
+    expect(rx2.stop).toHaveBeenCalled();
+    expect(tx2.mediaStreamTrack.stop).toHaveBeenCalled();
+    expect(errors.map((e) => e.message)).toEqual(['E_E2EE_REQUIRED: receiver rx-2 stopped', 'E_E2EE_REQUIRED: sender tx-2 stopped']);
+    expect(logs).toEqual(expect.arrayContaining(['attach rx-2: the worker is gone', 'attach tx-2: the worker is gone']));
+    await microtasks();
+    expect(lp.unpublishTrack).toHaveBeenCalledWith(tx2);
+  });
+});
+
 describe('no transform API at all (a manager used without joinCall’s gate)', () => {
   it('stops every sender and receiver track and unpublishes the sender', async () => {
     const { lp, engine, m } = setup();
