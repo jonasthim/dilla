@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,7 +12,14 @@ import (
 // in the unit means systemd waits for it, so a silent failure here is a service
 // that never reaches "active".
 func TestNotifyReadySendsExactlyOneDatagram(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "notify.sock")
+	// Unix sun_path is limited to 107 bytes on Linux. t.TempDir includes the
+	// test name, which exceeds that bound under the worktree's required TMPDIR.
+	dir, err := os.MkdirTemp("", "n-") //nolint:usetesting // t.TempDir exceeds Linux sun_path under the required TMPDIR.
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "n.sock")
 	ln, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: sock, Net: "unixgram"})
 	if err != nil {
 		t.Fatalf("ListenUnixgram: %v", err)

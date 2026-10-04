@@ -342,3 +342,11 @@ show a resync notice while they catch up.
 In Compose, run the same verbs with `docker compose run --rm dillad backup ...` or
 `docker compose run --rm dillad restore ...` against the stopped service. Mount a directory for
 `--out` and `--from`, and own it 65532:65532.
+
+## Capacity
+
+Every figure in this section is a measured cell from `docs/spikes/2026-10-capacity.md` (SP-29), on the
+hardware and commit that document names; nothing here is an estimate.
+
+The founder-LXC measurement is pending (NV-7): no LAN figure is published yet. Loopback numbers from a
+development machine are not capacity figures and are not quoted here.
