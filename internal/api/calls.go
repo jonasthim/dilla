@@ -328,8 +328,10 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	// PutVoiceSession leaves a live call as it is, so the row read back afterwards is the one call
 	// every device of this group lands in, however many start it at once.
 	groupID := group.GroupID
-	// A fresh room per call, so a device from the previous call cannot linger in this one.
-	room := fmt.Sprintf("%s-%d", callID, now)
+	// A fresh room per call, so a device from the previous call cannot linger in this one. The random
+	// suffix keeps a call that ends and restarts within one second from reusing its predecessor's
+	// room name, which an end's room deletion or the sweep would otherwise take for the new room's.
+	room := fmt.Sprintf("%s-%d-%s", callID, now, id.New().String()[:8])
 	status := http.StatusCreated
 	if live {
 		status = http.StatusOK
@@ -666,7 +668,7 @@ func (h *Calls) callFull(ctx context.Context, room string, dev id.ID) bool {
 }
 
 // AdmitRoom is the /rtc join gate (DEV-25, DEV-44): room must be the live room of a call —
-// "<call_id hex>-<unix>", equal to voice_sessions.livekit_room with the call not ended — device a
+// "<call_id hex>-<unix>-<8 hex>", equal to voice_sessions.livekit_room with the call not ended — device a
 // current leaf of the call group that room was opened on, neither it nor its user may be barred
 // (barred: revoked, quarantined, disabled or deleted), its user must hold view_channel and connect
 // in the call's channel now, and no cut or demotion of it may be pending in the call. It answers the
