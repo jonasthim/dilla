@@ -82,6 +82,7 @@ export interface DillaMediaStats {
   // N6: device_id hex → frames the cipher authenticated AND bound to that device (the decode handle's mapped
   // participantIdentity is the expectedDevice of the decrypt). The only input of verifiedIdentities().
   verified: Record<string, number>;
+  emptyFrames: Record<Side, number>; // zero-byte audio DTX markers passed through on each side
   // Both sides: an encoder counts unsupportedCodec (a frame whose own codec has no prefix rule), blocked and internal.
   dropped: Record<DropReason, number>;
   passedThrough: 0;

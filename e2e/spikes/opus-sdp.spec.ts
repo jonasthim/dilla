@@ -380,7 +380,7 @@ async function stereoTrap(page: Page, row: TrapRow): Promise<any> {
 }
 
 /** Outbound counters of one publication plus the manager's encrypt count, for a delta over a window. */
-async function wireCounters(page: Page, source: string): Promise<{ packets: number; bytes: number; encrypted: number; dropped: Record<string, number> }> {
+async function wireCounters(page: Page, source: string): Promise<{ packets: number; bytes: number; encrypted: number; emptyFrames: number; dropped: Record<string, number> }> {
   return page.evaluate(async (src) => {
     const t = (window as any).harness.session().room.localParticipant.getTrackPublication(src).track;
     let packets = 0;
@@ -389,7 +389,7 @@ async function wireCounters(page: Page, source: string): Promise<{ packets: numb
     const st = await (window as any).harness.mediaStats();
     let encrypted = 0;
     for (const row of Object.values(st.encrypted as Record<string, Record<string, number>>)) for (const v of Object.values(row)) encrypted += v;
-    return { packets, bytes, encrypted, dropped: st.dropped };
+    return { packets, bytes, encrypted, emptyFrames: st.emptyFrames?.encode ?? 0, dropped: st.dropped };
   }, source);
 }
 
@@ -509,9 +509,8 @@ for (const engine of ['chromium', 'firefox'] as const) {
     await browser.close();
   });
 
-  // Added by the implementer: DTX on the real wire. The publisher's microphone runs through a processor whose output
-  // is a 1 kHz oscillator behind a GainNode (0 = digital silence, 1 = tone), so the real dilla worker sees what the
-  // encoder emits in DTX; B decrypts. Counters are deltas over each phase.
+  // The captured microphone stays published through the real manager and worker. Disabling its underlying
+  // MediaStreamTrack feeds silence to the Opus encoder without LiveKit muting or unpublishing it.
   test(`${engine}: DTX silence through the real manager on the wire`, async ({ browserName }) => {
     test.skip(browserName !== engine, `${engine} leg`);
     test.setTimeout(180_000);
@@ -520,59 +519,41 @@ for (const engine of ['chromium', 'firefox'] as const) {
     const room = `sp09-dtx-${engine}`;
     await connectDilla(A, room, DEV_A, 0);
     await connectDilla(B, room, DEV_B, 1);
-    await activate(A);
     await A.evaluate(async ([cap, mic]) => {
       const lp = (window as any).harness.session().room.localParticipant;
       await lp.setMicrophoneEnabled(true, cap, mic);
-      const track = lp.getTrackPublication('microphone').track;
-      const ctx = new AudioContext({ sampleRate: 48_000 });
-      await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 2_000))]);
-      const dest = ctx.createMediaStreamDestination();
-      dest.channelCount = 1;
-      const osc = ctx.createOscillator();
-      osc.frequency.value = 1_000;
-      const gain = ctx.createGain();
-      gain.gain.value = 0;
-      osc.connect(gain).connect(dest);
-      osc.start();
-      (window as any).__sp09gain = gain;
-      (window as any).__sp09ctx = ctx;
-      await track.setProcessor({
-        name: 'sp09-silence',
-        processedTrack: dest.stream.getAudioTracks()[0],
-        async init(): Promise<void> {},
-        async restart(): Promise<void> {},
-        async destroy(): Promise<void> { await ctx.close(); },
-      });
     }, [MIC_CAPTURE, MIC_OPTIONS] as const);
     await sleep(4_000);
     const wire = await inspect(A, 'microphone');
-    const phase = async (gainValue: number, ms: number): Promise<any> => {
-      await A.evaluate((g) => { (window as any).__sp09gain.gain.value = g; }, gainValue);
+    const phase = async (enabled: boolean, ms: number): Promise<any> => {
+      await A.evaluate((value) => {
+        const track = (window as any).harness.session().room.localParticipant.getTrackPublication('microphone').track;
+        track.mediaStreamTrack.enabled = value;
+      }, enabled);
       await sleep(2_000); // settle into the phase before counting
-      const clock0 = await A.evaluate(() => (window as any).__sp09ctx.currentTime as number);
       const [a0, b0] = [await wireCounters(A, 'microphone'), await decryptedTotal(B)];
       await sleep(ms);
       const [a1, b1] = [await wireCounters(A, 'microphone'), await decryptedTotal(B)];
-      const ctxNow = await A.evaluate(() => ({ state: (window as any).__sp09ctx.state as string, t: (window as any).__sp09ctx.currentTime as number }));
       const s = ms / 1_000;
       const droppedDelta = Object.fromEntries(Object.entries(a1.dropped).map(([k, v]) => [k, v - (a0.dropped[k] ?? 0)]).filter(([, v]) => (v as number) > 0));
       return {
-        gain: gainValue, ms,
-        audioContextState: ctxNow.state,
-        audioClockAdvancedS: ctxNow.t - clock0,
+        enabled, ms,
         packetsPerSecond: (a1.packets - a0.packets) / s,
         bytesPerSecond: (a1.bytes - a0.bytes) / s,
         bytesPerPacket: a1.packets === a0.packets ? null : (a1.bytes - a0.bytes) / (a1.packets - a0.packets),
         encryptedPerSecond: (a1.encrypted - a0.encrypted) / s,
+        emptyFramesPerSecond: (a1.emptyFrames - a0.emptyFrames) / s,
         decryptedAtBPerSecond: (b1 - b0) / s,
         droppedAtA: droppedDelta,
       };
     };
-    const silence = await phase(0, 20_000);
-    const tone = await phase(1, 10_000);
-    record(`opus-sdp.${engine}-dtx-wire`, { browser: browser.version(), capture: MIC_CAPTURE, wire, silence, tone });
-    expect(tone.decryptedAtBPerSecond).toBeGreaterThan(0); // rig sanity
+    const silence = await phase(false, 20_000);
+    const active = await phase(true, 10_000);
+    record(`opus-sdp.${engine}-dtx-wire${process.env.DTX_PHASE ? `-${process.env.DTX_PHASE}` : ''}`, { browser: browser.version(), capture: MIC_CAPTURE, wire, silence, active });
+    expect(active.decryptedAtBPerSecond).toBeGreaterThan(30); // rig sanity
+    expect(active.packetsPerSecond).toBeGreaterThan(30);
+    expect(silence.emptyFramesPerSecond).toBeGreaterThan(30);
+    expect(silence.packetsPerSecond).toBeLessThan(15);
     await A.evaluate(() => (window as any).harness.disconnect());
     await B.evaluate(() => (window as any).harness.disconnect());
     await browser.close();

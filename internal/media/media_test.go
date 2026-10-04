@@ -56,6 +56,48 @@ func TestTheZeroValueOfCountersIsReadyToUse(t *testing.T) {
 	}
 }
 
+func TestEmptyAudioPassesAdaptersWithoutSpendingCounterOrTouchingKeyRing(t *testing.T) {
+	sender, err := sframe.NewSender(base, 0, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := NewFrameEncryptor(sender, sframe.Opus, sframe.Mic, 0)
+	for _, input := range [][]byte{nil, {}} {
+		out, err := enc.EncryptFrame(input)
+		if err != nil || len(out) != 0 {
+			t.Fatalf("empty encrypt = %x, %v", out, err)
+		}
+	}
+	sealed, err := enc.EncryptFrame([]byte{0xfc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ctr, _, err := sframe.DecodeHeader(sealed)
+	if err != nil || ctr != 0 {
+		t.Fatalf("first real counter = %d, %v; want 0", ctr, err)
+	}
+	var counters Counters
+	dec := NewFrameDecryptor(nil, sframe.Opus, alice, sframe.Mic, nil, &counters)
+	out, err := dec.DecryptFrame([]byte{})
+	if err != nil || out == nil || len(out) != 0 {
+		t.Fatalf("empty decrypt = %x, %v; want non-nil empty", out, err)
+	}
+	if counters.EmptyFrames() != 1 {
+		t.Fatalf("empty frames = %d; want 1", counters.EmptyFrames())
+	}
+	if n, dropped := counters.Snapshot(); n != 0 || len(dropped) != 0 {
+		t.Fatalf("decrypted=%d dropped=%v", n, dropped)
+	}
+	video := NewFrameEncryptor(sender, sframe.VP8, sframe.Camera, 0)
+	if out, err := video.EncryptFrame([]byte{}); err == nil && len(out) == 0 {
+		t.Fatal("empty video passed through")
+	}
+	videoDec := NewFrameDecryptor(sframe.NewKeyRing(nil), sframe.VP8, alice, sframe.Camera, nil, &counters)
+	if out, _ := videoDec.DecryptFrame([]byte{}); out != nil {
+		t.Fatal("empty video decrypt passed through")
+	}
+}
+
 // Every codec through the two adapters and back; the replayed copy is dropped and counted, never an
 // error the SDK would act on.
 func TestAFrameRoundTripsThroughTheAdapters(t *testing.T) {

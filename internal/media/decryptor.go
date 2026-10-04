@@ -9,19 +9,33 @@ import (
 	"github.com/jonasthim/dilla/internal/sframe"
 )
 
-// Counters is what a subscriber decrypted and dropped, by reason: an E_SFRAME_* code, "sif" for
-// LiveKit's own injected frames, or "other". The zero value is ready to use, and one Counters may
+// Counters tracks decrypted frames, empty audio DTX markers, and drops by reason: an E_SFRAME_* code,
+// "sif" for LiveKit's own injected frames, or "other". The zero value is ready to use, and one Counters may
 // be shared by every decryptor of a participant.
 type Counters struct {
-	mu        sync.Mutex
-	decrypted uint64
-	dropped   map[string]uint64
+	mu          sync.Mutex
+	decrypted   uint64
+	emptyFrames uint64
+	dropped     map[string]uint64
 }
 
 func (c *Counters) addDecrypted() {
 	c.mu.Lock()
 	c.decrypted++
 	c.mu.Unlock()
+}
+
+func (c *Counters) addEmptyFrame() {
+	c.mu.Lock()
+	c.emptyFrames++
+	c.mu.Unlock()
+}
+
+// EmptyFrames returns the number of zero-byte audio DTX markers passed through.
+func (c *Counters) EmptyFrames() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.emptyFrames
 }
 
 func (c *Counters) addDropped(reason string) {
@@ -67,6 +81,10 @@ func NewFrameDecryptor(r *sframe.KeyRing, c sframe.Codec, expectedDevice [16]byt
 // frame" — after counting it. The SIF suffix is tested before anything is parsed (DEV-13): LiveKit's
 // Opus silence begins with f8, which reads as an SFrame config byte.
 func (d *FrameDecryptor) DecryptFrame(payload []byte) ([]byte, error) {
+	if len(payload) == 0 && (d.slot == sframe.Mic || d.slot == sframe.ScreenAudio) && d.codec == sframe.Opus {
+		d.counters.addEmptyFrame()
+		return []byte{}, nil
+	}
 	if len(d.sif) > 0 && bytes.HasSuffix(payload, d.sif) {
 		d.counters.addDropped("sif")
 		return nil, nil

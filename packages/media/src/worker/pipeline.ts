@@ -101,7 +101,7 @@ function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
   return u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength ? (u8.buffer as ArrayBuffer) : (u8.slice().buffer as ArrayBuffer);
 }
 
-/** Every frame a dilla call carries goes through here; nothing is ever passed through unencrypted. */
+/** Every frame goes through here; only a zero-byte audio DTX marker passes without encryption. */
 export class Pipeline {
   readonly stats: DillaMediaStats = newStats();
   private readonly tracks = new Map<string, TrackHandle>();
@@ -218,6 +218,14 @@ export class Pipeline {
       this.drop(h, 'unsupportedCodec');
       return null;
     }
+    if (audio && codec === 'opus' && frame.data.byteLength === 0) {
+      this.stats.emptyFrames.encode += 1;
+      return frame;
+    }
+    if (!audio && frame.data.byteLength === 0) {
+      this.drop(h, 'parse');
+      return null;
+    }
     const kid = (BigInt(this.selfLeaf) << 8n) | (epoch & 0xffn);
     let layer = 0;
     if (!audio) {
@@ -253,6 +261,13 @@ export class Pipeline {
   }
 
   private decode(h: TrackHandle, frame: EncodedFrameLike): void {
+    if (frame.data.byteLength === 0) {
+      if (slotKind(h.opts.slot) === 'audio' && h.opts.codec === 'opus') {
+        this.stats.emptyFrames.decode += 1;
+        h.sink.enqueue(frame);
+      } else this.drop(h, 'parse');
+      return;
+    }
     if (hasSifSuffix(new Uint8Array(frame.data), this.sif)) {
       this.drop(h, 'sif');
       return;

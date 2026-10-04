@@ -77,6 +77,79 @@ const enc = (slot: SlotId, codec: DillaTransformOptions['codec'] = slot === 0 ||
 const dec = (trackId = 'dec-0'): DillaTransformOptions => ({
   dilla: 1, side: 'decode', trackId, participantIdentity: DEV_B, slot: 0, codec: 'opus', encryption: 1,
 });
+
+describe('zero-byte audio DTX frames', () => {
+  it('sends empty audio without encryption and still encrypts a one-byte audio frame', () => {
+    const { p, cipher } = setup();
+    install(p);
+    const sink = new Sink();
+    const h = p.addTrack(enc(0), sink);
+    p.frame(h, frame([], 'audio/opus'));
+    p.frame(h, frame([0xfc], 'audio/opus'));
+    expect(sink.out.map((b) => [...b])).toEqual([[], [0xee, 0x03]]);
+    expect(cipher.encrypts).toHaveLength(1);
+    expect(p.stats.emptyFrames).toEqual({ encode: 1, decode: 0 });
+    expect(p.stats.encrypted['7'][0]).toBe(1);
+  });
+
+  it('does not pass an empty video frame', () => {
+    const { p } = setup();
+    install(p);
+    const sink = new Sink();
+    const h = p.addTrack(enc(1), sink);
+    p.frame(h, frame([], 'video/VP8'));
+    expect(sink.out).toHaveLength(0);
+  });
+
+  it('receives empty audio before mapping without decrypting, verifying, dropping, or holding it', () => {
+    const { p, cipher } = setup();
+    install(p);
+    const sink = new Sink();
+    const h = p.addTrack({ ...dec(), participantIdentity: '', encryption: undefined }, sink);
+    cipher.decryptError = new Error('E_SFRAME_AUTH');
+    p.frame(h, frame([]));
+    expect(sink.out.map((b) => [...b])).toEqual([[]]);
+    expect(h.fifo.length).toBe(0);
+    expect(p.stats.emptyFrames).toEqual({ encode: 0, decode: 1 });
+    expect(p.stats.decrypted).toEqual({});
+    expect(p.stats.verified).toEqual({});
+    expect(Object.values(p.stats.dropped).every((n) => n === 0)).toBe(true);
+    p.frame(h, frame([0x01]));
+    expect(sink.out.map((b) => [...b])).toEqual([[]]);
+    expect(p.stats.dropped.aeadFail).toBe(0); // unmapped non-empty frames still enter the hold
+    expect(h.fifo.length).toBe(1);
+  });
+
+  it('does not disturb a held unknown-KID queue', () => {
+    const { p, cipher } = setup();
+    install(p);
+    const sink = new Sink();
+    const h = p.addTrack(dec(), sink);
+    cipher.decryptError = new Error('E_SFRAME_UNKNOWN_KID');
+    p.frame(h, frame([0x80, 0x01]));
+    expect(h.fifo.length).toBe(1);
+    p.frame(h, frame([]));
+    expect(h.fifo.length).toBe(1);
+    expect(sink.out.map((b) => [...b])).toEqual([[]]);
+    expect(p.stats.emptyFrames.decode).toBe(1);
+  });
+
+  it('blocks empty audio on both sides and drops empty video on receive', () => {
+    const { p } = setup();
+    install(p);
+    const send = new Sink();
+    const recv = new Sink();
+    p.frame(p.addTrack(block('encode', 'blocked-send'), send), frame([], 'audio/opus'));
+    p.frame(p.addTrack(block('decode', 'blocked-recv'), recv), frame([]));
+    const video = new Sink();
+    p.frame(p.addTrack({ ...dec('video'), slot: 1, codec: 'vp8' }, video), frame([]));
+    expect(send.out).toHaveLength(0);
+    expect(recv.out).toHaveLength(0);
+    expect(video.out).toHaveLength(0);
+    expect(p.stats.dropped.blocked).toBe(2);
+    expect(p.stats.emptyFrames).toEqual({ encode: 0, decode: 0 });
+  });
+});
 const block = (side: 'encode' | 'decode', trackId: string): DillaBlockOptions => ({ dilla: 1, side, trackId, block: true });
 
 describe('the encoder takes each frame’s codec from the frame (C1 step 2, M6)', () => {

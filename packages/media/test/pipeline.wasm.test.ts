@@ -68,6 +68,30 @@ function encrypt(p: Pipeline, h: TrackHandle, sink: Sink, bytes: Uint8Array, typ
   return sink.out[sink.out.length - 1];
 }
 
+it('passes empty Opus DTX without spending a wasm counter or verifying it', () => {
+  const A = worker();
+  const B = worker();
+  install(A.p, 7n, 0);
+  install(B.p, 7n, 1);
+  const sent = new Sink();
+  const received = new Sink();
+  const tx = encoder(A.p, sent, 0, 'opus');
+  const rx = decoder(B.p, received, 0, 'opus');
+  A.p.frame(tx, ef(tx, new Uint8Array()));
+  B.p.frame(rx, frame(sent.out[0]));
+  expect(sent.out[0]).toEqual(new Uint8Array());
+  expect(received.out[0]).toEqual(new Uint8Array());
+  expect(A.p.stats.emptyFrames).toEqual({ encode: 1, decode: 0 });
+  expect(B.p.stats.emptyFrames).toEqual({ encode: 0, decode: 1 });
+  expect(B.p.stats.verified).toEqual({});
+  const sealed = encrypt(A.p, tx, sent, hex('fc0102'));
+  // The first real frame still has sequence 0 and authenticates on its original track.
+  expect(sealed[0]).toBe(0x70); // KID 7, counter 0 in RFC 9605's short header
+  B.p.frame(rx, frame(sealed));
+  expect(received.out[1]).toEqual(hex('fc0102'));
+  expect(B.p.stats.verified).toEqual({ [DEV_A]: 1 });
+});
+
 const CASES: Array<{ name: string; codec: MediaCodec; slot: SlotId; frames: Array<{ bytes: Uint8Array; type?: 'key' | 'delta' }> }> = [
   { name: 'opus microphone', codec: 'opus', slot: 0, frames: [{ bytes: hex('fc0102030405060708') }] },
   { name: 'vp8 camera key and delta', codec: 'vp8', slot: 1, frames: [

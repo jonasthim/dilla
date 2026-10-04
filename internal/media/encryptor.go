@@ -5,7 +5,7 @@ import "github.com/jonasthim/dilla/internal/sframe"
 // FrameEncryptor is one published track's e2eetypes.FrameEncryptor: the device's shared Sender, the
 // track's codec, its slot and its layer (MD-22: every track of a device shares one counter space per
 // (epoch, slot, layer)). The SDK calls it once per sample, under the track's lock, before
-// packetisation; an error drops the sample — nothing is ever sent unencrypted.
+// packetisation; an error drops the sample. Only empty Opus audio DTX markers pass unencrypted.
 type FrameEncryptor struct {
 	s     *sframe.Sender
 	codec sframe.Codec
@@ -18,5 +18,8 @@ func NewFrameEncryptor(s *sframe.Sender, c sframe.Codec, slot sframe.Slot, layer
 }
 
 func (e *FrameEncryptor) EncryptFrame(payload []byte) ([]byte, error) {
+	if (e.slot == sframe.Mic || e.slot == sframe.ScreenAudio) && e.codec == sframe.Opus && len(payload) == 0 {
+		return []byte{}, nil
+	}
 	return e.s.Encrypt(e.codec, e.slot, e.layer, payload)
 }
