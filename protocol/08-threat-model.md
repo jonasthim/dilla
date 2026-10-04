@@ -51,7 +51,11 @@ Stated plainly in the product's documentation and onboarding:
 - In a browser call, the call group's per-epoch 16-byte `base_key` lives in the call tab's media
   worker for the epoch plus 10 s of retention, so script injected into that page can read it. It
   never reaches long-lived MLS or store secrets, and every member derives every sender's frame keys
-  from it anyway.
+  from it anyway. The worker zeroes the transferred key and each copy it hands the wasm cipher, and
+  the cipher zeroes the buffer each copy arrives in; the receiver keeps its copy zeroized-on-drop for
+  the retention period. Not zeroed: the copy that the receiver's key install passes by value, which
+  stays in the wasm stack region until a later call overwrites it, and any copy the browser makes
+  internally while transferring the key to the worker.
 - A call started in a follower tab receives that `base_key` from the leader tab's core worker over
   `BroadcastChannel("dilla-core:<instance>")`, which any same-origin script can read. The web
   client wave closes this exposure.

@@ -140,10 +140,10 @@ within an epoch, so three rules keep its counters unique across worker restarts,
   replay windows. A frame whose KID names an epoch the receiver dropped is `E_SFRAME_STALE_EPOCH`.
 - A frame whose KID names an epoch the receiver has not installed yet (`E_SFRAME_UNKNOWN_KID`) is
   held; no other failure ever is. The hold is one strict FIFO per receiving track, at most
-  **2 000 ms** and **256 frames**: while anything is held, later frames of that track queue behind
-  it, because an encoded-transform writer drops a frame older than the last one it wrote. The hold
-  drains when an epoch is installed and on a timer; a frame past either limit is dropped and
-  counted. Held frames are never rendered unless they authenticate.
+  **2 000 ms**, **256 frames** and **8 MiB**: while anything is held, later frames of that track
+  queue behind it, because an encoded-transform writer drops a frame older than the last one it
+  wrote. The hold drains when an epoch is installed and on a timer; a frame past any limit is
+  dropped and counted, the oldest first. Held frames are never rendered unless they authenticate.
 - Because `KID` carries only `epoch mod 256`, a receiver MUST bind a KID to the exact epoch it
   learned it in and reject a KID that it would have to resolve against an epoch more than 255
   commits ago.
@@ -187,6 +187,13 @@ A participant whose device is in no held roster yet — a joiner whose external 
 has not processed — is shown as joining, not as unverified, for as long as its frames can still be
 held.
 
+The per-participant encryption status a browser reports (livekit-client's
+`participantEncryptionStatusChanged`, whose name the SDK fixes) means only that the participant's
+device is in the roster of a held epoch. It does not mean any of its frames authenticated: a member
+whose every frame is dropped still has it. A device is **verified** once at least one of its frames
+has authenticated (the media worker counts authenticated frames per KID). The local participant's
+status turns false again when the call's media worker fails or the call ends.
+
 ## Key frames
 
 - A frame held for an unknown KID and released in order keeps the decoder's reference chain intact,
@@ -212,14 +219,46 @@ held.
   200 ms request cadence for a receive stream that has never decoded is read from source and was not
   observed.
 
+## No plaintext path
+
+A browser never sends a frame that its sender transform did not encrypt and never renders one that
+its receive transform did not authenticate. Nothing the SFU or a peer sends, and no failure, opens a
+path around the transform:
+
+- **Senders.** Every sender gets its transform synchronously when it is created, before the
+  renegotiation that starts its RTP. The codec of each frame is the frame's own (the encoded frame's
+  `mimeType`), never the codec the publication is labelled with, which the SFU chooses through the
+  codecs it enables. A frame whose codec has no prefix rule in "Codec prefixes" (AV1, H.265, RED,
+  PCMU, PCMA) or that names none is dropped and counted, never sent; on an audio slot only Opus is
+  sent. A track whose source has no slot, or whose kind does not match its source, gets a transform
+  that drops every frame, and is unpublished.
+- **Receivers.** Every receiver gets its transform synchronously in the PeerConnection's `track`
+  event, before any other listener in the page learns of the track.
+- **Firefox and Safari** (`RTCRtpScriptTransform`). A sender or receiver without a transform sends or
+  renders plaintext (measured on Firefox 155). When the browser refuses the transform's options a
+  transform that drops every frame is assigned instead; when no transform can be assigned at all (the
+  API is missing, or constructing or assigning it throws) the track is stopped, and a sender is
+  unpublished.
+- **Chromium and Electron** (`createEncodedStreams` on a PeerConnection created with
+  `encodedInsertableStreams: true`). A sender whose streams were never created sends nothing and
+  such a receiver decodes nothing (measured on Chromium 153). When creating the streams, or handing
+  them to the media worker, fails, the track is stopped as well, and a sender is unpublished.
+- **The media worker** passes a frame on only after a successful encryption or an authenticated
+  decryption. Any other outcome (a cipher error, a trapped cipher, an exception in the pipeline, no
+  epoch) drops the frame and keeps the stream open. Transform options it does not recognise drop
+  every frame. If its cipher fails to load it reads and discards every frame, and the call fails to
+  start.
+
 ## Authenticity
 
 Any member can derive any sender's key (RFC 9605 §7.2). Attribution rests on the SFU's binding of
 SSRC to the participant identity, which the instance mints only for a leaf present in the `call`
 group's current epoch, and on the receiver rules above, which a browser enforces at these points:
 
-- The receive transform is attached synchronously in the PeerConnection's `track` event, before any
-  frame of the track can reach a decoder. Frames that arrive before the receiver knows the
+- The receive transform is attached as "No plaintext path" states: synchronously in the `track`
+  event and before any other listener. On Firefox and Safari a receiver whose transform cannot be
+  assigned is stopped rather than left without one; on Chromium and Electron a receiver without its
+  streams decodes nothing and is stopped too. Frames that arrive before the receiver knows the
   publication's device, source and encryption flag are held, never rendered.
 - A publication flagged `Encryption NONE` is dropped whole; `GCM` and `CUSTOM` both mean
   `dilla-sframe/1`.
