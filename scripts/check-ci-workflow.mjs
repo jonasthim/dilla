@@ -15,6 +15,7 @@ export const REQUIRED_JOBS = [
   'rust-wasi',
   'vectors',
   'browser-spike',
+  'browser-media',
   'deny',
   'go',
   // internal/ds under -race in a job of its own (fix wave, CI run 36697379567): it is the slowest
@@ -93,6 +94,18 @@ const REQUIRED_STEPS = {
   'browser-spike': [
     'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir spike/pkg',
     'npm run test:e2e:matrix -w @dilla/e2e',
+    'timeout-minutes: 20',
+  ],
+  'browser-media': [
+    'timeout-minutes: 25',
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'name: dilla-testkit',
+    'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm',
+    'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
+    'npx playwright install --with-deps chromium firefox',
+    'npm run test:e2e:media -w @dilla/e2e',
+    'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
   ],
   deny: ['cargo deny --all-features check advisories bans licenses sources'],
   // Ruling M. The first two lines are the hand-off from `rust-wasi`: without the download, or with it
@@ -108,6 +121,7 @@ const REQUIRED_STEPS = {
     'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
     'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)',
     'name: dilla-core-wasi',
+    "go test -timeout 5m ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'",
   ],
   // The one package the go job leaves out, with the wasi core it needs and a budget of its own.
   'go-ds': [
@@ -322,6 +336,14 @@ export function checkWorkflow(root) {
     // edge the download finds nothing in the run and the job is red on every push.
     if (!/^\s*needs:.*rust-native/m.test(harness)) {
       problems.push('ci.yml: job "go-harness" downloads the rust-native testkit artifact but has no "needs: rust-native"');
+    }
+  }
+
+  if ('browser-media' in jobs) {
+    for (const need of ['rust-wasi', 'rust-native']) {
+      if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs['browser-media'])) {
+        problems.push(`ci.yml: job "browser-media" downloads the ${need} artifact but has no "needs: ${need}"`);
+      }
     }
   }
 

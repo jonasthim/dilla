@@ -6,6 +6,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseInvite, CONTROL_URL } from './driver';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(here, '..', '..', '..');
@@ -15,13 +16,13 @@ export const HARNESS = 'http://127.0.0.1:5179';
 export const SFU_PORT = 7880;
 export const SFU_UDP_PORT = 7882;
 
-function waitForLine(child: ChildProcess, pattern: RegExp, what: string, timeoutMs: number): Promise<void> {
+function waitForLine(child: ChildProcess, pattern: RegExp, what: string, timeoutMs: number): Promise<string> {
   return new Promise((resolveLine, reject) => {
     let seen = '';
     const timer = setTimeout(() => reject(new Error(`${what} did not print ${pattern} within ${timeoutMs} ms:\n${seen}`)), timeoutMs);
     const onData = (chunk: Buffer) => {
       seen += chunk.toString();
-      if (pattern.test(seen)) { clearTimeout(timer); resolveLine(); }
+      if (pattern.test(seen)) { clearTimeout(timer); resolveLine(seen); }
     };
     child.stdout?.on('data', onData);
     child.stderr?.on('data', (c: Buffer) => { seen += c.toString(); });
@@ -70,7 +71,11 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       ...(process.env.DILLA_MEDIA_SFU_NO_INTERNAL_IP === '1' ? ['-sfu-no-internal-ip'] : []),
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(host);
-    await waitForLine(host, /^sfu {5}ws:\/\//m, 'dilla-testhost', 60_000);
+    const banner = await waitForLine(host, /DILLA_TESTKIT_INVITE=\S+/, 'dilla-testhost', 60_000);
+    const invite = parseInvite(banner);
+    if (!invite) throw new Error(`dilla-testhost printed no DILLA_TESTKIT_INVITE= line:\n${banner}`);
+    process.env.DILLA_TESTKIT_INVITE = invite;
+    process.env.DILLA_TESTKIT_CONTROL = CONTROL_URL;
 
     const vite = spawn(process.execPath, [
       join(REPO_ROOT, 'node_modules', 'vite', 'bin', 'vite.js'),

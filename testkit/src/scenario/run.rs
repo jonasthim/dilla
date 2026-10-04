@@ -1043,6 +1043,67 @@ impl Runner {
             .get(name)
             .ok_or_else(|| TestkitError::Scenario(format!("unknown group {name}")))
     }
+    // ---- the media driver's way in (task 21, MD-12) ----
+
+    /// Parses one scenario statement and runs it, exactly as a `.scn` line would run.
+    pub fn exec_line(&mut self, line: &str) -> Result<(), TestkitError> {
+        let scenario = crate::parse(line, "media-driver")
+            .map_err(|e| TestkitError::Scenario(e.to_string()))?;
+        for stmt in &scenario.stmts {
+            self.exec(stmt)?;
+        }
+        Ok(())
+    }
+
+    /// The id the instance gave the group a `group <name> …` statement registered.
+    pub fn group_id(&self, name: &str) -> Result<Vec<u8>, TestkitError> {
+        Ok(self.group(name)?.id.clone())
+    }
+
+    /// `client`'s current epoch in the group named `group`.
+    pub fn epoch_of(&self, client: &str, group: &str) -> Result<u64, TestkitError> {
+        let id = &self.group(group)?.id;
+        self.clients
+            .get(client)
+            .ok_or_else(|| TestkitError::Scenario(format!("unknown client {client}")))?
+            .epoch_of(id)
+            .ok_or_else(|| {
+                TestkitError::Scenario(format!("{client} holds no state for group {group}"))
+            })
+    }
+
+    pub fn device_hex(&self, client: &str) -> Result<String, TestkitError> {
+        Ok(self.device_of(client)?.to_hex())
+    }
+
+    /// Runs `f` with `client` and its view of the delivery service, as a statement does.
+    pub fn with_member<T>(
+        &mut self,
+        client: &str,
+        f: impl FnOnce(&mut TestClient, &mut dyn DeliveryService) -> Result<T, TestkitError>,
+    ) -> Result<T, TestkitError> {
+        self.with_client(client, f)
+    }
+
+    /// Runs `f` with `client`'s own `/v1` session: the call routes are no `DeliveryService` call.
+    pub fn with_session<T>(
+        &mut self,
+        client: &str,
+        f: impl FnOnce(&TestClient, &mut HttpDs) -> Result<T, TestkitError>,
+    ) -> Result<T, TestkitError> {
+        let taken = self.take(client)?;
+        let result = match self.backend.as_mut() {
+            Some(Backend::Remote { clients, .. }) => match clients.get_mut(client) {
+                Some(ds) => f(&taken, ds),
+                None => Err(TestkitError::Scenario(format!("{client} holds no session"))),
+            },
+            _ => Err(TestkitError::Scenario(
+                "a session call needs `--ds <url>`: the stub has no /v1 routes".into(),
+            )),
+        };
+        self.clients.insert(client.to_owned(), taken);
+        result
+    }
 }
 
 fn no_instance() -> TestkitError {

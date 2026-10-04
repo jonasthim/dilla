@@ -16,6 +16,7 @@
 mod client;
 mod ds;
 mod fixtures;
+mod media_driver;
 mod scenario;
 
 pub use client::{Received, TestClient};
@@ -27,6 +28,7 @@ pub use ds::{
     ResyncRequest, TreeResp, TreeResponse, UploadResult, WelcomeItem,
 };
 pub use fixtures::{FixtureFile, FixtureManifest, FixtureSpec, gen_public_group};
+pub use media_driver::MediaDriver;
 pub use scenario::{
     DeviceListMode, ParseError, RunReport, Runner, Scenario, StepResult, Stmt, parse,
 };

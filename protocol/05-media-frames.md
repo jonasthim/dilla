@@ -152,6 +152,12 @@ within an epoch, so three rules keep its counters unique across worker restarts,
   queue behind it, because an encoded-transform writer drops a frame older than the last one it
   wrote. The hold drains when an epoch is installed and on a timer; a frame past any limit is
   dropped and counted, the oldest first. Held frames are never rendered unless they authenticate.
+- SP-12's three-context loopback call measured a **2 615 ms join visibility window** from an
+  existing member's merge of the join Commit to its first decrypted frame from the joiner;
+  the joiner's participant became visible after 2 460 ms, and its KID decrypted within 194 ms
+  of starting publication. This is an observed end-to-end window, including the joiner's call
+  start and publication, not a new hold limit. The receiver's 2 000 ms hold applies per frame
+  waiting for a key; the 10-second retired-epoch retention above covers older in-flight frames.
 - Because `KID` carries only `epoch mod 256`, a receiver MUST bind a KID to the exact epoch it
   learned it in and reject a KID that it would have to resolve against an epoch more than 255
   commits ago.

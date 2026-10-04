@@ -365,3 +365,277 @@ const dillaHarness: DillaHarness = {
 };
 
 Object.assign((window as unknown as { harness: object }).harness, dillaHarness);
+
+// ---- task 21: publish, observe and probe on the dilla room ----
+export interface DillaRemoteStats {
+  participantIdentity: string;
+  kind: 'audio' | 'video';
+  source: string;
+  framesDecoded: number;
+  keyFramesDecoded: number;
+  freezeCount: number;
+  packetsReceived: number;
+  totalSamplesReceived: number;
+  concealedSamples: number;
+  jitterBufferDelay: number;
+}
+
+export interface DillaHarness21 {
+  dillaPublish(what: { camera?: boolean; deviceCamera?: boolean; screen?: boolean; canvasScreen?: boolean; simulcast?: boolean; videoCodec?: 'vp8' | 'h264' }): Promise<void>;
+  dillaWaitPermission(source: 'camera' | 'screen_share', timeoutMs: number): Promise<void>;
+  dillaRemoteStats(): Promise<DillaRemoteStats[]>;
+  dillaRenderProbe(ms: number): Promise<RenderProbe[]>;
+  dillaIceServers(): Promise<RTCIceServer[][]>;
+  dillaRemoteSdp(): Promise<string[]>;
+  dillaLocalSdp(): Promise<string[]>;
+  dillaSenderRids(): Promise<string[]>;
+  dillaParticipantSeen(): Promise<Record<string, number>>;
+  dillaActiveVideoCodecs(): Promise<string[]>;
+  dillaFailWorker(): Promise<void>;
+  dillaAudioOutBytes(): Promise<number>;
+  dillaDeadSenderReplaceProbe(): Promise<{ replacementEnded: boolean; senderTrackNull: boolean }>;
+  dillaPreconnectProbe(agentIdentity: string): Promise<{ echoed: boolean; streamOpens: number }>;
+}
+
+const dillaSeen: Record<string, number> = {};
+
+/** A moving canvas track; 1280×720 is the smallest size livekit-client splits into three simulcast rids. */
+function dillaCanvasTrack(width: number, height: number): MediaStreamTrack {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const g = canvas.getContext('2d')!;
+  let frame = 0;
+  setInterval(() => {
+    frame++;
+    g.fillStyle = `hsl(${(frame * 7) % 360} 70% 50%)`;
+    g.fillRect(0, 0, width, height);
+    g.fillStyle = '#fff';
+    g.fillRect((frame * 11) % width, height / 3, width / 8, height / 3);
+  }, 1000 / 15);
+  return canvas.captureStream(15).getVideoTracks()[0];
+}
+
+const dillaJoin19 = dillaHarness.dillaJoin;
+
+const dillaHarness21: DillaHarness21 & Pick<DillaHarness, 'dillaJoin'> = {
+  async dillaJoin(o) {
+    await dillaJoin19(o);
+    const room = dillaRoom();
+    for (const p of room.remoteParticipants.values()) dillaSeen[p.identity] = 0;
+    room.on(dillaLk.RoomEvent.ParticipantConnected, (p: dillaLk.RemoteParticipant) => {
+      dillaSeen[p.identity] = Date.now();
+    });
+  },
+  async dillaPublish(what) {
+    const lp = dillaRoom().localParticipant;
+    if (what.camera) {
+      const track = new dillaLk.LocalVideoTrack(dillaCanvasTrack(1280, 720));
+      await lp.publishTrack(track, { source: dillaLk.Track.Source.Camera, simulcast: what.simulcast ?? true, videoCodec: what.videoCodec ?? 'vp8' });
+    }
+    if (what.deviceCamera) {
+      const [track] = await lp.createTracks({ video: true });
+      await lp.publishTrack(track, { source: dillaLk.Track.Source.Camera, simulcast: false, videoCodec: what.videoCodec ?? 'vp8' });
+    }
+    if (what.screen) await lp.setScreenShareEnabled(true, { audio: false, contentHint: 'detail' });
+    if (what.canvasScreen) {
+      const track = new dillaLk.LocalVideoTrack(dillaCanvasTrack(640, 360));
+      await lp.publishTrack(track, { source: dillaLk.Track.Source.ScreenShare, simulcast: false, videoCodec: what.videoCodec ?? 'vp8' });
+    }
+  },
+  async dillaWaitPermission(source, timeoutMs) {
+    const want = source === 'camera' ? 1 : 3; // livekit TrackSource CAMERA = 1, SCREEN_SHARE = 3
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const sources = (dillaRoom().localParticipant.permissions?.canPublishSources ?? []) as number[];
+      if (sources.includes(want)) return;
+      if (Date.now() > deadline) throw new Error(`no ${source} permission after ${timeoutMs} ms`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  },
+  async dillaRemoteStats() {
+    const out: DillaRemoteStats[] = [];
+    for (const p of dillaRoom().remoteParticipants.values()) {
+      for (const pub of p.trackPublications.values()) {
+        const track = pub.track;
+        if (!track) continue;
+        const report = await track.getRTCStatsReport();
+        report?.forEach((s: Record<string, number | string>) => {
+          if (s.type !== 'inbound-rtp') return;
+          out.push({
+            participantIdentity: p.identity,
+            kind: track.kind === dillaLk.Track.Kind.Audio ? 'audio' : 'video',
+            source: pub.source,
+            framesDecoded: Number(s.framesDecoded ?? 0),
+            keyFramesDecoded: Number(s.keyFramesDecoded ?? 0),
+            freezeCount: Number(s.freezeCount ?? 0),
+            packetsReceived: Number(s.packetsReceived ?? 0),
+            totalSamplesReceived: Number(s.totalSamplesReceived ?? 0),
+            concealedSamples: Number(s.concealedSamples ?? 0),
+            jitterBufferDelay: Number(s.jitterBufferDelay ?? 0),
+          });
+        });
+      }
+    }
+    return out;
+  },
+  async dillaRenderProbe(ms) {
+    // requestVideoFrameCallback counts and AnalyserNode RMS: the observables Firefox keeps (DEV-63).
+    const out: RenderProbe[] = [];
+    const jobs: Promise<void>[] = [];
+    for (const p of dillaRoom().remoteParticipants.values()) {
+      for (const pub of p.trackPublications.values()) {
+        const track = pub.track;
+        if (!track) continue;
+        if (track.kind === dillaLk.Track.Kind.Video) {
+          const el = document.createElement('video');
+          el.muted = true;
+          el.playsInline = true;
+          track.attach(el);
+          const probe: RenderProbe = { participantIdentity: p.identity, kind: 'video', frames: 0, rms: 0 };
+          out.push(probe);
+          jobs.push(
+            new Promise<void>((done) => {
+              const end = performance.now() + ms;
+              const tick = () => {
+                if (performance.now() >= end) {
+                  track.detach(el);
+                  done();
+                  return;
+                }
+                probe.frames++;
+                el.requestVideoFrameCallback(tick);
+              };
+              void el.play();
+              el.requestVideoFrameCallback(tick);
+              setTimeout(() => {
+                track.detach(el);
+                done();
+              }, ms + 100);
+            }),
+          );
+        } else {
+          const ctx = new AudioContext();
+          const analyser = ctx.createAnalyser();
+          ctx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack])).connect(analyser);
+          const probe: RenderProbe = { participantIdentity: p.identity, kind: 'audio', frames: 0, rms: 0 };
+          out.push(probe);
+          jobs.push(
+            new Promise<void>((done) => {
+              const buf = new Float32Array(analyser.fftSize);
+              const timer = setInterval(() => {
+                analyser.getFloatTimeDomainData(buf);
+                const rms = Math.sqrt(buf.reduce((a, x) => a + x * x, 0) / buf.length);
+                probe.rms = Math.max(probe.rms, rms);
+              }, 20);
+              setTimeout(() => {
+                clearInterval(timer);
+                void ctx.close();
+                done();
+              }, ms);
+            }),
+          );
+        }
+      }
+    }
+    await Promise.all(jobs);
+    return out;
+  },
+  async dillaIceServers() {
+    return dillaPcs.map((pc) => pc.getConfiguration().iceServers ?? []);
+  },
+  async dillaRemoteSdp() {
+    return dillaPcs.map((pc) => pc.remoteDescription?.sdp ?? '');
+  },
+  async dillaLocalSdp() {
+    return dillaPcs.map((pc) => pc.localDescription?.sdp ?? '');
+  },
+  async dillaSenderRids() {
+    const rids = new Set<string>();
+    for (const pc of dillaPcs) {
+      (await pc.getStats()).forEach((s: Record<string, unknown>) => {
+        if (s.type === 'outbound-rtp' && s.kind === 'video' && typeof s.rid === 'string' && Number(s.bytesSent ?? 0) > 0) rids.add(s.rid);
+      });
+    }
+    return [...rids];
+  },
+  async dillaParticipantSeen() {
+    return { ...dillaSeen };
+  },
+  async dillaActiveVideoCodecs() {
+    const active: string[] = [];
+    for (const pc of dillaPcs) {
+      const stats = await pc.getStats();
+      stats.forEach((s: Record<string, unknown>) => {
+        if (s.type !== 'outbound-rtp' || s.kind !== 'video' || Number(s.bytesSent ?? 0) === 0) return;
+        const codec = stats.get(String(s.codecId));
+        if (codec) active.push(`${codec.mimeType} ${codec.sdpFmtpLine ?? ''}`);
+      });
+    }
+    return active;
+  },
+  async dillaFailWorker() {
+    const manager = dillaSession?.manager as unknown as { worker: Worker } | undefined;
+    if (!manager) throw new Error('dillaJoin first');
+    manager.worker.dispatchEvent(new ErrorEvent('error', { message: 'task-21 real SFU probe' }));
+  },
+  async dillaAudioOutBytes() {
+    let total = 0;
+    for (const pc of dillaPcs) {
+      (await pc.getStats()).forEach((s: Record<string, unknown>) => {
+        if (s.type === 'outbound-rtp' && s.kind === 'audio') total += Number(s.bytesSent ?? 0);
+      });
+    }
+    return total;
+  },
+  async dillaDeadSenderReplaceProbe() {
+    const manager = dillaSession?.manager as unknown as { publishedSenders: WeakMap<dillaLk.LocalTrack, RTCRtpSender> } | undefined;
+    if (!manager) throw new Error('dillaJoin first');
+    const track = new dillaLk.LocalVideoTrack(dillaCanvasTrack(640, 360));
+    try { await dillaRoom().localParticipant.publishTrack(track, { source: dillaLk.Track.Source.Camera, simulcast: false }); }
+    catch { /* a failed worker may make the blocked publication reject */ }
+    const sender = manager.publishedSenders.get(track);
+    if (!sender) throw new Error('blocked publication never created a sender');
+    const replacement = dillaCanvasTrack(640, 360);
+    await sender.replaceTrack(replacement);
+    return { replacementEnded: replacement.readyState === 'ended', senderTrackNull: sender.track === null };
+  },
+  async dillaPreconnectProbe(agentIdentity) {
+    // The call and publication go through the real SFU. Inject the feature into its AddTrack
+    // response to exercise the branch even though dilla never requests that feature itself.
+    const room = dillaRoom() as unknown as {
+      engine: { addTrack: (request: unknown) => Promise<{ audioFeatures?: number[] }> };
+      localParticipant: {
+        setActiveAgent: (agent: dillaLk.RemoteParticipant) => void;
+        streamBytes: (options: { topic?: string }) => Promise<unknown>;
+      };
+      remoteParticipants: Map<string, dillaLk.RemoteParticipant>;
+    };
+    let echoed = false;
+    let streamOpens = 0;
+    const addTrack = room.engine.addTrack.bind(room.engine);
+    room.engine.addTrack = async (request) => {
+      const response = await addTrack(request);
+      response.audioFeatures = [...(response.audioFeatures ?? []), 6]; // TF_PRECONNECT_BUFFER
+      echoed = true;
+      return response;
+    };
+    const streamBytes = room.localParticipant.streamBytes.bind(room.localParticipant);
+    room.localParticipant.streamBytes = async (options) => {
+      if (options.topic === 'lk.agent.pre-connect-audio-buffer') streamOpens++;
+      return streamBytes(options);
+    };
+    const agent = room.remoteParticipants.get(agentIdentity);
+    if (!agent) throw new Error('the real SFU agent participant is absent');
+    room.localParticipant.setActiveAgent(agent);
+    try {
+      await dillaHarness.dillaPublishMic();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return { echoed, streamOpens };
+    } finally {
+      room.engine.addTrack = addTrack;
+    }
+  },
+};
+
+Object.assign((window as unknown as { harness: object }).harness, dillaHarness21);
