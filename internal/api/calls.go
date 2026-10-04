@@ -153,9 +153,11 @@ type iceServer struct {
 // group's CURRENT epoch — added at or before it and not removed. A device that has not yet joined
 // the group's current epoch and a removed one are refused E_LEAF_NOT_CURRENT, so a device that
 // could not decrypt the call's media keys cannot join its room. Then the room is opened in the SFU
-// (DEV-44), the advisory participant count may refuse E_CALL_FULL (DEV-01), and the token's grants
-// mirror the device's speak/video/screen_share, the video sources only while it holds a sharing
-// slot (DEV-02, DEV-03).
+// (DEV-44), the advisory participant count may refuse E_CALL_FULL (DEV-01), and the token carries
+// the base grant only (baseGrant: the microphone for speak, never a camera or screen source, even
+// for a device that holds a sharing slot). Camera and screen arrive only as the push a share makes
+// (DEV-02, DEV-03), so a token replayed after an unshare or a demotion confers nothing more; a
+// reconnecting sharer re-POSTs share, which is idempotent for a slot it holds.
 func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	s, ch, bits, err := h.channel(r)
 	if err != nil {
@@ -282,7 +284,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	if vdec != "" {
 		attrs = map[string]string{vdecAttribute: vdec}
 	}
-	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), h.grantFor(bits, callID, s.DeviceID), attrs)
+	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), baseGrant(bits), attrs)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "minting a LiveKit token failed", "err", err)
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not mint a token"))
@@ -559,42 +561,72 @@ func (h *Calls) callFull(ctx context.Context, room string, dev id.ID) bool {
 	return true
 }
 
-// CurrentLeafOfRoom is the /rtc join gate (DEV-25, DEV-44): room must be the live room of a call —
-// "<call_id hex>-<unix>", equal to voice_sessions.livekit_room with the call not ended — and device a
-// current leaf of the call group that room was opened on. A malformed or stale room is false, not
-// an error; only a store failure is.
-func (h *Calls) CurrentLeafOfRoom(ctx context.Context, room string, device id.ID) (bool, error) {
+// AdmitRoom is the /rtc join gate (DEV-25, DEV-44): room must be the live room of a call —
+// "<call_id hex>-<unix>", equal to voice_sessions.livekit_room with the call not ended — device a
+// current leaf of the call group that room was opened on, its user must hold view_channel and connect
+// in the call's channel now, and no cut or demotion of it may be pending in the call. It answers the
+// device's current base permission — the microphone when it holds speak, never a camera or screen
+// source, exactly what a token is minted with — which the gate compares the token's grants against,
+// so a token can never confer more at admission than the device holds now (a microphone after speak
+// was revoked, a camera after an unshare). A refusal is a *server.Error: E_LEAF_NOT_CURRENT for a
+// room that is no live call's or a device that is no current leaf of it, E_FORBIDDEN for a device
+// that lost access or whose repair is pending. Anything else is a store failure.
+func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*livekit.ParticipantPermission, error) {
+	notLeaf := server.Errorf(server.CodeLeafNotCurrent, "your device is not a current leaf of this call")
 	callHex, _, ok := strings.Cut(room, "-")
 	if !ok {
-		return false, nil
+		return nil, notLeaf
 	}
 	callID, err := id.Parse(callHex)
 	if err != nil {
-		return false, nil //nolint:nilerr // a room name that is no call's is a refusal, not a failure
+		return nil, notLeaf
 	}
 	row, err := h.repo.GetVoiceSession(ctx, callID)
 	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
+		return nil, notLeaf
 	}
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if row.Ended != nil || row.LivekitRoom != room {
-		return false, nil
+		return nil, notLeaf
+	}
+	if err := h.requireLeafOfCall(ctx, row, device); err != nil {
+		var se *server.Error
+		if errors.As(err, &se) {
+			return nil, notLeaf
+		}
+		return nil, err
 	}
 	// A device whose cut or demotion has not landed in the SFU does not rejoin until it has.
 	h.retryCall(ctx, callID)
 	if h.leases.isPending(callID, device) {
-		return false, nil
+		return nil, server.Errorf(server.CodeForbidden, "your device's access to this call is being revoked")
 	}
-	err = h.requireLeafOfCall(ctx, row, device)
-	var se *server.Error
-	switch {
-	case err == nil:
-		return true, nil
-	case errors.As(err, &se):
-		return false, nil
-	default:
-		return false, err
+	dev, err := h.repo.GetDevice(ctx, device)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, notLeaf
 	}
+	if err != nil {
+		return nil, err
+	}
+	ch, err := h.repo.GetChannel(ctx, row.ChannelID)
+	if err != nil {
+		return nil, err
+	}
+	bits, err := h.res.Resolve(ctx, dev.UserID, ch)
+	if err != nil {
+		return nil, err
+	}
+	if !bits.Has(PermViewChannel) || !bits.Has(PermConnect) {
+		return nil, server.Errorf(server.CodeForbidden, "your device may no longer join this call")
+	}
+	return baseGrant(bits), nil
+}
+
+// baseGrant is what every call token is minted with and the /rtc gate admits: the microphone when
+// the device holds speak, subscribe always, never a camera or screen source. Promotion exists only
+// as the push a share makes (DEV-02, ruling F1), so a token can never be replayed for video.
+func baseGrant(bits Bits) *livekit.ParticipantPermission {
+	return sfu.PublishGrant(bits.Has(PermSpeak), false, false)
 }

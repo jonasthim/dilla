@@ -18,6 +18,7 @@ import (
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -552,7 +553,55 @@ func TestAFullCallIsRefusedWithECallFull(t *testing.T) {
 	}
 }
 
-func TestCurrentLeafOfRoomIsTheGateTheProxyReads(t *testing.T) {
+// admitted is AdmitRoom as (permission, refusal code, store error).
+func admitted(t *testing.T, calls *api.Calls, room string, dev id.ID) (*livekit.ParticipantPermission, string, error) {
+	t.Helper()
+	perm, err := calls.AdmitRoom(t.Context(), room, dev)
+	var se *server.Error
+	if errors.As(err, &se) {
+		return nil, string(se.Code), nil
+	}
+	return perm, "", err
+}
+
+// A kicked device is still a leaf until another member commits its Remove, but it lost view_channel
+// or connect at once: the gate refuses it meanwhile.
+func TestTheGateRefusesALeafThatLostViewOrConnect(t *testing.T) {
+	e, ch, tok, group, stub, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	room := stub.minted()[0][0]
+	member, memberDev, _ := joinedMember(t, e, ch, group, "member")
+	for _, lost := range []api.Bits{api.PermConnect, api.PermViewChannel} {
+		denyInChannel(t, e, ch, member, lost)
+		if perm, code, err := admitted(t, calls, room, memberDev); perm != nil || code != "E_FORBIDDEN" || err != nil {
+			t.Errorf("lost %#x: the gate = %v %q %v; want E_FORBIDDEN", lost, perm, code, err)
+		}
+	}
+}
+
+// The gate answers the device's current base grant: the microphone while it holds speak, nothing to
+// publish once speak is revoked, and never a camera or screen source even while it holds a slot.
+func TestTheGateAnswersTheCurrentBaseGrant(t *testing.T) {
+	e, ch, tok, group, stub, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	room := stub.minted()[0][0]
+	member, memberDev, memberTok := joinedMember(t, e, ch, group, "member")
+	if status, _ := e.Do(http.MethodPost, "/v1/calls/"+decodeCall(t, body).CallID.String()+"/share", memberTok, []any{}); status != http.StatusNoContent {
+		t.Fatalf("member share = %d", status)
+	}
+	perm, code, err := admitted(t, calls, room, memberDev)
+	if err != nil || code != "" || !slices.Equal(perm.GetCanPublishSources(), []livekit.TrackSource{livekit.TrackSource_MICROPHONE}) {
+		t.Fatalf("a sharer's admission = %+v %q %v, want the microphone only", perm, code, err)
+	}
+	denyInChannel(t, e, ch, member, api.PermSpeak)
+	if perm, _, _ := admitted(t, calls, room, memberDev); perm.GetCanPublish() || len(perm.GetCanPublishSources()) != 0 {
+		t.Fatalf("after speak was revoked the gate answers %+v, want nothing to publish", perm)
+	}
+}
+
+func TestAdmitRoomIsTheGateTheProxyReads(t *testing.T) {
 	e, ch, tok, group, stub, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
 	dev := deviceOf(t, e, tok)
 	seedLeaf(t, e, group, dev, 3, nil)
@@ -563,22 +612,21 @@ func TestCurrentLeafOfRoomIsTheGateTheProxyReads(t *testing.T) {
 		name string
 		room string
 		dev  id.ID
-		want bool
+		code string
 	}{
-		{"the call's room and a leaf", room, dev, true},
-		{"another device", room, id.New(), false},
-		{"an older room of the call", callID.String() + "-1", dev, false},
-		{"a room that is no call", "not-a-call", dev, false},
+		{"the call's room and a leaf", room, dev, ""},
+		{"another device", room, id.New(), "E_LEAF_NOT_CURRENT"},
+		{"an older room of the call", callID.String() + "-1", dev, "E_LEAF_NOT_CURRENT"},
+		{"a room that is no call", "not-a-call", dev, "E_LEAF_NOT_CURRENT"},
 	} {
-		got, err := calls.CurrentLeafOfRoom(t.Context(), tc.room, tc.dev)
-		if err != nil || got != tc.want {
-			t.Errorf("%s: CurrentLeafOfRoom = %v, %v; want %v", tc.name, got, err, tc.want)
+		if _, code, err := admitted(t, calls, tc.room, tc.dev); err != nil || code != tc.code {
+			t.Errorf("%s: AdmitRoom = %q, %v; want %q", tc.name, code, err, tc.code)
 		}
 	}
 	if err := e.Repo.EndVoiceSession(t.Context(), callID, e.Clk.Now().Unix()); err != nil {
 		t.Fatalf("EndVoiceSession: %v", err)
 	}
-	if got, _ := calls.CurrentLeafOfRoom(t.Context(), room, dev); got {
+	if _, code, _ := admitted(t, calls, room, dev); code != "E_LEAF_NOT_CURRENT" {
 		t.Error("an ended call's room still admits its leaves")
 	}
 }

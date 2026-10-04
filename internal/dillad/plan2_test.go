@@ -17,6 +17,7 @@ import (
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/sfu"
 )
 
 // plan2_test.go is Plan 2's wiring through the composition root (task 19): every handler group
@@ -271,8 +272,8 @@ func (u upstreamSFU) Participants(context.Context, string) ([]*livekit.Participa
 	return nil, nil
 }
 func (u upstreamSFU) HTTPURL() string { return u.url }
-func (u upstreamSFU) VerifyToken(string) (string, string, error) {
-	return "", "", errors.New("upstreamSFU verifies nothing")
+func (u upstreamSFU) VerifyToken(string) (sfu.RoomToken, error) {
+	return sfu.RoomToken{}, errors.New("upstreamSFU verifies nothing")
 }
 
 // With an SFU (`dillad serve` with livekit.enabled), New mounts LiveKit's signalling paths on the

@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/livekit/protocol/livekit"
+
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/blob"
@@ -19,6 +21,7 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -29,14 +32,14 @@ type SFU interface {
 	api.CallTokens
 	// HTTPURL is the SFU's signalling origin over HTTP, e.g. http://127.0.0.1:7880.
 	HTTPURL() string
-	// VerifyToken answers the identity and room of a room-join token the SFU's key signed.
-	VerifyToken(token string) (identity, room string, err error)
+	// VerifyToken answers the identity, room and claims of a room-join token the SFU's key signed.
+	VerifyToken(token string) (sfu.RoomToken, error)
 }
 
-// RTCGate answers whether device is a current leaf of the live call whose room is room;
-// *api.Calls is one.
+// RTCGate admits device to the live call whose room is room and answers what it may hold there
+// now — its current base permission — or a *server.Error refusal; *api.Calls is one.
 type RTCGate interface {
-	CurrentLeafOfRoom(ctx context.Context, room string, device id.ID) (bool, error)
+	AdmitRoom(ctx context.Context, room string, device id.ID) (*livekit.ParticipantPermission, error)
 }
 
 // planTwo is what Plan 2's handler groups are built over: the composition root's own collaborators,
@@ -155,7 +158,9 @@ func urlHost(host string) string {
 //   - the access token (the access_token query parameter, or a Bearer header) must be one the SFU's
 //     key signed (403 E_FORBIDDEN), its identity a device id (403 E_FORBIDDEN), and that device a
 //     current leaf of the live call whose room the token names (403 E_LEAF_NOT_CURRENT) — so a
-//     device the call group removed cannot rejoin with a token LiveKit refreshed for it;
+//     device the call group removed cannot rejoin with a token LiveKit refreshed for it — whose user
+//     still holds view_channel and connect, and the token may confer nothing beyond the device's
+//     current base grant (403 E_FORBIDDEN; admitRTC);
 //   - the `publish` query parameter is deleted (on the parsed values, so a percent-encoded spelling
 //     goes too): it would open a second "<identity>#<x>" participant no gate admitted;
 //   - CF-Connecting-IP and X-Real-IP are deleted and X-Forwarded-For replaced by the one client
@@ -163,10 +168,10 @@ func urlHost(host string) string {
 //     X-Forwarded-For, and nothing a client wrote reaches it.
 //
 // The upgrade itself is httputil.ReverseProxy's own.
-func mountRTC(mux *server.Mux, sfu SFU, gate RTCGate, trusted []netip.Prefix) error {
-	upstream, err := url.Parse(sfu.HTTPURL())
+func mountRTC(mux *server.Mux, s SFU, gate RTCGate, trusted []netip.Prefix) error {
+	upstream, err := url.Parse(s.HTTPURL())
 	if err != nil {
-		return fmt.Errorf("dillad: the SFU's URL %q: %w", sfu.HTTPURL(), err)
+		return fmt.Errorf("dillad: the SFU's URL %q: %w", s.HTTPURL(), err)
 	}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -192,7 +197,7 @@ func mountRTC(mux *server.Mux, sfu SFU, gate RTCGate, trusted []netip.Prefix) er
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if err := admitRTC(r, sfu, gate); err != nil {
+		if err := admitRTC(r, s, gate); err != nil {
 			server.WriteError(w, err)
 			return
 		}
@@ -203,26 +208,43 @@ func mountRTC(mux *server.Mux, sfu SFU, gate RTCGate, trusted []netip.Prefix) er
 	return nil
 }
 
-// admitRTC is the join gate in front of LiveKit.
-func admitRTC(r *http.Request, sfu SFU, gate RTCGate) error {
-	token := r.URL.Query().Get("access_token")
-	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+// admitRTC is the join gate in front of LiveKit. It reads the token exactly where LiveKit will
+// (livekit-server pkg/service/auth.go: a non-empty Authorization header wins and must be a Bearer,
+// else the access_token parameter), verifies it, admits the device through the gate, and then
+// refuses a token that confers more than the device's current base permission: a token minted while
+// it held speak or a sharing slot cannot be replayed after a demotion or an unshare.
+//
+// A resume is the one exception to the per-source comparison. LiveKit resumes a participant it still
+// holds without re-reading the token's grants and refuses a resume of one it does not hold
+// (roommanager.go:326-420), and its own refreshed token carries the participant's current promoted
+// grant, so a sharer's signalling reconnect must still pass. The gate recognises a resume exactly as
+// LiveKit does on the v0 path (rtcservice.go:238-260): no join_request and reconnect "1" or
+// "true". A /rtc/v1 join_request's own reconnect flag is not read, so a v1 request is always held to
+// the full comparison. Every non-source right is checked either way.
+func admitRTC(r *http.Request, s SFU, gate RTCGate) error {
+	q := r.URL.Query()
+	token := q.Get("access_token")
+	if h := r.Header.Get("Authorization"); h != "" {
+		if !strings.HasPrefix(h, "Bearer ") {
+			return server.Errorf(server.CodeForbidden, "the Authorization header is not a Bearer token")
+		}
 		token = strings.TrimPrefix(h, "Bearer ")
 	}
-	identity, room, err := sfu.VerifyToken(token)
+	rt, err := s.VerifyToken(token)
 	if err != nil {
 		return server.Errorf(server.CodeForbidden, "the access token is not one this instance minted")
 	}
-	dev, err := id.Parse(identity)
+	dev, err := id.Parse(rt.Identity)
 	if err != nil {
 		return server.Errorf(server.CodeForbidden, "the token's identity is not a device")
 	}
-	ok, err := gate.CurrentLeafOfRoom(r.Context(), room, dev)
+	allowed, err := gate.AdmitRoom(r.Context(), rt.Room, dev)
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return server.Errorf(server.CodeLeafNotCurrent, "your device is not a current leaf of this call")
+	resume := q.Get("join_request") == "" && (q.Get("reconnect") == "1" || q.Get("reconnect") == "true")
+	if err := sfu.TokenWithin(rt.Claims, allowed, !resume); err != nil {
+		return server.Errorf(server.CodeForbidden, "the access token grants more than your device holds now; start the call again")
 	}
 	return nil
 }

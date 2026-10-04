@@ -97,9 +97,9 @@ func TestATokenCarriesThePermissionAndTheAttributes(t *testing.T) {
 	if grants.Attributes["dilla.vdec"] != "vp8,h264" {
 		t.Errorf("attributes = %v", grants.Attributes)
 	}
-	identity, room, err := s.VerifyToken(tok)
-	if err != nil || identity != "dev" || room != "room-1" {
-		t.Fatalf("VerifyToken = %q, %q, %v", identity, room, err)
+	rt, err := s.VerifyToken(tok)
+	if err != nil || rt.Identity != "dev" || rt.Room != "room-1" || rt.Claims.Attributes["dilla.vdec"] != "vp8,h264" {
+		t.Fatalf("VerifyToken = %+v, %v", rt, err)
 	}
 
 	other := &Server{cfg: testConfig()}
@@ -108,7 +108,7 @@ func TestATokenCarriesThePermissionAndTheAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Token(other): %v", err)
 	}
-	if _, _, err := s.VerifyToken(forged); err == nil {
+	if _, err := s.VerifyToken(forged); err == nil {
 		t.Error("a token signed with another secret was verified")
 	}
 	admin, err := auth.NewAccessToken(s.cfg.APIKey, s.cfg.APISecret).
@@ -116,14 +116,70 @@ func TestATokenCarriesThePermissionAndTheAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admin token: %v", err)
 	}
-	if _, _, err := s.VerifyToken(admin); err == nil {
+	if _, err := s.VerifyToken(admin); err == nil {
 		t.Error("an admin token without roomJoin passed as a join token")
 	}
-	if _, _, err := s.VerifyToken(""); err == nil {
+	if _, err := s.VerifyToken(""); err == nil {
 		t.Error("an empty token was verified")
 	}
 	if _, err := s.Token("room-1", "dev", nil, nil); err == nil {
 		t.Error("a token was minted without a permission")
+	}
+}
+
+// The /rtc gate's comparison: a token confers nothing beyond the device's current permission. A
+// microphone token against a revoked speak, a camera token against the base grant, and every right a
+// call token never carries are refused; a resume skips only the per-source comparison.
+func TestTokenWithinRefusesAnythingBeyondTheCurrentGrant(t *testing.T) {
+	s := &Server{cfg: testConfig()}
+	claims := func(perm *livekit.ParticipantPermission) *auth.ClaimGrants {
+		t.Helper()
+		tok, err := s.Token("room-1", "dev", perm, nil)
+		if err != nil {
+			t.Fatalf("Token: %v", err)
+		}
+		rt, err := s.VerifyToken(tok)
+		if err != nil {
+			t.Fatalf("VerifyToken: %v", err)
+		}
+		return rt.Claims
+	}
+	base, listen, sharer := PublishGrant(true, false, false), PublishGrant(false, false, false), PublishGrant(true, true, true)
+	for _, tc := range []struct {
+		name        string
+		token, now  *livekit.ParticipantPermission
+		withSources bool
+		ok          bool
+	}{
+		{"the base grant against itself", base, base, true, true},
+		{"listen-only against the base grant", listen, base, true, true},
+		{"a microphone after speak was revoked", base, listen, true, false},
+		{"a camera token against the base grant", sharer, base, true, false},
+		{"a camera token on a resume", sharer, base, false, true},
+	} {
+		err := TokenWithin(claims(tc.token), tc.now, tc.withSources)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: TokenWithin = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+	}
+	wide := claims(base)
+	wide.Video.SetCanPublishSources(nil) // an empty list is every source
+	if TokenWithin(wide, base, true) == nil {
+		t.Error("a token with no source list (every source) passed")
+	}
+	for name, mutate := range map[string]func(*auth.ClaimGrants){
+		"data":     func(c *auth.ClaimGrants) { c.Video.SetCanPublishData(true) },
+		"metadata": func(c *auth.ClaimGrants) { c.Video.SetCanUpdateOwnMetadata(true) },
+		"hidden":   func(c *auth.ClaimGrants) { c.Video.Hidden = true },
+		"admin":    func(c *auth.ClaimGrants) { c.Video.RoomAdmin = true },
+		"agent":    func(c *auth.ClaimGrants) { c.Kind = "agent" },
+		"preset":   func(c *auth.ClaimGrants) { c.RoomPreset = "x" },
+	} {
+		c := claims(base)
+		mutate(c)
+		if TokenWithin(c, base, false) == nil {
+			t.Errorf("a token with %s passed, even on a resume", name)
+		}
 	}
 }
 

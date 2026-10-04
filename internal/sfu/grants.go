@@ -201,25 +201,73 @@ func (s *Server) RemoveParticipant(ctx context.Context, room, identity string) e
 	return nil
 }
 
-// VerifyToken checks that token is a room-join token this server signed and answers its identity and
-// room: the /rtc proxy's join gate (DEV-25) reads both before LiveKit ever sees the request.
-func (s *Server) VerifyToken(token string) (identity, room string, err error) {
+// RoomToken is a verified room-join token: its identity, its room and every claim it carries.
+type RoomToken struct {
+	Identity string
+	Room     string
+	Claims   *auth.ClaimGrants
+}
+
+// VerifyToken checks that token is a room-join token this server signed and answers its identity,
+// room and claims: the /rtc proxy's join gate (DEV-25) reads them before LiveKit ever sees the
+// request.
+func (s *Server) VerifyToken(token string) (RoomToken, error) {
 	if token == "" {
-		return "", "", errors.New("sfu: no access token")
+		return RoomToken{}, errors.New("sfu: no access token")
 	}
 	v, err := auth.ParseAPIToken(token)
 	if err != nil {
-		return "", "", fmt.Errorf("sfu: parse the access token: %w", err)
+		return RoomToken{}, fmt.Errorf("sfu: parse the access token: %w", err)
 	}
 	if v.APIKey() != s.cfg.APIKey {
-		return "", "", errors.New("sfu: the access token names another API key")
+		return RoomToken{}, errors.New("sfu: the access token names another API key")
 	}
 	_, grants, err := v.Verify(s.cfg.APISecret)
 	if err != nil {
-		return "", "", fmt.Errorf("sfu: verify the access token: %w", err)
+		return RoomToken{}, fmt.Errorf("sfu: verify the access token: %w", err)
 	}
 	if grants.Video == nil || !grants.Video.RoomJoin || grants.Video.Room == "" {
-		return "", "", errors.New("sfu: not a room-join token")
+		return RoomToken{}, errors.New("sfu: not a room-join token")
 	}
-	return grants.Identity, grants.Video.Room, nil
+	return RoomToken{Identity: grants.Identity, Room: grants.Video.Room, Claims: grants}, nil
+}
+
+// TokenWithin answers nil when the token's claims confer nothing beyond allowed — the device's
+// current permission — and why not otherwise: the /rtc gate's check that a token cannot be replayed
+// for more than the device holds now (a microphone after speak was revoked, a camera after an
+// unshare). Every right a dilla call token never carries is refused outright: a room-wide or admin
+// grant, hidden, recorder, agent or a non-standard kind, data, own metadata, metrics, agent
+// sessions, a room configuration or preset, and every non-video grant. withSources false skips the
+// per-source comparison, for a resume of a participant the SFU already holds: LiveKit keeps that
+// participant's server-side permission and never re-reads the token's grants
+// (roommanager.go:326-420), so only a full join takes its publish sources from the token.
+func TokenWithin(c *auth.ClaimGrants, allowed *livekit.ParticipantPermission, withSources bool) error {
+	if c == nil || c.Video == nil {
+		return errors.New("sfu: the token carries no video grant")
+	}
+	v := c.Video
+	switch {
+	case v.RoomCreate || v.RoomList || v.RoomRecord || v.RoomAdmin || v.IngressAdmin || v.Hidden ||
+		v.Recorder || v.Agent || v.DestinationRoom != "":
+		return errors.New("sfu: the token carries a right no call token has")
+	case v.GetCanPublishData() || v.GetCanUpdateOwnMetadata() || v.GetCanSubscribeMetrics() || v.GetCanManageAgentSession():
+		return errors.New("sfu: the token grants data, metadata, metrics or agent sessions")
+	case c.Kind != "" && c.Kind != "standard", len(c.KindDetails) > 0, c.SIP != nil, c.Agent != nil,
+		c.Inference != nil, c.Observability != nil, c.RoomConfig != nil, c.RoomPreset != "":
+		return errors.New("sfu: the token carries a kind, a grant or a room setting no call token has")
+	case v.GetCanSubscribe() && !allowed.GetCanSubscribe():
+		return errors.New("sfu: the token may subscribe and the device may not")
+	}
+	if !withSources {
+		return nil
+	}
+	may := &auth.VideoGrant{}
+	may.UpdateFromPermission(allowed)
+	for value := range livekit.TrackSource_name {
+		src := livekit.TrackSource(value)
+		if v.GetCanPublishSource(src) && !may.GetCanPublishSource(src) {
+			return fmt.Errorf("sfu: the token may publish %s and the device may not now", src)
+		}
+	}
+	return nil
 }

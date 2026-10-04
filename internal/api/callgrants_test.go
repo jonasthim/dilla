@@ -157,7 +157,8 @@ func TestSyncCallGrantsFailsClosedOnALookupError(t *testing.T) {
 	if got.GetCanPublish() || len(got.GetCanPublishSources()) != 0 {
 		t.Fatalf("after a failed lookup the member holds %+v, want the no-publish grant", got)
 	}
-	if admitted, _ := calls.CurrentLeafOfRoom(t.Context(), room, memberDev); !admitted {
+	if perm, err := calls.AdmitRoom(t.Context(), room, memberDev); perm == nil {
+		t.Logf("AdmitRoom: %v", err)
 		// The retry on the gate's own read (e.Repo answers) lands the repair at once.
 		t.Fatal("the gate's retry did not land the repair once the lookup answered")
 	}
@@ -200,7 +201,7 @@ func TestACutTheSFURefusesIsRetriedUntilItLands(t *testing.T) {
 	}
 	// The owner's share was the call's next event and retried (failure two); the gate's own retry is
 	// failure three, so it refuses; the mint refuses too, and the maintenance retry lands the cut.
-	if admitted, _ := calls.CurrentLeafOfRoom(t.Context(), room, memberDev); admitted {
+	if perm, _ := calls.AdmitRoom(t.Context(), room, memberDev); perm != nil {
 		t.Fatal("the /rtc gate admitted a device whose cut is pending")
 	}
 	if status, resp := e.Do(http.MethodPost, path, memberTok, []any{}); status == http.StatusOK || status == http.StatusCreated {

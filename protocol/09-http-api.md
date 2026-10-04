@@ -559,10 +559,13 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   passes the count in a race with another is refused by the SFU's WebSocket upgrade (HTTP 500), and
   a client shows "could not join the call" for that.
 - **The token.** `token` is a LiveKit room-join JWT for the call's room whose identity is the device
-  id. It grants subscribe, never data, and publish exactly for the sources the device's permissions
-  in the channel allow: `speak` the microphone, `video` the camera, `screen_share` the screen and its
-  audio — the camera and screen sources only while the device holds a sharing slot (below). A device
-  with none of them is listen-only. When the request carries `vdec` — the device's video decoders,
+  id. It carries the **base grant** only: subscribe, never data, and publish for the microphone when
+  the device holds `speak` — never the camera or the screen, even for a device that holds a sharing
+  slot. A device without `speak` is listen-only. The camera and screen sources (`video` the camera,
+  `screen_share` the screen and its audio) reach a session only as the permission the instance pushes
+  after `POST …/share` (below), so a token can never be replayed for video after the device stopped
+  sharing; a client that reconnects with a fresh token while it shares POSTs `…/share` again, which
+  is idempotent for a slot it holds. When the request carries `vdec` — the device's video decoders,
   comma-separated from `vp8`, `h264` and `vp9`, each at most once (any other spelling is
   `400 E_INVALID_REQUEST`) — the token carries it as the participant attribute `dilla.vdec`, which
   the other devices read to choose a codec every subscriber can decode. The token can be used to
@@ -602,10 +605,19 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   instance pushes for a call is serialised per call, so the devices that may publish a camera or
   screen source are always among the slot holders.
 - **The signalling proxy.** The `/rtc` paths admit only `GET` (anything else is `405`). The access
-  token — the `access_token` query parameter or a `Bearer` header — must be one the instance minted
-  (`403 E_FORBIDDEN` otherwise), for a device, and that device must be a current leaf of the live
-  call whose room the token names (`403 E_LEAF_NOT_CURRENT` otherwise), so a device the call group
-  has removed cannot rejoin with a token the SFU re-issued to it. The instance removes a `publish`
+  token — a non-empty `Authorization` header, which must then be `Bearer`, else the `access_token`
+  query parameter — must be one the instance minted (`403 E_FORBIDDEN` otherwise), for a device, and
+  that device must be a current leaf of the live call whose room the token names
+  (`403 E_LEAF_NOT_CURRENT` otherwise), so a device the call group has removed cannot rejoin with a
+  token the SFU re-issued to it. Its user must still hold `view_channel` and `connect` in the
+  channel and no removal or demotion of it may be pending (`403 E_FORBIDDEN`), and the token may
+  confer nothing beyond the device's current base grant (`403 E_FORBIDDEN`): a token minted while
+  the device held `speak` is refused once `speak` is revoked, and a token the SFU re-issued while the
+  device shared (it carries the camera) is refused for a fresh join — the client starts the call
+  again for a base token and POSTs `…/share`. A resume of a session the SFU still holds (the `/rtc`
+  path without `join_request`, `reconnect` `1` or `true`) is exempt from the per-source comparison
+  only, because the SFU keeps a resumed participant's own permission and never reads the token's;
+  a `/rtc/v1` request is always held to it. The instance removes a `publish`
   query parameter and the `CF-Connecting-IP` and `X-Real-IP` headers before the request reaches the
   SFU, and `X-Forwarded-For` carries only the client address the instance resolved.
 - **Relays.** `ice_servers` is the `RTCIceServer` list for the client's peer connection: one entry

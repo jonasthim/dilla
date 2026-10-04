@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
 
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -123,22 +124,44 @@ func (f fakeSFU) Participants(context.Context, string) ([]*livekit.ParticipantIn
 	return nil, nil
 }
 func (f fakeSFU) HTTPURL() string { return f.url }
-func (f fakeSFU) VerifyToken(token string) (string, string, error) {
-	identity, room, ok := strings.Cut(token, "@")
-	if !ok {
-		return "", "", errors.New("not a token")
+
+// VerifyToken reads "<identity>@<room>[@<sources>]", sources a comma list of mic, cam and screen
+// (mic when left out), as a call token with that publish grant.
+func (f fakeSFU) VerifyToken(token string) (sfu.RoomToken, error) {
+	parts := strings.Split(token, "@")
+	if len(parts) < 2 || len(parts) > 3 {
+		return sfu.RoomToken{}, errors.New("not a token")
 	}
-	return identity, room, nil
+	sources := "mic"
+	if len(parts) == 3 {
+		sources = parts[2]
+	}
+	grant := &auth.VideoGrant{RoomJoin: true, Room: parts[1]}
+	grant.UpdateFromPermission(sfu.PublishGrant(strings.Contains(sources, "mic"),
+		strings.Contains(sources, "cam"), strings.Contains(sources, "screen")))
+	return sfu.RoomToken{Identity: parts[0], Room: parts[1], Claims: &auth.ClaimGrants{Identity: parts[0], Video: grant}}, nil
 }
 
-// fakeGate admits the devices of leaves in room.
+// fakeGate admits the devices of leaves in room with their base grant (the microphone unless
+// allowed names another), and refuses with refused's error.
 type fakeGate struct {
-	room   string
-	leaves map[id.ID]bool
+	room    string
+	leaves  map[id.ID]bool
+	allowed map[id.ID]*livekit.ParticipantPermission
+	refused map[id.ID]error
 }
 
-func (g fakeGate) CurrentLeafOfRoom(_ context.Context, room string, dev id.ID) (bool, error) {
-	return room == g.room && g.leaves[dev], nil
+func (g fakeGate) AdmitRoom(_ context.Context, room string, dev id.ID) (*livekit.ParticipantPermission, error) {
+	if err := g.refused[dev]; err != nil {
+		return nil, err
+	}
+	if room != g.room || !g.leaves[dev] {
+		return nil, server.Errorf(server.CodeLeafNotCurrent, "not a current leaf")
+	}
+	if p, ok := g.allowed[dev]; ok {
+		return p, nil
+	}
+	return sfu.PublishGrant(true, false, false), nil
 }
 
 // /rtc and everything under it reach the SFU for a current leaf, with the client address the
@@ -241,6 +264,61 @@ func TestTheRTCGateAdmitsOnlyACurrentLeaf(t *testing.T) {
 	}
 }
 
+// A token can never confer more at admission than the device holds now: a microphone token after
+// speak was revoked, a camera token (one LiveKit refreshed while the device shared) after an unshare,
+// and any token of a device that lost view or connect are refused; the base grant still joins, and a
+// v0 resume of a sharer with its refreshed token passes, since LiveKit never re-reads a resumed
+// participant's grants. A v1 join_request is held to the full comparison.
+func TestTheRTCGateRefusesATokenWiderThanTheCurrentGrant(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer upstream.Close()
+	speaker, muted, unshared, kicked := id.New(), id.New(), id.New(), id.New()
+	gate := fakeGate{
+		room:    "room-1",
+		leaves:  map[id.ID]bool{speaker: true, muted: true, unshared: true, kicked: true},
+		allowed: map[id.ID]*livekit.ParticipantPermission{muted: sfu.PublishGrant(false, false, false)},
+		refused: map[id.ID]error{kicked: server.Errorf(server.CodeForbidden, "lost connect")},
+	}
+	mux := server.NewMux()
+	if err := mountRTC(mux, fakeSFU{url: upstream.URL}, gate, nil); err != nil {
+		t.Fatalf("mountRTC: %v", err)
+	}
+	for _, tc := range []struct {
+		name, query string
+		status      int
+		code        string
+	}{
+		{"the happy path: the base grant", "access_token=" + speaker.String() + "@room-1", http.StatusTeapot, ""},
+		{"a microphone token after speak was revoked", "access_token=" + muted.String() + "@room-1@mic", http.StatusForbidden, "E_FORBIDDEN"},
+		{"a listen-only token after speak was revoked", "access_token=" + muted.String() + "@room-1@none", http.StatusTeapot, ""},
+		{"a camera token after an unshare", "access_token=" + unshared.String() + "@room-1@mic,cam,screen", http.StatusForbidden, "E_FORBIDDEN"},
+		{"a kicked leaf's base token", "access_token=" + kicked.String() + "@room-1", http.StatusForbidden, "E_FORBIDDEN"},
+		{"a v0 resume with a sharer's refreshed token", "reconnect=1&access_token=" + unshared.String() + "@room-1@mic,cam", http.StatusTeapot, ""},
+		{"a v0 resume still needs the gate", "reconnect=true&access_token=" + kicked.String() + "@room-1@mic", http.StatusForbidden, "E_FORBIDDEN"},
+		{"a v1 join_request is never a resume", "reconnect=1&join_request=x&access_token=" + unshared.String() + "@room-1@mic,cam", http.StatusForbidden, "E_FORBIDDEN"},
+		{"reconnect=yes is no resume to LiveKit", "reconnect=yes&access_token=" + unshared.String() + "@room-1@mic,cam", http.StatusForbidden, "E_FORBIDDEN"},
+	} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/rtc?"+tc.query, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != tc.status || rtcErrorCode(rec) != tc.code {
+			t.Errorf("%s: %d %s, want %d %s", tc.name, rec.Code, rtcErrorCode(rec), tc.status, tc.code)
+		}
+	}
+	// LiveKit reads a non-empty Authorization header before the parameter and refuses one that is
+	// no Bearer; the gate reads the same token, so a valid parameter cannot hide a header LiveKit
+	// would use.
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/rtc?access_token="+speaker.String()+"@room-1", nil)
+	req.Header.Set("Authorization", "Basic "+unshared.String()+"@room-1@mic,cam")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("a non-Bearer Authorization header beside a valid parameter = %d, want 403", rec.Code)
+	}
+}
+
 // rtcErrorCode is element 0 of a CBOR error body, or "" when the body is not one. plan2_test.go's
 // errorCode is the same rule in package dillad_test, which this internal test cannot see.
 func rtcErrorCode(rec *httptest.ResponseRecorder) string {
@@ -257,8 +335,8 @@ func rtcErrorCode(rec *httptest.ResponseRecorder) string {
 
 type admitEveryLeaf struct{}
 
-func (admitEveryLeaf) CurrentLeafOfRoom(context.Context, string, id.ID) (bool, error) {
-	return true, nil
+func (admitEveryLeaf) AdmitRoom(context.Context, string, id.ID) (*livekit.ParticipantPermission, error) {
+	return sfu.PublishGrant(true, false, false), nil
 }
 
 // SP-20: against the real SFU, neither a GET carrying publish=x nor a POST carrying publish=y in its
@@ -281,7 +359,7 @@ func TestNoShadowParticipantReachesTheSFUThroughTheProxy(t *testing.T) {
 		t.Fatalf("CreateRoom: %v", err)
 	}
 	dev := id.New()
-	tok, err := srv.Token(room, dev.String(), sfu.PublishGrant(true, true, true), nil)
+	tok, err := srv.Token(room, dev.String(), sfu.PublishGrant(true, false, false), nil)
 	if err != nil {
 		t.Fatalf("Token: %v", err)
 	}
@@ -291,6 +369,25 @@ func TestNoShadowParticipantReachesTheSFUThroughTheProxy(t *testing.T) {
 	}
 	front := httptest.NewServer(mux)
 	defer front.Close()
+
+	// A real token carrying the camera (one minted, or refreshed by LiveKit, while the device held a
+	// slot) is refused at the gate against the base grant the device holds now.
+	camTok, err := srv.Token(room, id.New().String(), sfu.PublishGrant(true, true, true), nil)
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	camReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, front.URL+"/rtc?access_token="+url.QueryEscape(camTok), nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	camResp, err := http.DefaultClient.Do(camReq)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	camResp.Body.Close()
+	if camResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("a camera token through the gate = %d, want 403", camResp.StatusCode)
+	}
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
 		front.URL+"/rtc?access_token="+url.QueryEscape(tok), strings.NewReader("publish=y"))

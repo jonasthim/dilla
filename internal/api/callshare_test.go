@@ -155,8 +155,11 @@ func TestShareNeedsVideoOrScreenShareAndALeaf(t *testing.T) {
 	}
 }
 
-// A device that holds a slot and starts the call again (a reconnect) keeps its video sources.
-func TestARestartOfALeasedDeviceKeepsItsVideoSources(t *testing.T) {
+// A token is minted with the base grant only — the microphone for speak, never a camera or screen
+// source — even for a device that holds a sharing slot: promotion exists only as the push a share
+// makes, so a token can never be replayed for video after an unshare. A reconnecting sharer keeps
+// its slot and re-POSTs share, which is idempotent.
+func TestATokenCarriesTheBaseGrantOnlyEvenForASharer(t *testing.T) {
 	e, ch, tok, group, stub := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL, MaxPublishers: 10})
 	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
 	path := "/v1/channels/" + ch.String() + "/calls"
@@ -166,10 +169,14 @@ func TestARestartOfALeasedDeviceKeepsItsVideoSources(t *testing.T) {
 		t.Fatalf("share = %d", status)
 	}
 	e.Do(http.MethodPost, path, tok, []any{})
-	want := []livekit.TrackSource{livekit.TrackSource_MICROPHONE, livekit.TrackSource_CAMERA,
-		livekit.TrackSource_SCREEN_SHARE, livekit.TrackSource_SCREEN_SHARE_AUDIO}
+	want := []livekit.TrackSource{livekit.TrackSource_MICROPHONE}
 	if got := stub.lastMint().Perm.GetCanPublishSources(); !slices.Equal(got, want) {
 		t.Fatalf("the leased device's new token = %v, want %v", got, want)
+	}
+	before := len(stub.permUpdates())
+	if status, _ := e.Do(http.MethodPost, share, tok, []any{}); status != http.StatusNoContent ||
+		len(stub.permUpdates()) != before+1 || !hasCamera(stub.permUpdates()[before].Perm) {
+		t.Fatalf("the reconnected sharer's repeated share = %d, want 204 and the promotion pushed again", status)
 	}
 }
 
