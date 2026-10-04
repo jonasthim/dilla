@@ -244,7 +244,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		ACL:      acl,
 		// The device lists are verified in the guest (NV-B8, deviation B32).
 		DeviceLists: ds.NewDeviceLists(o.Repo, wasm),
-		// A fork-quarantined device is cut from every live call at once (dilla-media task 10).
+		// A fork-quarantined device is queued to be cut from every live call; the hook only enqueues,
+		// so the fork-report path never waits on the SFU (dilla-media task 10).
 		OnQuarantine: cutFromCalls,
 	})
 	if err != nil {
@@ -268,8 +269,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	closeDevice := func(device id.ID) {
 		gw.CloseDevice(device, gateway.CloseSessionRevoked, "device revoked")
 	}
-	// A revoked device (and every device of a user RevokeUser disables) is also cut from every live
-	// call at once (dilla-media task 10); a device that is only logged out keeps its call permission.
+	// A revoked device (and every device of a user RevokeUser disables) is also queued to be cut from
+	// every live call (dilla-media task 10): CutDevice only enqueues and wakes the call retry loop, so
+	// the revocation path never waits on the SFU. A device that is only logged out keeps its call
+	// permission (the cut leaves a device that is not barred as it is).
 	sessions.OnRevoke = func(device id.ID) {
 		closeDevice(device)
 		cutFromCalls(context.Background(), device)

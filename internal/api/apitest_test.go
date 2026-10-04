@@ -412,8 +412,13 @@ type stubSFU struct {
 	roomsFail error
 }
 
-func (s *stubSFU) Rooms(context.Context) ([]string, error) {
+func (s *stubSFU) Rooms(ctx context.Context) ([]string, error) {
 	s.mu.Lock()
+	if s.hang {
+		s.mu.Unlock()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	defer s.mu.Unlock()
 	if s.roomsFail != nil {
 		return nil, s.roomsFail
@@ -436,9 +441,15 @@ func (s *stubSFU) addRoom(room string) {
 	s.rooms[room] = true
 }
 
-// heldRooms is Rooms without the error.
+// heldRooms is the rooms the stub holds.
 func (s *stubSFU) heldRooms() []string {
-	out, _ := s.Rooms(context.Background())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.rooms))
+	for r := range s.rooms {
+		out = append(out, r)
+	}
+	slices.Sort(out)
 	return out
 }
 

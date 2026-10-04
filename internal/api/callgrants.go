@@ -415,45 +415,91 @@ func (h *Calls) SweepRooms(ctx context.Context) {
 	}
 }
 
-// CutDevice cuts device, and every "#" shadow of it, from every live call room the SFU holds it in,
-// at once: the in-process revocation and quarantine paths call it after their commit. It runs the
-// same reconcile as the sweep for those identities only, so a barred device is removed with its
-// slot freed (pending when the SFU refuses), and a device that is not barred keeps exactly its
-// current permission. It is bounded by cutDeviceBudget; what it does not reach the sweep covers.
+// CutDevice requests that device, and every "#" shadow of it, be cut from every live call room the
+// SFU holds it in. It never calls the SFU, takes no lock but the request set's and returns at once:
+// the in-process revocation and quarantine paths call it after their commit, on request paths and
+// next to the delivery service, which a slow SFU must not stall. The device id joins a small,
+// bounded, de-duplicated set, and the retry loop is woken to cut it on its own goroutine at once
+// (falling back to its tick). Meanwhile the device is barred in the database, so the /rtc gate,
+// start and share refuse it. The cut runs the same reconcile as the sweep for those identities
+// only: a barred device is removed with its slot freed (pending when the SFU refuses), one that is
+// not barred keeps exactly its current permission. A request that finds the set full is dropped
+// with a WARN: the room sweep covers it within its period.
 func (h *Calls) CutDevice(ctx context.Context, device id.ID) {
-	dev := device.String()
-	h.cutMatching(ctx, func(identity string) bool {
-		base, _, _ := strings.Cut(identity, "#")
-		return base == dev
-	})
+	h.requestCut(ctx, device, false)
 }
 
-// CutUser is CutDevice for every device of userID: the in-process admin disable calls it.
+// CutUser is CutDevice for every device of userID, resolved on the retry loop: the in-process admin
+// disable calls it.
 func (h *Calls) CutUser(ctx context.Context, userID id.ID) {
+	h.requestCut(ctx, userID, true)
+}
+
+// maxCutRequests bounds the cut-request set; a request beyond it is left to the room sweep.
+const maxCutRequests = 1024
+
+func (h *Calls) requestCut(ctx context.Context, who id.ID, user bool) {
 	if h.sfu == nil {
 		return
 	}
-	devices, err := h.repo.ListDevicesByUser(ctx, userID)
-	if err != nil {
-		h.log.WarnContext(ctx, "listing a user's devices to cut them from calls failed; the room sweep covers it",
-			"user", userID, "err", err)
+	h.cutMu.Lock()
+	if h.cutDevices == nil {
+		h.cutDevices, h.cutUsers = map[id.ID]bool{}, map[id.ID]bool{}
+	}
+	set := h.cutDevices
+	if user {
+		set = h.cutUsers
+	}
+	full := !set[who] && len(h.cutDevices)+len(h.cutUsers) >= maxCutRequests
+	if !full {
+		set[who] = true
+	}
+	h.cutMu.Unlock()
+	if full {
+		h.log.WarnContext(ctx, "the call cut queue is full; the room sweep cuts this one within its period",
+			"id", who, "user", user)
 		return
 	}
-	set := make(map[string]bool, len(devices))
-	for _, d := range devices {
-		set[d.ID.String()] = true
+	select {
+	case h.cutWake <- struct{}{}:
+	default: // a wake is already pending; the loop takes the whole set
+	}
+}
+
+// processCuts takes the whole cut-request set and cuts its devices (and the devices of its users)
+// from every live call room in one pass bounded by cutDeviceBudget. It runs on the retry loop.
+func (h *Calls) processCuts(ctx context.Context) {
+	h.cutMu.Lock()
+	devices, users := h.cutDevices, h.cutUsers
+	h.cutDevices, h.cutUsers = nil, nil
+	h.cutMu.Unlock()
+	if len(devices) == 0 && len(users) == 0 {
+		return
+	}
+	h.cutPasses.Add(1)
+	match := make(map[string]bool, len(devices))
+	for d := range devices {
+		match[d.String()] = true
+	}
+	for u := range users {
+		rows, err := h.repo.ListDevicesByUser(ctx, u)
+		if err != nil {
+			h.log.WarnContext(ctx, "listing a user's devices to cut them from calls failed; the room sweep covers it",
+				"user", u, "err", err)
+			continue
+		}
+		for _, d := range rows {
+			match[d.ID.String()] = true
+		}
 	}
 	h.cutMatching(ctx, func(identity string) bool {
 		base, _, _ := strings.Cut(identity, "#")
-		return set[base]
+		return match[base]
 	})
 }
 
 func (h *Calls) cutMatching(ctx context.Context, match func(string) bool) {
-	if h.sfu == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cutDeviceBudget)
+	ctx, cancel := context.WithTimeout(ctx, cutDeviceBudget)
 	defer cancel()
 	rooms, err := h.listRooms(ctx)
 	if err != nil {
@@ -534,8 +580,9 @@ func (h *Calls) deleteRoom(ctx context.Context, room string) error {
 	return nil
 }
 
-// StartRetries runs the retry loop: every `every` it drives the calls' pending repairs (RetryPending)
-// and, at most every RoomSweepInterval, sweeps the SFU's rooms (SweepRooms), on its own goroutine,
+// StartRetries runs the retry loop: as soon as a cut is requested (CutDevice, CutUser) it cuts the
+// requested devices, and every `every` it drives the calls' pending repairs (RetryPending) and, at
+// most every RoomSweepInterval, sweeps the SFU's rooms (SweepRooms), all on its own goroutine,
 // so a slow or hung SFU never delays another maintenance duty. A pass never overlaps the next — a
 // tick that comes while one runs is dropped — each SFU call is bounded by sfuCallTimeout, each hold
 // of a call's lock by callHoldBackground, each pass by maxRepairsPerTick and the sweep's own bounds.
@@ -554,7 +601,11 @@ func (h *Calls) StartRetries(every time.Duration) (stop func()) {
 			select {
 			case <-ctx.Done():
 				return
+			case <-h.cutWake:
+				h.processCuts(ctx)
+				h.reportPending()
 			case <-tick.C:
+				h.processCuts(ctx)
 				h.RetryPending(ctx)
 				if time.Since(lastSweep) >= sweepEvery {
 					h.SweepRooms(ctx)

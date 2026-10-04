@@ -223,8 +223,8 @@ type Options struct {
 	CallEvictor CallEvictor
 
 	// OnQuarantine is told the device a fork quorum has just quarantined, after the flag is written
-	// and outside any group lock, so the composition root cuts it from every live call at once
-	// (api.Calls.CutDevice); nil means nobody is told.
+	// and outside any group lock, on the fork-report request's goroutine, so it must return at once:
+	// the composition root's hook only queues the cut (api.Calls.CutDevice); nil means nobody is told.
 	OnQuarantine func(ctx context.Context, device id.ID)
 }
 

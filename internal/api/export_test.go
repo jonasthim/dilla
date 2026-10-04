@@ -18,6 +18,9 @@ func (h *Calls) MarkPending(call, dev id.ID, room string) {
 // SetSweepEvery sets the retry loop's room-sweep cadence, for a test that runs the loop.
 func (h *Calls) SetSweepEvery(d time.Duration) { h.sweepEvery = d }
 
+// CutPasses is how many retry-loop passes took a non-empty cut-request set.
+func (h *Calls) CutPasses() int64 { return h.cutPasses.Load() }
+
 // SharersOf is the devices holding a sharing slot of call, for the lease-invariant tests in
 // package api_test.
 func (h *Calls) SharersOf(call id.ID) []id.ID {

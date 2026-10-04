@@ -190,7 +190,7 @@ func TestACutTheSFURefusesIsRetriedUntilItLands(t *testing.T) {
 	stub.setPresent(room, &livekit.ParticipantInfo{Identity: memberDev.String()})
 	denyInChannel(t, e, ch, member, api.PermSpeak)
 	stub.mu.Lock()
-	stub.failRemovals, stub.failUpdates = 3, 3 // the cut and its no-publish fallback fail three times
+	stub.failRemovals, stub.failUpdates = 2, 2 // the cut and its no-publish fallback fail twice
 	stub.mu.Unlock()
 	denyInChannel(t, e, ch, member, api.PermConnect)
 	if err := api.SyncCallGrants(t.Context(), e.Repo, api.NewResolver(e.Repo), stub, calls,
@@ -200,8 +200,8 @@ func TestACutTheSFURefusesIsRetriedUntilItLands(t *testing.T) {
 	if status, _ := e.Do(http.MethodPost, share, tok, []any{}); status != http.StatusConflict {
 		t.Fatalf("the owner's share while the member's cut is pending = %d, want 409: the slot must stay held", status)
 	}
-	// The owner's share was the call's next event and retried (failure two); the gate's own retry is
-	// failure three, so it refuses; the mint refuses too, and the maintenance retry lands the cut.
+	// The owner's share drives only its own repair, so it leaves the member's pending; the gate's own
+	// retry of the member's repair is failure two, so it refuses; the mint refuses too, and the retry loop lands the cut.
 	if perm, _ := calls.AdmitRoom(t.Context(), room, memberDev); perm != nil {
 		t.Fatal("the /rtc gate admitted a device whose cut is pending")
 	}

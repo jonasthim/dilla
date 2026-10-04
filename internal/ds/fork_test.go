@@ -67,11 +67,14 @@ func TestThreeDistinctReportersQuarantineTheCommitterAndOneDeviceDoesNot(t *test
 
 // The quarantine is told to the composition root at once (OnQuarantine), with the committer, so the
 // device is cut from every live call without waiting for the members' Removes or the room sweep;
-// reports short of the quorum tell nobody.
+// reports short of the quorum tell nobody. The hook runs with the group's lock free, so whatever it
+// does cannot freeze the group (the composition root's hook only queues the cut).
 func TestTheQuarantineTellsOnQuarantineTheCommitter(t *testing.T) {
 	h := newDSHarness(t)
 	var mu sync.Mutex
 	var told []id.ID
+	var lockHeld bool
+	var gid id.ID
 	if err := h.ds.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
@@ -81,6 +84,7 @@ func TestTheQuarantineTellsOnQuarantineTheCommitter(t *testing.T) {
 		OnQuarantine: func(_ context.Context, device id.ID) {
 			mu.Lock()
 			told = append(told, device)
+			lockHeld = lockHeld || !h.ds.GroupLockFree(gid)
 			mu.Unlock()
 		},
 	})
@@ -90,6 +94,9 @@ func TestTheQuarantineTellsOnQuarantineTheCommitter(t *testing.T) {
 	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
 	h.ds = d
 	g := h.groupWithMembers(t, 4)
+	mu.Lock()
+	gid = g.id
+	mu.Unlock()
 	commit := h.acceptedCommitBy(t, g, 0)
 	for i, reporter := range []int{1, 2, 3} {
 		if err := h.ds.ForkReport(context.Background(), g.sessionOf(reporter), g.id, commit.Epoch, commit.Seq, "cannot process"); err != nil {
@@ -106,6 +113,9 @@ func TestTheQuarantineTellsOnQuarantineTheCommitter(t *testing.T) {
 	defer mu.Unlock()
 	if len(told) != 1 || told[0] != g.members[0] {
 		t.Fatalf("OnQuarantine was told %v, want the committer %s once", told, g.members[0])
+	}
+	if lockHeld {
+		t.Fatal("OnQuarantine ran under the group's lock")
 	}
 }
 

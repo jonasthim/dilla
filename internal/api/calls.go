@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
@@ -94,7 +95,7 @@ const (
 	maxRoomsPerSweep = 64
 	// sweepPassBudget bounds one whole sweep pass; rooms it does not reach roll to the next.
 	sweepPassBudget = 20 * time.Second
-	// cutDeviceBudget bounds one CutDevice or CutUser; the sweep covers what it does not reach.
+	// cutDeviceBudget bounds one pass over the cut-request set; the sweep covers what it misses.
 	cutDeviceBudget = 15 * time.Second
 )
 
@@ -182,12 +183,21 @@ type Calls struct {
 	sweepMu     sync.Mutex
 	sweepCursor string
 	sweepEvery  time.Duration
+
+	// cutMu guards the cut-request set (CutDevice, CutUser): device and user ids the retry loop cuts
+	// from every live call on its own goroutine. cutWake wakes it (one pending wake is enough);
+	// cutPasses counts the passes that took a non-empty set.
+	cutMu      sync.Mutex
+	cutDevices map[id.ID]bool
+	cutUsers   map[id.ID]bool
+	cutWake    chan struct{}
+	cutPasses  atomic.Int64
 }
 
 // NewCalls wires the call routes over the SFU.
 func NewCalls(repo store.Repository, res *Resolver, sfu CallTokens, cfg CallsConfig, clk clock.Clock, log *slog.Logger) *Calls {
 	return &Calls{repo: repo, res: res, sfu: sfu, cfg: cfg, clk: clk, log: log, leases: newShareLeases(),
-		sweepEvery: RoomSweepInterval}
+		sweepEvery: RoomSweepInterval, cutWake: make(chan struct{}, 1)}
 }
 
 // WithCounters sets the label-free counters the routes move and returns h.

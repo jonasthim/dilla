@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/livekit/protocol/livekit"
 
@@ -98,11 +99,56 @@ func TestRevokingADeviceCutsItFromLiveCallsAtOnce(t *testing.T) {
 	if err := srv.Sessions().RevokeDevice(ctx, victim); err != nil {
 		t.Fatalf("RevokeDevice: %v", err)
 	}
-	got := sfu.cutDevices()
-	if !slices.Contains(got, victim.String()) {
-		t.Fatalf("devices cut on revocation = %v, want the revoked device %s at once", got, victim)
+	deadline := time.Now().Add(2 * time.Second)
+	for !slices.Contains(sfu.cutDevices(), victim.String()) {
+		if time.Now().After(deadline) {
+			t.Fatalf("devices cut on revocation = %v, want the revoked device %s within the loop's next pass", sfu.cutDevices(), victim)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if slices.Contains(got, bystander.String()) {
+	if got := sfu.cutDevices(); slices.Contains(got, bystander.String()) {
 		t.Fatalf("the revocation cut the bystander too: %v", got)
+	}
+}
+
+// hungSFU is an SFU that hangs on every room call until the caller's context ends.
+type hungSFU struct{ upstreamSFU }
+
+func (hungSFU) Rooms(ctx context.Context) ([]string, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// The revocation path never waits on the SFU: with an SFU that hangs, revoking a device returns well
+// under a second (the cut is queued for the retry loop; the device is refused everywhere because
+// the database bars it).
+func TestARevocationReturnsPromptlyWithAHungSFU(t *testing.T) {
+	cfg, _ := testConfigInvite(t)
+	srv, err := dillad.New(context.Background(), dillad.Options{
+		Config: cfg, Clock: clock.System(), Wasm: sharedRuntime(t), SFU: hungSFU{},
+	})
+	if err != nil {
+		t.Fatalf("dillad.New: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+	repo, ctx, now := srv.Repo(), t.Context(), srv.Now().Unix()
+	user, dev := id.New(), id.New()
+	if err := repo.CreateUser(ctx, store.UserRow{ID: user, Username: "u-" + user.String()[:8], Display: "u",
+		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: now}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := repo.CreateDevice(ctx, store.DeviceRow{ID: dev, UserID: user, DSKPub: make([]byte, 32),
+		CredentialBlob: []byte{1}, LastSeen: now, Created: now}); err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	start := time.Now()
+	if err := srv.Sessions().RevokeDevice(ctx, dev); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	if err := srv.Sessions().RevokeUser(ctx, user); err != nil {
+		t.Fatalf("RevokeUser: %v", err)
+	}
+	if took := time.Since(start); took > 300*time.Millisecond {
+		t.Fatalf("revoking against a hung SFU took %s", took)
 	}
 }

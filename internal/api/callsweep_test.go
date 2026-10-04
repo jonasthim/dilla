@@ -71,30 +71,93 @@ func TestTheRoomSweepCutsAConnectedBarredDevice(t *testing.T) {
 	})
 }
 
-// The in-process revocation and quarantine paths cut at once, without waiting for the sweep:
-// CutDevice cuts a barred device from every live call room it is in, and leaves a device that is
-// not barred exactly as it is. CutUser does the same for every device of a disabled user.
-func TestCutDeviceAndCutUserCutABarredDeviceAtOnce(t *testing.T) {
+// waitRemoved waits up to two seconds for RemoveParticipants of dev in room.
+func waitRemoved(stub *stubSFU, room string, dev id.ID) bool {
+	deadline := time.Now().Add(2 * time.Second)
+	for !removedDevice(stub, room, dev) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return true
+}
+
+// The in-process revocation and quarantine paths cut without waiting for the sweep: CutDevice
+// queues the device and the retry loop — woken at once, not on its tick (an hour here) — cuts a
+// barred device from every live call room it is in, and leaves a device that is not barred exactly
+// as it is. CutUser does the same for every device of a disabled user.
+func TestCutDeviceAndCutUserCutABarredDevicePromptly(t *testing.T) {
 	b := newBarredEnv(t)
+	stop := b.calls.StartRetries(time.Hour)
+	defer stop()
 	b.calls.CutDevice(t.Context(), b.ownerDev)
-	if removedDevice(b.stub, b.room, b.ownerDev) {
+	if waitRemoved(b.stub, b.room, b.ownerDev) {
 		t.Fatal("CutDevice cut a device that is not barred")
 	}
 	if err := b.e.Repo.QuarantineDevice(t.Context(), b.memberDev, b.e.Clk.Now().Unix(), "fork quorum"); err != nil {
 		t.Fatalf("QuarantineDevice: %v", err)
 	}
 	b.calls.CutDevice(t.Context(), b.memberDev)
-	if !removedDevice(b.stub, b.room, b.memberDev) {
+	if !waitRemoved(b.stub, b.room, b.memberDev) {
 		t.Fatal("CutDevice did not cut the quarantined device")
 	}
 
 	u := newBarredEnv(t)
+	ustop := u.calls.StartRetries(time.Hour)
+	defer ustop()
 	if err := u.e.Repo.SetUserDisabled(t.Context(), u.member, ptr(u.e.Clk.Now().Unix())); err != nil {
 		t.Fatalf("SetUserDisabled: %v", err)
 	}
 	u.calls.CutUser(t.Context(), u.member)
-	if !removedDevice(u.stub, u.room, u.memberDev) {
+	if !waitRemoved(u.stub, u.room, u.memberDev) {
 		t.Fatal("CutUser did not cut the disabled user's device")
+	}
+}
+
+// A cut request never makes an SFU call on its caller's goroutine: with an SFU that hangs on every
+// call, a burst of CutDevice and CutUser calls (what the revocation, quarantine and admin-disable
+// paths make) returns well under a second, while the loop's own pass waits out its budget.
+func TestACutRequestNeverWaitsOnTheSFU(t *testing.T) {
+	b := newBarredEnv(t)
+	b.stub.mu.Lock()
+	b.stub.hang = true
+	b.stub.mu.Unlock()
+	stop := b.calls.StartRetries(time.Hour)
+	defer stop()
+	start := time.Now()
+	for range 200 {
+		b.calls.CutDevice(t.Context(), id.New())
+		b.calls.CutUser(t.Context(), id.New())
+	}
+	b.calls.CutDevice(t.Context(), b.memberDev)
+	if took := time.Since(start); took > 200*time.Millisecond {
+		t.Fatalf("401 cut requests against a hung SFU took %s", took)
+	}
+}
+
+// A burst of cut requests for one device coalesces: queued before the loop runs, they are cut in a
+// single pass, with one removal.
+func TestABurstOfCutRequestsCoalescesIntoOnePass(t *testing.T) {
+	b := newBarredEnv(t)
+	if err := b.e.Repo.RevokeDevice(t.Context(), b.memberDev, b.e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	for range 50 {
+		b.calls.CutDevice(t.Context(), b.memberDev)
+	}
+	stop := b.calls.StartRetries(time.Hour)
+	defer stop()
+	if !waitRemoved(b.stub, b.room, b.memberDev) {
+		t.Fatal("the queued cut never landed")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := b.calls.CutPasses(); n != 1 {
+		t.Fatalf("cut passes = %d, want the burst in one", n)
+	}
+	devices, _ := b.stub.removals()
+	if n := len(devices); n != 1 {
+		t.Fatalf("removals = %v, want one", devices)
 	}
 }
 

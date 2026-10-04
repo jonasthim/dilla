@@ -603,9 +603,12 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   channel, is disconnected from the call's room with every `"<device>#…"` participant of it, before
   the call group's `Remove` of its leaf is committed, and its sharing slot is freed. That happens
   **at once**, within the request that made the change, for a role or overwrite change, a kick, a
-  leave, a ban, a group-DM removal, a channel's visibility change, a device revocation through
+  leave, a ban, a group-DM removal and a channel's visibility change. A device revocation through
   `DELETE /v1/devices/{id}` or an account deletion, a user disable through the admin route, and a
-  fork quarantine. A change written to the database by another process — `dillad admin user
+  fork quarantine **queue** the cut at once, without waiting on the SFU, and the instance's
+  background loop, woken by the request, makes it immediately after on its own (within its next
+  pass); the device is refused everywhere meanwhile, since it is barred. A queue that is full leaves
+  the cut to the room sweep. A change written to the database by another process — `dillad admin user
   disable` or `delete`, an admin device revoke — and a device admitted by the signalling proxy just
   before it lost access are caught by the **room sweep**: at most every 30 seconds the instance
   lists its SFU's rooms and, for each live call's room, applies the same rule to every participant,

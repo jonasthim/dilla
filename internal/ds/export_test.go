@@ -300,3 +300,14 @@ func RedriveCallRemovesForTest(d *DS, ctx context.Context, groupID id.ID, fromEp
 	defer unlock()
 	return d.redriveCallRemovesLocked(ctx, groupID, fromEpoch, curEpoch)
 }
+
+// GroupLockFree reports whether nobody holds groupID's lock right now.
+func (d *DS) GroupLockFree(groupID id.ID) bool {
+	v, _ := d.groupLocks.LoadOrStore(groupID, &sync.Mutex{})
+	mu, _ := v.(*sync.Mutex)
+	if !mu.TryLock() {
+		return false
+	}
+	mu.Unlock()
+	return true
+}

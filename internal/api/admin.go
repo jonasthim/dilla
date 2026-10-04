@@ -297,7 +297,8 @@ func (a *Admin) disableUser(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	// A disabled user's devices leave every live call now, not at the room sweep.
+	// A disabled user's devices are queued to leave every live call (the retry loop cuts them at
+	// once, off this request's goroutine), not left to the room sweep.
 	if req.Disabled == 1 && a.calls != nil {
 		a.calls.CutUser(context.WithoutCancel(r.Context()), target)
 	}
