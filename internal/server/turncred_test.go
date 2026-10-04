@@ -161,7 +161,7 @@ func TestCloseCancelsAndJoinsTheHoldersRecheck(t *testing.T) {
 	}
 	srv, err := server.StartTURN(config.TURN{Enabled: true, Realm: "chat.example.test", RelayIP: "127.0.0.1",
 		SharedSecretFile: writeFile(t, "turn.secret", "0123456789abcdef0123456789abcdef"), CredentialTTL: "1h"},
-		ln, netip.MustParseAddr("127.0.0.1"), nil, nil, rev, clock.System(), slog.New(slog.DiscardHandler))
+		ln, netip.MustParseAddr("127.0.0.1"), server.TURNPeers{}, nil, rev, clock.System(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("StartTURN: %v", err)
 	}

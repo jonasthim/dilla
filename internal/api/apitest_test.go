@@ -410,6 +410,28 @@ type stubSFU struct {
 	// DeleteRoom that succeeds. roomsFail fails Rooms.
 	rooms     map[string]bool
 	roomsFail error
+	// sids is the LiveKit room sid of each room the stub holds, set by setSID (none: "").
+	sids map[string]string
+}
+
+// RoomSID is sfu.Server's: the sid of the room the stub holds under that name now.
+func (s *stubSFU) RoomSID(_ context.Context, room string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sids[room], s.rooms[room], nil
+}
+
+// setSID names the incarnation of room the stub holds, opening it.
+func (s *stubSFU) setSID(room, sid string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sids == nil {
+		s.sids = map[string]string{}
+	}
+	if s.rooms == nil {
+		s.rooms = map[string]bool{}
+	}
+	s.sids[room], s.rooms[room] = sid, true
 }
 
 func (s *stubSFU) Rooms(ctx context.Context) ([]string, error) {

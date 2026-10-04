@@ -132,9 +132,15 @@ func (c Config) YAML() (string, error) {
 	if c.BindAddress == "" || c.NodeIP == "" {
 		return "", errors.New("sfu: bind address and node ip must both be set explicitly")
 	}
+	// The /rtc proxy is the only way into LiveKit's signalling and RoomService, so LiveKit listens on
+	// loopback alone, and on a literal: a hostname binds one resolved address while dillad's readiness
+	// dial, proxy and RoomService calls may reach another (branch review SFU-3).
+	if a, err := netip.ParseAddr(c.BindAddress); err != nil || !a.IsLoopback() || a.Zone() != "" {
+		return "", fmt.Errorf("sfu: bind address %q is not a loopback IP literal", c.BindAddress)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "port: %d\n", c.Port)
-	fmt.Fprintf(&b, "bind_addresses:\n  - %s\n", c.BindAddress)
+	fmt.Fprintf(&b, "bind_addresses:\n  - %q\n", c.BindAddress)
 	fmt.Fprintf(&b, "keys:\n  %s: %q\n", c.APIKey, c.APISecret)
 	b.WriteString("rtc:\n")
 	fmt.Fprintf(&b, "  node_ip: %s\n", c.NodeIP)

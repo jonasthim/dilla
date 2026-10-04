@@ -216,6 +216,19 @@ func (c *Config) Validate() error {
 		add("livekit.max_publishers is %d; the range is 1..livekit.max_voice_participants (%d)",
 			c.LiveKit.MaxPublishers, c.LiveKit.MaxVoiceParticipants)
 	}
+	// The /rtc proxy is the only way into LiveKit's signalling and RoomService (protocol/09): a
+	// non-loopback bind lets any holder of a LiveKit token skip the join gate, and a hostname binds
+	// one resolved address while dillad's dials may reach another a local process holds (SFU-3).
+	if a, err := netip.ParseAddr(c.LiveKit.BindAddress); err != nil || !a.IsLoopback() || a.Zone() != "" {
+		add("livekit.bind_address is %q; it must be a loopback IP literal such as 127.0.0.1 or ::1 (not a hostname): "+
+			"LiveKit's signalling and RoomService are reached only through dillad's /rtc gate", c.LiveKit.BindAddress)
+	}
+	// VP9 has a frame-prefix rule (0 clear bytes, protocol/05) but no SFrame test vector, and it has
+	// never been measured through LiveKit; until both exist it stays off (crypto lens, parked VP9).
+	if c.LiveKit.VP9 {
+		add("livekit.vp9 = true is refused: VP9 has no SFrame test vector yet and has not been measured through LiveKit; " +
+			"remove the key until the VP9 follow-up lands")
+	}
 	if c.LiveKit.UseExternalIP {
 		add("livekit.use_external_ip is reserved and must stay false: livekit.node_ip is the address LiveKit advertises")
 	}

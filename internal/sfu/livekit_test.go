@@ -49,7 +49,7 @@ func TestYAMLCarriesTheLoopbackKeys(t *testing.T) {
 	for _, want := range []string{
 		"port: 7880",
 		"bind_addresses:",
-		"- 127.0.0.1",
+		"- \"127.0.0.1\"",
 		"keys:",
 		"node_ip: 127.0.0.1",
 		"use_external_ip: false",
@@ -544,7 +544,7 @@ func TestTheDefaultYAMLIsTheVerifiedShape(t *testing.T) {
 	}
 	const want = `port: 7880
 bind_addresses:
-  - 127.0.0.1
+  - "127.0.0.1"
 keys:
   dilla: "dilla-spike-secret-0123456789abcdef"
 rtc:
@@ -933,8 +933,9 @@ func TestTheLiveKitLogVolumeStaysBounded(t *testing.T) {
 	}
 }
 
-// DEV-58: one /metrics over dillad's registry and the default one LiveKit registers on, with no
-// family clash (a clash would answer 500 under promhttp's default HTTPErrorOnError).
+// DEV-58: one /metrics over dillad's registry and the default one LiveKit registers on, served
+// through LiveKitGatherer as serve wires it, with no family clash (a clash would answer 500 under
+// promhttp's default HTTPErrorOnError).
 func TestOneMetricsEndpointServesLiveKitAndDilla(t *testing.T) {
 	c := testConfig()
 	c.Port, c.UDPPort = 7924, 7926
@@ -944,7 +945,7 @@ func TestOneMetricsEndpointServesLiveKitAndDilla(t *testing.T) {
 	}
 	defer func() { _ = srv.Stop(context.Background()) }()
 	reg := prometheus.NewRegistry()
-	m := obs.NewMetrics(reg, prometheus.Gatherers{reg, prometheus.DefaultGatherer})
+	m := obs.NewMetrics(reg, prometheus.Gatherers{reg, LiveKitGatherer(prometheus.DefaultGatherer)})
 	ts := httptest.NewServer(m.Handler(false, ""))
 	defer ts.Close()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL, nil)

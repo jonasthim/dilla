@@ -27,16 +27,27 @@ of the TLS listener hands STUN to the relay and everything else to HTTPS. Only 4
 
 ### What the TURN relay can reach
 
-The relay is restricted to the host's own SFU: it refuses a `CreatePermission` or `ChannelBind` for
-any peer address that is not `livekit.node_ip` (plus, with `livekit.advertise_internal_ip`, the
-host's interface addresses LiveKit also offers), and it refuses all of them when LiveKit is off. The
-filter is by IP address only, not by port. Every UDP port on an admitted address is therefore
-reachable by any call participant holding a relay credential, not just LiveKit's 7882: any other
-service bound on those addresses (a `0.0.0.0` listener, a Docker bridge address) is exposed, and
-when `livekit.node_ip` is unset the admitted address is `127.0.0.1`, which exposes every loopback
-UDP service. So set `livekit.node_ip` to the address the world reaches the SFU on, keep other
-services off the admitted addresses (bind them to an address that is not admitted), or firewall
-them.
+The relay is restricted to the host's own SFU, by address and by port. It refuses a
+`CreatePermission` or `ChannelBind` for any peer address that is not `livekit.node_ip` (plus, with
+`livekit.advertise_internal_ip`, the host's interface addresses LiveKit also listens on, minus
+`livekit.ips_excludes`), and it refuses all of them when LiveKit is off. On an admitted address the
+relay socket then exchanges datagrams only with LiveKit's media port, `livekit.udp_port` (7882; with
+`udp_port = 0`, LiveKit's 50000-60000 range), and never with another relay allocation: anything a
+client sends elsewhere, and anything that arrives from elsewhere, is dropped and counted in
+`dilla_turn_peer_drops_total`. Other UDP services on the admitted addresses, loopback included when
+`livekit.node_ip` is unset, are not reachable through the relay, and one member cannot push traffic
+into another member's relayed call. With `udp_port = 0` every port of that range on the admitted
+addresses is reachable, so keep other services out of 50000-60000 there, or set a fixed `udp_port`.
+
+The relay also bounds what one credential, and the whole instance, can hold: a TURN connection that
+has not created an allocation within 30 seconds of connecting is closed, and so is one that has gone
+61 minutes without an authenticated request on its allocation (longer than any allocation lives
+without a refresh). Unauthenticated bytes, an `Allocate` refused at a quota, and the requests of a
+revoked device or an expired credential do not keep a connection open. An `Allocate`
+with `EVEN-PORT` or `RESERVATION-TOKEN` is refused with 508 (browsers never send either). At most
+8192 relay allocations are live on the instance at once, whatever the devices; past that, an
+`Allocate` is refused with 486, counted in `dilla_turn_capacity_refusals_total` and logged at WARN.
+This is a fixed backstop until device enrolment per user is capped.
 
 The relay offers UDP relays only. It refuses an RFC 6062 TCP allocation (`REQUESTED-TRANSPORT` TCP)
 with STUN error 508, so no `Connect` can open a TCP connection to an admitted address. Browsers never
@@ -96,7 +107,10 @@ cut device's call start answers 429 until the clock passes the cut, and a step b
 (NTP slewing, not stepping). `dillad doctor` run from another host mints its relay probe on that
 host's clock, which must be within 2 seconds of the server's. Watch `dilla_turn_allocations`, `dilla_turn_quota_refusals_total`,
 `dilla_turn_relay_bytes_total` and the `turn_relay` leg of the admin diagnostics; raise
-`turn.allocations_per_device` when refusals appear. If `livekit.node_ip` is a public address the
+`turn.allocations_per_device` when refusals appear. `dilla_turn_cut_overflows_total` counts the
+revocations that found the relay's revocation table full (65 536 live entries) and refused every
+device's earlier credentials instead, each logged at WARN; any value above 0 means a mass relay
+reconnect happened and is worth investigating. If `livekit.node_ip` is a public address the
 host does not hold (behind NAT) and `livekit.advertise_internal_ip` is on, the relay does not admit
 `node_ip` and `dillad serve` logs a warning saying so: relayed media pairs with the host's own
 addresses instead.
@@ -131,8 +145,14 @@ What it fixes, and the keys that change it:
   Constrained Baseline with `packetization-mode=1`. (LiveKit cannot be limited to that profile in
   its own configuration without refusing H.264 altogether, so the restriction lives in the
   clients.) Every call is end-to-end encrypted frame by frame, so nothing else could be decrypted
-  on the other side anyway. `livekit.vp9 = true` adds VP9 profile 0; leave it off until the VP9
-  follow-up says otherwise. AV1 and H.265 are never offered.
+  on the other side anyway. `livekit.vp9 = true` is refused at start: VP9 has no frame test vector
+  yet and has not been measured through LiveKit. AV1 and H.265 are never offered.
+- **Loopback only.** `livekit.bind_address` (default `127.0.0.1`) must be a loopback IP literal
+  (`127.0.0.1`, `::1`); a hostname such as `localhost`, `0.0.0.0` or a LAN address is refused at
+  start. Clients reach LiveKit only through dillad's `/rtc` proxy, which checks every join. A load
+  rig or any other direct LiveKit client on another host reaches signalling through an ssh tunnel
+  to loopback (`ssh -L 7880:127.0.0.1:7880 <host>`), with media direct on UDP — never by binding
+  LiveKit to a LAN address.
 - **No TCP fallback.** LiveKit's own TCP fallback is off and `livekit.tcp_port` stays 0: a client
   that cannot reach UDP 7882 relays through TURN/TLS on 443 instead.
 - **STUN.** `livekit.stun_servers` defaults to `<instance.domain>:3478` and is never served: it only
@@ -147,18 +167,34 @@ What it fixes, and the keys that change it:
   them generously: one 25-person voice call is about 600 forwarded tracks.
 - **Publish caps.** `livekit.max_audio_bitrate_kbps` (64) and `livekit.max_share_bitrate_kbps`
   (2500) are handed to clients with every call token.
-- **Docker with a bridge network.** LiveKit offers every interface address as a candidate,
-  including the container's `172.x` bridge address, which no client can reach. List the bridge
-  range so LiveKit leaves it out:
-
-  ```toml
-  [livekit]
-  ips_excludes = ["172.16.0.0/12"]
-  ```
-
-  With `network_mode: host` this is not needed.
+- **Which addresses LiveKit offers, and `ips_excludes`.** LiveKit opens its media socket
+  (`udp_port`) on each address of the host's up interfaces (loopback only when `node_ip` is
+  loopback, and never `::1`), skipping those inside `livekit.ips_excludes`, and builds its host
+  candidates only from those sockets. `node_ip` is then offered for each of them, beside the local address with
+  `advertise_internal_ip = true` (the default) or instead of it with `false`. So `ips_excludes` can
+  drop an address but never adds one: if it covers every address the SFU has, LiveKit offers no
+  candidate at all and every call fails, and `dillad serve` refuses to start (exit 78) with a message
+  saying so. Use it with host networking or systemd to keep addresses such as `docker0`, WireGuard or
+  Tailscale out of the candidates, and never on the address `node_ip` is, or the only address left.
+- **Docker with a bridge network.** Do NOT exclude the bridge range: the container's `172.x`
+  address is its only address, and the socket on it is where Docker delivers the published 7882/udp.
+  Set `livekit.node_ip` to the public address and leave `ips_excludes` empty. With the default
+  `advertise_internal_ip = true` clients also see the `172.x` candidate, which they cannot reach and
+  skip after a failed check; the relay, inside the same container, pairs with it on the bridge. With
+  `advertise_internal_ip = false` only `node_ip` is offered; the relay then reaches the SFU through
+  the host's port mapping (a hairpin through `node_ip`), which works only if the host lets a
+  container reach its own published port on the public address. This recipe is derived from
+  LiveKit's source (mediatransportutil `rtcconfig/webrtc_config.go`, `transport/createmux.go`,
+  livekit/ice `gather.go`) and has not been measured on a real bridge network. Check it on yours:
+  open `chrome://webrtc-internals` during a call and confirm a remote `host` candidate on
+  `node_ip:7882` and a connected pair, then repeat with the browser forced to the relay
+  (`iceTransportPolicy: "relay"`, or UDP to 7882 blocked) and confirm the call still connects.
 - **Logs and metrics.** LiveKit's and pion's logs appear in dillad's own log (pion's only at
-  ERROR); LiveKit's `livekit_*` metrics appear on dillad's `/metrics` beside `dilla_*`.
+  ERROR) with a fixed set of fields — no SDP, no addresses, ids cut to eight characters — at most
+  20 lines in a burst and 5 a second per message, with one "LiveKit log lines suppressed" line
+  every 10 seconds counting the rest. LiveKit's `livekit_*` metrics appear on dillad's `/metrics`
+  beside `dilla_*`, without protocol version, country or other client-written values; the SDK label
+  keeps only LiveKit's enum names.
 - **If LiveKit stops.** The in-process SFU cannot be restarted inside a running dillad: the
   `livekit` readiness gate turns red and dillad exits with status 69 (`EX_UNAVAILABLE`), and the
   systemd unit or the container's restart policy starts it again.

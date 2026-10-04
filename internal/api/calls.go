@@ -97,6 +97,10 @@ const (
 	sweepPassBudget = 20 * time.Second
 	// cutDeviceBudget bounds one pass over the cut-request set; the sweep covers what it misses.
 	cutDeviceBudget = 15 * time.Second
+	// retryPassBudget bounds one RetryPending pass; the calls it does not reach wait for the next.
+	retryPassBudget = 15 * time.Second
+	// startRetryAfterMS is the retry_after_ms of a start whose call ended as it was opened.
+	startRetryAfterMS = 250
 )
 
 // lock takes call's lock for at most wait (or until ctx ends) and returns a context bounded by hold
@@ -128,16 +132,17 @@ func sfuCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, sfuCallTimeout)
 }
 
-// dropCall forgets an ended call's slots, repairs and F11 penalties under its lock. The call is
-// already over in the record, so a lock that cannot be taken is logged and left to the retry loop,
-// which drops them for an ended call; the wait does not end with the caller's context.
-func (h *Calls) dropCall(ctx context.Context, call id.ID) {
-	_, unlock, err := h.lock(context.WithoutCancel(ctx), call, callLockWaitBackground, callHoldBackground)
+// dropRoom forgets an ended call's slots, repairs and F11 penalties of its room under its lock. The
+// call is already over in the record, so a lock that cannot be taken is logged and left to the retry
+// loop, which drops them for an ended call; the wait does not end with the caller's context.
+func (h *Calls) dropRoom(ctx context.Context, row store.VoiceSessionRow) {
+	h.forgetMembers(row.CallID, row.LivekitRoom)
+	_, unlock, err := h.lock(context.WithoutCancel(ctx), row.CallID, callLockWaitBackground, callHoldBackground)
 	if err != nil {
-		h.log.WarnContext(ctx, "dropping an ended call's sharing slots is left to the retry loop", "call", call, "err", err)
+		h.log.WarnContext(ctx, "dropping an ended call's sharing slots is left to the retry loop", "call", row.CallID, "err", err)
 		return
 	}
-	h.leases.dropCall(call)
+	h.leases.dropRoom(row.CallID, row.LivekitRoom)
 	unlock()
 }
 
@@ -192,6 +197,12 @@ type Calls struct {
 	cutUsers   map[id.ID]bool
 	cutWake    chan struct{}
 	cutPasses  atomic.Int64
+	// The rest of the work queue (callqueue.go), also under cutMu: queued grant syncs, evictions by
+	// room, teardowns of ended calls by room, and resyncAll, raised when a request did not fit.
+	syncs     map[syncKey]bool
+	evictions map[string]*queuedEviction
+	teardowns map[string]queuedTeardown
+	resyncAll bool
 
 	// events and dsvc are set by NewCallEvents (dilla-media task 12): a call that ends closes its
 	// call group through the delivery service — which also drops the group's cached state — and
@@ -204,8 +215,19 @@ type Calls struct {
 	// allocations end with its call session. nil when the instance runs no relay.
 	relay RelayRevoker
 
-	// startHook, set by a test only, runs at named points of start (startStage).
+	// memMu guards the call-group membership state (callmembers.go): the memberships devices were
+	// admitted to rooms with, the absences the sweep tracks, the Removes it decided and when it last
+	// proposed each.
+	memMu        sync.Mutex
+	admissions   map[admitKey][]admission
+	absentSince  map[memberKey]time.Time
+	leafProposed map[memberKey]time.Time
+	leafRemovals []leafRemoval
+
+	// startHook, set by a test only, runs at named points of start (startStage); endHook likewise at
+	// named points of endCall.
 	startHook func(stage string)
+	endHook   func(stage string)
 }
 
 // RelayRevoker cuts a device from the TURN relay as of at; *server.RelayRevocations is one. Revoke
@@ -392,6 +414,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	if live {
 		status = http.StatusOK
 	}
+	h.startStage("put")
 	if err := h.repo.PutVoiceSession(r.Context(), store.VoiceSessionRow{
 		CallID: callID, ChannelID: ch.ID, GroupID: &groupID, LivekitRoom: room, Started: now,
 	}); err != nil {
@@ -403,14 +426,31 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	// The row may name a group an end has closed since this start read it (CALLS-2): the write above
+	// reopens an ended row, and an end closes the call group BEFORE it ends the row (endCall), so a
+	// start whose write landed after an end finds the group closed here. Such a call cannot go on — no
+	// commit of a closed group lands, so no leaf could ever be added or removed — and it is ended at
+	// once; the client retries, and the retry opens on the channel's newest open call group (or is
+	// 404 until one is registered).
+	var kept store.GroupRow
+	if row.GroupID != nil {
+		kept, err = h.repo.GetGroup(r.Context(), *row.GroupID)
+		switch {
+		case errors.Is(err, store.ErrNotFound) || (err == nil && kept.ClosedAt != nil):
+			if err := h.endCall(context.WithoutCancel(r.Context()), callID, row.LivekitRoom, "closed_group"); err != nil {
+				server.WriteError(w, err)
+				return
+			}
+			server.WriteError(w, server.Unavailable(startRetryAfterMS, "the call ended as it was opened; retry"))
+			return
+		case err != nil:
+			server.WriteError(w, err)
+			return
+		}
+	}
 	// Another device may have opened the call on another call group of the channel between the read
 	// above and the write: the room belongs to the group the row names.
 	if row.GroupID != nil && *row.GroupID != groupID {
-		kept, err := h.repo.GetGroup(r.Context(), *row.GroupID)
-		if err != nil {
-			server.WriteError(w, notFound(err))
-			return
-		}
 		if err := h.requireCurrentLeaf(r.Context(), kept, s.DeviceID); err != nil {
 			server.WriteError(w, err)
 			return
@@ -450,6 +490,8 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.startStage("mint")
+	// The token opens the device's join window (the sweep leaves its leaf alone while it connects).
+	h.noteAdmission(r.Context(), row, s.DeviceID)
 	ice, minted, err := h.iceServers(s.DeviceID, begun)
 	if err != nil {
 		server.WriteError(w, err)
@@ -528,8 +570,25 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, notFound(err))
 		return
 	}
-	if err := h.requireCurrentLeaf(r.Context(), group, s.DeviceID); err != nil {
+	// A call whose group is closed is over already (nobody is a leaf of it, so nobody is admitted to
+	// its room): the DELETE only finishes its end. Of a call that can go on, only a current leaf may
+	// end it.
+	closed := group.ClosedAt != nil
+	if !closed {
+		if err := h.requireCurrentLeaf(r.Context(), group, s.DeviceID); err != nil {
+			server.WriteError(w, err)
+			return
+		}
+	}
+	// A barred device (revoked, quarantined, of a disabled or deleted user) ends no call, as it
+	// starts, shares and joins none (CALLS-4); neither does a device penalised in the call's room for
+	// media that is not dilla's (F11), whose penalty ends with the room (CALLS-M1).
+	if err := h.refuseBarred(r.Context(), h.repo, s.DeviceID); err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	if h.leases.penalised(callID, row.LivekitRoom, s.DeviceID) {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device published media that is not dilla-sframe/1 in this call"))
 		return
 	}
 	// protocol/09: DELETE ends the call for everyone — the room is closed, every participant still in
@@ -562,12 +621,16 @@ func (h *Calls) closeRoom(ctx context.Context, room string) {
 // endCall ends one call (DEV-46, gap G30): DELETE /v1/calls/{call_id}, the room_finished webhook,
 // and a start that finds the live call's group closed all come here. It is keyed on the room: an
 // event for an older room of the same call, or for a call already over, changes nothing. In order it
-// ends the voice session, drops every sharing slot, repair and F11 penalty of the call under its
-// lock, deletes the room (disconnecting everyone still in it), closes the call group — so the next
-// call registers a fresh group and no device of this one stays a leaf of it, instead of a Remove for
-// every leaf that no member could commit (OpenMLS refuses a commit removing its own committer) — and
-// announces voice_state 0 for every device the call events saw in the room. The group is closed
-// after the call's lock is released: nothing under a call's lock calls the delivery service.
+// closes the call group — so the next call registers a fresh group and no device of this one stays a
+// leaf of it, instead of a Remove for every leaf that no member could commit (OpenMLS refuses a
+// commit removing its own committer) — then ends the voice session if it is still this call (endRow),
+// drops every sharing slot, repair and F11 penalty of the room under the call's lock, deletes the
+// room (disconnecting everyone still in it) and announces voice_state 0 for every device the call
+// events saw in the room. The group is closed FIRST (CALLS-2): a start that read it open and writes
+// the row after this end reopens it on a group that is closed by then, which the start's own
+// re-read finds and ends; and both gates hold no leaf in a closed group. It is closed before the
+// call's lock is taken: nothing under a call's lock calls the delivery service. An end that finds
+// the call ended by another in between leaves the rest to that one.
 func (h *Calls) endCall(ctx context.Context, callID id.ID, room string, reason string) error {
 	row, err := h.repo.GetVoiceSession(ctx, callID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -579,20 +642,28 @@ func (h *Calls) endCall(ctx context.Context, callID id.ID, room string, reason s
 	if row.Ended != nil || row.LivekitRoom != room {
 		return nil
 	}
-	if err := h.repo.EndVoiceSession(ctx, callID, h.clk.Now().Unix()); err != nil && !errors.Is(err, store.ErrNotFound) {
-		// ErrNotFound is an end that raced another: the call is over either way.
-		return err
-	}
-	h.dropCall(ctx, callID)
-	h.closeRoom(ctx, room)
 	if row.GroupID != nil {
 		h.closeCallGroup(ctx, *row.GroupID)
 	}
+	h.endStage("closed")
+	ended, err := h.endRow(ctx, row)
+	if err != nil || !ended {
+		return err
+	}
+	h.dropRoom(ctx, row)
+	h.closeRoom(ctx, room)
 	if h.events != nil {
 		h.events.ended(ctx, row)
 	}
 	h.log.InfoContext(ctx, "call ended", "call_id", callID.String(), "reason", reason)
 	return nil
+}
+
+// endStage runs the test hook at a named point of endCall ("closed"); nil in production.
+func (h *Calls) endStage(stage string) {
+	if f := h.endHook; f != nil {
+		f(stage)
+	}
 }
 
 // closeCallGroup closes an ended call's group, through the delivery service when the call events
@@ -666,23 +737,47 @@ func (h *Calls) callGroup(ctx context.Context, ch store.ChannelRow) (store.Group
 }
 
 // requireCurrentLeaf is the epoch gate: dev holds a leaf of group that was
-// added at or before the group's current epoch and has not been removed.
+// added at or before the group's current epoch and has not been removed, in a group that is neither
+// closed nor epoch-unknown (leafIn).
 func (h *Calls) requireCurrentLeaf(ctx context.Context, group store.GroupRow, dev id.ID) error {
-	if group.EpochUnknown {
+	switch {
+	case group.ClosedAt != nil:
+		// No commit of a closed group lands (CALLS-2): its member list is final, and a call on it is
+		// over.
+		return server.Errorf(server.CodeLeafNotCurrent, "the call group is closed")
+	case group.EpochUnknown:
 		// After a restore the stored epoch is not known to be the group's, so
 		// neither is its member list; the group heals first.
 		return server.Errorf(server.CodeLeafNotCurrent, "the call group is epoch-unknown until a member heals it")
 	}
-	members, err := h.repo.ListMembers(ctx, group.GroupID)
+	leaf, err := leafIn(ctx, h.repo, group, dev)
 	if err != nil {
 		return err
 	}
+	if !leaf {
+		return server.Errorf(server.CodeLeafNotCurrent, "your device is not a leaf of this call group's current epoch")
+	}
+	return nil
+}
+
+// leafIn is the leaf rule both gates (requireCurrentLeaf, leafOfCall) and the room's reconcile share:
+// dev holds a leaf of group added at or before its current epoch and not removed, and the group is
+// neither closed (no commit of it lands any more, so neither an Add nor a leave's Remove could) nor
+// epoch-unknown (its member list is not known to be current).
+func leafIn(ctx context.Context, repo store.Repository, group store.GroupRow, dev id.ID) (bool, error) {
+	if group.ClosedAt != nil || group.EpochUnknown {
+		return false, nil
+	}
+	members, err := repo.ListMembers(ctx, group.GroupID)
+	if err != nil {
+		return false, err
+	}
 	for _, m := range members {
 		if m.DeviceID == dev && m.RemovedEpoch == nil && m.AddedEpoch <= group.Epoch {
-			return nil
+			return true, nil
 		}
 	}
-	return server.Errorf(server.CodeLeafNotCurrent, "your device is not a leaf of this call group's current epoch")
+	return false, nil
 }
 
 // callIDOfGroup is R9's companion column: the call id the delivery service
@@ -921,6 +1016,10 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 		return nil, errBarred()
 	}
 	ch, err := h.repo.GetChannel(ctx, row.ChannelID)
+	if errors.Is(err, store.ErrNotFound) {
+		// The channel is deleted: its call is over, whatever the record still says (CALLS-1).
+		return nil, notLeaf
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -932,6 +1031,29 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 		return nil, server.Errorf(server.CodeForbidden, "your device may no longer join this call")
 	}
 	return h.admitGrant(bits, row, device), nil
+}
+
+// Admitted records that the /rtc proxy let device's join of room through: the gate (AdmitRoom)
+// passed and so did every check the proxy makes after it (the token's grants, the client's
+// signalling protocol). It is the admission a leave of the session is bound to (DS-7, N2) and what
+// opens the device's join window for the sweep (ruling (a)). Recording it only here (M-2 of the
+// integration re-review) means a request the proxy refuses neither holds a join window open nor
+// pushes a session's real admission out of the few remembered. A room that is no live call's
+// records nothing.
+func (h *Calls) Admitted(ctx context.Context, room string, device id.ID) {
+	callHex, _, ok := strings.Cut(room, "-")
+	if !ok {
+		return
+	}
+	callID, err := id.Parse(callHex)
+	if err != nil {
+		return
+	}
+	row, err := h.repo.GetVoiceSession(ctx, callID)
+	if err != nil || row.Ended != nil || row.LivekitRoom != room {
+		return
+	}
+	h.noteAdmission(ctx, row, device)
 }
 
 // barred reports whether dv may take part in no call at all: the device is revoked or quarantined,

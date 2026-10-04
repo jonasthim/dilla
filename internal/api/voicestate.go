@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -24,25 +25,112 @@ const (
 	VoiceScreen   uint64 = 1 << 4
 )
 
-// announce sends one voice_state to every device of every user who may view ch (MD-11): the
-// resolver's view_channel holders of a community channel, a DM's participants. The gateway delivers
-// to the users' live connections only, so an offline user receives nothing.
+const (
+	// announceInterval is the least time between two deliveries of queued voice_state frames: what
+	// one device's flags do within it is coalesced into its latest state (CALLS-5).
+	announceInterval = 250 * time.Millisecond
+	// maxPendingAnnouncements bounds the queued voice_state, one entry per (call, device); one beyond
+	// it is dropped with a WARN (voice_state is advisory, and the next change of that device sends it).
+	maxPendingAnnouncements = 4096
+	// audienceTimeout bounds one resolution of a channel's audience on the announcer's goroutine.
+	audienceTimeout = 10 * time.Second
+)
+
+// announceKey is one device in one call: its voice_state coalesces to the latest flags.
+type announceKey struct{ call, dev id.ID }
+
+// announcement is one queued voice_state.
+type announcement struct {
+	ch        store.ChannelRow
+	user      id.ID
+	flags     uint64
+	call, dev id.ID
+}
+
+// announce queues one voice_state for every device of every user who may view ch (MD-11): the
+// resolver's view_channel holders of a community channel, a DM's participants. It never resolves
+// the audience on the caller's goroutine (CALLS-5): a webhook's worker only records the device's
+// latest flags, and the announcer — its own goroutine, alive only while something is queued —
+// delivers them at most every announceInterval, resolving each channel's audience once per delivery
+// whatever the number of events behind it. So a member who publishes and unpublishes in a loop costs
+// the webhook worker a map write per event, and the store one audience resolution per interval. The
+// gateway delivers to the users' live connections only, so an offline user receives nothing.
 func (c *CallEvents) announce(ctx context.Context, ch store.ChannelRow, callID, user, dev id.ID, flags uint64) {
 	if c.gw == nil {
 		return
 	}
-	payload, err := gateway.VoiceStatePayload(user, dev, callID, flags)
-	if err != nil {
-		c.log.ErrorContext(ctx, "encoding a voice_state failed", "err", err)
+	k := announceKey{call: callID, dev: dev}
+	c.amu.Lock()
+	if c.apending == nil {
+		c.apending = map[announceKey]announcement{}
+	}
+	if _, ok := c.apending[k]; !ok && len(c.apending) >= maxPendingAnnouncements {
+		c.amu.Unlock()
+		c.log.WarnContext(ctx, "the voice_state queue is full; this announcement is dropped", "device_id", dev.String())
 		return
 	}
-	audience, err := EligibleUsers(ctx, c.repo, ch)
-	if err != nil {
-		c.log.ErrorContext(ctx, "resolving a voice channel's audience failed", "channel_id", ch.ID.String(), "err", err)
-		return
+	c.apending[k] = announcement{ch: ch, user: user, flags: flags, call: callID, dev: dev}
+	start := !c.arunning
+	c.arunning = true
+	c.amu.Unlock()
+	if start {
+		go c.drainAnnouncements()
 	}
-	f := gateway.Frame{Op: gateway.OpVoiceState, Payload: payload}
-	for _, u := range audience {
-		c.gw.DeliverUser(u, f)
+}
+
+// drainAnnouncements is the announcer: it delivers what is queued, waits announceInterval, and
+// returns once a delivery found nothing more queued.
+func (c *CallEvents) drainAnnouncements() {
+	for {
+		c.amu.Lock()
+		batch := c.apending
+		c.apending = nil
+		if len(batch) == 0 {
+			c.arunning = false
+			c.amu.Unlock()
+			return
+		}
+		c.adelivering = true
+		c.amu.Unlock()
+		c.deliver(batch)
+		c.amu.Lock()
+		c.adelivering = false
+		c.amu.Unlock()
+		time.Sleep(announceInterval)
 	}
+}
+
+// deliver sends one batch, resolving each channel's audience once.
+func (c *CallEvents) deliver(batch map[announceKey]announcement) {
+	byChannel := map[id.ID][]announcement{}
+	for _, a := range batch {
+		byChannel[a.ch.ID] = append(byChannel[a.ch.ID], a)
+	}
+	for chID, list := range byChannel {
+		ctx, cancel := context.WithTimeout(context.Background(), audienceTimeout)
+		audience, err := EligibleUsers(ctx, c.repo, list[0].ch)
+		cancel()
+		if err != nil {
+			c.log.Error("resolving a voice channel's audience failed", "channel_id", chID.String(), "err", err)
+			continue
+		}
+		for _, a := range list {
+			payload, err := gateway.VoiceStatePayload(a.user, a.dev, a.call, a.flags)
+			if err != nil {
+				c.log.Error("encoding a voice_state failed", "err", err)
+				continue
+			}
+			f := gateway.Frame{Op: gateway.OpVoiceState, Payload: payload}
+			for _, u := range audience {
+				c.gw.DeliverUser(u, f)
+			}
+		}
+	}
+}
+
+// announcementsIdle reports whether nothing is queued or being delivered (a test's flush).
+func (c *CallEvents) announcementsIdle() bool {
+	c.amu.Lock()
+	defer c.amu.Unlock()
+	return len(c.apending) == 0 && !c.adelivering
 }

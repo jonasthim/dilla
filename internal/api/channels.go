@@ -240,8 +240,9 @@ func (c *Channels) removeMember(w http.ResponseWriter, r *http.Request) {
 	if err := SyncGroupMembers(afterCommit(r), c.repo, c.dsvc, row, now); err != nil {
 		c.log.ErrorContext(r.Context(), "sync group members after remove", "channel", row.ID, "err", err)
 	}
-	// The removed participant's connected session in the DM's call is cut now.
-	syncAfterMembership(afterCommit(r), c.calls, c.log, id.ID{}, target, &row.ID)
+	// The removed participant's connected session in the DM's call is cut immediately after, on the
+	// call retry loop (the request queues it and never waits on the SFU).
+	syncAfterMembership(afterCommit(r), c.calls, id.ID{}, target, &row.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -597,12 +598,10 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 			c.log.ErrorContext(r.Context(), "materialise channel members", "channel", updated.ID, "err", err)
 		}
 		// A private channel's members are re-derived: every participant of its live call is
-		// reconciled now, so one who may no longer be in it is cut.
-		if c.calls != nil && c.calls.sfu != nil && updated.CommunityID != nil {
-			if err := SyncCallGrants(afterCommit(r), c.repo, c.res, c.calls.sfu, c.calls, *updated.CommunityID, nil, &updated.ID); err != nil {
-				c.log.ErrorContext(r.Context(), "re-syncing a channel's live call after a visibility change failed",
-					"channel", updated.ID, "err", err)
-			}
+		// reconciled immediately after, on the call retry loop, so one who may no longer be in it is
+		// cut; the request only queues it.
+		if updated.CommunityID != nil {
+			c.calls.RequestSync(afterCommit(r), *updated.CommunityID, nil, &updated.ID)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -766,6 +765,9 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 		c.log.ErrorContext(r.Context(), "close the groups of a deleted channel",
 			"channel", row.ID, "err", err)
 	}
+	// Its live call ends with it (CALLS-1), after its call group is closed: ended in the record now,
+	// so every gate refuses its room, and its room closed immediately after on the call retry loop.
+	c.calls.EndChannelCalls(afterCommit(r), []id.ID{row.ID}, "channel_deleted")
 	w.WriteHeader(http.StatusNoContent)
 }
 

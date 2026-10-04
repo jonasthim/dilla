@@ -139,7 +139,7 @@ func TestTURNAllocatesThroughTheDemuxAndHoldsTheQuota(t *testing.T) {
 		SharedSecretFile: writeFile(t, "turn.secret", secret+"\n"),
 		CredentialTTL:    "1h", AllocationsPerDevice: 2,
 	}
-	srv, err := server.StartTURN(c, d.TURN(), netip.Addr{}, nil, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
+	srv, err := server.StartTURN(c, d.TURN(), netip.Addr{}, server.TURNPeers{}, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("StartTURN: %v", err)
 	}
@@ -254,7 +254,22 @@ func udpPeer(t *testing.T, addr string) (net.PacketConn, <-chan string) {
 	return pc, got
 }
 
-func startPlainTURN(t *testing.T, secret string, peers []netip.Addr) string {
+// sfuPeers admits the addresses of conns, standing in for the SFU, on the ports from the lowest of
+// theirs to the highest.
+func sfuPeers(conns ...net.PacketConn) server.TURNPeers {
+	var p server.TURNPeers
+	for _, c := range conns {
+		ap := c.LocalAddr().(*net.UDPAddr).AddrPort()
+		p.Addrs = append(p.Addrs, ap.Addr().Unmap())
+		if p.PortLo == 0 || ap.Port() < p.PortLo {
+			p.PortLo = ap.Port()
+		}
+		p.PortHi = max(p.PortHi, ap.Port())
+	}
+	return p
+}
+
+func startPlainTURN(t *testing.T, secret string, peers server.TURNPeers) string {
 	t.Helper()
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -278,7 +293,7 @@ func TestTheRelayReachesOnlyTheSFU(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	sfu, toSFU := udpPeer(t, "127.0.0.2:0")
 	victim, toVictim := udpPeer(t, "127.0.0.1:0")
-	addr := startPlainTURN(t, secret, []netip.Addr{netip.MustParseAddr("127.0.0.2")})
+	addr := startPlainTURN(t, secret, sfuPeers(sfu))
 	relay := plainTURNClient(t, addr, secret)
 
 	if _, err := relay.WriteTo([]byte("media"), sfu.LocalAddr()); err != nil {
@@ -311,7 +326,7 @@ func TestTheRelayReachesOnlyTheSFU(t *testing.T) {
 func TestWithoutAnSFUTheRelayAdmitsNoPeer(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	peer, got := udpPeer(t, "127.0.0.2:0")
-	relay := plainTURNClient(t, startPlainTURN(t, secret, nil), secret)
+	relay := plainTURNClient(t, startPlainTURN(t, secret, server.TURNPeers{}), secret)
 	if _, err := relay.WriteTo([]byte("media"), peer.LocalAddr()); err == nil {
 		t.Error("a write was accepted by a relay with no SFU to reach")
 	}
@@ -395,7 +410,7 @@ func TestAnAutoRelayIPIsALocalAddressTheRelayBinds(t *testing.T) {
 	srv, err := server.StartTURN(config.TURN{
 		Enabled: true, Realm: "chat.example.test", RelayIP: "auto",
 		SharedSecretFile: writeFile(t, "turn.secret", secret), CredentialTTL: "1h", AllocationsPerDevice: 2,
-	}, ln, netip.Addr{}, nil, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
+	}, ln, netip.Addr{}, server.TURNPeers{}, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf(`StartTURN with relay_ip "auto": %v`, err)
 	}
@@ -415,7 +430,7 @@ func TestStartTURNRefusesAMissingSecret(t *testing.T) {
 	_, err = server.StartTURN(config.TURN{
 		Enabled: true, Realm: "chat.example.test", RelayIP: "127.0.0.1",
 		SharedSecretFile: filepath.Join(t.TempDir(), "missing"), CredentialTTL: "1h", AllocationsPerDevice: 2,
-	}, ln, netip.Addr{}, nil, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
+	}, ln, netip.Addr{}, server.TURNPeers{}, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("StartTURN ran without its shared secret")
 	}
@@ -439,7 +454,7 @@ func TestANetworkSetupFailureIsNotAConfigError(t *testing.T) {
 		Enabled: true, Realm: "chat.example.test", RelayIP: "127.0.0.1",
 		SharedSecretFile: writeFile(t, "turn.secret", "0123456789abcdef0123456789abcdef"),
 		CredentialTTL:    "1h", AllocationsPerDevice: 2,
-	}, ln, netip.Addr{}, nil, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
+	}, ln, netip.Addr{}, server.TURNPeers{}, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err == nil || !strings.Contains(err.Error(), "netlinkrib") {
 		t.Fatalf("StartTURN with no network = %v, want the network error", err)
 	}
@@ -461,6 +476,7 @@ func writeFile(t *testing.T, name, body string) string {
 type fakeTURNMetrics struct {
 	mu                        sync.Mutex
 	refused, toClient, toPeer int
+	full, dropped, overflows  int
 	allocations               []int
 }
 
@@ -468,6 +484,32 @@ func (m *fakeTURNMetrics) QuotaRefused() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.refused++
+}
+
+func (m *fakeTURNMetrics) CapacityRefused() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.full++
+}
+
+func (m *fakeTURNMetrics) PeerDropped() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dropped++
+}
+
+func (m *fakeTURNMetrics) CutOverflow() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.overflows++
+}
+
+// extra is what the relay counted beyond snapshot: Allocates refused at the instance-wide cap,
+// datagrams dropped for their peer, and overflowing cuts.
+func (m *fakeTURNMetrics) extra() (full, dropped, overflows int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.full, m.dropped, m.overflows
 }
 
 func (m *fakeTURNMetrics) RelayBytes(toClient bool, n int) {
@@ -524,13 +566,13 @@ func TestTheCredentialExpiryBindsAllocateOnly(t *testing.T) {
 }
 
 // startMeteredTURN is startPlainTURN with a TURN config and metrics of the test's own.
-func startMeteredTURN(t *testing.T, secret string, c config.TURN, peers []netip.Addr, m server.TURNMetrics, clk clock.Clock) string {
+func startMeteredTURN(t *testing.T, secret string, c config.TURN, peers server.TURNPeers, m server.TURNMetrics, clk clock.Clock) string {
 	t.Helper()
 	return startRevokableTURN(t, secret, c, peers, m, nil, clk)
 }
 
 // startRevokableTURN is startMeteredTURN reading the test's own revocation state.
-func startRevokableTURN(t *testing.T, secret string, c config.TURN, peers []netip.Addr, m server.TURNMetrics,
+func startRevokableTURN(t *testing.T, secret string, c config.TURN, peers server.TURNPeers, m server.TURNMetrics,
 	rev *server.RelayRevocations, clk clock.Clock) string {
 	t.Helper()
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -595,7 +637,7 @@ func TestAnExpiredCredentialStillBindsButCannotAllocate(t *testing.T) {
 	peerA, gotA := udpPeer(t, "127.0.0.2:0")
 	peerB, gotB := udpPeer(t, "127.0.0.3:0")
 	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1m", MaxAllocationAge: "3m", AllocationsPerDevice: 4},
-		[]netip.Addr{netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("127.0.0.3")}, nil, clk)
+		sfuPeers(peerA, peerB), nil, clk)
 	user, pass := server.TURNCredential(secret, id.New(), time.Minute, now)
 	relay, err := allocateAs(t, addr, user, pass)
 	if err != nil {
@@ -658,7 +700,7 @@ func TestTheMaxAgeIsMeasuredFromTheCarriedIssueTime(t *testing.T) {
 func TestClosingAnAllocationFreesItsSlotAndTheGauge(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	m := &fakeTURNMetrics{}
-	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 4}, nil, m, clock.System())
+	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 4}, server.TURNPeers{}, m, clock.System())
 	user, pass := server.TURNCredential(secret, id.New(), time.Hour, time.Now())
 	var relays []net.PacketConn
 	for i := range 4 {
@@ -1056,7 +1098,7 @@ func TestAnAllocationRacingACutIsRefused(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	m := &fakeTURNMetrics{}
 	rev := server.NewRelayRevocations(2*time.Hour, clock.System())
-	addr := startRevokableTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 1}, nil, m, rev, clock.System())
+	addr := startRevokableTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 1}, server.TURNPeers{}, m, rev, clock.System())
 	dev := id.New()
 	time.Sleep(2 * time.Millisecond) // a credential minted after the relay started
 	user, pass := server.TURNCredential(secret, dev, time.Hour, time.Now())
@@ -1101,7 +1143,7 @@ func TestRevokingADeviceClosesItsRelay(t *testing.T) {
 	rev := server.NewRelayRevocations(2*time.Hour, clock.System())
 	peer, got := udpPeer(t, "127.0.0.2:0")
 	addr := startRevokableTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 1},
-		[]netip.Addr{netip.MustParseAddr("127.0.0.2")}, m, rev, clock.System())
+		sfuPeers(peer), m, rev, clock.System())
 	dev := id.New()
 	time.Sleep(2 * time.Millisecond) // a credential minted after the relay started
 	user, pass := server.TURNCredential(secret, dev, time.Hour, time.Now())
@@ -1160,7 +1202,7 @@ func (f *fakeBarred) lookups() int {
 }
 
 // barredRelay is a relay on a fake clock whose revocation state consults look and logs to logged.
-func barredRelay(t *testing.T, secret string, c config.TURN, peers []netip.Addr, look *fakeBarred) (
+func barredRelay(t *testing.T, secret string, c config.TURN, peers server.TURNPeers, look *fakeBarred) (
 	addr string, m *fakeTURNMetrics, rev *server.RelayRevocations, clk *clock.Fake, logged *strings.Builder) {
 	t.Helper()
 	m, clk, logged = &fakeTURNMetrics{}, clock.NewFake(time.Now()), &strings.Builder{}
@@ -1189,7 +1231,7 @@ func (w lockedWriter) Write(p []byte) (int, error) {
 func TestUnauthenticatedRequestsNeverReachTheBarredLookup(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	look := &fakeBarred{}
-	addr, _, rev, clk, _ := barredRelay(t, secret, config.TURN{CredentialTTL: "1h"}, nil, look)
+	addr, _, rev, clk, _ := barredRelay(t, secret, config.TURN{CredentialTTL: "1h"}, server.TURNPeers{}, look)
 	realDev := id.New()
 	user, pass := server.TURNCredential(secret, realDev, time.Hour, clk.Now())
 	if _, err := allocateAs(t, addr, user, pass); err != nil {
@@ -1222,7 +1264,7 @@ func TestABarredDeviceLosesTheRelayOnItsNextAuthenticatedRequest(t *testing.T) {
 	look := &fakeBarred{}
 	peer, _ := udpPeer(t, "127.0.0.2:0")
 	addr, m, rev, clk, logged := barredRelay(t, secret, config.TURN{CredentialTTL: "1h"},
-		[]netip.Addr{netip.MustParseAddr("127.0.0.2")}, look)
+		sfuPeers(peer), look)
 	dev := id.New()
 	user, pass := server.TURNCredential(secret, dev, time.Hour, clk.Now())
 	relay, err := allocateAs(t, addr, user, pass)
@@ -1269,7 +1311,7 @@ func TestABarredDeviceLosesTheRelayOnItsNextAuthenticatedRequest(t *testing.T) {
 func TestTheRelayRechecksTheDevicesHoldingSockets(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	look := &fakeBarred{}
-	addr, m, rev, clk, _ := barredRelay(t, secret, config.TURN{CredentialTTL: "1h"}, nil, look)
+	addr, m, rev, clk, _ := barredRelay(t, secret, config.TURN{CredentialTTL: "1h"}, server.TURNPeers{}, look)
 	dev := id.New()
 	user, pass := server.TURNCredential(secret, dev, time.Hour, clk.Now())
 	if _, err := allocateAs(t, addr, user, pass); err != nil {
@@ -1291,7 +1333,7 @@ func TestTheRelayRechecksTheDevicesHoldingSockets(t *testing.T) {
 func TestTheFifthAllocationOfADeviceIsRefusedAndCounted(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	m := &fakeTURNMetrics{}
-	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 4}, nil, m, clock.System())
+	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 4}, server.TURNPeers{}, m, clock.System())
 	user, pass := server.TURNCredential(secret, id.New(), time.Hour, time.Now())
 	for i := range 4 {
 		if _, err := allocateAs(t, addr, user, pass); err != nil {
@@ -1312,7 +1354,7 @@ func TestTheRelayCountsItsBytesBothWays(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	m := &fakeTURNMetrics{}
 	peer, got := udpPeer(t, "127.0.0.2:0")
-	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h"}, []netip.Addr{netip.MustParseAddr("127.0.0.2")}, m, clock.System())
+	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h"}, sfuPeers(peer), m, clock.System())
 	user, pass := server.TURNCredential(secret, id.New(), time.Hour, time.Now())
 	relay, err := allocateAs(t, addr, user, pass)
 	if err != nil {
@@ -1378,7 +1420,7 @@ func TestTheRelayRefusesTCPAllocations(t *testing.T) {
 	m := &fakeTURNMetrics{}
 	service, accepted := tcpPeer(t, "127.0.0.2:0")
 	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 1},
-		[]netip.Addr{netip.MustParseAddr("127.0.0.2")}, m, clock.System())
+		server.TURNPeers{Addrs: []netip.Addr{netip.MustParseAddr("127.0.0.2")}, PortLo: 1, PortHi: 65535}, m, clock.System())
 	user, pass := server.TURNCredential(secret, id.New(), time.Hour, time.Now())
 	client, err := turnClientAs(t, addr, user, pass, 0)
 	if err != nil {
@@ -1431,7 +1473,7 @@ func TestTheRelayGeneratorRefusesTCP(t *testing.T) {
 func TestAFailedRelaySocketFreesItsQuotaSlot(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	m := &fakeTURNMetrics{}
-	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 2}, nil, m, clock.System())
+	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 2}, server.TURNPeers{}, m, clock.System())
 	user, pass := server.TURNCredential(secret, id.New(), time.Hour, time.Now())
 	for i := range 3 {
 		client, err := turnClientAs(t, addr, user, pass, turn.RequestedAddressFamilyIPv6)

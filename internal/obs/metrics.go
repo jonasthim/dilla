@@ -60,6 +60,12 @@ type Metrics struct {
 	TURNAllocations     prometheus.Gauge
 	TURNQuotaRefusals   prometheus.Counter
 	TURNRelayBytes      *prometheus.CounterVec
+	// The relay's backstops (server-half fix wave, lens turn), label-free. They live here, on
+	// dillad's own registry, because /metrics serves the default registry only through LiveKit's
+	// allowlist (I-1 of the integration re-review).
+	TURNCapacityRefusals prometheus.Counter
+	TURNPeerDrops        prometheus.Counter
+	TURNCutOverflows     prometheus.Counter
 	// turnMu guards the relay state the diagnostics' turn leg reads back.
 	turnMu      sync.Mutex
 	turnLive    int
@@ -152,8 +158,35 @@ func NewMetrics(r prometheus.Registerer, g prometheus.Gatherer) *Metrics {
 	m.TURNRelayBytes = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "dilla_turn_relay_bytes_total", Help: "Payload bytes relayed, by direction (to_client, to_peer)."},
 		[]string{"direction"})
+	m.TURNCapacityRefusals = prometheus.NewCounter(prometheus.CounterOpts{Name: "dilla_turn_capacity_refusals_total",
+		Help: "TURN allocations refused 486 at the instance-wide cap on live relay allocations."})
+	m.TURNPeerDrops = prometheus.NewCounter(prometheus.CounterOpts{Name: "dilla_turn_peer_drops_total",
+		Help: "Datagrams a relay socket dropped because the peer was not the SFU's media port (another port, another relay allocation)."})
+	m.TURNCutOverflows = prometheus.NewCounter(prometheus.CounterOpts{Name: "dilla_turn_cut_overflows_total",
+		Help: "Relay cuts that found the cut map full and refused every device's earlier credentials instead (fail closed)."})
 	r.MustRegister(m.collectors()...)
 	return m
+}
+
+// CapacityRefused records one 486 at the instance-wide relay cap (server.TURNMetrics).
+func (m *Metrics) CapacityRefused() {
+	if m != nil {
+		m.TURNCapacityRefusals.Inc()
+	}
+}
+
+// PeerDropped records one datagram a relay socket dropped (server.TURNMetrics).
+func (m *Metrics) PeerDropped() {
+	if m != nil {
+		m.TURNPeerDrops.Inc()
+	}
+}
+
+// CutOverflow records one relay cut that found the cut map full (server.TURNMetrics).
+func (m *Metrics) CutOverflow() {
+	if m != nil {
+		m.TURNCutOverflows.Inc()
+	}
 }
 
 func (m *Metrics) collectors() []prometheus.Collector {
@@ -168,6 +201,7 @@ func (m *Metrics) collectors() []prometheus.Collector {
 		m.CallLive,
 		m.CallStatsReports, m.CallRelayReports, m.CallDecryptFailures, m.CallRTT,
 		m.TURNAllocations, m.TURNQuotaRefusals, m.TURNRelayBytes,
+		m.TURNCapacityRefusals, m.TURNPeerDrops, m.TURNCutOverflows,
 	}
 }
 

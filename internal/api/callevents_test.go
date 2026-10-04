@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -38,15 +40,65 @@ type callDS struct {
 	mu      sync.Mutex
 	removes [][2]id.ID // (group, device)
 	closed  []id.ID
+	// memberRemoves is every membership-bound Remove issued (ProposeRemoveOfMember).
+	memberRemoves []memberRemove
+	// closeBlocks makes Close wait until its context ends: a delivery service stuck on the group.
+	closeBlocks bool
 }
 
 var _ api.DS = (*callDS)(nil)
 
-func (d *callDS) ProposeAdd(context.Context, id.ID, id.ID, id.ID) error              { return nil }
-func (d *callDS) ProposeRemove(context.Context, id.ID, uint32, id.ID) error          { return nil }
-func (d *callDS) ProposeRemoveOf(context.Context, id.ID, uint32, id.ID, id.ID) error { return nil }
-func (d *callDS) ProposeAddBatch(context.Context, id.ID, []id.ID) error              { return nil }
-func (d *callDS) VoidIneligibleAdds(context.Context, id.ID) error                    { return nil }
+func (d *callDS) ProposeAdd(context.Context, id.ID, id.ID, id.ID) error     { return nil }
+func (d *callDS) ProposeRemove(context.Context, id.ID, uint32, id.ID) error { return nil }
+func (d *callDS) ProposeAddBatch(context.Context, id.ID, []id.ID) error     { return nil }
+func (d *callDS) VoidIneligibleAdds(context.Context, id.ID) error           { return nil }
+
+// ProposeRemoveOf is recorded with the device-addressed Removes: a leave bound to the membership its
+// session joined with (DS-7) issues it.
+func (d *callDS) ProposeRemoveOf(_ context.Context, g id.ID, _ uint32, dev, _ id.ID) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.removes = append(d.removes, [2]id.ID{g, dev})
+	return nil
+}
+
+// ProposeRemoveOfMember checks the binding the way the delivery service does — the live member row at
+// leaf must be dev, added in addedEpoch — refusing with ds.ErrRemoveTargetGone otherwise, and records
+// an issued Remove with the device-addressed ones and in memberRemoves.
+func (d *callDS) ProposeRemoveOfMember(ctx context.Context, g id.ID, leaf uint32, dev id.ID, added uint64, _ id.ID) error {
+	members, err := d.repo.ListMembers(ctx, g)
+	if err != nil {
+		return err
+	}
+	bound := false
+	for _, m := range members {
+		if m.LeafIndex == leaf && m.RemovedEpoch == nil && m.DeviceID == dev && m.AddedEpoch == added {
+			bound = true
+		}
+	}
+	if !bound {
+		return fmt.Errorf("callDS: %w", ds.ErrRemoveTargetGone)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.removes = append(d.removes, [2]id.ID{g, dev})
+	d.memberRemoves = append(d.memberRemoves, memberRemove{Group: g, Leaf: leaf, Device: dev, Added: added})
+	return nil
+}
+
+// memberRemove is one membership-bound Remove callDS issued.
+type memberRemove struct {
+	Group, Device id.ID
+	Leaf          uint32
+	Added         uint64
+}
+
+func (d *callDS) memberRemovals() []memberRemove {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.memberRemoves)
+}
+
 func (d *callDS) ProposeRemoveDevice(_ context.Context, g, dev, _ id.ID) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -57,7 +109,12 @@ func (d *callDS) ProposeRemoveDevice(_ context.Context, g, dev, _ id.ID) error {
 func (d *callDS) Close(ctx context.Context, g id.ID) error {
 	d.mu.Lock()
 	d.closed = append(d.closed, g)
+	blocks := d.closeBlocks
 	d.mu.Unlock()
+	if blocks {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	return d.repo.CloseGroup(ctx, g, time.Now().Unix())
 }
 
@@ -158,6 +215,7 @@ func (f *eventsFixture) sendAs(t *testing.T, name, identity, sid string, track *
 		ev.Participant = &livekit.ParticipantInfo{Identity: identity, Sid: sid}
 	}
 	f.events.Handle(t.Context(), ev)
+	f.events.FlushAnnouncements() // voice_state is delivered off the webhook's goroutine (CALLS-5)
 }
 
 func deviceRemovals(stub *stubSFU) [][2]string {
@@ -299,6 +357,7 @@ func TestDeletingACallEndsItThroughTheCallEvents(t *testing.T) {
 	if status, _ := f.e.Do(http.MethodDelete, "/v1/calls/"+f.callID.String(), f.tok, nil); status != http.StatusNoContent {
 		t.Fatalf("DELETE = %d", status)
 	}
+	f.events.FlushAnnouncements()
 	if got := f.ds.closedGroups(); len(got) != 1 || got[0] != f.group {
 		t.Fatalf("groups closed = %v", got)
 	}
@@ -449,6 +508,8 @@ func TestEvictTakesTheDeviceOutOfTheRoom(t *testing.T) {
 		t.Fatal("an eviction from another group touched the room")
 	}
 	f.events.Evict(t.Context(), f.group, []id.ID{f.dev})
+	f.calls.ProcessQueueForTest(t.Context()) // the eviction is queued to the retry loop (CALLS-6)
+	f.events.FlushAnnouncements()
 	if got := deviceRemovals(f.stub); len(got) != 1 || got[0] != [2]string{f.room, f.dev.String()} {
 		t.Fatalf("removals = %v", got)
 	}
@@ -474,6 +535,7 @@ func TestAnEvictionTheSFURefusesIsRetriedUntilItLands(t *testing.T) {
 	f.stub.mu.Unlock()
 	dropLeaf(t, f.e, f.group, f.dev)
 	f.events.Evict(t.Context(), f.group, []id.ID{f.dev})
+	f.calls.ProcessQueueForTest(t.Context()) // the eviction is queued to the retry loop (CALLS-6)
 	if f.calls.PendingRepairs() != 1 {
 		t.Fatalf("pending repairs = %d, want the refused eviction", f.calls.PendingRepairs())
 	}

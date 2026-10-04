@@ -112,6 +112,12 @@ func (d *recordingDS) ProposeRemoveOf(ctx context.Context, g id.ID, leaf uint32,
 	return nil
 }
 
+// ProposeRemoveOfMember records like ProposeRemoveOf; the delivery service's added-epoch check is
+// internal/ds's to test.
+func (d *recordingDS) ProposeRemoveOfMember(ctx context.Context, g id.ID, leaf uint32, dev id.ID, _ uint64, a id.ID) error {
+	return d.ProposeRemoveOf(ctx, g, leaf, dev, a)
+}
+
 func (d *recordingDS) leafDevices() []id.ID {
 	d.mu.Lock()
 	defer d.mu.Unlock()

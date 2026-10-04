@@ -19,6 +19,11 @@ type DS interface {
 	// the Remove is issued only while deviceID still holds leaf, and is refused like a Remove of a
 	// leaf that is gone otherwise, so a leaf reused in between never redirects it.
 	ProposeRemoveOf(ctx context.Context, groupID id.ID, leaf uint32, deviceID, actionID id.ID) error
+	// ProposeRemoveOfMember is ProposeRemoveOf bound to one membership: the Remove is issued only
+	// while deviceID holds leaf from addedEpoch (the epoch it took the leaf in), and is refused with
+	// ds.ErrRemoveTargetGone once the device left the leaf or holds it again from a later epoch. The
+	// call paths use it for a departed device (DS-7, ruling (a) of the calls re-review).
+	ProposeRemoveOfMember(ctx context.Context, groupID id.ID, leaf uint32, deviceID id.ID, addedEpoch uint64, actionID id.ID) error
 	// ProposeRemoveDevice proposes removing deviceID's leaf, resolving it under the group lock, and
 	// drops the action when the device holds no leaf or an instance Remove of that leaf already
 	// stands (DEV-45). The call paths use it: a call leaf is short-lived and races the device's own

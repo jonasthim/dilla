@@ -9,6 +9,7 @@ package obs
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -81,7 +82,39 @@ func clean(a slog.Attr) slog.Attr {
 	if strings.HasSuffix(a.Key, "_id") && a.Value.Kind() == slog.KindString {
 		return slog.String(a.Key, prefix8(a.Value.String()))
 	}
+	// The call routes' own spellings of a device and a call id (SFU-9), as a string or a Stringer
+	// such as id.ID, and a LiveKit room "<call id>-<seconds>-<random>".
+	if callIDKeys[a.Key] {
+		if s, ok := idText(a.Value); ok {
+			return slog.String(a.Key, prefix8(s))
+		}
+	}
+	if a.Key == "room" {
+		if s, ok := idText(a.Value); ok {
+			call, rest, found := strings.Cut(s, "-")
+			if found {
+				return slog.String(a.Key, prefix8(call)+"-"+rest)
+			}
+			return slog.String(a.Key, prefix8(call))
+		}
+	}
 	return a
+}
+
+// callIDKeys are the keys the call routes log a device or a call id under without the _id suffix.
+var callIDKeys = map[string]bool{"identity": true, "device": true, "call": true}
+
+// idText is v's text when it is a string or a fmt.Stringer.
+func idText(v slog.Value) (string, bool) {
+	if v.Kind() == slog.KindString {
+		return v.String(), true
+	}
+	if v.Kind() == slog.KindAny {
+		if s, ok := v.Any().(fmt.Stringer); ok {
+			return s.String(), true
+		}
+	}
+	return "", false
 }
 
 func isSecret(key string) bool {

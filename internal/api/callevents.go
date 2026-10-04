@@ -12,7 +12,9 @@ import (
 	"github.com/livekit/protocol/webhook"
 
 	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -26,8 +28,8 @@ type LiveGauge interface {
 // delivery service dedupes against its own outstanding Remove as well (ProposeRemoveDevice).
 const proposeWindow = 30 * time.Second
 
-// evictTimeout bounds the SFU work of one eviction, which runs on the delivery service's caller's
-// goroutine after the group lock is released.
+// evictTimeout bounds the store reads of one eviction on the delivery service's caller's goroutine;
+// the SFU work is queued to the retry loop (Calls.requestEviction).
 const evictTimeout = 10 * time.Second
 
 // CallEvents turns the SFU's webhooks into the call lifecycle (DEV-43…46, DEV-60, F11) and is the
@@ -54,6 +56,13 @@ type CallEvents struct {
 	mu       sync.Mutex
 	rooms    map[string]*callRoom
 	proposed map[string]time.Time // room + "/" + device + "/" + session → the last Remove proposed for a leave
+
+	// amu guards the voice_state announcer's queue (voicestate.go): the latest flags per (call,
+	// device), whether its goroutine runs, and whether it is delivering a batch.
+	amu         sync.Mutex
+	apending    map[announceKey]announcement
+	arunning    bool
+	adelivering bool
 }
 
 type callRoom struct {
@@ -64,7 +73,20 @@ type callDevice struct {
 	user   id.ID
 	sid    string                         // LiveKit's participant session id at participant_joined
 	tracks map[string]livekit.TrackSource // published track SID → source
+	// member is the call-group membership this session was admitted with at the /rtc gate (DS-7, N2):
+	// a leave of this session proposes the Remove of that membership only, never of one the device
+	// rejoined the group with since.
+	member *membership
 }
+
+// roomIncarnations is an SFU that can name the incarnation of a room it holds now: its LiveKit room
+// sid. *sfu.Server is one. room_finished uses it to tell a late event for a room LiveKit reaped from
+// the room a start has re-created under the same name since (CALLS-3).
+type roomIncarnations interface {
+	RoomSID(ctx context.Context, room string) (sid string, held bool, err error)
+}
+
+var _ roomIncarnations = (*sfu.Server)(nil)
 
 // flags is the device's voice_state: in the call, plus video and screen while it publishes them.
 func (d *callDevice) flags() uint64 {
@@ -125,18 +147,48 @@ func (c *CallEvents) Handle(ctx context.Context, ev *livekit.WebhookEvent) {
 	p := ev.GetParticipant()
 	switch ev.GetEvent() {
 	case webhook.EventRoomFinished:
+		if c.earlierIncarnation(ctx, ev.GetRoom()) {
+			c.log.InfoContext(ctx, "dropped a room_finished for an earlier incarnation of a live call's room",
+				"room", room, "sid", ev.GetRoom().GetSid())
+			return
+		}
 		if err := c.calls.endCall(ctx, row.CallID, room, "room_finished"); err != nil {
 			c.log.ErrorContext(ctx, "ending a call LiveKit closed failed", "call_id", row.CallID.String(), "err", err)
 		}
 	case webhook.EventParticipantJoined:
-		c.joined(ctx, row, p.GetIdentity(), p.GetSid())
+		c.joined(ctx, row, p.GetIdentity(), p.GetSid(), joinedAt(p))
 	case webhook.EventParticipantLeft, webhook.EventParticipantConnectionAborted:
-		c.left(ctx, row, p.GetIdentity(), p.GetSid())
+		c.left(ctx, row, p.GetIdentity(), p.GetSid(), joinedAt(p))
 	case webhook.EventTrackPublished:
 		c.trackPublished(ctx, row, p.GetIdentity(), ev.GetTrack())
 	case webhook.EventTrackUnpublished:
 		c.trackUnpublished(ctx, row, p.GetIdentity(), ev.GetTrack())
 	}
+}
+
+// earlierIncarnation reports whether a room_finished names a room LiveKit has since re-created
+// (CALLS-3): a start re-opens the live call's room by name whenever LiveKit reaped it (20 s after the
+// last leave), and the event for the reaped one can be processed after that, up to ~45 s late. The
+// event's room sid is compared with the sid of the room the SFU holds under that name now: a
+// different one is a later incarnation, which the event must not end. An event without a sid, an SFU
+// that cannot name sids, or a room it no longer holds ends the call as before. When the SFU cannot
+// answer, the event is dropped (with a WARN): a live call whose room is gone costs nothing — the next
+// start re-opens it — while ending a re-created room would disconnect everyone in it.
+func (c *CallEvents) earlierIncarnation(ctx context.Context, room *livekit.Room) bool {
+	evSID := room.GetSid()
+	ri, ok := c.sfu.(roomIncarnations)
+	if evSID == "" || !ok {
+		return false
+	}
+	lctx, cancel := sfuCtx(ctx)
+	sid, held, err := ri.RoomSID(lctx, room.GetName())
+	cancel()
+	if err != nil {
+		c.log.WarnContext(ctx, "naming a closed room's incarnation failed; its room_finished is dropped",
+			"room", room.GetName(), "err", err)
+		return true
+	}
+	return held && sid != "" && sid != evSID
 }
 
 // liveRow is the call whose live room is room: "<call_id hex>-…" naming a voice session that is
@@ -180,6 +232,8 @@ func (c *CallEvents) liveLocked() int {
 	return n
 }
 
+// setGauge sets dilla_call_live. Its callers hold c.mu, so two rooms' events handled by two webhook
+// workers never publish their counts out of order (N5).
 func (c *CallEvents) setGauge(n int) {
 	if c.gauge != nil {
 		c.gauge.CallsLive(n)
@@ -189,9 +243,8 @@ func (c *CallEvents) setGauge(n int) {
 func (c *CallEvents) forget(room string) {
 	c.mu.Lock()
 	delete(c.rooms, room)
-	n := c.liveLocked()
+	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
-	c.setGauge(n)
 }
 
 // userOf is the user dev belongs to, from the room's state when the device was seen joining.
@@ -216,7 +269,7 @@ func (c *CallEvents) userOf(ctx context.Context, room string, dev id.ID) (id.ID,
 // demoted for a non-dilla track stays demoted, F11), or cut when it is barred, lost access or is no
 // current leaf (the seconds between the /rtc gate's admission and LiveKit's join that the room sweep
 // would otherwise leave) — and, unless it was cut, in_call is announced.
-func (c *CallEvents) joined(ctx context.Context, row store.VoiceSessionRow, identity, sid string) {
+func (c *CallEvents) joined(ctx context.Context, row store.VoiceSessionRow, identity, sid string, joinedAt time.Time) {
 	if identity == "" {
 		return
 	}
@@ -239,13 +292,62 @@ func (c *CallEvents) joined(ctx context.Context, row store.VoiceSessionRow, iden
 		c.log.ErrorContext(ctx, "reading a call's channel failed", "err", err)
 		return
 	}
+	// The session is bound to the membership the /rtc gate admitted it with (N2), not to what the
+	// device holds when this (possibly late) event is processed.
+	var member *membership
+	if m, ok := c.calls.admittedAs(row.LivekitRoom, dev, joinedAt); ok {
+		member = &m
+	}
 	c.mu.Lock()
 	r := c.roomLocked(row.LivekitRoom)
-	r.devices[dev] = &callDevice{user: d.UserID, sid: sid, tracks: map[string]livekit.TrackSource{}}
-	n := c.liveLocked()
+	r.devices[dev] = &callDevice{user: d.UserID, sid: sid, tracks: map[string]livekit.TrackSource{}, member: member}
+	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
-	c.setGauge(n)
 	c.announce(ctx, ch, row.CallID, d.UserID, dev, VoiceInCall)
+}
+
+// joinedAt is the time LiveKit reports p joined at, or zero.
+func joinedAt(p *livekit.ParticipantInfo) time.Time {
+	if ms := p.GetJoinedAtMs(); ms > 0 {
+		return time.UnixMilli(ms)
+	}
+	if s := p.GetJoinedAt(); s > 0 {
+		return time.Unix(s, 0)
+	}
+	return time.Time{}
+}
+
+// proposeLeave asks the delivery service to Remove dev's leaf after a leave (DEV-45), bound to the
+// membership the leaving session was admitted with (DS-7, N2): ds.ProposeRemoveOfMember issues it
+// only while dev holds that very membership — the same leaf, taken in the same epoch — so a device
+// that has rejoined the call group since (a new leaf, or the same leaf index re-added in a later
+// epoch) is left alone: the late leave was its earlier session's.
+//
+// When that membership is gone but the device holds another of the same call group — an in-call
+// resync re-added its leaf in a later epoch, or it rejoined by external commit — the Remove is bound
+// to the membership it holds now, under the sweep's rules (M-4 of the integration re-review): only
+// while the SFU shows the device out of the room and it was not admitted within its join window.
+// Otherwise nothing is proposed and the room sweep decides.
+func (c *CallEvents) proposeLeave(ctx context.Context, row store.VoiceSessionRow, dev id.ID, m membership) {
+	group := *row.GroupID
+	err := c.dsvc.ProposeRemoveOfMember(ctx, group, m.leaf, dev, m.added, id.New())
+	if errors.Is(err, ds.ErrRemoveTargetGone) {
+		cur, out := c.calls.currentMembershipOut(ctx, row, dev, m)
+		if !out {
+			c.log.InfoContext(ctx, "a leave of an earlier membership proposes nothing: the device rejoined the call group or left it",
+				"group_id", group.String(), "device_id", dev.String())
+			return
+		}
+		err = c.dsvc.ProposeRemoveOfMember(ctx, group, cur.leaf, dev, cur.added, id.New())
+		if errors.Is(err, ds.ErrRemoveTargetGone) {
+			return // it moved again in between: the sweep decides
+		}
+	}
+	switch {
+	case err != nil:
+		c.log.WarnContext(ctx, "proposing the Remove of a device that left a call failed",
+			"group_id", group.String(), "device_id", dev.String(), "err", err)
+	}
 }
 
 // staleLeave reports whether a leave of identity's session sid is about a session the device has
@@ -285,7 +387,7 @@ func (c *CallEvents) staleLeave(ctx context.Context, row store.VoiceSessionRow, 
 // duplicate inside the proposal TTL proposes nothing more, and the delivery service issues its
 // Remove whether or not the device posted its own), and flags 0 is announced. A "#" shadow's leave
 // says nothing about the device itself.
-func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identity, sid string) {
+func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identity, sid string, joinedAt time.Time) {
 	if strings.Contains(identity, "#") {
 		return
 	}
@@ -306,14 +408,19 @@ func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identi
 	now := c.clk.Now()
 	c.mu.Lock()
 	var user id.ID
-	known := false
+	var joined *membership
+	known, otherSession := false, false
 	if r := c.rooms[row.LivekitRoom]; r != nil {
 		if d := r.devices[dev]; d != nil && (d.sid == "" || sid == "" || d.sid == sid) {
-			user, known = d.user, true
+			user, known, joined = d.user, true, d.member
 			delete(r.devices, dev)
+		} else if d != nil {
+			// The device is recorded under a later session: this leave is of an earlier one, and the
+			// later session's own leave proposes its Remove.
+			otherSession = true
 		}
 	}
-	propose := now.Sub(c.proposed[key]) >= proposeWindow
+	propose := !otherSession && now.Sub(c.proposed[key]) >= proposeWindow
 	if propose {
 		c.proposed[key] = now
 	}
@@ -322,14 +429,24 @@ func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identi
 			delete(c.proposed, k)
 		}
 	}
-	n := c.liveLocked()
+	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
-	c.setGauge(n)
-	if propose && row.GroupID != nil && c.dsvc != nil {
-		if err := c.dsvc.ProposeRemoveDevice(ctx, *row.GroupID, dev, id.New()); err != nil {
-			c.log.WarnContext(ctx, "proposing the Remove of a device that left a call failed",
-				"group_id", row.GroupID.String(), "device_id", dev.String(), "err", err)
+	if joined == nil {
+		// The join was not seen (lost, or the session joined before a restart of this state): the
+		// leave is bound to the admission that preceded the session's join, never to whatever leaf
+		// the device holds now. With no admission known, no Remove is proposed here; the room sweep
+		// removes a leaf that stays out of the room (ruling (a)).
+		if m, ok := c.calls.admittedAs(row.LivekitRoom, dev, joinedAt); ok {
+			joined = &m
 		}
+	}
+	switch {
+	case !propose || row.GroupID == nil || c.dsvc == nil:
+	case joined == nil:
+		c.log.InfoContext(ctx, "a leave whose admission is unknown proposes no Remove; the room sweep decides",
+			"room", row.LivekitRoom, "device_id", dev.String())
+	default:
+		c.proposeLeave(ctx, row, dev, *joined)
 	}
 	if !known {
 		if user, err = c.userOf(ctx, row.LivekitRoom, dev); err != nil {
@@ -372,7 +489,7 @@ func (c *CallEvents) trackPublished(ctx context.Context, row store.VoiceSessionR
 		return
 	}
 	if notDillaMedia(t) {
-		strikes, err := c.calls.penalise(ctx, row, dev)
+		strikes, err := c.calls.penalise(ctx, row, dev, t.GetSid())
 		c.log.WarnContext(ctx, "a published track is not dilla-sframe/1 or not of its declared kind",
 			"room", row.LivekitRoom, "device_id", dev.String(), "track", t.GetSid(), "source", t.GetSource().String(),
 			"type", t.GetType().String(), "encryption", t.GetEncryption().String(), "strikes", strikes)
@@ -386,8 +503,9 @@ func (c *CallEvents) trackPublished(ctx context.Context, row store.VoiceSessionR
 }
 
 // trackUnpublished clears the track from the device's flags; when the device's last camera or screen
-// track stopped and it holds a sharing slot, the slot is released through the routes' own unshare
-// path — demotion first, under the call's lock (ruling F1).
+// track stopped and it holds a sharing slot, the slot is released — demotion first, under the call's
+// lock (ruling F1) — unless the SFU shows the device publishing a camera or screen track by then
+// (releaseStopped: a switch from camera to screen unpublishes one before it publishes the other).
 func (c *CallEvents) trackUnpublished(ctx context.Context, row store.VoiceSessionRow, identity string, t *livekit.TrackInfo) {
 	dev, err := id.Parse(identity)
 	if err != nil || t == nil {
@@ -397,11 +515,7 @@ func (c *CallEvents) trackUnpublished(ctx context.Context, row store.VoiceSessio
 	if !stopped || !c.calls.leases.held(row.CallID, row.LivekitRoom, dev) {
 		return
 	}
-	ch, err := c.repo.GetChannel(ctx, row.ChannelID)
-	if err != nil {
-		return
-	}
-	if err := c.calls.releaseShare(ctx, ch, row, dev); err != nil {
+	if err := c.calls.releaseStopped(ctx, row, dev); err != nil {
 		c.log.WarnContext(ctx, "releasing the slot of a device that stopped sharing failed", "err", err)
 	}
 }
@@ -424,9 +538,8 @@ func (c *CallEvents) updateTracks(ctx context.Context, row store.VoiceSessionRow
 	was := d.sharing()
 	change(d)
 	flags, stopped := d.flags(), was && !d.sharing()
-	n := c.liveLocked()
+	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
-	c.setGauge(n)
 	ch, err := c.repo.GetChannel(ctx, row.ChannelID)
 	if err != nil {
 		c.log.ErrorContext(ctx, "reading a call's channel failed", "err", err)
@@ -437,11 +550,15 @@ func (c *CallEvents) updateTracks(ctx context.Context, row store.VoiceSessionRow
 }
 
 // Evict is the delivery service's call evictor (ds.CallEvictor, G29): it runs after a commit, a heal
-// or a registry replacement removed devices from a call group, outside the group's lock. Each device
-// is removed from the call's live room with its "#" shadows at once — not when LiveKit would next
-// refresh its token — under the call's lock, loses its sharing slot, and is announced out; a removal
-// the SFU does not take is a pending cut the retry loop repeats. The /rtc gate refuses its rejoin
-// from then on, because it is no longer a current leaf, and the room sweep cuts a non-leaf too.
+// or a registry replacement removed devices from a call group, outside the group's lock, on the
+// committer's request goroutine. It returns at once (CALLS-6, DS-4): it reads the group and its call
+// from the store, cuts each device from the relay, queues its removal from the call's room
+// (Calls.requestEviction) and announces it out; it never waits for a call's lock and never calls the
+// SFU. The retry loop, woken at once, removes each device with its "#" shadows under the call's lock
+// — not when LiveKit would next refresh its token — and frees its slot; a removal the SFU does not
+// take, or a busy lock, is a pending cut the loop repeats. The /rtc gate refuses the device from the
+// moment the commit landed, because it is no longer a current leaf, and the room sweep cuts a
+// non-leaf too (the backstop when the queue is full).
 func (c *CallEvents) Evict(ctx context.Context, groupID id.ID, removed []id.ID) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), evictTimeout)
 	defer cancel()
@@ -460,10 +577,7 @@ func (c *CallEvents) Evict(ctx context.Context, groupID id.ID, removed []id.ID) 
 	if row.Ended != nil || row.GroupID == nil || *row.GroupID != groupID {
 		return
 	}
-	if err := c.calls.evictDevices(ctx, row, removed); err != nil {
-		c.log.ErrorContext(ctx, "evicting removed devices from their call's room did not land; it stays pending",
-			"room", row.LivekitRoom, "err", err)
-	}
+	c.calls.requestEviction(ctx, row, removed)
 	ch, chErr := c.repo.GetChannel(ctx, row.ChannelID)
 	for _, dev := range removed {
 		c.mu.Lock()
@@ -475,9 +589,8 @@ func (c *CallEvents) Evict(ctx context.Context, groupID id.ID, removed []id.ID) 
 				delete(r.devices, dev)
 			}
 		}
-		n := c.liveLocked()
+		c.setGauge(c.liveLocked())
 		c.mu.Unlock()
-		c.setGauge(n)
 		if known && chErr == nil {
 			c.announce(ctx, ch, row.CallID, user, dev, 0)
 		}
@@ -490,13 +603,15 @@ func (c *CallEvents) ended(ctx context.Context, row store.VoiceSessionRow) {
 	c.mu.Lock()
 	r := c.rooms[row.LivekitRoom]
 	delete(c.rooms, row.LivekitRoom)
-	n := c.liveLocked()
+	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
-	c.setGauge(n)
 	if r == nil || len(r.devices) == 0 {
 		return
 	}
 	ch, err := c.repo.GetChannel(ctx, row.ChannelID)
+	if errors.Is(err, store.ErrNotFound) {
+		return // a deleted channel's call: nobody may view the channel to be told
+	}
 	if err != nil {
 		c.log.ErrorContext(ctx, "reading an ended call's channel failed", "err", err)
 		return
@@ -526,6 +641,12 @@ func (h *Calls) eventLocked(ctx context.Context, row store.VoiceSessionRow, hold
 		return nil, nil, cur, store.ChannelRow{}, false, err
 	}
 	ch, err := h.repo.GetChannel(lctx, cur.ChannelID)
+	if errors.Is(err, store.ErrNotFound) {
+		// The channel is deleted: its call is over (CALLS-1), whatever event or eviction came here.
+		err = h.endLocked(lctx, cur, "channel_deleted")
+		unlock()
+		return nil, nil, cur, ch, false, err
+	}
 	if err != nil {
 		unlock()
 		return nil, nil, cur, ch, false, err
@@ -578,22 +699,62 @@ func (h *Calls) releaseDeparted(ctx context.Context, row store.VoiceSessionRow, 
 	return err
 }
 
+// releaseStopped frees the slot of a device whose last camera or screen track LiveKit reported
+// unpublished, under the call's lock and demotion first — unless the SFU lists the device publishing
+// a camera or screen track by now (CALLS-M3): a device switching from camera to screen unpublishes
+// one before it publishes the other, and the webhook for the first can be processed after the second
+// landed. A device that stopped for good still frees its slot here, through DELETE …/share, or at the
+// sweep once it has left.
+func (h *Calls) releaseStopped(ctx context.Context, row store.VoiceSessionRow, dev id.ID) error {
+	if h.sfu == nil {
+		return nil
+	}
+	lctx, unlock, cur, ch, live, err := h.eventLocked(ctx, row, callHoldRequest, func() {})
+	if err != nil || !live {
+		return err
+	}
+	defer unlock()
+	if !h.leases.held(cur.CallID, cur.LivekitRoom, dev) {
+		return nil
+	}
+	pctx, cancel := sfuCtx(lctx)
+	parts, err := h.sfu.Participants(pctx, cur.LivekitRoom)
+	cancel()
+	if err == nil {
+		for _, p := range parts {
+			if p.GetIdentity() != dev.String() {
+				continue
+			}
+			for _, t := range p.GetTracks() {
+				if s := t.GetSource(); s == livekit.TrackSource_CAMERA || s == livekit.TrackSource_SCREEN_SHARE {
+					return nil // it publishes video again: the slot is still in use
+				}
+			}
+		}
+	}
+	return h.reconcile(lctx, h.deps(), ch, cur, dev.String(), nil, true)
+}
+
 // penalise counts one F11 strike of dev in row's room and enforces it: the first demotes the device
 // to listen-only through reconcile (which honours the strike from then on), a repeat removes it from
-// the room as a cut a retry repeats. A lock that cannot be taken still records the strike and leaves
-// the demotion or removal pending for the retry loop.
-func (h *Calls) penalise(ctx context.Context, row store.VoiceSessionRow, dev id.ID) (int, error) {
+// the room as a cut a retry repeats. A strike is counted once per track sid (ruling (b)): a
+// publication the room sweep already struck changes nothing here. A lock that cannot be taken still
+// records the strike and leaves the demotion or removal pending for the retry loop.
+func (h *Calls) penalise(ctx context.Context, row store.VoiceSessionRow, dev id.ID, track string) (int, error) {
 	strikes := 0
 	lctx, unlock, cur, ch, live, err := h.eventLocked(ctx, row, callHoldRequest, func() {
-		strikes = h.leases.strike(row.CallID, row.LivekitRoom, dev)
-		h.leases.markPending(row.CallID, dev.String(), pendingRepair{Room: row.LivekitRoom, DropSlot: true, Cut: strikes > 1})
+		n, counted := h.leases.strikeTrack(row.CallID, row.LivekitRoom, dev, track)
+		strikes = n
+		if counted {
+			h.leases.markPending(row.CallID, dev.String(), pendingRepair{Room: row.LivekitRoom, DropSlot: true, Cut: n > 1})
+		}
 	})
 	if err != nil || !live {
 		return strikes, err
 	}
 	defer unlock()
-	strikes = h.leases.strike(cur.CallID, cur.LivekitRoom, dev)
-	if h.sfu == nil {
+	strikes, counted := h.leases.strikeTrack(cur.CallID, cur.LivekitRoom, dev, track)
+	if h.sfu == nil || !counted {
 		return strikes, nil
 	}
 	if strikes == 1 {
@@ -607,11 +768,8 @@ func (h *Calls) penalise(ctx context.Context, row store.VoiceSessionRow, dev id.
 // with its "#" shadows, and frees their slots. A removal the SFU does not take, or a lock that
 // cannot be taken, is a pending cut the retry loop repeats; the gate refuses the device meanwhile.
 func (h *Calls) evictDevices(ctx context.Context, row store.VoiceSessionRow, devices []id.ID) error {
-	// The relay first, whatever the lock or the SFU does below: an evicted device's relay
-	// credentials end with its leaf.
-	for _, dev := range devices {
-		h.revokeRelay(dev)
-	}
+	// The relay was cut when the eviction was queued (requestEviction); each removal below cuts it
+	// again as of its own moment.
 	if h.sfu == nil || len(devices) == 0 {
 		return nil
 	}

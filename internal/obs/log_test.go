@@ -63,6 +63,43 @@ func TestIdentifiersAreLoggedAsAnEightHexPrefix(t *testing.T) {
 	}
 }
 
+// idValue is an identifier type that logs through fmt.Stringer, as id.ID does.
+type idValue string
+
+func (v idValue) String() string { return string(v) }
+
+// Branch review SFU-9: the call routes log a device as "identity" or "device", a call as "call" and
+// a LiveKit room — "<call id>-<seconds>-<random>" — as "room". Each keeps the eight characters every
+// *_id keeps, the room its suffix as well, so lines still correlate without the full ids.
+func TestCallIdentifiersAreShortenedToo(t *testing.T) {
+	var buf bytes.Buffer
+	log := obs.NewLogger(config.Log{Level: "info", Format: "json"}, &buf)
+	full := "0123456789abcdef0123456789abcdef"
+	log.Info("call", "identity", full, "device", idValue(full), "call", idValue(full),
+		"room", full+"-1790000000-deadbeef")
+	log.Info("short", "room", "01234567-1790000000-deadbeef", "device", "x")
+	if strings.Contains(buf.String(), full) {
+		t.Fatalf("a full identifier reached the log: %s", buf.String())
+	}
+	var first, second map[string]any
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{"identity": "01234567", "device": "01234567", "call": "01234567",
+		"room": "01234567-1790000000-deadbeef"} {
+		if first[k] != want {
+			t.Errorf("%s = %v, want %s", k, first[k], want)
+		}
+	}
+	if second["room"] != "01234567-1790000000-deadbeef" || second["device"] != "x" {
+		t.Errorf("an already short room or id changed: %v", second)
+	}
+}
+
 // secretHolder is the hole a key-based redactor has if it does not resolve:
 // slog expands a LogValuer AFTER the handler chain, so an unresolved one walks
 // its whole group past the redactor.

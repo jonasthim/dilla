@@ -150,7 +150,7 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 		b.log.ErrorContext(ctx, "remove banned user from groups",
 			"community", m.community, "user", m.target, "err", err)
 	}
-	syncAfterMembership(ctx, b.calls, b.log, m.community, m.target, nil)
+	syncAfterMembership(ctx, b.calls, m.community, m.target, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 

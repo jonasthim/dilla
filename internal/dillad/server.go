@@ -255,8 +255,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		// so the fork-report path never waits on the SFU (dilla-media task 10).
 		OnQuarantine: cutFromCalls,
 		// G29: a device a commit, a heal or a registry replacement took out of a call group leaves the
-		// call's room at once. The evictor runs after the group lock is released and goes through the
-		// call's own lock (dilla-media task 12).
+		// call's room at once. The evictor runs after the group lock is released, on the committer's
+		// request goroutine, and only queues the removal (CALLS-6): the call retry loop makes it under
+		// the call's own lock (dilla-media task 12), so no commit waits on the SFU.
 		CallEvictor: func(ctx context.Context, groupID id.ID, removed []id.ID) {
 			if events != nil {
 				events.Evict(ctx, groupID, removed)

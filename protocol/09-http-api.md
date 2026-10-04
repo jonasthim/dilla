@@ -537,11 +537,11 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 
 | Method and path | Request | Response | Permission |
 |---|---|---|---|
-| `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; `409 E_CALL_FULL`; `429 E_RATE_LIMITED` with `retry_after_ms` (a few milliseconds, transient) when the device was cut from the relay in the same millisecond or while the request was served; after the relay credential is minted, the refusal its gate would have given (`403 E_FORBIDDEN` barred, `403 E_LEAF_NOT_CURRENT`, `404 E_NOT_FOUND` without `view_channel`, `403 E_FORBIDDEN` without `connect`) when that changed while the request was served | `connect`, and a current leaf of the call group |
+| `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; `409 E_CALL_FULL`; `429 E_RATE_LIMITED` with `retry_after_ms` (a few milliseconds, transient) when the device was cut from the relay in the same millisecond or while the request was served; after the relay credential is minted, the refusal its gate would have given (`403 E_FORBIDDEN` barred, `403 E_LEAF_NOT_CURRENT`, `404 E_NOT_FOUND` without `view_channel`, `403 E_FORBIDDEN` without `connect`) when that changed while the request was served; `503 E_UNAVAILABLE` with `retry_after_ms` when the call ended as the request opened it (see **Ending**) | `connect`, and a current leaf of the call group |
 | `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending or the device is barred | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
 | `POST /v1/calls/{call_id}/stats` | `[candidate_type(uint), relay_protocol(uint\|null), rtt_ms(uint), fraction_lost_permille(uint), decrypt_failures(uint), frames_encrypted(uint)]` | `204`; `429 E_RATE_LIMITED` above one report per device per 5 s; `404 E_NOT_FOUND` once the call has ended; `403 E_FORBIDDEN` for a barred device; `400 E_INVALID_REQUEST` for `decrypt_failures` or `frames_encrypted` above 1048576 | `view_channel` and `connect`, and a current leaf of the call's group |
-| `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended | `view_channel` and `connect`, and a current leaf of the call's group |
+| `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended or its call group is closed; `403 E_FORBIDDEN` for a barred device and for a device that is listen-only in the call's room for media that is not dilla's | `view_channel` and `connect`, and a current leaf of the call's group while that group is open |
 
 - **The leaf gate.** A token is minted only for a device whose leaf is in the call group's
   **current epoch**: added at or before it and not removed. Any other device — a removed one, one
@@ -551,8 +551,10 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   `400 E_INVALID_REQUEST`; a voice channel whose call group is not registered yet is
   `404 E_NOT_FOUND`. While a call is live, "the call group" is the one the call was opened on,
   never merely the newest open call group of the channel: a leaf of any other call group is
-  `403 E_LEAF_NOT_CURRENT` for that call. A live call whose group has been closed ends at the next
-  start that passes the gate, which opens a fresh call on the channel's current call group.
+  `403 E_LEAF_NOT_CURRENT` for that call. A closed call group holds no leaf at all: no commit of it
+  can land, so no device is admitted to a call on it. A live call whose group has been closed ends
+  at the next start that passes the gate, which opens a fresh call on the channel's current call
+  group, or at the room sweep (below), whichever comes first.
 - **Capacity.** A start that finds `livekit.max_voice_participants` other devices already in the
   call's room is `409 E_CALL_FULL`. The count leaves out the caller's own device (a rejoin replaces
   its old session), disconnected participants and non-device participants; it is advisory and
@@ -576,12 +578,14 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   access is the signalling proxy, which checks every join and resume against the device's current
   state (below), and the cuts in "Losing access". `livekit_url` is where the client connects with it: `wss://` and the
   instance's own host (its public IP in `acme_ip`), whose `/rtc` paths the instance proxies to its
-  in-process SFU, which listens only on `livekit.bind_address`. Every start opens the call's room in
+  in-process SFU, which listens only on `livekit.bind_address`, a loopback IP literal (the
+  instance refuses any other value at start). Every start opens the call's room in
   the SFU first and the SFU never opens one on a join, so a token for a room the instance has closed
   is refused by the SFU (HTTP 404). A call gets a fresh room each time it is opened, so a device of
   the previous call cannot remain in the next one. `caps` is what the client applies to its publish
   options: `livekit.max_audio_bitrate_kbps` and `livekit.max_share_bitrate_kbps` in bits per second,
-  and `vp9` 1 when `livekit.vp9` is on, else 0. An instance that runs no SFU (`livekit.enabled =
+  and `vp9` 1 when `livekit.vp9` is on, else 0 (the instance refuses `livekit.vp9 = true` at start
+  until VP9 has a frame test vector and a measured run through the SFU, so `vp9` is 0 today). An instance that runs no SFU (`livekit.enabled =
   false`) still answers every refusal above, and a start that passes them is `501 E_INTERNAL` with
   no call recorded.
 - **Sharing.** A device takes a **sharing slot** before it publishes its camera or its screen: one
@@ -595,29 +599,48 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   `screen_share`, when it is cut from the call, when a share or a permission push finds it no longer
   in the room, and when the call ends; a slot belongs to the room it was taken in and never carries
   into a later call. The instance also frees the slot when its SFU reports that the device stopped
-  its last camera and screen track (the camera and screen sources are taken away first) or left the
-  room; those reports can be late or lost, so a device that stops sharing sends `DELETE …/share`
-  itself. A permission change during a call is pushed to the SFU at once.
+  its last camera and screen track (the camera and screen sources are taken away first) — unless
+  the SFU shows the device publishing a camera or screen track again by the time the report is
+  handled, as when it switches from one to the other — or left the room; those reports can be late
+  or lost, so a device that stops sharing sends `DELETE …/share` itself, and the room sweep frees
+  the slot of a device its room no longer holds, so a device that crashed or whose leave report was
+  lost holds its slot no longer than the room sweep's bound (below); one whose removal or demotion is
+  pending keeps it until that repair lands. A permission change during a call is pushed to the SFU
+  immediately after it (below).
 - **Losing access.** A device is **barred** from every call when the device is revoked or
   quarantined (`02` invariant 9) or its user is disabled or deleted: a start answers it
-  `403 E_FORBIDDEN` and mints nothing, a share answers `403 E_FORBIDDEN`, and the signalling proxy
-  refuses it. A device that is barred, or whose user loses `view_channel` or `connect` in the
-  channel, is disconnected from the call's room with every `"<device>#…"` participant of it, before
-  the call group's `Remove` of its leaf is committed, and its sharing slot is freed. That happens
-  **at once**, within the request that made the change, for a role or overwrite change, a kick, a
-  leave, a ban, a group-DM removal and a channel's visibility change. A device revocation through
-  `DELETE /v1/devices/{id}` or an account deletion, a user disable through the admin route, and a
-  fork quarantine **queue** the cut at once, without waiting on the SFU, and the instance's
-  background loop, woken by the request, makes it immediately after on its own (within its next
-  pass); the device is refused everywhere meanwhile, since it is barred. A queue that is full leaves
-  the cut to the room sweep. A change written to the database by another process — `dillad admin user
-  disable` or `delete`, an admin device revoke — and a device admitted by the signalling proxy just
-  before it lost access are caught by the **room sweep**: at most every 30 seconds the instance
-  lists its SFU's rooms and, for each live call's room, applies the same rule to every participant,
-  so such a device is disconnected within about 30 seconds (one sweep pass covers at most 64 rooms;
-  a larger instance takes one pass per 64 rooms). The sweep also closes every room that belongs to no
+  `403 E_FORBIDDEN` and mints nothing, a share and an end (`DELETE /v1/calls/{call_id}`) answer
+  `403 E_FORBIDDEN`, and the signalling proxy refuses it. A device that is barred, or whose user
+  loses `view_channel` or `connect` in the channel, is disconnected from the call's room with every
+  `"<device>#…"` participant of it, before the call group's `Remove` of its leaf is committed, and
+  its sharing slot is freed. No request waits on the SFU for that: a role or overwrite change, a
+  kick, a leave, a ban, a group-DM removal, a channel's visibility change, a device revocation
+  through `DELETE /v1/devices/{id}` or an account deletion, a user disable through the admin route,
+  a fork quarantine and a commit that removes a device from a call group each **queue** the cut once
+  their change has landed, and the instance's background loop, woken by the request, makes it
+  immediately after on its own; the request answers without waiting for it. "Immediately after" is
+  at once when the loop is idle; when the loop is in one of its passes (a retry pass, at most 15
+  seconds; a room sweep, at most 20; the closing of ended calls' rooms, at most 15), the queued cut
+  is made between two calls or rooms of that pass, after at most one call's work (2 seconds of
+  waiting for the call's serialisation and its bounded SFU calls). A cut that has to visit many
+  calls (a role change in a large community) runs for at most 15 seconds and leaves every call it
+  did not reach to the next retry pass, at most five seconds later. Meanwhile the device is
+  refused everywhere, since the start, share and signalling-proxy checks re-read its state, its
+  permissions and its leaf on every request. The queue is bounded (1024 entries) and coalesces
+  repeats; a request that does not fit makes the loop run the room sweep (below) at once, so its
+  cut waits for the room sweep's bound. A change written to the database by another process —
+  `dillad admin user disable` or `delete`, an admin device revoke — and a device admitted by the signalling proxy just
+  before it lost access are caught by the **room sweep**: on the loop's five-second tick, at most
+  every 30 seconds, the instance lists its SFU's rooms and, for each live call's room, applies the
+  same rule to every participant. **The room sweep's bound**: one pass visits at most 64 rooms,
+  going on from where the last pass stopped, lasts at most 20 seconds (the rooms it does not reach
+  wait for the next pass), and skips a call whose serialisation stays busy for 2 seconds (it is
+  visited again at the next pass); a pass starts after the tick's queued work and retry pass. So a
+  room is reached within about 30 seconds per 64 live call rooms when the SFU answers promptly,
+  and one more period for each pass cut short or call skipped. The sweep also closes every room that belongs to no
   live call — a room whose close failed when its call ended, an older room of a call, a name that is
-  no call's. When the instance cannot resolve a participant's permissions or state, it takes every
+  no call's — and ends a live call whose channel is deleted or whose call group is closed, closing
+  its room. When the instance cannot resolve a participant's permissions or state, it takes every
   publish grant away from that participant rather than leave the old one in place. A participant
   whose identity is no device of the instance is removed from a call's room. A removal or demotion
   the SFU does not take stays **pending**: the device keeps counting against
@@ -648,7 +671,11 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   `true`; with `join_request` (the `/rtc/v1` form), the `reconnect` field of the base64url
   `WrappedJoinRequest`'s `JoinRequest`, uncompressed or gzip. A `join_request` the SFU would refuse —
   not base64url, not protobuf, or larger than 1 MiB raw or once decompressed — is
-  `400 E_INVALID_REQUEST`. The paths are metered per client address on the `unauth` bucket of
+  `400 E_INVALID_REQUEST`. A join the checks above admit must also name signalling protocol 17 —
+  the `protocol` query parameter without `join_request`, the `JoinRequest`'s `client_info.protocol`
+  with it — and, with `join_request`, a `client_info.sdk` the SFU's enum names; any other value,
+  including none, is `400 E_INVALID_REQUEST`, because the SFU labels its metrics with both. The
+  paths are metered per client address on the `unauth` bucket of
   `[limits.rate]` (`429 E_RATE_LIMITED` with `retry_after_ms`). The instance removes a `publish`
   query parameter and the `CF-Connecting-IP` and `X-Real-IP` headers before the request reaches the
   SFU, and `X-Forwarded-For` carries only the client address the instance resolved.
@@ -727,16 +754,27 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   say) holds no slot. Four is two
   networks through one ICE-restart overlap: a browser holds about `T × N × U` allocations — T = 1
   gathering transport under `max-bundle` (seven during the first offer under the default
-  `balanced`), N = the networks it gathers on, U = 1 relay URL. The relay reaches only the
-  instance's own SFU: `livekit.node_ip` when it is an address of the instance's host, or when
-  `livekit.advertise_internal_ip` is false (it is then the SFU's only candidate, and relayed media
-  leaves the host for it and comes back), and with `livekit.advertise_internal_ip` the host's
-  interface addresses the SFU also offers. A `CreatePermission` or `ChannelBind` for any other peer
-  is refused with STUN error 403, and with LiveKit off every one is. The filter is by IP address
-  only: every port of an admitted address stays reachable through the relay, the SFU's own and any
-  other service bound on those addresses, including `127.0.0.1` when `livekit.node_ip` is unset.
-  The relay offers UDP relays only: an `Allocate` with `REQUESTED-TRANSPORT` TCP (RFC 6062) is
-  refused with STUN error 508, so no `Connect` can open a TCP connection through it.
+  `balanced`), N = the networks it gathers on, U = 1 relay URL. Whatever the devices, at most 8192
+  relay allocations are live on the instance; another is refused with STUN error 486 until one
+  ends. The relay reaches only the instance's own SFU, at addresses the SFU both offers and
+  receives media on: `livekit.node_ip` when it is an address the SFU listens on in the instance's
+  host, or when `livekit.advertise_internal_ip` is false (it is then the SFU's only candidate, and
+  relayed media leaves the host for it and comes back), and with `livekit.advertise_internal_ip`
+  the host's interface addresses the SFU listens on — none inside `livekit.ips_excludes`. A
+  `CreatePermission` or `ChannelBind` for any other peer is refused with STUN error 403, and with
+  LiveKit off every one is. On an admitted address the relay exchanges datagrams only with the
+  SFU's media port (`livekit.udp_port`, or the SFU's 50000-60000 range when it is 0) and never
+  with another relay allocation: a datagram a client sends to any other port, or one that arrives
+  from any other port, is dropped without an error. With `livekit.udp_port` 0 that range is a range
+  of ports, not the SFU's sockets alone: any UDP service bound in 50000-60000 on an admitted address
+  is reachable through the relay too. The relay offers UDP relays only: an `Allocate`
+  with `REQUESTED-TRANSPORT` TCP (RFC 6062) is refused with STUN error 508, so no `Connect` can open
+  a TCP connection through it; an `Allocate` with `EVEN-PORT` or `RESERVATION-TOKEN` is refused with
+  STUN error 508 too. A connection to the relay that has created no allocation within 30 seconds of
+  connecting is closed, and so is one that has gone 61 minutes since its allocation was created or
+  since its last authenticated request while it held one; other bytes, an `Allocate` refused after
+  authentication, and requests that fail authentication (a revoked device, an expired credential)
+  keep no connection open.
 - **Call stats.** A device in a call reports its connection about every 30 seconds: the selected
   candidate's type (0 host, 1 srflx, 2 prflx, 3 relay), the relay's transport when it is a relay
   (0 udp, 1 tcp, 2 tls; null for any other type), the round-trip time in milliseconds (at most
@@ -749,18 +787,30 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   report sent sooner is refused before anything else is checked.
 - **Media that is not dilla's.** Every track a device publishes must be `dilla-sframe/1` (`05`) and
   of its source's kind (audio for the microphone and screen audio, video for the camera and the
-  screen). The first track the SFU reports otherwise — flagged unencrypted, or of the wrong kind —
-  makes the device listen-only for the rest of the call's room: every publish permission is taken
+  screen). The first track the SFU reports otherwise — flagged unencrypted, or of the wrong kind,
+  in the SFU's report of the publication or in its participant list as the room sweep reads it
+  (one publication counts once, whichever saw it first) — makes the device listen-only for the rest of the call's room: every publish permission is taken
   away (which unpublishes its tracks), its sharing slot is freed, a start mints it a listen-only
   token, the signalling proxy admits it listen-only, and a share answers `403 E_FORBIDDEN`. A second
   such track disconnects it from the room.
 - **Ending.** `DELETE` ends the call for everyone and is kept to its participants. A call also ends
   when the SFU closes its room — 20 seconds after the last participant leaves, or 300 seconds after
-  it was opened when nobody joined — and when a start finds its call group closed. Ending a call
-  ends its voice session, closes its room (disconnecting everyone still in it), **closes its call
-  group**, frees every sharing slot and sends `voice_state` with `flags` 0 (`02` § Gateway frames)
-  for every device still in it; the next call registers a fresh call group (`01`), and a start
-  before one is registered is `404 E_NOT_FOUND`. A restore ends every live call (`02` invariant 11).
+  it was opened when nobody joined; a report of the close of a room the SFU has since re-opened
+  under the same name, for a start that came after it, ends nothing, and neither does one the
+  instance cannot check against its SFU (the call then stays recorded live, with no room, until its
+  next start re-opens the room) — when a start finds its call
+  group closed, and when its channel, or the community of its channel, is deleted. Ending a call
+  **closes its call group** first, then ends its voice session, closes its room (disconnecting
+  everyone still in it), frees every sharing slot and sends `voice_state` with `flags` 0 (`02` §
+  Gateway frames) for every device still in it; the next call registers a fresh call group (`01`),
+  and a start before one is registered is `404 E_NOT_FOUND`. A start that read the call group open
+  just before an end closed it, and so would reopen the call on a closed group, ends that call again
+  at once and answers `503 E_UNAVAILABLE` with `retry_after_ms`; its retry opens the next call or is
+  `404 E_NOT_FOUND`. A deleted channel's call is ended in the record within the delete request, so
+  every start, share and signalling-proxy request refuses it from then on; its room is closed
+  immediately after by the background loop. When the instance cannot read the channel's live calls
+  in the delete request, the room sweep ends them within its bound (the signalling proxy refuses
+  every join of a deleted channel's call meanwhile). A restore ends every live call (`02` invariant 11).
 - **Leaving.** A device leaves a call by posting its self-Remove proposal to the call group (`01`
   § Joining) and only then disconnecting from the SFU. The instance learns of the leave from the
   SFU — under a millisecond after a graceful disconnect on loopback, and 20–22 seconds after a crash
@@ -769,9 +819,29 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   seconds late after the instance's receiver was briefly unavailable, or not at all. On that report
   the instance frees the device's sharing slot and proposes its own `Remove` of the device's leaf,
   whether or not the device posted one (whichever of the two is committed removes it, `02`
-  invariant 6); a leave of a session the device has already replaced by rejoining, and a leave the
-  SFU reports after the call has ended, change nothing. A device the call group removes is
-  disconnected from the room as soon as the commit is accepted, a removal the SFU does not take is
+  invariant 6); the `Remove` is of the leaf the leaving session was admitted with by the signalling
+  proxy — that leaf, taken in that epoch — and is not proposed when the device has since left the
+  call group or rejoined it (at another leaf, or the same leaf added again in a later epoch), nor
+  when the instance does not know the session's admission. When that membership is gone but the
+  same device holds another leaf of the call group — it re-joined the group from inside the call,
+  as a resync does — the `Remove` is of the leaf it holds now, provided the SFU shows the device out
+  of the room and it was not admitted in the last 30 seconds; otherwise the sweep below decides.
+  The admission is recorded only for a join the signalling proxy lets through to the SFU: a request
+  it refuses records none. A leave of a session the device has
+  already replaced by rejoining, and a leave the SFU reports after the call has ended, change
+  nothing. A device that stays out of the call's room while it holds a leaf of the call group — its
+  leave report lost, or disconnected by the instance and the report of that lost — loses the leaf
+  too: when a room sweep (or any reconcile of the whole room: a room resync, a channel- or
+  community-wide grant change) finds a current leaf whose device is not in the room, and one at
+  least one sweep period (30 seconds) later finds the same leaf, taken in the same epoch, still not in it,
+  the instance proposes its `Remove`, bound to that membership. A device the signalling proxy
+  admitted, or a start gave a token, in the last 30 seconds is left alone while it connects. So such
+  a leaf is removed within about two sweep periods, longer under the room sweep's bound (above),
+  and never once the device has rejoined the group. The `voice_state` frames
+  these reports cause are coalesced per device: a device's latest state is sent at most every
+  250 milliseconds. A device the call group removes is
+  disconnected from the room as soon as the commit is accepted (the background loop removes it, the
+  committer's request does not wait for it), a removal the SFU does not take is
   retried like any other pending removal, the room sweep disconnects any participant that is no
   current leaf of the call group, and the signalling proxy refuses its rejoin.
 

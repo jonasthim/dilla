@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"sync"
@@ -75,7 +76,7 @@ func (r *RelayRevocations) TrackForTest(dev string, pc net.PacketConn) bool {
 
 // TURNHandlersWithRevForTest is TURNHandlersForTest reading and feeding rev.
 func TURNHandlersWithRevForTest(maxPerDevice int, rev *RelayRevocations) (turn.QuotaHandler, turn.EventHandler) {
-	return turnHandlers(context.Background(), NewAllocationQuota(maxPerDevice), noTURNMetrics{}, rev)
+	return turnHandlers(context.Background(), NewAllocationQuota(maxPerDevice), noTURNMetrics{}, rev, nil)
 }
 
 // RelayCutsForTest is how many cuts r holds.
@@ -137,7 +138,7 @@ func TURNHandlersForTest(maxPerDevice int, m TURNMetrics) (turn.QuotaHandler, tu
 	if m == nil {
 		m = noTURNMetrics{}
 	}
-	return turnHandlers(context.Background(), NewAllocationQuota(maxPerDevice), m, NewRelayRevocations(time.Hour, clock.System()))
+	return turnHandlers(context.Background(), NewAllocationQuota(maxPerDevice), m, NewRelayRevocations(time.Hour, clock.System()), nil)
 }
 
 // FailTURNNetForTest makes StartTURN's network setup fail with err until the returned restore runs.
@@ -180,6 +181,71 @@ func TCPRelayRefusalsForTest(dev string, peer net.Addr) (listenErr, connErr erro
 		connErr = err
 	}
 	return listenErr, connErr, q.Allow(dev)
+}
+
+// IsNoReservationsForTest reports whether err is the relay generator's EVEN-PORT/RESERVATION-TOKEN
+// refusal.
+func IsNoReservationsForTest(err error) bool { return errors.Is(err, errNoReservations) }
+
+// RelaySocketsForTest is how many relay sockets t holds registered as peers no relay may reach.
+func (t *TURN) RelaySocketsForTest() int {
+	t.peers.mu.RLock()
+	defer t.peers.mu.RUnlock()
+	n := 0
+	for _, c := range t.peers.socks {
+		n += c
+	}
+	return n
+}
+
+// SetMaxRelaySocketsForTest makes relays started afterwards hold at most n live allocations in all,
+// until the returned restore runs.
+func SetMaxRelaySocketsForTest(n int) (restore func()) {
+	prev := maxRelaySockets
+	maxRelaySockets = n
+	return func() { maxRelaySockets = prev }
+}
+
+// SetTURNIdleForTest gives relays started afterwards the authentication window auth and the idle
+// bound idle, until the returned restore runs.
+func SetTURNIdleForTest(auth, idle time.Duration) (restore func()) {
+	prev := turnIdleBounds
+	turnIdleBounds.auth, turnIdleBounds.idle = auth, idle
+	return func() { turnIdleBounds = prev }
+}
+
+// ReservationRefusalsForTest asks the relay generator StartTURN installs (on 127.0.0.1, over a quota
+// of one that dev holds) for pion's EVEN-PORT probe socket (no user) and for a reserved port of dev,
+// and answers how many relay sockets either left registered, whether dev's slot is free again, and
+// both errors.
+func ReservationRefusalsForTest(dev string) (sockets int, freed bool, probeErr, reservedErr error) {
+	relayNet, err := newTURNNet()
+	if err != nil {
+		return 0, false, err, err
+	}
+	q := NewAllocationQuota(1)
+	q.Allow(dev)
+	peers := newRelayPeers(TURNPeers{})
+	g := &countingRelay{
+		RelayAddressGeneratorStatic: &turn.RelayAddressGeneratorStatic{
+			RelayAddress: net.IPv4(127, 0, 0, 1), Address: "127.0.0.1", Net: relayNet,
+		},
+		m: noTURNMetrics{}, q: q, rev: NewRelayRevocations(time.Hour, clock.System()), peers: peers,
+	}
+	if pc, _, err := g.AllocatePacketConn(turn.AllocateListenerConfig{Network: "udp4"}); err == nil {
+		_ = pc.Close()
+	} else {
+		probeErr = err
+	}
+	if pc, _, err := g.AllocatePacketConn(turn.AllocateListenerConfig{Network: "udp4", UserID: dev, RequestedPort: 40000}); err == nil {
+		_ = pc.Close()
+	} else {
+		reservedErr = err
+	}
+	peers.mu.RLock()
+	sockets = len(peers.socks)
+	peers.mu.RUnlock()
+	return sockets, q.Allow(dev), probeErr, reservedErr
 }
 
 // ChooseRelayIPForTest is the "auto" decision over a probe result and interface addresses.

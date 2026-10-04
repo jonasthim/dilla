@@ -292,6 +292,7 @@ func TestAnOverwriteChangeReachesTheLiveCall(t *testing.T) {
 		[]any{uint64(0), uint64(api.PermSpeak)}); status != http.StatusNoContent {
 		t.Fatal("PUT overwrite failed")
 	}
+	calls.ProcessQueueForTest(t.Context()) // the route queues its sync to the retry loop (parked item)
 	if got := stub.permUpdates(); len(got) != 1 || got[0].Identity != memberDev.String() || got[0].Perm.GetCanPublish() {
 		t.Fatalf("updates after the overwrite = %+v, want the member demoted to listen-only", got)
 	}

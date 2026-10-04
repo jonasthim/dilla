@@ -25,7 +25,7 @@ func TestAVisibilityPatchCutsAParticipantWhoLosesView(t *testing.T) {
 		[]any{nil, nil, nil, uint64(api.VisPrivate), nil, nil, nil}); status != http.StatusNoContent {
 		t.Fatalf("PATCH visibility = %d (%x)", status, body)
 	}
-	if !removedDevice(m.stub, m.room, m.memberDev) {
+	if !waitRemoved(m.stub, m.room, m.memberDev) { // queued to the retry loop (parked item)
 		t.Fatal("the visibility PATCH left a participant who lost view in the call's room")
 	}
 	if removedDevice(m.stub, m.room, ownerDev) {

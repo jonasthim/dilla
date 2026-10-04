@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/livekit/protocol/livekit"
 
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/sfu"
@@ -38,15 +39,23 @@ func SyncCallGrants(ctx context.Context, repo store.Repository, res *Resolver, t
 	if tokens == nil || h == nil {
 		return nil
 	}
+	// The store reads go on past ctx's end (N1): a sync whose budget ran out still finds every live
+	// call in scope, and leaves each one it does not reach as a pending room resync for the retry
+	// loop's next pass instead of skipping it.
+	rctx := context.WithoutCancel(ctx)
 	var channels []store.ChannelRow
 	if channelID != nil {
-		ch, err := repo.GetChannel(ctx, *channelID)
+		ch, err := repo.GetChannel(rctx, *channelID)
+		if errors.Is(err, store.ErrNotFound) {
+			// A deleted channel has no call to sync: one still live is ended (CALLS-1).
+			return h.endCallsOfGoneChannel(rctx, *channelID)
+		}
 		if err != nil {
 			return err
 		}
 		channels = []store.ChannelRow{ch}
 	} else {
-		all, err := repo.ListChannels(ctx, communityID)
+		all, err := repo.ListChannels(rctx, communityID)
 		if err != nil {
 			return err
 		}
@@ -58,34 +67,47 @@ func SyncCallGrants(ctx context.Context, repo store.Repository, res *Resolver, t
 		if !CallGroupAllowed(ch) {
 			continue
 		}
-		rows, err := repo.ListLiveVoiceSessions(ctx, ch.ID)
+		rows, err := repo.ListLiveVoiceSessions(rctx, ch.ID)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
 		for _, row := range rows {
+			if ctx.Err() != nil {
+				h.leases.markPending(row.CallID, roomResync, pendingRepair{Room: row.LivekitRoom})
+				continue
+			}
 			if err := h.syncRoomGrants(ctx, d, ch, row, userID); err != nil {
 				errs = append(errs, err)
 			}
 		}
 	}
+	h.reportPending()
 	return errors.Join(errs...)
 }
 
-// syncAfterMembership is SyncCallGrants scoped to userID after a membership change has committed —
-// a kick, a leave, a ban, a group-DM removal — so the user's connected SFU sessions are cut at once
-// (the MLS Remove of their leaves still follows through the delivery service). channelID scopes it
-// to one channel (a DM has no community); nil walks every channel of communityID. A failure is
-// logged: the change stands, and the room sweep converges what the sync could not. A nil h (no SFU)
-// touches nothing.
-func syncAfterMembership(ctx context.Context, h *Calls, log *slog.Logger, communityID id.ID, userID id.ID, channelID *id.ID) {
-	if h == nil || h.sfu == nil {
-		return
+// endCallsOfGoneChannel ends every live call of a channel that is deleted (endQueued): what every path
+// that finds a call's channel gone does instead of skipping its room.
+func (h *Calls) endCallsOfGoneChannel(ctx context.Context, channelID id.ID) error {
+	rows, err := h.repo.ListLiveVoiceSessions(ctx, channelID)
+	if err != nil {
+		return err
 	}
-	if err := SyncCallGrants(ctx, h.repo, h.res, h.sfu, h, communityID, &userID, channelID); err != nil {
-		log.ErrorContext(ctx, "cutting a removed user from live calls failed; the room sweep retries it",
-			"community", communityID, "user", userID, "err", err)
+	var errs []error
+	for _, row := range rows {
+		errs = append(errs, h.endQueued(ctx, row, "channel_deleted"))
 	}
+	return errors.Join(errs...)
+}
+
+// syncAfterMembership queues SyncCallGrants scoped to userID after a membership change has committed
+// — a kick, a leave, a ban, a group-DM removal — so the user's connected SFU sessions are cut
+// immediately after, on the retry loop (RequestSync), never within the request; the MLS Remove of
+// their leaves still follows through the delivery service. channelID scopes it to one channel (a DM
+// has no community); nil walks every channel of communityID. Meanwhile the gates refuse the user's
+// devices. A nil h (no SFU) touches nothing.
+func syncAfterMembership(ctx context.Context, h *Calls, communityID id.ID, userID id.ID, channelID *id.ID) {
+	h.RequestSync(ctx, communityID, &userID, channelID)
 }
 
 // roomResync is the pending-repair key for "reconcile every participant of the room": a grant sync
@@ -93,8 +115,11 @@ func syncAfterMembership(ctx context.Context, h *Calls, log *slog.Logger, commun
 // the retry loop.
 const roomResync = "*"
 
+// syncRoomGrants is SyncCallGrants' visit of one live call. It runs on the retry loop (RequestSync),
+// so it waits for the call's lock no longer than a request does: a busy call is left as a pending
+// room resync, which the loop's next retry pass drives, rather than holding up the queue behind it.
 func (h *Calls) syncRoomGrants(ctx context.Context, d grantDeps, ch store.ChannelRow, row store.VoiceSessionRow, userID *id.ID) error {
-	ctx, unlock, err := h.lock(ctx, row.CallID, callLockWaitBackground, callHoldBackground)
+	ctx, unlock, err := h.lock(ctx, row.CallID, callLockWait, callHoldBackground)
 	if err != nil {
 		// The change is committed; the room converges on the retry loop instead.
 		h.leases.markPending(row.CallID, roomResync, pendingRepair{Room: row.LivekitRoom})
@@ -112,8 +137,12 @@ func (h *Calls) syncRoomGrants(ctx context.Context, d grantDeps, ch store.Channe
 
 // reconcileRoom reconciles every participant of row's room in scope — userID's devices when it is
 // set, the identities match accepts when it is set — skipping the identities a drain already did.
-// A room that cannot be listed, or a hold that runs out before every participant was reached, is
-// left as a pending room resync. The caller holds the call's lock; ctx carries the hold's deadline.
+// Over the whole room (neither set) it also frees the slot of every holder the room no longer lists
+// (CALLS-5): a participant_left the webhook lost leaves it held otherwise, for the room's life. The
+// release goes through reconcile with the slot dropped, so a holder the SFU still holds after all is
+// demoted first. A room that cannot be listed, or a hold that runs out before every participant was
+// reached, is left as a pending room resync. The caller holds the call's lock; ctx carries the hold's
+// deadline.
 func (h *Calls) reconcileRoom(ctx context.Context, d grantDeps, ch store.ChannelRow, row store.VoiceSessionRow,
 	userID *id.ID, done map[string]bool, match func(string) bool) error {
 	h.leases.dropStale(row.CallID, row.LivekitRoom)
@@ -124,10 +153,25 @@ func (h *Calls) reconcileRoom(ctx context.Context, d grantDeps, ch store.Channel
 		h.leases.markPending(row.CallID, roomResync, pendingRepair{Room: row.LivekitRoom})
 		return err
 	}
-	if userID == nil && match == nil {
-		h.leases.clearPending(row.CallID, roomResync)
-	}
 	var errs []error
+	whole := userID == nil && match == nil
+	if whole {
+		h.leases.clearPending(row.CallID, roomResync)
+		present := make(map[string]bool, len(parts))
+		for _, p := range parts {
+			present[p.GetIdentity()] = true
+		}
+		pending := h.leases.pendingOf(row.CallID)
+		for _, dev := range h.leases.holders(row.CallID, row.LivekitRoom) {
+			identity := dev.String()
+			if _, ok := pending[identity]; ok || present[identity] || done[identity] {
+				continue
+			}
+			errs = append(errs, h.reconcile(ctx, d, ch, row, identity, nil, true))
+		}
+	}
+	cut := map[string]bool{}
+	complete := true
 	for _, p := range parts {
 		identity := p.GetIdentity()
 		if done[identity] || (match != nil && !match(identity)) {
@@ -136,11 +180,57 @@ func (h *Calls) reconcileRoom(ctx context.Context, d grantDeps, ch store.Channel
 		if err := ctx.Err(); err != nil {
 			h.leases.markPending(row.CallID, roomResync, pendingRepair{Room: row.LivekitRoom})
 			errs = append(errs, fmt.Errorf("the hold on %s ran out: %w", row.LivekitRoom, err))
+			complete = false
 			break
 		}
-		errs = append(errs, h.reconcile(ctx, d, ch, row, identity, userID, false))
+		if whole && h.strikeListed(ctx, d, row, p) {
+			cut[identity] = true // removed for a repeated F11 offence
+			continue
+		}
+		wasCut, err := h.reconcileOutcome(ctx, d, ch, row, identity, userID, false)
+		if wasCut {
+			cut[identity] = true
+		}
+		errs = append(errs, err)
+	}
+	if whole && complete {
+		h.trackAbsentLocked(ctx, row, parts, cut)
 	}
 	return errors.Join(errs...)
+}
+
+// strikeListed is ruling (b): F11 checked from the room's participant list, so a publication whose
+// track_published webhook was shed or lost is still penalised. Each listed track that is not
+// dilla-sframe/1 or not of its source's kind counts one strike for its track sid — the webhook's
+// strike for the same sid and this one are the same strike, whichever came first. A first strike is
+// enforced by the reconcile that follows (it honours the penalty: a listen-only push); a repeat
+// removes the device from the room here, and strikeListed reports true. The caller holds the call's
+// lock.
+func (h *Calls) strikeListed(ctx context.Context, d grantDeps, row store.VoiceSessionRow, p *livekit.ParticipantInfo) bool {
+	dev, err := id.Parse(p.GetIdentity())
+	if err != nil {
+		return false
+	}
+	repeat := false
+	for _, t := range p.GetTracks() {
+		if !notDillaMedia(t) {
+			continue
+		}
+		n, counted := h.leases.strikeTrack(row.CallID, row.LivekitRoom, dev, t.GetSid())
+		if !counted {
+			continue // the webhook, or an earlier sweep, already counted this publication
+		}
+		h.log.WarnContext(ctx, "the room sweep found a published track that is not dilla-sframe/1 or not of its declared kind",
+			"room", row.LivekitRoom, "device_id", dev.String(), "track", t.GetSid(), "strikes", n)
+		repeat = repeat || n > 1
+	}
+	if !repeat {
+		return false
+	}
+	if err := h.removeDevice(ctx, d, row, dev, true); err != nil {
+		h.log.WarnContext(ctx, "removing a repeat F11 offender did not land; it stays pending", "room", row.LivekitRoom, "err", err)
+	}
+	return true
 }
 
 // reconcile brings one participant of row's room within what it is entitled to now; the caller holds
@@ -257,9 +347,9 @@ func (h *Calls) removeDevice(ctx context.Context, d grantDeps, row store.VoiceSe
 }
 
 // leafOfCall reports whether dev holds a leaf of the call group row's call was opened on in the
-// group's current epoch — requireCurrentLeaf's rule, so the room keeps exactly the devices the
-// /rtc gate would admit. A call with no group, a group that is gone and an epoch-unknown group hold
-// no leaf.
+// group's current epoch — requireCurrentLeaf's rule (leafIn), so the room keeps exactly the devices
+// the /rtc gate would admit. A call with no group, a group that is gone, a closed group and an
+// epoch-unknown group hold no leaf.
 func leafOfCall(ctx context.Context, repo store.Repository, row store.VoiceSessionRow, dev id.ID) (bool, error) {
 	if row.GroupID == nil {
 		return false, nil
@@ -271,19 +361,7 @@ func leafOfCall(ctx context.Context, repo store.Repository, row store.VoiceSessi
 	if err != nil {
 		return false, err
 	}
-	if group.EpochUnknown {
-		return false, nil
-	}
-	members, err := repo.ListMembers(ctx, group.GroupID)
-	if err != nil {
-		return false, err
-	}
-	for _, m := range members {
-		if m.DeviceID == dev && m.RemovedEpoch == nil && m.AddedEpoch <= group.Epoch {
-			return true, nil
-		}
-	}
-	return false, nil
+	return leafIn(ctx, repo, group, dev)
 }
 
 // cutIdentity removes a participant that is no device of this instance by its exact identity.
@@ -364,14 +442,21 @@ func (h *Calls) drainPending(ctx context.Context, d grantDeps, ch store.ChannelR
 // forgets the slots and repairs of every call that has ended (its room is closed) and the slots of
 // an older room of a live call. The retry loop (StartRetries) runs it, so a cut or demotion the SFU
 // refused converges without another event in the call; a call whose lock is busy is left for the
-// next pass. Each call's hold is bounded by callHoldBackground.
+// next pass. Each call's hold is bounded by callHoldBackground, and the whole pass by retryPassBudget
+// (CALLS-M2: calls that hold only slots spend no repair budget, and each waits up to callLockWait for
+// its lock). A cut or an eviction queued while the pass runs is served between two calls, not after
+// the pass.
 func (h *Calls) RetryPending(ctx context.Context) {
 	budget := maxRepairsPerTick
+	pctx, cancel := context.WithTimeout(ctx, retryPassBudget)
+	defer cancel()
+	defer h.flushLeafRemovals(ctx) // a room resync's whole-room reconcile may have decided some
 	for _, call := range h.leases.trackedCalls() {
-		if budget <= 0 || ctx.Err() != nil {
+		if budget <= 0 || pctx.Err() != nil {
 			return
 		}
-		n, err := h.retryTracked(ctx, call, budget)
+		h.serveQueued(ctx)
+		n, err := h.retryTracked(pctx, call, budget)
 		if err != nil {
 			h.log.WarnContext(ctx, "a call's grant repairs were skipped this pass", "call", call, "err", err)
 		}
@@ -401,6 +486,9 @@ func (h *Calls) retryOwn(ctx context.Context, call, dev id.ID) error {
 		return err
 	}
 	ch, err := h.repo.GetChannel(ctx, row.ChannelID)
+	if errors.Is(err, store.ErrNotFound) {
+		return h.endLocked(ctx, row, "channel_deleted") // the channel is gone, so is its call (CALLS-1)
+	}
 	if err != nil {
 		return err
 	}
@@ -430,6 +518,9 @@ func (h *Calls) retryTracked(ctx context.Context, call id.ID, limit int) (int, e
 		return 0, nil
 	}
 	ch, err := h.repo.GetChannel(ctx, row.ChannelID)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, h.endLocked(ctx, row, "channel_deleted") // the channel is gone, so is its call (CALLS-1)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -474,9 +565,11 @@ func (h *Calls) SweepRooms(ctx context.Context) {
 		}
 		room := rooms[(start+i)%len(rooms)]
 		h.sweepCursor = room
+		h.serveQueued(ctx)
 		if err := h.sweepRoom(ctx, room, nil); err != nil {
 			h.log.WarnContext(ctx, "sweeping a call room did not finish; the next pass retries it", "room", room, "err", err)
 		}
+		h.flushLeafRemovals(ctx) // the room's lock is released: its decided Removes go to the DS now
 	}
 }
 
@@ -488,8 +581,10 @@ func (h *Calls) SweepRooms(ctx context.Context) {
 // (falling back to its tick). Meanwhile the device is barred in the database, so the /rtc gate,
 // start and share refuse it. The cut runs the same reconcile as the sweep for those identities
 // only: a barred device is removed with its slot freed (pending when the SFU refuses), one that is
-// not barred keeps exactly its current permission. A request that finds the set full is dropped
-// with a WARN: the room sweep covers it within its period.
+// not barred keeps exactly its current permission. A request that finds the work queue full
+// (callqueue.go) raises its resync-all flag with a WARN: the loop, woken all the same, runs a room
+// sweep at once, which cuts every barred participant of every live call room (CALLS-M4: one user who
+// logs many devices out cannot crowd another user's cut past the sweep's bound).
 func (h *Calls) CutDevice(ctx context.Context, device id.ID) {
 	h.requestCut(ctx, device, false)
 }
@@ -499,9 +594,6 @@ func (h *Calls) CutDevice(ctx context.Context, device id.ID) {
 func (h *Calls) CutUser(ctx context.Context, userID id.ID) {
 	h.requestCut(ctx, userID, true)
 }
-
-// maxCutRequests bounds the cut-request set; a request beyond it is left to the room sweep.
-const maxCutRequests = 1024
 
 func (h *Calls) requestCut(ctx context.Context, who id.ID, user bool) {
 	// The relay first, synchronously and whatever happens below (review I1): it closes sockets and
@@ -515,27 +607,22 @@ func (h *Calls) requestCut(ctx context.Context, who id.ID, user bool) {
 		return
 	}
 	h.cutMu.Lock()
-	if h.cutDevices == nil {
-		h.cutDevices, h.cutUsers = map[id.ID]bool{}, map[id.ID]bool{}
-	}
+	h.initQueueLocked()
 	set := h.cutDevices
 	if user {
 		set = h.cutUsers
 	}
-	full := !set[who] && len(h.cutDevices)+len(h.cutUsers) >= maxCutRequests
-	if !full {
+	full := !set[who] && h.queuedLocked() >= maxCutRequests
+	if full {
+		h.overflowLocked()
+	} else {
 		set[who] = true
 	}
 	h.cutMu.Unlock()
 	if full {
-		h.log.WarnContext(ctx, "the call cut queue is full; the room sweep cuts this one within its period",
-			"id", who, "user", user)
-		return
+		h.warnOverflow(ctx, "cut", "id", who, "user", user)
 	}
-	select {
-	case h.cutWake <- struct{}{}:
-	default: // a wake is already pending; the loop takes the whole set
-	}
+	h.wake() // a wake already pending is enough: the loop takes the whole set
 }
 
 // processCuts takes the whole cut-request set and cuts its devices (and the devices of its users)
@@ -596,10 +683,12 @@ func (h *Calls) listRooms(ctx context.Context) ([]string, error) {
 	return h.sfu.Rooms(lctx)
 }
 
-// sweepRoom is one room of the sweep (match nil) or of a cut (match set). A room named for no call,
-// or for a call that has ended or moved to a newer room, is deleted by the sweep and left alone by a
-// cut; a live call's room is reconciled under the call's lock, every participant (sweep) or those
-// match accepts (cut).
+// sweepRoom is one room of the sweep (match nil) or of a cut (match set). A room named for no call
+// is deleted by the sweep and left alone by a cut. A room of a call that has ended or moved to a newer
+// room is deleted by both: everyone in it is cut, and nobody belongs there. A live call whose channel
+// is gone (deleted) or whose call group is closed or gone is over (CALLS-1, CALLS-2): it is ended
+// and its room deleted, never skipped. Any other live call's room is reconciled under the call's
+// lock, every participant (sweep) or those match accepts (cut).
 func (h *Calls) sweepRoom(ctx context.Context, room string, match func(string) bool) error {
 	callHex, _, ok := strings.Cut(room, "-")
 	callID, perr := id.Parse(callHex)
@@ -617,9 +706,6 @@ func (h *Calls) sweepRoom(ctx context.Context, room string, match func(string) b
 	row, err := h.repo.GetVoiceSession(ctx, callID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		if match != nil {
-			return nil
-		}
 		return h.deleteRoom(ctx, room)
 	case err != nil:
 		return err
@@ -629,16 +715,47 @@ func (h *Calls) sweepRoom(ctx context.Context, room string, match func(string) b
 		} else {
 			h.leases.dropStale(callID, row.LivekitRoom)
 		}
-		if match != nil {
-			return nil
-		}
+		h.forgetMembers(callID, room)
 		return h.deleteRoom(ctx, room)
 	}
 	ch, err := h.repo.GetChannel(ctx, row.ChannelID)
+	if errors.Is(err, store.ErrNotFound) {
+		return h.endOver(ctx, row, "channel_deleted")
+	}
 	if err != nil {
 		return err
 	}
+	if over, err := h.groupOver(ctx, row); err != nil {
+		return err
+	} else if over {
+		return h.endOver(ctx, row, "closed_group")
+	}
 	return h.reconcileRoom(ctx, h.deps(), ch, row, nil, nil, match)
+}
+
+// groupOver reports whether row's live call is on a call group that is closed or gone, which no
+// commit can change any more: such a call cannot go on.
+func (h *Calls) groupOver(ctx context.Context, row store.VoiceSessionRow) (bool, error) {
+	if row.GroupID == nil {
+		return false, nil
+	}
+	g, err := h.repo.GetGroup(ctx, *row.GroupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return g.ClosedAt != nil, nil
+}
+
+// endOver ends a live call the sweep or a cut found over, under the call's lock the caller holds, and
+// deletes its room at once; the rest of its end (its group, voice_state) follows on the queue.
+func (h *Calls) endOver(ctx context.Context, row store.VoiceSessionRow, reason string) error {
+	if err := h.endLocked(ctx, row, reason); err != nil {
+		return err
+	}
+	return h.deleteRoom(ctx, row.LivekitRoom)
 }
 
 // deleteRoom closes a room that belongs to no live call: everyone in it is disconnected, and with
@@ -653,14 +770,14 @@ func (h *Calls) deleteRoom(ctx context.Context, room string) error {
 	return nil
 }
 
-// StartRetries runs the retry loop: as soon as a cut is requested (CutDevice, CutUser) it cuts the
-// requested devices, and every `every` it drives the calls' pending repairs (RetryPending) and, at
-// most every RoomSweepInterval, sweeps the SFU's rooms (SweepRooms), all on its own goroutine,
-// so a slow or hung SFU never delays another maintenance duty. A pass never overlaps the next — a
-// tick that comes while one runs is dropped — each SFU call is bounded by sfuCallTimeout, each hold
-// of a call's lock by callHoldBackground, each pass by maxRepairsPerTick and the sweep's own bounds.
-// stop ends the loop and waits for the pass in flight, which its cancelled context cuts short; the
-// composition root calls it before the SFU stops.
+// StartRetries runs the retry loop: as soon as work is queued (callqueue.go: a cut, an eviction, a
+// teardown, a grant sync) it does it (processQueue), and every `every` it also drives the calls'
+// pending repairs (RetryPending) and, at most every RoomSweepInterval, sweeps the SFU's rooms
+// (SweepRooms), all on its own goroutine, so a slow or hung SFU never delays a request or another
+// maintenance duty. A pass never overlaps the next — a tick that comes while one runs is dropped —
+// each SFU call is bounded by sfuCallTimeout, each hold of a call's lock by callHoldBackground, each
+// pass by its budget and the sweep's own bounds. stop ends the loop and waits for the pass in
+// flight, which its cancelled context cuts short; the composition root calls it before the SFU stops.
 func (h *Calls) StartRetries(every time.Duration) (stop func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -675,10 +792,10 @@ func (h *Calls) StartRetries(every time.Duration) (stop func()) {
 			case <-ctx.Done():
 				return
 			case <-h.cutWake:
-				h.processCuts(ctx)
+				h.processQueue(ctx)
 				h.reportPending()
 			case <-tick.C:
-				h.processCuts(ctx)
+				h.processQueue(ctx)
 				h.RetryPending(ctx)
 				if time.Since(lastSweep) >= sweepEvery {
 					h.SweepRooms(ctx)

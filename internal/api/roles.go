@@ -75,15 +75,14 @@ func (h *Roles) WithCalls(tokens CallTokens, calls *Calls) *Roles {
 	return h
 }
 
-// syncCallGrants runs SyncCallGrants after a commit and logs a failure: the change stands, and a
-// live participant keeps its old grant until its next join or the next change.
+// syncCallGrants queues SyncCallGrants after a commit (Calls.RequestSync): the call retry loop runs
+// it immediately after, on its own goroutine, so the request never waits on the SFU or a call's
+// lock. Meanwhile the token mint and the /rtc gate already answer from the new permissions.
 func (h *Roles) syncCallGrants(ctx context.Context, communityID id.ID, userID, channelID *id.ID) {
 	if h.tokens == nil || h.calls == nil {
 		return
 	}
-	if err := SyncCallGrants(ctx, h.repo, h.res, h.tokens, h.calls, communityID, userID, channelID); err != nil {
-		h.log.ErrorContext(ctx, "re-pushing live call grants failed", "community", communityID, "err", err)
-	}
+	h.calls.RequestSync(ctx, communityID, userID, channelID)
 }
 
 func (h *Roles) Register(mux *server.Mux) {

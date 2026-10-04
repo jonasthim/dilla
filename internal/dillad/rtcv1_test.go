@@ -87,9 +87,9 @@ func TestTheRTCGateReadsTheV1ResumeAsLiveKitDoes(t *testing.T) {
 		t.Fatalf("mountRTC: %v", err)
 	}
 	camTok := "access_token=" + url.QueryEscape(sharer.String()+"@room-1@mic,cam,screen")
-	resume := &livekit.JoinRequest{Reconnect: true, ParticipantSid: "PA_x"}
+	resume := &livekit.JoinRequest{Reconnect: true, ParticipantSid: "PA_x", ClientInfo: clientInfo()}
 	// Not empty: an empty JoinRequest encodes to an empty join_request, which LiveKit reads as none.
-	fresh := &livekit.JoinRequest{ConnectionSettings: &livekit.ConnectionSettings{AutoSubscribe: true}}
+	fresh := &livekit.JoinRequest{ConnectionSettings: &livekit.ConnectionSettings{AutoSubscribe: true}, ClientInfo: clientInfo()}
 	tooBig := make([]byte, http.DefaultMaxHeaderBytes+1)
 	bomb := gzipped(t, make([]byte, http.DefaultMaxHeaderBytes+1))
 	resumeBytes, _ := proto.Marshal(resume)
@@ -149,9 +149,9 @@ func TestAResumeOfAParticipantTheSFUDoesNotHoldConfersNothing(t *testing.T) {
 	front := httptest.NewServer(mux)
 	defer front.Close()
 
-	resume := &livekit.JoinRequest{Reconnect: true, ParticipantSid: "PA_nobody"}
+	resume := &livekit.JoinRequest{Reconnect: true, ParticipantSid: "PA_nobody", ClientInfo: clientInfo()}
 	for _, tc := range []struct{ name, path, extra string }{
-		{"v0", "/rtc", "&reconnect=1&sid=PA_nobody"},
+		{"v0", "/rtc", "&reconnect=1&sid=PA_nobody" + clientProto},
 		{"v1", "/rtc/v1", "&join_request=" + wrappedJoin(t, resume, livekit.WrappedJoinRequest_NONE)},
 	} {
 		ghost := id.New()
@@ -228,7 +228,7 @@ func TestTheRTCPathsAreMeteredPerClientAddress(t *testing.T) {
 		t.Fatalf("mountRTC: %v", err)
 	}
 	get := func(addr string) *httptest.ResponseRecorder {
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/rtc?access_token="+url.QueryEscape(dev.String()+"@room-1"), nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/rtc?access_token="+url.QueryEscape(dev.String()+"@room-1")+clientProto, nil)
 		req.RemoteAddr = addr + ":5555"
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)

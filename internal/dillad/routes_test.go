@@ -14,7 +14,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,6 +154,28 @@ type fakeGate struct {
 	leaves  map[id.ID]bool
 	allowed map[id.ID]*livekit.ParticipantPermission
 	refused map[id.ID]error
+	// noted, when set, records every device the proxy reported admitted (Admitted).
+	noted *admissions
+}
+
+// admissions is a fakeGate's record of the joins the proxy let through.
+type admissions struct {
+	mu   sync.Mutex
+	devs []id.ID
+}
+
+func (a *admissions) list() []id.ID {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.devs)
+}
+
+func (g fakeGate) Admitted(_ context.Context, _ string, dev id.ID) {
+	if g.noted != nil {
+		g.noted.mu.Lock()
+		g.noted.devs = append(g.noted.devs, dev)
+		g.noted.mu.Unlock()
+	}
 }
 
 func (g fakeGate) AdmitRoom(_ context.Context, room string, dev id.ID) (*livekit.ParticipantPermission, error) {
@@ -185,8 +209,8 @@ func TestTheRTCPathsAreProxiedToTheSFU(t *testing.T) {
 	if err := mountRTC(mux, fakeSFU{url: upstream.URL}, fakeGate{room: "room-1", leaves: map[id.ID]bool{dev: true}}, nil, unmetered()); err != nil {
 		t.Fatalf("mountRTC: %v", err)
 	}
-	for _, path := range []string{"/rtc?access_token=" + tok, "/rtc/validate?access_token=" + tok,
-		"/rtc/v1?access_token=" + tok + "&publish=x", "/rtc?access_token=" + tok + "&%70ublish=y"} {
+	for _, path := range []string{"/rtc?access_token=" + tok + clientProto, "/rtc/validate?access_token=" + tok + clientProto,
+		"/rtc/v1?access_token=" + tok + clientProto + "&publish=x", "/rtc?access_token=" + tok + clientProto + "&%70ublish=y"} {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil)
 		req.RemoteAddr = "198.51.100.9:5555"
 		req.Header.Set("X-Forwarded-For", "10.0.0.1")
@@ -205,7 +229,7 @@ func TestTheRTCPathsAreProxiedToTheSFU(t *testing.T) {
 		}
 	}
 	// The token in a Bearer header is read as well as the query parameter.
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/rtc/v1", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/rtc/v1?"+clientProto[1:], nil)
 	req.Header.Set("Authorization", "Bearer "+dev.String()+"@room-1")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -303,7 +327,7 @@ func TestTheRTCGateRefusesATokenWiderThanTheCurrentGrant(t *testing.T) {
 		{"a malformed v1 join_request is refused as LiveKit refuses it", "reconnect=1&join_request=x&access_token=" + unshared.String() + "@room-1@mic,cam", http.StatusBadRequest, "E_INVALID_REQUEST"},
 		{"reconnect=yes is no resume to LiveKit", "reconnect=yes&access_token=" + unshared.String() + "@room-1@mic,cam", http.StatusForbidden, "E_FORBIDDEN"},
 	} {
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/rtc?"+tc.query, nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/rtc?"+tc.query+clientProto, nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		if rec.Code != tc.status || rtcErrorCode(rec) != tc.code {
@@ -341,6 +365,8 @@ type admitEveryLeaf struct{}
 func (admitEveryLeaf) AdmitRoom(context.Context, string, id.ID) (*livekit.ParticipantPermission, error) {
 	return sfu.PublishGrant(true, false, false), nil
 }
+
+func (admitEveryLeaf) Admitted(context.Context, string, id.ID) {}
 
 // SP-20: against the real SFU, neither a GET carrying publish=x nor a POST carrying publish=y in its
 // body creates a "<device>#…" participant through the proxy.
@@ -416,7 +442,7 @@ func TestNoShadowParticipantReachesTheSFUThroughTheProxy(t *testing.T) {
 	defer conn.Close()
 	key := make([]byte, 16)
 	_, _ = rand.Read(key)
-	fmt.Fprintf(conn, "GET /rtc?access_token=%s&publish=x HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\n"+
+	fmt.Fprintf(conn, "GET /rtc?access_token=%s"+clientProto+"&publish=x HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\n"+
 		"Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\n\r\n",
 		url.QueryEscape(tok), front.Listener.Addr(), base64.StdEncoding.EncodeToString(key))
 	status, err := bufio.NewReader(conn).ReadString('\n')

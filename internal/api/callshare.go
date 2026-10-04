@@ -41,10 +41,13 @@ type shareLeases struct {
 	penalties map[id.ID]map[id.ID]penalty
 }
 
-// penalty is one device's F11 strikes in the room of a call they were counted in.
+// penalty is one device's F11 strikes in the room of a call they were counted in, and the track sids
+// already counted (ruling (b): one publication is one strike, whether the track_published webhook or
+// the room sweep saw it first).
 type penalty struct {
 	room    string
 	strikes int
+	tracks  map[string]bool
 }
 
 // callLock is one call's lock: a one-slot channel, so taking it can give up when the caller's
@@ -86,9 +89,11 @@ func newShareLeases() *shareLeases {
 	}
 }
 
-// strike counts one F11 violation of dev in call's room and answers its strikes there; strikes of
-// another room of the call are forgotten first. The caller holds call's lock.
-func (l *shareLeases) strike(call id.ID, room string, dev id.ID) int {
+// strikeTrack counts one F11 violation of dev in call's room for the publication track (its track
+// sid) and answers its strikes there, and whether this call counted it: a sid already counted adds
+// nothing, and an empty sid is always counted. Strikes of another room of the call are forgotten
+// first. The caller holds call's lock.
+func (l *shareLeases) strikeTrack(call id.ID, room string, dev id.ID, track string) (int, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	m := l.penalties[call]
@@ -100,9 +105,18 @@ func (l *shareLeases) strike(call id.ID, room string, dev id.ID) int {
 	if p.room != room {
 		p = penalty{room: room}
 	}
+	if track != "" && p.tracks[track] {
+		return p.strikes, false
+	}
+	if track != "" {
+		if p.tracks == nil {
+			p.tracks = map[string]bool{}
+		}
+		p.tracks[track] = true
+	}
 	p.strikes++
 	m[dev] = p
-	return p.strikes
+	return p.strikes, true
 }
 
 // penalised reports whether dev was struck in call's room (F11): its permission there is
@@ -307,6 +321,51 @@ func (l *shareLeases) dropCall(call id.ID) {
 	delete(l.byCall, call)
 	delete(l.pending, call)
 	delete(l.penalties, call)
+}
+
+// dropRoom forgets every slot, repair and F11 penalty of call recorded for room: that room's call
+// has ended. A later call of the same call id, in another room, keeps its own. The caller holds
+// call's lock.
+func (l *shareLeases) dropRoom(call id.ID, room string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for dev, s := range l.byCall[call] {
+		if s.room == room {
+			delete(l.byCall[call], dev)
+		}
+	}
+	if len(l.byCall[call]) == 0 {
+		delete(l.byCall, call)
+	}
+	for identity, r := range l.pending[call] {
+		if r.Room == room {
+			delete(l.pending[call], identity)
+		}
+	}
+	if len(l.pending[call]) == 0 {
+		delete(l.pending, call)
+	}
+	for dev, p := range l.penalties[call] {
+		if p.room == room {
+			delete(l.penalties[call], dev)
+		}
+	}
+	if len(l.penalties[call]) == 0 {
+		delete(l.penalties, call)
+	}
+}
+
+// holders is the devices holding a slot of call taken in room.
+func (l *shareLeases) holders(call id.ID, room string) []id.ID {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []id.ID
+	for dev, s := range l.byCall[call] {
+		if s.room == room {
+			out = append(out, dev)
+		}
+	}
+	return out
 }
 
 func (h *Calls) maxPublishers() int {

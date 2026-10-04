@@ -93,7 +93,7 @@ func TestTheWebhookHandlerVerifiesEnqueuesAndDedupes(t *testing.T) {
 	}
 }
 
-// A sink that stalls fills the bounded queue; the next webhook is 503 with Retry-After: 1, which
+// A sink that stalls fills its room's bounded queue; the next webhook of that room is 503 with Retry-After: 1, which
 // LiveKit's client honours, instead of a request that blocks every later event of its room.
 func TestAFullWebhookQueueAnswers503(t *testing.T) {
 	release := make(chan struct{})
@@ -101,7 +101,7 @@ func TestAFullWebhookQueueAnswers503(t *testing.T) {
 		slog.New(slog.DiscardHandler))
 	refusedAt := -1
 	var retryAfter string
-	for i := range webhookQueueLen + 8 {
+	for i := range webhookRoomQueueLen + 8 {
 		ev := &livekit.WebhookEvent{Event: webhook.EventTrackPublished, Id: "EV_" + strings.Repeat("x", i+1),
 			Room: &livekit.Room{Name: "room-1"}}
 		rec := httptest.NewRecorder()
@@ -116,9 +116,9 @@ func TestAFullWebhookQueueAnswers503(t *testing.T) {
 	}
 	close(release)
 	_ = h.(io.Closer).Close()
-	if refusedAt < webhookQueueLen || refusedAt > webhookQueueLen+1 || retryAfter != "1" {
+	if refusedAt < webhookRoomQueueLen || refusedAt > webhookRoomQueueLen+1 || retryAfter != "1" {
 		t.Fatalf("the first 503 came at webhook %d with Retry-After %q; want at %d or %d with \"1\"",
-			refusedAt, retryAfter, webhookQueueLen, webhookQueueLen+1)
+			refusedAt, retryAfter, webhookRoomQueueLen, webhookRoomQueueLen+1)
 	}
 }
 

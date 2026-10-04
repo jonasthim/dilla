@@ -112,6 +112,12 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 			return nil, s.abort(ctx.Err())
 		default:
 		}
+		// The dial only confirms what IsRunning already says; a squatter cannot fool it. LiveKit sets
+		// its running flag (server.go:333) only after its own net.Listen on <bind>:<port> succeeded
+		// (server.go:246-251); on a squatted address that Listen fails with EADDRINUSE, Start
+		// returns it on errCh and the select above reports it (TestASquattedPortFailsStart). The bind
+		// address is a loopback literal (YAML refuses a hostname), so the dial reaches the address
+		// LiveKit bound and no other.
 		if s.server.IsRunning() {
 			conn, err := (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext(ctx, "tcp", addr)
 			if err == nil {

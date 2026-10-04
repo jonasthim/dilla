@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/certmagic"
+	lkprom "github.com/livekit/livekit-server/pkg/telemetry/prometheus"
 	lkauth "github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/webhook"
@@ -303,6 +304,9 @@ func TestServeStartsTheSFU(t *testing.T) {
 	if code, body, err := get(client, "http://"+addr+"/rtc/validate"); err != nil || code == http.StatusNotFound {
 		t.Fatalf("GET /rtc/validate through serve = %d %q %v, want LiveKit's answer", code, body, err)
 	}
+	// A join with a client-chosen protocol number, as LiveKit records it: serve's /metrics merge must
+	// not carry the label (branch review SFU-1).
+	lkprom.RecordSessionJoinLatency(4242, time.Millisecond)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/metrics", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -316,6 +320,10 @@ func TestServeStartsTheSFU(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !bytes.Contains(metricsBody, []byte("# TYPE livekit_room_total ")) || !bytes.Contains(metricsBody, []byte("# TYPE dilla_gateway_connections ")) {
 		t.Fatalf("/metrics = %d; want livekit_room_total and dilla_gateway_connections in one scrape", resp.StatusCode)
+	}
+	if !bytes.Contains(metricsBody, []byte("livekit_session_join_latency_ms_count{")) || bytes.Contains(metricsBody, []byte("protocol_version")) {
+		t.Fatalf("/metrics serves the join latency without the client's protocol_version: %t, %t",
+			bytes.Contains(metricsBody, []byte("livekit_session_join_latency_ms_count{")), !bytes.Contains(metricsBody, []byte("protocol_version")))
 	}
 	stopServe(t, served)
 	if _, _, err := get(&http.Client{Timeout: time.Second}, fmt.Sprintf("http://127.0.0.1:%d/", port)); err == nil {
@@ -407,14 +415,7 @@ func TestServeRefusesAnUnknownLiveKitMode(t *testing.T) {
 // says so); with advertise_internal_ip it admits the host addresses LiveKit also offers. node_ip is
 // the relay family anchor either way. With LiveKit off there is no peer and no anchor.
 func TestTheRelayPeersAreTheSFUsAddresses(t *testing.T) {
-	ifaces := func() ([]net.Addr, error) {
-		return []net.Addr{
-			&net.IPNet{IP: net.ParseIP("10.0.0.5"), Mask: net.CIDRMask(24, 32)},
-			&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},
-			&net.IPNet{IP: net.ParseIP("fe80::1"), Mask: net.CIDRMask(64, 128)},
-			&net.IPNet{IP: net.ParseIP("2001:db8::5"), Mask: net.CIDRMask(64, 128)},
-		}, nil
-	}
+	ifaces := fakeIfaces("10.0.0.5/24", "127.0.0.1/8", "fe80::1/64", "2001:db8::5/64")
 	var logged strings.Builder
 	log := slog.New(slog.NewTextHandler(&logged, nil))
 	for _, tc := range []struct {
@@ -440,7 +441,7 @@ func TestTheRelayPeersAreTheSFUsAddresses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: turnPeers: %v", tc.name, err)
 		}
-		if anchor.String() != tc.anchor || fmt.Sprint(peers) != tc.peers {
+		if anchor.String() != tc.anchor || fmt.Sprint(peers.Addrs) != tc.peers {
 			t.Errorf("%s: anchor %s, peers %v; want %s, %s", tc.name, anchor, peers, tc.anchor, tc.peers)
 		}
 		if tc.warning == "" && strings.Contains(logged.String(), "level=WARN") {
@@ -452,7 +453,7 @@ func TestTheRelayPeersAreTheSFUsAddresses(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.LiveKit.Enabled = false
-	if anchor, peers, err := turnPeers(cfg, ifaces, log); err != nil || anchor.IsValid() || len(peers) != 0 {
+	if anchor, peers, err := turnPeers(cfg, ifaces, log); err != nil || anchor.IsValid() || len(peers.Addrs) != 0 {
 		t.Errorf("with LiveKit off = %s, %v, %v; want no anchor, no peers", anchor, peers, err)
 	}
 }

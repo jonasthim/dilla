@@ -484,6 +484,14 @@ func TestTheLiveKitMediaKeys(t *testing.T) {
 		"livekit.limit_num_tracks above int32":    func(c *config.Config) { c.LiveKit.LimitNumTracks = 1 << 31 },
 		"livekit.limit_bytes_per_sec negative":    func(c *config.Config) { c.LiveKit.LimitBytesPerSec = -1 },
 		"livekit.ips_excludes not a prefix":       func(c *config.Config) { c.LiveKit.IPsExcludes = []string{"172.17.0.1"} },
+		"livekit.bind_address a hostname":         func(c *config.Config) { c.LiveKit.BindAddress = "localhost" },
+		"livekit.bind_address the wildcard":       func(c *config.Config) { c.LiveKit.BindAddress = "0.0.0.0" },
+		"livekit.bind_address the IPv6 wildcard":  func(c *config.Config) { c.LiveKit.BindAddress = "::" },
+		"livekit.bind_address a LAN address":      func(c *config.Config) { c.LiveKit.BindAddress = "192.168.1.5" },
+		"livekit.bind_address empty":              func(c *config.Config) { c.LiveKit.BindAddress = "" },
+		"livekit.bind_address with a port":        func(c *config.Config) { c.LiveKit.BindAddress = "127.0.0.1:7880" },
+		"livekit.bind_address a YAML injection":   func(c *config.Config) { c.LiveKit.BindAddress = "127.0.0.1\n  - 0.0.0.0" },
+		"livekit.vp9 on":                          func(c *config.Config) { c.LiveKit.VP9 = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := valid(t)
@@ -499,7 +507,8 @@ func TestTheLiveKitMediaKeys(t *testing.T) {
 		"IPv6 loopback":        func(c *config.Config) { c.LiveKit.WebhookListen = "[::1]:7883" },
 		"port 0 (tests)":       func(c *config.Config) { c.LiveKit.WebhookListen = "127.0.0.1:0" },
 		"a Docker exclude":     func(c *config.Config) { c.LiveKit.IPsExcludes = []string{"172.17.0.0/16", "fd00::/8"} },
-		"the VP9 flag":         func(c *config.Config) { c.LiveKit.VP9 = true },
+		"a loopback bind":      func(c *config.Config) { c.LiveKit.BindAddress = "127.0.0.2" },
+		"the IPv6 loopback":    func(c *config.Config) { c.LiveKit.BindAddress = "::1" },
 		"host limits":          func(c *config.Config) { c.LiveKit.LimitNumTracks, c.LiveKit.LimitBytesPerSec = 4000, 125_000_000 },
 		"bitrates at the ends": func(c *config.Config) { c.LiveKit.MaxShareBitrateKbps, c.LiveKit.MaxAudioBitrateKbps = 100, 510 },
 	} {
@@ -510,6 +519,14 @@ func TestTheLiveKitMediaKeys(t *testing.T) {
 				t.Fatalf("Validate = %v", err)
 			}
 		})
+	}
+	// The VP9 follow-up (crypto lens, parked): the refusal says why, so an operator knows it is not a
+	// typo — no frame vector and no measurement through LiveKit for the 0-byte prefix rule yet.
+	vp9 := valid(t)
+	vp9.LiveKit.VP9 = true
+	if err := vp9.Validate(); err == nil || !strings.Contains(err.Error(), "test vector") ||
+		!strings.Contains(err.Error(), "measured through LiveKit") {
+		t.Fatalf("livekit.vp9 = true: Validate = %v, want a refusal naming the missing vector and measurement", err)
 	}
 	// A webhook listener nothing would start: a non-default webhook_listen with LiveKit off.
 	c := valid(t)

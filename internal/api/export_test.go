@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"slices"
 	"time"
 
@@ -9,6 +10,36 @@ import (
 
 // SetStartHookForTest makes start call f at its named points ("mint", "respond").
 func (h *Calls) SetStartHookForTest(f func(stage string)) { h.startHook = f }
+
+// SetEndHookForTest makes endCall call f at its named points ("closed": the call group is closed and
+// the voice session not yet ended).
+func (h *Calls) SetEndHookForTest(f func(stage string)) { h.endHook = f }
+
+// ProcessQueueForTest runs one pass of the retry loop's work queue on the caller's goroutine.
+func (h *Calls) ProcessQueueForTest(ctx context.Context) { h.processQueue(ctx) }
+
+// ProcessTeardownsForTest runs the work queue's teardown pass alone on the caller's goroutine.
+func (h *Calls) ProcessTeardownsForTest(ctx context.Context) { h.processTeardowns(ctx) }
+
+// QueuedForTest is how many entries the work queue holds, and whether a request did not fit.
+func (h *Calls) QueuedForTest() (int, bool) {
+	h.cutMu.Lock()
+	defer h.cutMu.Unlock()
+	return h.queuedLocked(), h.resyncAll
+}
+
+// LockCallForTest takes call's lock and returns its release, for a test that makes a call busy.
+func (h *Calls) LockCallForTest(ctx context.Context, call id.ID) (func(), error) {
+	return h.leases.lockCall(ctx, call, time.Second)
+}
+
+// FlushAnnouncements waits, up to five seconds, until every queued voice_state was delivered.
+func (c *CallEvents) FlushAnnouncements() {
+	deadline := time.Now().Add(5 * time.Second)
+	for !c.announcementsIdle() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+}
 
 // SaturatingAddForTest is the stats route's saturating sum.
 func SaturatingAddForTest(a, b uint64) uint64 { return saturatingAdd(a, b) }

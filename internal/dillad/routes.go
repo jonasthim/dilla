@@ -42,9 +42,13 @@ type SFU interface {
 const rtcRateClass = "unauth"
 
 // RTCGate admits device to the live call whose room is room and answers what it may hold there
-// now — its current base permission — or a *server.Error refusal; *api.Calls is one.
+// now — its current base permission — or a *server.Error refusal; *api.Calls is one. Admitted is
+// told, once every check of the proxy passed, that the join goes through to the SFU: the call
+// routes bind the session's leave to it and open its join window (M-2 of the integration
+// re-review: a join the proxy refuses after AdmitRoom records nothing).
 type RTCGate interface {
 	AdmitRoom(ctx context.Context, room string, device id.ID) (*livekit.ParticipantPermission, error)
+	Admitted(ctx context.Context, room string, device id.ID)
 }
 
 // planTwo is what Plan 2's handler groups are built over: the composition root's own collaborators,
@@ -176,6 +180,8 @@ func urlHost(host string) string {
 //     device the call group removed cannot rejoin with a token LiveKit refreshed for it — whose user
 //     still holds view_channel and connect, and the token may confer nothing beyond the device's
 //     current base grant (403 E_FORBIDDEN; admitRTC);
+//   - the client's signalling protocol must be the one dilla's clients speak, and a v1 SDK one
+//     LiveKit's enum names (400 E_INVALID_REQUEST; admitRTC): LiveKit labels metrics with both;
 //   - the `publish` query parameter is deleted (on the parsed values, so a percent-encoded spelling
 //     goes too): it would open a second "<identity>#<x>" participant no gate admitted;
 //   - CF-Connecting-IP and X-Real-IP are deleted and X-Forwarded-For replaced by the one client
@@ -252,6 +258,11 @@ func mountRTC(mux *server.Mux, s SFU, gate RTCGate, trusted []netip.Prefix, limi
 // with LiveKit's own compression and size bounds. A join request LiveKit would refuse is refused
 // here, 400 E_INVALID_REQUEST, before it reaches the SFU. Every other check — the token's signature,
 // its device, the gate, every non-source right — applies to a resume as to a fresh join.
+//
+// Last, an admitted join whose signalling protocol is not sfu.ClientProtocol (the v0 `protocol`
+// parameter, or client_info.protocol in a v1 join_request), or whose v1 client_info.sdk is not a
+// value of LiveKit's enum, is 400 E_INVALID_REQUEST: LiveKit labels metric series with both as the
+// client wrote them.
 func admitRTC(r *http.Request, s SFU, gate RTCGate) error {
 	q := r.URL.Query()
 	token := q.Get("access_token")
@@ -269,7 +280,7 @@ func admitRTC(r *http.Request, s SFU, gate RTCGate) error {
 	if err != nil {
 		return server.Errorf(server.CodeForbidden, "the token's identity is not a device")
 	}
-	resume, err := sfu.JoinIsResume(q)
+	join, err := sfu.ReadJoin(q)
 	if err != nil {
 		return server.Errorf(server.CodeInvalidRequest, "%v", err)
 	}
@@ -277,8 +288,14 @@ func admitRTC(r *http.Request, s SFU, gate RTCGate) error {
 	if err != nil {
 		return err
 	}
-	if err := sfu.TokenWithin(rt.Claims, allowed, !resume); err != nil {
+	if err := sfu.TokenWithin(rt.Claims, allowed, !join.Resume); err != nil {
 		return server.Errorf(server.CodeForbidden, "the access token grants more than your device holds now; start the call again")
 	}
+	// Last, once the device is admitted: LiveKit labels its session metrics with the client's
+	// protocol number and its v1 SDK enum, so only what dilla's clients send passes (SFU-1).
+	if err := join.CheckClient(); err != nil {
+		return server.Errorf(server.CodeInvalidRequest, "%v", err)
+	}
+	gate.Admitted(r.Context(), rt.Room, dev)
 	return nil
 }

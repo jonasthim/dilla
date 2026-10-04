@@ -14,7 +14,9 @@ import (
 
 // BarredLookup answers whether a device may no longer take part in calls — revoked, quarantined, or
 // of a disabled or deleted user — as the database says, which another process (`dillad admin`) may
-// have written. A device the database does not know is barred. api.BarredDevices is one.
+// have written. A device id with no device row is NOT barred: only a holder of turn's shared secret
+// can mint a credential for one (`dillad doctor`'s relay probe does, for a fresh id), and the call
+// routes mint only for devices that exist. api.BarredDevices is one.
 type BarredLookup interface {
 	DeviceBarred(ctx context.Context, device id.ID) (bool, error)
 }
@@ -113,6 +115,9 @@ type RelayRevocations struct {
 	floor     int64
 	overflows uint64
 	maxCuts   int
+	// overflowed counts an overflow on dillad's metrics (dilla_turn_cut_overflows_total); StartTURN
+	// installs it.
+	overflowed func()
 	// mints is device → the last time a relay credential was minted for it (Mint), kept for ttl
 	// (turn.credential_ttl in milliseconds; 0 disables the gate: every cut is recorded).
 	// mintsFullUntil, while in the future, is a window in which a mint could not be recorded, which
@@ -129,7 +134,9 @@ type RelayRevocations struct {
 	log      *slog.Logger
 	cache    *barredCache
 	inflight chan struct{}
-	warned   time.Time
+	// warned is when each WARN message was last logged: the limiter is per message, so a burst of
+	// lookup failures cannot swallow the overflow WARN (branch review TURN-4).
+	warned map[string]time.Time
 	// holderEvery is how often the holders' re-check runs: barredTTL (a test shortens it).
 	holderEvery time.Duration
 }
@@ -144,7 +151,7 @@ func NewRelayRevocations(maxAllocationAge time.Duration, clk clock.Clock) *Relay
 		clk: clk, keep: maxAllocationAge.Milliseconds(), log: slog.New(slog.DiscardHandler),
 		cuts: map[string]int64{}, socks: map[string]map[*countingConn]struct{}{},
 		pending: map[string]pendingAllocate{}, authed: map[string]map[string]authedAllocate{},
-		maxCuts: maxRelayCuts, mints: map[string]int64{},
+		maxCuts: maxRelayCuts, mints: map[string]int64{}, warned: map[string]time.Time{},
 		floor:       clk.Now().UnixMilli() - 1,
 		holderEvery: barredTTL,
 	}
@@ -358,8 +365,16 @@ func (r *RelayRevocations) prunePendingLocked(now int64) {
 	}
 }
 
+// setOverflowCounter makes every overflowing cut call count (StartTURN: the metric).
+func (r *RelayRevocations) setOverflowCounter(count func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.overflowed = count
+}
+
 // WithBarred makes the relay consult b about every device it authenticates and every device that
-// holds a relay socket, and returns r. log receives the lookups that fail open.
+// holds a relay socket, and returns r. log receives the lookups that fail open and the cut map's
+// overflow.
 func (r *RelayRevocations) WithBarred(b BarredLookup, log *slog.Logger) *RelayRevocations {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -404,12 +419,16 @@ func (r *RelayRevocations) revoke(dev string, at int64) {
 	size := len(r.cuts)
 	conns := r.socks[dev]
 	delete(r.socks, dev)
+	overflowed := r.overflowed
 	r.mu.Unlock()
 	for c := range conns {
 		_ = c.Close()
 	}
 	switch {
 	case !recorded:
+		if overflowed != nil {
+			overflowed()
+		}
 		r.warn("the relay's cut map is full; every credential issued up to this cut is refused for every device, which re-fetch theirs",
 			"device", dev, "cuts", size)
 	case size > relayCutsWarn:
@@ -520,13 +539,16 @@ func (r *RelayRevocations) checkBarred(ctx context.Context, dev string) bool {
 	return bar
 }
 
-// warn logs a fail-open lookup at most once per barredTTL, so a flood of them cannot flood the log.
+// warn logs msg at most once per barredTTL, so a flood of fail-open lookups or overflowing cuts
+// cannot flood the log. The limit is per message — the few constant messages of this file — so one
+// kind never silences another.
 func (r *RelayRevocations) warn(msg string, args ...any) {
 	now := r.clk.Now()
 	r.mu.Lock()
-	quiet := now.Sub(r.warned) < barredTTL
+	last, seen := r.warned[msg]
+	quiet := seen && now.Sub(last) < barredTTL
 	if !quiet {
-		r.warned = now
+		r.warned[msg] = now
 	}
 	r.mu.Unlock()
 	if !quiet {

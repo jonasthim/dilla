@@ -219,6 +219,8 @@ func TestTheRetryLoopSweepsTheRooms(t *testing.T) {
 type membershipCallEnv struct {
 	e                 *env
 	stub              *stubSFU
+	calls             *api.Calls
+	group             id.ID
 	cid, ch           id.ID
 	ownerTok          string
 	member, memberDev id.ID
@@ -228,11 +230,28 @@ type membershipCallEnv struct {
 
 func newMembershipCallEnv(t *testing.T) *membershipCallEnv {
 	t.Helper()
+	return newMembershipCallEnvLoop(t, true)
+}
+
+// newMembershipCallEnvWithoutLoop is newMembershipCallEnv without the retry loop: only what the test
+// itself drives (a retry pass, a sweep) serves the work queue.
+func newMembershipCallEnvWithoutLoop(t *testing.T) *membershipCallEnv {
+	t.Helper()
+	return newMembershipCallEnvLoop(t, false)
+}
+
+func newMembershipCallEnvLoop(t *testing.T, loop bool) *membershipCallEnv {
+	t.Helper()
 	e := newEnv(t)
 	log := slog.New(slog.DiscardHandler)
 	stub := &stubSFU{}
 	calls := api.NewCalls(e.Repo, api.NewResolver(e.Repo), stub, api.CallsConfig{LiveKitURL: testLiveKitURL}, e.Clk, log)
 	calls.Register(e.Mux)
+	// The membership routes queue their call cuts to the retry loop (parked item): run it, on an
+	// hour tick so only the wake drives it.
+	if loop {
+		t.Cleanup(calls.StartRetries(time.Hour))
+	}
 	api.NewCommunities(e.Repo, e.DS, e.Clk, log).WithCalls(calls).Register(e.Mux)
 	channels := api.NewChannels(e.Repo, e.DS, e.Clk, 10, log).WithCalls(calls)
 	channels.Register(e.Mux)
@@ -256,7 +275,7 @@ func newMembershipCallEnv(t *testing.T) *membershipCallEnv {
 	room := stub.minted()[0][0]
 	stub.setPresent(room, &livekit.ParticipantInfo{Identity: deviceOf(t, e, ownerTok).String()},
 		&livekit.ParticipantInfo{Identity: memberDev.String()})
-	return &membershipCallEnv{e: e, stub: stub, cid: cid, ch: ch, ownerTok: ownerTok, member: member,
+	return &membershipCallEnv{e: e, stub: stub, calls: calls, group: group, cid: cid, ch: ch, ownerTok: ownerTok, member: member,
 		memberDev: memberDev, memberTok: memberTok, room: room}
 }
 
@@ -283,7 +302,7 @@ func TestAKickABanAndALeaveCutTheUsersCallSessionAtOnce(t *testing.T) {
 			if status, body := tc.act(t, m); status != http.StatusNoContent {
 				t.Fatalf("%s = %d (%x)", tc.name, status, body)
 			}
-			if !removedDevice(m.stub, m.room, m.memberDev) {
+			if !waitRemoved(m.stub, m.room, m.memberDev) {
 				t.Fatalf("the %s left the user's device in the call's room", tc.name)
 			}
 			if removedDevice(m.stub, m.room, deviceOf(t, m.e, m.ownerTok)) {
@@ -310,6 +329,7 @@ func TestAGroupDMRemovalCutsTheParticipantsCallSessionAtOnce(t *testing.T) {
 	stub := &stubSFU{}
 	calls := api.NewCalls(e.Repo, api.NewResolver(e.Repo), stub, api.CallsConfig{LiveKitURL: testLiveKitURL}, e.Clk, log)
 	calls.Register(e.Mux)
+	t.Cleanup(calls.StartRetries(time.Hour)) // the removal queues its cut to the retry loop
 	api.NewDMs(e.Repo, e.DS, e.Clk, inst.InstanceID, 10, log).Register(e.Mux)
 	api.NewChannels(e.Repo, e.DS, e.Clk, 10, log).WithCalls(calls).RegisterMembers(e.Mux)
 	_, aliceTok := e.NewUser("alice")
@@ -339,7 +359,7 @@ func TestAGroupDMRemovalCutsTheParticipantsCallSessionAtOnce(t *testing.T) {
 	if status, body := e.Do(http.MethodDelete, "/v1/channels/"+dm.String()+"/members/"+bob.String(), aliceTok, nil); status != http.StatusNoContent {
 		t.Fatalf("remove bob = %d (%x)", status, body)
 	}
-	if !removedDevice(stub, room, bobDev) {
+	if !waitRemoved(stub, room, bobDev) {
 		t.Fatal("the removed participant's device is still in the DM's call room")
 	}
 	if removedDevice(stub, room, aliceDev) {

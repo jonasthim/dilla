@@ -27,20 +27,28 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
-// TURNMetrics is the relay's metric surface; *obs.Metrics is one. QuotaRefused counts one 486,
+// TURNMetrics is the relay's metric surface; *obs.Metrics is one. QuotaRefused counts one 486 at
+// turn.allocations_per_device, CapacityRefused one 486 at the instance-wide cap (maxRelaySockets),
 // RelayBytes the payload crossing a relay socket (toClient: read from a peer, on its way to the
-// client), Allocations the live allocation count after each change. All label-free but the
-// direction.
+// client), PeerDropped one datagram a relay socket dropped because its peer is not the SFU's media
+// port, CutOverflow one cut that found the cut map full and raised the floor for every device, and
+// Allocations the live allocation count after each change. All label-free but the direction.
 type TURNMetrics interface {
 	QuotaRefused()
+	CapacityRefused()
 	RelayBytes(toClient bool, n int)
+	PeerDropped()
+	CutOverflow()
 	Allocations(n int)
 }
 
 type noTURNMetrics struct{}
 
 func (noTURNMetrics) QuotaRefused()        {}
+func (noTURNMetrics) CapacityRefused()     {}
 func (noTURNMetrics) RelayBytes(bool, int) {}
+func (noTURNMetrics) PeerDropped()         {}
+func (noTURNMetrics) CutOverflow()         {}
 func (noTURNMetrics) Allocations(int)      {}
 
 // defaultAllocationsPerDevice is turn.allocations_per_device's default (G34): a browser holds
@@ -48,6 +56,22 @@ func (noTURNMetrics) Allocations(int)      {}
 // on, U = 1 relay URL — so 4 covers two networks (Wi-Fi and a VPN, IPv4 and IPv6) through one
 // ICE-restart overlap.
 const defaultAllocationsPerDevice = 4
+
+// maxRelaySockets caps the live relay allocations of the whole instance, whatever the devices: the
+// interim backstop of follow-up card 13 until device enrolment is capped per user, since
+// turn.allocations_per_device alone bounds the total only by devices × allocations_per_device. An
+// Allocate past it is refused 486, counted (dilla_turn_capacity_refusals_total) and logged at WARN.
+// Each allocation is one UDP socket and one goroutine; 8192 is 2048 devices relaying at the default
+// quota, far past one community instance. A variable so a test can lower it.
+var maxRelaySockets = 8192
+
+// TURNPeers is all a relay socket may exchange datagrams with: the co-located SFU's media addresses
+// and the UDP ports LiveKit receives media on, PortLo through PortHi (livekit.udp_port, or LiveKit's
+// own 50000-60000 range when it is 0). The zero value admits nothing.
+type TURNPeers struct {
+	Addrs          []netip.Addr
+	PortLo, PortHi uint16
+}
 
 // TURN is dillad's embedded relay: pion/turn v5.0.13 on a listener dillad
 // chooses. In the direct-TLS modes that is the 443 demux's STUN branch; in
@@ -58,6 +82,7 @@ const defaultAllocationsPerDevice = 4
 type TURN struct {
 	srv       *turn.Server
 	quota     *AllocationQuota
+	peers     *relayPeers
 	stop      func() // cancels the relay's store lookups and joins the holders' re-check
 	closeOnce sync.Once
 }
@@ -83,18 +108,26 @@ func TURNCredential(secret string, deviceID id.ID, ttl time.Duration, now time.T
 // turn.shared_secret_file (whitespace trimmed, as `dillad doctor` reads it), and
 // relays are allocated on turn.relay_ip.
 //
-// peers are the co-located SFU's media addresses, the relay's only legitimate
-// peers (spec "Ports and TURN, made true"): CreatePermission and ChannelBind to
-// any other address are refused with 403, so a call credential cannot turn the
-// relay into a way into loopback or the LAN. With no peers (LiveKit off) the
-// relay admits none. pion's handler sees the peer IP only, so every port of an
-// admitted address stays reachable; the SFU's addresses are the host's own.
+// peers are the co-located SFU's media addresses and ports, the relay's only
+// legitimate peers (spec "Ports and TURN, made true"): CreatePermission and
+// ChannelBind to any other address are refused with 403, so a call credential
+// cannot turn the relay into a way into loopback or the LAN. With no peers
+// (LiveKit off) the relay admits none. pion's permissions are by IP only, so the
+// relay socket itself enforces the port (countingConn): a datagram to or from an
+// admitted address on any port but the SFU's media port is dropped, and so is
+// one to or from another relay allocation — which is bound on turn.relay_ip, an
+// admitted address in every default deployment — so one member's relay cannot
+// reach another device's (branch review TURN-1).
+//
+// The listener's connections are bounded in time (idleListener): one that has
+// created no allocation within turnAuthWindow of its accept is closed, and so is one that has gone
+// turnIdleAfterAuth since its allocation's creation or its last authenticated request.
 //
 // anchor is livekit.node_ip, the address family turn.relay_ip "auto" must stay in (cmd/dillad
 // turnPeers); it is passed apart from peers because node_ip is not always an admitted peer (DEV-55).
 // m receives the relay's counters; nil reports nowhere. rev is the revocation state the relay shares
 // with the call routes (RelayRevocations); nil gives the relay one of its own that no cut reaches.
-func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers []netip.Addr, m TURNMetrics,
+func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers TURNPeers, m TURNMetrics,
 	rev *RelayRevocations, clk clock.Clock, log *slog.Logger) (*TURN, error) {
 	body, err := os.ReadFile(c.SharedSecretFile)
 	if err != nil {
@@ -132,10 +165,29 @@ func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers []netip.
 	if rev == nil {
 		rev = NewRelayRevocations(maxAge, clk)
 	}
+	rev.setOverflowCounter(m.CutOverflow)
 	q := NewAllocationQuota(perDevice)
 	// ctx ends with the relay: it cancels the store lookups OnAuth and the holders' re-check make.
 	ctx, cancel := context.WithCancel(context.Background())
-	quota, events := turnHandlers(ctx, q, m, rev)
+	quota, events := turnHandlers(ctx, q, m, rev, log)
+	relayed := newRelayPeers(peers)
+	idle := newIdleListener(ln, turnIdleBounds.auth, turnIdleBounds.idle)
+	onAuth := events.OnAuth
+	events.OnAuth = func(src, dst net.Addr, protocol, username, realm, method string, verdict bool) {
+		if verdict {
+			idle.authenticated(src)
+		}
+		onAuth(src, dst, protocol, username, realm, method, verdict)
+	}
+	created, deleted := events.OnAllocationCreated, events.OnAllocationDeleted
+	events.OnAllocationCreated = func(src, dst net.Addr, protocol, username, realm string, relay net.Addr, port int) {
+		idle.allocation(src, 1)
+		created(src, dst, protocol, username, realm, relay, port)
+	}
+	events.OnAllocationDeleted = func(src, dst net.Addr, protocol, username, realm string) {
+		idle.allocation(src, -1)
+		deleted(src, dst, protocol, username, realm)
+	}
 	srv, err := turn.NewServer(turn.ServerConfig{
 		Realm:         c.Realm,
 		AuthHandler:   turnAuth(secret, clk, ttl, maxAge, rev),
@@ -143,23 +195,23 @@ func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers []netip.
 		EventHandler:  events,
 		LoggerFactory: slogFactory{log: log},
 		ListenerConfigs: []turn.ListenerConfig{{
-			Listener: ln,
+			Listener: idle,
 			RelayAddressGenerator: &countingRelay{
 				RelayAddressGeneratorStatic: &turn.RelayAddressGeneratorStatic{
 					RelayAddress: relayIP,
 					Address:      relayIP.String(),
 					Net:          relayNet,
 				},
-				m: m, q: q, rev: rev,
+				m: m, q: q, rev: rev, peers: relayed,
 			},
-			PermissionHandler: peerFilter(peers),
+			PermissionHandler: peerFilter(peers.Addrs),
 		}},
 	})
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("turn: %w", err)
 	}
-	t := &TURN{srv: srv, quota: q, stop: cancel}
+	t := &TURN{srv: srv, quota: q, peers: relayed, stop: cancel}
 	if rev.barred != nil {
 		stopWatch := rev.startWatch(ctx)
 		t.stop = func() {
@@ -189,34 +241,52 @@ var errNoTCPRelay = errors.New("turn: TCP relays are not offered")
 // that will not bind — which a client can cause at will with an IPv6 REQUESTED-ADDRESS-FAMILY
 // against an IPv4 turn.relay_ip (review I3).
 //
-// Every relay socket of a device is tracked in rev, so a revocation can close them.
+// It offers no EVEN-PORT or RESERVATION-TOKEN either (branch review TURN-3): pion probes for an even
+// port before its quota handler runs, binding up to 128 sockets with no user (allocation_manager.go
+// GetRandomEvenPort), and keeps every reservation in a list it scans linearly for 30 s. The probe's
+// first socket is refused before anything is bound, so pion answers 508 without a port, a slot or a
+// reservation; with no reservation ever made, a RESERVATION-TOKEN is 508 at pion's lookup. Browsers
+// send neither.
+//
+// Every relay socket of a device is tracked in rev, so a revocation can close them, and in peers, so
+// no other relay socket can exchange a datagram with it.
 type countingRelay struct {
 	*turn.RelayAddressGeneratorStatic
-	m   TURNMetrics
-	q   *AllocationQuota
-	rev *RelayRevocations
+	m     TURNMetrics
+	q     *AllocationQuota
+	rev   *RelayRevocations
+	peers *relayPeers
 }
 
 func (g *countingRelay) AllocatePacketConn(conf turn.AllocateListenerConfig) (net.PacketConn, net.Addr, error) {
+	if conf.UserID == "" {
+		// pion's EVEN-PORT probe: no user, no slot taken, nothing bound.
+		return nil, nil, errNoReservations
+	}
+	if conf.RequestedPort != 0 {
+		// A port pion chose from a reservation; none is ever made, but the slot is given back anyway.
+		g.release(conf.UserID)
+		g.dropPending(conf.UserID)
+		return nil, nil, errNoReservations
+	}
 	conn, addr, err := g.RelayAddressGeneratorStatic.AllocatePacketConn(conf)
 	if err != nil {
 		g.release(conf.UserID)
 		g.dropPending(conf.UserID)
 		return nil, nil, err
 	}
-	c := &countingConn{PacketConn: conn, m: g.m}
-	if conf.UserID != "" {
-		c.dev, c.rev = deviceOf(conf.UserID), g.rev
-		if hook := allocateHook.Load(); hook != nil {
-			(*hook)(c.dev)
-		}
-		if !g.rev.track(c.dev, c) {
-			// A cut that may cover this allocation's credential landed after the auth handler let the
-			// Allocate through (commit review race finding): refuse it, which pion answers 508.
-			_ = conn.Close()
-			g.release(conf.UserID)
-			return nil, nil, errCutWhileAllocating
-		}
+	c := &countingConn{PacketConn: conn, m: g.m, peers: g.peers, dev: deviceOf(conf.UserID), rev: g.rev}
+	g.peers.addSocket(conn.LocalAddr())
+	if hook := allocateHook.Load(); hook != nil {
+		(*hook)(c.dev)
+	}
+	if !g.rev.track(c.dev, c) {
+		// A cut that may cover this allocation's credential landed after the auth handler let the
+		// Allocate through (commit review race finding): refuse it, which pion answers 508.
+		g.peers.removeSocket(conn.LocalAddr())
+		_ = conn.Close()
+		g.release(conf.UserID)
+		return nil, nil, errCutWhileAllocating
 	}
 	return c, addr, nil
 }
@@ -224,6 +294,10 @@ func (g *countingRelay) AllocatePacketConn(conf turn.AllocateListenerConfig) (ne
 // errCutWhileAllocating refuses an allocation whose device was cut between its authentication and
 // its relay socket.
 var errCutWhileAllocating = errors.New("turn: the device was cut while it allocated")
+
+// errNoReservations is the relay generator's answer to an EVEN-PORT probe or a reserved port; pion
+// turns it into 508 Insufficient Capacity.
+var errNoReservations = errors.New("turn: EVEN-PORT and RESERVATION-TOKEN are not offered")
 
 // allocateHook, when set (tests only), runs after a relay socket is bound and before it is tracked.
 var allocateHook atomic.Pointer[func(dev string)]
@@ -241,8 +315,7 @@ func (g *countingRelay) AllocateConn(turn.AllocateConnConfig) (net.Conn, error) 
 	return nil, errNoTCPRelay
 }
 
-// release frees the quota slot pion took for user's allocation. pion's EVEN-PORT probe asks for
-// sockets with no user (allocation_manager.go:324) before any slot is taken; it frees nothing.
+// release frees the quota slot pion took for user's allocation.
 func (g *countingRelay) release(user string) {
 	if user != "" {
 		g.q.Release(deviceOf(user))
@@ -258,38 +331,134 @@ func (g *countingRelay) dropPending(user string) {
 }
 
 // countingConn is a relay socket: what it reads came from a peer and goes on to the client, what it
-// writes goes to a peer. dev and rev are set for an allocation's socket (not for pion's EVEN-PORT
-// probe), which Close forgets.
+// writes goes to a peer, and either only when peers admits the peer's address and port (a datagram
+// to or from anything else is dropped and counted). dev and rev are the allocation's device and
+// revocation state; Close forgets the socket in both.
 type countingConn struct {
 	net.PacketConn
-	m   TURNMetrics
-	dev string
-	rev *RelayRevocations
+	m         TURNMetrics
+	peers     *relayPeers
+	dev       string
+	rev       *RelayRevocations
+	closeOnce sync.Once
 }
 
 // Close forgets the socket and closes it. pion closes it when the allocation ends; a revocation
 // closes it first, and pion's read loop then deletes the allocation.
 func (c *countingConn) Close() error {
-	if c.rev != nil {
-		c.rev.untrack(c.dev, c)
-	}
+	c.closeOnce.Do(func() {
+		if c.rev != nil {
+			c.rev.untrack(c.dev, c)
+		}
+		c.peers.removeSocket(c.LocalAddr())
+	})
 	return c.PacketConn.Close()
 }
 
+// ReadFrom returns the next datagram from an admitted peer; every other one is dropped. pion then
+// forwards it to the client if the client holds a permission for the peer's address.
 func (c *countingConn) ReadFrom(p []byte) (int, net.Addr, error) {
-	n, addr, err := c.PacketConn.ReadFrom(p)
-	if n > 0 {
-		c.m.RelayBytes(true, n)
+	for {
+		n, addr, err := c.PacketConn.ReadFrom(p)
+		if err == nil && !c.peers.admits(addr) {
+			c.m.PeerDropped()
+			continue
+		}
+		if n > 0 {
+			c.m.RelayBytes(true, n)
+		}
+		return n, addr, err
 	}
-	return n, addr, err
 }
 
+// WriteTo sends p to an admitted peer. A datagram to any other port or socket is dropped as though
+// sent — the client's Send indication or ChannelData has no answer to carry an error.
 func (c *countingConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if !c.peers.admits(addr) {
+		c.m.PeerDropped()
+		return len(p), nil
+	}
 	n, err := c.PacketConn.WriteTo(p, addr)
 	if n > 0 {
 		c.m.RelayBytes(false, n)
 	}
 	return n, err
+}
+
+// relayPeers is what a relay socket may exchange datagrams with: an address of the SFU's (pion's
+// permission handler admits by that address alone) on one of its media ports, and never another
+// live relay socket — with livekit.udp_port 0 LiveKit's port range overlaps the kernel's ephemeral
+// ports the relay sockets are bound on.
+type relayPeers struct {
+	addrs  map[netip.Addr]struct{}
+	lo, hi uint16
+
+	mu    sync.RWMutex
+	socks map[netip.AddrPort]int // the live relay sockets' local addresses
+}
+
+func newRelayPeers(p TURNPeers) *relayPeers {
+	r := &relayPeers{addrs: make(map[netip.Addr]struct{}, len(p.Addrs)), lo: p.PortLo, hi: p.PortHi,
+		socks: map[netip.AddrPort]int{}}
+	for _, a := range p.Addrs {
+		r.addrs[a.Unmap()] = struct{}{}
+	}
+	return r
+}
+
+// addrPortOf is a UDP address as an unmapped netip.AddrPort.
+func addrPortOf(a net.Addr) (netip.AddrPort, bool) {
+	u, ok := a.(*net.UDPAddr)
+	if !ok || u == nil {
+		return netip.AddrPort{}, false
+	}
+	ap := u.AddrPort()
+	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), ap.IsValid()
+}
+
+// admits reports whether a relay socket may send to or accept from a. A nil r admits nothing.
+func (r *relayPeers) admits(a net.Addr) bool {
+	if r == nil {
+		return false
+	}
+	ap, ok := addrPortOf(a)
+	if !ok {
+		return false
+	}
+	if _, ok := r.addrs[ap.Addr()]; !ok {
+		return false
+	}
+	if p := ap.Port(); p < r.lo || p > r.hi {
+		return false
+	}
+	unspecified := netip.IPv6Unspecified()
+	if ap.Addr().Is4() {
+		unspecified = netip.IPv4Unspecified()
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	// A relay socket bound on the unspecified address (turn.relay_ip = "0.0.0.0") is on every one.
+	return r.socks[ap] == 0 && r.socks[netip.AddrPortFrom(unspecified, ap.Port())] == 0
+}
+
+func (r *relayPeers) addSocket(a net.Addr) {
+	if ap, ok := addrPortOf(a); ok && r != nil {
+		r.mu.Lock()
+		r.socks[ap]++
+		r.mu.Unlock()
+	}
+}
+
+func (r *relayPeers) removeSocket(a net.Addr) {
+	if ap, ok := addrPortOf(a); ok && r != nil {
+		r.mu.Lock()
+		if r.socks[ap] <= 1 {
+			delete(r.socks, ap)
+		} else {
+			r.socks[ap]--
+		}
+		r.mu.Unlock()
+	}
 }
 
 // newTURNNet is the network relay sockets are allocated on; a variable so a test can make it fail.
@@ -547,21 +716,49 @@ func deviceOf(user string) string {
 // turns it into a pending Allocate when it admits the request, or drops it when it refuses (486, a
 // device known to be barred). An Allocate pion refuses before its quota handler (437, 440) never
 // becomes pending (re-review N6). ctx ends the store lookups with the relay.
-func turnHandlers(ctx context.Context, q *AllocationQuota, m TURNMetrics, rev *RelayRevocations) (turn.QuotaHandler, turn.EventHandler) {
+//
+// The quota is also instance-wide (maxRelaySockets): an Allocate past it is refused 486 like one past
+// the device's own, counted apart and logged at WARN at most once per barredTTL on log (nil: nowhere).
+func turnHandlers(ctx context.Context, q *AllocationQuota, m TURNMetrics, rev *RelayRevocations,
+	log *slog.Logger) (turn.QuotaHandler, turn.EventHandler) {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
 	var mu sync.Mutex
 	live := 0
+	var warned time.Time
 	count := func(delta int) {
 		mu.Lock()
 		defer mu.Unlock()
 		live += delta
 		m.Allocations(live)
 	}
+	full := func() {
+		m.CapacityRefused()
+		mu.Lock()
+		now := time.Now()
+		quiet := now.Sub(warned) < barredTTL
+		if !quiet {
+			warned = now
+		}
+		mu.Unlock()
+		if !quiet {
+			log.Warn("the relay holds its instance-wide maximum of live allocations; new ones are refused 486",
+				"max", q.maxTotal)
+		}
+	}
 	quota := func(user, _ string, src net.Addr) bool {
 		dev := deviceOf(user)
 		admitted := dev != "" && !rev.knownBarred(dev)
-		if admitted && !q.Allow(dev) {
-			m.QuotaRefused()
-			admitted = false
+		if admitted {
+			switch q.take(dev) {
+			case quotaDevice:
+				m.QuotaRefused()
+				admitted = false
+			case quotaInstance:
+				full()
+				admitted = false
+			}
 		}
 		if dev != "" {
 			rev.admitAllocate(dev, addrKey(src), admitted)
@@ -601,34 +798,57 @@ func addrKey(a net.Addr) string {
 	return a.Network() + "/" + a.String()
 }
 
-// AllocationQuota counts live TURN allocations per device.
+// AllocationQuota counts live TURN allocations per device and in all.
 type AllocationQuota struct {
-	mu   sync.Mutex
-	max  int
-	live map[string]int
+	mu       sync.Mutex
+	max      int
+	maxTotal int
+	total    int
+	live     map[string]int
 }
 
-// NewAllocationQuota allows at most max live allocations per device.
+// NewAllocationQuota allows at most maxPerDevice live allocations per device, and maxRelaySockets
+// in all.
 func NewAllocationQuota(maxPerDevice int) *AllocationQuota {
-	return &AllocationQuota{max: maxPerDevice, live: map[string]int{}}
+	return &AllocationQuota{max: maxPerDevice, maxTotal: maxRelaySockets, live: map[string]int{}}
 }
 
-// Allow takes a slot for dev, or reports that it has none left.
-func (q *AllocationQuota) Allow(dev string) bool {
+// quotaVerdict is AllocationQuota.take's answer.
+type quotaVerdict int
+
+const (
+	quotaTaken    quotaVerdict = iota
+	quotaDevice                // dev holds its maximum
+	quotaInstance              // the instance holds maxTotal
+)
+
+// Allow takes a slot for dev, or reports that it has none left (or the instance has none).
+func (q *AllocationQuota) Allow(dev string) bool { return q.take(dev) == quotaTaken }
+
+func (q *AllocationQuota) take(dev string) quotaVerdict {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.live[dev] >= q.max {
-		return false
+		return quotaDevice
+	}
+	if q.total >= q.maxTotal {
+		return quotaInstance
 	}
 	q.live[dev]++
-	return true
+	q.total++
+	return quotaTaken
 }
 
 // Release gives one of dev's slots back.
 func (q *AllocationQuota) Release(dev string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if n := q.live[dev]; n > 1 {
+	n := q.live[dev]
+	if n <= 0 {
+		return
+	}
+	q.total--
+	if n > 1 {
 		q.live[dev] = n - 1
 	} else {
 		delete(q.live, dev)

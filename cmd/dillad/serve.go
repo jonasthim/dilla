@@ -26,6 +26,7 @@ import (
 	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/postgres"
 	postgresmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
@@ -97,6 +98,16 @@ func migrationProvider(c *config.Config, db *sql.DB) (*goose.Provider, error) {
 	default:
 		return nil, fmt.Errorf("db.driver %q is neither sqlite nor postgres: %w", c.DB.Driver, exit.Config)
 	}
+}
+
+// newMetrics is dillad's metric surface as /metrics serves it: every dilla_* series on dillad's own
+// registry, and LiveKit's — which registers on the default registry — through sfu.LiveKitGatherer,
+// which drops the labels a call member writes (protocol_version, sdk, …), so no client can grow
+// /metrics. A dilla_* series registered anywhere but on the returned Metrics' registry is never
+// served (I-1 of the integration re-review).
+func newMetrics() *obs.Metrics {
+	reg := prometheus.NewRegistry()
+	return obs.NewMetrics(reg, prometheus.Gatherers{reg, sfu.LiveKitGatherer(prometheus.DefaultGatherer)})
 }
 
 // runServe loads the config, takes the data-directory lock (ops.AcquireServeLock),
@@ -198,8 +209,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 
 	log := obs.NewLogger(cfg.Log, stderr)
-	reg := prometheus.NewRegistry()
-	metrics := obs.NewMetrics(reg, prometheus.Gatherers{reg, prometheus.DefaultGatherer})
+	metrics := newMetrics()
 	health := obs.NewHealth(clock.System())
 
 	// The blob store, its start-up sweep of interrupted uploads and the
