@@ -12,6 +12,7 @@ import {
   type RoomOptions,
 } from 'livekit-client';
 import { StubE2EEManager, type AttachPath } from './stub-manager.ts';
+import { runFailClosed, type FailClosedResult, type FailClosedScenario } from './failclosed.ts';
 import { joinCall, type CallSession, type IceServerTuple } from '../src/connect';
 import type { EpochKeys } from '../src/manager';
 import type { DillaMediaStats } from '../src/protocol';
@@ -39,6 +40,8 @@ export interface HarnessApi {
   installEpoch(k: EpochKeysWire): Promise<void>;
   mediaStats(): Promise<DillaMediaStats>;
   session(): CallSession | null;
+  /** Task 17 fix round 1: the real manager and worker on a loopback PeerConnection pair (harness/failclosed.ts). */
+  failClosed(sc: FailClosedScenario): Promise<FailClosedResult>;
 }
 
 const worker = new Worker(new URL('./stub-worker.ts', import.meta.url), { type: 'module', name: 'dilla-stub-worker' });
@@ -235,6 +238,7 @@ const harness: HarnessApi = {
   installEpoch: installEpochWire,
   mediaStats,
   session: () => dillaSession,
+  failClosed: runFailClosed,
 };
 
 (window as unknown as { harness: HarnessApi }).harness = harness;
