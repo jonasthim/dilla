@@ -191,8 +191,10 @@ The per-participant encryption status a browser reports (livekit-client's
 `participantEncryptionStatusChanged`, whose name the SDK fixes) means only that the participant's
 device is in the roster of a held epoch. It does not mean any of its frames authenticated: a member
 whose every frame is dropped still has it. A device is **verified** once at least one of its frames
-has authenticated (the media worker counts authenticated frames per KID). The local participant's
-status turns false again when the call's media worker fails or the call ends.
+has authenticated. The media worker counts this per device: a frame counts for the device its
+publication is mapped to only when every step above passed, so the frame authenticated and step 3
+bound its sender leaf to that device. A KID read from the header outside the cipher never counts. The local
+participant's status turns false again when the call's media worker fails or the call ends.
 
 ## Key frames
 
@@ -222,9 +224,21 @@ status turns false again when the call's media worker fails or the call ends.
 ## No plaintext path
 
 A browser never sends a frame that its sender transform did not encrypt and never renders one that
-its receive transform did not authenticate. Nothing the SFU or a peer sends, and no failure, opens a
-path around the transform:
+its receive transform did not authenticate. Media leaves the device only as encrypted RTP. Nothing the
+SFU or a peer sends, no option the application passes, and no failure opens a path around the
+transform:
 
+- **Not through the data channel.** No media, and nothing derived from media, is ever sent through
+  the data channel, which a dilla call does not encrypt. livekit-client can do so on its own: its
+  pre-connect buffer records the microphone from capture and, once the SFU acknowledges the feature
+  and flags any participant as an agent, streams the recording to it over the data channel after
+  the track is published. So the client refuses these publish options, both as the room's defaults
+  and per publish: `preConnectBuffer`, `frameMetadata` and `packetTrailer`; it also refuses `red` and
+  backup codecs (DEV-08, DEV-09). Only options that shape the encoder's output before the transform
+  (encodings, simulcast layers, codec, audio preset, DTX, stereo, scalability mode, degradation
+  preference, stopping the microphone on mute) are taken from the application. A track that arrives
+  with a pre-connect recording anyway has the recording discarded and the recorder stopped before
+  livekit-client reads it, gets a transform that drops every frame, and is unpublished.
 - **Senders.** Every sender gets its transform synchronously when it is created, before the
   renegotiation that starts its RTP. The codec of each frame is the frame's own (the encoded frame's
   `mimeType`), never the codec the publication is labelled with, which the SFU chooses through the
@@ -243,11 +257,21 @@ path around the transform:
   `encodedInsertableStreams: true`). A sender whose streams were never created sends nothing and
   such a receiver decodes nothing (measured on Chromium 153). When creating the streams, or handing
   them to the media worker, fails, the track is stopped as well, and a sender is unpublished.
+- **A sender left without any transform stays dead.** Restarting, unmuting or switching the device of
+  a local track puts a new capture track on the same sender without creating a new one; on such a
+  sender the new track is stopped instead, and the sender is unpublished again. A later publish on
+  the same sender is refused the same way.
 - **The media worker** passes a frame on only after a successful encryption or an authenticated
   decryption. Any other outcome (a cipher error, a trapped cipher, an exception in the pipeline, no
   epoch) drops the frame and keeps the stream open. Transform options it does not recognise drop
   every frame. If its cipher fails to load it reads and discards every frame, and the call fails to
-  start.
+  start. If the worker fails during a call (it throws, or a message from it cannot be read), its keys are cleared and it is terminated, which ends every transform it hosts:
+  afterwards no media byte is sent and no frame is decoded or rendered on either browser path
+  (measured on Firefox 155 and Chromium 153, video). A sender or receiver created after that is
+  stopped, and a sender is unpublished.
+- **Application code** cannot undo any of this by throwing: an exception in a listener for the
+  client's encryption events is caught and logged, and the client still unpublishes, clears keys
+  and leaves the call.
 
 ## Authenticity
 
