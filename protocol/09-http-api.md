@@ -538,7 +538,7 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | Method and path | Request | Response | Permission |
 |---|---|---|---|
 | `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; `409 E_CALL_FULL` | `connect`, and a current leaf of the call group |
-| `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
+| `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending or the device is barred | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
 | `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended | `view_channel` and `connect`, and a current leaf of the call's group |
 
@@ -568,11 +568,12 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   is idempotent for a slot it holds. When the request carries `vdec` — the device's video decoders,
   comma-separated from `vp8`, `h264` and `vp9`, each at most once (any other spelling is
   `400 E_INVALID_REQUEST`) — the token carries it as the participant attribute `dilla.vdec`, which
-  the other devices read to choose a codec every subscriber can decode. The token can be used to
-  join for one hour; it does **not** bound a session, because the SFU re-issues a connected
-  participant's token every five minutes from its current grants, so a change of the device's
-  permissions or sharing slot reaches a live session at once, and only the end of the call or the
-  device's removal ends one. `livekit_url` is where the client connects with it: `wss://` and the
+  the other devices read to choose a codec every subscriber can decode. The token is valid for one
+  hour, but its lifetime bounds neither a session nor a rejoin: the SFU re-issues a connected
+  participant's token every five minutes from its current grants, valid for at least ten more
+  minutes, so a client that stays connected always holds a token it could rejoin with. What bounds
+  access is the signalling proxy, which checks every join and resume against the device's current
+  state (below), and the cuts in "Losing access". `livekit_url` is where the client connects with it: `wss://` and the
   instance's own host (its public IP in `acme_ip`), whose `/rtc` paths the instance proxies to its
   in-process SFU, which listens only on `livekit.bind_address`. Every start opens the call's room in
   the SFU first and the SFU never opens one on a join, so a token for a room the instance has closed
@@ -589,37 +590,61 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   two devices racing for the last slot exactly one wins. The instance pushes the device's complete
   new permission to the SFU before it answers `204`; the client publishes only after the SFU's
   permission update shows the new source. `DELETE …/share` takes the camera and screen sources away
-  first and frees the slot after. The slot is also freed when the device stops its last camera or
-  screen track, leaves the call, or loses both `video` and `screen_share`; a permission change
-  during a call is pushed to the SFU at once.
-- **Losing access.** A device whose user loses `view_channel` or `connect` in the channel during a
-  call is disconnected from the call's room at once, before the call group's `Remove` of its leaf is
-  committed, and its sharing slot is freed; the signalling proxy refuses its rejoin meanwhile. When
-  the instance cannot resolve a participant's permissions, it takes every publish grant away from
-  that participant rather than leave the old one in place. A participant whose identity is no device
-  of the instance is removed from a call's room. A removal or demotion the SFU does not take stays
-  **pending**: the device keeps counting against `livekit.max_publishers`, a start of the call
-  answers it `403 E_FORBIDDEN` and the signalling proxy refuses it, and the instance retries on its
-  maintenance tick and at the call's next event until the SFU holds a permission within the
-  device's entitlement or the device has left. Every slot transition and every permission the
-  instance pushes for a call is serialised per call, so the devices that may publish a camera or
-  screen source are always among the slot holders. A start, a share, an unshare or the signalling
-  proxy that cannot take that serialisation within two seconds — the SFU is stuck on the call —
-  answers `503 E_UNAVAILABLE` with `retry_after_ms`; the client retries after the delay.
+  first and frees the slot after. The slot is also freed when the device loses both `video` and
+  `screen_share`, when it is cut from the call, when a share or a permission push finds it no longer
+  in the room, and when the call ends; a slot belongs to the room it was taken in and never carries
+  into a later call. A device that stops its last camera or screen track, or leaves the room, without
+  `DELETE …/share` keeps its slot until one of those happens; freeing it on the SFU's own track and
+  departure events is a later change. A permission change during a call is pushed to the SFU at once.
+- **Losing access.** A device is **barred** from every call when the device is revoked or
+  quarantined (`02` invariant 9) or its user is disabled or deleted: a start answers it
+  `403 E_FORBIDDEN` and mints nothing, a share answers `403 E_FORBIDDEN`, and the signalling proxy
+  refuses it. A device that is barred, or whose user loses `view_channel` or `connect` in the
+  channel, is disconnected from the call's room with every `"<device>#…"` participant of it, before
+  the call group's `Remove` of its leaf is committed, and its sharing slot is freed. That happens
+  **at once**, within the request that made the change, for a role or overwrite change, a kick, a
+  leave, a ban, a group-DM removal, a channel's visibility change, a device revocation through
+  `DELETE /v1/devices/{id}` or an account deletion, a user disable through the admin route, and a
+  fork quarantine. A change written to the database by another process — `dillad admin user
+  disable` or `delete`, an admin device revoke — and a device admitted by the signalling proxy just
+  before it lost access are caught by the **room sweep**: at most every 30 seconds the instance
+  lists its SFU's rooms and, for each live call's room, applies the same rule to every participant,
+  so such a device is disconnected within about 30 seconds (one sweep pass covers at most 64 rooms;
+  a larger instance takes one pass per 64 rooms). The sweep also closes every room that belongs to no
+  live call — a room whose close failed when its call ended, an older room of a call, a name that is
+  no call's. When the instance cannot resolve a participant's permissions or state, it takes every
+  publish grant away from that participant rather than leave the old one in place. A participant
+  whose identity is no device of the instance is removed from a call's room. A removal or demotion
+  the SFU does not take stays **pending**: the device keeps counting against
+  `livekit.max_publishers`, a start of the call answers it `403 E_FORBIDDEN` and the signalling proxy
+  refuses it, and the instance retries every five seconds and at that device's next start, share or
+  signalling request until the SFU holds a permission within the device's entitlement or the device
+  has left. Every slot transition and every permission the instance pushes for a call is serialised
+  per call, so the devices that may publish a camera or screen source are always among the slot
+  holders. A start, a share, an unshare or the signalling proxy that cannot take that serialisation
+  within two seconds — the SFU is stuck on the call — answers `503 E_UNAVAILABLE` with
+  `retry_after_ms`; the client retries after the delay. Once it has it, a request holds it for at most
+  six seconds and the instance's own background work for at most ten per call.
 - **The signalling proxy.** The `/rtc` paths admit only `GET` (anything else is `405`). The access
   token — a non-empty `Authorization` header, which must then be `Bearer`, else the `access_token`
   query parameter — must be one the instance minted (`403 E_FORBIDDEN` otherwise), for a device, and
   that device must be a current leaf of the live call whose room the token names
   (`403 E_LEAF_NOT_CURRENT` otherwise), so a device the call group has removed cannot rejoin with a
-  token the SFU re-issued to it. Its user must still hold `view_channel` and `connect` in the
-  channel and no removal or demotion of it may be pending (`403 E_FORBIDDEN`), and the token may
+  token the SFU re-issued to it. The device must not be barred, its user must still hold
+  `view_channel` and `connect` in the channel, and no removal or demotion of it may be pending
+  (`403 E_FORBIDDEN`), and the token may
   confer nothing beyond the device's current base grant (`403 E_FORBIDDEN`): a token minted while
   the device held `speak` is refused once `speak` is revoked, and a token the SFU re-issued while the
   device shared (it carries the camera) is refused for a fresh join — the client starts the call
-  again for a base token and POSTs `…/share`. A resume of a session the SFU still holds (the `/rtc`
-  path without `join_request`, `reconnect` `1` or `true`) is exempt from the per-source comparison
-  only, because the SFU keeps a resumed participant's own permission and never reads the token's;
-  a `/rtc/v1` request is always held to it. The instance removes a `publish`
+  again for a base token and POSTs `…/share`. A resume of a session is exempt from the per-source
+  comparison only, because the SFU keeps a resumed participant's own permission and never reads the
+  token's, and refuses a resume of a participant it does not hold; every other check applies. The
+  instance reads a resume exactly as its SFU does: without `join_request`, `reconnect` `1` or
+  `true`; with `join_request` (the `/rtc/v1` form), the `reconnect` field of the base64url
+  `WrappedJoinRequest`'s `JoinRequest`, uncompressed or gzip. A `join_request` the SFU would refuse —
+  not base64url, not protobuf, or larger than 1 MiB raw or once decompressed — is
+  `400 E_INVALID_REQUEST`. The paths are metered per client address on the `unauth` bucket of
+  `[limits.rate]` (`429 E_RATE_LIMITED` with `retry_after_ms`). The instance removes a `publish`
   query parameter and the `CF-Connecting-IP` and `X-Real-IP` headers before the request reaches the
   SFU, and `X-Forwarded-For` carries only the client address the instance resolved.
 - **Relays.** `ice_servers` is the `RTCIceServer` list for the client's peer connection: one entry
