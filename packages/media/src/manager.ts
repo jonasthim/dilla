@@ -28,6 +28,12 @@ export const DATA_ERROR = 'dilla: data encryption is not supported';
  * stats() reject with E_WASM, so joinCall rejects and releases its Web Lock.
  */
 export const INIT_TIMEOUT_MS = 15_000;
+/**
+ * N4 (task 17 re-review): how long the worker may take to confirm (epochInstalled) or refuse (an error naming the
+ * epoch) a posted installEpoch. An install is a few key derivations, so only a hung or broken worker misses it;
+ * the install then rejects with E_NO_EPOCH and joinCall releases its Web Lock.
+ */
+export const INSTALL_TIMEOUT_MS = 10_000;
 
 export interface EpochKeys {
   groupId: string;
@@ -211,10 +217,19 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
 
   async installEpoch(k: EpochKeys): Promise<void> {
     this.assertUsable();
-    if (k.baseKey.length !== 16) throw new Error('E_BAD_OPTIONS: the base key is 16 bytes');
+    // N4 (task 17 re-review): the worker silently drops an install its parser refuses (parseToWorker), which would
+    // never settle; so every type it checks is checked here first, before anything is posted.
+    if (typeof k !== 'object' || k === null) throw new Error('E_BAD_OPTIONS: no epoch keys');
+    if (typeof k.groupId !== 'string') throw new Error('E_BAD_OPTIONS: groupId is a string');
+    if (typeof k.epoch !== 'bigint' || k.epoch < 0n) throw new Error('E_BAD_OPTIONS: epoch is a non-negative bigint');
+    if (typeof k.minEpoch !== 'bigint') throw new Error('E_BAD_OPTIONS: minEpoch is a bigint');
+    if (!(k.baseKey instanceof Uint8Array) || k.baseKey.length !== 16) throw new Error('E_BAD_OPTIONS: the base key is 16 bytes');
     if (!Number.isInteger(k.selfLeaf) || k.selfLeaf < 0 || k.selfLeaf > 0xffff) throw new Error('E_BAD_OPTIONS: leaf out of range');
+    if (!Array.isArray(k.roster)) throw new Error('E_BAD_OPTIONS: the roster is an array');
     for (const r of k.roster) {
-      if (!isDeviceIdentity(r.deviceId) || !Number.isInteger(r.leaf) || r.leaf < 0 || r.leaf > 0xffff) throw new Error('E_BAD_OPTIONS: roster entry');
+      if (typeof r !== 'object' || r === null || !isDeviceIdentity(r.deviceId) || !Number.isInteger(r.leaf) || r.leaf < 0 || r.leaf > 0xffff) {
+        throw new Error('E_BAD_OPTIONS: roster entry');
+      }
     }
     // N1: a worker's first epoch must be one its device committed after the worker started (protocol/05 Sender
     // uniqueness). Until the worker confirms an install (epochInstalled), every install is held to the highest
@@ -229,8 +244,20 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     for (const r of k.roster) roster.set(r.leaf, r.deviceId);
     const baseKey = k.baseKey.slice();
     k.baseKey.fill(0);
+    const epoch = k.epoch;
     const done = new Promise<void>((resolve, reject) => {
-      this.pendingInstalls.set(k.epoch, [...(this.pendingInstalls.get(k.epoch) ?? []), { resolve, reject }]);
+      // N4: every posted install settles: confirmed, failed by the worker, failed with the manager, or timed out.
+      const entry: Pending<void> = {
+        resolve: () => { clearTimeout(timer); resolve(); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      };
+      const timer = setTimeout(() => {
+        const left = (this.pendingInstalls.get(epoch) ?? []).filter((p) => p !== entry);
+        if (left.length > 0) this.pendingInstalls.set(epoch, left);
+        else this.pendingInstalls.delete(epoch);
+        reject(new Error(`E_NO_EPOCH: the worker did not confirm epoch ${epoch} within ${INSTALL_TIMEOUT_MS} ms`));
+      }, INSTALL_TIMEOUT_MS);
+      this.pendingInstalls.set(epoch, [...(this.pendingInstalls.get(epoch) ?? []), entry]);
     });
     this.post({ kind: 'installEpoch', groupId: k.groupId, epoch: k.epoch, baseKey, selfLeaf: k.selfLeaf, roster: k.roster.map((r) => ({ leaf: r.leaf, deviceId: r.deviceId })) }, [baseKey.buffer]);
     await done;

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Room } from 'livekit-client';
-import { DATA_CHANNEL_ERROR, DATA_ERROR, DillaE2EEManager, INIT_TIMEOUT_MS, type EpochKeys } from '../src/manager';
+import { DATA_CHANNEL_ERROR, DATA_ERROR, DillaE2EEManager, INIT_TIMEOUT_MS, INSTALL_TIMEOUT_MS, type EpochKeys } from '../src/manager';
 import type { DillaMediaStats, FromWorker } from '../src/protocol';
 import { parseToWorker } from '../src/worker/messages';
 import { kidHex } from '../src/worker/stats';
@@ -662,6 +662,54 @@ describe('install and dispose bookkeeping (M1, M2)', () => {
     const p = m.installEpoch(keys());
     m.dispose();
     await expect(p).rejects.toThrow('E_NO_EPOCH');
+  });
+});
+
+// N4 (task 17 re-review): an install the worker's parser would drop (parseToWorker) never settled, and joinCall then
+// hung holding its Web Lock (probe P3).
+describe('installEpoch validates its argument and never hangs (N4)', () => {
+  const BAD: Array<[string, (k: EpochKeys) => unknown]> = [
+    ['epoch as a number (P3)', (k) => ({ ...k, epoch: 5 })],
+    ['minEpoch as a number', (k) => ({ ...k, minEpoch: 5 })],
+    ['a groupId that is not a string', (k) => ({ ...k, groupId: 7 })],
+    ['a baseKey that is not a Uint8Array', (k) => ({ ...k, baseKey: new Array(16).fill(7) })],
+    ['a selfLeaf that is not an integer', (k) => ({ ...k, selfLeaf: 0.5 })],
+    ['a roster that is not an array', (k) => ({ ...k, roster: {} })],
+    ['a roster leaf that is a string', (k) => ({ ...k, roster: [{ leaf: '1', deviceId: DEV_B }] })],
+  ];
+  for (const [name, mutate] of BAD) {
+    it(`refuses ${name} before posting anything`, async () => {
+      const { w, m } = setup();
+      const before = w.posted.length;
+      await expect(m.installEpoch(mutate(keys()) as EpochKeys)).rejects.toThrow('E_BAD_OPTIONS');
+      expect(w.posted).toHaveLength(before);
+    });
+  }
+
+  it('every install that is posted settles: a valid one the worker never confirms rejects after INSTALL_TIMEOUT_MS', async () => {
+    vi.useFakeTimers();
+    try {
+      const { w, m } = setup();
+      const p = m.installEpoch(keys());
+      const assertion = expect(p).rejects.toThrow('E_NO_EPOCH');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(w.last('installEpoch')).toBeDefined();
+      await vi.advanceTimersByTimeAsync(INSTALL_TIMEOUT_MS - 1);
+      let settled = false;
+      p.then(() => { settled = true; }, () => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await assertion;
+      // a confirmation in time clears its timer
+      const q = m.installEpoch(keys(6n));
+      await vi.advanceTimersByTimeAsync(0);
+      w.reply({ kind: 'epochInstalled', epoch: 6n });
+      await vi.advanceTimersByTimeAsync(INSTALL_TIMEOUT_MS * 2);
+      await expect(q).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
