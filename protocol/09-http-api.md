@@ -674,7 +674,9 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   fresh servers by repeating `POST /v1/channels/{id}/calls` before `turn.credential_ttl` runs out
   and handing the new list to its peer connection for that restart. At most
   `turn.allocations_per_device` relay allocations are live per device (default 4); another is
-  refused with STUN error 486 until one ends, and the instance counts the refusals. Four is two
+  refused with STUN error 486 until one ends, and the instance counts the refusals. An allocation
+  the relay cannot create (STUN error 508 — a relay of an address family the relay address is not,
+  say) holds no slot. Four is two
   networks through one ICE-restart overlap: a browser holds about `T × N × U` allocations — T = 1
   gathering transport under `max-bundle` (seven during the first offer under the default
   `balanced`), N = the networks it gathers on, U = 1 relay URL. The relay reaches only the
@@ -685,6 +687,8 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   is refused with STUN error 403, and with LiveKit off every one is. The filter is by IP address
   only: every port of an admitted address stays reachable through the relay, the SFU's own and any
   other service bound on those addresses, including `127.0.0.1` when `livekit.node_ip` is unset.
+  The relay offers UDP relays only: an `Allocate` with `REQUESTED-TRANSPORT` TCP (RFC 6062) is
+  refused with STUN error 508, so no `Connect` can open a TCP connection through it.
 - **Call stats.** A device in a call reports its connection about every 30 seconds: the selected
   candidate's type (0 host, 1 srflx, 2 prflx, 3 relay), the relay's transport when it is a relay
   (0 udp, 1 tcp, 2 tls; null for any other type), the round-trip time in milliseconds (at most

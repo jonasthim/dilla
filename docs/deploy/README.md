@@ -38,6 +38,13 @@ UDP service. So set `livekit.node_ip` to the address the world reaches the SFU o
 services off the admitted addresses (bind them to an address that is not admitted), or firewall
 them.
 
+The relay offers UDP relays only. It refuses an RFC 6062 TCP allocation (`REQUESTED-TRANSPORT` TCP)
+with STUN error 508, so no `Connect` can open a TCP connection to an admitted address. Browsers never
+ask for one. Regression note: before this was fixed, pion's default relay generator served TCP
+allocations, and any holder of a call credential could reach every TCP service on the admitted
+addresses, loopback included. If you ran an instance built before that fix, check your TCP services
+on those addresses.
+
 ### The `behind_proxy` TURN consequence
 
 A TLS-terminating proxy cannot forward the TURN traffic that shares 443, so in `behind_proxy` mode

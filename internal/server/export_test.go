@@ -45,6 +45,36 @@ func (t *TLS) EmitForTest(ctx context.Context, event string, data map[string]any
 	return t.magic.OnEvent(ctx, event, data)
 }
 
+// TCPRelayRefusalsForTest asks the relay generator StartTURN installs (on 127.0.0.1, over a quota
+// of one that dev holds) for a TCP relay listener and for a Connect's outbound TCP connection to
+// peer, and answers both errors and whether dev's slot is free again.
+func TCPRelayRefusalsForTest(dev string, peer net.Addr) (listenErr, connErr error, freed bool) {
+	relayNet, err := newTURNNet()
+	if err != nil {
+		return err, err, false
+	}
+	q := NewAllocationQuota(1)
+	q.Allow(dev)
+	g := &countingRelay{
+		RelayAddressGeneratorStatic: &turn.RelayAddressGeneratorStatic{
+			RelayAddress: net.IPv4(127, 0, 0, 1), Address: "127.0.0.1", Net: relayNet,
+		},
+		m: noTURNMetrics{}, q: q,
+	}
+	if ln, _, err := g.AllocateListener(turn.AllocateListenerConfig{Network: "tcp4", UserID: dev}); err == nil {
+		_ = ln.Close()
+	} else {
+		listenErr = err
+	}
+	if c, err := g.AllocateConn(turn.AllocateConnConfig{Network: "tcp4", UserID: dev,
+		LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}, RemoteAddr: peer}); err == nil {
+		_ = c.Close()
+	} else {
+		connErr = err
+	}
+	return listenErr, connErr, q.Allow(dev)
+}
+
 // ChooseRelayIPForTest is the "auto" decision over a probe result and interface addresses.
 func ChooseRelayIPForTest(probed net.IP, addrs []net.Addr, prefer netip.Addr) (net.IP, error) {
 	return chooseRelayIP(probed, addrs, prefer)

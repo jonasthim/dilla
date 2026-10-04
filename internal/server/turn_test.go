@@ -529,8 +529,9 @@ func startMeteredTURN(t *testing.T, secret string, c config.TURN, peers []netip.
 	return ln.Addr().String()
 }
 
-// allocateAs allocates a relay over a plain TCP connection with the given credential.
-func allocateAs(t *testing.T, addr, user, pass string) (net.PacketConn, error) {
+// turnClientAs is a listening TURN client over a plain TCP connection to addr with the given
+// credential, asking for family's relays (0: pion infers IPv4 from the connection).
+func turnClientAs(t *testing.T, addr, user, pass string, family turn.RequestedAddressFamily) (*turn.Client, error) {
 	t.Helper()
 	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", addr)
 	if err != nil {
@@ -539,6 +540,7 @@ func allocateAs(t *testing.T, addr, user, pass string) (net.PacketConn, error) {
 	client, err := turn.NewClient(&turn.ClientConfig{
 		TURNServerAddr: addr, Username: user, Password: pass,
 		Realm: "chat.example.test", Conn: turn.NewSTUNConn(conn), RTO: time.Second,
+		RequestedAddressFamily: family,
 	})
 	if err != nil {
 		conn.Close()
@@ -546,6 +548,16 @@ func allocateAs(t *testing.T, addr, user, pass string) (net.PacketConn, error) {
 	}
 	t.Cleanup(client.Close)
 	if err := client.Listen(); err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+// allocateAs allocates a relay over a plain TCP connection with the given credential.
+func allocateAs(t *testing.T, addr, user, pass string) (net.PacketConn, error) {
+	t.Helper()
+	client, err := turnClientAs(t, addr, user, pass, 0)
+	if err != nil {
 		return nil, err
 	}
 	relay, err := client.Allocate()
@@ -647,5 +659,117 @@ func TestTheRelayCountsItsBytesBothWays(t *testing.T) {
 	_, toClient, toPeer, _ := m.snapshot()
 	if toPeer < len("media") || toClient < len("reply!") {
 		t.Fatalf("relay bytes to_peer %d, to_client %d", toPeer, toClient)
+	}
+}
+
+// tcpPeer is a TCP listener on addr that counts the connections it accepts.
+func tcpPeer(t *testing.T, addr string) (net.Listener, func() int) {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", addr)
+	if err != nil {
+		t.Fatalf("listen %s: %v", addr, err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	var mu sync.Mutex
+	accepted := 0
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			accepted++
+			mu.Unlock()
+			_, _ = c.Write([]byte("hello-from-a-local-tcp-service"))
+			_ = c.Close()
+		}
+	}()
+	return ln, func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return accepted
+	}
+}
+
+// C1 (task 13 review): the relay offers UDP relays only. An RFC 6062 Allocate with
+// REQUESTED-TRANSPORT TCP is refused 508 and frees the quota slot it took, so no Connect can open
+// a TCP connection to any port of an admitted peer address (the SFU's, often the host's own).
+func TestTheRelayRefusesTCPAllocations(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	m := &fakeTURNMetrics{}
+	service, accepted := tcpPeer(t, "127.0.0.2:0")
+	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 1},
+		[]netip.Addr{netip.MustParseAddr("127.0.0.2")}, m, clock.System())
+	user, pass := server.TURNCredential(secret, id.New(), time.Hour, time.Now())
+	client, err := turnClientAs(t, addr, user, pass, 0)
+	if err != nil {
+		t.Fatalf("TURN client: %v", err)
+	}
+	alloc, err := client.AllocateTCP()
+	if err == nil {
+		// The hole this test closes: Connect (through Dial) reaches the admitted peer's TCP service.
+		if conn, derr := alloc.Dial("tcp", service.Addr().String()); derr == nil {
+			_ = conn.Close()
+		}
+		_ = alloc.Close()
+		t.Errorf("a TCP allocation succeeded (relay %s)", alloc.Addr())
+	} else if !strings.Contains(err.Error(), "508") {
+		t.Errorf("a TCP allocation = %v, want 508 Insufficient Capacity", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := accepted(); n != 0 {
+		t.Errorf("the relay opened %d TCP connection(s) to the admitted peer's service", n)
+	}
+	// The refused allocation holds no slot of the device's quota of one: a UDP relay still allocates.
+	if _, err := allocateAs(t, addr, user, pass); err != nil {
+		t.Fatalf("a UDP allocation after the refused TCP one: %v", err)
+	}
+	if _, _, _, allocations := m.snapshot(); !slices.Equal(allocations, []int{1}) {
+		t.Fatalf("allocation gauge %v, want only the UDP relay", allocations)
+	}
+}
+
+// C1, the generator itself: the TCP listener of an allocation and a Connect's outbound connection are
+// both refused, the allocation's slot is freed, and the peer's TCP service is never dialled.
+func TestTheRelayGeneratorRefusesTCP(t *testing.T) {
+	service, accepted := tcpPeer(t, "127.0.0.2:0")
+	listenErr, connErr, freed := server.TCPRelayRefusalsForTest(id.New().String(), service.Addr())
+	if listenErr == nil || connErr == nil {
+		t.Fatalf("TCP relay listener = %v, Connect's connection = %v; want both refused", listenErr, connErr)
+	}
+	if !freed {
+		t.Fatal("the refused TCP allocation kept its quota slot")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := accepted(); n != 0 {
+		t.Fatalf("the generator dialled the peer's TCP service %d time(s)", n)
+	}
+}
+
+// I3 (task 13 review): an allocation pion admitted but could not create — here an IPv6 relay asked
+// of an IPv4 turn.relay_ip, which a client can ask for every time — frees its quota slot, so it
+// cannot lock the device out of the relay until a restart.
+func TestAFailedRelaySocketFreesItsQuotaSlot(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	m := &fakeTURNMetrics{}
+	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 2}, nil, m, clock.System())
+	user, pass := server.TURNCredential(secret, id.New(), time.Hour, time.Now())
+	for i := range 3 {
+		client, err := turnClientAs(t, addr, user, pass, turn.RequestedAddressFamilyIPv6)
+		if err != nil {
+			t.Fatalf("TURN client: %v", err)
+		}
+		if _, err := client.Allocate(); err == nil || !strings.Contains(err.Error(), "508") {
+			t.Fatalf("IPv6 allocation %d against an IPv4 relay_ip = %v, want 508", i+1, err)
+		}
+	}
+	for i := range 2 {
+		if _, err := allocateAs(t, addr, user, pass); err != nil {
+			t.Fatalf("IPv4 allocation %d after the failed IPv6 ones: %v", i+1, err)
+		}
+	}
+	if refused, _, _, _ := m.snapshot(); refused != 0 {
+		t.Fatalf("quota refusals = %d, want none", refused)
 	}
 }

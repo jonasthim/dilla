@@ -135,6 +135,7 @@ func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers []netip.
 					Net:          relayNet,
 				},
 				m: m,
+				q: q,
 			},
 			PermissionHandler: peerFilter(peers),
 		}},
@@ -145,19 +146,57 @@ func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers []netip.
 	return &TURN{srv: srv, quota: q}, nil
 }
 
+// errNoTCPRelay is the relay generator's answer to an RFC 6062 TCP allocation or Connect; pion
+// turns it into 508 Insufficient Capacity.
+var errNoTCPRelay = errors.New("turn: TCP relays are not offered")
+
 // countingRelay allocates relay sockets as RelayAddressGeneratorStatic does and counts what crosses
-// them (dilla_turn_relay_bytes_total). Only UDP relays exist: TCP allocations are not offered.
+// them (dilla_turn_relay_bytes_total).
+//
+// It offers UDP relays only (task 13 review C1). RelayAddressGeneratorStatic would serve RFC 6062
+// TCP allocations too, and pion's peer filter sees only the peer IP, so a TCP relay would be a TCP
+// tunnel to every port of every admitted address — the SFU's, which are often the host's own,
+// loopback included. Browsers never ask for a TCP allocation (WebRTC relays UDP); AllocateListener
+// and AllocateConn refuse, and pion answers 508.
+//
+// pion takes a device's quota slot before it asks the generator for the socket and reports no event
+// when the generator fails (internal/server/turn.go:212-237, allocation_manager.go:204-227), so the
+// generator gives the slot back itself on every failure: a refused TCP allocation, and a UDP socket
+// that will not bind — which a client can cause at will with an IPv6 REQUESTED-ADDRESS-FAMILY
+// against an IPv4 turn.relay_ip (review I3).
 type countingRelay struct {
 	*turn.RelayAddressGeneratorStatic
 	m TURNMetrics
+	q *AllocationQuota
 }
 
 func (g *countingRelay) AllocatePacketConn(conf turn.AllocateListenerConfig) (net.PacketConn, net.Addr, error) {
 	conn, addr, err := g.RelayAddressGeneratorStatic.AllocatePacketConn(conf)
 	if err != nil {
+		g.release(conf.UserID)
 		return nil, nil, err
 	}
 	return &countingConn{PacketConn: conn, m: g.m}, addr, nil
+}
+
+// AllocateListener refuses a TCP allocation and frees the slot pion took for it.
+func (g *countingRelay) AllocateListener(conf turn.AllocateListenerConfig) (net.Listener, net.Addr, error) {
+	g.release(conf.UserID)
+	return nil, nil, errNoTCPRelay
+}
+
+// AllocateConn refuses a Connect's outbound TCP connection. No TCP allocation can exist to make
+// one, and a Connect takes no quota slot, so there is nothing to free.
+func (g *countingRelay) AllocateConn(turn.AllocateConnConfig) (net.Conn, error) {
+	return nil, errNoTCPRelay
+}
+
+// release frees the quota slot pion took for user's allocation. pion's EVEN-PORT probe asks for
+// sockets with no user (allocation_manager.go:324) before any slot is taken; it frees nothing.
+func (g *countingRelay) release(user string) {
+	if user != "" {
+		g.q.Release(deviceOf(user))
+	}
 }
 
 // countingConn is a relay socket: what it reads came from a peer and goes on to the client, what it
@@ -348,17 +387,17 @@ func deviceOf(user string) string {
 // turnHandlers wires both halves of the per-device quota — the admission callback, which counts a
 // refusal, and the release on an allocation's deletion — and keeps the live allocation count the
 // gauge reports. Wiring only the admission would cap a device for the life of the process after
-// allocations_per_device allocations. An allocation pion fails to create after admitting it (a
-// relay port that will not bind) keeps its slot until restart; pion reports no event for that path.
+// allocations_per_device allocations. An allocation pion fails to create after admitting it fires
+// no event; countingRelay frees that slot. The gauge is published under the count's lock, so a
+// creation and a deletion racing cannot leave a stale value behind.
 func turnHandlers(q *AllocationQuota, m TURNMetrics) (turn.QuotaHandler, turn.EventHandler) {
 	var mu sync.Mutex
 	live := 0
 	count := func(delta int) {
 		mu.Lock()
+		defer mu.Unlock()
 		live += delta
-		n := live
-		mu.Unlock()
-		m.Allocations(n)
+		m.Allocations(live)
 	}
 	quota := func(user, _ string, _ net.Addr) bool {
 		dev := deviceOf(user)
