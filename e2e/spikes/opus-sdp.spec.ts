@@ -88,6 +88,7 @@ async function inspect(page: Page, source: string): Promise<any> {
       return pt === undefined ? '' : (new RegExp(`a=fmtp:${pt} ([^\\r\\n]*)`).exec(section)?.[1] ?? '');
     };
     for (const pc of (window as any).__pcs as RTCPeerConnection[]) {
+      if (pc.connectionState === 'closed' || pc.signalingState === 'closed') continue; // an earlier row's connection
       const t = pc.getTransceivers().find((x) => x.sender === sender);
       if (t === undefined || t.mid === null) continue;
       const midLine = new RegExp(`(^|\\r\\n)a=mid:${t.mid}(\\r\\n|$)`);
@@ -181,13 +182,19 @@ async function publishSyntheticScreenAudio(page: Page): Promise<any> {
   return { source, wire: await inspect(page, 'screen_share_audio') };
 }
 
-/** A page-local loopback pair with LiveKit's answer fmtp; a sender transform counts frame sizes. */
+/**
+ * A page-local loopback pair with LiveKit's answer fmtp; a sender transform counts frame sizes. `pad` > 0 makes the
+ * counting transform append that many zero bytes to every frame (counted before the append), which stands in for
+ * the dilla worker's per-frame SFrame overhead: it isolates whether a non-empty transform output for the encoder's
+ * 0-byte DTX frames is what keeps the packet rate at 50/s.
+ */
 type ProbeInput = 'none' | 'zero' | 'tone';
-async function dtxProbe(page: Page, ms: number, input: ProbeInput): Promise<any> {
-  return page.evaluate(async ([duration, inp]) => {
+async function dtxProbe(page: Page, ms: number, input: ProbeInput, pad = 0): Promise<any> {
+  return page.evaluate(async ([duration, inp, padBytes]) => {
     const ctx = new AudioContext({ sampleRate: 48_000 });
     await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 2_000))]);
     const audioContextState = ctx.state;
+    const audioClockStart = ctx.currentTime;
     const dest = ctx.createMediaStreamDestination();
     dest.channelCount = 1;
     // 'none': the planned rig, a destination node with nothing connected. 'zero': a 1 kHz oscillator through a
@@ -202,9 +209,11 @@ async function dtxProbe(page: Page, ms: number, input: ProbeInput): Promise<any>
     }
     const track = dest.stream.getAudioTracks()[0];
     const src = [
+      `const PAD = ${padBytes};`,
       'const s = { total: 0, zero: 0, upTo2: 0, other: 0, bytes: 0, maxGapMs: 0, last: 0 };',
       'onrtctransform = (e) => { const t = e.transformer; t.readable.pipeThrough(new TransformStream({ transform(f, c) {',
       '  const n = f.data.byteLength; s.total++; s.bytes += n; if (n === 0) s.zero++; else if (n <= 2) s.upTo2++; else s.other++;',
+      '  if (PAD > 0) { const out = new Uint8Array(n + PAD); out.set(new Uint8Array(f.data)); f.data = out.buffer; }',
       '  const now = performance.now(); if (s.last > 0) s.maxGapMs = Math.max(s.maxGapMs, now - s.last); s.last = now; c.enqueue(f);',
       '} })).pipeTo(t.writable); };',
       'onmessage = () => postMessage(s);',
@@ -231,14 +240,21 @@ async function dtxProbe(page: Page, ms: number, input: ProbeInput): Promise<any>
     const sizes: any = await new Promise((r) => { worker.onmessage = (e) => r(e.data); worker.postMessage(null); });
     delete sizes.last;
     let packetsSent = 0;
-    (await sender.getStats()).forEach((s: any) => { if (s.type === 'outbound-rtp') packetsSent = s.packetsSent; });
+    let bytesSent = 0;
+    (await sender.getStats()).forEach((s: any) => { if (s.type === 'outbound-rtp') { packetsSent = s.packetsSent; bytesSent = s.bytesSent; } });
     const answerFmtp = /a=fmtp:\d+ ([^\r\n]*usedtx[^\r\n]*)/.exec(a.remoteDescription?.sdp ?? '')?.[1] ?? '';
+    // A running context's clock advances by about the phase length; a suspended one stays put.
+    const audioClockAdvancedS = ctx.currentTime - audioClockStart;
+    const audioContextStateAtEnd = ctx.state;
     a.close();
     b.close();
     worker.terminate();
     await ctx.close();
-    return { ms: duration, input: inp, audioContextState, answerFmtp, sizes, packetsSent, framesPerSecond: sizes.total / (duration / 1_000), packetsPerSecond: packetsSent / (duration / 1_000) };
-  }, [ms, input] as const);
+    return {
+      ms: duration, input: inp, pad: padBytes, audioContextState, audioContextStateAtEnd, audioClockAdvancedS, answerFmtp, sizes,
+      packetsSent, bytesSent, framesPerSecond: sizes.total / (duration / 1_000), packetsPerSecond: packetsSent / (duration / 1_000),
+    };
+  }, [ms, input, pad] as const);
 }
 
 // The trap matrix. Deviation from the planned rig (module source wins): livekit-client 2.22.3 throws 'Audio context
@@ -250,10 +266,17 @@ async function dtxProbe(page: Page, ms: number, input: ProbeInput): Promise<any>
 // where the SDP was settled before the processor existed. Publish options: MIC explicit; `{}` (the Room's
 // ROOM_DEFAULTS.publishDefaults, which equal MIC); 'unset' (forceStereo and dtx set to undefined after the room
 // defaults merge: what livekit-client does on its own).
+// Every row runs in its own fresh room and connection, three times: the first run of this spike reused one room
+// for the whole matrix, and there the SFU sometimes answered a new microphone m-section before it had the track's
+// info (participant_sdp.go: `ti == nil` → no `usedtx`/`stereo` rewrite), which made rows look run-dependent. A
+// separate reused-room pass measures how often that happens. `trackInfo` is the server's view of the publication
+// (TF_STEREO = 0, TF_NO_DTX = 1); `answerConfigured` says whether the answer fmtp matches it.
 const CAPTURES = {
   'CAPTURE (processing off)': CAPTURE,
+  'CAPTURE + channelCount 1 (processing off)': { ...CAPTURE, channelCount: 1 },
   'MIC_CAPTURE (processing on)': MIC_CAPTURE,
 } as const;
+const TRAP_REPEATS = 3;
 type CaptureName = keyof typeof CAPTURES;
 type TrapOptions = 'explicit' | 'defaults' | 'unset';
 type TrapRow = { order: 'before' | 'after'; capture: CaptureName; options: TrapOptions; mono: boolean };
@@ -271,6 +294,8 @@ const TRAP_ROWS: TrapRow[] = [
   // Is the trap live without dilla's explicit options?
   { order: 'before', capture: 'CAPTURE (processing off)', options: 'unset', mono: false },
   { order: 'before', capture: 'CAPTURE (processing off)', options: 'unset', mono: true },
+  // Does a mono capture constraint alone remove the source-driven TF_STEREO?
+  { order: 'before', capture: 'CAPTURE + channelCount 1 (processing off)', options: 'explicit', mono: false },
   // Task 19's capture options and order.
   { order: 'before', capture: 'MIC_CAPTURE (processing on)', options: 'explicit', mono: false },
   { order: 'after', capture: 'MIC_CAPTURE (processing on)', options: 'explicit', mono: false },
@@ -324,11 +349,19 @@ async function stereoTrap(page: Page, row: TrapRow): Promise<any> {
     };
   }, [row.order, row.options, CAPTURES[row.capture], MIC_OPTIONS, row.mono] as const);
   const wire = await inspect(page, 'microphone');
+  const trackInfo = await page.evaluate(() => {
+    const ti = (window as any).harness.session().room.localParticipant.getTrackPublication('microphone')?.trackInfo;
+    return ti === undefined ? null : { stereo: ti.stereo ?? null, disableDtx: ti.disableDtx ?? null, audioFeatures: [...(ti.audioFeatures ?? [])] };
+  });
   await page.evaluate(async () => {
     const lp = (window as any).harness.session().room.localParticipant;
     await lp.unpublishTrack(lp.getTrackPublication('microphone').track);
   });
   await sleep(1_000);
+  const stereo = wire === null ? null : /(^|;)stereo=1/.test(wire.remoteFmtp);
+  const usedtx = wire === null ? null : wire.remoteFmtp.includes('usedtx=1');
+  const tfStereo = trackInfo === null ? null : trackInfo.audioFeatures.includes(0);
+  const tfNoDtx = trackInfo === null ? null : trackInfo.audioFeatures.includes(1);
   return {
     order: row.order === 'before' ? 'processor, then publish' : 'publish, then processor (task 19)',
     capture: row.capture,
@@ -336,8 +369,12 @@ async function stereoTrap(page: Page, row: TrapRow): Promise<any> {
     destination: row.mono ? 'channelCount = 1' : 'default (2)',
     ...state,
     remoteFmtp: wire?.remoteFmtp ?? null,
-    stereo: wire === null ? null : /(^|;)stereo=1/.test(wire.remoteFmtp),
-    usedtx: wire === null ? null : wire.remoteFmtp.includes('usedtx=1'),
+    stereo,
+    usedtx,
+    trackInfo,
+    tfStereo,
+    tfNoDtx,
+    answerConfigured: wire === null || trackInfo === null ? null : stereo === tfStereo && usedtx === !tfNoDtx,
     wire,
   };
 }
@@ -434,7 +471,7 @@ for (const engine of ['chromium', 'firefox'] as const) {
 
   test(`${engine}: frame sizes in a sender transform over 60 s of DTX silence, and 10 s of tone`, async ({ browserName }) => {
     test.skip(browserName !== engine, `${engine} leg`);
-    test.setTimeout(240_000);
+    test.setTimeout(300_000);
     const browser = await launch();
     const page = await harnessPage(browser);
     await activate(page);
@@ -442,21 +479,33 @@ for (const engine of ['chromium', 'firefox'] as const) {
     await activate(page);
     const silence = await dtxProbe(page, 60_000, 'zero');
     await activate(page);
+    // 19 bytes: the per-frame growth the real manager showed (about 960 payload B/s at 50 packets/s in silence).
+    const silencePadded = await dtxProbe(page, 20_000, 'zero', 19);
+    await activate(page);
     const tone = await dtxProbe(page, 10_000, 'tone');
-    record(`opus-sdp.${engine}-dtx`, { browser: browser.version(), silenceNoInput, silence, tone });
+    record(`opus-sdp.${engine}-dtx`, { browser: browser.version(), silenceNoInput, silence, silencePadded, tone });
     await browser.close();
   });
 
   test(`${engine}: destination-node channel count and the stereo trap`, async ({ browserName }) => {
     test.skip(browserName !== engine, `${engine} leg`);
-    test.setTimeout(240_000);
+    test.setTimeout(900_000);
     const browser = await launch();
     const A = await harnessPage(browser);
-    await connectDilla(A, `sp09-trap-${engine}`, DEV_A, 0);
     const rows = [];
-    for (const row of TRAP_ROWS) rows.push(await stereoTrap(A, row));
-    record(`opus-sdp.${engine}-trap`, { browser: browser.version(), rows });
+    for (let rep = 1; rep <= TRAP_REPEATS; rep++) {
+      for (const [i, row] of TRAP_ROWS.entries()) {
+        await connectDilla(A, `sp09-trap-${engine}-${rep}-${i}`, DEV_A, 0);
+        rows.push({ rep, room: 'fresh', ...(await stereoTrap(A, row)) });
+        await A.evaluate(() => (window as any).harness.disconnect());
+      }
+    }
+    // The first run's shape: the whole matrix in one reused room, for the unconfigured-answer rate.
+    await connectDilla(A, `sp09-trap-${engine}-reused`, DEV_A, 0);
+    const reused = [];
+    for (const row of TRAP_ROWS) reused.push({ room: 'reused', ...(await stereoTrap(A, row)) });
     await A.evaluate(() => (window as any).harness.disconnect());
+    record(`opus-sdp.${engine}-trap`, { browser: browser.version(), rows, reused });
     await browser.close();
   });
 
@@ -477,6 +526,7 @@ for (const engine of ['chromium', 'firefox'] as const) {
       await lp.setMicrophoneEnabled(true, cap, mic);
       const track = lp.getTrackPublication('microphone').track;
       const ctx = new AudioContext({ sampleRate: 48_000 });
+      await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 2_000))]);
       const dest = ctx.createMediaStreamDestination();
       dest.channelCount = 1;
       const osc = ctx.createOscillator();
@@ -486,6 +536,7 @@ for (const engine of ['chromium', 'firefox'] as const) {
       osc.connect(gain).connect(dest);
       osc.start();
       (window as any).__sp09gain = gain;
+      (window as any).__sp09ctx = ctx;
       await track.setProcessor({
         name: 'sp09-silence',
         processedTrack: dest.stream.getAudioTracks()[0],
@@ -499,15 +550,20 @@ for (const engine of ['chromium', 'firefox'] as const) {
     const phase = async (gainValue: number, ms: number): Promise<any> => {
       await A.evaluate((g) => { (window as any).__sp09gain.gain.value = g; }, gainValue);
       await sleep(2_000); // settle into the phase before counting
+      const clock0 = await A.evaluate(() => (window as any).__sp09ctx.currentTime as number);
       const [a0, b0] = [await wireCounters(A, 'microphone'), await decryptedTotal(B)];
       await sleep(ms);
       const [a1, b1] = [await wireCounters(A, 'microphone'), await decryptedTotal(B)];
+      const ctxNow = await A.evaluate(() => ({ state: (window as any).__sp09ctx.state as string, t: (window as any).__sp09ctx.currentTime as number }));
       const s = ms / 1_000;
       const droppedDelta = Object.fromEntries(Object.entries(a1.dropped).map(([k, v]) => [k, v - (a0.dropped[k] ?? 0)]).filter(([, v]) => (v as number) > 0));
       return {
         gain: gainValue, ms,
+        audioContextState: ctxNow.state,
+        audioClockAdvancedS: ctxNow.t - clock0,
         packetsPerSecond: (a1.packets - a0.packets) / s,
         bytesPerSecond: (a1.bytes - a0.bytes) / s,
+        bytesPerPacket: a1.packets === a0.packets ? null : (a1.bytes - a0.bytes) / (a1.packets - a0.packets),
         encryptedPerSecond: (a1.encrypted - a0.encrypted) / s,
         decryptedAtBPerSecond: (b1 - b0) / s,
         droppedAtA: droppedDelta,
