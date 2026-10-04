@@ -55,17 +55,21 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
   }
 
   private load(mod: WebAssembly.Module): void {
-    const m = (createRNNWasmModuleSync as Factory)({
-      instantiateWasm(info, receive) {
-        const inst = new WebAssembly.Instance(mod, info);
-        receive(inst, mod);
-        return inst.exports;
-      },
-    });
-    this.state = m._rnnoise_create(0);
-    this.buf = m._malloc(FRAME * 4);
-    this.m = m;
-    this.post({ kind: 'probe', atob: typeof (globalThis as { atob?: unknown }).atob, ctorMs: 0, compiled: true, error: null });
+    try {
+      const m = (createRNNWasmModuleSync as Factory)({
+        instantiateWasm(info, receive) {
+          const inst = new WebAssembly.Instance(mod, info);
+          receive(inst, mod);
+          return inst.exports;
+        },
+      });
+      this.state = m._rnnoise_create(0);
+      this.buf = m._malloc(FRAME * 4);
+      this.m = m;
+      this.post({ kind: 'probe', atob: typeof (globalThis as { atob?: unknown }).atob, ctorMs: 0, compiled: true, error: null });
+    } catch (error) {
+      this.post({ kind: 'probe', atob: typeof (globalThis as { atob?: unknown }).atob, ctorMs: 0, compiled: false, error: String(error) });
+    }
   }
 
   private onMessage(d: { kind: string; module?: WebAssembly.Module; bytes?: ArrayBuffer; active?: boolean; mode?: GateMode }): void {

@@ -63,8 +63,8 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
     node.port.onmessage = (e: MessageEvent) => this.onWorklet(e.data as { kind: string; p?: number } & RnnoiseProbe);
     this.node = node;
     const bytes = await (this.opts.fetchWasm ?? defaultFetch)(this.opts.wasmUrl ?? (await defaultWasmUrl()));
-    // A WebAssembly.Module did not reach Chromium's AudioWorklet port (NV-11). Compile bytes
-    // asynchronously in the worklet while its unloaded path passes audio through.
+    // The Module handoff stalled in Chromium 153 headless (NV-11); the cause was not isolated.
+    // Compile bytes asynchronously while the unloaded worklet passes audio through.
     node.port.postMessage({ kind: 'bytes', bytes }, [bytes]);
     // Keep the destination mono. SP-09 measured that Chromium's source channel count can still
     // determine its stereo decision, independent of this destination setting.

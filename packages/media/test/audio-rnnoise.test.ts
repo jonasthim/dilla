@@ -182,3 +182,22 @@ describe('DillaRnnoiseProcessor', () => {
     expect(ctx.closed).toBe(true);
   });
 });
+
+it('the worklet reports an RNNoise factory failure instead of leaving probe pending', async () => {
+  const reports: Array<{ kind: string; compiled: boolean; error: string | null }> = [];
+  let Processor: new (opts: unknown) => { port: { onmessage: ((e: MessageEvent) => void) | null } };
+  vi.stubGlobal('AudioWorkletProcessor', class {
+    port = { onmessage: null as ((e: MessageEvent) => void) | null, postMessage: (m: typeof reports[number]) => reports.push(m) };
+  });
+  vi.stubGlobal('registerProcessor', (_name: string, ctor: typeof Processor) => { Processor = ctor; });
+  try {
+    await import('../src/audio/rnnoise-worklet');
+    const worklet = new Processor!({ processorOptions: { mode: 'open' } });
+    const emptyWasm = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+    worklet.port.onmessage!({ data: { kind: 'bytes', bytes: emptyWasm.buffer } } as MessageEvent);
+    await vi.waitFor(() => expect(reports.some((r) => r.error)).toBe(true));
+    expect(reports.at(-1)).toMatchObject({ kind: 'probe', compiled: false, error: expect.any(String) });
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
