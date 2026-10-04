@@ -689,7 +689,11 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   re-POSTs that route and ICE-restarts with the new list. A start whose device was cut in the same
   millisecond, or while the start was served, is answered `429 E_RATE_LIMITED` with a
   `retry_after_ms` of a few milliseconds and no credential; it changes no cut, and the retry's own
-  gates answer whether the device may still call. A start whose gates changed after the credential
+  gates answer whether the device may still call. The instance's wall clock stepping backwards
+  stretches that wait: until the clock passes a device's cut again, its starts are answered
+  `429 E_RATE_LIMITED` with a `retry_after_ms` that names the remaining time (a credential issued at
+  or before the cut would be refused by the relay anyway), and a step back past the process start
+  refuses every device's start the same way until the clock passes the start. A start whose gates changed after the credential
   was minted (barred, no longer a leaf, without `view_channel` or `connect`) is refused with that
   gate's code, and the device is cut as of then, which covers the credential just minted. The
   relay refuses every credential issued before its process started: the cuts are held in memory
@@ -698,7 +702,8 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   it can store (65 536), the cut that does not fit refuses every device's credentials issued up to
   it, so every relayed client re-fetches its servers rather than any revocation being forgotten. A
   device another process bars (`dillad admin`) is found by the relay itself on its next
-  authenticated request, or, while it holds an allocation and sends only channel data, by a re-check
+  authenticated request — which can be up to 30 seconds late, because a lookup that found the device
+  not barred is trusted for 30 seconds — or, while it holds an allocation and sends only channel data, by a re-check
   every 30 seconds that trusts a lookup for 30 seconds: within 62 seconds of the revocation at worst
   (two periods and a 2-second lookup); while the database cannot answer, such a device stays bounded
   by `turn.max_allocation_age` only. A user disabled in the instance's own process loses every
@@ -708,8 +713,14 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   period. A client keeps fresh servers by repeating `POST /v1/channels/{id}/calls` before
   `turn.credential_ttl` runs out and handing the new list to its peer connection for that restart.
   The relay checks the username strictly: exactly three fields, both numbers unsigned decimal
-  digits, the device a device id, the issue time no more than 2 seconds ahead of its clock, and a
-  lifetime no longer than `turn.credential_ttl` and those 2 seconds. At most
+  digits without a leading zero, the device a device id, the issue time no more than 2 seconds
+  ahead of its clock, and a lifetime no longer than `turn.credential_ttl` and those 2 seconds
+  (`turn.credential_ttl` is at least one minute). An `Allocate` is accepted while the relay's clock,
+  in milliseconds, is at most the expiry times 1000 — that millisecond included, the next one
+  refused — so a credential never works for an `Allocate` past its
+  issue time plus `turn.credential_ttl`. `dillad doctor` mints its probe credential in its own
+  process: run from another host, it needs that host's clock within 2 seconds of the instance's, or
+  the relay refuses the probe. At most
   `turn.allocations_per_device` relay allocations are live per device (default 4); another is
   refused with STUN error 486 until one ends, and the instance counts the refusals. An allocation
   the relay cannot create (STUN error 508 — a relay of an address family the relay address is not,

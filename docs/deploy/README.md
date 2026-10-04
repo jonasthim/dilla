@@ -75,7 +75,7 @@ Set `turn.public_url` whenever the port the world reaches differs from `turn.lis
 
 | key | default | what it bounds |
 |---|---|---|
-| `turn.credential_ttl` | `"1h"` | how long a relay credential handed out with a call can open a new allocation |
+| `turn.credential_ttl` | `"1h"` (at least `"1m"`) | how long a relay credential handed out with a call can open a new allocation |
 | `turn.max_allocation_age` | `"2h"` | how long one allocation keeps working after its credential was issued; never shorter than `credential_ttl` |
 | `turn.allocations_per_device` | `4` (1–16) | live allocations per device; a browser needs about two per network it gathers on |
 
@@ -86,9 +86,15 @@ after it the browser re-allocates with the servers it re-fetched. A revoked, qua
 logged-out device loses its relay allocations at once. A user disabled by the running instance loses
 them as soon as the call cut queue handles the user (at once while the SFU runs and the queue has
 room), otherwise like a revocation written by `dillad admin`, which reaches a device holding an
-allocation within about a minute (62 seconds at worst) while the database answers. The relay holds
+allocation within about a minute (62 seconds at worst) while the database answers; the relay's own
+lookup of a device on its next authenticated request can be up to 30 seconds late, as a "not barred"
+answer is trusted for 30 seconds. The relay holds
 its revocations in memory, so it refuses every credential issued before it started: after a restart
-every client fetches a new one with its next call start. Watch `dilla_turn_allocations`, `dilla_turn_quota_refusals_total`,
+every client fetches a new one with its next call start. If the host's wall clock steps backwards, a
+cut device's call start answers 429 until the clock passes the cut, and a step back past the moment
+`dillad serve` started refuses every start until the clock passes it; keep the clock disciplined
+(NTP slewing, not stepping). `dillad doctor` run from another host mints its relay probe on that
+host's clock, which must be within 2 seconds of the server's. Watch `dilla_turn_allocations`, `dilla_turn_quota_refusals_total`,
 `dilla_turn_relay_bytes_total` and the `turn_relay` leg of the admin diagnostics; raise
 `turn.allocations_per_device` when refusals appear. If `livekit.node_ip` is a public address the
 host does not hold (behind NAT) and `livekit.advertise_internal_ip` is on, the relay does not admit
