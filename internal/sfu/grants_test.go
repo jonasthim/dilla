@@ -581,3 +581,25 @@ func TestTheCallTokenCannotPublishData(t *testing.T) {
 		}
 	}
 }
+
+// Rooms lists every room LiveKit holds (the room sweep's input): a created room is listed, a deleted
+// one is not.
+func TestRoomsListsTheRoomsTheSFUHolds(t *testing.T) {
+	srv := bootGrantSFU(t, 7954, nil)
+	for _, r := range []string{"room-a", "room-b"} {
+		if err := srv.CreateRoom(t.Context(), r); err != nil {
+			t.Fatalf("CreateRoom %s: %v", r, err)
+		}
+	}
+	got, err := srv.Rooms(t.Context())
+	slices.Sort(got)
+	if err != nil || !slices.Equal(got, []string{"room-a", "room-b"}) {
+		t.Fatalf("Rooms = %v, %v; want room-a and room-b", got, err)
+	}
+	if err := srv.DeleteRoom(t.Context(), "room-a"); err != nil {
+		t.Fatalf("DeleteRoom: %v", err)
+	}
+	if got, err := srv.Rooms(t.Context()); err != nil || !slices.Equal(got, []string{"room-b"}) {
+		t.Fatalf("Rooms after a delete = %v, %v; want room-b", got, err)
+	}
+}

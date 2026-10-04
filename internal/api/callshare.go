@@ -30,7 +30,7 @@ import (
 // livekit.max_publishers. mu only guards the maps themselves.
 type shareLeases struct {
 	mu      sync.Mutex
-	byCall  map[id.ID]map[id.ID]int64
+	byCall  map[id.ID]map[id.ID]slot
 	pending map[id.ID]map[string]pendingRepair
 	locks   map[id.ID]*callLock
 }
@@ -40,6 +40,15 @@ type shareLeases struct {
 type callLock struct {
 	ch   chan struct{}
 	refs int
+}
+
+// slot is one device's sharing slot: the room of the call it was taken in, and when. A slot belongs
+// to that room only: the next call of the same call id opens a fresh room, and a slot whose room is
+// not the live call's is dropped wherever it is met (take, held, the retry loop), so it can never
+// carry a reduced cap or a camera grant into a later call.
+type slot struct {
+	room  string
+	since int64
 }
 
 // pendingRepair is a cut or a demotion of one participant of a call's room that did not land: the
@@ -54,7 +63,7 @@ type pendingRepair struct {
 
 func newShareLeases() *shareLeases {
 	return &shareLeases{
-		byCall:  map[id.ID]map[id.ID]int64{},
+		byCall:  map[id.ID]map[id.ID]slot{},
 		pending: map[id.ID]map[string]pendingRepair{},
 		locks:   map[id.ID]*callLock{},
 	}
@@ -106,11 +115,13 @@ func (l *shareLeases) pendingCount() int {
 	return n
 }
 
-// take gives dev a slot of call unless maxSlots are held. A device that already holds one keeps it
-// (already true): a repeated request is idempotent. The caller holds call's lock.
-func (l *shareLeases) take(call, dev id.ID, maxSlots int, now int64) (taken, already bool) {
+// take gives dev a slot of call's room unless maxSlots are held there. A device that already holds
+// one keeps it (already true): a repeated request is idempotent. Slots taken in another room of the
+// call are dropped first. The caller holds call's lock.
+func (l *shareLeases) take(call id.ID, room string, dev id.ID, maxSlots int, now int64) (taken, already bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.dropStaleLocked(call, room)
 	held := l.byCall[call]
 	if _, ok := held[dev]; ok {
 		return true, true
@@ -119,18 +130,38 @@ func (l *shareLeases) take(call, dev id.ID, maxSlots int, now int64) (taken, alr
 		return false, false
 	}
 	if held == nil {
-		held = map[id.ID]int64{}
+		held = map[id.ID]slot{}
 		l.byCall[call] = held
 	}
-	held[dev] = now
+	held[dev] = slot{room: room, since: now}
 	return true, false
 }
 
-func (l *shareLeases) held(call, dev id.ID) bool {
+// held reports whether dev holds a slot of call taken in room.
+func (l *shareLeases) held(call id.ID, room string, dev id.ID) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_, ok := l.byCall[call][dev]
-	return ok
+	s, ok := l.byCall[call][dev]
+	return ok && s.room == room
+}
+
+// dropStale forgets every slot of call taken in a room other than room, the live call's. The caller
+// holds call's lock.
+func (l *shareLeases) dropStale(call id.ID, room string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.dropStaleLocked(call, room)
+}
+
+func (l *shareLeases) dropStaleLocked(call id.ID, room string) {
+	for dev, s := range l.byCall[call] {
+		if s.room != room {
+			delete(l.byCall[call], dev)
+		}
+	}
+	if len(l.byCall[call]) == 0 {
+		delete(l.byCall, call)
+	}
 }
 
 // release frees dev's slot of call. The caller holds call's lock.
@@ -309,8 +340,7 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, notImplemented("this instance runs no SFU (livekit.enabled is false)"))
 		return
 	}
-	ctx := r.Context()
-	unlock, err := h.lock(ctx, row.CallID, callLockWait)
+	ctx, unlock, err := h.lock(r.Context(), row.CallID, callLockWait, callHoldRequest)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -325,9 +355,14 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "the call has ended"))
 		return
 	}
-	h.drainPending(ctx, h.deps(), ch, cur, maxRepairsPerTick)
+	// A request drives only its own device's repair; every other one is the retry loop's.
+	h.drainPending(ctx, h.deps(), ch, cur, 1, s.DeviceID.String())
 	if h.leases.isPending(cur.CallID, s.DeviceID) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device's access to this call is being revoked"))
+		return
+	}
+	if err := h.refuseBarred(ctx, h.repo, s.DeviceID); err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	bits, err = h.res.Resolve(ctx, s.UserID, ch)
@@ -348,7 +383,7 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := h.maxPublishers()
-	taken, already := h.leases.take(cur.CallID, s.DeviceID, limit, h.clk.Now().Unix())
+	taken, already := h.leases.take(cur.CallID, cur.LivekitRoom, s.DeviceID, limit, h.clk.Now().Unix())
 	if !taken {
 		if h.counters != nil {
 			h.counters.ShareRefused()
@@ -357,7 +392,7 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pctx, cancel := sfuCtx(ctx)
-	err = h.sfu.UpdatePermission(pctx, cur.LivekitRoom, s.DeviceID.String(), h.grantFor(bits, cur.CallID, s.DeviceID))
+	err = h.sfu.UpdatePermission(pctx, cur.LivekitRoom, s.DeviceID.String(), h.grantFor(bits, cur, s.DeviceID))
 	cancel()
 	if err != nil {
 		if errors.Is(err, sfu.ErrNoParticipant) {
@@ -396,10 +431,10 @@ func (h *Calls) unshare(w http.ResponseWriter, r *http.Request) {
 // releaseShare frees dev's slot of row's call under the call's lock: the demotion — computed from
 // the bits read now, under the lock — is pushed FIRST, LiveKit unpublishes the video tracks, and the
 // slot is freed after. A device the room no longer holds needs no demotion. A demotion that fails
-// keeps the slot and is recorded as a pending repair, which the retry ticker and the call's next
-// event drive until it lands.
+// keeps the slot and is recorded as a pending repair, which the retry loop and the device's own next
+// request drive until it lands.
 func (h *Calls) releaseShare(ctx context.Context, ch store.ChannelRow, row store.VoiceSessionRow, dev id.ID) error {
-	unlock, err := h.lock(ctx, row.CallID, callLockWait)
+	ctx, unlock, err := h.lock(ctx, row.CallID, callLockWait, callHoldRequest)
 	if err != nil {
 		return err
 	}
@@ -412,8 +447,8 @@ func (h *Calls) releaseShare(ctx context.Context, ch store.ChannelRow, row store
 		return nil
 	}
 	d := h.deps()
-	h.drainPending(ctx, d, ch, cur, maxRepairsPerTick)
-	if !h.leases.held(cur.CallID, dev) {
+	h.drainPending(ctx, d, ch, cur, 1, dev.String())
+	if !h.leases.held(cur.CallID, cur.LivekitRoom, dev) {
 		return nil
 	}
 	if h.sfu == nil {

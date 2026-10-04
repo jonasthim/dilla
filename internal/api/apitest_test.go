@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -405,6 +406,40 @@ type stubSFU struct {
 	hang         bool // pushes and removals block until their context ends: a hung SFU
 	present      map[string][]*livekit.ParticipantInfo
 	listFail     error
+	// rooms is every room the stub SFU holds: opened by CreateRoom or setPresent, closed by a
+	// DeleteRoom that succeeds. roomsFail fails Rooms.
+	rooms     map[string]bool
+	roomsFail error
+}
+
+func (s *stubSFU) Rooms(context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.roomsFail != nil {
+		return nil, s.roomsFail
+	}
+	out := make([]string, 0, len(s.rooms))
+	for r := range s.rooms {
+		out = append(out, r)
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// addRoom opens room in the stub SFU with nobody in it, as a room left behind would be.
+func (s *stubSFU) addRoom(room string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rooms == nil {
+		s.rooms = map[string]bool{}
+	}
+	s.rooms[room] = true
+}
+
+// heldRooms is Rooms without the error.
+func (s *stubSFU) heldRooms() []string {
+	out, _ := s.Rooms(context.Background())
+	return out
 }
 
 var _ api.CallTokens = (*stubSFU)(nil)
@@ -423,6 +458,10 @@ func (s *stubSFU) DeleteRoom(_ context.Context, room string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deleted = append(s.deleted, room)
+	if s.deleteFail == nil {
+		delete(s.rooms, room)
+		delete(s.present, room)
+	}
 	return s.deleteFail
 }
 
@@ -430,6 +469,12 @@ func (s *stubSFU) CreateRoom(_ context.Context, room string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.created = append(s.created, room)
+	if s.createFail == nil {
+		if s.rooms == nil {
+			s.rooms = map[string]bool{}
+		}
+		s.rooms[room] = true
+	}
 	return s.createFail
 }
 
@@ -566,6 +611,10 @@ func (s *stubSFU) setPresent(room string, parts ...*livekit.ParticipantInfo) {
 		s.present = map[string][]*livekit.ParticipantInfo{}
 	}
 	s.present[room] = parts
+	if s.rooms == nil {
+		s.rooms = map[string]bool{}
+	}
+	s.rooms[room] = true
 }
 
 const (

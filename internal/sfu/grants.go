@@ -158,6 +158,24 @@ func (s *Server) Participants(ctx context.Context, room string) ([]*livekit.Part
 	return res.GetParticipants(), nil
 }
 
+// Rooms is the name of every room LiveKit holds (RoomService ListRooms, which needs the roomList
+// grant): the room sweep's input.
+func (s *Server) Rooms(ctx context.Context) ([]string, error) {
+	rs, ctx, err := s.roomServiceFor(ctx, &auth.VideoGrant{RoomList: true})
+	if err != nil {
+		return nil, err
+	}
+	res, err := rs.ListRooms(ctx, &livekit.ListRoomsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("sfu: list rooms: %w", err)
+	}
+	out := make([]string, 0, len(res.GetRooms()))
+	for _, r := range res.GetRooms() {
+		out = append(out, r.GetName())
+	}
+	return out, nil
+}
+
 // RemoveParticipants disconnects device from room: the participant whose identity is the device id
 // and every "<device id>#…" shadow LiveKit's publish parameter could have created (gap G29). A
 // participant that left in the meantime is not an error.

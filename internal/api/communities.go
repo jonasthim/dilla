@@ -39,6 +39,17 @@ type Communities struct {
 	// build Communities without one, and the composition root always sets it.
 	inviteLimiter *server.RateLimiter
 	trustedProxy  []netip.Prefix
+
+	// calls cuts a kicked or departing user's connected call sessions after the commit
+	// (syncAfterMembership); nil touches no call.
+	calls *Calls
+}
+
+// WithCalls sets the call routes a kick or a leave cuts the user's live call sessions through, and
+// returns c. The composition root sets it whenever it runs an SFU.
+func (c *Communities) WithCalls(calls *Calls) *Communities {
+	c.calls = calls
+	return c
 }
 
 // NewCommunities takes the delivery service a membership change reaches: a
@@ -665,6 +676,9 @@ func (c *Communities) removeFromGroups(r *http.Request, cid, userID id.ID) {
 		c.log.ErrorContext(ctx, "remove user from the community's groups",
 			"community", cid, "user", userID, "err", err)
 	}
+	// The user holds nothing in the community any more: their connected call sessions are cut now,
+	// not when a member commits the Remove.
+	syncAfterMembership(ctx, c.calls, c.log, cid, userID, nil)
 }
 
 func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {

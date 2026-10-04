@@ -2,6 +2,7 @@ package dillad
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -35,6 +36,10 @@ type SFU interface {
 	// VerifyToken answers the identity, room and claims of a room-join token the SFU's key signed.
 	VerifyToken(token string) (sfu.RoomToken, error)
 }
+
+// rtcRateClass is the bucket /rtc is metered on: the [limits.rate] unauth class's rate and burst,
+// keyed per client address.
+const rtcRateClass = "unauth"
 
 // RTCGate admits device to the live call whose room is room and answers what it may hold there
 // now — its current base permission — or a *server.Error refusal; *api.Calls is one.
@@ -81,20 +86,22 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 
 	// The join is metered on the ("invite", client address) bucket GET /i/{code} is on, so a join
 	// is not a way round the limit on guessing codes (task 5).
+	// A kick, a leave, a ban, a group-DM removal and a user disable cut the user's connected call
+	// sessions after their commit (dilla-media task 10).
 	api.NewCommunities(repo, p.delivery, clk, log).
-		WithInviteMeter(p.limiter, cfg.Server.TrustedProxyCIDRs).Register(m)
-	channels := api.NewChannels(repo, p.delivery, clk, maxGroupDM, log)
+		WithInviteMeter(p.limiter, cfg.Server.TrustedProxyCIDRs).WithCalls(calls).Register(m)
+	channels := api.NewChannels(repo, p.delivery, clk, maxGroupDM, log).WithCalls(calls)
 	channels.Register(m)
 	channels.RegisterMembers(m)
 	api.NewRoles(repo, clk, cfg.Auth.WebAuthn.RPID, log).WithDS(p.delivery).WithCalls(tokens, calls).Register(m)
-	api.NewBans(repo, p.delivery, clk, log).Register(m)
+	api.NewBans(repo, p.delivery, clk, log).WithCalls(calls).Register(m)
 	api.NewInvites(repo, clk, "https://"+urlHost(cfg.Instance.Domain), log).Register(m)
 	api.NewDMs(repo, p.delivery, clk, p.instance.InstanceID, maxGroupDM, log).Register(m)
 	api.NewReadable(repo, res, p.gw, p.keys, clk, log).Register(m)
 	api.NewBlobs(repo, p.blobs, res, cfg.Blobs, clk, log).Register(m)
 	api.NewReports(repo, p.keys, clk, log).Register(m)
 	calls.Register(m)
-	api.NewAdmin(repo, p.blobs, clk, log).WithMetrics(p.o.Metrics).WithDiagnostics(p.diagnose).Register(m)
+	api.NewAdmin(repo, p.blobs, clk, log).WithMetrics(p.o.Metrics).WithDiagnostics(p.diagnose).WithCalls(calls).Register(m)
 	return calls
 }
 
@@ -167,8 +174,16 @@ func urlHost(host string) string {
 //     address server.RealIP resolved behind the trusted proxies: LiveKit prefers the first two over
 //     X-Forwarded-For, and nothing a client wrote reaches it.
 //
+// Every request is metered first, on the [limits.rate] unauth class (unauth_per_second,
+// unauth_burst) keyed by the client address server.RealIP resolves (IPv6 by /64): the routes carry
+// no session, and each request costs store reads and, with a repair pending, an SFU call. Past the
+// burst it is 429 E_RATE_LIMITED with retry_after_ms.
+//
 // The upgrade itself is httputil.ReverseProxy's own.
-func mountRTC(mux *server.Mux, s SFU, gate RTCGate, trusted []netip.Prefix) error {
+func mountRTC(mux *server.Mux, s SFU, gate RTCGate, trusted []netip.Prefix, limiter *server.RateLimiter) error {
+	if limiter == nil {
+		return errors.New("dillad: the /rtc meter has no rate limiter")
+	}
 	upstream, err := url.Parse(s.HTTPURL())
 	if err != nil {
 		return fmt.Errorf("dillad: the SFU's URL %q: %w", s.HTTPURL(), err)
@@ -191,7 +206,13 @@ func mountRTC(mux *server.Mux, s SFU, gate RTCGate, trusted []netip.Prefix) erro
 		// Stream at once: /rtc is a WebSocket.
 		FlushInterval: -1,
 	}
+	rate := limiter.Config()
+	class := server.Class{Name: rtcRateClass, PerSecond: rate.UnauthPerSecond, Burst: rate.UnauthBurst}
 	gated := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ok, wait := limiter.Allow(class, server.RateKey(server.RealIP(r, trusted))); !ok {
+			server.WriteError(w, server.RateLimitedAfter(wait))
+			return
+		}
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -218,9 +239,11 @@ func mountRTC(mux *server.Mux, s SFU, gate RTCGate, trusted []netip.Prefix) erro
 // holds without re-reading the token's grants and refuses a resume of one it does not hold
 // (roommanager.go:326-420), and its own refreshed token carries the participant's current promoted
 // grant, so a sharer's signalling reconnect must still pass. The gate recognises a resume exactly as
-// LiveKit does on the v0 path (rtcservice.go:238-260): no join_request and reconnect "1" or
-// "true". A /rtc/v1 join_request's own reconnect flag is not read, so a v1 request is always held to
-// the full comparison. Every non-source right is checked either way.
+// LiveKit does (sfu.JoinIsResume): on the v0 form, no join_request and reconnect "1" or "true"; on
+// the v1 form livekit-client 2.22.3 uses, the Reconnect flag of the wrapped join request, parsed
+// with LiveKit's own compression and size bounds. A join request LiveKit would refuse is refused
+// here, 400 E_INVALID_REQUEST, before it reaches the SFU. Every other check — the token's signature,
+// its device, the gate, every non-source right — applies to a resume as to a fresh join.
 func admitRTC(r *http.Request, s SFU, gate RTCGate) error {
 	q := r.URL.Query()
 	token := q.Get("access_token")
@@ -238,11 +261,14 @@ func admitRTC(r *http.Request, s SFU, gate RTCGate) error {
 	if err != nil {
 		return server.Errorf(server.CodeForbidden, "the token's identity is not a device")
 	}
+	resume, err := sfu.JoinIsResume(q)
+	if err != nil {
+		return server.Errorf(server.CodeInvalidRequest, "%v", err)
+	}
 	allowed, err := gate.AdmitRoom(r.Context(), rt.Room, dev)
 	if err != nil {
 		return err
 	}
-	resume := q.Get("join_request") == "" && (q.Get("reconnect") == "1" || q.Get("reconnect") == "true")
 	if err := sfu.TokenWithin(rt.Claims, allowed, !resume); err != nil {
 		return server.Errorf(server.CodeForbidden, "the access token grants more than your device holds now; start the call again")
 	}

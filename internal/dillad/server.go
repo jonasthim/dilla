@@ -223,6 +223,14 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		FrameBurst:      o.Config.Gateway.FrameBurstMax,
 	})
 	channels, acl := deliverySeams(o)
+	// callRoutes is the call route group mountPlanTwo builds below. The revocation and quarantine
+	// hooks close over it: both run only on requests, which reach the mux after New has returned.
+	var callRoutes *api.Calls
+	cutFromCalls := func(ctx context.Context, device id.ID) {
+		if callRoutes != nil {
+			callRoutes.CutDevice(ctx, device)
+		}
+	}
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,
 		Wasm:     wasm,
@@ -236,6 +244,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		ACL:      acl,
 		// The device lists are verified in the guest (NV-B8, deviation B32).
 		DeviceLists: ds.NewDeviceLists(o.Repo, wasm),
+		// A fork-quarantined device is cut from every live call at once (dilla-media task 10).
+		OnQuarantine: cutFromCalls,
 	})
 	if err != nil {
 		closeWasmOnError()
@@ -258,7 +268,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	closeDevice := func(device id.ID) {
 		gw.CloseDevice(device, gateway.CloseSessionRevoked, "device revoked")
 	}
-	sessions.OnRevoke = closeDevice
+	// A revoked device (and every device of a user RevokeUser disables) is also cut from every live
+	// call at once (dilla-media task 10); a device that is only logged out keeps its call permission.
+	sessions.OnRevoke = func(device id.ID) {
+		closeDevice(device)
+		cutFromCalls(context.Background(), device)
+	}
 	deps.CloseGateway = closeDevice
 	// POST /v1/gateway/ticket mints from the gateway's own store; a second
 	// store would mint tickets the upgrade has never heard of.
@@ -326,12 +341,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// readable channels, blobs, reports, calls and the admin routes (routes.go), behind the same
 	// session middleware and [limits.rate] meter as the routes above; then LiveKit's signalling
 	// paths when this process runs an SFU.
-	callRoutes := mountPlanTwo(mux, planTwo{
+	callRoutes = mountPlanTwo(mux, planTwo{
 		o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
 		blobs: blobs, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
 	})
 	if o.SFU != nil {
-		if err := mountRTC(mux, o.SFU, callRoutes, o.Config.Server.TrustedProxyCIDRs); err != nil {
+		if err := mountRTC(mux, o.SFU, callRoutes, o.Config.Server.TrustedProxyCIDRs, limiter); err != nil {
 			closeWasmOnError()
 			return nil, err
 		}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"slices"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -13,6 +14,9 @@ func (h *Calls) PendingRepairs() int { return h.leases.pendingCount() }
 func (h *Calls) MarkPending(call, dev id.ID, room string) {
 	h.leases.markPending(call, dev.String(), pendingRepair{Room: room, DropSlot: true})
 }
+
+// SetSweepEvery sets the retry loop's room-sweep cadence, for a test that runs the loop.
+func (h *Calls) SetSweepEvery(d time.Duration) { h.sweepEvery = d }
 
 // SharersOf is the devices holding a sharing slot of call, for the lease-invariant tests in
 // package api_test.

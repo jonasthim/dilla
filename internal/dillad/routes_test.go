@@ -123,7 +123,8 @@ func (f fakeSFU) RemoveParticipant(context.Context, string, string) error { retu
 func (f fakeSFU) Participants(context.Context, string) ([]*livekit.ParticipantInfo, error) {
 	return nil, nil
 }
-func (f fakeSFU) HTTPURL() string { return f.url }
+func (f fakeSFU) Rooms(context.Context) ([]string, error) { return nil, nil }
+func (f fakeSFU) HTTPURL() string                         { return f.url }
 
 // VerifyToken reads "<identity>@<room>[@<sources>]", sources a comma list of mic, cam and screen
 // (mic when left out), as a call token with that publish grant.
@@ -179,7 +180,7 @@ func TestTheRTCPathsAreProxiedToTheSFU(t *testing.T) {
 	dev := id.New()
 	tok := url.QueryEscape(dev.String() + "@room-1")
 	mux := server.NewMux()
-	if err := mountRTC(mux, fakeSFU{url: upstream.URL}, fakeGate{room: "room-1", leaves: map[id.ID]bool{dev: true}}, nil); err != nil {
+	if err := mountRTC(mux, fakeSFU{url: upstream.URL}, fakeGate{room: "room-1", leaves: map[id.ID]bool{dev: true}}, nil, unmetered()); err != nil {
 		t.Fatalf("mountRTC: %v", err)
 	}
 	for _, path := range []string{"/rtc?access_token=" + tok, "/rtc/validate?access_token=" + tok,
@@ -218,7 +219,7 @@ func TestOnlyGETReachesTheSFU(t *testing.T) {
 	defer upstream.Close()
 	dev := id.New()
 	mux := server.NewMux()
-	if err := mountRTC(mux, fakeSFU{url: upstream.URL}, fakeGate{room: "room-1", leaves: map[id.ID]bool{dev: true}}, nil); err != nil {
+	if err := mountRTC(mux, fakeSFU{url: upstream.URL}, fakeGate{room: "room-1", leaves: map[id.ID]bool{dev: true}}, nil, unmetered()); err != nil {
 		t.Fatalf("mountRTC: %v", err)
 	}
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
@@ -241,7 +242,7 @@ func TestTheRTCGateAdmitsOnlyACurrentLeaf(t *testing.T) {
 	defer upstream.Close()
 	leaf, removed := id.New(), id.New()
 	mux := server.NewMux()
-	if err := mountRTC(mux, fakeSFU{url: upstream.URL}, fakeGate{room: "room-1", leaves: map[id.ID]bool{leaf: true}}, nil); err != nil {
+	if err := mountRTC(mux, fakeSFU{url: upstream.URL}, fakeGate{room: "room-1", leaves: map[id.ID]bool{leaf: true}}, nil, unmetered()); err != nil {
 		t.Fatalf("mountRTC: %v", err)
 	}
 	for _, tc := range []struct {
@@ -282,7 +283,7 @@ func TestTheRTCGateRefusesATokenWiderThanTheCurrentGrant(t *testing.T) {
 		refused: map[id.ID]error{kicked: server.Errorf(server.CodeForbidden, "lost connect")},
 	}
 	mux := server.NewMux()
-	if err := mountRTC(mux, fakeSFU{url: upstream.URL}, gate, nil); err != nil {
+	if err := mountRTC(mux, fakeSFU{url: upstream.URL}, gate, nil, unmetered()); err != nil {
 		t.Fatalf("mountRTC: %v", err)
 	}
 	for _, tc := range []struct {
@@ -297,7 +298,7 @@ func TestTheRTCGateRefusesATokenWiderThanTheCurrentGrant(t *testing.T) {
 		{"a kicked leaf's base token", "access_token=" + kicked.String() + "@room-1", http.StatusForbidden, "E_FORBIDDEN"},
 		{"a v0 resume with a sharer's refreshed token", "reconnect=1&access_token=" + unshared.String() + "@room-1@mic,cam", http.StatusTeapot, ""},
 		{"a v0 resume still needs the gate", "reconnect=true&access_token=" + kicked.String() + "@room-1@mic", http.StatusForbidden, "E_FORBIDDEN"},
-		{"a v1 join_request is never a resume", "reconnect=1&join_request=x&access_token=" + unshared.String() + "@room-1@mic,cam", http.StatusForbidden, "E_FORBIDDEN"},
+		{"a malformed v1 join_request is refused as LiveKit refuses it", "reconnect=1&join_request=x&access_token=" + unshared.String() + "@room-1@mic,cam", http.StatusBadRequest, "E_INVALID_REQUEST"},
 		{"reconnect=yes is no resume to LiveKit", "reconnect=yes&access_token=" + unshared.String() + "@room-1@mic,cam", http.StatusForbidden, "E_FORBIDDEN"},
 	} {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/rtc?"+tc.query, nil)
@@ -364,7 +365,7 @@ func TestNoShadowParticipantReachesTheSFUThroughTheProxy(t *testing.T) {
 		t.Fatalf("Token: %v", err)
 	}
 	mux := server.NewMux()
-	if err := mountRTC(mux, srv, admitEveryLeaf{}, nil); err != nil {
+	if err := mountRTC(mux, srv, admitEveryLeaf{}, nil, unmetered()); err != nil {
 		t.Fatalf("mountRTC: %v", err)
 	}
 	front := httptest.NewServer(mux)

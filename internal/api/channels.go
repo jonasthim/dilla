@@ -85,6 +85,15 @@ type Channels struct {
 	maxGroupDM int
 	log        *slog.Logger
 	res        *Resolver
+	// calls cuts a removed group-DM participant's connected call session, and re-syncs a channel's
+	// live call after a visibility change; nil touches no call.
+	calls *Calls
+}
+
+// WithCalls sets the call routes a membership change of a channel re-syncs, and returns c.
+func (c *Channels) WithCalls(calls *Calls) *Channels {
+	c.calls = calls
+	return c
 }
 
 // NewChannels takes the delivery service that closes a deleted channel's
@@ -231,6 +240,8 @@ func (c *Channels) removeMember(w http.ResponseWriter, r *http.Request) {
 	if err := SyncGroupMembers(afterCommit(r), c.repo, c.dsvc, row, now); err != nil {
 		c.log.ErrorContext(r.Context(), "sync group members after remove", "channel", row.ID, "err", err)
 	}
+	// The removed participant's connected session in the DM's call is cut now.
+	syncAfterMembership(afterCommit(r), c.calls, c.log, id.ID{}, target, &row.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -584,6 +595,14 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 	if visibility != nil {
 		if err := MaterialiseChannelMembers(afterCommit(r), c.repo, c.dsvc, updated, now); err != nil {
 			c.log.ErrorContext(r.Context(), "materialise channel members", "channel", updated.ID, "err", err)
+		}
+		// A private channel's members are re-derived: every participant of its live call is
+		// reconciled now, so one who may no longer be in it is cut.
+		if c.calls != nil && c.calls.sfu != nil && updated.CommunityID != nil {
+			if err := SyncCallGrants(afterCommit(r), c.repo, c.res, c.calls.sfu, c.calls, *updated.CommunityID, nil, &updated.ID); err != nil {
+				c.log.ErrorContext(r.Context(), "re-syncing a channel's live call after a visibility change failed",
+					"channel", updated.ID, "err", err)
+			}
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 
@@ -61,6 +62,50 @@ func TestThreeDistinctReportersQuarantineTheCommitterAndOneDeviceDoesNot(t *test
 	}
 	if !h.hasOutstandingRemoveOfLeaf(t, g, g.leafOf(0)) {
 		t.Fatal("quarantine must also Remove the committer's leaf by an instance proposal")
+	}
+}
+
+// The quarantine is told to the composition root at once (OnQuarantine), with the committer, so the
+// device is cut from every live call without waiting for the members' Removes or the room sweep;
+// reports short of the quorum tell nobody.
+func TestTheQuarantineTellsOnQuarantineTheCommitter(t *testing.T) {
+	h := newDSHarness(t)
+	var mu sync.Mutex
+	var told []id.ID
+	if err := h.ds.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	d, err := ds.New(ds.Options{
+		Store: h.repo, Wasm: h.wasm, Gateway: h.gw, Clock: h.clk,
+		Keys: testInstanceKeys(t), Policy: ds.DefaultPolicy(), Channels: h.channels, ACL: h.acl,
+		OnQuarantine: func(_ context.Context, device id.ID) {
+			mu.Lock()
+			told = append(told, device)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("ds.New: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+	h.ds = d
+	g := h.groupWithMembers(t, 4)
+	commit := h.acceptedCommitBy(t, g, 0)
+	for i, reporter := range []int{1, 2, 3} {
+		if err := h.ds.ForkReport(context.Background(), g.sessionOf(reporter), g.id, commit.Epoch, commit.Seq, "cannot process"); err != nil {
+			t.Fatalf("ForkReport from %d: %v", reporter, err)
+		}
+		mu.Lock()
+		n := len(told)
+		mu.Unlock()
+		if i < 2 && n != 0 {
+			t.Fatalf("OnQuarantine was told before the quorum (%d reports)", i+1)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(told) != 1 || told[0] != g.members[0] {
+		t.Fatalf("OnQuarantine was told %v, want the committer %s once", told, g.members[0])
 	}
 }
 

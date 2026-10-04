@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
@@ -29,8 +30,10 @@ import (
 // hold. RemoveParticipants disconnects a device and its "#" shadows; RemoveParticipant disconnects
 // one participant by its exact identity (one that is no device). Participants is the room's list
 // for the advisory E_CALL_FULL count and the grant sync. DeleteRoom closes a room and disconnects
-// everyone in it, answering nil for a room the SFU does not know.
+// everyone in it, answering nil for a room the SFU does not know. Rooms lists the names of every
+// room the SFU holds, for the room sweep (SweepRooms).
 type CallTokens interface {
+	Rooms(ctx context.Context) ([]string, error)
 	Token(room, identity string, perm *livekit.ParticipantPermission, attrs map[string]string) (string, error)
 	DeleteRoom(ctx context.Context, room string) error
 	CreateRoom(ctx context.Context, room string) error
@@ -68,25 +71,45 @@ const (
 	// sfuCallTimeout bounds every SFU call made under a call's lock, whatever the caller's context.
 	sfuCallTimeout = 2 * time.Second
 	// callLockWait bounds how long a request (a share, an unshare, a start, the /rtc gate) waits for
-	// a call's lock before it answers 503 E_UNAVAILABLE: no join is held longer than this.
+	// a call's lock before it answers 503 E_UNAVAILABLE.
 	callLockWait = 2 * time.Second
+	// callHoldRequest bounds how long a request holds a call's lock once it has it: its own repair
+	// (a removal and a fallback demotion) and its own push, each bounded by sfuCallTimeout. With
+	// callLockWait, no request — the /rtc gate included — waits on a call longer than their sum.
+	callHoldRequest = 3 * sfuCallTimeout
 	// callLockWaitBackground bounds the wait of the work that runs after an answer — a grant sync
 	// after a role change, a DELETE's slot drop — which leaves its work to the retry loop instead.
 	callLockWaitBackground = 10 * time.Second
-	// maxRepairsPerTick caps the repairs one retry pass, or one event of a call, attempts.
+	// callHoldBackground bounds how long one hold of a call's lock by background work (a grant
+	// sync, a retry pass, a room sweep, a device cut) lasts in total, however many participants and
+	// repairs it meets; what it has not reached by then is left pending for the next pass.
+	callHoldBackground = 10 * time.Second
+	// maxRepairsPerTick caps the repairs one retry pass, or one grant sync of a call, attempts.
 	maxRepairsPerTick = 32
 	// CallRetryInterval is the retry loop's cadence (StartRetries).
 	CallRetryInterval = 5 * time.Second
+	// RoomSweepInterval is how often, at most, the retry loop sweeps the SFU's rooms (SweepRooms).
+	RoomSweepInterval = 30 * time.Second
+	// maxRoomsPerSweep caps the rooms one sweep pass visits; the next pass goes on where it stopped.
+	maxRoomsPerSweep = 64
+	// sweepPassBudget bounds one whole sweep pass; rooms it does not reach roll to the next.
+	sweepPassBudget = 20 * time.Second
+	// cutDeviceBudget bounds one CutDevice or CutUser; the sweep covers what it does not reach.
+	cutDeviceBudget = 15 * time.Second
 )
 
-// lock takes call's lock for at most wait (or until ctx ends) and returns its release, which also
-// reports the pending-repair gauge; a lock it cannot take is 503 E_UNAVAILABLE with retry_after_ms.
-func (h *Calls) lock(ctx context.Context, call id.ID, wait time.Duration) (func(), error) {
+// lock takes call's lock for at most wait (or until ctx ends) and returns a context bounded by hold
+// for the work done under it — one deadline per hold, so no holder keeps the call longer — and its
+// release, which also reports the pending-repair gauge. A lock it cannot take is
+// 503 E_UNAVAILABLE with retry_after_ms.
+func (h *Calls) lock(ctx context.Context, call id.ID, wait, hold time.Duration) (context.Context, func(), error) {
 	unlock, err := h.leases.lockCall(ctx, call, wait)
 	if err != nil {
-		return nil, server.Unavailable(uint64(callLockWait/time.Millisecond), "the call is busy; retry shortly")
+		return nil, nil, server.Unavailable(uint64(callLockWait/time.Millisecond), "the call is busy; retry shortly")
 	}
-	return func() {
+	hctx, cancel := context.WithTimeout(ctx, hold)
+	return hctx, func() {
+		cancel()
 		unlock()
 		h.reportPending()
 	}, nil
@@ -108,7 +131,7 @@ func sfuCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 // record, so a lock that cannot be taken is logged and left to the retry loop, which drops both for
 // an ended call; the wait does not end with the request.
 func (h *Calls) dropCall(r *http.Request, call id.ID) {
-	unlock, err := h.lock(context.WithoutCancel(r.Context()), call, callLockWaitBackground)
+	_, unlock, err := h.lock(context.WithoutCancel(r.Context()), call, callLockWaitBackground, callHoldBackground)
 	if err != nil {
 		h.log.WarnContext(r.Context(), "dropping an ended call's sharing slots is left to the retry loop", "call", call, "err", err)
 		return
@@ -153,11 +176,18 @@ type Calls struct {
 	log      *slog.Logger
 	leases   *shareLeases
 	counters CallCounters
+
+	// sweepMu keeps room sweeps from overlapping and guards sweepCursor, the last room a sweep pass
+	// visited, where the next one goes on. sweepEvery is the retry loop's sweep cadence.
+	sweepMu     sync.Mutex
+	sweepCursor string
+	sweepEvery  time.Duration
 }
 
 // NewCalls wires the call routes over the SFU.
 func NewCalls(repo store.Repository, res *Resolver, sfu CallTokens, cfg CallsConfig, clk clock.Clock, log *slog.Logger) *Calls {
-	return &Calls{repo: repo, res: res, sfu: sfu, cfg: cfg, clk: clk, log: log, leases: newShareLeases()}
+	return &Calls{repo: repo, res: res, sfu: sfu, cfg: cfg, clk: clk, log: log, leases: newShareLeases(),
+		sweepEvery: RoomSweepInterval}
 }
 
 // WithCounters sets the label-free counters the routes move and returns h.
@@ -264,6 +294,11 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	// A revoked or quarantined device, or one of a disabled or deleted user, gets no token.
+	if err := h.refuseBarred(r.Context(), h.repo, s.DeviceID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	// An instance with livekit.enabled = false has no SFU to mint a room token from: every gate
 	// above answers as it does elsewhere, and a call that would open is 501, before any voice
 	// session is recorded for a room nobody can join.
@@ -323,8 +358,8 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A device whose cut or demotion in this call has not landed in the SFU gets no token for it until
-	// the repair does; the start is the call's next event, so it drives the repairs first.
-	if _, err := h.retryCall(r.Context(), callID, maxRepairsPerTick); err != nil {
+	// the repair does; the start drives that device's own repair first.
+	if err := h.retryOwn(r.Context(), callID, s.DeviceID); err != nil {
 		server.WriteError(w, err)
 		return
 	}
@@ -576,8 +611,8 @@ func (h *Calls) caps() callCaps {
 
 // grantFor is dev's permission in the call: its speak/video/screen_share bits, the video sources
 // only while it holds a sharing slot of the call (ruling F1).
-func (h *Calls) grantFor(bits Bits, callID, dev id.ID) *livekit.ParticipantPermission {
-	leased := h.leases.held(callID, dev)
+func (h *Calls) grantFor(bits Bits, row store.VoiceSessionRow, dev id.ID) *livekit.ParticipantPermission {
+	leased := h.leases.held(row.CallID, row.LivekitRoom, dev)
 	return sfu.PublishGrant(bits.Has(PermSpeak), bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased)
 }
 
@@ -622,14 +657,15 @@ func (h *Calls) callFull(ctx context.Context, room string, dev id.ID) bool {
 
 // AdmitRoom is the /rtc join gate (DEV-25, DEV-44): room must be the live room of a call —
 // "<call_id hex>-<unix>", equal to voice_sessions.livekit_room with the call not ended — device a
-// current leaf of the call group that room was opened on, its user must hold view_channel and connect
+// current leaf of the call group that room was opened on, neither it nor its user may be barred
+// (barred: revoked, quarantined, disabled or deleted), its user must hold view_channel and connect
 // in the call's channel now, and no cut or demotion of it may be pending in the call. It answers the
 // device's current base permission — the microphone when it holds speak, never a camera or screen
 // source, exactly what a token is minted with — which the gate compares the token's grants against,
 // so a token can never confer more at admission than the device holds now (a microphone after speak
 // was revoked, a camera after an unshare). A refusal is a *server.Error: E_LEAF_NOT_CURRENT for a
 // room that is no live call's or a device that is no current leaf of it, E_FORBIDDEN for a device
-// that lost access or whose repair is pending. Anything else is a store failure.
+// that is barred, lost access or whose repair is pending. Anything else is a store failure.
 func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*livekit.ParticipantPermission, error) {
 	notLeaf := server.Errorf(server.CodeLeafNotCurrent, "your device is not a current leaf of this call")
 	callHex, _, ok := strings.Cut(room, "-")
@@ -657,9 +693,10 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 		}
 		return nil, err
 	}
-	// A device whose cut or demotion has not landed in the SFU does not rejoin until it has. The
-	// retry takes the call's lock for at most callLockWait, so the gate never holds a join longer.
-	if _, err := h.retryCall(ctx, callID, maxRepairsPerTick); err != nil {
+	// A device whose cut or demotion has not landed in the SFU does not rejoin until it has. The gate
+	// retries that device's own repair only, waiting at most callLockWait for the call's lock and
+	// holding it at most callHoldRequest; every other repair is the retry loop's.
+	if err := h.retryOwn(ctx, callID, device); err != nil {
 		return nil, err
 	}
 	if h.leases.isPending(callID, device) {
@@ -671,6 +708,11 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 	}
 	if err != nil {
 		return nil, err
+	}
+	if bar, err := barred(ctx, h.repo, dev); err != nil {
+		return nil, err
+	} else if bar {
+		return nil, errBarred()
 	}
 	ch, err := h.repo.GetChannel(ctx, row.ChannelID)
 	if err != nil {
@@ -684,6 +726,45 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 		return nil, server.Errorf(server.CodeForbidden, "your device may no longer join this call")
 	}
 	return baseGrant(bits), nil
+}
+
+// barred reports whether dv may take part in no call at all: the device is revoked or quarantined,
+// or its user is disabled, deleted or gone. It reads the device row it is handed and the user row.
+func barred(ctx context.Context, repo store.Repository, dv store.DeviceRow) (bool, error) {
+	if dv.RevokedAt != nil || dv.QuarantinedAt != nil {
+		return true, nil
+	}
+	u, err := repo.GetUser(ctx, dv.UserID)
+	if errors.Is(err, store.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return u.DisabledAt != nil || u.DeletedAt != nil, nil
+}
+
+func errBarred() error {
+	return server.Errorf(server.CodeForbidden, "your device or account may not take part in calls")
+}
+
+// refuseBarred is 403 E_FORBIDDEN for a barred device (barred), nil otherwise, or a store failure.
+func (h *Calls) refuseBarred(ctx context.Context, repo store.Repository, device id.ID) error {
+	dv, err := repo.GetDevice(ctx, device)
+	if errors.Is(err, store.ErrNotFound) {
+		return errBarred()
+	}
+	if err != nil {
+		return err
+	}
+	bar, err := barred(ctx, repo, dv)
+	if err != nil {
+		return err
+	}
+	if bar {
+		return errBarred()
+	}
+	return nil
 }
 
 // baseGrant is what every call token is minted with and the /rtc gate admits: the microphone when

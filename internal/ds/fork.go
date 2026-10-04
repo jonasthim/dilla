@@ -126,6 +126,11 @@ func (d *DS) quarantineCommitterOf(ctx context.Context, groupID id.ID, seq uint6
 	if err := d.opts.Store.QuarantineDevice(ctx, *committer, d.now(), "fork quorum"); err != nil {
 		return err
 	}
+	// The quarantined device leaves every live call now: its call-group leaves stay until members
+	// commit their Removes, and the call routes refuse it from here on.
+	if d.opts.OnQuarantine != nil {
+		d.opts.OnQuarantine(context.WithoutCancel(ctx), *committer)
+	}
 	if rows[0].SenderLeaf == nil {
 		return nil
 	}

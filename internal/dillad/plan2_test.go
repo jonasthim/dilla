@@ -273,7 +273,8 @@ func (u upstreamSFU) RemoveParticipant(context.Context, string, string) error { 
 func (u upstreamSFU) Participants(context.Context, string) ([]*livekit.ParticipantInfo, error) {
 	return nil, nil
 }
-func (u upstreamSFU) HTTPURL() string { return u.url }
+func (u upstreamSFU) Rooms(context.Context) ([]string, error) { return nil, nil }
+func (u upstreamSFU) HTTPURL() string                         { return u.url }
 func (u upstreamSFU) VerifyToken(string) (sfu.RoomToken, error) {
 	return sfu.RoomToken{}, errors.New("upstreamSFU verifies nothing")
 }

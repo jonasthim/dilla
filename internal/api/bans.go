@@ -26,10 +26,18 @@ type Bans struct {
 	dsvc DS
 	clk  clock.Clock
 	log  *slog.Logger
+	// calls cuts a banned user's connected call sessions after the commit; nil touches no call.
+	calls *Calls
 }
 
 func NewBans(repo store.Repository, dsvc DS, clk clock.Clock, log *slog.Logger) *Bans {
 	return &Bans{repo: repo, dsvc: dsvc, clk: clk, log: log}
+}
+
+// WithCalls sets the call routes a ban cuts the user's live call sessions through, and returns b.
+func (b *Bans) WithCalls(calls *Calls) *Bans {
+	b.calls = calls
+	return b
 }
 
 func (b *Bans) Register(mux *server.Mux) {
@@ -142,6 +150,7 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 		b.log.ErrorContext(ctx, "remove banned user from groups",
 			"community", m.community, "user", m.target, "err", err)
 	}
+	syncAfterMembership(ctx, b.calls, b.log, m.community, m.target, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
