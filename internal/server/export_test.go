@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/pion/transport/v4"
@@ -48,8 +49,27 @@ func (r *RelayRevocations) BarredCacheLenForTest() int {
 	return r.cache.ll.Len()
 }
 
-// MaxRelayCutsForTest is the cut map's cap.
-const MaxRelayCutsForTest = maxRelayCuts
+// MaxRelayCutsForTest and RelayCutsWarnForTest are the cut map's hard and soft caps.
+const (
+	MaxRelayCutsForTest  = maxRelayCuts
+	RelayCutsWarnForTest = relayCutsWarn
+)
+
+// ParkAllocateForTest makes every relay socket of dev wait, after it is bound and before it is
+// tracked, until release is closed; parked is closed when the first one waits. restore undoes it.
+func ParkAllocateForTest(dev string) (parked <-chan struct{}, release chan<- struct{}, restore func()) {
+	p, rel := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	prev := allocateHook
+	allocateHook = func(d string) {
+		if d != dev {
+			return
+		}
+		once.Do(func() { close(p) })
+		<-rel
+	}
+	return p, rel, func() { allocateHook = prev }
+}
 
 // TURNHandlersForTest is the quota and event pair StartTURN installs over a fresh quota of
 // maxPerDevice, reporting to m (nil reports nowhere).

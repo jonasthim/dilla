@@ -2,10 +2,13 @@ package api_test
 
 import (
 	"log/slog"
+	"net/http"
 	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/livekit/protocol/livekit"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/id"
@@ -99,6 +102,61 @@ func TestTheRoomSweepRevokesABarredDevicesRelay(t *testing.T) {
 	if relay.has(b.ownerDev) {
 		t.Fatal("the sweep revoked the relay of a device that is not barred")
 	}
+}
+
+// Commit review, revocation parity: every cut from a call room also cuts the device from the relay
+// — not only a barred one. A device that lost view_channel (a kick's effect on the channel), lost
+// connect, or whose leaf the call group removed is revoked when the sweep removes it, and an
+// eviction by the delivery service revokes at once; a device left in the room is not. (What a cut
+// means for credentials — the old one refused, one issued after it admitted — is the relay's:
+// internal/server TestARevokedCredentialIsRefusedOnEveryMethod and TestRevokingADeviceClosesItsRelay.)
+func TestEveryCutFromACallRoomRevokesTheRelay(t *testing.T) {
+	for name, cut := range map[string]func(t *testing.T, e *env, ch, group, member, memberDev id.ID){
+		"lost view_channel": func(t *testing.T, e *env, ch, _, member, _ id.ID) {
+			denyInChannel(t, e, ch, member, api.PermViewChannel)
+		},
+		"lost connect": func(t *testing.T, e *env, ch, _, member, _ id.ID) {
+			denyInChannel(t, e, ch, member, api.PermConnect)
+		},
+		"leaf removed": func(t *testing.T, e *env, _, group, _, memberDev id.ID) {
+			dropLeaf(t, e, group, memberDev)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, ch, tok, group, stub, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+			owner := deviceOf(t, e, tok)
+			seedLeaf(t, e, group, owner, 3, nil)
+			if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{}); status != http.StatusCreated {
+				t.Fatalf("start = %d", status)
+			}
+			member, memberDev, _ := joinedMember(t, e, ch, group, "member")
+			room := stub.minted()[0][0]
+			stub.setPresent(room, &livekit.ParticipantInfo{Identity: owner.String()},
+				&livekit.ParticipantInfo{Identity: memberDev.String()})
+			relay := &fakeRelay{}
+			calls.WithRelay(relay)
+			cut(t, e, ch, group, member, memberDev)
+			calls.SweepRooms(t.Context())
+			if !removedDevice(stub, room, memberDev) {
+				t.Fatal("the sweep did not cut the device from the room")
+			}
+			if !relay.has(memberDev) {
+				t.Fatal("the device was cut from the room but kept the relay")
+			}
+			if relay.has(owner) {
+				t.Fatal("a device left in the room lost the relay")
+			}
+		})
+	}
+	t.Run("evicted by the delivery service", func(t *testing.T) {
+		f := newEventsFixture(t, api.CallsConfig{})
+		relay := &fakeRelay{}
+		f.calls.WithRelay(relay)
+		f.events.Evict(t.Context(), f.group, []id.ID{f.dev})
+		if !relay.has(f.dev) {
+			t.Fatal("an evicted device kept the relay")
+		}
+	})
 }
 
 // BarredDevices is the relay's store lookup: barred as the call routes say; an id with no device

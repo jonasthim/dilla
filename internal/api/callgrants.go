@@ -209,11 +209,6 @@ func (h *Calls) reconcileOutcome(ctx context.Context, d grantDeps, ch store.Chan
 		}
 	}
 	if bar || !leaf || !bits.Has(PermViewChannel) || !bits.Has(PermConnect) {
-		if bar {
-			// A barred device loses the relay with the room (review I1): the sweep is how a change
-			// another process wrote reaches it.
-			h.revokeRelay(dev)
-		}
 		return true, h.removeDevice(ctx, d, row, dev, false)
 	}
 	penalised := h.leases.penalised(row.CallID, row.LivekitRoom, dev)
@@ -241,6 +236,11 @@ func (h *Calls) reconcileOutcome(ctx context.Context, d grantDeps, ch store.Chan
 // repair that drops the slot; cut marks it as a removal a retry repeats whatever the device's
 // entitlement (an eviction, F11's repeat). The caller holds the call's lock.
 func (h *Calls) removeDevice(ctx context.Context, d grantDeps, row store.VoiceSessionRow, dev id.ID, cut bool) error {
+	// Every cut from a room also cuts the device from the relay as of now (review I1, and the
+	// commit review's parity finding): barred, no longer a leaf, lost view_channel or connect,
+	// evicted, or disconnected for media that is not dilla's. A device that may still take part
+	// in a call gets a credential issued after the cut from its next start, which the relay admits.
+	h.revokeRelay(dev)
 	rctx, cancel := sfuCtx(ctx)
 	err := d.tokens.RemoveParticipants(rctx, row.LivekitRoom, dev)
 	cancel()

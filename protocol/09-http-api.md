@@ -675,9 +675,12 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   restart allocates anew. The bound is per credential: a refresh made with a newer credential of the
   same device keeps the allocation, and channel data, which is never authenticated, flows until its
   permission or channel binding lapses (at most five and ten minutes). A device that is cut — revoked,
-  quarantined, logged out, of a user who is disabled, or found barred by the call sweep — loses the
-  relay at once: every credential of it issued at or before the cut is refused on every request and
-  its allocations end. A device another process bars (`dillad admin`) is found by the relay itself on
+  quarantined, logged out, of a user who is disabled, or removed from a call's room for any reason
+  (barred, no longer a leaf of the call group, without `view_channel` or `connect`, evicted, or
+  disconnected for media that is not dilla's) — loses the relay at once: every credential of it
+  issued at or before the cut is refused on every request, its allocations end, and an allocation
+  it was making as the cut landed is refused with STUN error 508. A device that may still take part
+  in a call gets a credential issued after the cut from its next `POST /v1/channels/{id}/calls`. A device another process bars (`dillad admin`) is found by the relay itself on
   its next authenticated request or within 30 seconds while it holds an allocation; while the
   database cannot answer, such a device stays bounded by `turn.max_allocation_age` only. A client keeps
   fresh servers by repeating `POST /v1/channels/{id}/calls` before `turn.credential_ttl` runs out

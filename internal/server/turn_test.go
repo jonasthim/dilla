@@ -743,23 +743,81 @@ func TestARevokedCredentialIsRefusedOnEveryMethod(t *testing.T) {
 	}
 }
 
-// The cut map is bounded: past its cap the oldest cut goes.
-func TestTheRelayCutMapIsBounded(t *testing.T) {
+// Commit review: a burst of cuts never pushes a live cut out. Past the soft cap the map grows (with a
+// WARN); at the hard cap a new cut is not recorded, and every cut already held — the oldest
+// included — stays enforced until turn.max_allocation_age has passed.
+func TestABurstOfCutsNeverForgetsALiveCut(t *testing.T) {
 	clk := clock.NewFake(time.Unix(1_790_000_000, 0))
-	rev := server.NewRelayRevocations(2*time.Hour, clk)
+	var mu sync.Mutex
+	var logged strings.Builder
+	rev := server.NewRelayRevocations(2*time.Hour, clk).
+		WithBarred(&fakeBarred{}, slog.New(slog.NewTextHandler(lockedWriter{&mu, &logged}, nil)))
+	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
 	first := id.New()
+	old, _ := server.TURNCredential("s3cret", first, time.Hour, clk.Now().Add(-time.Minute))
 	rev.Revoke(first, clk.Now())
-	for range server.MaxRelayCutsForTest {
-		clk.Advance(time.Millisecond)
-		rev.Revoke(id.New(), clk.Now().Add(time.Second))
+	clk.Advance(time.Second) // first is the oldest cut, the one an evicting map would drop
+	for range server.MaxRelayCutsForTest + 10 {
+		rev.Revoke(id.New(), clk.Now())
 	}
 	if n := rev.RelayCutsForTest(); n != server.MaxRelayCutsForTest {
-		t.Fatalf("cuts held = %d, want the cap %d", n, server.MaxRelayCutsForTest)
+		t.Fatalf("cuts held = %d, want the hard cap %d", n, server.MaxRelayCutsForTest)
 	}
-	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
-	old, _ := server.TURNCredential("s3cret", first, time.Hour, clk.Now().Add(-time.Minute))
-	if _, _, ok := auth(&turn.RequestAttributes{Username: old, Method: stun.MethodRefresh}); !ok {
-		t.Fatal("the oldest cut was kept past the cap")
+	if _, _, ok := auth(&turn.RequestAttributes{Username: old, Method: stun.MethodRefresh}); ok {
+		t.Fatal("a burst of cuts pushed out the oldest live cut: its device's old credential is admitted again")
+	}
+	mu.Lock()
+	full := strings.Contains(logged.String(), "level=WARN")
+	mu.Unlock()
+	if !full {
+		t.Fatal("the full cut map was not logged at WARN")
+	}
+	clk.Advance(2*time.Hour + time.Minute)
+	rev.Revoke(id.New(), clk.Now()) // makes room by dropping the expired cuts only
+	if n := rev.RelayCutsForTest(); n != 1 {
+		t.Fatalf("cuts held after max_allocation_age = %d, want only the new one", n)
+	}
+}
+
+// Commit review race: an Allocate that passed the auth handler just before a cut must not leave a
+// relay socket open. The allocation is parked after its socket is bound and before it is tracked,
+// the device is revoked, and then the allocation is let go: it is refused (508), its socket and
+// quota slot are freed, and the gauge never moves; a credential issued after the cut allocates.
+func TestAnAllocationRacingACutIsRefused(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	m := &fakeTURNMetrics{}
+	rev := server.NewRelayRevocations(2*time.Hour, clock.System())
+	addr := startRevokableTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 1}, nil, m, rev, clock.System())
+	dev := id.New()
+	user, pass := server.TURNCredential(secret, dev, time.Hour, time.Now().Add(-time.Minute))
+	parked, release, restore := server.ParkAllocateForTest(dev.String())
+	result := make(chan error, 1)
+	go func() {
+		_, err := allocateAs(t, addr, user, pass)
+		result <- err
+	}()
+	select {
+	case <-parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the allocation never reached its relay socket")
+	}
+	rev.Revoke(dev, time.Now()) // returns before the parked socket is tracked
+	close(release)
+	restore()
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "508") {
+			t.Fatalf("the allocation that raced the cut = %v, want 508", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the parked allocation never answered")
+	}
+	if _, _, _, allocations := m.snapshot(); len(allocations) != 0 {
+		t.Fatalf("allocation gauge %v, want it never to move", allocations)
+	}
+	fresh, freshPass := server.TURNCredential(secret, dev, time.Hour, time.Now().Add(time.Second))
+	if _, err := allocateAs(t, addr, fresh, freshPass); err != nil {
+		t.Fatalf("a credential issued after the cut (the slot must be free): %v", err)
 	}
 }
 

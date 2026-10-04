@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 
@@ -19,10 +20,19 @@ type BarredLookup interface {
 }
 
 const (
-	// maxRelayCuts bounds the cut map: an entry lives at most turn.max_allocation_age, so it holds
-	// the cuts of one max-age window; past the cap the oldest cut is forgotten (its device is then
-	// still refused by the barred lookup when it is barred, and by the max age in any case).
-	maxRelayCuts = 4096
+	// relayCutsWarn and maxRelayCuts bound the cut map. An entry lives at most
+	// turn.max_allocation_age, so the map holds the cuts of one max-age window, each made by a
+	// server-side event (a call cut, an authenticated barred lookup) and never by a request alone. A
+	// live cut is never evicted — forgetting one would re-admit its device's old credentials — so
+	// past relayCutsWarn the map grows with a WARN, and at maxRelayCuts a new cut is not recorded
+	// (its sockets are still closed; the room sweep, the barred re-check and the max age cover its
+	// device), with a WARN.
+	relayCutsWarn = 4096
+	maxRelayCuts  = 65536
+	// pendingAllocateWindow is how long the issue time of an authenticated Allocate is held for the
+	// allocation pion creates right after it on the same goroutine (OnAuth, then the quota handler,
+	// then the relay socket: internal/server/turn.go:33-237).
+	pendingAllocateWindow = 5 * time.Second
 	// barredTTL is how long the relay trusts one barred lookup, and how often it re-checks the
 	// devices that hold relay sockets: a device another process revoked loses the relay within it.
 	barredTTL = 30 * time.Second
@@ -45,7 +55,9 @@ const (
 //     OnAllocationDeleted and so frees the quota slots and moves the gauge. A credential issued
 //     after the cut passes, which only a device that may take part in calls again can get. An
 //     entry is dropped once turn.max_allocation_age has passed since the cut, when no credential
-//     issued before it is honoured anyway.
+//     issued before it is honoured anyway, and never before (relayCutsWarn, maxRelayCuts). A
+//     socket created for an Allocate that passed the auth handler just before a cut is refused
+//     when it is tracked (track), so a cut leaves no socket of an earlier credential open.
 //   - The barred lookup (WithBarred) covers what no cut reaches — a device another process revoked
 //     that is in no call room. It is asked (through a cache of barredTTL) only about a device whose
 //     request pion has authenticated — the OnAuth event, after the MESSAGE-INTEGRITY check — and,
@@ -59,9 +71,14 @@ type RelayRevocations struct {
 	clk  clock.Clock
 	keep int64 // seconds a cut is kept: turn.max_allocation_age
 
-	mu    sync.Mutex
-	cuts  map[string]int64
-	socks map[string]map[*countingConn]struct{}
+	mu      sync.Mutex
+	cuts    map[string]int64
+	socks   map[string]map[*countingConn]struct{}
+	pending map[string]pendingAllocate
+	// nextExpiry is the earliest time a held cut expires, kept from the last scan (scanned) and
+	// lowered by every cut recorded since.
+	nextExpiry int64
+	scanned    bool
 
 	barred   BarredLookup
 	log      *slog.Logger
@@ -76,8 +93,46 @@ func NewRelayRevocations(maxAllocationAge time.Duration, clk clock.Clock) *Relay
 		maxAllocationAge = 2 * time.Hour
 	}
 	return &RelayRevocations{
-		clk: clk, keep: int64(maxAllocationAge / time.Second),
+		clk: clk, keep: int64(maxAllocationAge / time.Second), log: slog.New(slog.DiscardHandler),
 		cuts: map[string]int64{}, socks: map[string]map[*countingConn]struct{}{},
+		pending: map[string]pendingAllocate{},
+	}
+}
+
+// pendingAllocate is what the relay holds about a device's authenticated Allocates whose relay
+// socket is not tracked yet: how many, the oldest issue time among their credentials, and when the
+// last was authenticated. It is conservative — the oldest issue time only goes down until the
+// record expires — so a cut covering any of them refuses the device's sockets for the window.
+type pendingAllocate struct {
+	count     int
+	minIssued int64
+	last      time.Time
+}
+
+// noteAllocate records an authenticated Allocate of dev with a credential issued at issued. Only
+// OnAuth with a verdict of true calls it, so no unauthenticated request adds a record.
+func (r *RelayRevocations) noteAllocate(dev string, issued int64) {
+	now := r.clk.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.pending[dev]
+	if !ok || now.Sub(p.last) > pendingAllocateWindow {
+		p = pendingAllocate{minIssued: issued}
+		if !ok && len(r.pending) >= maxRelayCuts {
+			r.prunePendingLocked(now)
+		}
+	}
+	p.count++
+	p.minIssued = min(p.minIssued, issued)
+	p.last = now
+	r.pending[dev] = p
+}
+
+func (r *RelayRevocations) prunePendingLocked(now time.Time) {
+	for dev, p := range r.pending {
+		if now.Sub(p.last) > pendingAllocateWindow {
+			delete(r.pending, dev)
+		}
 	}
 }
 
@@ -102,35 +157,52 @@ func (r *RelayRevocations) Revoke(device id.ID, at time.Time) {
 
 func (r *RelayRevocations) revoke(dev string, at int64) {
 	r.mu.Lock()
+	recorded := true
 	if prev, ok := r.cuts[dev]; !ok || at > prev {
-		if !ok && len(r.cuts) >= maxRelayCuts {
-			r.makeRoomLocked()
+		if !ok && len(r.cuts) >= relayCutsWarn {
+			r.dropExpiredCutsLocked()
 		}
-		r.cuts[dev] = at
+		if !ok && len(r.cuts) >= maxRelayCuts {
+			recorded = false
+		} else {
+			r.cuts[dev] = at
+			if r.scanned {
+				r.nextExpiry = min(r.nextExpiry, at+r.keep)
+			}
+		}
 	}
+	size := len(r.cuts)
 	conns := r.socks[dev]
 	delete(r.socks, dev)
 	r.mu.Unlock()
 	for c := range conns {
 		_ = c.Close()
 	}
+	switch {
+	case !recorded:
+		r.warn("the relay's cut map is full; this cut closed the device's relay sockets but is not recorded",
+			"device", dev, "cuts", size)
+	case size > relayCutsWarn:
+		r.warn("the relay holds more cuts than expected within one turn.max_allocation_age", "cuts", size)
+	}
 }
 
-// makeRoomLocked drops every expired cut and, if the map is still full, the oldest one.
-func (r *RelayRevocations) makeRoomLocked() {
+// dropExpiredCutsLocked forgets every cut older than turn.max_allocation_age. A live cut is never
+// dropped.
+// It scans the map only once its oldest cut can have expired (nextExpiry), so a burst of cuts past
+// the soft cap does not scan it once per cut.
+func (r *RelayRevocations) dropExpiredCutsLocked() {
 	now := r.clk.Now().Unix()
-	oldest, oldestAt := "", int64(0)
+	if r.scanned && now <= r.nextExpiry {
+		return
+	}
+	r.scanned, r.nextExpiry = true, math.MaxInt64
 	for dev, at := range r.cuts {
 		if now > at+r.keep {
 			delete(r.cuts, dev)
-			continue
+		} else {
+			r.nextExpiry = min(r.nextExpiry, at+r.keep)
 		}
-		if oldest == "" || at < oldestAt {
-			oldest, oldestAt = dev, at
-		}
-	}
-	if len(r.cuts) >= maxRelayCuts {
-		delete(r.cuts, oldest)
 	}
 }
 
@@ -251,16 +323,42 @@ func (r *RelayRevocations) watch(stop <-chan struct{}) {
 	}
 }
 
-// track records c as one of dev's relay sockets; untrack forgets it.
-func (r *RelayRevocations) track(dev string, c *countingConn) {
+// track records c as one of dev's relay sockets, or refuses it (false) when a live cut of dev may
+// cover the credential it was allocated with. It decides under the mutex revoke takes, so once
+// Revoke(dev, t) has returned no socket of a credential issued at or before t can join the set
+// revoke closed: the allocation's issue time is the one OnAuth recorded (noteAllocate) for the
+// Allocate that pion creates this socket for, and with a live cut a socket is admitted only when
+// every Allocate of dev authenticated in the last pendingAllocateWindow used a credential issued
+// after the cut. Allocates of a device that straddle its cut are refused together, even one with a
+// fresh credential; its client's next attempt succeeds.
+func (r *RelayRevocations) track(dev string, c *countingConn) bool {
+	now := r.clk.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	p, havePending := r.pending[dev]
+	if havePending && now.Sub(p.last) > pendingAllocateWindow {
+		delete(r.pending, dev)
+		havePending = false
+	}
+	// Each socket consumes one pending Allocate, admitted or refused, so the record ends with the
+	// allocations it describes; its oldest issue time stays until then.
+	if havePending {
+		if p.count--; p.count <= 0 {
+			delete(r.pending, dev)
+		} else {
+			r.pending[dev] = p
+		}
+	}
+	if at, cut := r.cuts[dev]; cut && now.Unix() <= at+r.keep && (!havePending || p.minIssued <= at) {
+		return false
+	}
 	set := r.socks[dev]
 	if set == nil {
 		set = map[*countingConn]struct{}{}
 		r.socks[dev] = set
 	}
 	set[c] = struct{}{}
+	return true
 }
 
 func (r *RelayRevocations) untrack(dev string, c *countingConn) {

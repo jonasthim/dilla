@@ -196,10 +196,26 @@ func (g *countingRelay) AllocatePacketConn(conf turn.AllocateListenerConfig) (ne
 	c := &countingConn{PacketConn: conn, m: g.m}
 	if conf.UserID != "" {
 		c.dev, c.rev = deviceOf(conf.UserID), g.rev
-		g.rev.track(c.dev, c)
+		if allocateHook != nil {
+			allocateHook(c.dev)
+		}
+		if !g.rev.track(c.dev, c) {
+			// A cut that may cover this allocation's credential landed after the auth handler let the
+			// Allocate through (commit review race finding): refuse it, which pion answers 508.
+			_ = conn.Close()
+			g.release(conf.UserID)
+			return nil, nil, errCutWhileAllocating
+		}
 	}
 	return c, addr, nil
 }
+
+// errCutWhileAllocating refuses an allocation whose device was cut between its authentication and
+// its relay socket.
+var errCutWhileAllocating = errors.New("turn: the device was cut while it allocated")
+
+// allocateHook, when set (tests only), runs after a relay socket is bound and before it is tracked.
+var allocateHook func(dev string)
 
 // AllocateListener refuses a TCP allocation and frees the slot pion took for it.
 func (g *countingRelay) AllocateListener(conf turn.AllocateListenerConfig) (net.Listener, net.Addr, error) {
@@ -437,6 +453,16 @@ func turnAuth(secret string, clk clock.Clock, maxAge time.Duration, rev *RelayRe
 // but a REST username "<expiry>:<device_id>:<issued>" is taken apart the way
 // pion's own handler does (lt_cred.go:100-105: the second field), so the quota
 // holds whichever spelling a future pion hands over.
+// issuedOf is the issue time a "<expiry>:<device_id>:<issued>" username carries.
+func issuedOf(user string) (int64, bool) {
+	fields := strings.Split(user, ":")
+	if len(fields) != 3 {
+		return 0, false
+	}
+	issued, err := strconv.ParseInt(fields[2], 10, 64)
+	return issued, err == nil
+}
+
 func deviceOf(user string) string {
 	if fields := strings.Split(user, ":"); len(fields) > 1 {
 		return fields[1]
@@ -479,10 +505,18 @@ func turnHandlers(q *AllocationQuota, m TURNMetrics, rev *RelayRevocations) (tur
 		return true
 	}
 	events := turn.EventHandler{
-		OnAuth: func(_, _ net.Addr, _, username, _, _ string, verdict bool) {
-			if verdict {
-				rev.checkBarred(deviceOf(username))
+		OnAuth: func(_, _ net.Addr, _, username, _, method string, verdict bool) {
+			if !verdict {
+				return
 			}
+			dev := deviceOf(username)
+			if method == stun.MethodAllocate.String() {
+				// The issue time the relay socket's track decision needs (turnrevoke.go track).
+				if issued, ok := issuedOf(username); ok {
+					rev.noteAllocate(dev, issued)
+				}
+			}
+			rev.checkBarred(dev)
 		},
 		OnAllocationCreated: func(_, _ net.Addr, _, _, _ string, _ net.Addr, _ int) {
 			count(1)

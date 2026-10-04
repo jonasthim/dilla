@@ -607,6 +607,11 @@ func (h *Calls) penalise(ctx context.Context, row store.VoiceSessionRow, dev id.
 // with its "#" shadows, and frees their slots. A removal the SFU does not take, or a lock that
 // cannot be taken, is a pending cut the retry loop repeats; the gate refuses the device meanwhile.
 func (h *Calls) evictDevices(ctx context.Context, row store.VoiceSessionRow, devices []id.ID) error {
+	// The relay first, whatever the lock or the SFU does below: an evicted device's relay
+	// credentials end with its leaf.
+	for _, dev := range devices {
+		h.revokeRelay(dev)
+	}
 	if h.sfu == nil || len(devices) == 0 {
 		return nil
 	}
