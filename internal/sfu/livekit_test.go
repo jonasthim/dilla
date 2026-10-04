@@ -232,8 +232,18 @@ func TestPrometheusInitPrecedesInitializeServer(t *testing.T) {
 	if !strings.Contains(text, "go s.server.Start()") && !strings.Contains(text, "go func()") {
 		t.Error("LivekitServer.Start blocks on <-s.doneChan; it must run in its own goroutine")
 	}
-	if setIdx := strings.Index(text, "logger.SetLogger("); setIdx < 0 || setIdx > serverIdx {
+	if setIdx := strings.Index(text, "installLiveKitLogger("); setIdx < 0 || setIdx > serverIdx {
 		t.Error("the log bridge must be installed before service.InitializeServer")
+	}
+	if strings.Contains(text, "logger.SetLogger(") {
+		t.Error("Start must not write LiveKit's global logger itself: installLiveKitLogger does it once")
+	}
+	bridge, err := os.ReadFile("logbridge.go")
+	if err != nil {
+		t.Fatalf("read logbridge.go: %v", err)
+	}
+	if strings.Count(string(bridge), "logger.SetLogger(") != 1 || !strings.Contains(string(bridge), "liveKitOnce.Do(") {
+		t.Error("logbridge.go must call logger.SetLogger exactly once, inside liveKitOnce.Do")
 	}
 	if strings.Contains(text, "InitLoggerFromConfig(") {
 		t.Error("config.InitLoggerFromConfig replaces slog.Default")
