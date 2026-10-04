@@ -52,6 +52,8 @@ type frontDeps struct {
 	health  *obs.Health
 	metrics *obs.Metrics
 	stdout  io.Writer
+	// relay is the revocation state the relay shares with the call routes (dillad.Options.Relay).
+	relay *server.RelayRevocations
 }
 
 // openFront binds the listeners tls.mode chooses and starts what sits behind
@@ -306,7 +308,7 @@ func startTURN(d frontDeps, f *front, ln net.Listener) error {
 		_ = ln.Close()
 		return fmt.Errorf("serve: turn: %w: %w", err, exit.Unavailable)
 	}
-	t, err := server.StartTURN(d.cfg.TURN, ln, anchor, peers, d.metrics, clock.System(), d.log)
+	t, err := server.StartTURN(d.cfg.TURN, ln, anchor, peers, d.metrics, d.relay, clock.System(), d.log)
 	if err != nil {
 		_ = ln.Close()
 		return turnStartError(err)

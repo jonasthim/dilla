@@ -16,6 +16,7 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
@@ -24,6 +25,7 @@ import (
 	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/postgres"
 	postgresmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
@@ -219,7 +221,12 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// The in-process SFU when livekit.enabled (Plan 2 task 16). It starts before the composition
 	// root, which builds the call routes over its token mint and proxies /rtc to it, and it stops
 	// after the drain below — its deferred stop runs after front.close.
-	fd := frontDeps{cfg: cfg, log: log, health: health, metrics: metrics, stdout: stdout}
+	// The relay's revocation state (dilla-media task 13 review I1), shared by the TURN relay and the
+	// call routes: a cut device loses its relay allocations, and the relay asks the store, after
+	// authenticating a request, whether a device another process revoked is barred.
+	relayRev := server.NewRelayRevocations(max(cfg.TURN.MaxAllocationAge.Value(), cfg.TURN.CredentialTTL.Value()), clock.System()).
+		WithBarred(api.BarredDevices{Repo: repo}, log)
+	fd := frontDeps{cfg: cfg, log: log, health: health, metrics: metrics, stdout: stdout, relay: relayRev}
 	// The SFU's webhook listener is bound before the SFU starts, so LiveKit's webhook URL names the
 	// port it got, and served once the composition root exists (dilla-media task 12).
 	whln, err := listenWebhook(ctx, fd)
@@ -244,7 +251,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	opts := dillad.Options{
 		Config: cfg, Repo: repo, Clock: clock.System(), Log: log,
 		Metrics: metrics, Health: health, ScrapeToken: os.Getenv(metricsTokenEnv),
-		Blobs: blobStore,
+		Blobs: blobStore, Relay: relayRev,
 	}
 	if sfuServer != nil {
 		opts.SFU = sfuServer

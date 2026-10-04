@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -82,7 +81,7 @@ func TestACurrentLeafGetsALiveKitToken(t *testing.T) {
 	}
 
 	// One relay entry, carrying the REST credential pion validates:
-	// "<expiry>:<device_id>" and base64(HMAC-SHA1(secret, username)).
+	// "<expiry>:<device_id>:<issued>" and base64(HMAC-SHA1(secret, username)).
 	if len(out.ICE) != 1 || len(out.ICE[0]) != 3 {
 		t.Fatalf("ice_servers = %v", out.ICE)
 	}
@@ -94,9 +93,8 @@ func TestACurrentLeafGetsALiveKitToken(t *testing.T) {
 	if len(urls) != 1 || urls[0] != "turns:chat.example.test:443?transport=tcp" {
 		t.Fatalf("urls = %v", urls)
 	}
-	expiry, who, _ := strings.Cut(user, ":")
-	if who != dev.String() || expiry != "1790003600" {
-		t.Fatalf("username = %q, want <now+1h>:<device>", user)
+	if want := "1790003600:" + dev.String() + ":1790000000"; user != want {
+		t.Fatalf("username = %q, want <now+1h>:<device>:<now> %q", user, want)
 	}
 	mac := hmac.New(sha1.New, []byte(testTURNSecret))
 	mac.Write([]byte(user))

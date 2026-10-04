@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"crypto/tls"
@@ -31,7 +32,8 @@ func TestTURNCredentialIsHMACOverExpiryColonDevice(t *testing.T) {
 	dev := id.New()
 	now := time.Unix(1_790_000_000, 0)
 	user, pass := server.TURNCredential("s3cret", dev, time.Hour, now)
-	wantUser := fmt.Sprintf("%d:%s", now.Add(time.Hour).Unix(), dev.String())
+	// "<expiry>:<device_id>:<issued>": the issue time is carried (review M6).
+	wantUser := fmt.Sprintf("%d:%s:%d", now.Add(time.Hour).Unix(), dev.String(), now.Unix())
 	if user != wantUser {
 		t.Fatalf("username = %q, want %q", user, wantUser)
 	}
@@ -40,10 +42,10 @@ func TestTURNCredentialIsHMACOverExpiryColonDevice(t *testing.T) {
 	if want := base64.StdEncoding.EncodeToString(mac.Sum(nil)); pass != want {
 		t.Fatalf("password = %q, want %q", pass, want)
 	}
-	// dillad's auth handler checks the HMAC and the "<expiry>:<device>" shape on every request,
-	// and the expiry on Allocate only (G33).
+	// dillad's auth handler checks the HMAC and the "<expiry>:<device>:<issued>" shape on every
+	// request, and the expiry on Allocate only (G33).
 	clk := clock.NewFake(now)
-	auth := server.TURNAuthForTest("s3cret", clk, time.Hour, 2*time.Hour)
+	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, nil)
 	gotDev, key, ok := auth(&turn.RequestAttributes{Username: user, Realm: "chat.example.test", Method: stun.MethodAllocate})
 	if !ok {
 		t.Fatal("dillad refused a credential it minted")
@@ -58,8 +60,15 @@ func TestTURNCredentialIsHMACOverExpiryColonDevice(t *testing.T) {
 	if _, _, ok := auth(&turn.RequestAttributes{Username: old, Method: stun.MethodAllocate}); ok {
 		t.Fatal("an expired credential allocated")
 	}
-	if _, _, ok := auth(&turn.RequestAttributes{Username: "not-a-number:" + dev.String(), Method: stun.MethodRefresh}); ok {
-		t.Fatal("a username without an expiry was accepted")
+	for _, bad := range []string{
+		"not-a-number:" + dev.String() + fmt.Sprintf(":%d", now.Unix()),
+		fmt.Sprintf("%d:%s", now.Add(time.Hour).Unix(), dev),                                 // no issue time
+		fmt.Sprintf("%d:%s:x", now.Add(time.Hour).Unix(), dev),                               // an issue time that is no number
+		fmt.Sprintf("%d:%s:%d", now.Add(time.Hour).Unix(), dev, now.Add(2*time.Hour).Unix()), // issued after it expires
+	} {
+		if _, _, ok := auth(&turn.RequestAttributes{Username: bad, Method: stun.MethodRefresh}); ok {
+			t.Fatalf("the malformed username %q was accepted", bad)
+		}
 	}
 	// And pion's own handler, on the wall clock, accepts the same shape: the
 	// format is pion's, not a dilla dialect of it.
@@ -96,7 +105,8 @@ func TestAtMostTwoAllocationsPerDevice(t *testing.T) {
 // life of the process after allocations_per_device calls.
 func TestTheQuotaHandlerParsesTheRESTUsername(t *testing.T) {
 	dev := id.New().String()
-	for _, name := range []string{dev, fmt.Sprintf("%d:%s", time.Now().Add(time.Hour).Unix(), dev)} {
+	for _, name := range []string{dev, fmt.Sprintf("%d:%s", time.Now().Add(time.Hour).Unix(), dev),
+		fmt.Sprintf("%d:%s:%d", time.Now().Add(time.Hour).Unix(), dev, time.Now().Unix())} {
 		quota, events := server.TURNHandlersForTest(2, nil)
 		for i := range 2 {
 			if !quota(name, "chat.example.test", nil) {
@@ -128,7 +138,7 @@ func TestTURNAllocatesThroughTheDemuxAndHoldsTheQuota(t *testing.T) {
 		SharedSecretFile: writeFile(t, "turn.secret", secret+"\n"),
 		CredentialTTL:    "1h", AllocationsPerDevice: 2,
 	}
-	srv, err := server.StartTURN(c, d.TURN(), netip.Addr{}, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
+	srv, err := server.StartTURN(c, d.TURN(), netip.Addr{}, nil, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("StartTURN: %v", err)
 	}
@@ -252,7 +262,7 @@ func startPlainTURN(t *testing.T, secret string, peers []netip.Addr) string {
 	srv, err := server.StartTURN(config.TURN{
 		Enabled: true, Realm: "chat.example.test", RelayIP: "127.0.0.1",
 		SharedSecretFile: writeFile(t, "turn.secret", secret), CredentialTTL: "1h", AllocationsPerDevice: 2,
-	}, ln, netip.Addr{}, peers, nil, clock.System(), slog.New(slog.DiscardHandler))
+	}, ln, netip.Addr{}, peers, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("StartTURN: %v", err)
 	}
@@ -384,7 +394,7 @@ func TestAnAutoRelayIPIsALocalAddressTheRelayBinds(t *testing.T) {
 	srv, err := server.StartTURN(config.TURN{
 		Enabled: true, Realm: "chat.example.test", RelayIP: "auto",
 		SharedSecretFile: writeFile(t, "turn.secret", secret), CredentialTTL: "1h", AllocationsPerDevice: 2,
-	}, ln, netip.Addr{}, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
+	}, ln, netip.Addr{}, nil, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf(`StartTURN with relay_ip "auto": %v`, err)
 	}
@@ -404,7 +414,7 @@ func TestStartTURNRefusesAMissingSecret(t *testing.T) {
 	_, err = server.StartTURN(config.TURN{
 		Enabled: true, Realm: "chat.example.test", RelayIP: "127.0.0.1",
 		SharedSecretFile: filepath.Join(t.TempDir(), "missing"), CredentialTTL: "1h", AllocationsPerDevice: 2,
-	}, ln, netip.Addr{}, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
+	}, ln, netip.Addr{}, nil, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("StartTURN ran without its shared secret")
 	}
@@ -428,7 +438,7 @@ func TestANetworkSetupFailureIsNotAConfigError(t *testing.T) {
 		Enabled: true, Realm: "chat.example.test", RelayIP: "127.0.0.1",
 		SharedSecretFile: writeFile(t, "turn.secret", "0123456789abcdef0123456789abcdef"),
 		CredentialTTL:    "1h", AllocationsPerDevice: 2,
-	}, ln, netip.Addr{}, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
+	}, ln, netip.Addr{}, nil, nil, nil, clock.System(), slog.New(slog.DiscardHandler))
 	if err == nil || !strings.Contains(err.Error(), "netlinkrib") {
 		t.Fatalf("StartTURN with no network = %v, want the network error", err)
 	}
@@ -486,7 +496,7 @@ func TestTheCredentialExpiryBindsAllocateOnly(t *testing.T) {
 	now := time.Unix(1_790_000_000, 0)
 	clk := clock.NewFake(now)
 	user, _ := server.TURNCredential("s3cret", id.New(), time.Hour, now) // issued now, expires now+1h
-	auth := server.TURNAuthForTest("s3cret", clk, time.Hour, 2*time.Hour)
+	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, nil)
 	ok := func(m stun.Method) bool {
 		_, _, ok := auth(&turn.RequestAttributes{Username: user, Realm: "chat.example.test", Method: m})
 		return ok
@@ -515,13 +525,20 @@ func TestTheCredentialExpiryBindsAllocateOnly(t *testing.T) {
 // startMeteredTURN is startPlainTURN with a TURN config and metrics of the test's own.
 func startMeteredTURN(t *testing.T, secret string, c config.TURN, peers []netip.Addr, m server.TURNMetrics, clk clock.Clock) string {
 	t.Helper()
+	return startRevokableTURN(t, secret, c, peers, m, nil, clk)
+}
+
+// startRevokableTURN is startMeteredTURN reading the test's own revocation state.
+func startRevokableTURN(t *testing.T, secret string, c config.TURN, peers []netip.Addr, m server.TURNMetrics,
+	rev *server.RelayRevocations, clk clock.Clock) string {
+	t.Helper()
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	c.Enabled, c.Realm, c.RelayIP = true, "chat.example.test", "127.0.0.1"
 	c.SharedSecretFile = writeFile(t, "turn.secret", secret)
-	srv, err := server.StartTURN(c, ln, netip.MustParseAddr("127.0.0.1"), peers, m, clk, slog.New(slog.DiscardHandler))
+	srv, err := server.StartTURN(c, ln, netip.MustParseAddr("127.0.0.1"), peers, m, rev, clk, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("StartTURN: %v", err)
 	}
@@ -599,13 +616,343 @@ func TestAnExpiredCredentialStillBindsButCannotAllocate(t *testing.T) {
 		t.Fatal("an expired credential allocated")
 	}
 	clk.Advance(90 * time.Second) // 3 min 30 s after issue: past max_allocation_age
-	if _, err := relay.WriteTo([]byte("past-max-age"), peerB.LocalAddr()); err == nil {
-		select {
-		case got := <-gotB:
-			t.Fatalf("peer B received %q past max_allocation_age", got)
-		case <-time.After(time.Second):
+	// The refusal is the auth handler's (400), not the peer filter's (403): peer B is admitted.
+	if _, err := relay.WriteTo([]byte("past-max-age"), peerB.LocalAddr()); err == nil ||
+		!strings.Contains(err.Error(), "CreatePermission error response (error 400") {
+		t.Fatalf("a CreatePermission past max_allocation_age = %v, want the auth handler's 400", err)
+	}
+	select {
+	case got := <-gotB:
+		t.Fatalf("peer B received %q past max_allocation_age", got)
+	case <-time.After(time.Second):
+	}
+}
+
+// Review M6: turn.max_allocation_age is measured from the issue time the credential carries, not
+// from its expiry less the current turn.credential_ttl, so changing the TTL across a restart cannot
+// lengthen an old credential's life: credentials issued together are bounded together whatever
+// TTL each was minted with.
+func TestTheMaxAgeIsMeasuredFromTheCarriedIssueTime(t *testing.T) {
+	now := time.Unix(1_790_000_000, 0)
+	clk := clock.NewFake(now)
+	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, nil)
+	long, _ := server.TURNCredential("s3cret", id.New(), time.Hour, now)
+	short, _ := server.TURNCredential("s3cret", id.New(), 5*time.Minute, now)
+	refresh := func(user string) bool {
+		_, _, ok := auth(&turn.RequestAttributes{Username: user, Realm: "chat.example.test", Method: stun.MethodRefresh})
+		return ok
+	}
+	clk.Advance(2*time.Hour - time.Second)
+	if !refresh(long) || !refresh(short) {
+		t.Fatal("a Refresh inside max_allocation_age of the issue time was refused")
+	}
+	clk.Advance(2 * time.Second)
+	if refresh(long) || refresh(short) {
+		t.Fatal("a Refresh past max_allocation_age of the issue time was accepted")
+	}
+}
+
+// I5: a real allocation's deletion frees its quota slot and moves the gauge — four allocations,
+// one closed, and a fifth allocates with the gauge back at four.
+func TestClosingAnAllocationFreesItsSlotAndTheGauge(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	m := &fakeTURNMetrics{}
+	addr := startMeteredTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 4}, nil, m, clock.System())
+	user, pass := server.TURNCredential(secret, id.New(), time.Hour, time.Now())
+	var relays []net.PacketConn
+	for i := range 4 {
+		relay, err := allocateAs(t, addr, user, pass)
+		if err != nil {
+			t.Fatalf("allocation %d: %v", i+1, err)
+		}
+		relays = append(relays, relay)
+	}
+	if err := relays[0].Close(); err != nil { // a Refresh with lifetime 0
+		t.Fatalf("close: %v", err)
+	}
+	waitGauge(t, m, 3)
+	if _, err := allocateAs(t, addr, user, pass); err != nil {
+		t.Fatalf("the fifth allocation after one closed: %v", err)
+	}
+	waitGauge(t, m, 4)
+	if refused, _, _, _ := m.snapshot(); refused != 0 {
+		t.Fatalf("quota refusals = %d, want none", refused)
+	}
+}
+
+// waitGauge waits up to five seconds for the allocation gauge's latest value to be want.
+func waitGauge(t *testing.T, m *fakeTURNMetrics, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, _, _, allocations := m.snapshot()
+		if len(allocations) > 0 && allocations[len(allocations)-1] == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("allocation gauge %v, want it to reach %d", allocations, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// I1: a revoked device's credentials issued at or before the cut are refused on every method, a
+// credential issued after it passes, and the cut is forgotten once max_allocation_age has passed.
+func TestARevokedCredentialIsRefusedOnEveryMethod(t *testing.T) {
+	now := time.Unix(1_790_000_000, 0)
+	clk := clock.NewFake(now)
+	rev := server.NewRelayRevocations(2*time.Hour, clk)
+	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
+	dev, other := id.New(), id.New()
+	before, _ := server.TURNCredential("s3cret", dev, time.Hour, now)
+	otherCred, _ := server.TURNCredential("s3cret", other, time.Hour, now)
+	ok := func(user string, m stun.Method) bool {
+		_, _, ok := auth(&turn.RequestAttributes{Username: user, Realm: "chat.example.test", Method: m})
+		return ok
+	}
+	methods := []stun.Method{stun.MethodAllocate, stun.MethodRefresh, stun.MethodCreatePermission,
+		stun.MethodChannelBind, stun.MethodConnect, stun.MethodConnectionBind}
+	clk.Advance(time.Minute)
+	rev.Revoke(dev, clk.Now())
+	for _, m := range methods {
+		if ok(before, m) {
+			t.Errorf("%s with a credential issued before the cut was accepted", m)
+		}
+		if !ok(otherCred, m) {
+			t.Errorf("%s of another device was refused", m)
 		}
 	}
+	atCut, _ := server.TURNCredential("s3cret", dev, time.Hour, clk.Now())
+	if ok(atCut, stun.MethodAllocate) {
+		t.Error("a credential issued in the cut's second was accepted")
+	}
+	clk.Advance(time.Second)
+	after, _ := server.TURNCredential("s3cret", dev, time.Hour, clk.Now())
+	for _, m := range methods {
+		if !ok(after, m) {
+			t.Errorf("%s with a credential issued after the cut was refused", m)
+		}
+	}
+	clk.Advance(2*time.Hour + time.Minute)
+	later, _ := server.TURNCredential("s3cret", dev, time.Hour, clk.Now())
+	if !ok(later, stun.MethodAllocate) {
+		t.Error("a fresh credential was refused past max_allocation_age of the cut")
+	}
+	if n := rev.RelayCutsForTest(); n != 0 {
+		t.Errorf("the cut is still held %d entries past max_allocation_age", n)
+	}
+}
+
+// The cut map is bounded: past its cap the oldest cut goes.
+func TestTheRelayCutMapIsBounded(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_790_000_000, 0))
+	rev := server.NewRelayRevocations(2*time.Hour, clk)
+	first := id.New()
+	rev.Revoke(first, clk.Now())
+	for range server.MaxRelayCutsForTest {
+		clk.Advance(time.Millisecond)
+		rev.Revoke(id.New(), clk.Now().Add(time.Second))
+	}
+	if n := rev.RelayCutsForTest(); n != server.MaxRelayCutsForTest {
+		t.Fatalf("cuts held = %d, want the cap %d", n, server.MaxRelayCutsForTest)
+	}
+	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
+	old, _ := server.TURNCredential("s3cret", first, time.Hour, clk.Now().Add(-time.Minute))
+	if _, _, ok := auth(&turn.RequestAttributes{Username: old, Method: stun.MethodRefresh}); !ok {
+		t.Fatal("the oldest cut was kept past the cap")
+	}
+}
+
+// I1, end to end: revoking a device closes its relay sockets at once — pion deletes the allocation,
+// which moves the gauge and frees the slot — and its credential cannot allocate again, while one
+// issued after the cut can.
+func TestRevokingADeviceClosesItsRelay(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	m := &fakeTURNMetrics{}
+	rev := server.NewRelayRevocations(2*time.Hour, clock.System())
+	peer, got := udpPeer(t, "127.0.0.2:0")
+	addr := startRevokableTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 1},
+		[]netip.Addr{netip.MustParseAddr("127.0.0.2")}, m, rev, clock.System())
+	dev := id.New()
+	user, pass := server.TURNCredential(secret, dev, time.Hour, time.Now().Add(-time.Minute))
+	relay, err := allocateAs(t, addr, user, pass)
+	if err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	waitGauge(t, m, 1)
+	rev.Revoke(dev, time.Now())
+	waitGauge(t, m, 0)
+	if _, err := relay.WriteTo([]byte("after-revoke"), peer.LocalAddr()); err == nil {
+		select {
+		case s := <-got:
+			t.Fatalf("the peer received %q after the revoke", s)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	if _, err := allocateAs(t, addr, user, pass); err == nil {
+		t.Fatal("a credential issued before the cut allocated")
+	}
+	fresh, freshPass := server.TURNCredential(secret, dev, time.Hour, time.Now().Add(2*time.Second))
+	if _, err := allocateAs(t, addr, fresh, freshPass); err != nil {
+		t.Fatalf("a credential issued after the cut (the slot must be free): %v", err)
+	}
+}
+
+// fakeBarred is a BarredLookup with a switchable answer that counts its lookups.
+type fakeBarred struct {
+	mu     sync.Mutex
+	barred map[id.ID]bool
+	err    error
+	calls  int
+}
+
+func (f *fakeBarred) DeviceBarred(_ context.Context, dev id.ID) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return f.barred[dev], f.err
+}
+
+func (f *fakeBarred) set(dev id.ID, barred bool, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.barred == nil {
+		f.barred = map[id.ID]bool{}
+	}
+	f.barred[dev], f.err = barred, err
+}
+
+func (f *fakeBarred) lookups() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// barredRelay is a relay on a fake clock whose revocation state consults look and logs to logged.
+func barredRelay(t *testing.T, secret string, c config.TURN, peers []netip.Addr, look *fakeBarred) (
+	addr string, m *fakeTURNMetrics, rev *server.RelayRevocations, clk *clock.Fake, logged *strings.Builder) {
+	t.Helper()
+	m, clk, logged = &fakeTURNMetrics{}, clock.NewFake(time.Now()), &strings.Builder{}
+	var mu sync.Mutex
+	rev = server.NewRelayRevocations(2*time.Hour, clk).WithBarred(look,
+		slog.New(slog.NewTextHandler(lockedWriter{&mu, logged}, nil)))
+	addr = startRevokableTURN(t, secret, c, peers, m, rev, clk)
+	return addr, m, rev, clk, logged
+}
+
+type lockedWriter struct {
+	mu *sync.Mutex
+	b  *strings.Builder
+}
+
+func (w lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+// Coordinator security finding on I1: pion calls the auth handler before it checks
+// MESSAGE-INTEGRITY, so the store-backed lookup must never run there. Requests with made-up device
+// ids and wrong passwords cause no lookup and no cache entry, and a flood of them leaves a real
+// device's cached state alone.
+func TestUnauthenticatedRequestsNeverReachTheBarredLookup(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	look := &fakeBarred{}
+	addr, _, rev, clk, _ := barredRelay(t, secret, config.TURN{CredentialTTL: "1h"}, nil, look)
+	realDev := id.New()
+	user, pass := server.TURNCredential(secret, realDev, time.Hour, clk.Now())
+	if _, err := allocateAs(t, addr, user, pass); err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	if n, size := look.lookups(), rev.BarredCacheLenForTest(); n != 1 || size != 1 {
+		t.Fatalf("after one authenticated Allocate: %d lookups, %d cached; want 1, 1", n, size)
+	}
+	for range 40 {
+		bogus, _ := server.TURNCredential("not-the-secret", id.New(), time.Hour, clk.Now())
+		client, err := turnClientAs(t, addr, bogus, "wrong-password", 0)
+		if err != nil {
+			t.Fatalf("TURN client: %v", err)
+		}
+		if _, err := client.Allocate(); err == nil {
+			t.Fatal("an Allocate with a forged credential succeeded")
+		}
+	}
+	if n, size := look.lookups(), rev.BarredCacheLenForTest(); n != 1 || size != 1 {
+		t.Fatalf("after 40 forged Allocates: %d lookups, %d cached; want still 1, 1", n, size)
+	}
+}
+
+// I1, the cross-process gap: a device another process revoked, in no call room, is refused once an
+// authenticated request of it finds it barred (the lookup is cached 30 s): its allocations end at
+// once, and a credential issued before that stays refused whatever the lookup later says. A device
+// found barred cannot allocate. A lookup that fails caches nothing and is logged at WARN.
+func TestABarredDeviceLosesTheRelayOnItsNextAuthenticatedRequest(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	look := &fakeBarred{}
+	peer, _ := udpPeer(t, "127.0.0.2:0")
+	addr, m, rev, clk, logged := barredRelay(t, secret, config.TURN{CredentialTTL: "1h"},
+		[]netip.Addr{netip.MustParseAddr("127.0.0.2")}, look)
+	dev := id.New()
+	user, pass := server.TURNCredential(secret, dev, time.Hour, clk.Now())
+	relay, err := allocateAs(t, addr, user, pass)
+	if err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	waitGauge(t, m, 1)
+	look.set(dev, true, nil) // `dillad admin device revoke` in another process
+	clk.Advance(31 * time.Second)
+	// The CreatePermission authenticates, OnAuth asks the lookup, the device is cut.
+	_, _ = relay.WriteTo([]byte("x"), peer.LocalAddr())
+	waitGauge(t, m, 0)
+	look.set(dev, false, nil)
+	clk.Advance(31 * time.Second)
+	if _, err := allocateAs(t, addr, user, pass); err == nil {
+		t.Fatal("a credential issued before the barred lookup's cut allocated")
+	}
+
+	barred := id.New()
+	look.set(barred, true, nil)
+	bUser, bPass := server.TURNCredential(secret, barred, time.Hour, clk.Now())
+	if _, err := allocateAs(t, addr, bUser, bPass); err == nil {
+		t.Fatal("a device the lookup reports barred allocated")
+	}
+
+	failing := id.New()
+	look.set(failing, false, errors.New("database is locked"))
+	fUser, fPass := server.TURNCredential(secret, failing, time.Hour, clk.Now())
+	before := rev.BarredCacheLenForTest()
+	if _, err := allocateAs(t, addr, fUser, fPass); err != nil {
+		t.Fatalf("a device whose lookup failed: %v (bounded by max_allocation_age, not refused)", err)
+	}
+	if rev.BarredCacheLenForTest() != before {
+		t.Fatal("a failed lookup was cached")
+	}
+	if s := logged.String(); !strings.Contains(s, "level=WARN") || !strings.Contains(s, "database is locked") {
+		t.Fatalf("the failed lookup was not logged at WARN: %q", s)
+	}
+}
+
+// I1: every 30 s the relay asks the barred lookup about each device holding a relay socket, so a
+// device that only sends ChannelData (never authenticated) loses the relay when another process
+// revokes it.
+func TestTheRelayRechecksTheDevicesHoldingSockets(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	look := &fakeBarred{}
+	addr, m, rev, clk, _ := barredRelay(t, secret, config.TURN{CredentialTTL: "1h"}, nil, look)
+	dev := id.New()
+	user, pass := server.TURNCredential(secret, dev, time.Hour, clk.Now())
+	if _, err := allocateAs(t, addr, user, pass); err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	waitGauge(t, m, 1)
+	rev.CheckHoldersForTest()
+	if _, _, _, allocations := m.snapshot(); allocations[len(allocations)-1] != 1 {
+		t.Fatal("the re-check closed a relay of a device that is not barred")
+	}
+	look.set(dev, true, nil)
+	clk.Advance(31 * time.Second)
+	rev.CheckHoldersForTest()
+	waitGauge(t, m, 0)
 }
 
 // SP-26 (Go half): with the default quota of 4 the fifth allocation of one device is 486, and the

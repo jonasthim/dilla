@@ -83,6 +83,11 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 		tokens = p.o.SFU
 	}
 	calls := api.NewCalls(repo, res, tokens, p.calls, clk, log).WithCounters(p.o.Metrics)
+	// A cut device loses the relay with its call session; a nil *RelayRevocations must not become
+	// a non-nil api.RelayRevoker.
+	if p.o.Relay != nil {
+		calls.WithRelay(p.o.Relay)
+	}
 	stats := api.NewCallStats(repo, calls, p.o.Metrics, clk)
 
 	// The join is metered on the ("invite", client address) bucket GET /i/{code} is on, so a join

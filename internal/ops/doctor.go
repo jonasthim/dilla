@@ -21,6 +21,7 @@ import (
 	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -342,10 +343,10 @@ func turnAllocate(ctx context.Context, listen, realm, secret string) (string, er
 		_ = conn.SetDeadline(dl)
 	}
 
-	user, pass, err := turn.GenerateLongTermTURNRESTCredentials(secret, id.New().String(), time.Minute)
-	if err != nil {
-		return "", err
-	}
+	// dillad's own credential shape, "<expiry>:<device_id>:<issued>" (the relay refuses pion's
+	// two-field one), for a device id no device has: the relay's barred lookup admits an id it has
+	// no device row for, which only a holder of the shared secret can mint.
+	user, pass := server.TURNCredential(secret, id.New(), time.Minute, time.Now())
 	client, err := turn.NewClient(&turn.ClientConfig{
 		TURNServerAddr: addr, Username: user, Password: pass, Realm: realm, Conn: stunConn,
 		RTO: 2 * time.Second,

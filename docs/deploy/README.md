@@ -57,7 +57,7 @@ is one more port to open, or calls that fail for people behind a UDP-blocking ne
 dillad does not terminate TLS on `turn.listen`: the relay there is plain TURN over TCP (a recorded
 deviation from the design, which puts TURN/TLS on the relay itself before the first public
 release). Media stays DTLS-SRTP with SFrame end to end, but a relay credential's username
-(`<expiry>:<device_id>`), the allocation requests and the call timing cross the network in the
+(`<expiry>:<device_id>:<issued>`), the allocation requests and the call timing cross the network in the
 clear unless you put TLS in front of it: a TCP stream proxy that terminates TLS and forwards to
 `turn.listen` (with `turn.proxy_protocol` if it sends a PROXY header). Tell clients where it is with
 `turn.public_url`, which they are handed verbatim instead of `turn:<domain>:<turn.listen port>`:
@@ -80,8 +80,11 @@ Set `turn.public_url` whenever the port the world reaches differs from `turn.lis
 | `turn.allocations_per_device` | `4` (1–16) | live allocations per device; a browser needs about two per network it gathers on |
 
 The credential's expiry is checked when an allocation is made, not on every refresh, so a relayed
-call outlives its credential; after `turn.max_allocation_age` the browser re-allocates with the
-servers it re-fetched. Watch `dilla_turn_allocations`, `dilla_turn_quota_refusals_total`,
+call outlives its credential; `turn.max_allocation_age` is measured from the issue time each
+credential carries, so changing `turn.credential_ttl` never lengthens an old credential's life, and
+after it the browser re-allocates with the servers it re-fetched. A revoked, quarantined or
+logged-out device, or one of a disabled user, loses its relay allocations at once; a revocation
+written by `dillad admin` reaches the relay within about 30 seconds. Watch `dilla_turn_allocations`, `dilla_turn_quota_refusals_total`,
 `dilla_turn_relay_bytes_total` and the `turn` leg of the admin diagnostics; raise
 `turn.allocations_per_device` when refusals appear. If `livekit.node_ip` is a public address the
 host does not hold (behind NAT) and `livekit.advertise_internal_ip` is on, the relay does not admit

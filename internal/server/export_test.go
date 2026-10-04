@@ -19,10 +19,37 @@ func ACMEIPSettingsForTest() acmeSettings {
 	return settingsFor(config.TLS{Mode: ModeACMEIP})
 }
 
-// TURNAuthForTest is the auth handler StartTURN installs, on clk, for ttl and maxAge.
-func TURNAuthForTest(secret string, clk clock.Clock, ttl, maxAge time.Duration) turn.AuthHandler {
-	return turnAuth(secret, clk, ttl, maxAge)
+// TURNAuthForTest is the auth handler StartTURN installs, on clk, for maxAge, reading rev (nil: a
+// fresh RelayRevocations nothing cuts).
+func TURNAuthForTest(secret string, clk clock.Clock, maxAge time.Duration, rev *RelayRevocations) turn.AuthHandler {
+	if rev == nil {
+		rev = NewRelayRevocations(maxAge, clk)
+	}
+	return turnAuth(secret, clk, maxAge, rev)
 }
+
+// CheckHoldersForTest runs one pass of the relay's barred re-check of the devices holding sockets.
+func (r *RelayRevocations) CheckHoldersForTest() { r.checkHolders() }
+
+// RelayCutsForTest is how many cuts r holds.
+func (r *RelayRevocations) RelayCutsForTest() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.cuts)
+}
+
+// BarredCacheLenForTest is how many barred lookups r has cached.
+func (r *RelayRevocations) BarredCacheLenForTest() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cache == nil {
+		return 0
+	}
+	return r.cache.ll.Len()
+}
+
+// MaxRelayCutsForTest is the cut map's cap.
+const MaxRelayCutsForTest = maxRelayCuts
 
 // TURNHandlersForTest is the quota and event pair StartTURN installs over a fresh quota of
 // maxPerDevice, reporting to m (nil reports nowhere).
@@ -30,7 +57,7 @@ func TURNHandlersForTest(maxPerDevice int, m TURNMetrics) (turn.QuotaHandler, tu
 	if m == nil {
 		m = noTURNMetrics{}
 	}
-	return turnHandlers(NewAllocationQuota(maxPerDevice), m)
+	return turnHandlers(NewAllocationQuota(maxPerDevice), m, NewRelayRevocations(time.Hour, clock.System()))
 }
 
 // FailTURNNetForTest makes StartTURN's network setup fail with err until the returned restore runs.

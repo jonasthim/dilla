@@ -49,6 +49,10 @@ type Options struct {
 	// not mounted and a call that would open answers 501.
 	Blobs *blob.Store
 	SFU   SFU
+	// Relay is the TURN relay's revocation state, shared with the relay `dillad serve` starts
+	// (server.StartTURN): the call routes' cuts revoke a device's relay credentials and close its
+	// relay sockets (dilla-media task 13 review I1). nil means no cut reaches a relay.
+	Relay *server.RelayRevocations
 
 	// Part 1b (deviation B17). Wasm is the wasi runtime the delivery service
 	// validates every handshake in; nil means New compiles one from CorePath

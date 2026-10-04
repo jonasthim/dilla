@@ -1,0 +1,130 @@
+package api_test
+
+import (
+	"log/slog"
+	"slices"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/id"
+)
+
+// fakeRelay records the relay revocations the call routes make.
+type fakeRelay struct {
+	mu      sync.Mutex
+	revoked []id.ID
+}
+
+func (f *fakeRelay) Revoke(device id.ID, _ time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revoked = append(f.revoked, device)
+}
+
+func (f *fakeRelay) has(device id.ID) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Contains(f.revoked, device)
+}
+
+// waitRevoked waits up to two seconds for device's relay revocation.
+func waitRevoked(f *fakeRelay, device id.ID) bool {
+	deadline := time.Now().Add(2 * time.Second)
+	for !f.has(device) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return true
+}
+
+// Review I1: CutDevice (the in-process revocation, quarantine and logout paths) revokes the
+// device's relay credentials synchronously, before anything else — also on an instance with no
+// SFU, where the call cut itself returns early.
+func TestCutDeviceRevokesTheRelayAtOnce(t *testing.T) {
+	b := newBarredEnv(t)
+	relay := &fakeRelay{}
+	b.calls.WithRelay(relay)
+	b.calls.CutDevice(t.Context(), b.memberDev) // no retry loop runs: only the synchronous part
+	if !relay.has(b.memberDev) {
+		t.Fatal("CutDevice did not revoke the device's relay credentials synchronously")
+	}
+
+	e := newEnv(t)
+	noSFU := api.NewCalls(e.Repo, api.NewResolver(e.Repo), nil, api.CallsConfig{}, e.Clk, slog.New(slog.DiscardHandler))
+	relay2 := &fakeRelay{}
+	noSFU.WithRelay(relay2)
+	dev := id.New()
+	noSFU.CutDevice(t.Context(), dev)
+	if !relay2.has(dev) {
+		t.Fatal("CutDevice on an instance with no SFU did not revoke the relay")
+	}
+}
+
+// Review I1: CutUser revokes the relay of every device of the user, resolved on the retry loop.
+func TestCutUserRevokesTheRelayOfEveryDevice(t *testing.T) {
+	b := newBarredEnv(t)
+	relay := &fakeRelay{}
+	b.calls.WithRelay(relay)
+	stop := b.calls.StartRetries(time.Hour)
+	defer stop()
+	if err := b.e.Repo.SetUserDisabled(t.Context(), b.member, ptr(b.e.Clk.Now().Unix())); err != nil {
+		t.Fatalf("SetUserDisabled: %v", err)
+	}
+	b.calls.CutUser(t.Context(), b.member)
+	if !waitRevoked(relay, b.memberDev) {
+		t.Fatal("CutUser did not revoke the relay of the user's device")
+	}
+	if relay.has(b.ownerDev) {
+		t.Fatal("CutUser revoked another user's device")
+	}
+}
+
+// Review I1: the room sweep revokes the relay of a barred device it removes (a change another
+// process wrote), and of no one else.
+func TestTheRoomSweepRevokesABarredDevicesRelay(t *testing.T) {
+	b := newBarredEnv(t)
+	relay := &fakeRelay{}
+	b.calls.WithRelay(relay)
+	if err := b.e.Repo.RevokeDevice(t.Context(), b.memberDev, b.e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	b.calls.SweepRooms(t.Context())
+	if !relay.has(b.memberDev) {
+		t.Fatal("the sweep did not revoke the barred device's relay")
+	}
+	if relay.has(b.ownerDev) {
+		t.Fatal("the sweep revoked the relay of a device that is not barred")
+	}
+}
+
+// BarredDevices is the relay's store lookup: barred as the call routes say; an id with no device
+// row (doctor's probe: rows are never deleted) is not.
+func TestBarredDevicesAnswersAsTheCallRoutes(t *testing.T) {
+	b := newBarredEnv(t)
+	look := api.BarredDevices{Repo: b.e.Repo}
+	if bar, err := look.DeviceBarred(t.Context(), b.memberDev); err != nil || bar {
+		t.Fatalf("a device in good standing = %v, %v", bar, err)
+	}
+	if bar, err := look.DeviceBarred(t.Context(), id.New()); err != nil || bar {
+		t.Fatalf("an id with no device row = %v, %v; want not barred", bar, err)
+	}
+	if err := b.e.Repo.SetUserDisabled(t.Context(), b.member, ptr(b.e.Clk.Now().Unix())); err != nil {
+		t.Fatalf("SetUserDisabled: %v", err)
+	}
+	if bar, err := look.DeviceBarred(t.Context(), b.memberDev); err != nil || !bar {
+		t.Fatalf("a disabled user's device = %v, %v; want barred", bar, err)
+	}
+	if err := b.e.Repo.SetUserDisabled(t.Context(), b.member, nil); err != nil {
+		t.Fatalf("SetUserDisabled: %v", err)
+	}
+	if err := b.e.Repo.QuarantineDevice(t.Context(), b.memberDev, b.e.Clk.Now().Unix(), "fork quorum"); err != nil {
+		t.Fatalf("QuarantineDevice: %v", err)
+	}
+	if bar, err := look.DeviceBarred(t.Context(), b.memberDev); err != nil || !bar {
+		t.Fatalf("a quarantined device = %v, %v; want barred", bar, err)
+	}
+}

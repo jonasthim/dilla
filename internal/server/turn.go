@@ -56,15 +56,21 @@ const defaultAllocationsPerDevice = 4
 // STUN Allocate — the client's "relay unavailable" dialog is the documented
 // consequence when the operator publishes none. It is off unless turn.enabled.
 type TURN struct {
-	srv   *turn.Server
-	quota *AllocationQuota
+	srv       *turn.Server
+	quota     *AllocationQuota
+	stopWatch chan struct{}
+	closeOnce sync.Once
 }
 
-// TURNCredential mints the REST-style ephemeral credential pion's
-// LongTermTURNRESTAuthHandler validates: username "<expiry>:<device_id>",
-// password base64(HMAC-SHA1(secret, username)). The expiry is unix seconds.
+// TURNCredential mints the REST-style ephemeral credential: username
+// "<expiry>:<device_id>:<issued>", password base64(HMAC-SHA1(secret, username)).
+// expiry and issued are unix seconds. The issue time is carried so that the
+// relay measures turn.max_allocation_age and a revocation against when the
+// credential was minted, whatever turn.credential_ttl is when it is used (task
+// 13 review M6). pion's LongTermTURNRESTAuthHandler accepts the shape: it reads
+// the first field as the expiry and the second as the user id.
 func TURNCredential(secret string, deviceID id.ID, ttl time.Duration, now time.Time) (username, password string) {
-	username = fmt.Sprintf("%d:%s", now.Add(ttl).Unix(), deviceID.String())
+	username = fmt.Sprintf("%d:%s:%d", now.Add(ttl).Unix(), deviceID.String(), now.Unix())
 	mac := hmac.New(sha1.New, []byte(secret))
 	_, _ = mac.Write([]byte(username))
 	return username, base64.StdEncoding.EncodeToString(mac.Sum(nil))
@@ -83,8 +89,10 @@ func TURNCredential(secret string, deviceID id.ID, ttl time.Duration, now time.T
 //
 // anchor is livekit.node_ip, the address family turn.relay_ip "auto" must stay in (cmd/dillad
 // turnPeers); it is passed apart from peers because node_ip is not always an admitted peer (DEV-55).
-// m receives the relay's counters; nil reports nowhere.
-func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers []netip.Addr, m TURNMetrics, clk clock.Clock, log *slog.Logger) (*TURN, error) {
+// m receives the relay's counters; nil reports nowhere. rev is the revocation state the relay shares
+// with the call routes (RelayRevocations); nil gives the relay one of its own that no cut reaches.
+func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers []netip.Addr, m TURNMetrics,
+	rev *RelayRevocations, clk clock.Clock, log *slog.Logger) (*TURN, error) {
 	body, err := os.ReadFile(c.SharedSecretFile)
 	if err != nil {
 		return nil, turnConfigError{fmt.Errorf("turn: turn.shared_secret_file: %w", err)}
@@ -118,11 +126,14 @@ func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers []netip.
 		ttl = time.Hour
 	}
 	maxAge := max(c.MaxAllocationAge.Value(), ttl)
+	if rev == nil {
+		rev = NewRelayRevocations(maxAge, clk)
+	}
 	q := NewAllocationQuota(perDevice)
-	quota, events := turnHandlers(q, m)
+	quota, events := turnHandlers(q, m, rev)
 	srv, err := turn.NewServer(turn.ServerConfig{
 		Realm:         c.Realm,
-		AuthHandler:   turnAuth(secret, clk, ttl, maxAge),
+		AuthHandler:   turnAuth(secret, clk, maxAge, rev),
 		QuotaHandler:  quota,
 		EventHandler:  events,
 		LoggerFactory: slogFactory{log: log},
@@ -134,8 +145,7 @@ func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers []netip.
 					Address:      relayIP.String(),
 					Net:          relayNet,
 				},
-				m: m,
-				q: q,
+				m: m, q: q, rev: rev,
 			},
 			PermissionHandler: peerFilter(peers),
 		}},
@@ -143,7 +153,11 @@ func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers []netip.
 	if err != nil {
 		return nil, fmt.Errorf("turn: %w", err)
 	}
-	return &TURN{srv: srv, quota: q}, nil
+	t := &TURN{srv: srv, quota: q, stopWatch: make(chan struct{})}
+	if rev.barred != nil {
+		go rev.watch(t.stopWatch)
+	}
+	return t, nil
 }
 
 // errNoTCPRelay is the relay generator's answer to an RFC 6062 TCP allocation or Connect; pion
@@ -164,10 +178,13 @@ var errNoTCPRelay = errors.New("turn: TCP relays are not offered")
 // generator gives the slot back itself on every failure: a refused TCP allocation, and a UDP socket
 // that will not bind — which a client can cause at will with an IPv6 REQUESTED-ADDRESS-FAMILY
 // against an IPv4 turn.relay_ip (review I3).
+//
+// Every relay socket of a device is tracked in rev, so a revocation can close them.
 type countingRelay struct {
 	*turn.RelayAddressGeneratorStatic
-	m TURNMetrics
-	q *AllocationQuota
+	m   TURNMetrics
+	q   *AllocationQuota
+	rev *RelayRevocations
 }
 
 func (g *countingRelay) AllocatePacketConn(conf turn.AllocateListenerConfig) (net.PacketConn, net.Addr, error) {
@@ -176,7 +193,12 @@ func (g *countingRelay) AllocatePacketConn(conf turn.AllocateListenerConfig) (ne
 		g.release(conf.UserID)
 		return nil, nil, err
 	}
-	return &countingConn{PacketConn: conn, m: g.m}, addr, nil
+	c := &countingConn{PacketConn: conn, m: g.m}
+	if conf.UserID != "" {
+		c.dev, c.rev = deviceOf(conf.UserID), g.rev
+		g.rev.track(c.dev, c)
+	}
+	return c, addr, nil
 }
 
 // AllocateListener refuses a TCP allocation and frees the slot pion took for it.
@@ -200,10 +222,22 @@ func (g *countingRelay) release(user string) {
 }
 
 // countingConn is a relay socket: what it reads came from a peer and goes on to the client, what it
-// writes goes to a peer.
+// writes goes to a peer. dev and rev are set for an allocation's socket (not for pion's EVEN-PORT
+// probe), which Close forgets.
 type countingConn struct {
 	net.PacketConn
-	m TURNMetrics
+	m   TURNMetrics
+	dev string
+	rev *RelayRevocations
+}
+
+// Close forgets the socket and closes it. pion closes it when the allocation ends; a revocation
+// closes it first, and pion's read loop then deletes the allocation.
+func (c *countingConn) Close() error {
+	if c.rev != nil {
+		c.rev.untrack(c.dev, c)
+	}
+	return c.PacketConn.Close()
 }
 
 func (c *countingConn) ReadFrom(p []byte) (int, net.Addr, error) {
@@ -333,8 +367,11 @@ func peerFilter(peers []netip.Addr) turn.PermissionHandler {
 	}
 }
 
-// Close stops the server and closes its listener.
-func (t *TURN) Close() error { return t.srv.Close() }
+// Close stops the server, its listener and the barred re-check.
+func (t *TURN) Close() error {
+	t.closeOnce.Do(func() { close(t.stopWatch) })
+	return t.srv.Close()
+}
 
 // AllocationCount is pion's live allocation count, for diagnostics.
 func (t *TURN) AllocationCount() int { return t.srv.AllocationCount() }
@@ -343,12 +380,24 @@ func (t *TURN) AllocationCount() int { return t.srv.AllocationCount() }
 // with the expiry checked on Allocate ONLY (G33, draft-uberti-behave-turn-rest-00 §4.2): Chrome
 // refreshes an allocation every 540 s and its permissions every 240 s with the credential it
 // allocated with, so a per-request expiry ended every relayed call at most 240 s after the
-// credential expired. Every other request is refused once maxAge has passed since the credential
-// was issued (expiry − ttl): turn.max_allocation_age bounds how long one relayed path lives. The
-// "<expiry>:<device>" shape and the HMAC are checked on every request; the user id is the device id.
-func turnAuth(secret string, clk clock.Clock, ttl, maxAge time.Duration) turn.AuthHandler {
+// credential expired. Every other request made with a credential is refused once maxAge has passed
+// since that credential was issued — the issue time it carries (review M6) — so
+// turn.max_allocation_age bounds how long one credential keeps a relayed path. It does not bound an
+// allocation a newer credential of the same device refreshes (pion binds an allocation to the user
+// id, the device), nor ChannelData and Send indications, which are never authenticated.
+//
+// Every method of a credential issued at or before its device's cut is refused (rev, review I1);
+// the cut map is fed by the call routes and by the barred lookup turnHandlers runs once a request
+// is authenticated. The
+// "<expiry>:<device>:<issued>" shape and the HMAC are checked on every request; the user id is the
+// device id.
+func turnAuth(secret string, clk clock.Clock, maxAge time.Duration, rev *RelayRevocations) turn.AuthHandler {
 	return func(ra *turn.RequestAttributes) (string, []byte, bool) {
-		expiry, dev, ok := strings.Cut(ra.Username, ":")
+		expiry, rest, ok := strings.Cut(ra.Username, ":")
+		if !ok {
+			return "", nil, false
+		}
+		dev, issuedField, ok := strings.Cut(rest, ":")
 		if !ok || dev == "" {
 			return "", nil, false
 		}
@@ -356,12 +405,23 @@ func turnAuth(secret string, clk clock.Clock, ttl, maxAge time.Duration) turn.Au
 		if err != nil {
 			return "", nil, false
 		}
+		issued, err := strconv.ParseInt(issuedField, 10, 64)
+		if err != nil || issued > t {
+			return "", nil, false
+		}
 		now := clk.Now().Unix()
 		if ra.Method == stun.MethodAllocate {
 			if t < now {
 				return "", nil, false
 			}
-		} else if issued := t - int64(ttl/time.Second); now > issued+int64(maxAge/time.Second) {
+		} else if now > issued+int64(maxAge/time.Second) {
+			return "", nil, false
+		}
+		// In memory only: pion calls this handler BEFORE it checks MESSAGE-INTEGRITY with the key
+		// returned here (internal/server/util.go:108-128), so nothing an unauthenticated request
+		// names may reach the store or the barred cache from here. The barred lookup runs on the
+		// OnAuth event instead, after the integrity check (turnHandlers).
+		if rev.cutCovers(dev, issued) {
 			return "", nil, false
 		}
 		mac := hmac.New(sha1.New, []byte(secret))
@@ -374,12 +434,12 @@ func turnAuth(secret string, clk clock.Clock, ttl, maxAge time.Duration) turn.Au
 // deviceOf is the device a TURN user id names. pion v5.0.13 passes the quota
 // handler and the allocation events the user id the auth handler returned —
 // the device id (internal/server/turn.go:212, allocation_manager.go:279-281) —
-// but a REST username "<expiry>:<device_id>" is taken apart the way pion's own
-// handler does (lt_cred.go:100-105), so the quota holds whichever spelling a
-// future pion hands over.
+// but a REST username "<expiry>:<device_id>:<issued>" is taken apart the way
+// pion's own handler does (lt_cred.go:100-105: the second field), so the quota
+// holds whichever spelling a future pion hands over.
 func deviceOf(user string) string {
-	if _, dev, ok := strings.Cut(user, ":"); ok {
-		return dev
+	if fields := strings.Split(user, ":"); len(fields) > 1 {
+		return fields[1]
 	}
 	return user
 }
@@ -390,7 +450,15 @@ func deviceOf(user string) string {
 // allocations_per_device allocations. An allocation pion fails to create after admitting it fires
 // no event; countingRelay frees that slot. The gauge is published under the count's lock, so a
 // creation and a deletion racing cannot leave a stale value behind.
-func turnHandlers(q *AllocationQuota, m TURNMetrics) (turn.QuotaHandler, turn.EventHandler) {
+//
+// The barred lookup (review I1) runs here, on requests pion has authenticated: OnAuth fires with
+// verdict true only after the request's MESSAGE-INTEGRITY verified under the credential's key
+// (internal/server/util.go:124-130), so only a holder of a credential this instance minted can
+// cause a store read or a cache entry. A barred device is cut there — its sockets close and its
+// credentials so far are refused. OnAuth cannot refuse the request it reports; for an Allocate the
+// quota handler, which pion runs after it on the same goroutine (internal/server/turn.go:33,212),
+// refuses a device the lookup has just found barred, from the cache alone.
+func turnHandlers(q *AllocationQuota, m TURNMetrics, rev *RelayRevocations) (turn.QuotaHandler, turn.EventHandler) {
 	var mu sync.Mutex
 	live := 0
 	count := func(delta int) {
@@ -401,7 +469,7 @@ func turnHandlers(q *AllocationQuota, m TURNMetrics) (turn.QuotaHandler, turn.Ev
 	}
 	quota := func(user, _ string, _ net.Addr) bool {
 		dev := deviceOf(user)
-		if dev == "" {
+		if dev == "" || rev.knownBarred(dev) {
 			return false
 		}
 		if !q.Allow(dev) {
@@ -411,6 +479,11 @@ func turnHandlers(q *AllocationQuota, m TURNMetrics) (turn.QuotaHandler, turn.Ev
 		return true
 	}
 	events := turn.EventHandler{
+		OnAuth: func(_, _ net.Addr, _, username, _, _ string, verdict bool) {
+			if verdict {
+				rev.checkBarred(deviceOf(username))
+			}
+		},
 		OnAllocationCreated: func(_, _ net.Addr, _, _, _ string, _ net.Addr, _ int) {
 			count(1)
 		},

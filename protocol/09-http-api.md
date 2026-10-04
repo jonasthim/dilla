@@ -654,7 +654,8 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   SFU, and `X-Forwarded-For` carries only the client address the instance resolved.
 - **Relays.** `ice_servers` is the `RTCIceServer` list for the client's peer connection: one entry
   when the instance runs its TURN relay, with a fresh ephemeral credential — `username` is
-  `"<expiry>:<device_id>"` (unix seconds, `turn.credential_ttl` ahead, default one hour) and
+  `"<expiry>:<device_id>:<issued>"` (unix seconds: the expiry `turn.credential_ttl` ahead, default
+  one hour, and the time it was minted) and
   `credential` is `base64(HMAC-SHA1(turn shared secret, username))`, the time-limited REST form
   TURN servers validate — and an empty array when it runs none. A client passes this list to its
   peer connection even when it is empty, so the SFU's own server list never reaches it, and sets
@@ -669,8 +670,16 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   verbatim — for a proxy that terminates TLS for the relay (`turns:`) or publishes it on another
   port. The credential's expiry is checked on `Allocate` only: an allocation made before it keeps
   refreshing and permitting after it, until `turn.max_allocation_age` (default two hours, never
-  shorter than `turn.credential_ttl`) has passed since the credential was issued, when every request
-  of that allocation is refused and the client's next ICE restart allocates anew. A client keeps
+  shorter than `turn.credential_ttl`) has passed since the credential was issued (the issue time it
+  carries), when every request made with that credential is refused and the client's next ICE
+  restart allocates anew. The bound is per credential: a refresh made with a newer credential of the
+  same device keeps the allocation, and channel data, which is never authenticated, flows until its
+  permission or channel binding lapses (at most five and ten minutes). A device that is cut — revoked,
+  quarantined, logged out, of a user who is disabled, or found barred by the call sweep — loses the
+  relay at once: every credential of it issued at or before the cut is refused on every request and
+  its allocations end. A device another process bars (`dillad admin`) is found by the relay itself on
+  its next authenticated request or within 30 seconds while it holds an allocation; while the
+  database cannot answer, such a device stays bounded by `turn.max_allocation_age` only. A client keeps
   fresh servers by repeating `POST /v1/channels/{id}/calls` before `turn.credential_ttl` runs out
   and handing the new list to its peer connection for that restart. At most
   `turn.allocations_per_device` relay allocations are live per device (default 4); another is

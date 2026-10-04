@@ -199,6 +199,48 @@ type Calls struct {
 	// (a test, an instance built without the call events) the group is closed on the store.
 	events *CallEvents
 	dsvc   DS
+
+	// relay is the TURN relay's revocation state (task 13 review I1): a cut device's relay
+	// allocations end with its call session. nil when the instance runs no relay.
+	relay RelayRevoker
+}
+
+// RelayRevoker cuts a device from the TURN relay as of at; *server.RelayRevocations is one. Revoke
+// closes sockets and writes a map, and never blocks on the store or the SFU.
+type RelayRevoker interface {
+	Revoke(device id.ID, at time.Time)
+}
+
+// WithRelay sets the relay revocation state the cuts feed and returns h.
+func (h *Calls) WithRelay(r RelayRevoker) *Calls {
+	h.relay = r
+	return h
+}
+
+// revokeRelay cuts device from the relay now, when there is one.
+func (h *Calls) revokeRelay(device id.ID) {
+	if h.relay != nil {
+		h.relay.Revoke(device, h.clk.Now())
+	}
+}
+
+// BarredDevices is the relay's barred lookup over the store (server.BarredLookup): what the call
+// routes call barred. An id with no device row is not barred: device rows are never deleted (a
+// revoked device keeps its row), the call routes mint relay credentials only for a session's device,
+// and a credential naming any other id can be minted only by a holder of turn.shared_secret_file —
+// `dillad doctor`'s allocation probe, which uses a fresh id.
+type BarredDevices struct{ Repo store.Repository }
+
+// DeviceBarred reports whether device may no longer take part in calls.
+func (b BarredDevices) DeviceBarred(ctx context.Context, device id.ID) (bool, error) {
+	dv, err := b.Repo.GetDevice(ctx, device)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return barred(ctx, b.Repo, dv)
 }
 
 // NewCalls wires the call routes over the SFU.
@@ -626,7 +668,7 @@ func callIDOfGroup(g store.GroupRow) id.ID {
 }
 
 // iceServers is the relay list for dev: one entry carrying a fresh REST
-// credential ("<expiry>:<device_id>", HMAC-SHA1 under the TURN secret), or an
+// credential ("<expiry>:<device_id>:<issued>", HMAC-SHA1 under the TURN secret), or an
 // empty list when TURN is off — in behind_proxy without turn.listen the client
 // shows its "relay unavailable" dialog and the call is UDP or nothing.
 func (h *Calls) iceServers(dev id.ID) []iceServer {

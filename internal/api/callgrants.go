@@ -209,6 +209,11 @@ func (h *Calls) reconcileOutcome(ctx context.Context, d grantDeps, ch store.Chan
 		}
 	}
 	if bar || !leaf || !bits.Has(PermViewChannel) || !bits.Has(PermConnect) {
+		if bar {
+			// A barred device loses the relay with the room (review I1): the sweep is how a change
+			// another process wrote reaches it.
+			h.revokeRelay(dev)
+		}
 		return true, h.removeDevice(ctx, d, row, dev, false)
 	}
 	penalised := h.leases.penalised(row.CallID, row.LivekitRoom, dev)
@@ -499,6 +504,13 @@ func (h *Calls) CutUser(ctx context.Context, userID id.ID) {
 const maxCutRequests = 1024
 
 func (h *Calls) requestCut(ctx context.Context, who id.ID, user bool) {
+	// The relay first, synchronously and whatever happens below (review I1): it closes sockets and
+	// writes a map, nothing more. A user's devices are resolved on the retry loop (processCuts);
+	// the in-process paths that disable a user also cut each device, and the relay's barred lookup
+	// covers the rest.
+	if !user {
+		h.revokeRelay(who)
+	}
 	if h.sfu == nil {
 		return
 	}
@@ -550,6 +562,7 @@ func (h *Calls) processCuts(ctx context.Context) {
 		}
 		for _, d := range rows {
 			match[d.ID.String()] = true
+			h.revokeRelay(d.ID)
 		}
 	}
 	h.cutMatching(ctx, func(identity string) bool {
