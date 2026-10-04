@@ -806,16 +806,17 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
   `400 E_INVALID_REQUEST`, an unknown user `404 E_NOT_FOUND`. The audit action is `user.disable`
   or `user.enable` with the user id in hex as `target`.
 - **Diagnostics.** `GET /v1/admin/diagnostics` answers `200 [[name(tstr), status(uint),
-  detail(tstr), fix(tstr)]]`, the `dillad doctor` legs the running instance can answer itself,
-  under doctor's names and in doctor's order: `database` (the schema version), `data_dir` (its
-  mode), `wasi` (the core the delivery service validates in), `udp`, `blobs` (every referenced
-  file present, no stray files), `calls` (the call stats of the last 15 minutes: how many of the
-  calls that reported are still live, the reports, how many had a relay selected, the median and
-  95th-percentile round-trip time, and the decrypt failures against the frames encrypted; WARN while
-  any decrypt failure was reported) and `turn` (live relay allocations
-  and the quota refusals since start; WARN after any refusal). `status` is 0 OK, 1 WARN, 2 FAIL; `fix` is the operator's next
-  step or `""`. The legs that probe the network or need a process of their own — the config
-  parse, the SQLite pragmas, clock skew, the certificate and a TURN allocation — are only
+  detail(tstr), fix(tstr)]]`: first the `dillad doctor` legs the running instance can answer
+  itself, under doctor's names and in doctor's order — `database` (the schema version), `data_dir`
+  (its mode), `wasi` (the core the delivery service validates in), `udp`, `blobs` (every referenced
+  file present, no stray files) — then two legs of the instance's own, which doctor does not have:
+  `calls` (the call stats of the last 15 minutes: how many of the calls that reported are still
+  live, the reports, how many had a relay selected, the median and 95th-percentile round-trip time,
+  and the decrypt failures against the frames encrypted; WARN while any decrypt failure was
+  reported) and `turn_relay` (the relay's live allocations and the quota refusals since start;
+  WARN after any refusal). `status` is 0 OK, 1 WARN, 2 FAIL; `fix` is the operator's next step or
+  `""`. The legs that probe the network or need a process of their own — the config parse, the
+  SQLite pragmas, clock skew, the certificate and doctor's `turn` leg, a TURN allocation — are only
   `dillad doctor`'s, so an admin request never makes the instance dial out. The report runs only
   after the admin check.
 

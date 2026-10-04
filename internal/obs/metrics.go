@@ -142,8 +142,8 @@ func NewMetrics(r prometheus.Registerer, g prometheus.Gatherer) *Metrics {
 	m.CallDecryptFailures = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "dilla_call_decrypt_failures_total", Help: "Media frames devices reported they failed to decrypt."})
 	m.CallRTT = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name: "dilla_call_rtt_ms", Help: "Round-trip times devices reported, in milliseconds.",
-		Buckets: []float64{10, 25, 50, 100, 150, 250, 400, 600, 1000, 2000},
+		Name: "dilla_call_rtt_seconds", Help: "Round-trip times devices reported, in seconds.",
+		Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.15, 0.25, 0.4, 0.6, 1, 2},
 	})
 	m.TURNAllocations = prometheus.NewGauge(
 		prometheus.GaugeOpts{Name: "dilla_turn_allocations", Help: "Live TURN relay allocations."})
@@ -284,7 +284,7 @@ func (m *Metrics) StatsReport(relay bool, rttMs uint32, decryptFailures uint64) 
 		m.CallRelayReports.Inc()
 	}
 	m.CallDecryptFailures.Add(float64(decryptFailures))
-	m.CallRTT.Observe(float64(rttMs))
+	m.CallRTT.Observe(float64(rttMs) / 1000) // Prometheus's base unit is the second
 }
 
 // QuotaRefused records one 486 (server.TURNMetrics).

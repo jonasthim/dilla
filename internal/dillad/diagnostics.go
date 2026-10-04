@@ -17,7 +17,8 @@ import (
 // that can be answered from inside the serving process, under doctor's leg names and in doctor's
 // order — the database and its schema version, the data directory's mode, the wasi core the
 // delivery service validates in (the runtime this process loaded, not a fresh one), the UDP
-// configuration and the blob store's consistency. The legs that probe the network or read state
+// configuration and the blob store's consistency; withCallLegs adds the instance's own legs after
+// them. The legs that probe the network or read state
 // another process holds (config parsing, the SQLite pragmas as a fresh connection sees them, clock
 // skew against remote peers, the certificate, a TURN allocation) stay `dillad doctor`'s: an admin
 // request must not make the instance dial out.
@@ -61,9 +62,13 @@ type turnState interface {
 	TURNState() (allocations int, quotaRefusals uint64)
 }
 
-// withCallLegs appends the calls and turn legs (DEV-59, ruling F10) to base's report. Both read
-// state this process already holds — the stats devices reported, the relay's own counters — so the
-// admin request still dials nothing.
+// turnRelayLeg is the instance's relay leg: the relay's own counters. It is not `dillad doctor`'s
+// "turn" leg, an allocation probe the instance never makes (review M4).
+const turnRelayLeg = "turn_relay"
+
+// withCallLegs appends the instance's own calls and turn_relay legs (DEV-59, ruling F10), which
+// `dillad doctor` does not have, to base's report. Both read state this process already holds — the
+// stats devices reported, the relay's own counters — so the admin request still dials nothing.
 func withCallLegs(base func(context.Context) ops.Report, stats *api.CallStats, turnCfg config.TURN, ts turnState) func(context.Context) ops.Report {
 	return func(ctx context.Context) ops.Report {
 		r := base(ctx)
@@ -98,14 +103,14 @@ func failureRatio(s api.StatsSummary) string {
 
 func turnLeg(c config.TURN, allocations int, refusals uint64) ops.Leg {
 	if !c.Enabled {
-		return ops.Leg{Name: "turn", Status: ops.Green,
+		return ops.Leg{Name: turnRelayLeg, Status: ops.Green,
 			Detail: "the TURN relay is off (turn.enabled = false): a client that cannot reach UDP 7882 cannot join a call"}
 	}
 	detail := fmt.Sprintf("%d live relay allocations; %d refused at the per-device quota of %d since start",
 		allocations, refusals, c.AllocationsPerDevice)
 	if refusals > 0 {
-		return ops.Leg{Name: "turn", Status: ops.Yellow, Detail: detail,
+		return ops.Leg{Name: turnRelayLeg, Status: ops.Yellow, Detail: detail,
 			Fix: fmt.Sprintf("raise turn.allocations_per_device (now %d): a device needs about two allocations per network it gathers on", c.AllocationsPerDevice)}
 	}
-	return ops.Leg{Name: "turn", Status: ops.Green, Detail: detail}
+	return ops.Leg{Name: turnRelayLeg, Status: ops.Green, Detail: detail}
 }

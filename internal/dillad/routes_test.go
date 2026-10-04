@@ -452,7 +452,9 @@ func TestTheCallsAndTurnLegs(t *testing.T) {
 		!strings.Contains(l.Detail, "3 decrypt failures against 3000 frames encrypted (1.0 per 1000)") {
 		t.Errorf("decrypt failures = %+v, want WARN with a fix and the rate against frames encrypted", l)
 	}
-	if l := turnLeg(config.TURN{Enabled: false}, 0, 0); l.Name != "turn" || l.Status != ops.Green || !strings.Contains(l.Detail, "off") {
+	// Review M4: the instance's relay leg (its counters) is not `dillad doctor`'s "turn" (an
+	// allocation probe), so it has a name of its own.
+	if l := turnLeg(config.TURN{Enabled: false}, 0, 0); l.Name != "turn_relay" || l.Status != ops.Green || !strings.Contains(l.Detail, "off") {
 		t.Errorf("TURN off = %+v", l)
 	}
 	if l := turnLeg(config.TURN{Enabled: true, AllocationsPerDevice: 4}, 3, 0); l.Status != ops.Green || !strings.Contains(l.Detail, "3 live relay allocations") {

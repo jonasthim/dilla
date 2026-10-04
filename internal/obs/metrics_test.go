@@ -93,7 +93,7 @@ func TestMetricNamesAreTheDocumentedSet(t *testing.T) {
 		"dilla_call_full_total", "dilla_call_share_refusals_total", "dilla_call_cuts_total",
 		"dilla_call_grant_retries_total", "dilla_call_grant_repairs_pending",
 		"dilla_call_stats_reports_total", "dilla_call_relay_reports_total", "dilla_call_decrypt_failures_total",
-		"dilla_call_rtt_ms", "dilla_turn_allocations", "dilla_turn_quota_refusals_total", "dilla_turn_relay_bytes_total",
+		"dilla_call_rtt_seconds","dilla_turn_allocations", "dilla_turn_quota_refusals_total", "dilla_turn_relay_bytes_total",
 	}
 	families, err := reg.Gather()
 	if err != nil {
@@ -220,6 +220,23 @@ func TestTheCallCountersCount(t *testing.T) {
 	none.CallsLive(1)
 }
 
+// histogramValue reads a label-free histogram's sample count and sum.
+func histogramValue(t *testing.T, reg *prometheus.Registry, name string) (uint64, float64) {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() == name && len(f.GetMetric()) == 1 {
+			h := f.GetMetric()[0].GetHistogram()
+			return h.GetSampleCount(), h.GetSampleSum()
+		}
+	}
+	t.Fatalf("no histogram %s", name)
+	return 0, 0
+}
+
 // labelledCounter reads the series of a counter family whose one label has the given value.
 func labelledCounter(t *testing.T, reg *prometheus.Registry, name, value string) float64 {
 	t.Helper()
@@ -273,6 +290,10 @@ func TestTheTURNAndStatsRecordersCount(t *testing.T) {
 	}
 	if live, refused := m.TURNState(); live != 4 || refused != 1 {
 		t.Errorf("TURNState = %d, %d; want 4, 1", live, refused)
+	}
+	// Review M7: the round-trip histogram is in seconds, Prometheus's base unit.
+	if count, sum := histogramValue(t, reg, "dilla_call_rtt_seconds"); count != 2 || sum < 0.0999 || sum > 0.1001 {
+		t.Errorf("dilla_call_rtt_seconds count %d, sum %v; want 2 and 0.1 (80 ms + 20 ms)", count, sum)
 	}
 	var none *obs.Metrics
 	none.StatsReport(true, 1, 1)

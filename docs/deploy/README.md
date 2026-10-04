@@ -85,7 +85,7 @@ credential carries, so changing `turn.credential_ttl` never lengthens an old cre
 after it the browser re-allocates with the servers it re-fetched. A revoked, quarantined or
 logged-out device, or one of a disabled user, loses its relay allocations at once; a revocation
 written by `dillad admin` reaches the relay within about 30 seconds. Watch `dilla_turn_allocations`, `dilla_turn_quota_refusals_total`,
-`dilla_turn_relay_bytes_total` and the `turn` leg of the admin diagnostics; raise
+`dilla_turn_relay_bytes_total` and the `turn_relay` leg of the admin diagnostics; raise
 `turn.allocations_per_device` when refusals appear. If `livekit.node_ip` is a public address the
 host does not hold (behind NAT) and `livekit.advertise_internal_ip` is on, the relay does not admit
 `node_ip` and `dillad serve` logs a warning saying so: relayed media pairs with the host's own
