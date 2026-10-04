@@ -6,3 +6,8 @@ export {
   assertDillaManager, CALLER_PUBLISH_DEFAULTS, CALLER_ROOM_OPTIONS, dillaRoomOptions, joinCall, refreshIceServers, ROOM_DEFAULTS, toRtcIceServers,
   type CallSession, type IceServerTuple, type JoinCallOptions,
 } from './connect';
+export * from './audio/presets';
+export * from './audio/codecs';
+export * from './audio/speakers';
+export * from './audio/gate';
+export * from './audio/rnnoise';

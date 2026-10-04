@@ -13,7 +13,7 @@ import {
 } from 'livekit-client';
 import { StubE2EEManager, type AttachPath } from './stub-manager.ts';
 import { runFailClosed, type FailClosedResult, type FailClosedScenario } from './failclosed.ts';
-import { joinCall, type CallSession, type IceServerTuple } from '../src/connect';
+import { joinCall, type CallSession, type IceServerTuple, type JoinCallOptions } from '../src/connect';
 import type { EpochKeys } from '../src/manager';
 import type { DillaMediaStats } from '../src/protocol';
 import { hexToBytes, isDeviceIdentity } from '../src/slots';
@@ -75,7 +75,7 @@ function defaultAttach(): AttachPath {
 // ---- task 17: e2ee 'dilla', the real DillaE2EEManager through joinCall (MD-20: decimal epochs and hex keys on the
 // Playwright boundary, because page.evaluate cannot carry bigint) -------------------------------------------------
 export interface EpochKeysWire { groupId: string; epoch: string; baseKey: string; selfLeaf: number; minEpoch: string; roster: Array<{ leaf: number; deviceId: string }> }
-export interface DillaConnectOptions { epoch: EpochKeysWire; lock: { instanceId: string; callGroupId: string } }
+export interface DillaConnectOptions { epoch: EpochKeysWire; lock: { instanceId: string; callGroupId: string }; roomOptions?: JoinCallOptions['roomOptions'] }
 
 export function epochFromWire(w: EpochKeysWire): EpochKeys {
   if (!/^[0-9a-f]{32}$/.test(w.baseKey) || !w.roster.every((r) => isDeviceIdentity(r.deviceId))) throw new Error('E_BAD_OPTIONS: epoch keys');
@@ -93,7 +93,7 @@ let dillaSession: CallSession | null = null;
 
 async function connectDilla(url: string, token: string, iceServers: RTCIceServer[] | undefined, dilla: DillaConnectOptions | undefined): Promise<CallSession> {
   if (dilla === undefined) throw new Error("E_BAD_OPTIONS: e2ee 'dilla' needs opts.dilla");
-  dillaSession = await joinCall({ livekitUrl: url, token, iceServers: iceTuples(iceServers), epoch: epochFromWire(dilla.epoch), lock: dilla.lock });
+  dillaSession = await joinCall({ livekitUrl: url, token, iceServers: iceTuples(iceServers), epoch: epochFromWire(dilla.epoch), lock: dilla.lock, roomOptions: dilla.roomOptions });
   return dillaSession;
 }
 
@@ -243,3 +243,125 @@ const harness: HarnessApi = {
 
 (window as unknown as { harness: HarnessApi }).harness = harness;
 document.getElementById('ready')?.removeAttribute('hidden');
+
+// ---- task 19: adapters over the single task 17 dilla join path (task 21 extends this block) ----
+import * as dillaLk from 'livekit-client';
+import { MIC as DILLA_MIC, MIC_CAPTURE as DILLA_MIC_CAPTURE, decodeCaps as dillaDecodeCaps, publishDefaults as dillaPublishDefaults } from '../src/audio/presets';
+import { DillaRnnoiseProcessor, type RnnoiseProbe as DillaRnnoiseProbe } from '../src/audio/rnnoise';
+
+export type EpochWire = EpochKeysWire;
+
+export interface DillaHarness {
+  dillaJoin(o: { livekitUrl: string; token: string; iceServers: Array<[string[], string, string]>; epoch: EpochWire; caps?: [number, number, number] }): Promise<void>;
+  dillaInstall(k: EpochWire): Promise<void>;
+  dillaStats(): Promise<DillaMediaStats>;
+  dillaPublishMic(): Promise<void>;
+  dillaSetProcessor(): Promise<{ processedTrackId: string; senderIsProcessed: boolean }>;
+  dillaRestartMic(): Promise<{ processedTrackId: string; senderIsProcessed: boolean }>;
+  rnnoiseProbe(): Promise<DillaRnnoiseProbe & { lostQuanta: number }>;
+  selectedPairs(): Promise<string[]>;
+  dillaLeave(): Promise<void>;
+}
+
+const dillaPcs: RTCPeerConnection[] = [];
+{
+  const Native = window.RTCPeerConnection;
+  window.RTCPeerConnection = class extends Native {
+    constructor(config?: RTCConfiguration) {
+      super(config);
+      dillaPcs.push(this);
+    }
+  } as typeof RTCPeerConnection;
+}
+
+let dillaMic: dillaLk.LocalAudioTrack | null = null;
+let dillaProcessor: DillaRnnoiseProcessor | null = null;
+
+function dillaBase(): HarnessApi {
+  return (window as unknown as { harness: HarnessApi }).harness;
+}
+
+function dillaRoom(): dillaLk.Room {
+  if (!dillaSession) throw new Error('dillaJoin first');
+  return dillaSession.room;
+}
+
+function dillaMicState(): { processedTrackId: string; senderIsProcessed: boolean } {
+  const processed = dillaProcessor?.processedTrack;
+  if (!dillaMic || !processed) throw new Error('no processed mic');
+  return { processedTrackId: processed.id, senderIsProcessed: dillaMic.sender?.track === processed };
+}
+
+const dillaHarness: DillaHarness = {
+  async dillaJoin(o) {
+    const caps = dillaDecodeCaps(o.caps ?? [64_000, 2_500_000, 0]);
+    await dillaBase().connect(o.livekitUrl, o.token, {
+      e2ee: 'dilla',
+      iceServers: o.iceServers.map(([urls, username, credential]) => ({ urls, username, credential })),
+      dilla: {
+        epoch: o.epoch,
+        lock: { instanceId: 'dilla-e2e', callGroupId: o.epoch.groupId },
+        roomOptions: { publishDefaults: dillaPublishDefaults(caps), adaptiveStream: false, dynacast: false },
+      },
+    });
+  },
+  async dillaInstall(k) {
+    await dillaBase().installEpoch(k);
+  },
+  async dillaStats() {
+    return dillaBase().mediaStats();
+  },
+  async dillaPublishMic() {
+    const room = dillaRoom();
+    const [track] = await room.localParticipant.createTracks({ audio: DILLA_MIC_CAPTURE });
+    dillaMic = track as dillaLk.LocalAudioTrack;
+    await room.localParticipant.publishTrack(dillaMic, DILLA_MIC);
+  },
+  async dillaSetProcessor() {
+    if (!dillaMic) throw new Error('dillaPublishMic first');
+    dillaProcessor = new DillaRnnoiseProcessor();
+    await dillaMic.setProcessor(dillaProcessor);
+    return dillaMicState();
+  },
+  async dillaRestartMic() {
+    if (!dillaMic) throw new Error('dillaPublishMic first');
+    await dillaMic.restartTrack(DILLA_MIC_CAPTURE);
+    return dillaMicState();
+  },
+  async rnnoiseProbe() {
+    const ctx = new AudioContext({ sampleRate: 48_000 });
+    const osc = ctx.createOscillator();
+    const dest = ctx.createMediaStreamDestination();
+    osc.connect(dest);
+    osc.start();
+    const p = new DillaRnnoiseProcessor();
+    await p.init({ kind: dillaLk.Track.Kind.Audio, track: dest.stream.getAudioTracks()[0], audioContext: ctx });
+    const probe = await p.probe();
+    await p.destroy();
+    await ctx.close();
+    const quantumMs = (128 / 48_000) * 1000;
+    return { ...probe, lostQuanta: Math.ceil(probe.ctorMs / quantumMs) };
+  },
+  async selectedPairs() {
+    const out: string[] = [];
+    for (const pc of dillaPcs) {
+      const stats = await pc.getStats();
+      const byId = new Map<string, Record<string, unknown>>();
+      stats.forEach((s: Record<string, unknown>) => byId.set(s.id as string, s));
+      for (const s of byId.values()) {
+        if (s.type !== 'candidate-pair' || s.state !== 'succeeded' || s.nominated !== true) continue;
+        const l = byId.get(s.localCandidateId as string);
+        const r = byId.get(s.remoteCandidateId as string);
+        out.push(`local ${l?.candidateType} ${l?.address}:${l?.port} -> remote ${r?.candidateType} ${r?.address}:${r?.port}`);
+      }
+    }
+    return out;
+  },
+  async dillaLeave() {
+    await dillaBase().disconnect();
+    dillaMic = null;
+    dillaProcessor = null;
+  },
+};
+
+Object.assign((window as unknown as { harness: object }).harness, dillaHarness);
