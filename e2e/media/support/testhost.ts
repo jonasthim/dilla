@@ -57,6 +57,9 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   if (!existsSync(core)) {
     throw new Error(`${core} is missing: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked, then copy it there`);
   }
+  const rnnoise = join(REPO_ROOT, 'packages', 'media', 'src', 'audio', 'generated', 'rnnoise.wasm');
+  execFileSync(process.execPath, [join(REPO_ROOT, 'packages', 'media', 'scripts', 'extract-rnnoise-wasm.mjs')], { stdio: 'inherit' });
+  if (!existsSync(rnnoise)) throw new Error(`${rnnoise} is missing after RNNoise extraction; the media harness cannot start`);
 
   // Playwright runs no teardown when globalSetup throws, so a failed start stops whatever it
   // already spawned itself: otherwise the fixed ports stay bound and every later run fails.

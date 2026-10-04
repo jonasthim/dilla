@@ -107,6 +107,7 @@ jobs:
           path: artifacts
       - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
       - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
+      - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
       - run: npx playwright install --with-deps chromium firefox
       - run: npm run test:e2e:media -w @dilla/e2e
         env:
@@ -580,6 +581,20 @@ test('an upload-artifact step in any job without if-no-files-found: error is rep
 test('a workflow without the browser-media job is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(/  browser-media:[\s\S]*?\n\n/, '')));
   assert.ok(problems.some((p) => p.includes('missing job "browser-media"')), problems.join('\n'));
+});
+
+test('browser-media must explicitly extract RNNoise wasm before Playwright', () => {
+  const step = '      - run: node packages/media/scripts/extract-rnnoise-wasm.mjs\n';
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
+  const problems = checkWorkflow(fixture(GOOD.replace(step, '')));
+  assert.ok(problems.some((p) => p.includes('extract-rnnoise-wasm.mjs')), problems.join('\n'));
+});
+
+test('browser-media extraction must precede the media suite', () => {
+  const step = '      - run: node packages/media/scripts/extract-rnnoise-wasm.mjs\n';
+  const moved = GOOD.replace(step, '').replace('      - run: npm run test:e2e:media -w @dilla/e2e\n', '      - run: npm run test:e2e:media -w @dilla/e2e\n' + step);
+  const problems = checkWorkflow(fixture(moved));
+  assert.ok(problems.some((p) => p.includes('RNNoise extraction') && p.includes('before')), problems.join('\n'));
 });
 
 test('the browser-media job requires the real-SFU AV1 leg', () => {

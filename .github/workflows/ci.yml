@@ -200,6 +200,7 @@ jobs:
       - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
       - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
       - run: npm ci
+      - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
       - run: npx playwright install --with-deps chromium firefox
       - run: npm run test:e2e:media -w @dilla/e2e
         env:

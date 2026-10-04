@@ -103,6 +103,7 @@ const REQUIRED_STEPS = {
     'name: dilla-testkit',
     'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm',
     'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
+    'node packages/media/scripts/extract-rnnoise-wasm.mjs',
     'npx playwright install --with-deps chromium firefox',
     'npm run test:e2e:media -w @dilla/e2e',
     'unsupported-sfu-codec.spec.ts',
@@ -342,6 +343,11 @@ export function checkWorkflow(root) {
   }
 
   if ('browser-media' in jobs) {
+    const extractAt = jobs['browser-media'].indexOf('node packages/media/scripts/extract-rnnoise-wasm.mjs');
+    const suiteAt = jobs['browser-media'].indexOf('npm run test:e2e:media -w @dilla/e2e');
+    if (extractAt !== -1 && suiteAt !== -1 && extractAt > suiteAt) {
+      problems.push('ci.yml: browser-media RNNoise extraction must run before the media suite');
+    }
     for (const need of ['rust-wasi', 'rust-native']) {
       if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs['browser-media'])) {
         problems.push(`ci.yml: job "browser-media" downloads the ${need} artifact but has no "needs: ${need}"`);
