@@ -133,6 +133,10 @@ within an epoch, so three rules keep its counters unique across worker restarts,
 
 - A new epoch (any Commit) gives every sender a new KID and new keys. Senders switch to the new
   epoch's keys as soon as they have processed the Commit.
+- Once the media worker has confirmed an epoch, a later install that times out or fails with
+  `E_WASM` ends that worker: the client clears its keys, terminates it, reports the error and stops
+  the call's media. It cannot continue sending under the superseded epoch. An initial install
+  failure rejects the join, which releases the call lock.
 - Receivers keep **every** epoch superseded less than **10 seconds** ago — a join storm makes
   several inside 10 s — each timed from the receiver's own processing of the Commit that superseded
   it, together with that epoch's roster. Installing an epoch evicts any held epoch with the same
@@ -237,8 +241,10 @@ transform:
   backup codecs (DEV-08, DEV-09). Only options that shape the encoder's output before the transform
   (encodings, simulcast layers, codec, audio preset, DTX, stereo, scalability mode, degradation
   preference, stopping the microphone on mute) are taken from the application. A track that arrives
-  with a pre-connect recording anyway has the recording discarded and the recorder stopped before
-  livekit-client reads it, gets a transform that drops every frame, and is unpublished.
+  with a pre-connect recording at sender creation or publication has its buffered chunks discarded,
+  its recorder stopped, its sender blocked and its track unpublished. The publication event is
+  synchronous before livekit-client reads the buffer; after sender creation, calls through the
+  track's `startPreConnectBuffer` method are refused and block the sender too.
 - **Senders.** Every sender gets its transform synchronously when it is created, before the
   renegotiation that starts its RTP. The codec of each frame is the frame's own (the encoded frame's
   `mimeType`), never the codec the publication is labelled with, which the SFU chooses through the
