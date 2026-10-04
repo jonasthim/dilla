@@ -1,0 +1,27 @@
+# Invariant 6 (DS-1 of the server-half review): an instance Remove nobody commits within its 24 h TTL
+# is voided, and the inactivity sweep proposes it again in the same epoch. The external sender signs
+# deterministically, so the new proposal is the voided one byte for byte: the instance re-arms it
+# rather than failing on the duplicate (and taking it out of its own queue). Carol stays away for 91
+# days, her Remove is issued, nobody commits for a day, the void lifts the freeze, and the very
+# same sweep re-arms it: alice's send is refused again, and her commit - which references the
+# proposal every member holds - is accepted.
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=dededededededededededededededede community=none creator=alice
+join bob chat via=welcome
+join carol chat via=welcome
+sync bob
+sync carol
+go_offline carol
+advance_clock 45d
+send alice chat nobody is past the window at day 45
+expect_decrypts bob chat nobody is past the window at day 45
+advance_clock 46d
+expect_425 send alice chat carol is past it at day 91
+advance_clock 25h
+expect_425 send alice chat the voided remove is re-armed
+commit alice
+send alice chat carol is out
+expect_decrypts bob chat carol is out

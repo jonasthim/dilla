@@ -88,28 +88,20 @@ func (d *DS) requireNoFreeze(ctx context.Context, groupID id.ID, epoch uint64) e
 }
 
 // reissueOmitted re-issues every non-void instance proposal the commit did not reference, for the
-// new epoch, and keeps the freeze. A proposal can only be omitted through invariant 5's
-// nobody-online exception, so this runs exactly on that path.
-//
-// IT CANNOT FIRE UNTIL TASK 25 (deviation B21, ruling 42). It is wired at commit step (9), and
-// `checkAppliedProposals`' clause 1 — step (4) — already refuses every commit that omits a
-// non-void origin-0 proposal at the current epoch, with no exemption for the external commit
-// invariant 5 accepts when nobody is online. Task 25 owes clause 1 that exemption as well as the
-// `commitOptions.external` flag; the comment at clause 1 in commit.go states the exact shape.
+// new epoch, and keeps the freeze. Only an EXTERNAL commit can omit one: clause 1 exempts it on
+// invariant 5's nobody-online path and on R25's resync (`clause1Exempt`), and commit step (9) calls
+// this for external commits alone. A member commit is never exempt; the one instance proposal it
+// may leave unreferenced is a Remove it satisfied by applying another Remove of the same leaf
+// (invariant 4, rule (3a) of the task-9 review), and that row is deleted in the commit's own
+// transaction, so it is never read here and is owed nothing.
 //
 // It runs with the group lock held but OUTSIDE withGroup: everything it reaches calls withGroup
 // again to queue the re-signed proposal in the guest, and the handle lock withGroup takes is a
 // plain sync.Mutex. Calling it from inside the commit's own withGroup closure would deadlock that
-// group's request goroutine for the life of the process.
-//
-// THE REGRESSION GUARD FOR THAT DEADLOCK IS CARRIED TO TASK 25 (deviation B24, ruling 45). Task
-// 22's `TestACommitThatReissuesAnOmittedRemoveDoesNotDeadlock` — the timeout is its assertion —
-// cannot be written until a commit can be ACCEPTED here, which is the same blocker as B21's. The
-// property holds today (`ProposeRemove` is a thin locking wrapper over `proposeRemoveLocked`,
-// `reissue` calls only the lock-free form, and `RequestCommit`, which task 22 added to this path,
-// takes `elections.mu`, the store and the gateway — never `d.lock(groupID)`), but nothing FAILS if
-// a later task makes anything reachable from `storeInstanceProposal` take the group lock. Task 25
-// must land that test in the same commit that exempts clause 1.
+// group's request goroutine for the life of the process. The property holds because `reissue`
+// calls only the lock-free proposal bodies and `RequestCommit` takes `elections.mu`, the store and
+// the gateway — never `d.lock(groupID)`; TestACommitThatReissuesAnOmittedRemoveDoesNotDeadlock
+// (resync_test.go) is its regression guard.
 func (d *DS) reissueOmitted(ctx context.Context, groupID id.ID, oldEpoch uint64, applied []mlswasi.AppliedProposal) error {
 	rows, err := d.opts.Store.ListProposals(ctx, groupID, oldEpoch, false)
 	if err != nil {

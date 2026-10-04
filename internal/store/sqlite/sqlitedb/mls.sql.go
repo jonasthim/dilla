@@ -538,6 +538,48 @@ func (q *Queries) ListAllProposals(ctx context.Context, arg ListAllProposalsPara
 	return items, nil
 }
 
+const listBarredMembers = `-- name: ListBarredMembers :many
+SELECT m.group_id, m.leaf_index, m.user_id, m.device_id, m.signature_key, m.added_epoch, m.removed_epoch FROM mls_members m JOIN devices d ON d.id = m.device_id
+WHERE m.group_id = ? AND m.removed_epoch IS NULL
+  AND (d.quarantined_at IS NOT NULL OR d.revoked_at IS NOT NULL)
+ORDER BY m.leaf_index
+`
+
+type ListBarredMembersParams struct {
+	GroupID id.ID
+}
+
+func (q *Queries) ListBarredMembers(ctx context.Context, arg ListBarredMembersParams) ([]MlsMembers, error) {
+	rows, err := q.db.QueryContext(ctx, listBarredMembers, arg.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MlsMembers{}
+	for rows.Next() {
+		var i MlsMembers
+		if err := rows.Scan(
+			&i.GroupID,
+			&i.LeafIndex,
+			&i.UserID,
+			&i.DeviceID,
+			&i.SignatureKey,
+			&i.AddedEpoch,
+			&i.RemovedEpoch,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGroupsForRetention = `-- name: ListGroupsForRetention :many
 SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below, handshakes_pruned_through FROM mls_groups WHERE group_id > ?
 ORDER BY group_id LIMIT ?2

@@ -308,6 +308,63 @@ func TestAForkReasonThatFitsIsStoredUnchanged(t *testing.T) {
 	}
 }
 
+// DS-2 of the server-half review: the reported commit's sender leaf is where the committer sat THEN.
+// By the time the quorum lands it may have left (a resync, a leave) and a newcomer may sit at that
+// index, since MLS fills the leftmost blank leaf. The quarantine removes the committer's device where
+// it is now — or proposes nothing when it holds no leaf — and never the newcomer.
+func TestAForkQuorumRemovesTheCommittersCurrentLeafNotTheReportedOne(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		moved bool // the committer holds another leaf now; otherwise none
+	}{{"the committer moved to another leaf", true}, {"the committer holds no leaf", false}} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newDSHarness(t)
+			ctx := context.Background()
+			g := h.groupWithMembers(t, 4)
+			commit := h.acceptedCommitBy(t, g, 0)
+			committer, reported := g.members[0], g.leafOf(0)
+
+			members, err := h.repo.ListMembers(ctx, g.id)
+			if err != nil {
+				t.Fatalf("ListMembers: %v", err)
+			}
+			newcomer, elsewhere := id.New(), uint32(10)
+			for i := range members {
+				switch {
+				case members[i].LeafIndex == reported:
+					members[i].DeviceID = newcomer
+				case c.moved && members[i].LeafIndex == elsewhere:
+					members[i].DeviceID = committer
+				}
+			}
+			if err := h.repo.Tx(ctx, func(tx store.Repository) error {
+				return tx.ReplaceMembers(ctx, g.id, g.epoch(t), members)
+			}); err != nil {
+				t.Fatalf("ReplaceMembers: %v", err)
+			}
+
+			for _, reporter := range []int{1, 2, 3} {
+				if err := h.ds.ForkReport(ctx, g.sessionOf(reporter), g.id, commit.Epoch, commit.Seq, "cannot process"); err != nil {
+					t.Fatalf("ForkReport from %d: %v", reporter, err)
+				}
+			}
+			if !h.isQuarantined(t, committer) {
+				t.Fatal("the quorum did not quarantine the committer")
+			}
+			if h.hasOutstandingRemoveOfLeaf(t, g, reported) {
+				t.Fatalf("the quarantine proposed removing leaf %d, which the newcomer holds now", reported)
+			}
+			got := h.instanceRemovesOf(t, g.id, elsewhere)
+			if c.moved && (len(got) != 1 || got[0].TargetDevice == nil || *got[0].TargetDevice != committer) {
+				t.Fatalf("instance Removes of leaf %d: %+v, want one of the committer, which holds it now", elsewhere, got)
+			}
+			if !c.moved && len(got) != 0 {
+				t.Fatalf("instance Removes of leaf %d: %+v, want none", elsewhere, got)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------- the helpers
 
 // acceptedCommitBy seeds the handshake log with the commit member `i` committed, and returns the

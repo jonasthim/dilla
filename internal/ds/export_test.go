@@ -31,6 +31,15 @@ func CheckChannelModeForTest(d *DS, ctx context.Context, b Binding) error {
 // (whose inactivity pass would also propose Removes over the fixture's devices).
 func ReconcileLeavesForTest(d *DS, ctx context.Context) (int, error) { return d.reconcileLeaves(ctx) }
 
+// MemberProposalAgainForTest is Proposal's answer to a member proposal whose ref SQL already holds.
+func MemberProposalAgainForTest(d *DS, ctx context.Context, groupID id.ID, epoch uint64, leaf uint32, device id.ID, blob []byte, existing store.ProposalRow) (uint64, error) {
+	return d.memberProposalAgain(ctx, groupID, epoch, leaf, device, blob, existing)
+}
+
+// RemoveInactiveForTest is the sweeper's inactivity pass on its own, so the leaf-reuse hook of the
+// store (reuseLeafAfterNextRead) fires on that pass's member read and not on the reconcile's.
+func RemoveInactiveForTest(d *DS, ctx context.Context) (int, error) { return d.removeInactive(ctx) }
+
 // ACLForTest and DeviceListsForTest are the seams New defaulted, which is the only way to see
 // that a DS built without them is built with the conservative Plan-1 stubs rather than with
 // nothing at all.
@@ -245,11 +254,11 @@ func ReissueAllUnderLockForTest(d *DS, ctx context.Context, groupID id.ID, epoch
 
 // ReplaceMembersForTest runs replaceMembersTx for a group of the given kind in one transaction and
 // queues its removed devices, exactly as every member-set writer does after its transaction.
-func ReplaceMembersForTest(d *DS, ctx context.Context, groupID id.ID, kind uint8, state mlswasi.GroupState) error {
+func ReplaceMembersForTest(d *DS, ctx context.Context, groupID id.ID, kind uint8, state mlswasi.GroupState, joined ...uint32) error {
 	var view memberView
 	if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
 		var err error
-		view, err = d.replaceMembersTx(ctx, tx, groupID, kind, state)
+		view, err = d.replaceMembersTx(ctx, tx, groupID, kind, state, joined...)
 		return err
 	}); err != nil {
 		return err

@@ -15,6 +15,13 @@ A `readable` text channel has no group. A call in any voice channel, including a
 a community whose text channels are `readable`, always has a `call` group: calls are always
 end-to-end encrypted.
 
+The instance keeps a `call` group to the devices present in the call. A device that stays out of
+the call's room while it holds a leaf — its leave report lost, or disconnected by the instance and
+that report lost — loses the leaf: when two room sweeps at least one sweep period apart find the
+same leaf, taken in the same epoch, with its device out of the room, and the device was not admitted
+to the room in the last 30 seconds, the instance proposes a DS `Remove` of that leaf bound to that
+membership, so a device that has rejoined the group since is never removed (`09` § Voice, Leaving).
+
 Groups use MLS ciphersuite `0x0001`. Handshake messages (Proposal, Commit) are sent as
 `PublicMessage`; application data as `PrivateMessage`. Application data MUST be padded so that the
 `PrivateMessage` ciphertext length is a multiple of 256 bytes (RFC 9420 §6.3.1 padding field).
@@ -116,7 +123,9 @@ The `Remove` proposal inside an external commit MUST target only a leaf with the
   disconnects from the SFU. A member proposal never cancels, voids, blocks or replaces a DS
   proposal: when the DS is already removing the leaf (a kick, a ban, an eviction) it refuses the
   member's own `Remove` with `409 E_REMOVE_PENDING`, which the client reads as "I am being removed"
-  and answers by withdrawing its refused proposal, without retrying;
+  and answers by withdrawing its refused proposal, without retrying (a client that re-uploads its
+  own proposal, for instance after a lost answer, is answered as the first time — never with this
+  code — and keeps its proposal);
   and the DS issues its own `Remove` of a leaf regardless of the member's own `Remove` of it
   (`02-delivery-service.md`, invariant 6).
 
@@ -130,6 +139,13 @@ The `Remove` proposal inside an external commit MUST target only a leaf with the
   committer per round for its own proposals (02, invariant 7).
 - **Inactivity:** a device that has not connected for **90 days** is removed from every group by a
   DS `Remove` proposal (founder decision 2026-09-23). It rejoins by external commit.
+- **Quarantined and revoked devices:** the leaf of a device that is quarantined (`02` invariant 9)
+  or revoked is removed from every `text` and `call` group (DMs included) by a DS `Remove`, which
+  the instance's periodic reconcile proposes again for as long as the device holds a leaf there
+  with no DS `Remove` of it outstanding (`02` invariants 9 and 11). Each such `Remove` freezes its
+  group until a member commits it, so a revocation is followed by a membership commit in every
+  group the device was in. `pairing` and `interaction` groups carry no external sender: there a
+  member removes a revoked device of its own user itself (§ External senders, member `Remove`s).
 - **Epoch rotation on membership change:** every Add or Remove is a new epoch; senders MUST NOT
   send application data in an epoch whose commit they have not processed.
 

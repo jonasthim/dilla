@@ -198,6 +198,17 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	if err := d.checkHealState(row); err != nil {
 		return CommitResult{}, err
 	}
+	// The two guards Resync has, for the same reason (DS-3 of the server-half review). The replay
+	// below runs no clause 1, so a device the instance is removing — a kick, a ban, an inactivity
+	// or watchdog removal, a fork quarantine — could otherwise heal first with a commit that omits
+	// its own Remove, and every honest member's heal would be refused after it. A quarantined device
+	// neither reads, resyncs nor heals (invariant 9).
+	if err := d.refuseQuarantined(ctx, s.DeviceID); err != nil {
+		return CommitResult{}, err
+	}
+	if err := d.guardResyncTarget(ctx, s, groupID, row.Epoch); err != nil {
+		return CommitResult{}, err
+	}
 
 	inst, err := d.opts.Wasm.Acquire(ctx)
 	if err != nil {
@@ -351,8 +362,91 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	release = false
 	closeGroup = false
 
+	// The restored epoch's instance work, carried across a heal that moved the epoch (DS-3). The
+	// replay runs no clause 1 (replayHealCommit says why), so this is what keeps a Remove owed at the
+	// backup's epoch owed at the healed one. The adopted state is installed, so the re-issues sign
+	// for the healed epoch against the healed tree. A failure is logged, not answered: the heal is
+	// durable.
+	//
+	// It is not inside the heal's transaction: each re-issue is a guest put plus a transaction of its
+	// own against the INSTALLED healed group (storeInstanceProposal), which exists only once the heal
+	// has committed. A crash between the two, or a failed re-issue, drops the restored epoch's
+	// proposals; the backstop is each proposal's own source (R-2 of the DS re-review): the reconcile
+	// re-proposes the Removes of quarantined and revoked devices and of users the ACL no longer
+	// admits, and the inactivity sweep its own (protocol/02 invariant 11).
+	if state.Epoch > row.Epoch {
+		if err := d.carryHealedProposals(context.WithoutCancel(ctx), groupID, row.Epoch); err != nil {
+			d.log().Error("carrying the restored epoch's instance proposals across a heal failed",
+				"group", groupID.String()[:8], "err", err)
+		}
+	}
+
 	// §2.5's POST /heal response is [epoch, next_seq], so the result carries the NEW high-water.
 	return CommitResult{Seq: high, Epoch: state.Epoch}, nil
+}
+
+// carryHealedProposals is the restored epoch's instance work after a heal that moved the group from
+// fromEpoch to a later one (DS-3 of the server-half review). Every reader of the proposal table
+// looks at the current epoch, or at the one before it (reissueAll), so rows left at fromEpoch would
+// never be read again: a Remove owed there would be silently dropped while its device keeps its leaf.
+//
+// Each non-void instance proposal at fromEpoch goes through reissue, which already decides across
+// epochs: a Remove whose recorded device no longer holds its leaf in the adopted tree is deleted
+// (satisfied), one whose device is still there is re-issued for the healed epoch onto that device
+// with the same action_id, and an Add whose device is no longer eligible is deleted while an
+// eligible one is re-proposed with a fresh KeyPackage. An Add whose device the adopted tree already
+// holds is done and is not re-proposed. Whatever is left at fromEpoch afterwards — void rows,
+// members' own proposals, and a re-issue that failed — is deleted. One committer is elected for the
+// lot. The group lock is held.
+func (d *DS) carryHealedProposals(ctx context.Context, groupID id.ID, fromEpoch uint64) error {
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, fromEpoch, true)
+	if err != nil || len(rows) == 0 {
+		return err
+	}
+	release := d.suppressElections(groupID)
+	carried := false
+	for _, r := range rows {
+		if r.Origin != 0 || r.VoidAt != nil {
+			continue
+		}
+		if mlswasi.ProposalKind(r.Kind) == mlswasi.ProposalAdd && r.TargetDevice != nil {
+			if _, lerr := d.leafOf(ctx, groupID, *r.TargetDevice); lerr == nil {
+				continue // already a member of the adopted tree: the Add is done
+			}
+		}
+		if err := d.reissue(ctx, groupID, r); err != nil {
+			if ctx.Err() != nil {
+				release()
+				return ctx.Err()
+			}
+			d.log().Error("an instance proposal of the restored epoch was not carried across the heal",
+				"group", groupID.String()[:8], "action", r.ActionID.String()[:8], "err", err)
+			continue
+		}
+		carried = true
+	}
+	release()
+
+	left, err := d.opts.Store.ListProposals(ctx, groupID, fromEpoch, true)
+	if err != nil {
+		return err
+	}
+	refs := make([][]byte, 0, len(left))
+	for _, r := range left {
+		refs = append(refs, r.Ref)
+		if r.VoidAt == nil && d.opts.Metrics != nil {
+			d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(r.Kind)).Dec()
+		}
+	}
+	if len(refs) > 0 {
+		if err := d.opts.Store.DeleteProposals(ctx, groupID, refs); err != nil {
+			return err
+		}
+	}
+	if carried {
+		return d.RequestCommit(ctx, groupID)
+	}
+	return nil
 }
 
 // checkHealState is the gate that keeps Heal the post-restore path it is written for. protocol/02

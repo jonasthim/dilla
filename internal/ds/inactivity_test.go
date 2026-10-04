@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 )
 
@@ -69,6 +71,37 @@ func TestADeviceThatConnectsIsNotRemovedForInactivity(t *testing.T) {
 	}
 	if removeTargets(t, h, g)[g.leafOf(0)] {
 		t.Fatal("a device that has just connected was proposed for removal for inactivity")
+	}
+}
+
+// DS-2 of the server-half review: the sweep reads its members outside the group lock, so the leaf
+// it read can hold another device by the time the Remove is built (a commit that removed the
+// unseen device and added a newcomer at its index). The Remove names the device the sweep read and
+// is refused when the leaf holds another one: the newcomer keeps its leaf.
+func TestAnInactivityRemoveOfALeafReusedSinceTheReadIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	g := h.groupWithMembers(t, 2)
+	for i := range 2 {
+		h.account(t, g.sessionOf(i).UserID, g.members[i])
+	}
+	h.clk.Advance(91 * 24 * time.Hour)
+	if err := h.repo.TouchDevice(ctx, g.members[0], h.clk.Now().Add(-24*time.Hour).Unix()); err != nil {
+		t.Fatalf("TouchDevice: %v", err)
+	}
+	newcomer := id.New()
+	h.repo.reuseLeafAfterNextRead(t, g.id, g.leafOf(1), newcomer)
+	if _, err := ds.RemoveInactiveForTest(h.ds, ctx); err != nil {
+		t.Fatalf("removeInactive: %v", err)
+	}
+	for _, r := range h.instanceRemovesOf(t, g.id, g.leafOf(1)) {
+		if r.TargetDevice != nil && *r.TargetDevice == newcomer {
+			t.Fatalf("the inactivity Remove of %s landed on %s, which took leaf %d after the sweep read it",
+				g.members[1].String()[:8], newcomer.String()[:8], g.leafOf(1))
+		}
+	}
+	if n := len(h.instanceRemovesOf(t, g.id, g.leafOf(1))); n != 0 {
+		t.Fatalf("%d instance Removes of the reused leaf, want none", n)
 	}
 }
 

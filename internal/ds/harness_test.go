@@ -568,6 +568,14 @@ func (r *failingRepo) AppendHandshake(ctx context.Context, row store.HandshakeRo
 	return r.Repository.AppendHandshake(ctx, row)
 }
 
+// ReissueProposal is the write a re-issue and a same-epoch re-arm go through (DS-1).
+func (r *failingRepo) ReissueProposal(ctx context.Context, oldRef []byte, p store.ProposalRow) error {
+	if r.take("ReissueProposal") {
+		return errInjected
+	}
+	return r.Repository.ReissueProposal(ctx, oldRef, p)
+}
+
 // ---------------------------------------------------------------- the fixture
 
 // dsFixtureData is the committed 1,500-leaf public group of testkit/fixtures/ds-1500, plus the

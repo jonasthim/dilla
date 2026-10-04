@@ -1305,6 +1305,19 @@ func (r *Repo) ListMembers(ctx context.Context, groupID id.ID) ([]store.MemberRo
 	if err != nil {
 		return nil, wrap(err)
 	}
+	return memberRows(rows), nil
+}
+
+// ListBarredMembers is the group's live leaves whose device is quarantined or revoked.
+func (r *Repo) ListBarredMembers(ctx context.Context, groupID id.ID) ([]store.MemberRow, error) {
+	rows, err := r.r.ListBarredMembers(ctx, pgdb.ListBarredMembersParams{GroupID: groupID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return memberRows(rows), nil
+}
+
+func memberRows(rows []pgdb.MlsMembers) []store.MemberRow {
 	out := make([]store.MemberRow, 0, len(rows))
 	for _, m := range rows {
 		out = append(out, store.MemberRow{
@@ -1317,7 +1330,7 @@ func (r *Repo) ListMembers(ctx context.Context, groupID id.ID) ([]store.MemberRo
 			RemovedEpoch: ptrUint64(m.RemovedEpoch),
 		})
 	}
-	return out, nil
+	return out
 }
 
 func (r *Repo) GroupsForDevice(ctx context.Context, deviceID id.ID) ([]id.ID, error) {

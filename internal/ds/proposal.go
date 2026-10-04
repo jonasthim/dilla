@@ -186,17 +186,62 @@ func (d *DS) ProposeRemoveOf(ctx context.Context, groupID id.ID, leaf uint32, de
 	return d.proposeRemoveOfLocked(ctx, groupID, leaf, &deviceID, actionID)
 }
 
+// ProposeRemoveOfMember is ProposeRemoveOf bound to one MEMBERSHIP rather than one device: the
+// Remove is issued only while deviceID holds leaf with the added epoch the caller read
+// (mls_members.added_epoch), and is otherwise refused with ErrRemoveTargetGone. A device that left
+// and came back at the same leaf index between the caller's read and the group lock — a call
+// leaver rejoining by external commit, which MLS puts in the leftmost blank leaf — holds a new
+// membership, and a Remove meant for the old one must not end it.
+//
+// The rule for added_epoch (replaceMembersTx): a leaf keeps the epoch its device took it at across
+// every commit while that device holds it; a leaf another device takes, and the leaf an external
+// commit puts its joiner on (an own-leaf resync or an external join), start at that commit's epoch
+// — at the device's old index or another one alike. So a Remove bound to the membership before a
+// resync is always refused, whatever the blank-leaf layout (R-3 of the DS re-review).
+func (d *DS) ProposeRemoveOfMember(ctx context.Context, groupID id.ID, leaf uint32, deviceID id.ID, addedEpoch uint64, actionID id.ID) error {
+	unlock := d.lock(groupID)
+	defer unlock()
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errNotFound("group")
+	}
+	if err != nil {
+		return err
+	}
+	members, err := d.opts.Store.ListMembers(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	same := false
+	for _, m := range members {
+		if m.LeafIndex == leaf && m.RemovedEpoch == nil {
+			same = m.DeviceID == deviceID && m.AddedEpoch == addedEpoch
+		}
+	}
+	if !same {
+		gone := errInvalid("the Remove target no longer holds that membership; the action is dropped")
+		gone.cause = ErrRemoveTargetGone
+		return gone
+	}
+	standing, err := d.instanceRemoveOutstanding(ctx, groupID, row.Epoch, leaf)
+	if err != nil || standing {
+		return err
+	}
+	return d.proposeRemoveOfLocked(ctx, groupID, leaf, &deviceID, actionID)
+}
+
 func (d *DS) proposeRemoveLocked(ctx context.Context, groupID id.ID, leaf uint32, actionID id.ID) error {
 	return d.proposeRemoveOfLocked(ctx, groupID, leaf, nil, actionID)
 }
 
-// errRemoveTargetGone is the cause of the refusal of a Remove whose leaf no longer holds the device
-// it was meant for — no device at all, or another one. ProposeRemoveDevice reads it as "nothing to
-// remove".
-var errRemoveTargetGone = errors.New("ds: the Remove target is no longer at its leaf")
+// ErrRemoveTargetGone is the cause of the refusal of a Remove whose leaf no longer holds the device
+// it was meant for — no device at all, or another one (errors.Is matches it through the *Error).
+// ProposeRemoveDevice and the inactivity sweep read it as "nothing to remove"; a caller of
+// ProposeRemoveOf outside the package can read it the same way.
+var ErrRemoveTargetGone = errors.New("ds: the Remove target is no longer at its leaf")
 
 // proposeRemoveOfLocked proposes removing leaf with the group lock held. With expect set, the device
-// at leaf must be *expect or the Remove is refused (errRemoveTargetGone), never aimed at whoever
+// at leaf must be *expect or the Remove is refused (ErrRemoveTargetGone), never aimed at whoever
 // holds the leaf instead.
 func (d *DS) proposeRemoveOfLocked(ctx context.Context, groupID id.ID, leaf uint32, expect *id.ID, actionID id.ID) error {
 	row, err := d.opts.Store.GetGroup(ctx, groupID)
@@ -215,7 +260,7 @@ func (d *DS) proposeRemoveOfLocked(ctx context.Context, groupID id.ID, leaf uint
 	}
 	if !present || (expect != nil && device != *expect) {
 		gone := errInvalid("the Remove target is no longer a member; the action is dropped")
-		gone.cause = errRemoveTargetGone
+		gone.cause = ErrRemoveTargetGone
 		return gone
 	}
 	inst, err := d.opts.Wasm.Acquire(ctx)
@@ -236,6 +281,13 @@ func (d *DS) proposeRemoveOfLocked(ctx context.Context, groupID id.ID, leaf uint
 		Origin:       0,
 		ActionID:     actionID,
 	})
+}
+
+// sameTarget reports whether two proposal rows name the same target leaf and device.
+func sameTarget(a, b store.ProposalRow) bool {
+	eqLeaf := (a.TargetLeaf == nil) == (b.TargetLeaf == nil) && (a.TargetLeaf == nil || *a.TargetLeaf == *b.TargetLeaf)
+	eqDevice := (a.TargetDevice == nil) == (b.TargetDevice == nil) && (a.TargetDevice == nil || *a.TargetDevice == *b.TargetDevice)
+	return eqLeaf && eqDevice
 }
 
 // deviceAtLeaf answers which device holds leaf in the group's current member set.
@@ -305,7 +357,7 @@ func (d *DS) ProposeRemoveDevice(ctx context.Context, groupID, deviceID, actionI
 		return err
 	}
 	if err := d.proposeRemoveOfLocked(ctx, groupID, leaf, &deviceID, actionID); err != nil {
-		if errors.Is(err, errRemoveTargetGone) {
+		if errors.Is(err, ErrRemoveTargetGone) {
 			return nil // the device left the leaf: there is nothing to remove
 		}
 		return err
@@ -550,6 +602,15 @@ func (d *DS) drainStalledJoins(ctx context.Context) (int, error) {
 // is not merely held in memory: the next SUCCESSFUL proposal's `persistState` runs inside its own
 // transaction and writes the divergence into the durable state blob, where it survives a restart
 // and is cleared only by the next merge.
+//
+// THE SAME PROPOSAL AGAIN (DS-1 of the server-half review). The external sender signs
+// deterministically and the frame carries no nonce, so a proposal re-signed in the epoch it was
+// voided in — the reconcile, the inactivity sweep, a repeated kick, a call re-drive — is
+// byte-identical to the voided one, and `ProposalPut` hands back the voided row's ref. That row is
+// RE-ARMED through `ReissueProposal` (delete then insert, in this transaction): live again, issued
+// now, a fresh TTL, its original action_id. A plain INSERT would hit the primary key. And a failure
+// on the way must not take the ref out of the guest's queue, which held it before this call:
+// unqueueProposal refuses a ref SQL still holds.
 func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store.GroupRow, blob []byte, p store.ProposalRow) error {
 	var seq uint64
 	err := d.withGroup(ctx, groupID, func(g *mlswasi.PublicGroup) error {
@@ -563,6 +624,16 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 				d.unqueueProposal(ctx, g, groupID, ref)
 			}
 		}()
+		existing, err := d.proposalRowAt(ctx, groupID, row.Epoch, ref)
+		if err != nil {
+			return err
+		}
+		// Only the voided instance proposal itself is re-armed: same kind, same target. A live row
+		// is never touched here (every issuer dedupes against live rows first), and a row for
+		// another target with this ref cannot be the same action; both fall through to an INSERT,
+		// which refuses them, and the guest keeps what it held.
+		rearm := existing != nil && existing.VoidAt != nil && existing.Origin == 0 &&
+			existing.Kind == p.Kind && sameTarget(*existing, p)
 		if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
 			seq, err = nextSeq(ctx, tx, groupID)
 			if err != nil {
@@ -580,13 +651,31 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 			p.IssuedAt = d.now()
 			p.TTL = uint64(d.proposalTTL(row.Kind).Seconds())
 			// A re-issue replaces the row it supersedes in the same transaction, keeping
-			// action_id; anything else is a fresh row.
-			if supersedes := d.takeSupersede(groupID); supersedes != nil {
+			// action_id; the same proposal again re-arms its own row (DS-1, above); anything else
+			// is a fresh row.
+			supersedes := d.takeSupersede(groupID)
+			switch {
+			case supersedes != nil && rearm && !bytes.Equal(supersedes, ref):
+				// A re-issue onto an epoch that already holds this very proposal under a row of its
+				// own: that row goes, and the re-issue carries the superseded action.
+				if err := tx.DeleteProposals(ctx, groupID, [][]byte{ref}); err != nil {
+					return err
+				}
 				if err := tx.ReissueProposal(ctx, supersedes, p); err != nil {
 					return err
 				}
-			} else if err := tx.PutProposal(ctx, p); err != nil {
-				return err
+			case supersedes != nil:
+				if err := tx.ReissueProposal(ctx, supersedes, p); err != nil {
+					return err
+				}
+			case rearm:
+				if err := tx.ReissueProposal(ctx, ref, p); err != nil {
+					return err
+				}
+			default:
+				if err := tx.PutProposal(ctx, p); err != nil {
+					return err
+				}
 			}
 			return persistState(ctx, tx, groupID, g, row.GroupInfoBlob)
 		}); err != nil {
@@ -595,6 +684,14 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 		accepted = true
 		return nil
 	})
+	if d.takeStaleAfterFailedMerge(groupID) {
+		// Outside withGroup, so the handle lock is free: the guest could not be brought back in
+		// line with SQL (unqueueProposal), and the next request re-imports the committed blob.
+		if evErr := d.states.evict(ctx, groupID); evErr != nil {
+			d.log().Error("evicting a group whose proposal queue outran its transaction failed",
+				"group", groupID, "err", evErr)
+		}
+	}
 	if err != nil {
 		return err
 	}

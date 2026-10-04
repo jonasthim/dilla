@@ -86,6 +86,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"PutKeyPackages", "PutProposal", "PutWelcomePayload", "PutWelcomes",
 			"QuarantineDevice", "ReissueProposal", "ReplaceMembers", "TakeKeyPackage",
 			"VoidProposal",
+			// ListBarredMembers is the reconcile sweeper's backstop for the Removes quarantined and
+			// revoked devices are owed (DS server-half re-review, R-2): one query per group.
+			"ListBarredMembers",
 			// The pending-join queue: deviation B13 names QueuePendingJoins/TakePendingJoins,
 			// and Plan 2 task 7 (Plan 1 follow-up card 8) lands them with the length its tests
 			// and the debug state read and the paged walk the sweeper re-drives a stalled

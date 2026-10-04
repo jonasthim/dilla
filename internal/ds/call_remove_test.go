@@ -287,7 +287,7 @@ func TestEveryMemberSetWriterFlushesEvictionsAfterUnlocking(t *testing.T) {
 			}
 			calls++
 			args, _, _ := strings.Cut(line[i+len("d.replaceMembersTx("):], ")")
-			if strings.Count(args, ",") != 4 { // ctx, tx, groupID, kind, state
+			if strings.Count(args, ",") < 4 { // ctx, tx, groupID, kind, state[, joined...]
 				t.Errorf("%s: %q does not pass the group kind", file, strings.TrimSpace(line))
 			}
 		}

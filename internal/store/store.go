@@ -210,6 +210,9 @@ type MLS interface {
 	ReissueProposal(ctx context.Context, oldRef []byte, p ProposalRow) error // keeps action_id
 	ReplaceMembers(ctx context.Context, groupID id.ID, epoch uint64, m []MemberRow) error
 	ListMembers(ctx context.Context, groupID id.ID) ([]MemberRow, error)
+	// ListBarredMembers is the group's live leaves whose device is quarantined or revoked: the
+	// reconcile sweeper's one query per group for the Removes those devices are owed.
+	ListBarredMembers(ctx context.Context, groupID id.ID) ([]MemberRow, error)
 	GroupsForDevice(ctx context.Context, deviceID id.ID) ([]id.ID, error)
 	// GroupsForTarget is Plan 2's P2-D3: the OPEN groups of one kind bound to one
 	// target (a channel's text and call groups), oldest first, over

@@ -166,3 +166,55 @@ func TestTheSweeperRemovesAnIneligibleMemberEvenWhileItsOwnRemoveStands(t *testi
 		t.Fatalf("%d instance Removes of leaf 5, want 1: its own Remove stood in for the instance's", len(got))
 	}
 }
+
+// R-2 of the DS re-review: a quarantined or revoked device that still holds a leaf is owed an
+// instance Remove, and the reconcile is its durable source. A fork quorum fires once, and nothing
+// else proposes a revoked device's removal, so a Remove that was lost — a heal's carry that failed,
+// a crash between the heal and the carry, a row deleted by hand — is proposed again by the next
+// pass, bound to the device, whatever the ACL says of its user.
+func TestTheReconcileReProposesTheRemoveOfAQuarantinedOrRevokedLeaf(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	quarantined, revoked := h.memberSession(t, reg.GroupID, 1), h.memberSession(t, reg.GroupID, 2)
+	h.account(t, quarantined.UserID, quarantined.DeviceID)
+	h.account(t, revoked.UserID, revoked.DeviceID)
+	if err := h.repo.QuarantineDevice(ctx, quarantined.DeviceID, h.clk.Now().Unix(), "fork quorum"); err != nil {
+		t.Fatalf("QuarantineDevice: %v", err)
+	}
+	if err := h.repo.RevokeDevice(ctx, revoked.DeviceID, h.clk.Now().Unix()); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	if _, err := ds.ReconcileLeavesForTest(h.ds, ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	for leaf, dev := range map[uint32]id.ID{1: quarantined.DeviceID, 2: revoked.DeviceID} {
+		got := h.instanceRemovesOf(t, reg.GroupID, leaf)
+		if len(got) != 1 || got[0].TargetDevice == nil || *got[0].TargetDevice != dev {
+			t.Fatalf("instance Removes of leaf %d: %+v, want one bound to its barred device", leaf, got)
+		}
+	}
+	// A second pass stacks nothing on the outstanding Removes.
+	if n, err := ds.ReconcileLeavesForTest(h.ds, ctx); err != nil || n != 0 {
+		t.Fatalf("the second pass proposed %d (err %v), want 0", n, err)
+	}
+}
+
+// A device that is quarantined but no longer holds a leaf is owed nothing.
+func TestTheReconcileProposesNothingForAQuarantinedDeviceWithNoLeaf(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	gone := h.memberSession(t, reg.GroupID, 1)
+	h.account(t, gone.UserID, gone.DeviceID)
+	if err := h.repo.QuarantineDevice(ctx, gone.DeviceID, h.clk.Now().Unix(), "fork quorum"); err != nil {
+		t.Fatalf("QuarantineDevice: %v", err)
+	}
+	h.dropMember(t, reg.GroupID, 1)
+	if n, err := ds.ReconcileLeavesForTest(h.ds, ctx); err != nil || n != 0 {
+		t.Fatalf("the reconcile proposed %d (err %v), want 0", n, err)
+	}
+	if rows := h.proposals(t, reg.GroupID, true); len(rows) != 0 {
+		t.Fatalf("proposals %+v, want none", rows)
+	}
+}

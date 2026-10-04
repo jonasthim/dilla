@@ -331,12 +331,22 @@ type memberView struct {
 // transaction and returns the fan-out list and, for a call group (kind), the removed devices. The
 // credential identity is the core's ten-element CredentialIdentity CBOR
 // (`core/dilla-core/src/identity/credential.rs:28-42`), decoded by decodeCredentialIdentity.
-func (d *DS) replaceMembersTx(ctx context.Context, tx store.Repository, groupID id.ID, kind uint8, state mlswasi.GroupState) (memberView, error) {
-	var before []store.MemberRow
-	if kind == groupKindCall {
-		var err error
-		if before, err = tx.ListMembers(ctx, groupID); err != nil {
-			return memberView{}, err
+//
+// joined names the leaves this write's commit put a device into by external commit (an own-leaf
+// resync or an external join): each starts a new membership at state.Epoch, whatever held the
+// index before.
+func (d *DS) replaceMembersTx(ctx context.Context, tx store.Repository, groupID id.ID, kind uint8, state mlswasi.GroupState, joined ...uint32) (memberView, error) {
+	before, err := tx.ListMembers(ctx, groupID)
+	if err != nil {
+		return memberView{}, err
+	}
+	// added_epoch is the epoch the device took its leaf, kept across rewrites while the same device
+	// holds the same leaf: it is what tells a membership from a later one at the same index
+	// (ProposeRemoveOfMember). A device that left and came back starts a new membership.
+	since := make(map[uint32]store.MemberRow, len(before))
+	for _, m := range before {
+		if m.RemovedEpoch == nil {
+			since[m.LeafIndex] = m
 		}
 	}
 	rows := make([]store.MemberRow, 0, len(state.Members))
@@ -346,13 +356,18 @@ func (d *DS) replaceMembersTx(ctx context.Context, tx store.Repository, groupID 
 		if err != nil {
 			return memberView{}, errCommitInvalid("credential_identity", err.Error())
 		}
+		added := state.Epoch
+		if prev, ok := since[m.LeafIndex]; ok && prev.DeviceID == deviceID && prev.AddedEpoch <= state.Epoch &&
+			!slices.Contains(joined, m.LeafIndex) {
+			added = prev.AddedEpoch
+		}
 		rows = append(rows, store.MemberRow{
 			GroupID:      groupID,
 			LeafIndex:    m.LeafIndex,
 			UserID:       userID,
 			DeviceID:     deviceID,
 			SignatureKey: m.SignatureKey,
-			AddedEpoch:   state.Epoch,
+			AddedEpoch:   added,
 		})
 		view.devices = append(view.devices, deviceID)
 		view.leaves[deviceID] = m.LeafIndex
@@ -361,6 +376,9 @@ func (d *DS) replaceMembersTx(ctx context.Context, tx store.Repository, groupID 
 		return memberView{}, err
 	}
 	for _, m := range before {
+		if kind != groupKindCall {
+			break
+		}
 		if _, still := view.leaves[m.DeviceID]; !still && !slices.Contains(view.removed, m.DeviceID) {
 			view.removed = append(view.removed, m.DeviceID)
 		}
