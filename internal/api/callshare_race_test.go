@@ -359,13 +359,24 @@ func TestACallThatEndsWithRepairsPendingLeavesNothingBehind(t *testing.T) {
 }
 
 // Stress, meant for -race: shares, unshares, permission flips and syncs from many goroutines. The
-// invariant is checked at every update the SFU applies, not only at the end.
+// invariant is checked at every update the SFU applies, not only at the end. As the targeted race
+// tests park one push, every push here is parked before the SFU applies it — a promotion longer than
+// a demotion — and a grant sync runs without pause for as long as the devices churn, so the window
+// between a permission being computed and landing is wide: without the per-call lock a sync's
+// promotion lands after an unshare freed the slot.
 func TestTheLeaseInvariantHoldsUnderConcurrentChurn(t *testing.T) {
 	const devices, maxPub, rounds = 6, 2, 40
 	l := newLeaseEnv(t, maxPub, devices)
 	var mu sync.Mutex
 	var breaches []string
 	l.stub.mu.Lock()
+	l.stub.beforeUpdate = func(u permUpdate) {
+		park := time.Duration(rand.IntN(1000)) * time.Microsecond
+		if hasCamera(u.Perm) {
+			park += 3 * time.Millisecond
+		}
+		time.Sleep(park)
+	}
 	l.stub.onUpdate = func(permUpdate) {
 		if v := l.violation(); v != "" {
 			mu.Lock()
@@ -389,19 +400,27 @@ func TestTheLeaseInvariantHoldsUnderConcurrentChurn(t *testing.T) {
 			}
 		}()
 	}
-	wg.Add(1)
+	churned, syncDone := make(chan struct{}), make(chan struct{})
 	go func() {
-		defer wg.Done()
-		for k := range rounds / 4 {
-			if k%2 == 0 {
+		defer close(syncDone)
+		for k := 0; ; k++ {
+			select {
+			case <-churned:
+				return
+			default:
+			}
+			switch k % 8 {
+			case 0:
 				denyInChannel(t, l.e, l.ch, l.owner, api.PermVideo|api.PermScreenShare)
-			} else {
+			case 1:
 				denyInChannel(t, l.e, l.ch, l.owner, 0)
 			}
 			_ = l.sync(t)
 		}
 	}()
 	wg.Wait()
+	close(churned)
+	<-syncDone
 	if v := l.violation(); v != "" {
 		breaches = append(breaches, v)
 	}
