@@ -400,8 +400,9 @@ type stubSFU struct {
 	// live is the permission the stub SFU holds per identity: set by an applied update, dropped by
 	// a removal.
 	live         map[string]*livekit.ParticipantPermission
-	failUpdates  int // the next failUpdates pushes fail (and are not applied)
-	failRemovals int // the next failRemovals RemoveParticipants calls fail
+	failUpdates  int  // the next failUpdates pushes fail (and are not applied)
+	failRemovals int  // the next failRemovals RemoveParticipants calls fail
+	hang         bool // pushes and removals block until their context ends: a hung SFU
 	present      map[string][]*livekit.ParticipantInfo
 	listFail     error
 }
@@ -432,11 +433,15 @@ func (s *stubSFU) CreateRoom(_ context.Context, room string) error {
 	return s.createFail
 }
 
-func (s *stubSFU) UpdatePermission(_ context.Context, room, identity string, perm *livekit.ParticipantPermission) error {
+func (s *stubSFU) UpdatePermission(ctx context.Context, room, identity string, perm *livekit.ParticipantPermission) error {
 	u := permUpdate{Room: room, Identity: identity, Perm: perm}
 	s.mu.Lock()
-	before := s.beforeUpdate
+	before, hang := s.beforeUpdate, s.hang
 	s.mu.Unlock()
+	if hang {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	if before != nil {
 		before(u)
 	}
@@ -463,8 +468,13 @@ func (s *stubSFU) UpdatePermission(_ context.Context, room, identity string, per
 	return fail
 }
 
-func (s *stubSFU) RemoveParticipants(_ context.Context, room string, device id.ID) error {
+func (s *stubSFU) RemoveParticipants(ctx context.Context, room string, device id.ID) error {
 	s.mu.Lock()
+	if s.hang {
+		s.mu.Unlock()
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	defer s.mu.Unlock()
 	s.removed = append(s.removed, [2]string{room, device.String()})
 	if s.failRemovals > 0 {

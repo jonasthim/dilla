@@ -44,10 +44,11 @@ type Metrics struct {
 	CertRenewalFailures prometheus.Counter
 	ClockSkewSeconds    prometheus.Gauge
 	// The call routes (dilla-media task 10). Label-free.
-	CallFullTotal          prometheus.Counter
-	CallShareRefusalsTotal prometheus.Counter
-	CallCutsTotal          prometheus.Counter
-	CallGrantRetriesTotal  prometheus.Counter
+	CallFullTotal           prometheus.Counter
+	CallShareRefusalsTotal  prometheus.Counter
+	CallCutsTotal           prometheus.Counter
+	CallGrantRetriesTotal   prometheus.Counter
+	CallRepairsPendingGauge prometheus.Gauge
 }
 
 // NewMetrics takes the gatherer explicitly rather than type-asserting the
@@ -115,6 +116,8 @@ func NewMetrics(r prometheus.Registerer, g prometheus.Gatherer) *Metrics {
 		prometheus.CounterOpts{Name: "dilla_call_cuts_total", Help: "Participants a permission change cut from a call room: a device that lost view_channel or connect, or an identity that is no device."})
 	m.CallGrantRetriesTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "dilla_call_grant_retries_total", Help: "Retries of a call participant's cut or demotion that had not landed in the SFU."})
+	m.CallRepairsPendingGauge = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "dilla_call_grant_repairs_pending", Help: "Call participants' cuts or demotions not yet landed in the SFU, across every call."})
 	r.MustRegister(m.collectors()...)
 	return m
 }
@@ -127,7 +130,7 @@ func (m *Metrics) collectors() []prometheus.Collector {
 		m.WasiDuration, m.StoreTxDuration, m.BlobBytes, m.RateLimitedTotal,
 		m.BlobGCRuns, m.BlobGCDeleted, m.BlobGCBytes, m.BlobRefsExpired, m.BlobPurges,
 		m.CertRenewalFailures, m.ClockSkewSeconds,
-		m.CallFullTotal, m.CallShareRefusalsTotal, m.CallCutsTotal, m.CallGrantRetriesTotal,
+		m.CallFullTotal, m.CallShareRefusalsTotal, m.CallCutsTotal, m.CallGrantRetriesTotal, m.CallRepairsPendingGauge,
 	}
 }
 
@@ -216,6 +219,14 @@ func (m *Metrics) CallGrantRetry() {
 		return
 	}
 	m.CallGrantRetriesTotal.Inc()
+}
+
+// CallRepairsPending sets the gauge of call grant repairs outstanding.
+func (m *Metrics) CallRepairsPending(n int) {
+	if m == nil {
+		return
+	}
+	m.CallRepairsPendingGauge.Set(float64(n))
 }
 
 func statusClass(status int) string {

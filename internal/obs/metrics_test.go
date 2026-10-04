@@ -89,7 +89,7 @@ func TestMetricNamesAreTheDocumentedSet(t *testing.T) {
 		"dilla_blob_refs_expired_total", "dilla_blob_purges_total",
 		"dilla_cert_renewal_failures_total", "dilla_clock_skew_seconds",
 		"dilla_call_full_total", "dilla_call_share_refusals_total", "dilla_call_cuts_total",
-		"dilla_call_grant_retries_total",
+		"dilla_call_grant_retries_total", "dilla_call_grant_repairs_pending",
 	}
 	families, err := reg.Gather()
 	if err != nil {
@@ -163,6 +163,22 @@ func counterValue(t *testing.T, reg *prometheus.Registry, name string) float64 {
 	return 0
 }
 
+// gaugeValue reads one label-free gauge out of a registry.
+func gaugeValue(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() == name && len(f.GetMetric()) == 1 {
+			return f.GetMetric()[0].GetGauge().GetValue()
+		}
+	}
+	t.Fatalf("%s is not in the registry", name)
+	return 0
+}
+
 func TestTheCallCountersCount(t *testing.T) {
 	reg := prometheus.NewPedanticRegistry()
 	m := obs.NewMetrics(reg, reg)
@@ -183,9 +199,14 @@ func TestTheCallCountersCount(t *testing.T) {
 	if got := counterValue(t, reg, "dilla_call_grant_retries_total"); got != 1 {
 		t.Errorf("dilla_call_grant_retries_total = %v", got)
 	}
+	m.CallRepairsPending(3)
+	if got := gaugeValue(t, reg, "dilla_call_grant_repairs_pending"); got != 3 {
+		t.Errorf("dilla_call_grant_repairs_pending = %v", got)
+	}
 	var none *obs.Metrics
 	none.CallFull()
 	none.ShareRefused()
 	none.CallCut()
 	none.CallGrantRetry()
+	none.CallRepairsPending(1)
 }

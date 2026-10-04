@@ -71,12 +71,13 @@ func TestSyncCallGrantsReleasesTheSlotOfAUserWhoLostVideoAndScreen(t *testing.T)
 }
 
 // countingCounters is the call routes' metric surface, counted.
-type countingCounters struct{ full, refused, cut, retries atomic.Int64 }
+type countingCounters struct{ full, refused, cut, retries, pending atomic.Int64 }
 
-func (c *countingCounters) CallFull()       { c.full.Add(1) }
-func (c *countingCounters) ShareRefused()   { c.refused.Add(1) }
-func (c *countingCounters) CallCut()        { c.cut.Add(1) }
-func (c *countingCounters) CallGrantRetry() { c.retries.Add(1) }
+func (c *countingCounters) CallFull()                { c.full.Add(1) }
+func (c *countingCounters) ShareRefused()            { c.refused.Add(1) }
+func (c *countingCounters) CallCut()                 { c.cut.Add(1) }
+func (c *countingCounters) CallGrantRetry()          { c.retries.Add(1) }
+func (c *countingCounters) CallRepairsPending(n int) { c.pending.Store(int64(n)) }
 
 // The spec's error handling: the SFU session is cut on kick at once. A participant whose user lost
 // view_channel or connect is removed from the room (its "#" shadows with it) by the sync itself, not

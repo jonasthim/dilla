@@ -57,9 +57,9 @@ type Server struct {
 	blobs     *blob.Store
 	ownsBlobs bool
 
-	// calls is the mounted call route group; the maintenance tick retries its pending grant repairs
-	// (a cut or demotion the SFU did not take), so a call converges without another event in it.
-	calls *api.Calls
+	// stopCallRetries stops the call route group's grant retry loop (a cut or demotion the SFU did
+	// not take converges on it); Shutdown calls it before it returns, and serve stops the SFU after.
+	stopCallRetries func()
 
 	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
 	// Shutdown calls before it stops the gateway.
@@ -379,7 +379,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
 		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery, groups: groups,
-		blobs: blobs, ownsBlobs: ownsBlobs, calls: callRoutes,
+		blobs: blobs, ownsBlobs: ownsBlobs,
 		throttle: throttle, limiter: limiter,
 	}
 	// One http.Server for whichever listener tls.mode chooses (Plan 2 task 16):
@@ -411,6 +411,11 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// connection that stops heartbeating stays "online" forever and every suspended connection
 	// keeps its ring for the life of the process.
 	s.maintenance = gw.Run(context.WithoutCancel(ctx), s.sweep)
+	// The call grant retry loop runs on its own goroutine and ticker, never on the maintenance tick
+	// above: a slow or hung SFU must not delay closing a revoked session's socket.
+	if o.SFU != nil {
+		s.stopCallRetries = callRoutes.StartRetries(api.CallRetryInterval)
+	}
 	return s, nil
 }
 
@@ -421,17 +426,7 @@ func (s *Server) sweep(ctx context.Context) {
 	if _, err := s.o.Repo.PruneSessions(ctx, s.o.Clock.Now().Unix()); err != nil {
 		s.o.Log.Warn("pruning expired sessions failed", "err", err)
 	}
-	// A call participant's cut or demotion the SFU did not take is retried every tick until it lands
-	// or the participant is gone; each SFU call is bounded so a hung SFU cannot stall the tick.
-	if s.calls != nil {
-		rctx, cancel := context.WithTimeout(ctx, callRetryBudget)
-		s.calls.RetryPending(rctx)
-		cancel()
-	}
 }
-
-// callRetryBudget bounds one tick's call grant retries.
-const callRetryBudget = 10 * time.Second
 
 // Throttle is the login throttle New built; the maintenance loop sweeps it.
 func (s *Server) Throttle() *auth.Throttle { return s.throttle }
@@ -513,6 +508,11 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if s.maintenance != nil {
 		s.maintenance()
+	}
+	// The retry loop's pass in flight is cut short by its cancelled context, and every SFU call in it
+	// is bounded by api's sfuCallTimeout, so a hung SFU cannot hold Shutdown.
+	if s.stopCallRetries != nil {
+		s.stopCallRetries()
 	}
 	if derr := s.ds.Shutdown(ctx); derr != nil {
 		keep(fmt.Errorf("dillad: stop the delivery service: %w", derr))

@@ -46,8 +46,11 @@ const (
 	CodeCommitRequired    Code = "E_COMMIT_REQUIRED"
 	CodeRateLimited       Code = "E_RATE_LIMITED"
 	CodeStorageFull       Code = "E_STORAGE_FULL"
-	CodeVersion           Code = "E_VERSION"
-	CodeInternal          Code = "E_INTERNAL"
+	// CodeUnavailable is 503 with retry_after_ms: the instance could not take a resource it needs
+	// within its bound (a call whose SFU work is stuck); retry after the delay.
+	CodeUnavailable Code = "E_UNAVAILABLE"
+	CodeVersion     Code = "E_VERSION"
+	CodeInternal    Code = "E_INTERNAL"
 	// CodeProvisionalOutsidePairing is protocol/02 § Device sessions item 4:
 	// a provisional session reaching anything but its one pairing group.
 	CodeProvisionalOutsidePairing Code = "E_PROVISIONAL_OUTSIDE_PAIRING"
@@ -119,6 +122,8 @@ func (e *Error) Status() int {
 		return http.StatusTooManyRequests
 	case CodeStorageFull:
 		return http.StatusInsufficientStorage
+	case CodeUnavailable:
+		return http.StatusServiceUnavailable
 	case CodeInternal:
 		return http.StatusInternalServerError
 	default:
@@ -165,6 +170,12 @@ func Version(wire, e2ee, media []uint64) *Error {
 func RateLimited(retryAfterMS uint64) *Error {
 	ms := retryAfterMS
 	return &Error{Code: CodeRateLimited, Detail: "rate limited", RetryAfterMS: &ms}
+}
+
+// Unavailable is 503 E_UNAVAILABLE with a retry delay.
+func Unavailable(retryAfterMS uint64, detail string) *Error {
+	ms := retryAfterMS
+	return &Error{Code: CodeUnavailable, Detail: detail, RetryAfterMS: &ms}
 }
 
 // RateLimitedAfter is RateLimited for a wait the caller holds as a duration. A non-positive wait

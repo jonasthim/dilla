@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/server"
 )
 
 // leaseEnv is shareEnv with the mounted *api.Calls, the call's room and the owner's community: an
@@ -246,6 +248,111 @@ func TestSyncCallGrantsRacingUnshareNeverLeavesVideoWithoutASlot(t *testing.T) {
 	}
 	if hasCamera(l.stub.lastPerms()[l.devs[0].String()]) {
 		t.Fatal("the device that unshared kept the camera")
+	}
+}
+
+// The per-call lock is bounded: while one request's push is stuck in the SFU, a second request for
+// the same call — a share, or the /rtc gate for a device with a repair pending — answers 503
+// E_UNAVAILABLE with retry_after_ms within the bound instead of queueing behind it.
+func TestABusyCallAnswersUnavailableWithinTheBound(t *testing.T) {
+	l := newLeaseEnv(t, 2, 3)
+	hook, parked, release := parkOnce(func(u permUpdate) bool {
+		return u.Identity == l.devs[0].String() && hasCamera(u.Perm)
+	})
+	l.stub.mu.Lock()
+	l.stub.beforeUpdate = hook // a push stuck in the SFU, deaf to its deadline
+	l.stub.mu.Unlock()
+	firstDone := make(chan struct{})
+	go func() { defer close(firstDone); l.share(0) }()
+	<-parked
+	defer func() { close(release); <-firstDone }()
+	// dev2 has a repair pending (as a failed cut leaves one), so the gate must take the call's lock
+	// to retry it before it may admit dev2.
+	l.calls.MarkPending(l.callID, l.devs[2], l.room)
+
+	start := time.Now()
+	status, body := l.e.Do(http.MethodPost, l.sharePath(), "dev1", []any{})
+	if status != http.StatusServiceUnavailable || l.e.ErrCode(body) != "E_UNAVAILABLE" {
+		t.Fatalf("a share behind a stuck one = %d %s, want 503 E_UNAVAILABLE", status, l.e.ErrCode(body))
+	}
+	if waited := time.Since(start); waited > 4*time.Second {
+		t.Fatalf("the share waited %s for the busy call, longer than the bound", waited)
+	}
+	start = time.Now()
+	_, err := l.calls.AdmitRoom(t.Context(), l.room, l.devs[2])
+	var se *server.Error
+	if !errors.As(err, &se) || se.Code != server.CodeUnavailable || se.RetryAfterMS == nil {
+		t.Fatalf("the gate behind a stuck call = %v, want E_UNAVAILABLE with retry_after_ms", err)
+	}
+	if waited := time.Since(start); waited > 4*time.Second {
+		t.Fatalf("the gate held the join %s, longer than the bound", waited)
+	}
+}
+
+// With an SFU that hangs, every SFU call under a call's lock gives up at its own timeout, the retry
+// loop's stop returns promptly (Shutdown calls it), and the repair stays pending rather than lost.
+func TestTheRetryLoopStopsPromptlyWithAHungSFU(t *testing.T) {
+	l := newLeaseEnv(t, 1, 1)
+	if status := l.share(0); status != http.StatusNoContent {
+		t.Fatalf("dev0 share = %d", status)
+	}
+	l.stub.mu.Lock()
+	l.stub.hang = true
+	l.stub.mu.Unlock()
+	start := time.Now()
+	if status := l.unshare(0); status != http.StatusInternalServerError {
+		t.Fatalf("an unshare against a hung SFU = %d, want 500", status)
+	}
+	if waited := time.Since(start); waited > 4*time.Second {
+		t.Fatalf("the unshare took %s against a hung SFU; each SFU call is bounded", waited)
+	}
+	if l.calls.PendingRepairs() != 1 || len(l.calls.SharersOf(l.callID)) != 1 {
+		t.Fatal("the failed demotion should be pending with its slot held")
+	}
+	stop := l.calls.StartRetries(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // a pass is in flight, hung on the SFU
+	start = time.Now()
+	stop()
+	if waited := time.Since(start); waited > 3*time.Second {
+		t.Fatalf("stopping the retry loop took %s with a hung SFU", waited)
+	}
+	if l.calls.PendingRepairs() != 1 {
+		t.Fatal("the repair was lost when the loop stopped")
+	}
+	l.stub.mu.Lock()
+	l.stub.hang = false
+	l.stub.mu.Unlock()
+	l.calls.RetryPending(t.Context())
+	if l.calls.PendingRepairs() != 0 || len(l.calls.SharersOf(l.callID)) != 0 || hasCamera(l.stub.lastPerms()[l.devs[0].String()]) {
+		t.Fatal("once the SFU answers, the retry should land the demotion and free the slot")
+	}
+}
+
+// The pending set is bounded: a call that ends with repairs pending leaves neither repairs nor slots
+// behind, and the gauge reads zero.
+func TestACallThatEndsWithRepairsPendingLeavesNothingBehind(t *testing.T) {
+	l := newLeaseEnv(t, 2, 2)
+	counters := &countingCounters{}
+	l.calls.WithCounters(counters)
+	if status := l.share(0); status != http.StatusNoContent {
+		t.Fatalf("dev0 share = %d", status)
+	}
+	l.stub.mu.Lock()
+	l.stub.failRemovals, l.stub.failUpdates = 100, 100
+	l.stub.mu.Unlock()
+	denyInChannel(t, l.e, l.ch, l.owner, api.PermConnect)
+	if err := l.sync(t); err == nil {
+		t.Fatal("the sync hid the failed cuts")
+	}
+	if l.calls.PendingRepairs() != 2 || counters.pending.Load() != 2 {
+		t.Fatalf("pending repairs = %d (gauge %d), want both devices", l.calls.PendingRepairs(), counters.pending.Load())
+	}
+	if status, _ := l.e.Do(http.MethodDelete, "/v1/calls/"+l.callID.String(), "dev1", nil); status != http.StatusNoContent {
+		t.Fatalf("DELETE call = %d", status)
+	}
+	if l.calls.PendingRepairs() != 0 || len(l.calls.SharersOf(l.callID)) != 0 || counters.pending.Load() != 0 {
+		t.Fatalf("after the call ended: %d repairs, %d slots, gauge %d; want nothing",
+			l.calls.PendingRepairs(), len(l.calls.SharersOf(l.callID)), counters.pending.Load())
 	}
 }
 

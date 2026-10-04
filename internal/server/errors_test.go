@@ -65,6 +65,7 @@ func TestEveryCodeMapsToItsStatusAndArrayShape(t *testing.T) {
 		{server.Errorf(server.CodeTooLarge, ""), 413, 3},
 		{server.Errorf(server.CodeCommitmentInvalid, ""), 422, 3},
 		{server.Errorf(server.CodeStorageFull, ""), 507, 3},
+		{server.Unavailable(500, "the call is busy"), 503, 3},
 		{server.CommitConflict([]byte{1}, [][]byte{{2}}), 409, 5},
 		{server.CommitRequired([][]byte{{3}}, 250), 425, 4},
 		{server.CommitInvalid("group_info_signature"), 422, 4},

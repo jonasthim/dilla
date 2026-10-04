@@ -603,7 +603,9 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   maintenance tick and at the call's next event until the SFU holds a permission within the
   device's entitlement or the device has left. Every slot transition and every permission the
   instance pushes for a call is serialised per call, so the devices that may publish a camera or
-  screen source are always among the slot holders.
+  screen source are always among the slot holders. A start, a share, an unshare or the signalling
+  proxy that cannot take that serialisation within two seconds — the SFU is stuck on the call —
+  answers `503 E_UNAVAILABLE` with `retry_after_ms`; the client retries after the delay.
 - **The signalling proxy.** The `/rtc` paths admit only `GET` (anything else is `405`). The access
   token — a non-empty `Authorization` header, which must then be `Bearer`, else the `access_token`
   query parameter — must be one the instance minted (`403 E_FORBIDDEN` otherwise), for a device, and

@@ -517,12 +517,13 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 425 | `E_COMMIT_REQUIRED` | outstanding DS proposals must be committed first | commit them (or wait for `mls.commit_needed`), then resend |
 | 429 | `E_RATE_LIMITED` | a token bucket is empty | wait `retry_after_ms`; a `Retry-After` header in whole seconds carries the same value |
 | 500 | `E_INTERNAL` | an unexpected server fault; the detail is always empty | retry with backoff |
+| 503 | `E_UNAVAILABLE` | the instance could not take a resource the request needs within its bound (a call whose SFU work is stuck) | wait `retry_after_ms`, then retry |
 | 507 | `E_STORAGE_FULL` | the instance or the user's quota is exhausted | none |
 
 A **syntactically invalid** identifier in a path is `400 E_INVALID_REQUEST`; a syntactically valid
 but unknown one is `404 E_NOT_FOUND`.
 
-That is **28 rows**: this file's original eighteen plus `E_VERSION`, `E_PROVISIONAL_OUTSIDE_PAIRING`
+That is **29 rows**: this file's original eighteen plus `E_VERSION`, `E_PROVISIONAL_OUTSIDE_PAIRING`
 and `E_INTERNAL` (deviation ID12), plus the four Plan 2 consumes — `E_ENVELOPE_SHAPE`,
 `E_ENVELOPE_TYPE`, `E_ENVELOPE_LIMIT` and `E_CHANNEL_MODE` (deviation ID12 as amended; controller
 ruling 2026-09-24). The first three are Plan 1a's own Go code — `server.CodeVersion`,
@@ -530,11 +531,12 @@ ruling 2026-09-24). The first three are Plan 1a's own Go code — `server.CodeVe
 `checkErrorVocabulary` diffs this table against `internal/server/errors.go` in both directions, so
 the three could not have been left out without CI failing.
 
-Three more came later. `E_REMOVE_PENDING` is invariant 6's refusal of a member's own `Remove` of a
+Four more came later. `E_REMOVE_PENDING` is invariant 6's refusal of a member's own `Remove` of a
 leaf the instance is already removing (plan dilla-media task 9). `E_CALL_FULL` and
 `E_CALL_SHARERS_FULL` are the call routes' capacity refusals (`09` § Voice, plan dilla-media
 task 10): the first answers the advisory participant count at token time, the second the publisher
-lease. Neither of those two is a delivery-service code.
+lease. `E_UNAVAILABLE` is a call route or the signalling proxy that could not take the call's
+serialisation within its bound (`09` § Voice). None of the last three is a delivery-service code.
 
 The four Plan 2 consumes are declared **here**, in the one task that owns the vocabulary, even though their
 only call sites are Plan 2's. The three `E_ENVELOPE_*` codes are 400 and mirror the Rust envelope

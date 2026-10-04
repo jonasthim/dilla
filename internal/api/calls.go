@@ -50,6 +50,8 @@ type CallCounters interface {
 	CallCut()
 	// CallGrantRetry counts one retry of a cut or demotion that had not landed in the SFU.
 	CallGrantRetry()
+	// CallRepairsPending sets the gauge of repairs outstanding across every call.
+	CallRepairsPending(n int)
 }
 
 // vdecAttribute is the participant attribute that carries a device's video decode list (DEV-07),
@@ -61,6 +63,59 @@ const defaultMaxSharers = 10
 
 // roomCloseTimeout bounds the SFU call that closes an ended call's room.
 const roomCloseTimeout = 5 * time.Second
+
+const (
+	// sfuCallTimeout bounds every SFU call made under a call's lock, whatever the caller's context.
+	sfuCallTimeout = 2 * time.Second
+	// callLockWait bounds how long a request (a share, an unshare, a start, the /rtc gate) waits for
+	// a call's lock before it answers 503 E_UNAVAILABLE: no join is held longer than this.
+	callLockWait = 2 * time.Second
+	// callLockWaitBackground bounds the wait of the work that runs after an answer — a grant sync
+	// after a role change, a DELETE's slot drop — which leaves its work to the retry loop instead.
+	callLockWaitBackground = 10 * time.Second
+	// maxRepairsPerTick caps the repairs one retry pass, or one event of a call, attempts.
+	maxRepairsPerTick = 32
+	// CallRetryInterval is the retry loop's cadence (StartRetries).
+	CallRetryInterval = 5 * time.Second
+)
+
+// lock takes call's lock for at most wait (or until ctx ends) and returns its release, which also
+// reports the pending-repair gauge; a lock it cannot take is 503 E_UNAVAILABLE with retry_after_ms.
+func (h *Calls) lock(ctx context.Context, call id.ID, wait time.Duration) (func(), error) {
+	unlock, err := h.leases.lockCall(ctx, call, wait)
+	if err != nil {
+		return nil, server.Unavailable(uint64(callLockWait/time.Millisecond), "the call is busy; retry shortly")
+	}
+	return func() {
+		unlock()
+		h.reportPending()
+	}, nil
+}
+
+// reportPending sets the pending-repair gauge.
+func (h *Calls) reportPending() {
+	if h.counters != nil {
+		h.counters.CallRepairsPending(h.leases.pendingCount())
+	}
+}
+
+// sfuCtx is ctx bounded by sfuCallTimeout.
+func sfuCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, sfuCallTimeout)
+}
+
+// dropCall forgets an ended call's slots and repairs under its lock. The call is already over in the
+// record, so a lock that cannot be taken is logged and left to the retry loop, which drops both for
+// an ended call; the wait does not end with the request.
+func (h *Calls) dropCall(r *http.Request, call id.ID) {
+	unlock, err := h.lock(context.WithoutCancel(r.Context()), call, callLockWaitBackground)
+	if err != nil {
+		h.log.WarnContext(r.Context(), "dropping an ended call's sharing slots is left to the retry loop", "call", call, "err", err)
+		return
+	}
+	h.leases.dropCall(call)
+	unlock()
+}
 
 // CallsConfig is what the call routes hand a client besides the token.
 type CallsConfig struct {
@@ -221,9 +276,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, err)
 			return
 		}
-		unlock := h.leases.lockCall(callID)
-		h.leases.dropCall(callID)
-		unlock()
+		h.dropCall(r, callID)
 		h.closeRoom(r, prev.LivekitRoom)
 	}
 
@@ -271,7 +324,10 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	}
 	// A device whose cut or demotion in this call has not landed in the SFU gets no token for it until
 	// the repair does; the start is the call's next event, so it drives the repairs first.
-	h.retryCall(r.Context(), callID)
+	if _, err := h.retryCall(r.Context(), callID, maxRepairsPerTick); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	if h.leases.isPending(callID, s.DeviceID) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device's access to this call is being revoked"))
 		return
@@ -358,9 +414,7 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 	// protocol/09: DELETE ends the call for everyone, so the room is closed too and every
 	// participant still in it is disconnected; the next call opens a fresh room. The next call keeps
 	// this call id (R9), so the sharing slots go with this one.
-	unlock := h.leases.lockCall(callID)
-	h.leases.dropCall(callID)
-	unlock()
+	h.dropCall(r, callID)
 	h.closeRoom(r, row.LivekitRoom)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -598,8 +652,11 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 		}
 		return nil, err
 	}
-	// A device whose cut or demotion has not landed in the SFU does not rejoin until it has.
-	h.retryCall(ctx, callID)
+	// A device whose cut or demotion has not landed in the SFU does not rejoin until it has. The
+	// retry takes the call's lock for at most callLockWait, so the gate never holds a join longer.
+	if _, err := h.retryCall(ctx, callID, maxRepairsPerTick); err != nil {
+		return nil, err
+	}
 	if h.leases.isPending(callID, device) {
 		return nil, server.Errorf(server.CodeForbidden, "your device's access to this call is being revoked")
 	}

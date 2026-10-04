@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -34,9 +35,10 @@ type shareLeases struct {
 	locks   map[id.ID]*callLock
 }
 
-// callLock is one call's lock, reference-counted so an idle call holds none.
+// callLock is one call's lock: a one-slot channel, so taking it can give up when the caller's
+// context ends or the wait bound passes. It is reference-counted so an idle call holds none.
 type callLock struct {
-	mu   sync.Mutex
+	ch   chan struct{}
 	refs int
 }
 
@@ -58,19 +60,22 @@ func newShareLeases() *shareLeases {
 	}
 }
 
-// lockCall takes call's lock and returns its release.
-func (l *shareLeases) lockCall(call id.ID) func() {
+// errCallBusy is a call lock that could not be taken within its bound or before the caller's
+// context ended.
+var errCallBusy = errors.New("api: the call is busy")
+
+// lockCall takes call's lock and returns its release; it gives up with errCallBusy once wait has
+// passed or ctx has ended, so no caller queues behind a stuck holder for longer than wait.
+func (l *shareLeases) lockCall(ctx context.Context, call id.ID, wait time.Duration) (func(), error) {
 	l.mu.Lock()
 	cl := l.locks[call]
 	if cl == nil {
-		cl = &callLock{}
+		cl = &callLock{ch: make(chan struct{}, 1)}
 		l.locks[call] = cl
 	}
 	cl.refs++
 	l.mu.Unlock()
-	cl.mu.Lock()
-	return func() {
-		cl.mu.Unlock()
+	deref := func() {
 		l.mu.Lock()
 		cl.refs--
 		if cl.refs == 0 {
@@ -78,6 +83,27 @@ func (l *shareLeases) lockCall(call id.ID) func() {
 		}
 		l.mu.Unlock()
 	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case cl.ch <- struct{}{}:
+		return func() { <-cl.ch; deref() }, nil
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+	deref()
+	return nil, errCallBusy
+}
+
+// pendingCount is how many repairs are outstanding across every call.
+func (l *shareLeases) pendingCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, m := range l.pending {
+		n += len(m)
+	}
+	return n
 }
 
 // take gives dev a slot of call unless maxSlots are held. A device that already holds one keeps it
@@ -162,13 +188,19 @@ func (l *shareLeases) isPending(call, dev id.ID) bool {
 	return ok
 }
 
-// pendingCalls is every call with a repair outstanding.
-func (l *shareLeases) pendingCalls() []id.ID {
+// trackedCalls is every call with a repair outstanding or a slot held: the retry loop drives the
+// first and drops both for a call that has ended.
+func (l *shareLeases) trackedCalls() []id.ID {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	out := make([]id.ID, 0, len(l.pending))
+	out := make([]id.ID, 0, len(l.pending)+len(l.byCall))
 	for call := range l.pending {
 		out = append(out, call)
+	}
+	for call := range l.byCall {
+		if _, ok := l.pending[call]; !ok {
+			out = append(out, call)
+		}
 	}
 	return out
 }
@@ -278,7 +310,11 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	unlock := h.leases.lockCall(row.CallID)
+	unlock, err := h.lock(ctx, row.CallID, callLockWait)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	defer unlock()
 	cur, live, err := h.liveRow(ctx, h.repo, row)
 	if err != nil {
@@ -289,7 +325,7 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "the call has ended"))
 		return
 	}
-	h.drainPending(ctx, h.deps(), ch, cur)
+	h.drainPending(ctx, h.deps(), ch, cur, maxRepairsPerTick)
 	if h.leases.isPending(cur.CallID, s.DeviceID) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device's access to this call is being revoked"))
 		return
@@ -320,7 +356,10 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeCallSharersFull, "%d devices of this call are already sharing", limit))
 		return
 	}
-	if err := h.sfu.UpdatePermission(ctx, cur.LivekitRoom, s.DeviceID.String(), h.grantFor(bits, cur.CallID, s.DeviceID)); err != nil {
+	pctx, cancel := sfuCtx(ctx)
+	err = h.sfu.UpdatePermission(pctx, cur.LivekitRoom, s.DeviceID.String(), h.grantFor(bits, cur.CallID, s.DeviceID))
+	cancel()
+	if err != nil {
 		if errors.Is(err, sfu.ErrNoParticipant) {
 			// A device the room does not hold publishes nothing, so its slot (new or old) goes.
 			h.leases.release(cur.CallID, s.DeviceID)
@@ -360,7 +399,10 @@ func (h *Calls) unshare(w http.ResponseWriter, r *http.Request) {
 // keeps the slot and is recorded as a pending repair, which the retry ticker and the call's next
 // event drive until it lands.
 func (h *Calls) releaseShare(ctx context.Context, ch store.ChannelRow, row store.VoiceSessionRow, dev id.ID) error {
-	unlock := h.leases.lockCall(row.CallID)
+	unlock, err := h.lock(ctx, row.CallID, callLockWait)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	cur, live, err := h.liveRow(ctx, h.repo, row)
 	if err != nil {
@@ -370,7 +412,7 @@ func (h *Calls) releaseShare(ctx context.Context, ch store.ChannelRow, row store
 		return nil
 	}
 	d := h.deps()
-	h.drainPending(ctx, d, ch, cur)
+	h.drainPending(ctx, d, ch, cur, maxRepairsPerTick)
 	if !h.leases.held(cur.CallID, dev) {
 		return nil
 	}
