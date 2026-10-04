@@ -143,12 +143,15 @@ type TLSDNS struct {
 }
 
 type TURN struct {
-	Enabled              bool     `toml:"enabled"`
-	Listen               string   `toml:"listen"`
-	Realm                string   `toml:"realm"`
-	SharedSecretFile     string   `toml:"shared_secret_file"`
-	RelayIP              string   `toml:"relay_ip"`
-	CredentialTTL        Duration `toml:"credential_ttl"`
+	Enabled          bool     `toml:"enabled"`
+	Listen           string   `toml:"listen"`
+	Realm            string   `toml:"realm"`
+	SharedSecretFile string   `toml:"shared_secret_file"`
+	RelayIP          string   `toml:"relay_ip"`
+	CredentialTTL    Duration `toml:"credential_ttl"`
+	// MaxAllocationAge bounds a relay allocation: every request but Allocate is refused once this
+	// long has passed since the credential was issued (F3, G33). Never shorter than CredentialTTL.
+	MaxAllocationAge     Duration `toml:"max_allocation_age"`
 	AllocationsPerDevice int      `toml:"allocations_per_device"`
 	ProxyProtocol        bool     `toml:"proxy_protocol"`
 	// PublicURL is the relay URL clients are handed instead of the derived one ("turns:" on

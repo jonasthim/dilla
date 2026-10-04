@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/blob"
+	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/ops"
 )
@@ -48,4 +51,52 @@ func diagnostics(o Options, wasm *mlswasi.Runtime, blobs *blob.Store) func(conte
 		add(ops.BlobConsistencyLeg(ctx, o.Repo, blobs))
 		return r
 	}
+}
+
+// callStatsWindow is how far back the calls leg looks.
+const callStatsWindow = 15 * time.Minute
+
+// turnState is what the turn leg reads; *obs.Metrics is one.
+type turnState interface {
+	TURNState() (allocations int, quotaRefusals uint64)
+}
+
+// withCallLegs appends the calls and turn legs (DEV-59, ruling F10) to base's report. Both read
+// state this process already holds — the stats devices reported, the relay's own counters — so the
+// admin request still dials nothing.
+func withCallLegs(base func(context.Context) ops.Report, stats *api.CallStats, turnCfg config.TURN, ts turnState) func(context.Context) ops.Report {
+	return func(ctx context.Context) ops.Report {
+		r := base(ctx)
+		r.Legs = append(r.Legs, callsLeg(stats.Summary(callStatsWindow)))
+		allocations, refusals := ts.TURNState()
+		r.Legs = append(r.Legs, turnLeg(turnCfg, allocations, refusals))
+		return r
+	}
+}
+
+func callsLeg(s api.StatsSummary) ops.Leg {
+	if s.Reports == 0 {
+		return ops.Leg{Name: "calls", Status: ops.Green, Detail: "no call reported stats in the last 15 minutes"}
+	}
+	detail := fmt.Sprintf("%d live calls, %d reports in the last 15 minutes, %d with a relay; RTT p50 %d ms, p95 %d ms; %d decrypt failures",
+		s.LiveCalls, s.Reports, s.RelayReports, s.P50RTTms, s.P95RTTms, s.DecryptFailures)
+	if s.DecryptFailures > 0 {
+		return ops.Leg{Name: "calls", Status: ops.Yellow, Detail: detail,
+			Fix: "a client failed to decrypt media: compare dilla_call_decrypt_failures_total with the clients' logs; a steady rate points at key distribution, not the network"}
+	}
+	return ops.Leg{Name: "calls", Status: ops.Green, Detail: detail}
+}
+
+func turnLeg(c config.TURN, allocations int, refusals uint64) ops.Leg {
+	if !c.Enabled {
+		return ops.Leg{Name: "turn", Status: ops.Green,
+			Detail: "the TURN relay is off (turn.enabled = false): a client that cannot reach UDP 7882 cannot join a call"}
+	}
+	detail := fmt.Sprintf("%d live relay allocations; %d refused at the per-device quota of %d since start",
+		allocations, refusals, c.AllocationsPerDevice)
+	if refusals > 0 {
+		return ops.Leg{Name: "turn", Status: ops.Yellow, Detail: detail,
+			Fix: fmt.Sprintf("raise turn.allocations_per_device (now %d): a device needs about two allocations per network it gathers on", c.AllocationsPerDevice)}
+	}
+	return ops.Leg{Name: "turn", Status: ops.Green, Detail: detail}
 }

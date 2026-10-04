@@ -83,6 +83,7 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 		tokens = p.o.SFU
 	}
 	calls := api.NewCalls(repo, res, tokens, p.calls, clk, log).WithCounters(p.o.Metrics)
+	stats := api.NewCallStats(repo, calls, p.o.Metrics, clk)
 
 	// The join is metered on the ("invite", client address) bucket GET /i/{code} is on, so a join
 	// is not a way round the limit on guessing codes (task 5).
@@ -101,7 +102,9 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	api.NewBlobs(repo, p.blobs, res, cfg.Blobs, clk, log).Register(m)
 	api.NewReports(repo, p.keys, clk, log).Register(m)
 	calls.Register(m)
-	api.NewAdmin(repo, p.blobs, clk, log).WithMetrics(p.o.Metrics).WithDiagnostics(p.diagnose).WithCalls(calls).Register(m)
+	stats.Register(m)
+	api.NewAdmin(repo, p.blobs, clk, log).WithMetrics(p.o.Metrics).
+		WithDiagnostics(withCallLegs(p.diagnose, stats, cfg.TURN, p.o.Metrics)).WithCalls(calls).Register(m)
 	return calls
 }
 

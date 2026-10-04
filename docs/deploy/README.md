@@ -64,6 +64,44 @@ public_url = "turns:turn.example.org:5349?transport=tcp"
 
 Set `turn.public_url` whenever the port the world reaches differs from `turn.listen`'s, TLS or not.
 
+### TURN knobs for long calls
+
+| key | default | what it bounds |
+|---|---|---|
+| `turn.credential_ttl` | `"1h"` | how long a relay credential handed out with a call can open a new allocation |
+| `turn.max_allocation_age` | `"2h"` | how long one allocation keeps working after its credential was issued; never shorter than `credential_ttl` |
+| `turn.allocations_per_device` | `4` (1–16) | live allocations per device; a browser needs about two per network it gathers on |
+
+The credential's expiry is checked when an allocation is made, not on every refresh, so a relayed
+call outlives its credential; after `turn.max_allocation_age` the browser re-allocates with the
+servers it re-fetched. Watch `dilla_turn_allocations`, `dilla_turn_quota_refusals_total`,
+`dilla_turn_relay_bytes_total` and the `turn` leg of the admin diagnostics; raise
+`turn.allocations_per_device` when refusals appear. If `livekit.node_ip` is a public address the
+host does not hold (behind NAT) and `livekit.advertise_internal_ip` is on, the relay does not admit
+`node_ip` and `dillad serve` logs a warning saying so: relayed media pairs with the host's own
+addresses instead.
+
+### Behind a WireGuard tunnel (Pangolin): MTU and UDP 7882
+
+Pangolin's `gerbil` and `newt` both default the tunnel MTU to **1280** (not the 1420 the design
+assumed). WebRTC keeps RTP packets at most 1200 bytes, which fits with 36 bytes to spare over IPv4
+and 16 over IPv6; raise `MTU` on both ends only together. The raw UDP forward for LiveKit's media
+port is Traefik's UDP router in gerbil's network namespace, and Pangolin's installer defines no UDP
+entry point, so add one with a session timeout well above LiveKit's 2-second keepalive (Traefik's
+default is 3 seconds, and every expiry re-dials with a new source port):
+
+```yaml
+# Traefik static configuration
+entryPoints:
+  udp-7882:
+    address: ":7882/udp"
+    udp:
+      timeout: 30s
+```
+
+and publish `7882:7882/udp` on the `gerbil` service. The 30-second value is pending the founder-path
+measurement (follow-up card 6); the instance itself still publishes only 443/tcp and 7882/udp.
+
 ### LiveKit
 
 dillad renders LiveKit's configuration itself from `[livekit]`; there is no LiveKit YAML to edit.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/pion/transport/v4"
 	"github.com/pion/turn/v5"
@@ -18,15 +19,18 @@ func ACMEIPSettingsForTest() acmeSettings {
 	return settingsFor(config.TLS{Mode: ModeACMEIP})
 }
 
-// TURNAuthForTest is the auth handler StartTURN installs, on clk.
-func TURNAuthForTest(secret string, clk clock.Clock) turn.AuthHandler {
-	return turnAuth(secret, clk)
+// TURNAuthForTest is the auth handler StartTURN installs, on clk, for ttl and maxAge.
+func TURNAuthForTest(secret string, clk clock.Clock, ttl, maxAge time.Duration) turn.AuthHandler {
+	return turnAuth(secret, clk, ttl, maxAge)
 }
 
-// TURNHandlersForTest is the quota and event pair StartTURN installs over a
-// fresh quota of maxPerDevice.
-func TURNHandlersForTest(maxPerDevice int) (turn.QuotaHandler, turn.EventHandler) {
-	return turnHandlers(NewAllocationQuota(maxPerDevice))
+// TURNHandlersForTest is the quota and event pair StartTURN installs over a fresh quota of
+// maxPerDevice, reporting to m (nil reports nowhere).
+func TURNHandlersForTest(maxPerDevice int, m TURNMetrics) (turn.QuotaHandler, turn.EventHandler) {
+	if m == nil {
+		m = noTURNMetrics{}
+	}
+	return turnHandlers(NewAllocationQuota(maxPerDevice), m)
 }
 
 // FailTURNNetForTest makes StartTURN's network setup fail with err until the returned restore runs.

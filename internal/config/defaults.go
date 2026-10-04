@@ -27,7 +27,7 @@ func Default() *Config {
 	}
 	c.TLS = TLS{Mode: TLSModeACMETLSALPN}
 	c.TLS.DNS = TLSDNS{TTL: "0s", PropagationDelay: "0s", PropagationTimeout: "2m"}
-	c.TURN = TURN{Enabled: true, CredentialTTL: "1h", AllocationsPerDevice: 2}
+	c.TURN = TURN{Enabled: true, CredentialTTL: "1h", MaxAllocationAge: "2h", AllocationsPerDevice: 4}
 	c.LiveKit = LiveKit{
 		Enabled: true, Mode: "in_process", BindAddress: "127.0.0.1", Port: 7880,
 		UDPPort: 7882, TCPPort: 0, AdvertiseInternalIP: true, APIKey: "dilla",

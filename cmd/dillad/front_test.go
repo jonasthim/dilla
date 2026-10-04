@@ -402,9 +402,10 @@ func TestServeRefusesAnUnknownLiveKitMode(t *testing.T) {
 	}
 }
 
-// C9 (fix wave): the relay admits only the co-located SFU's media addresses: livekit.node_ip (or
-// loopback when unset) and, with advertise_internal_ip, the host candidates LiveKit also offers,
-// which are this host's interface addresses. With LiveKit off it admits none.
+// G34 / DEV-55: the relay admits livekit.node_ip only when it is an address of this host, or when
+// advertise_internal_ip is false (the SFU's only candidate; the relay then hairpins through it, and
+// says so); with advertise_internal_ip it admits the host addresses LiveKit also offers. node_ip is
+// the relay family anchor either way. With LiveKit off there is no peer and no anchor.
 func TestTheRelayPeersAreTheSFUsAddresses(t *testing.T) {
 	ifaces := func() ([]net.Addr, error) {
 		return []net.Addr{
@@ -414,25 +415,45 @@ func TestTheRelayPeersAreTheSFUsAddresses(t *testing.T) {
 			&net.IPNet{IP: net.ParseIP("2001:db8::5"), Mask: net.CIDRMask(64, 128)},
 		}, nil
 	}
+	var logged strings.Builder
+	log := slog.New(slog.NewTextHandler(&logged, nil))
+	for _, tc := range []struct {
+		name      string
+		nodeIP    string
+		advertise bool
+		anchor    string
+		peers     string
+		warning   string
+	}{
+		{"a local node_ip with the host candidates", "10.0.0.5", true, "10.0.0.5", "[10.0.0.5 2001:db8::5]", ""},
+		{"a public node_ip with the host candidates", "203.0.113.7", true, "203.0.113.7", "[10.0.0.5 2001:db8::5]",
+			"livekit.node_ip is not an address of this host, so the relay does not admit it"},
+		{"a public node_ip as the only candidate", "203.0.113.7", false, "203.0.113.7", "[203.0.113.7]",
+			"relayed media hairpins out through it"},
+		{"no node_ip (loopback)", "", false, "127.0.0.1", "[127.0.0.1]", ""},
+		{"loopback with the host candidates", "", true, "127.0.0.1", "[127.0.0.1 10.0.0.5 2001:db8::5]", ""},
+	} {
+		logged.Reset()
+		cfg := config.Default()
+		cfg.LiveKit.NodeIP, cfg.LiveKit.AdvertiseInternalIP = tc.nodeIP, tc.advertise
+		anchor, peers, err := turnPeers(cfg, ifaces, log)
+		if err != nil {
+			t.Fatalf("%s: turnPeers: %v", tc.name, err)
+		}
+		if anchor.String() != tc.anchor || fmt.Sprint(peers) != tc.peers {
+			t.Errorf("%s: anchor %s, peers %v; want %s, %s", tc.name, anchor, peers, tc.anchor, tc.peers)
+		}
+		if tc.warning == "" && strings.Contains(logged.String(), "level=WARN") {
+			t.Errorf("%s: unexpected warning %q", tc.name, logged.String())
+		}
+		if tc.warning != "" && !strings.Contains(logged.String(), tc.warning) {
+			t.Errorf("%s: the warning %q was not logged (%q)", tc.name, tc.warning, logged.String())
+		}
+	}
 	cfg := config.Default()
-	cfg.LiveKit.NodeIP = "203.0.113.7"
-	got, err := turnPeers(cfg, ifaces)
-	if err != nil {
-		t.Fatalf("turnPeers: %v", err)
-	}
-	want := []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("peers with a public node_ip and advertise_internal_ip = %v, want %v", got, want)
-	}
-
-	cfg.LiveKit.NodeIP, cfg.LiveKit.AdvertiseInternalIP = "", false
-	if got, _ := turnPeers(cfg, ifaces); fmt.Sprint(got) != "[127.0.0.1]" {
-		t.Errorf("peers with no node_ip = %v, want [127.0.0.1]", got)
-	}
-
 	cfg.LiveKit.Enabled = false
-	if got, _ := turnPeers(cfg, ifaces); len(got) != 0 {
-		t.Errorf("peers with LiveKit off = %v, want none", got)
+	if anchor, peers, err := turnPeers(cfg, ifaces, log); err != nil || anchor.IsValid() || len(peers) != 0 {
+		t.Errorf("with LiveKit off = %s, %v, %v; want no anchor, no peers", anchor, peers, err)
 	}
 }
 

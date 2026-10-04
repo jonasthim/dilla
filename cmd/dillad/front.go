@@ -217,49 +217,77 @@ func manageCertificate(ctx context.Context, tl *server.TLS, domains []string, ga
 	}
 }
 
-// turnPeers is the co-located SFU's media addresses, the only peers the relay admits (C9):
-// livekit.node_ip, or loopback when it is unset, and, with livekit.advertise_internal_ip, the host
-// candidates LiveKit offers beside it — this host's own unicast interface addresses (link-local and,
-// unless the node itself is loopback, loopback ones excluded, as LiveKit excludes them). With LiveKit
-// off there is no SFU and the relay admits no peer.
-func turnPeers(cfg *config.Config, interfaceAddrs func() ([]net.Addr, error)) ([]netip.Addr, error) {
+// turnPeers is the co-located SFU's media addresses, the only peers the relay admits (C9, G34), and
+// the family anchor turn.relay_ip "auto" stays in (livekit.node_ip, or loopback when it is unset).
+//
+// node_ip is admitted only when it is an address of this host — the relay then reaches the SFU
+// on-host — or when livekit.advertise_internal_ip is false, which makes it the SFU's only candidate:
+// relayed media then leaves the host for node_ip and comes back (a hairpin through the router), and
+// a warning says so. With advertise_internal_ip and a node_ip that is not local (a public IP behind
+// NAT), node_ip is NOT admitted — the browser pairs the relay with the host candidates instead, and a
+// permission for node_ip would only open a path through the router — and the relay admits the
+// host's own unicast interface addresses LiveKit offers (link-local excluded, loopback only when the
+// node itself is loopback, as LiveKit does). With LiveKit off there is no SFU and no peer.
+func turnPeers(cfg *config.Config, interfaceAddrs func() ([]net.Addr, error), log *slog.Logger) (netip.Addr, []netip.Addr, error) {
 	lk := cfg.LiveKit
 	if !lk.Enabled {
-		return nil, nil
+		return netip.Addr{}, nil, nil
 	}
 	sc := sfuConfig(lk, "")
-	var peers []netip.Addr
-	seen := map[netip.Addr]bool{}
-	add := func(a netip.Addr) {
-		if a = a.Unmap(); a.IsValid() && !seen[a] {
-			seen[a] = true
-			peers = append(peers, a)
-		}
-	}
 	node, err := netip.ParseAddr(sc.NodeIP)
 	if err != nil {
-		return nil, fmt.Errorf("livekit.node_ip %q is not an IP address: %w", sc.NodeIP, err)
+		return netip.Addr{}, nil, fmt.Errorf("livekit.node_ip %q is not an IP address: %w", sc.NodeIP, err)
 	}
-	add(node)
-	if !lk.AdvertiseInternalIP {
-		return peers, nil
-	}
+	node = node.Unmap()
 	addrs, err := interfaceAddrs()
 	if err != nil {
-		return nil, fmt.Errorf("list the interface addresses LiveKit advertises: %w", err)
+		return netip.Addr{}, nil, fmt.Errorf("list this host's interface addresses: %w", err)
 	}
+	local := false
+	var offered []netip.Addr
 	for _, a := range addrs {
 		ipn, ok := a.(*net.IPNet)
 		if !ok {
 			continue
 		}
 		ip, ok := netip.AddrFromSlice(ipn.IP)
-		if !ok || ip.IsLinkLocalUnicast() || (ip.IsLoopback() && !sc.EnableLoopbackCandidate) {
+		if !ok {
 			continue
 		}
-		add(ip)
+		ip = ip.Unmap()
+		if ip == node {
+			local = true
+		}
+		if ip.IsLinkLocalUnicast() || (ip.IsLoopback() && !sc.EnableLoopbackCandidate) {
+			continue
+		}
+		offered = append(offered, ip)
 	}
-	return peers, nil
+	var peers []netip.Addr
+	seen := map[netip.Addr]bool{}
+	add := func(a netip.Addr) {
+		if a.IsValid() && !seen[a] {
+			seen[a] = true
+			peers = append(peers, a)
+		}
+	}
+	switch {
+	case local:
+		add(node)
+	case !lk.AdvertiseInternalIP:
+		add(node)
+		log.Warn("livekit.node_ip is not an address of this host and the SFU's only candidate: relayed media hairpins out through it and back",
+			"node_ip", node.String())
+	default:
+		log.Warn("livekit.node_ip is not an address of this host, so the relay does not admit it; relayed media pairs with the host addresses LiveKit also offers",
+			"node_ip", node.String())
+	}
+	if lk.AdvertiseInternalIP {
+		for _, ip := range offered {
+			add(ip)
+		}
+	}
+	return node, peers, nil
 }
 
 // turnStartError is serve's exit status for a relay that did not start: 78 (exit.Config, which the
@@ -273,12 +301,12 @@ func turnStartError(err error) error {
 }
 
 func startTURN(d frontDeps, f *front, ln net.Listener) error {
-	peers, err := turnPeers(d.cfg, net.InterfaceAddrs)
+	anchor, peers, err := turnPeers(d.cfg, net.InterfaceAddrs, d.log)
 	if err != nil {
 		_ = ln.Close()
 		return fmt.Errorf("serve: turn: %w: %w", err, exit.Unavailable)
 	}
-	t, err := server.StartTURN(d.cfg.TURN, ln, peers, clock.System(), d.log)
+	t, err := server.StartTURN(d.cfg.TURN, ln, anchor, peers, d.metrics, clock.System(), d.log)
 	if err != nil {
 		_ = ln.Close()
 		return turnStartError(err)

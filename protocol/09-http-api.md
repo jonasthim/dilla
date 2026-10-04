@@ -540,6 +540,7 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; `409 E_CALL_FULL` | `connect`, and a current leaf of the call group |
 | `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending or the device is barred | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
+| `POST /v1/calls/{call_id}/stats` | `[candidate_type(uint), relay_protocol(uint\|null), rtt_ms(uint), fraction_lost_permille(uint), decrypt_failures(uint), frames_encrypted(uint)]` | `204`; `429 E_RATE_LIMITED` above one report per device per 5 s; `404 E_NOT_FOUND` once the call has ended; `403 E_FORBIDDEN` for a barred device | `view_channel`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended | `view_channel` and `connect`, and a current leaf of the call's group |
 
 - **The leaf gate.** A token is minted only for a device whose leaf is in the call group's
@@ -653,25 +654,46 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   SFU, and `X-Forwarded-For` carries only the client address the instance resolved.
 - **Relays.** `ice_servers` is the `RTCIceServer` list for the client's peer connection: one entry
   when the instance runs its TURN relay, with a fresh ephemeral credential — `username` is
-  `"<expiry>:<device_id>"` (unix seconds, `turn.credential_ttl` ahead) and `credential` is
-  `base64(HMAC-SHA1(turn shared secret, username))`, the time-limited REST form TURN servers
-  validate — and an empty array when it runs none. The relay is `turns:` on the instance's 443,
-  where the instance tells a STUN stream from HTTP by its first bytes after the TLS handshake; in
-  `behind_proxy` it is a separate operator-configured TCP port, and without one the list is empty
-  and the client's "relay unavailable" dialog applies: the call is direct UDP or nothing. That
-  relay is plain `turn:` on the listen port, because the instance terminates no TLS for it there
-  (a recorded deviation from the spec, plan dillad-2 **D25**): its credential username and
-  allocation traffic cross the network in cleartext unless a TLS front the operator runs carries
-  it, while the media itself stays DTLS-SRTP with SFrame. When `turn.public_url` is set, in any
-  mode, it is the one URL in `urls`, verbatim — for a proxy that terminates TLS for the relay
-  (`turns:`) or publishes it on another port. At most
-  `turn.allocations_per_device` relay allocations are live per device (default 2); another is
-  refused with STUN error 486 until one ends. The relay reaches only the instance's own SFU (its
-  `livekit.node_ip`, and with `livekit.advertise_internal_ip` the host's interface addresses LiveKit
-  also offers): a `CreatePermission` or `ChannelBind` for any other peer is refused with STUN
-  error 403, and with LiveKit off every one is. The filter is by IP address only: every port of an
-  admitted address stays reachable through the relay, the SFU's own and any other service bound on
-  those addresses, including `127.0.0.1` when `livekit.node_ip` is unset.
+  `"<expiry>:<device_id>"` (unix seconds, `turn.credential_ttl` ahead, default one hour) and
+  `credential` is `base64(HMAC-SHA1(turn shared secret, username))`, the time-limited REST form
+  TURN servers validate — and an empty array when it runs none. A client passes this list to its
+  peer connection even when it is empty, so the SFU's own server list never reaches it, and sets
+  `bundlePolicy: 'max-bundle'`. The relay is `turns:` on the instance's 443, where the instance
+  tells a STUN stream from HTTP by its first bytes after the TLS handshake; in `behind_proxy` it is
+  a separate operator-configured TCP port, and without one the list is empty and the client's
+  "relay unavailable" dialog applies: the call is direct UDP or nothing. That relay is plain `turn:`
+  on the listen port, because the instance terminates no TLS for it there (a recorded deviation
+  from the spec, plan dillad-2 **D25**): its credential username and allocation traffic cross the
+  network in cleartext unless a TLS front the operator runs carries it, while the media itself stays
+  DTLS-SRTP with SFrame. When `turn.public_url` is set, in any mode, it is the one URL in `urls`,
+  verbatim — for a proxy that terminates TLS for the relay (`turns:`) or publishes it on another
+  port. The credential's expiry is checked on `Allocate` only: an allocation made before it keeps
+  refreshing and permitting after it, until `turn.max_allocation_age` (default two hours, never
+  shorter than `turn.credential_ttl`) has passed since the credential was issued, when every request
+  of that allocation is refused and the client's next ICE restart allocates anew. A client keeps
+  fresh servers by repeating `POST /v1/channels/{id}/calls` before `turn.credential_ttl` runs out
+  and handing the new list to its peer connection for that restart. At most
+  `turn.allocations_per_device` relay allocations are live per device (default 4); another is
+  refused with STUN error 486 until one ends, and the instance counts the refusals. Four is two
+  networks through one ICE-restart overlap: a browser holds about `T × N × U` allocations — T = 1
+  gathering transport under `max-bundle` (seven during the first offer under the default
+  `balanced`), N = the networks it gathers on, U = 1 relay URL. The relay reaches only the
+  instance's own SFU: `livekit.node_ip` when it is an address of the instance's host, or when
+  `livekit.advertise_internal_ip` is false (it is then the SFU's only candidate, and relayed media
+  leaves the host for it and comes back), and with `livekit.advertise_internal_ip` the host's
+  interface addresses the SFU also offers. A `CreatePermission` or `ChannelBind` for any other peer
+  is refused with STUN error 403, and with LiveKit off every one is. The filter is by IP address
+  only: every port of an admitted address stays reachable through the relay, the SFU's own and any
+  other service bound on those addresses, including `127.0.0.1` when `livekit.node_ip` is unset.
+- **Call stats.** A device in a call reports its connection about every 30 seconds: the selected
+  candidate's type (0 host, 1 srflx, 2 prflx, 3 relay), the relay's transport when it is a relay
+  (0 udp, 1 tcp, 2 tls; null for any other type), the round-trip time in milliseconds (at most
+  60 000), the fraction of packets lost in thousandths (at most 1000), and the frames it failed to
+  decrypt and the frames it encrypted since its previous report. Anything else is
+  `400 E_INVALID_REQUEST`. The leaf gate applies as for a share, and a barred device is
+  `403 E_FORBIDDEN`. The instance keeps the reports in memory only, for the admin's diagnostics
+  (§ Admin) and counters that name no device, and accepts one per device per 5 seconds
+  (`429 E_RATE_LIMITED` with `retry_after_ms`).
 - **Media that is not dilla's.** Every track a device publishes must be `dilla-sframe/1` (`05`) and
   of its source's kind (audio for the microphone and screen audio, video for the camera and the
   screen). The first track the SFU reports otherwise — flagged unencrypted, or of the wrong kind —
@@ -772,8 +794,11 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
 - **Diagnostics.** `GET /v1/admin/diagnostics` answers `200 [[name(tstr), status(uint),
   detail(tstr), fix(tstr)]]`, the `dillad doctor` legs the running instance can answer itself,
   under doctor's names and in doctor's order: `database` (the schema version), `data_dir` (its
-  mode), `wasi` (the core the delivery service validates in), `udp` and `blobs` (every referenced
-  file present, no stray files). `status` is 0 OK, 1 WARN, 2 FAIL; `fix` is the operator's next
+  mode), `wasi` (the core the delivery service validates in), `udp`, `blobs` (every referenced
+  file present, no stray files), `calls` (the call stats of the last 15 minutes: live calls,
+  reports, how many had a relay selected, the median and 95th-percentile round-trip time and the
+  decrypt failures; WARN while any decrypt failure was reported) and `turn` (live relay allocations
+  and the quota refusals since start; WARN after any refusal). `status` is 0 OK, 1 WARN, 2 FAIL; `fix` is the operator's next
   step or `""`. The legs that probe the network or need a process of their own — the config
   parse, the SQLite pragmas, clock skew, the certificate and a TURN allocation — are only
   `dillad doctor`'s, so an admin request never makes the instance dial out. The report runs only

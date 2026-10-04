@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/pion/logging"
+	"github.com/pion/stun/v3"
 	"github.com/pion/transport/v4"
 	"github.com/pion/transport/v4/stdnet"
 	"github.com/pion/turn/v5"
@@ -25,6 +26,28 @@ import (
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
 )
+
+// TURNMetrics is the relay's metric surface; *obs.Metrics is one. QuotaRefused counts one 486,
+// RelayBytes the payload crossing a relay socket (toClient: read from a peer, on its way to the
+// client), Allocations the live allocation count after each change. All label-free but the
+// direction.
+type TURNMetrics interface {
+	QuotaRefused()
+	RelayBytes(toClient bool, n int)
+	Allocations(n int)
+}
+
+type noTURNMetrics struct{}
+
+func (noTURNMetrics) QuotaRefused()        {}
+func (noTURNMetrics) RelayBytes(bool, int) {}
+func (noTURNMetrics) Allocations(int)      {}
+
+// defaultAllocationsPerDevice is turn.allocations_per_device's default (G34): a browser holds
+// T × N × U allocations — T = 1 gathering transport under max-bundle, N = the networks it gathers
+// on, U = 1 relay URL — so 4 covers two networks (Wi-Fi and a VPN, IPv4 and IPv6) through one
+// ICE-restart overlap.
+const defaultAllocationsPerDevice = 4
 
 // TURN is dillad's embedded relay: pion/turn v5.0.13 on a listener dillad
 // chooses. In the direct-TLS modes that is the 443 demux's STUN branch; in
@@ -57,7 +80,11 @@ func TURNCredential(secret string, deviceID id.ID, ttl time.Duration, now time.T
 // relay into a way into loopback or the LAN. With no peers (LiveKit off) the
 // relay admits none. pion's handler sees the peer IP only, so every port of an
 // admitted address stays reachable; the SFU's addresses are the host's own.
-func StartTURN(c config.TURN, ln net.Listener, peers []netip.Addr, clk clock.Clock, log *slog.Logger) (*TURN, error) {
+//
+// anchor is livekit.node_ip, the address family turn.relay_ip "auto" must stay in (cmd/dillad
+// turnPeers); it is passed apart from peers because node_ip is not always an admitted peer (DEV-55).
+// m receives the relay's counters; nil reports nowhere.
+func StartTURN(c config.TURN, ln net.Listener, anchor netip.Addr, peers []netip.Addr, m TURNMetrics, clk clock.Clock, log *slog.Logger) (*TURN, error) {
 	body, err := os.ReadFile(c.SharedSecretFile)
 	if err != nil {
 		return nil, turnConfigError{fmt.Errorf("turn: turn.shared_secret_file: %w", err)}
@@ -66,12 +93,7 @@ func StartTURN(c config.TURN, ln net.Listener, peers []netip.Addr, clk clock.Clo
 	if secret == "" {
 		return nil, turnConfigError{errors.New("turn: turn.shared_secret_file is empty")}
 	}
-	// peers[0] is livekit.node_ip (cmd/dillad turnPeers): the family "auto" must stay in.
-	var prefer netip.Addr
-	if len(peers) > 0 {
-		prefer = peers[0]
-	}
-	relayIP, err := ResolveRelayIP(c.RelayIP, prefer)
+	relayIP, err := ResolveRelayIP(c.RelayIP, anchor)
 	if err != nil {
 		return nil, err
 	}
@@ -86,22 +108,33 @@ func StartTURN(c config.TURN, ln net.Listener, peers []netip.Addr, clk clock.Clo
 	}
 	perDevice := c.AllocationsPerDevice
 	if perDevice <= 0 {
-		perDevice = 2
+		perDevice = defaultAllocationsPerDevice
 	}
+	if m == nil {
+		m = noTURNMetrics{}
+	}
+	ttl := c.CredentialTTL.Value()
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	maxAge := max(c.MaxAllocationAge.Value(), ttl)
 	q := NewAllocationQuota(perDevice)
-	quota, events := turnHandlers(q)
+	quota, events := turnHandlers(q, m)
 	srv, err := turn.NewServer(turn.ServerConfig{
 		Realm:         c.Realm,
-		AuthHandler:   turnAuth(secret, clk),
+		AuthHandler:   turnAuth(secret, clk, ttl, maxAge),
 		QuotaHandler:  quota,
 		EventHandler:  events,
 		LoggerFactory: slogFactory{log: log},
 		ListenerConfigs: []turn.ListenerConfig{{
 			Listener: ln,
-			RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
-				RelayAddress: relayIP,
-				Address:      relayIP.String(),
-				Net:          relayNet,
+			RelayAddressGenerator: &countingRelay{
+				RelayAddressGeneratorStatic: &turn.RelayAddressGeneratorStatic{
+					RelayAddress: relayIP,
+					Address:      relayIP.String(),
+					Net:          relayNet,
+				},
+				m: m,
 			},
 			PermissionHandler: peerFilter(peers),
 		}},
@@ -110,6 +143,44 @@ func StartTURN(c config.TURN, ln net.Listener, peers []netip.Addr, clk clock.Clo
 		return nil, fmt.Errorf("turn: %w", err)
 	}
 	return &TURN{srv: srv, quota: q}, nil
+}
+
+// countingRelay allocates relay sockets as RelayAddressGeneratorStatic does and counts what crosses
+// them (dilla_turn_relay_bytes_total). Only UDP relays exist: TCP allocations are not offered.
+type countingRelay struct {
+	*turn.RelayAddressGeneratorStatic
+	m TURNMetrics
+}
+
+func (g *countingRelay) AllocatePacketConn(conf turn.AllocateListenerConfig) (net.PacketConn, net.Addr, error) {
+	conn, addr, err := g.RelayAddressGeneratorStatic.AllocatePacketConn(conf)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &countingConn{PacketConn: conn, m: g.m}, addr, nil
+}
+
+// countingConn is a relay socket: what it reads came from a peer and goes on to the client, what it
+// writes goes to a peer.
+type countingConn struct {
+	net.PacketConn
+	m TURNMetrics
+}
+
+func (c *countingConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	n, addr, err := c.PacketConn.ReadFrom(p)
+	if n > 0 {
+		c.m.RelayBytes(true, n)
+	}
+	return n, addr, err
+}
+
+func (c *countingConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	n, err := c.PacketConn.WriteTo(p, addr)
+	if n > 0 {
+		c.m.RelayBytes(false, n)
+	}
+	return n, err
 }
 
 // newTURNNet is the network relay sockets are allocated on; a variable so a test can make it fail.
@@ -229,18 +300,29 @@ func (t *TURN) Close() error { return t.srv.Close() }
 // AllocationCount is pion's live allocation count, for diagnostics.
 func (t *TURN) AllocationCount() int { return t.srv.AllocationCount() }
 
-// turnAuth is pion's LongTermTURNRESTAuthHandler (lt_cred.go:90-127, v5.0.13)
-// with the expiry read against the instance clock instead of time.Now, so the
-// rule a test drives is the one production runs. It returns the device id as
-// pion's user id, exactly as pion's handler returns fields[1].
-func turnAuth(secret string, clk clock.Clock) turn.AuthHandler {
+// turnAuth is pion's LongTermTURNRESTAuthHandler (lt_cred.go:90-127, v5.0.13) on the instance clock,
+// with the expiry checked on Allocate ONLY (G33, draft-uberti-behave-turn-rest-00 §4.2): Chrome
+// refreshes an allocation every 540 s and its permissions every 240 s with the credential it
+// allocated with, so a per-request expiry ended every relayed call at most 240 s after the
+// credential expired. Every other request is refused once maxAge has passed since the credential
+// was issued (expiry − ttl): turn.max_allocation_age bounds how long one relayed path lives. The
+// "<expiry>:<device>" shape and the HMAC are checked on every request; the user id is the device id.
+func turnAuth(secret string, clk clock.Clock, ttl, maxAge time.Duration) turn.AuthHandler {
 	return func(ra *turn.RequestAttributes) (string, []byte, bool) {
 		expiry, dev, ok := strings.Cut(ra.Username, ":")
 		if !ok || dev == "" {
 			return "", nil, false
 		}
 		t, err := strconv.ParseInt(expiry, 10, 64)
-		if err != nil || t < clk.Now().Unix() {
+		if err != nil {
+			return "", nil, false
+		}
+		now := clk.Now().Unix()
+		if ra.Method == stun.MethodAllocate {
+			if t < now {
+				return "", nil, false
+			}
+		} else if issued := t - int64(ttl/time.Second); now > issued+int64(maxAge/time.Second) {
 			return "", nil, false
 		}
 		mac := hmac.New(sha1.New, []byte(secret))
@@ -263,23 +345,39 @@ func deviceOf(user string) string {
 	return user
 }
 
-// turnHandlers wires both halves of the per-device quota: the admission
-// callback, and the release on an allocation's deletion. Wiring only the first
-// would cap a device for the life of the process after allocations_per_device
-// allocations. An allocation pion fails to create after admitting it (a relay
-// port that will not bind) keeps its slot until restart; pion reports no event
-// for that path.
-func turnHandlers(q *AllocationQuota) (turn.QuotaHandler, turn.EventHandler) {
+// turnHandlers wires both halves of the per-device quota — the admission callback, which counts a
+// refusal, and the release on an allocation's deletion — and keeps the live allocation count the
+// gauge reports. Wiring only the admission would cap a device for the life of the process after
+// allocations_per_device allocations. An allocation pion fails to create after admitting it (a
+// relay port that will not bind) keeps its slot until restart; pion reports no event for that path.
+func turnHandlers(q *AllocationQuota, m TURNMetrics) (turn.QuotaHandler, turn.EventHandler) {
+	var mu sync.Mutex
+	live := 0
+	count := func(delta int) {
+		mu.Lock()
+		live += delta
+		n := live
+		mu.Unlock()
+		m.Allocations(n)
+	}
 	quota := func(user, _ string, _ net.Addr) bool {
 		dev := deviceOf(user)
 		if dev == "" {
 			return false
 		}
-		return q.Allow(dev)
+		if !q.Allow(dev) {
+			m.QuotaRefused()
+			return false
+		}
+		return true
 	}
 	events := turn.EventHandler{
+		OnAllocationCreated: func(_, _ net.Addr, _, _, _ string, _ net.Addr, _ int) {
+			count(1)
+		},
 		OnAllocationDeleted: func(_, _ net.Addr, _, user, _ string) {
 			q.Release(deviceOf(user))
+			count(-1)
 		},
 	}
 	return quota, events

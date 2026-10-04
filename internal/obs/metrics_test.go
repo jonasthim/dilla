@@ -30,6 +30,8 @@ func TestNoMetricCarriesAnIdentifierLabel(t *testing.T) {
 	m := obs.NewMetrics(reg, reg)
 	m.ObserveHTTP("/v1/instance", http.MethodGet, 200, time.Millisecond)
 	m.RateLimited("login")
+	m.RelayBytes(true, 10)
+	m.StatsReport(true, 40, 1)
 	families, err := reg.Gather()
 	if err != nil {
 		t.Fatalf("gather: %v", err)
@@ -90,6 +92,8 @@ func TestMetricNamesAreTheDocumentedSet(t *testing.T) {
 		"dilla_cert_renewal_failures_total", "dilla_clock_skew_seconds",
 		"dilla_call_full_total", "dilla_call_share_refusals_total", "dilla_call_cuts_total",
 		"dilla_call_grant_retries_total", "dilla_call_grant_repairs_pending",
+		"dilla_call_stats_reports_total", "dilla_call_relay_reports_total", "dilla_call_decrypt_failures_total",
+		"dilla_call_rtt_ms", "dilla_turn_allocations", "dilla_turn_quota_refusals_total", "dilla_turn_relay_bytes_total",
 	}
 	families, err := reg.Gather()
 	if err != nil {
@@ -214,4 +218,68 @@ func TestTheCallCountersCount(t *testing.T) {
 	none.CallGrantRetry()
 	none.CallRepairsPending(1)
 	none.CallsLive(1)
+}
+
+// labelledCounter reads the series of a counter family whose one label has the given value.
+func labelledCounter(t *testing.T, reg *prometheus.Registry, name, value string) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, metric := range f.GetMetric() {
+			if l := metric.GetLabel(); len(l) == 1 && l[0].GetValue() == value {
+				return metric.GetCounter().GetValue()
+			}
+		}
+	}
+	t.Fatalf("%s{%q} is not in the registry", name, value)
+	return 0
+}
+
+func TestTheTURNAndStatsRecordersCount(t *testing.T) {
+	reg := prometheus.NewPedanticRegistry()
+	m := obs.NewMetrics(reg, reg)
+	m.StatsReport(true, 80, 3)
+	m.StatsReport(false, 20, 0)
+	m.QuotaRefused()
+	m.Allocations(4)
+	m.RelayBytes(true, 100)
+	m.RelayBytes(false, 30)
+	if got := counterValue(t, reg, "dilla_call_stats_reports_total"); got != 2 {
+		t.Errorf("reports = %v", got)
+	}
+	if got := counterValue(t, reg, "dilla_call_relay_reports_total"); got != 1 {
+		t.Errorf("relay reports = %v", got)
+	}
+	if got := counterValue(t, reg, "dilla_call_decrypt_failures_total"); got != 3 {
+		t.Errorf("decrypt failures = %v", got)
+	}
+	if got := counterValue(t, reg, "dilla_turn_quota_refusals_total"); got != 1 {
+		t.Errorf("quota refusals = %v", got)
+	}
+	if got := gaugeValue(t, reg, "dilla_turn_allocations"); got != 4 {
+		t.Errorf("allocations = %v", got)
+	}
+	if got := labelledCounter(t, reg, "dilla_turn_relay_bytes_total", "to_client"); got != 100 {
+		t.Errorf("to_client = %v", got)
+	}
+	if got := labelledCounter(t, reg, "dilla_turn_relay_bytes_total", "to_peer"); got != 30 {
+		t.Errorf("to_peer = %v", got)
+	}
+	if live, refused := m.TURNState(); live != 4 || refused != 1 {
+		t.Errorf("TURNState = %d, %d; want 4, 1", live, refused)
+	}
+	var none *obs.Metrics
+	none.StatsReport(true, 1, 1)
+	none.QuotaRefused()
+	none.RelayBytes(true, 1)
+	none.Allocations(1)
+	if live, refused := none.TURNState(); live != 0 || refused != 0 {
+		t.Error("a nil *Metrics reported relay state")
+	}
 }

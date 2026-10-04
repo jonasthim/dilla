@@ -353,6 +353,30 @@ func TestValidationRules(t *testing.T) {
 			}
 		}
 	})
+	t.Run("the turn allocation knobs", func(t *testing.T) {
+		c := base()
+		c.Derive()
+		if c.TURN.AllocationsPerDevice != 4 || c.TURN.MaxAllocationAge != "2h" || c.TURN.CredentialTTL != "1h" {
+			t.Fatalf("defaults = %d, %s, %s; want 4, 2h, 1h", c.TURN.AllocationsPerDevice, c.TURN.MaxAllocationAge, c.TURN.CredentialTTL)
+		}
+		for name, set := range map[string]func(*config.Config){
+			"turn.allocations_per_device": func(c *config.Config) { c.TURN.AllocationsPerDevice = 0 },
+			"turn.max_allocation_age":     func(c *config.Config) { c.TURN.MaxAllocationAge = "30m" },
+		} {
+			c := base()
+			set(c)
+			c.Derive()
+			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), name) {
+				t.Errorf("%s out of range: Validate = %v, want an error naming the key", name, err)
+			}
+		}
+		c = base()
+		c.TURN.AllocationsPerDevice = 17
+		c.Derive()
+		if err := c.Validate(); err == nil {
+			t.Error("turn.allocations_per_device 17 was accepted")
+		}
+	})
 	// I14 (fix wave): turn.public_url is a turn: or turns: URL with a host and a port, or empty.
 	t.Run("turn.public_url is a TURN URL", func(t *testing.T) {
 		for u, ok := range map[string]bool{

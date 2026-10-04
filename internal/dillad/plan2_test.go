@@ -78,6 +78,7 @@ func planTwoRoutes() []struct{ group, method, path string } {
 		{"calls", http.MethodDelete, "/v1/calls/" + x},
 		{"calls", http.MethodPost, "/v1/calls/" + x + "/share"},
 		{"calls", http.MethodDelete, "/v1/calls/" + x + "/share"},
+		{"calls", http.MethodPost, "/v1/calls/" + x + "/stats"},
 		{"admin", http.MethodDelete, "/v1/admin/blobs/" + blobID},
 		{"admin", http.MethodGet, "/v1/admin/audit"},
 		{"admin", http.MethodPost, "/v1/admin/users/" + x + "/disable"},
@@ -250,7 +251,7 @@ func TestThePlanTwoFlowRunsThroughTheCompositionRoot(t *testing.T) {
 	}
 	// t.TempDir is 0755 and nothing reflects UDP here, so data_dir and udp only have to be present;
 	// the database, the wasi core and the blob just uploaded are this process's own and must be OK.
-	for _, name := range []string{"database", "data_dir", "wasi", "udp", "blobs"} {
+	for _, name := range []string{"database", "data_dir", "wasi", "udp", "blobs", "calls", "turn"} {
 		st, ok := status[name]
 		if !ok || (st != 0 && name != "data_dir" && name != "udp") {
 			t.Errorf("diagnostics leg %q: present %v, status %d (%v)", name, ok, st, legs)

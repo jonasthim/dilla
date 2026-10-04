@@ -85,6 +85,7 @@ func (c *Config) durations() map[string]Duration {
 		"tls.dns.propagation_delay":       c.TLS.DNS.PropagationDelay,
 		"tls.dns.propagation_timeout":     c.TLS.DNS.PropagationTimeout,
 		"turn.credential_ttl":             c.TURN.CredentialTTL,
+		"turn.max_allocation_age":         c.TURN.MaxAllocationAge,
 		"db.conn_max_lifetime":            c.DB.ConnMaxLifetime,
 		"blobs.pending_ttl":               c.Blobs.PendingTTL,
 		"blobs.gc_grace":                  c.Blobs.GCGrace,
@@ -178,6 +179,15 @@ func (c *Config) Validate() error {
 	}
 	if c.TURN.ProxyProtocol && c.TURN.Listen == "" {
 		add("turn.proxy_protocol requires turn.listen")
+	}
+	// G34: a browser holds T × N × U allocations (T = 1 under max-bundle, N = its networks, U = 1
+	// relay URL); 4 covers two networks through one ICE-restart overlap. 16 is far past any device.
+	if n := c.TURN.AllocationsPerDevice; n < 1 || n > 16 {
+		add("turn.allocations_per_device is %d; the range is 1..16", n)
+	}
+	if age, ttl := c.TURN.MaxAllocationAge.Value(), c.TURN.CredentialTTL.Value(); age < ttl {
+		add("turn.max_allocation_age (%s) is shorter than turn.credential_ttl (%s): an allocation could not outlive the credential it was made with",
+			c.TURN.MaxAllocationAge, c.TURN.CredentialTTL)
 	}
 	if c.LiveKit.Enabled {
 		if err := secretFile(c.LiveKit.APISecretFile, 32); err != nil {
