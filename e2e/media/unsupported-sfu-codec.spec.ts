@@ -9,7 +9,7 @@ type W = { harness: DillaHarness & DillaHarness21 };
 test.skip(() => process.env.DILLA_MEDIA_SFU_AV1 !== '1', 'run with the test-host AV1 SFU configuration');
 test.skip(({ browserName }) => browserName !== 'chromium', 'AV1 publish is measured on Chromium');
 
-test('the real SFU offers AV1; an AV1 sender sends zero bytes, reports unsupportedCodec and is unpublished', async ({ browser }) => {
+test('the real SFU offers AV1 but the client negotiates and sends VP8', async ({ browser }) => {
   const driver = await MediaDriver.start(DS_URL, testkitEnv());
   try {
     await driver.request('setup', { actors: ['alice'] });
@@ -20,21 +20,24 @@ test('the real SFU offers AV1; an AV1 sender sends zero bytes, reports unsupport
     await page.goto('http://127.0.0.1:5179/');
     await page.evaluate((o) => (globalThis as unknown as W).harness.dillaJoin(o), {
       livekitUrl: token.livekitUrl, token: token.token, iceServers: token.iceServers,
-      epoch: epochWire(key, key.epoch), caps: token.caps,
+      epoch: epochWire(key, key.epoch), caps: [32_000, token.caps[1], token.caps[2]],
     });
     const codecs = await page.evaluate(() => (globalThis as unknown as W).harness.dillaOfferedPublishCodecs());
     console.log('TASK21_JOIN_RESPONSE_CODECS', JSON.stringify(codecs));
     expect(codecs).toContain('video/AV1');
+    await page.evaluate(() => (globalThis as unknown as W).harness.dillaPublishMic());
+    expect(await page.evaluate(() => (globalThis as unknown as W).harness.dillaAudioSenderMaxBitrate())).toBe(32_000);
     await driver.request('share', { actor: 'alice', callId: token.callId });
     await page.evaluate(() => (globalThis as unknown as W).harness.dillaWaitPermission('camera', 10_000));
-    await page.evaluate(() => (globalThis as unknown as W).harness.dillaPublish({ camera: true, simulcast: false, videoCodec: 'av1' }));
-    await expect.poll(async () => (await page.evaluate(() => (globalThis as unknown as W).harness.dillaStats())).dropped.unsupportedCodec, { timeout: 10_000 }).toBeGreaterThan(0);
-    await expect.poll(() => page.evaluate(() => (globalThis as unknown as W).harness.dillaEncryptionErrors()), { timeout: 10_000 }).toContain('unsupportedCodec');
-    await expect.poll(() => page.evaluate(() => (globalThis as unknown as W).harness.dillaPublishedVideoCount()), { timeout: 10_000 }).toBe(0);
+    await page.evaluate(() => (globalThis as unknown as W).harness.dillaPublish({ camera: true, simulcast: false, videoCodec: 'vp8' }));
+    await expect.poll(() => page.evaluate(() => (globalThis as unknown as W).harness.dillaVideoOutBytes()), { timeout: 10_000 }).toBeGreaterThan(0);
+    const sdp = await page.evaluate(() => (globalThis as unknown as W).harness.dillaNegotiatedVideoSdp());
+    expect(sdp.join('\n')).not.toMatch(/a=rtpmap:\d+ (?:AV1|H265|VP9)\//i);
+    const active = await page.evaluate(() => (globalThis as unknown as W).harness.dillaActiveVideoCodecs());
+    expect(active.some((c) => c.startsWith('video/VP8'))).toBe(true);
     const bytes = await page.evaluate(() => (globalThis as unknown as W).harness.dillaVideoOutBytes());
-    console.log('TASK21_AV1_EVIDENCE', JSON.stringify({ bytesSent: bytes, unsupportedCodec: (await page.evaluate(() => (globalThis as unknown as W).harness.dillaStats())).dropped.unsupportedCodec,
-      errors: await page.evaluate(() => (globalThis as unknown as W).harness.dillaEncryptionErrors()), publishedVideo: await page.evaluate(() => (globalThis as unknown as W).harness.dillaPublishedVideoCount()) }));
-    expect(bytes).toBe(0);
+    console.log('TASK21_AV1_EVIDENCE', JSON.stringify({ bytesSent: bytes, active, checkedDescriptions: sdp.length }));
+    expect(bytes).toBeGreaterThan(0);
   } finally {
     await driver.close();
   }

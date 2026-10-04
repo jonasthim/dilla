@@ -58,7 +58,7 @@ it with the same function over the same clear bytes, so it has no length field.
 |---|---|
 | Opus | 0 bytes |
 | VP8 | key frame (`frame[0] & 1 == 0`): the 10-byte uncompressed chunk (frame tag, start code, both size fields), and a key frame shorter than 10 bytes is `E_SFRAME_MALFORMED_PREFIX`; inter frame: 1 byte (verified through LiveKit in both directions between Chromium 153 and Firefox 155 by SP-05) |
-| VP9 | 0 bytes (the RTP payload descriptor carries what the depacketiser and the SFU read) |
+| VP9 | 0 bytes (the RTP payload descriptor carries what the depacketiser and the SFU read); negotiation stays disabled until a frame vector and a measured LiveKit run exist |
 | H.264 | the rule below |
 | AV1, H.265, RED, PCMU/PCMA | not supported at media_version 1; a client MUST NOT negotiate them in a `call` group (livekit-client already turns RED off under E2EE) |
 
@@ -178,14 +178,14 @@ track's slot comes from its LiveKit `TrackSource`: `MICROPHONE` (2) → 0, `CAME
 
 A zero-byte frame on a non-blocking audio decode pipeline passes through unchanged, including
 before its track is mapped: it carries no content. It is counted as `emptyFrames` on the receive
-side, never as decrypted or verified, never held, and never counted as a drop reason. A blocking
+side, never as decrypted or verified, and never counted as a drop reason when delivered. It never starts a hold; while older frames are held on that track it queues behind them, uses one of the 256 frame slots but zero bytes of the 8 MiB bound, and is released in order after them. If an older held frame expires, that frame is counted as dropped, never decrypted. A blocking
 pipeline forwards nothing, and an empty video frame is dropped. The steps below apply to frames
 that are not zero-byte audio.
 
 Every received frame is checked in this order. The first failure names its code, and only
 `E_SFRAME_UNKNOWN_KID` is held:
 
-1. Compute the codec prefix, unescape (H.264) and decode the header strictly, including the
+1. Use the frame's own codec for its prefix rule when the encoded transform exposes one; otherwise use the mapped publication's `TrackInfo.mime_type`. A mismatched codec fails authentication. Compute the codec prefix, unescape (H.264) and decode the header strictly, including the
    canonical-KID rule (`E_SFRAME_TRUNCATED_HEADER`, `E_SFRAME_NON_MINIMAL_HEADER`,
    `E_SFRAME_NON_CANONICAL_KID`). Nothing before this step derives a key.
 2. Resolve the KID to its exact held epoch: none → `E_SFRAME_UNKNOWN_KID`; one this receiver
@@ -222,9 +222,9 @@ participant's status turns false again when the call's media worker fails or the
   so an epoch change needs no key frame when the hold covers it. Measured for holds of 500 to
   2 000 ms: no receiver PLI, no key frame, and a decode gap at most 12 ms longer than the hold
   (`docs/spikes/2026-10-keyframe-recovery.md`).
-- When a receiver must drop a video frame for any reason other than a server-injected frame or a
-  `NONE` flag (an expired or overflowing hold, a failed tag, an evicted epoch, a frame it cannot
-  parse), its decoder stalls until the next key frame.
+- When a receiver drops a video frame for an expired or overflowing hold, a failed tag, a stale
+  epoch, an unparseable frame or an internal error, its decoder may stall until the next key frame.
+  A replay, sender or slot mismatch, own-KID refusal or unsupported codec does not trigger this request.
 - A receiver whose transform exposes `RTCRtpScriptTransformer.sendKeyFrameRequest()` MUST call it
   after such a drop and MUST repeat it at most once per 500 ms on that track until a decrypted key
   frame of that track has been passed to the decoder. The request reaches the publisher as an RTCP
@@ -262,12 +262,14 @@ transform:
   with a pre-connect recording at sender creation or publication has its buffered chunks discarded,
   its recorder stopped, its sender blocked and its track unpublished. The publication event is
   synchronous before livekit-client reads the buffer; after sender creation, calls through the
-  track's `startPreConnectBuffer` method are refused and block the sender too.
+  track's `startPreConnectBuffer` method are refused and block the sender too. `red` and backup
+  codecs are forced off in room defaults; per publish, livekit-client disables both under E2EE,
+  and a RED frame has no prefix rule.
 - **Senders.** Every sender gets its transform synchronously when it is created, before the
   renegotiation that starts its RTP. The codec of each frame is the frame's own (the encoded frame's
   `mimeType`), never the codec the publication is labelled with, which the SFU chooses through the
   codecs it enables. A frame whose codec has no prefix rule in "Codec prefixes" (AV1, H.265, RED,
-  PCMU, PCMA) or that names none is dropped and counted, never sent; on an audio slot only Opus is
+  PCMU, PCMA) or that names none is dropped and counted, never sent; the client then stops and unpublishes that local track and reports `encryptionError`. On an audio slot only Opus is
   sent. A track whose source has no slot, or whose kind does not match its source, gets a transform
   that drops every frame, and is unpublished.
 - **Receivers.** Every receiver gets its transform synchronously in the PeerConnection's `track`

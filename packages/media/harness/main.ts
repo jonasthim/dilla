@@ -246,7 +246,7 @@ document.getElementById('ready')?.removeAttribute('hidden');
 
 // ---- task 19: adapters over the single task 17 dilla join path (task 21 extends this block) ----
 import * as dillaLk from 'livekit-client';
-import { MIC as DILLA_MIC, MIC_CAPTURE as DILLA_MIC_CAPTURE, decodeCaps as dillaDecodeCaps, publishDefaults as dillaPublishDefaults } from '../src/audio/presets';
+import { micOptions as dillaMicOptions, MIC_CAPTURE as DILLA_MIC_CAPTURE, decodeCaps as dillaDecodeCaps, publishDefaults as dillaPublishDefaults } from '../src/audio/presets';
 import { DillaRnnoiseProcessor, type RnnoiseProbe as DillaRnnoiseProbe } from '../src/audio/rnnoise';
 
 export type EpochWire = EpochKeysWire;
@@ -276,6 +276,7 @@ const dillaPcs: RTCPeerConnection[] = [];
 
 let dillaMic: dillaLk.LocalAudioTrack | null = null;
 let dillaProcessor: DillaRnnoiseProcessor | null = null;
+let dillaCaps = dillaDecodeCaps([64_000, 2_500_000, 0]);
 
 function dillaBase(): HarnessApi {
   return (window as unknown as { harness: HarnessApi }).harness;
@@ -295,6 +296,7 @@ function dillaMicState(): { processedTrackId: string; senderIsProcessed: boolean
 const dillaHarness: DillaHarness = {
   async dillaJoin(o) {
     const caps = dillaDecodeCaps(o.caps ?? [64_000, 2_500_000, 0]);
+    dillaCaps = caps;
     await dillaBase().connect(o.livekitUrl, o.token, {
       e2ee: 'dilla',
       iceServers: o.iceServers.map(([urls, username, credential]) => ({ urls, username, credential })),
@@ -315,7 +317,7 @@ const dillaHarness: DillaHarness = {
     const room = dillaRoom();
     const [track] = await room.localParticipant.createTracks({ audio: DILLA_MIC_CAPTURE });
     dillaMic = track as dillaLk.LocalAudioTrack;
-    await room.localParticipant.publishTrack(dillaMic, DILLA_MIC);
+    await room.localParticipant.publishTrack(dillaMic, dillaMicOptions(dillaCaps));
   },
   async dillaSetProcessor() {
     if (!dillaMic) throw new Error('dillaPublishMic first');
@@ -335,7 +337,11 @@ const dillaHarness: DillaHarness = {
     osc.connect(dest);
     osc.start();
     const p = new DillaRnnoiseProcessor();
-    await p.init({ kind: dillaLk.Track.Kind.Audio, track: dest.stream.getAudioTracks()[0], audioContext: ctx });
+    try {
+      await p.init({ kind: dillaLk.Track.Kind.Audio, track: dest.stream.getAudioTracks()[0], audioContext: ctx });
+    } catch {
+      // init now reports compile failures to callers; the probe leg intentionally inspects the report.
+    }
     const probe = await p.probe();
     await p.destroy();
     await ctx.close();
@@ -392,6 +398,7 @@ export interface DillaHarness21 {
   dillaSenderRids(): Promise<string[]>;
   dillaParticipantSeen(): Promise<Record<string, number>>;
   dillaActiveVideoCodecs(): Promise<string[]>;
+  dillaNegotiatedVideoSdp(): string[];
   dillaFailWorker(): Promise<void>;
   dillaAudioOutBytes(): Promise<number>;
   dillaDeadSenderReplaceProbe(): Promise<{ replacementEnded: boolean; senderTrackNull: boolean }>;
@@ -400,6 +407,7 @@ export interface DillaHarness21 {
   dillaEncryptionErrors(): string[];
   dillaPublishedVideoCount(): number;
   dillaVideoOutBytes(): Promise<number>;
+  dillaAudioSenderMaxBitrate(): number | undefined;
 }
 
 const dillaSeen: Record<string, number> = {};
@@ -582,6 +590,9 @@ const dillaHarness21: DillaHarness21 & Pick<DillaHarness, 'dillaJoin'> = {
     }
     return active;
   },
+  dillaNegotiatedVideoSdp() {
+    return dillaPcs.flatMap((pc) => [pc.localDescription?.sdp, pc.remoteDescription?.sdp].filter((s): s is string => s !== undefined));
+  },
   async dillaFailWorker() {
     const manager = dillaSession?.manager as unknown as { worker: Worker } | undefined;
     if (!manager) throw new Error('dillaJoin first');
@@ -610,6 +621,14 @@ const dillaHarness21: DillaHarness21 & Pick<DillaHarness, 'dillaJoin'> = {
       if (s.type === 'outbound-rtp' && s.kind === 'video') total += Number(s.bytesSent ?? 0);
     });
     return total;
+  },
+  dillaAudioSenderMaxBitrate() {
+    for (const pc of dillaPcs) {
+      for (const sender of pc.getSenders()) {
+        if (sender.track?.kind === 'audio') return sender.getParameters().encodings[0]?.maxBitrate;
+      }
+    }
+    return undefined;
   },
   async dillaDeadSenderReplaceProbe() {
     const manager = dillaSession?.manager as unknown as { publishedSenders: WeakMap<dillaLk.LocalTrack, RTCRtpSender> } | undefined;

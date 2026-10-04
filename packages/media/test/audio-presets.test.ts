@@ -6,6 +6,8 @@ import {
   SCREEN_AUDIO,
   SCREEN_AUDIO_BITRATE_BPS,
   SCREEN_AUDIO_CAPTURE,
+  micOptions,
+  screenAudioOptions,
   decodeCaps,
   publishDefaults,
 } from '../src/audio/presets';
@@ -16,7 +18,6 @@ describe('publish presets', () => {
     // two channels, which livekit-client would otherwise classify as stereo (DTX off, stereo=1).
     expect(MIC).toEqual({
       source: Track.Source.Microphone,
-      audioPreset: { maxBitrate: 64_000, priority: 'high' },
       dtx: true,
       red: false,
       forceStereo: false,
@@ -27,7 +28,6 @@ describe('publish presets', () => {
   it('screen audio is 96 kbit/s stereo without DTX or RED (F2)', () => {
     expect(SCREEN_AUDIO).toEqual({
       source: Track.Source.ScreenShareAudio,
-      audioPreset: { maxBitrate: 96_000 },
       forceStereo: true,
       dtx: false,
       red: false,
@@ -43,6 +43,15 @@ describe('publish presets', () => {
 });
 
 describe('caps', () => {
+  it('bare publish constants cannot override the instance bitrate cap', () => {
+    expect(MIC.audioPreset).toBeUndefined();
+    expect(SCREEN_AUDIO.audioPreset).toBeUndefined();
+  });
+  it('a 32 kbit/s cap binds both per-publish audio presets after LiveKit merges options', () => {
+    const caps = { maxAudioBitrateBps: 32_000, maxShareBitrateBps: 1_000_000, vp9: false };
+    expect(({ ...publishDefaults(caps), ...micOptions(caps) }).audioPreset?.maxBitrate).toBe(32_000);
+    expect(({ ...publishDefaults(caps), ...screenAudioOptions(caps) }).audioPreset?.maxBitrate).toBe(32_000);
+  });
   it('decodes the calls response element 5 (MD-10)', () => {
     expect(decodeCaps([64_000, 2_500_000, 0])).toEqual({ maxAudioBitrateBps: 64_000, maxShareBitrateBps: 2_500_000, vp9: false });
     expect(decodeCaps([32_000, 1_000_000, 1]).vp9).toBe(true);

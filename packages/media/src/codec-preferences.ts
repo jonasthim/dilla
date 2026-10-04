@@ -1,7 +1,12 @@
 /** Dilla's H.264 SFrame prefix requires Constrained Baseline and packetization mode 1. */
 export function dillaVideoCodecs<T extends { mimeType: string; sdpFmtpLine?: string }>(codecs: T[]): T[] {
   return codecs.filter((codec) => {
-    if (codec.mimeType.toLowerCase() !== 'video/h264') return true;
+    const mime = codec.mimeType.toLowerCase();
+    if (['video/vp8', 'video/rtx', 'video/red', 'video/ulpfec', 'video/flexfec-03'].includes(mime)) return true;
+    // Follow-up card: VP9 needs a vector and LiveKit measurement before negotiation.
+    const VP9_ENABLED = false;
+    if (mime === 'video/vp9') return VP9_ENABLED && !/(?:^|;)\s*profile-id=[^0](?:;|$)/.test(codec.sdpFmtpLine ?? '');
+    if (mime !== 'video/h264') return false;
     const fmtp = codec.sdpFmtpLine?.toLowerCase() ?? '';
     return /(?:^|;)\s*packetization-mode=1(?:;|$)/.test(fmtp)
       && /(?:^|;)\s*profile-level-id=42e01f(?:;|$)/.test(fmtp);
@@ -23,7 +28,7 @@ export function restrictH264Sdp(sdp: string): string {
       if (f) fmtp.set(f[1], f[2].toLowerCase());
     }
     for (const [pt, name] of codecs) {
-      if (name === 'h264' && dillaVideoCodecs([{ mimeType: 'video/H264', sdpFmtpLine: fmtp.get(pt) }]).length === 0) removed.add(pt);
+      if (name !== 'rtx' && dillaVideoCodecs([{ mimeType: `video/${name}`, sdpFmtpLine: fmtp.get(pt) }]).length === 0) removed.add(pt);
     }
     for (const [pt, name] of codecs) {
       if (name === 'rtx' && removed.has(/(?:^|;)\s*apt=(\d+)/.exec(fmtp.get(pt) ?? '')?.[1] ?? '')) removed.add(pt);
@@ -51,11 +56,12 @@ export function installDillaCodecPreferences(): () => void {
   const Native = globalThis.RTCPeerConnection;
   class DillaPeerConnection extends Native {
     private preferVideo(): void {
-      const codecs = RTCRtpSender.getCapabilities('video')?.codecs;
-      if (!codecs) return;
-      const preferred = dillaVideoCodecs(codecs);
       for (const tx of this.getTransceivers()) {
-        if (tx.receiver.track.kind === 'video') tx.setCodecPreferences(preferred);
+        if (tx.receiver.track.kind !== 'video' || tx.currentDirection === 'stopped') continue;
+        const caps = tx.direction === 'recvonly' ? RTCRtpReceiver.getCapabilities('video') : RTCRtpSender.getCapabilities('video');
+        if (!caps) continue;
+        try { tx.setCodecPreferences(dillaVideoCodecs(caps.codecs)); }
+        catch (err) { console.warn('dilla video codec preferences:', err); }
       }
     }
     override createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescriptionInit>;
@@ -71,7 +77,7 @@ export function installDillaCodecPreferences(): () => void {
       return typeof arg === 'function' ? super.createAnswer(arg as RTCSessionDescriptionCallback, failure!) : super.createAnswer(arg);
     }
     override async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
-      const safe = description.sdp === undefined ? description : { ...description, sdp: restrictH264Sdp(description.sdp) };
+      const safe = description.sdp === undefined ? description : { type: description.type, sdp: restrictH264Sdp(description.sdp) };
       return super.setRemoteDescription(safe);
     }
   }

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RoomEvent, Track, type Room } from 'livekit-client';
 import { SpeakerPolicy } from '../src/audio/speakers';
 
@@ -30,6 +30,27 @@ function room(n: number): { room: Room & EventEmitter; people: FakeParticipant[]
 const subscribed = (people: FakeParticipant[]) => people.filter((p) => p.mic.subscribed).map((p) => p.identity);
 
 describe('the top-6 speaker policy (ruling DEV-04 a)', () => {
+  it('promotes a steady speaker when the hold expires without another event', () => {
+    vi.useFakeTimers();
+    try {
+      const { room: r, people } = room(7);
+      const policy = new SpeakerPolicy(r, { holdMs: 2_000, now: () => Date.now() });
+      r.emit(RoomEvent.ActiveSpeakersChanged, [people[6]]);
+      expect(people[6].mic.subscribed).toBe(false);
+      vi.advanceTimersByTime(2_000);
+      expect(people[6].mic.subscribed).toBe(true);
+      policy.dispose();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('restores only microphones excluded by the policy on dispose', () => {
+    const { room: r, people } = room(7);
+    people[0].mic.setSubscribed(false);
+    const policy = new SpeakerPolicy(r, { now: () => 0 });
+    policy.dispose();
+    expect(people[0].mic.subscribed).toBe(false);
+    expect(people[6].mic.subscribed).toBe(true);
+  });
   it('with six or fewer remote participants everyone stays subscribed', () => {
     const { room: r, people } = room(6);
     const policy = new SpeakerPolicy(r, { now: () => 0 });
@@ -83,9 +104,11 @@ describe('the top-6 speaker policy (ruling DEV-04 a)', () => {
     const { room: r, people } = room(8);
     const policy = new SpeakerPolicy(r, { holdMs: 0, now: () => now });
     policy.dispose();
+    const calls = people[7].mic.calls;
     now = 10_000;
     r.emit(RoomEvent.ActiveSpeakersChanged, [people[7]]);
-    expect(people[7].mic.subscribed).toBe(false);
+    expect(people[7].mic.subscribed).toBe(true);
+    expect(people[7].mic.calls).toBe(calls);
   });
 
   it('does not signal unchanged subscriptions or override an application unsubscribe', () => {

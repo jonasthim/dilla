@@ -972,11 +972,22 @@ describe('participant status (M3)', () => {
     const errors: Array<[string, string | undefined]> = [];
     m.on('encryptionError', (e: Error, id?: string) => errors.push([e.message, id]));
     lp.emit('localSenderCreated', streamsRtp(), localTrack('camera', 'video', 'tx-cam', 'av1'));
-    w.reply({ kind: 'error', code: 'unsupportedCodec', trackId: 'tx-cam', participantIdentity: DEV_LOCAL });
-    w.reply({ kind: 'error', code: 'unsupportedCodec', trackId: 'tx-cam', participantIdentity: DEV_LOCAL });
-    w.reply({ kind: 'error', code: 'unsupportedCodec', trackId: 'rx-remote', participantIdentity: DEV_B });
+    w.reply({ kind: 'error', code: 'unsupportedCodec', side: 'decode', trackId: 'tx-cam', participantIdentity: DEV_LOCAL });
+    await microtasks();
+    expect(lp.unpublishTrack).not.toHaveBeenCalled();
+    w.reply({ kind: 'error', code: 'unsupportedCodec', side: 'encode', trackId: 'tx-cam', participantIdentity: DEV_LOCAL });
+    w.reply({ kind: 'error', code: 'unsupportedCodec', side: 'encode', trackId: 'tx-cam', participantIdentity: DEV_LOCAL });
+    w.reply({ kind: 'error', code: 'unsupportedCodec', side: 'decode', trackId: 'rx-remote', participantIdentity: DEV_B });
     expect(errors).toEqual([['unsupportedCodec', DEV_LOCAL]]);
     await vi.waitFor(() => expect(lp.unpublishTrack).toHaveBeenCalledTimes(1));
+  });
+  it('forgets local track references when LiveKit unpublishes a normal track', () => {
+    const { m, lp } = setup();
+    const track = localTrack('camera', 'video', 'tx-normal');
+    lp.emit('localSenderCreated', streamsRtp(), track);
+    lp.emit('localTrackUnpublished', { track });
+    expect((m as unknown as { localTrackIds: Set<string> }).localTrackIds.has('tx-normal')).toBe(false);
+    expect((m as unknown as { localTracks: Map<string, unknown> }).localTracks.has('tx-normal')).toBe(false);
   });
 });
 

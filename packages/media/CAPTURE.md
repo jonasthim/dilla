@@ -37,8 +37,8 @@ pactl load-module module-remap-source master=dilla_share.monitor source_name=dil
 
 ## Publish constants (this wave, `src/audio/presets.ts`)
 
-- Mic: `MIC = { source: Microphone, audioPreset: { maxBitrate: 64_000, priority: 'high' }, dtx: true, red: false, forceStereo: false }`.
-- Screen audio: `SCREEN_AUDIO = { source: ScreenShareAudio, audioPreset: { maxBitrate: 96_000 }, forceStereo: true, dtx: false, red: false }` (ruling F2) with capture `{ echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 }`.
+- Mic: publish with `micOptions(caps)`; its 64 kbit/s target is clamped to `caps.maxAudioBitrateBps` even when publish options override room defaults. It uses DTX, no RED and mono.
+- Screen audio: publish with `screenAudioOptions(caps)`; its 96 kbit/s target is clamped to `caps.maxAudioBitrateBps`, with stereo, no DTX and no RED (ruling F2). Capture with `{ echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 }`.
 
 ## Content-Security-Policy minimum
 

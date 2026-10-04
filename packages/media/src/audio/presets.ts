@@ -19,7 +19,6 @@ export const SCREEN_AUDIO_BITRATE_BPS = 96_000;
  */
 export const MIC: TrackPublishOptions = {
   source: Track.Source.Microphone,
-  audioPreset: { maxBitrate: MIC_BITRATE_BPS, priority: 'high' },
   dtx: true,
   red: false,
   forceStereo: false,
@@ -27,11 +26,19 @@ export const MIC: TrackPublishOptions = {
 
 export const SCREEN_AUDIO: TrackPublishOptions = {
   source: Track.Source.ScreenShareAudio,
-  audioPreset: { maxBitrate: SCREEN_AUDIO_BITRATE_BPS },
   forceStereo: true,
   dtx: false,
   red: false,
 };
+
+/** Per-publish options must carry the instance cap because LiveKit merges them over room defaults. */
+export function micOptions(caps: CallCaps): TrackPublishOptions {
+  return { ...MIC, audioPreset: { maxBitrate: Math.min(MIC_BITRATE_BPS, caps.maxAudioBitrateBps), priority: 'high' } };
+}
+
+export function screenAudioOptions(caps: CallCaps): TrackPublishOptions {
+  return { ...SCREEN_AUDIO, audioPreset: { maxBitrate: Math.min(SCREEN_AUDIO_BITRATE_BPS, caps.maxAudioBitrateBps) } };
+}
 
 /** Shared audio is content, not speech: no voice processing, both channels. */
 export const SCREEN_AUDIO_CAPTURE: MediaTrackConstraints = {

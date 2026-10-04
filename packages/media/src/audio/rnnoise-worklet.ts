@@ -1,6 +1,5 @@
 // The dilla RNNoise + gate AudioWorklet (DEV-36, DEV-37). It never decodes base64 and never compiles
-// synchronously: the main thread hands it raw bytes, which it compiles asynchronously while passing
-// audio through. The emscripten factory's own
+// synchronously: the main thread hands it raw bytes and it compiles asynchronously. The emscripten factory's own
 // `instantiateWasm` hook instantiates the module, so the 1.92 MB data URI inside rnnoise-sync.js is
 // never read.
 // @ts-ignore -- @jitsi/rnnoise-wasm 0.2.1 ships no type declarations (no "types", no "exports")
@@ -8,6 +7,7 @@ import createRNNWasmModuleSync from '@jitsi/rnnoise-wasm/dist/rnnoise-sync.js';
 import { VoiceGate, type GateMode } from './gate';
 
 declare const currentTime: number;
+declare const sampleRate: number;
 declare function registerProcessor(name: string, ctor: unknown): void;
 declare abstract class AudioWorkletProcessor {
   readonly port: MessagePort;
@@ -34,6 +34,7 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
   private state = 0;
   private buf = 0;
   private readonly gate: VoiceGate;
+  private mode: GateMode;
   private readonly inQ = new Float32Array(RING);
   private inLen = 0;
   private readonly outQ = new Float32Array(RING * 2);
@@ -41,13 +42,17 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
   private frames = 0;
   private lastVad = 0;
   private stopped = false;
+  private readonly unsupportedRate: boolean;
 
   constructor(options: { processorOptions?: { mode?: GateMode } }) {
     const t0 = Date.now();
     super();
-    this.gate = new VoiceGate({ mode: options.processorOptions?.mode ?? 'open' });
+    this.mode = options.processorOptions?.mode ?? 'open';
+    this.unsupportedRate = sampleRate !== 48_000;
+    this.gate = new VoiceGate({ mode: this.mode });
     this.port.onmessage = (e: MessageEvent) => this.onMessage(e.data as { kind: string; module?: WebAssembly.Module; bytes?: ArrayBuffer; active?: boolean; mode?: GateMode });
     this.post({ kind: 'probe', atob: typeof (globalThis as { atob?: unknown }).atob, ctorMs: Date.now() - t0, compiled: false, error: null });
+    if (this.unsupportedRate) this.post({ kind: 'probe', atob: 'none', ctorMs: 0, compiled: false, error: `E_AUDIO_RATE: expected 48000 Hz, got ${sampleRate}` });
   }
 
   private post(m: unknown): void {
@@ -55,6 +60,7 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
   }
 
   private load(mod: WebAssembly.Module): void {
+    if (this.stopped || this.unsupportedRate) return;
     try {
       const m = (createRNNWasmModuleSync as Factory)({
         instantiateWasm(info, receive) {
@@ -63,6 +69,7 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
           return inst.exports;
         },
       });
+      if (this.stopped) return;
       this.state = m._rnnoise_create(0);
       this.buf = m._malloc(FRAME * 4);
       this.m = m;
@@ -81,7 +88,7 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
         if (d.bytes) {
           WebAssembly.compile(d.bytes).then(
             (mod) => this.load(mod),
-            (err: unknown) => this.post({ kind: 'probe', atob: typeof (globalThis as { atob?: unknown }).atob, ctorMs: 0, compiled: false, error: String(err) }),
+            (err: unknown) => { if (!this.stopped) this.post({ kind: 'probe', atob: typeof (globalThis as { atob?: unknown }).atob, ctorMs: 0, compiled: false, error: String(err) }); },
           );
         }
         break;
@@ -89,7 +96,7 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
         this.gate.setPtt(d.active === true);
         break;
       case 'mode':
-        if (d.mode) this.gate.setMode(d.mode);
+        if (d.mode) { this.mode = d.mode; this.gate.setMode(d.mode); }
         break;
       case 'destroy':
         if (this.m) {
@@ -111,9 +118,14 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
       return true;
     }
     const m = this.m;
+    if (this.unsupportedRate) {
+      if (this.mode !== 'vad' && this.gate.update(0, currentTime * 1000)) out.set(input);
+      else out.fill(0);
+      return true;
+    }
     if (!m) {
-      // Not loaded yet: pass the mic through, still gated (PTT/open only; VAD has no probability yet).
-      if (this.gate.update(1, currentTime * 1000)) out.set(input);
+      // VAD has no voice probability until RNNoise loads: fail closed.
+      if (this.mode !== 'vad' && this.gate.update(0, currentTime * 1000)) out.set(input);
       else out.fill(0);
       return true;
     }

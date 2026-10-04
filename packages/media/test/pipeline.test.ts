@@ -17,6 +17,7 @@ class FakeCipher implements CryptoFactory {
   /** Every key array the pipeline handed to the cipher, and a copy of its bytes at the time of the call. */
   readonly keys: Array<{ array: Uint8Array; atCall: number[] }> = [];
   readonly encrypts: Array<{ codec: number; slot: number; layer: number }> = [];
+  readonly decrypts: number[] = [];
 
   private record(k: Uint8Array): void {
     this.keys.push({ array: k, atCall: [...k] });
@@ -41,6 +42,7 @@ class FakeCipher implements CryptoFactory {
       install_epoch: (_e, k) => this.record(k),
       expire: () => undefined,
       decrypt: (_codec, frame) => {
+        this.decrypts.push(_codec);
         if (this.decryptError !== undefined) throw this.decryptError;
         return frame.slice(1).map((b) => b ^ 0xff);
       },
@@ -120,7 +122,7 @@ describe('zero-byte audio DTX frames', () => {
     expect(h.fifo.length).toBe(1);
   });
 
-  it('does not disturb a held unknown-KID queue', () => {
+  it('delivers an empty frame after an older held frame', () => {
     const { p, cipher } = setup();
     install(p);
     const sink = new Sink();
@@ -129,8 +131,31 @@ describe('zero-byte audio DTX frames', () => {
     p.frame(h, frame([0x80, 0x01]));
     expect(h.fifo.length).toBe(1);
     p.frame(h, frame([]));
-    expect(h.fifo.length).toBe(1);
+    expect(h.fifo.length).toBe(2);
+    expect(sink.out).toHaveLength(0);
+    cipher.decryptError = undefined;
+    install(p, 8n);
+    expect(sink.out.map((b) => [...b])).toEqual([[0xfe], []]);
+    expect(p.stats.emptyFrames.decode).toBe(1);
+    expect(p.stats.decryptedByTrack['dec-0']).toBe(1);
+  });
+
+  it('counts an expired held frame as dropped and then releases its queued empty frame', () => {
+    const { p, cipher, advance } = setup();
+    install(p);
+    const sink = new Sink();
+    const h = p.addTrack(dec(), sink);
+    cipher.decryptError = new Error('E_SFRAME_UNKNOWN_KID');
+    p.frame(h, frame([0x80, 0x01]));
+    p.frame(h, frame([]));
+    expect(sink.out).toHaveLength(0);
+    expect(h.fifo.length).toBe(2);
+    advance(2_001);
+    p.tick();
     expect(sink.out.map((b) => [...b])).toEqual([[]]);
+    expect(p.stats.dropped.bufferTimeout).toBe(1);
+    expect(p.stats.droppedByTrack['dec-0']).toBe(1);
+    expect(p.stats.decryptedByTrack['dec-0']).toBeUndefined();
     expect(p.stats.emptyFrames.decode).toBe(1);
   });
 
@@ -149,6 +174,35 @@ describe('zero-byte audio DTX frames', () => {
     expect(p.stats.dropped.blocked).toBe(2);
     expect(p.stats.emptyFrames).toEqual({ encode: 0, decode: 0 });
   });
+});
+it('dropHeld counts every cleared frame on its track', () => {
+  const { p, cipher } = setup();
+  install(p);
+  cipher.decryptError = new Error('E_SFRAME_UNKNOWN_KID');
+  const h = p.addTrack(dec(), new Sink());
+  p.frame(h, frame([1]));
+  p.handle({ kind: 'detach', trackId: 'dec-0' });
+  expect(p.stats.droppedByTrack['dec-0']).toBe(1);
+});
+
+it('uses a receiver frame codec when exposed instead of its mapped publication codec', () => {
+  const { p, cipher } = setup();
+  install(p);
+  const h = p.addTrack({ ...dec(), slot: 1, codec: 'vp8' }, new Sink());
+  p.frame(h, frame([0x01, 0x02], 'video/H264'));
+  expect(cipher.decrypts).toEqual([CODEC_NUMBER.h264]);
+});
+
+it('reports the side of an unsupported codec and cannot replace an opposite-side handle', () => {
+  const { p, posted } = setup();
+  install(p);
+  const send = new Sink();
+  const h = p.addTrack({ ...enc(1), trackId: 'same' }, send);
+  p.addTrack({ ...dec('same'), slot: 1, codec: 'vp8' }, new Sink());
+  expect((p as unknown as { tracks: Map<string, unknown> }).tracks.get('same')).toBe(h);
+  p.frame(h, frame([1, 2], 'video/AV1'));
+  expect(posted).toContainEqual(expect.objectContaining({ kind: 'error', code: 'unsupportedCodec', side: 'encode' }));
+  expect(send.out).toHaveLength(0);
 });
 const block = (side: 'encode' | 'decode', trackId: string): DillaBlockOptions => ({ dilla: 1, side, trackId, block: true });
 

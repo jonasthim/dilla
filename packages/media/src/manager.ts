@@ -18,6 +18,7 @@ const ROOM = {
 } as const satisfies Record<string, `${RoomEvent}`>;
 const LOCAL_SENDER_CREATED = 'localSenderCreated' satisfies `${ParticipantEvent}`;
 const LOCAL_TRACK_PUBLISHED = 'localTrackPublished' satisfies `${ParticipantEvent}`;
+const LOCAL_TRACK_UNPUBLISHED = 'localTrackUnpublished' satisfies `${ParticipantEvent}`;
 const MEDIA_TRACK_ADDED = 'mediaTrackAdded' satisfies `${EngineEvent}`;
 
 export const DATA_CHANNEL_ERROR = 'dilla: data-channel encryption is not supported; construct Room with e2ee:, not encryption:';
@@ -181,6 +182,15 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     };
     lp.on(LOCAL_TRACK_PUBLISHED, onPublished);
     this.unsubscribe.push(() => lp.off(LOCAL_TRACK_PUBLISHED, onPublished));
+    const onUnpublished = (pub: { track?: LocalTrack }): void => {
+      const track = pub.track;
+      if (track) {
+        this.localTracks.delete(track.mediaStreamID);
+        this.localTrackIds.delete(track.mediaStreamID);
+      }
+    };
+    lp.on(LOCAL_TRACK_UNPUBLISHED, onUnpublished);
+    this.unsubscribe.push(() => lp.off(LOCAL_TRACK_UNPUBLISHED, onUnpublished));
   }
 
   setupEngine(engine: unknown): void {
@@ -299,6 +309,8 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
    * one frame for. The worker counts stats.verified per mapped participantIdentity after a successful decrypt,
    * which the core only returns when the frame is authentic and its sender leaf belongs to that device; the per-KID
    * `decrypted` counter (a JS peek) plays no part. This, not the roster status event, is the "verified" signal.
+   * A microphone excluded by SpeakerPolicy, with no other track, produces no decrypt; its status is
+   * "not heard yet", distinct from an authentication failure.
    */
   async verifiedIdentities(): Promise<Set<string>> {
     const s = await this.stats();
@@ -442,7 +454,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
       return;
     }
     // A local track whose frames have no prefix rule (a codec the SFU forced) sends nothing: the UI must know.
-    const localCodec = m.code === 'unsupportedCodec' && m.trackId !== undefined && this.localTrackIds.has(m.trackId);
+    const localCodec = m.code === 'unsupportedCodec' && m.side === 'encode' && m.trackId !== undefined && this.localTrackIds.has(m.trackId);
     if (localCodec) {
       const track = this.localTracks.get(m.trackId!);
       if (track !== undefined) {

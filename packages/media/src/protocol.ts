@@ -67,7 +67,7 @@ export type FromWorker =
   | { kind: 'rekeyNeeded'; reason: 'layerSpace' | 'seqExhausted' }
   // ≤1/s per (code, trackId). `epoch` names the installEpoch that failed; an E_WASM with neither `trackId` nor
   // `epoch` is worker-wide (the wasm never loaded): the manager then fails every pending call.
-  | { kind: 'error'; code: DropReason | 'E_NO_EPOCH' | 'E_BAD_OPTIONS' | 'E_WASM'; participantIdentity?: string; trackId?: string; epoch?: bigint }
+  | { kind: 'error'; code: DropReason | 'E_NO_EPOCH' | 'E_BAD_OPTIONS' | 'E_WASM'; participantIdentity?: string; trackId?: string; side?: Side; epoch?: bigint }
   | { kind: 'stats'; id: number; data: DillaMediaStats }
   | { kind: 'log'; level: 'error' | 'warn' | 'info' | 'debug'; msg: string };
 

@@ -56,7 +56,7 @@ describe('the VP9 publisher rule (DEV-07)', () => {
     ['every remote decodes VP9', ON, yes, [
       { identity: 'b', attributes: { [VDEC_ATTRIBUTE]: 'vp8,h264,vp9' } },
       { identity: 'c', attributes: { [VDEC_ATTRIBUTE]: 'vp8,vp9' } },
-    ], 'vp9'],
+    ], 'vp8'],
     ['one remote lacks VP9', ON, yes, [
       { identity: 'b', attributes: { [VDEC_ATTRIBUTE]: 'vp8,h264,vp9' } },
       { identity: 'c', attributes: { [VDEC_ATTRIBUTE]: 'vp8,h264' } },
@@ -65,7 +65,7 @@ describe('the VP9 publisher rule (DEV-07)', () => {
       { identity: 'b', attributes: { [VDEC_ATTRIBUTE]: 'vp8,h264,vp9' } },
       { identity: 'c', attributes: {} },
     ], 'vp8'],
-    ['alone in the call', ON, yes, [], 'vp9'],
+    ['alone in the call', ON, yes, [], 'vp8'],
   ];
   for (const [name, caps, enc, remotes, want] of cases) {
     it(`${name} → ${want}`, () => {
@@ -81,7 +81,7 @@ describe('the VP9 publisher rule (DEV-07)', () => {
     (room as unknown as { remoteParticipants: Map<string, FakeParticipant> }).remoteParticipants.set('c', late);
     room.emit(RoomEvent.ParticipantConnected, late);
     room.emit(RoomEvent.ParticipantConnected, late);
-    expect(changes).toEqual(['vp8:join']);
+    expect(changes).toEqual([]);
     stop();
   });
 
@@ -92,7 +92,7 @@ describe('the VP9 publisher rule (DEV-07)', () => {
     const stop = watchVideoCodec(room, ON, (codec, why) => changes.push(`${codec}:${why}`), yes);
     c.attributes = { [VDEC_ATTRIBUTE]: 'vp8,vp9' };
     room.emit(RoomEvent.ParticipantAttributesChanged, { [VDEC_ATTRIBUTE]: 'vp8,vp9' }, c);
-    expect(changes).toEqual(['vp9:attributes']);
+    expect(changes).toEqual([]);
     stop();
   });
 
@@ -102,7 +102,7 @@ describe('the VP9 publisher rule (DEV-07)', () => {
     const stop = watchVideoCodec(room, ON, (codec, why) => changes.push(`${codec}:${why}`), yes);
     room.emit(RoomEvent.TrackSubscriptionFailed, 'TR_x', { identity: 'b' }, SubscriptionError.SE_CODEC_UNSUPPORTED);
     room.emit(RoomEvent.ParticipantAttributesChanged, {}, { identity: 'b' });
-    expect(changes).toEqual(['vp8:subscription-failed']);
+    expect(changes).toEqual([]);
     stop();
   });
 });

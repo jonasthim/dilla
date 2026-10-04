@@ -54,10 +54,16 @@ describe('the VAD/PTT gate', () => {
 });
 
 class FakePort {
+  static nextError: string | null = null;
   sent: unknown[] = [];
   onmessage: ((e: MessageEvent) => void) | null = null;
   postMessage(m: unknown) {
     this.sent.push(m);
+    if ((m as { kind?: string }).kind === 'bytes') {
+      const error = FakePort.nextError;
+      FakePort.nextError = null;
+      queueMicrotask(() => this.onmessage?.({ data: { kind: 'probe', atob: 'undefined', ctorMs: 0, compiled: error === null, error } } as MessageEvent));
+    }
   }
 }
 class FakeNode {
@@ -99,6 +105,31 @@ describe('DillaRnnoiseProcessor', () => {
     vi.stubGlobal('AudioWorkletNode', FakeNode);
     vi.stubGlobal('MediaStream', class { constructor(readonly tracks: unknown[]) {} });
   }
+
+  it('rejects a worklet compile failure and closes its context', async () => {
+    stubAudioGlobals();
+    FakePort.nextError = 'E_WASM';
+    const ctx = fakeContext();
+    const p = new DillaRnnoiseProcessor({ createContext: () => ctx as unknown as AudioContext, workletUrl: '/w.js', wasmUrl: '/r.wasm', fetchWasm: async () => new ArrayBuffer(4) });
+    const init = p.init({ kind: Track.Kind.Audio, track: { id: 'mic-1' } as MediaStreamTrack } as AudioProcessorOptions);
+    await expect(init).rejects.toThrow('E_WASM');
+    expect(ctx.closed).toBe(true);
+  });
+
+  it('times out a suspended context resume and closes it', async () => {
+    stubAudioGlobals();
+    const ctx = fakeContext();
+    ctx.resume = () => new Promise<void>(() => {});
+    const p = new DillaRnnoiseProcessor({ createContext: () => ctx as unknown as AudioContext, workletUrl: '/w.js', wasmUrl: '/r.wasm', fetchWasm: async () => new ArrayBuffer(4) });
+    vi.useFakeTimers();
+    try {
+      const init = p.init({ kind: Track.Kind.Audio, track: { id: 'mic-1' } as MediaStreamTrack } as AudioProcessorOptions);
+      const outcome = expect(init).rejects.toThrow('resume');
+      await vi.advanceTimersByTimeAsync(10_001);
+      await outcome;
+      expect(ctx.closed).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
 
   it('owns its own context and never touches the room context (G40 a)', async () => {
     stubAudioGlobals();
@@ -180,23 +211,39 @@ describe('DillaRnnoiseProcessor', () => {
     await p.destroy();
     expect(node.port.sent).toContainEqual({ kind: 'destroy' });
     expect(ctx.closed).toBe(true);
+    await expect(p.probe(1)).rejects.toThrow('reported nothing');
   });
 });
 
 it('the worklet reports an RNNoise factory failure instead of leaving probe pending', async () => {
   const reports: Array<{ kind: string; compiled: boolean; error: string | null }> = [];
-  let Processor: new (opts: unknown) => { port: { onmessage: ((e: MessageEvent) => void) | null } };
+  let Processor: new (opts: unknown) => { port: { onmessage: ((e: MessageEvent) => void) | null }; process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean };
   vi.stubGlobal('AudioWorkletProcessor', class {
     port = { onmessage: null as ((e: MessageEvent) => void) | null, postMessage: (m: typeof reports[number]) => reports.push(m) };
   });
   vi.stubGlobal('registerProcessor', (_name: string, ctor: typeof Processor) => { Processor = ctor; });
   try {
+    vi.stubGlobal('sampleRate', 48_000);
+    vi.stubGlobal('currentTime', 0);
     await import('../src/audio/rnnoise-worklet');
+    const gated = new Processor!({ processorOptions: { mode: 'vad' } });
+    const output = new Float32Array(128);
+    gated.process([[new Float32Array(128).fill(0.5)]], [[output]]);
+    expect([...output].every((v) => v === 0)).toBe(true);
+    vi.stubGlobal('sampleRate', 44_100);
+    new Processor!({ processorOptions: { mode: 'vad' } });
+    expect(reports.some((r) => r.error?.includes('48000'))).toBe(true);
+    reports.length = 0;
+    vi.stubGlobal('sampleRate', 48_000);
     const worklet = new Processor!({ processorOptions: { mode: 'open' } });
     const emptyWasm = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
     worklet.port.onmessage!({ data: { kind: 'bytes', bytes: emptyWasm.buffer } } as MessageEvent);
     await vi.waitFor(() => expect(reports.some((r) => r.error)).toBe(true));
     expect(reports.at(-1)).toMatchObject({ kind: 'probe', compiled: false, error: expect.any(String) });
+    worklet.port.onmessage!({ data: { kind: 'destroy' } } as MessageEvent);
+    const before = reports.length;
+    worklet.port.onmessage!({ data: { kind: 'module', module: new WebAssembly.Module(emptyWasm) } } as MessageEvent);
+    expect(reports).toHaveLength(before);
   } finally {
     vi.unstubAllGlobals();
   }

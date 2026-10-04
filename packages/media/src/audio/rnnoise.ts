@@ -25,6 +25,13 @@ const defaultFetch = async (url: string): Promise<ArrayBuffer> => {
   if (!r.ok) throw new Error(`E_WASM: ${url} answered ${r.status}`);
   return r.arrayBuffer();
 };
+const INIT_TIMEOUT_MS = 10_000;
+function bounded<T>(promise: Promise<T>, step: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`E_AUDIO_TIMEOUT: ${step}`)), INIT_TIMEOUT_MS);
+    promise.then((value) => { clearTimeout(timer); resolve(value); }, (err: unknown) => { clearTimeout(timer); reject(err); });
+  });
+}
 
 /**
  * RNNoise plus the VAD/PTT gate as a livekit-client audio processor (DEV-36, DEV-37). It owns its
@@ -33,6 +40,7 @@ const defaultFetch = async (url: string): Promise<ArrayBuffer> => {
  * rate RNNoise is trained at — and swaps only the source node on `restart()`, keeping
  * `processedTrack` the same object so the sender's `replaceTrack` target never changes. Attach it with
  * `LocalAudioTrack.setProcessor` only after `publishTrack`; a capture-time processor throws in 2.22.3.
+ * Call setProcessor under user activation so the private AudioContext can resume.
  */
 export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, AudioProcessorOptions> {
   readonly name = 'dilla-rnnoise' as const;
@@ -48,10 +56,18 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
   constructor(private readonly opts: RnnoiseProcessorOptions = {}) {}
 
   async init(opts: AudioProcessorOptions): Promise<void> {
+    this.lastProbe = null;
     const ctx = (this.opts.createContext ?? (() => new AudioContext({ sampleRate: 48_000, latencyHint: 'interactive' })))();
     this.ctx = ctx;
-    await ctx.resume();
-    await ctx.audioWorklet.addModule(this.opts.workletUrl ?? (await defaultWorkletUrl()));
+    try {
+    await bounded(ctx.resume(), 'resume');
+    ctx.onstatechange = () => {
+      if (ctx.state === 'suspended') {
+        this.onWorklet({ kind: 'probe', atob: 'none', ctorMs: 0, compiled: false, error: 'E_AUDIO_SUSPENDED' });
+        void bounded(ctx.resume(), 'resume').catch(() => undefined);
+      }
+    };
+    await bounded(ctx.audioWorklet.addModule(this.opts.workletUrl ?? (await bounded(defaultWorkletUrl(), 'worklet URL'))), 'addModule');
     const node = new AudioWorkletNode(ctx, 'dilla-rnnoise-gate', {
       numberOfInputs: 1,
       numberOfOutputs: 1,
@@ -62,7 +78,7 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
     });
     node.port.onmessage = (e: MessageEvent) => this.onWorklet(e.data as { kind: string; p?: number } & RnnoiseProbe);
     this.node = node;
-    const bytes = await (this.opts.fetchWasm ?? defaultFetch)(this.opts.wasmUrl ?? (await defaultWasmUrl()));
+    const bytes = await bounded((this.opts.fetchWasm ?? defaultFetch)(this.opts.wasmUrl ?? (await bounded(defaultWasmUrl(), 'wasm URL'))), 'fetch wasm');
     // The Module handoff stalled in Chromium 153 headless (NV-11); the cause was not isolated.
     // Compile bytes asynchronously while the unloaded worklet passes audio through.
     node.port.postMessage({ kind: 'bytes', bytes }, [bytes]);
@@ -74,6 +90,17 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
     this.connectSource(opts.track);
     node.connect(dest);
     this.processedTrack = dest.stream.getAudioTracks()[0];
+    const probe = await this.probe(INIT_TIMEOUT_MS);
+    if (!probe.compiled) throw new Error(probe.error ?? 'E_WASM: RNNoise did not compile');
+    } catch (err) {
+      ctx.onstatechange = null;
+      this.node?.port.postMessage({ kind: 'destroy' });
+      this.source?.disconnect();
+      this.node?.disconnect();
+      await bounded(ctx.close(), 'close').catch(() => undefined);
+      this.ctx = undefined;
+      throw err;
+    }
   }
 
   async restart(opts: { track: MediaStreamTrack; kind: Track.Kind.Audio }): Promise<void> {
@@ -82,6 +109,7 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
   }
 
   async destroy(): Promise<void> {
+    this.lastProbe = null;
     this.node?.port.postMessage({ kind: 'destroy' });
     this.source?.disconnect();
     this.node?.disconnect();
@@ -101,11 +129,15 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
   probe(timeoutMs = 10_000): Promise<RnnoiseProbe> {
     if (this.lastProbe && (this.lastProbe.compiled || this.lastProbe.error)) return Promise.resolve(this.lastProbe);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('the RNNoise worklet reported nothing')), timeoutMs);
-      this.probeWaiters.push((p) => {
+      const waiter = (p: RnnoiseProbe) => {
         clearTimeout(timer);
         resolve(p);
-      });
+      };
+      const timer = setTimeout(() => {
+        this.probeWaiters = this.probeWaiters.filter((w) => w !== waiter);
+        reject(new Error('the RNNoise worklet reported nothing'));
+      }, timeoutMs);
+      this.probeWaiters.push(waiter);
     });
   }
 

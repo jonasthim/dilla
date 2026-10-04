@@ -5,6 +5,8 @@ import type { CallCaps } from './presets';
 export const VDEC_ATTRIBUTE = 'dilla.vdec';
 
 const ORDER = ['vp8', 'h264', 'vp9'] as const;
+// Follow-up card: enable only after a VP9 vector and a measured LiveKit run.
+const VP9_ENABLED = false;
 
 /** The calls request's `vdec`: what this browser can decode, lowercase, in a fixed order. */
 export function localDecodeList(): string {
@@ -27,6 +29,7 @@ export function decodeListHas(list: string | undefined, codec: 'vp8' | 'h264' | 
  * `dilla.vdec` names it. A participant without the attribute counts as "cannot decode".
  */
 export function chooseVideoCodec(room: Room, caps: CallCaps, canEncodeVp9: () => boolean = supportsVP9): 'vp8' | 'vp9' {
+  if (!VP9_ENABLED) return 'vp8';
   if (!caps.vp9 || !canEncodeVp9()) return 'vp8';
   for (const p of room.remoteParticipants.values()) {
     if (!decodeListHas(p.attributes[VDEC_ATTRIBUTE], 'vp9')) return 'vp8';

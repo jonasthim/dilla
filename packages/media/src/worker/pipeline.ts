@@ -146,14 +146,16 @@ export class Pipeline {
   }
 
   addTrack(o: DillaTransformOptions | DillaBlockOptions, sink: FrameSink, requestKeyFrame?: () => Promise<unknown>): TrackHandle {
-    const blocked = isBlock(o);
-    const opts = blocked ? blockedOpts(o) : o;
+    const collision = this.tracks.get(o.trackId)?.opts.side !== undefined && this.tracks.get(o.trackId)?.opts.side !== o.side;
+    const blocked = isBlock(o) || collision;
+    const opts = blocked ? blockedOpts({ dilla: 1, side: o.side, trackId: o.trackId, block: true }) : o;
     const h: TrackHandle = {
       trackId: opts.trackId, opts, blocked, mapped: !blocked && isMapped(opts), sink, requestKeyFrame,
       fifo: new PendingQueue(), stoppedEpoch: null, lastKeyFrameRequest: Number.NEGATIVE_INFINITY, awaitingKeyFrame: false,
     };
     if (!blocked) this.applyMapping(h);
-    this.tracks.set(opts.trackId, h);
+    if (collision) this.error('E_BAD_OPTIONS', opts.trackId, undefined, undefined, opts.side);
+    else this.tracks.set(opts.trackId, h);
     this.deps.post({ kind: 'attached', trackId: opts.trackId, side: opts.side });
     return h;
   }
@@ -261,15 +263,7 @@ export class Pipeline {
   }
 
   private decode(h: TrackHandle, frame: EncodedFrameLike): void {
-    if (frame.data.byteLength === 0) {
-      if (slotKind(h.opts.slot) === 'audio' && h.opts.codec === 'opus') {
-        this.stats.emptyFrames.decode += 1;
-        this.stats.emptyFramesByTrack[h.trackId] = (this.stats.emptyFramesByTrack[h.trackId] ?? 0) + 1;
-        h.sink.enqueue(frame);
-      } else this.drop(h, 'parse');
-      return;
-    }
-    if (hasSifSuffix(new Uint8Array(frame.data), this.sif)) {
+    if (frame.data.byteLength > 0 && hasSifSuffix(new Uint8Array(frame.data), this.sif)) {
       this.drop(h, 'sif');
       return;
     }
@@ -285,6 +279,12 @@ export class Pipeline {
   }
 
   private process(h: TrackHandle, frame: EncodedFrameLike): Outcome {
+    if (frame.data.byteLength === 0) {
+      if (slotKind(h.opts.slot) !== 'audio' || h.opts.codec !== 'opus') return 'parse';
+      this.stats.emptyFrames.decode += 1;
+      this.stats.emptyFramesByTrack[h.trackId] = (this.stats.emptyFramesByTrack[h.trackId] ?? 0) + 1;
+      return 'ok';
+    }
     if (!h.mapped) return 'hold';
     const o = h.opts;
     if (o.encryption === undefined || o.encryption === 0) return 'noneFlagged';
@@ -292,11 +292,14 @@ export class Pipeline {
     if (slotKind(o.slot) !== codecKind(o.codec)) return 'slotMismatch';
     const data = new Uint8Array(frame.data);
     try {
-      const out = this.receiver.decrypt(CODEC_NUMBER[o.codec], data, hexToBytes(o.participantIdentity), o.slot, this.deps.now());
+      const mime = frame.getMetadata?.()?.mimeType;
+      const codec = mime === undefined ? o.codec : codecFromMime(mime, slotKind(o.slot));
+      if (codec === null) return 'unsupportedCodec';
+      const out = this.receiver.decrypt(CODEC_NUMBER[codec], data, hexToBytes(o.participantIdentity), o.slot, this.deps.now());
       // N6: decrypt() returned, so the core authenticated the frame and checked that its KID's leaf belongs to
       // o.participantIdentity (expectedDevice): that device is verified. The KID peek is statistics only.
       this.stats.verified[o.participantIdentity] = (this.stats.verified[o.participantIdentity] ?? 0) + 1;
-      const kid = peekKidHex(o.codec, data) ?? '?';
+      const kid = peekKidHex(codec, data) ?? '?';
       this.stats.decrypted[kid] = (this.stats.decrypted[kid] ?? 0) + 1;
       this.stats.decryptedByTrack[h.trackId] = (this.stats.decryptedByTrack[h.trackId] ?? 0) + 1;
       frame.data = toArrayBuffer(out);
@@ -466,7 +469,10 @@ export class Pipeline {
   }
 
   private dropHeld(h: TrackHandle): void {
-    this.stats.dropped.bufferTimeout += h.fifo.clear().length;
+    for (const _ of h.fifo.clear()) {
+      this.stats.dropped.bufferTimeout += 1;
+      this.stats.droppedByTrack[h.trackId] = (this.stats.droppedByTrack[h.trackId] ?? 0) + 1;
+    }
   }
 
   private refreshEpochStats(): void {
@@ -480,11 +486,12 @@ export class Pipeline {
     this.stats.knownKids = kids;
   }
 
-  private error(code: ErrorCode, trackId?: string, participantIdentity?: string, epoch?: bigint): void {
+  private error(code: ErrorCode, trackId?: string, participantIdentity?: string, epoch?: bigint, side?: 'encode' | 'decode'): void {
     const identity = participantIdentity === '' ? undefined : participantIdentity;
+    const errorSide = side ?? (trackId === undefined ? undefined : this.tracks.get(trackId)?.opts.side);
     if (epoch !== undefined) {
       // Never rate-limited: the manager settles the pending installEpoch of exactly this epoch with it.
-      this.deps.post({ kind: 'error', code, trackId, participantIdentity: identity, epoch });
+      this.deps.post({ kind: 'error', code, trackId, side: errorSide, participantIdentity: identity, epoch });
       return;
     }
     const key = `${code}:${trackId ?? ''}`;
@@ -492,7 +499,7 @@ export class Pipeline {
     const last = this.lastError.get(key);
     if (last !== undefined && now - last < ERROR_INTERVAL_MS) return;
     this.lastError.set(key, now);
-    this.deps.post({ kind: 'error', code, trackId, participantIdentity: identity });
+    this.deps.post({ kind: 'error', code, trackId, side: errorSide, participantIdentity: identity });
   }
 
   private log(level: 'error' | 'warn' | 'info' | 'debug', msg: string): void {
