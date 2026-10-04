@@ -95,6 +95,7 @@ type RelayRevocations struct {
 	// process began, before which it saw no mint; mintsFullUntil, while in the future, is a window
 	// in which a mint could not be recorded. Both make Revoke record every cut (fail closed).
 	mints          map[string]int64
+	lastIssued     int64 // the latest issue time Mint handed out
 	ttl            int64
 	started        time.Time
 	mintsFullUntil time.Time
@@ -125,13 +126,22 @@ func (r *RelayRevocations) WithCredentialTTL(ttl time.Duration) *RelayRevocation
 	return r
 }
 
-// Minted records that a relay credential was minted for device at at — the call routes call it
-// where they mint one for a start, which needs a session, a current leaf and connect.
-func (r *RelayRevocations) Minted(device id.ID, at time.Time) {
+// Mint records that a relay credential is minted for device and answers its issue time, chosen
+// under the lock revoke takes — the call routes build the credential from it. Every Revoke is thus
+// ordered before the mint, and the issue time is after its cut (a second past a live cut of the
+// device, or the floor, at the latest), or after it, and its cut covers the credential (revoke
+// raises its cut time to the latest issue time handed out, lastIssued). Mint is what makes a later
+// cut of the device worth recording (mayHoldCredentialLocked).
+func (r *RelayRevocations) Mint(device id.ID) time.Time {
 	now := r.clk.Now()
 	dev := device.String()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	issued := now.Unix()
+	if at, cut := r.liveCutLocked(dev); cut && at >= issued {
+		issued = at + 1
+	}
+	r.lastIssued = max(r.lastIssued, issued)
 	if _, ok := r.mints[dev]; !ok && len(r.mints) >= r.maxCuts {
 		for d, t := range r.mints {
 			if now.Unix() > t+r.ttl {
@@ -140,11 +150,21 @@ func (r *RelayRevocations) Minted(device id.ID, at time.Time) {
 		}
 		if len(r.mints) >= r.maxCuts {
 			// Cannot record it: every cut is recorded until this credential has expired.
-			r.mintsFullUntil = now.Add(time.Duration(r.ttl)*time.Second + time.Second)
-			return
+			r.mintsFullUntil = now.Add(time.Duration(r.ttl)*time.Second + 2*time.Second)
+			return time.Unix(issued, 0)
 		}
 	}
-	r.mints[dev] = max(r.mints[dev], at.Unix())
+	r.mints[dev] = max(r.mints[dev], issued)
+	return time.Unix(issued, 0)
+}
+
+// CutSince reports whether device has a live cut (or floor) at or after t: the call routes refuse a
+// start whose device was cut while it was being served.
+func (r *RelayRevocations) CutSince(device id.ID, t time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at, cut := r.liveCutLocked(device.String())
+	return cut && at >= t.Unix()
 }
 
 // mayHoldCredentialLocked reports whether dev may hold a relay credential a cut would refuse: a
@@ -229,6 +249,9 @@ func (r *RelayRevocations) Revoke(device id.ID, at time.Time) {
 
 func (r *RelayRevocations) revoke(dev string, at int64) {
 	r.mu.Lock()
+	// A cut covers every credential minted before it, including one whose issue time Mint set a
+	// second ahead of the clock.
+	at = max(at, r.lastIssued)
 	recorded := true
 	if prev, ok := r.cuts[dev]; (!ok || at > prev) && (ok || r.mayHoldCredentialLocked(dev)) {
 		if !ok && len(r.cuts) >= min(relayCutsWarn, r.maxCuts) {

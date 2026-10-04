@@ -811,11 +811,51 @@ func TestOnlyADeviceThatCanHoldACredentialGetsACut(t *testing.T) {
 	}
 	minted := id.New()
 	mintedCred, _ := server.TURNCredential("s3cret", minted, time.Hour, clk.Now())
-	rev.Minted(minted, clk.Now())
+	rev.Mint(minted)
 	clk.Advance(time.Second)
 	rev.Revoke(minted, clk.Now())
 	if _, _, ok := auth(&turn.RequestAttributes{Username: mintedCred, Method: stun.MethodRefresh}); ok {
 		t.Fatal("a device that minted a credential and was cut kept it")
+	}
+}
+
+// Commit review (mint race): Mint chooses the issue time under the lock Revoke takes. A Revoke after
+// a Mint covers that credential, even in the same second; a Mint after a Revoke issues a credential
+// newer than the cut, which works; CutSince reports a cut made since a request began.
+func TestMintAndRevokeAreOrdered(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_790_000_000, 0))
+	rev := server.NewRelayRevocations(2*time.Hour, clk).WithCredentialTTL(time.Hour)
+	clk.Advance(time.Hour + time.Minute) // past the start window: the gate relies on the mint
+	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
+	ok := func(user string) bool {
+		_, _, ok := auth(&turn.RequestAttributes{Username: user, Method: stun.MethodRefresh})
+		return ok
+	}
+	dev := id.New()
+	begun := clk.Now()
+	issued := rev.Mint(dev)
+	before, _ := server.TURNCredential("s3cret", dev, time.Hour, issued)
+	if rev.CutSince(dev, begun) {
+		t.Fatal("CutSince reported a cut before any")
+	}
+	rev.Revoke(dev, clk.Now()) // the same second as the mint
+	if ok(before) {
+		t.Fatal("a credential minted before the cut, in the same second, is still valid")
+	}
+	if !rev.CutSince(dev, begun) {
+		t.Fatal("CutSince missed the cut made since the request began")
+	}
+	newer := rev.Mint(dev) // the same second as the cut
+	if !newer.After(issued) {
+		t.Fatalf("a mint after the cut issued at %v, not after the cut", newer)
+	}
+	after, _ := server.TURNCredential("s3cret", dev, time.Hour, newer)
+	if !ok(after) {
+		t.Fatal("a credential minted after the cut was refused")
+	}
+	rev.Revoke(dev, clk.Now()) // still the same second: the cut covers the newer credential too
+	if ok(after) {
+		t.Fatal("a cut after the second mint left its credential valid")
 	}
 }
 
@@ -840,11 +880,11 @@ func TestAnOverflowingCutRaisesTheFloorForEveryDevice(t *testing.T) {
 	overflowing, unrelated := id.New(), id.New()
 	overflowingOld, _ := server.TURNCredential("s3cret", overflowing, time.Hour, start)
 	unrelatedOld, _ := server.TURNCredential("s3cret", unrelated, time.Hour, start)
-	rev.Minted(overflowing, start)
-	rev.Minted(unrelated, start)
+	rev.Mint(overflowing)
+	rev.Mint(unrelated)
 	for range 3 {
 		dev := id.New()
-		rev.Minted(dev, clk.Now())
+		rev.Mint(dev)
 		rev.Revoke(dev, clk.Now())
 	}
 	clk.Advance(time.Second)

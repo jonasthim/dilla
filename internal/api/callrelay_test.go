@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/server"
 )
 
 // fakeRelay records the relay revocations the call routes make.
@@ -27,11 +30,14 @@ func (f *fakeRelay) Revoke(device id.ID, _ time.Time) {
 	f.revoked = append(f.revoked, device)
 }
 
-func (f *fakeRelay) Minted(device id.ID, _ time.Time) {
+func (f *fakeRelay) Mint(device id.ID) time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.minted = append(f.minted, device)
+	return time.Now()
 }
+
+func (f *fakeRelay) CutSince(id.ID, time.Time) bool { return false }
 
 func (f *fakeRelay) has(device id.ID) bool {
 	f.mu.Lock()
@@ -183,6 +189,98 @@ func TestAStartTellsTheRelayItMintedACredential(t *testing.T) {
 	if !slices.Equal(relay.minted, []id.ID{dev}) {
 		t.Fatalf("minted = %v, want the starting device %s", relay.minted, dev)
 	}
+}
+
+// startParked starts a call on a relay-enabled instance whose start parks at stage until the
+// returned release runs; parked is closed when it waits. done yields the start's status and body.
+func startParked(t *testing.T, stage string) (e *env, dev id.ID, rev *server.RelayRevocations,
+	parked <-chan struct{}, release func(), done <-chan [2]any) {
+	t.Helper()
+	e, ch, tok, group, _, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL,
+		TURNSecret: "0123456789abcdef", TURNURLs: []string{"turns:chat.example.test:443?transport=tcp"}, CredentialTTL: time.Hour})
+	rev = server.NewRelayRevocations(2*time.Hour, e.Clk)
+	calls.WithRelay(rev)
+	dev = deviceOf(t, e, tok)
+	seedLeaf(t, e, group, dev, 3, nil)
+	p, rel := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	calls.SetStartHookForTest(func(s string) {
+		if s == stage {
+			once.Do(func() { close(p) })
+			<-rel
+		}
+	})
+	out := make(chan [2]any, 1)
+	go func() {
+		status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+		out <- [2]any{status, body}
+	}()
+	select {
+	case <-p:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the start never reached %q", stage)
+	}
+	return e, dev, rev, p, func() { close(rel) }, out
+}
+
+// issuedOfCall is the issue time of the relay credential a start answered.
+func issuedOfCall(t *testing.T, body []byte) time.Time {
+	t.Helper()
+	ice := decodeCall(t, body).ICE
+	if len(ice) != 1 {
+		t.Fatalf("ice_servers = %v, want one relay", ice)
+	}
+	var user string
+	mustUnmarshal(t, ice[0][1], &user)
+	fields := strings.Split(user, ":")
+	issued, err := strconv.ParseInt(fields[len(fields)-1], 10, 64)
+	if err != nil || len(fields) != 3 {
+		t.Fatalf("username %q carries no issue time", user)
+	}
+	return time.Unix(issued, 0)
+}
+
+// Commit review (mint race): no relay credential a start answers is usable after a cut that landed
+// while the start was being served. A cut between the gates and the mint refuses the start; a cut
+// between the mint and the response covers the credential (the relay refuses it); a device another
+// process barred between the gates and the mint is refused, and its relay is cut.
+func TestNoCredentialFromAStartOutlivesACutDuringIt(t *testing.T) {
+	t.Run("a cut between the gates and the mint", func(t *testing.T) {
+		e, dev, rev, _, release, done := startParked(t, "mint")
+		rev.Revoke(dev, e.Clk.Now())
+		release()
+		res := <-done
+		if status := res[0].(int); status != http.StatusForbidden || e.ErrCode(res[1].([]byte)) != "E_FORBIDDEN" {
+			t.Fatalf("a start cut before its mint = %d %s, want 403 E_FORBIDDEN and no credential", status, e.ErrCode(res[1].([]byte)))
+		}
+	})
+	t.Run("a cut between the mint and the response", func(t *testing.T) {
+		e, dev, rev, _, release, done := startParked(t, "respond")
+		rev.Revoke(dev, e.Clk.Now())
+		release()
+		res := <-done
+		if status := res[0].(int); status != http.StatusCreated {
+			t.Fatalf("start = %d %s", status, e.ErrCode(res[1].([]byte)))
+		}
+		if issued := issuedOfCall(t, res[1].([]byte)); !rev.CutSince(dev, issued) {
+			t.Fatalf("the credential issued at %v is newer than the cut that followed its mint", issued)
+		}
+	})
+	t.Run("barred by another process between the gates and the mint", func(t *testing.T) {
+		e, dev, rev, _, release, done := startParked(t, "mint")
+		begun := e.Clk.Now()
+		if err := e.Repo.RevokeDevice(t.Context(), dev, e.Clk.Now().Unix()); err != nil {
+			t.Fatalf("RevokeDevice: %v", err)
+		}
+		release()
+		res := <-done
+		if status := res[0].(int); status != http.StatusForbidden || e.ErrCode(res[1].([]byte)) != "E_FORBIDDEN" {
+			t.Fatalf("a start barred before its mint = %d %s, want 403 E_FORBIDDEN", status, e.ErrCode(res[1].([]byte)))
+		}
+		if !rev.CutSince(dev, begun) {
+			t.Fatal("the refused start did not cut the device's relay")
+		}
+	})
 }
 
 // BarredDevices is the relay's store lookup: barred as the call routes say; an id with no device

@@ -203,14 +203,19 @@ type Calls struct {
 	// relay is the TURN relay's revocation state (task 13 review I1): a cut device's relay
 	// allocations end with its call session. nil when the instance runs no relay.
 	relay RelayRevoker
+
+	// startHook, set by a test only, runs at named points of start (startStage).
+	startHook func(stage string)
 }
 
 // RelayRevoker cuts a device from the TURN relay as of at; *server.RelayRevocations is one. Revoke
-// closes sockets and writes a map, and never blocks on the store or the SFU. Minted tells it a
-// relay credential was minted for device, which is what makes a later cut worth recording.
+// closes sockets and writes a map, and never blocks on the store or the SFU. Mint records a relay
+// credential minted for device and answers its issue time, chosen under the lock Revoke takes (and
+// makes a later cut of the device worth recording). CutSince reports a cut of device at or after t.
 type RelayRevoker interface {
 	Revoke(device id.ID, at time.Time)
-	Minted(device id.ID, at time.Time)
+	Mint(device id.ID) time.Time
+	CutSince(device id.ID, t time.Time) bool
 }
 
 // WithRelay sets the relay revocation state the cuts feed and returns h.
@@ -305,6 +310,7 @@ type iceServer struct {
 // (DEV-02, DEV-03), so a token replayed after an unshare or a demotion confers nothing more; a
 // reconnecting sharer re-POSTs share, which is idempotent for a slot it holds.
 func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
+	begun := h.clk.Now()
 	s, ch, bits, err := h.channel(r)
 	if err != nil {
 		server.WriteError(w, err)
@@ -442,9 +448,22 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not mint a token"))
 		return
 	}
+	h.startStage("mint")
+	ice, minted := h.iceServers(s.DeviceID)
+	if minted {
+		// The gates above ran before the credential was minted: a device cut, barred or demoted in
+		// between must not leave with it (commit review, mint race). The mint is ordered against
+		// every relay cut (RelayRevoker.Mint), so what remains is re-reading the entitlement.
+		if err := h.stillEntitled(r.Context(), s, ch, groupID, begun); err != nil {
+			h.revokeRelay(s.DeviceID)
+			server.WriteError(w, err)
+			return
+		}
+	}
+	h.startStage("respond")
 	if err := server.EncodeBody(w, status, callResponse{
 		CallID: callID, GroupID: groupID, LiveKitURL: h.cfg.LiveKitURL, Token: token,
-		ICEServers: h.iceServers(s.DeviceID), Caps: h.caps(),
+		ICEServers: ice, Caps: h.caps(),
 	}); err != nil {
 		h.log.WarnContext(r.Context(), "write call response", "err", err)
 	}
@@ -673,20 +692,61 @@ func callIDOfGroup(g store.GroupRow) id.ID {
 // credential ("<expiry>:<device_id>:<issued>", HMAC-SHA1 under the TURN secret), or an
 // empty list when TURN is off — in behind_proxy without turn.listen the client
 // shows its "relay unavailable" dialog and the call is UDP or nothing.
-func (h *Calls) iceServers(dev id.ID) []iceServer {
+//
+// The issue time comes from the relay's Mint, chosen under the lock its cuts take, so a cut is
+// ordered either before the credential (which is then newer than it) or after it (which then covers
+// it). minted reports whether a credential was minted.
+func (h *Calls) iceServers(dev id.ID) (servers []iceServer, minted bool) {
 	if h.cfg.TURNSecret == "" || len(h.cfg.TURNURLs) == 0 {
-		return []iceServer{}
+		return []iceServer{}, false
 	}
 	ttl := h.cfg.CredentialTTL
 	if ttl <= 0 {
 		ttl = time.Hour
 	}
-	now := h.clk.Now()
-	user, pass := server.TURNCredential(h.cfg.TURNSecret, dev, ttl, now)
+	issued := h.clk.Now()
 	if h.relay != nil {
-		h.relay.Minted(dev, now) // a later cut of dev now has a credential to refuse
+		issued = h.relay.Mint(dev)
 	}
-	return []iceServer{{URLs: h.cfg.TURNURLs, Username: user, Credential: pass}}
+	user, pass := server.TURNCredential(h.cfg.TURNSecret, dev, ttl, issued)
+	return []iceServer{{URLs: h.cfg.TURNURLs, Username: user, Credential: pass}}, true
+}
+
+// stillEntitled re-reads, after a relay credential was minted, what start checked before it: no relay
+// cut of the device since the request began, the device not barred, a current leaf of the call's
+// group, view_channel and connect. It answers the refusal the first check would have.
+func (h *Calls) stillEntitled(ctx context.Context, s auth.Session, ch store.ChannelRow, groupID id.ID, begun time.Time) error {
+	if h.relay != nil && h.relay.CutSince(s.DeviceID, begun) {
+		return server.Errorf(server.CodeForbidden, "your device's access to calls was revoked")
+	}
+	if err := h.refuseBarred(ctx, h.repo, s.DeviceID); err != nil {
+		return err
+	}
+	group, err := h.repo.GetGroup(ctx, groupID)
+	if err != nil {
+		return notFound(err)
+	}
+	if err := h.requireCurrentLeaf(ctx, group, s.DeviceID); err != nil {
+		return err
+	}
+	bits, err := h.res.Resolve(ctx, s.UserID, ch)
+	if err != nil {
+		return err
+	}
+	if !bits.Has(PermViewChannel) {
+		return server.Errorf(server.CodeNotFound, "no such object")
+	}
+	if !bits.Has(PermConnect) {
+		return server.Errorf(server.CodeForbidden, "missing permission")
+	}
+	return nil
+}
+
+// startStage runs the test hook at a named point of start ("mint", "respond"); nil in production.
+func (h *Calls) startStage(stage string) {
+	if f := h.startHook; f != nil {
+		f(stage)
+	}
 }
 
 // videoDecoders are the names a vdec list may carry (protocol/05's negotiable video codecs).

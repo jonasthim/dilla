@@ -7,6 +7,9 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
+// SetStartHookForTest makes start call f at its named points ("mint", "respond").
+func (h *Calls) SetStartHookForTest(f func(stage string)) { h.startHook = f }
+
 // SaturatingAddForTest is the stats route's saturating sum.
 func SaturatingAddForTest(a, b uint64) uint64 { return saturatingAdd(a, b) }
 
