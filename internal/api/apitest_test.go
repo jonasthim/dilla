@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -396,6 +397,11 @@ type stubSFU struct {
 	beforeUpdate func(permUpdate)
 	removed      [][2]string // (room, device) RemoveParticipants was asked for
 	removedIDs   [][2]string // (room, identity) RemoveParticipant was asked for
+	// live is the permission the stub SFU holds per identity: set by an applied update, dropped by
+	// a removal.
+	live         map[string]*livekit.ParticipantPermission
+	failUpdates  int // the next failUpdates pushes fail (and are not applied)
+	failRemovals int // the next failRemovals RemoveParticipants calls fail
 	present      map[string][]*livekit.ParticipantInfo
 	listFail     error
 }
@@ -437,6 +443,16 @@ func (s *stubSFU) UpdatePermission(_ context.Context, room, identity string, per
 	s.mu.Lock()
 	s.updates = append(s.updates, u)
 	hook, fail, absent := s.onUpdate, s.updateFail, s.absent[identity]
+	if s.failUpdates > 0 {
+		s.failUpdates--
+		fail = errors.New("stub SFU: push failed")
+	}
+	if !absent && fail == nil {
+		if s.live == nil {
+			s.live = map[string]*livekit.ParticipantPermission{}
+		}
+		s.live[identity] = perm
+	}
 	s.mu.Unlock()
 	if hook != nil {
 		hook(u)
@@ -451,6 +467,15 @@ func (s *stubSFU) RemoveParticipants(_ context.Context, room string, device id.I
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.removed = append(s.removed, [2]string{room, device.String()})
+	if s.failRemovals > 0 {
+		s.failRemovals--
+		return errors.New("stub SFU: removal failed")
+	}
+	for identity := range s.live {
+		if identity == device.String() || strings.HasPrefix(identity, device.String()+"#") {
+			delete(s.live, identity)
+		}
+	}
 	return nil
 }
 
@@ -458,6 +483,7 @@ func (s *stubSFU) RemoveParticipant(_ context.Context, room, identity string) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.removedIDs = append(s.removedIDs, [2]string{room, identity})
+	delete(s.live, identity)
 	return nil
 }
 
@@ -468,15 +494,12 @@ func (s *stubSFU) removals() (devices, identities [][2]string) {
 	return append([][2]string(nil), s.removed...), append([][2]string(nil), s.removedIDs...)
 }
 
-// lastPerms is the permission each identity was last pushed, in the order the stub applied them.
+// lastPerms is the permission the SFU holds for each participant now: the last one applied to it,
+// for as long as no removal took it out of the room.
 func (s *stubSFU) lastPerms() map[string]*livekit.ParticipantPermission {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := map[string]*livekit.ParticipantPermission{}
-	for _, u := range s.updates {
-		out[u.Identity] = u.Perm
-	}
-	return out
+	return maps.Clone(s.live)
 }
 
 func (s *stubSFU) Participants(_ context.Context, room string) ([]*livekit.ParticipantInfo, error) {

@@ -76,29 +76,28 @@ func TestTheEleventhConcurrentShareIsRefused(t *testing.T) {
 	}
 }
 
-// Release demotes first and frees the slot after: while the demotion is in flight the slot still
-// counts, so another device's share is refused; once released it succeeds. A DELETE with no slot is
-// 204 and pushes nothing.
+// Release demotes first and frees the slot after: when the SFU applies the demotion the slot is
+// still held, and another device's share — serialised behind the release by the call's lock —
+// succeeds once it is freed. A DELETE with no slot is 204 and pushes nothing.
 func TestReleasingAShareDemotesBeforeFreeingTheSlot(t *testing.T) {
-	e, stub, callID, _, devs := shareEnv(t, 1, 2)
-	path := "/v1/calls/" + callID.String() + "/share"
+	l := newLeaseEnv(t, 1, 2)
+	e, stub, devs, path := l.e, l.stub, l.devs, l.sharePath()
 	if status, _ := e.Do(http.MethodPost, path, "dev0", []any{}); status != http.StatusNoContent {
 		t.Fatalf("dev0 share = %d", status)
 	}
-	var duringDemotion atomic.Int64
+	var heldDuringDemotion atomic.Bool
 	stub.mu.Lock()
 	stub.onUpdate = func(u permUpdate) {
 		if u.Identity == devs[0].String() && !hasCamera(u.Perm) {
-			status, _ := e.Do(http.MethodPost, path, "dev1", []any{})
-			duringDemotion.Store(int64(status))
+			heldDuringDemotion.Store(slices.Contains(l.calls.SharersOf(l.callID), devs[0]))
 		}
 	}
 	stub.mu.Unlock()
 	if status, _ := e.Do(http.MethodDelete, path, "dev0", nil); status != http.StatusNoContent {
 		t.Fatalf("dev0 unshare = %d", status)
 	}
-	if got := duringDemotion.Load(); got != http.StatusConflict {
-		t.Fatalf("a share while dev0 was being demoted = %d, want 409: the slot was freed before the demotion", got)
+	if !heldDuringDemotion.Load() {
+		t.Fatal("the slot was freed before the SFU applied the demotion")
 	}
 	stub.mu.Lock()
 	stub.onUpdate = nil
@@ -137,6 +136,10 @@ func TestShareNeedsVideoOrScreenShareAndALeaf(t *testing.T) {
 	denyInChannel(t, e, ch, member, api.PermVideo|api.PermScreenShare)
 	if status, resp := e.Do(http.MethodPost, path, memberTok, []any{}); status != http.StatusForbidden || e.ErrCode(resp) != "E_FORBIDDEN" {
 		t.Fatalf("a share without video or screen_share = %d %s, want 403 E_FORBIDDEN", status, e.ErrCode(resp))
+	}
+	denyInChannel(t, e, ch, member, api.PermConnect)
+	if status, resp := e.Do(http.MethodPost, path, memberTok, []any{}); status != http.StatusForbidden || e.ErrCode(resp) != "E_FORBIDDEN" {
+		t.Fatalf("a share without connect = %d %s, want 403 E_FORBIDDEN", status, e.ErrCode(resp))
 	}
 	user := userOf(t, e, tok)
 	stranger := seedDevices(t, e, user, 1)[0]

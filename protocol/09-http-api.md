@@ -538,7 +538,7 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | Method and path | Request | Response | Permission |
 |---|---|---|---|
 | `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; `409 E_CALL_FULL` | `connect`, and a current leaf of the call group |
-| `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room | `video` or `screen_share`, and a current leaf of the call's group |
+| `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
 | `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended | `view_channel`, and a current leaf of the call's group |
 
@@ -594,7 +594,13 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   committed, and its sharing slot is freed; the signalling proxy refuses its rejoin meanwhile. When
   the instance cannot resolve a participant's permissions, it takes every publish grant away from
   that participant rather than leave the old one in place. A participant whose identity is no device
-  of the instance is removed from a call's room.
+  of the instance is removed from a call's room. A removal or demotion the SFU does not take stays
+  **pending**: the device keeps counting against `livekit.max_publishers`, a start of the call
+  answers it `403 E_FORBIDDEN` and the signalling proxy refuses it, and the instance retries on its
+  maintenance tick and at the call's next event until the SFU holds a permission within the
+  device's entitlement or the device has left. Every slot transition and every permission the
+  instance pushes for a call is serialised per call, so the devices that may publish a camera or
+  screen source are always among the slot holders.
 - **The signalling proxy.** The `/rtc` paths admit only `GET` (anything else is `405`). The access
   token — the `access_token` query parameter or a `Bearer` header — must be one the instance minted
   (`403 E_FORBIDDEN` otherwise), for a device, and that device must be a current leaf of the live

@@ -57,6 +57,10 @@ type Server struct {
 	blobs     *blob.Store
 	ownsBlobs bool
 
+	// calls is the mounted call route group; the maintenance tick retries its pending grant repairs
+	// (a cut or demotion the SFU did not take), so a call converges without another event in it.
+	calls *api.Calls
+
 	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
 	// Shutdown calls before it stops the gateway.
 	throttle    *auth.Throttle
@@ -375,7 +379,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
 		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery, groups: groups,
-		blobs: blobs, ownsBlobs: ownsBlobs,
+		blobs: blobs, ownsBlobs: ownsBlobs, calls: callRoutes,
 		throttle: throttle, limiter: limiter,
 	}
 	// One http.Server for whichever listener tls.mode chooses (Plan 2 task 16):
@@ -417,7 +421,17 @@ func (s *Server) sweep(ctx context.Context) {
 	if _, err := s.o.Repo.PruneSessions(ctx, s.o.Clock.Now().Unix()); err != nil {
 		s.o.Log.Warn("pruning expired sessions failed", "err", err)
 	}
+	// A call participant's cut or demotion the SFU did not take is retried every tick until it lands
+	// or the participant is gone; each SFU call is bounded so a hung SFU cannot stall the tick.
+	if s.calls != nil {
+		rctx, cancel := context.WithTimeout(ctx, callRetryBudget)
+		s.calls.RetryPending(rctx)
+		cancel()
+	}
 }
+
+// callRetryBudget bounds one tick's call grant retries.
+const callRetryBudget = 10 * time.Second
 
 // Throttle is the login throttle New built; the maintenance loop sweeps it.
 func (s *Server) Throttle() *auth.Throttle { return s.throttle }

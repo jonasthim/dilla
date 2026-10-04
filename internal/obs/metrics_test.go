@@ -89,6 +89,7 @@ func TestMetricNamesAreTheDocumentedSet(t *testing.T) {
 		"dilla_blob_refs_expired_total", "dilla_blob_purges_total",
 		"dilla_cert_renewal_failures_total", "dilla_clock_skew_seconds",
 		"dilla_call_full_total", "dilla_call_share_refusals_total", "dilla_call_cuts_total",
+		"dilla_call_grant_retries_total",
 	}
 	families, err := reg.Gather()
 	if err != nil {
@@ -178,8 +179,13 @@ func TestTheCallCountersCount(t *testing.T) {
 	if got := counterValue(t, reg, "dilla_call_cuts_total"); got != 1 {
 		t.Errorf("dilla_call_cuts_total = %v", got)
 	}
+	m.CallGrantRetry()
+	if got := counterValue(t, reg, "dilla_call_grant_retries_total"); got != 1 {
+		t.Errorf("dilla_call_grant_retries_total = %v", got)
+	}
 	var none *obs.Metrics
 	none.CallFull()
 	none.ShareRefused()
 	none.CallCut()
+	none.CallGrantRetry()
 }

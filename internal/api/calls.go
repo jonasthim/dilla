@@ -48,6 +48,8 @@ type CallCounters interface {
 	// CallCut counts a participant the grant sync took out of a call room: a device whose user lost
 	// view_channel or connect, or an identity that is no device.
 	CallCut()
+	// CallGrantRetry counts one retry of a cut or demotion that had not landed in the SFU.
+	CallGrantRetry()
 }
 
 // vdecAttribute is the participant attribute that carries a device's video decode list (DEV-07),
@@ -217,7 +219,9 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, err)
 			return
 		}
+		unlock := h.leases.lockCall(callID)
 		h.leases.dropCall(callID)
+		unlock()
 		h.closeRoom(r, prev.LivekitRoom)
 	}
 
@@ -261,6 +265,13 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	if err := h.sfu.CreateRoom(r.Context(), row.LivekitRoom); err != nil {
 		h.log.ErrorContext(r.Context(), "opening a LiveKit room failed", "room", row.LivekitRoom, "err", err)
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not open the room"))
+		return
+	}
+	// A device whose cut or demotion in this call has not landed in the SFU gets no token for it until
+	// the repair does; the start is the call's next event, so it drives the repairs first.
+	h.retryCall(r.Context(), callID)
+	if h.leases.isPending(callID, s.DeviceID) {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device's access to this call is being revoked"))
 		return
 	}
 	if h.callFull(r.Context(), row.LivekitRoom, s.DeviceID) {
@@ -345,7 +356,9 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 	// protocol/09: DELETE ends the call for everyone, so the room is closed too and every
 	// participant still in it is disconnected; the next call opens a fresh room. The next call keeps
 	// this call id (R9), so the sharing slots go with this one.
+	unlock := h.leases.lockCall(callID)
 	h.leases.dropCall(callID)
+	unlock()
 	h.closeRoom(r, row.LivekitRoom)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -567,6 +580,11 @@ func (h *Calls) CurrentLeafOfRoom(ctx context.Context, room string, device id.ID
 		return false, err
 	}
 	if row.Ended != nil || row.LivekitRoom != room {
+		return false, nil
+	}
+	// A device whose cut or demotion has not landed in the SFU does not rejoin until it has.
+	h.retryCall(ctx, callID)
+	if h.leases.isPending(callID, device) {
 		return false, nil
 	}
 	err = h.requireLeafOfCall(ctx, row, device)

@@ -71,11 +71,12 @@ func TestSyncCallGrantsReleasesTheSlotOfAUserWhoLostVideoAndScreen(t *testing.T)
 }
 
 // countingCounters is the call routes' metric surface, counted.
-type countingCounters struct{ full, refused, cut atomic.Int64 }
+type countingCounters struct{ full, refused, cut, retries atomic.Int64 }
 
-func (c *countingCounters) CallFull()     { c.full.Add(1) }
-func (c *countingCounters) ShareRefused() { c.refused.Add(1) }
-func (c *countingCounters) CallCut()      { c.cut.Add(1) }
+func (c *countingCounters) CallFull()       { c.full.Add(1) }
+func (c *countingCounters) ShareRefused()   { c.refused.Add(1) }
+func (c *countingCounters) CallCut()        { c.cut.Add(1) }
+func (c *countingCounters) CallGrantRetry() { c.retries.Add(1) }
 
 // The spec's error handling: the SFU session is cut on kick at once. A participant whose user lost
 // view_channel or connect is removed from the room (its "#" shadows with it) by the sync itself, not
@@ -132,12 +133,14 @@ func (r failingDeviceRepo) GetDevice(ctx context.Context, dev id.ID) (store.Devi
 	return r.Repository.GetDevice(ctx, dev)
 }
 
-// A lookup that fails is fail-closed: the participant is pushed the no-publish grant, loses its
-// slot, and the error is reported — it never keeps the permission it had.
+// A lookup that fails is fail-closed: the participant is pushed the no-publish grant, the error is
+// reported, and the repair stays pending — the slot held, the device refused a token and the /rtc
+// gate for the call — until a retry resolves it and pushes its real permission.
 func TestSyncCallGrantsFailsClosedOnALookupError(t *testing.T) {
 	e, ch, tok, group, stub, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL, MaxPublishers: 1})
 	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
-	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	path := "/v1/channels/" + ch.String() + "/calls"
+	_, body := e.Do(http.MethodPost, path, tok, []any{})
 	share := "/v1/calls/" + decodeCall(t, body).CallID.String() + "/share"
 	room := stub.minted()[0][0]
 	_, memberDev, memberTok := joinedMember(t, e, ch, group, "member")
@@ -154,8 +157,101 @@ func TestSyncCallGrantsFailsClosedOnALookupError(t *testing.T) {
 	if got.GetCanPublish() || len(got.GetCanPublishSources()) != 0 {
 		t.Fatalf("after a failed lookup the member holds %+v, want the no-publish grant", got)
 	}
+	if admitted, _ := calls.CurrentLeafOfRoom(t.Context(), room, memberDev); !admitted {
+		// The retry on the gate's own read (e.Repo answers) lands the repair at once.
+		t.Fatal("the gate's retry did not land the repair once the lookup answered")
+	}
+	if got := stub.lastPerms()[memberDev.String()]; !hasCamera(got) {
+		t.Fatalf("after the repair the member holds %+v, want its permission with the slot it holds", got)
+	}
+	if status, _ := e.Do(http.MethodPost, share, tok, []any{}); status != http.StatusConflict {
+		t.Fatalf("the owner's share while the member holds the slot = %d, want 409", status)
+	}
+}
+
+// A cut the SFU does not take stays pending and converges: the device keeps its slot (so the cap
+// holds), is refused a token and the /rtc gate, and the maintenance retry drives the cut until it
+// lands, counting and logging each retry.
+func TestACutTheSFURefusesIsRetriedUntilItLands(t *testing.T) {
+	e, ch, tok, group, stub, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL, MaxPublishers: 1})
+	counters := &countingCounters{}
+	calls.WithCounters(counters)
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	path := "/v1/channels/" + ch.String() + "/calls"
+	_, body := e.Do(http.MethodPost, path, tok, []any{})
+	share := "/v1/calls/" + decodeCall(t, body).CallID.String() + "/share"
+	room := stub.minted()[0][0]
+	member, memberDev, memberTok := joinedMember(t, e, ch, group, "member")
+	if status, _ := e.Do(http.MethodPost, share, memberTok, []any{}); status != http.StatusNoContent {
+		t.Fatalf("member share = %d", status)
+	}
+	stub.setPresent(room, &livekit.ParticipantInfo{Identity: memberDev.String()})
+	denyInChannel(t, e, ch, member, api.PermSpeak)
+	stub.mu.Lock()
+	stub.failRemovals, stub.failUpdates = 3, 3 // the cut and its no-publish fallback fail three times
+	stub.mu.Unlock()
+	denyInChannel(t, e, ch, member, api.PermConnect)
+	if err := api.SyncCallGrants(t.Context(), e.Repo, api.NewResolver(e.Repo), stub, calls,
+		ownerCommunityOf(t, e, ch), &member, nil); err == nil {
+		t.Fatal("SyncCallGrants hid the failed cut")
+	}
+	if status, _ := e.Do(http.MethodPost, share, tok, []any{}); status != http.StatusConflict {
+		t.Fatalf("the owner's share while the member's cut is pending = %d, want 409: the slot must stay held", status)
+	}
+	// The owner's share was the call's next event and retried (failure two); the gate's own retry is
+	// failure three, so it refuses; the mint refuses too, and the maintenance retry lands the cut.
+	if admitted, _ := calls.CurrentLeafOfRoom(t.Context(), room, memberDev); admitted {
+		t.Fatal("the /rtc gate admitted a device whose cut is pending")
+	}
+	if status, resp := e.Do(http.MethodPost, path, memberTok, []any{}); status == http.StatusOK || status == http.StatusCreated {
+		t.Fatalf("the token mint answered %d for a device whose cut is pending (%s)", status, e.ErrCode(resp))
+	}
+	calls.RetryPending(t.Context())
+	devices, _ := stub.removals()
+	if last := devices[len(devices)-1]; last != [2]string{room, memberDev.String()} {
+		t.Fatalf("the last removal = %v", last)
+	}
+	if _, inRoom := stub.lastPerms()[memberDev.String()]; inRoom {
+		t.Fatal("the member is still in the room after the retry")
+	}
+	if counters.retries.Load() < 2 || counters.cut.Load() != 1 {
+		t.Fatalf("retries %d, cuts %d; want at least 2 retries and the one cut", counters.retries.Load(), counters.cut.Load())
+	}
 	if status, _ := e.Do(http.MethodPost, share, tok, []any{}); status != http.StatusNoContent {
-		t.Fatalf("the owner's share after the fail-closed demotion = %d, want 204: the slot was kept", status)
+		t.Fatalf("the owner's share once the cut landed = %d, want 204", status)
+	}
+}
+
+// A demotion the SFU fails (the user lost video) leaves the slot held and the device pending; the
+// retry pushes it again until it lands, and only then frees the slot.
+func TestADemotionTheSFUFailsIsRetriedAndHoldsTheSlot(t *testing.T) {
+	e, ch, tok, group, stub, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL, MaxPublishers: 1})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	share := "/v1/calls/" + decodeCall(t, body).CallID.String() + "/share"
+	room := stub.minted()[0][0]
+	member, memberDev, memberTok := joinedMember(t, e, ch, group, "member")
+	if status, _ := e.Do(http.MethodPost, share, memberTok, []any{}); status != http.StatusNoContent {
+		t.Fatalf("member share = %d", status)
+	}
+	stub.setPresent(room, &livekit.ParticipantInfo{Identity: memberDev.String()})
+	denyInChannel(t, e, ch, member, api.PermVideo|api.PermScreenShare)
+	stub.mu.Lock()
+	stub.failUpdates = 1
+	stub.mu.Unlock()
+	if err := api.SyncCallGrants(t.Context(), e.Repo, api.NewResolver(e.Repo), stub, calls,
+		ownerCommunityOf(t, e, ch), &member, nil); err == nil {
+		t.Fatal("SyncCallGrants hid the failed demotion")
+	}
+	if !hasCamera(stub.lastPerms()[memberDev.String()]) || len(calls.SharersOf(decodeCall(t, body).CallID)) != 1 {
+		t.Fatal("the failed demotion should have left the camera and the held slot as they were")
+	}
+	calls.RetryPending(t.Context())
+	if hasCamera(stub.lastPerms()[memberDev.String()]) {
+		t.Fatal("the retry did not demote the member")
+	}
+	if status, _ := e.Do(http.MethodPost, share, tok, []any{}); status != http.StatusNoContent {
+		t.Fatalf("the owner's share once the demotion landed = %d, want 204", status)
 	}
 }
 
