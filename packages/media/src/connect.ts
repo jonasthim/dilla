@@ -1,5 +1,5 @@
 import type { EventEmitter } from 'events';
-import { Room, type RoomConnectOptions, type RoomEvent, type RoomOptions } from 'livekit-client';
+import { Room, type RoomConnectOptions, type RoomEvent, type RoomOptions, type TrackPublishDefaults } from 'livekit-client';
 import { createMediaWorker, DillaE2EEManager, type EpochKeys } from './manager';
 import { isVoiceSupported } from './support';
 
@@ -43,8 +43,8 @@ export const ROOM_DEFAULTS: Partial<RoomOptions> = {
  * I1 (task 17 review): the only RoomOptions a caller may set. Everything else is dilla's: `e2ee` and `encryption`
  * (Room.setupE2EE prefers `encryption` over `e2ee`, Room.ts:506-517, so either could replace the manager), `dynacast`
  * (multi-codec simulcast needs it), `frameMetadata` / `packetTrailer` (they append bytes to frames, Room.ts:539-543,
- * 2562-2563) and anything livekit-client adds later. publishDefaults is merged over ROOM_DEFAULTS', and its `red`
- * and `backupCodec` are forced off after the merge (DEV-08, DEV-09).
+ * 2562-2563) and anything livekit-client adds later. Only the CALLER_PUBLISH_DEFAULTS keys of publishDefaults are
+ * merged over ROOM_DEFAULTS', and `red`, `backupCodec` and `preConnectBuffer` are forced off after the merge (N1).
  */
 export const CALLER_ROOM_OPTIONS = [
   'adaptiveStream', 'audioCaptureDefaults', 'videoCaptureDefaults', 'publishDefaults', 'audioOutput',
@@ -52,16 +52,46 @@ export const CALLER_ROOM_OPTIONS = [
   'singlePeerConnection', 'dataStream',
 ] as const satisfies ReadonlyArray<keyof RoomOptions>;
 
-/** The RoomOptions joinCall builds Room with: ROOM_DEFAULTS, the caller's whitelisted keys, then the forced values. */
+/**
+ * N1 (task 17 re-review): the only publishDefaults keys a caller may set, checked against livekit-client 2.22.3. Each
+ * only shapes what the encoder produces before the sender transform encrypts it (bitrates, layers, codec choice, DTX,
+ * stereo, degradation, stopping the mic on mute). Everything else is dropped:
+ * - `preConnectBuffer` (forced false below): records the microphone with a MediaRecorder from capture and, once the
+ *   SFU echoes TF_PRECONNECT_BUFFER and flags any participant as an agent, streams the recording over the data
+ *   channel (LocalParticipant.ts:586-598, 1093-1095, 1385-1444; LocalTrack.ts:651-691), which dilla leaves
+ *   unencrypted (OutgoingDataStreamManager.ts:97, 524): plaintext microphone audio outside every transform;
+ * - `frameMetadata` / `packetTrailer`: frame metadata written by livekit's own transform worker
+ *   (RTCEngine.ts:1058-1105, LocalParticipant.ts:1448-1479), never part of a dilla call;
+ * - `red`, `backupCodec` (forced false below; DEV-08, DEV-09) and `backupCodecPolicy`, which only matters with backup
+ *   codecs;
+ * - any key livekit-client adds later.
+ * The manager also refuses a pre-connect recorder or these options when they are passed per publish (attachSender).
+ */
+export const CALLER_PUBLISH_DEFAULTS = [
+  'videoEncoding', 'screenShareEncoding', 'videoCodec', 'audioPreset', 'dtx', 'forceStereo', 'simulcast',
+  'scalabilityMode', 'degradationPreference', 'videoSimulcastLayers', 'screenShareSimulcastLayers', 'stopMicTrackOnMute',
+] as const satisfies ReadonlyArray<keyof TrackPublishDefaults>;
+
+function pick<T extends object>(from: T | undefined, keys: ReadonlyArray<keyof T>): Partial<T> {
+  const out: Partial<T> = {};
+  if (from === undefined || from === null) return out;
+  for (const key of keys) if (Object.hasOwn(from, key) && from[key] !== undefined) out[key] = from[key];
+  return out;
+}
+
+/** The RoomOptions joinCall builds Room with: ROOM_DEFAULTS, the caller's allowed keys, then the forced values. */
 export function dillaRoomOptions(manager: DillaE2EEManager, caller: Partial<RoomOptions> = {}): RoomOptions {
-  const allowed: Partial<RoomOptions> = {};
-  for (const key of CALLER_ROOM_OPTIONS) {
-    if (Object.hasOwn(caller, key) && caller[key] !== undefined) (allowed as Record<string, unknown>)[key] = caller[key];
-  }
+  const allowed = pick(caller, CALLER_ROOM_OPTIONS);
   return {
     ...ROOM_DEFAULTS,
     ...allowed,
-    publishDefaults: { ...ROOM_DEFAULTS.publishDefaults, ...allowed.publishDefaults, red: false, backupCodec: false },
+    publishDefaults: {
+      ...ROOM_DEFAULTS.publishDefaults,
+      ...pick(allowed.publishDefaults, CALLER_PUBLISH_DEFAULTS),
+      red: false,
+      backupCodec: false,
+      preConnectBuffer: false,
+    },
     dynacast: false,
     // e2ee: (the deprecated key) on purpose (G11, DEV-11): with `encryption` absent Room.setupE2EE sets
     // isDataChannelEncryptionEnabled = false (Room.ts:509-515), and LocalParticipant keeps its Safari < 17.2

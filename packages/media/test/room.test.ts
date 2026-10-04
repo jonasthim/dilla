@@ -23,6 +23,22 @@ describe('the real Room uses the dilla manager (I1)', () => {
     expect(m.isDataChannelEncryptionEnabled).toBe(false);
   });
 
+  it('the real Room and LocalParticipant never see preConnectBuffer or frame metadata in publishDefaults (N1)', () => {
+    const m = manager();
+    const room = new Room(dillaRoomOptions(m, {
+      publishDefaults: { preConnectBuffer: true, frameMetadata: { userTimestamp: true }, packetTrailer: { userTimestamp: true } },
+    } as never));
+    // LocalParticipant merges roomOptions.publishDefaults under every publish (LocalParticipant.ts:587-590, 900-903).
+    const lpDefaults = (room.localParticipant as unknown as { roomOptions: typeof room.options }).roomOptions.publishDefaults;
+    for (const pd of [room.options.publishDefaults, lpDefaults]) {
+      expect(pd?.preConnectBuffer).toBe(false);
+      expect(pd).not.toHaveProperty('frameMetadata');
+      expect(pd).not.toHaveProperty('packetTrailer');
+      expect(pd?.red).toBe(false);
+      expect(pd?.backupCodec).toBe(false);
+    }
+  });
+
   it('a Room without the dilla manager is refused; `encryption:` cannot even construct one around it', () => {
     const m = manager();
     expect(() => assertDillaManager(new Room({}), m)).toThrow('E_E2EE_REQUIRED');

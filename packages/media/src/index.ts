@@ -3,6 +3,6 @@ export { CODEC_NUMBER, codecFromMime, codecKind, hexToBytes, isDeviceIdentity, k
 export { isChromium, isVoiceSupported, type VoiceSupport } from './support';
 export { createMediaWorker, DATA_CHANNEL_ERROR, DATA_ERROR, DillaE2EEManager, INIT_TIMEOUT_MS, type EpochKeys } from './manager';
 export {
-  assertDillaManager, CALLER_ROOM_OPTIONS, dillaRoomOptions, joinCall, refreshIceServers, ROOM_DEFAULTS, toRtcIceServers,
+  assertDillaManager, CALLER_PUBLISH_DEFAULTS, CALLER_ROOM_OPTIONS, dillaRoomOptions, joinCall, refreshIceServers, ROOM_DEFAULTS, toRtcIceServers,
   type CallSession, type IceServerTuple, type JoinCallOptions,
 } from './connect';

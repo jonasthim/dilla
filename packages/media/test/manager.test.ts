@@ -445,6 +445,70 @@ describe('fail closed on the createEncodedStreams path (Chromium, Electron)', ()
   });
 });
 
+// N1 (task 17 re-review): livekit-client's pre-connect buffer records the microphone with a MediaRecorder and, once
+// the SFU echoes TF_PRECONNECT_BUFFER, streams the recording over the (unencrypted) data channel after negotiation
+// (LocalParticipant.ts:1385-1444). LocalSenderCreated (:1244) runs before that read (:1389), so the manager stops the
+// recorder there, discards what it buffered, blocks the sender and unpublishes the track.
+describe('pre-connect buffer and frame metadata requested per publish (N1)', () => {
+  function recordingTrack(): any {
+    const buffer = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array([1, 2, 3])); } });
+    const t = localTrack('microphone', 'audio', 'tx-mic');
+    let recorder = true;
+    Object.defineProperty(t, 'hasPreConnectBuffer', { get: () => recorder });
+    t.getPreConnectBuffer = vi.fn(() => (recorder ? buffer : undefined));
+    t.stopPreConnectBuffer = vi.fn(() => { recorder = false; });
+    t.buffer = buffer;
+    return t;
+  }
+
+  for (const path of ['streams', 'script'] as const) {
+    it(`stops an active recorder, discards its buffer, blocks the sender and unpublishes it (${path} path)`, async () => {
+      if (path === 'script') vi.stubGlobal('RTCRtpScriptTransform', FakeScriptTransform);
+      const { w, lp, m } = setup();
+      const errors: Error[] = [];
+      m.on('encryptionError', (e: Error) => errors.push(e));
+      const t = recordingTrack();
+      const sender: any = path === 'streams' ? streamsRtp() : {};
+      lp.emit('localSenderCreated', sender, t);
+      expect(t.stopPreConnectBuffer).toHaveBeenCalled();
+      expect(t.hasPreConnectBuffer).toBe(false);
+      expect(t.getPreConnectBuffer()).toBeUndefined(); // what LocalParticipant.ts:1389 reads next
+      await expect(t.buffer.getReader().read()).resolves.toMatchObject({ done: true }); // the recording is discarded
+      const opts = path === 'streams' ? w.last('attach')!.msg.data : sender.transform.options;
+      expect(opts).toMatchObject({ dilla: 1, side: 'encode', trackId: 'tx-mic', block: true });
+      expect(errors.map((e) => e.message)).toEqual([expect.stringContaining('pre-connect')]);
+      await microtasks();
+      expect(lp.unpublishTrack).toHaveBeenCalledWith(t);
+    });
+  }
+
+  it('blocks a track whose publish options or the live room defaults request a pre-connect buffer or frame metadata', async () => {
+    const { w, lp, m } = setup();
+    const errors: Error[] = [];
+    m.on('encryptionError', (e: Error) => errors.push(e));
+    const cam = { ...localTrack('camera', 'video', 'tx-cam'), publishOptions: { frameMetadata: { userTimestamp: true } } };
+    lp.emit('localSenderCreated', streamsRtp(), cam);
+    expect(w.last('attach')!.msg.data).toMatchObject({ trackId: 'tx-cam', block: true });
+    lp.roomOptions = { publishDefaults: { preConnectBuffer: true } }; // mutated after joinCall built the Room
+    lp.emit('localSenderCreated', streamsRtp(), localTrack('microphone', 'audio', 'tx-mic'));
+    expect(w.last('attach')!.msg.data).toMatchObject({ trackId: 'tx-mic', block: true });
+    expect(errors).toHaveLength(2);
+    await microtasks();
+    expect(lp.unpublishTrack).toHaveBeenCalledTimes(2);
+  });
+
+  it('a track without a recorder and with clean options is not affected', () => {
+    const { w, lp, m } = setup();
+    const errors: Error[] = [];
+    m.on('encryptionError', (e: Error) => errors.push(e));
+    lp.roomOptions = { publishDefaults: { preConnectBuffer: false } };
+    const mic = { ...localTrack('microphone', 'audio', 'tx-mic'), hasPreConnectBuffer: false, getPreConnectBuffer: () => undefined, stopPreConnectBuffer: vi.fn() };
+    lp.emit('localSenderCreated', streamsRtp(), mic);
+    expect(w.last('attach')!.msg.data.block).toBeUndefined();
+    expect(errors).toEqual([]);
+  });
+});
+
 describe('no transform API at all (a manager used without joinCall’s gate)', () => {
   it('stops every sender and receiver track and unpublishes the sender', async () => {
     const { lp, engine, m } = setup();

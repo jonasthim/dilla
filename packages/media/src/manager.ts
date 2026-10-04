@@ -414,6 +414,8 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
       const kind = kindValue === 'audio' ? 'audio' : 'video';
       let opts: DillaTransformOptions | DillaBlockOptions;
       try {
+        const refused = this.refusePublishFeatures(track);
+        if (refused !== null) throw new Error(`E_E2EE_REQUIRED: ${refused} sends media outside the transform`);
         const slot: SlotId = sourceToSlot(track.source);
         if (!kindMatchesSource(kind, track.source)) throw new Error(`E_BAD_OPTIONS: a ${kind} track cannot be published as ${track.source}`);
         // The codec here is informational: the worker encrypts every frame under the rule of the frame's own codec
@@ -438,6 +440,50 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     // lever; it awaits the pending publish itself (LocalParticipant.ts:1578-1587).
     this.fail(failure ?? new Error(`E_E2EE_REQUIRED: sender ${track.mediaStreamID} ${result}`), identity);
     queueMicrotask(() => this.unpublish(track, media));
+  }
+
+  /**
+   * N1 (task 17 re-review): what livekit-client could send outside the encoded-frame transform for this track.
+   * - A pre-connect recorder (`hasPreConnectBuffer`, LocalTrack.ts:42-44): livekit starts it from
+   *   publishDefaults or per-call options (LocalParticipant.ts:586-598) and, after negotiation, streams the
+   *   recording to any participant the SFU flags as an agent over the unencrypted data channel
+   *   (LocalParticipant.ts:1385-1444). LocalSenderCreated is emitted inside negotiate() (:1244), and publish() reads
+   *   the recording only after negotiate() resolves (:1318 or :1348, then :1389), so stopping the recorder here
+   *   leaves getPreConnectBuffer() undefined at :1389 and nothing is streamed. The recording held so far is
+   *   cancelled (discarded), never read.
+   * - `preConnectBuffer`, `frameMetadata` or `packetTrailer` requested in this track's publish options (a video
+   *   track carries them as `publishOptions`, LocalParticipant.ts:1241-1243) or in the live room defaults (an app
+   *   that mutated room.options after joinCall built it).
+   * Returns the refused feature, after stopping the recorder, or null.
+   */
+  private refusePublishFeatures(track: LocalTrack): string | null {
+    const t = track as unknown as {
+      hasPreConnectBuffer?: boolean;
+      getPreConnectBuffer?: () => ReadableStream<Uint8Array> | undefined;
+      stopPreConnectBuffer?: () => void;
+      publishOptions?: Record<string, unknown>;
+    };
+    if (t.hasPreConnectBuffer === true) {
+      try {
+        t.getPreConnectBuffer?.()?.cancel('dilla: no pre-connect buffer').catch(() => undefined);
+      } catch {
+        // a locked stream: stopping the recorder below closes it
+      }
+      try {
+        t.stopPreConnectBuffer?.();
+      } catch (err) {
+        this.log('error', `stopPreConnectBuffer ${track.mediaStreamID}: ${toError(err).message}`);
+      }
+      return 'a pre-connect buffer';
+    }
+    const roomDefaults = (this.room?.localParticipant as unknown as { roomOptions?: { publishDefaults?: Record<string, unknown> } } | undefined)
+      ?.roomOptions?.publishDefaults;
+    for (const opts of [t.publishOptions, roomDefaults]) {
+      if (opts === undefined || opts === null) continue;
+      if (opts.preConnectBuffer) return 'a pre-connect buffer';
+      if (opts.frameMetadata !== undefined || opts.packetTrailer !== undefined) return 'frame metadata';
+    }
+    return null;
   }
 
   private unpublish(track: LocalTrack, media: MediaStreamTrack | undefined): void {

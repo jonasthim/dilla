@@ -125,6 +125,23 @@ describe('joinCall (DEV-27)', () => {
     expect(h.state.rooms[0].engine.e2eeManager).toBe(h.state.managers[0]);
   });
 
+  it('publishDefaults is an allowlist: preConnectBuffer is forced off, frame metadata and unknown keys are dropped (N1)', async () => {
+    await joinCall(options({
+      roomOptions: {
+        publishDefaults: {
+          preConnectBuffer: true, frameMetadata: { userTimestamp: true }, packetTrailer: { userTimestamp: true },
+          backupCodecPolicy: 2, futureLeak: true, simulcast: false, dtx: false, videoCodec: 'vp9', stopMicTrackOnMute: true,
+        },
+      } as any,
+    }));
+    const pd = h.state.rooms[0].opts.publishDefaults;
+    expect(pd.preConnectBuffer).toBe(false);
+    expect(pd.red).toBe(false);
+    expect(pd.backupCodec).toBe(false);
+    for (const k of ['frameMetadata', 'packetTrailer', 'backupCodecPolicy', 'futureLeak']) expect(pd, k).not.toHaveProperty(k);
+    expect(pd).toMatchObject({ simulcast: false, dtx: false, videoCodec: 'vp9', stopMicTrackOnMute: true, forceStereo: false });
+  });
+
   it('refuses the join, and cleans up, when the Room does not use the dilla manager (I1)', async () => {
     h.state.ignoreManager = true;
     await expect(joinCall(options())).rejects.toThrow('E_E2EE_REQUIRED: the Room does not use the dilla E2EE manager');
