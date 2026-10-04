@@ -26,11 +26,57 @@ func TURNAuthForTest(secret string, clk clock.Clock, maxAge time.Duration, rev *
 	if rev == nil {
 		rev = NewRelayRevocations(maxAge, clk)
 	}
-	return turnAuth(secret, clk, maxAge, rev)
+	return turnAuth(secret, clk, maxAge, maxAge, rev) // turn.credential_ttl = maxAge
 }
 
 // CheckHoldersForTest runs one pass of the relay's barred re-check of the devices holding sockets.
-func (r *RelayRevocations) CheckHoldersForTest() { r.checkHolders() }
+func (r *RelayRevocations) CheckHoldersForTest() { r.checkHolders(context.Background()) }
+
+// CutOfForTest is the cut time (unix milliseconds) that binds dev now — its own or the floor.
+func (r *RelayRevocations) CutOfForTest(dev string) (int64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.liveCutLocked(dev)
+}
+
+// MintScansForTest is how many times Mint scanned its record for expired entries.
+func (r *RelayRevocations) MintScansForTest() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mintScans
+}
+
+// MintsForTest is how many mints r holds.
+func (r *RelayRevocations) MintsForTest() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.mints)
+}
+
+// SetHolderCheckEveryForTest makes the holders' re-check of a relay started afterwards run every d.
+func (r *RelayRevocations) SetHolderCheckEveryForTest(d time.Duration) { r.holderEvery = d }
+
+// HoldSocketForTest makes dev a holder of the relay socket pc, as an allocation would.
+func (r *RelayRevocations) HoldSocketForTest(dev string, pc net.PacketConn) {
+	c := &countingConn{PacketConn: pc, m: noTURNMetrics{}, dev: dev, rev: r}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.socks[dev] == nil {
+		r.socks[dev] = map[*countingConn]struct{}{}
+	}
+	r.socks[dev][c] = struct{}{}
+}
+
+// TrackForTest is the relay generator's decision on a relay socket pc of dev, which pion creates
+// right after the quota handler admitted dev's Allocate: true tracks it, false refuses it (508).
+func (r *RelayRevocations) TrackForTest(dev string, pc net.PacketConn) bool {
+	return r.track(dev, &countingConn{PacketConn: pc, m: noTURNMetrics{}, dev: dev, rev: r})
+}
+
+// TURNHandlersWithRevForTest is TURNHandlersForTest reading and feeding rev.
+func TURNHandlersWithRevForTest(maxPerDevice int, rev *RelayRevocations) (turn.QuotaHandler, turn.EventHandler) {
+	return turnHandlers(context.Background(), NewAllocationQuota(maxPerDevice), noTURNMetrics{}, rev)
+}
 
 // RelayCutsForTest is how many cuts r holds.
 func (r *RelayRevocations) RelayCutsForTest() int {
@@ -91,7 +137,7 @@ func TURNHandlersForTest(maxPerDevice int, m TURNMetrics) (turn.QuotaHandler, tu
 	if m == nil {
 		m = noTURNMetrics{}
 	}
-	return turnHandlers(NewAllocationQuota(maxPerDevice), m, NewRelayRevocations(time.Hour, clock.System()))
+	return turnHandlers(context.Background(), NewAllocationQuota(maxPerDevice), m, NewRelayRevocations(time.Hour, clock.System()))
 }
 
 // FailTURNNetForTest makes StartTURN's network setup fail with err until the returned restore runs.

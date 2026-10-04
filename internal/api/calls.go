@@ -210,12 +210,13 @@ type Calls struct {
 
 // RelayRevoker cuts a device from the TURN relay as of at; *server.RelayRevocations is one. Revoke
 // closes sockets and writes a map, and never blocks on the store or the SFU. Mint records a relay
-// credential minted for device and answers its issue time, chosen under the lock Revoke takes (and
-// makes a later cut of the device worth recording). CutSince reports a cut of device at or after t.
+// credential minted for device by a request that began at since and answers its issue time, the
+// clock's, chosen under the lock Revoke takes (and makes a later cut of the device worth
+// recording); when the device was cut in the current millisecond or since the request began it
+// mints nothing and answers how long to wait (wait > 0).
 type RelayRevoker interface {
 	Revoke(device id.ID, at time.Time)
-	Mint(device id.ID) time.Time
-	CutSince(device id.ID, t time.Time) bool
+	Mint(device id.ID, since time.Time) (issued time.Time, wait time.Duration)
 }
 
 // WithRelay sets the relay revocation state the cuts feed and returns h.
@@ -449,12 +450,18 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.startStage("mint")
-	ice, minted := h.iceServers(s.DeviceID)
+	ice, minted, err := h.iceServers(s.DeviceID, begun)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	if minted {
-		// The gates above ran before the credential was minted: a device cut, barred or demoted in
+		// The gates above ran before the credential was minted: a device barred or demoted in
 		// between must not leave with it (commit review, mint race). The mint is ordered against
-		// every relay cut (RelayRevoker.Mint), so what remains is re-reading the entitlement.
-		if err := h.stillEntitled(r.Context(), s, ch, groupID, begun); err != nil {
+		// every relay cut, and refuses after a cut made while this start was served
+		// (RelayRevoker.Mint), so what remains is re-reading the entitlement. A refusal here cuts
+		// the relay as of now, which covers the credential just minted and moves no one else's.
+		if err := h.stillEntitled(r.Context(), s, ch, groupID); err != nil {
 			h.revokeRelay(s.DeviceID)
 			server.WriteError(w, err)
 			return
@@ -695,10 +702,13 @@ func callIDOfGroup(g store.GroupRow) id.ID {
 //
 // The issue time comes from the relay's Mint, chosen under the lock its cuts take, so a cut is
 // ordered either before the credential (which is then newer than it) or after it (which then covers
-// it). minted reports whether a credential was minted.
-func (h *Calls) iceServers(dev id.ID) (servers []iceServer, minted bool) {
+// it). A device cut in the current millisecond, or since the start began (begun), gets no credential:
+// a transient 429 E_RATE_LIMITED with the few milliseconds to wait in retry_after_ms, after which
+// the start's own gates answer whether the cut still applies. minted reports whether a credential
+// was minted.
+func (h *Calls) iceServers(dev id.ID, begun time.Time) (servers []iceServer, minted bool, err error) {
 	if h.cfg.TURNSecret == "" || len(h.cfg.TURNURLs) == 0 {
-		return []iceServer{}, false
+		return []iceServer{}, false, nil
 	}
 	ttl := h.cfg.CredentialTTL
 	if ttl <= 0 {
@@ -706,19 +716,21 @@ func (h *Calls) iceServers(dev id.ID) (servers []iceServer, minted bool) {
 	}
 	issued := h.clk.Now()
 	if h.relay != nil {
-		issued = h.relay.Mint(dev)
+		var wait time.Duration
+		if issued, wait = h.relay.Mint(dev, begun); wait > 0 {
+			e := server.RateLimitedAfter(wait)
+			e.Detail = "your device was cut from the relay a moment ago; retry"
+			return nil, false, e
+		}
 	}
 	user, pass := server.TURNCredential(h.cfg.TURNSecret, dev, ttl, issued)
-	return []iceServer{{URLs: h.cfg.TURNURLs, Username: user, Credential: pass}}, true
+	return []iceServer{{URLs: h.cfg.TURNURLs, Username: user, Credential: pass}}, true, nil
 }
 
-// stillEntitled re-reads, after a relay credential was minted, what start checked before it: no relay
-// cut of the device since the request began, the device not barred, a current leaf of the call's
-// group, view_channel and connect. It answers the refusal the first check would have.
-func (h *Calls) stillEntitled(ctx context.Context, s auth.Session, ch store.ChannelRow, groupID id.ID, begun time.Time) error {
-	if h.relay != nil && h.relay.CutSince(s.DeviceID, begun) {
-		return server.Errorf(server.CodeForbidden, "your device's access to calls was revoked")
-	}
+// stillEntitled re-reads, after a relay credential was minted, what start checked before it: the
+// device not barred, a current leaf of the call's group, view_channel and connect. It answers the
+// refusal the first check would have.
+func (h *Calls) stillEntitled(ctx context.Context, s auth.Session, ch store.ChannelRow, groupID id.ID) error {
 	if err := h.refuseBarred(ctx, h.repo, s.DeviceID); err != nil {
 		return err
 	}

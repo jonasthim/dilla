@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/livekit/protocol/livekit"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -30,14 +31,12 @@ func (f *fakeRelay) Revoke(device id.ID, _ time.Time) {
 	f.revoked = append(f.revoked, device)
 }
 
-func (f *fakeRelay) Mint(device id.ID) time.Time {
+func (f *fakeRelay) Mint(device id.ID, _ time.Time) (time.Time, time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.minted = append(f.minted, device)
-	return time.Now()
+	return time.Now(), 0
 }
-
-func (f *fakeRelay) CutSince(id.ID, time.Time) bool { return false }
 
 func (f *fakeRelay) has(device id.ID) bool {
 	f.mu.Lock()
@@ -237,21 +236,105 @@ func issuedOfCall(t *testing.T, body []byte) time.Time {
 	if err != nil || len(fields) != 3 {
 		t.Fatalf("username %q carries no issue time", user)
 	}
-	return time.Unix(issued, 0)
+	return time.UnixMilli(issued) // "<expiry_s>:<device_id>:<issued_ms>"
 }
 
-// Commit review (mint race): no relay credential a start answers is usable after a cut that landed
-// while the start was being served. A cut between the gates and the mint refuses the start; a cut
-// between the mint and the response covers the credential (the relay refuses it); a device another
-// process barred between the gates and the mint is refused, and its relay is cut.
+// retryAfterOf is the retry_after_ms of an error body.
+func retryAfterOf(t *testing.T, body []byte) uint64 {
+	t.Helper()
+	var arr []cbor.RawMessage
+	mustUnmarshalBody(t, body, &arr)
+	var ms uint64
+	if len(arr) < 3 {
+		t.Fatalf("error body %x has no retry_after_ms", body)
+	}
+	mustUnmarshal(t, arr[2], &ms)
+	return ms
+}
+
+// Re-review N1, through the call route: a start whose device was cut in the same millisecond is a
+// transient 429 E_RATE_LIMITED with a retry_after_ms of a few milliseconds, and moves nothing — a
+// member whose every start lands in its own cut's millisecond, twice a second for two simulated
+// minutes, leaves no trace on anyone else: a victim cut afterwards starts a millisecond later, with a
+// credential issued at the clock's time, and so does the member itself once it waits retry_after_ms.
+func TestAStartInItsCutsMillisecondIsTransientAndMovesNothing(t *testing.T) {
+	e, ch, tok, group, _, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL,
+		TURNSecret: "0123456789abcdef", TURNURLs: []string{"turns:chat.example.test:443?transport=tcp"}, CredentialTTL: time.Hour})
+	rev := server.NewRelayRevocations(2*time.Hour, e.Clk).WithCredentialTTL(time.Hour)
+	calls.WithRelay(rev)
+	victim := deviceOf(t, e, tok)
+	seedLeaf(t, e, group, victim, 3, nil)
+	_, attacker, attackerTok := joinedMember(t, e, ch, group, "attacker")
+	path := "/v1/channels/" + ch.String() + "/calls"
+	start := func(tok string) (int, []byte) { return e.Do(http.MethodPost, path, tok, []any{}) }
+	for _, tk := range []string{tok, attackerTok} { // each device holds a credential, so its cuts count
+		if status, body := start(tk); status != http.StatusCreated && status != http.StatusOK {
+			t.Fatalf("first start = %d %s", status, e.ErrCode(body))
+		}
+	}
+	for i := range 240 { // two a second for two minutes, each in its own cut's millisecond
+		e.Clk.Advance(500 * time.Millisecond)
+		rev.Revoke(attacker, e.Clk.Now())
+		status, body := start(attackerTok)
+		if status != http.StatusTooManyRequests || e.ErrCode(body) != "E_RATE_LIMITED" {
+			t.Fatalf("attacker start %d in its cut's millisecond = %d %s, want 429 E_RATE_LIMITED", i, status, e.ErrCode(body))
+		}
+		if ms := retryAfterOf(t, body); ms < 1 || ms > 10 {
+			t.Fatalf("retry_after_ms = %d, want a few milliseconds", ms)
+		}
+	}
+	e.Clk.Advance(time.Second)
+	rev.Revoke(victim, e.Clk.Now())
+	e.Clk.Advance(time.Millisecond)
+	status, body := start(tok)
+	if status != http.StatusOK && status != http.StatusCreated {
+		t.Fatalf("the victim's start a millisecond after its cut = %d %s, want it to succeed at once", status, e.ErrCode(body))
+	}
+	if issued := issuedOfCall(t, body); !issued.Equal(e.Clk.Now()) {
+		t.Fatalf("the victim's credential was issued at %v, %v ahead of the clock", issued, issued.Sub(e.Clk.Now()))
+	}
+	// The honest retry: a start in its cut's millisecond waits retry_after_ms and gets in.
+	rev.Revoke(attacker, e.Clk.Now())
+	status, body = start(attackerTok)
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("a start in its cut's millisecond = %d, want 429", status)
+	}
+	e.Clk.Advance(time.Duration(retryAfterOf(t, body)) * time.Millisecond)
+	status, body = start(attackerTok)
+	if status != http.StatusOK && status != http.StatusCreated {
+		t.Fatalf("the retry after retry_after_ms = %d %s, want it to succeed", status, e.ErrCode(body))
+	}
+	if issued := issuedOfCall(t, body); !issued.Equal(e.Clk.Now()) {
+		t.Fatalf("the retried credential was issued at %v, not the clock's %v", issued, e.Clk.Now())
+	}
+}
+
+// cutCovers reports whether rev holds a cut of dev at or after issued — one that refuses a
+// credential issued then: a mint for a request begun at issued is refused exactly then.
+func cutCovers(rev *server.RelayRevocations, dev id.ID, issued time.Time) bool {
+	_, wait := rev.Mint(dev, issued)
+	return wait > 0
+}
+
+// Commit review (mint race), re-review N1: no relay credential a start answers is usable after a cut
+// that landed while the start was being served. A cut between the gates and the mint gets no
+// credential, a transient 429 E_RATE_LIMITED (the retry's own gates answer whether the cut still
+// applies); a cut between the mint and the response covers the credential (the relay refuses it); a
+// device another process barred between the gates and the mint is refused 403 by the re-check after
+// the mint, and its relay is cut, which covers the credential that was minted.
 func TestNoCredentialFromAStartOutlivesACutDuringIt(t *testing.T) {
 	t.Run("a cut between the gates and the mint", func(t *testing.T) {
 		e, dev, rev, _, release, done := startParked(t, "mint")
+		e.Clk.Advance(time.Millisecond) // the cut lands after the start began, not in its millisecond
 		rev.Revoke(dev, e.Clk.Now())
+		e.Clk.Advance(time.Millisecond)
 		release()
 		res := <-done
-		if status := res[0].(int); status != http.StatusForbidden || e.ErrCode(res[1].([]byte)) != "E_FORBIDDEN" {
-			t.Fatalf("a start cut before its mint = %d %s, want 403 E_FORBIDDEN and no credential", status, e.ErrCode(res[1].([]byte)))
+		if status := res[0].(int); status != http.StatusTooManyRequests || e.ErrCode(res[1].([]byte)) != "E_RATE_LIMITED" {
+			t.Fatalf("a start cut before its mint = %d %s, want 429 E_RATE_LIMITED and no credential", status, e.ErrCode(res[1].([]byte)))
+		}
+		if ms := retryAfterOf(t, res[1].([]byte)); ms < 1 || ms > 10 {
+			t.Fatalf("retry_after_ms = %d, want a few milliseconds", ms)
 		}
 	})
 	t.Run("a cut between the mint and the response", func(t *testing.T) {
@@ -262,13 +345,12 @@ func TestNoCredentialFromAStartOutlivesACutDuringIt(t *testing.T) {
 		if status := res[0].(int); status != http.StatusCreated {
 			t.Fatalf("start = %d %s", status, e.ErrCode(res[1].([]byte)))
 		}
-		if issued := issuedOfCall(t, res[1].([]byte)); !rev.CutSince(dev, issued) {
-			t.Fatalf("the credential issued at %v is newer than the cut that followed its mint", issued)
+		if issued := issuedOfCall(t, res[1].([]byte)); !cutCovers(rev, dev, issued) {
+			t.Fatalf("the credential issued at %v outlived the cut that followed its mint", issued)
 		}
 	})
 	t.Run("barred by another process between the gates and the mint", func(t *testing.T) {
 		e, dev, rev, _, release, done := startParked(t, "mint")
-		begun := e.Clk.Now()
 		if err := e.Repo.RevokeDevice(t.Context(), dev, e.Clk.Now().Unix()); err != nil {
 			t.Fatalf("RevokeDevice: %v", err)
 		}
@@ -277,8 +359,14 @@ func TestNoCredentialFromAStartOutlivesACutDuringIt(t *testing.T) {
 		if status := res[0].(int); status != http.StatusForbidden || e.ErrCode(res[1].([]byte)) != "E_FORBIDDEN" {
 			t.Fatalf("a start barred before its mint = %d %s, want 403 E_FORBIDDEN", status, e.ErrCode(res[1].([]byte)))
 		}
-		if !rev.CutSince(dev, begun) {
-			t.Fatal("the refused start did not cut the device's relay")
+		// What the start minted carried the clock's time; the refusal's cut covers it, and no later
+		// time: a credential issued a millisecond on is not cut.
+		if !cutCovers(rev, dev, e.Clk.Now()) {
+			t.Fatal("the refused start did not cut the credential it minted")
+		}
+		e.Clk.Advance(time.Millisecond)
+		if cutCovers(rev, dev, e.Clk.Now()) {
+			t.Fatal("the refused start's cut is ahead of the clock")
 		}
 	})
 }

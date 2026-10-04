@@ -32,8 +32,9 @@ func TestTURNCredentialIsHMACOverExpiryColonDevice(t *testing.T) {
 	dev := id.New()
 	now := time.Unix(1_790_000_000, 0)
 	user, pass := server.TURNCredential("s3cret", dev, time.Hour, now)
-	// "<expiry>:<device_id>:<issued>": the issue time is carried (review M6).
-	wantUser := fmt.Sprintf("%d:%s:%d", now.Add(time.Hour).Unix(), dev.String(), now.Unix())
+	// "<expiry_s>:<device_id>:<issued_ms>": the issue time is carried (review M6), in milliseconds
+	// (re-review N1).
+	wantUser := fmt.Sprintf("%d:%s:%d", now.Add(time.Hour).Unix(), dev.String(), now.UnixMilli())
 	if user != wantUser {
 		t.Fatalf("username = %q, want %q", user, wantUser)
 	}
@@ -724,9 +725,9 @@ func TestARevokedCredentialIsRefusedOnEveryMethod(t *testing.T) {
 	}
 	atCut, _ := server.TURNCredential("s3cret", dev, time.Hour, clk.Now())
 	if ok(atCut, stun.MethodAllocate) {
-		t.Error("a credential issued in the cut's second was accepted")
+		t.Error("a credential issued in the cut's millisecond was accepted")
 	}
-	clk.Advance(time.Second)
+	clk.Advance(time.Millisecond)
 	after, _ := server.TURNCredential("s3cret", dev, time.Hour, clk.Now())
 	for _, m := range methods {
 		if !ok(after, m) {
@@ -754,7 +755,11 @@ func TestABurstOfCutsNeverForgetsALiveCut(t *testing.T) {
 		WithBarred(&fakeBarred{}, slog.New(slog.NewTextHandler(lockedWriter{&mu, &logged}, nil)))
 	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
 	first := id.New()
-	old, _ := server.TURNCredential("s3cret", first, time.Hour, clk.Now().Add(-time.Minute))
+	clk.Advance(time.Minute)
+	old, _ := server.TURNCredential("s3cret", first, time.Hour, clk.Now())
+	if _, _, ok := auth(&turn.RequestAttributes{Username: old, Method: stun.MethodRefresh}); !ok {
+		t.Fatal("a credential minted after the start was refused before any cut")
+	}
 	rev.Revoke(first, clk.Now())
 	clk.Advance(time.Second) // first is the oldest cut, the one an evicting map would drop
 	for range server.MaxRelayCutsForTest + 10 {
@@ -781,26 +786,26 @@ func TestABurstOfCutsNeverForgetsALiveCut(t *testing.T) {
 
 // Commit review (amplification): a cut is recorded only for a device that can hold a relay
 // credential. Revoking 100 000 devices that never had one minted leaves the cut map empty and the
-// floor unset; a device whose credential was minted is cut and refused; while the process is
-// younger than one credential TTL (it saw no mint before it started) every cut is recorded.
+// floor unset; a device whose credential was minted is cut and refused. This holds from the first
+// moment of the process (re-review N3, N7): a credential minted before it started is refused by the
+// start floor, so the mints it recorded are all the credentials a cut could have to refuse.
 func TestOnlyADeviceThatCanHoldACredentialGetsACut(t *testing.T) {
 	start := time.Unix(1_790_000_000, 0)
 	clk := clock.NewFake(start)
 	rev := server.NewRelayRevocations(2*time.Hour, clk).WithCredentialTTL(time.Hour)
 	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
-	young := id.New()
-	rev.Revoke(young, clk.Now())
-	if n := rev.RelayCutsForTest(); n != 1 {
-		t.Fatalf("a cut inside the first credential TTL after start = %d entries, want it recorded", n)
+	rev.Revoke(id.New(), clk.Now())
+	if n := rev.RelayCutsForTest(); n != 0 {
+		t.Fatalf("a cut of a device that never minted, at the process start = %d entries, want none", n)
 	}
-	clk.Advance(2*time.Hour + time.Minute) // past the start window, and past young's cut
+	clk.Advance(time.Millisecond)
 	bystander := id.New()
 	bystanderOld, _ := server.TURNCredential("s3cret", bystander, time.Hour, clk.Now())
 	clk.Advance(time.Second)
 	for range 100_000 {
 		rev.Revoke(id.New(), clk.Now())
 	}
-	if n := rev.RelayCutsForTest(); n > 1 {
+	if n := rev.RelayCutsForTest(); n != 0 {
 		t.Fatalf("revoking devices that never minted a credential left %d cut entries", n)
 	}
 	if rev.OverflowsForTest() != 0 {
@@ -810,8 +815,8 @@ func TestOnlyADeviceThatCanHoldACredentialGetsACut(t *testing.T) {
 		t.Fatal("a bystander's credential was refused after cuts of devices that never minted")
 	}
 	minted := id.New()
-	mintedCred, _ := server.TURNCredential("s3cret", minted, time.Hour, clk.Now())
-	rev.Mint(minted)
+	issued, _ := rev.Mint(minted, clk.Now())
+	mintedCred, _ := server.TURNCredential("s3cret", minted, time.Hour, issued)
 	clk.Advance(time.Second)
 	rev.Revoke(minted, clk.Now())
 	if _, _, ok := auth(&turn.RequestAttributes{Username: mintedCred, Method: stun.MethodRefresh}); ok {
@@ -819,13 +824,15 @@ func TestOnlyADeviceThatCanHoldACredentialGetsACut(t *testing.T) {
 	}
 }
 
-// Commit review (mint race): Mint chooses the issue time under the lock Revoke takes. A Revoke after
-// a Mint covers that credential, even in the same second; a Mint after a Revoke issues a credential
-// newer than the cut, which works; CutSince reports a cut made since a request began.
+// Commit review (mint race), re-review N1: Mint chooses the issue time under the lock Revoke takes,
+// and it is the clock's time, never later. A Revoke after a Mint covers that credential, even in the
+// same millisecond; a Mint in the millisecond of a cut — or for a request that began before the cut
+// — mints nothing and answers a wait of a few milliseconds, after which it issues a credential newer
+// than the cut, which works. A cut time is never later than the clock.
 func TestMintAndRevokeAreOrdered(t *testing.T) {
 	clk := clock.NewFake(time.Unix(1_790_000_000, 0))
 	rev := server.NewRelayRevocations(2*time.Hour, clk).WithCredentialTTL(time.Hour)
-	clk.Advance(time.Hour + time.Minute) // past the start window: the gate relies on the mint
+	clk.Advance(time.Millisecond)
 	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
 	ok := func(user string) bool {
 		_, _, ok := auth(&turn.RequestAttributes{Username: user, Method: stun.MethodRefresh})
@@ -833,29 +840,146 @@ func TestMintAndRevokeAreOrdered(t *testing.T) {
 	}
 	dev := id.New()
 	begun := clk.Now()
-	issued := rev.Mint(dev)
+	issued, wait := rev.Mint(dev, begun)
+	if wait != 0 || !issued.Equal(clk.Now()) {
+		t.Fatalf("Mint = %v, wait %v; want the clock's time %v", issued, wait, clk.Now())
+	}
 	before, _ := server.TURNCredential("s3cret", dev, time.Hour, issued)
-	if rev.CutSince(dev, begun) {
-		t.Fatal("CutSince reported a cut before any")
-	}
-	rev.Revoke(dev, clk.Now()) // the same second as the mint
+	rev.Revoke(dev, clk.Now()) // the same millisecond as the mint
 	if ok(before) {
-		t.Fatal("a credential minted before the cut, in the same second, is still valid")
+		t.Fatal("a credential minted before the cut, in the same millisecond, is still valid")
 	}
-	if !rev.CutSince(dev, begun) {
-		t.Fatal("CutSince missed the cut made since the request began")
+	if _, wait := rev.Mint(dev, clk.Now()); wait != time.Millisecond {
+		t.Fatalf("a mint in the cut's millisecond answered wait %v, want 1ms and no credential", wait)
 	}
-	newer := rev.Mint(dev) // the same second as the cut
-	if !newer.After(issued) {
-		t.Fatalf("a mint after the cut issued at %v, not after the cut", newer)
+	clk.Advance(time.Millisecond)
+	newer, wait := rev.Mint(dev, clk.Now())
+	if wait != 0 || !newer.Equal(clk.Now()) {
+		t.Fatalf("a mint a millisecond after the cut = %v, wait %v; want the clock's time", newer, wait)
 	}
 	after, _ := server.TURNCredential("s3cret", dev, time.Hour, newer)
 	if !ok(after) {
 		t.Fatal("a credential minted after the cut was refused")
 	}
-	rev.Revoke(dev, clk.Now()) // still the same second: the cut covers the newer credential too
+	rev.Revoke(dev, clk.Now()) // the same millisecond again: the cut covers the newer credential too
 	if ok(after) {
 		t.Fatal("a cut after the second mint left its credential valid")
+	}
+	// A request that began before a cut gets nothing, whenever it mints.
+	begun = clk.Now()
+	clk.Advance(time.Millisecond)
+	rev.Revoke(dev, clk.Now())
+	clk.Advance(time.Second)
+	if _, wait := rev.Mint(dev, begun); wait <= 0 || wait > 10*time.Millisecond {
+		t.Fatalf("a mint for a request cut while it was served answered wait %v, want a few milliseconds", wait)
+	}
+	// A cut is never ahead of the clock, whatever time it is asked for.
+	rev.Revoke(dev, clk.Now().Add(time.Hour))
+	if at, cut := rev.CutOfForTest(dev.String()); !cut || at != clk.Now().UnixMilli() {
+		t.Fatalf("a cut asked for an hour ahead is at %d (%v), want the clock's %d", at, cut, clk.Now().UnixMilli())
+	}
+}
+
+// Re-review N1, the reviewer's drift probe as a regression test. One member's refused starts — two
+// a second for ten simulated minutes, alternating a start in its own cut's millisecond (Mint
+// refuses) and a start the re-check after the mint refuses (which cuts it as of now) — move
+// nothing: its cut never runs ahead of the clock, and a victim cut afterwards starts a millisecond
+// later, with a credential issued at the clock's time.
+func TestRefusedStartsMoveNoCutAndNoIssueTime(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_790_000_000, 0))
+	rev := server.NewRelayRevocations(2*time.Hour, clk).WithCredentialTTL(time.Hour)
+	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
+	attacker, victim := id.New(), id.New()
+	clk.Advance(time.Millisecond)
+	rev.Mint(attacker, clk.Now())
+	rev.Mint(victim, clk.Now())
+	clk.Advance(time.Millisecond)
+	rev.Revoke(attacker, clk.Now()) // one ordinary cut
+	for i := range 1200 {
+		clk.Advance(500 * time.Millisecond)
+		begun := clk.Now()
+		if i%2 == 0 {
+			rev.Revoke(attacker, clk.Now())
+			if _, wait := rev.Mint(attacker, begun); wait <= 0 {
+				t.Fatalf("start %d: a mint in its cut's millisecond minted", i)
+			}
+		} else {
+			issued, wait := rev.Mint(attacker, begun)
+			if wait != 0 || !issued.Equal(clk.Now()) {
+				t.Fatalf("start %d: Mint = %v, wait %v; want the clock's time", i, issued, wait)
+			}
+			rev.Revoke(attacker, clk.Now()) // the re-check after the mint refuses it
+		}
+		if at, _ := rev.CutOfForTest(attacker.String()); at > clk.Now().UnixMilli() {
+			t.Fatalf("start %d: the attacker's cut is %d ms ahead of the clock", i, at-clk.Now().UnixMilli())
+		}
+	}
+	rev.Revoke(victim, clk.Now())
+	cutAt := clk.Now().UnixMilli()
+	clk.Advance(time.Millisecond)
+	issued, wait := rev.Mint(victim, clk.Now())
+	if wait != 0 {
+		t.Fatalf("the victim's start a millisecond after its cut was refused (wait %v)", wait)
+	}
+	if !issued.Equal(clk.Now()) {
+		t.Fatalf("the victim's credential was issued at %v, %v ahead of the clock", issued, issued.Sub(clk.Now()))
+	}
+	if at, _ := rev.CutOfForTest(victim.String()); at != cutAt {
+		t.Fatalf("the victim's cut moved from %d to %d", cutAt, at)
+	}
+	user, _ := server.TURNCredential("s3cret", victim, time.Hour, issued)
+	if _, _, ok := auth(&turn.RequestAttributes{Username: user, Method: stun.MethodAllocate}); !ok {
+		t.Fatal("the victim's fresh credential was refused")
+	}
+}
+
+// Re-review N1: an honest client that retries a start once a second, each time just after a cut in
+// the same millisecond, gets in on every retry after the few milliseconds the refusal names.
+func TestAnHonestRetryAfterASameMillisecondCutSucceeds(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_790_000_000, 0))
+	rev := server.NewRelayRevocations(2*time.Hour, clk).WithCredentialTTL(time.Hour)
+	dev := id.New()
+	clk.Advance(time.Millisecond)
+	rev.Mint(dev, clk.Now())
+	for i := range 120 {
+		clk.Advance(time.Second)
+		rev.Revoke(dev, clk.Now())
+		_, wait := rev.Mint(dev, clk.Now())
+		if wait <= 0 || wait > 10*time.Millisecond {
+			t.Fatalf("retry %d: a start in its cut's millisecond answered wait %v, want a few milliseconds", i, wait)
+		}
+		clk.Advance(wait)
+		if issued, wait := rev.Mint(dev, clk.Now()); wait != 0 || !issued.Equal(clk.Now()) {
+			t.Fatalf("retry %d after %v: Mint = %v, wait %v; want a credential at the clock's time", i, wait, issued, wait)
+		}
+	}
+}
+
+// Re-review N7: a full mint record is not scanned on every mint — only once its earliest entry can
+// have expired — and while it stays full every cut is recorded (fail closed).
+func TestAFullMintRecordIsNotScannedOnEveryMint(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_790_000_000, 0))
+	rev := server.NewRelayRevocations(2*time.Hour, clk).WithCredentialTTL(time.Hour)
+	rev.SetMaxCutsForTest(4)
+	clk.Advance(time.Millisecond)
+	for range 4 {
+		rev.Mint(id.New(), clk.Now())
+	}
+	for range 1000 {
+		clk.Advance(time.Millisecond)
+		rev.Mint(id.New(), clk.Now())
+	}
+	if n := rev.MintScansForTest(); n != 1 {
+		t.Fatalf("1000 mints against a full record scanned it %d times, want once", n)
+	}
+	rev.Revoke(id.New(), clk.Now()) // a device whose mint could not be recorded
+	if n := rev.RelayCutsForTest(); n != 1 {
+		t.Fatalf("a cut while the mint record is full = %d entries, want it recorded", n)
+	}
+	clk.Advance(time.Hour)
+	rev.Mint(id.New(), clk.Now()) // the first four have expired
+	if n, held := rev.MintScansForTest(), rev.MintsForTest(); n != 2 || held != 1 {
+		t.Fatalf("after the record's entries expired: %d scans, %d mints held; want 2, 1", n, held)
 	}
 }
 
@@ -870,7 +994,7 @@ func TestAnOverflowingCutRaisesTheFloorForEveryDevice(t *testing.T) {
 	rev := server.NewRelayRevocations(2*time.Hour, clk).WithCredentialTTL(time.Hour).
 		WithBarred(&fakeBarred{}, slog.New(slog.NewTextHandler(lockedWriter{&mu, &logged}, nil)))
 	rev.SetMaxCutsForTest(3)
-	clk.Advance(time.Hour + time.Minute) // past the start window: only devices that minted get a cut
+	clk.Advance(time.Hour + time.Minute)
 	start := clk.Now()
 	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
 	ok := func(user string) bool {
@@ -880,11 +1004,11 @@ func TestAnOverflowingCutRaisesTheFloorForEveryDevice(t *testing.T) {
 	overflowing, unrelated := id.New(), id.New()
 	overflowingOld, _ := server.TURNCredential("s3cret", overflowing, time.Hour, start)
 	unrelatedOld, _ := server.TURNCredential("s3cret", unrelated, time.Hour, start)
-	rev.Mint(overflowing)
-	rev.Mint(unrelated)
+	rev.Mint(overflowing, start)
+	rev.Mint(unrelated, start)
 	for range 3 {
 		dev := id.New()
-		rev.Mint(dev)
+		rev.Mint(dev, start)
 		rev.Revoke(dev, clk.Now())
 	}
 	clk.Advance(time.Second)
@@ -934,7 +1058,8 @@ func TestAnAllocationRacingACutIsRefused(t *testing.T) {
 	rev := server.NewRelayRevocations(2*time.Hour, clock.System())
 	addr := startRevokableTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 1}, nil, m, rev, clock.System())
 	dev := id.New()
-	user, pass := server.TURNCredential(secret, dev, time.Hour, time.Now().Add(-time.Minute))
+	time.Sleep(2 * time.Millisecond) // a credential minted after the relay started
+	user, pass := server.TURNCredential(secret, dev, time.Hour, time.Now())
 	parked, release, restore := server.ParkAllocateForTest(dev.String())
 	result := make(chan error, 1)
 	go func() {
@@ -960,7 +1085,8 @@ func TestAnAllocationRacingACutIsRefused(t *testing.T) {
 	if _, _, _, allocations := m.snapshot(); len(allocations) != 0 {
 		t.Fatalf("allocation gauge %v, want it never to move", allocations)
 	}
-	fresh, freshPass := server.TURNCredential(secret, dev, time.Hour, time.Now().Add(time.Second))
+	time.Sleep(2 * time.Millisecond)
+	fresh, freshPass := server.TURNCredential(secret, dev, time.Hour, time.Now())
 	if _, err := allocateAs(t, addr, fresh, freshPass); err != nil {
 		t.Fatalf("a credential issued after the cut (the slot must be free): %v", err)
 	}
@@ -977,7 +1103,8 @@ func TestRevokingADeviceClosesItsRelay(t *testing.T) {
 	addr := startRevokableTURN(t, secret, config.TURN{CredentialTTL: "1h", AllocationsPerDevice: 1},
 		[]netip.Addr{netip.MustParseAddr("127.0.0.2")}, m, rev, clock.System())
 	dev := id.New()
-	user, pass := server.TURNCredential(secret, dev, time.Hour, time.Now().Add(-time.Minute))
+	time.Sleep(2 * time.Millisecond) // a credential minted after the relay started
+	user, pass := server.TURNCredential(secret, dev, time.Hour, time.Now())
 	relay, err := allocateAs(t, addr, user, pass)
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
@@ -995,7 +1122,8 @@ func TestRevokingADeviceClosesItsRelay(t *testing.T) {
 	if _, err := allocateAs(t, addr, user, pass); err == nil {
 		t.Fatal("a credential issued before the cut allocated")
 	}
-	fresh, freshPass := server.TURNCredential(secret, dev, time.Hour, time.Now().Add(2*time.Second))
+	time.Sleep(2 * time.Millisecond)
+	fresh, freshPass := server.TURNCredential(secret, dev, time.Hour, time.Now())
 	if _, err := allocateAs(t, addr, fresh, freshPass); err != nil {
 		t.Fatalf("a credential issued after the cut (the slot must be free): %v", err)
 	}
