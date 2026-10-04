@@ -680,7 +680,10 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   disconnected for media that is not dilla's) — loses the relay at once: every credential of it
   issued at or before the cut is refused on every request, its allocations end, and an allocation
   it was making as the cut landed is refused with STUN error 508. A device that may still take part
-  in a call gets a credential issued after the cut from its next `POST /v1/channels/{id}/calls`. A device another process bars (`dillad admin`) is found by the relay itself on
+  in a call gets a credential issued after the cut from its next `POST /v1/channels/{id}/calls`.
+  Should the instance ever hold more live cuts than it can store (65 536), the cut that does not fit
+  refuses every device's credentials issued up to it, so every relayed client re-fetches its servers
+  rather than any revocation being forgotten. A device another process bars (`dillad admin`) is found by the relay itself on
   its next authenticated request or within 30 seconds while it holds an allocation; while the
   database cannot answer, such a device stays bounded by `turn.max_allocation_age` only. A client keeps
   fresh servers by repeating `POST /v1/channels/{id}/calls` before `turn.credential_ttl` runs out

@@ -55,6 +55,20 @@ const (
 	RelayCutsWarnForTest = relayCutsWarn
 )
 
+// SetMaxCutsForTest lowers r's cut-map cap to n.
+func (r *RelayRevocations) SetMaxCutsForTest(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.maxCuts = n
+}
+
+// OverflowsForTest is how many cuts raised r's floor.
+func (r *RelayRevocations) OverflowsForTest() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.overflows
+}
+
 // ParkAllocateForTest makes every relay socket of dev wait, after it is bound and before it is
 // tracked, until release is closed; parked is closed when the first one waits. restore undoes it.
 func ParkAllocateForTest(dev string) (parked <-chan struct{}, release chan<- struct{}, restore func()) {

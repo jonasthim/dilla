@@ -24,9 +24,10 @@ const (
 	// turn.max_allocation_age, so the map holds the cuts of one max-age window, each made by a
 	// server-side event (a call cut, an authenticated barred lookup) and never by a request alone. A
 	// live cut is never evicted — forgetting one would re-admit its device's old credentials — so
-	// past relayCutsWarn the map grows with a WARN, and at maxRelayCuts a new cut is not recorded
-	// (its sockets are still closed; the room sweep, the barred re-check and the max age cover its
-	// device), with a WARN.
+	// past relayCutsWarn the map grows with a WARN, and a cut that finds maxRelayCuts live cuts
+	// already held fails closed: it raises the floor (RelayRevocations.floor) to its time, which
+	// refuses every device's credentials issued at or before it — a relay reconnect for everyone,
+	// logged at WARN and counted, rather than a forgotten revocation.
 	relayCutsWarn = 4096
 	maxRelayCuts  = 65536
 	// pendingAllocateWindow is how long the issue time of an authenticated Allocate is held for the
@@ -55,7 +56,8 @@ const (
 //     OnAllocationDeleted and so frees the quota slots and moves the gauge. A credential issued
 //     after the cut passes, which only a device that may take part in calls again can get. An
 //     entry is dropped once turn.max_allocation_age has passed since the cut, when no credential
-//     issued before it is honoured anyway, and never before (relayCutsWarn, maxRelayCuts). A
+//     issued before it is honoured anyway, and never before; a cut that cannot be stored raises
+//     the floor for every device instead (relayCutsWarn, maxRelayCuts). A
 //     socket created for an Allocate that passed the auth handler just before a cut is refused
 //     when it is tracked (track), so a cut leaves no socket of an earlier credential open.
 //   - The barred lookup (WithBarred) covers what no cut reaches — a device another process revoked
@@ -79,6 +81,12 @@ type RelayRevocations struct {
 	// lowered by every cut recorded since.
 	nextExpiry int64
 	scanned    bool
+	// floor is the overflow watermark: every credential issued at or before it is refused, for
+	// every device, until turn.max_allocation_age has passed since it (0: none). overflows counts
+	// the cuts that raised it; maxCuts is maxRelayCuts (a test lowers it).
+	floor     int64
+	overflows uint64
+	maxCuts   int
 
 	barred   BarredLookup
 	log      *slog.Logger
@@ -95,7 +103,7 @@ func NewRelayRevocations(maxAllocationAge time.Duration, clk clock.Clock) *Relay
 	return &RelayRevocations{
 		clk: clk, keep: int64(maxAllocationAge / time.Second), log: slog.New(slog.DiscardHandler),
 		cuts: map[string]int64{}, socks: map[string]map[*countingConn]struct{}{},
-		pending: map[string]pendingAllocate{},
+		pending: map[string]pendingAllocate{}, maxCuts: maxRelayCuts,
 	}
 }
 
@@ -110,7 +118,9 @@ type pendingAllocate struct {
 }
 
 // noteAllocate records an authenticated Allocate of dev with a credential issued at issued. Only
-// OnAuth with a verdict of true calls it, so no unauthenticated request adds a record.
+// OnAuth with a verdict of true calls it, so no unauthenticated request adds a record. It never
+// refuses to record (the map holds only the last pendingAllocateWindow of authenticated
+// Allocates); a socket with no record is refused while its device has a live cut (track).
 func (r *RelayRevocations) noteAllocate(dev string, issued int64) {
 	now := r.clk.Now()
 	r.mu.Lock()
@@ -118,7 +128,7 @@ func (r *RelayRevocations) noteAllocate(dev string, issued int64) {
 	p, ok := r.pending[dev]
 	if !ok || now.Sub(p.last) > pendingAllocateWindow {
 		p = pendingAllocate{minIssued: issued}
-		if !ok && len(r.pending) >= maxRelayCuts {
+		if !ok && len(r.pending) >= r.maxCuts {
 			r.prunePendingLocked(now)
 		}
 	}
@@ -159,11 +169,14 @@ func (r *RelayRevocations) revoke(dev string, at int64) {
 	r.mu.Lock()
 	recorded := true
 	if prev, ok := r.cuts[dev]; !ok || at > prev {
-		if !ok && len(r.cuts) >= relayCutsWarn {
+		if !ok && len(r.cuts) >= min(relayCutsWarn, r.maxCuts) {
 			r.dropExpiredCutsLocked()
 		}
-		if !ok && len(r.cuts) >= maxRelayCuts {
+		if !ok && len(r.cuts) >= r.maxCuts {
+			// Fail closed: no live cut is evicted, and this one is enforced for every device.
 			recorded = false
+			r.floor = max(r.floor, at)
+			r.overflows++
 		} else {
 			r.cuts[dev] = at
 			if r.scanned {
@@ -180,7 +193,7 @@ func (r *RelayRevocations) revoke(dev string, at int64) {
 	}
 	switch {
 	case !recorded:
-		r.warn("the relay's cut map is full; this cut closed the device's relay sockets but is not recorded",
+		r.warn("the relay's cut map is full; every credential issued up to this cut is refused for every device, which re-fetch theirs",
 			"device", dev, "cuts", size)
 	case size > relayCutsWarn:
 		r.warn("the relay holds more cuts than expected within one turn.max_allocation_age", "cuts", size)
@@ -210,15 +223,26 @@ func (r *RelayRevocations) dropExpiredCutsLocked() {
 func (r *RelayRevocations) cutCovers(dev string, issued int64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	at, ok := r.liveCutLocked(dev)
+	return ok && issued <= at
+}
+
+// liveCutLocked is the cut time that binds dev now — its own cut or the floor, the later of the two
+// that has not expired — and whether there is one. An expired cut or floor is dropped.
+func (r *RelayRevocations) liveCutLocked(dev string) (int64, bool) {
+	now := r.clk.Now().Unix()
 	at, ok := r.cuts[dev]
-	if !ok {
-		return false
-	}
-	if r.clk.Now().Unix() > at+r.keep {
+	if ok && now > at+r.keep {
 		delete(r.cuts, dev)
-		return false
+		ok = false
 	}
-	return issued <= at
+	if r.floor != 0 && now > r.floor+r.keep {
+		r.floor = 0
+	}
+	if r.floor != 0 && (!ok || r.floor > at) {
+		return r.floor, true
+	}
+	return at, ok
 }
 
 // knownBarred reports whether the cache holds a fresh "barred" answer for dev. It reads memory
@@ -349,7 +373,7 @@ func (r *RelayRevocations) track(dev string, c *countingConn) bool {
 			r.pending[dev] = p
 		}
 	}
-	if at, cut := r.cuts[dev]; cut && now.Unix() <= at+r.keep && (!havePending || p.minIssued <= at) {
+	if at, cut := r.liveCutLocked(dev); cut && (!havePending || p.minIssued <= at) {
 		return false
 	}
 	set := r.socks[dev]

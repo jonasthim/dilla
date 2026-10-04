@@ -744,8 +744,8 @@ func TestARevokedCredentialIsRefusedOnEveryMethod(t *testing.T) {
 }
 
 // Commit review: a burst of cuts never pushes a live cut out. Past the soft cap the map grows (with a
-// WARN); at the hard cap a new cut is not recorded, and every cut already held — the oldest
-// included — stays enforced until turn.max_allocation_age has passed.
+// WARN); at the hard cap a new cut raises the floor instead of evicting (next test), and every cut
+// already held — the oldest included — stays enforced until turn.max_allocation_age has passed.
 func TestABurstOfCutsNeverForgetsALiveCut(t *testing.T) {
 	clk := clock.NewFake(time.Unix(1_790_000_000, 0))
 	var mu sync.Mutex
@@ -776,6 +776,66 @@ func TestABurstOfCutsNeverForgetsALiveCut(t *testing.T) {
 	rev.Revoke(id.New(), clk.Now()) // makes room by dropping the expired cuts only
 	if n := rev.RelayCutsForTest(); n != 1 {
 		t.Fatalf("cuts held after max_allocation_age = %d, want only the new one", n)
+	}
+}
+
+// Commit review fail-open finding: a cut that finds the map full of live cuts fails closed. It
+// raises the floor to its time, so its own device's old credential is refused, every other
+// device's old credential too (they re-fetch), and credentials issued after the floor work; it is
+// counted and logged at WARN, and the floor expires like a cut.
+func TestAnOverflowingCutRaisesTheFloorForEveryDevice(t *testing.T) {
+	start := time.Unix(1_790_000_000, 0)
+	clk := clock.NewFake(start)
+	var mu sync.Mutex
+	var logged strings.Builder
+	rev := server.NewRelayRevocations(2*time.Hour, clk).
+		WithBarred(&fakeBarred{}, slog.New(slog.NewTextHandler(lockedWriter{&mu, &logged}, nil)))
+	rev.SetMaxCutsForTest(3)
+	auth := server.TURNAuthForTest("s3cret", clk, 2*time.Hour, rev)
+	ok := func(user string) bool {
+		_, _, ok := auth(&turn.RequestAttributes{Username: user, Method: stun.MethodRefresh})
+		return ok
+	}
+	overflowing, unrelated := id.New(), id.New()
+	overflowingOld, _ := server.TURNCredential("s3cret", overflowing, time.Hour, start)
+	unrelatedOld, _ := server.TURNCredential("s3cret", unrelated, time.Hour, start)
+	for range 3 {
+		rev.Revoke(id.New(), clk.Now())
+	}
+	clk.Advance(time.Second)
+	if !ok(unrelatedOld) {
+		t.Fatal("an unrelated device was refused before any overflow")
+	}
+	rev.Revoke(overflowing, clk.Now()) // the map is full of live cuts
+	if n := rev.RelayCutsForTest(); n != 3 {
+		t.Fatalf("cuts held = %d, want the cap 3: no live cut is evicted", n)
+	}
+	if ok(overflowingOld) {
+		t.Fatal("the overflowing cut was forgotten: its device's old credential is admitted")
+	}
+	if ok(unrelatedOld) {
+		t.Fatal("the floor did not refuse an unrelated device's credential issued before it")
+	}
+	if n := rev.OverflowsForTest(); n != 1 {
+		t.Fatalf("overflows = %d, want 1", n)
+	}
+	mu.Lock()
+	warned := strings.Contains(logged.String(), "level=WARN") && strings.Contains(logged.String(), "cut map is full")
+	mu.Unlock()
+	if !warned {
+		t.Fatalf("the overflow was not logged at WARN: %q", logged.String())
+	}
+	clk.Advance(time.Second)
+	for _, dev := range []id.ID{overflowing, unrelated} {
+		fresh, _ := server.TURNCredential("s3cret", dev, time.Hour, clk.Now())
+		if !ok(fresh) {
+			t.Fatalf("a credential issued after the floor was refused for %s", dev)
+		}
+	}
+	clk.Advance(2*time.Hour + time.Minute)
+	renewed, _ := server.TURNCredential("s3cret", unrelated, time.Hour, start.Add(2*time.Hour))
+	if !ok(renewed) {
+		t.Fatal("the floor outlived turn.max_allocation_age")
 	}
 }
 
