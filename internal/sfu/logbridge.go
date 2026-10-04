@@ -4,7 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
+
+	"github.com/go-logr/logr"
+	"github.com/livekit/protocol/logger"
 )
 
 // NewLogBridge is the slog handler LiveKit's and pion's logs go through (b.8). logr names arrive as
@@ -68,4 +74,59 @@ func short(v slog.Value) string {
 		return s[:8]
 	}
 	return s
+}
+
+// liveKitSink is the handler the one process-wide LiveKit logger writes through. LiveKit's
+// logger.SetLogger assigns two package-level variables without synchronisation, and goroutines left
+// over from an earlier in-process server (telemetry queues) read them while they log, so it runs once.
+// A later Start swaps the handler here instead.
+var (
+	liveKitSink atomic.Pointer[slog.Handler]
+	liveKitOnce sync.Once
+)
+
+// installLiveKitLogger points LiveKit's and pion's logs at next. The first call installs the logger;
+// every later call only swaps the handler, so LiveKit's package-level logger is written exactly once.
+func installLiveKitLogger(next slog.Handler) {
+	if next == nil {
+		next = slog.DiscardHandler
+	}
+	liveKitSink.Store(&next)
+	liveKitOnce.Do(func() {
+		logger.SetLogger(logger.LogRLogger(logr.FromSlogHandler(NewLogBridge(swapHandler{}))), "livekit")
+	})
+}
+
+// swapHandler forwards to whatever handler liveKitSink holds at the moment of the call. The attrs and
+// groups a logger derived from it carries are replayed onto that handler per record, so a derived
+// logger created under one Start follows the next Start's handler too.
+type swapHandler struct {
+	ops []func(slog.Handler) slog.Handler
+}
+
+func (h swapHandler) current() slog.Handler {
+	cur := slog.DiscardHandler
+	if p := liveKitSink.Load(); p != nil {
+		cur = *p
+	}
+	for _, op := range h.ops {
+		cur = op(cur)
+	}
+	return cur
+}
+
+func (h swapHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.current().Enabled(ctx, l)
+}
+
+func (h swapHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.current().Handle(ctx, r)
+}
+
+func (h swapHandler) WithAttrs(as []slog.Attr) slog.Handler {
+	return swapHandler{ops: append(slices.Clone(h.ops), func(n slog.Handler) slog.Handler { return n.WithAttrs(as) })}
+}
+
+func (h swapHandler) WithGroup(name string) slog.Handler {
+	return swapHandler{ops: append(slices.Clone(h.ops), func(n slog.Handler) slog.Handler { return n.WithGroup(name) })}
 }

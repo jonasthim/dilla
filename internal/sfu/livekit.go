@@ -9,14 +9,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/routing"
 	"github.com/livekit/livekit-server/pkg/service"
 	"github.com/livekit/livekit-server/pkg/telemetry/prometheus"
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
-	"github.com/livekit/protocol/logger"
 )
 
 // adminTokenTTL bounds the short-lived RoomService token DeleteRoom signs for itself.
@@ -79,12 +77,14 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 		return nil, fmt.Errorf("sfu: turn secrets: %w", err)
 	}
 	// LiveKit and pion read the logger as transports are built during initialization.
-	// Installing this bridge does not replace slog.Default.
+	// The bridge is installed once per process and only its handler is swapped here, so LiveKit's
+	// package-level logger is never written again while an earlier server's goroutines read it.
+	// It does not replace slog.Default.
 	sink := slog.DiscardHandler
 	if c.Log != nil {
 		sink = c.Log.Handler()
 	}
-	logger.SetLogger(logger.LogRLogger(logr.FromSlogHandler(NewLogBridge(sink))), "livekit")
+	installLiveKitLogger(sink)
 	node, err := routing.NewLocalNode(conf)
 	if err != nil {
 		return nil, fmt.Errorf("sfu: local node: %w", err)
