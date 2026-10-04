@@ -67,7 +67,7 @@ type turnState interface {
 func withCallLegs(base func(context.Context) ops.Report, stats *api.CallStats, turnCfg config.TURN, ts turnState) func(context.Context) ops.Report {
 	return func(ctx context.Context) ops.Report {
 		r := base(ctx)
-		r.Legs = append(r.Legs, callsLeg(stats.Summary(callStatsWindow)))
+		r.Legs = append(r.Legs, callsLeg(stats.Summary(ctx, callStatsWindow)))
 		allocations, refusals := ts.TURNState()
 		r.Legs = append(r.Legs, turnLeg(turnCfg, allocations, refusals))
 		return r
@@ -78,13 +78,22 @@ func callsLeg(s api.StatsSummary) ops.Leg {
 	if s.Reports == 0 {
 		return ops.Leg{Name: "calls", Status: ops.Green, Detail: "no call reported stats in the last 15 minutes"}
 	}
-	detail := fmt.Sprintf("%d live calls, %d reports in the last 15 minutes, %d with a relay; RTT p50 %d ms, p95 %d ms; %d decrypt failures",
-		s.LiveCalls, s.Reports, s.RelayReports, s.P50RTTms, s.P95RTTms, s.DecryptFailures)
+	detail := fmt.Sprintf("%d live calls, %d reports in the last 15 minutes, %d with a relay; RTT p50 %d ms, p95 %d ms; %d decrypt failures against %d frames encrypted%s",
+		s.LiveCalls, s.Reports, s.RelayReports, s.P50RTTms, s.P95RTTms, s.DecryptFailures, s.FramesEncrypted, failureRatio(s))
 	if s.DecryptFailures > 0 {
 		return ops.Leg{Name: "calls", Status: ops.Yellow, Detail: detail,
 			Fix: "a client failed to decrypt media: compare dilla_call_decrypt_failures_total with the clients' logs; a steady rate points at key distribution, not the network"}
 	}
 	return ops.Leg{Name: "calls", Status: ops.Green, Detail: detail}
+}
+
+// failureRatio is the decrypt failures per 1000 frames encrypted across the window's reports — a
+// rough rate, since a frame one device encrypts is decrypted by every other — or "" with no frames.
+func failureRatio(s api.StatsSummary) string {
+	if s.FramesEncrypted == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%.1f per 1000)", float64(s.DecryptFailures)*1000/float64(s.FramesEncrypted))
 }
 
 func turnLeg(c config.TURN, allocations int, refusals uint64) ops.Leg {

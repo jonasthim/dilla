@@ -7,6 +7,9 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
+// SaturatingAddForTest is the stats route's saturating sum.
+func SaturatingAddForTest(a, b uint64) uint64 { return saturatingAdd(a, b) }
+
 // PendingRepairs is how many grant repairs are outstanding across every call.
 func (h *Calls) PendingRepairs() int { return h.leases.pendingCount() }
 

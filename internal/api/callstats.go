@@ -1,6 +1,9 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"math"
 	"net/http"
 	"slices"
 	"sync"
@@ -17,12 +20,13 @@ type CallMetrics interface {
 	StatsReport(relay bool, rttMs uint32, decryptFailures uint64)
 }
 
-// StatsSummary is what the diagnostics' calls leg reports over a window: the calls and reports seen,
-// how many reports had a relay selected, the decrypt failures reported, and the median and 95th
-// percentile of the devices' latest round-trip times.
+// StatsSummary is what the diagnostics' calls leg reports over a window: the calls still live among
+// those that reported, the reports seen (an ended call's included), how many had a relay selected,
+// the decrypt failures and the frames encrypted that devices reported (saturating sums), and the
+// median and 95th percentile of the devices' latest round-trip times.
 type StatsSummary struct {
 	LiveCalls, Reports, RelayReports int
-	DecryptFailures                  uint64
+	DecryptFailures, FramesEncrypted uint64
 	P50RTTms, P95RTTms               uint32
 }
 
@@ -44,6 +48,11 @@ const (
 	maxRelayProtocol = 2
 	maxRTTms         = 60_000
 	maxLostPermille  = 1000
+	// maxFramesPerReport bounds decrypt_failures and frames_encrypted (review I2). It is generous —
+	// 25 subscribed tracks at 110 frames a second for 30 s is under 100 000, and a backgrounded
+	// tab's long interval still fits — and with one report per device per 5 s no sum can wrap and
+	// no counter be poisoned.
+	maxFramesPerReport = 1 << 20
 )
 
 // statsReport is `[candidate_type, relay_protocol|null, rtt_ms, fraction_lost_permille,
@@ -70,8 +79,18 @@ func (q statsReport) validate() error {
 		return server.Errorf(server.CodeInvalidRequest, "rtt_ms is at most 60000")
 	case q.FractionLostPermille > maxLostPermille:
 		return server.Errorf(server.CodeInvalidRequest, "fraction_lost_permille is at most 1000")
+	case q.DecryptFailures > maxFramesPerReport || q.FramesEncrypted > maxFramesPerReport:
+		return server.Errorf(server.CodeInvalidRequest, "decrypt_failures and frames_encrypted are at most 1048576")
 	}
 	return nil
+}
+
+// saturatingAdd is a + b, or the largest uint64 where that would wrap.
+func saturatingAdd(a, b uint64) uint64 {
+	if a > math.MaxUint64-b {
+		return math.MaxUint64
+	}
+	return a + b
 }
 
 // deviceStats is one device's reports in one call.
@@ -80,6 +99,7 @@ type deviceStats struct {
 	reports         int
 	relayReports    int
 	decryptFailures uint64
+	framesEncrypted uint64
 	rtt             uint32
 }
 
@@ -111,9 +131,20 @@ func (s *CallStats) Register(mux *server.Mux) {
 }
 
 // report is POST /v1/calls/{call_id}/stats: 204, from a current leaf of a live call's group whose
-// device may take part in calls, at most one per device per 5 s.
+// user holds connect and whose device may take part in calls, at most one per device per 5 s. The
+// interval is checked before anything reads the store (review M3), so a device that floods the
+// route costs no database round trip; only an accepted report starts the next interval.
 func (s *CallStats) report(w http.ResponseWriter, r *http.Request) {
-	sess, row, _, _, err := s.calls.callOf(r)
+	sess, err := enrolledSession(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if wait := s.wait(sess.DeviceID, s.clk.Now()); wait > 0 {
+		server.WriteError(w, server.RateLimitedAfter(wait))
+		return
+	}
+	sess, row, _, bits, err := s.calls.callOf(r)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -131,6 +162,11 @@ func (s *CallStats) report(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "the call has ended"))
 		return
 	}
+	// As for a share (review I4): a leaf whose user lost connect is being cut from the call.
+	if !bits.Has(PermConnect) {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "you may not connect to this call"))
+		return
+	}
 	if err := s.calls.requireLeafOfCall(r.Context(), row, sess.DeviceID); err != nil {
 		server.WriteError(w, err)
 		return
@@ -142,8 +178,8 @@ func (s *CallStats) report(w http.ResponseWriter, r *http.Request) {
 	now := s.clk.Now()
 	relay := req.CandidateType == candidateRelay
 	s.mu.Lock()
-	if last, ok := s.last[sess.DeviceID]; ok && now.Sub(last) < statsReportInterval {
-		wait := statsReportInterval - now.Sub(last)
+	// Checked again under the lock: two reports of one device may have passed the first check at once.
+	if wait := s.waitLocked(sess.DeviceID, now); wait > 0 {
 		s.mu.Unlock()
 		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
@@ -168,12 +204,27 @@ func (s *CallStats) report(w http.ResponseWriter, r *http.Request) {
 	if relay {
 		d.relayReports++
 	}
-	d.decryptFailures += req.DecryptFailures
+	d.decryptFailures = saturatingAdd(d.decryptFailures, req.DecryptFailures)
+	d.framesEncrypted = saturatingAdd(d.framesEncrypted, req.FramesEncrypted)
 	s.mu.Unlock()
 	if s.m != nil {
 		s.m.StatsReport(relay, req.RTTms, req.DecryptFailures)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// wait is how long dev must still wait before its next report is accepted; 0 when it may report.
+func (s *CallStats) wait(dev id.ID, now time.Time) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.waitLocked(dev, now)
+}
+
+func (s *CallStats) waitLocked(dev id.ID, now time.Time) time.Duration {
+	if last, ok := s.last[dev]; ok && now.Sub(last) < statsReportInterval {
+		return statsReportInterval - now.Sub(last)
+	}
+	return 0
 }
 
 // dropOlderLocked forgets every device whose last report is before cutoff, and every call left with
@@ -196,20 +247,31 @@ func (s *CallStats) dropOlderLocked(cutoff time.Time) {
 	}
 }
 
-// Summary is the window's view, dropping every device whose last report is older than window.
-func (s *CallStats) Summary(window time.Duration) StatsSummary {
+// Summary is the window's view, dropping every device whose last report is older than window. A
+// call counts as live only while its record has not ended (review M2); one the store cannot answer
+// for is counted as live, since the summary is advisory and an admin request must not fail on it.
+func (s *CallStats) Summary(ctx context.Context, window time.Duration) StatsSummary {
 	cutoff := s.clk.Now().Add(-window)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.dropOlderLocked(cutoff)
 	var out StatsSummary
 	var rtts []uint32
-	for _, devs := range s.byCall {
+	s.mu.Lock()
+	s.dropOlderLocked(cutoff)
+	calls := make([]id.ID, 0, len(s.byCall))
+	for call, devs := range s.byCall {
 		for _, d := range devs {
 			out.Reports += d.reports
 			out.RelayReports += d.relayReports
-			out.DecryptFailures += d.decryptFailures
+			out.DecryptFailures = saturatingAdd(out.DecryptFailures, d.decryptFailures)
+			out.FramesEncrypted = saturatingAdd(out.FramesEncrypted, d.framesEncrypted)
 			rtts = append(rtts, d.rtt)
+		}
+		calls = append(calls, call)
+	}
+	s.mu.Unlock()
+	for _, call := range calls {
+		row, err := s.repo.GetVoiceSession(ctx, call)
+		if errors.Is(err, store.ErrNotFound) || (err == nil && row.Ended != nil) {
+			continue
 		}
 		out.LiveCalls++
 	}

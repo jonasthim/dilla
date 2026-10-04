@@ -447,9 +447,10 @@ func TestTheCallsAndTurnLegs(t *testing.T) {
 	if l := callsLeg(api.StatsSummary{}); l.Name != "calls" || l.Status != ops.Green {
 		t.Errorf("no reports = %+v", l)
 	}
-	l := callsLeg(api.StatsSummary{LiveCalls: 2, Reports: 5, RelayReports: 1, DecryptFailures: 3, P50RTTms: 40, P95RTTms: 120})
-	if l.Status != ops.Yellow || !strings.Contains(l.Detail, "2 live calls") || !strings.Contains(l.Detail, "3 decrypt failures") || l.Fix == "" {
-		t.Errorf("decrypt failures = %+v, want WARN with a fix", l)
+	l := callsLeg(api.StatsSummary{LiveCalls: 2, Reports: 5, RelayReports: 1, DecryptFailures: 3, FramesEncrypted: 3000, P50RTTms: 40, P95RTTms: 120})
+	if l.Status != ops.Yellow || !strings.Contains(l.Detail, "2 live calls") || l.Fix == "" ||
+		!strings.Contains(l.Detail, "3 decrypt failures against 3000 frames encrypted (1.0 per 1000)") {
+		t.Errorf("decrypt failures = %+v, want WARN with a fix and the rate against frames encrypted", l)
 	}
 	if l := turnLeg(config.TURN{Enabled: false}, 0, 0); l.Name != "turn" || l.Status != ops.Green || !strings.Contains(l.Detail, "off") {
 		t.Errorf("TURN off = %+v", l)

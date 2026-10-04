@@ -540,7 +540,7 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; `409 E_CALL_FULL` | `connect`, and a current leaf of the call group |
 | `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending or the device is barred | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
-| `POST /v1/calls/{call_id}/stats` | `[candidate_type(uint), relay_protocol(uint\|null), rtt_ms(uint), fraction_lost_permille(uint), decrypt_failures(uint), frames_encrypted(uint)]` | `204`; `429 E_RATE_LIMITED` above one report per device per 5 s; `404 E_NOT_FOUND` once the call has ended; `403 E_FORBIDDEN` for a barred device | `view_channel`, and a current leaf of the call's group |
+| `POST /v1/calls/{call_id}/stats` | `[candidate_type(uint), relay_protocol(uint\|null), rtt_ms(uint), fraction_lost_permille(uint), decrypt_failures(uint), frames_encrypted(uint)]` | `204`; `429 E_RATE_LIMITED` above one report per device per 5 s; `404 E_NOT_FOUND` once the call has ended; `403 E_FORBIDDEN` for a barred device; `400 E_INVALID_REQUEST` for `decrypt_failures` or `frames_encrypted` above 1048576 | `view_channel` and `connect`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended | `view_channel` and `connect`, and a current leaf of the call's group |
 
 - **The leaf gate.** A token is minted only for a device whose leaf is in the call group's
@@ -693,11 +693,12 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   candidate's type (0 host, 1 srflx, 2 prflx, 3 relay), the relay's transport when it is a relay
   (0 udp, 1 tcp, 2 tls; null for any other type), the round-trip time in milliseconds (at most
   60 000), the fraction of packets lost in thousandths (at most 1000), and the frames it failed to
-  decrypt and the frames it encrypted since its previous report. Anything else is
-  `400 E_INVALID_REQUEST`. The leaf gate applies as for a share, and a barred device is
-  `403 E_FORBIDDEN`. The instance keeps the reports in memory only, for the admin's diagnostics
-  (§ Admin) and counters that name no device, and accepts one per device per 5 seconds
-  (`429 E_RATE_LIMITED` with `retry_after_ms`).
+  decrypt and the frames it encrypted since its previous report (each at most 1 048 576). Anything
+  else is `400 E_INVALID_REQUEST`. The leaf gate and `connect` apply as for a share
+  (`403 E_FORBIDDEN` without `connect`), and a barred device is `403 E_FORBIDDEN`. The instance
+  keeps the reports in memory only, for the admin's diagnostics (§ Admin) and counters that name no
+  device, and accepts one per device per 5 seconds (`429 E_RATE_LIMITED` with `retry_after_ms`); a
+  report sent sooner is refused before anything else is checked.
 - **Media that is not dilla's.** Every track a device publishes must be `dilla-sframe/1` (`05`) and
   of its source's kind (audio for the microphone and screen audio, video for the camera and the
   screen). The first track the SFU reports otherwise — flagged unencrypted, or of the wrong kind —
@@ -799,9 +800,10 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
   detail(tstr), fix(tstr)]]`, the `dillad doctor` legs the running instance can answer itself,
   under doctor's names and in doctor's order: `database` (the schema version), `data_dir` (its
   mode), `wasi` (the core the delivery service validates in), `udp`, `blobs` (every referenced
-  file present, no stray files), `calls` (the call stats of the last 15 minutes: live calls,
-  reports, how many had a relay selected, the median and 95th-percentile round-trip time and the
-  decrypt failures; WARN while any decrypt failure was reported) and `turn` (live relay allocations
+  file present, no stray files), `calls` (the call stats of the last 15 minutes: how many of the
+  calls that reported are still live, the reports, how many had a relay selected, the median and
+  95th-percentile round-trip time, and the decrypt failures against the frames encrypted; WARN while
+  any decrypt failure was reported) and `turn` (live relay allocations
   and the quota refusals since start; WARN after any refusal). `status` is 0 OK, 1 WARN, 2 FAIL; `fix` is the operator's next
   step or `""`. The legs that probe the network or need a process of their own — the config
   parse, the SQLite pragmas, clock skew, the certificate and a TURN allocation — are only

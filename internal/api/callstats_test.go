@@ -71,13 +71,143 @@ func TestAStatsReportIsAcceptedOncePerFiveSeconds(t *testing.T) {
 		t.Errorf("metrics saw %d reports, %d relayed, %d failures; want 2, 2, 8", m.reports, m.relayed, m.failed)
 	}
 	m.mu.Unlock()
-	s := stats.Summary(15 * time.Minute)
-	if s.LiveCalls != 1 || s.Reports != 2 || s.RelayReports != 2 || s.DecryptFailures != 8 || s.P50RTTms != 80 {
+	s := stats.Summary(t.Context(), 15*time.Minute)
+	if s.LiveCalls != 1 || s.Reports != 2 || s.RelayReports != 2 || s.DecryptFailures != 8 || s.FramesEncrypted != 3000 || s.P50RTTms != 80 {
 		t.Fatalf("summary = %+v", s)
 	}
 	e.Clk.Advance(16 * time.Minute)
-	if s := stats.Summary(15 * time.Minute); s.Reports != 0 || s.LiveCalls != 0 {
+	if s := stats.Summary(t.Context(), 15*time.Minute); s.Reports != 0 || s.LiveCalls != 0 {
 		t.Fatalf("a summary after the window = %+v, want nothing", s)
+	}
+}
+
+// Review M3: the 5-second check comes before any store read, so a flooding device costs no
+// database round trip — a second report at once is 429 even for a call id that names no call.
+func TestTheStatsRateCheckComesFirst(t *testing.T) {
+	e, tok, path, _, _, _ := statsEnv(t)
+	if status, _ := e.Do(http.MethodPost, path, tok, report(0, nil, 10, 0, 0, 0)); status != http.StatusNoContent {
+		t.Fatalf("a stats report = %d", status)
+	}
+	status, body := e.Do(http.MethodPost, "/v1/calls/"+id.New().String()+"/stats", tok, report(0, nil, 10, 0, 0, 0))
+	if status != http.StatusTooManyRequests || e.ErrCode(body) != "E_RATE_LIMITED" {
+		t.Fatalf("a second report at once, to an unknown call = %d %s, want 429 E_RATE_LIMITED", status, e.ErrCode(body))
+	}
+	// A refused report records nothing: the device may report again once 5 s have passed since the
+	// accepted one.
+	e.Clk.Advance(5 * time.Second)
+	if status, _ := e.Do(http.MethodPost, path, tok, report(0, nil, 10, 0, 0, 0)); status != http.StatusNoContent {
+		t.Fatalf("a report 5 s after the accepted one = %d", status)
+	}
+}
+
+// Review I2: decrypt_failures and frames_encrypted are bounded per report, so no report can wrap a
+// sum — one leaf zeroing another's failures — or poison the Prometheus counter.
+func TestTheStatsCountersAreBounded(t *testing.T) {
+	e, tok, path, _, stats, m := statsEnv(t)
+	for name, body := range map[string][]any{
+		"decrypt_failures 1048577":  report(0, nil, 10, 0, 1<<20+1, 0),
+		"frames_encrypted 1048577":  report(0, nil, 10, 0, 0, 1<<20+1),
+		"decrypt_failures 2^64 - 1": report(0, nil, 10, 0, ^uint64(0), 0),
+	} {
+		if status, resp := e.Do(http.MethodPost, path, tok, body); status != http.StatusBadRequest || e.ErrCode(resp) != "E_INVALID_REQUEST" {
+			t.Errorf("%s = %d %s, want 400 E_INVALID_REQUEST", name, status, e.ErrCode(resp))
+		}
+	}
+	if status, resp := e.Do(http.MethodPost, path, tok, report(0, nil, 10, 0, 1<<20, 1<<20)); status != http.StatusNoContent {
+		t.Fatalf("a report at the bound (1048576) = %d %s, want 204", status, e.ErrCode(resp))
+	}
+	if s := stats.Summary(t.Context(), 15*time.Minute); s.DecryptFailures != 1<<20 || s.FramesEncrypted != 1<<20 {
+		t.Fatalf("summary = %+v, want the bound counted once", s)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failed != 1<<20 {
+		t.Fatalf("metrics saw %d decrypt failures, want 1048576", m.failed)
+	}
+}
+
+// The window sums saturate rather than wrap.
+func TestTheStatsSumsSaturate(t *testing.T) {
+	if got := api.SaturatingAddForTest(^uint64(0)-1, 5); got != ^uint64(0) {
+		t.Fatalf("saturating add = %d, want 2^64 - 1", got)
+	}
+	if got := api.SaturatingAddForTest(2, 3); got != 5 {
+		t.Fatalf("saturating add = %d, want 5", got)
+	}
+}
+
+// Review I4 and I5: the route needs connect (403 E_FORBIDDEN without it, as a share does); a caller
+// who cannot see the channel finds no call (404), nor does anyone once it has ended; the body is
+// capped.
+func TestTheStatsRouteNeedsConnectAndALiveVisibleCall(t *testing.T) {
+	e, tok, path, _, _, _ := statsEnv(t)
+	_, outsiderTok := e.NewUser("outsider")
+	if status, resp := e.Do(http.MethodPost, path, outsiderTok, report(0, nil, 10, 0, 0, 0)); status != http.StatusNotFound || e.ErrCode(resp) != "E_NOT_FOUND" {
+		t.Errorf("a report from a user who cannot see the channel = %d %s, want 404 E_NOT_FOUND", status, e.ErrCode(resp))
+	}
+	big := make([]byte, 65<<10)
+	if status, resp := e.DoRaw(http.MethodPost, path, tok, "application/cbor", big); status != http.StatusRequestEntityTooLarge || e.ErrCode(resp) != "E_TOO_LARGE" {
+		t.Errorf("a 65 KiB body = %d %s, want 413 E_TOO_LARGE", status, e.ErrCode(resp))
+	}
+
+	e2, ch, tok2, group, _, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e2, group, deviceOf(t, e2, tok2), 3, nil)
+	_, body := e2.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok2, []any{})
+	callID := decodeCall(t, body).CallID
+	api.NewCallStats(e2.Repo, calls, &fakeCallMetrics{}, e2.Clk).Register(e2.Mux)
+	path2 := "/v1/calls/" + callID.String() + "/stats"
+	member, _, memberTok := joinedMember(t, e2, ch, group, "member")
+	denyInChannel(t, e2, ch, member, api.PermConnect)
+	if status, resp := e2.Do(http.MethodPost, path2, memberTok, report(0, nil, 10, 0, 0, 0)); status != http.StatusForbidden || e2.ErrCode(resp) != "E_FORBIDDEN" {
+		t.Errorf("a report from a leaf whose user lost connect = %d %s, want 403 E_FORBIDDEN", status, e2.ErrCode(resp))
+	}
+	if err := e2.Repo.EndVoiceSession(t.Context(), callID, e2.Clk.Now().Unix()); err != nil {
+		t.Fatalf("EndVoiceSession: %v", err)
+	}
+	if status, resp := e2.Do(http.MethodPost, path2, tok2, report(0, nil, 10, 0, 0, 0)); status != http.StatusNotFound || e2.ErrCode(resp) != "E_NOT_FOUND" {
+		t.Errorf("a report once the call has ended = %d %s, want 404 E_NOT_FOUND", status, e2.ErrCode(resp))
+	}
+}
+
+// Review M2: "live calls" counts the calls that are still live; an ended call's reports stay in the
+// window's report counts.
+func TestTheSummaryCountsLiveCallsOnly(t *testing.T) {
+	e, tok, path, _, stats, _ := statsEnv(t)
+	if status, _ := e.Do(http.MethodPost, path, tok, report(0, nil, 10, 0, 0, 0)); status != http.StatusNoContent {
+		t.Fatalf("a stats report = %d", status)
+	}
+	if s := stats.Summary(t.Context(), 15*time.Minute); s.LiveCalls != 1 {
+		t.Fatalf("summary of a live call = %+v, want one live call", s)
+	}
+	callID, err := id.Parse(path[len("/v1/calls/") : len("/v1/calls/")+32])
+	if err != nil {
+		t.Fatalf("call id: %v", err)
+	}
+	if err := e.Repo.EndVoiceSession(t.Context(), callID, e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("EndVoiceSession: %v", err)
+	}
+	if s := stats.Summary(t.Context(), 15*time.Minute); s.LiveCalls != 0 || s.Reports != 1 {
+		t.Fatalf("summary after the call ended = %+v, want no live call and its one report", s)
+	}
+}
+
+// The route holds what nobody asks a summary for at most an hour: an accepted report sweeps every
+// device whose last report is older (statsKeep), at most once a minute.
+func TestTheStatsRouteSweepsReportsOlderThanAnHour(t *testing.T) {
+	e, tok, path, group, stats, _ := statsEnv(t)
+	if status, _ := e.Do(http.MethodPost, path, tok, report(0, nil, 10, 0, 0, 0)); status != http.StatusNoContent {
+		t.Fatalf("owner report = %d", status)
+	}
+	e.Clk.Advance(61 * time.Minute)
+	user := userOf(t, e, tok)
+	dev := seedDevices(t, e, user, 1)[0]
+	e.sess["later"] = auth.Session{UserID: user, DeviceID: dev, Scope: auth.ScopeEnrolled}
+	seedLeaf(t, e, group, dev, 3, nil)
+	if status, _ := e.Do(http.MethodPost, path, "later", report(0, nil, 20, 0, 0, 0)); status != http.StatusNoContent {
+		t.Fatalf("later report = %d", status)
+	}
+	if s := stats.Summary(t.Context(), 2*time.Hour); s.Reports != 1 || s.P50RTTms != 20 {
+		t.Fatalf("summary over two hours = %+v, want only the later report: the hour-old one was swept", s)
 	}
 }
 
@@ -131,7 +261,7 @@ func TestTheSummaryPercentilesAreOverTheDevices(t *testing.T) {
 			t.Fatalf("device %s report = %d", name, status)
 		}
 	}
-	if s := stats.Summary(15 * time.Minute); s.Reports != 3 || s.P50RTTms != 50 || s.P95RTTms != 200 || s.RelayReports != 0 {
+	if s := stats.Summary(t.Context(), 15*time.Minute); s.Reports != 3 || s.P50RTTms != 50 || s.P95RTTms != 200 || s.RelayReports != 0 {
 		t.Fatalf("summary = %+v, want 3 reports, p50 50, p95 200, none relayed", s)
 	}
 }
