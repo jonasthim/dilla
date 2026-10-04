@@ -83,8 +83,12 @@ The credential's expiry is checked when an allocation is made, not on every refr
 call outlives its credential; `turn.max_allocation_age` is measured from the issue time each
 credential carries, so changing `turn.credential_ttl` never lengthens an old credential's life, and
 after it the browser re-allocates with the servers it re-fetched. A revoked, quarantined or
-logged-out device, or one of a disabled user, loses its relay allocations at once; a revocation
-written by `dillad admin` reaches the relay within about 30 seconds. Watch `dilla_turn_allocations`, `dilla_turn_quota_refusals_total`,
+logged-out device loses its relay allocations at once. A user disabled by the running instance loses
+them as soon as the call cut queue handles the user (at once while the SFU runs and the queue has
+room), otherwise like a revocation written by `dillad admin`, which reaches a device holding an
+allocation within about a minute (62 seconds at worst) while the database answers. The relay holds
+its revocations in memory, so it refuses every credential issued before it started: after a restart
+every client fetches a new one with its next call start. Watch `dilla_turn_allocations`, `dilla_turn_quota_refusals_total`,
 `dilla_turn_relay_bytes_total` and the `turn_relay` leg of the admin diagnostics; raise
 `turn.allocations_per_device` when refusals appear. If `livekit.node_ip` is a public address the
 host does not hold (behind NAT) and `livekit.advertise_internal_ip` is on, the relay does not admit

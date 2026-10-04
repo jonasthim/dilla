@@ -537,7 +537,7 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 
 | Method and path | Request | Response | Permission |
 |---|---|---|---|
-| `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; `409 E_CALL_FULL` | `connect`, and a current leaf of the call group |
+| `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; `409 E_CALL_FULL`; `429 E_RATE_LIMITED` with `retry_after_ms` (a few milliseconds, transient) when the device was cut from the relay in the same millisecond or while the request was served; after the relay credential is minted, the refusal its gate would have given (`403 E_FORBIDDEN` barred, `403 E_LEAF_NOT_CURRENT`, `404 E_NOT_FOUND` without `view_channel`, `403 E_FORBIDDEN` without `connect`) when that changed while the request was served | `connect`, and a current leaf of the call group |
 | `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending or the device is barred | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
 | `POST /v1/calls/{call_id}/stats` | `[candidate_type(uint), relay_protocol(uint\|null), rtt_ms(uint), fraction_lost_permille(uint), decrypt_failures(uint), frames_encrypted(uint)]` | `204`; `429 E_RATE_LIMITED` above one report per device per 5 s; `404 E_NOT_FOUND` once the call has ended; `403 E_FORBIDDEN` for a barred device; `400 E_INVALID_REQUEST` for `decrypt_failures` or `frames_encrypted` above 1048576 | `view_channel` and `connect`, and a current leaf of the call's group |
@@ -654,8 +654,9 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   SFU, and `X-Forwarded-For` carries only the client address the instance resolved.
 - **Relays.** `ice_servers` is the `RTCIceServer` list for the client's peer connection: one entry
   when the instance runs its TURN relay, with a fresh ephemeral credential — `username` is
-  `"<expiry>:<device_id>:<issued>"` (unix seconds: the expiry `turn.credential_ttl` ahead, default
-  one hour, and the time it was minted) and
+  `"<expiry>:<device_id>:<issued>"` — the expiry in unix seconds, `turn.credential_ttl` ahead
+  (default one hour), and the time it was minted in unix milliseconds, never ahead of the
+  instance's clock — and
   `credential` is `base64(HMAC-SHA1(turn shared secret, username))`, the time-limited REST form
   TURN servers validate — and an empty array when it runs none. A client passes this list to its
   peer connection even when it is empty, so the SFU's own server list never reaches it, and sets
@@ -678,16 +679,37 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   quarantined, logged out, of a user who is disabled, or removed from a call's room for any reason
   (barred, no longer a leaf of the call group, without `view_channel` or `connect`, evicted, or
   disconnected for media that is not dilla's) — loses the relay at once: every credential of it
-  issued at or before the cut is refused on every request, its allocations end, and an allocation
-  it was making as the cut landed is refused with STUN error 508. A device that may still take part
-  in a call gets a credential issued after the cut from its next `POST /v1/channels/{id}/calls`.
-  Should the instance ever hold more live cuts than it can store (65 536), the cut that does not fit
-  refuses every device's credentials issued up to it, so every relayed client re-fetches its servers
-  rather than any revocation being forgotten. A device another process bars (`dillad admin`) is found by the relay itself on
-  its next authenticated request or within 30 seconds while it holds an allocation; while the
-  database cannot answer, such a device stays bounded by `turn.max_allocation_age` only. A client keeps
-  fresh servers by repeating `POST /v1/channels/{id}/calls` before `turn.credential_ttl` runs out
-  and handing the new list to its peer connection for that restart. At most
+  issued at or before the cut's millisecond (never later than the instance's clock) is refused on
+  every request, and its allocations end. Its `Allocate`s whose relay pion was still creating as the
+  cut landed are refused with STUN error 508 — and so may be every `Allocate` of that device for up
+  to 5 seconds after the last of them, a fresh credential's included, so a client retries a refused
+  `Allocate` after more than 5 seconds. A device that may still take part in a call gets a credential
+  issued after the cut from its next `POST /v1/channels/{id}/calls`; a client whose relay refuses it
+  (a failed relayed pair, an allocation the relay dropped, an `Allocate` refused 400, 401 or 508)
+  re-POSTs that route and ICE-restarts with the new list. A start whose device was cut in the same
+  millisecond, or while the start was served, is answered `429 E_RATE_LIMITED` with a
+  `retry_after_ms` of a few milliseconds and no credential; it changes no cut, and the retry's own
+  gates answer whether the device may still call. A start whose gates changed after the credential
+  was minted (barred, no longer a leaf, without `view_channel` or `connect`) is refused with that
+  gate's code, and the device is cut as of then, which covers the credential just minted. The
+  relay refuses every credential issued before its process started: the cuts are held in memory
+  only, and a restart ends every call anyway (the SFU runs in the same process), so every client
+  re-POSTs the calls route for a fresh credential. Should the instance ever hold more live cuts than
+  it can store (65 536), the cut that does not fit refuses every device's credentials issued up to
+  it, so every relayed client re-fetches its servers rather than any revocation being forgotten. A
+  device another process bars (`dillad admin`) is found by the relay itself on its next
+  authenticated request, or, while it holds an allocation and sends only channel data, by a re-check
+  every 30 seconds that trusts a lookup for 30 seconds: within 62 seconds of the revocation at worst
+  (two periods and a 2-second lookup); while the database cannot answer, such a device stays bounded
+  by `turn.max_allocation_age` only. A user disabled in the instance's own process loses every
+  device's relay when the call cut queue processes the user, at once while the SFU runs and the
+  queue (1024 pending cuts) has room; otherwise, as for a revocation by another process, through the
+  relay's own lookup, and the room sweep removes such a device from every call room within its
+  period. A client keeps fresh servers by repeating `POST /v1/channels/{id}/calls` before
+  `turn.credential_ttl` runs out and handing the new list to its peer connection for that restart.
+  The relay checks the username strictly: exactly three fields, both numbers unsigned decimal
+  digits, the device a device id, the issue time no more than 2 seconds ahead of its clock, and a
+  lifetime no longer than `turn.credential_ttl` and those 2 seconds. At most
   `turn.allocations_per_device` relay allocations are live per device (default 4); another is
   refused with STUN error 486 until one ends, and the instance counts the refusals. An allocation
   the relay cannot create (STUN error 508 — a relay of an address family the relay address is not,
