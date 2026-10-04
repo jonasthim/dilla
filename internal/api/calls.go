@@ -357,7 +357,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 // end is DELETE /v1/calls/{call_id}: 204 once the call is over, including when
 // it already was. Ending a call ends it for everyone, so the caller must be a
 // current leaf of the call's group — a participant, not merely someone who may
-// see the channel.
+// see the channel — whose user still holds connect.
 func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 	s, err := enrolledSession(r)
 	if err != nil {
@@ -390,6 +390,11 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 	}
 	if row.Ended != nil {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	// A leaf whose user lost connect is being cut from the call; it does not end it for everyone.
+	if !bits.Has(PermConnect) {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "missing permission"))
 		return
 	}
 	if row.GroupID == nil {

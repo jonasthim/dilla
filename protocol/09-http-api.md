@@ -540,7 +540,7 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; `409 E_CALL_FULL` | `connect`, and a current leaf of the call group |
 | `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
-| `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended | `view_channel`, and a current leaf of the call's group |
+| `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended | `view_channel` and `connect`, and a current leaf of the call's group |
 
 - **The leaf gate.** A token is minted only for a device whose leaf is in the call group's
   **current epoch**: added at or before it and not removed. Any other device — a removed one, one

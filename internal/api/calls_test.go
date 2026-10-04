@@ -368,6 +368,24 @@ func TestOnlyALeafEndsACall(t *testing.T) {
 	}
 }
 
+// A leaf whose user lost connect — a kicked device whose Remove is not committed yet — cannot end the
+// call for everyone.
+func TestALeafWithoutConnectCannotEndTheCall(t *testing.T) {
+	e, ch, tok, group, _ := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	callID := decodeCall(t, body).CallID
+	member, _, memberTok := joinedMember(t, e, ch, group, "member")
+	denyInChannel(t, e, ch, member, api.PermConnect)
+	status, resp := e.Do(http.MethodDelete, "/v1/calls/"+callID.String(), memberTok, nil)
+	if status != http.StatusForbidden || e.ErrCode(resp) != "E_FORBIDDEN" {
+		t.Fatalf("a DELETE from a leaf without connect = %d %s, want 403 E_FORBIDDEN", status, e.ErrCode(resp))
+	}
+	if row, _ := e.Repo.GetVoiceSession(t.Context(), callID); row.Ended != nil {
+		t.Fatal("a leaf without connect ended the call")
+	}
+}
+
 func TestASFUFailureIsAnInternalError(t *testing.T) {
 	e, ch, tok, group, sfu := callEnvWith(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
 	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)

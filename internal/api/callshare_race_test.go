@@ -31,6 +31,8 @@ type leaseEnv struct {
 	owner  id.ID
 	devs   []id.ID
 	max    int
+	// ownerTok is the community owner's session, a leaf of the call.
+	ownerTok string
 }
 
 func newLeaseEnv(t *testing.T, maxPublishers, n int) *leaseEnv {
@@ -49,7 +51,7 @@ func newLeaseEnv(t *testing.T, maxPublishers, n int) *leaseEnv {
 	}
 	room := stub.minted()[0][0]
 	stub.setPresent(room, present...)
-	return &leaseEnv{e: e, stub: stub, calls: calls, ch: ch, callID: decodeCall(t, body).CallID, room: room,
+	return &leaseEnv{e: e, stub: stub, calls: calls, ch: ch, callID: decodeCall(t, body).CallID, room: room, ownerTok: tok,
 		owner: user, devs: devs, max: maxPublishers}
 }
 
@@ -347,7 +349,7 @@ func TestACallThatEndsWithRepairsPendingLeavesNothingBehind(t *testing.T) {
 	if l.calls.PendingRepairs() != 2 || counters.pending.Load() != 2 {
 		t.Fatalf("pending repairs = %d (gauge %d), want both devices", l.calls.PendingRepairs(), counters.pending.Load())
 	}
-	if status, _ := l.e.Do(http.MethodDelete, "/v1/calls/"+l.callID.String(), "dev1", nil); status != http.StatusNoContent {
+	if status, _ := l.e.Do(http.MethodDelete, "/v1/calls/"+l.callID.String(), l.ownerTok, nil); status != http.StatusNoContent {
 		t.Fatalf("DELETE call = %d", status)
 	}
 	if l.calls.PendingRepairs() != 0 || len(l.calls.SharersOf(l.callID)) != 0 || counters.pending.Load() != 0 {

@@ -76,6 +76,8 @@ func planTwoRoutes() []struct{ group, method, path string } {
 		{"reports", http.MethodPatch, "/v1/reports/" + x},
 		{"calls", http.MethodPost, "/v1/channels/" + x + "/calls"},
 		{"calls", http.MethodDelete, "/v1/calls/" + x},
+		{"calls", http.MethodPost, "/v1/calls/" + x + "/share"},
+		{"calls", http.MethodDelete, "/v1/calls/" + x + "/share"},
 		{"admin", http.MethodDelete, "/v1/admin/blobs/" + blobID},
 		{"admin", http.MethodGet, "/v1/admin/audit"},
 		{"admin", http.MethodPost, "/v1/admin/users/" + x + "/disable"},
