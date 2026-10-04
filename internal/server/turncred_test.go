@@ -120,16 +120,21 @@ func TestARefusedAllocateLeavesNothingPending(t *testing.T) {
 	}
 }
 
-// fakeHungBarred is a BarredLookup that hangs until its context ends, and reports that it did.
+// fakeHungBarred is a BarredLookup that hangs until its context ends, reports that it saw the
+// cancellation, and then keeps the lookup in flight until release is closed.
 type fakeHungBarred struct {
-	entered chan struct{}
-	once    sync.Once
-	ended   chan error
+	entered   chan struct{}
+	once      sync.Once
+	cancelled chan struct{}
+	release   chan struct{}
+	ended     chan error
 }
 
 func (f *fakeHungBarred) DeviceBarred(ctx context.Context, _ id.ID) (bool, error) {
 	f.once.Do(func() { close(f.entered) })
 	<-ctx.Done()
+	close(f.cancelled)
+	<-f.release
 	select {
 	case f.ended <- ctx.Err():
 	default:
@@ -137,10 +142,12 @@ func (f *fakeHungBarred) DeviceBarred(ctx context.Context, _ id.ID) (bool, error
 	return false, ctx.Err()
 }
 
-// Re-review N5: Close cancels the holders' re-check's store lookups and returns once it has ended —
-// promptly, with a lookup hung on the store, and never later than the lookup itself.
+// Re-review N5: Close cancels the holders' re-check's store lookups and returns only once the
+// re-check has ended. Deterministic: the lookup stays in flight after it sees the cancellation until
+// the test releases it, so a Close that does not join returns while it is still held.
 func TestCloseCancelsAndJoinsTheHoldersRecheck(t *testing.T) {
-	look := &fakeHungBarred{entered: make(chan struct{}), ended: make(chan error, 1)}
+	look := &fakeHungBarred{entered: make(chan struct{}), cancelled: make(chan struct{}),
+		release: make(chan struct{}), ended: make(chan error, 1)}
 	rev := server.NewRelayRevocations(2*time.Hour, clock.System()).WithBarred(look, nil)
 	rev.SetHolderCheckEveryForTest(5 * time.Millisecond)
 	pc, err := (&net.ListenConfig{}).ListenPacket(t.Context(), "udp4", "127.0.0.1:0")
@@ -163,12 +170,26 @@ func TestCloseCancelsAndJoinsTheHoldersRecheck(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the holders' re-check never asked the store")
 	}
-	began := time.Now()
-	if err := srv.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	closed := make(chan error, 1)
+	go func() { closed <- srv.Close() }()
+	select {
+	case <-look.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not cancel the hung lookup")
 	}
-	if took := time.Since(began); took > 500*time.Millisecond {
-		t.Fatalf("Close took %v with a hung barred lookup, want it to cancel the lookup", took)
+	select {
+	case <-closed:
+		t.Fatal("Close returned while the re-check's lookup was still in flight: the re-check was not joined")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(look.release)
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return once the lookup ended")
 	}
 	select {
 	case err := <-look.ended:

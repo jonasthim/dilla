@@ -436,8 +436,7 @@ func turnAuth(secret string, clk clock.Clock, ttl, maxAge time.Duration, rev *Re
 		if !ok {
 			return "", nil, false
 		}
-		now := clk.Now()
-		nowMs := now.UnixMilli()
+		nowMs := clk.Now().UnixMilli()
 		if issued > nowMs+skew {
 			return "", nil, false
 		}
@@ -445,7 +444,10 @@ func turnAuth(secret string, clk clock.Clock, ttl, maxAge time.Duration, rev *Re
 			return "", nil, false
 		}
 		if ra.Method == stun.MethodAllocate {
-			if expiry < now.Unix() {
+			// In milliseconds, like the issue time and the mint record: a credential is Allocate-valid
+			// only while now <= expiry_s * 1000 <= issued + ttl, inside its device's mint record and
+			// inside every cut's keep (re-review N9). expiry has at most 12 digits, so no overflow.
+			if expiry*1000 < nowMs {
 				return "", nil, false
 			}
 		} else if nowMs > issued+maxAge.Milliseconds() {
@@ -489,16 +491,16 @@ func parseRelayUsername(user string) (expiry int64, dev string, issued int64, ok
 	if issued, ok = decimalField(fields[2], maxIssuedDigits); !ok {
 		return 0, "", 0, false
 	}
-	if d, err := id.Parse(fields[1]); err != nil || d.String() != fields[1] {
+	if _, err := id.Parse(fields[1]); err != nil { // exactly 32 lowercase hex characters: canonical
 		return 0, "", 0, false
 	}
 	return expiry, fields[1], issued, true
 }
 
 // decimalField is s as an unsigned decimal of 1 to maxDigits ASCII digits: no sign, no space, no
-// other base.
+// other base, no leading zero.
 func decimalField(s string, maxDigits int) (int64, bool) {
-	if s == "" || len(s) > maxDigits {
+	if s == "" || len(s) > maxDigits || (len(s) > 1 && s[0] == '0') {
 		return 0, false
 	}
 	var n int64
