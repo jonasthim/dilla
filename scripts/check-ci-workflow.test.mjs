@@ -48,6 +48,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
+      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      - run: npm ci
+      - run: npm run typecheck -w @dilla/media
+      - run: npm run test:wasm -w @dilla/media
+      - run: npm run check:schema -w @dilla/media
   rust-wasi:
     runs-on: ubuntu-latest
     steps:
@@ -389,6 +394,10 @@ test('an image job that does not wait for go-ds is reported', () => {
 });
 
 for (const [job, needle] of [
+  ['rust-wasm-node', 'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm'],
+  ['rust-wasm-node', 'npm run typecheck -w @dilla/media'],
+  ['rust-wasm-node', 'npm run test:wasm -w @dilla/media'],
+  ['rust-wasm-node', 'npm run check:schema -w @dilla/media'],
   ['go-harness', 'go test -race -shuffle=on -timeout 25m ./internal/testkit/...'],
   ['go-harness', 'name: dilla-testkit'],
   ['go-lint', 'version: v2.13.2'],

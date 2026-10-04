@@ -3,15 +3,13 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["node", "vite/client"],
+    "lib": ["ES2022", "WebWorker"],
+    "types": [],
     "strict": true,
     "noEmit": true,
     "isolatedModules": true,
     "skipLibCheck": true,
-    "allowJs": false,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "test", "harness"],
-  "exclude": ["src/worker", "node_modules", "wasm"]
+  "include": ["src/worker/**/*.ts", "src/protocol.ts", "src/slots.ts"]
 }

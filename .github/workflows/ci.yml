@@ -74,6 +74,11 @@ jobs:
           test "$want" = "$have" || { echo "wasm-bindgen-cli $have != crate $want"; exit 1; }
       - run: cargo test -p dilla-core --target wasm32-unknown-unknown --locked --features vectors
       - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
+      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      - run: npm ci
+      - run: npm run typecheck -w @dilla/media
+      - run: npm run test:wasm -w @dilla/media
+      - run: npm run check:schema -w @dilla/media
 
   rust-native:
     runs-on: ubuntu-latest

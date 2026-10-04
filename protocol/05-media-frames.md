@@ -187,13 +187,51 @@ A participant whose device is in no held roster yet — a joiner whose external 
 has not processed — is shown as joining, not as unverified, for as long as its frames can still be
 held.
 
+## Key frames
+
+- A frame held for an unknown KID and released in order keeps the decoder's reference chain intact,
+  so an epoch change needs no key frame when the hold covers it. Measured for holds of 500 to
+  2 000 ms: no receiver PLI, no key frame, and a decode gap at most 12 ms longer than the hold
+  (`docs/spikes/2026-10-keyframe-recovery.md`).
+- When a receiver must drop a video frame for any reason other than a server-injected frame or a
+  `NONE` flag (an expired or overflowing hold, a failed tag, an evicted epoch, a frame it cannot
+  parse), its decoder stalls until the next key frame.
+- A receiver whose transform exposes `RTCRtpScriptTransformer.sendKeyFrameRequest()` MUST call it
+  after such a drop and MUST repeat it at most once per 500 ms on that track until a decrypted key
+  frame of that track has been passed to the decoder. The request reaches the publisher as an RTCP
+  PLI through the SFU, which forwards at most one PLI per 500 ms for the lowest layer and per 1 s
+  for the others and drops the rest; another receiver's PLI inside that window swallows a single
+  request (measured: recovery 2.45–2.50 s after one request, 0.53–0.57 s with the repeat).
+- On Chromium's `createEncodedStreams` path no such request exists. Recovery is libwebrtc's own PLI,
+  measured 3 010–3 013 ms after the last decoded frame (source: 3 s, repeated every 3 s while the
+  stall lasts), subject to the same SFU throttle; decoding resumed 3.01–3.11 s after the last
+  decoded frame. Two receivers dropping together sent two PLIs; one reached the publisher and its
+  single key frame recovered both.
+- On a new subscription, including an unsubscribe and resubscribe, the SFU asks the publisher for a
+  key frame itself: measured, the receiver decoded within 56–117 ms without sending a PLI. libwebrtc's
+  200 ms request cadence for a receive stream that has never decoded is read from source and was not
+  observed.
+
 ## Authenticity
 
 Any member can derive any sender's key (RFC 9605 §7.2). Attribution rests on the SFU's binding of
-SSRC to the participant identity established at join, which is minted by the instance only for a
-leaf present in the `call` group's current epoch. A colluding instance and member can therefore
-inject media attributed to another participant. This is the same limit as DAVE and is stated in
-`08-threat-model.md`.
+SSRC to the participant identity, which the instance mints only for a leaf present in the `call`
+group's current epoch, and on the receiver rules above, which a browser enforces at these points:
+
+- The receive transform is attached synchronously in the PeerConnection's `track` event, before any
+  frame of the track can reach a decoder. Frames that arrive before the receiver knows the
+  publication's device, source and encryption flag are held, never rendered.
+- A publication flagged `Encryption NONE` is dropped whole; `GCM` and `CUSTOM` both mean
+  `dilla-sframe/1`.
+- A frame ending in the SFU's server-injected-frame trailer is dropped before any SFrame header is
+  parsed. The trailer is replaced, never appended, each time the SFU sends one.
+- A participant identity that is not 32 lowercase hex, or a track whose kind does not match its
+  source (audio ⇔ microphone or screen-share audio, video ⇔ camera or screen share), is an
+  unverified stream and every frame of it is dropped.
+
+A colluding instance and member can therefore still inject media attributed to another participant:
+the member derives that participant's key and the instance binds the forged stream to that
+participant's identity. This is the same limit as DAVE and is stated in `08-threat-model.md`.
 
 ## Errors
 

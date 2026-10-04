@@ -1,6 +1,6 @@
 // The Playwright media harness: one livekit-client 2.22.3 Room per page, driven through
 // window.harness by e2e/media and e2e/spikes. e2ee 'stub' wires StubE2EEManager and the stub
-// worker; task 17 adds 'dilla' (the real manager).
+// worker; 'dilla' runs the real DillaE2EEManager and dilla-media worker through joinCall (task 17).
 import {
   Room,
   RoomEvent,
@@ -12,6 +12,10 @@ import {
   type RoomOptions,
 } from 'livekit-client';
 import { StubE2EEManager, type AttachPath } from './stub-manager.ts';
+import { joinCall, type CallSession, type IceServerTuple } from '../src/connect';
+import type { EpochKeys } from '../src/manager';
+import type { DillaMediaStats } from '../src/protocol';
+import { hexToBytes, isDeviceIdentity } from '../src/slots';
 
 export type StubMode =
   | { kind: 'pass' }
@@ -26,12 +30,15 @@ export interface RemoteTrackStats {
 }
 export interface RenderProbe { participantIdentity: string; kind: 'audio' | 'video'; frames: number; rms: number }
 export interface HarnessApi {
-  connect(url: string, token: string, opts: { e2ee: 'none' | 'stub'; attach?: AttachPath; stub?: StubMode; iceServers?: RTCIceServer[] }): Promise<void>;
+  connect(url: string, token: string, opts: { e2ee: 'none' | 'stub' | 'dilla'; attach?: AttachPath; stub?: StubMode; iceServers?: RTCIceServer[]; dilla?: DillaConnectOptions }): Promise<void>;
   publish(what: { mic?: boolean; camera?: boolean; screen?: boolean; canvasScreen?: boolean; videoCodec?: 'vp8' | 'h264' | 'vp9'; simulcast?: boolean }): Promise<void>;
   remoteStats(): Promise<RemoteTrackStats[]>;
   renderProbe(ms: number): Promise<RenderProbe[]>;
   stubStats(): Promise<Record<string, number>>;
   disconnect(): Promise<void>;
+  installEpoch(k: EpochKeysWire): Promise<void>;
+  mediaStats(): Promise<DillaMediaStats>;
+  session(): CallSession | null;
 }
 
 const worker = new Worker(new URL('./stub-worker.ts', import.meta.url), { type: 'module', name: 'dilla-stub-worker' });
@@ -44,6 +51,14 @@ worker.onmessage = (ev: MessageEvent<{ kind: string; id: number; stats: Record<s
 
 const elements = new Map<RemoteTrack, HTMLMediaElement>();
 
+function attachElement(track: RemoteTrack): void {
+  const el = track.attach();
+  el.muted = track.kind === Track.Kind.Video;
+  el.autoplay = true;
+  document.getElementById('media')?.append(el);
+  elements.set(track, el);
+}
+
 function mustRoom(): Room {
   if (!room) throw new Error('harness: connect first');
   return room;
@@ -54,21 +69,61 @@ function defaultAttach(): AttachPath {
   return 'createEncodedStreams' in RTCRtpSender.prototype ? 'streams' : 'script';
 }
 
+// ---- task 17: e2ee 'dilla', the real DillaE2EEManager through joinCall (MD-20: decimal epochs and hex keys on the
+// Playwright boundary, because page.evaluate cannot carry bigint) -------------------------------------------------
+export interface EpochKeysWire { groupId: string; epoch: string; baseKey: string; selfLeaf: number; minEpoch: string; roster: Array<{ leaf: number; deviceId: string }> }
+export interface DillaConnectOptions { epoch: EpochKeysWire; lock: { instanceId: string; callGroupId: string } }
+
+export function epochFromWire(w: EpochKeysWire): EpochKeys {
+  if (!/^[0-9a-f]{32}$/.test(w.baseKey) || !w.roster.every((r) => isDeviceIdentity(r.deviceId))) throw new Error('E_BAD_OPTIONS: epoch keys');
+  return {
+    groupId: w.groupId, epoch: BigInt(w.epoch), baseKey: hexToBytes(w.baseKey), selfLeaf: w.selfLeaf, minEpoch: BigInt(w.minEpoch),
+    roster: w.roster.map((r) => ({ leaf: r.leaf, deviceId: r.deviceId })),
+  };
+}
+
+function iceTuples(list: RTCIceServer[] = []): IceServerTuple[] {
+  return list.map((s) => [Array.isArray(s.urls) ? s.urls : [s.urls], s.username ?? '', typeof s.credential === 'string' ? s.credential : '']);
+}
+
+let dillaSession: CallSession | null = null;
+
+async function connectDilla(url: string, token: string, iceServers: RTCIceServer[] | undefined, dilla: DillaConnectOptions | undefined): Promise<CallSession> {
+  if (dilla === undefined) throw new Error("E_BAD_OPTIONS: e2ee 'dilla' needs opts.dilla");
+  dillaSession = await joinCall({ livekitUrl: url, token, iceServers: iceTuples(iceServers), epoch: epochFromWire(dilla.epoch), lock: dilla.lock });
+  return dillaSession;
+}
+
+async function installEpochWire(w: EpochKeysWire): Promise<void> {
+  if (dillaSession === null) throw new Error('E_NO_EPOCH: no dilla session');
+  await dillaSession.manager.installEpoch(epochFromWire(w));
+}
+
+async function mediaStats(): Promise<DillaMediaStats> {
+  if (dillaSession === null) throw new Error('E_NO_EPOCH: no dilla session');
+  return dillaSession.manager.stats();
+}
+
 const harness: HarnessApi = {
   async connect(url, token, opts) {
+    if (opts.e2ee === 'dilla') {
+      // joinCall builds and connects the Room itself, so the element wiring runs after it and also picks up the
+      // tracks subscribed while joinCall waited for the local participant to become encrypted.
+      const r = (await connectDilla(url, token, opts.iceServers, opts.dilla)).room;
+      r.on(RoomEvent.TrackSubscribed, attachElement);
+      for (const p of r.remoteParticipants.values()) {
+        for (const pub of p.trackPublications.values()) if (pub.track !== undefined && !elements.has(pub.track)) attachElement(pub.track);
+      }
+      room = r;
+      return;
+    }
     const options: RoomOptions = { adaptiveStream: false, dynacast: false };
     if (opts.e2ee === 'stub') {
       options.e2ee = { e2eeManager: new StubE2EEManager(worker, opts.attach ?? defaultAttach()) };
       worker.postMessage({ kind: 'mode', mode: opts.stub ?? { kind: 'pass' } });
     }
     const r = new Room(options);
-    r.on(RoomEvent.TrackSubscribed, (track: RemoteTrack) => {
-      const el = track.attach();
-      el.muted = track.kind === Track.Kind.Video;
-      el.autoplay = true;
-      document.getElementById('media')?.append(el);
-      elements.set(track, el);
-    });
+    r.on(RoomEvent.TrackSubscribed, attachElement);
     if (opts.e2ee === 'stub') await r.setE2EEEnabled(true);
     // iceServers always set: [] replaces LiveKit's server list, so no browser asks a public STUN
     // server anything (DEV-52); max-bundle gives one transport from the first offer (DEV-54).
@@ -166,9 +221,20 @@ const harness: HarnessApi = {
   },
 
   async disconnect() {
+    if (dillaSession !== null) {
+      const s = dillaSession;
+      dillaSession = null;
+      room = undefined;
+      await s.release();
+      return;
+    }
     await room?.disconnect();
     room = undefined;
   },
+
+  installEpoch: installEpochWire,
+  mediaStats,
+  session: () => dillaSession,
 };
 
 (window as unknown as { harness: HarnessApi }).harness = harness;

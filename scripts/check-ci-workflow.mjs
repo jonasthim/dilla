@@ -58,7 +58,15 @@ const REQUIRED_STEPS = {
     'name: dilla-testkit',
     'if-no-files-found: error',
   ],
-  'rust-wasm-node': ['cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked'],
+  'rust-wasm-node': [
+    'cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked',
+    // Task 17 (dilla-media): the media worker's wasm-backed tests, the BaseE2EEManager type contract and the
+    // JS half of the signalling-schema contract (DEV-66) run where the web wasm is built.
+    'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm',
+    'npm run typecheck -w @dilla/media',
+    'npm run test:wasm -w @dilla/media',
+    'npm run check:schema -w @dilla/media',
+  ],
   // Each entry must be a string the job carries and no other step of that job already contains.
   // `'dilla-core-wasi'` would be useless here: the cargo build line above already contains it, so the
   // artifact's `name:` would go unchecked. The three `with:` lines are named in full instead, which is

@@ -6,13 +6,20 @@
   "type": "module",
   "scripts": {
     "harness": "vite --config vite.config.ts --port 5179 --strictPort",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "build:wasm": "wasm-pack build ../../core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm",
+    "test": "vitest run --config vitest.config.ts",
+    "test:wasm": "vitest run --config vitest.wasm.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json",
+    "check:schema": "node scripts/check-protocol-schema.mjs"
   },
   "dependencies": {
+    "events": "3.3.0",
     "livekit-client": "2.22.3"
   },
   "devDependencies": {
+    "@types/node": "^24",
     "typescript": "^5.6",
-    "vite": "^7"
+    "vite": "^7",
+    "vitest": "^3"
   }
 }
