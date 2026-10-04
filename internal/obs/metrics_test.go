@@ -93,7 +93,7 @@ func TestMetricNamesAreTheDocumentedSet(t *testing.T) {
 		"dilla_call_full_total", "dilla_call_share_refusals_total", "dilla_call_cuts_total",
 		"dilla_call_grant_retries_total", "dilla_call_grant_repairs_pending",
 		"dilla_call_stats_reports_total", "dilla_call_relay_reports_total", "dilla_call_decrypt_failures_total",
-		"dilla_call_rtt_seconds","dilla_turn_allocations", "dilla_turn_quota_refusals_total", "dilla_turn_relay_bytes_total",
+		"dilla_call_rtt_seconds", "dilla_turn_allocations", "dilla_turn_quota_refusals_total", "dilla_turn_relay_bytes_total",
 	}
 	families, err := reg.Gather()
 	if err != nil {
