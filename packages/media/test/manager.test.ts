@@ -804,14 +804,25 @@ describe('participant status (M3)', () => {
     expect(events).toEqual([[false, DEV_B]]);
   });
 
-  it('verifiedIdentities() names only the devices whose frames the worker authenticated', async () => {
+  it('verifiedIdentities() names only the held-roster devices the worker authenticated frames for (N6: stats.verified)', async () => {
+    const { w, m } = setup();
+    await install(w, m);
+    const DEV_X = 'c3'.repeat(16); // verified by the worker, but in no roster this manager holds
+    const p = m.verifiedIdentities();
+    await vi.waitFor(() => expect(w.last('stats')).toBeDefined());
+    const data = { verified: { [DEV_B]: 3, [DEV_X]: 2 }, decrypted: {}, passedThrough: 0 } as unknown as DillaMediaStats;
+    w.reply({ kind: 'stats', id: w.last('stats')!.msg.id, data });
+    expect([...(await p)]).toEqual([DEV_B]);
+  });
+
+  it('N6: verifiedIdentities() never rests on the per-KID decrypted counter (the JS KID peek)', async () => {
     const { w, m } = setup();
     await install(w, m);
     const p = m.verifiedIdentities();
     await vi.waitFor(() => expect(w.last('stats')).toBeDefined());
-    const data = { decrypted: { [kidHex(1, 5n)]: 3, [kidHex(7, 5n)]: 1 }, passedThrough: 0 } as unknown as DillaMediaStats;
+    const data = { verified: {}, decrypted: { [kidHex(1, 5n)]: 3 }, passedThrough: 0 } as unknown as DillaMediaStats;
     w.reply({ kind: 'stats', id: w.last('stats')!.msg.id, data });
-    expect([...(await p)]).toEqual([DEV_B]);
+    expect([...(await p)]).toEqual([]);
   });
 
   it('a local track whose frames have no prefix rule is reported through encryptionError', () => {

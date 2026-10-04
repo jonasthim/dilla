@@ -222,6 +222,36 @@ describe('blocking transforms (C1 step 1)', () => {
   });
 });
 
+// N6 (task 17 re-review): the "verified" signal is counted per mapped device by the decoder itself, after the cipher
+// authenticated the frame and bound it to that device (expectedDevice), not from the JS KID peek.
+describe('verified decrypts are counted per mapped device (N6)', () => {
+  it('counts an authenticated frame for the participantIdentity the track is mapped to, whatever its KID bytes say', () => {
+    const { p, cipher } = setup();
+    install(p);
+    const sink = new Sink();
+    const h = p.addTrack(dec(), sink);
+    p.frame(h, frame([0xee, 0x01])); // byte 0 reads as no valid KID header for the peek
+    p.frame(h, frame([0x80, 0x01, 0x02]));
+    expect(sink.out).toHaveLength(2);
+    expect(p.stats.verified).toEqual({ [DEV_B]: 2 });
+    cipher.decryptError = new Error('E_SFRAME_AUTH');
+    p.frame(h, frame([0x80, 0x01, 0x02]));
+    cipher.decryptError = new Error('E_SFRAME_SENDER_MISMATCH');
+    p.frame(h, frame([0x80, 0x01, 0x02]));
+    expect(p.stats.verified).toEqual({ [DEV_B]: 2 }); // a failed or mis-bound frame is never counted
+  });
+
+  it('counts nothing for an unmapped, blocked or NONE-flagged track', () => {
+    const { p } = setup();
+    install(p);
+    const unmapped = p.addTrack({ ...dec('rx-u'), participantIdentity: '', encryption: undefined }, new Sink());
+    const blocked = p.addTrack(block('decode', 'rx-b'), new Sink());
+    const none = p.addTrack({ ...dec('rx-n'), encryption: 0 }, new Sink());
+    for (const h of [unmapped, blocked, none]) p.frame(h, frame([0x80, 0x01]));
+    expect(p.stats.verified).toEqual({});
+  });
+});
+
 describe('worker-side key zeroing (I3: review mutant M9, M4)', () => {
   it('zeroes the transferred key and every copy it handed to the cipher, after the cipher saw the real key', () => {
     const { p, cipher } = setup();

@@ -5,7 +5,6 @@ import type {
 } from 'livekit-client';
 import type { DillaBlockOptions, DillaMediaStats, DillaTransformOptions, FromWorker, SlotId, ToWorker } from './protocol';
 import { codecFromMime, isDeviceIdentity, kindMatchesSource, sourceToSlot } from './slots';
-import { kidHex } from './worker/stats';
 
 // livekit-client 2.22.3 event names as their string values, checked against the enums at compile time, so this
 // module needs no runtime import of livekit-client (it is also loaded by Node unit tests).
@@ -279,15 +278,16 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
   }
 
   /**
-   * M3: the identities, among the rosters this manager holds, whose frames the worker has authenticated at least
-   * once (stats.decrypted is counted per KID only after AEAD verification). This, not the roster status event, is
-   * the "verified" signal.
+   * M3, N6: the device identities, among the rosters this manager holds, that the worker has authenticated at least
+   * one frame for. The worker counts stats.verified per mapped participantIdentity after a successful decrypt,
+   * which the core only returns when the frame is authentic and its sender leaf belongs to that device; the per-KID
+   * `decrypted` counter (a JS peek) plays no part. This, not the roster status event, is the "verified" signal.
    */
   async verifiedIdentities(): Promise<Set<string>> {
     const s = await this.stats();
     const out = new Set<string>();
-    for (const [epoch, roster] of this.rosters) {
-      for (const [leaf, device] of roster) if ((s.decrypted[kidHex(leaf, epoch)] ?? 0) > 0) out.add(device);
+    for (const roster of this.rosters.values()) {
+      for (const device of roster.values()) if ((s.verified?.[device] ?? 0) > 0) out.add(device);
     }
     return out;
   }

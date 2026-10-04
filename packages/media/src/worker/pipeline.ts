@@ -277,6 +277,9 @@ export class Pipeline {
     const data = new Uint8Array(frame.data);
     try {
       const out = this.receiver.decrypt(CODEC_NUMBER[o.codec], data, hexToBytes(o.participantIdentity), o.slot, this.deps.now());
+      // N6: decrypt() returned, so the core authenticated the frame and checked that its KID's leaf belongs to
+      // o.participantIdentity (expectedDevice): that device is verified. The KID peek is statistics only.
+      this.stats.verified[o.participantIdentity] = (this.stats.verified[o.participantIdentity] ?? 0) + 1;
       const kid = peekKidHex(o.codec, data) ?? '?';
       this.stats.decrypted[kid] = (this.stats.decrypted[kid] ?? 0) + 1;
       frame.data = toArrayBuffer(out);

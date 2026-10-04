@@ -103,10 +103,26 @@ describe('the dilla-media/1 pipeline over the real wasm', () => {
       }
       expect(A.p.stats.encrypted[kidHex(0, 7n)][c.slot]).toBe(c.frames.length);
       expect(B.p.stats.decrypted[kidHex(0, 7n)]).toBe(c.frames.length);
+      expect(B.p.stats.verified).toEqual({ [DEV_A]: c.frames.length }); // N6
       expect(B.p.stats.passedThrough).toBe(0);
       expect(Object.values(B.p.stats.dropped).every((n) => n === 0)).toBe(true);
     });
   }
+
+  it('N6: a frame of leaf 0 on a publication mapped to another roster device is never counted as verified', () => {
+    const A = worker();
+    const B = worker();
+    install(A.p, 7n, 0);
+    install(B.p, 7n, 1);
+    const sa = new Sink();
+    const sb = new Sink();
+    const enc = encoder(A.p, sa, 0, 'opus');
+    const dec = decoder(B.p, sb, 0, 'opus', DEV_C); // the SFU claims the track belongs to DEV_C (leaf 2)
+    B.p.frame(dec, frame(encrypt(A.p, enc, sa, hex('fc0102030405060708'))));
+    expect(sb.out).toHaveLength(0);
+    expect(B.p.stats.dropped.senderMismatch).toBe(1);
+    expect(B.p.stats.verified).toEqual({});
+  });
 
   it('reads a three-byte KID (leaf 300) from the header', () => {
     const roster = [{ leaf: 300, deviceId: DEV_A }, { leaf: 1, deviceId: DEV_B }];

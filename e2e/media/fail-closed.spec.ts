@@ -37,6 +37,7 @@ test('control: a dilla sender and receiver carry video, and the path is the expe
   expect(r.path).toBe(browserName === 'firefox' ? 'script-transform' : 'insertable-streams');
   expect(encrypted(r)).toBeGreaterThan(10);
   expect(decrypted(r)).toBeGreaterThan(10);
+  expect(r.receiver?.verified).toEqual({ ['a1'.repeat(16)]: decrypted(r) }); // N6: counted per bound device
   expect(r.rendered).toBeGreaterThan(5);
   expect(r.errors).toEqual([]);
 });
