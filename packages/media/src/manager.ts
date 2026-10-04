@@ -17,6 +17,7 @@ const ROOM = {
   trackPublished: 'trackPublished',
 } as const satisfies Record<string, `${RoomEvent}`>;
 const LOCAL_SENDER_CREATED = 'localSenderCreated' satisfies `${ParticipantEvent}`;
+const LOCAL_TRACK_PUBLISHED = 'localTrackPublished' satisfies `${ParticipantEvent}`;
 const MEDIA_TRACK_ADDED = 'mediaTrackAdded' satisfies `${EngineEvent}`;
 
 export const DATA_CHANNEL_ERROR = 'dilla: data-channel encryption is not supported; construct Room with e2ee:, not encryption:';
@@ -121,6 +122,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
   /** N3: senders left without a transform, and the LocalTrack each one last carried. */
   private readonly deadSenderTrack = new WeakMap<object, LocalTrack>();
   private readonly guardedSenders = new WeakSet<object>();
+  private readonly publishedSenders = new WeakMap<LocalTrack, RTCRtpSender>();
   private nextStatsId = 1;
 
   constructor(worker: Worker, opts?: { log?: Log; initTimeoutMs?: number }) {
@@ -168,6 +170,16 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     const onSender = (sender: RTCRtpSender, track: LocalTrack): void => this.attachSender(sender, track);
     lp.on(LOCAL_SENDER_CREATED, onSender);
     this.unsubscribe.push(() => lp.off(LOCAL_SENDER_CREATED, onSender));
+    // livekit-client 2.22.3 LocalParticipant.ts:1383 emits this synchronously, before it reads the recorder at
+    // :1389. A caller holding the original @internal method can start a recorder after LocalSenderCreated.
+    const onPublished = (pub: { track?: LocalTrack }): void => {
+      const track = pub.track;
+      if (track === undefined || !track.hasPreConnectBuffer) return;
+      const sender = this.publishedSenders.get(track);
+      if (sender !== undefined) this.refuseLateBuffer(sender, track);
+    };
+    lp.on(LOCAL_TRACK_PUBLISHED, onPublished);
+    this.unsubscribe.push(() => lp.off(LOCAL_TRACK_PUBLISHED, onPublished));
   }
 
   setupEngine(engine: unknown): void {
@@ -251,6 +263,10 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
         reject: (e) => { clearTimeout(timer); reject(e); },
       };
       const timer = setTimeout(() => {
+        if (this.epochSeen) {
+          this.failWorker(`the worker did not confirm epoch ${epoch} within ${INSTALL_TIMEOUT_MS} ms`);
+          return;
+        }
         const left = (this.pendingInstalls.get(epoch) ?? []).filter((p) => p !== entry);
         if (left.length > 0) this.pendingInstalls.set(epoch, left);
         else this.pendingInstalls.delete(epoch);
@@ -409,6 +425,10 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
   private onWorkerError(m: Extract<FromWorker, { kind: 'error' }>): void {
     this.log('warn', `${m.code}${m.trackId === undefined ? '' : ` on ${m.trackId}`}`);
     if (m.code === 'E_WASM' && m.epoch !== undefined) {
+      if (this.epochSeen) {
+        this.failWorker(`installing epoch ${m.epoch} failed`);
+        return;
+      }
       // M2: an install failure names its epoch; only that epoch's installs fail.
       const err = new Error(`E_WASM: installing epoch ${m.epoch} failed`);
       for (const p of this.pendingInstalls.get(m.epoch) ?? []) p.reject(err);
@@ -467,6 +487,8 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
   }
 
   private attachSender(sender: RTCRtpSender, track: LocalTrack): void {
+    this.publishedSenders.set(track, sender);
+    const bufferGuarded = this.guardPreConnectStart(sender, track);
     const room = this.room;
     const identity = room?.localParticipant.identity ?? '';
     const media = (track as unknown as { mediaStreamTrack?: MediaStreamTrack }).mediaStreamTrack;
@@ -480,6 +502,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
       try {
         const refused = this.refusePublishFeatures(track);
         if (refused !== null) throw new Error(`E_E2EE_REQUIRED: ${refused} sends media outside the transform`);
+        if (!bufferGuarded) throw new Error('E_E2EE_REQUIRED: a pre-connect buffer cannot be guarded');
         const slot: SlotId = sourceToSlot(track.source);
         if (!kindMatchesSource(kind, track.source)) throw new Error(`E_BAD_OPTIONS: a ${kind} track cannot be published as ${track.source}`);
         // The codec here is informational: the worker encrypts every frame under the rule of the frame's own codec
@@ -506,6 +529,33 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     if (result === 'stopped') this.keepDead(sender, track, identity);
     queueMicrotask(() => this.unpublish(track, media));
     this.fail(failure ?? new Error(`E_E2EE_REQUIRED: sender ${track.mediaStreamID} ${result}`), identity);
+  }
+
+  private guardPreConnectStart(sender: RTCRtpSender, track: LocalTrack): boolean {
+    const t = track as LocalTrack & { startPreConnectBuffer?: () => void };
+    if (typeof t.startPreConnectBuffer !== 'function') return true;
+    try {
+      Object.defineProperty(t, 'startPreConnectBuffer', {
+        configurable: true,
+        writable: true,
+        value: () => this.refuseLateBuffer(sender, track),
+      });
+      return true;
+    } catch (err) {
+      this.log('error', `guard startPreConnectBuffer: ${toError(err).message}`);
+      return false;
+    }
+  }
+
+  private refuseLateBuffer(sender: RTCRtpSender, track: LocalTrack): void {
+    if (this.disposed) return;
+    this.refusePublishFeatures(track); // cancel buffered chunks and stop an active recorder
+    const media = track.mediaStreamTrack;
+    const opts: DillaBlockOptions = { dilla: 1, side: 'encode', trackId: track.mediaStreamID, block: true };
+    const result = this.attach(sender as unknown as Attachable, opts, media);
+    if (result === 'stopped') this.keepDead(sender, track, this.room?.localParticipant.identity ?? '');
+    queueMicrotask(() => this.unpublish(track, media));
+    this.fail(new Error('E_E2EE_REQUIRED: a pre-connect buffer sends media outside the transform'), this.room?.localParticipant.identity);
   }
 
   /**

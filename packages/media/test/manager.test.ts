@@ -450,13 +450,14 @@ describe('fail closed on the createEncodedStreams path (Chromium, Electron)', ()
 // (LocalParticipant.ts:1385-1444). LocalSenderCreated (:1244) runs before that read (:1389), so the manager stops the
 // recorder there, discards what it buffered, blocks the sender and unpublishes the track.
 describe('pre-connect buffer and frame metadata requested per publish (N1)', () => {
-  function recordingTrack(): any {
+  function recordingTrack(started = true): any {
     const buffer = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array([1, 2, 3])); } });
     const t = localTrack('microphone', 'audio', 'tx-mic');
-    let recorder = true;
+    let recorder = started;
     Object.defineProperty(t, 'hasPreConnectBuffer', { get: () => recorder });
     t.getPreConnectBuffer = vi.fn(() => (recorder ? buffer : undefined));
     t.stopPreConnectBuffer = vi.fn(() => { recorder = false; });
+    t.startPreConnectBuffer = vi.fn(() => { recorder = true; });
     t.buffer = buffer;
     return t;
   }
@@ -506,6 +507,50 @@ describe('pre-connect buffer and frame metadata requested per publish (N1)', () 
     lp.emit('localSenderCreated', streamsRtp(), mic);
     expect(w.last('attach')!.msg.data.block).toBeUndefined();
     expect(errors).toEqual([]);
+  });
+
+  it('N9: a recorder started between sender creation and publication is discarded before livekit reads it', async () => {
+    const { w, lp, m } = setup();
+    const errors: Error[] = [];
+    m.on('encryptionError', (e: Error) => errors.push(e));
+    const t = recordingTrack(false);
+    const start = t.startPreConnectBuffer;
+    const sender = streamsRtp();
+    lp.emit('localSenderCreated', sender, t);
+    start(); // a previously captured @internal method, during negotiate()
+    lp.emit('localTrackPublished', { track: t });
+    expect(t.getPreConnectBuffer()).toBeUndefined();
+    await expect(t.buffer.getReader().read()).resolves.toMatchObject({ done: true });
+    expect(w.last('retarget')?.msg.data).toMatchObject({ side: 'encode', trackId: 'tx-mic', block: true });
+    expect(errors.map((e) => e.message)).toEqual([expect.stringContaining('pre-connect')]);
+    await microtasks();
+    expect(lp.unpublishTrack).toHaveBeenCalledWith(t);
+  });
+
+  it('N9: startPreConnectBuffer cannot start a recorder after LocalSenderCreated', async () => {
+    const { lp, m } = setup();
+    const errors: Error[] = [];
+    m.on('encryptionError', (e: Error) => errors.push(e));
+    const t = recordingTrack(false);
+    lp.emit('localSenderCreated', streamsRtp(), t);
+    t.startPreConnectBuffer();
+    expect(t.getPreConnectBuffer()).toBeUndefined();
+    expect(errors.map((e) => e.message)).toEqual([expect.stringContaining('pre-connect')]);
+    await microtasks();
+    expect(lp.unpublishTrack).toHaveBeenCalledWith(t);
+  });
+
+  it('N9: a track that refuses the startPreConnectBuffer guard is blocked at sender creation', async () => {
+    const { w, lp, m } = setup();
+    const t = recordingTrack(false);
+    Object.defineProperty(t, 'startPreConnectBuffer', { value: t.startPreConnectBuffer, configurable: false, writable: false });
+    const errors: Error[] = [];
+    m.on('encryptionError', (e: Error) => errors.push(e));
+    lp.emit('localSenderCreated', streamsRtp(), t);
+    expect(w.last('attach')?.msg.data).toMatchObject({ trackId: 'tx-mic', block: true });
+    expect(errors.map((e) => e.message)).toEqual([expect.stringContaining('pre-connect')]);
+    await microtasks();
+    expect(lp.unpublishTrack).toHaveBeenCalledWith(t);
   });
 });
 
@@ -724,6 +769,49 @@ describe('a failed worker is cleared and terminated (N5)', () => {
     expect(rx.stop).toHaveBeenCalled();
     await microtasks();
     expect(lp.unpublishTrack).toHaveBeenCalledWith(track);
+  });
+});
+
+describe('N10: a failed install after a confirmed epoch ends the worker', () => {
+  it('terminates on an install timeout while preserving the first-install retry behavior', async () => {
+    vi.useFakeTimers();
+    try {
+      const { w, m } = setup();
+      const first = m.installEpoch(keys());
+      await vi.advanceTimersByTimeAsync(0);
+      w.reply({ kind: 'epochInstalled', epoch: 5n });
+      await first;
+      const terminate = vi.spyOn(w, 'terminate');
+      const errors: Error[] = [];
+      m.on('encryptionError', (e: Error) => errors.push(e));
+      const second = m.installEpoch(keys(6n));
+      const rejected = second.then(() => undefined, (e: Error) => e);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(INSTALL_TIMEOUT_MS);
+      expect((await rejected)?.message).toContain('E_WASM');
+      expect(w.last('clearKeys')).toBeDefined();
+      expect(terminate).toHaveBeenCalledTimes(1);
+      expect(errors.map((e) => e.message)).toEqual([expect.stringContaining('E_WASM')]);
+      await expect(m.installEpoch(keys(7n))).rejects.toThrow('E_WASM');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('terminates on a per-epoch E_WASM after a confirmed epoch', async () => {
+    const { w, m } = setup();
+    await install(w, m);
+    const terminate = vi.spyOn(w, 'terminate');
+    const errors: Error[] = [];
+    m.on('encryptionError', (e: Error) => errors.push(e));
+    const next = m.installEpoch(keys(6n));
+    await vi.waitFor(() => expect(w.last('installEpoch')?.msg.epoch).toBe(6n));
+    w.reply({ kind: 'error', code: 'E_WASM', epoch: 6n });
+    await expect(next).rejects.toThrow('E_WASM');
+    expect(w.last('clearKeys')).toBeDefined();
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(errors.map((e) => e.message)).toEqual([expect.stringContaining('E_WASM')]);
+    await expect(m.stats()).rejects.toThrow('E_WASM');
   });
 });
 
@@ -957,6 +1045,8 @@ describe('a sender stopped for want of a transform stays dead (N3)', () => {
     lp.emit('localSenderCreated', sender, track);
     expect(sender.transform).toBeUndefined();
     expect(track.mediaStreamTrack.stop).toHaveBeenCalled();
+    expect(original).toHaveBeenCalledWith(null); // N11: detach before any application replaceTrack call
+    expect(original).toHaveBeenCalledTimes(1);
     await microtasks();
     expect(lp.unpublishTrack).toHaveBeenCalledTimes(1);
     // LocalTrack.setMediaStreamTrack → sender.replaceTrack (LocalTrack.ts:201-202), from restartTrack, unmute
