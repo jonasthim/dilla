@@ -88,6 +88,28 @@ test('a receiver whose transform cannot be attached at all renders 0 frames of t
   expect(r.errors).toContainEqual(expect.stringContaining('receiver'));
 });
 
+// N5 (task 17 re-review): a worker that fails mid-call (an `error` event, as when it throws) is cleared and
+// terminated by the manager. Afterwards its transforms must carry nothing: no media byte leaves the sender and no
+// frame is decoded or rendered, also with a peer that would render plaintext (recv: 'none') or send it (send: 'plain').
+test('a sender whose worker fails mid-call sends 0 media bytes afterwards, and nothing renders', async ({ page }) => {
+  const r = await run(page, { send: 'dilla', label: 'vp8', recv: 'none', kill: 'sender', killAfterMs: 1_500, ms: MS + 1_000 });
+  expect(r.afterKill?.workerTerminated).toBe(true);
+  expect(r.bytesSent - (r.afterKill?.bytesSent ?? 0)).toBeGreaterThan(1_000); // it did send before the failure
+  expect(r.afterKill?.bytesSent).toBe(0);
+  expect(r.afterKill?.framesDecoded).toBe(0);
+  expect(r.afterKill?.rendered).toBe(0);
+  expect(r.errors).toContainEqual(expect.stringContaining('E_WASM'));
+});
+
+test('a receiver whose worker fails mid-call decodes and renders 0 frames of a plaintext sender afterwards', async ({ page }) => {
+  const r = await run(page, { send: 'plain', recv: 'dilla', kill: 'receiver', killAfterMs: 1_500, ms: MS + 1_000 });
+  expect(r.afterKill?.workerTerminated).toBe(true);
+  expect(r.afterKill?.bytesSent).toBeGreaterThan(1_000); // the plaintext sender keeps sending
+  expect(r.afterKill?.framesDecoded).toBe(0);
+  expect(r.afterKill?.rendered).toBe(0);
+  expect(r.errors).toContainEqual(expect.stringContaining('E_WASM'));
+});
+
 test('a receiver whose dilla options are refused gets a blocking transform and renders 0 frames', async ({ page, browserName }) => {
   test.skip(browserName !== 'firefox', 'options are a script-transform concept; Chromium has no options to refuse');
   const r = await run(page, { send: 'plain', recv: 'dilla', recvFailure: 'options', ms: MS });

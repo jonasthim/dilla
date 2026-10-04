@@ -29,7 +29,21 @@ export interface FailClosedScenario {
   recv: 'dilla' | 'none';
   /** Make the receiver's attach fail: 'options' refuses the dilla options only, 'all' refuses every transform. */
   recvFailure?: 'options' | 'all';
+  /**
+   * N5: fail this side's worker `killAfterMs` into the call by dispatching an `error` event on it (what the browser
+   * does when the worker throws), so the manager's own failWorker path runs; the counters are then read again
+   * KILL_SETTLE_MS later and at the end, and the result reports what moved in between.
+   */
+  kill?: 'sender' | 'receiver';
+  killAfterMs?: number;
   ms: number;
+}
+
+export interface AfterKill {
+  bytesSent: number;
+  framesDecoded: number;
+  rendered: number;
+  workerTerminated: boolean;
 }
 
 export interface FailClosedResult {
@@ -44,7 +58,11 @@ export interface FailClosedResult {
   errors: string[];
   sender: DillaMediaStats | null;
   receiver: DillaMediaStats | null;
+  /** With `kill`: what was sent, decoded and rendered after the worker failed (from KILL_SETTLE_MS on). */
+  afterKill?: AfterKill;
 }
+
+const KILL_SETTLE_MS = 500;
 
 class StandIns {
   readonly room: EventEmitter & { localParticipant: EventEmitter; remoteParticipants: Map<string, unknown> };
@@ -71,16 +89,40 @@ function epoch(selfLeaf: number): EpochKeys {
   return { groupId: 'failclosed', epoch: 7n, baseKey: new Uint8Array(16).fill(0x5c), selfLeaf, minEpoch: 7n, roster: ROSTER };
 }
 
-async function manager(identity: string, selfLeaf: number, errors: string[]): Promise<{ m: DillaE2EEManager; s: StandIns; worker: Worker }> {
+async function manager(identity: string, selfLeaf: number, errors: string[]): Promise<{ m: DillaE2EEManager; s: StandIns; worker: Worker; terminated: () => boolean }> {
   const worker = createMediaWorker();
+  let terminated = false;
+  const terminate = worker.terminate.bind(worker);
+  worker.terminate = (): void => { terminated = true; terminate(); };
   const m = new DillaE2EEManager(worker);
   m.on('encryptionError', (e: Error) => errors.push(`${identity.slice(0, 4)}: ${e.message}`));
   const s = new StandIns(identity);
   m.setup(s.room as unknown as Room);
   m.setupEngine(s.engine);
   await m.installEpoch(epoch(selfLeaf));
-  return { m, s, worker };
+  return { m, s, worker, terminated: () => terminated };
 }
+
+async function counters(a: RTCPeerConnection, b: RTCPeerConnection): Promise<{ bytesSent: number; framesDecoded: number; negotiatedCodec: string }> {
+  let bytesSent = 0;
+  let framesDecoded = 0;
+  let negotiatedCodec = '';
+  const codecs = new Map<string, string>();
+  const sent = await a.getStats();
+  sent.forEach((s: { type: string; id: string; mimeType?: string }) => { if (s.type === 'codec' && s.mimeType !== undefined) codecs.set(s.id, s.mimeType); });
+  sent.forEach((s: { type: string; kind?: string; bytesSent?: number; codecId?: string }) => {
+    if (s.type === 'outbound-rtp' && s.kind === 'video') {
+      bytesSent += s.bytesSent ?? 0;
+      if (s.codecId !== undefined) negotiatedCodec = codecs.get(s.codecId) ?? negotiatedCodec;
+    }
+  });
+  (await b.getStats()).forEach((s: { type: string; kind?: string; framesDecoded?: number }) => {
+    if (s.type === 'inbound-rtp' && s.kind === 'video') framesDecoded += s.framesDecoded ?? 0;
+  });
+  return { bytesSent, framesDecoded, negotiatedCodec };
+}
+
+const statsOrNull = (m: DillaE2EEManager): Promise<DillaMediaStats | null> => m.stats().catch(() => null);
 
 function canvasTrack(): { track: MediaStreamTrack; stop: () => void } {
   const canvas = document.createElement('canvas');
@@ -174,23 +216,24 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
   let counting = true;
   const tick = (): void => { if (!counting) return; rendered++; video.requestVideoFrameCallback(tick); };
   video.requestVideoFrameCallback(tick);
-  await new Promise((r) => setTimeout(r, sc.ms));
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  let killed: { bytesSent: number; framesDecoded: number; rendered: number; terminated: () => boolean } | null = null;
+  if (sc.kill !== undefined) {
+    const victim = sc.kill === 'sender' ? A : B;
+    if (victim === null) throw new Error(`kill ${sc.kill}: that side has no manager`);
+    const killAt = sc.killAfterMs ?? 1_500;
+    await sleep(killAt);
+    victim.worker.dispatchEvent(new Event('error')); // as the browser does when the worker throws
+    await sleep(KILL_SETTLE_MS);
+    const c = await counters(a, b);
+    killed = { bytesSent: c.bytesSent, framesDecoded: c.framesDecoded, rendered, terminated: victim.terminated };
+    await sleep(Math.max(0, sc.ms - killAt - KILL_SETTLE_MS));
+  } else {
+    await sleep(sc.ms);
+  }
   counting = false;
 
-  let bytesSent = 0;
-  let framesDecoded = 0;
-  let negotiatedCodec = '';
-  const codecs = new Map<string, string>();
-  (await a.getStats()).forEach((s: { type: string; id: string; mimeType?: string }) => { if (s.type === 'codec' && s.mimeType !== undefined) codecs.set(s.id, s.mimeType); });
-  (await a.getStats()).forEach((s: { type: string; kind?: string; bytesSent?: number; codecId?: string }) => {
-    if (s.type === 'outbound-rtp' && s.kind === 'video') {
-      bytesSent += s.bytesSent ?? 0;
-      if (s.codecId !== undefined) negotiatedCodec = codecs.get(s.codecId) ?? negotiatedCodec;
-    }
-  });
-  (await b.getStats()).forEach((s: { type: string; kind?: string; framesDecoded?: number }) => {
-    if (s.type === 'inbound-rtp' && s.kind === 'video') framesDecoded += s.framesDecoded ?? 0;
-  });
+  const { bytesSent, framesDecoded, negotiatedCodec } = await counters(a, b);
   const result: FailClosedResult = {
     path: streamsPath ? 'insertable-streams' : 'script-transform',
     negotiatedCodec,
@@ -201,9 +244,17 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
     senderTrackEnded: source.track.readyState === 'ended',
     unpublished: [...(A?.s.unpublished ?? [])],
     errors,
-    sender: A === null ? null : await A.m.stats(),
-    receiver: B === null ? null : await B.m.stats(),
+    sender: A === null ? null : await statsOrNull(A.m),
+    receiver: B === null ? null : await statsOrNull(B.m),
   };
+  if (killed !== null) {
+    result.afterKill = {
+      bytesSent: bytesSent - killed.bytesSent,
+      framesDecoded: framesDecoded - killed.framesDecoded,
+      rendered: rendered - killed.rendered,
+      workerTerminated: killed.terminated(),
+    };
+  }
   source.stop();
   source.track.stop();
   a.close();

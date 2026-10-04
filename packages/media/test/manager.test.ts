@@ -621,6 +621,58 @@ describe('worker failure (I2)', () => {
   });
 });
 
+// N5 (task 17 re-review): a failed worker must not keep encrypting or decrypting under its last epoch.
+describe('a failed worker is cleared and terminated (N5)', () => {
+  const FAILURES: Array<[string, (w: FakeWorker) => void]> = [
+    ['an error event', (w) => w.dispatchEvent(new Event('error'))],
+    ['a messageerror event', (w) => w.dispatchEvent(new Event('messageerror'))],
+    ['a worker-wide E_WASM', (w) => w.reply({ kind: 'error', code: 'E_WASM' })],
+  ];
+  for (const [name, fail] of FAILURES) {
+    it(`${name} after init posts clearKeys, then terminates the worker`, async () => {
+      const { w, m } = setup();
+      await install(w, m);
+      const terminate = vi.spyOn(w, 'terminate');
+      fail(w);
+      expect(w.last('clearKeys')).toBeDefined();
+      expect(terminate).toHaveBeenCalledTimes(1);
+      expect(w.posted.findIndex((p) => p.msg.kind === 'clearKeys')).toBe(w.posted.length - 1); // nothing after it
+    });
+  }
+
+  it('the init timeout terminates the worker too', async () => {
+    vi.useFakeTimers();
+    try {
+      const w = new FakeWorker();
+      const terminate = vi.spyOn(w, 'terminate');
+      new DillaE2EEManager(w as unknown as Worker);
+      await vi.advanceTimersByTimeAsync(INIT_TIMEOUT_MS);
+      expect(terminate).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('after the failure a new sender is stopped and unpublished and a new receiver stopped: no transform on a dead worker', async () => {
+    vi.stubGlobal('RTCRtpScriptTransform', FakeScriptTransform);
+    const { w, m, lp, engine } = setup();
+    await install(w, m);
+    w.dispatchEvent(new Event('error'));
+    const sender: { transform?: unknown } = {};
+    const track = localTrack('microphone', 'audio', 'tx-mic');
+    lp.emit('localSenderCreated', sender, track);
+    expect(sender.transform).toBeUndefined();
+    expect(track.mediaStreamTrack.stop).toHaveBeenCalled();
+    const receiver: { transform?: unknown } = {};
+    const rx = remoteTrack('rx-1', 'audio');
+    engine.emit('mediaTrackAdded', rx, {}, receiver);
+    expect(receiver.transform).toBeUndefined();
+    expect(rx.stop).toHaveBeenCalled();
+    await microtasks();
+    expect(lp.unpublishTrack).toHaveBeenCalledWith(track);
+  });
+});
+
 describe('install and dispose bookkeeping (M1, M2)', () => {
   it('M1: until the worker confirms an install, nothing below the highest minEpoch seen is installed', async () => {
     const { w, m } = setup();

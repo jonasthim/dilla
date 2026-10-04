@@ -351,6 +351,13 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     const err = new Error(`E_WASM: ${reason}`);
     this.failure = err;
     this.log('error', err.message);
+    // N5 (task 17 re-review): a failed worker must not keep encrypting or decrypting under its last epoch (a member
+    // removed later would keep reading this device's media). The keys are cleared, in case the worker still reads
+    // messages, and the worker is terminated, which ends every transform it hosts: measured on Firefox 155 and
+    // Chromium 153 (e2e fail-closed "… whose worker fails mid-call"), afterwards no media byte is sent and no frame
+    // is decoded or rendered on either path.
+    this.guard('failWorker: clearKeys', () => this.post({ kind: 'clearKeys' }));
+    this.guard('failWorker: terminate', () => this.worker.terminate());
     this.settleAll(err);
     this.setLocalStatus(false);
     this.emitSafe('encryptionError', err, this.room?.localParticipant.identity);
@@ -596,8 +603,9 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
    */
   private attach(rtp: Attachable, opts: DillaTransformOptions | DillaBlockOptions, media: MediaStreamTrack | undefined): AttachResult {
     try {
-      if (rtp[ATTACHED] === DEAD) {
-        // N3: a sender or receiver once left without a transform is never re-armed, on either path.
+      if (rtp[ATTACHED] === DEAD || this.failure !== null) {
+        // N3: a sender or receiver once left without a transform is never re-armed, on either path. N5: after the
+        // worker failed (and was terminated) no transform can work, so nothing new is attached to it.
         stopTrack(media);
         return 'stopped';
       }
