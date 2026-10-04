@@ -18,6 +18,11 @@ import (
 	"github.com/jonasthim/dilla/internal/exit"
 )
 
+// minCredentialTTL is the shortest turn.credential_ttl: the relay accepts a credential issued up to
+// 2 s ahead of its clock and `dillad doctor` mints a 10 s one, so a lifetime near that is refused at
+// random.
+const minCredentialTTL = time.Minute
+
 // runtimeNumCPU is runtime.NumCPU behind a variable so a test can pin it.
 var runtimeNumCPU = runtime.NumCPU
 
@@ -184,6 +189,10 @@ func (c *Config) Validate() error {
 	// relay URL); 4 covers two networks through one ICE-restart overlap. 16 is far past any device.
 	if n := c.TURN.AllocationsPerDevice; n < 1 || n > 16 {
 		add("turn.allocations_per_device is %d; the range is 1..16", n)
+	}
+	if ttl := c.TURN.CredentialTTL.Value(); ttl < minCredentialTTL {
+		add("turn.credential_ttl is %s; the minimum is %s (the relay judges a credential to the millisecond, with up to 2s of clock skew allowed between hosts)",
+			c.TURN.CredentialTTL, minCredentialTTL)
 	}
 	if age, ttl := c.TURN.MaxAllocationAge.Value(), c.TURN.CredentialTTL.Value(); age < ttl {
 		add("turn.max_allocation_age (%s) is shorter than turn.credential_ttl (%s): an allocation could not outlive the credential it was made with",

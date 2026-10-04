@@ -377,6 +377,23 @@ func TestValidationRules(t *testing.T) {
 			t.Error("turn.allocations_per_device 17 was accepted")
 		}
 	})
+	// The relay's credential is judged to the millisecond against clock skew of up to 2 s, so a
+	// lifetime under a minute is not a working configuration.
+	t.Run("turn.credential_ttl is at least a minute", func(t *testing.T) {
+		for ttl, ok := range map[config.Duration]bool{"59s": false, "1s": false, "1m": true, "1h": true} {
+			c := base()
+			c.TURN.CredentialTTL = ttl
+			c.TURN.MaxAllocationAge = "2h"
+			c.Derive()
+			err := c.Validate()
+			if ok && err != nil {
+				t.Errorf("turn.credential_ttl %s refused: %v", ttl, err)
+			}
+			if !ok && (err == nil || !strings.Contains(err.Error(), "turn.credential_ttl") || !strings.Contains(err.Error(), "1m")) {
+				t.Errorf("turn.credential_ttl %s: Validate = %v, want an error naming the key and the minimum", ttl, err)
+			}
+		}
+	})
 	// I14 (fix wave): turn.public_url is a turn: or turns: URL with a host and a port, or empty.
 	t.Run("turn.public_url is a TURN URL", func(t *testing.T) {
 		for u, ok := range map[string]bool{
