@@ -1,7 +1,7 @@
 # 05 — Media frames (`dilla-sframe/1`)
 
-Every audio, video and screen-share frame in a `call` group is encrypted per frame by the sender
-and forwarded opaquely by the SFU. The construction is RFC 9605 (SFrame), suite `0x0004`, with one
+Every content-bearing audio, video and screen-share frame in a `call` group is encrypted per frame
+by the sender and forwarded opaquely by the SFU. The construction is RFC 9605 (SFrame), suite `0x0004`, with one
 clear codec prefix per frame so that WebRTC depacketisers and the SFU keep working. The prefixes are
 the bytes libwebrtc's depacketisers read (for VP8, VP9 and Opus the same bytes Discord's DAVE
 leaves clear); H.264 escaping is libwebrtc's `WriteRbsp`/`ParseRbsp`, not DAVE's nonce retry, which
@@ -13,6 +13,10 @@ byte-compatible with DAVE.
 ```
 [ clear codec prefix P ][ E( SFrame header H || ciphertext C || 16-byte tag T ) ]
 ```
+
+The sole exception is a zero-byte audio DTX frame: its transform forwards it unchanged, with no
+SFrame header, encryption or counter use. Every non-empty audio frame and every video frame follows
+the frame format above; an empty video frame is dropped.
 
 - **AAD** = `H || P` (RFC 9605 §4.4.3's `header || metadata` with metadata = P; the RFC's Appendix C.3
   suite `0x0004` case reproduces only in this order).
@@ -166,6 +170,12 @@ is an **unverified stream** and is never played. A track whose kind does not mat
 track's slot comes from its LiveKit `TrackSource`: `MICROPHONE` (2) → 0, `CAMERA` (1) → 1,
 `SCREEN_SHARE` (3) → 2, `SCREEN_SHARE_AUDIO` (4) → 3; `UNKNOWN` (0) is refused.
 
+A zero-byte frame on a non-blocking audio decode pipeline passes through unchanged, including
+before its track is mapped: it carries no content. It is counted as `emptyFrames` on the receive
+side, never as decrypted or verified, never held, and never counted as a drop reason. A blocking
+pipeline forwards nothing, and an empty video frame is dropped. The steps below apply to frames
+that are not zero-byte audio.
+
 Every received frame is checked in this order. The first failure names its code, and only
 `E_SFRAME_UNKNOWN_KID` is held:
 
@@ -227,9 +237,11 @@ participant's status turns false again when the call's media worker fails or the
 
 ## No plaintext path
 
-A browser never sends a frame that its sender transform did not encrypt and never renders one that
-its receive transform did not authenticate. Media leaves the device only as encrypted RTP. Nothing the
-SFU or a peer sends, no option the application passes, and no failure opens a path around the
+A browser never sends a content-bearing frame that its sender transform did not encrypt and never
+renders one that its receive transform did not authenticate. The only frame that is not ciphertext
+is a zero-byte audio frame, which has no content. An SFU substituting empty frames for real ones is
+equivalent to dropping them, which it can always do. Media content leaves the device only as encrypted
+RTP. Nothing the SFU or a peer sends, no option the application passes, and no failure opens a path around the
 transform:
 
 - **Not through the data channel.** No media, and nothing derived from media, is ever sent through
