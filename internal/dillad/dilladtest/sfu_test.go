@@ -11,8 +11,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/livekit/protocol/auth"
 
@@ -237,5 +239,50 @@ func TestAHostWithAnSFUMintsCallTokens(t *testing.T) {
 	}
 	if idOf(out[1]) != group.GroupID {
 		t.Fatalf("group_id = %x, want %s", out[1], group.GroupID)
+	}
+}
+
+// A room POST /debug/sfu/token opened survives the call routes' room sweep, which deletes every room
+// that belongs to no call: a browser test on raw debug tokens (plan MD-13) runs for minutes, past
+// several sweeps. A room opened straight on the SFU is the control — the sweep deletes it, which
+// shows a sweep ran while the debug room stayed.
+func TestTheRoomSweepLeavesDebugRoomsAlone(t *testing.T) {
+	h := sfuHost(t, true)
+	control := httptest.NewServer(ControlHandler(h))
+	t.Cleanup(control.Close)
+	ctx := t.Context()
+
+	if err := h.SFU().CreateRoom(ctx, "orphan"); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	body := []byte(`{"room":"sp-debug","identity":"0123456789abcdef0123456789abcdef","create":true}`)
+	res, err := http.Post(control.URL+"/debug/sfu/token", "application/json", bytes.NewReader(body)) //nolint:noctx // test against httptest
+	if err != nil {
+		t.Fatalf("POST /debug/sfu/token: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST /debug/sfu/token = %d, want 200", res.StatusCode)
+	}
+
+	// The retry loop's first tick sweeps (api.CallRetryInterval after New), then every
+	// api.RoomSweepInterval.
+	wait := api.CallRetryInterval + 10*time.Second
+	deadline := time.Now().Add(wait)
+	for {
+		rooms, err := h.SFU().Rooms(ctx)
+		if err != nil {
+			t.Fatalf("Rooms: %v", err)
+		}
+		if !slices.Contains(rooms, "sp-debug") {
+			t.Fatalf("the room sweep deleted the debug room (rooms now %v)", rooms)
+		}
+		if !slices.Contains(rooms, "orphan") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no room sweep deleted the orphan room within %s (rooms %v)", wait, rooms)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

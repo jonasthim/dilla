@@ -166,6 +166,9 @@ type Host struct {
 	// sfu is the in-process LiveKit when HostOptions.SFU; it outlives a Restore, as the SFU
 	// outlives a database restore inside one dillad process.
 	sfu *sfu.Server
+	// debugRooms are the rooms the control listener's POST /debug/sfu/token opened, hidden from
+	// the room sweep (harnessSFU).
+	debugRooms debugRooms
 
 	// channels outlives a Restore, as the channels table outlives a restart.
 	channels *ChannelModes
@@ -334,8 +337,9 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 		o.ACL, o.Channels = AllowEveryone{}, h.channels
 	}
 	// Set only when there is one: an interface holding a nil *sfu.Server is not a nil interface.
+	// The instance sees it without the debug rooms, which its room sweep would otherwise delete.
 	if h.sfu != nil {
-		o.SFU = h.sfu
+		o.SFU = harnessSFU{Server: h.sfu, debug: &h.debugRooms}
 	}
 	return dillad.New(ctx, o)
 }
