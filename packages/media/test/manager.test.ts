@@ -29,9 +29,9 @@ class Emitter {
   emit(e: string, ...a: any[]): boolean { for (const f of this.l.get(e) ?? []) f(...a); return true; }
 }
 
-function setup(): { w: FakeWorker; m: DillaE2EEManager; room: any; lp: any; engine: Emitter } {
+function setup(log?: (level: string, msg: string) => void): { w: FakeWorker; m: DillaE2EEManager; room: any; lp: any; engine: Emitter } {
   const w = new FakeWorker();
-  const m = new DillaE2EEManager(w as unknown as Worker);
+  const m = new DillaE2EEManager(w as unknown as Worker, { log });
   const lp = Object.assign(new Emitter(), { identity: DEV_LOCAL, isE2EEEnabled: true, unpublishTrack: vi.fn(async () => undefined) });
   const room = Object.assign(new Emitter(), { localParticipant: lp, remoteParticipants: new Map<string, any>() });
   const engine = new Emitter();
@@ -722,5 +722,95 @@ describe('participant status (M3)', () => {
     w.reply({ kind: 'error', code: 'unsupportedCodec', trackId: 'tx-cam', participantIdentity: DEV_LOCAL });
     w.reply({ kind: 'error', code: 'unsupportedCodec', trackId: 'rx-remote', participantIdentity: DEV_B });
     expect(errors).toEqual([['unsupportedCodec', DEV_LOCAL]]);
+  });
+});
+
+// N2, N3 (task 17 re-review): Room forwards the manager's events synchronously to application listeners
+// (Room.ts:519-533), so an application listener that throws must never abort the manager's own work.
+describe('a throwing application listener cannot abort the manager (N2, N3)', () => {
+  it('P2: dispose posts clearKeys and unsubscribes before it emits, and completes when a status listener throws', async () => {
+    const logs: string[] = [];
+    const { w, m, room, engine } = setup((_l, msg) => logs.push(msg));
+    await install(w, m);
+    room.emit('signalConnected');
+    const seen: Array<{ clearKeys: boolean; detachAfterEmit: boolean }> = [];
+    const second = vi.fn();
+    m.on('participantEncryptionStatusChanged', () => {
+      const before = w.posted.length;
+      room.emit('trackUnsubscribed', { mediaStreamID: 'rx-late' }); // a room listener still attached would post detach
+      seen.push({ clearKeys: w.last('clearKeys') !== undefined, detachAfterEmit: w.posted.length !== before });
+      throw new Error('app listener bug');
+    });
+    m.on('participantEncryptionStatusChanged', second);
+    expect(() => m.dispose()).not.toThrow();
+    expect(seen).toEqual([{ clearKeys: true, detachAfterEmit: false }]);
+    expect(second).toHaveBeenCalledWith(false, expect.anything()); // the next listener still runs
+    expect(m.listenerCount('participantEncryptionStatusChanged')).toBe(0);
+    expect(m.isEnabled).toBe(false);
+    const n = w.posted.length;
+    engine.emit('mediaTrackAdded', remoteTrack('rx-9', 'video'), {}, streamsRtp());
+    expect(w.posted).toHaveLength(n);
+    expect(logs).toContainEqual(expect.stringContaining('app listener bug'));
+  });
+
+  it('P1: a throwing encryptionError listener cannot skip the unpublish of a blocked sender', async () => {
+    const logs: string[] = [];
+    const { lp, m } = setup((_l, msg) => logs.push(msg));
+    m.on('encryptionError', () => { throw new Error('app listener bug'); });
+    const track = localTrack('unknown', 'video', 'tx-x');
+    expect(() => lp.emit('localSenderCreated', streamsRtp(), track)).not.toThrow();
+    await microtasks();
+    expect(lp.unpublishTrack).toHaveBeenCalledWith(track);
+    expect(logs).toContainEqual(expect.stringContaining('app listener bug'));
+  });
+
+  it('a throwing listener cannot abort a worker failure or a receiver attach', async () => {
+    const { w, m, engine } = setup();
+    m.on('encryptionError', () => { throw new Error('app listener bug'); });
+    const rx = remoteTrack('rx-1', 'video');
+    expect(() => engine.emit('mediaTrackAdded', rx, {}, { createEncodedStreams: () => { throw new TypeError('boom'); } })).not.toThrow();
+    expect(rx.stop).toHaveBeenCalled();
+    const p = m.installEpoch(keys());
+    await vi.waitFor(() => expect(w.last('installEpoch')).toBeDefined());
+    expect(() => w.dispatchEvent(new Event('error'))).not.toThrow();
+    await expect(p).rejects.toThrow('E_WASM');
+  });
+});
+
+describe('a sender stopped for want of a transform stays dead (N3)', () => {
+  afterEach(() => { FakeScriptTransform.throwWhen = () => false; });
+
+  it('restartTrack, unmute or a device switch (sender.replaceTrack) cannot re-arm it, nor a later LocalSenderCreated', async () => {
+    vi.stubGlobal('RTCRtpScriptTransform', FakeScriptTransform);
+    const { lp, m } = setup();
+    const errors: Error[] = [];
+    m.on('encryptionError', (e: Error) => errors.push(e));
+    FakeScriptTransform.throwWhen = () => true;
+    const original = vi.fn(async (_t: unknown) => undefined);
+    const sender: any = { replaceTrack: original };
+    const track = localTrack('camera', 'video', 'tx-cam', 'vp8');
+    lp.emit('localSenderCreated', sender, track);
+    expect(sender.transform).toBeUndefined();
+    expect(track.mediaStreamTrack.stop).toHaveBeenCalled();
+    await microtasks();
+    expect(lp.unpublishTrack).toHaveBeenCalledTimes(1);
+    // LocalTrack.setMediaStreamTrack → sender.replaceTrack (LocalTrack.ts:201-202), from restartTrack, unmute
+    // (LocalVideoTrack.ts:180-183), visibility (LocalTrack.ts:425-434), resumeUpstream (:518) or a processor (:600).
+    const fresh = { kind: 'video', stop: vi.fn() };
+    await expect(sender.replaceTrack(fresh)).resolves.toBeUndefined();
+    expect(original).not.toHaveBeenCalledWith(fresh);
+    expect(fresh.stop).toHaveBeenCalled();
+    await microtasks();
+    expect(lp.unpublishTrack).toHaveBeenCalledTimes(2);
+    await sender.replaceTrack(null); // detaching stays possible
+    expect(original).toHaveBeenCalledWith(null);
+    FakeScriptTransform.throwWhen = () => false; // even if a transform could be built now
+    const again = localTrack('camera', 'video', 'tx-cam-2', 'vp8');
+    lp.emit('localSenderCreated', sender, again);
+    expect(sender.transform).toBeUndefined();
+    expect(again.mediaStreamTrack.stop).toHaveBeenCalled();
+    await microtasks();
+    expect(lp.unpublishTrack).toHaveBeenCalledWith(again);
+    expect(errors.length).toBeGreaterThanOrEqual(3);
   });
 });

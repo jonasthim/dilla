@@ -199,6 +199,24 @@ describe('joinCall (DEV-27)', () => {
     await expect(joinCall(options())).resolves.toBeDefined();
   });
 
+  it('N2: release runs dispose, disconnect, terminate and the lock release, each even when an earlier step throws', async () => {
+    const s = await joinCall(options());
+    h.state.managers[0].dispose.mockImplementation(() => { h.state.order.push('dispose'); throw new Error('dispose failed'); });
+    h.state.rooms[0].disconnect = async (): Promise<void> => { h.state.order.push('disconnect'); throw new Error('disconnect failed'); };
+    await expect(s.release()).rejects.toThrow('dispose failed');
+    expect(h.state.order.slice(-3)).toEqual(['dispose', 'disconnect', 'terminate']);
+    await vi.waitFor(() => expect(held.size).toBe(0));
+    await expect(joinCall(options())).resolves.toBeDefined(); // the Web Lock was released
+  });
+
+  it('N2: a throwing terminate still releases the Web Lock', async () => {
+    const s = await joinCall(options());
+    const worker = h.createMediaWorker.mock.results[0].value as { terminate: ReturnType<typeof vi.fn> };
+    worker.terminate.mockImplementation(() => { throw new Error('terminate failed'); });
+    await expect(s.release()).rejects.toThrow('terminate failed');
+    await vi.waitFor(() => expect(held.size).toBe(0));
+  });
+
   it('refreshIceServers swaps the live credentials on room.engine.rtcConfig (DEV-53)', async () => {
     const s = await joinCall(options());
     refreshIceServers(s.room, [[['turn:dilla.test:443?transport=tcp'], 'u2', 'c2']]);

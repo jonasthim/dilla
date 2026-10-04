@@ -172,14 +172,28 @@ export async function joinCall(o: JoinCallOptions): Promise<CallSession> {
   const worker = createMediaWorker();
   const manager = new DillaE2EEManager(worker);
   let room: Room | undefined;
+  // N2 (task 17 re-review): every step runs, whatever an earlier one threw; the first error is rethrown at the end.
+  // dispose clears the keys first, disconnect stops publishing, terminate ends the worker (and with it every
+  // transform), and the Web Lock is released last so a second tab cannot start while this one still sends.
   const release = async (): Promise<void> => {
-    manager.dispose();
+    let first: unknown = null;
+    let failed = false;
+    const step = async (fn: () => unknown): Promise<void> => {
+      try {
+        await fn();
+      } catch (err) {
+        if (!failed) first = err;
+        failed = true;
+      }
+    };
     try {
-      await room?.disconnect();
+      await step(() => manager.dispose());
+      await step(() => room?.disconnect());
+      await step(() => worker.terminate());
     } finally {
-      worker.terminate();
       releaseLock();
     }
+    if (failed) throw first;
   };
   try {
     // Rejects with E_WASM when the worker errors or never answers init (INIT_TIMEOUT_MS): the catch below then

@@ -113,6 +113,9 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
   private readonly inRosterStatus = new Map<string, boolean>();
   private readonly pendingStats = new Map<number, Pending<DillaMediaStats>>();
   private readonly localTrackIds = new Set<string>();
+  /** N3: senders left without a transform, and the LocalTrack each one last carried. */
+  private readonly deadSenderTrack = new WeakMap<object, LocalTrack>();
+  private readonly guardedSenders = new WeakSet<object>();
   private nextStatsId = 1;
 
   constructor(worker: Worker, opts?: { log?: Log; initTimeoutMs?: number }) {
@@ -181,7 +184,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
   setParticipantCryptorEnabled(enabled: boolean, participantIdentity: string): void {
     if (!enabled) {
       const err = new Error('E_E2EE_REQUIRED');
-      this.emit('encryptionError', err, participantIdentity);
+      this.emitSafe('encryptionError', err, participantIdentity);
       throw err;
     }
     const room = this.room;
@@ -262,15 +265,42 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     return out;
   }
 
+  /**
+   * N2 (task 17 re-review): the keys are cleared and every Room and engine listener is removed before anything is
+   * emitted, and the emits are guarded (emitSafe), so no application listener can keep keys alive or abort this.
+   */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     clearTimeout(this.initTimer);
+    this.guard('dispose: clearKeys', () => this.post({ kind: 'clearKeys' }));
+    for (const u of this.unsubscribe.splice(0)) this.guard('dispose: unsubscribe', u);
     this.settleAll(new Error('E_NO_EPOCH: the manager is disposed'));
     this.setLocalStatus(false);
-    this.post({ kind: 'clearKeys' });
-    for (const u of this.unsubscribe.splice(0)) u();
     this.removeAllListeners();
+  }
+
+  /**
+   * Every event this manager emits goes through here. Room forwards them synchronously to application listeners
+   * (Room.ts:519-533), so each listener is called on its own: one that throws is logged and the next one, and the
+   * manager's own work after the emit, still run (N2, N3).
+   */
+  private emitSafe(event: string, ...args: unknown[]): void {
+    for (const listener of this.rawListeners(event) as Listener[]) {
+      try {
+        listener.apply(this, args);
+      } catch (err) {
+        this.log('error', `a ${event} listener threw: ${toError(err).message}`);
+      }
+    }
+  }
+
+  private guard(what: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (err) {
+      this.log('error', `${what}: ${toError(err).message}`);
+    }
   }
 
   private assertUsable(): void {
@@ -296,7 +326,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     this.log('error', err.message);
     this.settleAll(err);
     this.setLocalStatus(false);
-    this.emit('encryptionError', err, this.room?.localParticipant.identity);
+    this.emitSafe('encryptionError', err, this.room?.localParticipant.identity);
   }
 
   private onWorkerMessage(m: FromWorker): void {
@@ -328,7 +358,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
         this.log('warn', `sequence space exhausted on slot ${m.slot} layer ${m.layer}; an MLS Update is needed`);
         return;
       case 'rekeyNeeded':
-        this.emit('rekeyNeeded', m.reason);
+        this.emitSafe('rekeyNeeded', m.reason);
         return;
       case 'error':
         this.onWorkerError(m);
@@ -349,7 +379,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
       const err = new Error(`E_WASM: installing epoch ${m.epoch} failed`);
       for (const p of this.pendingInstalls.get(m.epoch) ?? []) p.reject(err);
       this.pendingInstalls.delete(m.epoch);
-      this.emit('encryptionError', err, m.participantIdentity);
+      this.emitSafe('encryptionError', err, m.participantIdentity);
       return;
     }
     if (m.code === 'E_WASM' && m.trackId === undefined) {
@@ -359,7 +389,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     // A local track whose frames have no prefix rule (a codec the SFU forced) sends nothing: the UI must know.
     const localCodec = m.code === 'unsupportedCodec' && m.trackId !== undefined && this.localTrackIds.has(m.trackId);
     if (m.code === 'E_NO_EPOCH' || m.code === 'E_BAD_OPTIONS' || m.code === 'E_WASM' || localCodec) {
-      this.emit('encryptionError', new Error(m.code), m.participantIdentity);
+      this.emitSafe('encryptionError', new Error(m.code), m.participantIdentity);
     }
   }
 
@@ -369,7 +399,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     const lp = room.localParticipant;
     // setE2EEEnabled(true) before connect() skips the manager (identity ''), so the manager enables itself here.
     if (!lp.isE2EEEnabled) {
-      this.emit('encryptionError', new Error('E_E2EE_REQUIRED'), lp.identity);
+      this.emitSafe('encryptionError', new Error('E_E2EE_REQUIRED'), lp.identity);
       return;
     }
     this.setParticipantCryptorEnabled(true, lp.identity);
@@ -384,7 +414,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     const room = this.room;
     if (room === undefined || this.localEnabled === v) return;
     this.localEnabled = v;
-    this.emit('participantEncryptionStatusChanged', v, room.localParticipant);
+    this.emitSafe('participantEncryptionStatusChanged', v, room.localParticipant);
   }
 
   private attachReceiver(track: MediaStreamTrack, receiver: RTCRtpReceiver): void {
@@ -435,11 +465,43 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
       result = 'stopped';
     }
     if (failure === null && result === 'ok') return;
-    // The block (or the stopped track) is in place: only now report and unpublish. livekit undoes
+    // The block (or the stopped track) is in place: only now unpublish and report. livekit undoes
     // replaceTrack(null) and track.enabled (LocalTrack.ts:213,412; RemoteTrack.ts:35), so unpublishing is the
-    // lever; it awaits the pending publish itself (LocalParticipant.ts:1578-1587).
-    this.fail(failure ?? new Error(`E_E2EE_REQUIRED: sender ${track.mediaStreamID} ${result}`), identity);
+    // lever; it awaits the pending publish itself (LocalParticipant.ts:1578-1587). N3: the unpublish is queued
+    // before anything is emitted, so no listener can skip it.
+    if (result === 'stopped') this.keepDead(sender, track, identity);
     queueMicrotask(() => this.unpublish(track, media));
+    this.fail(failure ?? new Error(`E_E2EE_REQUIRED: sender ${track.mediaStreamID} ${result}`), identity);
+  }
+
+  /**
+   * N3 (task 17 re-review): a sender left without any transform ('stopped') is dead for good. livekit can put a live
+   * track on the same sender without a new LocalSenderCreated: LocalTrack.setMediaStreamTrack calls
+   * sender.replaceTrack (LocalTrack.ts:201-202) from restartTrack, camera unmute (LocalVideoTrack.ts:180-183), the
+   * mobile visibility handler (LocalTrack.ts:425-434), a device switch, a processor (:600) and resumeUpstream (:518).
+   * So the sender's replaceTrack is replaced: a new track is stopped instead of attached, the sender is unpublished
+   * again and the refusal is reported; only replaceTrack(null) still reaches the browser. A later
+   * LocalSenderCreated for the same sender finds the DEAD mark in attach() and stops that track too.
+   */
+  private keepDead(sender: RTCRtpSender, track: LocalTrack, identity: string): void {
+    const s = sender as unknown as Attachable & { replaceTrack?: (t: MediaStreamTrack | null) => Promise<void> };
+    this.guard('mark dead', () => { s[ATTACHED] = DEAD; });
+    this.deadSenderTrack.set(s, track);
+    if (this.guardedSenders.has(s) || typeof s.replaceTrack !== 'function') return;
+    const original = s.replaceTrack.bind(sender);
+    const refuse = (next: MediaStreamTrack | null): Promise<void> => {
+      if (next === null) return original(null);
+      stopTrack(next);
+      const current = this.deadSenderTrack.get(s) ?? track;
+      queueMicrotask(() => this.unpublish(current, undefined));
+      this.fail(new Error(`E_E2EE_REQUIRED: sender ${current.mediaStreamID} has no transform; a new track was refused`), identity);
+      return Promise.resolve();
+    };
+    this.guard('guard replaceTrack', () => {
+      Object.defineProperty(s, 'replaceTrack', { configurable: true, writable: true, value: refuse });
+      this.guardedSenders.add(s);
+    });
+    this.guard('replaceTrack(null)', () => { Promise.resolve(original(null)).catch(() => undefined); });
   }
 
   /**
@@ -507,6 +569,11 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
    */
   private attach(rtp: Attachable, opts: DillaTransformOptions | DillaBlockOptions, media: MediaStreamTrack | undefined): AttachResult {
     try {
+      if (rtp[ATTACHED] === DEAD) {
+        // N3: a sender or receiver once left without a transform is never re-armed, on either path.
+        stopTrack(media);
+        return 'stopped';
+      }
       // SP-01 (task 14, measured): on Chromium the PC carries encodedInsertableStreams: true and createEncodedStreams
       // is livekit-client's own path; RTCRtpScriptTransform where createEncodedStreams does not exist (Firefox,
       // Safari). Receivers are reused routinely (30 MediaTrackAdded re-deliveries per Chromium run), so a reused
@@ -521,11 +588,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
 
   private attachStreams(rtp: Attachable, opts: DillaTransformOptions | DillaBlockOptions, media: MediaStreamTrack | undefined): AttachResult {
     const previous = rtp[ATTACHED];
-    if (previous === DEAD) {
-      stopTrack(media);
-      return 'stopped';
-    }
-    if (previous !== undefined) {
+    if (previous !== undefined && previous !== DEAD) {
       this.post({ kind: 'retarget', data: { previousTrackId: previous, ...opts } });
       rtp[ATTACHED] = opts.trackId;
       return isBlock(opts) ? 'blocked' : 'ok';
@@ -602,7 +665,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     }
     if (!kindMatchesSource(kind, pub.source) || !isDeviceIdentity(identity)) {
       // Unverified stream: the worker drops it (slotMismatch / senderMismatch); the UI learns it here.
-      this.emit('encryptionError', new Error('E_BAD_OPTIONS: unverified stream'), identity);
+      this.emitSafe('encryptionError', new Error('E_BAD_OPTIONS: unverified stream'), identity);
     }
     const encryption = (pub.trackInfo?.encryption ?? 0) as 0 | 1 | 2;
     this.post({ kind: 'mapTrack', trackId: track.mediaStreamID, participantIdentity: identity, slot, codec, encryption });
@@ -618,7 +681,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     const v = this.inRoster(p.identity);
     if (this.inRosterStatus.get(p.identity) === v) return;
     this.inRosterStatus.set(p.identity, v);
-    this.emit('participantEncryptionStatusChanged', v, p);
+    this.emitSafe('participantEncryptionStatusChanged', v, p);
   }
 
   private refreshRemoteStatus(): void {
@@ -630,7 +693,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
   private fail(err: unknown, identity: string | undefined): void {
     const e = toError(err);
     this.log('error', e.message);
-    this.emit('encryptionError', e, identity);
+    this.emitSafe('encryptionError', e, identity);
   }
 
   private post(m: ToWorker, transfer: Transferable[] = []): void {
