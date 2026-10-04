@@ -2,6 +2,7 @@ import type { EventEmitter } from 'events';
 import { Room, type RoomConnectOptions, type RoomEvent, type RoomOptions, type TrackPublishDefaults } from 'livekit-client';
 import { createMediaWorker, DillaE2EEManager, type EpochKeys } from './manager';
 import { isVoiceSupported } from './support';
+import { installDillaCodecPreferences } from './codec-preferences';
 
 export type IceServerTuple = [urls: string[], username: string, credential: string];
 
@@ -172,6 +173,7 @@ export async function joinCall(o: JoinCallOptions): Promise<CallSession> {
   const worker = createMediaWorker();
   const manager = new DillaE2EEManager(worker);
   let room: Room | undefined;
+  let restorePeerConnection: (() => void) | undefined;
   // N2 (task 17 re-review): every step runs, whatever an earlier one threw; the first error is rethrown at the end.
   // dispose clears the keys first, disconnect stops publishing, terminate ends the worker (and with it every
   // transform), and the Web Lock is released last so a second tab cannot start while this one still sends.
@@ -191,6 +193,7 @@ export async function joinCall(o: JoinCallOptions): Promise<CallSession> {
       await step(() => room?.disconnect());
       await step(() => worker.terminate());
     } finally {
+      restorePeerConnection?.();
       releaseLock();
     }
     if (failed) throw first;
@@ -199,6 +202,7 @@ export async function joinCall(o: JoinCallOptions): Promise<CallSession> {
     // Rejects with E_WASM when the worker errors or never answers init (INIT_TIMEOUT_MS): the catch below then
     // disposes, terminates the worker and releases the Web Lock (I2).
     await manager.installEpoch(o.epoch);
+    if (typeof globalThis.RTCPeerConnection !== 'undefined') restorePeerConnection = installDillaCodecPreferences();
     room = new Room(dillaRoomOptions(manager, o.roomOptions));
     assertDillaManager(room, manager);
     await room.setE2EEEnabled(true);

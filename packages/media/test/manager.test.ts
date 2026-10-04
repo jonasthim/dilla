@@ -967,14 +967,16 @@ describe('participant status (M3)', () => {
     expect([...(await p)]).toEqual([]);
   });
 
-  it('a local track whose frames have no prefix rule is reported through encryptionError', () => {
+  it('a local track whose frames have no prefix rule is reported and unpublished', async () => {
     const { w, lp, m } = setup();
     const errors: Array<[string, string | undefined]> = [];
     m.on('encryptionError', (e: Error, id?: string) => errors.push([e.message, id]));
     lp.emit('localSenderCreated', streamsRtp(), localTrack('camera', 'video', 'tx-cam', 'av1'));
     w.reply({ kind: 'error', code: 'unsupportedCodec', trackId: 'tx-cam', participantIdentity: DEV_LOCAL });
+    w.reply({ kind: 'error', code: 'unsupportedCodec', trackId: 'tx-cam', participantIdentity: DEV_LOCAL });
     w.reply({ kind: 'error', code: 'unsupportedCodec', trackId: 'rx-remote', participantIdentity: DEV_B });
     expect(errors).toEqual([['unsupportedCodec', DEV_LOCAL]]);
+    await vi.waitFor(() => expect(lp.unpublishTrack).toHaveBeenCalledTimes(1));
   });
 });
 

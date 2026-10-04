@@ -119,6 +119,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
   private readonly inRosterStatus = new Map<string, boolean>();
   private readonly pendingStats = new Map<number, Pending<DillaMediaStats>>();
   private readonly localTrackIds = new Set<string>();
+  private readonly localTracks = new Map<string, LocalTrack>();
   /** N3: senders left without a transform, and the LocalTrack each one last carried. */
   private readonly deadSenderTrack = new WeakMap<object, LocalTrack>();
   private readonly guardedSenders = new WeakSet<object>();
@@ -442,6 +443,15 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     }
     // A local track whose frames have no prefix rule (a codec the SFU forced) sends nothing: the UI must know.
     const localCodec = m.code === 'unsupportedCodec' && m.trackId !== undefined && this.localTrackIds.has(m.trackId);
+    if (localCodec) {
+      const track = this.localTracks.get(m.trackId!);
+      if (track !== undefined) {
+        this.localTracks.delete(m.trackId!);
+        this.localTrackIds.delete(m.trackId!);
+        stopTrack(track.mediaStreamTrack);
+        queueMicrotask(() => this.unpublish(track, track.mediaStreamTrack));
+      }
+    }
     if (m.code === 'E_NO_EPOCH' || m.code === 'E_BAD_OPTIONS' || m.code === 'E_WASM' || localCodec) {
       this.emitSafe('encryptionError', new Error(m.code), m.participantIdentity);
     }
@@ -496,6 +506,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     let result: AttachResult = 'stopped';
     try {
       this.localTrackIds.add(track.mediaStreamID);
+      this.localTracks.set(track.mediaStreamID, track);
       const kindValue: string = track.kind; // Track.Kind is a string enum; compare its value, not the enum
       const kind = kindValue === 'audio' ? 'audio' : 'video';
       let opts: DillaTransformOptions | DillaBlockOptions;

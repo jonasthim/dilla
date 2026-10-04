@@ -641,6 +641,18 @@ func TestEveryConditionalKeyReachesLiveKit(t *testing.T) {
 	}
 }
 
+func TestTestOnlyAV1CodecCanBeOfferedByTheRealSFU(t *testing.T) {
+	c := testConfig()
+	c.TestAV1 = true
+	y, err := c.YAML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(y, "    - mime: video/AV1\n") {
+		t.Fatalf("AV1 not enabled in test SFU:\n%s", y)
+	}
+}
+
 // LiveKit's strict mode refuses the six spellings G22 probed; the renderer must use the real keys.
 func TestStrictModeRefusesTheSixWrongSpellings(t *testing.T) {
 	for _, c := range []struct{ yaml, want string }{

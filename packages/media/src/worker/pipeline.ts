@@ -264,6 +264,7 @@ export class Pipeline {
     if (frame.data.byteLength === 0) {
       if (slotKind(h.opts.slot) === 'audio' && h.opts.codec === 'opus') {
         this.stats.emptyFrames.decode += 1;
+        this.stats.emptyFramesByTrack[h.trackId] = (this.stats.emptyFramesByTrack[h.trackId] ?? 0) + 1;
         h.sink.enqueue(frame);
       } else this.drop(h, 'parse');
       return;
@@ -297,6 +298,7 @@ export class Pipeline {
       this.stats.verified[o.participantIdentity] = (this.stats.verified[o.participantIdentity] ?? 0) + 1;
       const kid = peekKidHex(o.codec, data) ?? '?';
       this.stats.decrypted[kid] = (this.stats.decrypted[kid] ?? 0) + 1;
+      this.stats.decryptedByTrack[h.trackId] = (this.stats.decryptedByTrack[h.trackId] ?? 0) + 1;
       frame.data = toArrayBuffer(out);
       return 'ok';
     } catch (err) {
@@ -335,6 +337,7 @@ export class Pipeline {
 
   private drop(h: TrackHandle, reason: DropReason): void {
     this.stats.dropped[reason] += 1;
+    this.stats.droppedByTrack[h.trackId] = (this.stats.droppedByTrack[h.trackId] ?? 0) + 1;
     if (reason !== 'sif') this.error(reason, h.trackId, h.opts.participantIdentity);
     if (KEY_FRAME_REASONS.has(reason) && slotKind(h.opts.slot) === 'video' && h.requestKeyFrame !== undefined) {
       h.awaitingKeyFrame = true;

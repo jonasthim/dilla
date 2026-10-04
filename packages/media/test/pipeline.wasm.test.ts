@@ -90,6 +90,9 @@ it('passes empty Opus DTX without spending a wasm counter or verifying it', () =
   B.p.frame(rx, frame(sealed));
   expect(received.out[1]).toEqual(hex('fc0102'));
   expect(B.p.stats.verified).toEqual({ [DEV_A]: 1 });
+  expect(B.p.stats.emptyFramesByTrack['dec-0']).toBe(1);
+  expect(B.p.stats.decryptedByTrack['dec-0']).toBe(1);
+  expect(B.p.stats.droppedByTrack['dec-0'] ?? 0).toBe(0);
 });
 
 const CASES: Array<{ name: string; codec: MediaCodec; slot: SlotId; frames: Array<{ bytes: Uint8Array; type?: 'key' | 'delta' }> }> = [

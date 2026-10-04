@@ -56,7 +56,9 @@ test('a sender whose frames have no prefix rule (AV1) sends 0 media bytes', asyn
   expect(r.negotiatedCodec.toLowerCase()).toBe('video/av1');
   expect(r.bytesSent).toBe(0);
   expect(encrypted(r)).toBe(0);
-  expect(r.sender?.dropped.unsupportedCodec).toBeGreaterThan(10);
+  expect(r.sender?.dropped.unsupportedCodec).toBeGreaterThan(0);
+  expect(r.unpublished).toHaveLength(1);
+  expect(r.senderTrackEnded).toBe(true);
   expect(r.rendered).toBe(0);
   expect(r.errors).toContainEqual(expect.stringContaining('unsupportedCodec'));
 });

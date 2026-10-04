@@ -9,9 +9,12 @@ export function newStats(): DillaMediaStats {
   return {
     encrypted: {},
     decrypted: {},
+    decryptedByTrack: {},
     verified: {},
     emptyFrames: { encode: 0, decode: 0 },
+    emptyFramesByTrack: {},
     dropped: Object.fromEntries(DROP_REASONS.map((r) => [r, 0])) as Record<DropReason, number>,
+    droppedByTrack: {},
     passedThrough: 0,
     currentEpoch: '',
     knownKids: [],

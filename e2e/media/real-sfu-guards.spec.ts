@@ -7,8 +7,6 @@ import type { DillaHarness, DillaHarness21 } from '../../packages/media/harness/
 type W = { harness: DillaHarness & DillaHarness21 };
 const HARNESS = 'http://127.0.0.1:5179/';
 
-test.skip(({ browserName }) => browserName !== 'chromium', 'the real-SFU guard leg runs on Chromium');
-
 test('audio stops at a failed worker and a dead sender refuses replaceTrack through the real SFU', async ({ browser }) => {
   test.setTimeout(90_000);
   const driver = await MediaDriver.start(DS_URL, testkitEnv());
@@ -28,6 +26,15 @@ test('audio stops at a failed worker and a dead sender refuses replaceTrack thro
         livekitUrl: token.livekitUrl, token: token.token, iceServers: token.iceServers,
         epoch: epochWire(key, key.epoch), caps: token.caps,
       });
+    }
+    const h264Fmtp = (await alice.evaluate(async () => {
+      const h = (globalThis as unknown as W).harness;
+      return (await Promise.all([h.dillaRemoteSdp(), h.dillaLocalSdp()])).flat().join('\n').match(/a=fmtp:\d+ [^\r\n]*profile-level-id[^\r\n]*/g) ?? [];
+    }));
+    console.log('TASK21_GUARD_CODEC', JSON.stringify(h264Fmtp));
+    for (const fmtp of h264Fmtp) {
+      expect(fmtp).toContain('packetization-mode=1');
+      expect(fmtp).toContain('profile-level-id=42e01f');
     }
     const agentIdentity = randomBytes(16).toString('hex');
     const agentToken = await debugToken(CONTROL_URL, roomOfToken(aTok.token), agentIdentity, false);

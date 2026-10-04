@@ -111,6 +111,10 @@ jobs:
       - run: npm run test:e2e:media -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - run: npx playwright test --config e2e/playwright.media.config.ts --project=chromium-media unsupported-sfu-codec.spec.ts
+        env:
+          DILLA_MEDIA_SFU_AV1: '1'
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
 
   go-ds:
     runs-on: ubuntu-latest
@@ -576,6 +580,12 @@ test('an upload-artifact step in any job without if-no-files-found: error is rep
 test('a workflow without the browser-media job is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(/  browser-media:[\s\S]*?\n\n/, '')));
   assert.ok(problems.some((p) => p.includes('missing job "browser-media"')), problems.join('\n'));
+});
+
+test('the browser-media job requires the real-SFU AV1 leg', () => {
+  const stripped = GOOD.replace(/      - run: npx playwright test --config e2e\/playwright\.media\.config\.ts --project=chromium-media unsupported-sfu-codec\.spec\.ts\n        env:\n          DILLA_MEDIA_SFU_AV1: '1'\n          DILLA_TESTKIT: \$\{\{ github\.workspace \}\}\/artifacts\/dilla-testkit\n/, '');
+  const problems = checkWorkflow(fixture(stripped));
+  assert.ok(problems.some((p) => p.includes('unsupported-sfu-codec.spec.ts')), problems.join('\n'));
 });
 
 for (const [need, kept] of [['rust-wasi', 'rust-native'], ['rust-native', 'rust-wasi']]) {

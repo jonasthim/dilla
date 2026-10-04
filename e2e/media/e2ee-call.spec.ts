@@ -1,6 +1,7 @@
 import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test';
 import { DS_URL, MediaDriver, epochWire, kidHex, testkitEnv, type CallToken, type MediaKey } from './support/driver';
 import { activate } from './support/lk';
+import { frameAccountingErrors } from './support/frame-accounting';
 import type { DillaHarness, DillaHarness21 } from '../../packages/media/harness/main';
 
 type W = { harness: DillaHarness & DillaHarness21 };
@@ -105,11 +106,19 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
     expect(sdp).not.toMatch(/a=rtpmap:\d+ (AV1|H265)\//i);
     expect(sdp).not.toContain('sprop-parameter-sets');
     const h264Fmtp = sdp.match(/a=fmtp:\d+ [^\r\n]*profile-level-id[^\r\n]*/g) ?? [];
-    // LiveKit offers mode 0 as well as mode 1. The active sender codec is checked below;
-    // an unused mode-0 offer does not imply a mode-0 publication.
-    expect(h264Fmtp.some((fmtp) => fmtp.includes('packetization-mode=1'))).toBe(true);
+    expect(h264Fmtp.length).toBeGreaterThan(0);
+    for (const fmtp of h264Fmtp) {
+      expect(fmtp).toContain('packetization-mode=1');
+      expect(fmtp).toContain('profile-level-id=42e01f');
+    }
     const answer = (await bob.page.evaluate(() => (globalThis as unknown as W).harness.dillaLocalSdp())).join('\n');
     console.log('TASK21_CODEC', JSON.stringify({ offer: h264Fmtp, answer: answer.match(/a=fmtp:\d+ [^\r\n]*profile-level-id[^\r\n]*/g) ?? [] }));
+    const answerH264Fmtp = answer.match(/a=fmtp:\d+ [^\r\n]*profile-level-id[^\r\n]*/g) ?? [];
+    expect(answerH264Fmtp.length).toBeGreaterThan(0);
+    for (const fmtp of answerH264Fmtp) {
+      expect(fmtp).toContain('packetization-mode=1');
+      expect(fmtp).toContain('profile-level-id=42e01f');
+    }
     await expect.poll(async () => (await bob.page.evaluate(() => (globalThis as unknown as W).harness.dillaActiveVideoCodecs())).filter((codec) => codec.toLowerCase().includes('h264')).length, { timeout: 10_000 }).toBeGreaterThan(0);
     const activeVideo = await bob.page.evaluate(() => (globalThis as unknown as W).harness.dillaActiveVideoCodecs());
     console.log('TASK21_ACTIVE_CODEC', JSON.stringify(activeVideo));
@@ -191,7 +200,11 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
     await alice.page.waitForTimeout(9_000);
     expect(await count(alice.page, kidOf(carol, e1))).toBe(carolAt3s);
     for (const m of [alice, bob, dave]) expect((await stats(m.page)).decrypted[kidOf(carol, e2)]).toBeUndefined();
-    for (const m of [alice, bob, dave]) expect((await stats(m.page)).passedThrough).toBe(0);
+    const senderKids = Object.fromEntries([alice, bob, carol, dave].map((m) => [m.device, [e, e1, e2].map((epoch) => kidOf(m, epoch))]));
+    for (const m of [alice, bob, dave]) {
+      const errors = frameAccountingErrors(await remote(m.page), await stats(m.page), senderKids);
+      expect(errors, `${m.actor} decoded a frame without worker authentication`).toEqual([]);
+    }
   } finally {
     await driver.close();
   }

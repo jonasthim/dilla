@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { debugToken } from './support/lk';
+import { frameAccountingErrors } from './support/frame-accounting';
 import { CONTROL_URL, DS_URL, MediaDriver, epochWire, kidHex, roomOfToken, testkitEnv, type CallToken, type MediaKey } from './support/driver';
 import type { DillaHarness, DillaHarness21 } from '../../packages/media/harness/main';
 
@@ -85,7 +86,15 @@ test('a canary connected straight to the SFU is decoded by nobody (MD-13, SP-13,
       expect(dropped, 'the worker dropped the canary frames').toBeGreaterThan(0);
       for (const kid of Object.keys(s.decrypted)) expect(memberKids.has(kid), `decrypted an unexpected KID ${kid}`).toBe(true);
       expect(s.dropped.sif).toBeLessThanOrEqual(SIF_CEILING);
-      expect(s.passedThrough).toBe(0);
+      if (browserName === 'chromium') {
+        const senderKids = { [a.key.roster.find((r) => r.leaf === a.key.selfLeaf)!.deviceId]: [kidHex(a.key.selfLeaf, a.key.epoch)],
+          [b.key.roster.find((r) => r.leaf === b.key.selfLeaf)!.deviceId]: [kidHex(b.key.selfLeaf, b.key.epoch)] };
+        const rosterTracks = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats()))
+          .filter((track) => Object.hasOwn(senderKids, track.participantIdentity));
+        // Canary tracks have the stronger zero-decoded/zero-samples checks above. Their RTP packet
+        // count includes packets the worker rejects before a decoder, so it is not a decrypt count.
+        expect(frameAccountingErrors(rosterTracks, s, senderKids)).toEqual([]);
+      }
     }
   } finally {
     await driver.close();

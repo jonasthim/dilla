@@ -69,6 +69,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       '-listen', '127.0.0.1:8443', '-control', '127.0.0.1:8444', '-core', core, '-log-level', 'warn',
       '-sfu', '-sfu-port', String(SFU_PORT), '-sfu-udp-port', String(SFU_UDP_PORT),
       ...(process.env.DILLA_MEDIA_SFU_NO_INTERNAL_IP === '1' ? ['-sfu-no-internal-ip'] : []),
+      ...(process.env.DILLA_MEDIA_SFU_AV1 === '1' ? ['-sfu-av1'] : []),
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(host);
     const banner = await waitForLine(host, /DILLA_TESTKIT_INVITE=\S+/, 'dilla-testhost', 60_000);

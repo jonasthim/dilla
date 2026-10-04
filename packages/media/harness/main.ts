@@ -368,6 +368,7 @@ Object.assign((window as unknown as { harness: object }).harness, dillaHarness);
 
 // ---- task 21: publish, observe and probe on the dilla room ----
 export interface DillaRemoteStats {
+  trackId: string;
   participantIdentity: string;
   kind: 'audio' | 'video';
   source: string;
@@ -381,7 +382,7 @@ export interface DillaRemoteStats {
 }
 
 export interface DillaHarness21 {
-  dillaPublish(what: { camera?: boolean; deviceCamera?: boolean; screen?: boolean; canvasScreen?: boolean; simulcast?: boolean; videoCodec?: 'vp8' | 'h264' }): Promise<void>;
+  dillaPublish(what: { camera?: boolean; deviceCamera?: boolean; screen?: boolean; canvasScreen?: boolean; simulcast?: boolean; videoCodec?: 'vp8' | 'h264' | 'av1' }): Promise<void>;
   dillaWaitPermission(source: 'camera' | 'screen_share', timeoutMs: number): Promise<void>;
   dillaRemoteStats(): Promise<DillaRemoteStats[]>;
   dillaRenderProbe(ms: number): Promise<RenderProbe[]>;
@@ -395,9 +396,14 @@ export interface DillaHarness21 {
   dillaAudioOutBytes(): Promise<number>;
   dillaDeadSenderReplaceProbe(): Promise<{ replacementEnded: boolean; senderTrackNull: boolean }>;
   dillaPreconnectProbe(agentIdentity: string): Promise<{ echoed: boolean; streamOpens: number }>;
+  dillaOfferedPublishCodecs(): string[];
+  dillaEncryptionErrors(): string[];
+  dillaPublishedVideoCount(): number;
+  dillaVideoOutBytes(): Promise<number>;
 }
 
 const dillaSeen: Record<string, number> = {};
+const dillaErrors: string[] = [];
 
 /** A moving canvas track; 1280×720 is the smallest size livekit-client splits into three simulcast rids. */
 function dillaCanvasTrack(width: number, height: number): MediaStreamTrack {
@@ -422,6 +428,7 @@ const dillaHarness21: DillaHarness21 & Pick<DillaHarness, 'dillaJoin'> = {
   async dillaJoin(o) {
     await dillaJoin19(o);
     const room = dillaRoom();
+    room.on(dillaLk.RoomEvent.EncryptionError, (error: Error) => dillaErrors.push(error.message));
     for (const p of room.remoteParticipants.values()) dillaSeen[p.identity] = 0;
     room.on(dillaLk.RoomEvent.ParticipantConnected, (p: dillaLk.RemoteParticipant) => {
       dillaSeen[p.identity] = Date.now();
@@ -463,6 +470,7 @@ const dillaHarness21: DillaHarness21 & Pick<DillaHarness, 'dillaJoin'> = {
         report?.forEach((s: Record<string, number | string>) => {
           if (s.type !== 'inbound-rtp') return;
           out.push({
+            trackId: track.mediaStreamTrack.id,
             participantIdentity: p.identity,
             kind: track.kind === dillaLk.Track.Kind.Audio ? 'audio' : 'video',
             source: pub.source,
@@ -586,6 +594,21 @@ const dillaHarness21: DillaHarness21 & Pick<DillaHarness, 'dillaJoin'> = {
         if (s.type === 'outbound-rtp' && s.kind === 'audio') total += Number(s.bytesSent ?? 0);
       });
     }
+    return total;
+  },
+  dillaOfferedPublishCodecs() {
+    const lp = dillaRoom().localParticipant as unknown as { enabledPublishVideoCodecs?: Array<{ mime: string }> };
+    return (lp.enabledPublishVideoCodecs ?? []).map((c) => c.mime);
+  },
+  dillaEncryptionErrors() { return [...dillaErrors]; },
+  dillaPublishedVideoCount() {
+    return [...dillaRoom().localParticipant.trackPublications.values()].filter((p) => p.kind === dillaLk.Track.Kind.Video).length;
+  },
+  async dillaVideoOutBytes() {
+    let total = 0;
+    for (const pc of dillaPcs) (await pc.getStats()).forEach((s: Record<string, unknown>) => {
+      if (s.type === 'outbound-rtp' && s.kind === 'video') total += Number(s.bytesSent ?? 0);
+    });
     return total;
   },
   async dillaDeadSenderReplaceProbe() {

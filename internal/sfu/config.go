@@ -84,6 +84,8 @@ type Config struct {
 	EmptyTimeout, DepartureTimeout uint32
 	// VP9 adds video/VP9 profile-id=0 to the enabled codecs (livekit.vp9, off by default — F4).
 	VP9 bool
+	// TestAV1 enables an unsupported publisher codec only in the browser test host.
+	TestAV1 bool
 	// WebhookURL is where LiveKit posts its webhooks; "" renders no webhook block.
 	WebhookURL string
 	// LimitNumTracks and LimitBytesPerSec are LiveKit's node-wide join gates, rendered only when a
@@ -189,6 +191,9 @@ func (c Config) YAML() (string, error) {
 	b.WriteString("    - mime: video/H264\n")
 	if c.VP9 {
 		b.WriteString("    - mime: video/VP9\n      fmtp_line: \"profile-id=0\"\n")
+	}
+	if c.TestAV1 {
+		b.WriteString("    - mime: video/AV1\n")
 	}
 	b.WriteString("    - mime: video/rtx\n")
 	if c.LimitNumTracks > 0 || c.LimitBytesPerSec > 0 {

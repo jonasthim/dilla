@@ -29131,6 +29131,8 @@ Claude-Session: https://claude.ai/code/session_01ATX5KV2uNfihoyAMASpNjz"
 
 ### Task 21: The three-context E2EE call, the canary and the Firefox smoke in CI
 
+**Fix round 1 (2026-10-04):** The literal unsupported-codec-first server ordering cannot be produced by pinned LiveKit v1.13.7: its observed `JoinResponse.enabledPublishCodecs` is `["video/VP8","video/H264","video/AV1"]` with AV1 enabled in the test host, even though the server config can list AV1 first. The real-SFU AV1 publication leg instead asserts zero bytes sent, `unsupportedCodec`, and unpublication. See `e2e/media/unsupported-sfu-codec.spec.ts` and the follow-up card in `deferred-minors.md`.
+
 **Files:**
 - Create: `testkit/src/media_driver.rs` (`MediaDriver`: the JSON-line protocol over the scenario `Runner` — MD-12)
 - Modify: `testkit/src/lib.rs` (`mod media_driver; pub use media_driver::MediaDriver;`)

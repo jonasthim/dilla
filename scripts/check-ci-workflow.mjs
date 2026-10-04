@@ -105,6 +105,8 @@ const REQUIRED_STEPS = {
     'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
     'npx playwright install --with-deps chromium firefox',
     'npm run test:e2e:media -w @dilla/e2e',
+    'unsupported-sfu-codec.spec.ts',
+    "DILLA_MEDIA_SFU_AV1: '1'",
     'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
   ],
   deny: ['cargo deny --all-features check advisories bans licenses sources'],

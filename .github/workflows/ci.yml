@@ -204,6 +204,11 @@ jobs:
       - run: npm run test:e2e:media -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+      - name: AV1 offered through the real SFU fails closed
+        run: npx playwright test --config e2e/playwright.media.config.ts --project=chromium-media unsupported-sfu-codec.spec.ts
+        env:
+          DILLA_MEDIA_SFU_AV1: '1'
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
 
   deny:
     runs-on: ubuntu-latest

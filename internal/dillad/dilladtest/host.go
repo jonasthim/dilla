@@ -85,6 +85,7 @@ type HostOptions struct {
 	// SFUNoInternalIP is SP-27's negative leg: Firefox cannot pair its non-loopback
 	// local candidate with the loopback-only SFU candidate. Zero keeps the test default.
 	SFUNoInternalIP bool
+	SFUEnableAV1    bool
 }
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
@@ -364,6 +365,7 @@ func (h *Host) startSFU(ctx context.Context) error {
 	if h.o.SFUNoInternalIP {
 		cfg.AdvertiseInternalIP = false
 	}
+	cfg.TestAV1 = h.o.SFUEnableAV1
 	s, err := sfu.Start(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("dilladtest: start the SFU on 127.0.0.1:%d (udp %d): %w", port, udp, err)
