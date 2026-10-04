@@ -15,6 +15,7 @@ const chromium = {
   launchOptions: { args: chromiumMediaArgs(fixtures) },
 };
 const firefox = { ...devices['Desktop Firefox'], launchOptions: { firefoxUserPrefs: FIREFOX_MEDIA_PREFS } };
+const chromiumMedia = { name: 'chromium-media', testDir: resolve(here, 'media'), use: chromium };
 
 // The media suite: a dilla-testhost with an in-process LiveKit and the packages/media harness,
 // both started by globalSetup. The persistence matrix keeps playwright.config.ts unchanged.
@@ -28,10 +29,12 @@ export default defineConfig({
   reporter: [['list']],
   use: { baseURL: 'http://127.0.0.1:5179', trace: 'retain-on-failure' },
   projects: [
-    { name: 'chromium-media', testDir: resolve(here, 'media'), use: chromium },
+    chromiumMedia,
     { name: 'firefox-media', testDir: resolve(here, 'media'), use: firefox },
     // Spike code: committed with its result document, never run in CI (plan MD-17).
     { name: 'spike-chromium', testDir: resolve(here, 'spikes'), use: chromium },
     { name: 'spike-firefox', testDir: resolve(here, 'spikes'), use: firefox },
+    // Run only harness.spec.ts under the default chromium-headless-shell build.
+    { ...chromiumMedia, name: 'spike-chromium-shell', testMatch: /harness\.spec\.ts$/, use: { ...chromium, channel: undefined } },
   ],
 });

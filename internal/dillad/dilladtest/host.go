@@ -82,6 +82,9 @@ type HostOptions struct {
 	// SFUUDPPort are its signalling and media ports; 0 means 7880 and 7882.
 	SFU                 bool
 	SFUPort, SFUUDPPort int
+	// SFUNoInternalIP is SP-27's negative leg: Firefox cannot pair its non-loopback
+	// local candidate with the loopback-only SFU candidate. Zero keeps the test default.
+	SFUNoInternalIP bool
 }
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
@@ -357,7 +360,11 @@ func (h *Host) startSFU(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s, err := sfu.Start(ctx, testSFUConfig(port, udp, h.cfg.LiveKit.APIKey, secret))
+	cfg := testSFUConfig(port, udp, h.cfg.LiveKit.APIKey, secret)
+	if h.o.SFUNoInternalIP {
+		cfg.AdvertiseInternalIP = false
+	}
+	s, err := sfu.Start(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("dilladtest: start the SFU on 127.0.0.1:%d (udp %d): %w", port, udp, err)
 	}

@@ -30,9 +30,11 @@ func main() {
 	withSFU := flag.Bool("sfu", false, "start an in-process LiveKit beside the instance (browser media tests)")
 	sfuPort := flag.Int("sfu-port", dilladtest.DefaultSFUPort, "the in-process LiveKit's signalling port")
 	sfuUDPPort := flag.Int("sfu-udp-port", dilladtest.DefaultSFUUDPPort, "the in-process LiveKit's ICE/UDP port")
+	sfuNoInternalIP := flag.Bool("sfu-no-internal-ip", false,
+		"SP-27 only: render advertise_internal_ip: false (Firefox then cannot pair with the loopback node_ip)")
 	flag.Parse()
 
-	sfu := sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort}
+	sfu := sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort, noInternalIP: *sfuNoInternalIP}
 	if err := run(*public, *control, *dataDir, *core, *logLevel, sfu); err != nil {
 		fmt.Fprintln(os.Stderr, "dilla-testhost:", err)
 		os.Exit(1)
@@ -43,6 +45,7 @@ func main() {
 type sfuOptions struct {
 	enabled       bool
 	port, udpPort int
+	noInternalIP  bool
 }
 
 func run(public, control, dataDir, core, logLevel string, sfu sfuOptions) error {
@@ -70,6 +73,7 @@ func run(public, control, dataDir, core, logLevel string, sfu sfuOptions) error 
 	host, err := dilladtest.NewHost(ctx, dilladtest.HostOptions{
 		DataDir: dataDir, CorePath: core, LogLevel: logLevel,
 		SFU: sfu.enabled, SFUPort: sfu.port, SFUUDPPort: sfu.udpPort,
+		SFUNoInternalIP: sfu.noInternalIP,
 	})
 	if err != nil {
 		return err
