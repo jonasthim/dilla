@@ -5,9 +5,18 @@
 //! is not 16 bytes, a roster whose device bytes are not 16 per leaf). The worker matches on the
 //! string: `E_SFRAME_UNKNOWN_KID` is held for at most 2 s, everything else is dropped and counted.
 //! `u64` crosses as `BigInt`; time is the caller's `performance.now()` in milliseconds.
+//!
+//! A base key crosses as an owned `Vec<u8>`: wasm-bindgen copies the caller's `Uint8Array` into
+//! a buffer it allocates in linear memory and hands that buffer over. [`with_key`] lends the
+//! core a reference into that buffer, never a copy, and zeroes it before it is freed (task 17
+//! review M4). The caller's array is not touched; the media worker zeroes its own copies. What
+//! the core does with the key is the core's: `KeyRing` keeps it in a `Zeroizing` for the epoch's
+//! retention, and its by-value parameter and key derivation can leave transient copies in the
+//! wasm stack region that later calls overwrite (protocol/08).
 
 use dilla_core::sframe::{Codec, KeyRing, NK, SframeError, SframeSender, Slot};
 use wasm_bindgen::prelude::*;
+use zeroize::Zeroize;
 
 fn code(e: SframeError) -> JsError {
     JsError::new(e.code())
@@ -17,8 +26,19 @@ fn bad_options() -> JsError {
     JsError::new("E_BAD_OPTIONS")
 }
 
-fn key16(bytes: &[u8]) -> Result<[u8; NK], JsError> {
-    <[u8; NK]>::try_from(bytes).map_err(|_| bad_options())
+/// Runs `f` on the 16-byte key in `bytes` by reference, then zeroes `bytes` in place, also when
+/// its length is wrong (`wrong_length`) or `f` fails. The caller drops (frees) the zeroed buffer.
+fn with_key<T, E>(
+    bytes: &mut [u8],
+    wrong_length: impl FnOnce() -> E,
+    f: impl FnOnce(&[u8; NK]) -> Result<T, E>,
+) -> Result<T, E> {
+    let out = match <&[u8; NK]>::try_from(&*bytes) {
+        Ok(key) => f(key),
+        Err(_) => Err(wrong_length()),
+    };
+    bytes.zeroize();
+    out
 }
 
 fn leaf(index: u32) -> Result<u16, JsError> {
@@ -41,19 +61,28 @@ impl MediaSender {
     /// N1: `min_epoch` is the first epoch this device committed after the worker started.
     #[wasm_bindgen(constructor)]
     pub fn new(
-        base_key: &[u8],
+        mut base_key: Vec<u8>,
         leaf_index: u32,
         epoch: u64,
         min_epoch: u64,
     ) -> Result<MediaSender, JsError> {
-        SframeSender::new(&key16(base_key)?, leaf(leaf_index)?, epoch, min_epoch)
-            .map(MediaSender)
-            .map_err(code)
+        with_key(&mut base_key, bad_options, |key| {
+            SframeSender::new(key, leaf(leaf_index)?, epoch, min_epoch)
+                .map(MediaSender)
+                .map_err(code)
+        })
     }
 
-    pub fn rekey(&mut self, base_key: &[u8], leaf_index: u32, epoch: u64) -> Result<(), JsError> {
-        self.0.rekey(&key16(base_key)?, leaf(leaf_index)?, epoch);
-        Ok(())
+    pub fn rekey(
+        &mut self,
+        mut base_key: Vec<u8>,
+        leaf_index: u32,
+        epoch: u64,
+    ) -> Result<(), JsError> {
+        with_key(&mut base_key, bad_options, |key| {
+            self.0.rekey(key, leaf(leaf_index)?, epoch);
+            Ok(())
+        })
     }
 
     /// `codec`: 0 Opus, 1 VP8, 2 VP9, 3 H.264. `slot`: 0 microphone, 1 camera, 2 screen video,
@@ -103,28 +132,31 @@ impl MediaReceiver {
     pub fn install_epoch(
         &mut self,
         epoch: u64,
-        base_key: &[u8],
+        mut base_key: Vec<u8>,
         roster_leaves: &[u32],
         roster_devices: &[u8],
         own_leaf: i32,
         now_ms: f64,
     ) -> Result<(), JsError> {
-        let key = key16(base_key)?;
-        let (devices, rest) = roster_devices.as_chunks::<16>();
-        if !rest.is_empty() || devices.len() != roster_leaves.len() {
-            return Err(bad_options());
-        }
-        let mut roster = Vec::with_capacity(roster_leaves.len());
-        for (l, d) in roster_leaves.iter().zip(devices) {
-            roster.push((leaf(*l)?, *d));
-        }
-        let own = match own_leaf {
-            -1 => None,
-            l => Some(leaf(u32::try_from(l).map_err(|_| bad_options())?)?),
-        };
-        self.ring
-            .install_epoch(epoch, key, &roster, own, ms(now_ms));
-        Ok(())
+        with_key(&mut base_key, bad_options, |key| {
+            let (devices, rest) = roster_devices.as_chunks::<16>();
+            if !rest.is_empty() || devices.len() != roster_leaves.len() {
+                return Err(bad_options());
+            }
+            let mut roster = Vec::with_capacity(roster_leaves.len());
+            for (l, d) in roster_leaves.iter().zip(devices) {
+                roster.push((leaf(*l)?, *d));
+            }
+            let own = match own_leaf {
+                -1 => None,
+                l => Some(leaf(u32::try_from(l).map_err(|_| bad_options())?)?),
+            };
+            // KeyRing takes the key by value and keeps it in a Zeroizing of its own for the
+            // epoch's retention.
+            self.ring
+                .install_epoch(epoch, *key, &roster, own, ms(now_ms));
+            Ok(())
+        })
     }
 
     pub fn expire(&mut self, now_ms: f64) {
@@ -152,5 +184,41 @@ impl MediaReceiver {
             .decrypt(codec, frame, device.as_ref(), slot, ms(now_ms))
             .map(|d| d.frame.into_boxed_slice())
             .map_err(code)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_key;
+
+    #[test]
+    fn the_argument_buffer_is_lent_by_reference_then_zeroed() {
+        let mut buf: Vec<u8> = (1..=16).collect();
+        let at = buf.as_ptr();
+        let seen = with_key(
+            &mut buf,
+            || "length",
+            |key| {
+                assert_eq!(key.as_ptr(), at, "the key must not be copied");
+                Ok::<_, &str>(*key)
+            },
+        );
+        assert_eq!(seen, Ok(core::array::from_fn(|i| i as u8 + 1)));
+        assert_eq!(buf, vec![0u8; 16]);
+    }
+
+    #[test]
+    fn a_failing_call_and_a_wrong_length_buffer_are_zeroed_too() {
+        let mut buf = vec![0x5a; 16];
+        assert_eq!(
+            with_key(&mut buf, || "length", |_| Err::<(), _>("refused")),
+            Err("refused")
+        );
+        assert_eq!(buf, vec![0u8; 16]);
+        for len in [0usize, 15, 17, 32] {
+            let mut buf = vec![0x5a; len];
+            assert_eq!(with_key(&mut buf, || "length", |_| Ok(())), Err("length"));
+            assert!(buf.iter().all(|&b| b == 0), "len {len}");
+        }
     }
 }

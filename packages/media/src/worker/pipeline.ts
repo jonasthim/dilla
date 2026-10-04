@@ -334,8 +334,8 @@ export class Pipeline {
 
   private installEpoch(m: Extract<ToWorker, { kind: 'installEpoch' }>): void {
     const now = this.deps.now();
-    // The wasm entry points zero the key slice they are given (M4), and wasm-bindgen copies a `&mut [u8]` back into
-    // the caller's array, so each call gets its own copy; every copy and the transferred key are zeroed here.
+    // The wasm entry points zero the argument buffer wasm-bindgen copies the key into (M4), not the caller's array:
+    // each call gets its own copy here, and every copy and the transferred key are zeroed below, also on a throw.
     const copies: Uint8Array[] = [];
     const key = (): Uint8Array => {
       const c = m.baseKey.slice();

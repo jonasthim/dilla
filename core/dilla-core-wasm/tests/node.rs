@@ -277,14 +277,14 @@ const BOB: [u8; 16] = [0xb2; 16];
 fn alice_receiver() -> MediaReceiver {
     let mut r = MediaReceiver::new();
     let devices: Vec<u8> = ALICE.iter().chain(BOB.iter()).copied().collect();
-    r.install_epoch(7, &BASE, &[0, 1], &devices, 0, 1_000.0)
+    r.install_epoch(7, BASE.to_vec(), &[0, 1], &devices, 0, 1_000.0)
         .unwrap();
     r
 }
 
 #[wasm_bindgen_test]
 fn a_media_sender_and_receiver_round_trip_every_codec() {
-    let mut bob = MediaSender::new(&BASE, 1, 7, 7).unwrap();
+    let mut bob = MediaSender::new(BASE.to_vec(), 1, 7, 7).unwrap();
     let mut alice = alice_receiver();
     let h264 = unhex("000000016742c01fda0280f68078442350000000016588842100000312ff");
     for (codec, slot, frame) in [
@@ -304,15 +304,15 @@ fn a_media_sender_and_receiver_round_trip_every_codec() {
 
 #[wasm_bindgen_test]
 fn a_rekeyed_sender_is_held_as_unknown_until_its_epoch_is_installed() {
-    let mut bob = MediaSender::new(&BASE, 1, 7, 7).unwrap();
+    let mut bob = MediaSender::new(BASE.to_vec(), 1, 7, 7).unwrap();
     let mut alice = alice_receiver();
-    bob.rekey(&[0x0b; 16], 1, 8).unwrap();
+    bob.rekey(vec![0x0b; 16], 1, 8).unwrap();
     let sealed = bob.encrypt(0, 0, 0, &unhex("fc01")).unwrap();
     let err = alice.decrypt(0, &sealed, &BOB, 0, 1_020.0).unwrap_err();
     assert_eq!(message(err), "E_SFRAME_UNKNOWN_KID");
     let devices: Vec<u8> = ALICE.iter().chain(BOB.iter()).copied().collect();
     alice
-        .install_epoch(8, &[0x0b; 16], &[0, 1], &devices, 0, 1_030.0)
+        .install_epoch(8, vec![0x0b; 16], &[0, 1], &devices, 0, 1_030.0)
         .unwrap();
     assert_eq!(
         hex(&alice.decrypt(0, &sealed, &BOB, 0, 1_040.0).unwrap()),
@@ -338,7 +338,7 @@ fn non_canonical_frame() -> Vec<u8> {
 
 #[wasm_bindgen_test]
 fn media_errors_are_bare_codes() {
-    let mut bob = MediaSender::new(&BASE, 1, 7, 7).unwrap();
+    let mut bob = MediaSender::new(BASE.to_vec(), 1, 7, 7).unwrap();
     let mut alice = alice_receiver();
     let sealed = bob.encrypt(0, 0, 0, &unhex("fc01")).unwrap();
     for (got, want) in [
@@ -373,15 +373,15 @@ fn media_errors_are_bare_codes() {
             "E_SFRAME_LAYER_RANGE",
         ),
         (
-            MediaSender::new(&BASE, 70_000, 7, 7).err().unwrap(),
+            MediaSender::new(BASE.to_vec(), 70_000, 7, 7).err().unwrap(),
             "E_SFRAME_LEAF_RANGE",
         ),
         (
-            MediaSender::new(&BASE, 1, 6, 7).err().unwrap(),
+            MediaSender::new(BASE.to_vec(), 1, 6, 7).err().unwrap(),
             "E_SFRAME_STALE_EPOCH",
         ),
         (
-            MediaSender::new(&[0u8; 15], 1, 7, 7).err().unwrap(),
+            MediaSender::new(vec![0u8; 15], 1, 7, 7).err().unwrap(),
             "E_BAD_OPTIONS",
         ),
         (
@@ -426,7 +426,7 @@ fn media_errors_are_bare_codes() {
     assert_eq!(
         message(
             wrong
-                .install_epoch(7, &BASE, &[0, 1], &ALICE, 0, 0.0)
+                .install_epoch(7, BASE.to_vec(), &[0, 1], &ALICE, 0, 0.0)
                 .unwrap_err()
         ),
         "E_BAD_OPTIONS"
