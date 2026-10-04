@@ -1,4 +1,4 @@
-import { RoomEvent, Track, type Participant, type RemoteParticipant, type Room } from 'livekit-client';
+import { RoomEvent, Track, type Participant, type RemoteParticipant, type RemoteTrackPublication, type Room } from 'livekit-client';
 
 /**
  * The spec's "top-6 active-speaker forwarding" as client policy (ruling DEV-04 a): LiveKit has no
@@ -18,8 +18,19 @@ export class SpeakerPolicy {
   private readonly selected = new Map<string, number>();
   /** identity → since when it has been in the top `max` without being selected. */
   private readonly candidates = new Map<string, number>();
+  /** Publications this policy turned off, rather than an application mute. */
+  private readonly excluded = new WeakSet<RemoteTrackPublication>();
   private readonly onSpeakers = (speakers: Participant[]) => this.update(speakers);
-  private readonly onRoster = () => this.apply();
+  private readonly onConnected = (p: RemoteParticipant) => {
+    if (this.selected.size < this.max) this.selected.set(p.identity, this.now());
+    this.apply();
+  };
+  private readonly onDisconnected = (p: RemoteParticipant) => {
+    this.selected.delete(p.identity);
+    this.candidates.delete(p.identity);
+    this.apply();
+  };
+  private readonly onPublished = () => this.apply();
 
   constructor(
     private readonly room: Room,
@@ -34,15 +45,17 @@ export class SpeakerPolicy {
       this.selected.set(p.identity, t);
     }
     room.on(RoomEvent.ActiveSpeakersChanged, this.onSpeakers);
-    room.on(RoomEvent.ParticipantConnected, this.onRoster);
-    room.on(RoomEvent.TrackPublished, this.onRoster);
+    room.on(RoomEvent.ParticipantConnected, this.onConnected);
+    room.on(RoomEvent.ParticipantDisconnected, this.onDisconnected);
+    room.on(RoomEvent.TrackPublished, this.onPublished);
     this.apply();
   }
 
   dispose(): void {
     this.room.off(RoomEvent.ActiveSpeakersChanged, this.onSpeakers);
-    this.room.off(RoomEvent.ParticipantConnected, this.onRoster);
-    this.room.off(RoomEvent.TrackPublished, this.onRoster);
+    this.room.off(RoomEvent.ParticipantConnected, this.onConnected);
+    this.room.off(RoomEvent.ParticipantDisconnected, this.onDisconnected);
+    this.room.off(RoomEvent.TrackPublished, this.onPublished);
   }
 
   private remotes(): RemoteParticipant[] {
@@ -89,7 +102,16 @@ export class SpeakerPolicy {
     const everyone = remotes.length <= this.max;
     for (const p of remotes) {
       const pub = p.getTrackPublication(Track.Source.Microphone);
-      pub?.setSubscribed(everyone || this.selected.has(p.identity));
+      if (!pub) continue;
+      if (everyone || this.selected.has(p.identity)) {
+        if (this.excluded.has(pub)) {
+          if (!pub.isDesired) pub.setSubscribed(true);
+          this.excluded.delete(pub);
+        }
+      } else if (pub.isDesired) {
+        pub.setSubscribed(false);
+        this.excluded.add(pub);
+      }
     }
   }
 }

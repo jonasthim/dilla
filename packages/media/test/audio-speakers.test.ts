@@ -5,7 +5,10 @@ import { SpeakerPolicy } from '../src/audio/speakers';
 
 class FakePub {
   subscribed = true;
+  calls = 0;
+  get isDesired() { return this.subscribed; }
   setSubscribed(v: boolean) {
+    this.calls++;
     this.subscribed = v;
   }
 }
@@ -83,5 +86,40 @@ describe('the top-6 speaker policy (ruling DEV-04 a)', () => {
     now = 10_000;
     r.emit(RoomEvent.ActiveSpeakersChanged, [people[7]]);
     expect(people[7].mic.subscribed).toBe(false);
+  });
+
+  it('does not signal unchanged subscriptions or override an application unsubscribe', () => {
+    const { room: r, people } = room(7);
+    const policy = new SpeakerPolicy(r, { now: () => 0 });
+    expect(people[6].mic.calls).toBe(1);
+    r.emit(RoomEvent.ActiveSpeakersChanged, [people[0]]);
+    expect(people.map((p) => p.mic.calls)).toEqual([0, 0, 0, 0, 0, 0, 1]);
+    r.remoteParticipants.delete(people[6].identity);
+    people[0].mic.setSubscribed(false); // application mute
+    r.emit(RoomEvent.ActiveSpeakersChanged, [people[1]]);
+    expect(people[0].mic.isDesired).toBe(false);
+    policy.dispose();
+  });
+
+  it('seeds the first six by join order when constructed before they arrive', () => {
+    const { room: r, people } = room(2);
+    const policy = new SpeakerPolicy(r, { now: () => 0 });
+    for (let i = 2; i < 7; i++) {
+      people[i] = new FakeParticipant(`p${i}`);
+      (r.remoteParticipants as unknown as Map<string, FakeParticipant>).set(people[i].identity, people[i]);
+      r.emit(RoomEvent.ParticipantConnected, people[i]);
+    }
+    expect(subscribed(people)).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5']);
+    policy.dispose();
+  });
+
+  it('resubscribes a policy-excluded microphone when the roster shrinks to six', () => {
+    const { room: r, people } = room(7);
+    const policy = new SpeakerPolicy(r, { now: () => 0 });
+    expect(people[6].mic.isDesired).toBe(false);
+    r.remoteParticipants.delete(people[0].identity);
+    r.emit(RoomEvent.ParticipantDisconnected, people[0]);
+    expect(people[6].mic.isDesired).toBe(true);
+    policy.dispose();
   });
 });
