@@ -23,6 +23,7 @@
     "test:copy-check": "node --test scripts/check-ui-copy.test.mjs",
     "check:ci": "node scripts/check-ci-workflow.mjs",
     "test:ci-check": "node --test scripts/check-ci-workflow.test.mjs",
+    "test:manifest-writer": "node --test scripts/write-manifest.test.mjs",
     "test:wasm-size-check": "node --test scripts/check-wasm-size.test.mjs",
     "vectors": "[ ! -d packages ] || npm run vectors --workspaces --if-present",
     "test:e2e": "npm run test:e2e -w @dilla/e2e"

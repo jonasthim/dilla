@@ -1,4 +1,6 @@
-import { readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { REPO_ROOT } from './support/host';
 import { expect, test } from './support/persistent';
 import { WebDriver, testHostUrl, testkitEnv } from './support/driver';
 import { injectAxe, runAxe } from './support/axe';
@@ -30,8 +32,8 @@ test('the test host serves the client root same-origin, with its headers, to a p
   expect(headers['cross-origin-opener-policy']).toBeUndefined();
   expect(headers['cross-origin-embedder-policy']).toBeUndefined();
   expect(headers['access-control-allow-origin']).toBeUndefined();
-  await expect(page.locator('meta[name="dilla-web"]')).toHaveAttribute('content', 'placeholder', { timeout: WAIT });
-  await expect(page.locator('body')).toHaveText('dilla: this build does not include the web client.');
+  await expect(page.locator('meta[name="dilla-harness"]')).toHaveAttribute('content', 'core-worker', { timeout: WAIT });
+  await expect(page.locator('#status')).toHaveText('ready', { timeout: WAIT });
 });
 
 test('axe evaluates under the served CSP without a policy violation', async ({ page }) => {
@@ -68,4 +70,31 @@ test('the native peer enrols and builds its community through the public routes'
   } finally {
     await peer.close();
   }
+});
+
+test('the harness build is served by its manifest: the wasm as application/wasm, immutable, and unknown paths fall back to index.html', async ({ request }) => {
+  const manifest = JSON.parse(
+    readFileSync(join(REPO_ROOT, 'packages', 'client-core', 'harness-dist', 'dilla-manifest.json'), 'utf8'),
+  ) as { v: number; files: { path: string; sha256: string; size: number }[] };
+  expect(manifest.v).toBe(1);
+  const wasm = manifest.files.filter((f) => f.path.endsWith('.wasm'));
+  expect(wasm).toHaveLength(1);
+  expect(wasm[0]!.path).toMatch(/^assets\//);
+  const response = await request.get(`/${wasm[0]!.path}`);
+  expect(response.status()).toBe(200);
+  expect(response.headers()['content-type']).toBe('application/wasm');
+  expect(response.headers()['cache-control']).toBe('public, max-age=31536000, immutable');
+  expect(response.headers()['etag']).toBe(`"${wasm[0]!.sha256}"`);
+  // The policy is on every file the web handler serves, the worker's script and the wasm included (L-HTTP-10, ruling 31).
+  expect(response.headers()['content-security-policy']).toBe(CSP);
+  const workerScript = manifest.files.filter((f) => f.path.startsWith('assets/') && f.path.endsWith('.js'));
+  expect(workerScript.length).toBeGreaterThan(0);
+  for (const f of workerScript) {
+    expect((await request.get(`/${f.path}`)).headers()['content-security-policy']).toBe(CSP);
+  }
+  expect((await response.body()).length).toBe(wasm[0]!.size);
+  const fallback = await request.get('/c/some/client/route');
+  expect(fallback.status()).toBe(200);
+  expect(await fallback.text()).toContain('name="dilla-harness"');
+  expect((await request.get('/dilla-manifest.json')).status()).toBe(404);
 });

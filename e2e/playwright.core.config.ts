@@ -4,9 +4,8 @@ import { fileURLToPath } from 'node:url';
 import type { HostConfig } from './web/support/host.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-// Task 17: no web root, so the test host serves the committed placeholder. Task 18 sets
-// 'packages/client-core/harness-dist'.
-const dillaHost: HostConfig = { port: 8453, control: 8454, webRoot: null };
+// From task 18 the test host serves the headless harness page (npm run build:harness -w @dilla/client-core).
+const dillaHost: HostConfig = { port: 8453, control: 8454, webRoot: 'packages/client-core/harness-dist' };
 
 // The client-core integration suite: the headless harness page against dilla-testhost on 8453/8454
 // (production ACL) with a native web-driver peer. Every project runs on a persistent profile

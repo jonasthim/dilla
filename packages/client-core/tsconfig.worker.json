@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src/worker/**/*.ts", "src/cbor/index.ts", "src/hex.ts"]
+  "include": ["src/worker/**/*.ts", "src/cbor/index.ts", "src/hex.ts", "harness/worker.ts"]
 }
