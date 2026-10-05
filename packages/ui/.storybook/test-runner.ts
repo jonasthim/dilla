@@ -1,10 +1,16 @@
 import type { TestRunnerConfig } from '@storybook/test-runner';
 import { injectAxe, checkA11y } from 'axe-playwright';
 
+const STRICT_TARGET_TITLES = ['Form/', 'Ceremony/', 'Shell/', 'Conversation/'];
+
 const config: TestRunnerConfig = {
   async preVisit(page) { await injectAxe(page); },
   async postVisit(page, context) {
-    await checkA11y(page, '#storybook-root', { detailedReport: true, detailedReportOptions: { html: true }, includedImpacts: ['critical', 'serious'] });
+    const strict = STRICT_TARGET_TITLES.some(prefix => context.title.startsWith(prefix));
+    await checkA11y(page, '#storybook-root', {
+      detailedReport: true, detailedReportOptions: { html: true }, includedImpacts: ['critical', 'serious'],
+      ...(strict ? { axeOptions: { rules: { 'target-size': { enabled: true } } } } : {}),
+    });
     // Focus-ring guard. The visible ring is an outline, never a box-shadow,
     // so that a component's own box-shadow state cue (the active channel
     // row's inset bar, the pressed button's underline) cannot swallow it.
@@ -22,6 +28,48 @@ const config: TestRunnerConfig = {
         `${context.title} / ${context.name}: the focused <${focused.tag}> has no visible focus ring ` +
         `(outline-style: ${focused.outlineStyle}, outline-width: ${focused.outlineWidth}; expected solid / 2px)`,
       );
+    }
+    // Print (L-UI DOM contract; F2 allows printing the recovery key). Browsers do not print
+    // backgrounds and the default theme's text is near-white, so under print media the key must be
+    // the system colour CanvasText under a light scheme, and the chrome around it must not print.
+    if (context.id.startsWith('ceremony-recoverykey--')) {
+      await page.emulateMedia({ media: 'print' });
+      try {
+        const r = await page.evaluate(() => {
+          const root = document.querySelector('.d-recovery-key');
+          const group = document.querySelector('.d-recovery-key__group');
+          const actions = document.querySelector('.d-recovery-key__actions');
+          if (!root || !group || !actions) return null;
+          const probe = document.createElement('span');
+          probe.style.color = 'CanvasText';
+          root.appendChild(probe);
+          const want = getComputedStyle(probe).color;
+          probe.remove();
+          return { want, got: getComputedStyle(group).color, scheme: getComputedStyle(root).colorScheme, actions: getComputedStyle(actions).display };
+        });
+        if (!r || r.got !== r.want || r.scheme !== 'light' || r.actions !== 'none') {
+          throw new Error(
+            `${context.title} / ${context.name}: under print media the recovery key is not CanvasText on a light scheme ` +
+            `(group colour ${r?.got}, CanvasText ${r?.want}, color-scheme ${r?.scheme}, actions display ${r?.actions})`,
+          );
+        }
+      } finally {
+        await page.emulateMedia({ media: 'screen' });
+      }
+    }
+    if (context.id.startsWith('ceremony-onboardingframe--')) {
+      await page.emulateMedia({ media: 'print' });
+      try {
+        const footer = await page.evaluate(() => {
+          const el = document.querySelector('.d-onboarding-frame__footer');
+          return el ? getComputedStyle(el).display : null;
+        });
+        if (footer !== null && footer !== 'none') {
+          throw new Error(`${context.title} / ${context.name}: under print media the onboarding footer is displayed (display: ${footer})`);
+        }
+      } finally {
+        await page.emulateMedia({ media: 'screen' });
+      }
     }
   },
 };
