@@ -64,6 +64,25 @@ Rules:
 2. `dilla_binding` MUST be listed in `required_capabilities.extension_types`, so a leaf that does
    not understand it cannot be added.
 3. The extension is immutable for the life of the group. A change requires a new group.
+4. The group id inside a Welcome's or a GroupInfo's GroupContext MUST equal the id of the group the
+   client is joining: the `group_id` the DS serves the Welcome under, or the group whose GroupInfo
+   the client fetched for an external join. A client rejects any other before it stores anything
+   (a Welcome so rejected is reported as `E_BINDING`). The id and the binding are public, so
+   neither alone ties a Welcome or a GroupInfo to the group the DS sequences.
+5. A Welcome's GroupContext `epoch` and `tree_hash` MUST equal the `epoch` and `tree_hash` the DS
+   serves with it (`02-delivery-service.md`, `GET /v1/welcomes` and `mls.welcome`: the group's
+   epoch and tree hash right after the commit the Welcome was uploaded with, from the instance's
+   own public view of the group). A client rejects a Welcome that does not match before it stores
+   anything, and the KeyPackage it was addressed to stays usable. A member can otherwise address,
+   to a device the group adds, the Welcome of a private group with the same id and binding.
+6. A client keeps, per group id, the highest epoch it has held: every epoch it reached by a
+   Welcome, by an external commit the DS accepted, or by a commit it merged. Rejoining over a
+   group it has held, it MUST reject a Welcome whose epoch is at or below that epoch (a replay: a
+   real re-admission is committed after it) and a GroupInfo whose epoch is below it (an external
+   commit lands one epoch above the GroupInfo). A first join has no such floor. A heal after a
+   restore (`02-delivery-service.md`, invariant 11) adopts a member's GroupInfo at or above the
+   instance's restored epoch; a device whose floor is above the healed epoch can rejoin only once
+   the group has passed it.
 
 ## External senders
 
