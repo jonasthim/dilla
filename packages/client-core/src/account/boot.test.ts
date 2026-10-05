@@ -150,8 +150,10 @@ class FakeConfig implements StoreOpenConfigLike {
 describe('wasmCoreOpener', () => {
   const contention = new DOMException('Access Handles cannot be created', 'NoModificationAllowedError');
   const reservations: number[] = [];
+  // The generated CoreHandle class has no `then`; the stub answers undefined for it too, so the
+  // `Promise.resolve(handle)` below resolves with the handle instead of adopting it as a thenable.
   const handle = new Proxy({}, {
-    get: (_t, prop) => (...args: unknown[]) => {
+    get: (_t, prop) => prop === 'then' ? undefined : (...args: unknown[]) => {
       if (prop === 'reserve_capacity') {
         reservations.push(args[0] as number);
         return Promise.resolve();

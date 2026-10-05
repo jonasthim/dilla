@@ -49,8 +49,12 @@ export function indexedDbKekStore(idb: IDBFactory, subtle: SubtleCrypto,
       const wrapKey = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
       const kek = getRandomValues(new Uint8Array(32));
       const iv = getRandomValues(new Uint8Array(12));
-      const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv: new Uint8Array(iv), additionalData: aad(instanceHex) },
-        wrapKey, new Uint8Array(kek)));
+      const plain = new Uint8Array(kek);
+      let ct: Uint8Array;
+      try {
+        ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv: new Uint8Array(iv), additionalData: aad(instanceHex) },
+          wrapKey, plain));
+      } finally { plain.fill(0); }
       try {
         return await inTx<Uint8Array>(idb, 'readwrite', (store, done, fail, tx) => {
           const record: RecordV1 = { v: 1, wrapKey, iv, ct };
@@ -76,12 +80,15 @@ export function indexedDbKekStore(idb: IDBFactory, subtle: SubtleCrypto,
         !(r.ct instanceof Uint8Array) || r.ct.length !== 48 || typeof r.wrapKey !== 'object' || r.wrapKey === null) {
         throw new Error('E_KEK_UNWRAP');
       }
+      let plain: Uint8Array;
       try {
-        const plain = new Uint8Array(await subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(r.iv), additionalData: aad(instanceHex) },
+        plain = new Uint8Array(await subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(r.iv), additionalData: aad(instanceHex) },
           r.wrapKey, new Uint8Array(r.ct)));
+      } catch { throw new Error('E_KEK_UNWRAP'); }
+      try {
         if (plain.length !== 32) throw new Error('E_KEK_UNWRAP');
         return plain.slice();
-      } catch { throw new Error('E_KEK_UNWRAP'); }
+      } finally { plain.fill(0); }
     },
     async remove(instanceHex) {
       await inTx<void>(idb, 'readwrite', (store, done, fail, tx) => {

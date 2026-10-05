@@ -56,8 +56,8 @@ export class FakeCore implements CorePort {
   resume(): Promise<void> {
     this.calls.push('resume');
     const error = this.failures.get('resume');
-    if (error !== undefined) { this.failures.delete('resume'); throw error; }
-    if (this.closed) throw new CoreError('E_STORE_PAUSED', 'the store is paused');
+    if (error !== undefined) { this.failures.delete('resume'); return Promise.reject(error); }
+    if (this.closed) return Promise.reject(new CoreError('E_STORE_PAUSED', 'the store is paused'));
     this.paused = false;
     return Promise.resolve();
   }
