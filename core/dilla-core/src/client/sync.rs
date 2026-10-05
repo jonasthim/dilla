@@ -3,14 +3,16 @@
 use super::error::{
     E_CORE_INPUT, E_CORE_MLS, E_CORE_NOT_FOUND, E_CORE_RELOAD, E_CORE_STATE, E_CORE_STORAGE,
 };
-use super::groups::{STATE_ACTIVE, checked, group_row};
+use super::groups::{STATE_ACTIVE, STATE_GONE, STATE_NEEDS_RESYNC, checked, group_row};
 use super::messages::{
     REASON_OWN_UNKNOWN, REASON_PRUNED, REASON_SENDER_MISMATCH, STATUS_CANNOT_DECRYPT,
     STATUS_DELETED, STATUS_OK, StoredMessage, insert_message,
 };
 use super::{ClientCore, ClientError, Own, wire};
+use crate::cbor::Encoder;
 use crate::envelope::Envelope;
 use crate::mls::{DillaGroup, DillaProcessed, StorageError};
+use openmls::prelude::{GroupId, MlsMessageOut};
 use rusqlite::{OptionalExtension, params};
 use std::collections::BTreeMap;
 
@@ -141,6 +143,213 @@ fn apply_message(
 }
 
 impl ClientCore {
+    pub fn commit_build(
+        &mut self,
+        id: &[u8; 16],
+        proposals_body: &[u8],
+    ) -> Result<Vec<u8>, ClientError> {
+        self.own()?;
+        let proposals = wire::decode_proposals_body(proposals_body)?;
+        let row = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
+        if row.state != STATE_ACTIVE {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                format!("group state {}", row.state),
+            ));
+        }
+        self.signer()?;
+        self.retry_reload(id, |this| {
+            let mut group = this.take_group(id)?.ok_or_else(absent)?;
+            if group.has_pending_commit() {
+                this.keep_group(*id, group);
+                return Err(ClientError::new(E_CORE_STATE, "a commit is pending"));
+            }
+            let result = this.write(|ctx, u| {
+                for item in &proposals {
+                    if item.void { continue; }
+                    let _ = (&item.reference, item.kind, item.target_leaf);
+                    let Ok(message) = wire::protocol_message(&item.blob) else { continue; };
+                    if message.epoch().as_u64() != group.epoch() { continue; }
+                    match group.process_message(ctx.provider, message) {
+                        Ok(DillaProcessed::Proposal(proposal)) => {
+                            let reference = proposal.proposal_reference_ref().as_slice().to_vec();
+                            let exists = u.with_conn(|c| Ok(c.query_row("SELECT 1 FROM app_proposals WHERE group_id=?1 AND ref=?2", params![id.as_slice(), &reference], |r| r.get::<_, i64>(0)).optional()?.is_some()))?;
+                            if !exists {
+                                group.store_pending_proposal(ctx.provider, *proposal)?;
+                                u.with_conn(|c| { c.execute("INSERT INTO app_proposals (group_id,ref,epoch) VALUES(?1,?2,?3)", params![id.as_slice(), reference, group.epoch() as i64])?; Ok(()) })?;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            let e: ClientError = e.into();
+                            if e.code == E_CORE_STORAGE || e.code == E_CORE_RELOAD { return Err(e); }
+                            group = DillaGroup::load(ctx.provider, &GroupId::from_slice(id))?.ok_or_else(absent)?;
+                        }
+                    }
+                }
+                let epoch = group.epoch();
+                let bundle = group.self_update(ctx.provider, ctx.signer.ok_or_else(|| ClientError::new(super::error::E_CORE_NO_IDENTITY, ""))?)?;
+                let info = bundle.group_info.ok_or_else(|| ClientError::new(E_CORE_MLS, "the staged commit carries no GroupInfo"))?;
+                let mut out = Encoder::new();
+                out.array(5).uint(epoch).bytes(&wire::tls(&bundle.commit)?).bytes(&wire::tls(&MlsMessageOut::from(info))?);
+                out.array(bundle.welcomes.len());
+                for (device, welcome) in &bundle.welcomes { out.array(2).bytes(device.as_bytes()).bytes(&wire::tls(welcome)?); }
+                out.null();
+                Ok(out.into_vec())
+            });
+            if result.is_ok() { this.keep_group(*id, group); }
+            result
+        })
+    }
+
+    pub fn commit_confirm(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
+        self.own()?;
+        let row = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
+        if row.state != STATE_ACTIVE {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                format!("group state {}", row.state),
+            ));
+        }
+        self.retry_reload(id, |this| {
+            let mut group = this.take_group(id)?.ok_or_else(absent)?;
+            let result = this.write(|ctx, u| {
+                if group.has_pending_commit() {
+                    group.merge_pending_commit(ctx.provider)?;
+                }
+                u.with_conn(|c| {
+                    c.execute(
+                        "DELETE FROM app_proposals WHERE group_id=?1",
+                        [id.as_slice()],
+                    )?;
+                    Ok(())
+                })?;
+                Ok(wire::encode_apply_result(&wire::ApplyResult {
+                    state: 2,
+                    epoch: group.epoch(),
+                    next_seq: row.next_seq as u64,
+                    new_seqs: vec![],
+                    proposals_pending: 0,
+                    flags: 1,
+                }))
+            });
+            if result.is_ok() {
+                this.keep_group(*id, group);
+            }
+            result
+        })
+    }
+
+    pub fn commit_abort(&mut self, id: &[u8; 16]) -> Result<(), ClientError> {
+        self.own()?;
+        self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
+        self.retry_reload(id, |this| {
+            let Some(mut group) = this.take_group(id)? else {
+                return Ok(());
+            };
+            if !group.has_pending_commit() {
+                this.keep_group(*id, group);
+                return Ok(());
+            }
+            let result = this.write(|ctx, _| {
+                group.clear_pending_commit(ctx.provider)?;
+                Ok(())
+            });
+            if result.is_ok() {
+                this.keep_group(*id, group);
+            }
+            result
+        })
+    }
+
+    pub fn cursor_body(&self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
+        self.own()?;
+        let (state, next_seq, acked_seq): (i64, i64, i64) = self
+            .read(|c| {
+                c.query_row(
+                    "SELECT state,next_seq,acked_seq FROM app_groups WHERE group_id=?1",
+                    [id.as_slice()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(Into::into)
+            })?
+            .ok_or_else(absent)?;
+        if state != STATE_ACTIVE && state != STATE_NEEDS_RESYNC {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                format!("group state {state}"),
+            ));
+        }
+        let loaded = if self.groups.contains_key(id) {
+            None
+        } else {
+            DillaGroup::load(&self.provider, &GroupId::from_slice(id))?
+        };
+        let group = self
+            .groups
+            .get(id)
+            .or(loaded.as_ref())
+            .ok_or_else(|| ClientError::new(E_CORE_STATE, format!("group state {state}")))?;
+        let mut out = Encoder::new();
+        if next_seq - 1 <= acked_seq {
+            out.null();
+        } else {
+            out.array(2).uint((next_seq - 1) as u64).uint(group.epoch());
+        }
+        Ok(out.into_vec())
+    }
+
+    pub fn cursor_acked(
+        &mut self,
+        id: &[u8; 16],
+        last_seq: u64,
+        last_epoch: u64,
+    ) -> Result<(), ClientError> {
+        self.own()?;
+        let row = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
+        if last_seq > (row.next_seq - 1) as u64 {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "last_seq beyond the applied head",
+            ));
+        }
+        let epoch = checked("last_epoch", last_epoch)?;
+        self.write(|_, u| { u.with_conn(|c| { c.execute("UPDATE app_groups SET acked_seq=?2,acked_epoch=?3 WHERE group_id=?1 AND acked_seq<?2", params![id.as_slice(), last_seq as i64, epoch])?; Ok(()) })?; Ok(()) })
+    }
+
+    pub fn message_deleted(&mut self, id: &[u8; 16], seq: u64) -> Result<Vec<u8>, ClientError> {
+        self.own()?;
+        let seq_i = checked("seq", seq)?;
+        let row = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
+        if row.state == STATE_GONE {
+            return Err(ClientError::new(E_CORE_STATE, "state 4"));
+        }
+        let (changed, proposals): (usize, i64) = self.write(|_, u| Ok(u.with_conn(|c| {
+            let changed = c.execute("UPDATE app_messages SET status=2,body='',envelope=NULL,reason='' WHERE group_id=?1 AND seq=?2 AND status<>2", params![id.as_slice(), seq_i])?;
+            let proposals = c.query_row("SELECT COUNT(*) FROM app_proposals WHERE group_id=?1", [id.as_slice()], |r| r.get(0))?;
+            Ok((changed, proposals))
+        })?))?;
+        let loaded = if self.groups.contains_key(id) {
+            None
+        } else {
+            DillaGroup::load(&self.provider, &GroupId::from_slice(id))?
+        };
+        let epoch = self
+            .groups
+            .get(id)
+            .or(loaded.as_ref())
+            .map_or(0, DillaGroup::epoch);
+        Ok(wire::encode_apply_result(&wire::ApplyResult {
+            state: row.state as u8,
+            epoch,
+            next_seq: row.next_seq as u64,
+            new_seqs: if changed == 1 { vec![seq] } else { vec![] },
+            proposals_pending: proposals as u64,
+            flags: 0,
+        }))
+    }
+
     pub fn group_apply(
         &mut self,
         id: &[u8; 16],
@@ -185,53 +394,76 @@ impl ClientCore {
         let mut next = r.next_seq as u64;
         let mut new_seqs = Vec::new();
         let mut flags = 0u8;
+        let mut stopped = false;
         for (seq, row) in rows {
             if seq < next || seq > through {
                 continue;
             }
             checked("seq", seq)?;
-            let (changed, adopted, epoch_changed) = self.retry_reload(id, |this| {
+            let (changed, adopted, epoch_changed, stop) = self.retry_reload(id, |this| {
                 let mut group = this.take_group(id)?.ok_or_else(absent)?;
                 let mut mls_failed = false;
                 let result = this.write(|ctx, u| {
                     let mut changed = false;
                     let mut adopted = false;
                     let mut epoch_changed = false;
+                    let mut stop = false;
                     match &row {
                         Row::Handshake(h) => {
-                            let message = wire::protocol_message(&h.blob)?;
-                            if message.epoch().as_u64() >= group.epoch() {
+                            let hs_epoch = checked("handshakes: epoch", h.epoch)?;
+                            u.with_conn(|c| {
+                                c.execute("INSERT OR REPLACE INTO app_handshake_tail (group_id,seq,epoch,kind,sender,blob) VALUES(?1,?2,?3,?4,?5,?6)",
+                                    params![id.as_slice(), seq as i64, hs_epoch, h.kind as i64, h.sender.map(i64::from), &h.blob])?;
+                                c.execute("DELETE FROM app_handshake_tail WHERE group_id=?1 AND seq NOT IN (SELECT seq FROM app_handshake_tail WHERE group_id=?1 ORDER BY seq DESC LIMIT ?2)",
+                                    params![id.as_slice(), super::schema::HANDSHAKE_TAIL as i64])?;
+                                Ok(())
+                            })?;
+                            let attempt = (|| -> Result<bool, ClientError> {
+                                let message = wire::protocol_message(&h.blob)?;
+                                if message.epoch().as_u64() < group.epoch() { return Ok(false); }
                                 match group.process_message(ctx.provider, message)? {
                                     DillaProcessed::StagedCommit(commit) => {
+                                        if commit.self_removed() {
+                                            group.delete(ctx.provider)?;
+                                            u.with_conn(|c| {
+                                                c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?;
+                                                c.execute("UPDATE app_groups SET state=4,next_seq=?2 WHERE group_id=?1", params![id.as_slice(), seq as i64 + 1])?;
+                                                Ok(())
+                                            })?;
+                                            epoch_changed = true;
+                                            return Ok(true);
+                                        }
+                                        if group.has_pending_commit() { group.clear_pending_commit(ctx.provider)?; }
                                         group.merge_staged_commit(ctx.provider, *commit)?;
-                                        u.with_conn(|c| {
-                                            c.execute(
-                                                "DELETE FROM app_proposals WHERE group_id=?1",
-                                                [id.as_slice()],
-                                            )?;
-                                            Ok(())
-                                        })?;
+                                        u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; Ok(()) })?;
+                                        epoch_changed = true;
+                                    }
+                                    DillaProcessed::OwnPendingCommit => {
+                                        group.merge_pending_commit(ctx.provider)?;
+                                        u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; Ok(()) })?;
                                         epoch_changed = true;
                                     }
                                     DillaProcessed::Proposal(proposal) => {
-                                        let reference =
-                                            proposal.proposal_reference_ref().as_slice().to_vec();
-                                        group.store_pending_proposal(ctx.provider, *proposal)?;
-                                        u.with_conn(|c| {
-                                            c.execute(
-                                                "INSERT OR IGNORE INTO app_proposals \
-                                                 (group_id,ref,epoch) VALUES(?1,?2,?3)",
-                                                params![
-                                                    id.as_slice(),
-                                                    reference,
-                                                    group.epoch() as i64,
-                                                ],
-                                            )?;
-                                            Ok(())
-                                        })?;
+                                        let reference = proposal.proposal_reference_ref().as_slice().to_vec();
+                                        let exists: bool = u.with_conn(|c| Ok(c.query_row("SELECT 1 FROM app_proposals WHERE group_id=?1 AND ref=?2", params![id.as_slice(), &reference], |r| r.get::<_, i64>(0)).optional()?.is_some()))?;
+                                        if !exists {
+                                            group.store_pending_proposal(ctx.provider, *proposal)?;
+                                            u.with_conn(|c| { c.execute("INSERT INTO app_proposals (group_id,ref,epoch) VALUES(?1,?2,?3)", params![id.as_slice(), reference, group.epoch() as i64])?; Ok(()) })?;
+                                        }
                                     }
                                     _ => {}
                                 }
+                                Ok(false)
+                            })();
+                            match attempt {
+                                Ok(removed) => { stop = removed; }
+                                Err(e) if e.code == E_CORE_STORAGE || e.code == E_CORE_RELOAD => return Err(e),
+                                Err(_) if h.kind == 1 || h.kind == 2 => {
+                                    u.with_conn(|c| { c.execute("UPDATE app_groups SET state=3 WHERE group_id=?1", [id.as_slice()])?; Ok(()) })?;
+                                    stop = true;
+                                    mls_failed = true;
+                                }
+                                Err(_) => { mls_failed = true; }
                             }
                         }
                         Row::Message(m) => {
@@ -300,21 +532,19 @@ impl ClientCore {
                             }
                         }
                     }
-                    u.with_conn(|c| {
-                        c.execute(
-                            "UPDATE app_groups SET next_seq=?2 WHERE group_id=?1",
-                            params![id.as_slice(), seq as i64 + 1],
-                        )?;
-                        Ok(())
-                    })?;
-                    Ok((changed, adopted, epoch_changed))
+                    if !stop || matches!(&row, Row::Handshake(_)) && !mls_failed {
+                        u.with_conn(|c| { c.execute("UPDATE app_groups SET next_seq=?2 WHERE group_id=?1", params![id.as_slice(), seq as i64 + 1])?; Ok(()) })?;
+                    }
+                    Ok((changed, adopted, epoch_changed, stop))
                 });
-                if result.is_ok() && !mls_failed {
+                if result.is_ok() && !mls_failed && !matches!(&result, Ok((_,_,_,true))) {
                     this.keep_group(*id, group);
                 }
                 result
             })?;
-            next = seq + 1;
+            if !stop || !matches!(&row, Row::Handshake(_)) {
+                next = seq + 1;
+            }
             if changed {
                 new_seqs.push(seq);
             }
@@ -324,6 +554,22 @@ impl ClientCore {
             if epoch_changed {
                 flags |= 1;
             }
+            if stop {
+                stopped = true;
+                break;
+            }
+        }
+        if !stopped && through + 1 > next {
+            self.write(|_, u| {
+                u.with_conn(|c| {
+                    c.execute(
+                        "UPDATE app_groups SET next_seq=?2 WHERE group_id=?1 AND next_seq<?2",
+                        params![id.as_slice(), through as i64 + 1],
+                    )?;
+                    Ok(())
+                })?;
+                Ok(())
+            })?;
         }
         let row = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
         let group = self.groups.get(id);

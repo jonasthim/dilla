@@ -34,6 +34,52 @@ pub(crate) struct ApplyResult {
     pub proposals_pending: u64,
     pub flags: u8,
 }
+pub(crate) struct ProposalItem {
+    pub reference: Vec<u8>,
+    pub kind: u64,
+    pub target_leaf: Option<u32>,
+    pub blob: Vec<u8>,
+    pub void: bool,
+}
+
+pub(crate) fn decode_proposals_body(bytes: &[u8]) -> Result<Vec<ProposalItem>, ClientError> {
+    let rows = decode_strict(bytes, |d| {
+        let n = d.array_len()?;
+        let mut rows = Vec::with_capacity(n);
+        for _ in 0..n {
+            d.array(5)?;
+            rows.push((
+                d.bytes()?.to_vec(),
+                d.uint()?,
+                d.opt_uint()?,
+                d.bytes()?.to_vec(),
+                d.uint()?,
+            ));
+        }
+        Ok(rows)
+    })
+    .map_err(|e| shape("proposals_body", e))?;
+    rows.into_iter()
+        .map(|(reference, kind, target_leaf, blob, void)| {
+            let target_leaf = target_leaf
+                .map(|v| {
+                    u32::try_from(v)
+                        .map_err(|_| shape("proposals_body", "target leaf out of range"))
+                })
+                .transpose()?;
+            if void > 1 {
+                return Err(shape("proposals_body", format!("void {void}")));
+            }
+            Ok(ProposalItem {
+                reference,
+                kind,
+                target_leaf,
+                blob,
+                void: void == 1,
+            })
+        })
+        .collect()
+}
 #[allow(dead_code)] // next_seq is part of the delivery-service body.
 pub(crate) struct InfoBody {
     pub epoch: u64,

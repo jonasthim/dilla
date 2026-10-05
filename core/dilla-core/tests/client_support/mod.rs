@@ -16,7 +16,10 @@ use dilla_core::ids::{CommunityId, DeviceId, InstanceId, MsgId, UserId};
 use dilla_core::mls::{
     CIPHERSUITE, ConnHandle, DillaBinding, DillaGroup, DillaProvider, GroupKind, external_senders,
 };
-use dilla_core::public_group::{DillaPublicGroup, PublicProcessed, validate_key_package};
+use dilla_core::public_group::{
+    DillaPublicGroup, PublicProcessed, external_propose_add, external_propose_remove,
+    validate_key_package,
+};
 use openmls::messages::group_info::VerifiableGroupInfo;
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
@@ -1039,5 +1042,200 @@ impl RawPeer {
             .post_message(self.device, &e.into_vec())
             .expect("upload");
         seq_of_answer(&answer)
+    }
+}
+
+impl Instance {
+    /// The instance's Add of the device whose KeyPackage `MLSMessage` is `key_package`, queued by
+    /// the relay as invariant 6 queues it. Answers the proposal's seq.
+    pub fn propose_add(&self, relay: &mut Relay, key_package: &[u8]) -> u64 {
+        let incoming = match MlsMessageIn::tls_deserialize_exact(key_package)
+            .expect("an MLSMessage")
+            .extract()
+        {
+            MlsMessageBodyIn::KeyPackage(kp) => kp,
+            other => panic!("expected a KeyPackage, got {other:?}"),
+        };
+        let kp =
+            validate_key_package(&RustCrypto::default(), incoming).expect("a valid KeyPackage");
+        let message = external_propose_add(
+            kp,
+            GroupId::from_slice(&relay.group_id),
+            relay.epoch().into(),
+            &self.signer,
+        )
+        .expect("instance Add");
+        relay.propose(message)
+    }
+
+    /// The instance's Remove of `device`'s leaf. Answers the proposal's seq.
+    pub fn propose_remove(&self, relay: &mut Relay, device: [u8; 16]) -> u64 {
+        let leaf = relay.leaf_of(device);
+        let message = external_propose_remove(
+            LeafNodeIndex::new(leaf),
+            GroupId::from_slice(&relay.group_id),
+            relay.epoch().into(),
+            &self.signer,
+        )
+        .expect("instance Remove");
+        relay.propose(message)
+    }
+}
+
+impl Relay {
+    /// Queues a proposal in the public view, appends its handshake row (kind 0, sender null: the
+    /// instance) and lists it as outstanding. Answers its seq.
+    pub fn propose(&mut self, message: MlsMessageOut) -> u64 {
+        let blob = message.tls_serialize_detached().expect("serialize");
+        let crypto = &self.crypto;
+        let public = self.public.as_mut().expect("the group is registered");
+        let reference = public
+            .queue_proposal(crypto, protocol_in(&blob).expect("a protocol message"))
+            .expect("the relay queues the proposal");
+        let (kind, _, target_leaf, _) = public
+            .queued_proposal_detail(&reference)
+            .expect("detail")
+            .expect("queued");
+        let seq = self.take_seq();
+        let epoch = self.epoch();
+        self.handshakes.push(HsRow {
+            seq,
+            epoch,
+            kind: 0,
+            sender: None,
+            blob: blob.clone(),
+        });
+        self.proposals.push(RelayProposal {
+            reference,
+            kind,
+            target_leaf: target_leaf.map(u64::from),
+            blob,
+        });
+        seq
+    }
+
+    /// GET /v1/groups/{id}/proposals: [[ref, kind, target_leaf|null, blob, void]].
+    pub fn proposals_body(&self) -> Vec<u8> {
+        let mut e = Encoder::new();
+        e.array(self.proposals.len());
+        for p in &self.proposals {
+            e.array(5)
+                .bytes(&p.reference)
+                .uint(p.kind)
+                .opt_uint(p.target_leaf)
+                .bytes(&p.blob)
+                .uint(0);
+        }
+        e.into_vec()
+    }
+
+    /// The leaf `device` holds in the relay's current tree.
+    pub fn leaf_of(&self, device: [u8; 16]) -> u32 {
+        self.public()
+            .members()
+            .into_iter()
+            .find(|m| m.identity.device_id.as_bytes() == &device)
+            .expect("a member of the group")
+            .leaf_index
+    }
+
+    /// Appends a handshake row the public view never saw (a delivery service that stored garbage).
+    pub fn push_handshake(&mut self, kind: u64, blob: Vec<u8>) -> u64 {
+        let seq = self.take_seq();
+        let epoch = self.epoch();
+        self.handshakes.push(HsRow {
+            seq,
+            epoch,
+            kind,
+            sender: None,
+            blob,
+        });
+        seq
+    }
+}
+
+impl Core {
+    /// commit_build over the relay's outstanding proposals → POST …/commit → commit_confirm.
+    pub fn commit(&mut self, relay: &mut Relay) -> Applied {
+        let body = self
+            .core
+            .commit_build(&relay.group_id, &relay.proposals_body())
+            .expect("commit_build");
+        relay.commit(&body).expect("commit accepted");
+        decode_applied(
+            &self
+                .core
+                .commit_confirm(&relay.group_id)
+                .expect("commit_confirm"),
+        )
+    }
+}
+
+impl RawPeer {
+    /// Joins the relay's group by external commit (POST …/resync) against the CHANNEL binding.
+    /// Answers the seq of the external commit.
+    pub fn join_external(&mut self, relay: &mut Relay) -> u64 {
+        let info = group_info_in(&relay.group_info).expect("the relay's GroupInfo");
+        let tree_bytes = relay
+            .public()
+            .export_ratchet_tree()
+            .tls_serialize_detached()
+            .expect("tree");
+        let tree = RatchetTreeIn::tls_deserialize_exact(tree_bytes.as_slice()).expect("tree");
+        let (group, commit, _) = DillaGroup::join_by_external_commit(
+            &self.provider,
+            &self.signer,
+            self.credential.clone(),
+            info,
+            tree,
+            &text_binding(CHANNEL),
+        )
+        .expect("external join");
+        let own_info = group
+            .export_group_info(&self.provider, &self.signer)
+            .expect("group info")
+            .tls_serialize_detached()
+            .expect("serialize");
+        let mut e = Encoder::new();
+        e.array(2)
+            .bytes(&commit.tls_serialize_detached().expect("serialize"))
+            .bytes(&own_info);
+        let answer = relay.resync(&e.into_vec()).expect("resync accepted");
+        self.group = Some(group);
+        decode_strict(&answer, |d| {
+            d.array(2)?;
+            let seq = d.uint()?;
+            d.uint()?;
+            Ok(seq)
+        })
+        .expect("200 body")
+    }
+
+    /// One self-update commit (it carries no proposal here), posted and merged. Answers its seq.
+    pub fn self_update(&mut self, relay: &mut Relay) -> u64 {
+        let group = self.group.as_mut().expect("joined");
+        let epoch = group.epoch();
+        let bundle = group
+            .self_update(&self.provider, &self.signer)
+            .expect("self_update");
+        let info = MlsMessageOut::from(bundle.group_info.expect("the GroupInfo of epoch n + 1"))
+            .tls_serialize_detached()
+            .expect("serialize");
+        let mut e = Encoder::new();
+        e.array(5)
+            .uint(epoch)
+            .bytes(&bundle.commit.tls_serialize_detached().expect("serialize"))
+            .bytes(&info);
+        e.array(0);
+        e.null();
+        let answer = relay.commit(&e.into_vec()).expect("commit accepted");
+        group.merge_pending_commit(&self.provider).expect("merge");
+        decode_strict(&answer, |d| {
+            d.array(2)?;
+            let seq = d.uint()?;
+            d.uint()?;
+            Ok(seq)
+        })
+        .expect("200 body")
     }
 }
