@@ -32,6 +32,7 @@ func planTwoRoutes() []struct{ group, method, path string } {
 	const blobID = "00000000000000000000000000000000000000000000000000000000000000aa"
 	return []struct{ group, method, path string }{
 		{"communities", http.MethodPost, "/v1/communities"},
+		{"communities", http.MethodGet, "/v1/communities"},
 		{"communities", http.MethodGet, "/v1/communities/" + x},
 		{"communities", http.MethodPatch, "/v1/communities/" + x},
 		{"communities", http.MethodDelete, "/v1/communities/" + x},
@@ -183,6 +184,13 @@ func TestThePlanTwoFlowRunsThroughTheCompositionRoot(t *testing.T) {
 	cid := idOf(t, created[0])
 	must(call(t, h, http.MethodGet, "/v1/communities/"+cid.String(), tok, nil), http.StatusOK, "GET community")
 	must(call(t, h, http.MethodGet, "/v1/communities/"+cid.String()+"/members", tok, nil), http.StatusOK, "GET members")
+	mine := decodeArray(t, must(call(t, h, http.MethodGet, "/v1/communities", tok, nil), http.StatusOK, "GET /v1/communities"))
+	if len(mine) != 1 {
+		t.Fatalf("GET /v1/communities = %#v, want the one community this account created", mine)
+	}
+	if row, ok := mine[0].([]any); !ok || len(row) != 4 || idOf(t, row[0]) != cid || row[1] != "lounge" || row[3] != uint64(1) {
+		t.Fatalf("GET /v1/communities row = %#v, want [%s, \"lounge\", owner, 1]", mine[0], cid)
+	}
 
 	// kind text (0), mode readable (1), visibility discoverable (2).
 	channel := decodeArray(t, must(call(t, h, http.MethodPost, "/v1/communities/"+cid.String()+"/channels", tok,
@@ -190,7 +198,9 @@ func TestThePlanTwoFlowRunsThroughTheCompositionRoot(t *testing.T) {
 		http.StatusCreated, "POST channel"))
 	ch := idOf(t, channel[0])
 	chPath := "/v1/channels/" + ch.String()
-	must(call(t, h, http.MethodGet, chPath, tok, nil), http.StatusOK, "GET channel")
+	if doc := decodeArray(t, must(call(t, h, http.MethodGet, chPath, tok, nil), http.StatusOK, "GET channel")); len(doc) != 12 || doc[11] != nil {
+		t.Fatalf("GET channel = %#v, want twelve elements with text_group_id null for a server-readable channel", doc)
+	}
 	must(call(t, h, http.MethodGet, chPath+"/members", tok, nil), http.StatusOK, "GET channel members")
 
 	must(call(t, h, http.MethodPost, "/v1/communities/"+cid.String()+"/roles", tok,

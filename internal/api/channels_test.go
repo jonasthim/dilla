@@ -73,7 +73,7 @@ func TestInviteAndDiscoverableChannelsAreForcedReadable(t *testing.T) {
 // I10 (fix wave): a member discovers a community's channels in band. GET
 // /v1/communities/{id}/channels lists the live channels the caller may view, by position then
 // channel id, each [channel_id, kind, mode, visibility, parent_id|null, name, topic, position,
-// slowmode_seconds, seq]; a category is listed when it or a child of it is visible; a deleted
+// slowmode_seconds, seq, text_group_id|null]; a category is listed when it or a child of it is visible; a deleted
 // channel never is; a non-member gets 404, as for an unknown community.
 func TestAMemberListsTheCommunitysVisibleChannels(t *testing.T) {
 	e, cid, ownerTok := channelEnv(t)
@@ -123,8 +123,8 @@ func TestAMemberListsTheCommunitysVisibleChannels(t *testing.T) {
 		}
 		var out []id.ID
 		for _, r := range rows {
-			if len(r) != 10 {
-				t.Fatalf("an element has %d fields, want 10", len(r))
+			if len(r) != 11 {
+				t.Fatalf("an element has %d fields, want 11", len(r))
 			}
 			var chID id.ID
 			mustUnmarshal(t, r[0], &chID)
@@ -397,7 +397,7 @@ func TestTheGroupPredicatesFollowTheKindTable(t *testing.T) {
 	}
 }
 
-// GET /v1/channels/{id} is the eleven-element channel document; a non-member
+// GET /v1/channels/{id} is the twelve-element channel document; a non-member
 // is told the channel does not exist, and only the owner may change it.
 func TestChannelReadAndManageGates(t *testing.T) {
 	e, cid, tok := channelEnv(t)
@@ -409,8 +409,8 @@ func TestChannelReadAndManageGates(t *testing.T) {
 	}
 	var doc []cbor.RawMessage
 	mustUnmarshalBody(t, body, &doc)
-	if len(doc) != 11 {
-		t.Fatalf("channel document has %d elements, want 11", len(doc))
+	if len(doc) != 12 {
+		t.Fatalf("channel document has %d elements, want 12", len(doc))
 	}
 	var gotID, gotCommunity id.ID
 	var name string

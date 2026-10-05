@@ -36,6 +36,10 @@ column below uses four scopes:
 | `A` | an `enrolled` session whose user holds the instance-admin flag |
 | `—` | no session required |
 
+Session GET routes use the read rate bucket; `GET /i/{code}` uses the invite bucket by client
+address. Any route may answer `429 E_RATE_LIMITED` or `500 E_INTERNAL` in addition to its listed
+statuses.
+
 ## Accounts and devices
 
 | Method and path | Auth | Request | Response |
@@ -53,6 +57,14 @@ column below uses four scopes:
 `POST /v1/accounts` is the sole exception to the device-session proof rule: it creates the device
 and its first session in the same transaction, because the device's key is the one being
 registered and there is no prior key to prove possession of.
+
+The `credential` of the `device` sub-array is opaque to the instance: it is stored as sent (1 to
+8192 bytes) and never parsed or read back. Because the instance mints `user_id` in this response,
+a registering client cannot know it when it builds the credential: it sends the credential with
+16 zero bytes as `user_id`, and after the response rebuilds its MLS credential with the minted
+`user_id` without signing anything again (`sig_ssk_dev` does not cover `user_id` and
+`sig_umk_ssk` covers `ssk_pub` only, `03` § Keys). Every leaf the device creates carries the
+rebuilt credential; the placeholder never appears in a group.
 
 Two rows above describe more than any released instance does. They are recorded here so a client
 plans against what an instance answers, not against what the table would otherwise promise:
@@ -138,7 +150,7 @@ never reaches `/v1` beyond that one endpoint.
 
 | Area | Routes |
 |---|---|
-| communities | `POST /v1/communities`, `GET/PATCH/DELETE /v1/communities/{id}`, `GET /v1/communities/{id}/members`, `DELETE /v1/communities/{id}/members/{user_id}`, `POST /v1/communities/{id}/join`, `POST /v1/communities/{id}/leave` |
+| communities | `POST/GET /v1/communities`, `GET/PATCH/DELETE /v1/communities/{id}`, `GET /v1/communities/{id}/members`, `DELETE /v1/communities/{id}/members/{user_id}`, `POST /v1/communities/{id}/join`, `POST /v1/communities/{id}/leave` |
 | channels | `POST/GET /v1/communities/{id}/channels`, `GET/PATCH/DELETE /v1/channels/{id}`, `PUT /v1/channels/{id}/overwrites/{kind}/{target_id}`, `DELETE` the same, `GET /v1/channels/{id}/members`, `PUT/DELETE /v1/channels/{id}/members/{user_id}` |
 | roles | `POST /v1/communities/{id}/roles`, `PATCH/DELETE /v1/roles/{id}`, `PUT/DELETE /v1/communities/{id}/members/{user_id}/roles/{role_id}` |
 | bans | `PUT /v1/communities/{id}/bans/{user_id}`, `DELETE` the same, `GET /v1/communities/{id}/bans` |
@@ -165,10 +177,11 @@ community answers `404` to everyone.
 | Method and path | Request | Response |
 |---|---|---|
 | `POST /v1/communities` | `[name(tstr), policy(bstr), min_account_age_seconds(uint), require_mod_2fa(uint)]` | `201 [community_id(bstr16), role_everyone(bstr16), policy_version(uint)]` |
+| `GET /v1/communities` | — | `[[community_id(bstr16), name(tstr), owner(bstr16), policy_version(uint)]]`: the live communities the caller is a member of, ordered by `community_id`, unpaginated; `[]` for none |
 | `GET /v1/communities/{id}` | — | `[community_id, owner, name, policy, policy_version, min_account_age_seconds, require_mod_2fa, created]` |
 | `PATCH /v1/communities/{id}` | `[name(tstr\|null), policy(bstr\|null), min_account_age_seconds(uint\|null), require_mod_2fa(uint\|null)]` | `[policy_version(uint)]` |
 | `DELETE /v1/communities/{id}` | — | `204` |
-| `GET /v1/communities/{id}/members?after=` | — | `[[user_id, joined, nick, [role_id]]]`, at most 200 per page, ordered by `user_id`; `after` is the last `user_id` of the previous page |
+| `GET /v1/communities/{id}/members?after=` | — | `[[user_id, joined, nick, [role_id], username(tstr), display(tstr), kind(uint)]]`, at most 200 per page, ordered by `user_id`; `after` is the last `user_id` of the previous page |
 | `DELETE /v1/communities/{id}/members/{user_id}` | — | `204` |
 | `POST /v1/communities/{id}/join` | `[invite(tstr\|null)]` | `[community_id]` |
 | `POST /v1/communities/{id}/leave` | `[]` | `204` |
@@ -205,6 +218,13 @@ community answers `404` to everyone.
 - A member's `nick` is a **display name**, not a handle: free Unicode, NFC, at most 64 characters,
   no control or bidi character. The handle rules do not apply to it. An empty `nick` means the
   member's own display name shows.
+- `GET /v1/communities` lists the caller's own memberships and nothing else: a community the
+  caller left or was removed from, or one that is soft-deleted, is not listed. It names no
+  community in its path, so it has no `404`.
+- A member row's `username`, `display` and `kind` (`0` user, `1` bot) are the member's account
+  fields, as `GET /v1/accounts/me` answers them to that user; a member whose account row is gone
+  answers `""`, `""`, `0`. Only a member of the community reaches the route, so these names are
+  visible exactly to the people the member shares the community with.
 
 The **policy document** is a UTF-8 JSON object of at most 16 KiB. The instance stores the bytes the
 owner sent and serves them back unchanged, but refuses (`400 E_INVALID_REQUEST`) a document that is
@@ -229,8 +249,8 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
 | Method and path | Request | Response |
 |---|---|---|
 | `POST /v1/communities/{id}/channels` | `[kind(uint), mode(uint), visibility(uint), parent_id(bstr16\|null), name(tstr), topic(tstr), position(uint), slowmode_seconds(uint)]` | `201 [channel_id(bstr16), mode(uint), visibility(uint)]` |
-| `GET /v1/channels/{id}` | — | `[channel_id, community_id(bstr16\|null), kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq]` |
-| `GET /v1/communities/{id}/channels` | — | `200 [[channel_id, kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq]]`: the live channels the caller may view (`view_channel`, overwrites applied) by `position` then `channel_id`; a category is listed when it or one of its children is visible; `404` for a non-member |
+| `GET /v1/channels/{id}` | — | `[channel_id, community_id(bstr16\|null), kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]` |
+| `GET /v1/communities/{id}/channels` | — | `200 [[channel_id, kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]]`: the live channels the caller may view (`view_channel`, overwrites applied) by `position` then `channel_id`; a category is listed when it or one of its children is visible; `404` for a non-member |
 | `PATCH /v1/channels/{id}` | `[name(tstr\|null), topic(tstr\|null), mode(uint\|null), visibility(uint\|null), parent_id(bstr16\|null), position(uint\|null), slowmode_seconds(uint\|null)]` | `204` |
 | `DELETE /v1/channels/{id}` | — | `204` |
 
@@ -260,6 +280,12 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   `slowmode_seconds` at most 21 600. A community's channels are ordered by `position`, ties broken
   by `channel_id` (bytewise), the same on every engine.
 - `seq` is the channel's own sequence, which the server-readable message path advances.
+- `text_group_id` is the `group_id` of the channel's oldest open `text` group (`01` § Group kinds),
+  an epoch-unknown one included (`02` invariant 11), for a channel that carries one: kind `0`, `3`
+  or `4` in mode `0`. It is `null` while no such group is open — the client then registers one
+  (`02`, `POST /v1/groups`) — and always `null` for a server-readable channel, a voice channel and
+  a category. A client joins the group it names (`01` § Joining) and does not register another
+  while it is not `null`.
 - Deleting a community deletes its channels in the same transaction. Deleting a channel, or its
   community, closes the channel's open `text` and `call` groups (`02`) once the deletion has
   committed.
