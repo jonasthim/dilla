@@ -2,11 +2,21 @@
 # E_GROUP_EXISTS). A text group is refused for a channel whose visibility is invite or discoverable,
 # or whose mode is readable (403 E_MODE_READABLE); a private e2ee channel takes one, and a call
 # group exists whatever the channel's text mode. The test host records the channels, because the
-# channels table is Plan 2's.
+# channels table is Plan 2's. A registration adopts exactly one leaf, the registering device's
+# own, listed in its user's signed device list: dave's user has published no list, so his
+# registration of either kind is 400 E_INVALID_REQUEST (hardening G), and the same channels then
+# take alice's and bob's groups, so the refusals left nothing behind.
 instance dilla
 client alice
 client bob
 client carol
+client dave device_list=none
+channel e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1 visibility=private mode=e2ee
+expect_reject E_INVALID_REQUEST group unlisted kind=text target=e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1 community=none creator=dave
+group listed kind=text target=e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1 community=none creator=alice
+channel e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6 visibility=invite mode=readable
+expect_reject E_INVALID_REQUEST group unlisted_voice kind=call target=e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6 community=none creator=dave
+group listed_voice kind=call target=e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6 community=none creator=bob
 channel f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1 visibility=private mode=e2ee
 group chat kind=text target=f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1 community=none creator=alice
 expect_reject E_GROUP_EXISTS group again kind=text target=f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1 community=none creator=bob

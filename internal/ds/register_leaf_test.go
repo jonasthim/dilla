@@ -212,6 +212,11 @@ func TestRegisterAdoptsTheRegisteringDevicesOneLeaf(t *testing.T) {
 	if len(members) != 1 || members[0].DeviceID != s.DeviceID || members[0].UserID != s.UserID {
 		t.Fatalf("members = %+v, want the registering device alone", members)
 	}
+	// And Register publishes the member set to the gateway: the device is the group's one fan-out
+	// target, at its leaf, before any commit (the gateway learns nothing from SQL until a restart).
+	if g := h.gw.Debug(s.DeviceID, got.GroupID); !g.InMembers || g.Members != 1 || g.Leaf == nil || *g.Leaf != 0 {
+		t.Fatalf("the gateway after Register: %+v, want the registering device as the one member, at leaf 0", g)
+	}
 }
 
 // A tree with more than one leaf is refused, even when every check on the registering device's

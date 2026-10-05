@@ -231,6 +231,12 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 				"the restored state blob does not import: "+err.Error())
 		}
 	case len(h.RatchetTree) > 0:
+		// The tree is the healer's upload, so the healer must be somebody the instance itself knew
+		// as a member: a device of the group as the restore left it (hardening G2b). A device that
+		// only its own tree names gets the refusal every heal by a non-member gets.
+		if err := d.requireRestoredMember(ctx, groupID, s.DeviceID); err != nil {
+			return CommitResult{}, err
+		}
 		group, err = inst.PublicGroupFromExternal(ctx, h.RatchetTree, h.GroupInfo)
 		if err != nil {
 			return CommitResult{}, errCommitInvalid("reseed", err.Error())
@@ -298,6 +304,9 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	// be one an Add could have put there (finding G2b). The GroupInfo checks above only prove that
 	// the healer built the tree it claims.
 	if reseeded {
+		if err := checkReseededBinding(row.Binding, state.Binding); err != nil {
+			return CommitResult{}, err
+		}
 		if err := d.checkReseededLeaves(ctx, group, groupID, state); err != nil {
 			return CommitResult{}, err
 		}
@@ -838,6 +847,44 @@ func (d *DS) checkReseededLeaves(ctx context.Context, v DeviceListVerifier, grou
 		if !eligible[userID] {
 			return errCommitInvalid("add_acl", "a reseeded leaf's user is not eligible under the channel's ACL")
 		}
+	}
+	return nil
+}
+
+// requireRestoredMember is the reseed's gate on its healer: the uploading device holds a live leaf
+// in mls_members as the restore left them, the instance's own record of the group. Otherwise
+// 403 E_FORBIDDEN, the answer signerLeafOf gives a heal by a device that is not a member.
+func (d *DS) requireRestoredMember(ctx context.Context, groupID, deviceID id.ID) error {
+	members, err := d.opts.Store.ListMembers(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	for _, m := range members {
+		if m.RemovedEpoch == nil && m.DeviceID == deviceID {
+			return nil
+		}
+	}
+	return errForbidden("a reseeding heal needs a healer the restored group holds as a member")
+}
+
+// checkReseededBinding is the reseed's binding check: the uploaded tree's dilla_binding names the
+// group the instance holds - the same kind, community and target as the binding stored with the
+// group. The GroupInfo checks only tie the tree to the group id; without this a reseed could move
+// a group to another target or kind. Rule "reseed".
+func checkReseededBinding(stored, uploaded []byte) error {
+	want, err := decodeBinding(stored)
+	if err != nil {
+		return errCommitInvalid("reseed", "the instance's stored binding does not decode: "+err.Error())
+	}
+	got, err := decodeBinding(uploaded)
+	if err != nil {
+		return errCommitInvalid("reseed", "the reseeded tree's binding does not decode: "+err.Error())
+	}
+	sameCommunity := (want.CommunityID == nil) == (got.CommunityID == nil) &&
+		(want.CommunityID == nil || *want.CommunityID == *got.CommunityID)
+	if got.Kind != want.Kind || got.TargetID != want.TargetID || !sameCommunity {
+		return errCommitInvalid("reseed",
+			"the reseeded tree's dilla_binding (kind, community, target) is not the group's")
 	}
 	return nil
 }

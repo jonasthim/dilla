@@ -15,14 +15,133 @@ package ds_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
+	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
+
+// restoreWithoutBlob is the reseed's starting point for an enrolled group: the tree and the
+// GroupInfo its healer (leaf 0, the GroupInfo's signer) uploads, after a restore that lost the
+// group's state blob.
+func (h *dsHarness) restoreWithoutBlob(t *testing.T, g *dsMessageGroup) (tree, groupInfo []byte) {
+	t.Helper()
+	tree = h.currentTree(t, g)
+	groupInfo = h.groupInfoAt(t, g, g.Epoch())
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	h.destroyStateBlob(t, g)
+	return tree, groupInfo
+}
+
+// refusedReseed asserts that the reseed left the group as the restore left it: still
+// epoch-unknown, no handshake row, the restored member rows unchanged.
+func (h *dsHarness) refusedReseed(t *testing.T, g *dsMessageGroup, members int) {
+	t.Helper()
+	if !h.epochUnknown(t, g.id) {
+		t.Error("a refused reseed must leave the group epoch-unknown")
+	}
+	if got := h.handshakeCount(t, g.id); got != 0 {
+		t.Errorf("a refused reseed wrote %d handshake rows", got)
+	}
+	after, err := h.repo.ListMembers(context.Background(), g.id)
+	if err != nil || len(after) != members {
+		t.Errorf("the member rows changed: %d -> %d (%v)", members, len(after), err)
+	}
+}
+
+// The reseed's healer must have been a member of the group as the instance restored it. A device
+// that names itself in the uploaded tree, but that the restored member rows do not hold (here:
+// leaf 0's row is missing from the restore, every leaf's device is enrolled and its user is
+// eligible), gets the refusal every heal by a non-member gets: 403 E_FORBIDDEN.
+func TestAReseedByADeviceTheRestoreDoesNotHoldIsForbidden(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.enrolledGroup(t)
+	ctx := context.Background()
+	members, err := h.repo.ListMembers(ctx, g.id)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	kept := make([]store.MemberRow, 0, len(members))
+	for _, m := range members {
+		if m.DeviceID == g.device {
+			h.acl.allow(m.UserID) // its user stays eligible: the refusal must be about the device
+			continue
+		}
+		kept = append(kept, m)
+	}
+	if len(kept) != len(members)-1 {
+		t.Fatalf("the healer holds %d rows, want 1", len(members)-len(kept))
+	}
+	if err := h.repo.ReplaceMembers(ctx, g.id, g.Epoch(), kept); err != nil {
+		t.Fatalf("ReplaceMembers: %v", err)
+	}
+	tree, groupInfo := h.restoreWithoutBlob(t, g)
+
+	_, err = h.ds.Heal(ctx, g.session, g.id, ds.HealRequest{GroupInfo: groupInfo, RatchetTree: tree})
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+		t.Fatalf("got %v, want E_FORBIDDEN", err)
+	}
+	h.refusedReseed(t, g, len(kept))
+}
+
+// The reseeded tree's dilla_binding must be the one the instance holds for the group: its kind,
+// its community and its target. Here the instance's stored binding is changed in each of the
+// three (the uploaded tree is the honest one, so the two disagree in exactly that field), and the
+// reseed is refused with rule "reseed".
+func TestAReseedWhoseBindingIsNotTheGroupsIsRefused(t *testing.T) {
+	community := id.New()
+	for _, c := range []struct {
+		name   string
+		change func(b *ds.Binding)
+	}{
+		{"kind", func(b *ds.Binding) { b.Kind = 1 }},
+		{"community", func(b *ds.Binding) { b.CommunityID = &community }},
+		{"target", func(b *ds.Binding) { b.TargetID = id.New() }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newDSHarness(t)
+			g := h.enrolledGroup(t)
+			ctx := context.Background()
+			members, err := h.repo.ListMembers(ctx, g.id)
+			if err != nil {
+				t.Fatalf("ListMembers: %v", err)
+			}
+			tree, groupInfo := h.restoreWithoutBlob(t, g)
+			stored, err := ds.DecodeBindingForTest(h.groupRow(t, g.id).Binding)
+			if err != nil {
+				t.Fatalf("decode the stored binding: %v", err)
+			}
+			c.change(&stored)
+			other, err := cborx.Marshal(stored)
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			db, err := sqlite.OpenWrite(h.path)
+			if err != nil {
+				t.Fatalf("sqlite.OpenWrite: %v", err)
+			}
+			if _, err := db.ExecContext(ctx, "UPDATE mls_groups SET binding = ? WHERE group_id = ?", other, g.id[:]); err != nil {
+				t.Fatalf("set the stored binding: %v", err)
+			}
+			_ = db.Close()
+
+			_, err = h.ds.Heal(ctx, g.session, g.id, ds.HealRequest{GroupInfo: groupInfo, RatchetTree: tree})
+			if !hasRule(err, "reseed") {
+				t.Fatalf("got %v, want E_COMMIT_INVALID/reseed", err)
+			}
+			h.refusedReseed(t, g, len(members))
+		})
+	}
+}
 
 // leafEnrolment is what enrolLeaves makes of one leaf's device.
 type leafEnrolment int
