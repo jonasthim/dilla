@@ -10,6 +10,9 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json"
   },
+  "dependencies": {
+    "@dilla/core-wasm": "*"
+  },
   "devDependencies": {
     "@types/node": "^24",
     "typescript": "^5.6",
