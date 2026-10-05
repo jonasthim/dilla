@@ -304,7 +304,13 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    commits only the later of two `Remove`s of one leaf in the committer's queue, so a committer
    holding the DS's first commits the member's; the device removed is the same). The DS deletes a
    `Remove` satisfied this way with the commit, as it does a referenced one, and never re-issues it;
-   it contains no `Update` from the committer; every member-originated `Remove` targets its proposer's
+   it contains no `Update` from the committer; its UpdatePath leaf node, if a member commit carries
+   one, and every `Update` it applies carry the credential that leaf holds before the commit, byte
+   for byte (`01-groups.md`, "Client policy for proposals from members"; a member `Update` proposal
+   that changes it is refused on `POST /v1/groups/{id}/proposal` the same way, and neither is
+   stored or fanned out; both refusals are `422 E_COMMIT_INVALID` with `rule = "structural"`,
+   because the `PublicGroup`'s own processing refuses the message); every member-originated
+   `Remove` targets its proposer's
    own user (the committer's for a `Remove` the commit carries, the proposing member's for a member
    `Remove` proposal it references — how a member leaves, `01-groups.md`), the proposer being the
    sender the `PublicGroup` authenticated; every `Add` carries a

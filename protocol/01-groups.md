@@ -84,7 +84,13 @@ Client policy for proposals from the external sender:
 
 Client policy for proposals from members:
 
-- `Update`: accept.
+- `Update`: accept only if its leaf node carries a credential byte-identical to the one the
+  proposer's leaf holds before the commit; reject otherwise (`E_CREDENTIAL`). The same rule binds a
+  member commit's UpdatePath: its leaf node keeps the committer's credential. Once a leaf is in a
+  group its credential — which binds the leaf to a `user_id` and a `device_id` (`03-identity.md`,
+  "Credential") — is immutable; only a new leaf carries a new credential. The leaf's signature key
+  may change under this rule; `03-identity.md`'s leaf checks govern it. A client refuses such a proposal before queueing it and such a commit before merging
+  it; the DS refuses both (`02-delivery-service.md`, invariant 4).
 - `Remove`: accept only if the target leaf belongs to the proposer's own user — the committer's for
   a `Remove` carried in the commit (device revocation), the proposing member's for a `Remove`
   proposal the commit references (a member leaving, below); reject otherwise
