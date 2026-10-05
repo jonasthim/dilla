@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './support/test';
 import { frameAccountingErrors } from './support/frame-accounting';
 import type { DillaMediaStats } from '../../packages/media/src/protocol';
 import type { DillaRemoteStats } from '../../packages/media/harness/main';

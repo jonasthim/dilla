@@ -2,7 +2,8 @@
 // host's LiveKit with debug tokens (plan MD-13), publish the fake microphone and camera through the
 // stub manager's pass-through transforms, and each sees every remote track decode. Every later
 // browser test and spike stands on this.
-import { devices, expect, firefox, test, type Browser, type Page } from '@playwright/test';
+import { devices, firefox, type Browser, type Page } from '@playwright/test';
+import { expect, test } from './support/test.ts';
 import { FIREFOX_MEDIA_PREFS } from './support/fixtures.ts';
 import { CONTROL } from './support/testhost.ts';
 import { debugToken, deviceIdentity, sfuInfo, waitForDecode, type HarnessWindow } from './support/lk.ts';

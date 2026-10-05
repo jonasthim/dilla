@@ -1,7 +1,7 @@
 // LiveKit v1.13.7 puts supported codecs first in JoinResponse even when enabled_codecs lists AV1 first.
 // This real-SFU leg offers AV1 and asks dilla to publish it; the literal unsupported-first order
 // cannot be produced by this pinned server. The measured JoinResponse order is logged below.
-import { expect, test } from '@playwright/test';
+import { expect, test } from './support/test';
 import { DS_URL, MediaDriver, epochWire, testkitEnv, type CallToken, type MediaKey } from './support/driver';
 import type { DillaHarness, DillaHarness21 } from '../../packages/media/harness/main';
 

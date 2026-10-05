@@ -1,6 +1,6 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './support/test';
 import { DS_URL, MediaDriver, epochWire, kidHex, runMediabot, testkitEnv, type CallToken, type MediaKey } from './support/driver';
 import type { DillaHarness, DillaHarness21 } from '../../packages/media/harness/main';
 
