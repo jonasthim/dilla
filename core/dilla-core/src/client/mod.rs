@@ -3,8 +3,11 @@
 //! change runs inside exactly one `DillaStorage::unit`.
 
 mod error;
+mod groups;
 mod identity;
+mod messages;
 mod schema;
+mod sync;
 mod wire;
 
 pub use error::ClientError;
@@ -12,9 +15,12 @@ pub use identity::session_preimage;
 pub use schema::{HANDSHAKE_TAIL, migrate_app};
 
 use crate::cbor::decode_strict;
+use crate::identity::CredentialIdentity;
 use crate::mls::{CIPHERSUITE, ConnHandle, DillaGroup, DillaProvider, StorageError, UnitScope};
-use error::{E_CORE_STATE, E_CORE_STORAGE};
+use error::{E_CORE_NO_IDENTITY, E_CORE_RELOAD, E_CORE_STATE, E_CORE_STORAGE};
+use openmls::prelude::GroupId;
 use openmls_basic_credential::SignatureKeyPair;
+use rusqlite::OptionalExtension;
 use std::collections::BTreeMap;
 
 pub struct ClientCore {
@@ -28,7 +34,74 @@ struct Ctx<'a> {
     signer: Option<&'a SignatureKeyPair>,
 }
 
+struct Own {
+    instance_id: [u8; 16],
+    user_id: [u8; 16],
+    device_id: [u8; 16],
+    dsk_pub: [u8; 32],
+    credential: Vec<u8>,
+    kind: u8,
+    tier: u8,
+}
+
 impl ClientCore {
+    fn own(&self) -> Result<Own, ClientError> {
+        let raw: Option<Vec<u8>> = self.read(|c| {
+            c.query_row("SELECT v FROM app_meta WHERE k = 'identity'", [], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(StorageError::from)
+        })?;
+        let raw = raw.ok_or_else(|| ClientError::new(E_CORE_NO_IDENTITY, ""))?;
+        let record = identity::IdentityRecord::decode(&raw)?;
+        let credential = CredentialIdentity::decode(&record.credential).map_err(|_| {
+            ClientError::new(
+                E_CORE_STORAGE,
+                "identity record: credential does not decode",
+            )
+        })?;
+        Ok(Own {
+            instance_id: record.instance_id,
+            user_id: record.user_id,
+            device_id: record.device_id,
+            dsk_pub: record.dsk_pub,
+            credential: record.credential,
+            kind: credential.kind.as_u8(),
+            tier: credential.tier.as_u8(),
+        })
+    }
+
+    fn signer(&self) -> Result<&SignatureKeyPair, ClientError> {
+        self.signer
+            .as_ref()
+            .ok_or_else(|| ClientError::new(E_CORE_NO_IDENTITY, ""))
+    }
+
+    fn take_group(&mut self, group_id: &[u8; 16]) -> Result<Option<DillaGroup>, ClientError> {
+        if let Some(group) = self.groups.remove(group_id) {
+            return Ok(Some(group));
+        }
+        DillaGroup::load(&self.provider, &GroupId::from_slice(group_id)).map_err(Into::into)
+    }
+
+    fn keep_group(&mut self, group_id: [u8; 16], group: DillaGroup) {
+        self.groups.insert(group_id, group);
+    }
+
+    fn retry_reload<T>(
+        &mut self,
+        group_id: &[u8; 16],
+        mut f: impl FnMut(&mut Self) -> Result<T, ClientError>,
+    ) -> Result<T, ClientError> {
+        let first = f(self);
+        if matches!(&first, Err(e) if e.code == E_CORE_RELOAD) {
+            self.groups.remove(group_id);
+            f(self)
+        } else {
+            first
+        }
+    }
     fn write<T>(
         &mut self,
         f: impl FnOnce(&Ctx<'_>, &UnitScope<'_>) -> Result<T, ClientError>,

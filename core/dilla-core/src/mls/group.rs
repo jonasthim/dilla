@@ -839,6 +839,11 @@ impl DillaGroup {
         self.group.epoch().as_u64()
     }
 
+    /// Whether a staged commit awaits a merge or abort.
+    pub fn has_pending_commit(&self) -> bool {
+        self.group.pending_commit().is_some()
+    }
+
     pub fn own_leaf_index(&self) -> LeafNodeIndex {
         self.group.own_leaf_index()
     }
