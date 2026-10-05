@@ -35,10 +35,10 @@ test('the Go peer and Chromium decrypt each other (SP-15 cross-SDK)', async ({ b
     const eKey = await driver.request<MediaKey>('media_key', { actor: 'erin' });
     const eTok = await driver.request<CallToken>('call_token', { actor: 'erin', vdec: 'vp8,h264' });
     const bot = runMediabot([
-      '-url', eTok.livekitUrl, '-token', eTok.token, '-base-key', eKey.baseKey, '-leaf', String(eKey.selfLeaf),
+      '-url', eTok.livekitUrl, '-token', eTok.token, '-base-key-file', '-', '-leaf', String(eKey.selfLeaf),
       '-epoch', eKey.epoch, '-roster', eKey.roster.map((r) => `${r.leaf}:${r.deviceId}`).join(','),
       '-publish', 'opus,vp8,h264', '-subscribe', '-expect-device', aliceDev, '-duration', '25s', '-media', media,
-    ], 90_000);
+    ], 90_000, eKey.baseKey);
     // The bot is a participant once alice's room shows it; then it takes the lease for its video.
     await expect.poll(async () => (await page.evaluate(() => (globalThis as unknown as W).harness.dillaParticipantSeen()))[erinDev] !== undefined, { timeout: 20_000 }).toBe(true);
     await driver.request('share', { actor: 'erin', callId: eTok.callId });
@@ -48,10 +48,11 @@ test('the Go peer and Chromium decrypt each other (SP-15 cross-SDK)', async ({ b
     await expect
       .poll(async () => {
         const s = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats())).filter((x) => x.participantIdentity === erinDev);
-        observed = { remote: s, dilla: await page.evaluate(() => (globalThis as unknown as W).harness.dillaStats()) };
+        const dilla = await page.evaluate(() => (globalThis as unknown as W).harness.dillaStats());
+        observed = { remote: s, dilla };
         return [
-          s.some((x) => x.kind === 'audio' && x.totalSamplesReceived > 0),
-          s.some((x) => x.source === 'camera' && x.framesDecoded > 0),
+          s.some((x) => x.kind === 'audio' && x.totalSamplesReceived > 0 && (dilla.decryptedByTrack[x.trackId] ?? 0) > 0),
+          s.some((x) => x.source === 'camera' && x.framesDecoded > 0 && (dilla.decryptedByTrack[x.trackId] ?? 0) > 0),
           s.some((x) => x.source === 'screen_share' && x.framesDecoded > 0),
         ];
       }, { timeout: 30_000 })
@@ -61,6 +62,8 @@ test('the Go peer and Chromium decrypt each other (SP-15 cross-SDK)', async ({ b
     const report = await bot;
     expect(Object.keys(report.published).sort()).toEqual(['h264', 'opus', 'vp8']);
     expect(report.decrypted).toBeGreaterThan(0);
+    expect(report.decrypted_by_kind.microphone).toBeGreaterThan(0);
+    expect(report.decrypted_by_kind.camera).toBeGreaterThan(0);
     expect(Object.entries(report.dropped).filter(([code, n]) => code !== 'sif' && n > 0)).toEqual([]);
   } finally {
     await driver.close();

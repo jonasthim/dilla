@@ -80,6 +80,34 @@ const dec = (trackId = 'dec-0'): DillaTransformOptions => ({
   dilla: 1, side: 'decode', trackId, participantIdentity: DEV_B, slot: 0, codec: 'opus', encryption: 1,
 });
 
+describe('epoch window mirrors the receiver', () => {
+  it('ignores a late install older than 255 commits, even when its KID aliases the newest', () => {
+    const { p, cipher, posted } = setup();
+    install(p, 300n);
+    const calls = cipher.keys.length;
+    install(p, 44n);
+    expect(cipher.keys).toHaveLength(calls);
+    expect(p.stats.currentEpoch).toBe('300');
+    expect(p.stats.knownKids).toHaveLength(2);
+    expect(posted.filter((m) => m.kind === 'epochInstalled')).toHaveLength(1);
+  });
+
+  it('does not reinstall a retired epoch and retires epochs outside the window', () => {
+    const { p, posted, advance } = setup();
+    install(p, 5n);
+    install(p, 6n);
+    advance(10_000);
+    p.tick();
+    const installed = posted.filter((m) => m.kind === 'epochInstalled').length;
+    install(p, 5n);
+    expect(posted.filter((m) => m.kind === 'epochInstalled')).toHaveLength(installed);
+    install(p, 7n);
+    install(p, 263n);
+    expect(posted).toContainEqual({ kind: 'epochRetired', epoch: 6n });
+    expect(p.stats.knownKids).not.toContain('6');
+  });
+});
+
 describe('zero-byte audio DTX frames', () => {
   it('sends empty audio without encryption and still encrypts a one-byte audio frame', () => {
     const { p, cipher } = setup();

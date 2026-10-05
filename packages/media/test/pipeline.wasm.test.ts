@@ -130,6 +130,8 @@ describe('the dilla-media/1 pipeline over the real wasm', () => {
       }
       expect(A.p.stats.encrypted[kidHex(0, 7n)][c.slot]).toBe(c.frames.length);
       expect(B.p.stats.decrypted[kidHex(0, 7n)]).toBe(c.frames.length);
+      expect(B.p.stats.decryptedByTrackKid[`dec-${c.slot}`]?.[kidHex(0, 7n)]).toBe(c.frames.length);
+      expect(B.p.stats.verifiedByTrack[`dec-${c.slot}`]).toBe(c.frames.length);
       expect(B.p.stats.verified).toEqual({ [DEV_A]: c.frames.length }); // N6
       expect(B.p.stats.passedThrough).toBe(0);
       expect(Object.values(B.p.stats.dropped).every((n) => n === 0)).toBe(true);
@@ -149,6 +151,22 @@ describe('the dilla-media/1 pipeline over the real wasm', () => {
     expect(sb.out).toHaveLength(0);
     expect(B.p.stats.dropped.senderMismatch).toBe(1);
     expect(B.p.stats.verified).toEqual({});
+  });
+
+  it('refuses a removed device under a superseded epoch', () => {
+    const A = worker();
+    const B = worker();
+    install(A.p, 7n, 0);
+    install(B.p, 7n, 1);
+    const sent = new Sink();
+    const received = new Sink();
+    const tx = encoder(A.p, sent, 0, 'opus');
+    const rx = decoder(B.p, received, 0, 'opus');
+    const sealed = encrypt(A.p, tx, sent, hex('fc0102030405060708'));
+    install(B.p, 8n, 1, [{ leaf: 1, deviceId: DEV_B }, { leaf: 2, deviceId: DEV_C }]);
+    B.p.frame(rx, frame(sealed));
+    expect(received.out).toHaveLength(0);
+    expect(B.p.stats.dropped.senderMismatch).toBe(1);
   });
 
   it('reads a three-byte KID (leaf 300) from the header', () => {
@@ -372,6 +390,23 @@ describe('the dilla-media/1 pipeline over the real wasm', () => {
     expect(B.posted.filter((m) => m.kind === 'epochRetired')).toEqual([{ kind: 'epochRetired', epoch: 7n }]);
     expect(B.p.stats.knownKids).not.toContain(kidHex(0, 7n));
     expect((globalThis as { __dillaMediaStats?: unknown }).__dillaMediaStats).toBe(B.p.stats);
+  });
+
+  it('mirrors the wasm receiver’s late-install, retired-epoch and same-mod-256 rules', () => {
+    const B = worker();
+    install(B.p, 300n, 1);
+    install(B.p, 44n, 1); // same low byte, but outside the 255-epoch window
+    expect(B.p.stats.currentEpoch).toBe('300');
+    expect(B.posted.filter((m) => m.kind === 'epochInstalled')).toHaveLength(1);
+    install(B.p, 301n, 1);
+    B.advance(10_000);
+    B.p.tick();
+    install(B.p, 300n, 1); // a dropped epoch cannot reappear
+    expect(B.posted.filter((m) => m.kind === 'epochInstalled')).toHaveLength(2);
+    install(B.p, 557n, 1); // aliases 301 modulo 256
+    expect(B.posted).toContainEqual({ kind: 'epochRetired', epoch: 301n });
+    expect(B.p.stats.currentEpoch).toBe('557');
+    expect(B.p.stats.knownKids).toHaveLength(ROSTER.length);
   });
 });
 

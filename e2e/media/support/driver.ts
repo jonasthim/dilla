@@ -31,6 +31,7 @@ export interface CallToken {
 export interface MediabotReport {
   published: Record<string, string>;
   decrypted: number;
+  decrypted_by_kind: Record<string, number>;
   dropped: Record<string, number>;
 }
 
@@ -128,13 +129,14 @@ export class MediaDriver {
 }
 
 /** Runs dilla-mediabot to completion and parses its one-line report. */
-export function runMediabot(args: string[], timeoutMs: number): Promise<MediabotReport> {
+export function runMediabot(args: string[], timeoutMs: number, stdin?: string): Promise<MediabotReport> {
   const bin = mediabotBinary();
   if (!existsSync(bin)) {
     return Promise.reject(new Error(`dilla-mediabot not found at ${bin}: go build -o target/dilla-mediabot ./cmd/dilla-mediabot, or set DILLA_MEDIABOT`));
   }
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stdin.end(stdin === undefined ? undefined : `${stdin}\n`);
     let out = '';
     let err = '';
     child.stdout.on('data', (d: Buffer) => (out += d.toString()));

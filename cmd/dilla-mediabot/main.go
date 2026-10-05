@@ -45,10 +45,11 @@ type config struct {
 }
 
 type report struct {
-	Published   map[string]string `json:"published"`
-	Decrypted   uint64            `json:"decrypted"`
-	EmptyFrames uint64            `json:"empty_frames"`
-	Dropped     map[string]uint64 `json:"dropped"`
+	Published       map[string]string `json:"published"`
+	Decrypted       uint64            `json:"decrypted"`
+	DecryptedByKind map[string]uint64 `json:"decrypted_by_kind"`
+	EmptyFrames     uint64            `json:"empty_frames"`
+	Dropped         map[string]uint64 `json:"dropped"`
 }
 
 func deviceID(s string) ([16]byte, error) {
@@ -220,7 +221,12 @@ func run(ctx context.Context, c config) (report, error) {
 	}
 	ring := sframe.NewKeyRing(time.Now)
 	ring.InstallEpoch(c.Epoch, c.BaseKey, c.Roster, int(c.Leaf))
-	counters := &media.Counters{}
+	counters := map[livekit.TrackSource]*media.Counters{
+		livekit.TrackSource_MICROPHONE:         {},
+		livekit.TrackSource_CAMERA:             {},
+		livekit.TrackSource_SCREEN_SHARE:       {},
+		livekit.TrackSource_SCREEN_SHARE_AUDIO: {},
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -248,7 +254,7 @@ func run(ctx context.Context, c config) (report, error) {
 				mu.Lock()
 				sif := room.SifTrailer()
 				mu.Unlock()
-				_ = media.DecryptLoop(ctx, track, media.NewFrameDecryptor(ring, codec, dev, slot, sif, counters))
+				_ = media.DecryptLoop(ctx, track, media.NewFrameDecryptor(ring, codec, dev, slot, sif, counters[pub.Source()]))
 			}()
 		},
 	}}
@@ -296,8 +302,19 @@ func run(ctx context.Context, c config) (report, error) {
 	case <-ctx.Done():
 	case <-time.After(c.Duration):
 	}
-	decrypted, dropped := counters.Snapshot()
-	return report{Published: published, Decrypted: decrypted, EmptyFrames: counters.EmptyFrames(), Dropped: dropped}, nil
+	byKind := map[string]uint64{}
+	dropped := map[string]uint64{}
+	var decrypted, emptyFrames uint64
+	for source, counter := range counters {
+		n, losses := counter.Snapshot()
+		byKind[strings.ToLower(strings.TrimPrefix(source.String(), "SOURCE_"))] = n
+		decrypted += n
+		emptyFrames += counter.EmptyFrames()
+		for reason, count := range losses {
+			dropped[reason] += count
+		}
+	}
+	return report{Published: published, Decrypted: decrypted, DecryptedByKind: byKind, EmptyFrames: emptyFrames, Dropped: dropped}, nil
 }
 
 func main() {
