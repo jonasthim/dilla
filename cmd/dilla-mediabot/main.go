@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -72,28 +73,46 @@ func readBaseKey(path string, stdin io.Reader) ([16]byte, error) {
 	case "-":
 		b, err := io.ReadAll(io.LimitReader(stdin, 256))
 		if err != nil {
+			clear(b)
 			return key, fmt.Errorf("-base-key-file -: %w", err)
 		}
 		raw = b
 	default:
-		info, err := os.Stat(path)
+		fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 		if err != nil {
 			return key, fmt.Errorf("-base-key-file: %w", err)
+		}
+		f := os.NewFile(uintptr(fd), path)
+		defer func() { _ = f.Close() }()
+		info, err := f.Stat()
+		if err != nil {
+			return key, fmt.Errorf("-base-key-file: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return key, errors.New("-base-key-file must be a regular file")
+		}
+		if st, ok := info.Sys().(*syscall.Stat_t); !ok || int64(st.Uid) != int64(os.Geteuid()) {
+			return key, errors.New("-base-key-file must be owned by the current user")
 		}
 		if info.Mode().Perm()&0o077 != 0 {
 			return key, fmt.Errorf("-base-key-file %s is mode %#o: it must be readable by its owner only (chmod 600)", path, info.Mode().Perm())
 		}
-		// #nosec G304 -- the operator names the key file; its mode was checked above.
-		if raw, err = os.ReadFile(path); err != nil {
+		if raw, err = io.ReadAll(io.LimitReader(f, 256)); err != nil {
+			clear(raw)
 			return key, fmt.Errorf("-base-key-file: %w", err)
 		}
 	}
-	s := strings.TrimSpace(string(raw))
-	clear(raw)
-	if len(s) != 32 || strings.ToLower(s) != s {
+	defer clear(raw)
+	s := bytes.TrimSpace(raw)
+	if len(s) != 32 {
 		return key, errors.New("-base-key-file must hold the base key as 32 lowercase hex")
 	}
-	if _, err := hex.Decode(key[:], []byte(s)); err != nil {
+	for _, b := range s {
+		if b >= 'A' && b <= 'F' {
+			return key, errors.New("-base-key-file must hold the base key as 32 lowercase hex")
+		}
+	}
+	if _, err := hex.Decode(key[:], s); err != nil {
 		return [16]byte{}, errors.New("-base-key-file must hold the base key as 32 lowercase hex")
 	}
 	return key, nil
@@ -126,6 +145,7 @@ func parseFlags(args []string, stdin io.Reader, stderr io.Writer) (config, error
 		return config{}, err
 	}
 	c.BaseKey = key
+	clear(key[:])
 	if *leaf < 0 || *leaf > 65535 {
 		return config{}, errors.New("-leaf must be 0…65535")
 	}
@@ -214,13 +234,15 @@ func waitPublishSource(ctx context.Context, room *lksdk.Room, source livekit.Tra
 	}
 }
 
-func run(ctx context.Context, c config) (report, error) {
+func run(ctx context.Context, c *config) (report, error) {
+	defer clear(c.BaseKey[:])
 	sender, err := sframe.NewSender(c.BaseKey, c.Leaf, c.Epoch, c.MinEpoch)
 	if err != nil {
 		return report{}, fmt.Errorf("sender: %w", err)
 	}
 	ring := sframe.NewKeyRing(time.Now)
 	ring.InstallEpoch(c.Epoch, c.BaseKey, c.Roster, int(c.Leaf))
+	clear(c.BaseKey[:])
 	counters := map[livekit.TrackSource]*media.Counters{
 		livekit.TrackSource_MICROPHONE:         {},
 		livekit.TrackSource_CAMERA:             {},
@@ -328,7 +350,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	rep, err := run(ctx, c)
+	rep, err := run(ctx, &c)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dilla-mediabot:", err)
 		os.Exit(1)

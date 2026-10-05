@@ -73,7 +73,8 @@ func TrackBinding(identity string, kind webrtc.RTPCodecType, mime string, source
 		return [16]byte{}, 0, 0, false
 	}
 	audio := slot == sframe.Mic || slot == sframe.ScreenAudio
-	if (kind == webrtc.RTPCodecTypeAudio) != audio || (kind != webrtc.RTPCodecTypeAudio && kind != webrtc.RTPCodecTypeVideo) {
+	codecAudio := codec == sframe.Opus
+	if (kind == webrtc.RTPCodecTypeAudio) != audio || (kind == webrtc.RTPCodecTypeAudio) != codecAudio || (kind != webrtc.RTPCodecTypeAudio && kind != webrtc.RTPCodecTypeVideo) {
 		return [16]byte{}, 0, 0, false
 	}
 	return device, codec, slot, true

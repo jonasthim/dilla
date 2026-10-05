@@ -251,6 +251,16 @@ describe('DillaE2EEManager (interfaces.md c.4)', () => {
     expect(events.at(-1)).toEqual([false, DEV_B]);
   });
 
+  it('removes a member from roster status as soon as the newest epoch removes it', async () => {
+    const { w, m, room } = setup();
+    room.remoteParticipants.set('bob', { identity: DEV_B });
+    const events: unknown[][] = [];
+    m.on('participantEncryptionStatusChanged', (enabled: boolean, p: { identity: string }) => events.push([enabled, p.identity]));
+    await install(w, m);
+    await install(w, m, keys(6n, [{ leaf: 0, deviceId: DEV_LOCAL }]));
+    expect(events).toContainEqual([false, DEV_B]);
+  });
+
   it('has no data-channel encryption: the setter throws on true, both data methods reject (G11)', async () => {
     const { m } = setup();
     expect(m.isDataChannelEncryptionEnabled).toBe(false);

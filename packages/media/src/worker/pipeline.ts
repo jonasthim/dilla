@@ -112,7 +112,7 @@ export class Pipeline {
   private minNextSenderEpoch = 0n; // N1 across clearKeys: never a second counter space under a used KID
   private selfLeaf = -1;
   private readonly epochs: Array<{ epoch: bigint; leaves: number[]; supersededAt: number | null }> = [];
-  private readonly retiredEpochs = new Set<bigint>();
+  private droppedEpochFloor: bigint | null = null;
   private sif = new Uint8Array(0);
   private readonly layers = new LayerAllocator();
   private readonly layerSpaceReported = new Set<string>();
@@ -186,19 +186,23 @@ export class Pipeline {
   tick(): void {
     const now = this.deps.now();
     this.receiver.expire(now);
-    for (let i = this.epochs.length - 1; i >= 0; i--) {
-      const e = this.epochs[i];
-      if (e.supersededAt !== null && now - e.supersededAt >= RETENTION_MS) {
-        this.epochs.splice(i, 1);
-        this.retiredEpochs.add(e.epoch);
-        this.deps.post({ kind: 'epochRetired', epoch: e.epoch });
-      }
-    }
+    this.retireExpiredEpochs(now);
     this.refreshEpochStats();
     for (const h of this.tracks.values()) {
       if (h.opts.side !== 'decode') continue;
       if (h.fifo.length > 0) this.drain(h);
       if (h.awaitingKeyFrame) this.requestKeyFrameIfDue(h);
+    }
+  }
+
+  private retireExpiredEpochs(now: number): void {
+    for (let i = this.epochs.length - 1; i >= 0; i--) {
+      const e = this.epochs[i];
+      if (e.supersededAt !== null && now - e.supersededAt >= RETENTION_MS) {
+        this.epochs.splice(i, 1);
+        this.droppedEpochFloor = this.droppedEpochFloor === null || e.epoch > this.droppedEpochFloor ? e.epoch : this.droppedEpochFloor;
+        this.deps.post({ kind: 'epochRetired', epoch: e.epoch });
+      }
     }
   }
 
@@ -363,10 +367,12 @@ export class Pipeline {
 
   private installEpoch(m: Extract<ToWorker, { kind: 'installEpoch' }>): void {
     const now = this.deps.now();
+    this.retireExpiredEpochs(now);
+    this.refreshEpochStats();
     // Mirror the receiver's install decision before touching the sender or reporting success.
     const newest = this.epochs.reduce<bigint | null>((max, e) => max === null || e.epoch > max ? e.epoch : max, null);
     if (this.epochs.some((e) => e.epoch === m.epoch) ||
-        (newest !== null && m.epoch < newest && (newest - m.epoch > 255n || this.retiredEpochs.has(m.epoch)))) {
+        (newest !== null && m.epoch < newest && (newest - m.epoch > 255n || (this.droppedEpochFloor !== null && m.epoch <= this.droppedEpochFloor)))) {
       m.baseKey.fill(0);
       return;
     }
@@ -409,13 +415,12 @@ export class Pipeline {
       const e = this.epochs[i];
       if (e.epoch % 256n === m.epoch % 256n || (!newer && m.epoch - e.epoch > 255n)) {
         this.epochs.splice(i, 1);
-        this.retiredEpochs.add(e.epoch);
+        this.droppedEpochFloor = this.droppedEpochFloor === null || e.epoch > this.droppedEpochFloor ? e.epoch : this.droppedEpochFloor;
         this.deps.post({ kind: 'epochRetired', epoch: e.epoch });
       } else if (!newer && e.supersededAt === null) {
         e.supersededAt = now;
       }
     }
-    this.retiredEpochs.delete(m.epoch);
     this.epochs.push({ epoch: m.epoch, leaves: m.roster.map((r) => r.leaf), supersededAt: newer ? now : null });
     this.refreshEpochStats();
     this.deps.post({ kind: 'epochInstalled', epoch: m.epoch });
@@ -431,7 +436,7 @@ export class Pipeline {
     this.senderEpoch = null;
     this.selfLeaf = -1;
     this.epochs.length = 0;
-    this.retiredEpochs.clear();
+    this.droppedEpochFloor = null;
     this.refreshEpochStats();
     for (const h of this.tracks.values()) this.dropHeld(h);
   }

@@ -76,6 +76,8 @@ func TestTheBaseKeyComesFromStdinOrAPrivateFileNeverFromArgv(t *testing.T) {
 		{"no key", base, "", "-base-key-file is required"},
 		{"a group-readable file", append([]string{"-base-key-file", keyFile(t, keyHex, 0o640)}, base...), "", "must be readable by its owner only"},
 		{"a world-readable file", append([]string{"-base-key-file", keyFile(t, keyHex, 0o604)}, base...), "", "must be readable by its owner only"},
+		{"a 0644 file", append([]string{"-base-key-file", keyFile(t, keyHex, 0o644)}, base...), "", "must be readable by its owner only"},
+		{"stdin closed early", append([]string{"-base-key-file", "-"}, base...), keyHex[:16], "32 lowercase hex"},
 		{"uppercase on stdin", append([]string{"-base-key-file", "-"}, base...), strings.ToUpper(keyHex), "32 lowercase hex"},
 		{"short key in a file", append([]string{"-base-key-file", keyFile(t, "0a0a", 0o600)}, base...), "", "32 lowercase hex"},
 	} {
@@ -88,6 +90,38 @@ func TestTheBaseKeyComesFromStdinOrAPrivateFileNeverFromArgv(t *testing.T) {
 				t.Fatalf("the refusal repeats the key: %v", err)
 			}
 		})
+	}
+}
+
+func TestKeyFileRejectsSymlink(t *testing.T) {
+	target := keyFile(t, keyHex, 0o600)
+	link := filepath.Join(t.TempDir(), "key-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readBaseKey(link, strings.NewReader("")); err == nil {
+		t.Fatal("symlink accepted")
+	}
+}
+
+func TestKeyFileRejectsAnotherOwnerWhenConstructible(t *testing.T) {
+	path := keyFile(t, keyHex, 0o600)
+	other := os.Geteuid() + 1
+	if err := os.Chown(path, other, -1); err != nil {
+		t.Skipf("cannot construct a file owned by another uid: %v", err)
+	}
+	if _, err := readBaseKey(path, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "owned by the current user") {
+		t.Fatalf("other owner's key file: %v", err)
+	}
+}
+
+func TestRunClearsTheCallerKeyAfterBuildingBothCipherSides(t *testing.T) {
+	c := config{BaseKey: [16]byte{1}, Leaf: 0, Epoch: 1, MinEpoch: 1, Roster: []sframe.RosterEntry{{Leaf: 0, Device: [16]byte{1}}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _ = run(ctx, &c)
+	if c.BaseKey != [16]byte{} {
+		t.Fatalf("caller key still present: %x", c.BaseKey)
 	}
 }
 
@@ -168,10 +202,10 @@ func TestTwoBotsDecryptEachOtherThroughTheSFU(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		subRep, subErr = run(ctx, sub)
+		subRep, subErr = run(ctx, &sub)
 	}()
 	time.Sleep(time.Second)
-	pubRep, err := run(ctx, pub)
+	pubRep, err := run(ctx, &pub)
 	if err != nil {
 		t.Fatalf("publisher: %v", err)
 	}

@@ -28,6 +28,8 @@ func TestATrackIsBoundOnlyUnderProtocolFivesReceiverRules(t *testing.T) {
 		{"mic", lower, webrtc.RTPCodecTypeAudio, webrtc.MimeTypeOpus, livekit.TrackSource_MICROPHONE, true},
 		{"screen audio", lower, webrtc.RTPCodecTypeAudio, webrtc.MimeTypeOpus, livekit.TrackSource_SCREEN_SHARE_AUDIO, true},
 		{"camera", lower, webrtc.RTPCodecTypeVideo, webrtc.MimeTypeVP8, livekit.TrackSource_CAMERA, true},
+		{"opus on camera", lower, webrtc.RTPCodecTypeVideo, webrtc.MimeTypeOpus, livekit.TrackSource_CAMERA, false},
+		{"vp8 on microphone", lower, webrtc.RTPCodecTypeAudio, webrtc.MimeTypeVP8, livekit.TrackSource_MICROPHONE, false},
 		{"screen", lower, webrtc.RTPCodecTypeVideo, webrtc.MimeTypeH264, livekit.TrackSource_SCREEN_SHARE, true},
 		{"uppercase identity", strings.ToUpper(lower), webrtc.RTPCodecTypeAudio, webrtc.MimeTypeOpus, livekit.TrackSource_MICROPHONE, false},
 		{"34 hex digits", lower + "a1", webrtc.RTPCodecTypeAudio, webrtc.MimeTypeOpus, livekit.TrackSource_MICROPHONE, false},

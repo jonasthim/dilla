@@ -81,6 +81,25 @@ const dec = (trackId = 'dec-0'): DillaTransformOptions => ({
 });
 
 describe('epoch window mirrors the receiver', () => {
+  it('never lists an epoch dropped 25 seconds ago when it is reinstalled', () => {
+    const { p, posted, advance } = setup();
+    install(p, 5n);
+    install(p, 6n);
+    advance(25_000);
+    p.tick();
+    install(p, 5n);
+    expect(p.stats.currentEpoch).toBe('6');
+    expect(p.stats.knownKids).not.toContain('5');
+    expect(posted.filter((m) => m.kind === 'epochInstalled' && m.epoch === 5n)).toHaveLength(1);
+  });
+  it('expires an old held epoch before deciding a late reinstall without a tick', () => {
+    const { p, advance } = setup();
+    install(p, 5n);
+    install(p, 6n);
+    advance(25_000);
+    install(p, 5n);
+    expect(p.stats.knownKids).not.toContain('5');
+  });
   it('ignores a late install older than 255 commits, even when its KID aliases the newest', () => {
     const { p, cipher, posted } = setup();
     install(p, 300n);
@@ -105,6 +124,17 @@ describe('epoch window mirrors the receiver', () => {
     install(p, 263n);
     expect(posted).toContainEqual({ kind: 'epochRetired', epoch: 6n });
     expect(p.stats.knownKids).not.toContain('6');
+  });
+  it('retires same-mod-256 and more-than-255-behind epochs immediately', () => {
+    const { p, posted } = setup();
+    install(p, 1n);
+    install(p, 257n);
+    expect(posted).toContainEqual({ kind: 'epochRetired', epoch: 1n });
+    expect(p.stats.knownKids).toHaveLength(2); // the alias now belongs only to epoch 257
+    install(p, 258n);
+    install(p, 514n);
+    expect(posted).toContainEqual({ kind: 'epochRetired', epoch: 257n });
+    expect(p.stats.knownKids).toHaveLength(2);
   });
 });
 

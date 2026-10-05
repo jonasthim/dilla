@@ -781,7 +781,9 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
 
   private inRoster(identity: string): boolean {
     if (!isDeviceIdentity(identity)) return false;
-    for (const roster of this.rosters.values()) for (const device of roster.values()) if (device === identity) return true;
+    const newest = [...this.rosters.keys()].reduce<bigint | null>((max, epoch) => max === null || epoch > max ? epoch : max, null);
+    if (newest === null) return false;
+    for (const device of this.rosters.get(newest)?.values() ?? []) if (device === identity) return true;
     return false;
   }
 
