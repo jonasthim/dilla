@@ -17,10 +17,10 @@ import (
 	"golang.org/x/crypto/chacha20"
 
 	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/ds/dstest"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -743,7 +743,7 @@ func doBounded(t *testing.T, e *env, within time.Duration, method, path, token s
 
 // newRealDS builds the real *ds.DS over e.Repo — the same repository, and so
 // the same single-connection write pool, the handlers write through — and
-// registers the committed fixture group in it. It returns the delivery service
+// seeds the committed fixture group in it (dstest). It returns the delivery service
 // and the group's id.
 func newRealDS(t *testing.T, e *env) (*ds.DS, id.ID) {
 	t.Helper()
@@ -776,11 +776,13 @@ func newRealDS(t *testing.T, e *env) (*ds.DS, id.ID) {
 		t.Fatalf("ds.New: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
-	if _, err := d.Register(ctx, ds.RegisterRequest{
-		Session: auth.Session{Scope: auth.ScopeEnrolled}, GroupID: f.groupID,
-		Binding: f.binding, GroupInfo: f.groupInfo, RatchetTree: f.ratchetTree,
+	// Seeded, not registered: POST /v1/groups adopts one leaf, the registering device's own
+	// (hardening G), and this is the 1,500-member fixture group at epoch 6. The seed writes through
+	// the same repository, which is what this test is about.
+	if err := dstest.SeedGroup(ctx, d, e.Repo, wasm, keys.ExternalSenderKeyID, e.Clk.Now().Unix(), dstest.Group{
+		GroupID: f.groupID, Binding: f.binding, GroupInfo: f.groupInfo, RatchetTree: f.ratchetTree,
 	}); err != nil {
-		t.Fatalf("Register: %v", err)
+		t.Fatalf("seed the fixture group: %v", err)
 	}
 	return d, f.groupID
 }

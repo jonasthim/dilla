@@ -1,6 +1,7 @@
 package ds
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -107,6 +108,11 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 			return RegisterResult{}, err
 		}
 	}
+	// The tree adopts exactly one leaf, the registering device's own (finding G2). It runs after
+	// every refusal above so each keeps its own code, and before anything is written.
+	if err := d.checkRegisteredLeaf(ctx, group, r.Session, state); err != nil {
+		return RegisterResult{}, err
+	}
 
 	row := store.GroupRow{
 		GroupID: r.GroupID,
@@ -167,6 +173,63 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 	release = false
 	closeGroup = false
 	return RegisterResult{GroupID: r.GroupID, NextSeq: row.Seq + 1}, nil
+}
+
+// checkRegisteredLeaf is what registration adopts (finding G2 of the second hardening review): a
+// tree of exactly one leaf, the registering device's own. Every honest client registers the group
+// it has just created, before it adds anybody (`DillaGroup::create`, then the register call), so
+// every member after the first enters through a commit whose Adds invariant 4 checks, or through an
+// external join checkExternalJoiner checks; a registered tree with more leaves would put devices in
+// the group that passed neither.
+//
+// The one leaf passes what an external joiner's leaf passes (checkExternalJoiner): its credential
+// names the session's own device and user, its signature key is that device's registered key, the
+// device is not revoked, and its key is in the user's newest signed device list. The channel ACL
+// half is the registration ACL, which Register has already asked (checkRegistrant: the permission
+// invariant 4's ACL resolves too). The count is the tree's own `LeafCount`, not the member list's
+// length: the member list leaves out a leaf whose credential is no dilla identity.
+//
+// Every refusal is E_INVALID_REQUEST, the answer registration already gives a tree or GroupInfo it
+// cannot adopt.
+func (d *DS) checkRegisteredLeaf(ctx context.Context, v DeviceListVerifier, s Session, state mlswasi.GroupState) error {
+	if state.LeafCount != 1 || len(state.Members) != 1 {
+		return errInvalid(fmt.Sprintf(
+			"a registered group holds exactly one leaf, the registering device's own; this tree holds %d", state.LeafCount))
+	}
+	leaf := state.Members[0]
+	deviceID, userID, err := decodeCredentialIdentity(leaf.CredentialIdentity)
+	if err != nil {
+		return errInvalid("the registered leaf's credential is not a dilla identity")
+	}
+	if deviceID != s.DeviceID || userID != s.UserID {
+		return errInvalid("the registered leaf must be the registering device's own")
+	}
+	device, err := d.opts.Store.GetDevice(ctx, deviceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errInvalid("the registering device is unknown to this instance")
+	}
+	if err != nil {
+		return err
+	}
+	if device.UserID != userID {
+		return errInvalid("the registered leaf's user does not own the device")
+	}
+	if device.RevokedAt != nil {
+		return errInvalid("the registering device is revoked")
+	}
+	if !leafKeyIsRegistered(device, leaf.SignatureKey) {
+		return errInvalid("the registered leaf's key is not the device's registered key")
+	}
+	entries, err := d.opts.DeviceLists.Entries(ctx, v, userID)
+	if err != nil {
+		return errInvalid("no verifiable signed device list for the registering user: " + err.Error())
+	}
+	for _, dsk := range entries {
+		if bytes.Equal(dsk, device.DSKPub) {
+			return nil
+		}
+	}
+	return errInvalid("the registering device's key is not in its user's newest signed device list")
 }
 
 // Channels is the sliver of the community structure registration needs: invariant 1's channel

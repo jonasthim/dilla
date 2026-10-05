@@ -22,6 +22,9 @@ import (
 // Each case gets its own harness because the committed fixture is ONE group with one group id
 // baked into its GroupInfo, and `Register` refuses a body whose group id is not the group
 // context's — so two successful registrations cannot share a database.
+//
+// The registration is an honest one (hardening G: a registered tree holds one leaf, the
+// registering device's own): testkit/fixtures/registration's one-leaf group, by its creator.
 func TestRegisterRefusesATextGroupOnAReadableOrOpenChannel(t *testing.T) {
 	for _, c := range []struct {
 		name       string
@@ -36,8 +39,8 @@ func TestRegisterRefusesATextGroupOnAReadableOrOpenChannel(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newDSHarness(t)
-			channel := h.channel(t, c.visibility, c.mode)
-			_, err := h.ds.Register(context.Background(), h.registerRequest(t, channel))
+			h.registrationChannel(t, c.visibility, c.mode)
+			_, err := h.ds.Register(context.Background(), registration(t, "one-leaf-0", h.honestRegistrant(t)))
 			if c.wantCode == "" {
 				if err != nil {
 					t.Fatalf("Register: %v", err)
@@ -105,9 +108,20 @@ func TestRegisterAsksTheChannelSourceWhoMayRegister(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			h := newDSHarness(t)
 			h.channels.refuse = c.refuse
+			// A refused case registers under a user who is neither the creator nor any leaf's, so
+			// asking about anybody but the session's user fails it. The admitted case must be an
+			// honest registration (hardening G: the one leaf is the session's own device and user),
+			// so there the session's user is the leaf's; the refused cases carry the distinction.
 			req := h.registerRequest(t, h.channel(t, 0, 0))
 			req.Session.UserID = id.New()
-			_, err := h.ds.Register(context.Background(), req)
+			if c.refuse == nil {
+				req = registration(t, "one-leaf-0", h.honestRegistrant(t))
+			}
+			want, err := ds.DecodeBindingForTest(req.Binding)
+			if err != nil {
+				t.Fatalf("decode the request's binding: %v", err)
+			}
+			_, err = h.ds.Register(context.Background(), req)
 
 			if len(h.channels.asked) != 1 {
 				t.Fatalf("MayRegister was asked %d times, want once", len(h.channels.asked))
@@ -116,8 +130,8 @@ func TestRegisterAsksTheChannelSourceWhoMayRegister(t *testing.T) {
 			if q.user != req.Session.UserID {
 				t.Errorf("MayRegister was asked about %v, want the session's user %v", q.user, req.Session.UserID)
 			}
-			if q.binding != dsFixture(t).binding {
-				t.Errorf("MayRegister was asked about %+v, want the decoded binding %+v", q.binding, dsFixture(t).binding)
+			if q.binding != want {
+				t.Errorf("MayRegister was asked about %+v, want the decoded binding %+v", q.binding, want)
 			}
 
 			switch {
@@ -178,7 +192,7 @@ func TestADeliveryServiceWithNoChannelSourceRefusesRegistration(t *testing.T) {
 
 func TestRegisterRefusesADuplicateGroupID(t *testing.T) {
 	h := newDSHarness(t)
-	req := h.registerRequest(t, h.channel(t, 0, 0))
+	req := registration(t, "one-leaf-0", h.honestRegistrant(t))
 	if _, err := h.ds.Register(context.Background(), req); err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
@@ -192,10 +206,17 @@ func TestRegisterRefusesADuplicateGroupID(t *testing.T) {
 // member who registered first would have left it; epochUnknown marks it as a restore leaves it.
 func (h *dsHarness) rivalGroup(t *testing.T, epochUnknown bool) id.ID {
 	t.Helper()
+	return h.rivalGroupOn(t, dsFixture(t).targetID, epochUnknown)
+}
+
+// rivalGroupOn is rivalGroup on another target: the registration fixture's, for a test whose
+// successful registration is an honest one-leaf group.
+func (h *dsHarness) rivalGroupOn(t *testing.T, target id.ID, epochUnknown bool) id.ID {
+	t.Helper()
 	ctx := context.Background()
 	gid := id.New()
 	if err := h.repo.CreateGroup(ctx, store.GroupRow{
-		GroupID: gid, Binding: []byte{0xf6}, Kind: 0, TargetID: dsFixture(t).targetID,
+		GroupID: gid, Binding: []byte{0xf6}, Kind: 0, TargetID: target,
 		Ciphersuite: 1, Epoch: 3, Created: h.clk.Now().Unix(),
 	}); err != nil {
 		t.Fatalf("CreateGroup: %v", err)
@@ -241,9 +262,10 @@ func TestRegisterAdmitsTheOwnersReCreationOfAnEpochUnknownGroup(t *testing.T) {
 		t.Fatalf("a non-owner's re-creation: %v, want E_GROUP_EXISTS", err)
 	}
 
+	// The owner's re-creation is an honest registration: a one-leaf group by its creator.
 	h := newDSHarness(t)
-	h.rivalGroup(t, true)
-	if _, err := h.ds.Register(context.Background(), h.registerRequest(t, h.channel(t, 0, 0))); err != nil {
+	h.rivalGroupOn(t, h.registrationChannel(t, 0, 0), true)
+	if _, err := h.ds.Register(context.Background(), registration(t, "one-leaf-1", h.honestRegistrant(t))); err != nil {
 		t.Fatalf("the owner's re-creation of an epoch-unknown group: %v", err)
 	}
 }
@@ -304,7 +326,8 @@ func TestRegisterRefusesABindingForAnotherInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ds.New: %v", err)
 	}
-	req := h.registerRequest(t, h.channel(t, 0, 0))
+	// An honest registration (hardening G), so the instance it names can accept it.
+	req := registration(t, "one-leaf-0", h.honestRegistrant(t))
 	var dsErr *ds.Error
 	if _, err := other.Register(context.Background(), req); !errors.As(err, &dsErr) ||
 		dsErr.Code != "E_BINDING_INVALID" || !strings.Contains(dsErr.Detail, "instance") {
@@ -328,7 +351,7 @@ func mustRefuseWithBindingInvalid(t *testing.T, h *dsHarness, req ds.RegisterReq
 
 func TestRegisterAnswersNextSeqOneAndInfoAgrees(t *testing.T) {
 	h := newDSHarness(t)
-	got, session := h.mustRegister(t)
+	got, session := h.mustRegisterOneLeaf(t, "one-leaf-0")
 	if got.NextSeq != 1 {
 		t.Fatalf("NextSeq = %d, want 1 (high-water 0 + 1)", got.NextSeq)
 	}
@@ -389,16 +412,21 @@ func TestInfoAndTreeAnswerNotFoundToANonMember(t *testing.T) {
 }
 
 // Registration records the group's leaves in the SAME transaction as the group row: a registered
-// group with no member rows would refuse every later commit from its own creator.
+// group with no member rows would refuse every later commit from its own creator. A registration
+// is a one-leaf group since hardening G, so the leaf recorded is the registering device's; the
+// 1,500-leaf fixture is seeded, not registered (dstest).
 func TestRegisterRecordsTheGroupsLeaves(t *testing.T) {
 	h := newDSHarness(t)
-	reg, _ := h.mustRegister(t)
+	reg, session := h.mustRegisterOneLeaf(t, "one-leaf-0")
 	members, err := h.repo.ListMembers(context.Background(), reg.GroupID)
 	if err != nil {
 		t.Fatalf("ListMembers: %v", err)
 	}
-	if len(members) != 1500 {
-		t.Fatalf("mls_members holds %d leaves, want the fixture's 1500", len(members))
+	if want := registrationFixture(t).groups["one-leaf-0"].leaves; len(members) != want {
+		t.Fatalf("mls_members holds %d leaves, want the tree's %d", len(members), want)
+	}
+	if members[0].DeviceID != session.DeviceID {
+		t.Fatalf("mls_members records device %s, want the registering device %s", members[0].DeviceID, session.DeviceID)
 	}
 	groups, err := h.repo.GroupsForDevice(context.Background(), members[0].DeviceID)
 	if err != nil {

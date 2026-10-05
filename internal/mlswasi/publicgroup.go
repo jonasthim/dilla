@@ -106,6 +106,10 @@ type GroupState struct {
 	TreeHash []byte
 	Binding  []byte
 	Members  []Member
+	// LeafCount is every occupied leaf of the tree (ABI v5). Members leaves out a leaf whose
+	// credential is not a dilla identity or whose key is not 32 bytes, so a caller that adopts a
+	// tree compares the two instead of trusting len(Members).
+	LeafCount uint64
 }
 
 // KeyPackageInfo is the validate_key_package response.
@@ -312,7 +316,7 @@ func (g *PublicGroup) State(ctx context.Context) (GroupState, error) {
 	if err != nil {
 		return GroupState{}, err
 	}
-	if err := expectLen(elems, 6, "public_group_state"); err != nil {
+	if err := expectLen(elems, 7, "public_group_state"); err != nil {
 		return GroupState{}, err
 	}
 	var s GroupState
@@ -352,6 +356,9 @@ func (g *PublicGroup) State(ctx context.Context) (GroupState, error) {
 			return GroupState{}, err
 		}
 		s.Members = append(s.Members, m)
+	}
+	if s.LeafCount, err = rawUint(elems[6]); err != nil {
+		return GroupState{}, err
 	}
 	return s, nil
 }

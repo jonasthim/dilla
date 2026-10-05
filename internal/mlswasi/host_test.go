@@ -108,6 +108,10 @@ func TestClockAndRandomnessConfigurationIsLoadBearing(t *testing.T) {
 	if len(state.Members) != f.manifest.Leaves {
 		t.Fatalf("members = %d, want %d", len(state.Members), f.manifest.Leaves)
 	}
+	// ABI v5: every occupied leaf, which for the fixture is every member.
+	if state.LeafCount != uint64(f.manifest.Leaves) {
+		t.Fatalf("LeafCount = %d, want %d", state.LeafCount, f.manifest.Leaves)
+	}
 
 	// Control: the same module with wazero's defaults must fail.
 	ctrlRT := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
@@ -135,15 +139,15 @@ func TestClockAndRandomnessConfigurationIsLoadBearing(t *testing.T) {
 	}
 }
 
-func TestABIReportsVersionFour(t *testing.T) {
+func TestABIReportsVersionFive(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRuntime(t, Options{PoolSize: 1})
 	info, err := r.ABI(ctx)
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 4 {
-		t.Errorf("ABIVersion = %d, want 4", info.ABIVersion)
+	if info.ABIVersion != 5 {
+		t.Errorf("ABIVersion = %d, want 5", info.ABIVersion)
 	}
 	if info.E2EEVersion != 1 || info.MediaVersion != 1 {
 		t.Errorf("E2EEVersion/MediaVersion = %d/%d, want 1/1", info.E2EEVersion, info.MediaVersion)
@@ -691,9 +695,9 @@ func TestNewNamesTheMissingExport(t *testing.T) {
 	}
 }
 
-func TestABIVersionIsFourAndTwentyThreeExportsAreRequired(t *testing.T) {
-	if ABIVersion != 4 {
-		t.Fatalf("ABIVersion = %d, want 4", ABIVersion)
+func TestABIVersionIsFiveAndTwentyThreeExportsAreRequired(t *testing.T) {
+	if ABIVersion != 5 {
+		t.Fatalf("ABIVersion = %d, want 5", ABIVersion)
 	}
 	if len(RequiredExports) != 23 {
 		t.Fatalf("RequiredExports has %d names, want 23", len(RequiredExports))
@@ -721,8 +725,8 @@ func TestABIVersionIsFourAndTwentyThreeExportsAreRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 4 {
-		t.Fatalf("dilla_abi reports abi_version %d, want 4", info.ABIVersion)
+	if info.ABIVersion != 5 {
+		t.Fatalf("dilla_abi reports abi_version %d, want 5", info.ABIVersion)
 	}
 }
 

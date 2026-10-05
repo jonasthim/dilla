@@ -226,6 +226,32 @@ func CheckExternalCommitScopeForTest(d *DS, ctx context.Context, groupID id.ID, 
 	return d.checkExternalCommitScope(ctx, groupID, s, applied)
 }
 
+// CheckHealedExternalCommitForTest is checkHealedExternalCommit, heal's clause over a replayed
+// external commit, in the group's own instance. before maps a leaf of the pre-commit tree to its
+// [device, user]. The fixture holds no external commit, so the clause is asserted over the merged
+// state it is defined on (T2 of the second hardening review pins its key check).
+func CheckHealedExternalCommitForTest(d *DS, ctx context.Context, groupID id.ID, before map[uint32][2]id.ID, after mlswasi.GroupState, applied []mlswasi.AppliedProposal) (id.ID, error) {
+	leaves := make(map[uint32]leafIdentity, len(before))
+	for leaf, who := range before {
+		leaves[leaf] = leafIdentity{device: who[0], user: who[1]}
+	}
+	var joiner id.ID
+	err := d.withGroup(ctx, groupID, func(g *mlswasi.PublicGroup) error {
+		var err error
+		joiner, err = d.checkHealedExternalCommit(ctx, g, groupID, leaves, after, applied)
+		return err
+	})
+	return joiner, err
+}
+
+// CheckExternalCommitReplacesOwnLeafForTest is checkExternalCommitReplacesOwnLeaf (one device, one
+// leaf), exported for the reason CheckExternalCommitScopeForTest is: the core's public group
+// refuses the same shape inside Process, so no commit reaches the Go clause, and it is asserted
+// over the applied list it is defined on.
+func CheckExternalCommitReplacesOwnLeafForTest(d *DS, ctx context.Context, groupID id.ID, s Session, applied []mlswasi.AppliedProposal) error {
+	return d.checkExternalCommitReplacesOwnLeaf(ctx, groupID, s, applied)
+}
+
 // ReissueOmittedUnderLockForTest runs `reissueOmitted` exactly as commit step (9) runs it: with the
 // group lock HELD and outside `withGroup`. It is deviation B24 / ruling 45's regression guard —
 // everything reachable from `reissue` must be lock-free, and nothing FAILS today if a later change

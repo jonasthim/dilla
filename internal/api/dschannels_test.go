@@ -271,14 +271,33 @@ func TestRegisterThroughTheRealChannelSource(t *testing.T) {
 }
 
 // A participant of the DM the fixture's binding names registers its text group through the real
-// channel source, the real delivery service and the real wasm core (task 6).
+// channel source, the real delivery service and the real wasm core (task 6). The registration is
+// an honest one (hardening G): the registration fixture's one-leaf group, by its creator, whose
+// user is a participant of the DM at that group's target.
 func TestADMParticipantRegistersThroughTheRealChannelSource(t *testing.T) {
 	h := newGroupsAPIWith(t, func(repo store.Repository) ds.Channels {
 		return api.StructureChannels{Repo: repo}
 	})
-	seedDMAt(t, h, true)
-	h.mustCreate(t)
-	if _, err := h.deps.Repo.GetGroup(context.Background(), h.groupID); err != nil {
+	token := h.registrantToken(t)
+	f := apiRegistrationData(t)
+	ctx := context.Background()
+	if err := h.deps.Repo.CreateChannel(ctx, store.ChannelRow{
+		ID: f.targetID, Kind: api.ChannelDM, Mode: api.ModeE2EE, Visibility: api.VisPrivate,
+		SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: 1,
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	other, _, _ := seedAPIDevice(t, h.deps)
+	for _, u := range []id.ID{other.ID, f.userID} {
+		if err := h.deps.Repo.PutChannelMember(ctx, f.targetID, u, 1); err != nil {
+			t.Fatalf("PutChannelMember: %v", err)
+		}
+	}
+	body, groupID := oneLeafBody(t, "one-leaf-0")
+	if res := h.do(t, http.MethodPost, "/v1/groups", token, body); res.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", res.Code, res.Body.String())
+	}
+	if _, err := h.deps.Repo.GetGroup(ctx, groupID); err != nil {
 		t.Fatalf("the registered group: %v", err)
 	}
 }

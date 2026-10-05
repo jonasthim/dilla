@@ -19,6 +19,7 @@ import (
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/ds/dstest"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -30,7 +31,9 @@ import (
 // service and the real wasm core. Nothing between the request and the guest is a double.
 func TestCreateGroupAnswersTwoZeroOneWithTheGroupIdAndNextSeq(t *testing.T) {
 	h := newGroupsAPI(t)
-	res := h.do(t, http.MethodPost, "/v1/groups", h.session, h.createBody(t))
+	// An honest registration (hardening G): the one-leaf group of its creator's device.
+	body, groupID := oneLeafBody(t, "one-leaf-0")
+	res := h.do(t, http.MethodPost, "/v1/groups", h.registrantToken(t), body)
 	if res.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: %s", res.Code, res.Body.String())
 	}
@@ -42,8 +45,8 @@ func TestCreateGroupAnswersTwoZeroOneWithTheGroupIdAndNextSeq(t *testing.T) {
 	if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil {
 		t.Fatalf("response: %v", err)
 	}
-	if out.GroupID != h.groupID {
-		t.Errorf("group_id = %s, want %s", out.GroupID, h.groupID)
+	if out.GroupID != groupID {
+		t.Errorf("group_id = %s, want %s", out.GroupID, groupID)
 	}
 	if out.NextSeq != 1 {
 		t.Errorf("next_seq = %d, want 1", out.NextSeq)
@@ -54,10 +57,12 @@ func TestCreateGroupAnswersTwoZeroOneWithTheGroupIdAndNextSeq(t *testing.T) {
 // error array, not JSON.
 func TestASecondCreateOfTheSameGroupIsFourZeroNine(t *testing.T) {
 	h := newGroupsAPI(t)
-	if res := h.do(t, http.MethodPost, "/v1/groups", h.session, h.createBody(t)); res.Code != http.StatusCreated {
+	token := h.registrantToken(t)
+	body, _ := oneLeafBody(t, "one-leaf-0")
+	if res := h.do(t, http.MethodPost, "/v1/groups", token, body); res.Code != http.StatusCreated {
 		t.Fatalf("first create: %d %s", res.Code, res.Body.String())
 	}
-	res := h.do(t, http.MethodPost, "/v1/groups", h.session, h.createBody(t))
+	res := h.do(t, http.MethodPost, "/v1/groups", token, body)
 	if res.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", res.Code)
 	}
@@ -329,6 +334,10 @@ type groupsAPI struct {
 	// fixture's KeyPackage lifetimes against it, and a test that needs a group old enough to have
 	// been swept advances this one and leaves the session clock alone.
 	clk *clock.Fake
+	// wasm and keys are the delivery service's own, which dstest.SeedGroup writes the fixture group
+	// with (mustCreate).
+	wasm *mlswasi.Runtime
+	keys ds.InstanceKeys
 }
 
 // newGroupsAPI mounts the delivery-service routes on the same mux, repository and sessions the
@@ -414,19 +423,31 @@ func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels)
 	user, _, token := seedAPISession(t, deps)
 	return &groupsAPI{
 		mux: mux, deps: deps, ds: d, groups: groups, groupID: f.groupID, fixture: f, session: token,
-		user: user.ID, clk: clk,
+		user: user.ID, clk: clk, wasm: wasm, keys: keys,
 	}
 }
 
+// createBody is the 1,500-leaf fixture as a POST /v1/groups body. Since hardening G the route
+// adopts only a one-leaf tree, the registering device's own, so this body is refused unless a
+// check that runs first refuses it (the binding, the mode, the registration ACL); a test of the
+// route's accepted path registers registration_test.go's one-leaf group instead.
 func (h *groupsAPI) createBody(t *testing.T) []byte {
 	t.Helper()
 	return mustCBOR(t, []any{h.groupID, h.fixture.binding, h.fixture.groupInfo, h.fixture.ratchetTree})
 }
 
+// mustCreate puts the 1,500-leaf fixture group in the delivery service as a registration would
+// have left it, through the test-only seeding entry (dstest.SeedGroup): no registration produces a
+// group of 1,500 members at epoch 6, and every test that calls this is about what happens to the
+// group after it exists. AfterRegister does not run for a seeded group.
 func (h *groupsAPI) mustCreate(t *testing.T) {
 	t.Helper()
-	if res := h.do(t, http.MethodPost, "/v1/groups", h.session, h.createBody(t)); res.Code != http.StatusCreated {
-		t.Fatalf("create: %d %s", res.Code, res.Body.String())
+	if err := dstest.SeedGroup(context.Background(), h.ds, h.deps.Repo, h.wasm,
+		h.keys.ExternalSenderKeyID, h.clk.Now().Unix(), dstest.Group{
+			GroupID: h.groupID, Binding: h.fixture.binding, GroupInfo: h.fixture.groupInfo,
+			RatchetTree: h.fixture.ratchetTree,
+		}); err != nil {
+		t.Fatalf("seed the fixture group: %v", err)
 	}
 }
 
@@ -729,12 +750,15 @@ func TestAnAcceptedRegistrationIsHandedToAfterRegisterAfterThe201(t *testing.T) 
 		hookCtxErr = ctx.Err()
 	}
 
+	// An honest registration (hardening G): the one-leaf group of its creator's device.
+	token := h.registrantToken(t)
+	body, groupID := oneLeafBody(t, "one-leaf-0")
 	reqCtx, cancelReq := context.WithCancel(t.Context())
 	res := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		req := httptest.NewRequestWithContext(reqCtx, http.MethodPost, "/v1/groups", bytes.NewReader(h.createBody(t)))
+		req := httptest.NewRequestWithContext(reqCtx, http.MethodPost, "/v1/groups", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/cbor")
-		req.Header.Set("Authorization", "Bearer "+h.session)
+		req.Header.Set("Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
 		h.mux.ServeHTTP(rec, req)
 		res <- rec
@@ -756,15 +780,15 @@ func TestAnAcceptedRegistrationIsHandedToAfterRegisterAfterThe201(t *testing.T) 
 		t.Fatalf("Drain: %v", err)
 	}
 	mu.Lock()
-	if len(got) != 1 || got[0] != h.groupID {
-		t.Fatalf("AfterRegister saw %v, want exactly [%s]", got, h.groupID)
+	if len(got) != 1 || got[0] != groupID {
+		t.Fatalf("AfterRegister saw %v, want exactly [%s]", got, groupID)
 	}
 	if hookCtxErr != nil {
 		t.Fatalf("the hook's context ended with the request: %v", hookCtxErr)
 	}
 	mu.Unlock()
 
-	if res := h.do(t, http.MethodPost, "/v1/groups", h.session, h.createBody(t)); res.Code == http.StatusCreated {
+	if res := h.do(t, http.MethodPost, "/v1/groups", token, body); res.Code == http.StatusCreated {
 		t.Fatal("a second registration of the same group was accepted")
 	}
 	if err := h.groups.Drain(t.Context()); err != nil {
@@ -789,7 +813,8 @@ func TestDrainWaitsForAfterRegisterAndHonoursItsDeadline(t *testing.T) {
 		<-release
 		close(finished)
 	}
-	h.mustCreate(t)
+	// A registration over the route (a seeded group never reaches AfterRegister).
+	h.mustRegisterOneLeaf(t)
 
 	short, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()

@@ -366,6 +366,84 @@ func TestACommitWhoseAddedLeafKeysAreNotTheDevicesRegisteredKeysIsRefused(t *tes
 	}
 }
 
+// G3 of the second hardening review: POST /commit checks the uploaded GroupInfo against the group
+// it merges to, as heal does: its group id and its tree hash, not only its epoch and signature.
+// commits/00.mls (256 Adds by leaf 0) is uploaded with commits/09.group_info.mls: the GroupInfo of
+// epoch 7, of this group, signed by leaf 0 - but of the tree the fixture's self-update produced,
+// not of the tree these Adds produce. Every Add is honest (as in the test above), so the commit
+// passes every other clause; the GroupInfo would be served to every device that resyncs or joins
+// until the next commit, and none could build an external commit from it. Refused with the route's
+// rule for a bad GroupInfo, and nothing is written: the epoch, the handshake log and the stored
+// GroupInfo stay as they were. commits/09.mls with its own GroupInfo (TestARefusedCommitEvictsNobody)
+// is the accepted control.
+func TestACommitWhoseGroupInfoDescribesAnotherTreeIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	reg, session := h.mustRegister(t)
+	commit := fixtureFile(t, "commits/00.mls")
+
+	var identities, keys [][]byte
+	err := ds.WithGroupForTest(h.ds, context.Background(), reg.GroupID, func(g *mlswasi.PublicGroup) error {
+		p, err := g.Process(context.Background(), commit)
+		if err != nil {
+			return err
+		}
+		for _, a := range p.Applied {
+			identities = append(identities, a.CredentialIdentity)
+			keys = append(keys, a.SignatureKey)
+		}
+		return g.Discard(context.Background(), *p.Staged)
+	})
+	if err != nil {
+		t.Fatalf("read the Adds: %v", err)
+	}
+	byUser := map[id.ID][]listEntry{}
+	var order []id.ID
+	for i, identity := range identities {
+		device, user, err := ds.DecodeCredentialIdentityForTest(identity)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if _, seen := byUser[user]; !seen {
+			order = append(order, user)
+			h.userWithSSK(t, user, testSSK(0x62))
+		}
+		h.accountWithKey(t, user, device, keys[i])
+		byUser[user] = append(byUser[user], listEntry{DeviceID: device[:], DSKPub: keys[i], AddedAt: 1})
+	}
+	for _, user := range order {
+		h.publishDeviceList(t, user, signedDeviceList(t, testSSK(0x62), user, byUser[user]))
+	}
+	before, err := h.repo.GetGroup(context.Background(), reg.GroupID)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	handshakes := h.handshakeCount(t, reg.GroupID)
+
+	_, err = h.ds.Commit(context.Background(), session, reg.GroupID, ds.CommitRequest{
+		Epoch: 6, Commit: commit, GroupInfo: fixtureFile(t, "commits/09.group_info.mls"),
+	})
+	if !hasRule(err, "group_info") {
+		t.Fatalf("got %v, want E_COMMIT_INVALID/group_info: the GroupInfo's tree hash is not the merged tree's", err)
+	}
+	after, err := h.repo.GetGroup(context.Background(), reg.GroupID)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	if after.Epoch != before.Epoch || !bytes.Equal(after.GroupInfoBlob, before.GroupInfoBlob) ||
+		!bytes.Equal(after.TreeHash, before.TreeHash) {
+		t.Errorf("a refused commit moved the group: epoch %d -> %d", before.Epoch, after.Epoch)
+	}
+	if got := h.handshakeCount(t, reg.GroupID); got != handshakes {
+		t.Errorf("a refused commit wrote %d handshake rows", got-handshakes)
+	}
+	// The instance's own view is unchanged too: the honest self-update of epoch 6 still lands.
+	if _, err := h.ds.Commit(context.Background(), session, reg.GroupID, ds.CommitRequest{
+		Epoch: 6, Commit: fixtureFile(t, "commits/09.mls"), GroupInfo: fixtureFile(t, "commits/09.group_info.mls"),
+	}); err != nil {
+		t.Fatalf("the honest commit of epoch 6 after the refusal: %v", err)
+	}
+}
+
 func hasRule(err error, rule string) bool {
 	var dsErr *ds.Error
 	return errors.As(err, &dsErr) && dsErr.Code == "E_COMMIT_INVALID" && dsErr.Rule == rule

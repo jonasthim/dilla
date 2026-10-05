@@ -366,6 +366,14 @@ impl DillaPublicGroup {
         &self.binding
     }
 
+    /// The number of occupied leaves in the tree, every one of them: `members()` leaves out a leaf
+    /// whose credential is not a dilla identity or whose key is not 32 bytes, so its length is not
+    /// how many leaves the group holds. A caller that adopts a tree (registration, heal's reseed)
+    /// compares the two, so a tree cannot carry a leaf nobody can name.
+    pub fn leaf_count(&self) -> usize {
+        self.group.members().count()
+    }
+
     pub fn members(&self) -> Vec<MemberInfo> {
         self.group
             .members()

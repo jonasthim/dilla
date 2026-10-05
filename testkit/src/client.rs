@@ -447,11 +447,19 @@ impl TestClient {
             .find(|w| w.group_id == group_id)
             .ok_or_else(|| TestkitError::Assertion("no welcome for this device".into()))?;
         let welcome = deserialize_welcome(&item.blob)?;
-        let group = DillaGroup::join_from_welcome(
+        // Joined through the delivery service's label, as `ClientCore::welcomes_apply` joins: the
+        // served group id, epoch and tree hash must be the Welcome's own (protocol/01 rule 5), so
+        // every Welcome a scenario joins through a real dillad pins what dillad labels it with.
+        let group = DillaGroup::join_from_welcome_labelled(
             &self.provider,
             welcome,
             deserialize_tree(&item.ratchet_tree)?,
             expected,
+            dilla_core::mls::WelcomeLabel {
+                group_id: &item.group_id,
+                epoch: item.epoch,
+                tree_hash: &item.tree_hash,
+            },
         )?;
         ds.ack_welcome(item.welcome_id)?;
         self.groups.insert(group_id.to_vec(), group);
@@ -869,7 +877,9 @@ impl TestClient {
     /// `resync`, optionally with a leaf whose signature key is a fresh one rather than this
     /// device's DSK — the resync half of the probe `join_external_with` makes for a joiner. With a
     /// fresh key OpenMLS finds no leaf carrying the joiner's key, so the commit removes nothing and
-    /// the device would end with two leaves; the delivery service must refuse it on the key alone.
+    /// the device would end with two leaves. The delivery service refuses it twice over: the new
+    /// leaf's key is not the device's registered key, and a device that holds a leaf must remove it
+    /// (one device, one leaf; its public group refuses that first, under the joiner's rule).
     pub fn resync_with(
         &mut self,
         ds: &mut dyn DeliveryService,

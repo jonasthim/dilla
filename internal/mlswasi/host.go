@@ -58,10 +58,12 @@ import (
 // no compatibility shim — this host is the guest's only consumer and CI builds both from one
 // commit. **4** since 2026-10-05 (hardening C): validate_key_package grew a seventh element and
 // each public_group_process applied item a sixth, the leaf's signature key, which the delivery
-// service binds to the device's registered key.
-const ABIVersion uint64 = 4
+// service binds to the device's registered key. **5** since 2026-10-05 (hardening G):
+// public_group_state grew a seventh element, leaf_count, every occupied leaf of the tree, which
+// registration and heal's reseed compare with the member list before adopting a tree.
+const ABIVersion uint64 = 5
 
-// RequiredExports is the 23-export ABI v4 surface (v4 added no export). New refuses any module that does not carry all
+// RequiredExports is the 23-export ABI v5 surface (v4 and v5 added no export). New refuses any module that does not carry all
 // of them. _initialize is deliberately absent: see the package comment.
 var RequiredExports = []string{
 	"dilla_alloc",

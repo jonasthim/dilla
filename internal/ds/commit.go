@@ -187,6 +187,16 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 		// (4) structural validation.
 		processed, err := g.Process(ctx, c.Commit)
 		if err != nil {
+			// On the external path the core's one dilla-level commit rule that answers E_CREDENTIAL
+			// is the joiner's: a resync keeps its device's credential, removes the device's old leaf,
+			// and a device holding two leaves cannot resync (`leaf_credentials_unchanged`'s
+			// NewMemberCommit arm; an external commit carries no Update). It is the external joiner's
+			// clause, so it answers under that rule's name, as checkExternalJoiner and
+			// checkExternalCommitReplacesOwnLeaf do.
+			var abiErr *mlswasi.ABIError
+			if o.external && errors.As(err, &abiErr) && abiErr.Code == "E_CREDENTIAL" {
+				return errCommitInvalid("external_joiner", err.Error())
+			}
 			return errCommitInvalid("structural", err.Error())
 		}
 		// Every refusal from HERE on — the structural checks below included — must release the
@@ -331,6 +341,20 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 			state, err := g.State(ctx)
 			if err != nil {
 				return err
+			}
+			// (6, continued) the GroupInfo describes the group this commit merged to: its group id
+			// and its tree hash, as heal checks them. The epoch and the committer's signature above
+			// do not tie it to the tree - a committer can sign the GroupInfo of another commit of the
+			// same epoch, or of another group - and the stored GroupInfo is what every device that
+			// resyncs or joins builds its external commit from until the next commit. The tree hash
+			// is the merged group's own, so the check runs here, after the merge; a refusal rolls the
+			// transaction back and the stale handle is evicted below, as for any failure after it.
+			if !bytes.Equal(check.GroupID, groupID[:]) {
+				return errCommitInvalid("group_info", "the GroupInfo names another group")
+			}
+			if !bytes.Equal(check.TreeHash, state.TreeHash) {
+				return errCommitInvalid("group_info",
+					"the GroupInfo's tree_hash is not the tree this commit merges to")
 			}
 			// The joiner's own leaf is checked against the session that uploaded it, on the
 			// merged state because that is the first place the leaf exists. A refusal here rolls
@@ -600,7 +624,11 @@ func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, gr
 	}
 	if o.external {
 		// R25: an external commit may remove nobody but the joiner's own prior leaf.
-		return satisfied, d.checkExternalCommitScope(ctx, groupID, s, p.Applied)
+		if err := d.checkExternalCommitScope(ctx, groupID, s, p.Applied); err != nil {
+			return nil, err
+		}
+		// …and it must remove that leaf, if the device holds one (one device, one leaf).
+		return satisfied, d.checkExternalCommitReplacesOwnLeaf(ctx, groupID, s, p.Applied)
 	}
 	return satisfied, nil
 }

@@ -1279,3 +1279,68 @@ fn the_floor_is_the_highest_epoch_ever_stored_at_every_step() {
     check(&b, "a rejoin");
     assert_eq!(highest, 5);
 }
+
+// ---------------------------------------------------------------------------------------------
+// T1 of the second hardening review: the floor write of `welcomes_apply` over an EXISTING row (the
+// UPDATE, a re-admission) was pinned by no test, and since the self-removal write was dropped it
+// alone stops a replay of the Welcome that re-admitted a device. The reviewer's two probes, taken
+// as they were written.
+// ---------------------------------------------------------------------------------------------
+
+/// Carol joins by Welcome (epoch 1), is removed (epoch 2) and is re-added by Welcome (epoch 3).
+/// Answers the instance, the relay, Alice, Carol and the body of Carol's Welcomes.
+fn carol_readmitted() -> (Instance, Relay, Core, Core, Vec<u8>) {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut a = ready_core(0xa1, "alice");
+    a.create_and_register(&mut relay, &instance);
+    let mut c = ready_core(0xc3, "carol");
+    let kp = last_resort_key_package(&mut c);
+    instance.propose_add(&mut relay, &kp);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    let w1 = relay.welcomes_body(c.device);
+    assert_eq!(welcome_outcome(&mut c, &w1), (0, String::new()));
+    instance.propose_remove(&mut relay, c.device);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(c.sync(&relay).state, 4);
+    assert_eq!(max_epoch(&c), 1);
+
+    instance.propose_add(&mut relay, &kp);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(relay.epoch(), 3);
+    let welcomes = relay.welcomes_body(c.device);
+    // The last item is the Welcome of epoch 3; an earlier one (epoch 1) is a replay.
+    assert_eq!(welcome_outcome(&mut c, &welcomes), (0, String::new()));
+    assert_eq!(c.group(&GROUP).map(|g| (g.state, g.epoch)), Some((2, 3)));
+    (instance, relay, a, c, welcomes)
+}
+
+/// The writer the mutation sweep did not pin: `welcomes_apply` over an EXISTING row (the UPDATE)
+/// writes the epoch it joined at to the floor.
+#[test]
+fn a_welcome_over_a_gone_row_writes_the_joined_epoch_to_the_floor() {
+    let (_instance, _relay, _a, c, _welcomes) = carol_readmitted();
+    assert_eq!(max_epoch(&c), 3);
+}
+
+/// What depends on that writer alone since the self-removal write was dropped: the device is
+/// removed in the very epoch it was re-admitted to, and the Welcome that re-admitted it is replayed.
+#[test]
+fn a_replay_of_the_readmitting_welcome_after_a_removal_is_refused() {
+    let (instance, mut relay, mut a, mut c, welcomes) = carol_readmitted();
+    // Removed again without Carol merging anything in between.
+    instance.propose_remove(&mut relay, c.device);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(c.sync(&relay).state, 4);
+    let before = c.group(&GROUP);
+    assert_eq!(
+        welcome_outcome(&mut c, &welcomes),
+        (2, "E_CORE_INPUT".into()),
+        "the Welcome of epoch 3 is a replay once the device has held epoch 3"
+    );
+    assert_eq!(c.group(&GROUP), before);
+}

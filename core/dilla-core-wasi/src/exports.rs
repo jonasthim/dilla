@@ -426,8 +426,12 @@ fn public_group_state(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
     // says "spliced verbatim"; that note is wrong, and splicing a bare array here would make
     // §2.13's mlswasi decoder read a major-4 head where it expects major 2. The Go side decodes the
     // bstr, then decodes the binding array out of those bytes.
+    //
+    // ABI v5: element 7 is `leaf_count`, every occupied leaf of the tree. The member list above
+    // leaves out a leaf it cannot name (no dilla identity, or not a 32-byte key), so a host that
+    // adopts a tree compares the two rather than trusting the list's length.
     let mut e = Encoder::new();
-    e.array(6)
+    e.array(7)
         .uint(0)
         .uint(group.epoch())
         .bytes(group.group_id().as_slice())
@@ -440,6 +444,7 @@ fn public_group_state(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
             .bytes(&m.signature_key)
             .bytes(&m.identity.encode());
     }
+    e.uint(group.leaf_count() as u64);
     Ok(e.into_vec())
 }
 
@@ -1065,10 +1070,10 @@ mod tests {
         let r = req(|e| {
             e.array(2).uint(dilla_core::ABI_VERSION).uint(imported);
         });
-        let (got_epoch, got_group_id, got_tree_hash, members) = decode_strict(
+        let (got_epoch, got_group_id, got_tree_hash, members, leaf_count) = decode_strict(
             &dispatch("public_group_state", &r),
             |d: &mut Decoder<'_>| {
-                d.array(6)?;
+                d.array(7)?;
                 assert_eq!(d.uint()?, 0);
                 let epoch = d.uint()?;
                 let group_id = d.bytes()?.to_vec();
@@ -1086,7 +1091,9 @@ mod tests {
                     !binding.is_empty(),
                     "dilla_binding must survive the state round-trip"
                 );
-                Ok((epoch, group_id, tree_hash, members))
+                // ABI v5: element 7, every occupied leaf of the tree.
+                let leaf_count = d.uint()?;
+                Ok((epoch, group_id, tree_hash, members, leaf_count))
             },
         )
         .unwrap();
@@ -1097,6 +1104,10 @@ mod tests {
             "the tree hash must survive export and import"
         );
         assert_eq!(members, 1_500, "the committed fixture has 1,500 leaves");
+        assert_eq!(
+            leaf_count, 1_500,
+            "leaf_count counts every occupied leaf; every fixture leaf is a dilla identity"
+        );
     }
 
     #[test]
@@ -1252,9 +1263,10 @@ mod tests {
     /// interfaces §3: a response-shape change moves `abi_version`. 2 when the process and
     /// validate_key_package responses grew; 3 since `public_group_process` grew `new_leaf` and the
     /// module grew `device_list_entries` (task 27a, Ruling C); 4 since `validate_key_package` and
-    /// the applied items grew the leaf's `signature_key` (hardening C).
+    /// the applied items grew the leaf's `signature_key` (hardening C); 5 since
+    /// `public_group_state` grew `leaf_count` (hardening G).
     #[test]
-    fn dilla_abi_reports_version_four() {
+    fn dilla_abi_reports_version_five() {
         let out = dispatch("dilla_abi", &version_only());
         let abi = decode_strict(&out, |d: &mut Decoder<'_>| {
             d.array(6)?;
@@ -1271,23 +1283,24 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            abi, 4,
-            "ABI v4: validate_key_package and the applied items carry the leaf's signature key"
+            abi, 5,
+            "ABI v5: public_group_state carries the tree's leaf_count"
         );
-        assert_eq!(dilla_core::ABI_VERSION, 4);
+        assert_eq!(dilla_core::ABI_VERSION, 5);
     }
 
-    /// An ABI v2 or v3 request must now be refused outright — there is no compatibility shim (§3).
+    /// An ABI v2, v3 or v4 request must now be refused outright — there is no compatibility shim
+    /// (§3).
     #[test]
     fn an_abi_version_two_request_is_refused() {
-        for old in [2u64, 3] {
+        for old in [2u64, 3, 4] {
             let r = req(|e| {
                 e.array(1).uint(old);
             });
             let (code, detail) = failure(&dispatch("dilla_abi", &r));
             assert_eq!(code, crate::abi::E_ABI_VERSION);
             assert!(
-                detail.contains(&old.to_string()) && detail.contains('4'),
+                detail.contains(&old.to_string()) && detail.contains('5'),
                 "detail: {detail}"
             );
         }

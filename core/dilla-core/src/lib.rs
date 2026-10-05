@@ -43,4 +43,10 @@ pub const WIRE_VERSION: u64 = 1;
 /// the KeyPackage leaf's `signature_key`, and each item of `public_group_process`'s applied list a
 /// sixth, the added leaf's `signature_key` (an Add's; null for every other proposal), so the
 /// delivery service can bind a new leaf to the device's registered key without parsing MLS.
-pub const ABI_VERSION: u64 = 4;
+///
+/// **5** since 2026-10-05 (hardening G): `public_group_state`'s response grew a seventh element,
+/// `leaf_count`, the number of occupied leaves in the tree. The member list leaves out a leaf whose
+/// credential is not a dilla identity or whose key is not 32 bytes, so it cannot say how many
+/// leaves a tree holds; group registration and heal's reseed adopt a tree only when every leaf is
+/// one the delivery service can name.
+pub const ABI_VERSION: u64 = 5;

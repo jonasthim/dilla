@@ -47,6 +47,17 @@ enum Command {
         #[arg(long, default_value_t = 0x5eed)]
         seed: u64,
     },
+    /// Generate the committed registration fixture: one-leaf groups as an honest device registers
+    /// them, and one tree that hides a leaf the member list cannot name.
+    GenRegistrationGroups {
+        #[arg(long, default_value_t = 4)]
+        groups: usize,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// The 1,500-leaf fixture's seed, so the creator is that fixture's leaf 0.
+        #[arg(long, default_value_t = 0x5eed)]
+        seed: u64,
+    },
     /// Generate the committed directory KeyPackage fixture: one honest KeyPackage per device.
     GenKeyPackages {
         #[arg(long, default_value_t = 16)]
@@ -130,6 +141,26 @@ fn main() -> std::process::ExitCode {
                         manifest.epoch,
                         manifest.tree_hash_hex,
                         manifest.files.len(),
+                        manifest.not_after
+                    );
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+        Command::GenRegistrationGroups { groups, out, seed } => {
+            match dilla_testkit::gen_registration_groups(&dilla_testkit::RegistrationSpec {
+                out,
+                seed,
+                groups,
+            }) {
+                Ok(manifest) => {
+                    println!(
+                        "{} groups, not_after {}",
+                        manifest.groups.len(),
                         manifest.not_after
                     );
                     std::process::ExitCode::SUCCESS

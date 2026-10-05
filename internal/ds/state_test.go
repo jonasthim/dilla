@@ -17,15 +17,16 @@ import (
 )
 
 // R12: the PublicGroup state blob is written in the SAME transaction as the group row. A forced
-// rollback must leave neither.
+// rollback must leave neither. The registration is an honest one-leaf group (hardening G), so the
+// transaction is reached and its injected failure is the refusal.
 func TestAFailedTransactionLeavesNeitherTheGroupRowNorTheStateBlob(t *testing.T) {
 	for _, failAt := range []string{"PutGroupState", "ReplaceMembers"} {
 		t.Run(failAt, func(t *testing.T) {
 			h := newDSHarness(t)
+			req := registration(t, "one-leaf-0", h.honestRegistrant(t))
 			h.failNextTx(failAt)
-			req := h.registerRequest(t, h.channel(t, 0, 0))
-			if _, err := h.ds.Register(context.Background(), req); err == nil {
-				t.Fatal("Register must fail when its transaction fails")
+			if _, err := h.ds.Register(context.Background(), req); !errors.Is(err, errInjected) {
+				t.Fatalf("Register must fail when its transaction fails: got %v, want the injected failure", err)
 			}
 			if _, err := h.repo.GetGroup(context.Background(), req.GroupID); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("GetGroup after a rolled-back Register: %v, want ErrNotFound", err)
@@ -180,11 +181,12 @@ func TestCredentialIdentityDecodesTheCommittedVector(t *testing.T) {
 	}
 }
 
-// And the binding: the fixture group's own dilla_binding, read back out of the column it was
-// stored in.
+// And the binding: the registered group's own dilla_binding, read back out of the column Register
+// stored it in (an honest one-leaf registration since hardening G, bound to the registration
+// fixture's channel target).
 func TestTheBindingDecodesAsEightFixedPositionElements(t *testing.T) {
 	h := newDSHarness(t)
-	reg, _ := h.mustRegister(t)
+	reg, session := h.mustRegisterOneLeaf(t, "one-leaf-0")
 	row, err := h.repo.GetGroup(context.Background(), reg.GroupID)
 	if err != nil {
 		t.Fatalf("GetGroup: %v", err)
@@ -196,8 +198,8 @@ func TestTheBindingDecodesAsEightFixedPositionElements(t *testing.T) {
 	if b.V != 1 {
 		t.Errorf("v = %d, want 1", b.V)
 	}
-	if b.TargetID != reg.GroupID {
-		t.Errorf("target_id = %s, want %s", b.TargetID, reg.GroupID)
+	if want := registrationFixture(t).targetID; b.TargetID != want {
+		t.Errorf("target_id = %s, want %s", b.TargetID, want)
 	}
 	if b.CommunityID != nil {
 		t.Errorf("community_id = %v, want null", b.CommunityID)
@@ -212,7 +214,7 @@ func TestTheBindingDecodesAsEightFixedPositionElements(t *testing.T) {
 		t.Fatal("dilla_binding decoded as JSON; it is deterministic CBOR")
 	}
 	// Deviation B11: the column holds the binding's own bytes, not a re-encoding.
-	if string(row.Binding) != string(h.registerRequest(t, reg.GroupID).Binding) {
+	if string(row.Binding) != string(registration(t, "one-leaf-0", session).Binding) {
 		t.Error("the stored binding is not the bytes the group context signed")
 	}
 	// R9: a text group has no call id.

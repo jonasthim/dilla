@@ -294,6 +294,14 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 		return CommitResult{}, errCommitInvalid("tree_hash",
 			"the rebuilt tree does not match the GroupInfo's tree_hash")
 	}
+	// A reseeded tree is the member's upload, not the instance's own state: every leaf in it must
+	// be one an Add could have put there (finding G2b). The GroupInfo checks above only prove that
+	// the healer built the tree it claims.
+	if reseeded {
+		if err := d.checkReseededLeaves(ctx, group, groupID, state); err != nil {
+			return CommitResult{}, err
+		}
+	}
 
 	// The replayed tail is APPENDED to mls_handshakes and the group's high-water advances with it.
 	// Without this the group is healed for the one device that uploaded the tail and permanently
@@ -746,6 +754,109 @@ func (d *DS) checkHealedExternalCommit(ctx context.Context, g DeviceListVerifier
 		return id.ID{}, err
 	}
 	return added[0], nil
+}
+
+// checkReseededLeaves is what a reseed may adopt (finding G2b of the second hardening review). The
+// reseed builds the group from the healing member's uploaded ratchet tree, because the instance
+// lost its own state blob; nothing in that tree passed invariant 4 on its way in, so every leaf
+// passes here the clause an Add passes (`checkAddedMember`): the device the credential names is
+// known to this instance and owned by the credential's user, is not revoked, carries its
+// registered key, is in its user's newest signed device list, and the user is eligible under the
+// ACL. The verdicts are the Add clause's own rules (add_key_package, add_acl). The tree must also
+// hold no leaf the member list cannot name (LeafCount, ABI v5): such a leaf passes no check and
+// would still receive the group's secrets.
+//
+// It is batched over the tree - one device list per user, one ACL question per group where the ACL
+// answers in batches - because a reseeded channel group holds as many leaves as the channel has
+// devices. What it does NOT bound is the set of devices: a tree may hold a device the restored
+// member rows do not, because the members' commits after the backup are already inside the tree
+// and the reseed path has no state to replay them from (see the hardening-G report).
+func (d *DS) checkReseededLeaves(ctx context.Context, v DeviceListVerifier, groupID id.ID, state mlswasi.GroupState) error {
+	if state.LeafCount != uint64(len(state.Members)) {
+		return errCommitInvalid("reseed", fmt.Sprintf(
+			"the reseeded tree holds %d leaves and names %d: a leaf's credential is no dilla identity",
+			state.LeafCount, len(state.Members)))
+	}
+	type leafDevice struct {
+		device store.DeviceRow
+		user   id.ID
+	}
+	byUser := map[id.ID][]leafDevice{}
+	var users []id.ID
+	for _, m := range state.Members {
+		deviceID, userID, err := decodeCredentialIdentity(m.CredentialIdentity)
+		if err != nil {
+			return errCommitInvalid("add_key_package", "undecodable credential identity")
+		}
+		device, err := d.opts.Store.GetDevice(ctx, deviceID)
+		if errors.Is(err, store.ErrNotFound) {
+			return errCommitInvalid("add_key_package", "a reseeded leaf's device is unknown to this instance")
+		}
+		if err != nil {
+			return err
+		}
+		if device.UserID != userID {
+			return errCommitInvalid("add_key_package", "a reseeded leaf's user does not own the device")
+		}
+		if device.RevokedAt != nil {
+			return errCommitInvalid("add_key_package", "a reseeded leaf's device is revoked")
+		}
+		if !leafKeyIsRegistered(device, m.SignatureKey) {
+			return errCommitInvalid("add_key_package",
+				"a reseeded leaf's signature key is not the device's registered key")
+		}
+		if _, seen := byUser[userID]; !seen {
+			users = append(users, userID)
+		}
+		byUser[userID] = append(byUser[userID], leafDevice{device: device, user: userID})
+	}
+	for _, userID := range users {
+		entries, err := d.opts.DeviceLists.Entries(ctx, v, userID)
+		if err != nil {
+			return errCommitInvalid("add_key_package",
+				"no verifiable signed device list for a reseeded leaf's user: "+err.Error())
+		}
+		for _, leaf := range byUser[userID] {
+			listed := false
+			for _, dsk := range entries {
+				if bytes.Equal(dsk, leaf.device.DSKPub) {
+					listed = true
+					break
+				}
+			}
+			if !listed {
+				return errCommitInvalid("add_key_package",
+					"a reseeded leaf's device is not in its user's newest signed device list")
+			}
+		}
+	}
+	eligible, err := d.eligibleUsers(ctx, groupID, users)
+	if err != nil {
+		return errCommitInvalid("add_acl", "the channel ACL cannot be resolved: "+err.Error())
+	}
+	for _, userID := range users {
+		if !eligible[userID] {
+			return errCommitInvalid("add_acl", "a reseeded leaf's user is not eligible under the channel's ACL")
+		}
+	}
+	return nil
+}
+
+// eligibleUsers is the ACL's verdict for many users of one group: one question when the ACL
+// answers in batches (BatchACL), one per user otherwise.
+func (d *DS) eligibleUsers(ctx context.Context, groupID id.ID, users []id.ID) (map[id.ID]bool, error) {
+	if b, ok := d.opts.ACL.(BatchACL); ok {
+		return b.EligibleUsers(ctx, groupID, users)
+	}
+	out := make(map[id.ID]bool, len(users))
+	for _, u := range users {
+		ok, err := d.opts.ACL.Eligible(ctx, groupID, u)
+		if err != nil {
+			return nil, err
+		}
+		out[u] = ok
+	}
+	return out, nil
 }
 
 // signerLeafOf is the leaf the healing device occupies in the rebuilt tree.

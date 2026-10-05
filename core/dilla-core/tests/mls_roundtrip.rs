@@ -2022,3 +2022,487 @@ fn a_resync_that_changes_the_credential_is_refused_by_a_member_and_the_ds() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Finding G1 of the second hardening review: a leaf's signature key is immutable like its
+// credential, and a device holds at most one leaf. Before this, an `Update` built with a new signer
+// moved a leaf to a key its device never registered, after which an external commit on the
+// registered key found no leaf to remove, counted as a first join, and left the device with two
+// leaves - the second under a changed credential (review2_probe_a, turned round below).
+// ---------------------------------------------------------------------------------------------
+
+/// Bob's credential on a fresh signature key, stored in his provider: what
+/// `propose_self_update_with_new_signer` takes to move his leaf to another key with its credential
+/// unchanged.
+fn bob_on_a_new_key(g: &TwoMembers) -> (SignatureKeyPair, CredentialWithKey) {
+    let k2 = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    k2.store(g.bob_p.storage()).expect("store");
+    let with_key = CredentialWithKey {
+        credential: BasicCredential::new(identity(0xbb, 0x02)).into(),
+        signature_key: k2.public().into(),
+    };
+    (k2, with_key)
+}
+
+/// G1a, the proposal (the review's probe, step 1, turned round): Bob proposes an `Update` that
+/// keeps his credential byte for byte and moves his leaf to a new signature key. A member refuses
+/// it rather than queueing it, and the delivery service refuses it on both of its routes; nothing
+/// is queued and the DS view is unchanged.
+#[test]
+fn an_update_proposal_that_changes_the_signature_key_is_refused_by_a_member_and_the_ds() {
+    let mut g = two_members_and_the_ds();
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let (k2, with_key) = bob_on_a_new_key(&g);
+    let mut raw = MlsGroup::load(g.bob_p.storage(), &g.group_id)
+        .expect("load")
+        .expect("bob's group is stored");
+    let (proposal, _) = raw
+        .propose_self_update_with_new_signer(
+            &g.bob_p,
+            &g.bob_signer,
+            NewSignerBundle {
+                signer: &k2,
+                credential_with_key: with_key,
+            },
+            LeafNodeParameters::default(),
+        )
+        .expect("stock OpenMLS builds the key-rotating Update; the receivers must refuse it");
+    let proposal = wire_bytes(&proposal);
+
+    let err = g
+        .alice
+        .process_message(&g.alice_p, protocol_in(&proposal))
+        .expect_err("an Update that moves the leaf to another key must not be queued");
+    assert!(
+        matches!(err, MlsError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+
+    let before = g.ds.export_state();
+    let err =
+        g.ds.process_message(&crypto, protocol_in(&proposal))
+            .expect_err("the DS's proposal route parses with process_message first");
+    assert!(
+        matches!(err, PublicGroupError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+    let err =
+        g.ds.queue_proposal(&crypto, protocol_in(&proposal))
+            .expect_err("and queue_proposal refuses it too");
+    assert!(
+        matches!(err, PublicGroupError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+    assert!(
+        g.ds.queued_proposals()
+            .expect("queued_proposals")
+            .is_empty(),
+        "nothing is queued"
+    );
+    assert_eq!(g.ds.export_state(), before, "the DS view is unchanged");
+}
+
+/// G1a, the UpdatePath: Alice commits a self-update whose path leaf keeps her credential and moves
+/// her leaf to a new key. A member and the delivery service refuse it and stay at epoch 1; the
+/// honest self-update Alice makes instead, from the same epoch, is accepted by both.
+#[test]
+fn a_self_update_that_changes_the_signature_key_is_refused_by_a_member_and_the_ds() {
+    let mut g = two_members_and_the_ds();
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let k2 = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    k2.store(g.alice_p.storage()).expect("store");
+    let mut raw = MlsGroup::load(g.alice_p.storage(), &g.group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let (commit, _, _) = raw
+        .self_update_with_new_signer(
+            &g.alice_p,
+            &g.alice_signer,
+            NewSignerBundle {
+                signer: &k2,
+                credential_with_key: CredentialWithKey {
+                    credential: BasicCredential::new(identity(0xaa, 0x01)).into(),
+                    signature_key: k2.public().into(),
+                },
+            },
+            LeafNodeParameters::default(),
+        )
+        .expect("stock OpenMLS builds the key-rotating commit; the receivers must refuse it")
+        .into_contents();
+    let commit = wire_bytes(&commit);
+
+    let err = g
+        .bob
+        .process_message(&g.bob_p, protocol_in(&commit))
+        .expect_err("a commit that moves the committer's leaf to another key must be refused");
+    assert!(
+        matches!(err, MlsError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+    assert_eq!(g.bob.epoch(), 1, "the refused commit must not advance Bob");
+
+    let before = g.ds.export_state();
+    let err =
+        g.ds.process_message(&crypto, protocol_in(&commit))
+            .expect_err("the DS must refuse the same commit");
+    assert!(
+        matches!(err, PublicGroupError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+    assert_eq!(g.ds.export_state(), before, "the refusal writes nothing");
+
+    raw.clear_pending_commit(g.alice_p.storage())
+        .expect("clear the refused commit");
+    let mut alice = DillaGroup::load(&g.alice_p, &g.group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let honest = alice
+        .self_update(&g.alice_p, &g.alice_signer)
+        .expect("self_update");
+    match g
+        .bob
+        .process_message(&g.bob_p, into_protocol(honest.commit.clone()))
+        .expect("the honest commit is accepted after the refusal")
+    {
+        DillaProcessed::StagedCommit(staged) => g
+            .bob
+            .merge_staged_commit(&g.bob_p, *staged)
+            .expect("merge_staged_commit"),
+        other => panic!("expected a staged commit, got {other:?}"),
+    }
+    assert_eq!(g.bob.epoch(), 2);
+    assert!(matches!(
+        g.ds.process_message(&crypto, into_protocol(honest.commit))
+            .expect("the DS accepts the honest commit"),
+        PublicProcessed::StagedCommit { .. }
+    ));
+}
+
+/// G1a, by reference: a commit that carries Bob's key-rotating `Update`, built by a committer that
+/// queued it with the raw `MlsGroup`, is refused by Bob and stays at epoch 1.
+#[test]
+fn a_commit_carrying_an_update_that_changes_the_signature_key_is_refused() {
+    let g = two_members_and_the_ds();
+    let (k2, with_key) = bob_on_a_new_key(&g);
+    let mut raw_bob = MlsGroup::load(g.bob_p.storage(), &g.group_id)
+        .expect("load")
+        .expect("bob's group is stored");
+    let (proposal, _) = raw_bob
+        .propose_self_update_with_new_signer(
+            &g.bob_p,
+            &g.bob_signer,
+            NewSignerBundle {
+                signer: &k2,
+                credential_with_key: with_key,
+            },
+            LeafNodeParameters::default(),
+        )
+        .expect("propose_self_update_with_new_signer");
+
+    let mut raw_alice = MlsGroup::load(g.alice_p.storage(), &g.group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let queued = match raw_alice
+        .process_message(&g.alice_p, into_protocol(proposal))
+        .expect("OpenMLS itself accepts the Update")
+        .into_content()
+    {
+        ProcessedMessageContent::ProposalMessage(p) => *p,
+        other => panic!("expected a proposal, got {other:?}"),
+    };
+    raw_alice
+        .store_pending_proposal(g.alice_p.storage(), queued)
+        .expect("store_pending_proposal");
+    let (commit, _, _) = raw_alice
+        .commit_to_pending_proposals(&g.alice_p, &g.alice_signer)
+        .expect("commit_to_pending_proposals");
+
+    // Reloaded because the raw handle above wrote Bob's own proposal to the storage they share.
+    let mut bob = DillaGroup::load(&g.bob_p, &g.group_id)
+        .expect("load")
+        .expect("bob's group is stored");
+    let err = bob
+        .process_message(&g.bob_p, into_protocol(commit))
+        .expect_err("a commit applying a key-rotating Update must be refused");
+    assert!(
+        matches!(err, MlsError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+    assert_eq!(bob.epoch(), 1, "the refused commit must not advance Bob");
+}
+
+/// An external commit for Bob's device from Alice's current GroupInfo and tree, signed by `signer`
+/// and carrying his unchanged credential. The stock builder removes the leaf that carries
+/// `signer`'s key, if any, and nothing otherwise.
+fn bob_joins_externally_on(g: &TwoMembers, signer: &SignatureKeyPair) -> Vec<u8> {
+    let p = provider();
+    signer.store(p.storage()).expect("store signer");
+    let info = g
+        .alice
+        .export_group_info(&g.alice_p, &g.alice_signer)
+        .expect("group info");
+    let (_, commit, _) = DillaGroup::join_by_external_commit(
+        &p,
+        signer,
+        CredentialWithKey {
+            credential: BasicCredential::new(identity(0xbb, 0x02)).into(),
+            signature_key: signer.public().into(),
+        },
+        into_group_info(info),
+        g.alice.export_ratchet_tree().into(),
+        &binding(GroupKind::Text),
+    )
+    .expect("OpenMLS builds the external commit; the receivers decide on it");
+    wire_bytes(&commit)
+}
+
+/// A member (Alice) and the delivery service both refuse `commit` with `E_CREDENTIAL`, and
+/// neither moves.
+fn refused_by_a_member_and_the_ds(g: &mut TwoMembers, commit: &[u8], what: &str) {
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let epoch = g.alice.epoch();
+    let err = g
+        .alice
+        .process_message(&g.alice_p, protocol_in(commit))
+        .expect_err(what);
+    assert!(
+        matches!(err, MlsError::Protocol(ProtocolError::Credential)),
+        "{what}: {err:?}"
+    );
+    assert_eq!(g.alice.epoch(), epoch, "{what}: Alice must not advance");
+    let before = g.ds.export_state();
+    let err =
+        g.ds.process_message(&crypto, protocol_in(commit))
+            .expect_err(what);
+    assert!(
+        matches!(err, PublicGroupError::Protocol(ProtocolError::Credential)),
+        "{what}: {err:?}"
+    );
+    assert_eq!(
+        g.ds.export_state(),
+        before,
+        "{what}: the DS view is unchanged"
+    );
+}
+
+/// G1b (the review's probe, step 2, as a hand-built shape): Bob's device already holds leaf 1. An
+/// external commit whose new leaf names his device but that removes nothing - the stock builder
+/// finds no leaf on the new key - would leave the device with two leaves. A member and the
+/// delivery service refuse it. The honest resync (on the leaf's own key, with its Remove) and a
+/// first join by a device that holds no leaf are both still accepted afterwards.
+#[test]
+fn an_external_commit_that_leaves_its_devices_old_leaf_in_place_is_refused() {
+    let mut g = two_members_and_the_ds();
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let fresh = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    let commit = bob_joins_externally_on(&g, &fresh);
+    refused_by_a_member_and_the_ds(
+        &mut g,
+        &commit,
+        "an external commit that keeps the device's existing leaf must be refused",
+    );
+
+    let honest = bob_resyncs(&g, bob_identity_with("none"));
+    match g
+        .alice
+        .process_message(&g.alice_p, protocol_in(&honest))
+        .expect("the honest resync is accepted after the refusal")
+    {
+        DillaProcessed::StagedCommit(staged) => {
+            assert_eq!(staged.remove_proposals().count(), 1);
+        }
+        other => panic!("expected a staged commit, got {other:?}"),
+    }
+    assert!(matches!(
+        g.ds.process_message(&crypto, protocol_in(&honest))
+            .expect("the DS accepts the honest resync"),
+        PublicProcessed::StagedCommit { .. }
+    ));
+
+    // A first join: Carol's device holds no leaf, so her external commit removes nothing.
+    let p = provider();
+    let (carol_signer, carol_cred) = signer_and_credential(0xcc, 0x03);
+    carol_signer.store(p.storage()).expect("store signer");
+    let info = g
+        .alice
+        .export_group_info(&g.alice_p, &g.alice_signer)
+        .expect("group info");
+    let (_, join, _) = DillaGroup::join_by_external_commit(
+        &p,
+        &carol_signer,
+        carol_cred,
+        into_group_info(info),
+        g.alice.export_ratchet_tree().into(),
+        &binding(GroupKind::Text),
+    )
+    .expect("join_by_external_commit");
+    let join = wire_bytes(&join);
+    assert!(matches!(
+        g.alice
+            .process_message(&g.alice_p, protocol_in(&join))
+            .expect("a first join is accepted"),
+        DillaProcessed::StagedCommit(_)
+    ));
+    assert!(matches!(
+        g.ds.process_message(&crypto, protocol_in(&join))
+            .expect("the DS accepts a first join"),
+        PublicProcessed::StagedCommit { .. }
+    ));
+}
+
+/// `DillaPublicGroup::leaf_count` (wasi ABI v5) counts every occupied leaf, a leaf whose credential
+/// is not a dilla identity included, while `members()` leaves that leaf out. A delivery service
+/// that adopts a tree (registration, heal's reseed) compares the two.
+#[test]
+fn leaf_count_counts_a_leaf_that_members_cannot_name() {
+    let alice_p = provider();
+    let other_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    let other = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    other.store(other_p.storage()).expect("store signer");
+    let nameless = CredentialWithKey {
+        credential: BasicCredential::new(b"not a dilla identity".to_vec()).into(),
+        signature_key: other.public().into(),
+    };
+    let kp = build_key_package(&other_p, &other, nameless, false).expect("key package");
+    let group_id = GroupId::from_slice(&[0x47; 16]);
+    DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        binding(GroupKind::Text),
+        None,
+    )
+    .expect("create");
+    // `DillaGroup::add_members` names every device it adds, so the nameless leaf goes in through
+    // the raw OpenMLS group.
+    let mut raw = MlsGroup::load(alice_p.storage(), &group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    raw.add_members(&alice_p, &alice_signer, &[kp.key_package().clone()])
+        .expect("OpenMLS adds a leaf whatever its credential says");
+    raw.merge_pending_commit(&alice_p).expect("merge");
+    let alice = DillaGroup::load(&alice_p, &group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let info = alice
+        .export_group_info(&alice_p, &alice_signer)
+        .expect("group info");
+    let (ds, _) = DillaPublicGroup::from_external(
+        &openmls_rust_crypto::RustCrypto::default(),
+        alice.export_ratchet_tree().into(),
+        into_group_info(info),
+    )
+    .expect("from_external");
+    assert_eq!(ds.members().len(), 1, "members() names Alice only");
+    assert_eq!(
+        ds.leaf_count(),
+        2,
+        "leaf_count counts the nameless leaf too"
+    );
+}
+
+/// G1b, two leaves: the creator built the group with two leaves that both name Bob's device, on two
+/// keys. OpenMLS lets an external commit remove one leaf only, so Bob's resync on one of the keys
+/// removes that leaf and leaves the other: refused by a member and the delivery service.
+#[test]
+fn an_external_commit_by_a_device_that_holds_two_leaves_is_refused() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    let (bob_k2, bob_cred_k2) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    bob_k2.store(bob_p.storage()).expect("store signer");
+    let kp1 = build_key_package(&bob_p, &bob_signer, bob_cred.clone(), false).expect("kp");
+    let kp2 = build_key_package(&bob_p, &bob_k2, bob_cred_k2, false).expect("kp");
+    let group_id = GroupId::from_slice(&[0x45; 16]);
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        b.clone(),
+        None,
+    )
+    .expect("create");
+    alice
+        .add_members(
+            &alice_p,
+            &alice_signer,
+            &[kp1.key_package().clone(), kp2.key_package().clone()],
+        )
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    let info = alice
+        .export_group_info(&alice_p, &alice_signer)
+        .expect("group info");
+    let (ds, _) = DillaPublicGroup::from_external(
+        &openmls_rust_crypto::RustCrypto::default(),
+        alice.export_ratchet_tree().into(),
+        into_group_info(info),
+    )
+    .expect("from_external");
+    let bob_device = DeviceId::from_bytes([0x02; 16]);
+    assert_eq!(
+        ds.members()
+            .iter()
+            .filter(|m| m.identity.device_id == bob_device)
+            .count(),
+        2,
+        "the setup holds two leaves of Bob's device"
+    );
+    // Bob's own group is not used: the external commit is built from Alice's GroupInfo and tree.
+    let bob = DillaGroup::create(
+        &bob_p,
+        &bob_signer,
+        bob_cred,
+        GroupId::from_slice(&[0x46; 16]),
+        b,
+        None,
+    )
+    .expect("a group of Bob's own, to fill the struct");
+    let mut g = TwoMembers {
+        alice_p,
+        alice_signer,
+        alice,
+        bob_p,
+        bob_signer,
+        bob,
+        ds,
+        group_id,
+    };
+    let commit = bob_joins_externally_on(&g, &g.bob_signer);
+    // What the stock builder put in it, read by OpenMLS alone (no dilla policy) and never merged:
+    // one Remove, of the leaf on Bob's first key.
+    let mut raw = MlsGroup::load(g.alice_p.storage(), &g.group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    match raw
+        .process_message(&g.alice_p, protocol_in(&commit))
+        .expect("OpenMLS itself accepts the external commit")
+        .into_content()
+    {
+        ProcessedMessageContent::StagedCommitMessage(staged) => {
+            let removed: Vec<_> = staged
+                .remove_proposals()
+                .map(|r| r.remove_proposal().removed().u32())
+                .collect();
+            assert_eq!(
+                removed,
+                vec![1],
+                "the commit removes the leaf on Bob's first key only"
+            );
+        }
+        other => panic!("expected a staged commit, got {other:?}"),
+    }
+    refused_by_a_member_and_the_ds(
+        &mut g,
+        &commit,
+        "an external commit that removes one of its device's two leaves must be refused",
+    );
+}

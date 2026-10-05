@@ -29,7 +29,8 @@ pub use ds::{
 };
 pub use fixtures::{
     FixtureFile, FixtureManifest, FixtureSpec, KeyPackageSetEntry, KeyPackageSetManifest,
-    KeyPackageSetSpec, gen_key_packages, gen_public_group,
+    KeyPackageSetSpec, RegistrationGroup, RegistrationManifest, RegistrationSpec, gen_key_packages,
+    gen_public_group, gen_registration_groups,
 };
 pub use media_driver::MediaDriver;
 pub use scenario::{
