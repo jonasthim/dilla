@@ -147,7 +147,12 @@ within an epoch, so three rules keep its counters unique across worker restarts,
 - Once the media worker has confirmed an epoch, a later install that times out or fails with
   `E_WASM` ends that worker: the client clears its keys, terminates it, reports the error and stops
   the call's media. It cannot continue sending under the superseded epoch. An initial install
-  failure rejects the join, which releases the call lock.
+  failure rejects the join, which releases the call lock. Every posted install gets a worker answer:
+  an identical duplicate of a held epoch is confirmed; a duplicate with a different roster or key
+  is refused with `E_BAD_OPTIONS` for that install alone; an epoch too old or at or below the
+  dropped-epoch floor gets `epochIgnored` and the caller's promise rejects with `E_STALE_EPOCH`.
+  An ignored install records no roster, does not count as a confirmed epoch and does not end the
+  worker after the install timeout.
 - Receivers keep **every** epoch superseded less than **10 seconds** ago — a join storm makes
   several inside 10 s — each timed from the receiver's own processing of the Commit that superseded
   it, together with that epoch's roster. Installing an epoch evicts any held epoch with the same
@@ -181,8 +186,10 @@ within an epoch, so three rules keep its counters unique across worker restarts,
   p50 **2 881 ms**, p95 **2 884 ms**, p99 **2 888 ms** (nearest-rank, `n=20`). From the
   joiner's microphone publish start to the first observed authenticated KID on that member,
   the upper-bound observations were p50 **137 ms**, p95 **141 ms**, p99 **142 ms** (`n=20`).
-  Neither interval includes a fixed test sleep. The visibility interval includes MLS sync,
-  browser page creation and call connection; it is not the receiver's frame hold. The KID
+  Neither interval includes a fixed test sleep. About 2.5 s of the 2.88 s visibility interval
+  comes from LiveKit's 3 s `subscriberUpdateInterval` (`livekit-server` v1.13.7,
+  `pkg/rtc/room.go:56`); see follow-up card 23 in the media plan. The interval also includes MLS
+  sync, browser page creation and call connection; it is not the receiver's frame hold. The KID
   observation retains the **2 000 ms** acceptance bound. The receiver's separate **2 000 ms**
   hold applies per frame waiting for a key; the 10-second retired-epoch retention above covers
   older in-flight frames.

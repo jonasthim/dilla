@@ -32574,7 +32574,9 @@ Claude-Session: https://claude.ai/code/session_01ATX5KV2uNfihoyAMASpNjz"
 19. **Unconfigured Opus answer race** — origin: progress.md:101. Investigate answers missing `usedtx` and carrying `stereo=1` until renegotiation.
 20. **Unsupported codec first on real SFU** — origin: deferred-minors.md:178. Add a reachable unsupported-codec-first leg when LiveKit permits it.
 21. **Blocked sender UI** — origin: progress.md:85. dilla-web surfaces `encryptionError` and uses `verifiedIdentities()` rather than roster presence for verified state.
-22. **Audio input state** — origin: progress.md:118 (AUDIO-9). dilla-web presents suppression and echo-cancellation state distinctly.
+22. **Audio input state** — origin: progress.md:118 (AUDIO-9). dilla-web presents a distinct "not heard yet" state for a policy-excluded peer with no camera, separate from "failed authentication"; roster presence alone cannot call the peer verified.
+23. **LiveKit join visibility batching** — origin: progress.md:121; livekit-server v1.13.7 `pkg/rtc/room.go:56` fixes `subscriberUpdateInterval` at 3 s. An existing caller sees a new participant about 2.5–2.9 s late (20 joins: 2.88 s p50); a scratch build with the constant at 100 ms measured about 300 ms. Choose a carried patch, an upstream knob, or join announcements through dillad's gateway.
+24. **RNNoise render-thread startup cost** — origin: progress.md:120 (E2E-14/AUDIO-5). Synchronous WebAssembly instantiation in the audio worklet's render thread has unmeasured startup cost; the old lost-quanta gate measured only the constructor. Measure render-thread startup cost before setting a bound.
 
 ## Assembly notes
 
