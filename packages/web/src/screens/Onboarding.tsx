@@ -96,6 +96,9 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [closed, setClosed] = useState(false);
+  // Set by the E_NETWORK / 5xx row of a refused signupSubmit: the account may exist already, so the
+  // page never sends signupSubmit again and Reload (Signup.resume in the worker) is the only way on.
+  const [stalled, setStalled] = useState(false);
   const [result, setResult] = useState<SignupResult | null>(null);
   const [focusRequest, setFocusRequest] = useState<{ target: FocusTarget; n: number }>({ target: 'heading', n: 0 });
   const rootRef = useRef<HTMLDivElement>(null);
@@ -109,7 +112,7 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   const shown = ready && finished !== null ? 'done'
     : (closed || instance?.registrationMode === 2) ? 'closed' : step;
   const busy = submitting || (submitted && !ready);
-  const blocked = busy || beginning;
+  const blocked = busy || beginning || stalled;
 
   // OnboardingFrame focuses its heading when the title changes; this effect runs after the frame's
   // (child effects first), so a field request after a step change lands on the field.
@@ -141,13 +144,14 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
     requestFocus(`onboarding-${first}`);
     return true;
   };
-  const applyRefusal = (rejection: unknown) => {
+  const applyRefusal = (rejection: unknown): RefusalView => {
     const view = refusalView(errorOf(rejection), name);
     if (view.closed) setClosed(true);
     if (view.step) setStep(view.step);
     if (view.field && view.fieldKey) setErrors({ [view.field]: view.fieldKey });
     setBanner(view.banner ?? null);
     if (view.focus) requestFocus(view.focus);
+    return view;
   };
 
   const connectNext = () => {
@@ -198,7 +202,9 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
         setSubmitting(false);
       } catch (e) {
         setSubmitting(false);
-        applyRefusal(e);
+        // Requirement 6, the E_NETWORK row: a second POST /v1/accounts would answer "username taken"
+        // for the person's own account, so Create account and Back stay blocked from here on.
+        if (applyRefusal(e).banner?.reload === true) setStalled(true);
       }
     };
     void run();

@@ -420,6 +420,27 @@ describe('refusals', () => {
     expect(fake.callsOf('signupSubmit')).toHaveLength(1);
     reload.mockRestore();
   });
+  // Requirement 6, the E_NETWORK row: the page never sends signupSubmit again in this case, so after
+  // the network banner Create account and Back stay blocked (aria-disabled) and Reload is the only way on.
+  it.each([
+    [{ code: 'E_NETWORK', detail: '', status: 0, retryAfterMs: null }],
+    [{ code: 'E_HTTP', status: 502 }],
+  ])('after a lost response only Reload goes on (%j)', async init => {
+    const { user, fake } = setup();
+    await toBrowser(user);
+    fake.handler = () => Promise.reject(refusal(init));
+    await user.click(button('Create account'));
+    expect(screen.getByRole('alert')).toHaveTextContent('The connection dropped while creating your account. Reload the page to finish.');
+    expect(button('Create account')).toHaveAttribute('aria-disabled', 'true');
+    expect(button('Back')).toHaveAttribute('aria-disabled', 'true');
+    expect(document.activeElement).toBe(button('Create account'));
+    await user.click(button('Create account'));
+    await user.keyboard('{Enter}');
+    await user.click(button('Back'));
+    expect(fake.callsOf('signupSubmit')).toHaveLength(1);
+    expect(h1()).toHaveTextContent('What this browser keeps');
+    expect(screen.getByRole('alert')).toHaveTextContent('The connection dropped while creating your account. Reload the page to finish.');
+  });
   it('another refusal can be tried again', async () => {
     const { user, fake } = setup();
     await toBrowser(user);

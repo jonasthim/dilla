@@ -22,6 +22,7 @@ function Field(props: { id: string; label: string; initial?: string; hint?: stri
 }
 // While the account is being created the app blocks both buttons with aria-disabled, never the native
 // attribute, so focus stays on the pressed button (task 23, pre-flight ruling (c)); the story does the same.
+// After a lost response (the network banner) both stay blocked: Reload is the only way on (Requirement 6).
 function Footer({ back, next, disabled }: { back?: boolean; next: string; disabled?: boolean }) {
   const blocked = disabled ? { 'aria-disabled': true } : {};
   return (
@@ -71,7 +72,7 @@ function Keys({ initiallyAcknowledged }: { initiallyAcknowledged: boolean }) {
 function BrowserStep({ registering, network }: { registering?: boolean; network?: boolean }) {
   return (
     <Step n={4} title={t('onboarding.browser.title')}
-      footer={<Footer back next={t(registering ? 'onboarding.browser.submitting' : 'onboarding.browser.submit')} disabled={registering} />}>
+      footer={<Footer back next={t(registering ? 'onboarding.browser.submitting' : 'onboarding.browser.submit')} disabled={registering || network} />}>
       {network ? <Banner tone="danger" action={{ label: t('onboarding.error.reload'), onAction: noop }}>{t('onboarding.error.network')}</Banner> : null}
       <p>{t('onboarding.browser.device', { instance })}</p>
       <p>{t('onboarding.browser.clear')}</p>
