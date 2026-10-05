@@ -355,6 +355,9 @@ type Communities interface {
 	// with id > after, ordered by id (so the order is the same on both engines),
 	// at most limit. A soft-deleted community is left out, as GetCommunity does.
 	ListCommunities(ctx context.Context, after id.ID, limit int32) ([]CommunityRow, error)
+	// ListCommunitiesForUser is GET /v1/communities: the live communities userID is a member of,
+	// ordered by community id (the same order on both engines). A soft-deleted community is left out.
+	ListCommunitiesForUser(ctx context.Context, userID id.ID) ([]CommunityRow, error)
 	// UpdateCommunityPolicy writes the policy under version, which must be
 	// greater than the stored one. The version is monotone, so a writer that
 	// lost a race to the same successor gets ErrConflict rather than landing a

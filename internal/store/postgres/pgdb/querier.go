@@ -156,6 +156,9 @@ type Querier interface {
 	ListChannelsForUser(ctx context.Context, arg ListChannelsForUserParams) ([]Channels, error)
 	ListCollectableBlobs(ctx context.Context, arg ListCollectableBlobsParams) ([]Blobs, error)
 	ListCommunities(ctx context.Context, arg ListCommunitiesParams) ([]Communities, error)
+	// GET /v1/communities (dilla-web-1 L-SQL-02): the live communities the user is a member of, by id
+	// (the same order on both engines), over members_by_user (00013_members_by_user.sql).
+	ListCommunitiesForUser(ctx context.Context, arg ListCommunitiesForUserParams) ([]Communities, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
 	// A community's references created strictly before the retention cutoff, oldest first.
 	ListExpiredBlobRefs(ctx context.Context, arg ListExpiredBlobRefsParams) ([]BlobRefs, error)

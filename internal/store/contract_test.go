@@ -141,6 +141,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// Plan 2 task 14: `dillad admin community list`, reached through the
 			// embedded Communities.
 			"ListCommunities",
+			// dilla-web-1 task 8 (L-SQL-02): GET /v1/communities, reached through the embedded
+			// Communities.
+			"ListCommunitiesForUser",
 			// §4.1 plus P2-D22's GetVoiceSession and the live-call listing POST
 			// /v1/channels/{id}/calls joins through (task 16), reached through the
 			// embedded VoiceSessions.
@@ -175,7 +178,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		// is what Repository embeds until the rest of Structure exists (P2-D23).
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
 			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity",
-			"GetMember", "GetRole", "ListCommunities", "ListMemberRoles", "ListMembersOfCommunity",
+			"GetMember", "GetRole", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
+			"ListMembersOfCommunity",
 			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SoftDeleteCommunity",
 			"UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
