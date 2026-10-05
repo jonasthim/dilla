@@ -202,6 +202,7 @@ jobs:
       - run: npm ci
       - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
       - run: npx playwright install --with-deps chromium firefox
+      - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:media -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit

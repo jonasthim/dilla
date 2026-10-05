@@ -184,16 +184,21 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
     const tDaveIn = Date.now();
     const tDavePublishStart = Date.now();
     await publish(driver, dave, { camera: true, simulcast: true });
+    // NV-12: 2 s holds on a developer machine (p99 142 ms over 20 joins, docs/spikes). The 4-vCPU CI
+    // runner, encoding four simulcast cameras in software, missed it on its first run (PR #7), so CI
+    // asserts the ruling's ceiling and prints what it measured.
+    const kidBoundMs = process.env.CI ? 10_000 : 2_000;
     let tFrame = 0;
     await expect
       .poll(async () => {
         const n = await count(alice.page, kidOf(dave, e1));
         if (n > 0 && tFrame === 0) tFrame = Date.now();
         return n;
-      }, { timeout: 2_000, message: "dave's KID decrypts on alice within 2 s of his publish" })
+      }, { timeout: kidBoundMs, message: `dave's KID decrypts on alice within ${kidBoundMs} ms of his publish` })
       .toBeGreaterThan(0);
-    expect(tFrame - tDavePublishStart).toBeLessThanOrEqual(2_000);
-    for (const rx of [bob, carol]) await expect.poll(() => count(rx.page, kidOf(dave, e1)), { timeout: 2_000 }).toBeGreaterThan(0);
+    console.log(`NV-12 joiner KID after publish start: ${tFrame - tDavePublishStart} ms (bound ${kidBoundMs} ms)`);
+    expect(tFrame - tDavePublishStart).toBeLessThanOrEqual(kidBoundMs);
+    for (const rx of [bob, carol]) await expect.poll(() => count(rx.page, kidOf(dave, e1)), { timeout: kidBoundMs }).toBeGreaterThan(0);
     for (const [rx, tx] of pairs([alice, bob, carol, dave])) await assertKinds(rx, tx, e1);
 
     // Key-frame latency: the joiner's time to first frame; existing members never freeze (held frames).

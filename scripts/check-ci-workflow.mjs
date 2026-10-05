@@ -110,6 +110,7 @@ const REQUIRED_STEPS = {
     'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
     'node packages/media/scripts/extract-rnnoise-wasm.mjs',
     'npx playwright install --with-deps chromium firefox',
+    'sh scripts/ci-audio-server.sh',
     'npm run test:e2e:media -w @dilla/e2e',
     'unsupported-sfu-codec.spec.ts',
     "DILLA_MEDIA_SFU_AV1: '1'",
@@ -352,6 +353,11 @@ export function checkWorkflow(root) {
     const suiteAt = jobs['browser-media'].indexOf('npm run test:e2e:media -w @dilla/e2e');
     if (extractAt !== -1 && suiteAt !== -1 && extractAt > suiteAt) {
       problems.push('ci.yml: browser-media RNNoise extraction must run before the media suite');
+    }
+    // Firefox's AudioContext stays suspended on a runner with no audio server (first run of PR #7).
+    const audioAt = jobs['browser-media'].indexOf('sh scripts/ci-audio-server.sh');
+    if (audioAt !== -1 && suiteAt !== -1 && audioAt > suiteAt) {
+      problems.push('ci.yml: browser-media audio server must start before the media suite');
     }
     for (const need of ['rust-wasi', 'rust-native']) {
       if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs['browser-media'])) {

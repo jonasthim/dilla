@@ -109,6 +109,7 @@ jobs:
       - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
       - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
       - run: npx playwright install --with-deps chromium firefox
+      - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:media -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
@@ -601,6 +602,15 @@ test('browser-media extraction must precede the media suite', () => {
   const moved = GOOD.replace(step, '').replace('      - run: npm run test:e2e:media -w @dilla/e2e\n', '      - run: npm run test:e2e:media -w @dilla/e2e\n' + step);
   const problems = checkWorkflow(fixture(moved));
   assert.ok(problems.some((p) => p.includes('RNNoise extraction') && p.includes('before')), problems.join('\n'));
+});
+
+test('browser-media must start an audio server before the media suite', () => {
+  const step = '      - run: sh scripts/ci-audio-server.sh\n';
+  const missing = checkWorkflow(fixture(GOOD.replace(step, '')));
+  assert.ok(missing.some((p) => p.includes('ci-audio-server.sh')), missing.join('\n'));
+  const moved = GOOD.replace(step, '').replace('      - run: npm run test:e2e:media -w @dilla/e2e\n', '      - run: npm run test:e2e:media -w @dilla/e2e\n' + step);
+  const late = checkWorkflow(fixture(moved));
+  assert.ok(late.some((p) => p.includes('audio server') && p.includes('before')), late.join('\n'));
 });
 
 test('the browser-media job requires the real-SFU AV1 leg', () => {
