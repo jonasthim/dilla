@@ -1,0 +1,4 @@
+.d-message-log { height: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: var(--group-gap) 0; background: var(--bg); }
+.d-message-log__earlier { align-self: center; margin-bottom: var(--group-gap); flex-shrink: 0; }
+.d-message-log__empty { margin: auto 0 0; padding: 2rem var(--row-pad-x); font-size: var(--text-sm); color: var(--fg-3); text-align: center; }
+.d-message-log__rows { margin-top: auto; display: flex; flex-direction: column; }

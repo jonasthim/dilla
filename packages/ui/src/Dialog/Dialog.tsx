@@ -2,9 +2,9 @@ import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
 import './Dialog.css';
 
-export type DialogProps = { open: boolean; title: string; onClose: () => void; children: ReactNode; footer?: ReactNode };
+export type DialogProps = { open: boolean; title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; closeLabel?: string };
 
-export function Dialog({ open, title, onClose, children, footer }: DialogProps) {
+export function Dialog({ open, title, onClose, children, footer, closeLabel }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   // The <dialog> element stays mounted for the component's lifetime and is
@@ -33,7 +33,7 @@ export function Dialog({ open, title, onClose, children, footer }: DialogProps) 
           <h2 id={titleId} className="d-dialog__title">{title}</h2>
           <div className="d-dialog__body">{children}</div>
           <div className="d-dialog__footer">
-            <Button variant="ghost" keyHint="esc" onClick={onClose}>Close</Button>
+            <Button variant="ghost" keyHint="esc" onClick={onClose}>{closeLabel ?? 'Close'}</Button>
             {footer}
           </div>
         </div>

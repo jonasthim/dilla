@@ -22,3 +22,12 @@
 .d-label { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
 .d-root a { color: var(--fg-link); text-decoration-line: none; }
 [data-theme="high-contrast"] .d-root a, .d-root a[data-underline] { text-decoration-line: underline; }
+/* The component library's only stacking value and only width breakpoint (Global Constraints, plan
+   web-1). The skip link paints above the rail's positioned tiles. Below 48rem of shell width the
+   sidebar stacks above the main pane, so the shell fits a 360px phone without sideways scrolling.
+   The selectors carry two classes so they win over AppShell.css whatever the load order. */
+.d-app-shell .d-app-shell__skip { z-index: 1; }
+@container d-shell (max-width: 47.99rem) {
+  .d-app-shell .d-app-shell__grid { grid-template-columns: var(--rail-w) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; grid-template-areas: "banner banner" "rail sidebar" "rail main" "status status"; }
+  .d-app-shell .d-app-shell__sidebar { max-height: 35dvh; overflow-y: auto; border-bottom: 1px solid var(--hairline); }
+}
