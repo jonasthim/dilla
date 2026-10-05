@@ -590,6 +590,115 @@ func TestProposeAddRefusesADeviceAbsentFromItsUsersSignedDeviceList(t *testing.T
 	}
 }
 
+// registeredDeviceFor registers the device of a committed-set KeyPackage under the given user and
+// key, listed in that user's signed device list. With kp.user and kp.dsk it is the honest device;
+// with anything else it is a device whose directory holds a package it could not publish today —
+// one uploaded before the delivery service bound a package to its device's registered key.
+func (h *dsHarness) registeredDeviceFor(t *testing.T, kp keyPackageSetEntry, user id.ID, dsk []byte) {
+	t.Helper()
+	now := h.clk.Now().Unix()
+	ssk := testSSK(0x6b)
+	h.userWithSSK(t, user, ssk)
+	if err := h.repo.CreateDevice(context.Background(), store.DeviceRow{
+		ID: kp.device, UserID: user, DSKPub: dsk,
+		Tier: 0, SignerTier: 0, CredentialBlob: []byte{0xf6}, LastSeen: now, Created: now,
+	}); err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	h.publishDeviceList(t, user, signedDeviceList(t, ssk, user, []listEntry{
+		{DeviceID: kp.device[:], DSKPub: dsk, AddedAt: 1},
+	}))
+}
+
+// putDirectoryPackage stores one package in a device's directory straight through the store, as
+// an upload accepted before the key binding left it there.
+func (h *dsHarness) putDirectoryPackage(t *testing.T, device id.ID, blob []byte, lastResort uint8, expiresIn time.Duration) []byte {
+	t.Helper()
+	ref := id.New()
+	if err := h.repo.PutKeyPackages(context.Background(), device, []store.KeyPackageRow{{
+		DeviceID: device, KPRef: ref[:], Blob: blob, LastResort: lastResort,
+		Expires: h.clk.Now().Add(expiresIn).Unix(), Created: h.clk.Now().Unix(),
+	}}); err != nil {
+		t.Fatalf("PutKeyPackages: %v", err)
+	}
+	return ref[:]
+}
+
+// The follow-up to hardening C: the instance's own Add takes a package from the directory, and a
+// package that is not bound to its device — one stored before the binding existed — is skipped
+// before it is spent and deleted, and the device's next package is proposed. The device here is
+// honest; the package served first (it expires first) was built by another device of another user
+// under another key.
+func TestProposeAddSkipsAndDeletesADirectoryPackageNotBoundToItsDevice(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	honest := h.nextKeyPackageDevice(t)
+	stranger := h.nextKeyPackageDevice(t)
+	h.registeredDeviceFor(t, honest, honest.user, honest.dsk)
+	h.putDirectoryPackage(t, honest.device, stranger.blob, 0, 10*24*time.Hour)
+	h.putDirectoryPackage(t, honest.device, honest.blob, 0, 80*24*time.Hour)
+
+	if err := h.ds.ProposeAdd(ctx, reg.GroupID, honest.device, id.New()); err != nil {
+		t.Fatalf("ProposeAdd: %v", err)
+	}
+	rows, err := h.repo.ListProposals(ctx, reg.GroupID, 6, true)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	if len(rows) != 1 || !bytes.Equal(rows[0].KeyPackage, honest.blob) {
+		t.Fatalf("got %d proposals, the first built from the honest package: %v; want exactly one",
+			len(rows), len(rows) == 1 && bytes.Equal(rows[0].KeyPackage, honest.blob))
+	}
+	// The stranger's package is gone from the directory; the honest one is the consumed row left.
+	if got := h.countRows(t, "key_packages"); got != 1 {
+		t.Fatalf("key_packages holds %d rows, want 1: the unbound package must be deleted", got)
+	}
+}
+
+// With only unbound packages in its directory the device has none to propose: the outcome is the
+// existing "no usable KeyPackage" refusal, nothing is proposed, and every unbound package —
+// the last-resort one included, which is otherwise never consumed — is deleted.
+func TestProposeAddWithOnlyUnboundPackagesIsTheNoPackageRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		lastResort uint8
+		mismatch   string
+	}{
+		{"a package under another key", 0, "key"},
+		{"a last-resort package under another key", 1, "key"},
+		{"a package naming another user", 0, "user"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newDSHarness(t)
+			ctx := context.Background()
+			reg, _ := h.mustRegister(t)
+			kp := h.nextKeyPackageDevice(t)
+			user, dsk := kp.user, kp.dsk
+			if tc.mismatch == "key" {
+				dsk = bytes.Repeat([]byte{4}, 32)
+			} else {
+				user = id.New()
+			}
+			h.registeredDeviceFor(t, kp, user, dsk)
+			h.putDirectoryPackage(t, kp.device, kp.blob, tc.lastResort, 80*24*time.Hour)
+
+			err := h.ds.ProposeAdd(ctx, reg.GroupID, kp.device, id.New())
+			var dsErr *ds.Error
+			if !errors.As(err, &dsErr) || dsErr.Code != "E_INVALID_REQUEST" ||
+				!strings.Contains(dsErr.Detail, "no usable KeyPackage") {
+				t.Fatalf("got %v, want E_INVALID_REQUEST: no usable KeyPackage", err)
+			}
+			if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 6, true); len(rows) != 0 {
+				t.Fatalf("%d proposals stored, want 0", len(rows))
+			}
+			if got := h.countRows(t, "key_packages"); got != 0 {
+				t.Fatalf("key_packages holds %d rows, want 0: the unbound package must be deleted", got)
+			}
+		})
+	}
+}
+
 // The join-storm drain applies the same clause: an unlisted device is dropped from the queue
 // without spending its KeyPackage, and the listed device beside it is proposed.
 func TestProposeAddBatchDropsAnUnlistedDeviceWithoutSpendingItsKeyPackage(t *testing.T) {
@@ -1004,10 +1113,12 @@ func (h *dsHarness) bareGroup(t *testing.T) id.ID {
 	return gid
 }
 
-// deviceWithKeyPackage registers one user and one device with the instance and stores the
-// fixture's committed KeyPackage for it. `key_packages.device_id` references `devices(id)`, so the
-// two rows are not optional. The blob is real material a real `validate_key_package` accepts; only
-// the identities are the test's.
+// deviceWithKeyPackage registers one user and one device with the instance and stores that
+// device's own KeyPackage for it. `key_packages.device_id` references `devices(id)`, so the two
+// rows are not optional. The device is the next one of the committed KeyPackage set
+// (keypackage_set_test.go): its id, its user and its registered key are the ones its package's
+// credential and leaf carry, as for every honest device — the delivery service proposes no
+// package its device did not build under its registered key.
 //
 // The user's signed device list names the device, as it does for every device a real user has
 // finished pairing: the delivery service proposes an Add only for a listed device (invariant 4's
@@ -1025,11 +1136,12 @@ func (h *dsHarness) deviceWithKeyPackageListed(t *testing.T, listed bool) id.ID 
 	t.Helper()
 	ctx := context.Background()
 	now := h.clk.Now().Unix()
-	user := id.New()
+	kp := h.nextKeyPackageDevice(t)
+	user := kp.user
 	ssk := testSSK(0x6b)
 	h.userWithSSK(t, user, ssk)
-	device := id.New()
-	dsk := bytes.Repeat([]byte{4}, 32)
+	device := kp.device
+	dsk := kp.dsk
 	if err := h.repo.CreateDevice(ctx, store.DeviceRow{
 		ID: device, UserID: user, DSKPub: dsk,
 		Tier: 0, SignerTier: 0, CredentialBlob: []byte{0xf6}, LastSeen: now, Created: now,
@@ -1044,7 +1156,7 @@ func (h *dsHarness) deviceWithKeyPackageListed(t *testing.T, listed bool) id.ID 
 	h.publishDeviceList(t, user, signedDeviceList(t, ssk, user, []listEntry{entry}))
 	ref := id.New()
 	if err := h.repo.PutKeyPackages(ctx, device, []store.KeyPackageRow{{
-		DeviceID: device, KPRef: ref[:], Blob: fixtureFile(t, "key_package.mls"), LastResort: 0,
+		DeviceID: device, KPRef: ref[:], Blob: kp.blob, LastResort: 0,
 		Expires: h.clk.Now().Add(80 * 24 * time.Hour).Unix(), Created: now,
 	}}); err != nil {
 		t.Fatalf("PutKeyPackages: %v", err)

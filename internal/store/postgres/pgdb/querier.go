@@ -51,6 +51,7 @@ type Querier interface {
 	// Fix wave C3: a kick, ban or leave drops the user from every channel of the community, in the
 	// transaction that removes the membership. A DM has no community and is never matched.
 	DeleteCommunityChannelMembers(ctx context.Context, arg DeleteCommunityChannelMembersParams) (int64, error)
+	DeleteKeyPackage(ctx context.Context, arg DeleteKeyPackageParams) error
 	DeleteMember(ctx context.Context, arg DeleteMemberParams) (int64, error)
 	DeleteMemberRole(ctx context.Context, arg DeleteMemberRoleParams) (int64, error)
 	DeleteMembers(ctx context.Context, arg DeleteMembersParams) error

@@ -47,6 +47,18 @@ enum Command {
         #[arg(long, default_value_t = 0x5eed)]
         seed: u64,
     },
+    /// Generate the committed directory KeyPackage fixture: one honest KeyPackage per device.
+    GenKeyPackages {
+        #[arg(long, default_value_t = 16)]
+        count: usize,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Not the public-group fixture's 0x5eed: a device's id is derived from its seed, and the
+        /// 1,500-leaf fixture's members take seeds 0x5eed + 1 .. 0x5eed + 1499, so a package set
+        /// from the same seed would name devices that are already members of that group.
+        #[arg(long, default_value_t = 0x00c0_ffee_0000)]
+        seed: u64,
+    },
 }
 
 fn main() -> std::process::ExitCode {
@@ -118,6 +130,26 @@ fn main() -> std::process::ExitCode {
                         manifest.epoch,
                         manifest.tree_hash_hex,
                         manifest.files.len(),
+                        manifest.not_after
+                    );
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+        Command::GenKeyPackages { count, out, seed } => {
+            match dilla_testkit::gen_key_packages(&dilla_testkit::KeyPackageSetSpec {
+                count,
+                out,
+                seed,
+            }) {
+                Ok(manifest) => {
+                    println!(
+                        "{} key packages, not_after {}",
+                        manifest.key_packages.len(),
                         manifest.not_after
                     );
                     std::process::ExitCode::SUCCESS

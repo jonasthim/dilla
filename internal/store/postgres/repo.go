@@ -1435,6 +1435,10 @@ func (r *Repo) CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) 
 	return n, wrap(err)
 }
 
+func (r *Repo) DeleteKeyPackage(ctx context.Context, deviceID id.ID, kpRef []byte) error {
+	return wrap(r.w.DeleteKeyPackage(ctx, pgdb.DeleteKeyPackageParams{DeviceID: deviceID, KpRef: kpRef}))
+}
+
 func (r *Repo) PurgeKeyPackages(ctx context.Context, keepLastResort bool) (int64, error) {
 	if keepLastResort {
 		n, err := r.w.PurgeKeyPackagesKeepingLastResort(ctx)

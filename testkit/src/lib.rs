@@ -27,7 +27,10 @@ pub use ds::{
     MessageAccepted, MessageItem, NewAccount, RegisterGroup, RegisterRequest, RegisterResult,
     ResyncRequest, TreeResp, TreeResponse, UploadResult, WelcomeItem,
 };
-pub use fixtures::{FixtureFile, FixtureManifest, FixtureSpec, gen_public_group};
+pub use fixtures::{
+    FixtureFile, FixtureManifest, FixtureSpec, KeyPackageSetEntry, KeyPackageSetManifest,
+    KeyPackageSetSpec, gen_key_packages, gen_public_group,
+};
 pub use media_driver::MediaDriver;
 pub use scenario::{
     DeviceListMode, ParseError, RunReport, Runner, Scenario, StepResult, Stmt, parse,

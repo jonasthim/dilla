@@ -380,3 +380,95 @@ pub fn gen_public_group(spec: &FixtureSpec) -> Result<FixtureManifest, TestkitEr
         .map_err(|e| TestkitError::Scenario(e.to_string()))?;
     Ok(manifest)
 }
+
+/// The directory KeyPackage fixture: `count` KeyPackages, each built by its own device of its own
+/// user with the device's own signing key, exactly as an honest client publishes one.
+///
+/// The delivery service binds a KeyPackage to the device it is published for (its credential
+/// names that device and user, and its leaf key is the device's registered key), so a Go test that
+/// needs several devices with a KeyPackage each needs one real package per device: Go builds no
+/// MLS object, and `key_package.mls` of the 1,500-leaf fixture is a single device's.
+pub struct KeyPackageSetSpec {
+    pub count: usize,
+    pub out: PathBuf,
+    pub seed: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeyPackageSetEntry {
+    /// `NN.mls`: an `MLSMessage` framing a bare KeyPackage, the form `POST /v1/keypackages` takes.
+    pub path: String,
+    pub device_id_hex: String,
+    pub user_id_hex: String,
+    /// The device's DSK public key: the KeyPackage leaf's signature key, which the device
+    /// registers as `dsk_pub`.
+    pub dsk_pub_hex: String,
+    pub key_package_ref_hex: String,
+    pub sha256_hex: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeyPackageSetManifest {
+    /// Seconds since the Unix epoch; every package's lifetime ends here or later.
+    pub not_after: u64,
+    pub openmls_version: String,
+    pub key_packages: Vec<KeyPackageSetEntry>,
+}
+
+pub fn gen_key_packages(spec: &KeyPackageSetSpec) -> Result<KeyPackageSetManifest, TestkitError> {
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    std::fs::create_dir_all(&spec.out).map_err(|e| TestkitError::Scenario(e.to_string()))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| TestkitError::Scenario(e.to_string()))?
+        .as_secs();
+    let mut entries = Vec::with_capacity(spec.count);
+    for i in 0..spec.count {
+        // One user per device, so a test can give each its own ACL verdict and device list. Not a
+        // uniform byte array: the 1,500-leaf fixture's users are `[k; 16]` for every k in 1..=250
+        // (`gen_public_group` above), and a user id equal to one of them would already be a member
+        // of that group.
+        let mut user_bytes = [0xfd; 16];
+        user_bytes[1] = i as u8;
+        let user = UserId::from_bytes(user_bytes);
+        let client = TestClient::new(
+            &format!("kp{i}"),
+            user,
+            Tier::Native,
+            Kind::User,
+            spec.seed.wrapping_add(i as u64),
+        )?;
+        let kp = build_key_package(
+            client.provider(),
+            client.signer(),
+            client.credential(),
+            false,
+        )?;
+        let bytes = serialize(&MlsMessageOut::from(kp.key_package().clone()))?;
+        let path = format!("{i:02}.mls");
+        std::fs::write(spec.out.join(&path), &bytes)
+            .map_err(|e| TestkitError::Scenario(e.to_string()))?;
+        entries.push(KeyPackageSetEntry {
+            path,
+            device_id_hex: hex(client.device_id().as_bytes()),
+            user_id_hex: hex(client.user_id().as_bytes()),
+            dsk_pub_hex: hex(client.signer().public()),
+            key_package_ref_hex: hex(kp
+                .key_package()
+                .hash_ref(&crypto)
+                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?
+                .as_slice()),
+            sha256_hex: hex(&Sha256::digest(&bytes)),
+        });
+    }
+    let manifest = KeyPackageSetManifest {
+        not_after: now + dilla_core::mls::KEY_PACKAGE_LIFETIME_DAYS * 24 * 60 * 60,
+        openmls_version: "0.9.0".to_owned(),
+        key_packages: entries,
+    };
+    let json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| TestkitError::Scenario(e.to_string()))?;
+    std::fs::write(spec.out.join("manifest.json"), format!("{json}\n"))
+        .map_err(|e| TestkitError::Scenario(e.to_string()))?;
+    Ok(manifest)
+}

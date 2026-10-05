@@ -377,7 +377,12 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    signed device list (invariant 4's Add clause). A device the ACL admits may read
    `GET /v1/groups/{id}/info` and `/tree` to build that external commit.
 6. **Void.** Before proposing, the DS validates a KeyPackage (lifetime not expired, capabilities
-   include `0xF001`, not consumed) and a Remove target (leaf still present). A DS proposal older
+   include `0xF001`, not consumed, and bound to its device as the KeyPackage directory binds an
+   upload: its credential names the device and the device's user and its leaf `signature_key` is
+   the device's registered key — a directory package that is not, one stored before that binding,
+   is deleted from the directory unspent and the device's next package is taken, and a device left
+   with none gets the same refusal as a device whose directory is empty) and a Remove target (leaf
+   still present). A DS proposal older
    than its TTL — 30 seconds in `call` groups, 24 hours in `text` groups — is marked **void**; a
    Commit MAY omit void proposals. In `call` groups the DS sweeps the call groups that have DS
    proposals outstanding every 5 seconds, at most 256 of them per sweep in turn, so a call proposal

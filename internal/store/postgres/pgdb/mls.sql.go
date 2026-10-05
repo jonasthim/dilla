@@ -191,6 +191,20 @@ func (q *Queries) CreateGroup(ctx context.Context, arg CreateGroupParams) error 
 	return err
 }
 
+const deleteKeyPackage = `-- name: DeleteKeyPackage :exec
+DELETE FROM key_packages WHERE device_id = $1 AND kp_ref = $2
+`
+
+type DeleteKeyPackageParams struct {
+	DeviceID id.ID
+	KpRef    []byte
+}
+
+func (q *Queries) DeleteKeyPackage(ctx context.Context, arg DeleteKeyPackageParams) error {
+	_, err := q.db.ExecContext(ctx, deleteKeyPackage, arg.DeviceID, arg.KpRef)
+	return err
+}
+
 const deleteMembers = `-- name: DeleteMembers :exec
 DELETE FROM mls_members WHERE group_id = $1
 `

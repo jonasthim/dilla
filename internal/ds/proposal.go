@@ -78,16 +78,9 @@ func (d *DS) proposeAddLocked(ctx context.Context, groupID, deviceID, actionID i
 	if err := d.checkListedDevice(ctx, inst, deviceID); err != nil {
 		return err
 	}
-	kp, err := d.opts.Store.TakeKeyPackage(ctx, deviceID, d.now())
-	if errors.Is(err, store.ErrNotFound) {
-		return errInvalid("no usable KeyPackage for that device")
-	}
+	kp, err := d.takeBoundKeyPackage(ctx, inst, deviceID)
 	if err != nil {
 		return err
-	}
-
-	if _, err := inst.ValidateKeyPackage(ctx, kp.Blob); err != nil {
-		return errInvalid("the stored KeyPackage no longer validates: " + err.Error())
 	}
 	blob, err := inst.ExternalProposeAdd(ctx, groupID[:], row.Epoch, kp.Blob,
 		d.opts.Keys.ExternalSenderPriv[:])
@@ -101,6 +94,44 @@ func (d *DS) proposeAddLocked(ctx context.Context, groupID, deviceID, actionID i
 		Origin:       0,
 		ActionID:     actionID,
 	})
+}
+
+// takeBoundKeyPackage takes the device's next directory KeyPackage that is bound to the device —
+// its credential names the device and the device's user, and its leaf is keyed by the device's
+// registered key (leafKeyIsRegistered, the binding PublishKeyPackages applies on upload). A package
+// that is not — one stored before that binding existed — would become an Add no commit can carry
+// (checkAddedMember refuses it, and clause 1 refuses every commit that leaves it out), so it is
+// deleted from the directory before it is spent and the device's next package is tried. Each pass
+// takes a row out of the directory (consumed or deleted), so the loop ends; an empty directory is
+// the same "no usable KeyPackage" refusal as ever. A package that no longer validates at all is
+// refused as before.
+func (d *DS) takeBoundKeyPackage(ctx context.Context, inst *mlswasi.Instance, deviceID id.ID) (store.KeyPackageRow, error) {
+	device, err := d.opts.Store.GetDevice(ctx, deviceID)
+	if err != nil {
+		return store.KeyPackageRow{}, err
+	}
+	for {
+		kp, err := d.opts.Store.TakeKeyPackage(ctx, deviceID, d.now())
+		if errors.Is(err, store.ErrNotFound) {
+			return store.KeyPackageRow{}, errInvalid("no usable KeyPackage for that device")
+		}
+		if err != nil {
+			return store.KeyPackageRow{}, err
+		}
+		info, err := inst.ValidateKeyPackage(ctx, kp.Blob)
+		if err != nil {
+			return store.KeyPackageRow{}, errInvalid("the stored KeyPackage no longer validates: " + err.Error())
+		}
+		if bytes.Equal(info.DeviceID, deviceID[:]) && bytes.Equal(info.UserID, device.UserID[:]) &&
+			leafKeyIsRegistered(device, info.SignatureKey) {
+			return kp, nil
+		}
+		d.log().Warn("dropping a directory KeyPackage not bound to its device's registered key",
+			"device", deviceID.String()[:8], "last_resort", kp.LastResort == 1)
+		if err := d.opts.Store.DeleteKeyPackage(ctx, deviceID, kp.KPRef); err != nil {
+			return store.KeyPackageRow{}, err
+		}
+	}
 }
 
 // checkListedDevice answers errInvalid unless the device exists, is live, and its DSK is in the

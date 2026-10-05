@@ -66,6 +66,11 @@ type dsHarness struct {
 	sessions map[id.ID]auth.Session
 	conns    map[id.ID]*deviceConn
 	hello    recordedFrame
+
+	// keyPackagesUsed is how many devices of the committed KeyPackage set
+	// (testkit/fixtures/key-packages) this harness has registered; keypackage_set_test.go hands
+	// each new device the next entry, so no two devices of one test share a package.
+	keyPackagesUsed int
 }
 
 func newDSHarness(t *testing.T) *dsHarness {

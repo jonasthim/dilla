@@ -204,9 +204,18 @@ func TestADrainThatDiesMidSliceLeavesTheUnresolvedDevicesQueued(t *testing.T) {
 		t.Fatalf("after the crash pending_joins holds %v, want the three devices the drain never "+
 			"resolved %v: a device left the queue before its Add was stored", got, order[2:])
 	}
+	// The first device's Add is among them. Not necessarily first in the list: outstanding
+	// proposals issued in one second are listed by ref, and with each device's own KeyPackage the
+	// refs of the two Adds are unrelated to the devices' order.
 	adds := h.outstandingAdds(t, reg.GroupID)
-	if len(adds) == 0 || *adds[0].TargetDevice != order[0] {
-		t.Fatalf("%d outstanding Adds, want the first device's: the drain did run before it died", len(adds))
+	firstProposed := false
+	for _, a := range adds {
+		if a.TargetDevice != nil && *a.TargetDevice == order[0] {
+			firstProposed = true
+		}
+	}
+	if !firstProposed {
+		t.Fatalf("%d outstanding Adds, none for the first device: the drain did run before it died", len(adds))
 	}
 
 	// And the restarted instance still has them to drain.
