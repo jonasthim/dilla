@@ -44,6 +44,7 @@ export type ToWorker =
   | { kind: 'init'; v: 1; logLevel: 'error' | 'warn' | 'info' | 'debug'; wasmUrl: string }
   | {
       kind: 'installEpoch';
+      requestId?: number; // correlates concurrent installs of the same epoch
       groupId: string;
       epoch: bigint;
       baseKey: Uint8Array; // 16 B, buffer transferred
@@ -60,14 +61,15 @@ export type ToWorker =
 
 export type FromWorker =
   | { kind: 'initAck'; v: 1; scriptTransform: boolean }
-  | { kind: 'epochInstalled'; epoch: bigint }
+  | { kind: 'epochInstalled'; epoch: bigint; requestId?: number }
+  | { kind: 'epochIgnored'; epoch: bigint; reason: 'tooOld' | 'dropped'; requestId?: number }
   | { kind: 'epochRetired'; epoch: bigint }
   | { kind: 'attached'; trackId: string; side: Side }
   | { kind: 'seqExhausted'; slot: SlotId; layer: number } // encoder stopped → manager triggers MLS Update
   | { kind: 'rekeyNeeded'; reason: 'layerSpace' | 'seqExhausted' }
   // ≤1/s per (code, trackId). `epoch` names the installEpoch that failed; an E_WASM with neither `trackId` nor
   // `epoch` is worker-wide (the wasm never loaded): the manager then fails every pending call.
-  | { kind: 'error'; code: DropReason | 'E_NO_EPOCH' | 'E_BAD_OPTIONS' | 'E_WASM'; participantIdentity?: string; trackId?: string; side?: Side; epoch?: bigint }
+  | { kind: 'error'; code: DropReason | 'E_NO_EPOCH' | 'E_BAD_OPTIONS' | 'E_WASM'; participantIdentity?: string; trackId?: string; side?: Side; epoch?: bigint; requestId?: number }
   | { kind: 'stats'; id: number; data: DillaMediaStats }
   | { kind: 'log'; level: 'error' | 'warn' | 'info' | 'debug'; msg: string };
 

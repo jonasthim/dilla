@@ -783,6 +783,63 @@ describe('a failed worker is cleared and terminated (N5)', () => {
 });
 
 describe('N10: a failed install after a confirmed epoch ends the worker', () => {
+  it('settles duplicate and ignored installs without terminating after the install timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const { w, m } = setup();
+      const first = m.installEpoch(keys());
+      await vi.advanceTimersByTimeAsync(0);
+      w.reply({ kind: 'epochInstalled', epoch: 5n });
+      await first;
+      const terminate = vi.spyOn(w, 'terminate');
+      const duplicate = m.installEpoch(keys());
+      await vi.advanceTimersByTimeAsync(0);
+      w.reply({ kind: 'epochInstalled', epoch: 5n });
+      await expect(duplicate).resolves.toBeUndefined();
+      const bad = m.installEpoch(keys());
+      await vi.advanceTimersByTimeAsync(0);
+      const badId = w.last('installEpoch')!.msg.requestId;
+      w.reply({ kind: 'error', code: 'E_BAD_OPTIONS', epoch: 5n, requestId: badId });
+      await expect(bad).rejects.toThrow('E_BAD_OPTIONS');
+      for (const [epoch, reason] of [[6n, 'tooOld'], [7n, 'dropped']] as const) {
+        const ignored = m.installEpoch(keys(epoch, [{ leaf: 0, deviceId: DEV_LOCAL }, { leaf: 2, deviceId: 'c3'.repeat(16) }]));
+        await vi.advanceTimersByTimeAsync(0);
+        w.reply({ kind: 'epochIgnored', epoch, reason });
+        await expect(ignored).rejects.toThrow('E_STALE_EPOCH');
+      }
+      await vi.advanceTimersByTimeAsync(INSTALL_TIMEOUT_MS + 1);
+      expect(terminate).not.toHaveBeenCalled();
+      expect(w.last('clearKeys')).toBeUndefined();
+      expect((m as unknown as { inRoster(identity: string): boolean }).inRoster(DEV_B)).toBe(true);
+      expect((m as unknown as { inRoster(identity: string): boolean }).inRoster('c3'.repeat(16))).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('refuses only the changed duplicate when two installs of one epoch overlap', async () => {
+    const { w, m } = setup();
+    await install(w, m);
+    const first = m.installEpoch(keys());
+    const second = m.installEpoch(keys());
+    await vi.waitFor(() => expect(w.posted.filter((p) => p.msg.kind === 'installEpoch')).toHaveLength(3));
+    const [firstId, secondId] = w.posted.filter((p) => p.msg.kind === 'installEpoch').slice(-2).map((p) => p.msg.requestId as number);
+    w.reply({ kind: 'error', code: 'E_BAD_OPTIONS', epoch: 5n, requestId: firstId });
+    w.reply({ kind: 'epochInstalled', epoch: 5n, requestId: secondId });
+    await expect(first).rejects.toThrow('E_BAD_OPTIONS');
+    await expect(second).resolves.toBeUndefined();
+  });
+
+  it('settles only the failed first request when concurrent installs share an epoch', async () => {
+    const { w, m } = setup();
+    const first = m.installEpoch(keys());
+    const second = m.installEpoch(keys());
+    await vi.waitFor(() => expect(w.posted.filter((p) => p.msg.kind === 'installEpoch')).toHaveLength(2));
+    const [firstId, secondId] = w.posted.filter((p) => p.msg.kind === 'installEpoch').map((p) => p.msg.requestId as number);
+    w.reply({ kind: 'error', code: 'E_WASM', epoch: 5n, requestId: firstId });
+    w.reply({ kind: 'epochInstalled', epoch: 5n, requestId: secondId });
+    await expect(first).rejects.toThrow('E_WASM');
+    await expect(second).resolves.toBeUndefined();
+  });
+
   it('terminates on an install timeout while preserving the first-install retry behavior', async () => {
     vi.useFakeTimers();
     try {

@@ -37,6 +37,7 @@ export function parseToWorker(m: unknown): ToWorker | null {
       return m.v === 1 && LOG_LEVELS.has(m.logLevel as string) && isStr(m.wasmUrl) ? (m as ToWorker) : null;
     case 'installEpoch':
       return isStr(m.groupId) && typeof m.epoch === 'bigint' && m.baseKey instanceof Uint8Array && isInt(m.selfLeaf)
+        && (m.requestId === undefined || (isInt(m.requestId) && (m.requestId as number) >= 0))
         && Array.isArray(m.roster) && m.roster.every((r) => isObj(r) && isInt(r.leaf) && isStr(r.deviceId))
         ? (m as ToWorker) : null;
     case 'clearKeys':

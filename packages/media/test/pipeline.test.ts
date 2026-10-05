@@ -109,6 +109,7 @@ describe('epoch window mirrors the receiver', () => {
     expect(p.stats.currentEpoch).toBe('300');
     expect(p.stats.knownKids).toHaveLength(2);
     expect(posted.filter((m) => m.kind === 'epochInstalled')).toHaveLength(1);
+    expect(posted).toContainEqual({ kind: 'epochIgnored', epoch: 44n, reason: 'tooOld' });
   });
 
   it('does not reinstall a retired epoch and retires epochs outside the window', () => {
@@ -120,10 +121,24 @@ describe('epoch window mirrors the receiver', () => {
     const installed = posted.filter((m) => m.kind === 'epochInstalled').length;
     install(p, 5n);
     expect(posted.filter((m) => m.kind === 'epochInstalled')).toHaveLength(installed);
+    expect(posted).toContainEqual({ kind: 'epochIgnored', epoch: 5n, reason: 'dropped' });
     install(p, 7n);
     install(p, 263n);
     expect(posted).toContainEqual({ kind: 'epochRetired', epoch: 6n });
     expect(p.stats.knownKids).not.toContain('6');
+  });
+  it('acknowledges an identical held epoch but refuses a changed roster or key for that install', () => {
+    const { p, posted, cipher } = setup();
+    install(p, 5n);
+    const calls = cipher.keys.length;
+    install(p, 5n);
+    expect(posted.filter((m) => m.kind === 'epochInstalled' && m.epoch === 5n)).toHaveLength(2);
+    p.handle({ kind: 'installEpoch', groupId: 'g', epoch: 5n, baseKey: new Uint8Array(16).fill(7), selfLeaf: 0, roster: [...ROSTER].reverse() });
+    expect(posted.filter((m) => m.kind === 'epochInstalled' && m.epoch === 5n)).toHaveLength(3);
+    p.handle({ kind: 'installEpoch', groupId: 'g', epoch: 5n, baseKey: new Uint8Array(16).fill(8), selfLeaf: 0, roster: ROSTER });
+    p.handle({ kind: 'installEpoch', groupId: 'g', epoch: 5n, baseKey: new Uint8Array(16).fill(7), selfLeaf: 0, roster: [{ leaf: 0, deviceId: DEV_A }] });
+    expect(posted.filter((m) => m.kind === 'error' && m.code === 'E_BAD_OPTIONS' && m.epoch === 5n)).toHaveLength(2);
+    expect(cipher.keys).toHaveLength(calls);
   });
   it('retires same-mod-256 and more-than-255-behind epochs immediately', () => {
     const { p, posted } = setup();

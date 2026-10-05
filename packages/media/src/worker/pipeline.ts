@@ -111,7 +111,7 @@ export class Pipeline {
   private senderEpoch: bigint | null = null;
   private minNextSenderEpoch = 0n; // N1 across clearKeys: never a second counter space under a used KID
   private selfLeaf = -1;
-  private readonly epochs: Array<{ epoch: bigint; leaves: number[]; supersededAt: number | null }> = [];
+  private readonly epochs: Array<{ epoch: bigint; leaves: number[]; supersededAt: number | null; groupId: string; selfLeaf: number; roster: Array<{ leaf: number; deviceId: string }>; baseKey: Uint8Array }> = [];
   private droppedEpochFloor: bigint | null = null;
   private sif = new Uint8Array(0);
   private readonly layers = new LayerAllocator();
@@ -200,6 +200,7 @@ export class Pipeline {
       const e = this.epochs[i];
       if (e.supersededAt !== null && now - e.supersededAt >= RETENTION_MS) {
         this.epochs.splice(i, 1);
+        e.baseKey.fill(0);
         this.droppedEpochFloor = this.droppedEpochFloor === null || e.epoch > this.droppedEpochFloor ? e.epoch : this.droppedEpochFloor;
         this.deps.post({ kind: 'epochRetired', epoch: e.epoch });
       }
@@ -371,13 +372,29 @@ export class Pipeline {
     this.refreshEpochStats();
     // Mirror the receiver's install decision before touching the sender or reporting success.
     const newest = this.epochs.reduce<bigint | null>((max, e) => max === null || e.epoch > max ? e.epoch : max, null);
-    if (this.epochs.some((e) => e.epoch === m.epoch) ||
-        (newest !== null && m.epoch < newest && (newest - m.epoch > 255n || (this.droppedEpochFloor !== null && m.epoch <= this.droppedEpochFloor)))) {
+    const held = this.epochs.find((e) => e.epoch === m.epoch);
+    if (held !== undefined) {
+      const byLeafAndDevice = (a: { leaf: number; deviceId: string }, b: { leaf: number; deviceId: string }): number =>
+        a.leaf - b.leaf || a.deviceId.localeCompare(b.deviceId);
+      const prior = [...held.roster].sort(byLeafAndDevice);
+      const incoming = [...m.roster].sort(byLeafAndDevice);
+      const same = held.groupId === m.groupId && held.selfLeaf === m.selfLeaf && prior.length === incoming.length
+        && prior.every((r, i) => r.leaf === incoming[i]?.leaf && r.deviceId === incoming[i]?.deviceId)
+        && held.baseKey.length === m.baseKey.length && held.baseKey.every((b, i) => b === m.baseKey[i]);
       m.baseKey.fill(0);
+      if (same) this.deps.post({ kind: 'epochInstalled', epoch: m.epoch, ...(m.requestId === undefined ? {} : { requestId: m.requestId }) });
+      else this.deps.post({ kind: 'error', code: 'E_BAD_OPTIONS', epoch: m.epoch, ...(m.requestId === undefined ? {} : { requestId: m.requestId }) });
+      return;
+    }
+    if (newest !== null && m.epoch < newest && (newest - m.epoch > 255n || (this.droppedEpochFloor !== null && m.epoch <= this.droppedEpochFloor))) {
+      const reason = newest - m.epoch > 255n ? 'tooOld' : 'dropped';
+      m.baseKey.fill(0);
+      this.deps.post({ kind: 'epochIgnored', epoch: m.epoch, reason, ...(m.requestId === undefined ? {} : { requestId: m.requestId }) });
       return;
     }
     // The wasm entry points zero the argument buffer wasm-bindgen copies the key into (M4), not the caller's array:
     // each call gets its own copy here, and every copy and the transferred key are zeroed below, also on a throw.
+    const retainedKey = m.baseKey.slice();
     const copies: Uint8Array[] = [];
     const key = (): Uint8Array => {
       const c = m.baseKey.slice();
@@ -403,7 +420,8 @@ export class Pipeline {
         this.selfLeaf = m.selfLeaf;
       }
     } catch (err) {
-      this.error('E_WASM', undefined, undefined, m.epoch);
+      retainedKey.fill(0);
+      this.deps.post({ kind: 'error', code: 'E_WASM', epoch: m.epoch, ...(m.requestId === undefined ? {} : { requestId: m.requestId }) });
       this.log('error', `installEpoch ${m.epoch}: ${errorCode(err)}`);
       return;
     } finally {
@@ -415,15 +433,17 @@ export class Pipeline {
       const e = this.epochs[i];
       if (e.epoch % 256n === m.epoch % 256n || (!newer && m.epoch - e.epoch > 255n)) {
         this.epochs.splice(i, 1);
+        e.baseKey.fill(0);
         this.droppedEpochFloor = this.droppedEpochFloor === null || e.epoch > this.droppedEpochFloor ? e.epoch : this.droppedEpochFloor;
         this.deps.post({ kind: 'epochRetired', epoch: e.epoch });
       } else if (!newer && e.supersededAt === null) {
         e.supersededAt = now;
       }
     }
-    this.epochs.push({ epoch: m.epoch, leaves: m.roster.map((r) => r.leaf), supersededAt: newer ? now : null });
+    this.epochs.push({ epoch: m.epoch, leaves: m.roster.map((r) => r.leaf), supersededAt: newer ? now : null,
+      groupId: m.groupId, selfLeaf: m.selfLeaf, roster: m.roster.map((r) => ({ ...r })), baseKey: retainedKey });
     this.refreshEpochStats();
-    this.deps.post({ kind: 'epochInstalled', epoch: m.epoch });
+    this.deps.post({ kind: 'epochInstalled', epoch: m.epoch, ...(m.requestId === undefined ? {} : { requestId: m.requestId }) });
     for (const h of this.tracks.values()) if (h.opts.side === 'decode') this.drain(h);
   }
 
@@ -435,6 +455,7 @@ export class Pipeline {
     this.sender = null;
     this.senderEpoch = null;
     this.selfLeaf = -1;
+    for (const e of this.epochs) e.baseKey.fill(0);
     this.epochs.length = 0;
     this.droppedEpochFloor = null;
     this.refreshEpochStats();

@@ -116,7 +116,8 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
   private disposed = false;
   /** epoch → leaf → device identity, for the roster status and verifiedIdentities(). */
   private readonly rosters = new Map<bigint, Map<number, string>>();
-  private readonly pendingInstalls = new Map<bigint, Array<Pending<void>>>();
+  private readonly pendingInstalls = new Map<bigint, Array<Pending<void> & { requestId: number }>>();
+  private nextInstallId = 1;
   private readonly inRosterStatus = new Map<string, boolean>();
   private readonly pendingStats = new Map<number, Pending<DillaMediaStats>>();
   private readonly localTrackIds = new Set<string>();
@@ -267,9 +268,11 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     const baseKey = k.baseKey.slice();
     k.baseKey.fill(0);
     const epoch = k.epoch;
+    const requestId = this.nextInstallId++;
     const done = new Promise<void>((resolve, reject) => {
       // N4: every posted install settles: confirmed, failed by the worker, failed with the manager, or timed out.
-      const entry: Pending<void> = {
+      const entry: Pending<void> & { requestId: number } = {
+        requestId,
         resolve: () => { clearTimeout(timer); resolve(); },
         reject: (e) => { clearTimeout(timer); reject(e); },
       };
@@ -285,7 +288,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
       }, INSTALL_TIMEOUT_MS);
       this.pendingInstalls.set(epoch, [...(this.pendingInstalls.get(epoch) ?? []), entry]);
     });
-    this.post({ kind: 'installEpoch', groupId: k.groupId, epoch: k.epoch, baseKey, selfLeaf: k.selfLeaf, roster: k.roster.map((r) => ({ leaf: r.leaf, deviceId: r.deviceId })) }, [baseKey.buffer]);
+    this.post({ kind: 'installEpoch', requestId, groupId: k.groupId, epoch: k.epoch, baseKey, selfLeaf: k.selfLeaf, roster: k.roster.map((r) => ({ leaf: r.leaf, deviceId: r.deviceId })) }, [baseKey.buffer]);
     await done;
     this.rosters.set(k.epoch, roster);
     this.refreshRemoteStatus();
@@ -400,12 +403,14 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
         return;
       case 'epochInstalled':
         this.epochSeen = true;
-        for (const p of this.pendingInstalls.get(m.epoch) ?? []) p.resolve();
-        this.pendingInstalls.delete(m.epoch);
+        this.settleInstall(m.epoch, m.requestId, (p) => p.resolve());
         if (this.pendingLocalEnable) {
           this.pendingLocalEnable = false;
           this.enableLocal();
         }
+        return;
+      case 'epochIgnored':
+        this.settleInstall(m.epoch, m.requestId, (p) => p.reject(new Error(`E_STALE_EPOCH: epoch ${m.epoch} ignored (${m.reason})`)));
         return;
       case 'epochRetired':
         this.rosters.delete(m.epoch);
@@ -435,8 +440,21 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     }
   }
 
+  private settleInstall(epoch: bigint, requestId: number | undefined, settle: (p: Pending<void>) => void): void {
+    const list = this.pendingInstalls.get(epoch) ?? [];
+    const selected = requestId === undefined ? list : list.filter((p) => p.requestId === requestId);
+    for (const p of selected) settle(p);
+    const left = list.filter((p) => !selected.includes(p));
+    if (left.length > 0) this.pendingInstalls.set(epoch, left);
+    else this.pendingInstalls.delete(epoch);
+  }
+
   private onWorkerError(m: Extract<FromWorker, { kind: 'error' }>): void {
     this.log('warn', `${m.code}${m.trackId === undefined ? '' : ` on ${m.trackId}`}`);
+    if (m.code === 'E_BAD_OPTIONS' && m.epoch !== undefined) {
+      this.settleInstall(m.epoch, m.requestId, (p) => p.reject(new Error(`E_BAD_OPTIONS: installing epoch ${m.epoch} refused`)));
+      return;
+    }
     if (m.code === 'E_WASM' && m.epoch !== undefined) {
       if (this.epochSeen) {
         this.failWorker(`installing epoch ${m.epoch} failed`);
@@ -444,8 +462,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
       }
       // M2: an install failure names its epoch; only that epoch's installs fail.
       const err = new Error(`E_WASM: installing epoch ${m.epoch} failed`);
-      for (const p of this.pendingInstalls.get(m.epoch) ?? []) p.reject(err);
-      this.pendingInstalls.delete(m.epoch);
+      this.settleInstall(m.epoch, m.requestId, (p) => p.reject(err));
       this.emitSafe('encryptionError', err, m.participantIdentity);
       return;
     }
