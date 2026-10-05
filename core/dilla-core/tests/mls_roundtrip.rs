@@ -1901,3 +1901,124 @@ fn a_commit_carrying_an_update_that_changes_the_credential_is_refused() {
     );
     assert_eq!(bob.epoch(), 1, "the refused commit must not advance Bob");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Residual R1 of the hardening review: a resync - an external commit that removes the joiner
+// device's own leaf L and re-adds it - must not change L's credential either. The external
+// commit's path leaf is a new leaf, but the leaf it replaces is the same device's, so the
+// credential that leaf carried is the one the new leaf must carry, byte for byte.
+// ---------------------------------------------------------------------------------------------
+
+/// Bob's credential identity with one field or byte changed: the forgeries R1's probe used (kind,
+/// tier) and a single byte of a signature, which no field-level comparison would name.
+fn bob_identity_with(change: &str) -> Vec<u8> {
+    use dilla_core::identity::{CredentialIdentity, Kind, Tier};
+    let mut id = CredentialIdentity::decode(&identity(0xbb, 0x02)).expect("decode");
+    match change {
+        "none" => {}
+        "tier" => id.tier = Tier::Browser,
+        "kind" => id.kind = Kind::Bot,
+        "one signature byte" => id.sig_ssk_dev[0] ^= 0x01,
+        other => panic!("unknown change {other}"),
+    }
+    id.encode()
+}
+
+/// Bob resyncs: a fresh provider holding his signing key joins from Alice's epoch-1 GroupInfo and
+/// tree by external commit, carrying `identity` on his own signature key. OpenMLS removes the
+/// leaf that carries his signature key in the same commit (`external_commits.rs`), which is how a
+/// resync replaces its old leaf. Returns the commit's wire bytes.
+fn bob_resyncs(g: &TwoMembers, identity: Vec<u8>) -> Vec<u8> {
+    let p = provider();
+    g.bob_signer.store(p.storage()).expect("store signer");
+    let info = g
+        .alice
+        .export_group_info(&g.alice_p, &g.alice_signer)
+        .expect("group info");
+    let (_, commit, _) = DillaGroup::join_by_external_commit(
+        &p,
+        &g.bob_signer,
+        CredentialWithKey {
+            credential: BasicCredential::new(identity).into(),
+            signature_key: g.bob_signer.public().into(),
+        },
+        into_group_info(info),
+        g.alice.export_ratchet_tree().into(),
+        &binding(GroupKind::Text),
+    )
+    .expect("OpenMLS builds the resync; the receivers decide on it");
+    wire_bytes(&commit)
+}
+
+/// The honest resync: the new leaf carries exactly the credential Bob's old leaf carried. A member
+/// and the delivery service both stage it.
+#[test]
+fn a_resync_that_keeps_the_credential_is_accepted_by_a_member_and_the_ds() {
+    let mut g = two_members_and_the_ds();
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let commit = bob_resyncs(&g, bob_identity_with("none"));
+
+    match g
+        .alice
+        .process_message(&g.alice_p, protocol_in(&commit))
+        .expect("an honest resync is accepted")
+    {
+        DillaProcessed::StagedCommit(staged) => {
+            assert_eq!(
+                staged.remove_proposals().count(),
+                1,
+                "a resync removes the device's old leaf"
+            );
+            g.alice
+                .merge_staged_commit(&g.alice_p, *staged)
+                .expect("merge_staged_commit");
+        }
+        other => panic!("expected a staged commit, got {other:?}"),
+    }
+    assert_eq!(g.alice.epoch(), 2);
+    assert!(matches!(
+        g.ds.process_message(&crypto, protocol_in(&commit))
+            .expect("the DS accepts the honest resync"),
+        PublicProcessed::StagedCommit { .. }
+    ));
+}
+
+/// R1: the same resync with Bob's credential changed in one field or one byte - same user, same
+/// device, same signature key - is refused with `E_CREDENTIAL` by a receiving member, whose epoch
+/// stays at 1, and by the delivery service, whose state is unchanged.
+#[test]
+fn a_resync_that_changes_the_credential_is_refused_by_a_member_and_the_ds() {
+    for change in ["tier", "kind", "one signature byte"] {
+        let mut g = two_members_and_the_ds();
+        let crypto = openmls_rust_crypto::RustCrypto::default();
+        let commit = bob_resyncs(&g, bob_identity_with(change));
+
+        let err = g
+            .alice
+            .process_message(&g.alice_p, protocol_in(&commit))
+            .expect_err("a resync that rewrites the device's credential must be refused");
+        assert!(
+            matches!(err, MlsError::Protocol(ProtocolError::Credential)),
+            "{change}: {err:?}"
+        );
+        assert_eq!(
+            g.alice.epoch(),
+            1,
+            "{change}: the refusal must not advance Alice"
+        );
+
+        let before = g.ds.export_state();
+        let err =
+            g.ds.process_message(&crypto, protocol_in(&commit))
+                .expect_err("the DS must refuse the same resync");
+        assert!(
+            matches!(err, PublicGroupError::Protocol(ProtocolError::Credential)),
+            "{change}: {err:?}"
+        );
+        assert_eq!(
+            g.ds.export_state(),
+            before,
+            "{change}: the DS view is unchanged"
+        );
+    }
+}

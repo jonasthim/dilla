@@ -242,10 +242,15 @@ pub(crate) fn extension_change_verdict(_proposal_sender: &Sender) -> Result<(), 
 /// - a member commit's UpdatePath leaf node, against the committer's leaf;
 /// - every `Update` the commit applies, against its proposer's leaf.
 ///
-/// An external commit's UpdatePath leaf is a new leaf, not a changed one: the joiner is in no leaf
-/// of `tree`, and binding a new leaf to its device is the Add and external-join rules' job. The
-/// signature key is not compared: MLS lets a leaf rotate it, and protocol/03 rule 1 (the key is the
-/// `dsk_pub` that `sig_ssk_dev` covers) is the leaf validation a later wave adds.
+/// - a **resync** - an external commit whose inline `Remove` takes out a leaf of the joiner's own
+///   device (the device the path leaf's credential names) - against the leaf it replaces: the
+///   device keeps the credential it joined with across the resync (review residual R1).
+///
+/// An external commit that removes no leaf of its own device is a first join: its UpdatePath leaf
+/// is a new leaf, not a changed one, and binding it to its device is the Add and external-join
+/// rules' job (the delivery service binds its key to the device's registered key). The signature
+/// key is not compared: MLS lets a leaf rotate it, and protocol/03 rule 1 (the key is the `dsk_pub`
+/// that `sig_ssk_dev` covers) is the leaf validation a later wave adds.
 ///
 /// Shared by both enforcement points so they cannot drift: `validate_staged_commit` (a receiving
 /// member) and `DillaPublicGroup::process_message` (the delivery service, which runs no other
@@ -255,8 +260,14 @@ pub(crate) fn leaf_credentials_unchanged(
     sender: &Sender,
     staged: &StagedCommit,
 ) -> Result<(), ProtocolError> {
-    if let (Sender::Member(committer), Some(path_leaf)) = (sender, staged.update_path_leaf_node()) {
-        credential_unchanged(tree, *committer, path_leaf.credential())?;
+    match (sender, staged.update_path_leaf_node()) {
+        (Sender::Member(committer), Some(path_leaf)) => {
+            credential_unchanged(tree, *committer, path_leaf.credential())?;
+        }
+        (Sender::NewMemberCommit, Some(path_leaf)) => {
+            resync_keeps_credential(tree, staged, path_leaf.credential())?;
+        }
+        _ => {}
     }
     for update in staged.update_proposals() {
         update_credential_verdict(tree, update.sender(), update.update_proposal())?;
@@ -288,6 +299,35 @@ fn update_credential_verdict(
         Sender::Member(leaf) => credential_unchanged(tree, *leaf, update.leaf_node().credential()),
         _ => Err(ProtocolError::Credential),
     }
+}
+
+/// The resync half of the rule. An external commit carries its proposals inline (RFC 9420
+/// §12.4.3.2), and the leaf it replaces is the one its `Remove` names; OpenMLS's builder emits that
+/// `Remove` for the leaf holding the joiner's signature key, but a hand-built commit may name any
+/// leaf, so the leaf is recognised by what it IS - a leaf whose credential names the same device as
+/// the new leaf - not by how the commit was built. Every such leaf must carry exactly the new
+/// leaf's credential. A credential on either side that does not decode as a dilla identity is
+/// refused rather than passed over.
+fn resync_keeps_credential(
+    tree: &PublicGroup,
+    staged: &StagedCommit,
+    new: &Credential,
+) -> Result<(), ProtocolError> {
+    let joiner = device_of_credential(new)?;
+    for remove in staged.remove_proposals() {
+        let target = remove.remove_proposal().removed();
+        let old = tree.leaf(target).ok_or(ProtocolError::Credential)?;
+        if device_of_credential(old.credential())? == joiner && old.credential() != new {
+            return Err(ProtocolError::Credential);
+        }
+    }
+    Ok(())
+}
+
+fn device_of_credential(credential: &Credential) -> Result<crate::ids::DeviceId, ProtocolError> {
+    let basic =
+        BasicCredential::try_from(credential.clone()).map_err(|_| ProtocolError::Credential)?;
+    Ok(crate::identity::CredentialIdentity::decode(basic.identity())?.device_id)
 }
 
 fn credential_unchanged(
