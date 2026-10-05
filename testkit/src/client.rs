@@ -37,7 +37,10 @@ use std::sync::{Arc, Mutex};
 pub struct Received {
     pub group_id: Vec<u8>,
     pub seq: u64,
+    /// The device authenticated by the MLS sender's credential.
     pub sender: DeviceId,
+    pub sender_user: UserId,
+    pub tier: Tier,
     pub envelope: Envelope,
 }
 
@@ -820,14 +823,25 @@ impl TestClient {
                 Frame::MessageCt { group_id, item } => {
                     if let Some(group) = self.groups.get_mut(&group_id) {
                         let message = deserialize_protocol(&item.blob)?;
-                        if let DillaProcessed::Application(envelope) =
+                        if let DillaProcessed::Application(app) =
                             group.process_message(&self.provider, message)?
                         {
+                            if app.sender.device_id != item.uploader_device {
+                                return Err(TestkitError::Assertion(format!(
+                                    "message seq {} in group {}: the MLS sender {} is not the uploader {}",
+                                    item.seq,
+                                    hex::encode(&group_id),
+                                    app.sender.device_id.to_hex(),
+                                    item.uploader_device.to_hex()
+                                )));
+                            }
                             let received = Received {
                                 group_id: group_id.clone(),
                                 seq: item.seq,
-                                sender: item.uploader_device,
-                                envelope,
+                                sender: app.sender.device_id,
+                                sender_user: app.sender.user_id,
+                                tier: app.sender.tier,
+                                envelope: app.envelope,
                             };
                             self.inbox.push(received.clone());
                             new.push(received);

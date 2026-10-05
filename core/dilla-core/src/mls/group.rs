@@ -95,9 +95,29 @@ enum CommitShape<'a> {
     Update,
 }
 
+/// An application sender authenticated to its MLS leaf. Validation against signed device lists
+/// belongs to the later device-list work (DEV-W20).
+pub struct ReceivedApplication {
+    pub envelope: Envelope,
+    pub sender_leaf: u32,
+    pub sender: crate::identity::CredentialIdentity,
+    pub epoch: u64,
+}
+
+impl core::fmt::Debug for ReceivedApplication {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ReceivedApplication")
+            .field("sender_leaf", &self.sender_leaf)
+            .field("sender_device", &self.sender.device_id)
+            .field("epoch", &self.epoch)
+            .field("msg_id", &self.envelope.msg_id)
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 pub enum DillaProcessed {
-    Application(Envelope),
+    Application(Box<ReceivedApplication>),
     Proposal(Box<QueuedProposal>),
     ExternalJoinProposal(Box<QueuedProposal>),
     StagedCommit(Box<StagedCommit>),
@@ -573,21 +593,36 @@ impl DillaGroup {
         let aad = processed.aad().to_vec();
         // Read before `into_content` consumes the message. `sender()` and `credential()` are
         // verified accessors (facts-openmls section 4.10). The credential is only *cloned* here:
-        // decoding it as a dilla `CredentialIdentity` happens in the one arm that needs a dilla
-        // user, because for `Sender::External(_)` OpenMLS fills `credential` from the
+        // decoding it as a dilla `CredentialIdentity` happens in the application and commit arms,
+        // which carry a member's leaf. For `Sender::External(_)` OpenMLS fills `credential` from the
         // ExternalSenders extension (public_group/process.rs:93-97 and :302) - dilla's own
         // instance credential, whose identity is the three-element array `[1, "instance", id]`,
         // not the ten-element `CredentialIdentity`. Decoding unconditionally refused every
         // instance-sent proposal, the inactivity-Remove path included.
         let sender = processed.sender().clone();
         let credential = processed.credential().clone();
+        let epoch = processed.epoch().as_u64();
         Ok(match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(app) => {
+                let Sender::Member(leaf) = sender else {
+                    return Err(MlsError::OpenMls(
+                        "application message from a non-member".into(),
+                    ));
+                };
+                let basic = BasicCredential::try_from(credential)
+                    .map_err(|_| MlsError::Protocol(ProtocolError::Credential))?;
+                let identity = crate::identity::CredentialIdentity::decode(basic.identity())
+                    .map_err(MlsError::Protocol)?;
                 let envelope = Envelope::decode(&app.into_bytes()).map_err(MlsError::Protocol)?;
                 envelope
                     .verify_commitment(&aad)
                     .map_err(MlsError::Protocol)?;
-                DillaProcessed::Application(envelope)
+                DillaProcessed::Application(Box::new(ReceivedApplication {
+                    envelope,
+                    sender_leaf: leaf.u32(),
+                    sender: identity,
+                    epoch,
+                }))
             }
             ProcessedMessageContent::ProposalMessage(p) => {
                 // The policy table is enforced on a standalone proposal too, not only on the
@@ -608,7 +643,7 @@ impl DillaGroup {
             }
             ProcessedMessageContent::StagedCommitMessage(c) => {
                 // A commit's sender is always `Member` or `NewMemberCommit`, both of which carry a
-                // real dilla leaf credential, so this is the only arm that may decode it.
+                // real dilla leaf credential, so this is the other arm that may decode it.
                 let committer_user = user_of_credential(&credential)?;
                 // The proposal policy of protocol/01-groups.md is enforced here, before the caller
                 // ever sees the commit: `merge_staged_commit` is a separate call, and a caller

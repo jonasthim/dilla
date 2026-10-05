@@ -166,7 +166,20 @@ fn two_clients_create_add_join_send_and_decrypt() {
         .expect("create_message");
     let protocol = into_protocol(message);
     match bob.process_message(&bob_p, protocol).expect("process") {
-        DillaProcessed::Application(got) => assert_eq!(got, env),
+        DillaProcessed::Application(got) => {
+            assert_eq!(got.envelope, env);
+            // Alice created the group, so her leaf is 0; Bob joined as leaf 1.
+            assert_eq!(got.sender_leaf, 0, "the sender's leaf, not the receiver's");
+            assert_eq!(
+                got.sender.device_id,
+                DeviceId::from_bytes([0x01; 16]),
+                "the device of the MLS-authenticated sender"
+            );
+            assert_eq!(got.sender.user_id, UserId::from_bytes([0xaa; 16]));
+            assert_eq!(got.sender.kind, dilla_core::identity::Kind::User);
+            assert_eq!(got.sender.tier, dilla_core::identity::Tier::Native);
+            assert_eq!(got.epoch, 1);
+        }
         other => panic!("expected an application message, got {other:?}"),
     }
 }
@@ -1418,4 +1431,150 @@ fn every_commit_carries_the_group_info_of_the_epoch_it_creates() {
         .expect("remove");
     alice.merge_pending_commit(&alice_p).expect("merge");
     check(&bundle, &alice, 2);
+}
+
+/// C22: the epoch on a received application message is the epoch it was SENT in. A message of
+/// epoch 1 delivered after the commit that moved the receiver to epoch 2 must say 1; a reading of
+/// the receiver's own epoch would say 2.
+#[test]
+fn an_application_message_carries_the_epoch_it_was_sent_in() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        GroupId::from_slice(&[0x44; 16]),
+        b.clone(),
+        None,
+    )
+    .expect("create");
+    let bundle = alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    let welcome = into_welcome(bundle.welcomes[0].1.clone());
+    let mut bob =
+        DillaGroup::join_from_welcome(&bob_p, welcome, alice.export_ratchet_tree().into(), &b)
+            .expect("join");
+    assert_eq!(bob.epoch(), 1);
+
+    let late = alice
+        .create_message(&alice_p, &alice_signer, &envelope("sent before the update"))
+        .expect("create_message");
+    let update = alice
+        .self_update(&alice_p, &alice_signer)
+        .expect("self_update");
+    alice.merge_pending_commit(&alice_p).expect("merge update");
+    match bob
+        .process_message(&bob_p, into_protocol(update.commit))
+        .expect("process the update")
+    {
+        DillaProcessed::StagedCommit(staged) => bob
+            .merge_staged_commit(&bob_p, *staged)
+            .expect("merge the update"),
+        other => panic!("expected a staged commit, got {other:?}"),
+    }
+    assert_eq!(bob.epoch(), 2);
+
+    match bob
+        .process_message(&bob_p, into_protocol(late))
+        .expect("a text group keeps past-epoch secrets, so the late message decrypts")
+    {
+        DillaProcessed::Application(got) => {
+            assert_eq!(got.epoch, 1, "the message's epoch, not the receiver's");
+            assert_eq!(got.sender_leaf, 0);
+            assert_eq!(got.sender.device_id, DeviceId::from_bytes([0x01; 16]));
+            assert_eq!(got.envelope.body, "sent before the update");
+        }
+        other => panic!("expected an application message, got {other:?}"),
+    }
+}
+
+/// C22: a member leaf whose basic credential is not a dilla `CredentialIdentity` yields no sender;
+/// the message is refused with E_CREDENTIAL, which the client stores as a cannot-decrypt reason.
+#[test]
+fn an_application_message_from_a_leaf_without_a_dilla_identity_is_e_credential() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let alice_signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    let alice_cred = CredentialWithKey {
+        credential: BasicCredential::new(b"not a dilla credential".to_vec()).into(),
+        signature_key: alice_signer.public().into(),
+    };
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        GroupId::from_slice(&[0x44; 16]),
+        b.clone(),
+        None,
+    )
+    .expect("create: the creator's own credential is never decoded");
+    let bundle = alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add_members decodes only the joiner's credential");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    let welcome = into_welcome(bundle.welcomes[0].1.clone());
+    let mut bob =
+        DillaGroup::join_from_welcome(&bob_p, welcome, alice.export_ratchet_tree().into(), &b)
+            .expect("join");
+
+    let message = alice
+        .create_message(&alice_p, &alice_signer, &envelope("from a foreign leaf"))
+        .expect("create_message");
+    let err = bob
+        .process_message(&bob_p, into_protocol(message))
+        .expect_err("a leaf whose credential is not a CredentialIdentity must not yield a sender");
+    assert!(
+        matches!(err, MlsError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+}
+
+/// The received message's Debug names the routing facts and nothing a log must not hold.
+#[test]
+fn received_application_debug_prints_no_body_and_no_credential_material() {
+    use dilla_core::identity::CredentialIdentity;
+    let mut env = envelope("a body that must never reach a log line");
+    env.k_f = [0x5a; 32];
+    let got = ReceivedApplication {
+        envelope: env,
+        sender_leaf: 3,
+        sender: CredentialIdentity::decode(&identity(0xbb, 0x02)).expect("decode"),
+        epoch: 7,
+    };
+    let printed = format!("{got:?}");
+    assert!(printed.starts_with("ReceivedApplication {"), "{printed}");
+    assert!(printed.contains("sender_leaf: 3"), "{printed}");
+    assert!(
+        printed.contains(&format!(
+            "sender_device: {:?}",
+            DeviceId::from_bytes([0x02; 16])
+        )),
+        "{printed}"
+    );
+    assert!(printed.contains("epoch: 7"), "{printed}");
+    assert!(
+        printed.contains(&format!("msg_id: {:?}", MsgId::from_bytes([0x01; 16]))),
+        "{printed}"
+    );
+    assert!(!printed.contains("a body that must never"), "{printed}");
+    assert!(!printed.contains("90, 90"), "k_f bytes leaked: {printed}");
+    assert!(!printed.contains("umk_pub"), "{printed}");
+    assert!(!printed.contains("sig_ssk_dev"), "{printed}");
+    assert!(!printed.contains("Envelope"), "{printed}");
 }
