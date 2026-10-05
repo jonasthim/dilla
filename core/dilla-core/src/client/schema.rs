@@ -13,7 +13,17 @@ pub(crate) const SESSION: &str = "session";
 pub(crate) const ROOT_SEALED: &str = "root_sealed";
 pub(crate) const STATE_SEALED: &str = "state_sealed";
 
-/// Group state, cursor, resync, message status and outbox epoch have the meanings in L-SQL-10.
+/// App schema v1 column meanings (L-SQL-10):
+///
+/// - `app_groups.state`: 0 registering, 1 joining, 2 active, 3 needs_resync, 4 gone.
+/// - `app_groups.next_seq`: every delivery-service seq below it is applied or skipped.
+/// - `app_groups.resync`: 1 while a state-1 row is joining over a local group that was in state 2 or 3.
+/// - `app_messages.status`: 0 ok, 1 cannot_decrypt, 2 deleted.
+/// - `app_messages.sender_user`: NULL unless status = 0.
+/// - `app_messages.sender_device`: status 0: the MLS credential's device; else the DS uploader_device.
+/// - `app_messages.envelope`: the envelope CBOR (with k_f) of an ok row; NULL otherwise.
+/// - `app_outbox.state`: 0 queued, 1 in_flight, 2 failed.
+/// - `app_outbox.epoch`: the epoch send_encrypt framed the message in; read by send_confirm.
 const APP_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS app_groups (
