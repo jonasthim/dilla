@@ -300,6 +300,18 @@ pub(crate) fn protocol_message(blob: &[u8]) -> Result<ProtocolMessage, ClientErr
         .and_then(|m| m.try_into_protocol_message().ok())
         .ok_or_else(|| ClientError::new(E_CORE_MLS, "not an MLS protocol message"))
 }
+/// The commitment `C` a `PrivateMessage` blob carries as its 32-byte `authenticated_data`
+/// (protocol/04; unverified, as the delivery service reads it); `None` for anything else.
+pub(crate) fn blob_commitment(blob: &[u8]) -> Option<[u8; 32]> {
+    match MlsMessageIn::tls_deserialize_exact(blob)
+        .ok()?
+        .try_into_protocol_message()
+        .ok()?
+    {
+        ProtocolMessage::PrivateMessage(p) => p.aad().try_into().ok(),
+        ProtocolMessage::PublicMessage(_) => None,
+    }
+}
 pub(crate) fn tls<T: tls_codec::Serialize>(v: &T) -> Result<Vec<u8>, ClientError> {
     v.tls_serialize_detached()
         .map_err(|_| ClientError::new(E_CORE_MLS, "TLS serialization failed"))

@@ -272,3 +272,95 @@ fn a_confirm_at_a_seq_holding_another_message_fails_the_row_and_the_group_sends_
     );
     a.send(&mut relay, &GROUP, "the group sends on", NOW + 3);
 }
+
+// ---------------------------------------------------------------------------------------------
+// F5: an own echo is adopted only when its commitment is the in-flight envelope's.
+
+#[test]
+fn the_echo_of_an_earlier_upload_is_not_adopted_as_the_message_in_flight() {
+    let (_instance, mut relay, _a, mut b) = alice_and_bob();
+    // A is stored by the server, but a proxy answers 502: the engine fails A and sends B.
+    let first = b.prepare(&GROUP, "first", NOW + 1);
+    let (_, body) = b.encrypt(&first);
+    let stored = seq_of_answer(&relay.post_message(b.device, &body).expect("upload"));
+    b.core.send_fail(&first, "E_HTTP_502").expect("fail");
+    let second = b.prepare(&GROUP, "second", NOW + 2);
+    let (_, body) = b.encrypt(&second);
+
+    let applied = b.sync(&relay);
+    assert_eq!(applied.new_seqs, vec![stored]);
+    assert_eq!(applied.flags & OWN_ADOPTED, 0, "nothing was adopted");
+    let row = b.timeline(&GROUP).pop().expect("row");
+    assert_eq!(
+        (row.seq, row.status, row.reason.as_str(), row.body.as_str()),
+        (stored, 1, "E_OWN_UNKNOWN", "")
+    );
+    let states: Vec<([u8; 16], u64)> = b
+        .outbox(&GROUP)
+        .into_iter()
+        .map(|o| (o.msg_id, o.state))
+        .collect();
+    assert_eq!(states, vec![(first, 2), (second, 1)], "B stays in flight");
+
+    // B's own echo is adopted at its own seq.
+    let seq = seq_of_answer(&relay.post_message(b.device, &body).expect("upload"));
+    let applied = b.sync(&relay);
+    assert_eq!(applied.flags & OWN_ADOPTED, OWN_ADOPTED);
+    let row = b.timeline(&GROUP).pop().expect("row");
+    assert_eq!((row.seq, row.status, row.body.as_str()), (seq, 0, "second"));
+}
+
+#[test]
+fn an_own_echo_without_a_served_commitment_is_judged_by_its_ciphertext() {
+    let (_instance, mut relay, _a, mut b) = alice_and_bob();
+    let first = b.prepare(&GROUP, "first", NOW + 1);
+    let (_, body) = b.encrypt(&first);
+    let stored = seq_of_answer(&relay.post_message(b.device, &body).expect("upload"));
+    // A live op-19 frame carries no commitment: the one in the blob's authenticated data counts.
+    let live = MsgRow {
+        commitment: None,
+        ..row_at(&relay, stored)
+    };
+    b.core.send_fail(&first, "E_HTTP_502").expect("fail");
+    let second = b.prepare(&GROUP, "second", NOW + 2);
+    let (_, body) = b.encrypt(&second);
+    let applied = apply(&mut b, &[&live], stored);
+    assert_eq!(applied.flags & OWN_ADOPTED, 0);
+    assert_eq!(b.timeline(&GROUP).pop().map(|r| r.status), Some(1));
+
+    let seq = seq_of_answer(&relay.post_message(b.device, &body).expect("upload"));
+    let live = MsgRow {
+        commitment: None,
+        ..row_at(&relay, seq)
+    };
+    let applied = apply(&mut b, &[&live], seq);
+    assert_eq!(applied.flags & OWN_ADOPTED, OWN_ADOPTED);
+    let row = b.timeline(&GROUP).pop().expect("row");
+    assert_eq!((row.seq, row.status, row.body.as_str()), (seq, 0, "second"));
+    assert_eq!(
+        b.outbox(&GROUP).len(),
+        1,
+        "only the failed first row is left"
+    );
+
+    // A served commitment that names the row in flight does not outvote a ciphertext that
+    // carries another one.
+    let third = b.prepare(&GROUP, "third", NOW + 3);
+    let (_, body) = b.encrypt(&third);
+    let in_flight = commitment_of(
+        &decode_strict(&body, |d| {
+            d.array(2)?;
+            d.uint()?;
+            Ok(d.bytes()?.to_vec())
+        })
+        .expect("message body"),
+    );
+    let mixed = MsgRow {
+        seq: seq + 1,
+        commitment: in_flight,
+        ..row_at(&relay, stored)
+    };
+    let applied = apply(&mut b, &[&mixed], seq + 1);
+    assert_eq!(applied.flags & OWN_ADOPTED, 0);
+    assert_eq!(b.outbox(&GROUP).last().map(|o| o.state), Some(1));
+}

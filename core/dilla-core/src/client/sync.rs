@@ -165,16 +165,19 @@ fn apply_message(
         if message_stored(c, id, row.seq)? {
             return Ok((false, false));
         }
-        let outbox: Option<([u8; 16], Vec<u8>)> = c
-            .query_row(
-                "SELECT msg_id,envelope FROM app_outbox WHERE group_id=?1 AND state=1",
-                [id.as_slice()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        if let Some((msg_id, bytes)) = outbox {
-            let env = Envelope::decode(&bytes)
-                .map_err(|_| StorageError::Sqlite("outbox envelope does not decode".into()))?;
+        // Adopted only as the upload of the row in flight: the commitment the row carries (the
+        // served field and the ciphertext's authenticated data, which must agree when both are
+        // there) is that envelope's. Anything else is an own upload this device cannot place.
+        let carried = row.blob.as_deref().and_then(wire::blob_commitment);
+        let served = match (row.commitment, carried) {
+            (Some(field), Some(blob)) if field != blob => None,
+            (field, blob) => field.or(blob),
+        };
+        let adopt = match served {
+            Some(served) => in_flight_with(c, id, &served)?,
+            None => None,
+        };
+        if let Some((msg_id, bytes, env)) = adopt {
             insert_message(
                 c,
                 &own_message(id, row, own, &env, &bytes, group.own_leaf_index().u32()),
