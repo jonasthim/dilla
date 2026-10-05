@@ -36,10 +36,6 @@ column below uses four scopes:
 | `A` | an `enrolled` session whose user holds the instance-admin flag |
 | `—` | no session required |
 
-Session GET routes use the read rate bucket; `GET /i/{code}` uses the invite bucket by client
-address. Any route may answer `429 E_RATE_LIMITED` or `500 E_INTERNAL` in addition to its listed
-statuses.
-
 ## Accounts and devices
 
 | Method and path | Auth | Request | Response |
