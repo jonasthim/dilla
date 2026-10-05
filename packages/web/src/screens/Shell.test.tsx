@@ -384,6 +384,21 @@ describe('connection', () => {
     act(() => fake.set('connection', { status: 'online', generation: '8' }));
     expect(screen.queryByRole('alert')).toBeNull();
   });
+
+  it('shows the newer-client banner, not the offline one, while the server refuses the client version', () => {
+    const OFFLINE = 'Connection lost. Reconnecting…';
+    const TOO_OLD = 'This server needs a newer client. Reload the page.';
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set('connection', { status: 'offline', generation: '7', reason: 'version' }));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('alert')).toHaveTextContent(TOO_OLD);
+    expect(screen.queryByText(OFFLINE)).toBeNull();
+    expect(screen.getByRole('region', { name: 'connection' })).toHaveTextContent('offline');
+    act(() => fake.set('connection', { status: 'offline', generation: '7' }));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('alert')).toHaveTextContent(OFFLINE);
+    expect(screen.queryByText(TOO_OLD)).toBeNull();
+  });
 });
 
 describe('keyboard', () => {

@@ -14,7 +14,8 @@ export interface AccountState {
  *  verbatim, status its HTTP status (0 for a network failure) and retryAfterMs its wait; for every
  *  other error status is 0 and retryAfterMs null. The page switches on code and status, never on detail. */
 export interface WorkerError { code: string; detail: string; status: number; retryAfterMs: number | null; }
-export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; generation: string | null; }
+export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; generation: string | null;
+  reason?: 'version'; }                        // only while idle because the server refused this client's version (gateway close 4006)
 export interface CommunitySummary { id: string; name: string; }
 export type ChannelGroupState = 'none' | 'joining' | 'active' | 'resync' | 'not-member' | 'unsupported';
 export interface ChannelSummary { id: string; communityId: string; kind: 0 | 1 | 2; mode: 0 | 1; name: string; topic: string; parentId: string | null; position: number; group: ChannelGroupState; }

@@ -4,7 +4,7 @@ import type { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
 import type { ApplyResult, CorePort, GroupInfo, IdentityInfo, TimelineRow } from '../core-port';
-import type { Gateway, GatewayEvent, ReadyInfo } from '../gateway/gateway';
+import { CLIENT_CLOSE, type Gateway, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { Instance, Routes } from '../http/routes';
@@ -454,6 +454,28 @@ describe('Controller in the ready phase', () => {
     expect(seen).toEqual(['online', 'offline', 'offline', 'online']);
     // The unchanged third value is not published again.
     expect(published() - before).toBe(3);
+  });
+
+  it("a version refusal publishes connection reason 'version' and no reconnect", async () => {
+    const w = world();
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    expect(w.connection()).toEqual({ status: 'online', generation: '7' });
+    const starts = w.gateway.starts;
+    w.gateway.emit({ type: 'status', status: 'idle', closeCode: CLIENT_CLOSE.version });
+    expect(w.connection()).toStrictEqual({ status: 'offline', generation: '7', reason: 'version' });
+    await settle();
+    // The controller does not start the gateway again: the refusal stands until the page is reloaded.
+    expect(w.gateway.starts).toBe(starts);
+    // The next connecting or online clears the reason; a plain idle never carries one.
+    w.gateway.emit({ type: 'status', status: 'connecting', closeCode: null });
+    expect(w.connection()).toStrictEqual({ status: 'connecting', generation: '7' });
+    w.gateway.emit({ type: 'status', status: 'idle', closeCode: CLIENT_CLOSE.version });
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    expect(w.connection()).toStrictEqual({ status: 'online', generation: '7' });
+    w.gateway.emit({ type: 'status', status: 'idle', closeCode: null });
+    expect(w.connection()).toStrictEqual({ status: 'offline', generation: '7' });
   });
 
   it('a request that cannot re-authenticate ends in revoked', async () => {

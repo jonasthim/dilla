@@ -7,7 +7,7 @@ import { Session } from '../account/session';
 import { Signup, publishDeviceList } from '../account/signup';
 import { CborError } from '../cbor';
 import { CoreError, type ApplyResult, type CorePort, type ExpectedGroup, type GroupInfo, type Id } from '../core-port';
-import { GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
+import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
@@ -396,7 +396,13 @@ export class Controller {
         case 'connecting': status = this.wasDown ? 'offline' : 'connecting'; break;
         case 'idle': status = 'offline'; break;
       }
-      this.setConnection({ status });
+      // A version refusal leaves the gateway idle for good, so the page is told why (L-TS-08 reason);
+      // every other status change drops the reason.
+      const { generation } = this.connectionState;
+      this.connectionState = e.status === 'idle' && e.closeCode === CLIENT_CLOSE.version
+        ? { status, generation, reason: 'version' }
+        : { status, generation };
+      this.slices.set('connection', this.connectionState);
     } else if (e.type === 'ready') {
       this.onReady(e.info);
     } else if (e.type === 'revoked') {

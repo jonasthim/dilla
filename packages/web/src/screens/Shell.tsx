@@ -266,7 +266,9 @@ export function Shell(): React.JSX.Element {
   const offline = connection?.status === 'offline';
   const banner = offline || commandError !== null ? (
     <>
-      {offline ? <Banner tone="warn">{t('shell.banner.offline')}</Banner> : null}
+      {offline ? (
+        <Banner tone="warn">{t(connection.reason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
+      ) : null}
       {commandError !== null ? (
         <Banner tone="danger" action={{ label: t('shell.banner.dismiss'), onAction: () => setCommandError(null) }}>
           {t('shell.banner.commandError', { code: commandError.code })}
