@@ -396,8 +396,10 @@ impl ClientCore {
         }
         self.write(|_, u| {
             in_unit(u, |c| {
+                // next_seq never moves back: rows below the stored value were applied or skipped.
                 c.execute(
-                    "UPDATE app_groups SET state=2,next_seq=?2,resync=0 WHERE group_id=?1",
+                    "UPDATE app_groups SET state=2,next_seq=MAX(next_seq,?2),resync=0 \
+                     WHERE group_id=?1",
                     params![id.as_slice(), seq + 1],
                 )?;
                 Ok(())
@@ -465,8 +467,8 @@ impl ClientCore {
                                         if row.is_some() {
                                             c.execute(
                                                 "UPDATE app_groups SET kind=0,community_id=?2, \
-                                             target_id=?3,state=2,next_seq=?4,resync=0 \
-                                             WHERE group_id=?1",
+                                             target_id=?3,state=2,next_seq=MAX(next_seq,?4), \
+                                             resync=0 WHERE group_id=?1",
                                                 params![
                                                     id.as_slice(),
                                                     want.community_id.as_slice(),

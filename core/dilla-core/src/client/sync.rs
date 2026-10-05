@@ -75,6 +75,42 @@ fn own_message<'a>(
         franking_tag: &row.franking_tag,
     }
 }
+/// Whether a message row is already stored at `(id, seq)`.
+fn message_stored(c: &rusqlite::Connection, id: &[u8; 16], seq: u64) -> Result<bool, StorageError> {
+    Ok(c.query_row(
+        "SELECT 1 FROM app_messages WHERE group_id=?1 AND seq=?2",
+        params![id.as_slice(), seq as i64],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()?
+    .is_some())
+}
+/// An outbox row: its `msg_id`, the stored envelope bytes and the envelope they decode to.
+type InFlight = ([u8; 16], Vec<u8>, Envelope);
+/// The group's in-flight outbox row when its envelope's commitment `C` is `served`: the served
+/// row is the upload of that row.
+fn in_flight_with(
+    c: &rusqlite::Connection,
+    id: &[u8; 16],
+    served: &[u8; 32],
+) -> Result<Option<InFlight>, StorageError> {
+    let outbox: Option<([u8; 16], Vec<u8>)> = c
+        .query_row(
+            "SELECT msg_id,envelope FROM app_outbox WHERE group_id=?1 AND state=1",
+            [id.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((msg_id, bytes)) = outbox else {
+        return Ok(None);
+    };
+    let env = Envelope::decode(&bytes)
+        .map_err(|_| StorageError::Sqlite("outbox envelope does not decode".into()))?;
+    let commitment = env
+        .commitment()
+        .map_err(|_| StorageError::Sqlite("outbox envelope has no commitment".into()))?;
+    Ok((&commitment == served).then_some((msg_id, bytes, env)))
+}
 fn apply_message(
     c: &rusqlite::Connection,
     id: &[u8; 16],
@@ -88,9 +124,34 @@ fn apply_message(
              WHERE group_id=?1 AND seq=?2",
             params![id.as_slice(), row.seq as i64],
         )?;
-        if changed == 0 {
-            insert_message(c, &empty_message(id, row, STATUS_DELETED, ""))?;
+        if changed > 0 {
+            return Ok((true, false));
         }
+        // The deleted upload of the row in flight (its commitment survives the deletion): the
+        // server stored it, so the outbox row is done and never resent.
+        if row.uploader_device == own.device_id
+            && let Some(served) = row.commitment.as_ref()
+            && let Some((msg_id, _, env)) = in_flight_with(c, id, served)?
+        {
+            let marker = StoredMessage {
+                status: STATUS_DELETED,
+                sender_user: Some(&own.user_id),
+                sender_device: &own.device_id,
+                sender_leaf: Some(group.own_leaf_index().u32()),
+                sender_kind: Some(own.kind),
+                sender_tier: Some(own.tier),
+                msg_id: Some(env.msg_id.as_bytes()),
+                ty: Some(env.kind.as_u8()),
+                ..empty_message(id, row, STATUS_DELETED, "")
+            };
+            insert_message(c, &marker)?;
+            c.execute(
+                "DELETE FROM app_outbox WHERE msg_id=?1",
+                [msg_id.as_slice()],
+            )?;
+            return Ok((true, true));
+        }
+        insert_message(c, &empty_message(id, row, STATUS_DELETED, ""))?;
         return Ok((true, false));
     }
     if row.blob.is_none() {
@@ -101,14 +162,7 @@ fn apply_message(
         return Ok((true, false));
     }
     if row.uploader_device == own.device_id {
-        let existing: Option<i64> = c
-            .query_row(
-                "SELECT 1 FROM app_messages WHERE group_id=?1 AND seq=?2",
-                params![id.as_slice(), row.seq as i64],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if existing.is_some() {
+        if message_stored(c, id, row.seq)? {
             return Ok((false, false));
         }
         let outbox: Option<([u8; 16], Vec<u8>)> = c
@@ -469,7 +523,17 @@ impl ClientCore {
                         Row::Message(m) => {
                             // Do not borrow the connection across an OpenMLS call: `with_conn`
                             // releases it before process_message takes the storage handle.
-                            if m.deleted || m.blob.is_none() || m.uploader_device == own.device_id {
+                            // A row already stored at this seq (an own row confirmed ahead of
+                            // next_seq, or one the server serves twice) is skipped before any
+                            // MLS processing; rule 2 alone updates a stored row.
+                            let occupied =
+                                !m.deleted && u.with_conn(|c| message_stored(c, id, m.seq))?;
+                            if occupied {
+                                // Skipped: not listed; next_seq moves past it below.
+                            } else if m.deleted
+                                || m.blob.is_none()
+                                || m.uploader_device == own.device_id
+                            {
                                 (changed, adopted) =
                                     u.with_conn(|c| apply_message(c, id, m, &own, &group))?;
                             } else {

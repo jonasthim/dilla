@@ -957,6 +957,7 @@ fn group_apply_refuses_malformed_rows_and_groups_that_are_not_active() {
         epoch: u64::MAX,
         uploader: b.device,
         blob: None,
+        commitment: None,
         franking_tag: [0; 32],
         recv_ts: NOW,
         deleted: false,

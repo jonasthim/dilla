@@ -518,6 +518,9 @@ pub struct MsgRow {
     pub epoch: u64,
     pub uploader: [u8; 16],
     pub blob: Option<Vec<u8>>,
+    /// The `C` the delivery service read from the upload's `authenticated_data`, kept when the
+    /// message is deleted (`mls_app_messages.commitment_c`); `None` as a live op-19 frame sends it.
+    pub commitment: Option<[u8; 32]>,
     pub franking_tag: [u8; 32],
     pub recv_ts: u64,
     pub deleted: bool,
@@ -579,12 +582,21 @@ pub fn encode_messages(rows: &[&MsgRow]) -> Vec<u8> {
             .uint(m.epoch)
             .bytes(&m.uploader)
             .opt_bytes(m.blob.as_deref())
-            .null()
+            .opt_bytes(m.commitment.as_ref().map(|c| c.as_slice()))
             .bytes(&m.franking_tag)
             .uint(m.recv_ts)
             .uint(u64::from(m.deleted));
     }
     e.into_vec()
+}
+
+/// The 32-byte `authenticated_data` of a `PrivateMessage` blob: the commitment `C` the delivery
+/// service stores with the row (protocol/02 "`commitment` … is the stored value of `C`").
+pub fn commitment_of(blob: &[u8]) -> Option<[u8; 32]> {
+    match protocol_in(blob).ok()? {
+        ProtocolMessage::PrivateMessage(p) => p.aad().try_into().ok(),
+        ProtocolMessage::PublicMessage(_) => None,
+    }
 }
 
 fn protocol_in(bytes: &[u8]) -> Result<ProtocolMessage, &'static str> {
@@ -834,11 +846,13 @@ impl Relay {
         let seq = self.take_seq();
         let franking_tag = [seq as u8; 32];
         let recv_ts = NOW + seq;
+        let commitment = blob.as_deref().and_then(commitment_of);
         self.messages.push(MsgRow {
             seq,
             epoch,
             uploader,
             blob,
+            commitment,
             franking_tag,
             recv_ts,
             deleted,

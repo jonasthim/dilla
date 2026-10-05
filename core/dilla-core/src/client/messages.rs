@@ -284,16 +284,53 @@ impl ClientCore {
                 return Err(outbox_state(o.state));
             }
             let id = o.group_id;
-            if self.read(|c| {
-                Ok(c.query_row(
-                    "SELECT 1 FROM app_messages WHERE group_id=?1 AND seq=?2",
+            let occupant: Option<(i64, Vec<u8>, Option<Vec<u8>>)> = self.read(|c| {
+                c.query_row(
+                    "SELECT status,sender_device,msg_id FROM app_messages \
+                     WHERE group_id=?1 AND seq=?2",
                     params![id.as_slice(), response.seq as i64],
-                    |r| r.get::<_, i64>(0),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
-                .optional()?
-                .is_some())
-            })? {
-                return Err(ClientError::new(E_CORE_STATE, "message seq exists"));
+                .optional()
+                .map_err(Into::into)
+            })?;
+            if let Some((status, device, stored_msg)) = occupant {
+                // The deleted marker of this device's upload at that seq (the echo of the deletion
+                // came first): the server stored the message, so the row is done, never resent.
+                let own_deleted = status == STATUS_DELETED
+                    && device == own.device_id
+                    && stored_msg.as_deref().is_none_or(|m| m == msg_id);
+                self.write(|_, u| {
+                    u.with_conn(|c| {
+                        if own_deleted {
+                            c.execute(
+                                "UPDATE app_messages SET msg_id=?3 \
+                                 WHERE group_id=?1 AND seq=?2 AND msg_id IS NULL",
+                                params![id.as_slice(), response.seq as i64, msg_id.as_slice()],
+                            )?;
+                            c.execute(
+                                "DELETE FROM app_outbox WHERE msg_id=?1",
+                                [msg_id.as_slice()],
+                            )?;
+                        } else {
+                            // Another row holds the seq the server names for this upload: the
+                            // answer contradicts what is stored. The row leaves flight as failed,
+                            // so the group sends on and nothing is resent without the person.
+                            c.execute(
+                                "UPDATE app_outbox SET state=2,error=?2 WHERE msg_id=?1",
+                                params![msg_id.as_slice(), E_CORE_STATE],
+                            )?;
+                        }
+                        Ok(())
+                    })?;
+                    Ok(())
+                })?;
+                if !own_deleted {
+                    return Err(ClientError::new(E_CORE_STATE, "message seq exists"));
+                }
+                let mut e = Encoder::new();
+                e.array(2).bytes(&id).uint(response.seq);
+                return Ok(e.into_vec());
             }
             let mut group = self.take_group(&id)?;
             let leaf = group.as_ref().map(|g| g.own_leaf_index().u32());
