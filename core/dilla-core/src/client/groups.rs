@@ -27,6 +27,7 @@ pub(super) struct GroupRow {
     pub next_seq: i64,
     pub resync: i64,
     pub was_gone: i64,
+    pub max_epoch: i64,
 }
 impl GroupRow {
     /// Whether the row is the text group of `channel` in `community`: a join never changes this.
@@ -39,12 +40,24 @@ impl GroupRow {
 fn rebound() -> ClientError {
     ClientError::new(E_CORE_STATE, "group is bound to another channel")
 }
+/// The lowest epoch a rejoin may land in: the highest this device has held for the group (the
+/// row's `max_epoch`, and the stale group's epoch while it is still stored).
+fn epoch_floor(row: Option<&GroupRow>, prior: Option<&DillaGroup>) -> u64 {
+    let stored = row.map_or(0, |r| u64::try_from(r.max_epoch).unwrap_or(0));
+    stored.max(prior.map_or(0, DillaGroup::epoch))
+}
+fn below_floor(what: &str) -> ClientError {
+    ClientError::new(
+        E_CORE_INPUT,
+        format!("{what} epoch is below an epoch this device has held"),
+    )
+}
 pub(super) fn group_row(
     c: &rusqlite::Connection,
     id: &[u8; 16],
 ) -> Result<Option<GroupRow>, StorageError> {
     c.query_row(
-        "SELECT kind, community_id, target_id, state, next_seq, resync, was_gone \
+        "SELECT kind, community_id, target_id, state, next_seq, resync, was_gone, max_epoch \
          FROM app_groups WHERE group_id = ?1",
         [id.as_slice()],
         |r| {
@@ -56,6 +69,7 @@ pub(super) fn group_row(
                 next_seq: r.get(4)?,
                 resync: r.get(5)?,
                 was_gone: r.get(6)?,
+                max_epoch: r.get(7)?,
             })
         },
     )
@@ -357,6 +371,11 @@ impl ClientCore {
             ));
         }
         let mut prior = self.take_group_unchecked(id)?;
+        let info_epoch = gi.epoch().as_u64();
+        if info_epoch < epoch_floor(r.as_ref(), prior.as_ref()) {
+            // Not put back in the cache: it was taken unchecked; the next use reloads it.
+            return Err(below_floor("GroupInfo"));
+        }
         let bind = binding(&own, community, channel, policy);
         let result = self.write(|ctx, u| {
             let signer = ctx
@@ -379,6 +398,9 @@ impl ClientCore {
             )?;
             let commit = wire::tls(&commit)?;
             let exported = wire::tls(&g.export_group_info(ctx.provider, signer)?)?;
+            // The GroupInfo's epoch is one the group has reached; the joined epoch is not yet
+            // (the external commit may still be refused and discarded), so it is not the floor.
+            let held = checked("epoch", info_epoch)?;
             in_unit(u, |c| {
                 c.execute(
                     "DELETE FROM app_proposals WHERE group_id=?1",
@@ -389,14 +411,21 @@ impl ClientCore {
                     // is never rewritten by a join.
                     let was_gone = r.state == STATE_GONE;
                     c.execute(
-                        "UPDATE app_groups SET state=1,resync=?2,was_gone=?3 WHERE group_id=?1",
-                        params![id.as_slice(), i64::from(resync), i64::from(was_gone)],
+                        "UPDATE app_groups SET state=1,resync=?2,was_gone=?3, \
+                         max_epoch=MAX(max_epoch,?4) WHERE group_id=?1",
+                        params![id.as_slice(), i64::from(resync), i64::from(was_gone), held],
                     )?;
                 } else {
                     c.execute(
-                        "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) \
-                         VALUES(?1,0,?2,?3,1)",
-                        params![id.as_slice(), community.as_slice(), channel.as_slice()],
+                        "INSERT INTO app_groups \
+                         (group_id,kind,community_id,target_id,state,max_epoch) \
+                         VALUES(?1,0,?2,?3,1,?4)",
+                        params![
+                            id.as_slice(),
+                            community.as_slice(),
+                            channel.as_slice(),
+                            held
+                        ],
                     )?;
                 }
                 Ok(())
@@ -469,6 +498,7 @@ impl ClientCore {
                         }
                         Ok((w, t)) => {
                             let mut prior = self.take_group_unchecked(id)?;
+                            let floor = epoch_floor(row.as_ref(), prior.as_ref());
                             let bind = binding(
                                 &own,
                                 &want.community_id,
@@ -494,6 +524,13 @@ impl ClientCore {
                                     if g.group_id().as_slice() != id {
                                         return Err(crate::ProtocolError::Binding.into());
                                     }
+                                    // Its epoch, likewise, is known only now (the item's epoch
+                                    // is the server's label): a Welcome into an epoch below one
+                                    // this device has held is a replay, rolled back the same way.
+                                    if g.epoch() < floor {
+                                        return Err(below_floor("Welcome"));
+                                    }
+                                    let held = checked("epoch", g.epoch())?;
                                     in_unit(u, |c| {
                                         c.execute(
                                             "DELETE FROM app_proposals WHERE group_id=?1",
@@ -503,20 +540,22 @@ impl ClientCore {
                                             // The binding was checked equal to the row's above.
                                             c.execute(
                                                 "UPDATE app_groups SET state=2, \
-                                                 next_seq=MAX(next_seq,?2),resync=0 \
-                                                 WHERE group_id=?1",
-                                                params![id.as_slice(), next],
+                                                 next_seq=MAX(next_seq,?2),resync=0, \
+                                                 max_epoch=MAX(max_epoch,?3) WHERE group_id=?1",
+                                                params![id.as_slice(), next, held],
                                             )?;
                                         } else {
                                             c.execute(
                                                 "INSERT INTO app_groups \
-                                             (group_id,kind,community_id,target_id,state,next_seq) \
-                                             VALUES(?1,0,?2,?3,2,?4)",
+                                                 (group_id,kind,community_id,target_id,state, \
+                                                 next_seq,max_epoch) \
+                                                 VALUES(?1,0,?2,?3,2,?4,?5)",
                                                 params![
                                                     id.as_slice(),
                                                     want.community_id.as_slice(),
                                                     want.channel_id.as_slice(),
                                                     next,
+                                                    held,
                                                 ],
                                             )?;
                                         }

@@ -651,3 +651,129 @@ fn a_discarded_join_that_created_its_row_leaves_nothing() {
     c.core.group_discard(&GROUP).expect("discard");
     assert!(groups(&c.core).is_empty());
 }
+
+// ---------------------------------------------------------------------------------------------
+// F6: no rejoin below the highest epoch this device has held for the group.
+
+#[test]
+fn a_resync_from_a_group_info_older_than_the_local_group_is_refused() {
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (old_info, old_tree) = (relay.info_body(), relay.tree_body()); // epoch 1
+    a.commit(&mut relay);
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).epoch, 3);
+    relay.push_handshake(1, vec![0xde, 0xad]);
+    assert_eq!(b.sync(&relay).state, 3);
+    let before = b.group(&GROUP).expect("row");
+
+    let err = b
+        .core
+        .group_join_external(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &old_info, &old_tree)
+        .expect_err("a GroupInfo of epoch 1 under a group at epoch 3");
+    assert_eq!(err.code, "E_CORE_INPUT");
+    assert_eq!(b.group(&GROUP), Some(before));
+
+    b.join_external(&mut relay);
+    assert_eq!(b.group(&GROUP).map(|g| (g.state, g.epoch)), Some((2, 4)));
+}
+
+#[test]
+fn a_rejoin_of_a_gone_group_from_an_older_group_info_is_refused() {
+    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (old_info, old_tree) = (relay.info_body(), relay.tree_body()); // epoch 1
+    a.commit(&mut relay);
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).epoch, 3);
+    instance.propose_remove(&mut relay, b.device);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).state, 4, "Bob held epoch 3 last");
+    let before = b.group(&GROUP).expect("row");
+
+    let err = b
+        .core
+        .group_join_external(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &old_info, &old_tree)
+        .expect_err("a GroupInfo of epoch 1 after holding epoch 3");
+    assert_eq!(err.code, "E_CORE_INPUT");
+    assert_eq!(b.group(&GROUP), Some(before.clone()));
+    assert_eq!(
+        b.reopen().group(&GROUP),
+        Some(before),
+        "the floor is stored"
+    );
+}
+
+#[test]
+fn a_replayed_welcome_older_than_the_local_group_is_refused() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut peer = RawPeer::new(0xe5, 0xe6);
+    peer.create(&mut relay, &instance);
+    let mut c = ready_core(0xc3, "carol");
+    let kp = last_resort_key_package(&mut c); // kept by OpenMLS after use: the Welcome stays openable
+    peer.add(&mut relay, &[kp.as_slice()]);
+    let old = relay.welcomes_body(c.device); // epoch 1
+    let expected = expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]);
+    let joined = c
+        .core
+        .welcomes_apply(&old, &expected)
+        .expect("welcomes_apply");
+    assert_eq!(decode_outcomes(&joined)[0].outcome, 0);
+    peer.self_update(&mut relay);
+    peer.self_update(&mut relay);
+    assert_eq!(c.sync(&relay).epoch, 3);
+    relay.push_handshake(1, vec![0xde, 0xad]);
+    assert_eq!(c.sync(&relay).state, 3);
+    let before = c.group(&GROUP).expect("row");
+
+    let replayed = c
+        .core
+        .welcomes_apply(&old, &expected)
+        .expect("welcomes_apply");
+    assert_eq!(
+        decode_outcomes(&replayed),
+        vec![WelcomeOutcome {
+            welcome_id: 1,
+            group_id: GROUP,
+            outcome: 2,
+            reason: "E_CORE_INPUT".to_owned(),
+        }]
+    );
+    assert_eq!(c.group(&GROUP), Some(before));
+}
+
+#[test]
+fn a_replayed_welcome_after_a_removal_is_refused() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut a = ready_core(0xa1, "alice");
+    a.create_and_register(&mut relay, &instance);
+    let mut c = ready_core(0xc3, "carol");
+    let kp = last_resort_key_package(&mut c);
+    instance.propose_add(&mut relay, &kp);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    let old = relay.welcomes_body(c.device); // epoch 1
+    let expected = expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]);
+    let joined = c
+        .core
+        .welcomes_apply(&old, &expected)
+        .expect("welcomes_apply");
+    assert_eq!(decode_outcomes(&joined)[0].outcome, 0);
+    a.commit(&mut relay);
+    a.commit(&mut relay);
+    assert_eq!(c.sync(&relay).epoch, 3);
+    instance.propose_remove(&mut relay, c.device);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(c.sync(&relay).state, 4);
+    let before = c.group(&GROUP).expect("row");
+
+    let replayed = c
+        .core
+        .welcomes_apply(&old, &expected)
+        .expect("welcomes_apply");
+    assert_eq!(decode_outcomes(&replayed)[0].outcome, 2);
+    assert_eq!(decode_outcomes(&replayed)[0].reason, "E_CORE_INPUT");
+    assert_eq!(c.group(&GROUP), Some(before));
+}
