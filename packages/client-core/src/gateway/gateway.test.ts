@@ -281,6 +281,17 @@ describe('Gateway heartbeat', () => {
     expect(h.events.at(-1)).toEqual({ type: 'status', status: 'waiting', closeCode: CLIENT_CLOSE.heartbeatTimeout });
     expect(h.clock.pending()).toEqual([500]);
   });
+
+  it('closes at the first unanswered beat deadline when beats are 5 s apart', async () => {
+    const h = harness();
+    const s = await connected(h, hello({ heartbeatMs: 10_000 }));
+    h.clock.advance(14_999);
+    expect(s.sentFrames().filter((f) => f.op === Op.heartbeat)).toHaveLength(2);
+    expect(s.closedWith).toBeNull();
+    h.clock.advance(1);
+    expect(s.closedWith?.code).toBe(CLIENT_CLOSE.heartbeatTimeout);
+    expect(h.gw.status).toBe('waiting');
+  });
 });
 
 describe('Gateway input checks', () => {

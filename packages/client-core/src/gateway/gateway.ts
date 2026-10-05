@@ -230,7 +230,9 @@ export class Gateway {
     const interval = Math.min(Math.floor(this.hello.heartbeatMs / 2), GATEWAY.heartbeatMaxMs);
     this.arm('heartbeatTimer', interval, () => {
       this.send(encodeFrame(Op.heartbeat, 0, null, [this.lastN, 1]));
-      this.arm('ackTimer', GATEWAY.ackTimeoutMs, () => this.teardown(CLIENT_CLOSE.heartbeatTimeout, true));
+      if (this.ackTimer === null) {
+        this.arm('ackTimer', GATEWAY.ackTimeoutMs, () => this.teardown(CLIENT_CLOSE.heartbeatTimeout, true));
+      }
       this.scheduleBeat();
     });
   }
