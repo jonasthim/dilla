@@ -521,8 +521,12 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     credential's user, not revoked, keyed by its registered key, in its user's newest signed device
     list, its user eligible under the ACL; `422 E_COMMIT_INVALID` with `rule = "add_key_package"` or
     `"add_acl"`), and the tree may hold no leaf whose credential is no dilla identity
-    (`rule = "reseed"`). The reseed does not bound which devices the tree holds beyond that: the
-    commits after the backup are already inside the uploaded tree. A device that is the target
+    (`rule = "reseed"`). Two more conditions bind a reseed: the healing device must hold a leaf of
+    the group as the instance restored it (its own member record; otherwise `403 E_FORBIDDEN`, as
+    for any heal by a non-member), and the uploaded tree's `dilla_binding` must name the group the
+    instance holds — the same `kind`, `community_id` and `target_id` as the binding stored with
+    the group (`rule = "reseed"`). The reseed does not bound which devices the tree holds beyond
+    that: the commits after the backup are already inside the uploaded tree. A device that is the target
     of an outstanding non-void DS `Remove` at the restored epoch, or that is quarantined, cannot
     heal (`403 E_FORBIDDEN`, as for a resync). The replay does not apply invariant 4's first clause
     or invariant 5 (the restored queue describes the backup's epoch); instead, after a heal that
