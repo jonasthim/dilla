@@ -1,4 +1,5 @@
-.d-statusbar { display: flex; align-items: stretch; gap: 0; background: var(--bg-2); font-size: var(--text-micro); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); white-space: nowrap; overflow: hidden; }
+/* No case transform on the bar: a chunk's label carries .d-label, its value keeps the case it was given. */
+.d-statusbar { display: flex; align-items: stretch; gap: 0; background: var(--bg-2); font-size: var(--text-micro); color: var(--fg-3); white-space: nowrap; overflow: hidden; }
 .d-statusbar[data-position="top"] { height: var(--topbar-h); border-bottom: 1px solid var(--hairline); }
 .d-statusbar[data-position="bottom"] { height: var(--bottombar-h); border-top: 1px solid var(--hairline); }
 .d-chunk { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border-right: 1px solid var(--hairline); font: inherit; color: inherit; background: transparent; }

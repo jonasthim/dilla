@@ -35,6 +35,20 @@ describe('StatusBar', () => {
     expect(plain).not.toHaveTextContent(/error|ok|warning/);
     expect(plain.querySelector('[aria-hidden="true"]')).toBeNull();
   });
+  // Design ruling (i), task 24: the label part of every chunk, clickable or not, carries the label
+  // treatment; the value part (a domain, a name, a state word) keeps the case it was given.
+  it('cases every chunk label as a label and never transforms a value', () => {
+    render(
+      <StatusBar position="bottom" label="Connection">
+        <StatusChunk label="server">dilla.thim.dev</StatusChunk>
+        <StatusChunk label="connection" tone="ok" onClick={() => {}}>online</StatusChunk>
+        <StatusChunk label="gen">3</StatusChunk>
+      </StatusBar>,
+    );
+    for (const k of ['server', 'connection', 'gen']) expect(screen.getByText(k)).toHaveClass('d-chunk__k', 'd-label');
+    for (const v of ['dilla.thim.dev', 'online', '3']) expect(screen.getByText(v).closest('.d-label')).toBeNull();
+    // The computed case of both parts is checked in a real browser by the Storybook test-runner.
+  });
   it('renders the brand mark with the product name readable once', () => {
     render(<StatusBar position="top" label="Session"><BrandMark /></StatusBar>);
     expect(screen.getByText('DILLA')).toBeInTheDocument();
@@ -46,7 +60,7 @@ describe('StatusBar', () => {
     expect(container.querySelectorAll('i')).toHaveLength(12);
   });
   it('has no serious axe violations', async () => {
-    const { container } = render(<div className="d-root"><StatusBar position="top" label="Session"><BrandMark /><StatusChunk>server Midgard Crew</StatusChunk></StatusBar></div>);
+    const { container } = render(<div className="d-root"><StatusBar position="top" label="Session"><BrandMark /><StatusChunk label="server">Midgard Crew</StatusChunk></StatusBar></div>);
     await expectNoAxeViolations(container);
   });
 });

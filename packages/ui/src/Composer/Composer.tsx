@@ -19,6 +19,15 @@ export interface ComposerProps {
 const ENCODER = new TextEncoder();
 
 /**
+ * The label split into its label part and its target, the `#channel` (or `@person`) that follows the
+ * first space: the target is a value and keeps its case, so the label treatment never reaches it.
+ */
+function labelParts(label: string): { lead: string; target: string | null } {
+  const m = /^(.*?\s)([#@].*)$/s.exec(label);
+  return m === null ? { lead: label, target: null } : { lead: m[1], target: m[2] };
+}
+
+/**
  * The message composer, controlled (pre-flight ruling (a), L-UI-13): the owner
  * holds the text and the component never clears it on send, so a refused
  * message is not lost. Enter sends, Shift+Enter breaks the line, and neither
@@ -40,6 +49,7 @@ export function Composer({
   const showReason = disabled === true && !!disabledReason;
   const described = [showReason ? reasonId : null, showCounter ? counterId : null].filter((x): x is string => x !== null);
   const describedBy = described.length > 0 ? described.join(' ') : undefined;
+  const { lead, target } = labelParts(label);
 
   const submit = () => {
     if (disabled) return;
@@ -68,7 +78,9 @@ export function Composer({
 
   return (
     <form className="d-composer" data-disabled={disabled ? 'true' : undefined} noValidate onSubmit={onSubmit}>
-      <label className="d-composer__label d-label" htmlFor={inputId}>{label}</label>
+      <label className="d-composer__label d-label" htmlFor={inputId}>
+        {lead}{target === null ? null : <span className="d-composer__target">{target}</span>}
+      </label>
       <div className="d-composer__box">
         <textarea id={inputId} className="d-composer__input" rows={1} value={value} placeholder={placeholder}
           readOnly={disabled} aria-disabled={disabled ? true : undefined} aria-describedby={describedBy}

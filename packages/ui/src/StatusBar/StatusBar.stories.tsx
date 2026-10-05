@@ -8,9 +8,9 @@ export const Top: Story = {
   render: args => (
     <StatusBar {...args}>
       <BrandMark />
-      <StatusChunk>server Midgard Crew</StatusChunk>
-      <StatusChunk>node home-1</StatusChunk>
-      <StatusChunk tone="ok">ready</StatusChunk>
+      <StatusChunk label="server">Midgard Crew</StatusChunk>
+      <StatusChunk label="node">home-1</StatusChunk>
+      <StatusChunk label="state" tone="ok">ready</StatusChunk>
     </StatusBar>
   ),
 };

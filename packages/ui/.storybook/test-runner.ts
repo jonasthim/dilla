@@ -29,6 +29,22 @@ const config: TestRunnerConfig = {
         `(outline-style: ${focused.outlineStyle}, outline-width: ${focused.outlineWidth}; expected solid / 2px)`,
       );
     }
+    // Chrome labels (design ruling (i), task 24): a status chunk's label is cased as a label; its
+    // value, and the channel inside the composer's label, keep the case they were given.
+    const casing = await page.evaluate(() => {
+      const bad: string[] = [];
+      const want = (selector: string, transform: string) => {
+        for (const el of Array.from(document.querySelectorAll(`#storybook-root ${selector}`))) {
+          const got = getComputedStyle(el).textTransform;
+          if (got !== transform) bad.push(`${selector} "${el.textContent ?? ''}" is ${got}, expected ${transform}`);
+        }
+      };
+      want('.d-chunk__k', 'uppercase');
+      want('.d-chunk__v', 'none');
+      want('.d-composer__target', 'none');
+      return bad;
+    });
+    if (casing.length > 0) throw new Error(`${context.title} / ${context.name}: ${casing.join('; ')}`);
     // Print (L-UI DOM contract; F2 allows printing the recovery key). Browsers do not print
     // backgrounds and the default theme's text is near-white, so under print media the key must be
     // the system colour CanvasText under a light scheme, and the chrome around it must not print.

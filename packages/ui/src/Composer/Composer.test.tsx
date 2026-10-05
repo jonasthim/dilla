@@ -32,7 +32,32 @@ describe('Composer', () => {
     expect(textarea.tagName).toBe('TEXTAREA');
     expect(textarea.closest('form')).toHaveClass('d-composer');
     expect(textarea).toHaveAttribute('placeholder', 'message #general');
-    expect(screen.getByText('message #general', { selector: 'label' })).toHaveAttribute('for', textarea.id);
+    // The channel name sits in its own span (design ruling (i), task 24), so the label is matched by its whole text.
+    const label = textarea.closest('form')?.querySelector('label');
+    expect(label).toHaveAttribute('for', textarea.id);
+    expect(label?.textContent).toBe('message #general');
+  });
+
+  // Design ruling (i), task 24: the label part carries the label treatment; the channel name, a value,
+  // is wrapped so the case transform never reaches it.
+  function labelOf(label: string) {
+    render(<Composer label={label} placeholder={label} maxLength={4000} value="" onChange={() => {}} onSend={() => {}}
+      sendLabel="send" counterLabel={n => `${n} left`} />);
+    const textarea = screen.getByRole('textbox', { name: label });
+    return textarea.closest('form')?.querySelector('label') ?? null;
+  }
+  it('keeps the case of the channel name inside its label', () => {
+    const label = labelOf('message #General Chat');
+    expect(label).toHaveClass('d-label');
+    expect(label?.textContent).toBe('message #General Chat');
+    expect(label?.querySelector('.d-composer__target')?.textContent).toBe('#General Chat');
+    // The computed case of the target is checked in a real browser by the Storybook test-runner.
+  });
+
+  it('keeps a label without a channel whole', () => {
+    const label = labelOf('message');
+    expect(label?.textContent).toBe('message');
+    expect(label?.querySelector('.d-composer__target')).toBeNull();
   });
 
   it('has no native limit: the textarea carries no maxlength attribute', () => {

@@ -13,10 +13,14 @@ const TONE_GLYPH = { ok: '●', warn: '▲', danger: '✕' } as const;
 /** …and a visually hidden word carries it for assistive tech. */
 const TONE_TEXT = { ok: 'ok', warn: 'warning', danger: 'error' } as const;
 
+/**
+ * One fact: a label (the label treatment, clickable chunk or not) and a value that keeps the case it
+ * was given — a server name, a domain or a state word is never case-transformed.
+ */
 export function StatusChunk({ label, children, onClick, tone }: { label?: string; children: ReactNode; onClick?: () => void; tone?: 'ok' | 'warn' | 'danger' }) {
   const inner = (
     <>
-      {label ? <span className="d-chunk__k">{label}</span> : null}
+      {label ? <span className="d-chunk__k d-label">{label}</span> : null}
       <span className="d-chunk__v" data-tone={tone}>
         {tone ? <><span className="d-chunk__tone" aria-hidden="true">{TONE_GLYPH[tone]}</span><span className="d-sr-only">{TONE_TEXT[tone]}</span></> : null}
         {children}
