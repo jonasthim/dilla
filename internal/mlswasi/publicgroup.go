@@ -31,13 +31,15 @@ const (
 )
 
 // AppliedProposal is one proposal a commit resolved. TargetLeaf is set for Remove only;
-// CredentialIdentity is the added leaf's credential identity, for Add only.
+// CredentialIdentity and SignatureKey (ABI v4) are the added leaf's credential identity and
+// signature key, for Add only.
 type AppliedProposal struct {
 	ProposalRef        []byte
 	Kind               ProposalKind
 	SenderLeaf         *uint32
 	TargetLeaf         *uint32
 	CredentialIdentity []byte
+	SignatureKey       []byte
 }
 
 // Processed is one processed handshake message.
@@ -113,6 +115,9 @@ type KeyPackageInfo struct {
 	LastResort bool
 	NotAfter   uint64
 	KPRef      []byte // the RFC 9420 KeyPackageRef, the key_packages primary key
+	// SignatureKey is the KeyPackage leaf's signature key (ABI v4), the key its signatures verify
+	// under. The delivery service binds it to the publishing device's registered key.
+	SignatureKey []byte
 }
 
 func rawProposalKind(raw cbor.RawMessage) (ProposalKind, error) {
@@ -137,7 +142,7 @@ func decodeApplied(raw cbor.RawMessage) ([]AppliedProposal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := expectLen(fields, 5, "applied proposal"); err != nil {
+		if err := expectLen(fields, 6, "applied proposal"); err != nil {
 			return nil, err
 		}
 		var a AppliedProposal
@@ -154,6 +159,9 @@ func decodeApplied(raw cbor.RawMessage) ([]AppliedProposal, error) {
 			return nil, err
 		}
 		if a.CredentialIdentity, err = rawOptBytes(fields[4]); err != nil {
+			return nil, err
+		}
+		if a.SignatureKey, err = rawOptBytes(fields[5]); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -406,7 +414,7 @@ func (i *Instance) ValidateKeyPackage(ctx context.Context, keyPackage []byte) (K
 	if err != nil {
 		return KeyPackageInfo{}, err
 	}
-	if err := expectLen(elems, 6, "validate_key_package"); err != nil {
+	if err := expectLen(elems, 7, "validate_key_package"); err != nil {
 		return KeyPackageInfo{}, err
 	}
 	var info KeyPackageInfo
@@ -423,6 +431,9 @@ func (i *Instance) ValidateKeyPackage(ctx context.Context, keyPackage []byte) (K
 		return KeyPackageInfo{}, err
 	}
 	if info.KPRef, err = rawBytes(elems[5]); err != nil {
+		return KeyPackageInfo{}, err
+	}
+	if info.SignatureKey, err = rawBytes(elems[6]); err != nil {
 		return KeyPackageInfo{}, err
 	}
 	return info, nil

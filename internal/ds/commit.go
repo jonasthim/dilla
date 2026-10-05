@@ -681,6 +681,18 @@ func checkAddressedWelcomes(applied []mlswasi.AppliedProposal, welcomes []Welcom
 	return nil
 }
 
+// leafKeyIsRegistered is the one comparison that binds a NEW leaf to the device its credential
+// names (hardening C): the leaf's signature key must be the device's registered key,
+// `devices.dsk_pub`, which the device proved possession of when its session was established
+// (auth.Sessions.issue) or registered together with its first session (POST /v1/accounts,
+// POST /v1/devices). No flow changes a device's dsk_pub, so the value read at the check is the one
+// the device has always had. It is applied at the three points a new leaf reaches the delivery
+// service: a published KeyPackage, an Add a commit applies, and the leaf an external commit
+// creates. An empty or absent leaf key never matches.
+func leafKeyIsRegistered(device store.DeviceRow, leafKey []byte) bool {
+	return len(leafKey) != 0 && bytes.Equal(leafKey, device.DSKPub)
+}
+
 // checkAddedMember validates one Add's credential against the device list the delivery service
 // holds and the channel ACL. v is the guest the caller already holds, which the device list is
 // verified in (DeviceLists.Entries says why a second instance must not be acquired here).
@@ -701,6 +713,13 @@ func (d *DS) checkAddedMember(ctx context.Context, v DeviceListVerifier, groupID
 	}
 	if device.RevokedAt != nil {
 		return errCommitInvalid("add_key_package", "the added device is revoked")
+	}
+	// The added leaf is keyed by the device's registered key. A KeyPackage is self-signed under its
+	// own leaf key, so without this a committer could mint one that names another user's device
+	// under a key of its own, and every clause above and below would pass on the device's records.
+	if !leafKeyIsRegistered(device, a.SignatureKey) {
+		return errCommitInvalid("add_key_package",
+			"the added leaf's signature key is not the device's registered key")
 	}
 
 	// The device-list clause. A substring search over the serialized blob is NOT membership: a
@@ -741,9 +760,10 @@ func (d *DS) checkAddedMember(ctx context.Context, v DeviceListVerifier, groupID
 
 // checkExternalJoiner is invariant 4's Add clause applied to the leaf an external commit creates:
 // an external commit adds its committer, so the leaf must be the uploading session's own device and
-// user — a joiner may not land a leaf in another device's name — and, for a device joining rather
-// than resyncing, its user must be eligible under the channel ACL and its DSK, which is the leaf's
-// signature key, must be in the newest signed device list, exactly as for an Add by proposal
+// user — a joiner may not land a leaf in another device's name — keyed by that device's registered
+// key on the join AND the resync path (hardening C: a resync's new leaf is a new leaf like any
+// other), and, for a device joining rather than resyncing, its device must not be revoked, and its
+// DSK must be in the newest signed device list, exactly as for an Add by proposal
 // (`checkAddedMember`). Deviation B36.
 func (d *DS) checkExternalJoiner(ctx context.Context, v DeviceListVerifier, groupID id.ID, s Session, state mlswasi.GroupState, newLeaf *uint32, joining bool) error {
 	if newLeaf == nil {
@@ -767,18 +787,18 @@ func (d *DS) checkExternalJoiner(ctx context.Context, v DeviceListVerifier, grou
 		return errCommitInvalid("external_joiner",
 			"an external commit's leaf must be the uploading device's own")
 	}
-	if !joining {
-		return nil
-	}
 	device, err := d.opts.Store.GetDevice(ctx, deviceID)
 	if err != nil {
 		return err
 	}
-	if device.RevokedAt != nil {
+	if joining && device.RevokedAt != nil {
 		return errCommitInvalid("external_joiner", "the joining device is revoked")
 	}
-	if !bytes.Equal(leaf.SignatureKey, device.DSKPub) {
+	if !leafKeyIsRegistered(device, leaf.SignatureKey) {
 		return errCommitInvalid("external_joiner", "the joiner's leaf key is not its device key")
+	}
+	if !joining {
+		return nil
 	}
 	entries, err := d.opts.DeviceLists.Entries(ctx, v, userID)
 	if err != nil {

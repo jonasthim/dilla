@@ -863,10 +863,24 @@ impl TestClient {
         group_id: &[u8],
         expected: &DillaBinding,
     ) -> Result<(), TestkitError> {
+        self.resync_with(ds, group_id, expected, false)
+    }
+
+    /// `resync`, optionally with a leaf whose signature key is a fresh one rather than this
+    /// device's DSK — the resync half of the probe `join_external_with` makes for a joiner. With a
+    /// fresh key OpenMLS finds no leaf carrying the joiner's key, so the commit removes nothing and
+    /// the device would end with two leaves; the delivery service must refuse it on the key alone.
+    pub fn resync_with(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        expected: &DillaBinding,
+        fresh_leaf_key: bool,
+    ) -> Result<(), TestkitError> {
         if let Some(mut stale) = self.groups.remove(group_id) {
             stale.delete(&self.provider)?;
         }
-        self.join_external(ds, group_id, expected)
+        self.join_external_with(ds, group_id, expected, fresh_leaf_key)
     }
 
     /// Invariant 9: reports the last commit this client received for the group as one it cannot

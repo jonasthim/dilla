@@ -96,7 +96,9 @@ func (h *dsHarness) keyPackageFixture(t *testing.T) ([]byte, mlswasi.KeyPackageI
 }
 
 // keyPackageOwner is the account and device the committed KeyPackage was built for, written into
-// `users` and `devices` so the publish can store a row for it.
+// `users` and `devices` so the publish can store a row for it. The device is registered under the
+// package's own leaf key, as the honest device that built it registered it: the publish binds
+// every package to the device's registered key (hardening C).
 func (h *dsHarness) keyPackageOwner(t *testing.T) (id.ID, auth.Session, []byte, mlswasi.KeyPackageInfo) {
 	t.Helper()
 	blob, info := h.keyPackageFixture(t)
@@ -107,7 +109,10 @@ func (h *dsHarness) keyPackageOwner(t *testing.T) (id.ID, auth.Session, []byte, 
 	var device, user id.ID
 	copy(device[:], info.DeviceID)
 	copy(user[:], info.UserID)
-	h.account(t, user, device)
+	if len(info.SignatureKey) != 32 {
+		t.Fatalf("the fixture KeyPackage's leaf key is %d bytes, want 32", len(info.SignatureKey))
+	}
+	h.accountWithKey(t, user, device, info.SignatureKey)
 	return device, auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled}, blob, info
 }
 

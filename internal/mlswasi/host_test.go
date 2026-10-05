@@ -135,15 +135,15 @@ func TestClockAndRandomnessConfigurationIsLoadBearing(t *testing.T) {
 	}
 }
 
-func TestABIReportsVersionThree(t *testing.T) {
+func TestABIReportsVersionFour(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRuntime(t, Options{PoolSize: 1})
 	info, err := r.ABI(ctx)
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 3 {
-		t.Errorf("ABIVersion = %d, want 3", info.ABIVersion)
+	if info.ABIVersion != 4 {
+		t.Errorf("ABIVersion = %d, want 4", info.ABIVersion)
 	}
 	if info.E2EEVersion != 1 || info.MediaVersion != 1 {
 		t.Errorf("E2EEVersion/MediaVersion = %d/%d, want 1/1", info.E2EEVersion, info.MediaVersion)
@@ -691,9 +691,9 @@ func TestNewNamesTheMissingExport(t *testing.T) {
 	}
 }
 
-func TestABIVersionIsThreeAndTwentyThreeExportsAreRequired(t *testing.T) {
-	if ABIVersion != 3 {
-		t.Fatalf("ABIVersion = %d, want 3", ABIVersion)
+func TestABIVersionIsFourAndTwentyThreeExportsAreRequired(t *testing.T) {
+	if ABIVersion != 4 {
+		t.Fatalf("ABIVersion = %d, want 4", ABIVersion)
 	}
 	if len(RequiredExports) != 23 {
 		t.Fatalf("RequiredExports has %d names, want 23", len(RequiredExports))
@@ -721,8 +721,8 @@ func TestABIVersionIsThreeAndTwentyThreeExportsAreRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 3 {
-		t.Fatalf("dilla_abi reports abi_version %d, want 3", info.ABIVersion)
+	if info.ABIVersion != 4 {
+		t.Fatalf("dilla_abi reports abi_version %d, want 4", info.ABIVersion)
 	}
 }
 
@@ -806,6 +806,9 @@ func TestProcessReportsTheAppliedListAndTheCommitterUpdateFlag(t *testing.T) {
 	if p.Applied[0].CredentialIdentity != nil {
 		t.Error("a Remove carries no credential identity")
 	}
+	if p.Applied[0].SignatureKey != nil {
+		t.Error("a Remove carries no leaf signature key")
+	}
 	if err := g.Discard(ctx, *p.Staged); err != nil {
 		t.Fatalf("Discard: %v", err)
 	}
@@ -829,9 +832,27 @@ func TestProcessReportsTheAppliedListAndTheCommitterUpdateFlag(t *testing.T) {
 		if len(a.CredentialIdentity) == 0 {
 			t.Fatalf("Applied[%d] carries no credential identity", i)
 		}
+		if len(a.SignatureKey) != 32 {
+			t.Fatalf("Applied[%d] carries a %d-byte leaf signature key, want 32 (ABI v4)", i, len(a.SignatureKey))
+		}
 	}
+	added := p.Applied
 	if _, err := g.Merge(ctx, *p.Staged); err != nil {
 		t.Fatalf("Merge: %v", err)
+	}
+	// ABI v4: the key each Add reports is the key its leaf holds in the merged tree.
+	state, err := g.State(ctx)
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	keyOf := make(map[string][]byte, len(state.Members))
+	for _, m := range state.Members {
+		keyOf[string(m.CredentialIdentity)] = m.SignatureKey
+	}
+	for i, a := range added {
+		if got, ok := keyOf[string(a.CredentialIdentity)]; !ok || !bytes.Equal(got, a.SignatureKey) {
+			t.Fatalf("Applied[%d].SignatureKey is not the key its leaf holds after the merge", i)
+		}
 	}
 }
 

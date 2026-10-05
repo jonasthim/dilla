@@ -38,4 +38,9 @@ pub const WIRE_VERSION: u64 = 1;
 /// **3** since 2026-09-29 (dillad-1 task 27a, Ruling C): `public_group_process`'s response grew a
 /// ninth element, `new_leaf` — the leaf an external commit's joiner lands on — and the module
 /// grew `device_list_entries`, the verified decoder of a user's signed device list (NV-B8).
-pub const ABI_VERSION: u64 = 3;
+///
+/// **4** since 2026-10-05 (hardening C): `validate_key_package`'s response grew a seventh element,
+/// the KeyPackage leaf's `signature_key`, and each item of `public_group_process`'s applied list a
+/// sixth, the added leaf's `signature_key` (an Add's; null for every other proposal), so the
+/// delivery service can bind a new leaf to the device's registered key without parsing MLS.
+pub const ABI_VERSION: u64 = 4;

@@ -544,12 +544,13 @@ impl Runner {
                 client,
                 group,
                 uploader,
+                fresh_leaf_key,
             } => {
                 let target = self.group(group)?;
                 let (id, binding) = (target.id.clone(), target.binding.clone());
                 let uploader = uploader.as_deref().unwrap_or(client);
                 self.with_client_via(client, uploader, |actor, ds| {
-                    actor.resync(ds, &id, &binding)
+                    actor.resync_with(ds, &id, &binding, *fresh_leaf_key)
                 })
             }
             Stmt::ForkReport { client, group } => {

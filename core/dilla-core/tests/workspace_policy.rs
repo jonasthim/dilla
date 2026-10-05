@@ -37,6 +37,7 @@ fn version_constants_are_the_wire_values() {
     // `committer_updated`, and `validate_key_package` grows `kp_ref`. The wasi ABI is internal to
     // dillad's host, so it moves on a response-shape change while the wire versions stay at 1.
     // 3 since 2026-09-29: `public_group_process` grew `new_leaf` and `device_list_entries` exists.
-    assert_eq!(dilla_core::ABI_VERSION, 3);
+    // 4 since 2026-10-05: `validate_key_package` and the applied items carry the leaf's key.
+    assert_eq!(dilla_core::ABI_VERSION, 4);
     assert_eq!(dilla_core::CORE_VERSION, "0.1.0");
 }

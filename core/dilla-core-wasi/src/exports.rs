@@ -246,10 +246,11 @@ fn public_group_process(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> 
     e.opt_bytes(proposal_ref.as_deref());
     e.array(applied.len());
     for item in &applied {
-        e.array(5).bytes(&item.proposal_ref).uint(item.kind);
+        e.array(6).bytes(&item.proposal_ref).uint(item.kind);
         e.opt_uint(item.sender_leaf.map(u64::from));
         e.opt_uint(item.target_leaf.map(u64::from));
         e.opt_bytes(item.credential_identity.as_deref());
+        e.opt_bytes(item.signature_key.as_deref());
     }
     e.uint(committer_updated);
     e.opt_uint(new_leaf.map(u64::from));
@@ -285,12 +286,18 @@ fn with_staged_or_release<T>(
 }
 
 /// One entry of ABI v2 §3.1's `applied` array.
+///
+/// ABI v4: `signature_key` is the added leaf's signature key, for an Add only. The delivery
+/// service compares it with the registered key of the device the credential names (invariant 4's
+/// Add clause), which it cannot do from the credential alone: nothing in the credential is the
+/// leaf's key, and Go does not parse MLS.
 struct Applied {
     proposal_ref: Vec<u8>,
     kind: u64,
     sender_leaf: Option<u32>,
     target_leaf: Option<u32>,
     credential_identity: Option<Vec<u8>>,
+    signature_key: Option<Vec<u8>>,
 }
 
 /// Every proposal the commit resolved, in the order `StagedCommit` reports them.
@@ -309,8 +316,12 @@ fn applied_proposals(staged: &StagedCommit) -> Result<Vec<Applied>, AbiError> {
             _ => None,
         };
         let proposal_ref = queued.proposal_reference_ref().as_slice().to_vec();
+        let mut signature_key = None;
         let (kind, target_leaf, credential_identity) = match queued.proposal() {
-            Proposal::Add(add) => (1u64, None, Some(leaf_credential_bytes(add.key_package())?)),
+            Proposal::Add(add) => {
+                signature_key = Some(leaf_signature_key(add.key_package()));
+                (1u64, None, Some(leaf_credential_bytes(add.key_package())?))
+            }
             Proposal::Update(_) => (2, None, None),
             Proposal::Remove(remove) => (3, Some(remove.removed().u32()), None),
             Proposal::PreSharedKey(_) => (4, None, None),
@@ -330,6 +341,7 @@ fn applied_proposals(staged: &StagedCommit) -> Result<Vec<Applied>, AbiError> {
             sender_leaf,
             target_leaf,
             credential_identity,
+            signature_key,
         });
     }
     Ok(out)
@@ -647,14 +659,17 @@ fn validate_key_package_export(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, Ab
         .hash_ref(&crypto)
         .map_err(|e| AbiError::state(format!("key package ref: {e}")))?;
 
+    // ABI v4: the leaf's signature key, which the delivery service compares with the uploading
+    // device's registered key (protocol/02 invariant 4, the KeyPackage route).
     let mut e = Encoder::new();
-    e.array(6)
+    e.array(7)
         .uint(0)
         .bytes(identity.device_id.as_bytes())
         .bytes(identity.user_id.as_bytes())
         .uint(u64::from(is_last_resort(&kp)))
         .uint(lifetime_not_after(&kp))
-        .bytes(kp_ref.as_slice());
+        .bytes(kp_ref.as_slice())
+        .bytes(&leaf_signature_key(&kp));
     Ok(e.into_vec())
 }
 
@@ -777,6 +792,13 @@ fn leaf_credential_bytes(kp: &KeyPackage) -> Result<Vec<u8>, AbiError> {
     BasicCredential::try_from(credential.clone())
         .map(|b| b.identity().to_vec())
         .map_err(|e| AbiError::new("E_CREDENTIAL", e.to_string()))
+}
+
+/// The KeyPackage leaf's signature key, the key both of the KeyPackage's signatures verified under
+/// (`KeyPackageIn::validate`). It is what a dilla leaf's `sig_ssk_dev` covers and what the
+/// delivery service binds to the device's registered key (ABI v4).
+fn leaf_signature_key(kp: &KeyPackage) -> Vec<u8> {
+    kp.leaf_node().signature_key().as_slice().to_vec()
 }
 
 /// NV-3: `last_resort` is a KeyPackage extension, not a leaf-node one.
@@ -1192,18 +1214,20 @@ mod tests {
             let n = d.array_len()?;
             let mut applied = Vec::with_capacity(n);
             for _ in 0..n {
-                d.array(5)?;
+                d.array(6)?;
                 let proposal_ref = d.bytes()?.to_vec();
                 let kind = d.uint()?;
                 let sender_leaf = d.opt_uint()?;
                 let target_leaf = d.opt_uint()?;
                 let credential_identity = d.opt_bytes()?.map(<[u8]>::to_vec);
+                let signature_key = d.opt_bytes()?.map(<[u8]>::to_vec);
                 applied.push(AppliedItem {
                     proposal_ref,
                     kind,
                     sender_leaf,
                     target_leaf,
                     credential_identity,
+                    signature_key,
                 });
             }
             let committer_updated = d.uint()?;
@@ -1222,13 +1246,15 @@ mod tests {
         sender_leaf: Option<u64>,
         target_leaf: Option<u64>,
         credential_identity: Option<Vec<u8>>,
+        signature_key: Option<Vec<u8>>,
     }
 
     /// interfaces §3: a response-shape change moves `abi_version`. 2 when the process and
     /// validate_key_package responses grew; 3 since `public_group_process` grew `new_leaf` and the
-    /// module grew `device_list_entries` (task 27a, Ruling C).
+    /// module grew `device_list_entries` (task 27a, Ruling C); 4 since `validate_key_package` and
+    /// the applied items grew the leaf's `signature_key` (hardening C).
     #[test]
-    fn dilla_abi_reports_version_three() {
+    fn dilla_abi_reports_version_four() {
         let out = dispatch("dilla_abi", &version_only());
         let abi = decode_strict(&out, |d: &mut Decoder<'_>| {
             d.array(6)?;
@@ -1245,24 +1271,26 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            abi, 3,
-            "ABI v3: the process response grew new_leaf and device_list_entries was added"
+            abi, 4,
+            "ABI v4: validate_key_package and the applied items carry the leaf's signature key"
         );
-        assert_eq!(dilla_core::ABI_VERSION, 3);
+        assert_eq!(dilla_core::ABI_VERSION, 4);
     }
 
-    /// An ABI v2 request must now be refused outright — there is no compatibility shim (§3).
+    /// An ABI v2 or v3 request must now be refused outright — there is no compatibility shim (§3).
     #[test]
     fn an_abi_version_two_request_is_refused() {
-        let r = req(|e| {
-            e.array(1).uint(2);
-        });
-        let (code, detail) = failure(&dispatch("dilla_abi", &r));
-        assert_eq!(code, crate::abi::E_ABI_VERSION);
-        assert!(
-            detail.contains('2') && detail.contains('3'),
-            "detail: {detail}"
-        );
+        for old in [2u64, 3] {
+            let r = req(|e| {
+                e.array(1).uint(old);
+            });
+            let (code, detail) = failure(&dispatch("dilla_abi", &r));
+            assert_eq!(code, crate::abi::E_ABI_VERSION);
+            assert!(
+                detail.contains(&old.to_string()) && detail.contains('4'),
+                "detail: {detail}"
+            );
+        }
     }
 
     /// A signing key for the device lists below. The SSK is a plain Ed25519 key, and
@@ -1752,6 +1780,12 @@ mod tests {
                 .expect("an Add carries the joiner's credential identity");
             dilla_core::identity::CredentialIdentity::decode(identity)
                 .expect("the credential identity is the core's 10-element CBOR array");
+            // ABI v4: the added leaf's signature key travels with the Add.
+            assert_eq!(
+                item.signature_key.as_ref().map(Vec::len),
+                Some(32),
+                "an Add carries its leaf's Ed25519 signature key"
+            );
         }
         assert_eq!(committer_updated, 1, "add_members forces a self-update");
     }
@@ -1778,6 +1812,10 @@ mod tests {
         assert!(
             applied[0].credential_identity.is_none(),
             "a Remove carries no credential"
+        );
+        assert!(
+            applied[0].signature_key.is_none(),
+            "a Remove carries no leaf key"
         );
         assert_eq!(
             committer_updated, 1,
@@ -2037,7 +2075,8 @@ mod tests {
     }
 
     /// §3.5: `validate_key_package` grew to six elements and the sixth is the RFC 9420
-    /// KeyPackageRef.
+    /// KeyPackageRef; ABI v4 adds a seventh, the leaf's signature key, which is the key the
+    /// KeyPackage's own signature verifies under.
     #[test]
     fn validate_key_package_returns_the_key_package_ref() {
         let out = dispatch(
@@ -2048,9 +2087,9 @@ mod tests {
                     .bytes(FIXTURE_KEY_PACKAGE);
             }),
         );
-        let (device_id, user_id, last_resort, not_after, kp_ref) =
+        let (device_id, user_id, last_resort, not_after, kp_ref, signature_key) =
             decode_strict(&out, |d: &mut Decoder<'_>| {
-                d.array(6)?;
+                d.array(7)?;
                 assert_eq!(
                     d.uint()?,
                     0,
@@ -2062,9 +2101,20 @@ mod tests {
                     d.uint()?,
                     d.uint()?,
                     d.bytes()?.to_vec(),
+                    d.bytes()?.to_vec(),
                 ))
             })
             .unwrap();
+        let kp = validate_key_package(
+            &RustCrypto::default(),
+            tls::key_package_in(FIXTURE_KEY_PACKAGE).expect("the fixture decodes"),
+        )
+        .expect("the fixture validates natively");
+        assert_eq!(
+            signature_key,
+            kp.leaf_node().signature_key().as_slice(),
+            "the seventh element is the leaf's own signature key"
+        );
         assert_eq!(device_id.len(), 16);
         assert_eq!(user_id.len(), 16);
         assert!(last_resort <= 1);

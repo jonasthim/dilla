@@ -130,6 +130,37 @@ func TestAnAcceptedPublishIsHandedToAfterKeyPackages(t *testing.T) {
 	}
 }
 
+// Hardening C, point (a), on the wire: the device the committed KeyPackage names is registered with
+// a key of its own — a real one, whose session is established through the challenge — that is not
+// the key the package's leaf carries. Row 10 answers 422 E_COMMIT_INVALID, the code it gives every
+// KeyPackage it refuses as invalid, and the device's directory stays empty.
+func TestAKeyPackageNotKeyedByTheDevicesRegisteredKeyIsRefusedOverTheMux(t *testing.T) {
+	h := newGroupsAPI(t)
+	device, user := apiKeyPackageIdentity(t)
+	now := h.deps.Clock.Now().Unix()
+	if err := h.deps.Repo.CreateUser(context.Background(), store.UserRow{
+		ID: user, Username: "kp" + user.String()[:8], Display: "KeyPackage owner",
+		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64),
+		Created: now,
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	token := h.tokenForNewDevice(t, user, device, auth.PurposeSession) // a fresh key, not the leaf's
+
+	res := h.do(t, http.MethodPost, "/v1/keypackages", token,
+		mustCBOR(t, []any{[][]byte{apiKeyPackageFixture(t)}, nil}))
+	if res.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("publish: status = %d, want 422: %s", res.Code, res.Body.String())
+	}
+	if got := errorCode(t, res); got != "E_COMMIT_INVALID" {
+		t.Fatalf("code = %s, want E_COMMIT_INVALID", got)
+	}
+	res = h.do(t, http.MethodGet, "/v1/devices/"+device.String()+"/keypackage", h.session, nil)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("take after a refused publish: status = %d, want 404", res.Code)
+	}
+}
+
 // Row 15's items are the seven-element [welcome_id, group_id, epoch, commit_seq, blob,
 // ratchet_tree, tree_hash]; row 16 is 204 and is what marks one delivered — the GET does not.
 func TestTheWelcomeQueueIsServedAndOnlyTheDeleteMarksItDelivered(t *testing.T) {
@@ -258,21 +289,45 @@ func TestTheDirectoryRoutesAdmitAProvisionalSessionAndTheRuleRefusesIt(t *testin
 // ------------------------------------------------------------------ harness additions
 
 // keyPackageOwnerToken seeds the account and device the committed KeyPackage was BUILT for, and
-// establishes a real session for it. A publish for any other device is E_FORBIDDEN, so this is the
-// only identity that can put the fixture package in the directory.
+// mints its session. A publish for any other device is E_FORBIDDEN, and one whose leaf key is not
+// the device's registered key is E_COMMIT_INVALID (hardening C), so this is the only identity that
+// can put the fixture package in the directory: the device is registered under the package's own
+// leaf key.
+//
+// The fixture does not publish that key's private half, so the session cannot come from the
+// challenge ceremony. It is minted the way POST /v1/accounts mints a new device's first session
+// (auth.Sessions.NewDeviceSession, in the transaction that writes the user and the device), which
+// is exactly the session a freshly signed-up browser publishes its first KeyPackages under.
 func (h *groupsAPI) keyPackageOwnerToken(t *testing.T) (string, id.ID) {
 	t.Helper()
 	ctx := context.Background()
-	device, user := apiKeyPackageIdentity(t)
+	info := apiKeyPackageInfo(t)
+	var device, user id.ID
+	copy(device[:], info.DeviceID)
+	copy(user[:], info.UserID)
 	now := h.deps.Clock.Now().Unix()
-	if err := h.deps.Repo.CreateUser(ctx, store.UserRow{
-		ID: user, Username: "kp" + user.String()[:8], Display: "KeyPackage owner",
-		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64),
-		Created: now,
+	var token string
+	if err := h.deps.Repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.CreateUser(ctx, store.UserRow{
+			ID: user, Username: "kp" + user.String()[:8], Display: "KeyPackage owner",
+			UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64),
+			Created: now,
+		}); err != nil {
+			return err
+		}
+		if err := tx.CreateDevice(ctx, store.DeviceRow{
+			ID: device, UserID: user, DSKPub: info.SignatureKey, CredentialBlob: []byte{1},
+			LastSeen: now, Created: now,
+		}); err != nil {
+			return err
+		}
+		tok, err := h.deps.Sessions.NewDeviceSession(ctx, tx, user, device, 0)
+		token = tok.Token
+		return err
 	}); err != nil {
-		t.Fatalf("CreateUser: %v", err)
+		t.Fatalf("register the KeyPackage's device: %v", err)
 	}
-	return h.tokenForNewDevice(t, user, device, auth.PurposeSession), device
+	return token, device
 }
 
 // seedJoiner is one enrolled account and device with a session: the device a Welcome is addressed
@@ -379,6 +434,17 @@ func apiKeyPackageFixture(t *testing.T) []byte {
 // asserting its own arithmetic.
 func apiKeyPackageIdentity(t *testing.T) (device, user id.ID) {
 	t.Helper()
+	info := apiKeyPackageInfo(t)
+	copy(device[:], info.DeviceID)
+	copy(user[:], info.UserID)
+	return device, user
+}
+
+// apiKeyPackageInfo is everything the guest says about the committed KeyPackage, its leaf's
+// signature key included (ABI v4): the key its device must be registered under for the publish to
+// be accepted.
+func apiKeyPackageInfo(t *testing.T) mlswasi.KeyPackageInfo {
+	t.Helper()
 	ctx := context.Background()
 	f := apiFixtureData(t)
 	// A runtime of its own, over the SAME compilation cache the harness uses, so this costs a
@@ -401,7 +467,8 @@ func apiKeyPackageIdentity(t *testing.T) (device, user id.ID) {
 		t.Fatalf("the fixture KeyPackage names a %d-byte device and a %d-byte user, want 16 each",
 			len(info.DeviceID), len(info.UserID))
 	}
-	copy(device[:], info.DeviceID)
-	copy(user[:], info.UserID)
-	return device, user
+	if len(info.SignatureKey) != 32 {
+		t.Fatalf("the fixture KeyPackage's leaf key is %d bytes, want 32", len(info.SignatureKey))
+	}
+	return info
 }

@@ -693,12 +693,14 @@ func (d *DS) checkHealedExternalCommit(ctx context.Context, g DeviceListVerifier
 		present[who.device] = struct{}{}
 	}
 	now := make(map[id.ID][]byte, len(after.Members))
+	keys := make(map[id.ID][]byte, len(after.Members))
 	for _, m := range after.Members {
 		device, _, err := decodeCredentialIdentity(m.CredentialIdentity)
 		if err != nil {
 			continue
 		}
 		now[device] = m.CredentialIdentity
+		keys[device] = m.SignatureKey
 	}
 
 	var joiner id.ID
@@ -715,6 +717,15 @@ func (d *DS) checkHealedExternalCommit(ctx context.Context, g DeviceListVerifier
 		joiner, found = target.device, true
 	}
 	if found {
+		// A replayed resync creates a new leaf like any other: it is keyed by the device's
+		// registered key, as checkExternalJoiner requires of a live one.
+		device, err := d.opts.Store.GetDevice(ctx, joiner)
+		if err != nil {
+			return id.ID{}, err
+		}
+		if !leafKeyIsRegistered(device, keys[joiner]) {
+			return id.ID{}, errCommitInvalid("external_joiner", "the joiner's leaf key is not its device key")
+		}
 		return joiner, nil
 	}
 
@@ -727,8 +738,10 @@ func (d *DS) checkHealedExternalCommit(ctx context.Context, g DeviceListVerifier
 	if len(added) != 1 {
 		return id.ID{}, errCommitInvalid("structural", "an external commit must add exactly one device")
 	}
+	// The joiner's leaf key travels with its credential: checkAddedMember binds it to the device's
+	// registered key exactly as it binds an Add's.
 	if err := d.checkAddedMember(ctx, g, groupID, mlswasi.AppliedProposal{
-		Kind: mlswasi.ProposalAdd, CredentialIdentity: now[added[0]],
+		Kind: mlswasi.ProposalAdd, CredentialIdentity: now[added[0]], SignatureKey: keys[added[0]],
 	}); err != nil {
 		return id.ID{}, err
 	}

@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,6 +200,56 @@ func TestPublishRefusesAKeyPackageForAnotherDevice(t *testing.T) {
 	var dsErr *ds.Error
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
 		t.Fatalf("got %v, want E_FORBIDDEN", err)
+	}
+	if total := h.countRows(t, "key_packages"); total != 0 {
+		t.Fatalf("%d rows were written for a refused publish, want 0", total)
+	}
+}
+
+// The ruling of hardening C, point (a): a published KeyPackage's leaf is bound to the device's
+// REGISTERED key, the `devices.dsk_pub` the session was established under. Here the device the
+// committed package names is registered with another key (the harness's 0x04…), as a device that
+// minted the package under a key it never registered would be: the publish is refused as an
+// invalid KeyPackage and nothing is stored.
+func TestPublishRefusesAKeyPackageWhoseLeafKeyIsNotTheDevicesRegisteredKey(t *testing.T) {
+	h := newDSHarness(t)
+	blob, info := h.keyPackageFixture(t)
+	var device, user id.ID
+	copy(device[:], info.DeviceID)
+	copy(user[:], info.UserID)
+	h.account(t, user, device) // devices.dsk_pub = 0x04…, not the package's leaf key
+	session := h.sessionOf(t, device)
+
+	_, err := h.ds.PublishKeyPackages(context.Background(), session, [][]byte{blob}, nil)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" || dsErr.Rule != "key_package" {
+		t.Fatalf("got %v, want E_COMMIT_INVALID/key_package", err)
+	}
+	if total := h.countRows(t, "key_packages"); total != 0 {
+		t.Fatalf("%d rows were written for a refused publish, want 0", total)
+	}
+}
+
+// Point (a) again: the package's credential must name the uploading session's USER as well as its
+// device. The session here holds the package's device id under another user — the shape a client
+// produces when it mints its credential for an account it is not — and the publish is refused.
+func TestPublishRefusesAKeyPackageWhoseCredentialNamesAnotherUser(t *testing.T) {
+	h := newDSHarness(t)
+	blob, info := h.keyPackageFixture(t)
+	var device id.ID
+	copy(device[:], info.DeviceID)
+	other := id.New()
+	h.account(t, other, device)
+	session := h.sessionOf(t, device)
+	if session.UserID != other {
+		t.Fatal("the session must be the other user's")
+	}
+
+	_, err := h.ds.PublishKeyPackages(context.Background(), session, [][]byte{blob}, nil)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" || dsErr.Rule != "key_package" ||
+		!strings.Contains(dsErr.Detail, "user") {
+		t.Fatalf("got %v, want E_COMMIT_INVALID/key_package naming the user", err)
 	}
 	if total := h.countRows(t, "key_packages"); total != 0 {
 		t.Fatalf("%d rows were written for a refused publish, want 0", total)

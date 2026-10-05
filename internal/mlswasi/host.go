@@ -56,10 +56,12 @@ import (
 // C): public_group_process grew a ninth element, new_leaf, and the module grew
 // device_list_entries and public_group_staged_group_info_validate (deviations B32, B33). There is
 // no compatibility shim — this host is the guest's only consumer and CI builds both from one
-// commit.
-const ABIVersion uint64 = 3
+// commit. **4** since 2026-10-05 (hardening C): validate_key_package grew a seventh element and
+// each public_group_process applied item a sixth, the leaf's signature key, which the delivery
+// service binds to the device's registered key.
+const ABIVersion uint64 = 4
 
-// RequiredExports is the 23-export ABI v3 surface. New refuses any module that does not carry all
+// RequiredExports is the 23-export ABI v4 surface (v4 added no export). New refuses any module that does not carry all
 // of them. _initialize is deliberately absent: see the package comment.
 var RequiredExports = []string{
 	"dilla_alloc",

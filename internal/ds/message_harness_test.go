@@ -63,6 +63,14 @@ func (h *dsHarness) group(t *testing.T) *dsMessageGroup {
 // hold and a test that pretended otherwise would be testing a shape production never sees.
 func (h *dsHarness) account(t *testing.T, userID, deviceID id.ID) {
 	t.Helper()
+	h.accountWithKey(t, userID, deviceID, bytes.Repeat([]byte{4}, 32))
+}
+
+// accountWithKey is account with the device registered under dsk: the key a device whose real
+// MLS material a test drives (a fixture KeyPackage, a fixture member's leaf) registered, which is
+// what the delivery service binds every new leaf to.
+func (h *dsHarness) accountWithKey(t *testing.T, userID, deviceID id.ID, dsk []byte) {
+	t.Helper()
 	ctx := context.Background()
 	if _, err := h.repo.GetUser(ctx, userID); err != nil {
 		if err := h.repo.CreateUser(ctx, store.UserRow{
@@ -84,7 +92,7 @@ func (h *dsHarness) account(t *testing.T, userID, deviceID id.ID) {
 	if err := h.repo.CreateDevice(ctx, store.DeviceRow{
 		ID:             deviceID,
 		UserID:         userID,
-		DSKPub:         bytes.Repeat([]byte{4}, 32),
+		DSKPub:         dsk,
 		Tier:           0,
 		SignerTier:     0,
 		CredentialBlob: []byte{0x01},

@@ -151,13 +151,15 @@ pub enum Stmt {
     ExpectClosed {
         group: String,
     },
-    /// `resync <client> <group> [as=<uploader>]`: the client drops its copy of the group and
-    /// returns by an own-leaf external commit (`POST /resync`, invariant 9 and R25). With `as=`,
-    /// the commit is uploaded under the uploader's session instead.
+    /// `resync <client> <group> [as=<uploader>] [leaf_key=fresh]`: the client drops its copy of
+    /// the group and returns by an own-leaf external commit (`POST /resync`, invariant 9 and R25).
+    /// With `as=`, the commit is uploaded under the uploader's session instead; with
+    /// `leaf_key=fresh`, the new leaf carries a signature key that is not the device's DSK.
     Resync {
         client: String,
         group: String,
         uploader: Option<String>,
+        fresh_leaf_key: bool,
     },
     /// `fork_report <client> <group>`: the client reports the last commit it received for the
     /// group as one it cannot process (`POST /fork-report`, invariant 9).
@@ -277,6 +279,18 @@ fn hex16(s: &str, line: usize) -> Result<[u8; 16], ParseError> {
 
 fn named<'a>(args: &[&'a str], key: &str) -> Option<&'a str> {
     args.iter().find_map(|a| a.strip_prefix(key))
+}
+
+/// `leaf_key=fresh`, the one leaf-key probe an external commit (a join or a resync) takes.
+fn leaf_key_probe(args: &[&str], line: usize) -> Result<bool, ParseError> {
+    match named(args, "leaf_key=") {
+        None => Ok(false),
+        Some("fresh") => Ok(true),
+        Some(other) => Err(err(
+            line,
+            format!("unknown leaf_key {other:?}; the only probe is leaf_key=fresh"),
+        )),
+    }
 }
 
 /// `key=<32 hex>` when present.
@@ -462,16 +476,7 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                 return Err(err(line_no, format!("unknown via= {via:?}")));
             }
             let uploader = named(args, "as=").map(str::to_owned);
-            let fresh_leaf_key = match named(args, "leaf_key=") {
-                None => false,
-                Some("fresh") => true,
-                Some(other) => {
-                    return Err(err(
-                        line_no,
-                        format!("unknown leaf_key {other:?}; the only probe is leaf_key=fresh"),
-                    ));
-                }
-            };
+            let fresh_leaf_key = leaf_key_probe(args, line_no)?;
             if !external && (uploader.is_some() || fresh_leaf_key) {
                 return Err(err(
                     line_no,
@@ -699,6 +704,7 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                     client,
                     group,
                     uploader: named(args, "as=").map(str::to_owned),
+                    fresh_leaf_key: leaf_key_probe(args, line_no)?,
                 },
                 "fork_report" => Stmt::ForkReport { client, group },
                 _ => Stmt::Heal { client, group },
@@ -1201,6 +1207,7 @@ expect_reject E_BINDING join bob chat
                 client: "bob".into(),
                 group: "chat".into(),
                 uploader: None,
+                fresh_leaf_key: false,
             }
         );
         assert_eq!(
@@ -1361,8 +1368,19 @@ expect_reject E_BINDING join bob chat
                 client: "carol".into(),
                 group: "chat".into(),
                 uploader: Some("alice".into()),
+                fresh_leaf_key: false,
             }
         );
+        assert_eq!(
+            one("resync alice chat leaf_key=fresh").unwrap(),
+            Stmt::Resync {
+                client: "alice".into(),
+                group: "chat".into(),
+                uploader: None,
+                fresh_leaf_key: true,
+            }
+        );
+        refused("resync alice chat leaf_key=old", "leaf_key");
         assert_eq!(
             one("mark_revoked mallory").unwrap(),
             Stmt::MarkRevoked {
