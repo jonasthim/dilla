@@ -54,16 +54,16 @@ export async function externalJoin(s: SyncInternals, eg: ExpectedGroup, budget: 
       throw e;
     }
     budget.joins += 1;
+    let answer: { seq: bigint; epoch: bigint };
     try {
-      const answer = await s.deps.routes.postResync(eg.groupId, body);
-      if (s.stopped()) throw new SyncError('E_SYNC_STOPPED');
-      s.deps.core.groupJoined(eg.groupId, answer.seq);
-      await s.activate(eg.groupId);
-      return;
+      answer = await s.deps.routes.postResync(eg.groupId, body);
     } catch (e) {
-      if (s.row(eg.groupId)?.state === 1) s.deps.core.groupDiscard(eg.groupId);
+      if (e instanceof DillaHttpError && s.row(eg.groupId)?.state === 1) s.deps.core.groupDiscard(eg.groupId);
       throw e;
     }
+    s.deps.core.groupJoined(eg.groupId, answer.seq);
+    await s.activate(eg.groupId);
+    return;
   }
 }
 export async function resyncGroup(s: SyncInternals, g: Id, fromOpen: boolean): Promise<boolean> {
@@ -126,12 +126,11 @@ export async function openChannelFlow(
     try {
       await s.queues.run(groupKey(g), async () => {
         const body = s.deps.core.groupCreate(g, ch.communityId, ch.channelId, s.deps.instance.policyVersion, s.deps.instance.externalSenderPub);
-        try {
-          const result = await s.deps.routes.postGroup(body);
-          if (s.stopped()) throw new SyncError('E_SYNC_STOPPED');
-          s.deps.core.groupRegistered(g, result.nextSeq);
-          await s.activate(g);
-        } catch (e) { if (s.row(g)?.state === 0) s.deps.core.groupDiscard(g); throw e; }
+        let result: { nextSeq: bigint };
+        try { result = await s.deps.routes.postGroup(body); }
+        catch (e) { if (s.row(g)?.state === 0) s.deps.core.groupDiscard(g); throw e; }
+        s.deps.core.groupRegistered(g, result.nextSeq);
+        await s.activate(g);
       });
       return { groupId: g, state: 2 };
     } catch (e) {

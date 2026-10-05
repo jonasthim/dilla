@@ -115,6 +115,35 @@ describe('opening a channel (rule 6)', () => {
     expect(d.membership).toEqual([]);
   });
 
+  it('keeps an accepted external join when stopped during postResync', async () => {
+    const pg = ds.peerCreate(PEER, CHANNEL);
+    const gate = deferred();
+    ds.inject('postResync', { gate: gate.promise });
+    const opening = open(pg).catch((e: unknown) => e);
+    await settle();
+    expect(count('postResync')).toBe(1);
+    d.engine.stop();
+    gate.resolve();
+    await opening;
+    expect(coreCalls(d, pg, ['groupDiscard'])).toEqual([]);
+    expect(d.core.group(pg)?.state).toBe(2);
+    expect(ds.view(pg).members).toContain(toHex(ME.device));
+  });
+
+  it('keeps an accepted registration when stopped during postGroup', async () => {
+    const gate = deferred();
+    ds.inject('postGroup', { gate: gate.promise });
+    const opening = open(null).catch((e: unknown) => e);
+    await settle();
+    expect(count('postGroup')).toBe(1);
+    d.engine.stop();
+    gate.resolve();
+    const result = await opening;
+    expect(d.core.calls.filter((c) => c.m === 'groupDiscard')).toEqual([]);
+    expect(result).toMatchObject({ state: 2 });
+    expect(d.core.groups()).toMatchObject([{ state: 2 }]);
+  });
+
   it('waits and starts again from the Welcome step when the join meets the 425 freeze', async () => {
     const pg = ds.peerCreate(PEER, CHANNEL);
     ds.inject('postResync', { fail: httpError(425, 'E_COMMIT_REQUIRED', 2000) });
