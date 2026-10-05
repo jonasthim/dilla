@@ -5,7 +5,12 @@
 The instance acts as the MLS Delivery Service (RFC 9750 §5) for every group it hosts:
 
 1. **KeyPackage directory**: stores KeyPackages per device, serves one on request, consumes
-   ordinary packages on use, never consumes the last-resort package.
+   ordinary packages on use, never consumes the last-resort package. It stores a package only if
+   its credential names the publishing session's `device_id` and `user_id` and its leaf's
+   `signature_key` is the device's **registered key** (the `dsk_pub` it registered with
+   `POST /v1/accounts` or `POST /v1/devices`, the key its sessions are established under); a
+   package for another device is `403 E_FORBIDDEN`, any other mismatch `422 E_COMMIT_INVALID`
+   (`rule = "key_package"`), and nothing of the request is stored.
 2. **Sequencer**: accepts exactly one Commit per epoch per group and totally orders handshake and
    application messages per group (`seq`, a per-group unsigned counter starting at 1).
 3. **GroupInfo and tree store**: keeps the latest committer-signed GroupInfo (without the ratchet
@@ -342,7 +347,8 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    `Remove` targets its proposer's
    own user (the committer's for a `Remove` the commit carries, the proposing member's for a member
    `Remove` proposal it references — how a member leaves, `01-groups.md`), the proposer being the
-   sender the `PublicGroup` authenticated; every `Add` carries a
+   sender the `PublicGroup` authenticated; every `Add` carries a leaf whose `signature_key` is the
+   registered key of the device its credential names, and a
    credential whose user is eligible under the channel's
    ACL (for a community group, the same permission invariant 1 asks of a registrant, resolved
    through `09` § Permissions; for a DM or group DM, being one of its participants; for any other
@@ -360,7 +366,9 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    membership commit deadlocks exactly the device that cannot act. Two guards apply: the resync is
    refused with `E_FORBIDDEN` when the resyncing device is the target of an outstanding non-void
    instance Remove, and the instance re-issues its outstanding proposals for the new epoch
-   immediately afterwards. `POST /v1/groups/{id}/resync` from a device that holds **no** leaf in the
+   immediately afterwards. A resync's new leaf, like a joiner's, must name the uploading device and
+   user and carry that device's registered key as its `signature_key` (`422 E_COMMIT_INVALID`,
+   `rule = "external_joiner"`). `POST /v1/groups/{id}/resync` from a device that holds **no** leaf in the
    group is not a resync but a join (`01-groups.md`, "Joining"): it is gated by the channel ACL
    (`E_NOT_FOUND` to a device the ACL does not admit, as every read answers it), it is held by the
    freeze above, and the joiner's leaf must be its own device with its DSK in its user's newest
@@ -556,7 +564,7 @@ Probes for invariants 1, 4 and 8, which break exactly one rule each:
 - `client <name> device_list=none|revoked` — the client's user publishes no signed device list, or
   one whose entry for the device is revoked (default `signed`).
 - `external_join <client> <group> [as=<uploader>] [leaf_key=fresh]` and
-  `resync <client> <group> [as=<uploader>]` — the client's external commit is uploaded under the
+  `resync <client> <group> [as=<uploader>] [leaf_key=fresh]` — the client's external commit is uploaded under the
   uploader's session, or its leaf carries a signature key that is not the device's DSK.
 - `mark_revoked <client>` — the test host marks the device revoked in the store and leaves its
   session, the window a revocation can race.

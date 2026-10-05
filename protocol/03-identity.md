@@ -123,6 +123,14 @@ accepted only if:
 Failing 1, 3 or 4 rejects the leaf (`E_CREDENTIAL`); failing 2 hard-rejects (`E_UMK_CHANGED`);
 failing 5 rejects the leaf (`E_TIER_MISMATCH`).
 
+The instance binds every new leaf to a device too, before any client sees it: a leaf's
+`signature_key` must be the `dsk_pub` its device registered (`POST /v1/accounts`,
+`POST /v1/devices`; the key the device's sessions are established under). No flow changes a
+registered `dsk_pub`, so the key is compared as it stands at the check. The delivery service applies
+this to a published KeyPackage, an `Add`, and an external join or resync (`02-delivery-service.md`,
+"KeyPackage directory" and invariant 4). It is the instance's check, made against its own device
+records; the client checks above, made against the signed device list, do not depend on it.
+
 ## Device list
 
 The user's devices are published as a hash-chained, SSK-signed list. The DS stores and serves it;
