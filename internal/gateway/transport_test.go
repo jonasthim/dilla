@@ -210,12 +210,15 @@ func TestATicketUpgradeSpendsTheTicketAndIsNeverEchoed(t *testing.T) {
 	if got := c.Subprotocol(); got != "dilla.v1" {
 		t.Fatalf("negotiated subprotocol %q: the ticket must never be echoed", got)
 	}
-	if h.gw.Tickets().len() != 0 {
-		t.Fatal("the upgrade must spend the ticket")
-	}
 
 	if in := readWS(t, ctx, c); in.Op != OpHello {
 		t.Fatalf("first frame op %d, want hello", in.Op)
+	}
+	// Dial returns once the 101 is read, and Handler spends the ticket after Accept has written it, so
+	// right after Dial the ticket may still be outstanding. Handler spends it before serve sends hello:
+	// once hello is read, the spend has happened.
+	if h.gw.Tickets().len() != 0 {
+		t.Fatal("the upgrade must spend the ticket")
 	}
 	p, err := payload("", uint64(1), uint64(1), uint64(1), uint64(0))
 	if err != nil {
