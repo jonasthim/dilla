@@ -582,3 +582,72 @@ fn a_stored_group_whose_binding_is_not_its_rows_is_refused_until_a_resync() {
     let (_, seq) = a.send(&mut relay, &GROUP, "after the resync", NOW + 3);
     assert!(b.sync(&relay).new_seqs.contains(&seq));
 }
+
+// ---------------------------------------------------------------------------------------------
+// F4: a refused rejoin never deletes history.
+
+/// Alice and Bob talk, Bob queues a message, the instance removes Bob and Alice commits it: Bob's
+/// row is gone (state 4) with its timeline and its outbox.
+fn bob_removed() -> (Instance, Relay, Core, Core) {
+    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    a.send(&mut relay, &GROUP, "before the removal", NOW + 1);
+    b.sync(&relay);
+    b.prepare(&GROUP, "never sent", NOW + 2);
+    instance.propose_remove(&mut relay, b.device);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).state, 4);
+    (instance, relay, a, b)
+}
+
+#[test]
+fn a_discarded_rejoin_of_a_gone_group_returns_it_to_gone_with_its_history() {
+    let (_instance, relay, _a, mut b) = bob_removed();
+    let row = b.group(&GROUP).expect("row");
+    let timeline = b.timeline(&GROUP);
+    let outbox = b.outbox(&GROUP);
+    assert_eq!(timeline.len(), 1);
+    assert_eq!(outbox.len(), 1);
+
+    // The device is admitted again; its join is refused (425 or 403) and the engine discards it.
+    b.core
+        .group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )
+        .expect("rejoin body");
+    assert_eq!(b.group(&GROUP).map(|g| g.state), Some(1));
+    b.core.group_discard(&GROUP).expect("discard");
+
+    assert_eq!(b.group(&GROUP), Some(row), "back to gone, as it was");
+    assert_eq!(b.timeline(&GROUP), timeline, "the history is kept");
+    assert_eq!(b.outbox(&GROUP), outbox, "and the outbox");
+
+    // A later rejoin that succeeds still works.
+    let mut relay = relay;
+    b.join_external(&mut relay);
+    assert_eq!(b.group(&GROUP).map(|g| g.state), Some(2));
+    assert_eq!(b.timeline(&GROUP), timeline);
+}
+
+#[test]
+fn a_discarded_join_that_created_its_row_leaves_nothing() {
+    let (_instance, relay, _a, _b) = alice_and_bob();
+    let mut c = ready_core(0xc3, "carol");
+    c.core
+        .group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )
+        .expect("join body");
+    c.core.group_discard(&GROUP).expect("discard");
+    assert!(groups(&c.core).is_empty());
+}

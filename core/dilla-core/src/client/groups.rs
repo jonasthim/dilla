@@ -26,6 +26,7 @@ pub(super) struct GroupRow {
     pub state: i64,
     pub next_seq: i64,
     pub resync: i64,
+    pub was_gone: i64,
 }
 impl GroupRow {
     /// Whether the row is the text group of `channel` in `community`: a join never changes this.
@@ -43,7 +44,7 @@ pub(super) fn group_row(
     id: &[u8; 16],
 ) -> Result<Option<GroupRow>, StorageError> {
     c.query_row(
-        "SELECT kind, community_id, target_id, state, next_seq, resync \
+        "SELECT kind, community_id, target_id, state, next_seq, resync, was_gone \
          FROM app_groups WHERE group_id = ?1",
         [id.as_slice()],
         |r| {
@@ -54,6 +55,7 @@ pub(super) fn group_row(
                 state: r.get(3)?,
                 next_seq: r.get(4)?,
                 resync: r.get(5)?,
+                was_gone: r.get(6)?,
             })
         },
     )
@@ -287,6 +289,13 @@ impl ClientCore {
                         "UPDATE app_groups SET state=3,resync=0 WHERE group_id=?1",
                         [id.as_slice()],
                     )?;
+                } else if r.state == STATE_JOINING && r.was_gone == 1 {
+                    // A rejoin of a gone row that did not complete: the row goes back to gone with
+                    // its timeline and outbox (history outranks the discard of a fresh join).
+                    c.execute(
+                        "UPDATE app_groups SET state=4,was_gone=0 WHERE group_id=?1",
+                        [id.as_slice()],
+                    )?;
                 } else {
                     for table in ["app_handshake_tail", "app_messages", "app_outbox"] {
                         c.execute(
@@ -375,12 +384,13 @@ impl ClientCore {
                     "DELETE FROM app_proposals WHERE group_id=?1",
                     [id.as_slice()],
                 )?;
-                if r.is_some() {
+                if let Some(r) = &r {
                     // The row's binding (kind, community, target) was checked equal above and
                     // is never rewritten by a join.
+                    let was_gone = r.state == STATE_GONE;
                     c.execute(
-                        "UPDATE app_groups SET state=1,resync=?2 WHERE group_id=?1",
-                        params![id.as_slice(), i64::from(resync)],
+                        "UPDATE app_groups SET state=1,resync=?2,was_gone=?3 WHERE group_id=?1",
+                        params![id.as_slice(), i64::from(resync), i64::from(was_gone)],
                     )?;
                 } else {
                     c.execute(
@@ -413,8 +423,8 @@ impl ClientCore {
             in_unit(u, |c| {
                 // next_seq never moves back: rows below the stored value were applied or skipped.
                 c.execute(
-                    "UPDATE app_groups SET state=2,next_seq=MAX(next_seq,?2),resync=0 \
-                     WHERE group_id=?1",
+                    "UPDATE app_groups SET state=2,next_seq=MAX(next_seq,?2),resync=0, \
+                     was_gone=0 WHERE group_id=?1",
                     params![id.as_slice(), seq + 1],
                 )?;
                 Ok(())
