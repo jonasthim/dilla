@@ -1,4 +1,5 @@
-import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test';
+import type { Browser, Page, TestInfo } from '@playwright/test';
+import { expect, test } from './support/test';
 import { DS_URL, MediaDriver, epochWire, kidHex, testkitEnv, type CallToken, type MediaKey } from './support/driver';
 import { activate } from './support/lk';
 import { frameAccountingErrors } from './support/frame-accounting';

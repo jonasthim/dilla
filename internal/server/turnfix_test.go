@@ -161,9 +161,11 @@ func TestOneRelayAllocationCannotReachAnother(t *testing.T) {
 			if got := toOther(); len(got) != 0 {
 				t.Fatalf("the other service received %q through the relay", got)
 			}
-			if _, dropped, _ := m.extra(); dropped < 7 {
-				t.Fatalf("dropped datagrams counted %d, want at least 7", dropped)
-			}
+			// The relay counts a drop on its own read goroutine, so the count is waited for, not read.
+			waitFor(t, "at least 7 dropped datagrams counted", func() bool {
+				_, dropped, _ := m.extra()
+				return dropped >= 7
+			})
 		})
 	}
 }
@@ -248,7 +250,9 @@ func stunRequestOn(conn net.Conn, method stun.Method, user, pass string, extra .
 
 // Branch review TURN-3: EVEN-PORT and RESERVATION-TOKEN are refused 508 before pion binds a port or
 // takes a quota slot: with a quota of one, the device still allocates a plain relay afterwards, and
-// the gauge saw only that one.
+// the gauge saw only that one. The plain relay's connection stays open to the end: a TCP
+// allocation ends when its connection closes, and stunAllocate closes its own, so the gauge's
+// history would also hold the asynchronous deletion's 0, or not, depending on when it is read.
 func TestTheRelayRefusesEvenPortAndReservations(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	m := &fakeTURNMetrics{}
@@ -262,9 +266,15 @@ func TestTheRelayRefusesEvenPortAndReservations(t *testing.T) {
 		stun.RawAttribute{Type: stun.AttrReservationToken, Value: []byte("abcdefgh")}); code != 508 {
 		t.Fatalf("a RESERVATION-TOKEN Allocate = %d, want 508", code)
 	}
-	if code := stunAllocate(t, addr, user, pass); code != 0 {
+	plain, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = plain.Close() })
+	if code := stunAllocateOn(t, plain, user, pass); code != 0 {
 		t.Fatalf("a plain Allocate after the refused ones = %d, want success (the slot must be free)", code)
 	}
+	// pion reports the creation before it answers the Allocate, so the 1 is in the history by now.
 	if refused, _, _, allocations := m.snapshot(); refused != 0 || !slices.Equal(allocations, []int{1}) {
 		t.Fatalf("quota refusals %d, allocation gauge %v; want 0 and only the plain relay", refused, allocations)
 	}

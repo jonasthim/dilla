@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { expect, test, type Browser, type Page } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
+import { expect, test } from './support/test';
 import { debugToken } from './support/lk';
 import { CONTROL_URL, DS_URL, MediaDriver, epochWire, kidHex, testkitEnv, type CallToken, type MediaKey } from './support/driver';
 import type { DillaHarness, DillaHarness21 } from '../../packages/media/harness/main';

@@ -362,8 +362,12 @@ func TestRunCellRefusesAHoldShorterThanThirtySeconds(t *testing.T) {
 // 2 talkers + 1 sharer + 2 pure viewers through the real in-process LiveKit, decrypting everything.
 // The ports come from sfutest.FreePorts (every LiveKit-booting package test binary runs concurrently
 // under `go test ./...`). The hold is 6 s with AllowShortHold: livekit_packet_bytes moves in 5 s
-// steps, so a window of at least 6 s always contains one step and the egress delta is never 0.
+// steps, so a window of at least 6 s always contains one step and the egress delta is never 0. The
+// sharer publishes VP8 through the SFU, so the test runs in CI's non-race step (ruling I8).
 func TestALoopbackCellDecryptsEverything(t *testing.T) {
+	if raceEnabled {
+		t.Skip("upstream livekit-server data race in updateRidsFromSDP; runs in the non-race step")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cfg := sfu.DefaultConfig()

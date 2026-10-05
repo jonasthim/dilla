@@ -6,7 +6,8 @@
 // - A sender with no slot (unknown source) is blocked: 0 media bytes, and unpublished.
 // - A receiver whose transform cannot be attached renders and decodes 0 frames of a plaintext sender that a receiver
 //   without any transform renders.
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './support/test.ts';
 import type { FailClosedResult, FailClosedScenario } from '../../packages/media/harness/failclosed.ts';
 import type { HarnessWindow } from './support/lk.ts';
 

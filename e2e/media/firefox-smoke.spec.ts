@@ -1,4 +1,5 @@
-import { chromium, expect, test, type Page } from '@playwright/test';
+import { chromium, type Page } from '@playwright/test';
+import { expect, test } from './support/test';
 import { DS_URL, MediaDriver, epochWire, testkitEnv, type CallToken, type MediaKey } from './support/driver';
 import type { DillaHarness, DillaHarness21 } from '../../packages/media/harness/main';
 
