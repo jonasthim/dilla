@@ -11,6 +11,10 @@ import type { FailClosedResult, FailClosedScenario } from '../../packages/media/
 import type { HarnessWindow } from './support/lk.ts';
 
 const MS = 4_000;
+// The two control legs prove that video IS rendered, so that the zero of every other leg means
+// something. More than 5 frames in the window holds on a developer machine; a 4-vCPU CI runner,
+// straight after the three-context call, rendered exactly 5 once (PR #7), so CI asserts more than 0.
+const RENDER_FLOOR = process.env.CI ? 0 : 5;
 
 async function run(page: Page, sc: FailClosedScenario): Promise<FailClosedResult> {
   const r = await page.evaluate((s) => (window as unknown as HarnessWindow).harness.failClosed(s), sc);
@@ -38,7 +42,7 @@ test('control: a dilla sender and receiver carry video, and the path is the expe
   expect(encrypted(r)).toBeGreaterThan(10);
   expect(decrypted(r)).toBeGreaterThan(10);
   expect(r.receiver?.verified).toEqual({ ['a1'.repeat(16)]: decrypted(r) }); // N6: counted per bound device
-  expect(r.rendered).toBeGreaterThan(5);
+  expect(r.rendered).toBeGreaterThan(RENDER_FLOOR);
   expect(r.errors).toEqual([]);
 });
 
@@ -76,7 +80,7 @@ test('a sender with no slot (unknown source) is blocked: 0 media bytes, reported
 test('control: a receiver without any transform renders a plaintext sender', async ({ page }) => {
   const r = await run(page, { send: 'plain', recv: 'none', ms: MS });
   expect(r.bytesSent).toBeGreaterThan(1_000);
-  expect(r.rendered).toBeGreaterThan(5);
+  expect(r.rendered).toBeGreaterThan(RENDER_FLOOR);
 });
 
 // Measured (task 17 fix round 1): Chromium decodes nothing (no encoded streams under the forced flag). Firefox 155
