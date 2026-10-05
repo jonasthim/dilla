@@ -143,39 +143,62 @@ fn group_joined_never_moves_next_seq_back() {
 
 #[test]
 fn a_welcome_over_a_stale_row_never_moves_next_seq_back() {
-    let instance = Instance::generate();
-    let mut relay = Relay::new(GROUP);
-    let mut peer = RawPeer::new(0xe5, 0xe6);
-    peer.create(&mut relay, &instance);
-    let mut c = ready_core(0xc3, "carol");
-    let kp = last_resort_key_package(&mut c);
-    peer.add(&mut relay, &[kp.as_slice()]);
-    let welcomes = relay.welcomes_body(c.device);
-    let expected = expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]);
-    let joined = c
-        .core
-        .welcomes_apply(&welcomes, &expected)
-        .expect("welcomes_apply");
-    assert_eq!(decode_outcomes(&joined)[0].outcome, 0);
-    for _ in 0..3 {
-        peer.send(&mut relay, "filler");
+    let (instance, mut relay, mut a, mut c) = carol_added();
+    for i in 0..3 {
+        a.send(&mut relay, &GROUP, "filler", NOW + i);
     }
-    let bad = relay.push_handshake(1, vec![0xde, 0xad]);
-    let stopped = c.sync(&relay);
-    assert_eq!((stopped.state, stopped.next_seq), (3, bad));
+    instance.propose_remove(&mut relay, c.device);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    let gone = c.sync(&relay);
+    assert_eq!(gone.state, 4);
 
-    // The same Welcome again (its commit_seq lies far below): the row rejoins, next_seq stays.
+    // Carol is admitted again; the server labels the new Welcome with a commit_seq far below.
+    let kp = c.first_key_package();
+    instance.propose_add(&mut relay, &kp);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    let mut latest = relay.welcomes.last().expect("the new Welcome").clone();
+    latest.commit_seq = 1;
+    relay.welcomes = vec![latest];
     let again = c
         .core
-        .welcomes_apply(&welcomes, &expected)
+        .welcomes_apply(
+            &relay.welcomes_body(c.device),
+            &expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]),
+        )
         .expect("welcomes_apply");
     assert_eq!(decode_outcomes(&again)[0].outcome, 0);
     let row = c.group(&GROUP).expect("row");
     assert_eq!(
         (row.state, row.next_seq),
-        (2, bad),
+        (2, gone.next_seq),
         "next_seq is not lowered"
     );
+}
+
+/// Alice creates GROUP; the instance adds Carol's last-resort KeyPackage (kept by OpenMLS after
+/// use, so the Welcome stays openable) and Alice commits it; Carol joins at epoch 1.
+fn carol_added() -> (Instance, Relay, Core, Core) {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut a = ready_core(0xa1, "alice");
+    a.create_and_register(&mut relay, &instance);
+    let mut c = ready_core(0xc3, "carol");
+    let kp = last_resort_key_package(&mut c);
+    instance.propose_add(&mut relay, &kp);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    let joined = c
+        .core
+        .welcomes_apply(
+            &relay.welcomes_body(c.device),
+            &expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]),
+        )
+        .expect("welcomes_apply");
+    assert_eq!(decode_outcomes(&joined)[0].outcome, 0);
+    assert_eq!(c.group(&GROUP).map(|g| g.epoch), Some(1));
+    (instance, relay, a, c)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -776,4 +799,120 @@ fn a_replayed_welcome_after_a_removal_is_refused() {
     assert_eq!(decode_outcomes(&replayed)[0].outcome, 2);
     assert_eq!(decode_outcomes(&replayed)[0].reason, "E_CORE_INPUT");
     assert_eq!(c.group(&GROUP), Some(before));
+}
+
+// The boundaries of the floor (controller ruling): a Welcome is refused at or below the highest
+// epoch held, a GroupInfo at e (which lands the device in e + 1) only below it.
+
+fn welcome_outcome(c: &mut Core, welcomes: &[u8]) -> (u64, String) {
+    let out = c
+        .core
+        .welcomes_apply(
+            welcomes,
+            &expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]),
+        )
+        .expect("welcomes_apply");
+    let o = decode_outcomes(&out).pop().expect("one outcome");
+    (o.outcome, o.reason)
+}
+
+#[test]
+fn a_welcome_one_below_the_floor_is_refused() {
+    let (_instance, mut relay, mut a, mut c) = carol_added();
+    let w1 = relay.welcomes_body(c.device); // epoch 1
+    a.commit(&mut relay);
+    assert_eq!(c.sync(&relay).epoch, 2, "floor 2");
+    relay.push_handshake(1, vec![0xde, 0xad]);
+    assert_eq!(c.sync(&relay).state, 3);
+    let before = c.group(&GROUP);
+    assert_eq!(welcome_outcome(&mut c, &w1), (2, "E_CORE_INPUT".into()));
+    assert_eq!(c.group(&GROUP), before);
+}
+
+#[test]
+fn a_welcome_at_the_floor_is_refused() {
+    let (_instance, mut relay, _a, mut c) = carol_added();
+    let w1 = relay.welcomes_body(c.device); // epoch 1 = the floor
+    relay.push_handshake(1, vec![0xde, 0xad]);
+    assert_eq!(c.sync(&relay).state, 3);
+    let before = c.group(&GROUP);
+    assert_eq!(welcome_outcome(&mut c, &w1), (2, "E_CORE_INPUT".into()));
+    assert_eq!(c.group(&GROUP), before);
+}
+
+#[test]
+fn a_welcome_one_above_the_floor_rejoins() {
+    let (instance, mut relay, mut a, mut c) = carol_added();
+    a.commit(&mut relay);
+    assert_eq!(c.sync(&relay).epoch, 2, "floor 2");
+    // One commit removes Carol's leaf and adds her again: its Welcome is for epoch 3.
+    let kp = c.first_key_package();
+    instance.propose_remove(&mut relay, c.device);
+    instance.propose_add(&mut relay, &kp);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(c.sync(&relay).state, 4);
+    let latest = relay.welcomes.last().expect("the new Welcome").clone();
+    assert_eq!(latest.epoch, 3);
+    relay.welcomes = vec![latest];
+    let welcomes = relay.welcomes_body(c.device);
+    assert_eq!(welcome_outcome(&mut c, &welcomes), (0, String::new()));
+    assert_eq!(c.group(&GROUP).map(|g| (g.state, g.epoch)), Some((2, 3)));
+}
+
+#[test]
+fn a_group_info_one_below_the_floor_is_refused_and_one_at_it_rejoins() {
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (info1, tree1) = (relay.info_body(), relay.tree_body()); // epoch 1
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).epoch, 2, "floor 2");
+    relay.push_handshake(1, vec![0xde, 0xad]);
+    assert_eq!(b.sync(&relay).state, 3);
+    let before = b.group(&GROUP);
+
+    assert_eq!(
+        code(
+            b.core
+                .group_join_external(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &info1, &tree1)
+        ),
+        "E_CORE_INPUT",
+        "epoch 1 would land in 2, the floor"
+    );
+    assert_eq!(b.group(&GROUP), before);
+
+    // The relay's GroupInfo is at epoch 2, the floor: the join lands in 3.
+    b.join_external(&mut relay);
+    assert_eq!(b.group(&GROUP).map(|g| (g.state, g.epoch)), Some((2, 3)));
+}
+
+#[test]
+fn the_floor_survives_a_discarded_rejoin() {
+    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (info1, tree1) = (relay.info_body(), relay.tree_body()); // epoch 1
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).epoch, 2);
+    instance.propose_remove(&mut relay, b.device);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).state, 4);
+
+    b.core
+        .group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )
+        .expect("rejoin body");
+    b.core.group_discard(&GROUP).expect("discard");
+    assert_eq!(b.group(&GROUP).map(|g| g.state), Some(4));
+    assert_eq!(
+        code(
+            b.core
+                .group_join_external(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &info1, &tree1)
+        ),
+        "E_CORE_INPUT"
+    );
 }

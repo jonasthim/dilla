@@ -75,6 +75,14 @@ fn own_message<'a>(
         franking_tag: &row.franking_tag,
     }
 }
+/// Raises `app_groups.max_epoch` (the F6 floor of a rejoin) to `epoch`, a newly held epoch.
+fn raise_floor(c: &rusqlite::Connection, id: &[u8; 16], epoch: i64) -> Result<(), StorageError> {
+    c.execute(
+        "UPDATE app_groups SET max_epoch=MAX(max_epoch,?2) WHERE group_id=?1",
+        params![id.as_slice(), epoch],
+    )?;
+    Ok(())
+}
 /// Whether a message row is already stored at `(id, seq)`.
 fn message_stored(c: &rusqlite::Connection, id: &[u8; 16], seq: u64) -> Result<bool, StorageError> {
     Ok(c.query_row(
@@ -274,12 +282,13 @@ impl ClientCore {
                 if group.has_pending_commit() {
                     group.merge_pending_commit(ctx.provider)?;
                 }
+                let held = checked("epoch", group.epoch())?;
                 u.with_conn(|c| {
                     c.execute(
                         "DELETE FROM app_proposals WHERE group_id=?1",
                         [id.as_slice()],
                     )?;
-                    Ok(())
+                    raise_floor(c, id, held)
                 })?;
                 Ok(wire::encode_apply_result(&wire::ApplyResult {
                     state: 2,
@@ -498,12 +507,14 @@ impl ClientCore {
                                         }
                                         if group.has_pending_commit() { group.clear_pending_commit(ctx.provider)?; }
                                         group.merge_staged_commit(ctx.provider, *commit)?;
-                                        u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; Ok(()) })?;
+                                        let held = checked("epoch", group.epoch())?;
+                                        u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; raise_floor(c, id, held) })?;
                                         epoch_changed = true;
                                     }
                                     DillaProcessed::OwnPendingCommit => {
                                         group.merge_pending_commit(ctx.provider)?;
-                                        u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; Ok(()) })?;
+                                        let held = checked("epoch", group.epoch())?;
+                                        u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; raise_floor(c, id, held) })?;
                                         epoch_changed = true;
                                     }
                                     DillaProcessed::Proposal(proposal) => {

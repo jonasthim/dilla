@@ -49,7 +49,7 @@ fn epoch_floor(row: Option<&GroupRow>, prior: Option<&DillaGroup>) -> u64 {
 fn below_floor(what: &str) -> ClientError {
     ClientError::new(
         E_CORE_INPUT,
-        format!("{what} epoch is below an epoch this device has held"),
+        format!("{what} would rejoin at or below an epoch this device has held"),
     )
 }
 pub(super) fn group_row(
@@ -371,8 +371,10 @@ impl ClientCore {
             ));
         }
         let mut prior = self.take_group_unchecked(id)?;
+        // The join lands this device in epoch e + 1 of a GroupInfo at e: refused when e + 1 is
+        // not above the highest epoch held, so a GroupInfo at exactly that epoch is accepted.
         let info_epoch = gi.epoch().as_u64();
-        if info_epoch < epoch_floor(r.as_ref(), prior.as_ref()) {
+        if r.is_some() && info_epoch < epoch_floor(r.as_ref(), prior.as_ref()) {
             // Not put back in the cache: it was taken unchecked; the next use reloads it.
             return Err(below_floor("GroupInfo"));
         }
@@ -385,7 +387,12 @@ impl ClientCore {
                 r.as_ref().map(|r| r.state),
                 Some(STATE_ACTIVE | STATE_NEEDS_RESYNC)
             );
+            // The stale group's epoch was held: it stays the floor after the group is deleted
+            // (also when this join is discarded later). The joined epoch is not held until the
+            // server accepts the external commit: group_joined records it.
+            let mut held = 0;
             if resync && let Some(g) = prior.as_mut() {
+                held = checked("epoch", g.epoch())?;
                 g.delete(ctx.provider)?;
             }
             let (g, commit, _) = DillaGroup::join_by_external_commit(
@@ -398,9 +405,6 @@ impl ClientCore {
             )?;
             let commit = wire::tls(&commit)?;
             let exported = wire::tls(&g.export_group_info(ctx.provider, signer)?)?;
-            // The GroupInfo's epoch is one the group has reached; the joined epoch is not yet
-            // (the external commit may still be refused and discarded), so it is not the floor.
-            let held = checked("epoch", info_epoch)?;
             in_unit(u, |c| {
                 c.execute(
                     "DELETE FROM app_proposals WHERE group_id=?1",
@@ -417,15 +421,9 @@ impl ClientCore {
                     )?;
                 } else {
                     c.execute(
-                        "INSERT INTO app_groups \
-                         (group_id,kind,community_id,target_id,state,max_epoch) \
-                         VALUES(?1,0,?2,?3,1,?4)",
-                        params![
-                            id.as_slice(),
-                            community.as_slice(),
-                            channel.as_slice(),
-                            held
-                        ],
+                        "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) \
+                         VALUES(?1,0,?2,?3,1)",
+                        params![id.as_slice(), community.as_slice(), channel.as_slice()],
                     )?;
                 }
                 Ok(())
@@ -448,13 +446,23 @@ impl ClientCore {
         if r.state != STATE_JOINING {
             return Err(state(r.state));
         }
+        // The server accepted the external commit: its epoch is now held (F6 floor).
+        let loaded;
+        let joined = match self.groups.get(id) {
+            Some(g) => Some(g),
+            None => {
+                loaded = DillaGroup::load(&self.provider, &GroupId::from_slice(id))?;
+                loaded.as_ref()
+            }
+        };
+        let held = checked("epoch", joined.map_or(0, DillaGroup::epoch))?;
         self.write(|_, u| {
             in_unit(u, |c| {
                 // next_seq never moves back: rows below the stored value were applied or skipped.
                 c.execute(
                     "UPDATE app_groups SET state=2,next_seq=MAX(next_seq,?2),resync=0, \
-                     was_gone=0 WHERE group_id=?1",
-                    params![id.as_slice(), seq + 1],
+                     was_gone=0,max_epoch=MAX(max_epoch,?3) WHERE group_id=?1",
+                    params![id.as_slice(), seq + 1, held],
                 )?;
                 Ok(())
             })
@@ -525,9 +533,11 @@ impl ClientCore {
                                         return Err(crate::ProtocolError::Binding.into());
                                     }
                                     // Its epoch, likewise, is known only now (the item's epoch
-                                    // is the server's label): a Welcome into an epoch below one
-                                    // this device has held is a replay, rolled back the same way.
-                                    if g.epoch() < floor {
+                                    // is the server's label): over an existing row, a Welcome
+                                    // into an epoch at or below one this device has held is a
+                                    // replay (a real re-admission is committed after the last
+                                    // held epoch), rolled back the same way.
+                                    if row.is_some() && g.epoch() <= floor {
                                         return Err(below_floor("Welcome"));
                                     }
                                     let held = checked("epoch", g.epoch())?;

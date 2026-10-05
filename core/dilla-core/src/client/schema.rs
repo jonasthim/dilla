@@ -21,10 +21,14 @@ pub(crate) const STATE_SEALED: &str = "state_sealed";
 /// - `app_groups.was_gone`: 1 while a state-1 row is joining over a row that was gone (state 4);
 ///   `group_discard` returns such a row to state 4 with its history. A state-1 row with both 0 was
 ///   created by its join, and discard deletes it.
-/// - `app_groups.max_epoch`: the highest epoch this device has held for the group id. Raised (never
-///   lowered) by `group_join_external` to the GroupInfo's epoch, by `welcomes_apply` to the joined
-///   epoch, and by `group_apply` to the epoch held when a commit removes this device. A GroupInfo
-///   or Welcome below it, or below the stored group's epoch, is refused (`E_CORE_INPUT`).
+/// - `app_groups.max_epoch`: the highest epoch this device has held for the group id, only ever
+///   raised: by every commit merged in `group_apply` and `commit_confirm` (the new epoch), by
+///   `group_apply` when a commit removes this device (the epoch held then), by `group_joined` (the
+///   epoch the accepted external commit opened), by `welcomes_apply` (the joined epoch), and by
+///   `group_join_external` when it deletes a stale group (that group's epoch). Never by
+///   `group_discard`. Over an existing row a Welcome into an epoch at or below the floor
+///   (`max(max_epoch, stored group's epoch)`) is refused, and so is a GroupInfo below it (its join
+///   would land at or below it); `E_CORE_INPUT`.
 /// - `app_messages.status`: 0 ok, 1 cannot_decrypt, 2 deleted.
 /// - `app_messages.sender_user`: NULL unless status = 0.
 /// - `app_messages.sender_device`: status 0: the MLS credential's device; else the DS uploader_device.
