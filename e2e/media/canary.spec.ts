@@ -3,6 +3,7 @@ import { expect, test, type Browser, type Page } from '@playwright/test';
 import { debugToken } from './support/lk';
 import { CONTROL_URL, DS_URL, MediaDriver, epochWire, kidHex, testkitEnv, type CallToken, type MediaKey } from './support/driver';
 import type { DillaHarness, DillaHarness21 } from '../../packages/media/harness/main';
+import { frameAccountingErrors } from './support/frame-accounting';
 
 type W = {
   harness: DillaHarness &
@@ -99,8 +100,12 @@ test('a canary connected straight to the SFU is decoded by nobody (MD-13, SP-13,
       await pa.waitForTimeout(250);
     }
     for (const page of [pa, pb]) {
+      const allTracks = await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats());
       const s = await page.evaluate(() => (globalThis as unknown as W).harness.dillaStats());
-      const canaryTracks = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats()))
+      const senderKids = { [a.key.roster.find((r) => r.leaf === a.key.selfLeaf)!.deviceId]: [kidHex(a.key.selfLeaf, a.key.epoch)],
+        [b.key.roster.find((r) => r.leaf === b.key.selfLeaf)!.deviceId]: [kidHex(b.key.selfLeaf, b.key.epoch)] };
+      expect(frameAccountingErrors(allTracks.filter((t) => !canaries.includes(t.participantIdentity)), s, senderKids), 'member media is accounted by the worker').toEqual([]);
+      const canaryTracks = allTracks
         .filter((track) => canaries.includes(track.participantIdentity));
       for (const track of canaryTracks) {
         await expect.poll(async () => (await page.evaluate(() => (globalThis as unknown as W).harness.dillaStats()))

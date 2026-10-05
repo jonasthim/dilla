@@ -13,6 +13,8 @@ The spike ran **n=20** independent call joins. The interval starts before the de
 
 The KID observations met the protocol/05 acceptance limit in all **20/20** joins. The earlier merge-to-first-frame number included the test's own fixed wait and is superseded by this event-driven run.
 
+The roughly 2.88-second visibility interval consists of about 0.30 seconds for the join, MLS sync, page creation and LiveKit connection, followed by about 2.5 seconds waiting for the pinned LiveKit server's 3-second batched participant-update ticker (`pkg/rtc/room.go:56,1608`); shortening that ticker to 100 ms in a scratch server build moved two measured joins from 2,821/2,879 ms to 316/283 ms. This timer delays when an existing caller sees a new participant, so the user-visible join delay needs a product follow-up; the scratch override was reverted.
+
 ## SP-07 — audio across a join Commit
 
 The Chromium three-context call (`n=1` call) reported `concealedSamples: 0` and `jitterBufferEmittedCount` delta **146,880**. Its cumulative `jitterBufferDelay` delta divided by that emitted-sample delta was **30 ms per emitted sample**. The test also required the receiver's microphone sample count to rise across the observation and required authenticated audio and video separately for every participant. The raw cumulative delay is not a per-sample delay.
