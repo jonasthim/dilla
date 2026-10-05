@@ -51,6 +51,10 @@ impl From<MlsError> for ClientError {
             MlsError::OpenMls(s) => Self::new(E_CORE_MLS, s),
             MlsError::NeedsReload => Self::new(E_CORE_RELOAD, ""),
             MlsError::NotFound => Self::new(E_CORE_NOT_FOUND, ""),
+            MlsError::WelcomeLabel => Self::new(
+                E_CORE_INPUT,
+                "the Welcome's epoch or tree hash is not the served label",
+            ),
         }
     }
 }

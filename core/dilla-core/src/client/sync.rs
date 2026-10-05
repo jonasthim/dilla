@@ -496,15 +496,14 @@ impl ClientCore {
                                 match group.process_message(ctx.provider, message)? {
                                     DillaProcessed::StagedCommit(commit) => {
                                         if commit.self_removed() {
-                                            // The epoch this device held last stays the floor of
-                                            // any rejoin once the MLS group is gone (F6).
-                                            let held = checked("epoch", group.epoch())?;
+                                            // The epoch this device held last is already the
+                                            // floor (F6): it was written when it was reached.
                                             group.delete(ctx.provider)?;
                                             u.with_conn(|c| {
                                                 c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?;
                                                 c.execute(
-                                                    "UPDATE app_groups SET state=4,next_seq=?2,max_epoch=MAX(max_epoch,?3) WHERE group_id=?1",
-                                                    params![id.as_slice(), seq as i64 + 1, held],
+                                                    "UPDATE app_groups SET state=4,next_seq=?2 WHERE group_id=?1",
+                                                    params![id.as_slice(), seq as i64 + 1],
                                                 )?;
                                                 Ok(())
                                             })?;

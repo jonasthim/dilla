@@ -48,7 +48,7 @@ pub use config::{
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 pub use group::{
     CommitBundle, DillaGroup, DillaProcessed, MediaEpoch, MlsError, ReceivedApplication,
-    RosterEntry,
+    RosterEntry, WelcomeLabel,
 };
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 pub use provider::DillaProvider;

@@ -298,6 +298,11 @@ fn a_mislabelled_external_resync_preserves_the_existing_group() {
     let mut other_relay = Relay::new(OTHER_GROUP);
     let mut creator = ready_core(0xc3, "carol");
     creator.create_and_register(&mut other_relay, &instance);
+    // OTHER_GROUP's GroupInfo is at epoch 2, above the joiner's floor of 1: only the group id
+    // tells it apart from a valid resync input.
+    creator.commit(&mut other_relay);
+    creator.commit(&mut other_relay);
+    assert_eq!(other_relay.epoch(), 2);
 
     assert_eq!(
         code(joiner.core.group_join_external(

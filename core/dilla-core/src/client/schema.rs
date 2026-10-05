@@ -22,16 +22,22 @@ pub(crate) const STATE_SEALED: &str = "state_sealed";
 ///   `group_discard` returns such a row to state 4 with its history. A state-1 row with both 0 was
 ///   created by its join, and discard deletes it.
 /// - `app_groups.max_epoch`: the highest epoch this device has held for the group id, only ever
-///   raised: by every commit merged in `group_apply` and `commit_confirm` (the new epoch), by
-///   `group_apply` when a commit removes this device (the epoch held then), by `group_joined` (the
-///   epoch the accepted external commit opened), by `welcomes_apply` (the joined epoch), and by
-///   `group_join_external` when it deletes a stale group (that group's epoch). Never by
-///   `group_discard`. Over an existing row a Welcome into an epoch at or below the floor
+///   raised, and written when the epoch is reached: by every commit merged in `group_apply` and
+///   `commit_confirm` (the new epoch), by `group_joined` (the epoch the accepted external commit
+///   opened) and by `welcomes_apply` (the joined epoch, which must equal the served label). These
+///   are every epoch change of a stored group, so deleting a group (removal, resync, discard)
+///   needs no write of its own. Over an existing row a Welcome into an epoch at or below the floor
 ///   (`max(max_epoch, stored group's epoch)`) is refused, and so is a GroupInfo below it (its join
 ///   would land at or below it); `E_CORE_INPUT`.
 /// - `app_messages.status`: 0 ok, 1 cannot_decrypt, 2 deleted.
-/// - `app_messages.sender_user`: NULL unless status = 0.
-/// - `app_messages.sender_device`: status 0: the MLS credential's device; else the DS uploader_device.
+/// - `app_messages.sender_user` (and `sender_leaf`, `sender_kind`, `sender_tier`, `msg_id`,
+///   `type`): set on a status-0 row (`sender_leaf` NULL when `send_confirm` found no stored group);
+///   NULL on a status-1 row. A status-2 row keeps the values of
+///   the row it cleared (set if that row was status 0), or, inserted by rule 2 for a seq not
+///   stored before, has them NULL, except the deleted marker of this device's own upload adopted
+///   from the outbox, which carries this device's identity, `msg_id` and `type`.
+/// - `app_messages.sender_device`: status 0, and a status-2 row that cleared one: the MLS
+///   credential's device; otherwise the DS uploader_device.
 /// - `app_messages.envelope`: the envelope CBOR (with k_f) of an ok row; NULL otherwise.
 /// - `app_outbox.state`: 0 queued, 1 in_flight, 2 failed.
 /// - `app_outbox.epoch`: the epoch send_encrypt framed the message in; read by send_confirm.

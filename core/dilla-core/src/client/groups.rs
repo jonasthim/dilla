@@ -4,7 +4,9 @@ use super::error::{E_CORE_INPUT, E_CORE_NOT_FOUND, E_CORE_STATE};
 use super::{ClientCore, ClientError, Own, wire};
 use crate::cbor::Encoder;
 use crate::ids::{CommunityId, InstanceId};
-use crate::mls::{DillaBinding, DillaGroup, GroupKind, StorageError, UnitScope, external_senders};
+use crate::mls::{
+    DillaBinding, DillaGroup, GroupKind, StorageError, UnitScope, WelcomeLabel, external_senders,
+};
 use openmls::messages::group_info::VerifiableGroupInfo;
 use openmls::prelude::*;
 use rusqlite::{OptionalExtension, params};
@@ -387,12 +389,10 @@ impl ClientCore {
                 r.as_ref().map(|r| r.state),
                 Some(STATE_ACTIVE | STATE_NEEDS_RESYNC)
             );
-            // The stale group's epoch was held: it stays the floor after the group is deleted
-            // (also when this join is discarded later). The joined epoch is not held until the
-            // server accepts the external commit: group_joined records it.
-            let mut held = 0;
+            // The stale group's epoch is already the floor (written when it was reached), so it
+            // survives this deletion and a discard of the join. The joined epoch is not held
+            // until the server accepts the external commit: group_joined records it.
             if resync && let Some(g) = prior.as_mut() {
-                held = checked("epoch", g.epoch())?;
                 g.delete(ctx.provider)?;
             }
             let (g, commit, _) = DillaGroup::join_by_external_commit(
@@ -415,9 +415,8 @@ impl ClientCore {
                     // is never rewritten by a join.
                     let was_gone = r.state == STATE_GONE;
                     c.execute(
-                        "UPDATE app_groups SET state=1,resync=?2,was_gone=?3, \
-                         max_epoch=MAX(max_epoch,?4) WHERE group_id=?1",
-                        params![id.as_slice(), i64::from(resync), i64::from(was_gone), held],
+                        "UPDATE app_groups SET state=1,resync=?2,was_gone=?3 WHERE group_id=?1",
+                        params![id.as_slice(), i64::from(resync), i64::from(was_gone)],
                     )?;
                 } else {
                     c.execute(
@@ -523,17 +522,25 @@ impl ClientCore {
                                     if let Some(g) = prior.as_mut() {
                                         g.delete(ctx.provider)?;
                                     }
-                                    let g =
-                                        DillaGroup::join_from_welcome(ctx.provider, w, t, &bind)?;
-                                    // The Welcome's group id is inside its encrypted GroupInfo,
-                                    // so it is known only once OpenMLS has staged and stored the
-                                    // join; returning here rolls the whole unit back (the stored
-                                    // group, the KeyPackage and its keys, the deleted prior).
-                                    if g.group_id().as_slice() != id {
-                                        return Err(crate::ProtocolError::Binding.into());
-                                    }
-                                    // Its epoch, likewise, is known only now (the item's epoch
-                                    // is the server's label): over an existing row, a Welcome
+                                    // The Welcome's group id, epoch and tree hash are inside its
+                                    // encrypted GroupInfo, so they are compared with the served
+                                    // label on the staged welcome (id: E_BINDING; epoch or tree
+                                    // hash: E_CORE_INPUT). Any refusal here rolls the whole unit
+                                    // back: the KeyPackage and keys OpenMLS consumed while
+                                    // staging, the deleted prior, and no floor is raised.
+                                    let g = DillaGroup::join_from_welcome_labelled(
+                                        ctx.provider,
+                                        w,
+                                        t,
+                                        &bind,
+                                        WelcomeLabel {
+                                            group_id: id.as_slice(),
+                                            epoch: item.epoch,
+                                            tree_hash: item.tree_hash.as_slice(),
+                                        },
+                                    )?;
+                                    // With the epoch the server's (checked above): over an
+                                    // existing row, a Welcome
                                     // into an epoch at or below one this device has held is a
                                     // replay (a real re-admission is committed after the last
                                     // held epoch), rolled back the same way.

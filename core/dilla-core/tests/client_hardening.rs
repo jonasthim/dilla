@@ -989,3 +989,293 @@ fn the_floor_survives_a_discarded_rejoin() {
         "E_CORE_INPUT"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// N1 (hardening review): a Welcome must be the one the delivery service labelled.
+
+/// A member that commits the instance's Add of a device uploads, as that device's Welcome, the
+/// Welcome of a private group it built with the same group id and binding, advanced by `ahead`
+/// epochs, with the ratchet tree inside (OpenMLS prefers it over the served tree). The delivery
+/// service cannot read a Welcome, so an honest one relays it under its own label. Stock OpenMLS
+/// builders only (the review's probe, `review_probe.rs`).
+fn shadow_welcome(instance: &Instance, key_package: &[u8], ahead: usize) -> (Vec<u8>, u64) {
+    use dilla_core::ids::InstanceId;
+    use dilla_core::mls::{
+        CIPHERSUITE, external_senders, group_context_extensions, leaf_capabilities,
+    };
+    use dilla_core::public_group::validate_key_package;
+    use openmls::prelude::*;
+    use tls_codec::{Deserialize as _, Serialize as _};
+
+    let peer = RawPeer::new(0xe5, 0xe6);
+    let config = MlsGroupCreateConfig::builder()
+        .ciphersuite(CIPHERSUITE)
+        .use_ratchet_tree_extension(true)
+        .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
+        .with_group_context_extensions(
+            group_context_extensions(
+                &text_binding(CHANNEL),
+                Some(external_senders(
+                    instance.signer.public().into(),
+                    &InstanceId::from_bytes(INSTANCE),
+                )),
+            )
+            .expect("extensions"),
+        )
+        .capabilities(leaf_capabilities())
+        .build();
+    let mut shadow = MlsGroup::new_with_group_id(
+        &peer.provider,
+        &peer.signer,
+        &config,
+        GroupId::from_slice(&GROUP),
+        peer.credential.clone(),
+    )
+    .expect("shadow group");
+    for _ in 0..ahead {
+        shadow
+            .self_update(&peer.provider, &peer.signer, LeafNodeParameters::default())
+            .expect("self_update");
+        shadow.merge_pending_commit(&peer.provider).expect("merge");
+    }
+    let kp = match MlsMessageIn::tls_deserialize_exact(key_package)
+        .expect("an MLSMessage")
+        .extract()
+    {
+        MlsMessageBodyIn::KeyPackage(kp) => kp,
+        other => panic!("expected a KeyPackage, got {other:?}"),
+    };
+    let kp = validate_key_package(peer.provider.crypto(), kp).expect("valid");
+    let (_commit, welcome, _info) = shadow
+        .add_members(&peer.provider, &peer.signer, &[kp])
+        .expect("add_members");
+    shadow.merge_pending_commit(&peer.provider).expect("merge");
+    (
+        welcome.tls_serialize_detached().expect("serialize"),
+        shadow.epoch().as_u64(),
+    )
+}
+
+/// `app_groups.max_epoch` of GROUP, read through the probe connection.
+fn max_epoch(core: &Core) -> i64 {
+    core.probe
+        .lock()
+        .expect("probe")
+        .query_row(
+            "SELECT max_epoch FROM app_groups WHERE group_id = ?1",
+            [GROUP.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("row")
+}
+
+/// Alice creates GROUP and commits the instance's Add of Carol's KeyPackage (the real group is
+/// then at epoch 1). Answers Carol, her KeyPackage and the relay holding the honest Welcome.
+fn carol_welcomed_by_alice() -> (Instance, Relay, Core, Core, Vec<u8>) {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut a = ready_core(0xa1, "alice");
+    a.create_and_register(&mut relay, &instance);
+    let mut c = ready_core(0xc3, "carol");
+    let kp = c.first_key_package();
+    instance.propose_add(&mut relay, &kp);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(relay.welcomes.len(), 1);
+    assert_eq!(
+        relay.welcomes[0].epoch, 1,
+        "the label is the real welcoming epoch"
+    );
+    (instance, relay, a, c, kp)
+}
+
+#[test]
+fn a_welcome_of_a_private_group_at_an_inflated_epoch_is_refused_and_the_honest_one_joins() {
+    let (instance, mut relay, _a, mut c, kp) = carol_welcomed_by_alice();
+    let honest = relay.welcomes[0].blob.clone();
+    let (forged, shadow_epoch) = shadow_welcome(&instance, &kp, 40);
+    assert_eq!(shadow_epoch, 41);
+    relay.welcomes[0].blob = forged;
+
+    let body = relay.welcomes_body(c.device);
+    assert_eq!(welcome_outcome(&mut c, &body), (2, "E_CORE_INPUT".into()));
+    assert!(groups(&c.core).is_empty(), "no row, no group, no floor");
+
+    // What OpenMLS consumed while staging (the KeyPackage and its keys) was rolled back.
+    relay.welcomes[0].blob = honest;
+    let body = relay.welcomes_body(c.device);
+    assert_eq!(welcome_outcome(&mut c, &body), (0, String::new()));
+    assert_eq!(c.group(&GROUP).map(|g| (g.state, g.epoch)), Some((2, 1)));
+    assert_eq!(max_epoch(&c), 1);
+}
+
+#[test]
+fn after_a_refused_inflated_welcome_the_device_still_resyncs_from_the_real_group_info() {
+    let (instance, mut relay, mut a, mut c, kp) = carol_welcomed_by_alice();
+    // Carol joins honestly, then stops on a commit she cannot process (state 3, floor 1).
+    let honest = relay.welcomes_body(c.device);
+    assert_eq!(welcome_outcome(&mut c, &honest), (0, String::new()));
+    relay.push_handshake(1, vec![0xde, 0xad]);
+    assert_eq!(c.sync(&relay).state, 3);
+    let before = c.group(&GROUP);
+    assert_eq!(max_epoch(&c), 1);
+
+    // The private group's Welcome, for a fresh KeyPackage of Carol's (the honest join consumed
+    // the first), uploaded under the honest label.
+    let _ = kp;
+    let fresh = c.first_key_package();
+    let (forged, _) = shadow_welcome(&instance, &fresh, 40);
+    relay.welcomes[0].blob = forged;
+    let body = relay.welcomes_body(c.device);
+    assert_eq!(welcome_outcome(&mut c, &body), (2, "E_CORE_INPUT".into()));
+    assert_eq!(c.group(&GROUP), before, "row untouched");
+    assert_eq!(max_epoch(&c), 1, "floor untouched");
+
+    // The repair works: a resync from the real GroupInfo.
+    a.sync(&relay);
+    c.join_external(&mut relay);
+    assert_eq!(c.group(&GROUP).map(|g| (g.state, g.epoch)), Some((2, 2)));
+}
+
+#[test]
+fn a_welcome_whose_epoch_or_tree_hash_is_not_its_label_is_refused() {
+    let (_instance, mut relay, _a, mut c, _kp) = carol_welcomed_by_alice();
+    let honest = relay.welcomes[0].clone();
+
+    relay.welcomes[0].tree_hash[0] ^= 0x01; // the right epoch, another tree
+    let body = relay.welcomes_body(c.device);
+    assert_eq!(welcome_outcome(&mut c, &body), (2, "E_CORE_INPUT".into()));
+    assert!(groups(&c.core).is_empty());
+
+    relay.welcomes[0] = honest.clone();
+    relay.welcomes[0].epoch = 2; // the right tree, another epoch
+    let body = relay.welcomes_body(c.device);
+    assert_eq!(welcome_outcome(&mut c, &body), (2, "E_CORE_INPUT".into()));
+    assert!(groups(&c.core).is_empty());
+
+    relay.welcomes[0] = honest; // the positive control
+    let body = relay.welcomes_body(c.device);
+    assert_eq!(welcome_outcome(&mut c, &body), (0, String::new()));
+}
+
+// The writers of the floor, one by one: each asserts the column right after its one write.
+
+#[test]
+fn group_joined_writes_the_joined_epoch_to_the_floor() {
+    let (_instance, _relay, _a, b) = alice_and_bob();
+    assert_eq!(max_epoch(&b), 1);
+}
+
+#[test]
+fn welcomes_apply_writes_the_joined_epoch_to_the_floor() {
+    let (_instance, relay, _a, mut c, _kp) = carol_welcomed_by_alice();
+    let body = relay.welcomes_body(c.device);
+    assert_eq!(welcome_outcome(&mut c, &body), (0, String::new()));
+    assert_eq!(max_epoch(&c), 1);
+}
+
+#[test]
+fn a_commit_merged_in_group_apply_raises_the_floor() {
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).epoch, 2);
+    assert_eq!(max_epoch(&b), 2);
+}
+
+#[test]
+fn the_echo_of_an_own_commit_merged_in_group_apply_raises_the_floor() {
+    let (_instance, mut relay, mut a, _b) = alice_and_bob();
+    let body = a
+        .core
+        .commit_build(&GROUP, &relay.proposals_body())
+        .expect("commit_build");
+    relay.commit(&body).expect("accepted");
+    assert_eq!(max_epoch(&a), 1);
+    assert_eq!(a.sync(&relay).epoch, 2);
+    assert_eq!(max_epoch(&a), 2);
+}
+
+#[test]
+fn commit_confirm_raises_the_floor() {
+    let (_instance, mut relay, mut a, _b) = alice_and_bob();
+    assert_eq!(max_epoch(&a), 1);
+    a.commit(&mut relay);
+    assert_eq!(max_epoch(&a), 2);
+}
+
+#[test]
+fn the_floor_survives_a_discarded_resync() {
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (info1, tree1) = (relay.info_body(), relay.tree_body()); // epoch 1
+    a.commit(&mut relay);
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).epoch, 3);
+    relay.push_handshake(1, vec![0xde, 0xad]);
+    assert_eq!(b.sync(&relay).state, 3);
+    b.core
+        .group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )
+        .expect("resync body");
+    b.core.group_discard(&GROUP).expect("discard");
+    assert_eq!(b.group(&GROUP).map(|g| (g.state, g.epoch)), Some((3, 0)));
+    assert_eq!(max_epoch(&b), 3);
+    assert_eq!(
+        code(
+            b.core
+                .group_join_external(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &info1, &tree1)
+        ),
+        "E_CORE_INPUT"
+    );
+}
+
+/// The floor is written when an epoch is reached, so at every step of a life with joins,
+/// commits, a removal, a refused and a successful rejoin, it is the highest epoch the device
+/// has had stored for the group, and deleting the group never lowers it.
+#[test]
+fn the_floor_is_the_highest_epoch_ever_stored_at_every_step() {
+    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let mut highest = 0u64;
+    let mut check = |b: &Core, step: &str| {
+        let epoch = b.group(&GROUP).map_or(0, |g| g.epoch);
+        highest = highest.max(epoch);
+        assert_eq!(max_epoch(b), highest as i64, "after {step}");
+    };
+    check(&b, "the external join");
+    a.commit(&mut relay);
+    b.sync(&relay);
+    check(&b, "a merged commit");
+    let body = b
+        .core
+        .commit_build(&GROUP, &relay.proposals_body())
+        .expect("commit_build");
+    relay.commit(&body).expect("accepted");
+    b.core.commit_confirm(&GROUP).expect("confirm");
+    check(&b, "an own commit");
+    a.sync(&relay);
+    instance.propose_remove(&mut relay, b.device);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).state, 4);
+    check(&b, "the removal");
+    b.core
+        .group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )
+        .expect("rejoin body");
+    b.core.group_discard(&GROUP).expect("discard");
+    check(&b, "a discarded rejoin");
+    b.join_external(&mut relay);
+    check(&b, "a rejoin");
+    assert_eq!(highest, 5);
+}

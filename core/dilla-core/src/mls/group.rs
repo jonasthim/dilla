@@ -38,6 +38,20 @@ pub enum MlsError {
     NeedsReload,
     #[error("group not found")]
     NotFound,
+    /// A Welcome whose group context's epoch or tree hash is not the one the delivery service
+    /// labelled it with (`WelcomeLabel`): it does not belong to the group's history at that point.
+    #[error("the Welcome does not match its delivery-service label")]
+    WelcomeLabel,
+}
+
+/// What the delivery service says about a Welcome it serves (`GET /v1/welcomes`, protocol/02):
+/// the group it was uploaded for, and the epoch and tree hash of that group right after the commit
+/// it was uploaded with, read from the instance's own public group.
+#[derive(Clone, Copy, Debug)]
+pub struct WelcomeLabel<'a> {
+    pub group_id: &'a [u8],
+    pub epoch: u64,
+    pub tree_hash: &'a [u8],
 }
 
 /// Lives here rather than in `binding.rs`: `MlsError` is defined in this module, and `binding` is
@@ -283,6 +297,35 @@ impl DillaGroup {
         ratchet_tree: RatchetTreeIn,
         expected: &DillaBinding,
     ) -> Result<Self, MlsError> {
+        Self::join_welcome(provider, welcome, ratchet_tree, expected, None)
+    }
+
+    /// `join_from_welcome`, and the staged group context must also match the delivery service's
+    /// label: its group id (`ProtocolError::Binding`), its epoch and its tree hash
+    /// (`MlsError::WelcomeLabel`). The checks run in this order, before `into_group`.
+    ///
+    /// The id and the binding are public, so a member can build a private group that carries
+    /// both and address its Welcome to a device the real group adds; OpenMLS prefers the
+    /// Welcome's own `ratchet_tree` extension over the served tree, so the tree argument does
+    /// not constrain it either. The label is the instance's view of the real group after the
+    /// commit that added the device, which such a Welcome cannot match.
+    pub fn join_from_welcome_labelled(
+        provider: &DillaProvider,
+        welcome: Welcome,
+        ratchet_tree: RatchetTreeIn,
+        expected: &DillaBinding,
+        label: WelcomeLabel<'_>,
+    ) -> Result<Self, MlsError> {
+        Self::join_welcome(provider, welcome, ratchet_tree, expected, Some(label))
+    }
+
+    fn join_welcome(
+        provider: &DillaProvider,
+        welcome: Welcome,
+        ratchet_tree: RatchetTreeIn,
+        expected: &DillaBinding,
+        label: Option<WelcomeLabel<'_>>,
+    ) -> Result<Self, MlsError> {
         let group = provider.storage().transaction(|| {
             let staged = StagedWelcome::new_from_welcome(
                 provider,
@@ -291,9 +334,18 @@ impl DillaGroup {
                 Some(ratchet_tree),
             )
             .map_err(mls_err)?;
-            let binding = DillaBinding::from_group_context(staged.group_context())
-                .map_err(MlsError::Protocol)?;
+            let context = staged.group_context();
+            let binding = DillaBinding::from_group_context(context).map_err(MlsError::Protocol)?;
             binding.matches(expected).map_err(MlsError::Protocol)?;
+            if let Some(label) = label {
+                if context.group_id().as_slice() != label.group_id {
+                    return Err(MlsError::Protocol(ProtocolError::Binding));
+                }
+                if context.epoch().as_u64() != label.epoch || context.tree_hash() != label.tree_hash
+                {
+                    return Err(MlsError::WelcomeLabel);
+                }
+            }
             staged.into_group(provider).map_err(mls_err)
         })?;
         Ok(Self {
