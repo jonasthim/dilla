@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -47,6 +47,16 @@ const FORBIDDEN = [
   { re: /continue-on-error/, what: 'continue-on-error' },
   { re: /if:.*always\(\)/, what: 'if: always()' },
 ];
+
+/**
+ * Ruling I8: a Go test that publishes video through the in-process LiveKit can trip the pinned
+ * upstream race in updateRidsFromSDP, so it skips itself under -race (`if raceEnabled {`) and runs in
+ * this step of the `go` job instead. assertRaceGatedTestsRunWithoutRace keeps the step and the gated
+ * tests in step with each other: the pinned text alone would let a newly gated test, or a renamed
+ * one, run nowhere.
+ */
+export const NON_RACE_STEP =
+  "go test -timeout 5m ./cmd/dilla-loadrig ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestALoopbackCellDecryptsEverything|TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
 
 /** One load-bearing command per job, so a silently gutted job is caught. */
 const REQUIRED_STEPS = {
@@ -130,7 +140,7 @@ const REQUIRED_STEPS = {
     'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
     'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)',
     'name: dilla-core-wasi',
-    "go test -timeout 5m ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'",
+    NON_RACE_STEP,
   ],
   // The one package the go job leaves out, with the wasi core it needs and a budget of its own.
   'go-ds': [
@@ -211,6 +221,65 @@ function assertTestStepIsNotNarrowed(workflow, fail) {
   const line = 'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
   if (!workflow.includes(line)) {
     fail(`the go job's test step must be exactly "${line}"`);
+  }
+}
+
+/** Directories that hold no Go package of the module: dependencies, build output, dot-directories. */
+const SKIP_DIRS = new Set(['node_modules', 'target', 'dist', 'testdata']);
+
+/**
+ * Every Go test the race detector skips: `{ pkg: './cmd/x', name: 'TestY' }` for each `if raceEnabled {`
+ * in a *_test.go file under root, named by the Test function it sits in (null when it sits in none).
+ */
+export function raceGatedTests(root) {
+  const found = [];
+  const walk = (rel) => {
+    for (const e of readdirSync(join(root, rel), { withFileTypes: true })) {
+      if (e.isDirectory()) {
+        if (!e.name.startsWith('.') && !SKIP_DIRS.has(e.name)) walk(rel === '' ? e.name : `${rel}/${e.name}`);
+        continue;
+      }
+      if (!e.isFile() || !e.name.endsWith('_test.go')) continue;
+      const text = readFileSync(join(root, rel, e.name), 'utf8');
+      const gate = /^\s*if raceEnabled \{/gm;
+      for (let m = gate.exec(text); m !== null; m = gate.exec(text)) {
+        const funcs = [...text.slice(0, m.index).matchAll(/^func (\w+)\(/gm)];
+        const name = funcs.at(-1)?.[1] ?? null;
+        found.push({ pkg: `./${rel}`, name: name !== null && /^Test/.test(name) ? name : null, file: `${rel}/${e.name}` });
+      }
+    }
+  };
+  walk('');
+  return found;
+}
+
+/**
+ * The `go` job's non-race step (the `go test` without -race that names its tests with -run) runs the
+ * package of every race-gated test and names each one exactly, and names no test that is not gated:
+ * a renamed or deleted test leaves a -run alternative that matches nothing, which go test passes.
+ */
+function assertRaceGatedTestsRunWithoutRace(root, goJob, problems) {
+  const gated = raceGatedTests(root);
+  const line = goJob.split('\n').find((l) => /\bgo test\b/.test(l) && !/-race\b/.test(l) && / -run '/.test(l));
+  if (line === undefined) {
+    if (gated.length > 0) {
+      problems.push(`ci.yml: job "go" has no non-race "go test ... -run '...'" step for the ${gated.length} race-gated test(s)`);
+    }
+    return;
+  }
+  const pkgs = new Set(line.split(/\s+/).filter((w) => w.startsWith('./')));
+  const names = new Set((/ -run '([^']*)'/.exec(line)?.[1] ?? '').split('|'));
+  for (const g of gated) {
+    if (g.name === null) {
+      problems.push(`${g.file}: an "if raceEnabled {" gate outside a Test function; the non-race step cannot name it`);
+      continue;
+    }
+    if (!pkgs.has(g.pkg)) problems.push(`ci.yml: job "go"'s non-race step does not run ${g.pkg}, the package of race-gated ${g.name}`);
+    if (!names.has(g.name)) problems.push(`ci.yml: job "go"'s non-race step does not name race-gated ${g.name} (${g.pkg}) in -run`);
+  }
+  const known = new Set(gated.map((g) => g.name));
+  for (const n of names) {
+    if (!known.has(n)) problems.push(`ci.yml: job "go"'s non-race step names ${n || '(empty)'}, which is no race-gated test`);
   }
 }
 
@@ -330,6 +399,7 @@ export function checkWorkflow(root) {
         'ci.yml: job "go" must use actions/download-artifact@v8 to pair with rust-wasi\'s actions/upload-artifact@v7 (gap-31 §4 item 2)',
       );
     }
+    assertRaceGatedTestsRunWithoutRace(root, jobs.go, problems);
   }
 
   if ('go-ds' in jobs && !/^\s*needs:.*rust-wasi/m.test(jobs['go-ds'])) {

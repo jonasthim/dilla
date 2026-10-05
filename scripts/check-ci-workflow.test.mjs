@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkWorkflow } from './check-ci-workflow.mjs';
+import { checkWorkflow, NON_RACE_STEP, raceGatedTests } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 
@@ -89,7 +89,7 @@ jobs:
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
       - run: go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
-      - run: go test -timeout 5m ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'
+      - run: ${NON_RACE_STEP}
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
 
   browser-media:
@@ -231,10 +231,28 @@ jobs:
           sbom: true
 `;
 
-function fixture(body) {
+// The race-gated Go tests of the repository (ruling I8), as GOOD's non-race step names them.
+const GATED = [
+  ['cmd/dilla-loadrig', 'TestALoopbackCellDecryptsEverything'],
+  ['cmd/dilla-mediabot', 'TestTwoBotsDecryptEachOtherThroughTheSFU'],
+  ['internal/media', 'TestGoPublisherToGoSubscriberDecryptsThroughTheSFU'],
+  ['internal/sfu', 'TestTheSFUOfferCarriesOnlyTheDillaCodecs'],
+  ['internal/sfu', 'TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'],
+];
+
+function gatedTest(name) {
+  return `package x\n\nimport "testing"\n\nfunc ${name}(t *testing.T) {\n\tif raceEnabled {\n\t\tt.Skip("upstream livekit-server data race in updateRidsFromSDP; runs in the non-race step")\n\t}\n}\n`;
+}
+
+// A repository root holding ci.yml and, as Go test files, the race-gated tests in `gated`.
+function fixture(body, gated = GATED) {
   const dir = mkdtempSync(join(tmpdir(), 'dilla-ci-'));
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
   writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), body);
+  for (const [pkg, name] of gated) {
+    mkdirSync(join(dir, pkg), { recursive: true });
+    writeFileSync(join(dir, pkg, `${name}_test.go`), gatedTest(name));
+  }
   return dir;
 }
 
@@ -653,9 +671,66 @@ test('a browser-spike job without its timeout is reported', () => {
 });
 
 test('the video publishing tests retain a non-race CI step', () => {
-  const needle = "go test -timeout 5m ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
-  const problems = checkWorkflow(fixture(GOOD.replace(needle, 'go test ./cmd/dilla-mediabot')));
-  assert.ok(problems.some((p) => p.includes('job "go"') && p.includes(needle)), problems.join('\n'));
+  const problems = checkWorkflow(fixture(GOOD.replace(NON_RACE_STEP, 'go test ./cmd/dilla-mediabot')));
+  assert.ok(problems.some((p) => p.includes('job "go"') && p.includes(NON_RACE_STEP)), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('no non-race') && p.includes('5 race-gated')), problems.join('\n'));
+});
+
+// Ruling I8, the CI run on main after PR #7: TestALoopbackCellDecryptsEverything published VP8 under
+// -race. The repository's gated tests are exactly the ones the non-race step names.
+test('the repository gates exactly the tests the non-race step names', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const found = raceGatedTests(root).map((g) => [g.pkg.slice(2), g.name]);
+  assert.deepEqual(found.toSorted(), GATED.toSorted());
+});
+
+test('a race-gated test the non-race step does not name is reported', () => {
+  const extra = [...GATED, ['internal/api', 'TestANewVideoPublisher']];
+  const problems = checkWorkflow(fixture(GOOD, extra));
+  assert.ok(problems.some((p) => p.includes('does not name race-gated TestANewVideoPublisher')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('does not run ./internal/api')), problems.join('\n'));
+});
+
+test('a non-race step that lost a gated package is reported', () => {
+  const step = NON_RACE_STEP.replace(' ./cmd/dilla-loadrig', '');
+  const problems = checkWorkflow(fixture(GOOD.replace(NON_RACE_STEP, step)));
+  assert.ok(
+    problems.some((p) => p.includes('does not run ./cmd/dilla-loadrig') && p.includes('TestALoopbackCellDecryptsEverything')),
+    problems.join('\n'),
+  );
+});
+
+test('a non-race step that lost a gated test name is reported', () => {
+  const step = NON_RACE_STEP.replace('TestALoopbackCellDecryptsEverything|', '');
+  const problems = checkWorkflow(fixture(GOOD.replace(NON_RACE_STEP, step)));
+  assert.ok(problems.some((p) => p.includes('does not name race-gated TestALoopbackCellDecryptsEverything')), problems.join('\n'));
+});
+
+// A renamed or deleted test leaves an alternative that matches nothing, and go test passes that.
+test('a non-race step naming a test that is not gated is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD, GATED.slice(1)));
+  assert.ok(problems.some((p) => p.includes('names TestALoopbackCellDecryptsEverything, which is no race-gated test')), problems.join('\n'));
+});
+
+test('a non-race step that gained -race is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(NON_RACE_STEP, NON_RACE_STEP.replace('go test ', 'go test -race '))));
+  assert.ok(problems.some((p) => p.includes('no non-race')), problems.join('\n'));
+});
+
+test('a raceEnabled gate outside a Test function is reported', () => {
+  const root = fixture(GOOD);
+  writeFileSync(join(root, 'internal', 'sfu', 'helper_test.go'), 'package x\n\nfunc helper() {\n\tif raceEnabled {\n\t\treturn\n\t}\n}\n');
+  const problems = checkWorkflow(root);
+  assert.ok(problems.some((p) => p.includes('internal/sfu/helper_test.go') && p.includes('outside a Test function')), problems.join('\n'));
+});
+
+test('race gates under node_modules and dot-directories are not the module\'s', () => {
+  const root = fixture(GOOD);
+  for (const dir of ['node_modules/x', '.claude/worktrees/other']) {
+    mkdirSync(join(root, dir), { recursive: true });
+    writeFileSync(join(root, dir, 'gate_test.go'), gatedTest('TestElsewhere'));
+  }
+  assert.deepEqual(checkWorkflow(root), []);
 });
 
 test('browser-media must upload failure traces and host logs', () => {
