@@ -22,6 +22,7 @@ jobs:
       - run: npm run test:brief-check
       - run: npm run test:copy-check
       - run: npm run test:ci-check
+      - run: npm run test:wasm-size-check
       - run: npm test
       - name: vectors are up to date
         run: |
@@ -74,7 +75,9 @@ jobs:
           test "$want" = "$have" || { echo "wasm-bindgen-cli $have != crate $want"; exit 1; }
       - run: cargo test -p dilla-core --target wasm32-unknown-unknown --locked --features vectors
       - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
-      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
+      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm ci
       - run: npm run typecheck -w @dilla/media
       - run: npm run test:wasm -w @dilla/media
@@ -153,7 +156,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
-      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir spike/pkg
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg
       - run: npm ci
       # Deviation A2-6: the persistence matrix asserts Firefox private-browsing and WebKit
       # ephemeral behaviour, so those engines must be installed too.
@@ -197,7 +200,7 @@ jobs:
           name: dilla-testkit
           path: artifacts
       - run: chmod +x artifacts/dilla-testkit
-      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
       - run: npm ci
       - run: node packages/media/scripts/extract-rnnoise-wasm.mjs

@@ -28,6 +28,7 @@ jobs:
     steps:
       - run: npm test
       - run: npm run test:ci-check
+      - run: npm run test:wasm-size-check
   ui:
     runs-on: ubuntu-latest
     steps:
@@ -48,7 +49,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
-      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
+      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm ci
       - run: npm run typecheck -w @dilla/media
       - run: npm run test:wasm -w @dilla/media
@@ -72,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir spike/pkg
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg
       - run: npm run test:e2e:matrix -w @dilla/e2e
   deny:
     runs-on: ubuntu-latest
@@ -105,7 +108,7 @@ jobs:
         with:
           name: dilla-testkit
           path: artifacts
-      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
       - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
       - run: npx playwright install --with-deps chromium firefox
@@ -446,7 +449,9 @@ test('an image job that does not wait for go-ds is reported', () => {
 });
 
 for (const [job, needle] of [
-  ['rust-wasm-node', 'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm'],
+  ['rust-wasm-node', 'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm'],
+  ['rust-wasm-node', 'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg'],
+  ['rust-wasm-node', 'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm'],
   ['rust-wasm-node', 'npm run typecheck -w @dilla/media'],
   ['rust-wasm-node', 'npm run test:wasm -w @dilla/media'],
   ['rust-wasm-node', 'npm run check:schema -w @dilla/media'],
@@ -649,7 +654,7 @@ for (const needle of [
   'name: dilla-core-wasi',
   'path: internal/mlswasi/testdata',
   'name: dilla-testkit',
-  'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm',
+  'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
   'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
   'npx playwright install --with-deps chromium firefox',
   'npm run test:e2e:media -w @dilla/e2e',
@@ -736,4 +741,39 @@ test('race gates under node_modules and dot-directories are not the module\'s', 
 test('browser-media must upload failure traces and host logs', () => {
   const problems = checkWorkflow(fixture(GOOD.replace('name: browser-media-results', 'name: removed-results')));
   assert.ok(problems.some((p) => p.includes('browser-media') && p.includes('browser-media-results')), problems.join('\n'));
+});
+
+test('a node job that stopped running the wasm size checker\'s own tests is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('      - run: npm run test:wasm-size-check\n', '')));
+  assert.ok(problems.some((p) => p.includes('"node"') && p.includes('npm run test:wasm-size-check')), problems.join('\n'));
+});
+
+test('a browser-spike job that lost its size-profile wasm-pack line is reported', () => {
+  const line = 'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg';
+  const problems = checkWorkflow(fixture(GOOD.replace(`      - run: ${line}\n`, '')));
+  assert.ok(problems.some((p) => p.includes('"browser-spike"') && p.includes(line)), problems.join('\n'));
+});
+
+test('a wasm-pack build with --release instead of the size profile is reported with its line', () => {
+  const body = GOOD.replace(
+    'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg',
+    'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir spike/pkg',
+  );
+  assert.notEqual(body, GOOD, 'fixture sanity');
+  const lineNo = body.split('\n').findIndex((l) => l.includes('--release --mode no-install --out-dir spike/pkg')) + 1;
+  const problems = checkWorkflow(fixture(body));
+  assert.ok(
+    problems.includes(`ci.yml:${lineNo}: wasm-pack build must use --profile wasm-release, not --release (C16)`),
+    problems.join('\n'),
+  );
+});
+
+test('a wasm-pack build with no profile at all is reported', () => {
+  const body = GOOD.replace(
+    'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg',
+    'wasm-pack build core/dilla-core-wasm --target web --mode no-install --out-dir ../../packages/core-wasm/pkg',
+  );
+  assert.notEqual(body, GOOD, 'fixture sanity');
+  const problems = checkWorkflow(fixture(body));
+  assert.ok(problems.some((p) => p.endsWith('wasm-pack build must use --profile wasm-release, not --release (C16)')), problems.join('\n'));
 });

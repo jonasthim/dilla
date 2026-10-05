@@ -73,7 +73,10 @@ const REQUIRED_STEPS = {
     'cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked',
     // Task 17 (dilla-media): the media worker's wasm-backed tests, the BaseE2EEManager type contract and the
     // JS half of the signalling-schema contract (DEV-66) run where the web wasm is built.
-    'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm',
+    'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
+    // web-1 task 2, C16: the browser core is built with the size profile and gated by L-CI-02.
+    'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg',
+    'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm',
     'npm run typecheck -w @dilla/media',
     'npm run test:wasm -w @dilla/media',
     'npm run check:schema -w @dilla/media',
@@ -93,7 +96,7 @@ const REQUIRED_STEPS = {
   // The repository's pattern is that every scripts/check-*.mjs gate runs its own unit tests in the
   // `node` job (test:docs-check, test:brief-check, test:copy-check). This gate enforces that for
   // itself, so it cannot silently rot.
-  node: ['npm run test:ci-check'],
+  node: ['npm run test:ci-check', 'npm run test:wasm-size-check'],
   vectors: [
     'npm run vectors',
     'git diff --exit-code -- protocol/vectors',
@@ -102,7 +105,7 @@ const REQUIRED_STEPS = {
   // Only the matrix run: it already includes the chromium project, so also running `test:e2e` would
   // execute the 10-hand-over test twice per CI run for no added signal.
   'browser-spike': [
-    'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir spike/pkg',
+    'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg',
     'npm run test:e2e:matrix -w @dilla/e2e',
     'timeout-minutes: 20',
   ],
@@ -116,7 +119,7 @@ const REQUIRED_STEPS = {
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
     'name: dilla-testkit',
-    'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm',
+    'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
     'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
     'node packages/media/scripts/extract-rnnoise-wasm.mjs',
     'npx playwright install --with-deps chromium firefox',
@@ -305,6 +308,16 @@ function assertEveryUploadFailsOnNoFiles(text, problems) {
   }
 }
 
+/** C16 / L-CI-05: also cover any wasm-pack build line added tomorrow. */
+function assertWasmPackUsesTheSizeProfile(text, problems) {
+  text.split('\n').forEach((line, i) => {
+    if (!line.includes('wasm-pack build')) return;
+    if (!line.includes('--profile wasm-release') || / --release(?:\s|$)/.test(line)) {
+      problems.push(`ci.yml:${i + 1}: wasm-pack build must use --profile wasm-release, not --release (C16)`);
+    }
+  });
+}
+
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
 function splitJobs(text) {
   const lines = text.split('\n');
@@ -359,6 +372,7 @@ export function checkWorkflow(root) {
 
   assertTestStepIsNotNarrowed(text, (msg) => problems.push(`ci.yml: ${msg}`));
   assertEveryUploadFailsOnNoFiles(text, problems);
+  assertWasmPackUsesTheSizeProfile(text, problems);
 
   // Task 18. The Dockerfile cross-compiles with GOOS/GOARCH from a $BUILDPLATFORM builder, so
   // nothing runs under emulation and setup-qemu-action would only add a slow, useless step.
