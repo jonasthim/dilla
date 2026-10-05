@@ -159,6 +159,11 @@ function waitForLocalEncryption(room: Room): Promise<void> {
   });
 }
 
+/** The caller's worker init timeout when it is a whole number of milliseconds from 1 s to 120 s. */
+function initTimeout(ms: number | undefined): number | undefined {
+  return typeof ms === 'number' && Number.isInteger(ms) && ms >= 1_000 && ms <= 120_000 ? ms : undefined;
+}
+
 /**
  * DEV-27: lock → (caller: external commit or own-leaf resync → processed epoch) → installEpoch acked →
  * setE2EEEnabled(true) → connect(url, jwt, { rtcConfig: { iceServers, bundlePolicy: 'max-bundle' } }) →
@@ -171,11 +176,6 @@ function waitForLocalEncryption(room: Room): Promise<void> {
  * after retry_after_ms; a call whose group was closed (room_finished) needs a fresh call group; and fresh
  * ice_servers come from a new start, handed in through refreshIceServers.
  */
-/** The caller's worker init timeout when it is a whole number of milliseconds from 1 s to 120 s. */
-function initTimeout(ms: number | undefined): number | undefined {
-  return typeof ms === 'number' && Number.isInteger(ms) && ms >= 1_000 && ms <= 120_000 ? ms : undefined;
-}
-
 export async function joinCall(o: JoinCallOptions): Promise<CallSession> {
   const support = isVoiceSupported();
   if (!support.ok) throw new Error(`E_E2EE_REQUIRED: ${support.reason}`);

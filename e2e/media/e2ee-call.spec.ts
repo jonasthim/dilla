@@ -12,7 +12,7 @@ test.skip(({ browserName }) => browserName !== 'chromium', 'the three-context ca
 // How long a receiver may take to decrypt under a new KID. 2 s holds on a developer machine (NV-12:
 // p99 142 ms over 20 joins, docs/spikes). A 4-vCPU CI runner software-encoding four simulcast cameras
 // measured 6.5 s and 7.2 s for a joiner (PR #7), so CI asserts the plan's ceiling instead.
-const KID_BOUND_MS = process.env.CI ? 10_000 : 2_000;
+const KID_BOUND_MS = process.env.CI === 'true' ? 10_000 : 2_000;
 
 interface Member {
   actor: string;
@@ -217,7 +217,7 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
     // simulcast camera froze twice (PR #7), so CI prints the count next to the worker's drops.
     const freezes = videoAfter.freezeCount - videoBefore.freezeCount;
     console.log(`SP-12 freezes of bob's camera at alice across dave's join: ${freezes} (worker drops ${droppedAcross})`);
-    if (!process.env.CI) expect(freezes).toBe(0);
+    if (process.env.CI !== 'true') expect(freezes).toBe(0);
     const audioAfter = (await remote(alice.page)).find((s) => s.participantIdentity === bob.device && s.kind === 'audio')!;
     expect(audioAfter.totalSamplesReceived - audioBefore.totalSamplesReceived, 'bob microphone stays audible across the commit').toBeGreaterThan(0);
     expect(audioAfter.jitterBufferEmittedCount - audioBefore.jitterBufferEmittedCount).toBeGreaterThan(0);

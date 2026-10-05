@@ -6,8 +6,8 @@
 # after 1.5 s), so every analyser-based probe of the media suite reads silence. Chromium's fake
 # devices do not need this.
 set -eu
-sudo apt-get update
-sudo apt-get install -y --no-install-recommends pulseaudio
+sudo apt-get -o DPkg::Lock::Timeout=60 update
+sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends pulseaudio
 pulseaudio --daemonize=yes --exit-idle-time=-1
 pactl load-module module-null-sink sink_name=ci
 pactl set-default-sink ci

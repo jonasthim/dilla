@@ -1,12 +1,15 @@
 import type { DillaMediaStats } from '../../../packages/media/src/protocol';
 import type { DillaRemoteStats } from '../../../packages/media/harness/main';
 
-// RTP counts every arrival; the worker counts what has reached it, and the two snapshots are not
-// atomic. A developer machine stays within 4 packets. A 4-vCPU CI runner measured a gap of 10 on one
-// audio track of the three-context call (PR #7; the cause was not isolated: packets queued for the
-// worker, or arrivals before the receiver's transform was attached), so CI allows one second of Opus
-// packets. The decoded-sample ceiling below is the security check and keeps its slack of 4.
-const PACKET_SLACK = process.env.CI ? 50 : 4;
+// RTP counts every arrival; the worker counts what has left it, and the two snapshots are not atomic.
+// A developer machine stays within 4 packets. A 4-vCPU CI runner measured a gap of 10 on one audio
+// track of the three-context call (PR #7). The cause was not isolated; the likeliest is frames
+// waiting in the worker's hold queue, which no stat counts. CI therefore allows one second of Opus
+// packets, which means that in CI up to 50 packets of a track bypassing the worker would pass THIS
+// check; it is the tight one, and the decoded-sample ceiling below is loose (it allows 5,760 samples
+// a packet where Opus at 20 ms uses 960). Non-member media, the sender binding and the fail-closed
+// legs are asserted absolutely in their own specs. Plan follow-up card 26 makes this exact again.
+const PACKET_SLACK = process.env.CI === 'true' ? 50 : 4;
 
 /** Compare decoder output with the worker's authenticated output for each remote track. */
 export function frameAccountingErrors(

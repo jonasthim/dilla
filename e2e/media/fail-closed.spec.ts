@@ -14,7 +14,7 @@ const MS = 4_000;
 // The two control legs prove that video IS rendered, so that the zero of every other leg means
 // something. More than 5 frames in the window holds on a developer machine; a 4-vCPU CI runner,
 // straight after the three-context call, rendered exactly 5 once (PR #7), so CI asserts more than 0.
-const RENDER_FLOOR = process.env.CI ? 0 : 5;
+const RENDER_FLOOR = process.env.CI === 'true' ? 0 : 5;
 
 async function run(page: Page, sc: FailClosedScenario): Promise<FailClosedResult> {
   const r = await page.evaluate((s) => (window as unknown as HarnessWindow).harness.failClosed(s), sc);
