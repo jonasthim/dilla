@@ -2,6 +2,7 @@ package ds
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/id"
@@ -29,6 +30,15 @@ func CheckChannelModeForTest(d *DS, ctx context.Context, b Binding) error {
 // ReconcileLeavesForTest is the sweeper's leaf reconcile on its own, without the rest of Sweep
 // (whose inactivity pass would also propose Removes over the fixture's devices).
 func ReconcileLeavesForTest(d *DS, ctx context.Context) (int, error) { return d.reconcileLeaves(ctx) }
+
+// MemberProposalAgainForTest is Proposal's answer to a member proposal whose ref SQL already holds.
+func MemberProposalAgainForTest(d *DS, ctx context.Context, groupID id.ID, epoch uint64, leaf uint32, device id.ID, blob []byte, existing store.ProposalRow) (uint64, error) {
+	return d.memberProposalAgain(ctx, groupID, epoch, leaf, device, blob, existing)
+}
+
+// RemoveInactiveForTest is the sweeper's inactivity pass on its own, so the leaf-reuse hook of the
+// store (reuseLeafAfterNextRead) fires on that pass's member read and not on the reconcile's.
+func RemoveInactiveForTest(d *DS, ctx context.Context) (int, error) { return d.removeInactive(ctx) }
 
 // ACLForTest and DeviceListsForTest are the seams New defaulted, which is the only way to see
 // that a DS built without them is built with the conservative Plan-1 stubs rather than with
@@ -79,7 +89,11 @@ func CommitExternalForTest(d *DS, ctx context.Context, s Session, groupID id.ID,
 // external sender — so the refusals that happen AFTER the queue has been written cannot be reached
 // through `Proposal` with committed material.
 func QueueMemberProposalForTest(d *DS, ctx context.Context, g *mlswasi.PublicGroup, s Session, groupID id.ID, blob []byte) ([]byte, mlswasi.ProposalDetail, error) {
-	return d.queueMemberProposal(ctx, g, s, groupID, blob)
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if err != nil {
+		return nil, mlswasi.ProposalDetail{}, err
+	}
+	return d.queueMemberProposal(ctx, g, s, groupID, row.Epoch, blob)
 }
 
 // ------------------------------------------------------------------- task 21
@@ -234,4 +248,75 @@ func ReissueAllUnderLockForTest(d *DS, ctx context.Context, groupID id.ID, epoch
 	unlock := d.lock(groupID)
 	defer unlock()
 	return d.reissueAll(ctx, groupID, epoch)
+}
+
+// ------------------------------------------------------------------- dilla-media task 9
+
+// ReplaceMembersForTest runs replaceMembersTx for a group of the given kind in one transaction and
+// queues its removed devices, exactly as every member-set writer does after its transaction.
+func ReplaceMembersForTest(d *DS, ctx context.Context, groupID id.ID, kind uint8, state mlswasi.GroupState, joined ...uint32) error {
+	var view memberView
+	if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		var err error
+		view, err = d.replaceMembersTx(ctx, tx, groupID, kind, state, joined...)
+		return err
+	}); err != nil {
+		return err
+	}
+	d.queueEviction(groupID, view.removed)
+	return nil
+}
+
+// FlushEvictionsForTest is the flush every member-set entry point defers past its unlock.
+func FlushEvictionsForTest(d *DS, ctx context.Context, groupID id.ID) { d.flushEvictions(ctx, groupID) }
+
+// GroupLockFreeForTest reports whether nobody holds groupID's lock right now.
+func GroupLockFreeForTest(d *DS, groupID id.ID) bool {
+	v, _ := d.groupLocks.LoadOrStore(groupID, &sync.Mutex{})
+	mu, _ := v.(*sync.Mutex)
+	if mu.TryLock() {
+		mu.Unlock()
+		return true
+	}
+	return false
+}
+
+// SweepCallProposalsForTest is one pass of the call sweeper.
+func SweepCallProposalsForTest(d *DS, ctx context.Context) (int, error) {
+	return d.sweepCallProposals(ctx)
+}
+
+// MarkCallWorkForTest puts a group in the call sweeper's set, as storeInstanceProposal does.
+func MarkCallWorkForTest(d *DS, groupID id.ID) { d.markCallWork(groupID) }
+
+// CallWorkForTest is the call sweeper's set, in no particular order.
+func CallWorkForTest(d *DS) []id.ID {
+	d.callWorkMu.Lock()
+	defer d.callWorkMu.Unlock()
+	out := make([]id.ID, 0, len(d.callWork))
+	for g := range d.callWork {
+		out = append(out, g)
+	}
+	return out
+}
+
+// RedriveCallRemovesForTest is the call re-drive from fromEpoch's voided instance Removes into
+// curEpoch, under the group lock as both callers run it. The fixture never advances an epoch, so a
+// cross-epoch re-drive — the one commitLocked step (9) runs — is reached through this seam with
+// rows a test wrote at an earlier epoch.
+func RedriveCallRemovesForTest(d *DS, ctx context.Context, groupID id.ID, fromEpoch, curEpoch uint64) error {
+	unlock := d.lock(groupID)
+	defer unlock()
+	return d.redriveCallRemovesLocked(ctx, groupID, fromEpoch, curEpoch)
+}
+
+// GroupLockFree reports whether nobody holds groupID's lock right now.
+func (d *DS) GroupLockFree(groupID id.ID) bool {
+	v, _ := d.groupLocks.LoadOrStore(groupID, &sync.Mutex{})
+	mu, _ := v.(*sync.Mutex)
+	if !mu.TryLock() {
+		return false
+	}
+	mu.Unlock()
+	return true
 }

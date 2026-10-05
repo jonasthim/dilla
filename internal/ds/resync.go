@@ -33,6 +33,7 @@ type ResyncRequest struct {
 // would read the group row unlocked too. Every read that feeds commit's epoch comparison happens
 // under the same lock acquisition.
 func (d *DS) Resync(ctx context.Context, s Session, groupID id.ID, r ResyncRequest) (CommitResult, error) {
+	defer d.flushEvictions(ctx, groupID) // after the unlock below: defers run last-in, first-out
 	unlock := d.lock(groupID)
 	defer unlock()
 	return d.resyncLocked(ctx, s, groupID, r)
@@ -105,7 +106,9 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 	return out, nil
 }
 
-// guardResyncTarget refuses a resync by the target of an outstanding non-void instance Remove.
+// guardResyncTarget refuses a resync — and a heal, which runs it at the restored epoch — by the
+// target of an outstanding non-void instance Remove: by the device the Remove recorded, or by the
+// leaf the device holds in mls_members.
 func (d *DS) guardResyncTarget(ctx context.Context, s Session, groupID id.ID, epoch uint64) error {
 	rows, err := d.opts.Store.ListProposals(ctx, groupID, epoch, false)
 	if err != nil {

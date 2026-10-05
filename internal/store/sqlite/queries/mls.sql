@@ -128,6 +128,12 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
 -- name: ListMembers :many
 SELECT * FROM mls_members WHERE group_id = ? AND removed_epoch IS NULL ORDER BY leaf_index;
 
+-- name: ListBarredMembers :many
+SELECT m.* FROM mls_members m JOIN devices d ON d.id = m.device_id
+WHERE m.group_id = ? AND m.removed_epoch IS NULL
+  AND (d.quarantined_at IS NOT NULL OR d.revoked_at IS NOT NULL)
+ORDER BY m.leaf_index;
+
 -- name: GroupsForDevice :many
 SELECT DISTINCT group_id FROM mls_members WHERE device_id = ? AND removed_epoch IS NULL
 ORDER BY group_id;

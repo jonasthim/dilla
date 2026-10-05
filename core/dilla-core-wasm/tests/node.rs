@@ -7,10 +7,11 @@
 use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
 use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
-    abi_version, core_version, credential_identity_cbor, envelope_commitment, envelope_decode_json,
-    envelope_encode, franking_tag, recovery_key_base32, safety_number, sas, sframe_derive,
-    sframe_header, vectors_check_json, vectors_check_ok,
+    MediaReceiver, MediaSender, abi_version, core_version, credential_identity_cbor,
+    envelope_commitment, envelope_decode_json, envelope_encode, franking_tag, recovery_key_base32,
+    safety_number, sas, sframe_derive, sframe_header, vectors_check_json, vectors_check_ok,
 };
+use wasm_bindgen::{JsError, JsValue};
 use wasm_bindgen_test::*;
 
 // NV-8: delete this line if step 1 shows the identifier does not exist on 0.3.78; Node is the
@@ -261,4 +262,178 @@ fn a_redacted_probe_message_never_carries_the_statement() {
 fn the_version_getters_agree_with_dilla_core_on_wasm() {
     assert_eq!(core_version(), dilla_core::CORE_VERSION);
     assert_eq!(u64::from(abi_version()), dilla_core::ABI_VERSION);
+}
+
+/// The message a `JsError` carries across the boundary: what the media worker matches on.
+fn message(e: JsError) -> String {
+    js_sys::Error::from(JsValue::from(e)).message().into()
+}
+
+const BASE: [u8; 16] = [0x0a; 16];
+const ALICE: [u8; 16] = [0xa1; 16];
+const BOB: [u8; 16] = [0xb2; 16];
+
+/// Alice's receiver in epoch 7: Alice is leaf 0, Bob leaf 1.
+fn alice_receiver() -> MediaReceiver {
+    let mut r = MediaReceiver::new();
+    let devices: Vec<u8> = ALICE.iter().chain(BOB.iter()).copied().collect();
+    r.install_epoch(7, BASE.to_vec(), &[0, 1], &devices, 0, 1_000.0)
+        .unwrap();
+    r
+}
+
+#[wasm_bindgen_test]
+fn a_media_sender_and_receiver_round_trip_every_codec() {
+    let mut bob = MediaSender::new(BASE.to_vec(), 1, 7, 7).unwrap();
+    let mut alice = alice_receiver();
+    let h264 = unhex("000000016742c01fda0280f68078442350000000016588842100000312ff");
+    for (codec, slot, frame) in [
+        (0u8, 0u8, unhex("fc0102030405060708")),
+        (1, 1, unhex("5002009d012a8002e0010102030405060708")),
+        (1, 1, unhex("310102030405060708")),
+        (2, 2, unhex("8249834200")),
+        (3, 1, h264),
+    ] {
+        let sealed = bob.encrypt(codec, slot, 0, &frame).unwrap();
+        assert_ne!(&sealed[..], &frame[..]);
+        let opened = alice.decrypt(codec, &sealed, &BOB, slot, 1_010.0).unwrap();
+        assert_eq!(hex(&opened), hex(&frame), "codec {codec}");
+    }
+    assert!(!bob.exhausted());
+}
+
+#[wasm_bindgen_test]
+fn a_rekeyed_sender_is_held_as_unknown_until_its_epoch_is_installed() {
+    let mut bob = MediaSender::new(BASE.to_vec(), 1, 7, 7).unwrap();
+    let mut alice = alice_receiver();
+    bob.rekey(vec![0x0b; 16], 1, 8).unwrap();
+    let sealed = bob.encrypt(0, 0, 0, &unhex("fc01")).unwrap();
+    let err = alice.decrypt(0, &sealed, &BOB, 0, 1_020.0).unwrap_err();
+    assert_eq!(message(err), "E_SFRAME_UNKNOWN_KID");
+    let devices: Vec<u8> = ALICE.iter().chain(BOB.iter()).copied().collect();
+    alice
+        .install_epoch(8, vec![0x0b; 16], &[0, 1], &devices, 0, 1_030.0)
+        .unwrap();
+    assert_eq!(
+        hex(&alice.decrypt(0, &sealed, &BOB, 0, 1_040.0).unwrap()),
+        "fc01"
+    );
+}
+
+/// An Opus frame from Bob (leaf 1, epoch 7) whose KID also has bit 24 set, sealed under the key
+/// that KID derives: a receiver that did not check the KID's range would authenticate it.
+fn non_canonical_frame() -> Vec<u8> {
+    use dilla_core::sframe::{Codec, Ctr, FrameKey, Kid, protect};
+    let kid = Kid::from_raw((1 << 24) | Kid::new(1, 7).value());
+    let ctr = Ctr::new(0, 0, 0).unwrap();
+    protect(
+        &FrameKey::derive(&BASE, kid),
+        kid,
+        ctr,
+        Codec::Opus,
+        &unhex("fc01"),
+    )
+    .unwrap()
+}
+
+#[wasm_bindgen_test]
+fn media_errors_are_bare_codes() {
+    let mut bob = MediaSender::new(BASE.to_vec(), 1, 7, 7).unwrap();
+    let mut alice = alice_receiver();
+    let sealed = bob.encrypt(0, 0, 0, &unhex("fc01")).unwrap();
+    for (got, want) in [
+        (
+            alice.decrypt(0, &sealed, &ALICE, 0, 1_010.0).unwrap_err(),
+            "E_SFRAME_SENDER_MISMATCH",
+        ),
+        (
+            alice.decrypt(0, &sealed, &BOB, 1, 1_010.0).unwrap_err(),
+            "E_SFRAME_SLOT_MISMATCH",
+        ),
+        (
+            alice.decrypt(9, &sealed, &BOB, 0, 1_010.0).unwrap_err(),
+            "E_SFRAME_UNSUPPORTED_CODEC",
+        ),
+        (
+            alice.decrypt(0, &sealed, &BOB, 4, 1_010.0).unwrap_err(),
+            "E_SFRAME_SLOT_MISMATCH",
+        ),
+        (
+            alice
+                .decrypt(0, &sealed, &[0u8; 3], 0, 1_010.0)
+                .unwrap_err(),
+            "E_BAD_OPTIONS",
+        ),
+        // CRYPTO-10: an empty identity is not "no sender binding".
+        (
+            alice.decrypt(0, &sealed, &[], 0, 1_010.0).unwrap_err(),
+            "E_BAD_OPTIONS",
+        ),
+        (
+            bob.encrypt(1, 1, 0, &unhex("5002")).unwrap_err(),
+            "E_SFRAME_MALFORMED_PREFIX",
+        ),
+        (
+            bob.encrypt(0, 0, 16, &unhex("fc")).unwrap_err(),
+            "E_SFRAME_LAYER_RANGE",
+        ),
+        (
+            MediaSender::new(BASE.to_vec(), 70_000, 7, 7).err().unwrap(),
+            "E_SFRAME_LEAF_RANGE",
+        ),
+        (
+            MediaSender::new(BASE.to_vec(), 1, 6, 7).err().unwrap(),
+            "E_SFRAME_STALE_EPOCH",
+        ),
+        (
+            MediaSender::new(vec![0u8; 15], 1, 7, 7).err().unwrap(),
+            "E_BAD_OPTIONS",
+        ),
+        (
+            sframe_derive(&BASE, 65_536, 0).err().unwrap(),
+            "E_SFRAME_LEAF_RANGE",
+        ),
+        // A raw KID from JavaScript goes through the same canonical check as a received one.
+        (
+            sframe_header(1 << 24, 0).err().unwrap(),
+            "E_SFRAME_NON_CANONICAL_KID",
+        ),
+        // Bob's KID (leaf 1, epoch 7) with bit 24 set: refused while parsing, not held.
+        (
+            alice
+                .decrypt(0, &non_canonical_frame(), &BOB, 0, 1_010.0)
+                .unwrap_err(),
+            "E_SFRAME_NON_CANONICAL_KID",
+        ),
+        // Bob's KID 0x000107 in three bytes instead of two.
+        (
+            alice
+                .decrypt(
+                    0,
+                    &unhex(&format!("a0000107{}", "00".repeat(17))),
+                    &BOB,
+                    0,
+                    1_010.0,
+                )
+                .unwrap_err(),
+            "E_SFRAME_NON_MINIMAL_HEADER",
+        ),
+    ] {
+        assert_eq!(message(got), want);
+    }
+    // The same frame again on the right track is accepted once, then replayed.
+    assert!(alice.decrypt(0, &sealed, &BOB, 0, 1_010.0).is_ok());
+    assert_eq!(
+        message(alice.decrypt(0, &sealed, &BOB, 0, 1_010.0).unwrap_err()),
+        "E_SFRAME_REPLAY"
+    );
+    let mut wrong = MediaReceiver::new();
+    assert_eq!(
+        message(
+            wrong
+                .install_epoch(7, BASE.to_vec(), &[0, 1], &ALICE, 0, 0.0)
+                .unwrap_err()
+        ),
+        "E_BAD_OPTIONS"
+    );
 }

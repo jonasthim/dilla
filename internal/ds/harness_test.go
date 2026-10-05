@@ -83,7 +83,7 @@ func newDSHarness(t *testing.T) *dsHarness {
 	// vanishes with its first connection.
 	path := filepath.Join(t.TempDir(), "dilla.db")
 	base := openMigratedSQLite(t, path)
-	repo := &failingRepo{Repository: base, welcomeReads: &atomic.Int64{}}
+	repo := &failingRepo{Repository: base, welcomeReads: &atomic.Int64{}, calls: &sync.Map{}}
 
 	h := &dsHarness{t: t, path: path, clk: clk, repo: repo, calls: map[string]int64{}}
 
@@ -335,6 +335,134 @@ type failingRepo struct {
 	// this number and about nothing visible on the wire. It is a pointer so the sub-repository Tx
 	// builds counts into the same total.
 	welcomeReads *atomic.Int64
+	// calls marks groups the store reports as call groups (kind 1). The committed fixture is a text
+	// group, and the call-group rules — the 30 s TTL, the re-drive, the call sweep, the evictor — are
+	// keyed on GroupRow.Kind; the override is the only way to reach them with real MLS state.
+	calls *sync.Map
+	// openGroupPages counts ListOpenGroups calls: the call sweeper's per-tick work must not grow with
+	// the number of open groups on the instance.
+	openGroupPages atomic.Int64
+	// broken holds the groups whose GetGroup fails, on the outer repository only: one call group
+	// whose sweep fails must not stop the call sweeper's tick.
+	broken sync.Map
+	// readHooks runs once, after the next ListMembers of its group returns: the window between a
+	// caller's read of the member set and its next statement, in which a commit can reuse a leaf.
+	readHooks map[id.ID]func(context.Context)
+	// deletedProposals records that this transaction's repository reached DeleteProposals, so the
+	// "TxCommit" fault fails only the transaction of a commit that ran all the way through.
+	deletedProposals bool
+}
+
+// breakGroup makes the store's GetGroup of groupID fail.
+func (r *failingRepo) breakGroup(groupID id.ID) { r.broken.Store(groupID, true) }
+
+// reuseLeafAfterNextRead hands leaf to newcomer in mls_members right after the next ListMembers of
+// groupID returns — what a commit that removed the leaf's device and added another at its index
+// leaves behind.
+func (r *failingRepo) reuseLeafAfterNextRead(t *testing.T, groupID id.ID, leaf uint32, newcomer id.ID) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.readHooks == nil {
+		r.readHooks = map[id.ID]func(context.Context){}
+	}
+	r.readHooks[groupID] = func(ctx context.Context) {
+		row, err := r.Repository.GetGroup(ctx, groupID)
+		if err != nil {
+			t.Errorf("GetGroup: %v", err)
+			return
+		}
+		members, err := r.Repository.ListMembers(ctx, groupID)
+		if err != nil {
+			t.Errorf("ListMembers: %v", err)
+			return
+		}
+		for i := range members {
+			if members[i].LeafIndex == leaf {
+				members[i].DeviceID = newcomer
+			}
+		}
+		if err := r.Repository.ReplaceMembers(ctx, groupID, row.Epoch, members); err != nil {
+			t.Errorf("ReplaceMembers: %v", err)
+		}
+	}
+}
+
+func (r *failingRepo) takeReadHook(groupID id.ID) func(context.Context) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	hook := r.readHooks[groupID]
+	delete(r.readHooks, groupID)
+	return hook
+}
+
+func (r *failingRepo) ListMembers(ctx context.Context, groupID id.ID) ([]store.MemberRow, error) {
+	rows, err := r.Repository.ListMembers(ctx, groupID)
+	if err == nil {
+		if hook := r.takeReadHook(groupID); hook != nil {
+			hook(ctx)
+		}
+	}
+	return rows, err
+}
+
+func (r *failingRepo) DeleteProposals(ctx context.Context, groupID id.ID, refs [][]byte) error {
+	if r.take("DeleteProposals") {
+		return errInjected
+	}
+	r.deletedProposals = true
+	return r.Repository.DeleteProposals(ctx, groupID, refs)
+}
+
+// markCall makes the store report groupID as a call group.
+func (r *failingRepo) markCall(groupID id.ID) { r.calls.Store(groupID, true) }
+
+func (r *failingRepo) isCall(groupID id.ID) bool {
+	if r.calls == nil {
+		return false
+	}
+	_, ok := r.calls.Load(groupID)
+	return ok
+}
+
+func (r *failingRepo) GetGroup(ctx context.Context, groupID id.ID) (store.GroupRow, error) {
+	if _, broken := r.broken.Load(groupID); broken {
+		return store.GroupRow{}, errInjected
+	}
+	row, err := r.Repository.GetGroup(ctx, groupID)
+	if err == nil && r.isCall(groupID) {
+		row.Kind = 1
+	}
+	return row, err
+}
+
+func (r *failingRepo) ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]store.GroupRow, error) {
+	r.openGroupPages.Add(1)
+	rows, err := r.Repository.ListOpenGroups(ctx, after, limit)
+	for i := range rows {
+		if r.isCall(rows[i].GroupID) {
+			rows[i].Kind = 1
+		}
+	}
+	return rows, err
+}
+
+// restartWithEvictor rebuilds the delivery service over the same store with a call evictor.
+func (h *dsHarness) restartWithEvictor(e ds.CallEvictor) {
+	h.t.Helper()
+	if err := h.ds.Shutdown(context.Background()); err != nil {
+		h.t.Fatalf("Shutdown: %v", err)
+	}
+	d, err := ds.New(ds.Options{
+		Store: h.repo, Wasm: h.wasm, Gateway: h.gw, Clock: h.clk,
+		Keys: testInstanceKeys(h.t), Policy: ds.DefaultPolicy(), Channels: h.channels,
+		ACL: h.acl, CallEvictor: e,
+	})
+	if err != nil {
+		h.t.Fatalf("ds.New: %v", err)
+	}
+	h.t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+	h.ds = d
 }
 
 var errInjected = errors.New("injected failure")
@@ -389,13 +517,19 @@ func (r *failingRepo) Tx(ctx context.Context, fn func(store.Repository) error) e
 	return r.Repository.Tx(ctx, func(tx store.Repository) error {
 		sub := &failingRepo{
 			Repository: tx, failOn: r.snapshotFailOn(), onPut: r.snapshotOnPut(),
-			welcomeReads: r.welcomeReads,
+			welcomeReads: r.welcomeReads, calls: r.calls,
 		}
 		err := fn(sub)
 		// The sub-repository owns the injection for the duration of the transaction; whatever it
 		// did not consume goes back, so failNextTx("X") before a call that never reaches X does
 		// not silently disarm.
 		r.failNext(sub.snapshotFailOn())
+		// "TxCommit" fails a transaction whose every statement succeeded, at the commit: the
+		// rollback after the last statement of a commit's transaction. Returning an error from the
+		// closure is what makes the real store roll it back.
+		if err == nil && sub.deletedProposals && r.take("TxCommit") {
+			return errInjected
+		}
 		return err
 	})
 }
@@ -432,6 +566,14 @@ func (r *failingRepo) AppendHandshake(ctx context.Context, row store.HandshakeRo
 		return errInjected
 	}
 	return r.Repository.AppendHandshake(ctx, row)
+}
+
+// ReissueProposal is the write a re-issue and a same-epoch re-arm go through (DS-1).
+func (r *failingRepo) ReissueProposal(ctx context.Context, oldRef []byte, p store.ProposalRow) error {
+	if r.take("ReissueProposal") {
+		return errInjected
+	}
+	return r.Repository.ReissueProposal(ctx, oldRef, p)
 }
 
 // ---------------------------------------------------------------- the fixture

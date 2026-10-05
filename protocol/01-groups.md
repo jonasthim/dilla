@@ -15,6 +15,13 @@ A `readable` text channel has no group. A call in any voice channel, including a
 a community whose text channels are `readable`, always has a `call` group: calls are always
 end-to-end encrypted.
 
+The instance keeps a `call` group to the devices present in the call. A device that stays out of
+the call's room while it holds a leaf — its leave report lost, or disconnected by the instance and
+that report lost — loses the leaf: when two room sweeps at least one sweep period apart find the
+same leaf, taken in the same epoch, with its device out of the room, and the device was not admitted
+to the room in the last 30 seconds, the instance proposes a DS `Remove` of that leaf bound to that
+membership, so a device that has rejoined the group since is never removed (`09` § Voice, Leaving).
+
 Groups use MLS ciphersuite `0x0001`. Handshake messages (Proposal, Commit) are sent as
 `PublicMessage`; application data as `PrivateMessage`. Application data MUST be padded so that the
 `PrivateMessage` ciphertext length is a multiple of 256 bytes (RFC 9420 §6.3.1 padding field).
@@ -78,9 +85,17 @@ Client policy for proposals from the external sender:
 Client policy for proposals from members:
 
 - `Update`: accept.
-- `Remove`: accept only if the target leaf belongs to the committer's own user (device revocation);
-  reject otherwise (`E_MEMBER_REMOVE_FORBIDDEN`). Removing other users is the instance's job, bound
-  to roles.
+- `Remove`: accept only if the target leaf belongs to the proposer's own user — the committer's for
+  a `Remove` carried in the commit (device revocation), the proposing member's for a `Remove`
+  proposal the commit references (a member leaving, below); reject otherwise
+  (`E_MEMBER_REMOVE_FORBIDDEN`). Removing other users is the instance's job, bound to roles. A
+  member's `Remove` never cancels or stands in for the instance's `Remove` of the same leaf while it
+  is only proposed: a committer holding both commits the instance's. RFC 9420 allows one `Remove`
+  per leaf in a commit, and OpenMLS commits the later of two queued for one leaf, so a client queues
+  a member's `Remove` in front of an instance `Remove` of the same leaf it already holds, whatever
+  order it received them in, and keeps both queued. A commit that applies the member's instead is
+  still accepted: it removes the same device, and the DS counts the instance's `Remove` as
+  satisfied (`02-delivery-service.md`, invariant 4).
 - `Add`: accept only in `pairing` (first join of the second leaf) and `interaction` groups (the
   user's device adding the bot device or a new own device); reject in `text` and `call` groups.
 - `GroupContextExtensions`, `ReInit`, `PreSharedKey`: reject.
@@ -102,18 +117,35 @@ The `Remove` proposal inside an external commit MUST target only a leaf with the
 - Creating a private channel, or granting a role that opens a channel to many members, is done by
   the DS issuing Add proposals in batches: the creator's device commits at most 256 Adds per
   commit, each producing one Welcome, until all eligible devices are members.
-- A member leaves a channel or a call by a `Remove` of its own leaves in a commit, or is removed
-  by the DS.
+- A member leaves a channel or a call by a `Remove` **proposal** of its own leaf, which another
+  member commits — a device cannot commit its own removal (RFC 9420 forbids a committer removing
+  itself) — or is removed by the DS. A client leaving a call posts that proposal before it
+  disconnects from the SFU. A member proposal never cancels, voids, blocks or replaces a DS
+  proposal: when the DS is already removing the leaf (a kick, a ban, an eviction) it refuses the
+  member's own `Remove` with `409 E_REMOVE_PENDING`, which the client reads as "I am being removed"
+  and answers by withdrawing its refused proposal, without retrying (a client that re-uploads its
+  own proposal, for instance after a lost answer, is answered as the first time — never with this
+  code — and keeps its proposal);
+  and the DS issues its own `Remove` of a leaf regardless of the member's own `Remove` of it
+  (`02-delivery-service.md`, invariant 6).
 
 ## Cadence
 
 - **Update cadence (post-compromise security):** a device in a `text` group sends an `Update`
   proposal at most every `24h × max(1, ceil(leaves / 64))` and only if it has sent at least one
-  application message since its last `Update`. The DS batches proposals into one commit per
-  `max(60 s, leaves × 1 s)` (see 02, invariant 7). In `call` groups a device updates every 60
-  minutes; the DS commits at most once per minute.
+  application message since its last `Update`. In `call` groups a device rotates its leaf at least
+  every 60 minutes, by an empty commit with an UpdatePath or an `Update` proposal another member
+  commits; this is a client obligation the DS does not check. The DS never commits: it elects one
+  committer per round for its own proposals (02, invariant 7).
 - **Inactivity:** a device that has not connected for **90 days** is removed from every group by a
   DS `Remove` proposal (founder decision 2026-09-23). It rejoins by external commit.
+- **Quarantined and revoked devices:** the leaf of a device that is quarantined (`02` invariant 9)
+  or revoked is removed from every `text` and `call` group (DMs included) by a DS `Remove`, which
+  the instance's periodic reconcile proposes again for as long as the device holds a leaf there
+  with no DS `Remove` of it outstanding (`02` invariants 9 and 11). Each such `Remove` freezes its
+  group until a member commits it, so a revocation is followed by a membership commit in every
+  group the device was in. `pairing` and `interaction` groups carry no external sender: there a
+  member removes a revoked device of its own user itself (§ External senders, member `Remove`s).
 - **Epoch rotation on membership change:** every Add or Remove is a new epoch; senders MUST NOT
   send application data in an epoch whose commit they have not processed.
 

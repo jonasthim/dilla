@@ -49,6 +49,10 @@ type Roles struct {
 	// dsvc receives the Adds and Removes a role or overwrite change turns into
 	// (task 7): private channels are populated by batched delivery-service Adds.
 	dsvc DS
+	// tokens and calls re-push live call grants after a change (SyncCallGrants, dilla-media task 10);
+	// without them no call is touched.
+	tokens CallTokens
+	calls  *Calls
 }
 
 func NewRoles(repo store.Repository, clk clock.Clock, rpID string, log *slog.Logger) *Roles {
@@ -62,6 +66,23 @@ func NewRoles(repo store.Repository, clk clock.Clock, rpID string, log *slog.Log
 func (h *Roles) WithDS(dsvc DS) *Roles {
 	h.dsvc = dsvc
 	return h
+}
+
+// WithCalls sets the SFU and the call routes a role or overwrite change re-pushes live call grants
+// through, and returns h. The composition root sets it whenever it runs an SFU.
+func (h *Roles) WithCalls(tokens CallTokens, calls *Calls) *Roles {
+	h.tokens, h.calls = tokens, calls
+	return h
+}
+
+// syncCallGrants queues SyncCallGrants after a commit (Calls.RequestSync): the call retry loop runs
+// it immediately after, on its own goroutine, so the request never waits on the SFU or a call's
+// lock. Meanwhile the token mint and the /rtc gate already answer from the new permissions.
+func (h *Roles) syncCallGrants(ctx context.Context, communityID id.ID, userID, channelID *id.ID) {
+	if h.tokens == nil || h.calls == nil {
+		return
+	}
+	h.calls.RequestSync(ctx, communityID, userID, channelID)
 }
 
 func (h *Roles) Register(mux *server.Mux) {
@@ -450,6 +471,7 @@ func (h *Roles) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	// A role's bits decide who may see every private channel of the community.
 	h.materialiseCommunity(afterCommit(r), current.CommunityID, now)
+	h.syncCallGrants(afterCommit(r), current.CommunityID, nil, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -500,6 +522,7 @@ func (h *Roles) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.materialiseCommunity(afterCommit(r), role.CommunityID, now)
+	h.syncCallGrants(afterCommit(r), role.CommunityID, nil, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -646,6 +669,7 @@ func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
 	if err := syncChannelEligibility(afterCommit(r), h.repo, h.dsvc, g.cid, g.target, now); err != nil {
 		h.log.ErrorContext(r.Context(), "sync channel eligibility", "community", g.cid, "user", g.target, "err", err)
 	}
+	h.syncCallGrants(afterCommit(r), g.cid, &g.target, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -673,6 +697,7 @@ func (h *Roles) revoke(w http.ResponseWriter, r *http.Request) {
 	if err := syncChannelEligibility(afterCommit(r), h.repo, h.dsvc, g.cid, g.target, now); err != nil {
 		h.log.ErrorContext(r.Context(), "sync channel eligibility", "community", g.cid, "user", g.target, "err", err)
 	}
+	h.syncCallGrants(afterCommit(r), g.cid, &g.target, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -835,6 +860,7 @@ func (h *Roles) putOverwrite(w http.ResponseWriter, r *http.Request) {
 	if err := materialiseChannel(afterCommit(r), h.repo, h.dsvc, o.ch.ID, now); err != nil {
 		h.log.ErrorContext(r.Context(), "materialise channel members", "channel", o.ch.ID, "err", err)
 	}
+	h.syncCallGrants(afterCommit(r), *o.ch.CommunityID, nil, &o.ch.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -862,6 +888,7 @@ func (h *Roles) deleteOverwrite(w http.ResponseWriter, r *http.Request) {
 	if err := materialiseChannel(afterCommit(r), h.repo, h.dsvc, o.ch.ID, now); err != nil {
 		h.log.ErrorContext(r.Context(), "materialise channel members", "channel", o.ch.ID, "err", err)
 	}
+	h.syncCallGrants(afterCommit(r), *o.ch.CommunityID, nil, &o.ch.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

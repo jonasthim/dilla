@@ -27,15 +27,30 @@ func main() {
 	dataDir := flag.String("data-dir", "", "instance data directory (default: a temp directory)")
 	core := flag.String("core", "", "the wasm32-wasip1 dilla_core_wasi.wasm (default: beside this binary)")
 	logLevel := flag.String("log-level", "warn", "the instance log level: debug, info, warn or error")
+	withSFU := flag.Bool("sfu", false, "start an in-process LiveKit beside the instance (browser media tests)")
+	sfuPort := flag.Int("sfu-port", dilladtest.DefaultSFUPort, "the in-process LiveKit's signalling port")
+	sfuUDPPort := flag.Int("sfu-udp-port", dilladtest.DefaultSFUUDPPort, "the in-process LiveKit's ICE/UDP port")
+	sfuNoInternalIP := flag.Bool("sfu-no-internal-ip", false,
+		"SP-27 only: render advertise_internal_ip: false (Firefox then cannot pair with the loopback node_ip)")
+	sfuAV1 := flag.Bool("sfu-av1", false, "browser test only: enable AV1 in the real SFU")
 	flag.Parse()
 
-	if err := run(*public, *control, *dataDir, *core, *logLevel); err != nil {
+	sfu := sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort, noInternalIP: *sfuNoInternalIP, av1: *sfuAV1}
+	if err := run(*public, *control, *dataDir, *core, *logLevel, sfu); err != nil {
 		fmt.Fprintln(os.Stderr, "dilla-testhost:", err)
 		os.Exit(1)
 	}
 }
 
-func run(public, control, dataDir, core, logLevel string) error {
+// sfuOptions are the -sfu flags: whether the host starts an in-process LiveKit, and on which ports.
+type sfuOptions struct {
+	enabled       bool
+	port, udpPort int
+	noInternalIP  bool
+	av1           bool
+}
+
+func run(public, control, dataDir, core, logLevel string, sfu sfuOptions) error {
 	if dataDir == "" {
 		dir, err := os.MkdirTemp("", "dilla-testhost-")
 		if err != nil {
@@ -57,8 +72,14 @@ func run(public, control, dataDir, core, logLevel string) error {
 
 	// A fake clock, because advance_clock is the whole reason this binary exists: five of the
 	// fifteen scenarios cross a TTL, retention or heal boundary and none of them can wait for it.
+	// /metrics accepts DILLA_METRICS_TOKEN as its bearer token, exactly as dillad does, so a load
+	// rig can scrape this host (docs/spikes/2026-10-capacity.md); unset, every scrape is refused.
 	host, err := dilladtest.NewHost(ctx, dilladtest.HostOptions{
 		DataDir: dataDir, CorePath: core, LogLevel: logLevel,
+		SFU: sfu.enabled, SFUPort: sfu.port, SFUUDPPort: sfu.udpPort,
+		SFUNoInternalIP: sfu.noInternalIP,
+		SFUEnableAV1:    sfu.av1,
+		ScrapeToken:     os.Getenv("DILLA_METRICS_TOKEN"),
 	})
 	if err != nil {
 		return err
@@ -85,6 +106,9 @@ func run(public, control, dataDir, core, logLevel string) error {
 
 	fmt.Printf("public  http://%s\n", publicLn.Addr())
 	fmt.Printf("control http://%s\n", controlLn.Addr())
+	if s := host.SFU(); s != nil {
+		fmt.Printf("sfu     %s\n", s.URL())
+	}
 	fmt.Printf("run a scenario with:\n  DILLA_TESTKIT_CONTROL=http://%s DILLA_TESTKIT_INVITE=%s \\\n"+
 		"    dilla-testkit run testkit/scenarios/<name>.scn --ds http://%s\n",
 		controlLn.Addr(), host.Invite(), publicLn.Addr())

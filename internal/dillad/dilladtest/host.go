@@ -37,6 +37,7 @@ import (
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
@@ -76,6 +77,19 @@ type HostOptions struct {
 	// routes. The default keeps AllowEveryone and ChannelModes, which the Plan 1 scenarios need
 	// because their groups are bound to targets they invent.
 	ProductionACL bool
+	// SFU starts an in-process LiveKit beside the instance (testSFUConfig) and hands it to
+	// dillad.Options.SFU, so the call routes mint real tokens and /rtc is proxied. SFUPort and
+	// SFUUDPPort are its signalling and media ports; 0 means 7880 and 7882.
+	SFU                 bool
+	SFUPort, SFUUDPPort int
+	// SFUNoInternalIP is SP-27's negative leg: Firefox cannot pair its non-loopback
+	// local candidate with the loopback-only SFU candidate. Zero keeps the test default.
+	SFUNoInternalIP bool
+	SFUEnableAV1    bool
+	// ScrapeToken is the bearer token /metrics accepts (dillad.Options.ScrapeToken; dilla-testhost
+	// takes it from DILLA_METRICS_TOKEN, as dillad does). Empty keeps dillad's default: a random
+	// token nobody holds, so every scrape is refused.
+	ScrapeToken string
 }
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
@@ -157,6 +171,13 @@ type Host struct {
 	mu     sync.RWMutex
 	server *dillad.Server
 
+	// sfu is the in-process LiveKit when HostOptions.SFU; it outlives a Restore, as the SFU
+	// outlives a database restore inside one dillad process.
+	sfu *sfu.Server
+	// debugRooms are the rooms the control listener's POST /debug/sfu/token opened, hidden from
+	// the room sweep (harnessSFU).
+	debugRooms debugRooms
+
 	// channels outlives a Restore, as the channels table outlives a restart.
 	channels *ChannelModes
 
@@ -199,8 +220,15 @@ func NewHost(ctx context.Context, o HostOptions) (*Host, error) {
 		}
 		h.owns = true
 	}
+	if o.SFU {
+		if err := h.startSFU(ctx); err != nil {
+			h.closeWasm(ctx)
+			return nil, err
+		}
+	}
 	server, err := h.newServer(ctx)
 	if err != nil {
+		h.stopSFU(ctx)
 		h.closeWasm(ctx)
 		return nil, err
 	}
@@ -306,17 +334,56 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 		out = os.Stderr
 	}
 	o := dillad.Options{
-		Config: h.cfg,
-		Clock:  h.clk,
-		Wasm:   h.wasm,
-		Log:    obs.NewLogger(h.cfg.Log, out),
+		Config:      h.cfg,
+		Clock:       h.clk,
+		Wasm:        h.wasm,
+		Log:         obs.NewLogger(h.cfg.Log, out),
+		ScrapeToken: h.o.ScrapeToken,
 	}
 	// Left nil under ProductionACL, so New wires api.ResolverACL and api.StructureChannels. (An
 	// interface holding a nil *ChannelModes would not be nil; the fields are simply not set.)
 	if !h.o.ProductionACL {
 		o.ACL, o.Channels = AllowEveryone{}, h.channels
 	}
+	// Set only when there is one: an interface holding a nil *sfu.Server is not a nil interface.
+	// The instance sees it without the debug rooms, which its room sweep would otherwise delete.
+	if h.sfu != nil {
+		o.SFU = harnessSFU{Server: h.sfu, debug: &h.debugRooms}
+	}
 	return dillad.New(ctx, o)
+}
+
+// startSFU starts the harness LiveKit with the instance's own livekit.api_key and a fresh secret.
+func (h *Host) startSFU(ctx context.Context) error {
+	port, udp := h.o.SFUPort, h.o.SFUUDPPort
+	if port == 0 {
+		port = DefaultSFUPort
+	}
+	if udp == 0 {
+		udp = DefaultSFUUDPPort
+	}
+	secret, err := newSFUSecret()
+	if err != nil {
+		return err
+	}
+	cfg := testSFUConfig(port, udp, h.cfg.LiveKit.APIKey, secret)
+	if h.o.SFUNoInternalIP {
+		cfg.AdvertiseInternalIP = false
+	}
+	cfg.TestAV1 = h.o.SFUEnableAV1
+	s, err := sfu.Start(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("dilladtest: start the SFU on 127.0.0.1:%d (udp %d): %w", port, udp, err)
+	}
+	h.sfu = s
+	return nil
+}
+
+func (h *Host) stopSFU(ctx context.Context) {
+	if h.sfu != nil {
+		_ = h.sfu.Stop(ctx)
+		h.sfu = nil
+	}
 }
 
 // PutCommunityChannel writes a text channel of community under target, with visibility and mode,
@@ -610,6 +677,7 @@ func (h *Host) Close(ctx context.Context) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	err := h.server.Shutdown(ctx)
+	h.stopSFU(ctx)
 	h.closeWasm(ctx)
 	return err
 }

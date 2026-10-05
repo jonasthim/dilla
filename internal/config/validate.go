@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -16,6 +17,11 @@ import (
 
 	"github.com/jonasthim/dilla/internal/exit"
 )
+
+// minCredentialTTL is the shortest turn.credential_ttl: the relay accepts a credential issued up to
+// 2 s ahead of its clock and `dillad doctor` mints a 10 s one, so a lifetime near that is refused at
+// random.
+const minCredentialTTL = time.Minute
 
 // runtimeNumCPU is runtime.NumCPU behind a variable so a test can pin it.
 var runtimeNumCPU = runtime.NumCPU
@@ -84,6 +90,7 @@ func (c *Config) durations() map[string]Duration {
 		"tls.dns.propagation_delay":       c.TLS.DNS.PropagationDelay,
 		"tls.dns.propagation_timeout":     c.TLS.DNS.PropagationTimeout,
 		"turn.credential_ttl":             c.TURN.CredentialTTL,
+		"turn.max_allocation_age":         c.TURN.MaxAllocationAge,
 		"db.conn_max_lifetime":            c.DB.ConnMaxLifetime,
 		"blobs.pending_ttl":               c.Blobs.PendingTTL,
 		"blobs.gc_grace":                  c.Blobs.GCGrace,
@@ -178,6 +185,19 @@ func (c *Config) Validate() error {
 	if c.TURN.ProxyProtocol && c.TURN.Listen == "" {
 		add("turn.proxy_protocol requires turn.listen")
 	}
+	// G34: a browser holds T × N × U allocations (T = 1 under max-bundle, N = its networks, U = 1
+	// relay URL); 4 covers two networks through one ICE-restart overlap. 16 is far past any device.
+	if n := c.TURN.AllocationsPerDevice; n < 1 || n > 16 {
+		add("turn.allocations_per_device is %d; the range is 1..16", n)
+	}
+	if ttl := c.TURN.CredentialTTL.Value(); ttl < minCredentialTTL {
+		add("turn.credential_ttl is %s; the minimum is %s (the relay judges a credential to the millisecond, with up to 2s of clock skew allowed between hosts)",
+			c.TURN.CredentialTTL, minCredentialTTL)
+	}
+	if age, ttl := c.TURN.MaxAllocationAge.Value(), c.TURN.CredentialTTL.Value(); age < ttl {
+		add("turn.max_allocation_age (%s) is shorter than turn.credential_ttl (%s): an allocation could not outlive the credential it was made with",
+			c.TURN.MaxAllocationAge, c.TURN.CredentialTTL)
+	}
 	if c.LiveKit.Enabled {
 		if err := secretFile(c.LiveKit.APISecretFile, 32); err != nil {
 			add("livekit.api_secret_file: %v", err)
@@ -191,12 +211,49 @@ func (c *Config) Validate() error {
 	if c.LiveKit.ExtraConfigFile != "" {
 		add("livekit.extra_config_file is reserved and not read yet; remove it")
 	}
-	if c.LiveKit.MaxPublishers != defaultMaxPublishers {
-		add("livekit.max_publishers is reserved: LiveKit v1.13.7 has no publisher cap, so only the default %d is accepted",
-			defaultMaxPublishers)
+	// The publisher lease (dilla-media task 10) enforces any cap up to the room's own.
+	if c.LiveKit.MaxPublishers < 1 || c.LiveKit.MaxPublishers > c.LiveKit.MaxVoiceParticipants {
+		add("livekit.max_publishers is %d; the range is 1..livekit.max_voice_participants (%d)",
+			c.LiveKit.MaxPublishers, c.LiveKit.MaxVoiceParticipants)
+	}
+	// The /rtc proxy is the only way into LiveKit's signalling and RoomService (protocol/09): a
+	// non-loopback bind lets any holder of a LiveKit token skip the join gate, and a hostname binds
+	// one resolved address while dillad's dials may reach another a local process holds (SFU-3).
+	if a, err := netip.ParseAddr(c.LiveKit.BindAddress); err != nil || !a.IsLoopback() || a.Zone() != "" {
+		add("livekit.bind_address is %q; it must be a loopback IP literal such as 127.0.0.1 or ::1 (not a hostname): "+
+			"LiveKit's signalling and RoomService are reached only through dillad's /rtc gate", c.LiveKit.BindAddress)
+	}
+	// VP9 has a frame-prefix rule (0 clear bytes, protocol/05) but no SFrame test vector, and it has
+	// never been measured through LiveKit; until both exist it stays off (crypto lens, parked VP9).
+	if c.LiveKit.VP9 {
+		add("livekit.vp9 = true is refused: VP9 has no SFrame test vector yet and has not been measured through LiveKit; " +
+			"remove the key until the VP9 follow-up lands")
 	}
 	if c.LiveKit.UseExternalIP {
 		add("livekit.use_external_ip is reserved and must stay false: livekit.node_ip is the address LiveKit advertises")
+	}
+	if err := validWebhookListen(c.LiveKit.WebhookListen); err != nil {
+		add("livekit.webhook_listen: %v", err)
+	}
+	if !c.LiveKit.Enabled && c.LiveKit.WebhookListen != DefaultWebhookListen {
+		add("livekit.webhook_listen is set while livekit.enabled is false: no SFU would post to it and no receiver would start")
+	}
+	if v := c.LiveKit.MaxShareBitrateKbps; v < 100 || v > 20000 {
+		add("livekit.max_share_bitrate_kbps is %d; the range is 100..20000", v)
+	}
+	if v := c.LiveKit.MaxAudioBitrateKbps; v < 16 || v > 510 {
+		add("livekit.max_audio_bitrate_kbps is %d; the range is 16..510 (Opus)", v)
+	}
+	if v := c.LiveKit.LimitNumTracks; v < 0 || v > math.MaxInt32 {
+		add("livekit.limit_num_tracks is %d; the range is 0..%d", v, math.MaxInt32)
+	}
+	if c.LiveKit.LimitBytesPerSec < 0 {
+		add("livekit.limit_bytes_per_sec is %d; it cannot be negative", c.LiveKit.LimitBytesPerSec)
+	}
+	for _, p := range c.LiveKit.IPsExcludes {
+		if _, err := netip.ParsePrefix(p); err != nil {
+			add("livekit.ips_excludes entry %q is not a CIDR prefix such as \"172.17.0.0/16\"", p)
+		}
 	}
 	if c.Retention.HandshakeDays > 30 || c.Retention.HandshakeDays < 1 {
 		add("retention.handshake_days is %d; the range is 1..30 (protocol/02 § Retention)", c.Retention.HandshakeDays)
@@ -334,6 +391,25 @@ func secretFile(path string, minBytes int) error {
 	}
 	if info.Size() < int64(minBytes) {
 		return fmt.Errorf("%s is %d bytes; at least %d are required", path, info.Size(), minBytes)
+	}
+	return nil
+}
+
+// validWebhookListen: a loopback IP literal or localhost, with a port. LiveKit signs every webhook,
+// but the receiver is loopback-only so nothing off the host can even try.
+func validWebhookListen(v string) error {
+	host, port, err := net.SplitHostPort(v)
+	if err != nil {
+		return fmt.Errorf("%q is not host:port", v)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 0 || n > 65535 {
+		return fmt.Errorf("%q has no valid port", v)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if a, err := netip.ParseAddr(host); err != nil || !a.IsLoopback() {
+		return fmt.Errorf("%q is not a loopback address (127.0.0.0/8, ::1 or localhost)", v)
 	}
 	return nil
 }

@@ -17,9 +17,12 @@ sync bob
 # A member-originated Remove may only target the committer's own user.
 expect_reject E_COMMIT_INVALID rule=member_remove_scope remove bob chat alice
 # The instance proposes removing bob; alice has not synced, so her own Remove of bob does not carry
-# the instance's proposal and is refused for that before its scope is even looked at.
+# the instance's proposal. A Remove of bob's leaf satisfies the instance's Remove of it (invariant 4
+# clause 1, the task-9 review's (3a)), so the commit is refused for its scope instead: alice may not
+# remove another user. `outstanding_proposals` itself is pinned by the delivery service's unit tests
+# (TestEachCommitValidityClauseHasItsOwnRule, TestAnyAppliedRemoveOfTheLeafSatisfiesTheInstanceRemove).
 kick alice bob
-expect_reject E_COMMIT_INVALID rule=outstanding_proposals remove alice chat bob
+expect_reject E_COMMIT_INVALID rule=member_remove_scope remove alice chat bob
 commit alice
 # The external joiner's leaf: another device's commit under frank's session, the same on the resync
 # path under alice's, a leaf key that is not the DSK, no signed list, a list that revokes the

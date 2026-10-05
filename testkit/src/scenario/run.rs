@@ -458,18 +458,51 @@ impl Runner {
                 control_post(path, &format!("{{\"name\":{}}}", json_string(name)))?;
                 Ok(())
             }
-            Stmt::Commit { actor } => self.with_client(actor, |committer, ds| {
-                let groups = committer.group_ids();
-                if groups.is_empty() {
-                    return Err(TestkitError::Scenario(format!(
-                        "{actor} is in no group to commit to"
-                    )));
+            Stmt::Commit {
+                actor,
+                group,
+                member_removes_last,
+            } => {
+                if let Some(group) = group {
+                    let id = self.group(group)?.id.clone();
+                    let reorder = *member_removes_last;
+                    return self.with_client(actor, |committer, ds| {
+                        if reorder {
+                            committer.commit_member_removes_last(ds, &id)
+                        } else {
+                            committer.commit(ds, &id)
+                        }
+                    });
                 }
-                for group_id in groups {
-                    committer.commit(ds, &group_id)?;
+                self.with_client(actor, |committer, ds| {
+                    let groups = committer.group_ids();
+                    if groups.is_empty() {
+                        return Err(TestkitError::Scenario(format!(
+                            "{actor} is in no group to commit to"
+                        )));
+                    }
+                    for group_id in groups {
+                        committer.commit(ds, &group_id)?;
+                    }
+                    Ok(())
+                })
+            }
+            Stmt::Leave { client, group } => {
+                // The stub issues no instance proposals, so it never holds the instance Remove a
+                // leave can race and never answers E_REMOVE_PENDING: a leave scenario against it
+                // would pass without ever meeting the refusal it is written for (m7 of the task-9
+                // review). It is refused as `kick` is.
+                if !self.is_remote() {
+                    return Err(DsError::Unsupported(
+                        "DsStub does not model instance-originated proposals, so it cannot refuse \
+                         a leave with E_REMOVE_PENDING (invariant 6); use `ds <url>`"
+                            .into(),
+                    )
+                    .into());
                 }
-                Ok(())
-            }),
+                let id = self.group(group)?.id.clone();
+                self.with_client(client, |leaver, ds| leaver.leave(ds, &id))
+            }
             Stmt::JoinMany {
                 group,
                 count,
@@ -1010,6 +1043,67 @@ impl Runner {
             .get(name)
             .ok_or_else(|| TestkitError::Scenario(format!("unknown group {name}")))
     }
+    // ---- the media driver's way in (task 21, MD-12) ----
+
+    /// Parses one scenario statement and runs it, exactly as a `.scn` line would run.
+    pub fn exec_line(&mut self, line: &str) -> Result<(), TestkitError> {
+        let scenario = crate::parse(line, "media-driver")
+            .map_err(|e| TestkitError::Scenario(e.to_string()))?;
+        for stmt in &scenario.stmts {
+            self.exec(stmt)?;
+        }
+        Ok(())
+    }
+
+    /// The id the instance gave the group a `group <name> …` statement registered.
+    pub fn group_id(&self, name: &str) -> Result<Vec<u8>, TestkitError> {
+        Ok(self.group(name)?.id.clone())
+    }
+
+    /// `client`'s current epoch in the group named `group`.
+    pub fn epoch_of(&self, client: &str, group: &str) -> Result<u64, TestkitError> {
+        let id = &self.group(group)?.id;
+        self.clients
+            .get(client)
+            .ok_or_else(|| TestkitError::Scenario(format!("unknown client {client}")))?
+            .epoch_of(id)
+            .ok_or_else(|| {
+                TestkitError::Scenario(format!("{client} holds no state for group {group}"))
+            })
+    }
+
+    pub fn device_hex(&self, client: &str) -> Result<String, TestkitError> {
+        Ok(self.device_of(client)?.to_hex())
+    }
+
+    /// Runs `f` with `client` and its view of the delivery service, as a statement does.
+    pub fn with_member<T>(
+        &mut self,
+        client: &str,
+        f: impl FnOnce(&mut TestClient, &mut dyn DeliveryService) -> Result<T, TestkitError>,
+    ) -> Result<T, TestkitError> {
+        self.with_client(client, f)
+    }
+
+    /// Runs `f` with `client`'s own `/v1` session: the call routes are no `DeliveryService` call.
+    pub fn with_session<T>(
+        &mut self,
+        client: &str,
+        f: impl FnOnce(&TestClient, &mut HttpDs) -> Result<T, TestkitError>,
+    ) -> Result<T, TestkitError> {
+        let taken = self.take(client)?;
+        let result = match self.backend.as_mut() {
+            Some(Backend::Remote { clients, .. }) => match clients.get_mut(client) {
+                Some(ds) => f(&taken, ds),
+                None => Err(TestkitError::Scenario(format!("{client} holds no session"))),
+            },
+            _ => Err(TestkitError::Scenario(
+                "a session call needs `--ds <url>`: the stub has no /v1 routes".into(),
+            )),
+        };
+        self.clients.insert(client.to_owned(), taken);
+        result
+    }
 }
 
 fn no_instance() -> TestkitError {
@@ -1032,10 +1126,11 @@ fn actor_of(stmt: &Stmt) -> Option<&str> {
         | Stmt::ForkReport { client, .. }
         | Stmt::Heal { client, .. }
         | Stmt::AckCommit { client }
+        | Stmt::Leave { client, .. }
         | Stmt::PublishKeyPackages { client, .. } => Some(client),
         Stmt::Remove { actor, .. }
         | Stmt::Kick { actor, .. }
-        | Stmt::Commit { actor }
+        | Stmt::Commit { actor, .. }
         | Stmt::ExpectDecryptsAll { actor } => Some(actor),
         Stmt::ExpectReject { inner, .. } => actor_of(inner),
         _ => None,

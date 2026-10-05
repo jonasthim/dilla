@@ -298,13 +298,11 @@ func TestValidationRules(t *testing.T) {
 		}
 	})
 	// I13 (fix wave): a livekit.* key that never reaches LiveKit is refused rather than silently
-	// ignored. LiveKit v1.13.7 has no publisher cap and dillad renders its own YAML, so only the
-	// defaults of max_publishers, extra_config_file and use_external_ip are accepted until they are
-	// wired.
+	// ignored. dillad renders its own YAML, so only the defaults of extra_config_file and
+	// use_external_ip are accepted until they are wired.
 	t.Run("livekit keys that reach nothing are refused", func(t *testing.T) {
 		for name, set := range map[string]func(*config.Config){
 			"extra_config_file": func(c *config.Config) { c.LiveKit.ExtraConfigFile = "/etc/dilla/livekit.yaml" },
-			"max_publishers":    func(c *config.Config) { c.LiveKit.MaxPublishers = 4 },
 			"use_external_ip":   func(c *config.Config) { c.LiveKit.UseExternalIP = true },
 		} {
 			c := base()
@@ -319,6 +317,22 @@ func TestValidationRules(t *testing.T) {
 		c.Derive()
 		if err := c.Validate(); err != nil {
 			t.Fatalf("the defaults: %v", err)
+		}
+	})
+	// dilla-media task 10: the publisher lease enforces livekit.max_publishers, so any cap from one
+	// device up to the room's own is accepted.
+	t.Run("livekit.max_publishers is within the room cap", func(t *testing.T) {
+		for publishers, ok := range map[int]bool{0: false, 1: true, 4: true, 25: true, 26: false} {
+			c := base()
+			c.LiveKit.MaxPublishers = publishers
+			c.Derive()
+			err := c.Validate()
+			if ok && err != nil {
+				t.Errorf("max_publishers %d refused: %v", publishers, err)
+			}
+			if !ok && (err == nil || !strings.Contains(err.Error(), "livekit.max_publishers")) {
+				t.Errorf("max_publishers %d: Validate = %v, want an error naming the key", publishers, err)
+			}
 		}
 	})
 	// I12 (fix wave): turn.relay_ip is an IP address or "auto"; anything else is refused at load, not
@@ -336,6 +350,47 @@ func TestValidationRules(t *testing.T) {
 			}
 			if !ok && (err == nil || !strings.Contains(err.Error(), "turn.relay_ip")) {
 				t.Errorf("relay_ip %q: Validate = %v, want an error naming turn.relay_ip", relay, err)
+			}
+		}
+	})
+	t.Run("the turn allocation knobs", func(t *testing.T) {
+		c := base()
+		c.Derive()
+		if c.TURN.AllocationsPerDevice != 4 || c.TURN.MaxAllocationAge != "2h" || c.TURN.CredentialTTL != "1h" {
+			t.Fatalf("defaults = %d, %s, %s; want 4, 2h, 1h", c.TURN.AllocationsPerDevice, c.TURN.MaxAllocationAge, c.TURN.CredentialTTL)
+		}
+		for name, set := range map[string]func(*config.Config){
+			"turn.allocations_per_device": func(c *config.Config) { c.TURN.AllocationsPerDevice = 0 },
+			"turn.max_allocation_age":     func(c *config.Config) { c.TURN.MaxAllocationAge = "30m" },
+		} {
+			c := base()
+			set(c)
+			c.Derive()
+			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), name) {
+				t.Errorf("%s out of range: Validate = %v, want an error naming the key", name, err)
+			}
+		}
+		c = base()
+		c.TURN.AllocationsPerDevice = 17
+		c.Derive()
+		if err := c.Validate(); err == nil {
+			t.Error("turn.allocations_per_device 17 was accepted")
+		}
+	})
+	// The relay's credential is judged to the millisecond against clock skew of up to 2 s, so a
+	// lifetime under a minute is not a working configuration.
+	t.Run("turn.credential_ttl is at least a minute", func(t *testing.T) {
+		for ttl, ok := range map[config.Duration]bool{"59s": false, "1s": false, "1m": true, "1h": true} {
+			c := base()
+			c.TURN.CredentialTTL = ttl
+			c.TURN.MaxAllocationAge = "2h"
+			c.Derive()
+			err := c.Validate()
+			if ok && err != nil {
+				t.Errorf("turn.credential_ttl %s refused: %v", ttl, err)
+			}
+			if !ok && (err == nil || !strings.Contains(err.Error(), "turn.credential_ttl") || !strings.Contains(err.Error(), "1m")) {
+				t.Errorf("turn.credential_ttl %s: Validate = %v, want an error naming the key and the minimum", ttl, err)
 			}
 		}
 	})
@@ -395,5 +450,92 @@ func TestConfigDoesNotImplementLogValuerByAccident(t *testing.T) {
 	// method set rather than the output.
 	if _, ok := any(config.Default()).(slog.LogValuer); ok {
 		t.Fatal("*Config implements slog.LogValuer; R20 requires the explicit Redacted() call")
+	}
+}
+
+// dilla-media task 8: the new [livekit] keys, their defaults and their ranges.
+func TestTheLiveKitMediaKeys(t *testing.T) {
+	d := config.Default().LiveKit
+	if d.WebhookListen != "127.0.0.1:7883" || d.VP9 || d.MaxShareBitrateKbps != 2500 || d.MaxAudioBitrateKbps != 64 ||
+		d.LimitNumTracks != 0 || d.LimitBytesPerSec != 0 || len(d.IPsExcludes) != 0 {
+		t.Fatalf("defaults = %+v", d)
+	}
+	valid := func(t *testing.T) *config.Config {
+		t.Helper()
+		c := base()
+		c.Instance.PublicIP = netipMustParse(t, "203.0.113.7")
+		c.TURN.Enabled = false
+		c.LiveKit.APISecretFile = writeSecretFile(t)
+		c.Derive()
+		return c
+	}
+	if err := valid(t).Validate(); err != nil {
+		t.Fatalf("the defaults: %v", err)
+	}
+	for name, set := range map[string]func(*config.Config){
+		"livekit.webhook_listen not loopback":     func(c *config.Config) { c.LiveKit.WebhookListen = "0.0.0.0:7883" },
+		"livekit.webhook_listen without a port":   func(c *config.Config) { c.LiveKit.WebhookListen = "127.0.0.1" },
+		"livekit.webhook_listen a hostname":       func(c *config.Config) { c.LiveKit.WebhookListen = "dilla.example:7883" },
+		"livekit.max_share_bitrate_kbps too low":  func(c *config.Config) { c.LiveKit.MaxShareBitrateKbps = 99 },
+		"livekit.max_share_bitrate_kbps too high": func(c *config.Config) { c.LiveKit.MaxShareBitrateKbps = 20001 },
+		"livekit.max_audio_bitrate_kbps too low":  func(c *config.Config) { c.LiveKit.MaxAudioBitrateKbps = 15 },
+		"livekit.max_audio_bitrate_kbps too high": func(c *config.Config) { c.LiveKit.MaxAudioBitrateKbps = 511 },
+		"livekit.limit_num_tracks negative":       func(c *config.Config) { c.LiveKit.LimitNumTracks = -1 },
+		"livekit.limit_num_tracks above int32":    func(c *config.Config) { c.LiveKit.LimitNumTracks = 1 << 31 },
+		"livekit.limit_bytes_per_sec negative":    func(c *config.Config) { c.LiveKit.LimitBytesPerSec = -1 },
+		"livekit.ips_excludes not a prefix":       func(c *config.Config) { c.LiveKit.IPsExcludes = []string{"172.17.0.1"} },
+		"livekit.bind_address a hostname":         func(c *config.Config) { c.LiveKit.BindAddress = "localhost" },
+		"livekit.bind_address the wildcard":       func(c *config.Config) { c.LiveKit.BindAddress = "0.0.0.0" },
+		"livekit.bind_address the IPv6 wildcard":  func(c *config.Config) { c.LiveKit.BindAddress = "::" },
+		"livekit.bind_address a LAN address":      func(c *config.Config) { c.LiveKit.BindAddress = "192.168.1.5" },
+		"livekit.bind_address empty":              func(c *config.Config) { c.LiveKit.BindAddress = "" },
+		"livekit.bind_address with a port":        func(c *config.Config) { c.LiveKit.BindAddress = "127.0.0.1:7880" },
+		"livekit.bind_address a YAML injection":   func(c *config.Config) { c.LiveKit.BindAddress = "127.0.0.1\n  - 0.0.0.0" },
+		"livekit.vp9 on":                          func(c *config.Config) { c.LiveKit.VP9 = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := valid(t)
+			set(c)
+			key, _, _ := strings.Cut(name, " ")
+			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("Validate = %v, want an error naming %s", err, key)
+			}
+		})
+	}
+	for name, set := range map[string]func(*config.Config){
+		"localhost":            func(c *config.Config) { c.LiveKit.WebhookListen = "localhost:7883" },
+		"IPv6 loopback":        func(c *config.Config) { c.LiveKit.WebhookListen = "[::1]:7883" },
+		"port 0 (tests)":       func(c *config.Config) { c.LiveKit.WebhookListen = "127.0.0.1:0" },
+		"a Docker exclude":     func(c *config.Config) { c.LiveKit.IPsExcludes = []string{"172.17.0.0/16", "fd00::/8"} },
+		"a loopback bind":      func(c *config.Config) { c.LiveKit.BindAddress = "127.0.0.2" },
+		"the IPv6 loopback":    func(c *config.Config) { c.LiveKit.BindAddress = "::1" },
+		"host limits":          func(c *config.Config) { c.LiveKit.LimitNumTracks, c.LiveKit.LimitBytesPerSec = 4000, 125_000_000 },
+		"bitrates at the ends": func(c *config.Config) { c.LiveKit.MaxShareBitrateKbps, c.LiveKit.MaxAudioBitrateKbps = 100, 510 },
+	} {
+		t.Run("accepted: "+name, func(t *testing.T) {
+			c := valid(t)
+			set(c)
+			if err := c.Validate(); err != nil {
+				t.Fatalf("Validate = %v", err)
+			}
+		})
+	}
+	// The VP9 follow-up (crypto lens, parked): the refusal says why, so an operator knows it is not a
+	// typo — no frame vector and no measurement through LiveKit for the 0-byte prefix rule yet.
+	vp9 := valid(t)
+	vp9.LiveKit.VP9 = true
+	if err := vp9.Validate(); err == nil || !strings.Contains(err.Error(), "test vector") ||
+		!strings.Contains(err.Error(), "measured through LiveKit") {
+		t.Fatalf("livekit.vp9 = true: Validate = %v, want a refusal naming the missing vector and measurement", err)
+	}
+	// A webhook listener nothing would start: a non-default webhook_listen with LiveKit off.
+	c := valid(t)
+	c.LiveKit.Enabled = false
+	if err := c.Validate(); err != nil {
+		t.Fatalf("LiveKit off with the default webhook_listen: %v", err)
+	}
+	c.LiveKit.WebhookListen = "127.0.0.1:9999"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "livekit.webhook_listen") {
+		t.Fatalf("LiveKit off with webhook_listen set: Validate = %v, want a refusal naming the key", err)
 	}
 }

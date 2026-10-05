@@ -326,6 +326,7 @@ func ControlHandler(h *Host) http.Handler {
 		}
 		writeJSON(w, report)
 	})
+	h.mountSFU(mux)
 	return mux
 }
 
@@ -456,12 +457,15 @@ func (h *Host) Advance(ctx context.Context, d time.Duration) error {
 
 // Kick is the instance proposing the removal of `target` from every group it is a member of: an
 // instance Remove proposal per group, which freezes the group (invariant 5) until a member commits
-// it. It answers how many proposals it issued.
+// it. It answers how many proposals it issued. In a call group the Remove goes by device
+// (ProposeRemoveDevice), so a kick that finds an instance Remove of that leaf already standing is
+// dropped rather than stacked (DEV-45); a member's own Remove of the leaf does not stop it.
 //
 // A target that is in no group any more is kicked again at the leaves an earlier kick named, so
 // the delivery service's own "a Remove whose target leaf is already gone is dropped, not proposed"
 // (invariant 6) answers — as the E_* refusal writeError relays — rather than this helper deciding
-// it by finding nothing to do.
+// it by finding nothing to do. The text-group Remove names the target's device
+// (ProposeRemoveOf), so a leaf another device holds by now is refused the same way.
 func (h *Host) Kick(ctx context.Context, target id.ID) (int, error) {
 	s := h.Server()
 	groups, err := s.Repo().GroupsForDevice(ctx, target)
@@ -489,7 +493,16 @@ func (h *Host) Kick(ctx context.Context, target id.ID) (int, error) {
 	h.kickMu.Unlock()
 	n := 0
 	for _, k := range leaves {
-		if err := s.DS().ProposeRemove(ctx, k.group, k.leaf, id.New()); err != nil {
+		row, err := s.Repo().GetGroup(ctx, k.group)
+		if err != nil {
+			return n, err
+		}
+		if row.Kind == 1 { // call: by device, as every production call path proposes (DEV-45)
+			err = s.DS().ProposeRemoveDevice(ctx, k.group, target, id.New())
+		} else {
+			err = s.DS().ProposeRemoveOf(ctx, k.group, k.leaf, target, id.New())
+		}
+		if err != nil {
 			return n, err
 		}
 		n++

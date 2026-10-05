@@ -6,15 +6,18 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
+	"github.com/livekit/protocol/livekit"
 	"github.com/pressly/goose/v3"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -24,6 +27,7 @@ import (
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
@@ -362,22 +366,237 @@ func prevsToAny(prevs []api.Preview) []any {
 // ptr returns a pointer to a copy of v.
 func ptr[T any](v T) *T { return &v }
 
-// stubSFU stands in for internal/sfu.(*Server).Token: the JWT's contents are
-// internal/sfu's own test's business, and the epoch gate in front of it is
-// this file's.
+// mint is one token stubSFU minted.
+type mint struct {
+	Room, Identity string
+	Perm           *livekit.ParticipantPermission
+	Attrs          map[string]string
+}
+
+// permUpdate is one UpdatePermission stubSFU was asked for.
+type permUpdate struct {
+	Room, Identity string
+	Perm           *livekit.ParticipantPermission
+}
+
+// stubSFU stands in for internal/sfu.(*Server): the JWT's contents are internal/sfu's own test's
+// business, and the gates in front of it are this file's.
 type stubSFU struct {
 	mu         sync.Mutex
-	calls      [][2]string // (room, identity)
+	mints      []mint
 	fail       error
 	deleted    []string // rooms DeleteRoom was asked to close
 	deleteFail error
+	created    []string // rooms CreateRoom was asked to open
+	createFail error
+	updates    []permUpdate
+	updateFail error
+	absent     map[string]bool  // identities UpdatePermission answers sfu.ErrNoParticipant for
+	onUpdate   func(permUpdate) // runs after the update is recorded, outside the lock
+	// beforeUpdate runs before the update is recorded (applied), outside the lock: a test parks a
+	// push there to order it after a concurrent one.
+	beforeUpdate func(permUpdate)
+	removed      [][2]string // (room, device) RemoveParticipants was asked for
+	removedIDs   [][2]string // (room, identity) RemoveParticipant was asked for
+	// live is the permission the stub SFU holds per identity: set by an applied update, dropped by
+	// a removal.
+	live         map[string]*livekit.ParticipantPermission
+	failUpdates  int  // the next failUpdates pushes fail (and are not applied)
+	failRemovals int  // the next failRemovals RemoveParticipants calls fail
+	hang         bool // pushes and removals block until their context ends: a hung SFU
+	present      map[string][]*livekit.ParticipantInfo
+	listFail     error
+	// rooms is every room the stub SFU holds: opened by CreateRoom or setPresent, closed by a
+	// DeleteRoom that succeeds. roomsFail fails Rooms.
+	rooms     map[string]bool
+	roomsFail error
+	// sids is the LiveKit room sid of each room the stub holds, set by setSID (none: "").
+	sids map[string]string
+}
+
+// RoomSID is sfu.Server's: the sid of the room the stub holds under that name now.
+func (s *stubSFU) RoomSID(_ context.Context, room string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sids[room], s.rooms[room], nil
+}
+
+// setSID names the incarnation of room the stub holds, opening it.
+func (s *stubSFU) setSID(room, sid string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sids == nil {
+		s.sids = map[string]string{}
+	}
+	if s.rooms == nil {
+		s.rooms = map[string]bool{}
+	}
+	s.sids[room], s.rooms[room] = sid, true
+}
+
+func (s *stubSFU) Rooms(ctx context.Context) ([]string, error) {
+	s.mu.Lock()
+	if s.hang {
+		s.mu.Unlock()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	defer s.mu.Unlock()
+	if s.roomsFail != nil {
+		return nil, s.roomsFail
+	}
+	out := make([]string, 0, len(s.rooms))
+	for r := range s.rooms {
+		out = append(out, r)
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// addRoom opens room in the stub SFU with nobody in it, as a room left behind would be.
+func (s *stubSFU) addRoom(room string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rooms == nil {
+		s.rooms = map[string]bool{}
+	}
+	s.rooms[room] = true
+}
+
+// heldRooms is the rooms the stub holds.
+func (s *stubSFU) heldRooms() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.rooms))
+	for r := range s.rooms {
+		out = append(out, r)
+	}
+	slices.Sort(out)
+	return out
+}
+
+var _ api.CallTokens = (*stubSFU)(nil)
+
+func (s *stubSFU) Token(room, identity string, perm *livekit.ParticipantPermission, attrs map[string]string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail != nil {
+		return "", s.fail
+	}
+	s.mints = append(s.mints, mint{Room: room, Identity: identity, Perm: perm, Attrs: attrs})
+	return "jwt-for-" + identity, nil
 }
 
 func (s *stubSFU) DeleteRoom(_ context.Context, room string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deleted = append(s.deleted, room)
+	if s.deleteFail == nil {
+		delete(s.rooms, room)
+		delete(s.present, room)
+	}
 	return s.deleteFail
+}
+
+func (s *stubSFU) CreateRoom(_ context.Context, room string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.created = append(s.created, room)
+	if s.createFail == nil {
+		if s.rooms == nil {
+			s.rooms = map[string]bool{}
+		}
+		s.rooms[room] = true
+	}
+	return s.createFail
+}
+
+func (s *stubSFU) UpdatePermission(ctx context.Context, room, identity string, perm *livekit.ParticipantPermission) error {
+	u := permUpdate{Room: room, Identity: identity, Perm: perm}
+	s.mu.Lock()
+	before, hang := s.beforeUpdate, s.hang
+	s.mu.Unlock()
+	if hang {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if before != nil {
+		before(u)
+	}
+	s.mu.Lock()
+	s.updates = append(s.updates, u)
+	hook, fail, absent := s.onUpdate, s.updateFail, s.absent[identity]
+	if s.failUpdates > 0 {
+		s.failUpdates--
+		fail = errors.New("stub SFU: push failed")
+	}
+	if !absent && fail == nil {
+		if s.live == nil {
+			s.live = map[string]*livekit.ParticipantPermission{}
+		}
+		s.live[identity] = perm
+	}
+	s.mu.Unlock()
+	if hook != nil {
+		hook(u)
+	}
+	if absent {
+		return sfu.ErrNoParticipant
+	}
+	return fail
+}
+
+func (s *stubSFU) RemoveParticipants(ctx context.Context, room string, device id.ID) error {
+	s.mu.Lock()
+	if s.hang {
+		s.mu.Unlock()
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	defer s.mu.Unlock()
+	s.removed = append(s.removed, [2]string{room, device.String()})
+	if s.failRemovals > 0 {
+		s.failRemovals--
+		return errors.New("stub SFU: removal failed")
+	}
+	for identity := range s.live {
+		if identity == device.String() || strings.HasPrefix(identity, device.String()+"#") {
+			delete(s.live, identity)
+		}
+	}
+	return nil
+}
+
+func (s *stubSFU) RemoveParticipant(_ context.Context, room, identity string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.removedIDs = append(s.removedIDs, [2]string{room, identity})
+	delete(s.live, identity)
+	return nil
+}
+
+// removals is every RemoveParticipants (device) and RemoveParticipant (identity) call.
+func (s *stubSFU) removals() (devices, identities [][2]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([][2]string(nil), s.removed...), append([][2]string(nil), s.removedIDs...)
+}
+
+// lastPerms is the permission the SFU holds for each participant now: the last one applied to it,
+// for as long as no removal took it out of the room.
+func (s *stubSFU) lastPerms() map[string]*livekit.ParticipantPermission {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.live)
+}
+
+func (s *stubSFU) Participants(_ context.Context, room string) ([]*livekit.ParticipantInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listFail != nil {
+		return nil, s.listFail
+	}
+	return s.present[room], nil
 }
 
 func (s *stubSFU) deletedRooms() []string {
@@ -386,20 +605,49 @@ func (s *stubSFU) deletedRooms() []string {
 	return append([]string(nil), s.deleted...)
 }
 
-func (s *stubSFU) Token(room, identity string) (string, error) {
+func (s *stubSFU) createdRooms() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.fail != nil {
-		return "", s.fail
-	}
-	s.calls = append(s.calls, [2]string{room, identity})
-	return "jwt-for-" + identity, nil
+	return append([]string(nil), s.created...)
 }
 
+// minted is every token as (room, identity), in mint order.
 func (s *stubSFU) minted() [][2]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([][2]string(nil), s.calls...)
+	out := make([][2]string, 0, len(s.mints))
+	for _, m := range s.mints {
+		out = append(out, [2]string{m.Room, m.Identity})
+	}
+	return out
+}
+
+func (s *stubSFU) lastMint() mint {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.mints) == 0 {
+		return mint{}
+	}
+	return s.mints[len(s.mints)-1]
+}
+
+func (s *stubSFU) permUpdates() []permUpdate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]permUpdate(nil), s.updates...)
+}
+
+func (s *stubSFU) setPresent(room string, parts ...*livekit.ParticipantInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.present == nil {
+		s.present = map[string][]*livekit.ParticipantInfo{}
+	}
+	s.present[room] = parts
+	if s.rooms == nil {
+		s.rooms = map[string]bool{}
+	}
+	s.rooms[room] = true
 }
 
 const (
@@ -422,14 +670,23 @@ func callEnv(t *testing.T) (*env, id.ID, string, id.ID) {
 
 func callEnvWith(t *testing.T, cfg api.CallsConfig) (*env, id.ID, string, id.ID, *stubSFU) {
 	t.Helper()
+	e, ch, tok, group, stub, _ := callEnvCalls(t, cfg)
+	return e, ch, tok, group, stub
+}
+
+// callEnvCalls is callEnvWith that also hands back the mounted *api.Calls, for the tests that drive
+// SyncCallGrants and the call events through it.
+func callEnvCalls(t *testing.T, cfg api.CallsConfig) (*env, id.ID, string, id.ID, *stubSFU, *api.Calls) {
+	t.Helper()
 	e, cid, tok := channelEnv(t)
 	ch, _, status := newChannel(t, e, cid, tok, 1 /* voice */, 1, 2, "voice")
 	if status != http.StatusCreated {
 		t.Fatalf("voice channel = %d", status)
 	}
-	sfu := &stubSFU{}
-	api.NewCalls(e.Repo, api.NewResolver(e.Repo), sfu, cfg, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
-	return e, ch, tok, seedCallGroup(t, e, ch, cid, callGroupEpoch), sfu
+	stub := &stubSFU{}
+	calls := api.NewCalls(e.Repo, api.NewResolver(e.Repo), stub, cfg, e.Clk, slog.New(slog.DiscardHandler))
+	calls.Register(e.Mux)
+	return e, ch, tok, seedCallGroup(t, e, ch, cid, callGroupEpoch), stub, calls
 }
 
 // seedCallGroup writes one open call group row bound to the channel at the

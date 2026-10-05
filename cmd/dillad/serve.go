@@ -16,6 +16,7 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
@@ -24,6 +25,8 @@ import (
 	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/postgres"
 	postgresmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
@@ -95,6 +98,16 @@ func migrationProvider(c *config.Config, db *sql.DB) (*goose.Provider, error) {
 	default:
 		return nil, fmt.Errorf("db.driver %q is neither sqlite nor postgres: %w", c.DB.Driver, exit.Config)
 	}
+}
+
+// newMetrics is dillad's metric surface as /metrics serves it: every dilla_* series on dillad's own
+// registry, and LiveKit's — which registers on the default registry — through sfu.LiveKitGatherer,
+// which drops the labels a call member writes (protocol_version, sdk, …), so no client can grow
+// /metrics. A dilla_* series registered anywhere but on the returned Metrics' registry is never
+// served (I-1 of the integration re-review).
+func newMetrics() *obs.Metrics {
+	reg := prometheus.NewRegistry()
+	return obs.NewMetrics(reg, prometheus.Gatherers{reg, sfu.LiveKitGatherer(prometheus.DefaultGatherer)})
 }
 
 // runServe loads the config, takes the data-directory lock (ops.AcquireServeLock),
@@ -196,8 +209,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 
 	log := obs.NewLogger(cfg.Log, stderr)
-	reg := prometheus.NewRegistry()
-	metrics := obs.NewMetrics(reg, reg)
+	metrics := newMetrics()
 	health := obs.NewHealth(clock.System())
 
 	// The blob store, its start-up sweep of interrupted uploads and the
@@ -219,7 +231,24 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// The in-process SFU when livekit.enabled (Plan 2 task 16). It starts before the composition
 	// root, which builds the call routes over its token mint and proxies /rtc to it, and it stops
 	// after the drain below — its deferred stop runs after front.close.
-	fd := frontDeps{cfg: cfg, log: log, health: health, metrics: metrics, stdout: stdout}
+	// The relay's revocation state (dilla-media task 13 review I1), shared by the TURN relay and the
+	// call routes: a cut device loses its relay allocations, and the relay asks the store, after
+	// authenticating a request, whether a device another process revoked is barred.
+	relayRev := server.NewRelayRevocations(max(cfg.TURN.MaxAllocationAge.Value(), cfg.TURN.CredentialTTL.Value()), clock.System()).
+		WithBarred(api.BarredDevices{Repo: repo}, log).WithCredentialTTL(cfg.TURN.CredentialTTL.Value())
+	fd := frontDeps{cfg: cfg, log: log, health: health, metrics: metrics, stdout: stdout, relay: relayRev}
+	// The SFU's webhook listener is bound before the SFU starts, so LiveKit's webhook URL names the
+	// port it got, and served once the composition root exists (dilla-media task 12).
+	whln, err := listenWebhook(ctx, fd)
+	if err != nil {
+		return err
+	}
+	webhookServed := false
+	defer func() {
+		if whln != nil && !webhookServed {
+			_ = whln.Close()
+		}
+	}()
 	sfuServer, stopSFU, err := startSFU(ctx, fd)
 	if err != nil {
 		return err
@@ -232,7 +261,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	opts := dillad.Options{
 		Config: cfg, Repo: repo, Clock: clock.System(), Log: log,
 		Metrics: metrics, Health: health, ScrapeToken: os.Getenv(metricsTokenEnv),
-		Blobs: blobStore,
+		Blobs: blobStore, Relay: relayRev,
 	}
 	if sfuServer != nil {
 		opts.SFU = sfuServer
@@ -241,9 +270,27 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("serve: %w: %w", err, exit.Software)
 	}
+	// LiveKit's webhooks drive the call lifecycle from here on; the listener stops before the SFU.
+	stopWebhook, err := serveWebhook(fd, whln, srv.CallEvents().Handle)
+	if err != nil {
+		_ = srv.Shutdown(context.Background())
+		return err
+	}
+	webhookServed = true
+	defer stopWebhook()
 
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	sfuExit := make(chan error, 1)
+	if sfuServer != nil {
+		died := watchSFU(runCtx, sfuServer.Done(), health.Gate("livekit"), log)
+		go func() {
+			if err, ok := <-died; ok {
+				sfuExit <- err
+				stop()
+			}
+		}()
+	}
 
 	// The listener tls.mode chooses (Plan 2 task 16): server.plain_listen
 	// behind a proxy, or server.listen through the 443 TLS/STUN demux with
@@ -352,6 +399,11 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	default:
 		// Serve returned for a reason other than a signal; no drain was
 		// started and the goroutine is still parked on runCtx.
+	}
+	select {
+	case err := <-sfuExit:
+		return fmt.Errorf("serve: the in-process SFU exited: %w: %w", err, exit.Unavailable)
+	default:
 	}
 	return nil
 }

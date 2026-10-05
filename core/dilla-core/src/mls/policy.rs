@@ -47,8 +47,10 @@ pub fn past_epoch_sweep(kind: GroupKind) -> Option<PastEpochDeletion> {
 /// hook on Add?").
 ///
 /// - `Update` from a member: accept.
-/// - `Remove`: accept only when the target leaf belongs to the committer's own user
-///   (`E_MEMBER_REMOVE_FORBIDDEN`). Removing other users is the instance's job.
+/// - `Remove`: accept only when the target leaf belongs to the proposer's own user — the
+///   committer's for a Remove carried by value, the proposing member's for a referenced member
+///   proposal (a member leaving, DEV-47) — (`E_MEMBER_REMOVE_FORBIDDEN`). Removing other users is
+///   the instance's job.
 /// - `Add`: accept only in pairing and interaction groups; reject in text and call groups.
 /// - An external commit's `Remove` must target only the joiner's own leaf
 ///   (`E_EXTERNAL_COMMIT_REMOVE`).
@@ -87,7 +89,7 @@ pub fn validate_staged_commit(
     let external = matches!(sender, Sender::NewMemberCommit);
 
     // `own_user` is the receiving device's own user. No rule below is receiver-relative — every
-    // check compares the committer with the target — but the contract carries it because only the
+    // check compares a proposal's sender with its target — but the contract carries it because only the
     // caller knows it and the role-snapshot rule of protocol/01 will need it. Asserted rather than
     // discarded with a `let _ =`.
     debug_assert_ne!(
@@ -140,7 +142,15 @@ pub fn validate_staged_commit(
         }
         let target = remove.remove_proposal().removed();
         let target_user = user_of_leaf(tree, target)?;
-        removal_verdict(external, committer_user, &target_user)?;
+        // Measured against the proposal's own sender, like every rule here: a Remove the commit
+        // carries by value is the committer's, and a member Remove proposal the commit references
+        // is its proposer's - which is how a member leaves (protocol/01 "Leaving", DEV-47): it
+        // proposes its own Remove and another member commits it.
+        let owner = match remove.sender() {
+            Sender::Member(leaf) => user_of_leaf(tree, *leaf)?,
+            _ => *committer_user,
+        };
+        removal_verdict(external, &owner, &target_user)?;
     }
     Ok(())
 }

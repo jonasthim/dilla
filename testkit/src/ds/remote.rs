@@ -604,6 +604,19 @@ fn establish(
     .map_err(protocol)
 }
 
+/// What `POST /v1/channels/{id}/calls` answers (protocol/09 § Voice, MD-10):
+/// `[call_id, group_id, livekit_url, token, ice_servers, caps]`.
+#[derive(Clone, Debug)]
+pub struct CallStarted {
+    pub call_id: [u8; 16],
+    pub group_id: [u8; 16],
+    pub livekit_url: String,
+    pub token: String,
+    pub ice_servers: Vec<(Vec<String>, String, String)>,
+    /// `[max_audio_bitrate_bps, max_share_bitrate_bps, vp9]`.
+    pub caps: [u64; 3],
+}
+
 impl HttpDs {
     /// Establishes a device session over the real endpoints: a challenge, an Ed25519 signature
     /// over the 81-byte preimage of `protocol/02`'s "Device sessions", then the session itself.
@@ -728,6 +741,59 @@ impl HttpDs {
     /// /v1/accounts` answers with).
     pub fn set_session_expires(&mut self, expires: u64) {
         self.expires = expires;
+    }
+
+    /// Opens or joins the channel's call: the body is `[]`, or `[vdec]` with the comma-separated
+    /// decode list dillad writes into the token's `dilla.vdec` attribute (DEV-07).
+    pub fn start_call(&self, channel: &[u8; 16], vdec: &str) -> Result<CallStarted, DsError> {
+        let body = encode(|e| {
+            if vdec.is_empty() {
+                e.array(0);
+            } else {
+                e.array(1).text(vdec);
+            }
+        });
+        let path = format!("/v1/channels/{}/calls", hex::encode(channel));
+        self.post_decoded(&path, &body, |d| {
+            d.array(6)?;
+            let call_id = d.bytes_exact::<16>()?;
+            let group_id = d.bytes_exact::<16>()?;
+            let livekit_url = d.text()?.to_owned();
+            let token = d.text()?.to_owned();
+            let servers = array_or_null(d)?;
+            let mut ice_servers = Vec::with_capacity(servers);
+            for _ in 0..servers {
+                d.array(3)?;
+                let urls = (0..d.array_len()?)
+                    .map(|_| d.text().map(str::to_owned))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let username = d.text()?.to_owned();
+                let credential = d.text()?.to_owned();
+                ice_servers.push((urls, username, credential));
+            }
+            d.array(3)?;
+            let caps = [d.uint()?, d.uint()?, d.uint()?];
+            Ok(CallStarted {
+                call_id,
+                group_id,
+                livekit_url,
+                token,
+                ice_servers,
+                caps,
+            })
+        })
+    }
+
+    /// Takes the call's publisher lease for this device (`POST /v1/calls/{call_id}/share`, `204`):
+    /// dillad then pushes the camera and screen sources to the live participant (DEV-02, F1).
+    pub fn share_call(&self, call_id: &[u8; 16]) -> Result<(), DsError> {
+        let path = format!("/v1/calls/{}/share", hex::encode(call_id));
+        self.post_status(
+            &path,
+            &encode(|e| {
+                e.array(0);
+            }),
+        )
     }
 
     /// `PUT /v1/users/{user_id}/device-list`: `[version, blob, ssk_signature, prev_hash]`, where

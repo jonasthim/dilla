@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -26,13 +29,21 @@ import (
 	"time"
 
 	"github.com/caddyserver/certmagic"
+	lkprom "github.com/livekit/livekit-server/pkg/telemetry/prometheus"
+	lkauth "github.com/livekit/protocol/auth"
+	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/webhook"
 	"github.com/pion/turn/v5"
+	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/sfu"
 )
 
 // rewriteConfig loads cfgPath, applies tune and writes it back.
@@ -259,6 +270,7 @@ func freeUDPPort(t *testing.T) int {
 // the livekit readiness gate is green only once it accepts connections; serve
 // stops it on the way out.
 func TestServeStartsTheSFU(t *testing.T) {
+	t.Setenv(metricsTokenEnv, "dilla-media-task-8-metrics-probe")
 	cfgPath := bootstrapServeConfig(t)
 	port := freeTCPPort(t)
 	rewriteConfig(t, cfgPath, func(c *config.Config) {
@@ -291,6 +303,27 @@ func TestServeStartsTheSFU(t *testing.T) {
 	}
 	if code, body, err := get(client, "http://"+addr+"/rtc/validate"); err != nil || code == http.StatusNotFound {
 		t.Fatalf("GET /rtc/validate through serve = %d %q %v, want LiveKit's answer", code, body, err)
+	}
+	// A join with a client-chosen protocol number, as LiveKit records it: serve's /metrics merge must
+	// not carry the label (branch review SFU-1).
+	lkprom.RecordSessionJoinLatency(4242, time.Millisecond)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer dilla-media-task-8-metrics-probe")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	metricsBody, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(metricsBody, []byte("# TYPE livekit_room_total ")) || !bytes.Contains(metricsBody, []byte("# TYPE dilla_gateway_connections ")) {
+		t.Fatalf("/metrics = %d; want livekit_room_total and dilla_gateway_connections in one scrape", resp.StatusCode)
+	}
+	if !bytes.Contains(metricsBody, []byte("livekit_session_join_latency_ms_count{")) || bytes.Contains(metricsBody, []byte("protocol_version")) {
+		t.Fatalf("/metrics serves the join latency without the client's protocol_version: %t, %t",
+			bytes.Contains(metricsBody, []byte("livekit_session_join_latency_ms_count{")), !bytes.Contains(metricsBody, []byte("protocol_version")))
 	}
 	stopServe(t, served)
 	if _, _, err := get(&http.Client{Timeout: time.Second}, fmt.Sprintf("http://127.0.0.1:%d/", port)); err == nil {
@@ -377,37 +410,51 @@ func TestServeRefusesAnUnknownLiveKitMode(t *testing.T) {
 	}
 }
 
-// C9 (fix wave): the relay admits only the co-located SFU's media addresses: livekit.node_ip (or
-// loopback when unset) and, with advertise_internal_ip, the host candidates LiveKit also offers,
-// which are this host's interface addresses. With LiveKit off it admits none.
+// G34 / DEV-55: the relay admits livekit.node_ip only when it is an address of this host, or when
+// advertise_internal_ip is false (the SFU's only candidate; the relay then hairpins through it, and
+// says so); with advertise_internal_ip it admits the host addresses LiveKit also offers. node_ip is
+// the relay family anchor either way. With LiveKit off there is no peer and no anchor.
 func TestTheRelayPeersAreTheSFUsAddresses(t *testing.T) {
-	ifaces := func() ([]net.Addr, error) {
-		return []net.Addr{
-			&net.IPNet{IP: net.ParseIP("10.0.0.5"), Mask: net.CIDRMask(24, 32)},
-			&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},
-			&net.IPNet{IP: net.ParseIP("fe80::1"), Mask: net.CIDRMask(64, 128)},
-			&net.IPNet{IP: net.ParseIP("2001:db8::5"), Mask: net.CIDRMask(64, 128)},
-		}, nil
+	ifaces := fakeIfaces("10.0.0.5/24", "127.0.0.1/8", "fe80::1/64", "2001:db8::5/64")
+	var logged strings.Builder
+	log := slog.New(slog.NewTextHandler(&logged, nil))
+	for _, tc := range []struct {
+		name      string
+		nodeIP    string
+		advertise bool
+		anchor    string
+		peers     string
+		warning   string
+	}{
+		{"a local node_ip with the host candidates", "10.0.0.5", true, "10.0.0.5", "[10.0.0.5 2001:db8::5]", ""},
+		{"a public node_ip with the host candidates", "203.0.113.7", true, "203.0.113.7", "[10.0.0.5 2001:db8::5]",
+			"livekit.node_ip is not an address of this host, so the relay does not admit it"},
+		{"a public node_ip as the only candidate", "203.0.113.7", false, "203.0.113.7", "[203.0.113.7]",
+			"relayed media hairpins out through it"},
+		{"no node_ip (loopback)", "", false, "127.0.0.1", "[127.0.0.1]", ""},
+		{"loopback with the host candidates", "", true, "127.0.0.1", "[127.0.0.1 10.0.0.5 2001:db8::5]", ""},
+	} {
+		logged.Reset()
+		cfg := config.Default()
+		cfg.LiveKit.NodeIP, cfg.LiveKit.AdvertiseInternalIP = tc.nodeIP, tc.advertise
+		anchor, peers, err := turnPeers(cfg, ifaces, log)
+		if err != nil {
+			t.Fatalf("%s: turnPeers: %v", tc.name, err)
+		}
+		if anchor.String() != tc.anchor || fmt.Sprint(peers.Addrs) != tc.peers {
+			t.Errorf("%s: anchor %s, peers %v; want %s, %s", tc.name, anchor, peers, tc.anchor, tc.peers)
+		}
+		if tc.warning == "" && strings.Contains(logged.String(), "level=WARN") {
+			t.Errorf("%s: unexpected warning %q", tc.name, logged.String())
+		}
+		if tc.warning != "" && !strings.Contains(logged.String(), tc.warning) {
+			t.Errorf("%s: the warning %q was not logged (%q)", tc.name, tc.warning, logged.String())
+		}
 	}
 	cfg := config.Default()
-	cfg.LiveKit.NodeIP = "203.0.113.7"
-	got, err := turnPeers(cfg, ifaces)
-	if err != nil {
-		t.Fatalf("turnPeers: %v", err)
-	}
-	want := []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("peers with a public node_ip and advertise_internal_ip = %v, want %v", got, want)
-	}
-
-	cfg.LiveKit.NodeIP, cfg.LiveKit.AdvertiseInternalIP = "", false
-	if got, _ := turnPeers(cfg, ifaces); fmt.Sprint(got) != "[127.0.0.1]" {
-		t.Errorf("peers with no node_ip = %v, want [127.0.0.1]", got)
-	}
-
 	cfg.LiveKit.Enabled = false
-	if got, _ := turnPeers(cfg, ifaces); len(got) != 0 {
-		t.Errorf("peers with LiveKit off = %v, want none", got)
+	if anchor, peers, err := turnPeers(cfg, ifaces, log); err != nil || anchor.IsValid() || len(peers.Addrs) != 0 {
+		t.Errorf("with LiveKit off = %s, %v, %v; want no anchor, no peers", anchor, peers, err)
 	}
 }
 
@@ -455,9 +502,148 @@ func TestTheSFUConfigCarriesTheLiveKitKeys(t *testing.T) {
 	if got.APISecret != "secret" || got.APIKey != lk.APIKey {
 		t.Errorf("key pair = %q/%q", got.APIKey, got.APISecret)
 	}
+	if got.AutoCreate {
+		t.Error("sfuConfig renders room.auto_create: true")
+	}
 	lk.NodeIP, lk.AdvertiseInternalIP = "", false
 	got = sfuConfig(lk, "secret")
 	if got.NodeIP != "127.0.0.1" || !got.EnableLoopbackCandidate || got.AdvertiseInternalIP {
 		t.Errorf("unset node_ip: %+v, want 127.0.0.1 with the loopback candidate and no internal ip", got)
+	}
+	lk = config.Default().LiveKit
+	lk.VP9 = true
+	lk.WebhookListen = "127.0.0.1:7883"
+	lk.LimitNumTracks, lk.LimitBytesPerSec = 4000, 125_000_000
+	lk.IPsExcludes = []string{"172.17.0.0/16"}
+	got = sfuConfig(lk, "secret")
+	if !got.VP9 || got.WebhookURL != "http://127.0.0.1:7883/livekit/webhook" {
+		t.Errorf("vp9 %t, webhook %q", got.VP9, got.WebhookURL)
+	}
+	if got.LimitNumTracks != 4000 || got.LimitBytesPerSec != 125_000_000 || len(got.IPsExcludes) != 1 {
+		t.Errorf("limits %d/%v, excludes %v", got.LimitNumTracks, got.LimitBytesPerSec, got.IPsExcludes)
+	}
+	if got.AutoCreate || got.EmptyTimeout != 300 || got.DepartureTimeout != 20 {
+		t.Errorf("room: auto_create %t, timeouts %d/%d; want false (task 10, MD-16), 300/20",
+			got.AutoCreate, got.EmptyTimeout, got.DepartureTimeout)
+	}
+	lk.Enabled, lk.WebhookListen = true, ""
+	if got = sfuConfig(lk, "secret"); got.WebhookURL != "" {
+		t.Errorf("an empty webhook_listen rendered webhook %q", got.WebhookURL)
+	}
+}
+
+// DEV-42 (a): a post-boot SFU exit turns the livekit gate red and is handed to serve, which exits
+// exit.Unavailable for systemd to restart dillad; an ending serve stops the watcher quietly.
+func TestAnSFUExitTurnsTheGateRedAndEndsServe(t *testing.T) {
+	health := obs.NewHealth(clock.System())
+	gate := health.Gate("livekit")
+	gate.Set(true, "in-process SFU on ws://127.0.0.1:7880")
+	done := make(chan error, 1)
+	died := watchSFU(t.Context(), done, gate, slog.New(slog.DiscardHandler))
+	done <- errors.New("http: Server closed")
+	select {
+	case err, ok := <-died:
+		if !ok || err == nil {
+			t.Fatalf("watchSFU delivered %v, %t", err, ok)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchSFU did not report the exit")
+	}
+	rec := httptest.NewRecorder()
+	health.Readiness().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil))
+	if rec.Code == http.StatusOK || !strings.Contains(rec.Body.String(), "livekit") {
+		t.Fatalf("/readyz = %d %s, want the livekit gate red", rec.Code, rec.Body.String())
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	quiet := watchSFU(ctx, make(chan error), obs.NewHealth(clock.System()).Gate("livekit"), slog.New(slog.DiscardHandler))
+	cancel()
+	select {
+	case err, ok := <-quiet:
+		if ok {
+			t.Fatalf("a cancelled watcher delivered %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a cancelled watcher did not close its channel")
+	}
+}
+
+// The webhook listener binds livekit.webhook_listen (writing a :0 port back for sfuConfig), serves
+// only POST /livekit/webhook, and hands a verified event to the sink; an unsigned one is 401.
+func TestTheWebhookListenerHandsVerifiedEventsToTheSink(t *testing.T) {
+	const secret = "dilla-webhook-secret-0123456789abcdef"
+	secretFile := filepath.Join(t.TempDir(), "livekit.secret")
+	if err := os.WriteFile(secretFile, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.LiveKit.Enabled = true
+	cfg.LiveKit.WebhookListen = "127.0.0.1:0"
+	cfg.LiveKit.APIKey = "dilla"
+	cfg.LiveKit.APISecretFile = secretFile
+	d := frontDeps{cfg: cfg, log: slog.New(slog.DiscardHandler), stdout: io.Discard}
+	ln, err := listenWebhook(t.Context(), d)
+	if err != nil {
+		t.Fatalf("listenWebhook: %v", err)
+	}
+	if cfg.LiveKit.WebhookListen == "127.0.0.1:0" {
+		t.Fatal("the bound address was not written back into livekit.webhook_listen")
+	}
+	if got := sfuConfig(cfg.LiveKit, secret).WebhookURL; got != "http://"+cfg.LiveKit.WebhookListen+sfu.WebhookPath {
+		t.Fatalf("LiveKit's webhook URL = %q, want the bound port", got)
+	}
+	got := make(chan *livekit.WebhookEvent, 1)
+	stop, err := serveWebhook(d, ln, func(_ context.Context, ev *livekit.WebhookEvent) { got <- ev })
+	if err != nil {
+		t.Fatalf("serveWebhook: %v", err)
+	}
+	defer stop()
+
+	target := "http://" + cfg.LiveKit.WebhookListen + sfu.WebhookPath
+	post := func(sign bool) int {
+		body, _ := protojson.Marshal(&livekit.WebhookEvent{Event: webhook.EventRoomFinished, Id: "EV_1",
+			Room: &livekit.Room{Name: "room-1"}})
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, target, bytes.NewReader(body))
+		req.Header.Set("Content-Type", webhook.ContentType)
+		if sign {
+			sum := sha256.Sum256(body)
+			tok, _ := lkauth.NewAccessToken("dilla", secret).SetValidFor(5 * time.Minute).
+				SetSha256(base64.StdEncoding.EncodeToString(sum[:])).ToJWT()
+			req.Header.Set("Authorization", tok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if status := post(false); status != http.StatusUnauthorized {
+		t.Fatalf("an unsigned webhook = %d, want 401", status)
+	}
+	if status := post(true); status != http.StatusOK {
+		t.Fatalf("a signed webhook = %d, want 200", status)
+	}
+	select {
+	case ev := <-got:
+		if ev.GetEvent() != webhook.EventRoomFinished || ev.GetRoom().GetName() != "room-1" {
+			t.Fatalf("the sink got %+v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sink never got the event")
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET %s = %d, want 405", sfu.WebhookPath, resp.StatusCode)
+	}
+
+	cfg.LiveKit.Enabled = false
+	if ln, err := listenWebhook(t.Context(), d); ln != nil || err != nil {
+		t.Fatalf("with LiveKit off listenWebhook = %v, %v; want nothing", ln, err)
 	}
 }

@@ -1,0 +1,51 @@
+# DEV-45, SP-22 (b), as corrected by the security fix to dilla-media task 9: a member's own Remove
+# and the instance's Remove of the same call leaf, in both orders, followed by another member's
+# commit. A member proposal never cancels, voids, blocks or stands in for an instance proposal.
+#
+# Order 1, the instance first: carol is kicked, then tries to leave. The delivery service refuses
+# her own Remove because the instance's is pending; the leave verb reads that as "I am being
+# removed" and withdraws it. The call stays frozen until alice commits the instance's Remove.
+#
+# Order 2, the member first: dave posts his own Remove, then is kicked. The instance issues its
+# Remove on top of his — the call freezes, which a member Remove never does — and alice's commit
+# is accepted. That acceptance is the two-Removes-of-one-leaf check: OpenMLS keeps only the later
+# of two Removes of one leaf in alice's proposal store, so her commit references the instance's
+# (clause 1 refuses a commit that omits it) and leaves dave's unreferenced, which clause 1 allows,
+# and the instance's PublicGroup stages a commit that references one of the two.
+#
+# "Out" is checked through the instance, not by the leaver sending: a client holding its own
+# pending Remove cannot create an application message (OpenMLS refuses with PendingProposal). A
+# repeated kick of a device that still held a leaf would leave a Remove outstanding and the send
+# after it would answer 425; a kick of a device that is gone is dropped, and the send goes through.
+instance dilla
+client alice
+client bob
+client carol
+client dave
+group call kind=call target=e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2 community=none creator=alice
+join bob call via=external
+sync alice
+join carol call via=external
+sync alice
+sync bob
+join dave call via=external
+sync alice
+sync bob
+sync carol
+kick alice carol
+leave carol call
+expect_425 send alice call carol's own remove did not lift the freeze
+commit alice call
+sync bob
+sync dave
+kick alice carol
+send alice call carol is out after order one
+expect_decrypts bob call carol is out after order one
+leave dave call
+kick alice dave
+expect_425 send alice call the kick is issued over dave's own remove
+commit alice call
+sync bob
+kick alice dave
+send alice call carol and dave are out
+expect_decrypts bob call carol and dave are out

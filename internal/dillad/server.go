@@ -51,11 +51,18 @@ type Server struct {
 	// (a channel group being populated after its 201) before it stops the delivery service they
 	// issue proposals through.
 	groups *api.Groups
+	// events is the dispatcher of the SFU's webhooks and the delivery service's call evictor
+	// (dilla-media task 12).
+	events *api.CallEvents
 
 	// blobs is the attachment store Plan 2's blob and admin routes use; ownsBlobs records that New
 	// opened it, so Shutdown closes it.
 	blobs     *blob.Store
 	ownsBlobs bool
+
+	// stopCallRetries stops the call route group's grant retry loop (a cut or demotion the SFU did
+	// not take converges on it); Shutdown calls it before it returns, and serve stops the SFU after.
+	stopCallRetries func()
 
 	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
 	// Shutdown calls before it stops the gateway.
@@ -219,6 +226,18 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		FrameBurst:      o.Config.Gateway.FrameBurstMax,
 	})
 	channels, acl := deliverySeams(o)
+	// callRoutes is the call route group mountPlanTwo builds below. The revocation and quarantine
+	// hooks close over it: both run only on requests, which reach the mux after New has returned.
+	var callRoutes *api.Calls
+	cutFromCalls := func(ctx context.Context, device id.ID) {
+		if callRoutes != nil {
+			callRoutes.CutDevice(ctx, device)
+		}
+	}
+	// The call events (dilla-media task 12) are built over the call routes further down; the delivery
+	// service's call evictor reaches them through this variable, which is assigned before
+	// delivery.Start and so before any commit can run the evictor.
+	var events *api.CallEvents
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,
 		Wasm:     wasm,
@@ -232,6 +251,18 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		ACL:      acl,
 		// The device lists are verified in the guest (NV-B8, deviation B32).
 		DeviceLists: ds.NewDeviceLists(o.Repo, wasm),
+		// A fork-quarantined device is queued to be cut from every live call; the hook only enqueues,
+		// so the fork-report path never waits on the SFU (dilla-media task 10).
+		OnQuarantine: cutFromCalls,
+		// G29: a device a commit, a heal or a registry replacement took out of a call group leaves the
+		// call's room at once. The evictor runs after the group lock is released, on the committer's
+		// request goroutine, and only queues the removal (CALLS-6): the call retry loop makes it under
+		// the call's own lock (dilla-media task 12), so no commit waits on the SFU.
+		CallEvictor: func(ctx context.Context, groupID id.ID, removed []id.ID) {
+			if events != nil {
+				events.Evict(ctx, groupID, removed)
+			}
+		},
 	})
 	if err != nil {
 		closeWasmOnError()
@@ -254,7 +285,14 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	closeDevice := func(device id.ID) {
 		gw.CloseDevice(device, gateway.CloseSessionRevoked, "device revoked")
 	}
-	sessions.OnRevoke = closeDevice
+	// A revoked device (and every device of a user RevokeUser disables) is also queued to be cut from
+	// every live call (dilla-media task 10): CutDevice only enqueues and wakes the call retry loop, so
+	// the revocation path never waits on the SFU. A device that is only logged out keeps its call
+	// permission (the cut leaves a device that is not barred as it is).
+	sessions.OnRevoke = func(device id.ID) {
+		closeDevice(device)
+		cutFromCalls(context.Background(), device)
+	}
 	deps.CloseGateway = closeDevice
 	// POST /v1/gateway/ticket mints from the gateway's own store; a second
 	// store would mint tickets the upgrade has never heard of.
@@ -322,16 +360,26 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// readable channels, blobs, reports, calls and the admin routes (routes.go), behind the same
 	// session middleware and [limits.rate] meter as the routes above; then LiveKit's signalling
 	// paths when this process runs an SFU.
-	mountPlanTwo(mux, planTwo{
+	callRoutes = mountPlanTwo(mux, planTwo{
 		o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
 		blobs: blobs, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
 	})
 	if o.SFU != nil {
-		if err := mountRTC(mux, o.SFU, o.Config.Server.TrustedProxyCIDRs); err != nil {
+		if err := mountRTC(mux, o.SFU, callRoutes, o.Config.Server.TrustedProxyCIDRs, limiter); err != nil {
 			closeWasmOnError()
 			return nil, err
 		}
 	}
+	// The SFU's webhooks drive the call lifecycle through these (dilla-media task 12); `dillad serve`
+	// hands Handle to its loopback webhook listener. They are built even without an SFU: the call
+	// routes end calls through them. An interface holding a nil SFU is not a nil interface, so it is
+	// handed over only when there is one.
+	var callSFU api.CallTokens
+	if o.SFU != nil {
+		callSFU = o.SFU
+	}
+	events = api.NewCallEvents(o.Repo, api.NewResolver(o.Repo), delivery, callSFU, callRoutes, gw, o.Clock, o.Log).
+		WithGauge(o.Metrics)
 
 	if err := delivery.Start(ctx); err != nil {
 		closeWasmOnError()
@@ -374,7 +422,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
-		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery, groups: groups,
+		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery, groups: groups, events: events,
 		blobs: blobs, ownsBlobs: ownsBlobs,
 		throttle: throttle, limiter: limiter,
 	}
@@ -407,6 +455,11 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// connection that stops heartbeating stays "online" forever and every suspended connection
 	// keeps its ring for the life of the process.
 	s.maintenance = gw.Run(context.WithoutCancel(ctx), s.sweep)
+	// The call grant retry loop runs on its own goroutine and ticker, never on the maintenance tick
+	// above: a slow or hung SFU must not delay closing a revoked session's socket.
+	if o.SFU != nil {
+		s.stopCallRetries = callRoutes.StartRetries(api.CallRetryInterval)
+	}
 	return s, nil
 }
 
@@ -429,7 +482,12 @@ func (s *Server) Sessions() *auth.Sessions { return s.sessions }
 
 // DS returns the delivery service New built. It is one of three harness accessors of
 // deviation B17 (with Gateway and Now): plain getters over what New built.
-func (s *Server) DS() *ds.DS                { return s.ds }
+func (s *Server) DS() *ds.DS { return s.ds }
+
+// CallEvents is the dispatcher of the SFU's webhooks (dilla-media task 12); `dillad serve` serves its
+// Handle on livekit.webhook_listen.
+func (s *Server) CallEvents() *api.CallEvents { return s.events }
+
 func (s *Server) Gateway() *gateway.Gateway { return s.gw }
 func (s *Server) Now() time.Time            { return s.o.Clock.Now() }
 
@@ -499,6 +557,11 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if s.maintenance != nil {
 		s.maintenance()
+	}
+	// The retry loop's pass in flight is cut short by its cancelled context, and every SFU call in it
+	// is bounded by api's sfuCallTimeout, so a hung SFU cannot hold Shutdown.
+	if s.stopCallRetries != nil {
+		s.stopCallRetries()
 	}
 	if derr := s.ds.Shutdown(ctx); derr != nil {
 		keep(fmt.Errorf("dillad: stop the delivery service: %w", derr))

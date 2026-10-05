@@ -48,6 +48,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
+      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      - run: npm ci
+      - run: npm run typecheck -w @dilla/media
+      - run: npm run test:wasm -w @dilla/media
+      - run: npm run check:schema -w @dilla/media
   rust-wasi:
     runs-on: ubuntu-latest
     steps:
@@ -65,6 +70,7 @@ jobs:
       - run: cargo run -p dilla-testkit --bin dilla-testkit --locked -- vectors
   browser-spike:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir spike/pkg
       - run: npm run test:e2e:matrix -w @dilla/e2e
@@ -83,7 +89,40 @@ jobs:
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
       - run: go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
+      - run: go test -timeout 5m ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
+
+  browser-media:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [rust-native, rust-wasi]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
+      - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
+      - run: npx playwright install --with-deps chromium firefox
+      - run: sh scripts/ci-audio-server.sh
+      - run: npm run test:e2e:media -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - run: npx playwright test --config e2e/playwright.media.config.ts --project=chromium-media unsupported-sfu-codec.spec.ts
+        env:
+          DILLA_MEDIA_SFU_AV1: '1'
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-media-results
+          path: e2e/test-results
+          if-no-files-found: error
 
   go-ds:
     runs-on: ubuntu-latest
@@ -389,6 +428,10 @@ test('an image job that does not wait for go-ds is reported', () => {
 });
 
 for (const [job, needle] of [
+  ['rust-wasm-node', 'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm'],
+  ['rust-wasm-node', 'npm run typecheck -w @dilla/media'],
+  ['rust-wasm-node', 'npm run test:wasm -w @dilla/media'],
+  ['rust-wasm-node', 'npm run check:schema -w @dilla/media'],
   ['go-harness', 'go test -race -shuffle=on -timeout 25m ./internal/testkit/...'],
   ['go-harness', 'name: dilla-testkit'],
   ['go-lint', 'version: v2.13.2'],
@@ -539,4 +582,83 @@ test('an upload-artifact step in any job without if-no-files-found: error is rep
   );
   // The same step with the setting is clean.
   assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))), []);
+});
+
+// Task 21: the browser E2EE suite.
+test('a workflow without the browser-media job is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/  browser-media:[\s\S]*?\n\n/, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "browser-media"')), problems.join('\n'));
+});
+
+test('browser-media must explicitly extract RNNoise wasm before Playwright', () => {
+  const step = '      - run: node packages/media/scripts/extract-rnnoise-wasm.mjs\n';
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
+  const problems = checkWorkflow(fixture(GOOD.replace(step, '')));
+  assert.ok(problems.some((p) => p.includes('extract-rnnoise-wasm.mjs')), problems.join('\n'));
+});
+
+test('browser-media extraction must precede the media suite', () => {
+  const step = '      - run: node packages/media/scripts/extract-rnnoise-wasm.mjs\n';
+  const moved = GOOD.replace(step, '').replace('      - run: npm run test:e2e:media -w @dilla/e2e\n', '      - run: npm run test:e2e:media -w @dilla/e2e\n' + step);
+  const problems = checkWorkflow(fixture(moved));
+  assert.ok(problems.some((p) => p.includes('RNNoise extraction') && p.includes('before')), problems.join('\n'));
+});
+
+test('browser-media must start an audio server before the media suite', () => {
+  const step = '      - run: sh scripts/ci-audio-server.sh\n';
+  const missing = checkWorkflow(fixture(GOOD.replace(step, '')));
+  assert.ok(missing.some((p) => p.includes('ci-audio-server.sh')), missing.join('\n'));
+  const moved = GOOD.replace(step, '').replace('      - run: npm run test:e2e:media -w @dilla/e2e\n', '      - run: npm run test:e2e:media -w @dilla/e2e\n' + step);
+  const late = checkWorkflow(fixture(moved));
+  assert.ok(late.some((p) => p.includes('audio server') && p.includes('before')), late.join('\n'));
+});
+
+test('the browser-media job requires the real-SFU AV1 leg', () => {
+  const stripped = GOOD.replace(/      - run: npx playwright test --config e2e\/playwright\.media\.config\.ts --project=chromium-media unsupported-sfu-codec\.spec\.ts\n        env:\n          DILLA_MEDIA_SFU_AV1: '1'\n          DILLA_TESTKIT: \$\{\{ github\.workspace \}\}\/artifacts\/dilla-testkit\n/, '');
+  const problems = checkWorkflow(fixture(stripped));
+  assert.ok(problems.some((p) => p.includes('unsupported-sfu-codec.spec.ts')), problems.join('\n'));
+});
+
+for (const [need, kept] of [['rust-wasi', 'rust-native'], ['rust-native', 'rust-wasi']]) {
+  test(`a browser-media job without needs: ${need} is reported`, () => {
+    const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-native, rust-wasi]\n', `    needs: [${kept}]\n`)));
+    assert.ok(problems.some((p) => p.includes('"browser-media"') && p.includes(`needs: ${need}`)), problems.join('\n'));
+  });
+}
+
+for (const needle of [
+  'timeout-minutes: 25',
+  'name: dilla-core-wasi',
+  'path: internal/mlswasi/testdata',
+  'name: dilla-testkit',
+  'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm',
+  'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
+  'npx playwright install --with-deps chromium firefox',
+  'npm run test:e2e:media -w @dilla/e2e',
+  'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
+]) {
+  test(`a browser-media job that lost "${needle}" is reported`, () => {
+    const start = GOOD.indexOf('  browser-media:\n');
+    const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
+    assert.ok(body.includes(needle), 'fixture sanity: ' + needle);
+    const gutted = body.split('\n').filter((l) => !l.includes(needle)).join('\n');
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => gutted)));
+    assert.ok(problems.some((p) => p.includes('"browser-media"') && p.includes(needle)), problems.join('\n'));
+  });
+}
+
+test('a browser-spike job without its timeout is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('    timeout-minutes: 20\n', '')));
+  assert.ok(problems.some((p) => p.includes('"browser-spike"') && p.includes('timeout-minutes: 20')), problems.join('\n'));
+});
+
+test('the video publishing tests retain a non-race CI step', () => {
+  const needle = "go test -timeout 5m ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
+  const problems = checkWorkflow(fixture(GOOD.replace(needle, 'go test ./cmd/dilla-mediabot')));
+  assert.ok(problems.some((p) => p.includes('job "go"') && p.includes(needle)), problems.join('\n'));
+});
+
+test('browser-media must upload failure traces and host logs', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('name: browser-media-results', 'name: removed-results')));
+  assert.ok(problems.some((p) => p.includes('browser-media') && p.includes('browser-media-results')), problems.join('\n'));
 });

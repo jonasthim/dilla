@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -43,6 +44,32 @@ type Metrics struct {
 	// dillad doctor's two operational signals (Plan 2 task 15).
 	CertRenewalFailures prometheus.Counter
 	ClockSkewSeconds    prometheus.Gauge
+	// The call routes (dilla-media task 10). Label-free.
+	CallFullTotal           prometheus.Counter
+	CallShareRefusalsTotal  prometheus.Counter
+	CallCutsTotal           prometheus.Counter
+	CallGrantRetriesTotal   prometheus.Counter
+	CallRepairsPendingGauge prometheus.Gauge
+	// The call events (dilla-media task 12).
+	CallLive prometheus.Gauge
+	// Call stats and the TURN relay (dilla-media task 13). Label-free but for the relay direction.
+	CallStatsReports    prometheus.Counter
+	CallRelayReports    prometheus.Counter
+	CallDecryptFailures prometheus.Counter
+	CallRTT             prometheus.Histogram
+	TURNAllocations     prometheus.Gauge
+	TURNQuotaRefusals   prometheus.Counter
+	TURNRelayBytes      *prometheus.CounterVec
+	// The relay's backstops (server-half fix wave, lens turn), label-free. They live here, on
+	// dillad's own registry, because /metrics serves the default registry only through LiveKit's
+	// allowlist (I-1 of the integration re-review).
+	TURNCapacityRefusals prometheus.Counter
+	TURNPeerDrops        prometheus.Counter
+	TURNCutOverflows     prometheus.Counter
+	// turnMu guards the relay state the diagnostics' turn leg reads back.
+	turnMu      sync.Mutex
+	turnLive    int
+	turnRefused uint64
 }
 
 // NewMetrics takes the gatherer explicitly rather than type-asserting the
@@ -102,8 +129,64 @@ func NewMetrics(r prometheus.Registerer, g prometheus.Gatherer) *Metrics {
 		prometheus.CounterOpts{Name: "dilla_cert_renewal_failures_total", Help: "ACME issuance or renewal attempts that failed; the last certificate keeps being served."})
 	m.ClockSkewSeconds = prometheus.NewGauge(
 		prometheus.GaugeOpts{Name: "dilla_clock_skew_seconds", Help: "Median local clock offset against the doctor.clock_peers HTTPS origins; positive means the local clock is ahead."})
+	m.CallFullTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_call_full_total", Help: "Call starts refused E_CALL_FULL by the advisory participant count."})
+	m.CallShareRefusalsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_call_share_refusals_total", Help: "Share requests refused E_CALL_SHARERS_FULL at livekit.max_publishers."})
+	m.CallCutsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_call_cuts_total", Help: "Participants a permission change cut from a call room: a device that lost view_channel or connect, or an identity that is no device."})
+	m.CallGrantRetriesTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_call_grant_retries_total", Help: "Retries of a call participant's cut or demotion that had not landed in the SFU."})
+	m.CallRepairsPendingGauge = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "dilla_call_grant_repairs_pending", Help: "Call participants' cuts or demotions not yet landed in the SFU, across every call."})
+	m.CallLive = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "dilla_call_live", Help: "Calls with at least one device in their room, as the SFU's webhooks report them."})
+	m.CallStatsReports = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_call_stats_reports_total", Help: "Call stats reports accepted from devices."})
+	m.CallRelayReports = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_call_relay_reports_total", Help: "Call stats reports whose selected candidate was a relay."})
+	m.CallDecryptFailures = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_call_decrypt_failures_total", Help: "Media frames devices reported they failed to decrypt."})
+	m.CallRTT = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "dilla_call_rtt_seconds", Help: "Round-trip times devices reported, in seconds.",
+		Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.15, 0.25, 0.4, 0.6, 1, 2},
+	})
+	m.TURNAllocations = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "dilla_turn_allocations", Help: "Live TURN relay allocations."})
+	m.TURNQuotaRefusals = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "dilla_turn_quota_refusals_total", Help: "TURN allocations refused 486 at turn.allocations_per_device."})
+	m.TURNRelayBytes = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "dilla_turn_relay_bytes_total", Help: "Payload bytes relayed, by direction (to_client, to_peer)."},
+		[]string{"direction"})
+	m.TURNCapacityRefusals = prometheus.NewCounter(prometheus.CounterOpts{Name: "dilla_turn_capacity_refusals_total",
+		Help: "TURN allocations refused 486 at the instance-wide cap on live relay allocations."})
+	m.TURNPeerDrops = prometheus.NewCounter(prometheus.CounterOpts{Name: "dilla_turn_peer_drops_total",
+		Help: "Datagrams a relay socket dropped because the peer was not the SFU's media port (another port, another relay allocation)."})
+	m.TURNCutOverflows = prometheus.NewCounter(prometheus.CounterOpts{Name: "dilla_turn_cut_overflows_total",
+		Help: "Relay cuts that found the cut map full and refused every device's earlier credentials instead (fail closed)."})
 	r.MustRegister(m.collectors()...)
 	return m
+}
+
+// CapacityRefused records one 486 at the instance-wide relay cap (server.TURNMetrics).
+func (m *Metrics) CapacityRefused() {
+	if m != nil {
+		m.TURNCapacityRefusals.Inc()
+	}
+}
+
+// PeerDropped records one datagram a relay socket dropped (server.TURNMetrics).
+func (m *Metrics) PeerDropped() {
+	if m != nil {
+		m.TURNPeerDrops.Inc()
+	}
+}
+
+// CutOverflow records one relay cut that found the cut map full (server.TURNMetrics).
+func (m *Metrics) CutOverflow() {
+	if m != nil {
+		m.TURNCutOverflows.Inc()
+	}
 }
 
 func (m *Metrics) collectors() []prometheus.Collector {
@@ -114,6 +197,11 @@ func (m *Metrics) collectors() []prometheus.Collector {
 		m.WasiDuration, m.StoreTxDuration, m.BlobBytes, m.RateLimitedTotal,
 		m.BlobGCRuns, m.BlobGCDeleted, m.BlobGCBytes, m.BlobRefsExpired, m.BlobPurges,
 		m.CertRenewalFailures, m.ClockSkewSeconds,
+		m.CallFullTotal, m.CallShareRefusalsTotal, m.CallCutsTotal, m.CallGrantRetriesTotal, m.CallRepairsPendingGauge,
+		m.CallLive,
+		m.CallStatsReports, m.CallRelayReports, m.CallDecryptFailures, m.CallRTT,
+		m.TURNAllocations, m.TURNQuotaRefusals, m.TURNRelayBytes,
+		m.TURNCapacityRefusals, m.TURNPeerDrops, m.TURNCutOverflows,
 	}
 }
 
@@ -170,6 +258,111 @@ func (m *Metrics) BlobPurged() {
 		return
 	}
 	m.BlobPurges.Inc()
+}
+
+// CallFull records one E_CALL_FULL refusal. Like the blob recorders it is safe on a nil *Metrics.
+func (m *Metrics) CallFull() {
+	if m == nil {
+		return
+	}
+	m.CallFullTotal.Inc()
+}
+
+// ShareRefused records one E_CALL_SHARERS_FULL refusal.
+func (m *Metrics) ShareRefused() {
+	if m == nil {
+		return
+	}
+	m.CallShareRefusalsTotal.Inc()
+}
+
+// CallCut records one participant a permission change cut from a call room.
+func (m *Metrics) CallCut() {
+	if m == nil {
+		return
+	}
+	m.CallCutsTotal.Inc()
+}
+
+// CallGrantRetry records one retry of a call participant's cut or demotion.
+func (m *Metrics) CallGrantRetry() {
+	if m == nil {
+		return
+	}
+	m.CallGrantRetriesTotal.Inc()
+}
+
+// CallRepairsPending sets the gauge of call grant repairs outstanding.
+func (m *Metrics) CallRepairsPending(n int) {
+	if m == nil {
+		return
+	}
+	m.CallRepairsPendingGauge.Set(float64(n))
+}
+
+// CallsLive sets dilla_call_live. Safe on a nil *Metrics.
+func (m *Metrics) CallsLive(n int) {
+	if m == nil {
+		return
+	}
+	m.CallLive.Set(float64(n))
+}
+
+// StatsReport records one accepted call stats report (api.CallMetrics).
+func (m *Metrics) StatsReport(relay bool, rttMs uint32, decryptFailures uint64) {
+	if m == nil {
+		return
+	}
+	m.CallStatsReports.Inc()
+	if relay {
+		m.CallRelayReports.Inc()
+	}
+	m.CallDecryptFailures.Add(float64(decryptFailures))
+	m.CallRTT.Observe(float64(rttMs) / 1000) // Prometheus's base unit is the second
+}
+
+// QuotaRefused records one 486 (server.TURNMetrics).
+func (m *Metrics) QuotaRefused() {
+	if m == nil {
+		return
+	}
+	m.TURNQuotaRefusals.Inc()
+	m.turnMu.Lock()
+	m.turnRefused++
+	m.turnMu.Unlock()
+}
+
+// RelayBytes records n payload bytes relayed (server.TURNMetrics).
+func (m *Metrics) RelayBytes(toClient bool, n int) {
+	if m == nil {
+		return
+	}
+	dir := "to_peer"
+	if toClient {
+		dir = "to_client"
+	}
+	m.TURNRelayBytes.WithLabelValues(dir).Add(float64(n))
+}
+
+// Allocations sets the live allocation count (server.TURNMetrics).
+func (m *Metrics) Allocations(n int) {
+	if m == nil {
+		return
+	}
+	m.TURNAllocations.Set(float64(n))
+	m.turnMu.Lock()
+	m.turnLive = n
+	m.turnMu.Unlock()
+}
+
+// TURNState is the relay state the diagnostics' turn leg reports.
+func (m *Metrics) TURNState() (allocations int, quotaRefusals uint64) {
+	if m == nil {
+		return 0, 0
+	}
+	m.turnMu.Lock()
+	defer m.turnMu.Unlock()
+	return m.turnLive, m.turnRefused
 }
 
 func statusClass(status int) string {

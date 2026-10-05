@@ -39,6 +39,17 @@ type Communities struct {
 	// build Communities without one, and the composition root always sets it.
 	inviteLimiter *server.RateLimiter
 	trustedProxy  []netip.Prefix
+
+	// calls cuts a kicked or departing user's connected call sessions after the commit
+	// (syncAfterMembership); nil touches no call.
+	calls *Calls
+}
+
+// WithCalls sets the call routes a kick or a leave cuts the user's live call sessions through, and
+// returns c. The composition root sets it whenever it runs an SFU.
+func (c *Communities) WithCalls(calls *Calls) *Communities {
+	c.calls = calls
+	return c
 }
 
 // NewCommunities takes the delivery service a membership change reaches: a
@@ -665,6 +676,9 @@ func (c *Communities) removeFromGroups(r *http.Request, cid, userID id.ID) {
 		c.log.ErrorContext(ctx, "remove user from the community's groups",
 			"community", cid, "user", userID, "err", err)
 	}
+	// The user holds nothing in the community any more: their connected call sessions are cut
+	// immediately after, on the call retry loop, not when a member commits the Remove.
+	syncAfterMembership(ctx, c.calls, cid, userID, nil)
 }
 
 func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
@@ -709,13 +723,13 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	// Inside the transaction: read what will be closed, then tombstone.
 	// ListChannels filters deleted_at IS NULL, so it runs BEFORE
 	// DeleteChannelsOfCommunity or it returns nothing.
-	var toClose []id.ID
+	var toClose, ids []id.ID
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
 		channels, err := tx.ListChannels(r.Context(), row.ID)
 		if err != nil {
 			return err
 		}
-		ids := make([]id.ID, 0, len(channels))
+		ids = make([]id.ID, 0, len(channels))
 		for _, ch := range channels {
 			ids = append(ids, ch.ID)
 		}
@@ -745,6 +759,8 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 		c.log.ErrorContext(r.Context(), "close the groups of a deleted community",
 			"community", row.ID, "err", err)
 	}
+	// Every live call of its channels ends with it (CALLS-1), as for a channel delete.
+	c.calls.EndChannelCalls(afterCommit(r), ids, "community_deleted")
 	w.WriteHeader(http.StatusNoContent)
 }
 

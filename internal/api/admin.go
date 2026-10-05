@@ -30,6 +30,14 @@ type Admin struct {
 	// diagnose runs the `dillad doctor` legs a running instance can answer
 	// (P2-5); nil answers GET /v1/admin/diagnostics with 501.
 	diagnose func(context.Context) ops.Report
+	// calls cuts a disabled user's devices from every live call after the commit; nil touches none.
+	calls *Calls
+}
+
+// WithCalls sets the call routes a user disable cuts the user's devices through, and returns a.
+func (a *Admin) WithCalls(calls *Calls) *Admin {
+	a.calls = calls
+	return a
 }
 
 // NewAdmin wires the admin routes over the repository and the blob store the
@@ -288,6 +296,11 @@ func (a *Admin) disableUser(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		server.WriteError(w, err)
 		return
+	}
+	// A disabled user's devices are queued to leave every live call (the retry loop cuts them at
+	// once, off this request's goroutine), not left to the room sweep.
+	if req.Disabled == 1 && a.calls != nil {
+		a.calls.CutUser(context.WithoutCancel(r.Context()), target)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

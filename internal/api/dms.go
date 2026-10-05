@@ -405,8 +405,9 @@ func syncGroup(ctx context.Context, repo store.Repository, dsvc DS, g store.Grou
 		if slices.Contains(eligible, m.UserID) || pendingRemove[m.LeafIndex] {
 			continue
 		}
-		// Each Remove carries its own action_id; see RemoveUserFromChannelGroups.
-		if err := dsvc.ProposeRemove(ctx, g.GroupID, m.LeafIndex, id.New()); err != nil {
+		// Each Remove carries its own action_id, and names the device it is for; see
+		// RemoveUserFromChannelGroups.
+		if err := dsvc.ProposeRemoveOf(ctx, g.GroupID, m.LeafIndex, m.DeviceID, id.New()); err != nil {
 			errs = append(errs, err)
 		}
 	}

@@ -101,8 +101,10 @@ metrics and LiveKit's to appear together.
   configuration; that is not what the spike claims.
 - No TURN, no Redis, no egress or ingress, `development: false`.
 - The Bot SDK's `server-sdk-go/v2/pkg/media` is **not** imported anywhere and
-  must not be: it pulls `github.com/livekit/media-sdk/opus`, a single file with
-  `#cgo pkg-config: opus` and no build-tag fallback, which would cost
+  must not be: it pulls `github.com/livekit/media-sdk/opus`, two files
+  (`opus.go`, `codec.go`) that are both `//go:build cgo`, with `opus.go`
+  importing `gopkg.in/hraban/opus.v2` under `#cgo pkg-config: opus`
+  (corrected by `docs/spikes/2026-10-go-publisher.md`), which would cost
   `CGO_ENABLED=0` and require libopus headers on every architecture.
   `TestNothingInTheModuleImportsTheCgoMediaPackage` asserts it over the **whole
   module's** transitive import set (`go list -deps -test ./...`), not just over

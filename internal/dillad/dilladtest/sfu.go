@@ -1,0 +1,148 @@
+package dilladtest
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"net/http"
+	"slices"
+	"sync"
+
+	"github.com/livekit/protocol/livekit"
+
+	"github.com/jonasthim/dilla/internal/sfu"
+)
+
+// Default ports of the harness SFU, the same as dillad's own livekit.port and livekit.udp_port.
+const (
+	DefaultSFUPort    = 7880
+	DefaultSFUUDPPort = 7882
+)
+
+// testSFUConfig is the in-process LiveKit a browser can reach on a one-interface box and on a CI
+// runner: node_ip 127.0.0.1 with the loopback candidate on, **and** advertise_internal_ip, which
+// also offers the host's LAN address. Firefox's nICEr never pairs a non-loopback local candidate
+// with a loopback remote one (ice_component.cpp:1088-1090 at FIREFOX_155_0_RELEASE), so with
+// loopback alone Firefox fails "could not establish pc connection" while Chromium connects (G35
+// runs L2 and A1). sfu.DefaultConfig() leaves AdvertiseInternalIP false and must never be used
+// unmodified for a browser test.
+func testSFUConfig(port, udpPort int, apiKey, secret string) sfu.Config {
+	c := sfu.DefaultConfig()
+	c.Port = port
+	c.UDPPort = udpPort
+	c.BindAddress = "127.0.0.1"
+	c.NodeIP = "127.0.0.1"
+	c.EnableLoopbackCandidate = true
+	c.AdvertiseInternalIP = true
+	c.APIKey = apiKey
+	c.APISecret = secret
+	return c
+}
+
+// newSFUSecret is a fresh 64-hex-character LiveKit API secret, well over the 32 characters
+// sfu.Config.YAML insists on.
+func newSFUSecret() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// SFU is the in-process LiveKit the host started, or nil when HostOptions.SFU was false.
+func (h *Host) SFU() *sfu.Server { return h.sfu }
+
+// debugRooms are the rooms POST /debug/sfu/token opened (create: true). They belong to no call, so
+// the call routes' room sweep (api.Calls.SweepRooms, every api.RoomSweepInterval) would delete them
+// and disconnect a browser test mid-run; harnessSFU hides them from it. It outlives a Restore, as
+// the SFU does.
+type debugRooms struct {
+	mu    sync.Mutex
+	names map[string]struct{}
+}
+
+func (d *debugRooms) add(room string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.names == nil {
+		d.names = map[string]struct{}{}
+	}
+	d.names[room] = struct{}{}
+}
+
+func (d *debugRooms) has(room string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.names[room]
+	return ok
+}
+
+// harnessSFU is the in-process LiveKit as the instance sees it: every method is the server's own,
+// except that Rooms leaves out the debug rooms. Only the room sweep and a device cut list rooms, so a
+// debug room — raw debug tokens, connected straight to LiveKit (plan MD-13) — is never swept or cut,
+// while every room the call routes open is swept exactly as in production.
+type harnessSFU struct {
+	*sfu.Server
+	debug *debugRooms
+}
+
+func (s harnessSFU) Rooms(ctx context.Context) ([]string, error) {
+	rooms, err := s.Server.Rooms(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(rooms, s.debug.has), nil
+}
+
+// mountSFU adds the two SFU routes to the control listener. They are test-only and never on the
+// public mux: GET /debug/sfu names the SFU's signalling URLs, and POST /debug/sfu/token mints a raw
+// LiveKit token with every grant for any room and identity, which is exactly what a browser test
+// needs to connect to LiveKit directly — the SFU-as-adversary case dillad's /rtc gate cannot
+// produce (plan MD-13).
+func (h *Host) mountSFU(mux *http.ServeMux) {
+	mux.HandleFunc("GET /debug/sfu", func(w http.ResponseWriter, _ *http.Request) {
+		if h.sfu == nil {
+			http.Error(w, "this host runs no SFU (start it with -sfu)", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, map[string]string{"url": h.sfu.URL(), "http_url": h.sfu.HTTPURL()})
+	})
+	mux.HandleFunc("POST /debug/sfu/token", func(w http.ResponseWriter, r *http.Request) {
+		if h.sfu == nil {
+			http.Error(w, "this host runs no SFU (start it with -sfu)", http.StatusNotFound)
+			return
+		}
+		var body struct {
+			Room     string `json:"room"`
+			Identity string `json:"identity"`
+			// Create asks for the room to exist before the token is used: room.auto_create is
+			// false (task 10, MD-16), so LiveKit refuses a join to a room nobody opened with
+			// CreateRoom. A test that wants that refusal leaves it false.
+			Create bool `json:"create"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		if body.Room == "" || body.Identity == "" {
+			http.Error(w, "room and identity are both required", http.StatusBadRequest)
+			return
+		}
+		if body.Create {
+			if err := h.sfu.CreateRoom(r.Context(), body.Room); err != nil {
+				http.Error(w, "create room: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			h.debugRooms.add(body.Room)
+		}
+		// A raw debug token carries every grant, data included (MD-13: the canary and the harness
+		// smoke connect straight to LiveKit, never through the /rtc gate).
+		token, err := h.sfu.Token(body.Room, body.Identity, &livekit.ParticipantPermission{
+			CanSubscribe: true, CanPublish: true, CanPublishData: true,
+		}, nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"url": h.sfu.URL(), "http_url": h.sfu.HTTPURL(), "token": token})
+	})
+}

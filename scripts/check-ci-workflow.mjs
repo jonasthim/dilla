@@ -15,6 +15,7 @@ export const REQUIRED_JOBS = [
   'rust-wasi',
   'vectors',
   'browser-spike',
+  'browser-media',
   'deny',
   'go',
   // internal/ds under -race in a job of its own (fix wave, CI run 36697379567): it is the slowest
@@ -58,7 +59,15 @@ const REQUIRED_STEPS = {
     'name: dilla-testkit',
     'if-no-files-found: error',
   ],
-  'rust-wasm-node': ['cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked'],
+  'rust-wasm-node': [
+    'cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked',
+    // Task 17 (dilla-media): the media worker's wasm-backed tests, the BaseE2EEManager type contract and the
+    // JS half of the signalling-schema contract (DEV-66) run where the web wasm is built.
+    'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm',
+    'npm run typecheck -w @dilla/media',
+    'npm run test:wasm -w @dilla/media',
+    'npm run check:schema -w @dilla/media',
+  ],
   // Each entry must be a string the job carries and no other step of that job already contains.
   // `'dilla-core-wasi'` would be useless here: the cargo build line above already contains it, so the
   // artifact's `name:` would go unchecked. The three `with:` lines are named in full instead, which is
@@ -85,6 +94,27 @@ const REQUIRED_STEPS = {
   'browser-spike': [
     'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir spike/pkg',
     'npm run test:e2e:matrix -w @dilla/e2e',
+    'timeout-minutes: 20',
+  ],
+  'browser-media': [
+    'actions/upload-artifact@v7',
+    'if: failure()',
+    'name: browser-media-results',
+    'path: e2e/test-results',
+    'if-no-files-found: error',
+    'timeout-minutes: 25',
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'name: dilla-testkit',
+    'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm',
+    'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
+    'node packages/media/scripts/extract-rnnoise-wasm.mjs',
+    'npx playwright install --with-deps chromium firefox',
+    'sh scripts/ci-audio-server.sh',
+    'npm run test:e2e:media -w @dilla/e2e',
+    'unsupported-sfu-codec.spec.ts',
+    "DILLA_MEDIA_SFU_AV1: '1'",
+    'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
   ],
   deny: ['cargo deny --all-features check advisories bans licenses sources'],
   // Ruling M. The first two lines are the hand-off from `rust-wasi`: without the download, or with it
@@ -100,6 +130,7 @@ const REQUIRED_STEPS = {
     'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
     'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)',
     'name: dilla-core-wasi',
+    "go test -timeout 5m ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'",
   ],
   // The one package the go job leaves out, with the wasi core it needs and a budget of its own.
   'go-ds': [
@@ -314,6 +345,24 @@ export function checkWorkflow(root) {
     // edge the download finds nothing in the run and the job is red on every push.
     if (!/^\s*needs:.*rust-native/m.test(harness)) {
       problems.push('ci.yml: job "go-harness" downloads the rust-native testkit artifact but has no "needs: rust-native"');
+    }
+  }
+
+  if ('browser-media' in jobs) {
+    const extractAt = jobs['browser-media'].indexOf('node packages/media/scripts/extract-rnnoise-wasm.mjs');
+    const suiteAt = jobs['browser-media'].indexOf('npm run test:e2e:media -w @dilla/e2e');
+    if (extractAt !== -1 && suiteAt !== -1 && extractAt > suiteAt) {
+      problems.push('ci.yml: browser-media RNNoise extraction must run before the media suite');
+    }
+    // Firefox's AudioContext stays suspended on a runner with no audio server (first run of PR #7).
+    const audioAt = jobs['browser-media'].indexOf('sh scripts/ci-audio-server.sh');
+    if (audioAt !== -1 && suiteAt !== -1 && audioAt > suiteAt) {
+      problems.push('ci.yml: browser-media audio server must start before the media suite');
+    }
+    for (const need of ['rust-wasi', 'rust-native']) {
+      if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs['browser-media'])) {
+        problems.push(`ci.yml: job "browser-media" downloads the ${need} artifact but has no "needs: ${need}"`);
+      }
     }
   }
 

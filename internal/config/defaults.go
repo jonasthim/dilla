@@ -5,6 +5,9 @@ import (
 	"runtime"
 )
 
+// DefaultWebhookListen is the loopback destination for LiveKit webhooks.
+const DefaultWebhookListen = "127.0.0.1:7883"
+
 // Default returns the struct that is pre-populated BEFORE decoding, so deleting
 // any line from dilla.toml leaves behaviour unchanged (gap-74 §2.4). Three
 // values here are a ruling's rather than the gap file's: max_ciphertext_bytes
@@ -24,11 +27,12 @@ func Default() *Config {
 	}
 	c.TLS = TLS{Mode: TLSModeACMETLSALPN}
 	c.TLS.DNS = TLSDNS{TTL: "0s", PropagationDelay: "0s", PropagationTimeout: "2m"}
-	c.TURN = TURN{Enabled: true, CredentialTTL: "1h", AllocationsPerDevice: 2}
+	c.TURN = TURN{Enabled: true, CredentialTTL: "1h", MaxAllocationAge: "2h", AllocationsPerDevice: 4}
 	c.LiveKit = LiveKit{
 		Enabled: true, Mode: "in_process", BindAddress: "127.0.0.1", Port: 7880,
 		UDPPort: 7882, TCPPort: 0, AdvertiseInternalIP: true, APIKey: "dilla",
 		MaxVoiceParticipants: 25, MaxPublishers: defaultMaxPublishers,
+		WebhookListen: DefaultWebhookListen, MaxShareBitrateKbps: 2500, MaxAudioBitrateKbps: 64,
 	}
 	c.DB = DB{
 		Driver: "sqlite", Path: "/var/lib/dilla/dilla.db", ConnMaxLifetime: "0s",
@@ -89,8 +93,8 @@ func Default() *Config {
 // host's own address (internal/server.ResolveRelayIP), never on a public IP the host may not hold.
 const RelayIPAuto = "auto"
 
-// defaultMaxPublishers is livekit.max_publishers' default, the spec's 25/10 sizing. It is the only
-// value Validate accepts until a publisher cap reaches LiveKit.
+// defaultMaxPublishers is livekit.max_publishers' default, the spec's 25/10 sizing; the publisher
+// lease enforces it.
 const defaultMaxPublishers = 10
 
 // LetsEncryptProductionCA is certmagic's production directory, spelled out here

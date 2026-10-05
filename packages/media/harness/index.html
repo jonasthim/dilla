@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>dilla media harness</title>
+  </head>
+  <body>
+    <p data-testid="ready" id="ready" hidden>ready</p>
+    <!-- Clicked by e2e/media/support/lk.ts activate(page) right before a screen share: Chromium's
+         getDisplayMedia needs transient user activation, which page.evaluate never grants
+         (facts-browser-testing fact 24 verified the fake capture only after a real page.click). -->
+    <button id="activate" type="button">activate</button>
+    <div id="media"></div>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

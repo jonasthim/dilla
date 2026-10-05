@@ -1,7 +1,6 @@
 //! The CTR partition and the nonce (protocol/05-media-frames.md "Counter partition").
 
-use super::NN;
-use crate::error::ProtocolError;
+use super::{NN, SframeError};
 
 /// `seq` must stay below 2^52. On exhaustion the sender rekeys through an MLS `Update` rather
 /// than wrapping.
@@ -22,12 +21,17 @@ pub enum Slot {
 pub struct Ctr(u64);
 
 impl Ctr {
-    /// `E_UNSUPPORTED_VERSION` on `layer > 0xf` or `seq > MAX_SEQ`: both mean the sender is
-    /// speaking a media version this one does not implement, or has exhausted its counter and
-    /// must rekey. protocol/05 names no dedicated code, so the media-version code carries it.
-    pub fn new(slot: u8, layer: u8, seq: u64) -> Result<Self, ProtocolError> {
-        if layer > 0xf || seq > MAX_SEQ {
-            return Err(ProtocolError::UnsupportedVersion);
+    /// `SlotMismatch` on a reserved slot (above 3, the screen-audio slot); `LayerOutOfRange` on
+    /// `layer > 0xf`; `CounterExhausted` on `seq > MAX_SEQ`. The Go `CTR` checks in the same order.
+    pub fn new(slot: u8, layer: u8, seq: u64) -> Result<Self, SframeError> {
+        if slot > Slot::ScreenAudio as u8 {
+            return Err(SframeError::SlotMismatch);
+        }
+        if layer > 0xf {
+            return Err(SframeError::LayerOutOfRange);
+        }
+        if seq > MAX_SEQ {
+            return Err(SframeError::CounterExhausted);
         }
         Ok(Self(
             (u64::from(slot) << 56) | (u64::from(layer) << 52) | seq,
@@ -85,13 +89,28 @@ mod tests {
 
     #[test]
     fn ctr_refuses_an_out_of_range_layer_or_a_wrapped_sequence() {
-        assert_eq!(Ctr::new(0, 16, 0), Err(ProtocolError::UnsupportedVersion));
+        assert_eq!(Ctr::new(0, 16, 0), Err(SframeError::LayerOutOfRange));
         assert!(Ctr::new(0, 15, MAX_SEQ).is_ok());
         assert_eq!(
             Ctr::new(0, 0, MAX_SEQ + 1),
-            Err(ProtocolError::UnsupportedVersion)
+            Err(SframeError::CounterExhausted)
         );
         assert_eq!(MAX_SEQ, (1u64 << 52) - 1);
+    }
+
+    /// CRYPTO-7's mirror: slots above 3 are reserved, refused before the layer and the sequence,
+    /// exactly as the Go `CTR` refuses them.
+    #[test]
+    fn ctr_refuses_a_reserved_slot_first() {
+        assert!(Ctr::new(3, 0, 0).is_ok());
+        for slot in [4u8, 5, 0xff] {
+            assert_eq!(
+                Ctr::new(slot, 0, 0),
+                Err(SframeError::SlotMismatch),
+                "{slot}"
+            );
+        }
+        assert_eq!(Ctr::new(4, 16, MAX_SEQ + 1), Err(SframeError::SlotMismatch));
     }
 
     #[test]

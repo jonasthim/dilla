@@ -91,13 +91,13 @@ func (d *DS) RunWatchdogOnce(ctx context.Context) {
 		}
 		if o.acked && lost >= d.opts.Policy.MaxLostRounds {
 			// Three acknowledged-and-lost rounds: the device is removed by an instance Remove.
-			// ProposeRemove, not proposeRemoveLocked: the watchdog runs on its own goroutine and
-			// holds no group lock, so it is the locking form that is correct here.
-			if leaf, err := d.leafOf(ctx, o.groupID, o.candidate); err == nil {
-				if err := d.ProposeRemove(ctx, o.groupID, leaf, id.New()); err != nil {
-					d.log().Error("watchdog remove failed",
-						"group", o.groupID.String()[:8], "err", err)
-				}
+			// By DEVICE, through the locking form (the watchdog runs on its own goroutine and holds
+			// no group lock): the leaf is resolved under the lock and the Remove is built only for
+			// the candidate, so a leaf reused since the election cannot redirect it onto another
+			// device. A candidate that holds no leaf any more is dropped.
+			if err := d.ProposeRemoveDevice(ctx, o.groupID, o.candidate, id.New()); err != nil {
+				d.log().Error("watchdog remove failed",
+					"group", o.groupID.String()[:8], "err", err)
 			}
 			d.resetLost(o.groupID, o.candidate)
 			if d.opts.Metrics != nil {
@@ -170,6 +170,26 @@ func (d *DS) runSweeper(ctx context.Context) {
 		case <-ticker.C:
 			if _, err := d.Sweep(ctx); err != nil {
 				d.log().Error("sweep failed", "err", err)
+			}
+		}
+	}
+}
+
+// runCallSweeper runs sweepCallProposals every Policy.ProposalSweepInterval. It reads the DS's
+// clock, which is the wall clock in production, so a test drives it with clock.Fake.Advance.
+func (d *DS) runCallSweeper(ctx context.Context) {
+	for {
+		t := d.opts.Clock.NewTimer(d.opts.Policy.ProposalSweepInterval)
+		select {
+		case <-d.stop:
+			t.Stop()
+			return
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C():
+			if _, err := d.sweepCallProposals(ctx); err != nil {
+				d.log().Error("call proposal sweep failed", "err", err)
 			}
 		}
 	}

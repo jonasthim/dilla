@@ -1,15 +1,33 @@
 //! `dilla-sframe/1`: the RFC 9605 key schedule, KID and CTR packing and header codec for suite
 //! 0x0004 (AES_128_GCM_SHA256_128), as pinned by protocol/05-media-frames.md.
 //!
-//! Week 1 covers exactly what protocol/vectors/sframe.json pins. The codec-prefix parsers for
-//! Opus, VP8, VP9 and H.264 and the RBSP escaping arrive when the format is exercised end to end;
-//! `dilla-sframe/1` freezes at the end of W5, never on paper.
+//! The frame cipher: seal and open over `P || H || C || T` with AAD `H || P`, the four codec
+//! prefix rules, H.264 canonicalisation and the seeded RBSP escape, and the non-wire
+//! `SframeError` vocabulary protocol/05 publishes. The vectors in `protocol/vectors/sframe.json`
+//! pin every byte of it.
 
 mod ctr;
+mod error;
+mod frame;
+mod h264;
 mod header;
+mod keyring;
+mod pending;
+mod prefix;
+mod sender;
 
 pub use ctr::{Ctr, MAX_SEQ, Slot, nonce};
+pub use error::SframeError;
+pub use frame::{encrypt_frame, open_frame, peek_kid_ctr, protect, unescape_protected};
+pub use h264::{
+    bytes_covering_h264_pps, canonicalize_h264, check_prefix_sps, check_sps_vui, rbsp_escape,
+    rbsp_unescape, trailing_zeros,
+};
 pub use header::{decode_header, encode_header};
+pub use keyring::{Decrypted, KeyRing, ReplayWindow};
+pub use pending::PendingFrames;
+pub use prefix::{VP8_DELTA_PREFIX, VP8_KEY_PREFIX, prefix_len};
+pub use sender::{SenderCounters, SframeSender};
 
 use crate::identity::hkdf_sha256;
 
@@ -19,9 +37,19 @@ pub const SFRAME_SUITE: u16 = 0x0004;
 pub const NK: usize = 16;
 /// Nonce and salt length in bytes.
 pub const NN: usize = 12;
+/// AEAD tag length in bytes (RFC 9605 Table 1, suite 0x0004).
+pub const NT: usize = 16;
 /// A receiver MUST reject a KID that would resolve against an epoch more than this many commits
 /// ago (protocol/05 "Rotation").
 pub const KID_EPOCH_WINDOW: u64 = 255;
+/// A receiver keeps every epoch superseded less than this long ago (protocol/05 "Rotation").
+pub const OLD_EPOCH_RETENTION_MS: u64 = 10_000;
+/// The longest a frame under a not-yet-installed epoch is held before it is dropped and counted.
+pub const UNKNOWN_KID_BUFFER_MS: u64 = 2_000;
+/// The most frames one receiving track holds for a not-yet-installed epoch.
+pub const UNKNOWN_KID_BUFFER_FRAMES: usize = 256;
+/// The anti-replay window per (leaf, slot, layer) and epoch; RFC 3711's minimum is 64.
+pub const REPLAY_WINDOW: u64 = 128;
 /// The MLS exporter label the call group's base key is derived under.
 pub const LABEL_BASE_KEY: &str = "SFrame 1.0 Base Key";
 /// Note the trailing space: it is part of the label.
@@ -30,16 +58,34 @@ pub const LABEL_KEY: &[u8] = b"SFrame 1.0 Secret key ";
 pub const LABEL_SALT: &[u8] = b"SFrame 1.0 Secret salt ";
 
 /// `(leaf_index << 8) | (epoch mod 256)`. `leaf_index` is capped at 2^16, so a KID uses 24 bits.
+///
+/// `from_raw` takes any 64-bit value, because RFC 9605's header codec and its Appendix C vectors
+/// do; a received KID becomes a dilla KID only through `Kid::canonical` (protocol/05 "Frame
+/// format": a KID of 2^24 or more is `E_SFRAME_NON_CANONICAL_KID`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Kid(u64);
 
 impl Kid {
+    /// The largest dilla-sframe/1 KID: leaf 2^16 - 1, epoch byte 255.
+    pub const MAX: u64 = 0xff_ffff;
+
     pub fn new(leaf_index: u16, epoch: u64) -> Self {
         Self((u64::from(leaf_index) << 8) | (epoch % 256))
     }
 
     pub const fn from_raw(v: u64) -> Self {
         Self(v)
+    }
+
+    /// A KID read off the wire or handed in by a caller: `NonCanonicalKid` unless it is
+    /// `(leaf_index << 8) | epoch_low` for a 16-bit leaf, i.e. below 2^24. Without this check one
+    /// sender would have 2^40 accepted spellings of its KID, each deriving a different key.
+    pub const fn canonical(v: u64) -> Result<Self, SframeError> {
+        if v > Self::MAX {
+            Err(SframeError::NonCanonicalKid)
+        } else {
+            Ok(Self(v))
+        }
     }
 
     pub const fn value(self) -> u64 {
@@ -61,6 +107,62 @@ pub struct SframeKeys {
     pub salt: [u8; NN],
 }
 
+impl Slot {
+    /// The wasm surface's `slot: u8`. Anything above 3 is `SlotMismatch`: no track source maps there.
+    pub fn from_u8(v: u8) -> Result<Slot, SframeError> {
+        match v {
+            0 => Ok(Slot::Microphone),
+            1 => Ok(Slot::Camera),
+            2 => Ok(Slot::ScreenVideo),
+            3 => Ok(Slot::ScreenAudio),
+            _ => Err(SframeError::SlotMismatch),
+        }
+    }
+}
+
+/// The codec a frame carries. The numbers are the wasm surface's `codec: u8`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Codec {
+    Opus = 0,
+    Vp8 = 1,
+    Vp9 = 2,
+    H264 = 3,
+}
+
+impl Codec {
+    /// `UnsupportedCodec` for anything else: AV1 and H.265 have no number at media_version 1.
+    pub fn from_u8(v: u8) -> Result<Codec, SframeError> {
+        match v {
+            0 => Ok(Codec::Opus),
+            1 => Ok(Codec::Vp8),
+            2 => Ok(Codec::Vp9),
+            3 => Ok(Codec::H264),
+            _ => Err(SframeError::UnsupportedCodec),
+        }
+    }
+}
+
+/// One KID's AES-128-GCM key and salt, zeroed when dropped. `SframeKeys` stays `Copy` for the
+/// vectors; everything that holds a key for longer than one call holds a `FrameKey`.
+#[derive(zeroize::ZeroizeOnDrop)]
+pub struct FrameKey {
+    key: [u8; NK],
+    salt: [u8; NN],
+}
+
+impl FrameKey {
+    /// Derives straight into the key's own fields, with no intermediate `SframeKeys` copy.
+    pub fn derive(base_key: &[u8; NK], kid: Kid) -> Self {
+        let mut out = Self {
+            key: [0u8; NK],
+            salt: [0u8; NN],
+        };
+        derive_into(base_key, kid, &mut out.key, &mut out.salt);
+        out
+    }
+}
+
 /// `HKDF-Extract(salt = "", IKM = base_key)` (RFC 9605 section 4.4.2).
 pub fn sframe_secret(base_key: &[u8; NK]) -> [u8; 32] {
     crate::identity::hmac_sha256(&[0u8; 32], base_key)
@@ -74,6 +176,14 @@ pub fn sframe_secret(base_key: &[u8; NK]) -> [u8; 32] {
 /// The reference implementation performs Extract and Expand as one HKDF call with an empty salt,
 /// which is what `hkdf_sha256(Some(&[]), base_key, info, out)` does here.
 pub fn derive_keys(base_key: &[u8; NK], kid: Kid) -> SframeKeys {
+    let mut key = [0u8; NK];
+    let mut salt = [0u8; NN];
+    derive_into(base_key, kid, &mut key, &mut salt);
+    SframeKeys { key, salt }
+}
+
+/// `derive_keys` into caller-owned buffers.
+fn derive_into(base_key: &[u8; NK], kid: Kid, key: &mut [u8; NK], salt: &mut [u8; NN]) {
     let mut info_key = Vec::with_capacity(LABEL_KEY.len() + 10);
     info_key.extend_from_slice(LABEL_KEY);
     info_key.extend_from_slice(&kid.value().to_be_bytes());
@@ -84,11 +194,8 @@ pub fn derive_keys(base_key: &[u8; NK], kid: Kid) -> SframeKeys {
     info_salt.extend_from_slice(&kid.value().to_be_bytes());
     info_salt.extend_from_slice(&SFRAME_SUITE.to_be_bytes());
 
-    let mut key = [0u8; NK];
-    let mut salt = [0u8; NN];
-    hkdf_sha256(Some(&[]), base_key, &info_key, &mut key).expect("16 bytes is within the limit");
-    hkdf_sha256(Some(&[]), base_key, &info_salt, &mut salt).expect("12 bytes is within the limit");
-    SframeKeys { key, salt }
+    hkdf_sha256(Some(&[]), base_key, &info_key, key).expect("16 bytes is within the limit");
+    hkdf_sha256(Some(&[]), base_key, &info_salt, salt).expect("12 bytes is within the limit");
 }
 
 #[cfg(test)]

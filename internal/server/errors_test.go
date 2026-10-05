@@ -33,7 +33,7 @@ func TestRateLimitedAfterReportsWholeMillisecondsAndNeverWraps(t *testing.T) {
 	}
 }
 
-// The twenty-five rows of protocol/02 § Errors, exercised one by one, plus the
+// The twenty-six rows of protocol/02 § Errors, exercised one by one, plus the
 // one WithStatus override 1a uses (a duplicate username is E_INVALID_REQUEST at
 // 409, not at 400). The last four have no Plan 1 call site — Plan 2's readable
 // channels raise them — and are asserted here because this package declares them.
@@ -57,11 +57,15 @@ func TestEveryCodeMapsToItsStatusAndArrayShape(t *testing.T) {
 		{server.Errorf(server.CodeProvisionalOutsidePairing, ""), 403, 3},
 		{server.Errorf(server.CodeNotFound, ""), 404, 3},
 		{server.Errorf(server.CodeGroupExists, ""), 409, 3},
+		{server.Errorf(server.CodeRemovePending, ""), 409, 3},
+		{server.Errorf(server.CodeCallFull, ""), 409, 3},
+		{server.Errorf(server.CodeCallSharersFull, ""), 409, 3},
 		{server.Errorf(server.CodePruned, ""), 410, 3},
 		{server.Errorf(server.CodeInviteInvalid, ""), 410, 3},
 		{server.Errorf(server.CodeTooLarge, ""), 413, 3},
 		{server.Errorf(server.CodeCommitmentInvalid, ""), 422, 3},
 		{server.Errorf(server.CodeStorageFull, ""), 507, 3},
+		{server.Unavailable(500, "the call is busy"), 503, 3},
 		{server.CommitConflict([]byte{1}, [][]byte{{2}}), 409, 5},
 		{server.CommitRequired([][]byte{{3}}, 250), 425, 4},
 		{server.CommitInvalid("group_info_signature"), 422, 4},

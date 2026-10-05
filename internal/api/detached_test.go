@@ -35,6 +35,30 @@ func (d *cancellingDS) ProposeRemove(ctx context.Context, g id.ID, leaf uint32, 
 	return d.recordingDS.ProposeRemove(ctx, g, leaf, a)
 }
 
+func (d *cancellingDS) ProposeRemoveOf(ctx context.Context, g id.ID, leaf uint32, dev, a id.ID) error {
+	d.once.Do(d.cancel)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return d.recordingDS.ProposeRemoveOf(ctx, g, leaf, dev, a)
+}
+
+func (d *cancellingDS) ProposeRemoveOfMember(ctx context.Context, g id.ID, leaf uint32, dev id.ID, added uint64, a id.ID) error {
+	d.once.Do(d.cancel)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return d.recordingDS.ProposeRemoveOfMember(ctx, g, leaf, dev, added, a)
+}
+
+func (d *cancellingDS) ProposeRemoveDevice(ctx context.Context, g, dev, a id.ID) error {
+	d.once.Do(d.cancel)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return d.recordingDS.ProposeRemoveDevice(ctx, g, dev, a)
+}
+
 func (d *cancellingDS) VoidIneligibleAdds(ctx context.Context, g id.ID) error {
 	if err := ctx.Err(); err != nil {
 		return err

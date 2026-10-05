@@ -47,9 +47,33 @@ Stated plainly in the product's documentation and onboarding:
   alert. It is not silent, but it is possible.
 - Media authenticity is group-level: any member can derive any sender's frame keys
   (`05-media-frames.md`); a colluding operator and member can inject media attributed to another
-  participant.
+  participant. A member a Commit removed still holds the superseded epoch's key while receivers
+  retain that epoch (10 s after each processed the Commit): receivers refuse its own frames under
+  that epoch, but with the SFU's help it can still forge frames attributed to a participant who
+  remains in the call, under the superseded epoch, until they drop it.
+- In a browser call, the call group's per-epoch 16-byte `base_key` lives in the call tab's media
+  worker for the epoch plus 10 s of retention, so script injected into that page can read it. It
+  never reaches long-lived MLS or store secrets, and every member derives every sender's frame keys
+  from it anyway. The worker zeroes the transferred key and each copy it hands the wasm cipher, and
+  the cipher zeroes the buffer each copy arrives in; the receiver's key install borrows the key and
+  copies it once into a zeroized-on-drop heap buffer it keeps for the retention period. The worker
+  also keeps one JavaScript copy of each held epoch's `base_key`, only to recognise an identical
+  duplicate install; it is zeroed when that epoch retires or is evicted, when its install fails, and
+  on `clearKeys`. The JavaScript engine may move that small buffer during garbage collection, so
+  earlier unzeroed images of it can remain in freed heap until overwritten. Not zeroed:
+  the transient copies that key derivation leaves, because every derivation hashes `base_key` as the
+  HKDF input keying material and the hasher's working buffers hold it until they are overwritten;
+  they stay in the wasm stack region until later calls overwrite them; and any copy the browser
+  makes internally while transferring the key to the worker. A media worker that fails during a
+  call is told to clear its keys and then terminated, so no key in it is used after the failure; its
+  memory is released by the browser, not zeroed.
+- A call started in a follower tab receives that `base_key` from the leader tab's core worker over
+  `BroadcastChannel("dilla-core:<instance>")`, which any same-origin script can read. The web
+  client wave closes this exposure.
 - Metadata is visible to the instance: membership, presence, typing, who is in voice, message
-  timestamps and sizes, attachment sizes, franking tags.
+  timestamps and sizes, attachment sizes, franking tags, and in a call each participant's audio
+  level and speaking activity (the RTP audio-level header extension is outside SFrame, and a silent
+  microphone's zero-byte DTX frames mark its silent intervals) and every frame's size and timing.
 - History before a member joined is not shared with them at this version.
 - A user who loses every device and the recovery key loses their history.
 - A `browser`-tier session trusts the code the instance serves.

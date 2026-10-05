@@ -50,6 +50,12 @@ type Policy struct {
 	WatchdogInterval time.Duration // 2s
 	MaxLostRounds    int           // 3
 
+	// ProposalSweepInterval is how often the call sweeper voids expired call-group proposals and
+	// re-drives the voided call Removes whose leaf is still present (DEV-49, F9). The one-minute Sweep
+	// still covers every group; this one covers call groups only, so a call Remove is void within
+	// 30-35 s of issue instead of 30-90 s.
+	ProposalSweepInterval time.Duration // 5s
+
 	HandshakeRetention time.Duration // 30d
 	MessageRetention   time.Duration // 30d
 	HealWindow         time.Duration // 24h
@@ -107,21 +113,22 @@ type Policy struct {
 // DefaultPolicy is every value interfaces.md §6.2 fixes.
 func DefaultPolicy() Policy {
 	return Policy{
-		ProposalTTLText:    24 * time.Hour,
-		ProposalTTLCall:    30 * time.Second,
-		CommitDeadline:     2 * time.Second,
-		Backoff:            300 * time.Millisecond,
-		BackoffJitter:      300 * time.Millisecond,
-		WatchdogInterval:   2 * time.Second,
-		MaxLostRounds:      3,
-		HandshakeRetention: 30 * 24 * time.Hour,
-		MessageRetention:   30 * 24 * time.Hour,
-		HealWindow:         24 * time.Hour,
-		InactivityRemove:   90 * 24 * time.Hour,
-		FreezeWarn:         24 * time.Hour,
-		FreezeMax:          30 * 24 * time.Hour,
-		MaxCiphertextBytes: 131072,
-		MaxAddsPerCommit:   256,
+		ProposalTTLText:       24 * time.Hour,
+		ProposalTTLCall:       30 * time.Second,
+		CommitDeadline:        2 * time.Second,
+		Backoff:               300 * time.Millisecond,
+		BackoffJitter:         300 * time.Millisecond,
+		WatchdogInterval:      2 * time.Second,
+		MaxLostRounds:         3,
+		ProposalSweepInterval: 5 * time.Second,
+		HandshakeRetention:    30 * 24 * time.Hour,
+		MessageRetention:      30 * 24 * time.Hour,
+		HealWindow:            24 * time.Hour,
+		InactivityRemove:      90 * 24 * time.Hour,
+		FreezeWarn:            24 * time.Hour,
+		FreezeMax:             30 * 24 * time.Hour,
+		MaxCiphertextBytes:    131072,
+		MaxAddsPerCommit:      256,
 		// config.Default().Limits.MaxKeypackagesPerDevice, kept in step by
 		// TestPublishRefusesMoreThanThePolicyCap rather than by a comment.
 		MaxKeyPackagesPerDevice: 32,
@@ -159,6 +166,7 @@ func normalisePolicy(p Policy) Policy {
 	fill(&p.BackoffJitter, d.BackoffJitter)
 	fill(&p.WatchdogInterval, d.WatchdogInterval)
 	fillInt(&p.MaxLostRounds, d.MaxLostRounds)
+	fill(&p.ProposalSweepInterval, d.ProposalSweepInterval)
 	fill(&p.HandshakeRetention, d.HandshakeRetention)
 	fill(&p.MessageRetention, d.MessageRetention)
 	fill(&p.HealWindow, d.HealWindow)
@@ -208,6 +216,16 @@ type Options struct {
 	// but they are declared now, with Options, because Options is the one shape both plans read
 	// and tasks 21 and 24 are written against all three fields.
 	DeviceLists DeviceLists
+
+	// CallEvictor is told which devices a commit, a heal or a registration took out of a call group,
+	// after the group lock is released (G29). The composition root wires the SFU adapter's eviction
+	// (dilla-media task 12); nil means nobody is told.
+	CallEvictor CallEvictor
+
+	// OnQuarantine is told the device a fork quorum has just quarantined, after the flag is written
+	// and outside any group lock, on the fork-report request's goroutine, so it must return at once:
+	// the composition root's hook only queues the cut (api.Calls.CutDevice); nil means nobody is told.
+	OnQuarantine func(ctx context.Context, device id.ID)
 }
 
 type DS struct {
@@ -245,6 +263,21 @@ type DS struct {
 	// touched.
 	supersedeMu sync.Mutex
 	supersede   map[id.ID][]byte
+
+	// evictions carries the devices a member-set writer removed from a call group out of the group
+	// lock to the call evictor (queueEviction, flushEvictions).
+	evictMu   sync.Mutex
+	evictions map[id.ID][]id.ID
+
+	// callWork is the set of call groups with instance proposals the call sweeper must look at
+	// (markCallWork, sweepCallProposals), so its tick costs the call groups that have work rather
+	// than every open group of the instance. It is in memory: the sweeper's first tick after a start
+	// walks the open groups once to fill it (callWorkSeeded), and callWorkAfter is the round-robin
+	// cursor when more groups have work than one tick visits.
+	callWorkMu     sync.Mutex
+	callWork       map[id.ID]struct{}
+	callWorkSeeded bool
+	callWorkAfter  id.ID
 
 	// elections is invariant 7's in-flight committer round, one per group. It is in memory on
 	// purpose: an election decided while everybody was away is stale by definition, and the
@@ -296,13 +329,14 @@ func New(o Options) (*DS, error) {
 
 // Start runs the delivery service's background work: invariant 7's 2-second election watchdog and
 // the one-minute sweeper that voids proposals past invariant 6's TTL. Task 26 extends the sweeper
-// with retention pruning, on the same tick.
+// with retention pruning, on the same tick. dilla-media task 9 adds the call sweeper, which runs the
+// call-group half of the proposal sweep every Policy.ProposalSweepInterval on the DS's clock.
 //
-// Both loops end on Shutdown, which closes d.stop and waits on d.wg. A test that drives the
+// All three loops end on Shutdown, which closes d.stop and waits on d.wg. A test that drives the
 // watchdog deterministically calls RunWatchdogOnce against a clock.Fake instead of starting it —
 // these tickers are wall-clock, because a fake clock in production would be a stopped one.
 func (d *DS) Start(ctx context.Context) error {
-	d.wg.Add(2)
+	d.wg.Add(3)
 	go func() {
 		defer d.wg.Done()
 		d.runWatchdog(ctx)
@@ -310,6 +344,10 @@ func (d *DS) Start(ctx context.Context) error {
 	go func() {
 		defer d.wg.Done()
 		d.runSweeper(ctx)
+	}()
+	go func() {
+		defer d.wg.Done()
+		d.runCallSweeper(ctx)
 	}()
 	return nil
 }
@@ -336,3 +374,37 @@ func (d *DS) lock(groupID id.ID) func() {
 }
 
 func (d *DS) now() int64 { return d.opts.Clock.Now().Unix() }
+
+// groupKindCall is GroupRow.Kind for a call group (protocol/01 § Group kinds).
+const groupKindCall uint8 = 1
+
+// CallEvictor receives the devices a member-set writer removed from a call group.
+type CallEvictor func(ctx context.Context, groupID id.ID, removed []id.ID)
+
+// queueEviction records devices removed from a call group inside a writer's transaction.
+func (d *DS) queueEviction(groupID id.ID, removed []id.ID) {
+	if len(removed) == 0 || d.opts.CallEvictor == nil {
+		return
+	}
+	d.evictMu.Lock()
+	if d.evictions == nil {
+		d.evictions = map[id.ID][]id.ID{}
+	}
+	d.evictions[groupID] = append(d.evictions[groupID], removed...)
+	d.evictMu.Unlock()
+}
+
+// flushEvictions hands the queued devices to the call evictor. Every member-set entry point defers
+// it before taking the group lock, so it runs after the unlock: the evictor makes a loopback twirp
+// call per device, and the group must not wait on it.
+func (d *DS) flushEvictions(ctx context.Context, groupID id.ID) {
+	d.evictMu.Lock()
+	removed := d.evictions[groupID]
+	delete(d.evictions, groupID)
+	d.evictMu.Unlock()
+	if len(removed) == 0 || d.opts.CallEvictor == nil {
+		return
+	}
+	// The change is durable: a client hanging up must not keep a removed device in the room.
+	d.opts.CallEvictor(context.WithoutCancel(ctx), groupID, removed)
+}

@@ -1,0 +1,18 @@
+# POST /proposal, the identical duplicate seen from the leaver (R-5 of the DS re-review): carol's
+# second upload of her own leave is answered as the first, so she keeps it queued - and OpenMLS
+# refuses an application message from a device whose own proposal is pending. The LAST statement,
+# carol's send, is therefore meant to FAIL on her own client and never reach the instance; the Go
+# test (TestAMemberProposalUploadedTwiceIsAnsweredAsTheFirst) asserts exactly that. Had the instance
+# refused the retry, carol would have withdrawn her leave and sent this message as a member.
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9 community=none creator=alice
+join bob chat via=welcome
+join carol chat via=welcome
+sync bob
+sync carol
+leave carol chat
+leave carol chat
+send carol chat I have left

@@ -7,8 +7,8 @@
 //! construction.
 
 use crate::ds::{
-    CommitRequest, DeliveryService, Device, HandshakeItem, HealRequest, NewAccount, RegisterGroup,
-    ResyncRequest,
+    CommitRequest, DeliveryService, Device, DsError, HandshakeItem, HealRequest, NewAccount,
+    RegisterGroup, ResyncRequest,
 };
 use crate::{Frame, TestkitError};
 use dilla_core::envelope::{Envelope, EnvelopeType};
@@ -613,6 +613,40 @@ impl TestClient {
         self.upload_commit(ds, group_id, bundle, Vec::new())
     }
 
+    /// Proposes this device's removal from `group_id` (`leave <client> <group>`): the member Remove
+    /// proposal of protocol/01 "Leaving", posted to `POST /v1/groups/{id}/proposal`. Another
+    /// member's commit applies it.
+    ///
+    /// When the instance is already removing this leaf (a kick, a ban, an eviction), the delivery
+    /// service refuses the proposal with `409 E_REMOVE_PENDING` (protocol/02 invariant 6), matched
+    /// on the code. That is not a failure of the leave: the device is being
+    /// removed, by the instance's own Remove. The refused proposal is withdrawn from this client's
+    /// queue — no other member holds it — and the leave succeeds. Any other refusal withdraws it too
+    /// and is returned.
+    pub fn leave(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+    ) -> Result<(), TestkitError> {
+        let group = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        let epoch = group.epoch();
+        let proposal = group.leave(&self.provider, &self.signer)?;
+        match ds.post_proposal(group_id, epoch, serialize(&proposal)?) {
+            Ok(_) => Ok(()),
+            Err(refused) => {
+                group.withdraw_leave(&self.provider)?;
+                if is_removal_pending(&refused) {
+                    Ok(())
+                } else {
+                    Err(refused.into())
+                }
+            }
+        }
+    }
+
     /// Commits for the group's current epoch: a self-update, which also carries every proposal
     /// this client holds for the epoch. This is what lets a scenario drive invariant 3 without an
     /// implicit commit hiding inside `send`.
@@ -621,11 +655,38 @@ impl TestClient {
         ds: &mut dyn DeliveryService,
         group_id: &[u8],
     ) -> Result<(), TestkitError> {
+        self.commit_with(ds, group_id, false)
+    }
+
+    /// `commit` by a committer whose queue holds a member's `Remove` BEHIND the instance's `Remove`
+    /// of the same leaf (`commit <actor> <group> member_removes_last`): OpenMLS then commits the
+    /// member's, which is what a client not following dilla-core's queue rule sends. Fails when
+    /// the queue holds no such pair, so a scenario cannot pass without exercising it.
+    pub fn commit_member_removes_last(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+    ) -> Result<(), TestkitError> {
+        self.commit_with(ds, group_id, true)
+    }
+
+    fn commit_with(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        member_removes_last: bool,
+    ) -> Result<(), TestkitError> {
         self.absorb_proposals(ds, group_id)?;
         let group = self
             .groups
             .get_mut(group_id)
             .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        if member_removes_last && group.requeue_member_removes_last(&self.provider)? == 0 {
+            return Err(TestkitError::Scenario(
+                "member_removes_last: no member Remove shares its leaf with a queued instance Remove"
+                    .into(),
+            ));
+        }
         let bundle = group.self_update(&self.provider, &self.signer)?;
         // A queued instance Add makes the commit carry a Welcome, addressed by `self_update` to
         // the device the Add names; the instance stores it for that device (row 15).
@@ -676,14 +737,27 @@ impl TestClient {
         Ok(())
     }
 
-    /// Drains this device's frames and applies everything in order: handshakes first, then the
-    /// application messages of the epoch they belong to. Every frame is also kept, in order, for
-    /// `take_frame`.
+    /// The call group's media epoch (task 5's `DillaGroup::media_epoch`): base key, own leaf and
+    /// roster read together from one merged state, which is what the media driver hands a page.
+    pub fn media_epoch(
+        &self,
+        group_id: &[u8],
+    ) -> Result<dilla_core::mls::MediaEpoch, TestkitError> {
+        let group = self
+            .groups
+            .get(group_id)
+            .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        Ok(group.media_epoch(&self.provider)?)
+    }
+
     /// The client's current epoch in `group_id`, or None when it holds no state for the group.
     pub fn epoch_of(&self, group_id: &[u8]) -> Option<u64> {
         self.groups.get(group_id).map(|g| g.epoch())
     }
 
+    /// Drains this device's frames and applies everything in order: handshakes first, then the
+    /// application messages of the epoch they belong to. Every frame is also kept, in order, for
+    /// `take_frame`.
     pub fn sync(&mut self, ds: &mut dyn DeliveryService) -> Result<Vec<Received>, TestkitError> {
         let frames = ds.drain()?;
         self.frames.extend(frames.iter().cloned());
@@ -1057,11 +1131,50 @@ fn with_authenticated_data_len(message: &[u8], len: usize) -> Result<Vec<u8>, Te
     Ok(out)
 }
 
+/// The delivery service's refusal of a member's own `Remove` of a leaf the instance is already
+/// removing (protocol/02 invariant 6): `409 E_REMOVE_PENDING`. A leaving client reads it as "I am
+/// being removed". It is matched on the code alone; the detail is for people and may change.
+fn is_removal_pending(e: &DsError) -> bool {
+    e.code() == "E_REMOVE_PENDING"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dilla_core::ids::InstanceId;
     use dilla_core::mls::GroupKind;
+
+    #[test]
+    fn only_the_removal_pending_refusal_reads_as_being_removed() {
+        for pending in [
+            "a removal of this leaf is already pending",
+            "",
+            "anything at all",
+        ] {
+            let pending = DsError::from_code(
+                409,
+                "E_REMOVE_PENDING",
+                pending,
+                crate::ds::ErrorExtras::default(),
+            );
+            assert!(is_removal_pending(&pending), "{pending:?}");
+        }
+        for other in [
+            DsError::Remote {
+                status: 400,
+                code: "E_INVALID_REQUEST",
+                detail: "a removal of this leaf is already pending".into(),
+            },
+            DsError::Remote {
+                status: 403,
+                code: "E_FORBIDDEN",
+                detail: "a removal of this leaf is already pending".into(),
+            },
+            DsError::LeafNotCurrent,
+        ] {
+            assert!(!is_removal_pending(&other), "{other:?}");
+        }
+    }
 
     /// A real application message of a one-member text group, serialized as it is uploaded.
     fn an_application_message() -> Vec<u8> {

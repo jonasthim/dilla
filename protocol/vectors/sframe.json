@@ -1,7 +1,7 @@
 {
   "version": 1,
   "suite": 4,
-  "description": "dilla-sframe/1 key schedule (05-media-frames.md): base_key = MLS-Exporter(\"SFrame 1.0 Base Key\", \"\", 16); key/salt per RFC 9605 §4.4.2; CTR = slot(8)|layer(4)|seq(52); nonce = salt XOR CTR; header per RFC 9605 §4.3.",
+  "description": "dilla-sframe/1 (05-media-frames.md): base_key = MLS-Exporter(\"SFrame 1.0 Base Key\", \"\", 16); key/salt per RFC 9605 §4.4.2; CTR = slot(8)|layer(4)|seq(52); nonce = salt XOR CTR; header per RFC 9605 §4.3. rfc9605_c1/rfc9605_c3 = RFC 9605 appendix C; media_frames = P || H || C || T with AAD H || P after the codec prefix rule (H.264: canonical start codes, seeded RBSP escape; canonical = what the receiver opens to when the sender rewrote the input); escapes = seeded WriteRbsp; rejects = inputs a receiver must refuse with the named code; sender_rejects = what a sender must refuse; receiver = scripted key-ring runs (05 \"Rotation\", \"Receiver rules\"), each from an empty ring.",
   "base_key": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
   "cases": [
     {
@@ -55,6 +55,1519 @@
       "ctr": "283726777598083072",
       "nonce": "aa28fe534e294e42971b0f5b",
       "header": "afffffff03f0000040000000"
+    }
+  ],
+  "rfc9605_c1": [
+    {
+      "kid": "0",
+      "ctr": "0",
+      "header": "00"
+    },
+    {
+      "kid": "0",
+      "ctr": "1",
+      "header": "01"
+    },
+    {
+      "kid": "0",
+      "ctr": "255",
+      "header": "08ff"
+    },
+    {
+      "kid": "0",
+      "ctr": "256",
+      "header": "090100"
+    },
+    {
+      "kid": "0",
+      "ctr": "65535",
+      "header": "09ffff"
+    },
+    {
+      "kid": "0",
+      "ctr": "65536",
+      "header": "0a010000"
+    },
+    {
+      "kid": "0",
+      "ctr": "16777215",
+      "header": "0affffff"
+    },
+    {
+      "kid": "0",
+      "ctr": "16777216",
+      "header": "0b01000000"
+    },
+    {
+      "kid": "0",
+      "ctr": "4294967295",
+      "header": "0bffffffff"
+    },
+    {
+      "kid": "0",
+      "ctr": "4294967296",
+      "header": "0c0100000000"
+    },
+    {
+      "kid": "0",
+      "ctr": "1099511627775",
+      "header": "0cffffffffff"
+    },
+    {
+      "kid": "0",
+      "ctr": "1099511627776",
+      "header": "0d010000000000"
+    },
+    {
+      "kid": "0",
+      "ctr": "281474976710655",
+      "header": "0dffffffffffff"
+    },
+    {
+      "kid": "0",
+      "ctr": "281474976710656",
+      "header": "0e01000000000000"
+    },
+    {
+      "kid": "0",
+      "ctr": "72057594037927935",
+      "header": "0effffffffffffff"
+    },
+    {
+      "kid": "0",
+      "ctr": "72057594037927936",
+      "header": "0f0100000000000000"
+    },
+    {
+      "kid": "0",
+      "ctr": "18446744073709551615",
+      "header": "0fffffffffffffffff"
+    },
+    {
+      "kid": "1",
+      "ctr": "0",
+      "header": "10"
+    },
+    {
+      "kid": "255",
+      "ctr": "0",
+      "header": "80ff"
+    },
+    {
+      "kid": "256",
+      "ctr": "0",
+      "header": "900100"
+    },
+    {
+      "kid": "65535",
+      "ctr": "0",
+      "header": "90ffff"
+    },
+    {
+      "kid": "65536",
+      "ctr": "0",
+      "header": "a0010000"
+    },
+    {
+      "kid": "16777215",
+      "ctr": "0",
+      "header": "a0ffffff"
+    },
+    {
+      "kid": "16777216",
+      "ctr": "0",
+      "header": "b001000000"
+    },
+    {
+      "kid": "4294967295",
+      "ctr": "0",
+      "header": "b0ffffffff"
+    },
+    {
+      "kid": "4294967296",
+      "ctr": "0",
+      "header": "c00100000000"
+    },
+    {
+      "kid": "1099511627775",
+      "ctr": "0",
+      "header": "c0ffffffffff"
+    },
+    {
+      "kid": "1099511627776",
+      "ctr": "0",
+      "header": "d0010000000000"
+    },
+    {
+      "kid": "281474976710655",
+      "ctr": "0",
+      "header": "d0ffffffffffff"
+    },
+    {
+      "kid": "281474976710656",
+      "ctr": "0",
+      "header": "e001000000000000"
+    },
+    {
+      "kid": "72057594037927935",
+      "ctr": "0",
+      "header": "e0ffffffffffffff"
+    },
+    {
+      "kid": "72057594037927936",
+      "ctr": "0",
+      "header": "f00100000000000000"
+    },
+    {
+      "kid": "18446744073709551615",
+      "ctr": "0",
+      "header": "f0ffffffffffffffff"
+    },
+    {
+      "kid": "18446744073709551615",
+      "ctr": "18446744073709551615",
+      "header": "ffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "rfc9605_c3": {
+    "base_key": "000102030405060708090a0b0c0d0e0f",
+    "kid": "291",
+    "ctr": "17767",
+    "key": "d34f547f4ca4f9a7447006fe7fcbf768",
+    "salt": "75234edefe07819026751816",
+    "nonce": "75234edefe07819026755d71",
+    "prefix": "4945544620534672616d65205747",
+    "plaintext": "64726166742d696574662d736672616d652d656e63",
+    "frame": "4945544620534672616d652057479901234567b7412c2513a1b66dbb48841bbaf17f598751176ad847681a69c6d0b091c07018ce4adb34eb"
+  },
+  "media_frames": [
+    {
+      "name": "opus mic",
+      "codec": "opus",
+      "leaf_index": 0,
+      "epoch": 41,
+      "slot": 0,
+      "layer": 0,
+      "seq": 0,
+      "kid": "41",
+      "ctr": "0",
+      "header": "8029",
+      "input": "fc0102030405060708",
+      "prefix_len": 0,
+      "frame": "8029e2cb55c1af3559fae36751e93f325d2aaeff190e61164a66ff"
+    },
+    {
+      "name": "vp8 delta camera",
+      "codec": "vp8",
+      "leaf_index": 3,
+      "epoch": 41,
+      "slot": 1,
+      "layer": 0,
+      "seq": 1,
+      "kid": "809",
+      "ctr": "72057594037927937",
+      "header": "9f03290100000000000001",
+      "input": "310102030405060708",
+      "prefix_len": 1,
+      "frame": "319f03290100000000000001340a6b27e8eb6e0103de9bc092d5abe52394632f8ecd2519"
+    },
+    {
+      "name": "vp8 key 640x480 layer 2",
+      "codec": "vp8",
+      "leaf_index": 3,
+      "epoch": 297,
+      "slot": 1,
+      "layer": 2,
+      "seq": 1000,
+      "kid": "809",
+      "ctr": "81064793292669928",
+      "header": "9f032901200000000003e8",
+      "input": "5002009d012a8002e0010102030405060708",
+      "prefix_len": 10,
+      "frame": "5002009d012a8002e0019f032901200000000003e8690e3801073c4c990ed0d5ad5735f3b67f0fdaa765afe0ba"
+    },
+    {
+      "name": "h264 sps pps idr escaped",
+      "codec": "h264",
+      "leaf_index": 3,
+      "epoch": 41,
+      "slot": 1,
+      "layer": 0,
+      "seq": 5,
+      "kid": "809",
+      "ctr": "72057594037927941",
+      "header": "9f03290100000000000005",
+      "input": "000000016742c01e95a0501ec80000000168ce3c800000000165888421ff00000312345a5a5a5a",
+      "prefix_len": 28,
+      "frame": "000000016742c01e95a0501ec80000000168ce3c80000000016588849f032901000003000003000005db05f193d08dc6cc86f2420a0baae4e1e76087c4740ff030eb87e1"
+    },
+    {
+      "name": "h264 idr alone",
+      "codec": "h264",
+      "leaf_index": 1,
+      "epoch": 41,
+      "slot": 1,
+      "layer": 0,
+      "seq": 6,
+      "kid": "297",
+      "ctr": "72057594037927942",
+      "header": "9f01290100000000000006",
+      "input": "00000001658884aabbccdd",
+      "prefix_len": 7,
+      "frame": "000000016588849f012901000003000003000006f3ceee362b5b3f789f35e3dcb6bcae68ccf3100c"
+    },
+    {
+      "name": "h264 idr in two slices",
+      "codec": "h264",
+      "leaf_index": 1,
+      "epoch": 41,
+      "slot": 1,
+      "layer": 0,
+      "seq": 7,
+      "kid": "297",
+      "ctr": "72057594037927943",
+      "header": "9f01290100000000000007",
+      "input": "00000001658884aabb00000001658884ccdd",
+      "prefix_len": 7,
+      "frame": "000000016588849f0129010000030000030000070af62d8385a67566ce722678ec5fd979f2bd03cee2bdef01ea67bb"
+    },
+    {
+      "name": "h264 three-byte start codes, leading garbage, trailing zeros",
+      "codec": "h264",
+      "leaf_index": 1,
+      "epoch": 41,
+      "slot": 1,
+      "layer": 0,
+      "seq": 8,
+      "kid": "297",
+      "ctr": "72057594037927944",
+      "header": "9f01290100000000000008",
+      "input": "ffee0000016742c01e95a0501ec80000000168ce3c800000000001658884aabb0000",
+      "prefix_len": 29,
+      "frame": "000000016742c01e95a0501ec80000000168ce3c8000000000016588849f01290100000300000300000862a6cd34601fc64fff385838bde277144d3fa1a4",
+      "canonical": "000000016742c01e95a0501ec80000000168ce3c800000000001658884aabb0000"
+    },
+    {
+      "name": "h264 prefix ending in one zero byte",
+      "codec": "h264",
+      "leaf_index": 1,
+      "epoch": 41,
+      "slot": 2,
+      "layer": 0,
+      "seq": 9,
+      "kid": "297",
+      "ctr": "144115188075855881",
+      "header": "9f01290200000000000009",
+      "input": "0000000165c02000aa55",
+      "prefix_len": 8,
+      "frame": "0000000165c020009f012902000003000003000009d373ab6829c3c93255643d5693a41f86c0dc"
+    },
+    {
+      "name": "h264 access unit delimiter and filler before the first slice",
+      "codec": "h264",
+      "leaf_index": 1,
+      "epoch": 41,
+      "slot": 1,
+      "layer": 0,
+      "seq": 10,
+      "kid": "297",
+      "ctr": "72057594037927946",
+      "header": "9f0129010000000000000a",
+      "input": "0000000109f0000000010cffff0000000168ce3c8000000001658884aabb",
+      "prefix_len": 15,
+      "frame": "0000000168ce3c80000000016588849f01290100000300000300000a200a9a80220f7d93a044aaf347ea266f9f66",
+      "canonical": "0000000168ce3c8000000001658884aabb"
+    },
+    {
+      "name": "h264 sealed tail ending in a zero byte",
+      "codec": "h264",
+      "leaf_index": 1,
+      "epoch": 41,
+      "slot": 1,
+      "layer": 0,
+      "seq": 515,
+      "kid": "297",
+      "ctr": "72057594037928451",
+      "header": "9f01290100000000000203",
+      "input": "00000001658884aabbccdd",
+      "prefix_len": 7,
+      "frame": "000000016588849f0129010000030000030002037670978b493207a14409c09a50797a6abe35ca00"
+    }
+  ],
+  "escapes": [
+    {
+      "seed_zeros": 0,
+      "in": "00000001000003",
+      "out": "000003000100000303"
+    },
+    {
+      "seed_zeros": 0,
+      "in": "000000",
+      "out": "00000300"
+    },
+    {
+      "seed_zeros": 0,
+      "in": "0000",
+      "out": "0000"
+    },
+    {
+      "seed_zeros": 1,
+      "in": "0001",
+      "out": "000301"
+    },
+    {
+      "seed_zeros": 1,
+      "in": "0100",
+      "out": "0100"
+    },
+    {
+      "seed_zeros": 2,
+      "in": "03ff",
+      "out": "0303ff"
+    },
+    {
+      "seed_zeros": 2,
+      "in": "04",
+      "out": "04"
+    },
+    {
+      "seed_zeros": 0,
+      "in": "9f03290100000000000001",
+      "out": "9f03290100000300000300000301"
+    }
+  ],
+  "rejects": [
+    {
+      "name": "truncated header: empty",
+      "header": "",
+      "error": "E_SFRAME_TRUNCATED_HEADER"
+    },
+    {
+      "name": "truncated header: extended kid missing",
+      "header": "80",
+      "error": "E_SFRAME_TRUNCATED_HEADER"
+    },
+    {
+      "name": "truncated header: extended kid and ctr missing",
+      "header": "8f",
+      "error": "E_SFRAME_TRUNCATED_HEADER"
+    },
+    {
+      "name": "truncated header: ctr one byte short",
+      "header": "99010001",
+      "error": "E_SFRAME_TRUNCATED_HEADER"
+    },
+    {
+      "name": "non-minimal kid 5",
+      "header": "8005",
+      "error": "E_SFRAME_NON_MINIMAL_HEADER"
+    },
+    {
+      "name": "non-minimal kid 7",
+      "header": "8007",
+      "error": "E_SFRAME_NON_MINIMAL_HEADER"
+    },
+    {
+      "name": "non-minimal ctr 0",
+      "header": "0800",
+      "error": "E_SFRAME_NON_MINIMAL_HEADER"
+    },
+    {
+      "name": "non-minimal ctr 7",
+      "header": "0807",
+      "error": "E_SFRAME_NON_MINIMAL_HEADER"
+    },
+    {
+      "name": "non-minimal kid with a leading zero byte",
+      "header": "9000ff",
+      "error": "E_SFRAME_NON_MINIMAL_HEADER"
+    },
+    {
+      "name": "non-minimal ctr with a leading zero byte",
+      "header": "0900ff",
+      "error": "E_SFRAME_NON_MINIMAL_HEADER"
+    },
+    {
+      "name": "non-minimal kid 0 in eight bytes",
+      "header": "f00000000000000000",
+      "error": "E_SFRAME_NON_MINIMAL_HEADER"
+    },
+    {
+      "name": "non-minimal ctr 8 in eight bytes",
+      "header": "0f0000000000000008",
+      "error": "E_SFRAME_NON_MINIMAL_HEADER"
+    },
+    {
+      "name": "non-minimal kid: leaf 1 epoch 41 in three bytes",
+      "header": "a0000129",
+      "error": "E_SFRAME_NON_MINIMAL_HEADER"
+    },
+    {
+      "name": "non-canonical kid 2^24",
+      "header": "b001000000",
+      "error": "E_SFRAME_NON_CANONICAL_KID"
+    },
+    {
+      "name": "non-canonical kid: leaf 1 epoch 41 with bit 24 set",
+      "header": "b001000129",
+      "error": "E_SFRAME_NON_CANONICAL_KID"
+    },
+    {
+      "name": "non-canonical kid 2^64 - 1",
+      "header": "f0ffffffffffffffff",
+      "error": "E_SFRAME_NON_CANONICAL_KID"
+    },
+    {
+      "name": "tag bit flipped",
+      "codec": "vp8",
+      "leaf_index": 3,
+      "epoch": 297,
+      "frame": "5002009d012a8002e0019f032901200000000003e8690e3801073c4c990ed0d5ad5735f3b67f0fdaa765afe0bb",
+      "error": "E_SFRAME_AUTH"
+    },
+    {
+      "name": "prefix byte changed",
+      "codec": "vp8",
+      "leaf_index": 3,
+      "epoch": 297,
+      "frame": "5002009d012a8102e0019f032901200000000003e8690e3801073c4c990ed0d5ad5735f3b67f0fdaa765afe0ba",
+      "error": "E_SFRAME_AUTH"
+    },
+    {
+      "name": "first ciphertext bit flipped",
+      "codec": "vp8",
+      "leaf_index": 3,
+      "epoch": 297,
+      "frame": "5002009d012a8002e0019f032901200000000003e8680e3801073c4c990ed0d5ad5735f3b67f0fdaa765afe0ba",
+      "error": "E_SFRAME_AUTH"
+    },
+    {
+      "name": "header ctr byte changed",
+      "codec": "vp8",
+      "leaf_index": 3,
+      "epoch": 297,
+      "frame": "5002009d012a8002e0019f032901200000000003e9690e3801073c4c990ed0d5ad5735f3b67f0fdaa765afe0ba",
+      "error": "E_SFRAME_AUTH"
+    },
+    {
+      "name": "tag truncated to 15 bytes",
+      "codec": "vp8",
+      "leaf_index": 3,
+      "epoch": 297,
+      "frame": "5002009d012a8002e0019f032901200000000003e8690e3801073c4c990ed0d5ad5735f3",
+      "error": "E_SFRAME_TRUNCATED_FRAME"
+    },
+    {
+      "name": "vp8 key frame shorter than 10 bytes",
+      "codec": "vp8",
+      "frame": "5002009d012a8002e0",
+      "error": "E_SFRAME_MALFORMED_PREFIX"
+    },
+    {
+      "name": "opus frame sealed under a non-canonical kid",
+      "codec": "opus",
+      "frame": "b001000029cf9c501a9130473806082f9a88abc9cdd47709a8da6f222375",
+      "error": "E_SFRAME_NON_CANONICAL_KID"
+    },
+    {
+      "name": "h264 sps and pps with no slice",
+      "codec": "h264",
+      "frame": "000000016742c01e95a0501ec80000000168ce3c80",
+      "error": "E_SFRAME_NO_VCL_NAL"
+    },
+    {
+      "name": "h264 first vcl nal of type 2",
+      "codec": "h264",
+      "frame": "0000000162888421",
+      "error": "E_SFRAME_UNSUPPORTED_CODEC"
+    },
+    {
+      "name": "h264 first vcl nal of type 3",
+      "codec": "h264",
+      "frame": "0000000163888421",
+      "error": "E_SFRAME_UNSUPPORTED_CODEC"
+    },
+    {
+      "name": "h264 first vcl nal of type 4",
+      "codec": "h264",
+      "frame": "0000000164888421",
+      "error": "E_SFRAME_UNSUPPORTED_CODEC"
+    },
+    {
+      "name": "h264 first vcl nal of type 19",
+      "codec": "h264",
+      "frame": "0000000173888421",
+      "error": "E_SFRAME_UNSUPPORTED_CODEC"
+    },
+    {
+      "name": "h264 first vcl nal of type 20",
+      "codec": "h264",
+      "frame": "0000000174888421",
+      "error": "E_SFRAME_UNSUPPORTED_CODEC"
+    },
+    {
+      "name": "h264 first vcl nal of type 21",
+      "codec": "h264",
+      "frame": "0000000175888421",
+      "error": "E_SFRAME_UNSUPPORTED_CODEC"
+    },
+    {
+      "name": "h264 nal of type 0",
+      "codec": "h264",
+      "frame": "0000000100888421",
+      "error": "E_SFRAME_MALFORMED_PREFIX"
+    },
+    {
+      "name": "h264 nal of type 24",
+      "codec": "h264",
+      "frame": "0000000178888421",
+      "error": "E_SFRAME_MALFORMED_PREFIX"
+    },
+    {
+      "name": "h264 nal of type 31",
+      "codec": "h264",
+      "frame": "000000017f888421",
+      "error": "E_SFRAME_MALFORMED_PREFIX"
+    },
+    {
+      "name": "h264 with no start code",
+      "codec": "h264",
+      "frame": "658884aabb",
+      "error": "E_SFRAME_MALFORMED_PREFIX"
+    },
+    {
+      "name": "h264 with bytes before the first start code",
+      "codec": "h264",
+      "frame": "ff00000001658884aabb",
+      "error": "E_SFRAME_MALFORMED_PREFIX"
+    },
+    {
+      "name": "h264 slice header ending inside pic_parameter_set_id",
+      "codec": "h264",
+      "frame": "0000000165c020",
+      "error": "E_SFRAME_MALFORMED_PREFIX"
+    },
+    {
+      "name": "h264 pic_parameter_set_id 256",
+      "codec": "h264",
+      "frame": "0000000165c02020aa",
+      "error": "E_SFRAME_MALFORMED_PREFIX"
+    }
+  ],
+  "sender_rejects": [
+    {
+      "name": "h264 sps a libwebrtc receiver would rewrite",
+      "codec": "h264",
+      "slot": 1,
+      "layer": 0,
+      "input": "000000016742c01e95a0501ec80000000165888421",
+      "error": "E_SFRAME_NON_CANONICAL_SPS"
+    },
+    {
+      "name": "h264 with no slice",
+      "codec": "h264",
+      "slot": 1,
+      "layer": 0,
+      "input": "000000016742c01e95a0501ec80000000168ce3c80",
+      "error": "E_SFRAME_NO_VCL_NAL"
+    },
+    {
+      "name": "vp8 key frame shorter than 10 bytes",
+      "codec": "vp8",
+      "slot": 1,
+      "layer": 0,
+      "input": "5002009d012a8002e0",
+      "error": "E_SFRAME_MALFORMED_PREFIX"
+    },
+    {
+      "name": "layer 16",
+      "codec": "opus",
+      "slot": 0,
+      "layer": 16,
+      "input": "fc01",
+      "error": "E_SFRAME_LAYER_RANGE"
+    },
+    {
+      "name": "reserved slot 4",
+      "codec": "opus",
+      "slot": 4,
+      "layer": 0,
+      "input": "fc01",
+      "error": "E_SFRAME_SLOT_MISMATCH"
+    },
+    {
+      "name": "sequence number 2^52",
+      "slot": 0,
+      "layer": 0,
+      "seq": "4503599627370496",
+      "error": "E_SFRAME_COUNTER_EXHAUSTED"
+    },
+    {
+      "name": "h264 with only an AUD and filler",
+      "codec": "h264",
+      "slot": 1,
+      "layer": 0,
+      "input": "0000000109f0000000010cffff",
+      "error": "E_SFRAME_NO_VCL_NAL"
+    }
+  ],
+  "receiver": [
+    {
+      "name": "replay window of 128",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "980105c855bbab769b0b28680c199e2dfc340be15103",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 200,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "ok"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "98010548c87e6f868ac9a1c35d57e08c4d6250e5c1e6",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 72,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "E_SFRAME_REPLAY"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "98010549dd8049bf2dc27fc1463a857597664f8308f7",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 73,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "ok"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "98010549dd8049bf2dc27fc1463a857597664f8308f7",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 73,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "E_SFRAME_REPLAY"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "980105c855bbab769b0b28680c199e2dfc340be15103",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 200,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "E_SFRAME_REPLAY"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "980105c7aff0ea810680c91c6fd09f5f67bba9160ab7",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 199,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "ok"
+        }
+      ]
+    },
+    {
+      "name": "own kid, leaf, sender and slot bindings",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ],
+            [
+              2,
+              "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "503a1fcfd69209aeb80fa1b017a63f4aeda963",
+          "leaf": 0,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 0,
+          "device": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "E_SFRAME_OWN_KID"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "9009053d22b693151293067f4378db4df7765477e1",
+          "leaf": 9,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "E_SFRAME_LEAF_NOT_IN_EPOCH"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "9002058257c4b141374d42b2f7e6249950491ee7a8",
+          "leaf": 2,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "E_SFRAME_SENDER_MISMATCH"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "9f01050100000000000000e45a1765c4d3de9cb4e438ad14aa44a44e18",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 1,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "E_SFRAME_SLOT_MISMATCH"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "9f01050100000000000000e45a1765c4d3de9cb4e438ad14aa44a44e18",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 1,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 1,
+          "now": 0,
+          "expect": "ok"
+        }
+      ]
+    },
+    {
+      "name": "a device holding two leaves",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ],
+            [
+              3,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "900105d21b9071a113592ea435937655fdf055c277",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "E_SFRAME_SENDER_MISMATCH"
+        }
+      ]
+    },
+    {
+      "name": "unknown, held for 10 s, stale for 20 s, then unknown",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "90010691fc59d3da48d606daafd468efa635a309c8",
+          "leaf": 1,
+          "epoch": 6,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 0,
+          "expect": "E_SFRAME_UNKNOWN_KID"
+        },
+        {
+          "op": "install",
+          "epoch": 6,
+          "base_key": "06060606060606060606060606060606",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 1000
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "90010691fc59d3da48d606daafd468efa635a309c8",
+          "leaf": 1,
+          "epoch": 6,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 1000,
+          "expect": "ok"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "900105d21b9071a113592ea435937655fdf055c277",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 10999,
+          "expect": "ok"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "910105976be04be050431c91e056e3f5895cc465f1",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 1,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 11000,
+          "expect": "E_SFRAME_STALE_EPOCH"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "92010530941f402962cb588494f2b32c2fe75a2da2",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 2,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 30999,
+          "expect": "E_SFRAME_STALE_EPOCH"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "93010518d44dfc575bfc26f1c1cdb93da5ab094032",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 3,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 31000,
+          "expect": "E_SFRAME_UNKNOWN_KID"
+        }
+      ]
+    },
+    {
+      "name": "an epoch with the same low byte evicts the held one",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 1,
+          "base_key": "01010101010101010101010101010101",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "install",
+          "epoch": 257,
+          "base_key": "06060606060606060606060606060606",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 100
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "90010101da6eae63b5e7ba6d31a71e99468122a1ed",
+          "leaf": 1,
+          "epoch": 1,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 200,
+          "expect": "E_SFRAME_AUTH"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "91010192a699857c0fb27aba6d023889e3d958eab1",
+          "leaf": 1,
+          "epoch": 257,
+          "slot": 0,
+          "seq": 1,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 200,
+          "expect": "ok"
+        }
+      ]
+    },
+    {
+      "name": "a member the newest epoch removed",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ],
+            [
+              2,
+              "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "install",
+          "epoch": 6,
+          "base_key": "06060606060606060606060606060606",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "9002058257c4b141374d42b2f7e6249950491ee7a8",
+          "leaf": 2,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 0,
+          "device": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "track_slot": 0,
+          "now": 100,
+          "expect": "E_SFRAME_SENDER_MISMATCH"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "900105d21b9071a113592ea435937655fdf055c277",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 100,
+          "expect": "ok"
+        }
+      ]
+    },
+    {
+      "name": "a late install more than 255 epochs old",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 300,
+          "base_key": "31313131313131313131313131313131",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "install",
+          "epoch": 44,
+          "base_key": "2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 10
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "90012c89520e04eca6e7ab651c6c18eae57746a838",
+          "leaf": 1,
+          "epoch": 300,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 20,
+          "expect": "ok"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "91012c8cf4eac8bbb6060f229f4459568624b0d9e9",
+          "leaf": 1,
+          "epoch": 44,
+          "slot": 0,
+          "seq": 1,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 20,
+          "expect": "E_SFRAME_AUTH"
+        }
+      ]
+    },
+    {
+      "name": "a new epoch drops one more than 255 behind it",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 10,
+          "base_key": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ],
+            [
+              2,
+              "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "install",
+          "epoch": 300,
+          "base_key": "31313131313131313131313131313131",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 100
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "90010a41d1dee4584d56e67f5aaa6f919789070c73",
+          "leaf": 1,
+          "epoch": 10,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 200,
+          "expect": "E_SFRAME_STALE_EPOCH"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "90012c89520e04eca6e7ab651c6c18eae57746a838",
+          "leaf": 1,
+          "epoch": 300,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 200,
+          "expect": "ok"
+        }
+      ]
+    },
+    {
+      "name": "a dropped epoch installed again stays dropped",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "install",
+          "epoch": 6,
+          "base_key": "06060606060606060606060606060606",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "90010691fc59d3da48d606daafd468efa635a309c8",
+          "leaf": 1,
+          "epoch": 6,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 10000,
+          "expect": "ok"
+        },
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 11000
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "900105d21b9071a113592ea435937655fdf055c277",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 11000,
+          "expect": "E_SFRAME_STALE_EPOCH"
+        }
+      ]
+    },
+    {
+      "name": "a resync that moves a device keeps both kids",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              3,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "install",
+          "epoch": 6,
+          "base_key": "06060606060606060606060606060606",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 100
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "900305731ccae1b9eb18c7af4eeb34ad9c9dc4d0f7",
+          "leaf": 3,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 200,
+          "expect": "ok"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "90010691fc59d3da48d606daafd468efa635a309c8",
+          "leaf": 1,
+          "epoch": 6,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 200,
+          "expect": "ok"
+        }
+      ]
+    },
+    {
+      "name": "a dropped epoch cannot be reinstalled 25 seconds after its drop",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "install",
+          "epoch": 6,
+          "base_key": "06060606060606060606060606060606",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "900105d21b9071a113592ea435937655fdf055c277",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 10000,
+          "expect": "E_SFRAME_STALE_EPOCH"
+        },
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 35000
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "910105976be04be050431c91e056e3f5895cc465f1",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 1,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 35000,
+          "expect": "E_SFRAME_UNKNOWN_KID"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "90010691fc59d3da48d606daafd468efa635a309c8",
+          "leaf": 1,
+          "epoch": 6,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 35000,
+          "expect": "ok"
+        }
+      ]
     }
   ]
 }

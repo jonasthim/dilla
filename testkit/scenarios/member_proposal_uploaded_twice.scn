@@ -1,0 +1,22 @@
+# Invariant 6 and POST /proposal: a member that uploads the same proposal twice - a retry of an
+# upload whose answer it lost - is answered as the first time. Member proposals carry no nonce, so
+# carol's second `leave` in the same epoch is byte-identical to the first: the instance answers it
+# with the first upload's seq, writes and fans out nothing again, and alice's commit applies the one
+# Remove. carol keeps her proposal (a refusal would have made her withdraw it), so she can process
+# the commit that removes her.
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=dfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdf community=none creator=alice
+join bob chat via=welcome
+join carol chat via=welcome
+sync bob
+sync carol
+leave carol chat
+leave carol chat
+commit alice chat
+sync bob
+sync carol
+send alice chat carol has left
+expect_decrypts bob chat carol has left

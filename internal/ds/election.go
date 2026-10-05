@@ -2,6 +2,7 @@ package ds
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -49,9 +50,27 @@ func (d *DS) RequestCommit(ctx context.Context, groupID id.ID) error {
 	if err != nil {
 		return err
 	}
-	refs, err := d.refsOf(ctx, groupID, row.Epoch)
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
 	if err != nil {
 		return err
+	}
+	refs := make([][]byte, 0, len(rows))
+	// The devices (and, for a Remove that recorded none, the leaves) an outstanding instance Remove
+	// is taking out. Such a device can never commit its own removal — OpenMLS refuses a commit that
+	// removes the committer — so electing it only wastes a round, and charges it a lost one if it
+	// acks (DS-5 of the server-half review).
+	leavingDevice := map[id.ID]bool{}
+	leavingLeaf := map[uint32]bool{}
+	for _, r := range rows {
+		refs = append(refs, r.Ref)
+		if r.TargetLeaf == nil || !isInstanceRemoveOf(r, *r.TargetLeaf) {
+			continue
+		}
+		if r.TargetDevice != nil {
+			leavingDevice[*r.TargetDevice] = true
+		} else {
+			leavingLeaf[*r.TargetLeaf] = true
+		}
 	}
 	if len(refs) == 0 {
 		d.clearElection(groupID)
@@ -64,10 +83,13 @@ func (d *DS) RequestCommit(ctx context.Context, groupID id.ID) error {
 		d.clearElection(groupID)
 		return nil
 	}
-	candidates := d.opts.Gateway.OnlineIn(groupID) // already bots-first, then by leaf index
+	// OnlineIn is already bots-first, then by leaf index, and a fresh slice of the caller's own.
+	candidates := slices.DeleteFunc(d.opts.Gateway.OnlineIn(groupID), func(c gateway.OnlineDevice) bool {
+		return leavingDevice[c.DeviceID] || leavingLeaf[c.LeafIndex]
+	})
 	if len(candidates) == 0 {
 		// No candidate: arm nothing. The next ready re-elects, which is what the online predicate
-		// is for.
+		// is for. The same when the only devices online are the ones being removed.
 		d.clearElection(groupID)
 		return nil
 	}

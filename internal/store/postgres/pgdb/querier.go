@@ -139,6 +139,7 @@ type Querier interface {
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
 	ListBackups(ctx context.Context, arg ListBackupsParams) ([]Backups, error)
 	ListBans(ctx context.Context, arg ListBansParams) ([]Bans, error)
+	ListBarredMembers(ctx context.Context, arg ListBarredMembersParams) ([]MlsMembers, error)
 	// Channels are tombstoned, never removed, so the ON DELETE CASCADE on blob_refs never fires:
 	// the sweeper drops a deleted channel's references itself.
 	ListBlobRefsOfDeletedChannels(ctx context.Context, arg ListBlobRefsOfDeletedChannelsParams) ([]BlobRefs, error)

@@ -195,7 +195,15 @@ func (d *DS) removeInactive(ctx context.Context) (int, error) {
 				if d.opts.Gateway != nil && d.opts.Gateway.Online(m.DeviceID) {
 					continue
 				}
-				if err := d.ProposeRemove(ctx, g.GroupID, m.LeafIndex, id.New()); err != nil {
+				// The member set was read outside the group lock, so the Remove names the device
+				// it read and is refused when another device holds the leaf by the time the lock is
+				// held (DS-2 of the server-half review): one commit can remove this device and add a
+				// newcomer at its index. A device that left its leaf is nothing to do.
+				err := d.ProposeRemoveOf(ctx, g.GroupID, m.LeafIndex, m.DeviceID, id.New())
+				if errors.Is(err, ErrRemoveTargetGone) {
+					continue
+				}
+				if err != nil {
 					// One group's refusal must not stop the sweep of the others.
 					d.log().Warn("an inactivity Remove was not proposed",
 						"group", g.GroupID.String()[:8], "leaf", m.LeafIndex, "err", err)

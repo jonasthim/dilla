@@ -80,8 +80,8 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `GET /v1/groups/{id}/info` | E | — | `[epoch, group_info, tree_hash, next_seq]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/tree` | E | — | `[epoch, ratchet_tree, tree_hash]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/handshakes?from=&limit=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
-| `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
-| `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN` |
+| `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
+| `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_INVALID_REQUEST`, `E_REMOVE_PENDING` |
 | `POST /v1/groups/{id}/message` | E | `[epoch, private_message(bstr)]` | `[seq, franking_tag(bstr32), recv_ts]` | `E_COMMIT_REQUIRED`, `E_LEAF_NOT_CURRENT`, `E_TOO_LARGE`, `E_COMMITMENT_INVALID` |
 | `POST /v1/groups/{id}/resync` | E | `[external_commit(bstr), group_info(bstr)]` | `[seq, epoch]` | `E_COMMIT_INVALID`, `E_FORBIDDEN` (freeze-exempt, invariant 5) |
 | `POST /v1/groups/{id}/fork-report` | E | `[epoch, seq, reason(tstr)]` | `202 []` | `E_NOT_FOUND` |
@@ -214,6 +214,22 @@ dense on every device of its audience; `group_id` is null.
 | 49 | `typing` | `[user_id(bstr 16), device_id(bstr 16), typing(uint), expires_ts(uint)]` |
 | 50 | `voice_state` | `[user_id(bstr 16), device_id(bstr 16), call_id(bstr 16), flags(uint)]` |
 
+`voice_state` is produced by the instance alone, from what its SFU reports about a call's room
+(`09` § Voice), and goes to every device of every user who may view the call's channel — for a DM
+or group DM, its participants. `call_id` is the call's id. `flags` is a bit set:
+
+| bit | name | set while |
+|---|---|---|
+| 0 | `in_call` | the device is in the call's room |
+| 1 | `self_mute` | reserved for the device's own mute state; no client→server path carries it in this version, so it is 0 |
+| 2 | `self_deaf` | reserved for the device's own deafen state; 0 in this version |
+| 3 | `video` | the device publishes a camera track |
+| 4 | `screen` | the device publishes a screen-share track |
+
+`flags` 0 means the device has left the call; when a call ends, every device still in it is sent
+one. Every other bit is reserved and 0. The SFU's reports can arrive late or not at all, so
+`voice_state` is advisory: it never decides who may join or publish.
+
 Opcodes 64–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
 outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored. A frame of
 the wrong element count for its opcode is `E_FRAME_SHAPE`; a frame that fails the deterministic
@@ -279,10 +295,20 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    MUST verify `tree_hash` in the GroupInfo against the served tree before joining.
 3. **One commit per epoch.** The first valid Commit for epoch `n` wins; a later one for the same
    epoch gets `409 E_COMMIT_CONFLICT` with the winning commit and the current outstanding proposals.
-4. **Commit validity.** A Commit is accepted only if: it is signed by a current leaf or is a valid
-   external commit; it references every outstanding non-void DS proposal (invariant 6); it
-   contains no `Update` from the committer; every member-originated `Remove` targets the
-   committer's own user; every `Add` carries a credential whose user is eligible under the channel's
+4. **Commit validity.** A Commit is accepted only if: it is signed by a current leaf — the leaf of
+   the device uploading it (`403 E_FORBIDDEN` otherwise) — or is a valid external commit; it
+   references every outstanding non-void DS proposal (invariant 6), except that an outstanding
+   non-void DS `Remove` of leaf `L` is also satisfied when the commit applies any other `Remove`
+   of `L` — a member's own `Remove`, which the clause on member-originated `Remove`s below measures
+   against its proposer — while `L` still holds the device the DS `Remove` recorded (OpenMLS
+   commits only the later of two `Remove`s of one leaf in the committer's queue, so a committer
+   holding the DS's first commits the member's; the device removed is the same). The DS deletes a
+   `Remove` satisfied this way with the commit, as it does a referenced one, and never re-issues it;
+   it contains no `Update` from the committer; every member-originated `Remove` targets its proposer's
+   own user (the committer's for a `Remove` the commit carries, the proposing member's for a member
+   `Remove` proposal it references — how a member leaves, `01-groups.md`), the proposer being the
+   sender the `PublicGroup` authenticated; every `Add` carries a
+   credential whose user is eligible under the channel's
    ACL (for a community group, the same permission invariant 1 asks of a registrant, resolved
    through `09` § Permissions; for a DM or group DM, being one of its participants; for any other
    group, being in it already) and whose DSK is in the
@@ -291,9 +317,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
 5. **Freeze.** While any DS proposal is outstanding for a group, application messages get
    `425 E_COMMIT_REQUIRED`, and external commits get `425 E_COMMIT_REQUIRED` too — **unless no member
    device is online**, in which case the external commit is accepted, the outstanding proposals are
-   re-issued for the new epoch, and `mls.commit_needed` goes to the joiner. After any commit that
-   omitted DS proposals (only possible via this exception), non-void ones are re-issued and the
-   freeze stays. `POST /v1/groups/{id}/resync` is exempt from this freeze: an own-leaf external
+   re-issued for the new epoch, and `mls.commit_needed` goes to the joiner. After an external
+   commit that omitted DS proposals (this exception, or the resync below), the non-void ones are
+   re-issued for the new epoch and the freeze stays; a DS `Remove` that a member commit satisfied
+   under invariant 4 without referencing it is deleted with that commit and never re-issued. `POST /v1/groups/{id}/resync` is exempt from this freeze: an own-leaf external
    commit is how a device that has fallen out of the epoch returns, and making it wait on a
    membership commit deadlocks exactly the device that cannot act. Two guards apply: the resync is
    refused with `E_FORBIDDEN` when the resyncing device is the target of an outstanding non-void
@@ -307,8 +334,51 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
 6. **Void.** Before proposing, the DS validates a KeyPackage (lifetime not expired, capabilities
    include `0xF001`, not consumed) and a Remove target (leaf still present). A DS proposal older
    than its TTL — 30 seconds in `call` groups, 24 hours in `text` groups — is marked **void**; a
-   Commit MAY omit void proposals. The underlying action is retried with a fresh KeyPackage, or
-   dropped if the target leaf is already gone. Before proposing an Add the DS also checks invariant
+   Commit MAY omit void proposals. In `call` groups the DS sweeps the call groups that have DS
+   proposals outstanding every 5 seconds, at most 256 of them per sweep in turn, so a call proposal
+   is void within one sweep rotation after its 30 s TTL (30–35 s while at most 256 call groups have
+   work; a group whose sweep fails is retried on the next sweep and holds up no other), and a voided DS `Remove` whose
+   target leaf is still present is re-issued with the same `action_id` instead of being dropped: in
+   a call group a void lifts the freeze but leaves the member decrypting media, and only a commit
+   removes it. A DS `Remove` records the device holding its leaf when it is issued, and is re-issued
+   only while that same device still holds the leaf: MLS reuses blank leaves, and a `Remove` re-aimed
+   by index alone would remove whoever joined there since. A DS `Remove` that recorded no device
+   (one written before devices were recorded) is re-issued only within the epoch it was issued in,
+   and never across epochs. A DS proposal re-issued in the epoch it was voided in is the same
+   proposal — the external sender's signature is deterministic, so its bytes and its reference are
+   the voided one's — and is re-armed (no longer void, issued now with a fresh TTL, its original
+   `action_id` kept), not duplicated; a re-issue that fails leaves the voided proposal as it was. A
+   DS `Remove` that names a device rather
+   than a leaf (a device that left a call, a kick, or the committer election's removal of a
+   candidate) resolves the leaf under the group lock and is
+   dropped when the device holds no leaf or when a non-void DS `Remove` of that leaf is already
+   outstanding. A DS `Remove` that names a leaf is likewise dropped while a non-void DS `Remove` of
+   that leaf is outstanding; one whose leaf was read before the group lock (the inactivity sweep's,
+   a text-group kick's) names the device it expects too, and is refused like a `Remove` of a leaf
+   that is gone when another device holds the leaf by then. The DS also offers a `Remove` bound to
+   one membership — the device and the epoch at which it took the leaf — which is refused as well
+   when that device holds the leaf from a later epoch, having left and come back. A leaf keeps the
+   epoch its device took it at for as long as that device holds it; a leaf another device takes,
+   and the leaf an external commit (a resync or an external join) puts its joiner on, start at that
+   commit's epoch, whether the joiner lands at its old index or another. A member proposal never
+   cancels, voids, blocks or replaces a DS proposal: a
+   member's own `Remove` is not mandatory for a commit, does not freeze the group and starts no
+   election, so it never counts as the DS's while it is only proposed. The DS issues its `Remove`
+   of a leaf regardless of the member's own `Remove` of it — a commit then applies one of the two
+   and leaves the other unreferenced, and invariant 4 counts the DS's as satisfied when the one
+   applied is the member's — and refuses a member's own `Remove` of a leaf whose DS `Remove` is
+   outstanding with `409 E_REMOVE_PENDING`, which the member reads as "I am being removed": it
+   withdraws the proposal and does not retry. A member that uploads (`POST /proposal`) a proposal
+   the DS already holds — the same bytes, so the same reference, sender and epoch; typically a retry
+   of an upload whose answer was lost — is answered as the first upload was (the same `[seq]`;
+   nothing is queued, logged or fanned out again) when the DS's copy is that member's own
+   proposal. If that copy had gone void it is re-armed as a DS proposal is (live again, issued now
+   with a fresh TTL, the same `action_id`): the member is asking for the same thing again. Only a
+   reference that names an instance proposal or another sender's proposal — which no conforming
+   client can produce, since the reference covers the sender — is refused, with
+   `409 E_REMOVE_PENDING`, and the DS's copy is left as it is.
+   The underlying action is
+   retried with a fresh KeyPackage, or dropped if the target leaf is already gone. Before proposing an Add the DS also checks invariant
    4's device-list clause (the device's DSK is in its user's newest signed device list) and leaves
    an unlisted device unproposed, its KeyPackage unspent. An outstanding DS Add whose device is
    revoked or quarantined, or whose user is no longer eligible under the channel ACL, is marked void
@@ -326,7 +396,9 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    connection's writer is not an acknowledgement. The acknowledgement is the `commit_ack` frame
    (opcode 12), group-scoped, whose payload echoes the `round` of the `mls.commit_needed` it
    answers. Three acknowledged-and-lost rounds remove the device; unacknowledged rounds only
-   advance the election.
+   advance the election. A device that an outstanding non-void DS `Remove` is removing is never
+   elected — it cannot commit its own removal — and when it is the only candidate online nobody is
+   elected.
 8. **Current-leaf sends.** Application messages are accepted only from a device session whose
    leaf is in the current `PublicGroup` (`403 E_LEAF_NOT_CURRENT`). The DS reads the franking
    commitment `C` from `private_message.authenticated_data` and MUST reject an upload whose
@@ -334,7 +406,15 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    stores the franking tag `T` over that value (`04-envelope-and-franking.md`, "Franking").
 9. **Fork handling.** A member that cannot process an accepted Commit reports it
    (`POST /fork-report`) and resyncs to the DS head by external commit. Three distinct reports
-   against one Commit quarantine the committer: DS Remove of its leaf and a flag on the device.
+   against one Commit quarantine the committer: a flag on the device and a DS Remove of the leaf
+   the committer's device holds now (not the leaf it committed from, which a newcomer may hold by
+   then; nothing is proposed when the device holds no leaf). The instance's periodic reconcile
+   proposes that `Remove` again for as long as the quarantined device holds a leaf with no DS
+   `Remove` of it outstanding, and does the same for a revoked device, in every `text` and `call`
+   group (DMs included): the kinds that carry the instance as an external sender (`01` § External
+   senders). In `pairing` and `interaction` groups, which carry none, the instance proposes nothing;
+   their members remove a revoked device themselves (`01` § External senders: a member's `Remove`
+   of its own user's leaf, a device revocation).
 10. **Retention.** Handshakes are kept 30 days. Retention has two independent halves. **Delivery
     retention** is how long the instance keeps an object so that a device that was away can still
     fetch it: handshakes 30 days; application ciphertext until every member device's cursor has
@@ -358,7 +438,23 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     `tree_hash` equals the rebuilt tree's. When the instance holds no usable state blob for the
     group, the healing member additionally uploads the ratchet tree in the same request — the one
     upload where the tree is allowed, because the instance has none — and the instance reseeds from
-    it; RFC 9420 §12.4.3.3's signed `tree_hash` makes that source safe. If no heal succeeds within
+    it; RFC 9420 §12.4.3.3's signed `tree_hash` makes that source safe. A device that is the target
+    of an outstanding non-void DS `Remove` at the restored epoch, or that is quarantined, cannot
+    heal (`403 E_FORBIDDEN`, as for a resync). The replay does not apply invariant 4's first clause
+    or invariant 5 (the restored queue describes the backup's epoch); instead, after a heal that
+    moves the epoch, the instance re-issues the restored epoch's outstanding DS proposals for the
+    healed epoch when they still apply — a `Remove` whose recorded device still holds its leaf, onto
+    that device with the same `action_id`; an `Add` still eligible and not yet a member — and drops
+    the rest. A proposal whose re-issue fails is dropped too, and so is everything at the restored
+    epoch if the instance stops between adopting the heal and re-issuing. What re-creates a dropped
+    proposal is its own source, not the heal: the instance's periodic reconcile re-proposes the
+    `Remove` of every leaf whose device is quarantined or revoked and of every leaf whose user the
+    channel ACL no longer admits (both in `text` and `call` groups, DMs included); the inactivity sweep
+    re-proposes an inactivity `Remove` while the device stays away; a group DM's next membership
+    sync re-proposes its participants' `Remove`s and `Add`s, and a channel's next membership change
+    or admission its `Add`s; a committer-election `Remove` is not re-created (the device is elected
+    and charged again only if it keeps losing rounds). A heal that leaves the epoch where it was
+    leaves them as they are. If no heal succeeds within
     24 hours the group is closed and re-created by the channel owner's device. All non-last-resort
     KeyPackages are purged on restore. Live calls end.
 
@@ -383,7 +479,18 @@ Added for the remote delivery service:
   backup`'s own code.
 - `restore_snapshot <name>` — the test host restores it through `dillad restore`'s own code and
   restarts the instance, which finishes the restore at start as `dillad serve` does.
-- `commit <actor>` — the actor commits for the current epoch of every group it is in.
+- `commit <actor> [<group>]` — the actor commits for the current epoch of every group it is in, or
+  of that one group. `commit <actor> <group> member_removes_last` queues a member's own `Remove`
+  behind the instance's `Remove` of the same leaf first, so the commit applies the member's
+  (invariant 4); the step fails when the actor holds no such pair.
+- `leave <client> <group>` — the client posts its own `Remove` proposal (`01-groups.md`, how a
+  member leaves); another member's commit applies it. A second `leave` in the same epoch re-uploads
+  the same proposal and is answered as the first (re-armed if it had gone void). When the instance
+  is already removing the leaf, the refusal (invariant 6, `409 E_REMOVE_PENDING`, matched on the
+  code) is the client being
+  removed, not a failure: the client withdraws its proposal and the step passes. The testkit's
+  in-memory delivery service issues no instance proposals and so cannot answer that refusal; it
+  refuses the statement (as it does `kick`) rather than let a leave scenario pass without it.
 - `join_many <group> <count>` — `count` new clients join, at most 256 Adds per commit.
 - `expect_decrypts_all <actor>` — everything the actor received since its last such assertion decrypts.
 - `expect_quarantined <actor>` — the instance reports the actor's device quarantined (invariant 9).
@@ -463,6 +570,9 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 404 | `E_NOT_FOUND` | no such group, device, message or blob | none |
 | 409 | `E_GROUP_EXISTS` | this `group_id` is already registered | mint a new `group_id` |
 | 409 | `E_COMMIT_CONFLICT` | another commit won this epoch | discard the pending commit, process the winner, retry |
+| 409 | `E_REMOVE_PENDING` | the instance is already removing this leaf (invariant 6); the member's own `Remove` of it is refused. Also, defensively, an uploaded proposal whose reference names an instance proposal or another sender's (no conforming client sends one; a member's re-upload of its own proposal is answered as the first) | you are being removed: withdraw the proposal, do not retry |
+| 409 | `E_CALL_FULL` | the call already has `livekit.max_voice_participants` devices | show "This call is full"; the user may retry later |
+| 409 | `E_CALL_SHARERS_FULL` | the call already has `livekit.max_publishers` devices sharing camera or screen | show that sharing is full; retry after a sharer stops |
 | 410 | `E_PRUNED` | delivery retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest `seq` delivery retention deleted from each stream, so the answer is exact; an archival deletion is not recorded, invariant 10) | resync; mark older messages "undecryptable (too old)" |
 | 410 | `E_INVITE_INVALID` | the invite is expired, exhausted or revoked | none |
 | 413 | `E_TOO_LARGE` | the object exceeds the instance limit | split or attach |
@@ -471,12 +581,13 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 425 | `E_COMMIT_REQUIRED` | outstanding DS proposals must be committed first | commit them (or wait for `mls.commit_needed`), then resend |
 | 429 | `E_RATE_LIMITED` | a token bucket is empty | wait `retry_after_ms`; a `Retry-After` header in whole seconds carries the same value |
 | 500 | `E_INTERNAL` | an unexpected server fault; the detail is always empty | retry with backoff |
+| 503 | `E_UNAVAILABLE` | the instance could not take a resource the request needs within its bound (a call whose SFU work is stuck) | wait `retry_after_ms`, then retry |
 | 507 | `E_STORAGE_FULL` | the instance or the user's quota is exhausted | none |
 
 A **syntactically invalid** identifier in a path is `400 E_INVALID_REQUEST`; a syntactically valid
 but unknown one is `404 E_NOT_FOUND`.
 
-That is **25 rows**: this file's original eighteen plus `E_VERSION`, `E_PROVISIONAL_OUTSIDE_PAIRING`
+That is **29 rows**: this file's original eighteen plus `E_VERSION`, `E_PROVISIONAL_OUTSIDE_PAIRING`
 and `E_INTERNAL` (deviation ID12), plus the four Plan 2 consumes — `E_ENVELOPE_SHAPE`,
 `E_ENVELOPE_TYPE`, `E_ENVELOPE_LIMIT` and `E_CHANNEL_MODE` (deviation ID12 as amended; controller
 ruling 2026-09-24). The first three are Plan 1a's own Go code — `server.CodeVersion`,
@@ -484,7 +595,16 @@ ruling 2026-09-24). The first three are Plan 1a's own Go code — `server.CodeVe
 `checkErrorVocabulary` diffs this table against `internal/server/errors.go` in both directions, so
 the three could not have been left out without CI failing.
 
-The last four are declared **here**, in the one task that owns the vocabulary, even though their
+Four more came later. `E_REMOVE_PENDING` is invariant 6's refusal of a member's own `Remove` of a
+leaf the instance is already removing (plan dilla-media task 9); the only other proposals it
+refuses are ones no conforming client sends (a reference naming an instance proposal or another
+sender's), never a member's re-upload of its own proposal. `E_CALL_FULL` and
+`E_CALL_SHARERS_FULL` are the call routes' capacity refusals (`09` § Voice, plan dilla-media
+task 10): the first answers the advisory participant count at token time, the second the publisher
+lease. `E_UNAVAILABLE` is a call route or the signalling proxy that could not take the call's
+serialisation within its bound (`09` § Voice). None of the last three is a delivery-service code.
+
+The four Plan 2 consumes are declared **here**, in the one task that owns the vocabulary, even though their
 only call sites are Plan 2's. The three `E_ENVELOPE_*` codes are 400 and mirror the Rust envelope
 module's own codes and the `protocol/vectors/` reject corpus one-for-one: a server-readable
 channel's instance **is** a receiver in `protocol/04`'s sense, so it refuses exactly what a client

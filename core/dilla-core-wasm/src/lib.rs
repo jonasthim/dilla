@@ -13,6 +13,9 @@ pub mod probe;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod store;
 
+// Ungated: `MediaSender`/`MediaReceiver` use no browser API, so they build natively too.
+mod media;
+
 use dilla_core::ProtocolError;
 use dilla_core::envelope::{
     Attachment, Envelope, EnvelopeType, FrankingTagInput, Preview,
@@ -23,9 +26,11 @@ use dilla_core::identity::{
     safety_number as core_safety_number, sas as core_sas,
 };
 use dilla_core::ids::{DeviceId, MsgId, UserId};
-use dilla_core::sframe::{Ctr, Kid, NK, NN, derive_keys, encode_header};
+use dilla_core::sframe::{Ctr, Kid, NK, NN, SframeError, derive_keys, encode_header};
 use serde_json::{Map, Value, json};
 use wasm_bindgen::prelude::*;
+
+pub use media::*;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use probe::probe_persistence;
@@ -280,8 +285,8 @@ pub fn sframe_derive(
     epoch: u64,
 ) -> Result<SframeKeysJs, JsError> {
     let base = fixed::<NK>(base_key, "base_key")?;
-    let leaf = u16::try_from(leaf_index)
-        .map_err(|_| err("E_UNSUPPORTED_SUITE", "leaf_index must be below 2^16"))?;
+    let leaf =
+        u16::try_from(leaf_index).map_err(|_| JsError::new(SframeError::LeafOutOfRange.code()))?;
     let keys = derive_keys(&base, Kid::new(leaf, epoch));
     Ok(SframeKeysJs {
         key: keys.key,
@@ -289,9 +294,12 @@ pub fn sframe_derive(
     })
 }
 
+/// A raw KID from JavaScript is held to the same rule as a received one: 2^24 or more is
+/// `E_SFRAME_NON_CANONICAL_KID` (protocol/05 "Frame format").
 #[wasm_bindgen]
 pub fn sframe_header(kid: u64, ctr: u64) -> Result<Box<[u8]>, JsError> {
-    Ok(encode_header(Kid::from_raw(kid), Ctr::from_raw(ctr)).into_boxed_slice())
+    let kid = Kid::canonical(kid).map_err(|e| JsError::new(e.code()))?;
+    Ok(encode_header(kid, Ctr::from_raw(ctr)).into_boxed_slice())
 }
 
 #[wasm_bindgen]

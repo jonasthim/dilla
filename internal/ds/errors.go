@@ -73,6 +73,18 @@ func errModeReadable() *Error {
 	}
 }
 
+// errRemovePending is invariant 6's refusal of a member's own Remove of a leaf the instance is
+// already removing: a state conflict over a well-formed proposal, which the member reads as "I am
+// being removed" — it withdraws the proposal and does not retry. Clients branch on the code, never
+// on the detail.
+func errRemovePending() *Error {
+	return &Error{
+		Code:   "E_REMOVE_PENDING",
+		Detail: "a removal of this leaf is already pending",
+		Status: http.StatusConflict,
+	}
+}
+
 func errGroupExists(detail string) *Error {
 	return &Error{Code: "E_GROUP_EXISTS", Detail: detail, Status: http.StatusConflict}
 }

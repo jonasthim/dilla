@@ -31,6 +31,13 @@ enum Command {
     },
     /// Check the committed protocol vectors and print the report.
     Vectors,
+    /// Drive native MLS clients for the browser media tests, one JSON request per stdin line.
+    MediaDriver {
+        #[arg(long)]
+        ds: String,
+        #[arg(long, default_value_t = 0x5eed)]
+        seed: u64,
+    },
     /// Generate the committed PublicGroup benchmark fixture.
     GenPublicGroup {
         #[arg(long, default_value_t = 1500)]
@@ -45,6 +52,18 @@ enum Command {
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     match cli.command {
+        Command::MediaDriver { ds, seed } => {
+            let mut driver = dilla_testkit::MediaDriver::new(ds, seed);
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            match driver.serve(stdin.lock(), stdout.lock()) {
+                Ok(()) => std::process::ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("media-driver: {e}");
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
         Command::Run { path, seed, ds } => {
             let src = match std::fs::read_to_string(&path) {
                 Ok(s) => s,

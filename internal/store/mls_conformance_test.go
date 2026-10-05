@@ -110,6 +110,39 @@ func TestMLSMessagesAndCursorsConformance(t *testing.T) {
 				}
 			})
 
+			t.Run("ListBarredMembers is the live leaves of quarantined or revoked devices", func(t *testing.T) {
+				g := seedGroup(ctx, t, repo, 1_000)
+				user := seedUser(ctx, t, repo).ID
+				fine, quarantined, revoked, gone := seedDevice(ctx, t, repo, user), seedDevice(ctx, t, repo, user),
+					seedDevice(ctx, t, repo, user), seedDevice(ctx, t, repo, user)
+				if err := repo.QuarantineDevice(ctx, quarantined, 2_000, "fork quorum"); err != nil {
+					t.Fatalf("QuarantineDevice: %v", err)
+				}
+				for _, d := range []id.ID{revoked, gone} {
+					if err := repo.RevokeDevice(ctx, d, 2_000); err != nil {
+						t.Fatalf("RevokeDevice: %v", err)
+					}
+				}
+				removed := uint64(2)
+				rows := []store.MemberRow{}
+				for leaf, d := range []id.ID{fine, quarantined, revoked, gone} {
+					m := store.MemberRow{GroupID: g.GroupID, LeafIndex: uint32(leaf), UserID: user, DeviceID: d,
+						SignatureKey: make([]byte, 32), AddedEpoch: 1}
+					if d == gone {
+						m.RemovedEpoch = &removed
+					}
+					rows = append(rows, m)
+				}
+				if err := repo.ReplaceMembers(ctx, g.GroupID, 2, rows); err != nil {
+					t.Fatalf("ReplaceMembers: %v", err)
+				}
+				barred, err := repo.ListBarredMembers(ctx, g.GroupID)
+				if err != nil || len(barred) != 2 || barred[0].DeviceID != quarantined || barred[0].LeafIndex != 1 ||
+					barred[1].DeviceID != revoked || barred[1].LeafIndex != 2 {
+					t.Fatalf("ListBarredMembers = %+v, %v; want the quarantined leaf 1 and the revoked leaf 2", barred, err)
+				}
+			})
+
 			t.Run("proposals: put, list live and void, reissue keeps the action", func(t *testing.T) {
 				g := seedGroup(ctx, t, repo, 1_000)
 				leaf := uint32(3)

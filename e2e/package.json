@@ -6,9 +6,11 @@
   "type": "module",
   "scripts": {
     "test:e2e": "playwright test --config playwright.config.ts --project=chromium",
-    "test:e2e:matrix": "playwright test --config playwright.config.ts --project=chromium --project=firefox --project=webkit"
+    "test:e2e:matrix": "playwright test --config playwright.config.ts --project=chromium --project=firefox --project=webkit",
+    "test:e2e:media": "playwright test --config playwright.media.config.ts --project=chromium-media --project=firefox-media",
+    "test:e2e:spike": "playwright test --config playwright.media.config.ts --project=spike-chromium --project=spike-firefox"
   },
   "devDependencies": {
-    "@playwright/test": "^1.50"
+    "@playwright/test": "1.63.0"
   }
 }

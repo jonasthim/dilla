@@ -41,8 +41,8 @@ func boundReason(reason string) string {
 }
 
 // ForkReport records that a member could not process an accepted commit. Three distinct reports
-// against one commit quarantine its committer: an instance Remove of its leaf and a flag on the
-// device (invariant 9).
+// against one commit quarantine its committer: an instance Remove of its device's current leaf and
+// a flag on the device (invariant 9).
 func (d *DS) ForkReport(ctx context.Context, s Session, groupID id.ID, epoch, seq uint64, reason string) error {
 	// Member-only. protocol/02's row for `POST /v1/groups/{id}/fork-report` names E_NOT_FOUND as
 	// its one refusal, and `requireMember` is what answers it: a device that is not in the group
@@ -94,7 +94,7 @@ func (d *DS) ForkReport(ctx context.Context, s Session, groupID id.ID, epoch, se
 }
 
 // quarantineCommitterOf is invariant 9's second half: the device that committed handshake `seq` is
-// flagged and its leaf is Removed by an instance proposal.
+// flagged and its current leaf is Removed by an instance proposal.
 //
 // `seq` was bounded by the group's high-water mark in `ForkReport` before the first row was
 // written, so it is 1 or above and no higher than the log ever reached; everything below is about
@@ -126,8 +126,16 @@ func (d *DS) quarantineCommitterOf(ctx context.Context, groupID id.ID, seq uint6
 	if err := d.opts.Store.QuarantineDevice(ctx, *committer, d.now(), "fork quorum"); err != nil {
 		return err
 	}
-	if rows[0].SenderLeaf == nil {
-		return nil
+	// The quarantined device leaves every live call now: its call-group leaves stay until members
+	// commit their Removes, and the call routes refuse it from here on.
+	if d.opts.OnQuarantine != nil {
+		d.opts.OnQuarantine(context.WithoutCancel(ctx), *committer)
 	}
-	return d.ProposeRemove(ctx, groupID, *rows[0].SenderLeaf, id.New())
+	// The Remove is of the committer's device where it is NOW, resolved under the group lock
+	// (DS-2 of the server-half review). The handshake's sender leaf is where it sat when the
+	// reported commit was appended, which can be any seq still in the 30-day log: it may have
+	// resynced or left since, and MLS fills the leftmost blank leaf, so by now that index can hold
+	// a newcomer, whom a Remove by index would freeze out. A committer that holds no leaf any more
+	// is flagged and has nothing to remove.
+	return d.ProposeRemoveDevice(ctx, groupID, *committer, id.New())
 }

@@ -1,0 +1,23 @@
+# POST /proposal, the member's own void proposal uploaded again (R-1 of the DS re-review): carol's
+# own Remove goes void after 24 h with nobody committing it, and she uploads the very same proposal
+# again in the same epoch. It is HER proposal, so the instance re-arms it - live again, a fresh TTL -
+# and answers as the first time; carol keeps it queued, alice's commit applies it, carol processes
+# that commit, and she is out. (A 409 E_REMOVE_PENDING here would make carol withdraw her leave
+# while nothing removes her.)
+instance dilla
+client alice
+client bob
+client carol
+group chat kind=text target=d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0 community=none creator=alice
+join bob chat via=welcome
+join carol chat via=welcome
+sync bob
+sync carol
+leave carol chat
+advance_clock 25h
+leave carol chat
+commit alice chat
+sync bob
+sync carol
+send alice chat carol has left
+expect_decrypts bob chat carol has left

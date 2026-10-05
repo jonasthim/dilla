@@ -70,6 +70,30 @@ func TestCommitNeededGoesToTheLowestIndexOnlineDeviceBotsFirst(t *testing.T) {
 	h.expectDeviceFrames(t, g.members[2], "mls.commit_needed") // bots first, whatever the leaf
 }
 
+// DS-5 of the server-half review: the device an outstanding instance Remove targets can never
+// commit it (OpenMLS refuses a commit that removes the committer), so it is never elected. The
+// lowest-index online device being removed, the round goes to the next one; when it is the only
+// device online, nobody is elected and nothing is armed.
+func TestTheElectionSkipsTheDeviceTheInstanceIsRemoving(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 2)
+	h.online(g.members[0], g.members[1])
+	h.setLeaves(g, map[int]uint32{0: g.leafOf(0), 1: g.leafOf(1)})
+	h.proposeRemoveOf(t, g, g.leafOf(0)) // members[0] is the lowest leaf and the one being removed
+
+	h.expectDeviceFrames(t, g.members[1], "mls.commit_needed")
+	h.expectNoFrames(t, g.members[0])
+
+	h.offline(g.members[1])
+	if err := h.ds.RequestCommit(context.Background(), g.id); err != nil {
+		t.Fatalf("RequestCommit: %v", err)
+	}
+	h.expectNoFrames(t, g.members[0])
+	if n := h.armedElections(); n != 0 {
+		t.Fatalf("%d elections armed with only the removed device online, want 0", n)
+	}
+}
+
 // deadline_ms is re-based at the writer, not at election time: a frame that waited 400 ms in the
 // queue arrives with 400 ms less on its clock.
 // The re-base happens when the frame is DEQUEUED, before sink.write, so an idle writer dequeues

@@ -143,12 +143,15 @@ type TLSDNS struct {
 }
 
 type TURN struct {
-	Enabled              bool     `toml:"enabled"`
-	Listen               string   `toml:"listen"`
-	Realm                string   `toml:"realm"`
-	SharedSecretFile     string   `toml:"shared_secret_file"`
-	RelayIP              string   `toml:"relay_ip"`
-	CredentialTTL        Duration `toml:"credential_ttl"`
+	Enabled          bool     `toml:"enabled"`
+	Listen           string   `toml:"listen"`
+	Realm            string   `toml:"realm"`
+	SharedSecretFile string   `toml:"shared_secret_file"`
+	RelayIP          string   `toml:"relay_ip"`
+	CredentialTTL    Duration `toml:"credential_ttl"`
+	// MaxAllocationAge bounds a relay allocation: every request but Allocate is refused once this
+	// long has passed since the credential was issued (F3, G33). Never shorter than CredentialTTL.
+	MaxAllocationAge     Duration `toml:"max_allocation_age"`
 	AllocationsPerDevice int      `toml:"allocations_per_device"`
 	ProxyProtocol        bool     `toml:"proxy_protocol"`
 	// PublicURL is the relay URL clients are handed instead of the derived one ("turns:" on
@@ -158,8 +161,9 @@ type TURN struct {
 }
 
 type LiveKit struct {
-	Enabled              bool     `toml:"enabled"`
-	Mode                 string   `toml:"mode"`
+	Enabled bool   `toml:"enabled"`
+	Mode    string `toml:"mode"`
+	// BindAddress is where LiveKit listens: a loopback IP literal, never a hostname (Validate).
 	BindAddress          string   `toml:"bind_address"`
 	Port                 int      `toml:"port"`
 	UDPPort              int      `toml:"udp_port"`
@@ -172,7 +176,15 @@ type LiveKit struct {
 	APISecretFile        string   `toml:"api_secret_file"`
 	MaxVoiceParticipants int      `toml:"max_voice_participants"`
 	MaxPublishers        int      `toml:"max_publishers"`
-	ExtraConfigFile      string   `toml:"extra_config_file"`
+	WebhookListen        string   `toml:"webhook_listen"`
+	// VP9 is refused by Validate until VP9 has an SFrame test vector and a run through LiveKit.
+	VP9                 bool     `toml:"vp9"`
+	MaxShareBitrateKbps int      `toml:"max_share_bitrate_kbps"`
+	MaxAudioBitrateKbps int      `toml:"max_audio_bitrate_kbps"`
+	LimitNumTracks      int      `toml:"limit_num_tracks"`
+	LimitBytesPerSec    int      `toml:"limit_bytes_per_sec"`
+	IPsExcludes         []string `toml:"ips_excludes"`
+	ExtraConfigFile     string   `toml:"extra_config_file"`
 }
 
 type DB struct {

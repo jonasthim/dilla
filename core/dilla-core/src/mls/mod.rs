@@ -45,7 +45,7 @@ pub use config::{
     leaf_capabilities, rotate_external_senders_extensions,
 };
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
-pub use group::{CommitBundle, DillaGroup, DillaProcessed, MlsError};
+pub use group::{CommitBundle, DillaGroup, DillaProcessed, MediaEpoch, MlsError, RosterEntry};
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 pub use provider::DillaProvider;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]

@@ -20,6 +20,7 @@ package ds_test
 //     purges is seeded through the store, which is where the purge rule lives anyway.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -483,6 +484,199 @@ func TestTheNewGenerationInvalidatesResumeTokens(t *testing.T) {
 	}
 	if h.resumeAccepted(t, conn, token) {
 		t.Fatal("a resume under the old generation must be refused after a restore")
+	}
+}
+
+// DS-3 of the server-half review: the device an outstanding instance Remove targets, and a
+// quarantined device, cannot heal — the same two refusals Resync makes. Otherwise a device being
+// removed builds a commit at the restored epoch that omits its Remove, heals first, and every honest
+// member's heal is refused after it.
+func TestTheTargetOfAnOutstandingRemoveAndAQuarantinedDeviceCannotHeal(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		setup func(t *testing.T, h *dsHarness, g *dsMessageGroup)
+		want  string
+	}{
+		{"the target of an outstanding Remove", func(t *testing.T, h *dsHarness, g *dsMessageGroup) {
+			if err := h.ds.ProposeRemove(context.Background(), g.id, 0, id.New()); err != nil {
+				t.Fatalf("ProposeRemove: %v", err)
+			}
+		}, "outstanding Remove"},
+		{"a quarantined device", func(t *testing.T, h *dsHarness, g *dsMessageGroup) {
+			if err := h.repo.QuarantineDevice(context.Background(), g.device, h.clk.Now().Unix(), "fork quorum"); err != nil {
+				t.Fatalf("QuarantineDevice: %v", err)
+			}
+		}, "quarantined"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newDSHarness(t)
+			g := h.group(t)
+			c.setup(t, h, g)
+			if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+				t.Fatalf("OnRestore: %v", err)
+			}
+			_, err := h.ds.Heal(context.Background(), g.session, g.id, ds.HealRequest{
+				GroupInfo: h.groupInfoAt(t, g, g.Epoch()+1),
+				Tail:      h.commitTail(t, g, h.groupRow(t, g.id).Seq),
+			})
+			var dsErr *ds.Error
+			if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" || !strings.Contains(dsErr.Detail, c.want) {
+				t.Fatalf("the heal: got %v, want 403 E_FORBIDDEN naming %q", err, c.want)
+			}
+			if !h.epochUnknown(t, g.id) || h.groupRow(t, g.id).Epoch != g.Epoch() {
+				t.Fatal("a refused heal must leave the group epoch-unknown at its restored epoch")
+			}
+		})
+	}
+}
+
+// healAcrossOneEpoch restores and heals the fixture group one epoch forward (commits/09.mls).
+func (h *dsHarness) healAcrossOneEpoch(t *testing.T, g *dsMessageGroup) {
+	t.Helper()
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	out, err := h.ds.Heal(context.Background(), g.session, g.id, ds.HealRequest{
+		GroupInfo: h.groupInfoAt(t, g, g.Epoch()+1),
+		Tail:      h.commitTail(t, g, h.groupRow(t, g.id).Seq),
+	})
+	if err != nil {
+		t.Fatalf("Heal: %v", err)
+	}
+	if out.Epoch != g.Epoch()+1 {
+		t.Fatalf("healed to epoch %d, want %d", out.Epoch, g.Epoch()+1)
+	}
+}
+
+// DS-3: a heal that moves the epoch carries the restored epoch's outstanding instance Remove across:
+// its device still holds the leaf in the adopted tree, so the Remove is re-issued for the healed
+// epoch onto that device with the same action_id, and the group is frozen on it. Nothing is left at
+// the restored epoch, where no reader would ever look again.
+func TestAHealThatMovesTheEpochReissuesAnOutstandingRemove(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	g := h.group(t)
+	target := h.memberSession(t, g.id, 1).DeviceID
+	action := id.New()
+	if err := h.ds.ProposeRemove(ctx, g.id, 1, action); err != nil {
+		t.Fatalf("ProposeRemove: %v", err)
+	}
+	h.healAcrossOneEpoch(t, g)
+
+	if rows := h.proposalsAt(t, g.id, g.Epoch(), true); len(rows) != 0 {
+		t.Fatalf("%d rows left at the restored epoch, want 0: %+v", len(rows), rows)
+	}
+	rows := h.proposalsAt(t, g.id, g.Epoch()+1, true)
+	if len(rows) != 1 {
+		t.Fatalf("rows at the healed epoch: %+v, want the one Remove re-issued", rows)
+	}
+	r := rows[0]
+	if r.Origin != 0 || r.VoidAt != nil || r.TargetLeaf == nil || *r.TargetLeaf != 1 ||
+		r.TargetDevice == nil || *r.TargetDevice != target || r.ActionID != action {
+		t.Fatalf("re-issued row %+v: want a live instance Remove of leaf 1 recording %s with action %s",
+			r, target.String()[:8], action)
+	}
+	_, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch()+1, h.message(t, g, g.Epoch()+1))
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_REQUIRED" {
+		t.Fatalf("a send after the heal: got %v, want 425 E_COMMIT_REQUIRED", err)
+	}
+	if !h.guestHolds(t, g.id, r.Ref, true) {
+		t.Fatal("the healed state blob does not hold the re-issued Remove")
+	}
+}
+
+// DS-3: what no longer applies after an epoch-moving heal is dropped, at every epoch: a Remove whose
+// recorded device no longer holds its leaf in the adopted tree, an Add whose device is already a
+// member, an Add whose device the instance does not know, and the restored epoch's void and member
+// rows.
+func TestAHealThatMovesTheEpochDropsWhatNoLongerApplies(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	g := h.group(t)
+	epoch := g.Epoch()
+	put := func(r store.ProposalRow) {
+		t.Helper()
+		ref := id.New()
+		r.GroupID, r.Ref, r.Epoch, r.ActionID = g.id, ref[:], epoch, id.New()
+		r.IssuedAt, r.TTL = h.clk.Now().Unix(), uint64((24 * time.Hour).Seconds())
+		if err := h.repo.PutProposal(ctx, r); err != nil {
+			t.Fatalf("PutProposal: %v", err)
+		}
+	}
+	remove, add := uint8(mlswasi.ProposalRemove), uint8(mlswasi.ProposalAdd)
+	leaf2, leaf4 := uint32(2), uint32(4)
+	gone, stranger := id.New(), id.New()
+	member := h.memberSession(t, g.id, 3).DeviceID
+	put(store.ProposalRow{Kind: remove, TargetLeaf: &leaf2, TargetDevice: &gone})      // its device left leaf 2
+	put(store.ProposalRow{Kind: add, TargetDevice: &member, KeyPackage: []byte{0x01}}) // already a member
+	put(store.ProposalRow{Kind: add, TargetDevice: &stranger, KeyPackage: []byte{0x01}})
+	put(store.ProposalRow{Kind: remove, TargetLeaf: &leaf4, Origin: 1}) // a member's own Remove
+	voidAt := h.clk.Now().Unix()
+	put(store.ProposalRow{Kind: remove, TargetLeaf: &leaf4, TargetDevice: &gone, VoidAt: &voidAt})
+
+	h.healAcrossOneEpoch(t, g)
+	if rows := h.proposalsAt(t, g.id, epoch, true); len(rows) != 0 {
+		t.Fatalf("%d rows left at the restored epoch, want 0: %+v", len(rows), rows)
+	}
+	if rows := h.proposalsAt(t, g.id, epoch+1, true); len(rows) != 0 {
+		t.Fatalf("rows at the healed epoch: %+v, want none: nothing of the restored epoch still applies", rows)
+	}
+}
+
+// R-2 of the DS re-review: a fork-quarantine Remove the heal's carry fails to re-issue is dropped
+// with the restored epoch's rows — and the next reconcile pass proposes it again at the healed
+// epoch, bound to the quarantined device, so the device is still removed.
+func TestAQuarantineRemoveTheHealFailsToCarryIsProposedAgain(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	g := h.group(t)
+	target := h.memberSession(t, g.id, 1)
+	h.account(t, target.UserID, target.DeviceID)
+	if err := h.repo.QuarantineDevice(ctx, target.DeviceID, h.clk.Now().Unix(), "fork quorum"); err != nil {
+		t.Fatalf("QuarantineDevice: %v", err)
+	}
+	if err := h.ds.ProposeRemoveDevice(ctx, g.id, target.DeviceID, id.New()); err != nil {
+		t.Fatalf("ProposeRemoveDevice: %v", err)
+	}
+	h.failNextTx("ReissueProposal") // the carry's re-issue, which the heal's own transaction never calls
+	h.healAcrossOneEpoch(t, g)
+	h.failNextTx("")
+	if rows := h.proposalsAt(t, g.id, g.Epoch()+1, true); len(rows) != 0 {
+		t.Fatalf("rows at the healed epoch %+v, want none: the carry was meant to fail", rows)
+	}
+
+	if _, err := ds.ReconcileLeavesForTest(h.ds, ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	rows := h.proposalsAt(t, g.id, g.Epoch()+1, false)
+	if len(rows) != 1 || rows[0].Origin != 0 || rows[0].TargetLeaf == nil || *rows[0].TargetLeaf != 1 ||
+		rows[0].TargetDevice == nil || *rows[0].TargetDevice != target.DeviceID {
+		t.Fatalf("rows at the healed epoch after the reconcile: %+v, want the quarantined device's Remove", rows)
+	}
+}
+
+// DS-3: a heal that leaves the epoch where it was (the members never moved past the backup) leaves
+// the restored epoch's proposals exactly as they are: they are still this epoch's work.
+func TestAHealAtTheRestoredEpochLeavesItsProposalsAlone(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	g := h.group(t)
+	if err := h.ds.ProposeRemove(ctx, g.id, 1, id.New()); err != nil {
+		t.Fatalf("ProposeRemove: %v", err)
+	}
+	before := h.proposalsAt(t, g.id, g.Epoch(), true)
+	if err := h.ds.OnRestore(ctx, h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	h.clk.Advance(time.Minute)
+	if _, err := h.ds.Heal(ctx, g.session, g.id, h.healAtEpoch(t, g, g.Epoch())); err != nil {
+		t.Fatalf("Heal: %v", err)
+	}
+	after := h.proposalsAt(t, g.id, g.Epoch(), true)
+	if len(after) != 1 || len(before) != 1 || !bytes.Equal(after[0].Ref, before[0].Ref) ||
+		after[0].IssuedAt != before[0].IssuedAt || after[0].ActionID != before[0].ActionID || after[0].VoidAt != nil {
+		t.Fatalf("rows after a same-epoch heal %+v, want them untouched: %+v", after, before)
 	}
 }
 

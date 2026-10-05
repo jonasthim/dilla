@@ -18,7 +18,11 @@ use crate::identity::{
     safety_number, sas,
 };
 use crate::ids::{DeviceId, MsgId, UserId};
-use crate::sframe::{Ctr, Kid, NK, derive_keys, encode_header, nonce};
+use crate::sframe::{
+    Codec, Ctr, FrameKey, KeyRing, Kid, NK, SframeError, SframeSender, Slot, decode_header,
+    derive_keys, encode_header, encrypt_frame, nonce, open_frame, peek_kid_ctr, prefix_len,
+    protect, rbsp_escape, rbsp_unescape, unescape_protected,
+};
 use serde_json::Value;
 
 pub const ENVELOPE_JSON: &str = include_str!("../../../../protocol/vectors/envelope.json");
@@ -280,10 +284,260 @@ pub fn run_sframe() -> SuiteReport {
             hex(&encode_header(kid, ctr)),
         ));
     }
+    // RFC 9605 appendix C.1: encode, and strict decode back to (kid, ctr, length).
+    for entry in doc["rfc9605_c1"].as_array().unwrap_or(&Vec::new()) {
+        let (kid, ctr) = (int(&entry["kid"]), int(&entry["ctr"]));
+        let name = format!("c1 kid {kid} ctr {ctr}");
+        let header = expect_str(&entry["header"]);
+        cases.push(CaseReport::compare(
+            name.clone(),
+            "header",
+            header,
+            hex(&encode_header(Kid::from_raw(kid), Ctr::from_raw(ctr))),
+        ));
+        cases.push(CaseReport::compare(
+            name,
+            "decode",
+            format!("{kid} {ctr} {}", header.len() / 2),
+            match decode_header(&unhex(header)) {
+                Ok((k, c, n)) => format!("{} {} {n}", k.value(), c.value()),
+                Err(e) => e.code().to_owned(),
+            },
+        ));
+    }
+
+    // RFC 9605 appendix C.3, suite 0x0004, as a dilla frame (the RFC's metadata is the prefix).
+    let c3 = &doc["rfc9605_c3"];
+    let c3_base = unhex_n::<NK>(c3["base_key"].as_str().unwrap_or(""));
+    let (c3_kid, c3_ctr) = (
+        Kid::from_raw(int(&c3["kid"])),
+        Ctr::from_raw(int(&c3["ctr"])),
+    );
+    let c3_keys = derive_keys(&c3_base, c3_kid);
+    let c3_prefix = unhex(c3["prefix"].as_str().unwrap_or(""));
+    let mut c3_input = c3_prefix.clone();
+    c3_input.extend_from_slice(&unhex(c3["plaintext"].as_str().unwrap_or("")));
+    let c3_key = FrameKey::derive(&c3_base, c3_kid);
+    cases.push(CaseReport::compare(
+        "c3",
+        "key",
+        expect_str(&c3["key"]),
+        hex(&c3_keys.key),
+    ));
+    cases.push(CaseReport::compare(
+        "c3",
+        "salt",
+        expect_str(&c3["salt"]),
+        hex(&c3_keys.salt),
+    ));
+    cases.push(CaseReport::compare(
+        "c3",
+        "nonce",
+        expect_str(&c3["nonce"]),
+        hex(&nonce(&c3_keys.salt, c3_ctr)),
+    ));
+    cases.push(CaseReport::compare(
+        "c3",
+        "frame",
+        expect_str(&c3["frame"]),
+        encrypt_frame(&c3_key, c3_kid, c3_ctr, c3_prefix.len(), &c3_input)
+            .map(|f| hex(&f))
+            .unwrap_or_else(|e| e.code().to_owned()),
+    ));
+    cases.push(CaseReport::compare(
+        "c3",
+        "open",
+        hex(&c3_input),
+        open_frame(
+            &c3_key,
+            c3_prefix.len(),
+            &unhex(c3["frame"].as_str().unwrap_or("")),
+        )
+        .map(|(_, _, plain)| hex(&plain))
+        .unwrap_or_else(|e| e.code().to_owned()),
+    ));
+
+    // One frame per codec rule: the prefix rule, the sender's whole path, the receiver's. A row
+    // whose sender rewrites the input (H.264 canonicalisation) carries `canonical`: the prefix is
+    // computed over it and the receiver opens to it.
+    for f in doc["media_frames"].as_array().unwrap_or(&Vec::new()) {
+        let name = format!("frame {}", f["name"].as_str().unwrap_or("?"));
+        let codec = codec_of(&f["codec"]);
+        let input = unhex(f["input"].as_str().unwrap_or(""));
+        let opened = if f["canonical"].is_null() {
+            &f["input"]
+        } else {
+            &f["canonical"]
+        };
+        let canonical = unhex(opened.as_str().unwrap_or(""));
+        let kid = Kid::new(
+            u16::try_from(int(&f["leaf_index"])).unwrap_or(0),
+            int(&f["epoch"]),
+        );
+        let ctr = Ctr::new(
+            u8::try_from(int(&f["slot"])).unwrap_or(0),
+            u8::try_from(int(&f["layer"])).unwrap_or(0),
+            int(&f["seq"]),
+        )
+        .unwrap_or(Ctr::from_raw(0));
+        cases.push(CaseReport::compare(
+            name.clone(),
+            "prefix_len",
+            expect_int(&f["prefix_len"]),
+            codec
+                .and_then(|c| prefix_len(c, &canonical))
+                .map(|n| n.to_string())
+                .unwrap_or_else(|e| e.code().to_owned()),
+        ));
+        cases.push(CaseReport::compare(
+            name.clone(),
+            "frame",
+            expect_str(&f["frame"]),
+            codec
+                .and_then(|c| protect(&FrameKey::derive(&base_key, kid), kid, ctr, c, &input))
+                .map(|out| hex(&out))
+                .unwrap_or_else(|e| e.code().to_owned()),
+        ));
+        cases.push(CaseReport::compare(
+            name,
+            "open",
+            expect_str(opened),
+            open_vector_frame(&base_key, &f["codec"], f["frame"].as_str().unwrap_or(""))
+                .map(|plain| hex(&plain))
+                .unwrap_or_else(|e| e.code().to_owned()),
+        ));
+    }
+
+    // Seeded RBSP escaping, both ways.
+    for (i, e) in doc["escapes"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .enumerate()
+    {
+        let seed = u8::try_from(int(&e["seed_zeros"])).unwrap_or(0);
+        let name = format!("escape {i} seed {seed}");
+        cases.push(CaseReport::compare(
+            name.clone(),
+            "out",
+            expect_str(&e["out"]),
+            hex(&rbsp_escape(seed, &unhex(e["in"].as_str().unwrap_or("")))),
+        ));
+        cases.push(CaseReport::compare(
+            name,
+            "roundtrip",
+            expect_str(&e["in"]),
+            hex(&rbsp_unescape(
+                seed,
+                &unhex(e["out"].as_str().unwrap_or("")),
+            )),
+        ));
+    }
+
+    // Scripted key-ring runs: one case per `decrypt` step, expected `ok` or the code.
+    for script in doc["receiver"].as_array().unwrap_or(&Vec::new()) {
+        let name = script["name"].as_str().unwrap_or("?");
+        let mut ring = KeyRing::new();
+        for (i, step) in script["steps"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .enumerate()
+        {
+            if step["op"].as_str() == Some("install") {
+                let roster: Vec<(u16, [u8; 16])> = step["roster"]
+                    .as_array()
+                    .unwrap_or(&Vec::new())
+                    .iter()
+                    .map(|m| {
+                        (
+                            u16::try_from(int(&m[0])).unwrap_or(u16::MAX),
+                            unhex_n::<16>(m[1].as_str().unwrap_or("")),
+                        )
+                    })
+                    .collect();
+                let own = step["own_leaf"]
+                    .as_i64()
+                    .and_then(|l| u16::try_from(l).ok());
+                ring.install_epoch(
+                    int(&step["epoch"]),
+                    &unhex_n::<NK>(step["base_key"].as_str().unwrap_or("")),
+                    &roster,
+                    own,
+                    int(&step["now"]),
+                );
+                continue;
+            }
+            let device = unhex_n::<16>(step["device"].as_str().unwrap_or(""));
+            let outcome = codec_of(&step["codec"]).and_then(|codec| {
+                let slot =
+                    Slot::from_u8(u8::try_from(int(&step["track_slot"])).unwrap_or(u8::MAX))?;
+                ring.decrypt(
+                    codec,
+                    &unhex(step["frame"].as_str().unwrap_or("")),
+                    Some(&device),
+                    slot,
+                    int(&step["now"]),
+                )
+            });
+            cases.push(CaseReport::compare(
+                format!("receiver {name} step {i}"),
+                "result",
+                expect_str(&step["expect"]),
+                match outcome {
+                    Ok(_) => "ok",
+                    Err(e) => e.code(),
+                },
+            ));
+        }
+    }
     SuiteReport {
         name: "sframe",
         cases,
     }
+}
+
+/// What a fresh sender (leaf 1, epoch 41, floor 41) refuses for one `sender_rejects` row: the
+/// encryption of `input` on (`slot`, `layer`), or for a row with `seq` the counter itself.
+fn sender_refusal(base_key: &[u8; NK], row: &Value) -> Result<(), SframeError> {
+    let slot = u8::try_from(int(&row["slot"])).unwrap_or(u8::MAX);
+    let layer = u8::try_from(int(&row["layer"])).unwrap_or(u8::MAX);
+    if !row["seq"].is_null() {
+        return Ctr::new(slot, layer, int(&row["seq"])).map(|_| ());
+    }
+    let codec = codec_of(&row["codec"])?;
+    let slot = Slot::from_u8(slot)?;
+    SframeSender::new(base_key, 1, 41, 41)?
+        .encrypt(
+            codec,
+            slot,
+            layer,
+            &unhex(row["input"].as_str().unwrap_or("")),
+        )
+        .map(|_| ())
+}
+
+/// `"opus" | "vp8" | "vp9" | "h264"` as the vector files spell a codec.
+fn codec_of(v: &Value) -> Result<Codec, SframeError> {
+    match v.as_str() {
+        Some("opus") => Ok(Codec::Opus),
+        Some("vp8") => Ok(Codec::Vp8),
+        Some("vp9") => Ok(Codec::Vp9),
+        Some("h264") => Ok(Codec::H264),
+        _ => Err(SframeError::UnsupportedCodec),
+    }
+}
+
+/// The receiver's path over a vector frame: unescape (H.264), read the KID from the header,
+/// derive its key from the file's `base_key`, open. Returns `P || plaintext`.
+fn open_vector_frame(
+    base_key: &[u8; NK],
+    codec: &Value,
+    frame: &str,
+) -> Result<Vec<u8>, SframeError> {
+    let (unescaped, prefix) = unescape_protected(codec_of(codec)?, &unhex(frame))?;
+    let (kid, _, _) = peek_kid_ctr(prefix, &unescaped)?;
+    open_frame(&FrameKey::derive(base_key, kid), prefix, &unescaped).map(|(_, _, plain)| plain)
 }
 
 pub fn run_identity() -> SuiteReport {
@@ -530,6 +784,52 @@ pub fn run_rejects() -> SuiteReport {
             "decode",
             expect_str(&case["error"]),
             actual,
+        ));
+    }
+
+    // sframe.json's `rejects` (protocol/05 "Errors"): header rows go through the receiver's parse
+    // (`peek_kid_ctr`: the strict RFC 9605 decode, then the KID < 2^24 rule), frame rows through
+    // the receiver's whole path. Expected is the file's `error`; actual is the code the core
+    // refuses with, or "accepted".
+    let sframe: Value = serde_json::from_str(SFRAME_JSON).unwrap_or(Value::Null);
+    let sframe_base = unhex_n::<NK>(sframe["base_key"].as_str().unwrap_or(""));
+    for case in sframe["rejects"].as_array().unwrap_or(&Vec::new()) {
+        let name = format!("sframe reject: {}", case["name"].as_str().unwrap_or("?"));
+        let (field, outcome) = match case["header"].as_str() {
+            Some(header) => ("decode", peek_kid_ctr(0, &unhex(header)).map(|_| ())),
+            None => (
+                "open",
+                open_vector_frame(
+                    &sframe_base,
+                    &case["codec"],
+                    case["frame"].as_str().unwrap_or(""),
+                )
+                .map(|_| ()),
+            ),
+        };
+        cases.push(CaseReport::compare(
+            name,
+            field,
+            expect_str(&case["error"]),
+            match outcome {
+                Ok(()) => "accepted",
+                Err(e) => e.code(),
+            },
+        ));
+    }
+    // sframe.json's `sender_rejects`: what a sender refuses to emit.
+    for case in sframe["sender_rejects"].as_array().unwrap_or(&Vec::new()) {
+        cases.push(CaseReport::compare(
+            format!(
+                "sframe sender reject: {}",
+                case["name"].as_str().unwrap_or("?")
+            ),
+            "encrypt",
+            expect_str(&case["error"]),
+            match sender_refusal(&sframe_base, case) {
+                Ok(()) => "accepted",
+                Err(e) => e.code(),
+            },
         ));
     }
 

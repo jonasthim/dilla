@@ -74,6 +74,11 @@ jobs:
           test "$want" = "$have" || { echo "wasm-bindgen-cli $have != crate $want"; exit 1; }
       - run: cargo test -p dilla-core --target wasm32-unknown-unknown --locked --features vectors
       - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
+      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      - run: npm ci
+      - run: npm run typecheck -w @dilla/media
+      - run: npm run test:wasm -w @dilla/media
+      - run: npm run check:schema -w @dilla/media
 
   rust-native:
     runs-on: ubuntu-latest
@@ -132,6 +137,7 @@ jobs:
 
   browser-spike:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -155,6 +161,62 @@ jobs:
       # Only the matrix script: it already runs the chromium project, so adding `test:e2e` here would
       # execute the 10-hand-over test twice per run and rewrite opfs-leader-metrics.json for nothing.
       - run: npm run test:e2e:matrix -w @dilla/e2e
+
+  browser-media:
+    runs-on: ubuntu-latest
+    # SP-27's cold container run was unavailable; the controller retains the 25-minute budget.
+    timeout-minutes: 25
+    needs: [rust-native, rust-wasi]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-wasm32-unknown-unknown
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: Fetch the testkit binary built by the rust-native job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - run: chmod +x artifacts/dilla-testkit
+      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
+      - run: npm ci
+      - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
+      - run: npx playwright install --with-deps chromium firefox
+      - run: sh scripts/ci-audio-server.sh
+      - run: npm run test:e2e:media -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+      - name: AV1 offered through the real SFU fails closed
+        run: npx playwright test --config e2e/playwright.media.config.ts --project=chromium-media unsupported-sfu-codec.spec.ts
+        env:
+          DILLA_MEDIA_SFU_AV1: '1'
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-media-results
+          path: e2e/test-results
+          if-no-files-found: error
 
   deny:
     runs-on: ubuntu-latest
@@ -198,6 +260,9 @@ jobs:
         run: go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
         env:
           GORACE: halt_on_error=1
+      # I8: these four video publishing tests are gated out of -race due to the pinned LiveKit race.
+      - name: Video publishing tests without the upstream LiveKit race detector conflict
+        run: go test -timeout 5m ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'
       - name: Static release build
         run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
 

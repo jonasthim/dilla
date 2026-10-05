@@ -5,15 +5,19 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/livekit/protocol/livekit"
+
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/sfu"
 )
 
 // plan2_test.go is Plan 2's wiring through the composition root (task 19): every handler group
@@ -72,6 +76,9 @@ func planTwoRoutes() []struct{ group, method, path string } {
 		{"reports", http.MethodPatch, "/v1/reports/" + x},
 		{"calls", http.MethodPost, "/v1/channels/" + x + "/calls"},
 		{"calls", http.MethodDelete, "/v1/calls/" + x},
+		{"calls", http.MethodPost, "/v1/calls/" + x + "/share"},
+		{"calls", http.MethodDelete, "/v1/calls/" + x + "/share"},
+		{"calls", http.MethodPost, "/v1/calls/" + x + "/stats"},
 		{"admin", http.MethodDelete, "/v1/admin/blobs/" + blobID},
 		{"admin", http.MethodGet, "/v1/admin/audit"},
 		{"admin", http.MethodPost, "/v1/admin/users/" + x + "/disable"},
@@ -244,7 +251,7 @@ func TestThePlanTwoFlowRunsThroughTheCompositionRoot(t *testing.T) {
 	}
 	// t.TempDir is 0755 and nothing reflects UDP here, so data_dir and udp only have to be present;
 	// the database, the wasi core and the blob just uploaded are this process's own and must be OK.
-	for _, name := range []string{"database", "data_dir", "wasi", "udp", "blobs"} {
+	for _, name := range []string{"database", "data_dir", "wasi", "udp", "blobs", "calls", "turn_relay"} {
 		st, ok := status[name]
 		if !ok || (st != 0 && name != "data_dir" && name != "udp") {
 			t.Errorf("diagnostics leg %q: present %v, status %d (%v)", name, ok, st, legs)
@@ -254,9 +261,24 @@ func TestThePlanTwoFlowRunsThroughTheCompositionRoot(t *testing.T) {
 
 type upstreamSFU struct{ url string }
 
-func (u upstreamSFU) Token(room, identity string) (string, error) { return room + "/" + identity, nil }
-func (u upstreamSFU) DeleteRoom(context.Context, string) error    { return nil }
-func (u upstreamSFU) HTTPURL() string                             { return u.url }
+func (u upstreamSFU) Token(room, identity string, _ *livekit.ParticipantPermission, _ map[string]string) (string, error) {
+	return room + "/" + identity, nil
+}
+func (u upstreamSFU) DeleteRoom(context.Context, string) error { return nil }
+func (u upstreamSFU) CreateRoom(context.Context, string) error { return nil }
+func (u upstreamSFU) UpdatePermission(context.Context, string, string, *livekit.ParticipantPermission) error {
+	return nil
+}
+func (u upstreamSFU) RemoveParticipants(context.Context, string, id.ID) error { return nil }
+func (u upstreamSFU) RemoveParticipant(context.Context, string, string) error { return nil }
+func (u upstreamSFU) Participants(context.Context, string) ([]*livekit.ParticipantInfo, error) {
+	return nil, nil
+}
+func (u upstreamSFU) Rooms(context.Context) ([]string, error) { return nil, nil }
+func (u upstreamSFU) HTTPURL() string                         { return u.url }
+func (u upstreamSFU) VerifyToken(string) (sfu.RoomToken, error) {
+	return sfu.RoomToken{}, errors.New("upstreamSFU verifies nothing")
+}
 
 // With an SFU (`dillad serve` with livekit.enabled), New mounts LiveKit's signalling paths on the
 // instance's own origin; without one they are not routes at all.
@@ -273,8 +295,8 @@ func TestTheRTCPathsAreMountedOnlyWithAnSFU(t *testing.T) {
 		t.Fatalf("dillad.New: %v", err)
 	}
 	defer srv.Shutdown(context.Background())
-	if rec := call(t, srv.Handler(), http.MethodGet, "/rtc/validate?access_token=x", "", nil); rec.Code != http.StatusTeapot {
-		t.Fatalf("GET /rtc/validate = %d, want the SFU's answer", rec.Code)
+	if rec := call(t, srv.Handler(), http.MethodGet, "/rtc/validate?access_token=x", "", nil); rec.Code != http.StatusForbidden {
+		t.Fatalf("GET /rtc/validate with a token nobody minted = %d, want the join gate's 403 (the route exists)", rec.Code)
 	}
 	_, h, _ := newInstance(t)
 	if rec := call(t, h, http.MethodGet, "/rtc/validate", "", nil); rec.Code != http.StatusNotFound {
