@@ -81,7 +81,7 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 
 | Method and path | Auth | Request | Response | Errors |
 |---|---|---|---|---|
-| `POST /v1/groups` | E | `[group_id(bstr16), binding(bstr), group_info(bstr), ratchet_tree(bstr)]` | `201 [group_id, next_seq]` | `E_BINDING_INVALID`, `E_MODE_READABLE`, `E_GROUP_EXISTS`, `E_FORBIDDEN` |
+| `POST /v1/groups` | E | `[group_id(bstr16), binding(bstr), group_info(bstr), ratchet_tree(bstr)]` | `201 [group_id, next_seq]` | `E_BINDING_INVALID`, `E_MODE_READABLE`, `E_GROUP_EXISTS`, `E_FORBIDDEN`, `E_INVALID_REQUEST` |
 | `GET /v1/groups/{id}/info` | E | — | `[epoch, group_info, tree_hash, next_seq]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/tree` | E | — | `[epoch, ratchet_tree, tree_hash]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/handshakes?from=&limit=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
@@ -105,6 +105,13 @@ Two rules the table encodes: a Welcome is **fetched without being consumed** —
 marks it delivered, because `StagedWelcome::new_from_welcome` consumes the key material even when
 the client then fails — and the Welcome response carries the ratchet tree **as of the welcoming
 epoch**, because dilla Welcomes carry no tree and the live tree has moved on.
+
+The `group_id`, `epoch` and `tree_hash` served with a Welcome (on `GET /v1/welcomes` and in the
+`mls.welcome` frame) are the instance's own: the group the commit was uploaded to, the epoch the
+instance's public group reached by merging that commit, and the hash of that public group's tree
+after the merge. The committer supplies only `[device_id, blob]` per Welcome and cannot choose them.
+A joining client verifies the Welcome's group context against all three before it joins
+(`01-groups.md`, client join rule 5).
 
 A commit's `welcomes` are addressed: each `device_id` must be a device the commit's own applied Add
 proposals add, and a commit that addresses a Welcome to any other device is refused with
@@ -323,7 +330,14 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    a lock on the target so two first registrations cannot both pass, with one exception, invariant
    11's re-creation: while every open group of the target is epoch-unknown, the channel owner's
    device (the community owner; any participant of a DM) may register its replacement. `pairing`
-   and `interaction` groups are not channel groups and are not gated here.
+   and `interaction` groups are not channel groups and are not gated here. A registration adopts
+   exactly one leaf, the registering device's own: the uploaded tree holds one leaf (counted in
+   the tree, a leaf whose credential is no dilla identity included), whose credential names the
+   session's device and user, whose `signature_key` is that device's registered key, and whose
+   device is not revoked and is in its user's newest signed device list — the checks an external
+   joiner's leaf passes, the ACL half being the registration gate above. Anything else is
+   `400 E_INVALID_REQUEST` and nothing is stored. Every other member enters through a commit
+   (invariant 4) or an external join (invariant 5).
 2. **Tree service.** The DS keeps a `PublicGroup` per group. Committers upload a GroupInfo
    **without** the ratchet tree; the DS serves the tree from its own `PublicGroup`, and a joiner
    MUST verify `tree_hash` in the GroupInfo against the served tree before joining.
@@ -340,12 +354,14 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    `Remove` satisfied this way with the commit, as it does a referenced one, and never re-issues it;
    it contains no `Update` from the committer; its UpdatePath leaf node, if a member commit carries
    one, and every `Update` it applies carry the credential that leaf holds before the commit, byte
-   for byte, and an external commit that removes a leaf of the joiner's own device (a resync)
-   carries that removed leaf's credential, byte for byte
+   for byte, and that leaf's `signature_key`; an external commit by a device that already holds a
+   leaf (a resync) removes that leaf — a device holds at most one leaf, read from the credentials
+   of the tree before the commit — and carries the removed leaf's credential, byte for byte
    (`01-groups.md`, "Client policy for proposals from members"; a member `Update` proposal
-   that changes it is refused on `POST /v1/groups/{id}/proposal` the same way, and neither is
-   stored or fanned out; both refusals are `422 E_COMMIT_INVALID` with `rule = "structural"`,
-   because the `PublicGroup`'s own processing refuses the message); every member-originated
+   that changes either is refused on `POST /v1/groups/{id}/proposal` the same way, and neither is
+   stored or fanned out; these refusals are `422 E_COMMIT_INVALID` with `rule = "structural"`,
+   because the `PublicGroup`'s own processing refuses the message, except on an external commit,
+   where the rule is the joiner's, `rule = "external_joiner"`); every member-originated
    `Remove` targets its proposer's
    own user (the committer's for a `Remove` the commit carries, the proposing member's for a member
    `Remove` proposal it references — how a member leaves, `01-groups.md`), the proposer being the
@@ -356,7 +372,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    through `09` § Permissions; for a DM or group DM, being one of its participants; for any other
    group, being in it already) and whose DSK is in the
    newest signed device list the DS holds; the `PublicGroup` validates
-   it structurally; and the uploaded GroupInfo's epoch is `n + 1`. Otherwise `422 E_COMMIT_INVALID`.
+   it structurally; and the uploaded GroupInfo's epoch is `n + 1`, and its `group_id` and
+   `tree_hash` are those of the group the commit merges to (`rule = "group_info"`), since that
+   GroupInfo is what every device that resyncs or joins builds its external commit from until the
+   next commit. Otherwise `422 E_COMMIT_INVALID`.
 5. **Freeze.** While any DS proposal is outstanding for a group, application messages get
    `425 E_COMMIT_REQUIRED`, and external commits get `425 E_COMMIT_REQUIRED` too — **unless no member
    device is online**, in which case the external commit is accepted, the outstanding proposals are
@@ -369,7 +388,8 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    refused with `E_FORBIDDEN` when the resyncing device is the target of an outstanding non-void
    instance Remove, and the instance re-issues its outstanding proposals for the new epoch
    immediately afterwards. A resync's new leaf, like a joiner's, must name the uploading device and
-   user and carry that device's registered key as its `signature_key` (`422 E_COMMIT_INVALID`,
+   user and carry that device's registered key as its `signature_key`, and the resync must remove
+   the leaf the device holds (invariant 4: one device, one leaf) (`422 E_COMMIT_INVALID`,
    `rule = "external_joiner"`). `POST /v1/groups/{id}/resync` from a device that holds **no** leaf in the
    group is not a resync but a join (`01-groups.md`, "Joining"): it is gated by the channel ACL
    (`E_NOT_FOUND` to a device the ACL does not admit, as every read answers it), it is held by the
@@ -496,7 +516,13 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     `tree_hash` equals the rebuilt tree's. When the instance holds no usable state blob for the
     group, the healing member additionally uploads the ratchet tree in the same request — the one
     upload where the tree is allowed, because the instance has none — and the instance reseeds from
-    it; RFC 9420 §12.4.3.3's signed `tree_hash` makes that source safe. A device that is the target
+    it; RFC 9420 §12.4.3.3's signed `tree_hash` ties that tree to the member-signed GroupInfo, and
+    every leaf of it must pass invariant 4's `Add` clause (the device known, owned by the
+    credential's user, not revoked, keyed by its registered key, in its user's newest signed device
+    list, its user eligible under the ACL; `422 E_COMMIT_INVALID` with `rule = "add_key_package"` or
+    `"add_acl"`), and the tree may hold no leaf whose credential is no dilla identity
+    (`rule = "reseed"`). The reseed does not bound which devices the tree holds beyond that: the
+    commits after the backup are already inside the uploaded tree. A device that is the target
     of an outstanding non-void DS `Remove` at the restored epoch, or that is quarantined, cannot
     heal (`403 E_FORBIDDEN`, as for a resync). The replay does not apply invariant 4's first clause
     or invariant 5 (the restored queue describes the backup's epoch); instead, after a heal that

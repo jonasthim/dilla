@@ -123,13 +123,18 @@ accepted only if:
 Failing 1, 3 or 4 rejects the leaf (`E_CREDENTIAL`); failing 2 hard-rejects (`E_UMK_CHANGED`);
 failing 5 rejects the leaf (`E_TIER_MISMATCH`).
 
-The instance binds every new leaf to a device too, before any client sees it: a leaf's
+The instance binds a new leaf to a device too, before any client sees it: a leaf's
 `signature_key` must be the `dsk_pub` its device registered (`POST /v1/accounts`,
 `POST /v1/devices`; the key the device's sessions are established under). No flow changes a
 registered `dsk_pub`, so the key is compared as it stands at the check. The delivery service applies
-this to a published KeyPackage, an `Add`, and an external join or resync (`02-delivery-service.md`,
-"KeyPackage directory" and invariant 4). It is the instance's check, made against its own device
-records; the client checks above, made against the signed device list, do not depend on it.
+this on every path a leaf enters a group by: a published KeyPackage, an `Add`, an external join or
+resync, the one leaf a group registration adopts, and every leaf of a tree heal's reseed adopts
+(`02-delivery-service.md`, "KeyPackage directory" and invariants 1, 4, 5 and 11; `ProposeAdd` takes
+only a directory KeyPackage bound this way, invariant 6). Once in a group a leaf keeps its key: an
+`Update` or an UpdatePath that changes it is refused by clients and the delivery service alike
+(`01-groups.md`, "Client policy for proposals from members"). It is the instance's check, made
+against its own device records; the client checks above, made against the signed device list, do
+not depend on it.
 
 ## Device list
 
