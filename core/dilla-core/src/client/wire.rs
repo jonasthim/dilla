@@ -45,7 +45,7 @@ pub(crate) struct ProposalItem {
 pub(crate) fn decode_proposals_body(bytes: &[u8]) -> Result<Vec<ProposalItem>, ClientError> {
     let rows = decode_strict(bytes, |d| {
         let n = d.array_len()?;
-        let mut rows = Vec::with_capacity(n);
+        let mut rows = reserve(n, bytes.len() - d.position());
         for _ in 0..n {
             d.array(5)?;
             rows.push((
@@ -118,10 +118,18 @@ fn shape(arg: &str, error: impl core::fmt::Display) -> ClientError {
     ClientError::new(E_CORE_INPUT, format!("{arg}: {error}"))
 }
 
+/// An empty vector for `claimed` decoded elements whose up-front reservation never exceeds the
+/// `remaining` input bytes. `Decoder::array_len` bounds the count by the input, not by the input
+/// divided by an element's size (`cbor/dec.rs` `array_len`: a caller must not scale it into a
+/// larger allocation); the vector grows past this only as elements actually decode.
+fn reserve<T>(claimed: usize, remaining: usize) -> Vec<T> {
+    Vec::with_capacity(claimed.min(remaining / core::mem::size_of::<T>().max(1)))
+}
+
 pub(crate) fn decode_handshake_rows(bytes: &[u8]) -> Result<Vec<HandshakeRow>, ClientError> {
     let rows = decode_strict(bytes, |d| {
         let n = d.array_len()?;
-        let mut rows = Vec::with_capacity(n);
+        let mut rows = reserve(n, bytes.len() - d.position());
         for _ in 0..n {
             d.array(5)?;
             rows.push((
@@ -164,7 +172,7 @@ pub(crate) fn decode_handshake_rows(bytes: &[u8]) -> Result<Vec<HandshakeRow>, C
 pub(crate) fn decode_message_rows(bytes: &[u8]) -> Result<Vec<MessageRow>, ClientError> {
     let rows = decode_strict(bytes, |d| {
         let n = d.array_len()?;
-        let mut rows = Vec::with_capacity(n);
+        let mut rows = reserve(n, bytes.len() - d.position());
         for _ in 0..n {
             d.array(8)?;
             rows.push((
@@ -228,7 +236,7 @@ pub(crate) fn decode_tree_body(bytes: &[u8]) -> Result<TreeBody, ClientError> {
 pub(crate) fn decode_welcomes_body(bytes: &[u8]) -> Result<Vec<WelcomeItem>, ClientError> {
     decode_strict(bytes, |d| {
         let n = d.array_len()?;
-        let mut v = Vec::with_capacity(n);
+        let mut v = reserve(n, bytes.len() - d.position());
         for _ in 0..n {
             d.array(7)?;
             v.push(WelcomeItem {
@@ -248,7 +256,7 @@ pub(crate) fn decode_welcomes_body(bytes: &[u8]) -> Result<Vec<WelcomeItem>, Cli
 pub(crate) fn decode_expected(bytes: &[u8]) -> Result<Vec<ExpectedGroup>, ClientError> {
     decode_strict(bytes, |d| {
         let n = d.array_len()?;
-        let mut v = Vec::with_capacity(n);
+        let mut v = reserve(n, bytes.len() - d.position());
         for _ in 0..n {
             d.array(4)?;
             v.push(ExpectedGroup {
