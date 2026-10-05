@@ -562,6 +562,17 @@ impl TestClient {
         Ok(msg_id)
     }
 
+    /// Sends a type-0 envelope and returns the delivery service sequence number.
+    pub fn send_seq(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        body: &str,
+    ) -> Result<u64, TestkitError> {
+        let (epoch, message, _) = self.seal(group_id, body)?;
+        Ok(ds.post_message_from(group_id, epoch, message)?.seq)
+    }
+
     /// Invariant 8's malformed upload: a real message of this group whose `authenticated_data` —
     /// the 32-byte franking commitment — is rewritten to `len` bytes. The field is cleartext in a
     /// `PrivateMessage` (RFC 9420 §6.3), so the rewritten message still parses; only its AEAD no
@@ -991,6 +1002,11 @@ impl TestClient {
     /// How many members this client's tree of the group holds.
     pub fn member_count(&self, group_id: &[u8]) -> Option<usize> {
         self.groups.get(group_id).map(DillaGroup::member_count)
+    }
+
+    /// The group's members in leaf order, when this client holds its tree.
+    pub fn roster(&self, group_id: &[u8]) -> Option<Vec<dilla_core::mls::RosterEntry>> {
+        self.groups.get(group_id).map(DillaGroup::roster)
     }
 
     pub fn inbox(&self) -> &[Received] {

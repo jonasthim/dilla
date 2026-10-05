@@ -18,6 +18,7 @@ mod ds;
 mod fixtures;
 mod media_driver;
 mod scenario;
+mod web_driver;
 
 pub use client::{Received, TestClient};
 pub use ds::{
@@ -36,6 +37,7 @@ pub use media_driver::MediaDriver;
 pub use scenario::{
     DeviceListMode, ParseError, RunReport, Runner, Scenario, StepResult, Stmt, parse,
 };
+pub use web_driver::WebDriver;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

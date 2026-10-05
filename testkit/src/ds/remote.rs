@@ -818,6 +818,90 @@ impl HttpDs {
         check_status(status, &out)
     }
 
+    /// POST /v1/communities [name, policy bstr "{}", 0, 0].
+    pub fn create_community(&self, name: &str) -> Result<[u8; 16], DsError> {
+        self.post_decoded(
+            "/v1/communities",
+            &encode(|e| {
+                e.array(4).text(name).bytes(b"{}").uint(0).uint(0);
+            }),
+            |d| {
+                d.array(3)?;
+                let id = d.bytes_exact::<16>()?;
+                d.skip()?;
+                d.skip()?;
+                Ok(id)
+            },
+        )
+    }
+
+    /// POST /v1/communities/{id}/channels [0, 0, 0, null, name, "", 0, 0].
+    pub fn create_text_channel(
+        &self,
+        community: &[u8; 16],
+        name: &str,
+    ) -> Result<([u8; 16], u64, u64), DsError> {
+        let path = format!("/v1/communities/{}/channels", hex::encode(community));
+        self.post_decoded(
+            &path,
+            &encode(|e| {
+                e.array(8)
+                    .uint(0)
+                    .uint(0)
+                    .uint(0)
+                    .null()
+                    .text(name)
+                    .text("")
+                    .uint(0)
+                    .uint(0);
+            }),
+            |d| {
+                d.array(3)?;
+                Ok((d.bytes_exact::<16>()?, d.uint()?, d.uint()?))
+            },
+        )
+    }
+
+    /// POST /v1/communities/{id}/invites [max_uses, ttl_seconds, 0].
+    pub fn create_invite(
+        &self,
+        community: &[u8; 16],
+        max_uses: u64,
+        ttl_seconds: u64,
+    ) -> Result<String, DsError> {
+        let path = format!("/v1/communities/{}/invites", hex::encode(community));
+        self.post_decoded(
+            &path,
+            &encode(|e| {
+                e.array(3).uint(max_uses).uint(ttl_seconds).uint(0);
+            }),
+            |d| {
+                d.array(4)?;
+                d.skip()?;
+                let code = d.text()?.to_owned();
+                d.skip()?;
+                d.skip()?;
+                Ok(code)
+            },
+        )
+    }
+
+    /// POST /v1/communities/{id}/join [code].
+    pub fn join_community(&self, community: &[u8; 16], code: &str) -> Result<(), DsError> {
+        let path = format!("/v1/communities/{}/join", hex::encode(community));
+        self.post_decoded(
+            &path,
+            &encode(|e| {
+                e.array(1).text(code);
+            }),
+            |d| {
+                d.array(1)?;
+                d.bytes_exact::<16>()?;
+                Ok(())
+            },
+        )
+    }
+
     /// Opens the gateway: the upgrade with the bearer on the `Authorization` header, `hello`,
     /// `identify` at the highest versions both sides share, and `ready`.
     fn open_socket(&mut self) -> Result<(), DsError> {

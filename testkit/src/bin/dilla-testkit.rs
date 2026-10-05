@@ -38,6 +38,13 @@ enum Command {
         #[arg(long, default_value_t = 0x5eed)]
         seed: u64,
     },
+    /// Drive the native peer of the browser web tests, one JSON request per stdin line.
+    WebDriver {
+        #[arg(long)]
+        ds: String,
+        #[arg(long, default_value_t = 0x5eed)]
+        seed: u64,
+    },
     /// Generate the committed PublicGroup benchmark fixture.
     GenPublicGroup {
         #[arg(long, default_value_t = 1500)]
@@ -83,6 +90,18 @@ fn main() -> std::process::ExitCode {
                 Ok(()) => std::process::ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("media-driver: {e}");
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+        Command::WebDriver { ds, seed } => {
+            let mut driver = dilla_testkit::WebDriver::new(ds, seed);
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            match driver.serve(stdin.lock(), stdout.lock()) {
+                Ok(()) => std::process::ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("web-driver: {e}");
                     std::process::ExitCode::FAILURE
                 }
             }

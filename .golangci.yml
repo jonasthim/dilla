@@ -64,6 +64,9 @@ linters:
   exclusions:
     generated: lax
     warn-unused: true
+    paths:
+      # npm dependencies may contain Go examples; they are not part of the Go module.
+      - ^node_modules/
     rules:
       # wasm32 ABI: every pointer and length crossing the wazero boundary is a uint32 by
       # construction. Scoped to this package, NOT global — G115 must stay live in internal/cborx,
