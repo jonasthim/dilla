@@ -280,10 +280,13 @@ export class SyncEngine implements SyncInternals {
   async activate(g: Id): Promise<void> {
     const snap = this.snapshot(g); if (snap !== null) this.deps.onGroupChanged(g, snap);
     const frames = this.held.get(toHex(g)) ?? []; this.held.delete(toHex(g));
-    frames.sort((a, b) => {
-      const x = u64(a.payload[0] ?? 0n); const y = u64(b.payload[0] ?? 0n); return x < y ? -1 : x > y ? 1 : 0;
-    });
-    for (const f of frames) await this.frameJob(f);
+    const ordered: { frame: Frame; seq: bigint }[] = [];
+    for (const frame of frames) {
+      try { ordered.push({ frame, seq: u64(frame.payload[0] ?? null) }); }
+      catch { this.requestCatchUp(g); }
+    }
+    ordered.sort((a, b) => a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0);
+    for (const { frame } of ordered) await this.frameJob(frame);
     this.requestCatchUp(g); this.requestDrain(g);
   }
   async pollWelcomes(): Promise<void> { await this.queues.run('w', () => welcomeStep(this)).catch(() => undefined); }

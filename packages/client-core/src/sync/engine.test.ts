@@ -227,6 +227,22 @@ describe('live frames (rule 3)', () => {
     expect(count('getHandshakes')).toBe(1);
   });
 
+  it('drops a held frame with an invalid sequence and replays the remaining frames on activation', async () => {
+    const d = device(ds, clock, ME);
+    const g = ds.peerCreate(PEER, CHANNEL);
+    d.core.groupCreate(g, COMMUNITY, CHANNEL);
+    ds.join(g, ME.device);
+    d.gateway.frame({ op: 19, n: 50n, groupId: g, payload: ['bad-seq', 0n, PEER.device, new Uint8Array([1]), new Uint8Array(32), 1n] });
+    ds.peerSend(g, PEER, 'valid');
+    await settle();
+    expect(d.core.group(g)?.state).toBe(0);
+    d.core.groupRegistered(g, 1n);
+    await d.engine.activate(g);
+    await settle();
+    expect(d.core.bodies(g)).toEqual(['valid']);
+    expect(count('getMessages')).toBeGreaterThan(0);
+  });
+
   it('holds back the frames of a group while its queue is busy, but not those of another group', async () => {
     const d = device(ds, clock, ME);
     const g1 = await openRegistered(ds, d, CHANNEL);
