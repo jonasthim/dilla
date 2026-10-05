@@ -8,7 +8,7 @@ import { frameAccountingErrors } from './support/frame-accounting';
 type W = {
   harness: DillaHarness &
     DillaHarness21 & {
-      connect(url: string, token: string, opts: { e2ee: 'none' | 'stub'; stub?: { kind: 'xor'; keyPrefix: number; deltaPrefix: number; sframeLayout: boolean } }): Promise<void>;
+      connect(url: string, token: string, opts: { e2ee: 'none' | 'stub'; stub?: { kind: 'xor'; keyPrefix: number; deltaPrefix: number; sframeLayout: boolean; clearBody?: boolean } }): Promise<void>;
       publish(what: { mic?: boolean; camera?: boolean }): Promise<void>;
     };
 };
@@ -49,19 +49,20 @@ test('a canary connected straight to the SFU is decoded by nobody (MD-13, SP-13,
     const room = `canary-${randomBytes(8).toString('hex')}`;
     const pa = await open(browser);
     const a = await member(driver, pa, 'alice', browserName, room);
-    const pb = await open(browser);
-    const b = await member(driver, pb, 'bob', browserName, room);
 
-    // Two canaries, neither in the MLS group: one publishes NONE, one garbage ciphertext under the GCM
-    // flag with an SFrame-shaped header (the stub's keystream randomises from the first ciphertext byte).
+    // Two canaries, neither in the MLS group: one publishes NONE, one puts playable media in an
+    // unauthenticated SFrame-shaped envelope under GCM. Expiry must never expose that body.
     const canaries = [randomBytes(16).toString('hex'), randomBytes(16).toString('hex')];
-    const modes = [{ e2ee: 'none' as const }, { e2ee: 'stub' as const, stub: { kind: 'xor' as const, keyPrefix: 10, deltaPrefix: 1, sframeLayout: true } }];
+    const modes = [{ e2ee: 'none' as const }, { e2ee: 'stub' as const, stub: { kind: 'xor' as const, keyPrefix: 10, deltaPrefix: 1, sframeLayout: true, clearBody: true } }];
     for (const [i, id] of canaries.entries()) {
       const t = await debugToken(CONTROL_URL, room, id, false);
       const cp = await open(browser);
       await cp.evaluate(([url, token, opts]) => (globalThis as unknown as W).harness.connect(url, token, opts), [t.url, t.token, modes[i]] as const);
       await cp.evaluate(() => (globalThis as unknown as W).harness.publish({ mic: true, camera: true }));
     }
+    // Bob connects after the canaries already publish: initial subscription must also fail closed.
+    const pb = await open(browser);
+    const b = await member(driver, pb, 'bob', browserName, room);
     const memberKids = new Set([kidHex(a.key.selfLeaf, b.key.epoch), kidHex(b.key.selfLeaf, b.key.epoch), kidHex(a.key.selfLeaf, a.key.epoch)]);
 
     // First establish that both canaries and both sources reached both members.
@@ -72,7 +73,9 @@ test('a canary connected straight to the SFU is decoded by nobody (MD-13, SP-13,
           tracks.some((t) => t.participantIdentity === id && t.kind === kind && t.packetsReceived > 0)));
       }, { timeout: 10_000 }).toBe(true);
     }
-    for (let tick = 0; tick < 4; tick++) {
+    // Twenty 250 ms ticks keep zero-render under observation for at least five seconds after
+    // presence on both pages, past the worker's two-second unknown-KID hold.
+    for (let tick = 0; tick < 20; tick++) {
       for (const page of [pa, pb]) {
         const present = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats()))
           .filter((s) => canaries.includes(s.participantIdentity));
@@ -111,6 +114,22 @@ test('a canary connected straight to the SFU is decoded by nobody (MD-13, SP-13,
         await expect.poll(async () => (await page.evaluate(() => (globalThis as unknown as W).harness.dillaStats()))
           .droppedByTrack[track.trackId] ?? 0, { message: `refused ${track.participantIdentity}/${track.kind}` })
           .toBeGreaterThan(0);
+      }
+      // Check again after the refusal polls: expiry must not release a held frame into the decoder.
+      if (browserName === 'chromium') {
+        const after = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats()))
+          .filter((track) => canaries.includes(track.participantIdentity));
+        for (const track of after) {
+          expect(track.framesDecoded, 'canary video decoded after hold expiry').toBe(0);
+          expect(track.totalSamplesReceived, 'canary audio played after hold expiry').toBe(0);
+        }
+      } else {
+        const after = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRenderProbe(250)))
+          .filter((track) => canaries.includes(track.participantIdentity));
+        for (const track of after) {
+          expect(track.frames, 'canary video rendered after hold expiry').toBe(0);
+          expect(track.rms, 'canary audio audible after hold expiry').toBeLessThan(0.01);
+        }
       }
       const dropped = Object.entries(s.dropped).filter(([reason]) => reason !== 'sif').reduce((n, [, v]) => n + v, 0);
       expect(dropped, 'the worker dropped the canary frames').toBeGreaterThan(0);

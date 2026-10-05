@@ -20,7 +20,7 @@ import { hexToBytes, isDeviceIdentity } from '../src/slots';
 
 export type StubMode =
   | { kind: 'pass' }
-  | { kind: 'xor'; keyPrefix: number; deltaPrefix: number; sframeLayout: boolean }
+  | { kind: 'xor'; keyPrefix: number; deltaPrefix: number; sframeLayout: boolean; clearBody?: boolean }
   | { kind: 'drop'; ms: number }
   | { kind: 'log-h264' }
   | { kind: 'count-sif' };

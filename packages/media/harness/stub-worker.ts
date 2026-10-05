@@ -75,7 +75,7 @@ function xorEncode(frame: EncodedFrame, m: Extract<StubMode, { kind: 'xor' }>): 
   const out = new Uint8Array(n + header.length + (d.length - n) + TAG_LEN);
   out.set(d.subarray(0, n), 0);
   out.set(header, n);
-  for (let i = n; i < d.length; i++) out[header.length + i] = d[i] ^ ks[i - n];
+  for (let i = n; i < d.length; i++) out[header.length + i] = m.clearBody ? d[i] : d[i] ^ ks[i - n];
   const tag = keystream(seed + 1, TAG_LEN);
   tag[0] = seed; tag[1] = 0xd1;
   out.set(tag, out.length - TAG_LEN);
