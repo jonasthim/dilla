@@ -14,7 +14,7 @@ interface WorkerReport {
   message?: string;
   id?: number;
   ok?: boolean;
-  value?: string;
+  value?: string | Record<string, unknown>;
   error?: string;
 }
 
@@ -44,6 +44,17 @@ const state: Record<string, unknown> = { order: [], instance };
 (globalThis as unknown as { __dilla: Record<string, unknown> }).__dilla = state;
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+const coreMode = params.get('core') === '1';
+const coreCalls = new Map<number, (result: unknown) => void>();
+let coreSeq = 0;
+if (coreMode) {
+  state.core = (op: string): Promise<unknown> =>
+    new Promise((resolveCall) => {
+      coreSeq += 1;
+      coreCalls.set(coreSeq, resolveCall);
+      worker.postMessage({ type: 'core', id: coreSeq, op, instance });
+    });
+}
 const mlsWaiters = new Map<number, (reply: MlsReply) => void>();
 let nextMlsId = 0;
 state.mls = (op: MlsOp): Promise<MlsReply> => new Promise((resolve) => {
@@ -85,7 +96,7 @@ worker.addEventListener('message', (event: MessageEvent<WorkerReport>) => {
       if (resolve === undefined) break;
       mlsWaiters.delete(report.id);
       resolve(report.ok === true
-        ? { ok: true, value: report.value ?? '' }
+        ? { ok: true, value: typeof report.value === 'string' ? report.value : '' }
         : { ok: false, error: report.error ?? '' });
       break;
     }
@@ -156,6 +167,14 @@ worker.addEventListener('message', (event: MessageEvent<WorkerReport>) => {
       setAppendEnabled(false);
       banner(`Store error: ${report.message ?? 'unknown'}`);
       break;
+    case 'core-result': {
+      const resolveCall = report.id === undefined ? undefined : coreCalls.get(report.id);
+      if (resolveCall !== undefined && report.id !== undefined) {
+        coreCalls.delete(report.id);
+        resolveCall(report.ok === true ? { ok: true, value: report.value ?? {} } : { ok: false, error: report.error ?? '' });
+      }
+      break;
+    }
     default:
       break;
   }
@@ -170,4 +189,4 @@ document.getElementById('resign')?.addEventListener('click', () => {
   worker.postMessage({ type: 'resign' });
 });
 
-worker.postMessage({ type: 'start', instance, badKek });
+if (!coreMode) worker.postMessage({ type: 'start', instance, badKek });

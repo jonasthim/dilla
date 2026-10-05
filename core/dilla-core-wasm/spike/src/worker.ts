@@ -1,5 +1,7 @@
 /// <reference lib="webworker" />
 import init, {
+  abi_version,
+  core_open,
   is_sah_contention,
   store_open,
   store_mls_probe,
@@ -7,6 +9,7 @@ import init, {
   wrong_key_probe,
   StoreOpenConfig,
   type StoreHandle,
+  type CoreHandle,
 } from '../pkg/dilla_core_wasm.js';
 import { channelName, elect, type LeaderMessage, type LeaderSession } from './leader.js';
 import { probePersistence } from './probe.js';
@@ -283,11 +286,187 @@ async function run(instance: string, badKek: boolean): Promise<void> {
   );
 }
 
+// ---- core mode (web-1 task 7): the page drives CoreHandle with `?core=1` and never posts `start`.
+
+const CORE_INSTANCE_ID = new Uint8Array(16).fill(0x77);
+const CORE_USER_ID = new Uint8Array(16).fill(0x66);
+const CORE_GROUP_ID = new Uint8Array(16).fill(0x33);
+const CORE_COMMUNITY_ID = new Uint8Array(16).fill(0x44);
+const CORE_CHANNEL_ID = new Uint8Array(16).fill(0x55);
+/** protocol/vectors/identity.json `credential_identity.fields.umk_pub`: a real Ed25519 public key. */
+const CORE_EXTERNAL_SENDER_PUB = fromHex('db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d');
+const CORE_NONCE = new Uint8Array(32).fill(0x22);
+const CORE_NOW = 1_760_000_000n;
+/** A fabricated 200 body of POST /v1/groups/{id}/message: [seq 1, franking_tag 32 × 0x99, recv_ts 1760000000]. */
+const CORE_CONFIRM = Uint8Array.of(0x83, 0x01, 0x58, 0x20, ...new Array<number>(32).fill(0x99), 0x1a, 0x68, 0xe7, 0x78, 0x00);
+
+let core: CoreHandle | undefined;
+let wasmReady: Promise<unknown> | undefined;
+/** Ops run one at a time, in arrival order. */
+let coreQueue: Promise<void> = Promise.resolve();
+
+function toHex(b: Uint8Array): string {
+  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+function fromHex(s: string): Uint8Array {
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < out.length; i += 1) out[i] = Number.parseInt(s.slice(2 * i, 2 * i + 2), 16);
+  return out;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** The message `f` throws, or 'no error' — which no assertion of the spec accepts. */
+function thrown(f: () => unknown): string {
+  try {
+    f();
+    return 'no error';
+  } catch (err) {
+    return errorMessage(err);
+  }
+}
+
+function need(): CoreHandle {
+  if (core === undefined) throw new Error('E_SPIKE_NO_CORE: run open first');
+  return core;
+}
+
+/** send_prepare answers [msg_id b16]: 0x81 0x50 and 16 bytes. */
+function msgIdOf(prepared: Uint8Array): Uint8Array {
+  if (prepared.length !== 18 || prepared[0] !== 0x81 || prepared[1] !== 0x50) {
+    throw new Error(`E_SPIKE_SHAPE: send_prepare answered ${toHex(prepared)}`);
+  }
+  return prepared.slice(2);
+}
+
+/** core_open with the same contention schedule as openWithRetry: a reload's predecessor may still hold the handles. */
+async function openCore(instance: string): Promise<{ handle: CoreHandle; attempts: number }> {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const cfg = new StoreOpenConfig(`dilla/${instance}`, 'dilla.db', SPIKE_KEK_HEX);
+    try {
+      return { handle: await core_open(cfg), attempts: attempt };
+    } catch (err) {
+      if (!is_sah_contention(err) || attempt === MAX_ATTEMPTS) throw err;
+      await sleep(BACKOFF_MS[attempt - 1]);
+    }
+  }
+  throw new Error('unreachable: the loop returns or throws');
+}
+
+async function runCore(op: string, instance: string): Promise<Record<string, unknown>> {
+  switch (op) {
+    case 'open': {
+      wasmReady ??= init();
+      await wasmReady;
+      const persistence = await probePersistence();
+      if (persistence.mode !== 'opfs') throw new Error(`E_SPIKE_PROBE: ${persistence.reason}`);
+      const opened = await openCore(instance);
+      core = opened.handle;
+      await core.reserve_capacity(16);
+      return { abi: abi_version(), attempts: opened.attempts, phase: core.identity()[1] };
+    }
+    case 'signup': {
+      const c = need();
+      const recoveryKey = c.signup_begin(CORE_INSTANCE_ID);
+      const request = c.signup_request('spike-invite', 'facade', 'Facade', null);
+      const complete = c.signup_complete(CORE_USER_ID, 'facade', CORE_NOW);
+      c.device_list_published();
+      const keyPackages = c.key_packages(2, true);
+      return {
+        recoveryKey,
+        requestHead: toHex(request.subarray(0, 1)),
+        completeHead: toHex(complete.subarray(0, 2)),
+        keyPackagesHead: toHex(keyPackages.subarray(0, 2)),
+        beginAgain: thrown(() => c.signup_begin(CORE_INSTANCE_ID)),
+      };
+    }
+    case 'group': {
+      const c = need();
+      const create = c.group_create(CORE_GROUP_ID, CORE_COMMUNITY_ID, CORE_CHANNEL_ID, 1n, CORE_EXTERNAL_SENDER_PUB);
+      c.group_registered(CORE_GROUP_ID, 1n);
+      const first = msgIdOf(c.send_prepare(CORE_GROUP_ID, 'hello from the facade', CORE_NOW));
+      c.send_encrypt(first);
+      const confirm = c.send_confirm(first, CORE_CONFIRM);
+      const second = msgIdOf(c.send_prepare(CORE_GROUP_ID, 'still queued', CORE_NOW));
+      const encrypted = c.send_encrypt(second);
+      return {
+        createHead: toHex(create.subarray(0, 18)),
+        confirm: toHex(confirm),
+        encryptHead: toHex(encrypted.subarray(0, 18)),
+      };
+    }
+    case 'snapshot': {
+      const c = need();
+      return {
+        identity: toHex(c.identity()),
+        groups: toHex(c.groups()),
+        timeline: toHex(c.timeline(CORE_GROUP_ID, 0n, 200)),
+        outbox: toHex(c.outbox(CORE_GROUP_ID)),
+        deviceList: toHex(c.device_list_body()),
+        sealed: toHex(c.sealed_objects()),
+        session: toHex(c.session_sign(CORE_NONCE, 0)),
+        cursor: toHex(c.cursor_body(CORE_GROUP_ID)),
+      };
+    }
+    case 'identity':
+      return { hex: toHex(need().identity()) };
+    case 'pause':
+      need().pause();
+      return {};
+    case 'resume':
+      await need().resume();
+      return {};
+    case 'resend-queued': {
+      const c = need();
+      const outbox = c.outbox(CORE_GROUP_ID);
+      if (outbox.length < 19 || outbox[0] !== 0x81 || outbox[1] !== 0x85 || outbox[2] !== 0x50) {
+        throw new Error(`E_SPIKE_SHAPE: outbox answered ${toHex(outbox)}`);
+      }
+      const msgId = outbox.slice(3, 19);
+      c.send_requeue(msgId);
+      return { encryptHead: toHex(c.send_encrypt(msgId).subarray(0, 18)) };
+    }
+    case 'errors': {
+      const c = need();
+      const keyPackagesBeforeIdentity = thrown(() => c.key_packages(1, false));
+      const sessionBeforeIdentity = thrown(() => c.session_sign(CORE_NONCE, 0));
+      const shortInstance = thrown(() => c.signup_begin(new Uint8Array(15)));
+      c.signup_begin(CORE_INSTANCE_ID);
+      const phaseAfterBegin = c.identity()[1];
+      const beginTwice = thrown(() => c.signup_begin(CORE_INSTANCE_ID));
+      const shortNonce = thrown(() => c.session_sign(new Uint8Array(31), 0));
+      const purposeOutOfRange = thrown(() => c.session_sign(CORE_NONCE, 256));
+      const shortGroup = thrown(() => c.group_registered(new Uint8Array(15), 1n));
+      c.signup_reset();
+      return {
+        keyPackagesBeforeIdentity, sessionBeforeIdentity, shortInstance, phaseAfterBegin,
+        beginTwice, shortNonce, purposeOutOfRange, shortGroup, phaseAfterReset: c.identity()[1],
+      };
+    }
+    default:
+      throw new Error(`E_SPIKE_OP: unknown core op ${op}`);
+  }
+}
+
 // One listener for the worker's whole life. Removing it after `start` — which is what this used to
 // do — is what left the append click with nowhere to land until the leader callback installed a
 // second one (ruling J).
 scope.addEventListener('message', (event: MessageEvent) => {
   const data = event.data as { type: string; instance?: string; badKek?: boolean; id?: number; op?: string };
+  if (data.type === 'core') {
+    const { id, op, instance } = event.data as { id: number; op: string; instance: string };
+    coreQueue = coreQueue.then(async () => {
+      try {
+        scope.postMessage({ type: 'core-result', id, ok: true, value: await runCore(op, instance) });
+      } catch (err) {
+        scope.postMessage({ type: 'core-result', id, ok: false, error: errorMessage(err) });
+      }
+    });
+    return;
+  }
   if (data.type === 'start') {
     if (bootstrapped || data.instance === undefined) return;
     bootstrapped = true;
