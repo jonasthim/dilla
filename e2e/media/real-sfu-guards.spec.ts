@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { randomBytes } from 'node:crypto';
-import { DS_URL, CONTROL_URL, MediaDriver, epochWire, kidHex, roomOfToken, testkitEnv, type CallToken, type MediaKey } from './support/driver';
+import { DS_URL, CONTROL_URL, MediaDriver, epochWire, kidHex, testkitEnv, type CallToken, type MediaKey } from './support/driver';
 import { debugToken } from './support/lk';
 import type { DillaHarness, DillaHarness21 } from '../../packages/media/harness/main';
 
@@ -69,13 +69,20 @@ test('a recorded pre-connect microphone is refused through the real SFU', async 
     const page = await (await browser.newContext()).newPage();
     await page.goto(HARNESS);
     const key = await driver.request<MediaKey>('media_key', { actor: 'alice' });
-    const token = await driver.request<CallToken>('call_token', { actor: 'alice', vdec: 'vp8' });
+    const issued = await driver.request<CallToken>('call_token', { actor: 'alice', vdec: 'vp8' });
+    // A debug room, as in the canary: dillad's room sweep removes a participant that is no leaf of the
+    // call group, and the agent is none. In the call's own room the test raced that sweep (it lost
+    // every time when run alone, right after the test host started).
+    const room = `preconnect-${randomBytes(8).toString('hex')}`;
+    const identity = key.roster.find((r) => r.leaf === key.selfLeaf)!.deviceId;
+    const member = await debugToken(CONTROL_URL, room, identity, true);
+    const token = { ...issued, livekitUrl: member.url, token: member.token };
     await page.evaluate((o) => (globalThis as unknown as W).harness.dillaJoin(o), {
       livekitUrl: token.livekitUrl, token: token.token, iceServers: token.iceServers,
       epoch: epochWire(key, key.epoch), caps: token.caps,
     });
     const agentIdentity = randomBytes(16).toString('hex');
-    const agentToken = await debugToken(CONTROL_URL, roomOfToken(token.token), agentIdentity, false);
+    const agentToken = await debugToken(CONTROL_URL, room, agentIdentity, false);
     const agentPage = await (await browser.newContext()).newPage();
     await agentPage.goto(HARNESS);
     await agentPage.evaluate(([url, t]) => (globalThis as unknown as { harness: { connect: (u: string, t: string, o: { e2ee: 'none' }) => Promise<void> } }).harness.connect(url, t, { e2ee: 'none' }), [agentToken.url, agentToken.token] as const);
