@@ -2,6 +2,7 @@
 import init, {
   is_sah_contention,
   store_open,
+  store_mls_probe,
   unencrypted_vfs_probe,
   wrong_key_probe,
   StoreOpenConfig,
@@ -28,9 +29,11 @@ const INVALID_KEK_HEX = 'not-a-key';
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 const order: string[] = [];
 let handle: StoreHandle | undefined;
+let resigned = false;
 
 /** The commands the page can send once the store is open. */
-type Command = { type: 'append' } | { type: 'resign' };
+type MlsOp = 'create' | 'load' | 'hold' | 'release' | 'pause' | 'resume';
+type Command = { type: 'append' } | { type: 'resign' } | { type: 'mls'; id: number; op: MlsOp };
 
 /**
  * Ruling J. `append` used to be handled by a listener installed *inside* the elected-leader callback,
@@ -86,12 +89,38 @@ function runCommand(command: Command): void {
     post({ type: 'append-done', rows: handle.query_scalar_i64('SELECT count(*) FROM spike_meta') });
     return;
   }
+  if (command.type === 'mls') {
+    const { id, op } = command;
+    if (!['create', 'load', 'hold', 'release', 'pause', 'resume'].includes(op)) {
+      post({ type: 'mls-result', id, ok: false, error: `E_SPIKE_OP: unknown op ${op}` });
+      return;
+    }
+    if (op === 'resume') {
+      ready = false;
+      void handle.resume().then(
+        () => post({ type: 'mls-result', id, ok: true, value: 'resumed' }),
+        (err: unknown) => post({ type: 'mls-result', id, ok: false, error: (err as Error).message }),
+      ).finally(() => {
+        if (!resigned) ready = true;
+        drain();
+      });
+      return;
+    }
+    try {
+      const value = op === 'pause' ? (handle.pause(), 'paused') : store_mls_probe(handle, op);
+      post({ type: 'mls-result', id, ok: true, value });
+    } catch (err) {
+      post({ type: 'mls-result', id, ok: false, error: (err as Error).message });
+    }
+    return;
+  }
   // The order below is the contract: connection closed, VFS paused, message posted, lock released.
   // pause_vfs() errors while any file handle is open (gap-11 §9 item 5). `lock-released` is NOT
   // pushed here: `resign()` only resolves the `held` promise, and the browser releases the lock
   // later, when the locks.request callback's promise settles. It is recorded in `elect`'s
   // `onReleased`, which runs from a `.finally()` on that promise.
   ready = false; // the store is about to close: no further command may run against it
+  resigned = true;
   order.push('resign-start');
   handle.pause();
   order.push('pause');
@@ -258,7 +287,7 @@ async function run(instance: string, badKek: boolean): Promise<void> {
 // do — is what left the append click with nowhere to land until the leader callback installed a
 // second one (ruling J).
 scope.addEventListener('message', (event: MessageEvent) => {
-  const data = event.data as { type: string; instance?: string; badKek?: boolean };
+  const data = event.data as { type: string; instance?: string; badKek?: boolean; id?: number; op?: string };
   if (data.type === 'start') {
     if (bootstrapped || data.instance === undefined) return;
     bootstrapped = true;
@@ -270,6 +299,10 @@ scope.addEventListener('message', (event: MessageEvent) => {
   }
   if (data.type === 'append' || data.type === 'resign') {
     pending.push({ type: data.type });
+    drain();
+  }
+  if (data.type === 'mls' && typeof data.id === 'number' && typeof data.op === 'string') {
+    pending.push({ type: 'mls', id: data.id, op: data.op as MlsOp });
     drain();
   }
 });

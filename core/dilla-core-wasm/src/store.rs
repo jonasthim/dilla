@@ -6,8 +6,16 @@
 //! the re-exports in `lib.rs` carry the identical cfg.
 
 use core::cell::RefCell;
+use std::rc::Rc;
 
+use dilla_core::identity::{CredentialIdentity, Kind, SignerTier, SskSigner, Tier, UmkSigner};
+use dilla_core::ids::{DeviceId, InstanceId, UserId};
+use dilla_core::mls::{
+    CIPHERSUITE, ConnHandle, DillaBinding, DillaGroup, DillaProvider, GroupKind,
+};
 use js_sys::Reflect;
+use openmls::prelude::{BasicCredential, CredentialWithKey, GroupId};
+use openmls_basic_credential::SignatureKeyPair;
 use rusqlite::{Connection, OpenFlags};
 use sqlite_wasm_rs::WasmOsCallback;
 use sqlite_wasm_vfs::sahpool::{OpfsSAHError, OpfsSAHPoolCfgBuilder, OpfsSAHPoolUtil, install};
@@ -94,10 +102,12 @@ pub fn is_sah_contention(err: &JsValue) -> bool {
     }
 }
 
+/// Owns one connection handle and lends clones with `share()`. Pause and close refuse while any
+/// clone lives, preserving the storage ownership invariant across OPFS suspension.
 #[wasm_bindgen]
 pub struct StoreHandle {
     util: OpfsSAHPoolUtil,
-    conn: RefCell<Option<Connection>>,
+    conn: RefCell<Option<ConnHandle>>,
     db_name: String,
     /// Deviation A2-14. The raw 256-bit device KEK, kept only because `resume()` has to replay
     /// `PRAGMA key` after `unpause_vfs()`. `Zeroizing` wipes it when the handle drops; without it the
@@ -153,14 +163,23 @@ pub async fn store_open(cfg: StoreOpenConfig) -> Result<StoreHandle, JsValue> {
     let conn = open_encrypted(&cfg.db_name, &cfg.kek_hex)?;
     Ok(StoreHandle {
         util,
-        conn: RefCell::new(Some(conn)),
+        conn: RefCell::new(Some(Rc::new(RefCell::new(conn)))),
         db_name: cfg.db_name,
         kek_hex: Zeroizing::new(cfg.kek_hex),
     })
 }
 
-#[wasm_bindgen]
 impl StoreHandle {
+    fn shared(&self) -> Option<ConnHandle> {
+        self.conn.borrow().as_ref().map(Rc::clone)
+    }
+
+    #[allow(dead_code)] // task 7's facade consumes this; this task's probe uses shared directly.
+    pub(crate) fn share(&self) -> Result<ConnHandle, JsError> {
+        self.shared()
+            .ok_or_else(|| JsError::new("E_STORE_PAUSED: the store is paused"))
+    }
+
     fn with_conn<T>(
         &self,
         f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
@@ -169,9 +188,15 @@ impl StoreHandle {
         let conn = guard
             .as_ref()
             .ok_or_else(|| JsError::new("E_STORE_PAUSED: the store is paused"))?;
-        f(conn).map_err(|e| JsError::new(&format!("E_STORE_SQL: {e}")))
+        let borrowed = conn
+            .try_borrow()
+            .map_err(|_| JsError::new("E_STORE_SQL: the connection is in use"))?;
+        f(&borrowed).map_err(|e| JsError::new(&format!("E_STORE_SQL: {e}")))
     }
+}
 
+#[wasm_bindgen]
+impl StoreHandle {
     pub fn exec(&self, sql: &str) -> Result<(), JsError> {
         self.with_conn(|c| c.execute_batch(sql))
     }
@@ -199,10 +224,19 @@ impl StoreHandle {
             .map_err(|e| JsError::new(&format!("E_STORE_CAPACITY: {e}")))
     }
 
-    /// Deviation A2-4: drops the connection first — `pause_vfs()` errors while any file handle is
-    /// open, and 0.2.0 has no typed `Busy` to tell that apart from a real failure (gap-11 §9 item 5).
+    /// Deviation A2-4: drops the connection first, after refusing any live lent clones.
     pub fn pause(&self) -> Result<(), JsError> {
-        drop(self.conn.borrow_mut().take());
+        let mut slot = self.conn.borrow_mut();
+        if let Some(conn) = slot.as_ref() {
+            let lent = Rc::strong_count(conn) - 1;
+            if lent > 0 {
+                return Err(JsError::new(&format!(
+                    "E_STORE_BUSY: {lent} handles are still open"
+                )));
+            }
+        }
+        drop(slot.take());
+        drop(slot);
         self.util
             .pause_vfs()
             .map_err(|e| JsError::new(&format!("E_STORE_PAUSE: {e}")))
@@ -219,12 +253,23 @@ impl StoreHandle {
         // there cannot leak through this path either.
         let conn = open_encrypted(&self.db_name, &self.kek_hex)
             .map_err(|_| JsError::new("E_STORE_RESUME: reopening the keyed connection failed"))?;
-        *self.conn.borrow_mut() = Some(conn);
+        *self.conn.borrow_mut() = Some(Rc::new(RefCell::new(conn)));
         Ok(())
     }
 
-    pub fn close(self) {
-        drop(self.conn.borrow_mut().take());
+    /// JS still sees `close(): void`; a live clone causes an `E_STORE_BUSY` throw.
+    pub fn close(self) -> Result<(), JsError> {
+        let mut slot = self.conn.borrow_mut();
+        if let Some(conn) = slot.as_ref() {
+            let lent = Rc::strong_count(conn) - 1;
+            if lent > 0 {
+                return Err(JsError::new(&format!(
+                    "E_STORE_BUSY: {lent} handles are still open"
+                )));
+            }
+        }
+        drop(slot.take());
+        Ok(())
     }
 }
 
@@ -315,5 +360,143 @@ pub async fn wrong_key_probe(db_name: &str, kek_hex: &str) -> Result<String, JsE
         Err(e) => Ok(format!(
             "E_STORE_KEY: SELECT count(*) FROM sqlite_schema: {e}"
         )),
+    }
+}
+
+thread_local! {
+    static HELD: RefCell<Option<ConnHandle>> = const { RefCell::new(None) };
+}
+
+fn probe_binding() -> DillaBinding {
+    DillaBinding {
+        v: 1,
+        instance_id: InstanceId::from_bytes([0x11; 16]),
+        community_id: None,
+        target_id: [0x11; 16],
+        kind: GroupKind::Text,
+        policy_version: 1,
+        e2ee_version: 1,
+        media_version: GroupKind::Text.media_version(),
+    }
+}
+
+fn probe_credential(signer: &SignatureKeyPair) -> CredentialWithKey {
+    let umk = UmkSigner::from_bytes(&[0x21; 32]);
+    let ssk = SskSigner::from_bytes(&[0x24; 32]);
+    let identity = CredentialIdentity {
+        v: 1,
+        umk_pub: umk.public(),
+        user_id: UserId::from_bytes([0x22; 16]),
+        device_id: DeviceId::from_bytes([0x23; 16]),
+        kind: Kind::User,
+        tier: Tier::Browser,
+        signer_tier: SignerTier::Browser,
+        ssk_pub: ssk.public(),
+        sig_umk_ssk: umk.sign_ssk(&ssk.public()),
+        sig_ssk_dev: [0; 64],
+    };
+    CredentialWithKey {
+        credential: BasicCredential::new(identity.encode()).into(),
+        signature_key: signer.public().into(),
+    }
+}
+
+fn probe_err(detail: impl core::fmt::Display) -> JsError {
+    JsError::new(&format!("E_STORE_PROBE: {detail}"))
+}
+
+/// Test probe for L-WASM-02. `create` and `load` report epoch and authenticator; `hold` and
+/// `release` keep a clone across pause to prove the busy guard. Providers and groups drop before
+/// returning, leaving the store's own handle as the only live connection when not held.
+#[wasm_bindgen]
+pub fn store_mls_probe(handle: &StoreHandle, op: &str) -> Result<String, JsError> {
+    match op {
+        "hold" => HELD.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_some() {
+                return Err(probe_err("a handle is already held"));
+            }
+            *slot = Some(
+                handle
+                    .shared()
+                    .ok_or_else(|| probe_err("E_STORE_PAUSED: the store is paused"))?,
+            );
+            Ok(serde_json::json!({ "held": 1 }).to_string())
+        }),
+        "release" => HELD.with(|slot| {
+            slot.borrow_mut().take();
+            Ok(serde_json::json!({ "held": 0 }).to_string())
+        }),
+        "create" | "load" => {
+            let conn = handle
+                .shared()
+                .ok_or_else(|| probe_err("E_STORE_PAUSED: the store is paused"))?;
+            let provider = DillaProvider::new(conn);
+            provider.storage().migrate().map_err(probe_err)?;
+            let group_id = GroupId::from_slice(&[0x11; 16]);
+            let group = if op == "create" {
+                let signer =
+                    SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).map_err(probe_err)?;
+                signer.store(provider.storage()).map_err(probe_err)?;
+                {
+                    let conn = provider.storage().conn().try_borrow().map_err(probe_err)?;
+                    conn.execute_batch("CREATE TABLE IF NOT EXISTS probe_mls (k TEXT PRIMARY KEY, v BLOB NOT NULL)")
+                        .map_err(probe_err)?;
+                    conn.execute(
+                        "INSERT OR REPLACE INTO probe_mls (k, v) VALUES ('signer_pub', ?1)",
+                        [signer.public()],
+                    )
+                    .map_err(probe_err)?;
+                }
+                let mut group = DillaGroup::create(
+                    &provider,
+                    &signer,
+                    probe_credential(&signer),
+                    group_id,
+                    probe_binding(),
+                    None,
+                )
+                .map_err(probe_err)?;
+                group.self_update(&provider, &signer).map_err(probe_err)?;
+                group.merge_pending_commit(&provider).map_err(probe_err)?;
+                group
+            } else {
+                let public = {
+                    let conn = provider.storage().conn().try_borrow().map_err(probe_err)?;
+                    match conn.query_row(
+                        "SELECT v FROM probe_mls WHERE k = 'signer_pub'",
+                        [],
+                        |r| r.get::<_, Vec<u8>>(0),
+                    ) {
+                        Ok(value) => value,
+                        Err(rusqlite::Error::QueryReturnedNoRows) => {
+                            return Err(probe_err("no probe group was created"));
+                        }
+                        Err(e) if e.to_string().contains("no such table") => {
+                            return Err(probe_err("no probe group was created"));
+                        }
+                        Err(e) => return Err(probe_err(e)),
+                    }
+                };
+                let _signer = SignatureKeyPair::read(
+                    provider.storage(),
+                    &public,
+                    CIPHERSUITE.signature_algorithm(),
+                )
+                .ok_or_else(|| probe_err("the signer is missing"))?;
+                DillaGroup::load(&provider, &group_id)
+                    .map_err(probe_err)?
+                    .ok_or_else(|| probe_err("the group is missing"))?
+            };
+            let result = serde_json::json!({
+                "epoch": group.epoch(),
+                "authenticator": crate::hex(&group.epoch_authenticator().map_err(probe_err)?)
+            })
+            .to_string();
+            drop(group);
+            drop(provider);
+            Ok(result)
+        }
+        _ => Err(probe_err(format!("unknown op {op}"))),
     }
 }

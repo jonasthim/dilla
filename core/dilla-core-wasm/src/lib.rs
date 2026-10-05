@@ -35,7 +35,7 @@ pub use media::*;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use probe::probe_persistence;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub use store::{StoreHandle, StoreOpenConfig, is_sah_contention, store_open};
+pub use store::{StoreHandle, StoreOpenConfig, is_sah_contention, store_mls_probe, store_open};
 
 fn err(code: &str, detail: &str) -> JsError {
     JsError::new(&format!("{code}: {detail}"))
