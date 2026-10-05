@@ -340,7 +340,9 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    `Remove` satisfied this way with the commit, as it does a referenced one, and never re-issues it;
    it contains no `Update` from the committer; its UpdatePath leaf node, if a member commit carries
    one, and every `Update` it applies carry the credential that leaf holds before the commit, byte
-   for byte (`01-groups.md`, "Client policy for proposals from members"; a member `Update` proposal
+   for byte, and an external commit that removes a leaf of the joiner's own device (a resync)
+   carries that removed leaf's credential, byte for byte
+   (`01-groups.md`, "Client policy for proposals from members"; a member `Update` proposal
    that changes it is refused on `POST /v1/groups/{id}/proposal` the same way, and neither is
    stored or fanned out; both refusals are `422 E_COMMIT_INVALID` with `rule = "structural"`,
    because the `PublicGroup`'s own processing refuses the message); every member-originated
