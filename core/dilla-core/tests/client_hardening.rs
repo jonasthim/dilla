@@ -364,3 +364,221 @@ fn an_own_echo_without_a_served_commitment_is_judged_by_its_ciphertext() {
     assert_eq!(applied.flags & OWN_ADOPTED, 0);
     assert_eq!(b.outbox(&GROUP).last().map(|o| o.state), Some(1));
 }
+
+// ---------------------------------------------------------------------------------------------
+// F1: the MLS group id and a stored row's binding are fixed; a stored group must match its row.
+
+/// `core` creates and registers the relay's group, bound to `channel`.
+fn register_on(core: &mut Core, relay: &mut Relay, channel: [u8; 16], instance: &Instance) {
+    let body = core
+        .core
+        .group_create(
+            &relay.group_id,
+            &COMMUNITY,
+            &channel,
+            POLICY,
+            &instance.public(),
+        )
+        .expect("group_create");
+    let created = relay.register(&body).expect("register");
+    let next_seq = decode_strict(&created, |d| {
+        d.array(2)?;
+        d.bytes_exact::<16>()?;
+        d.uint()
+    })
+    .expect("201 body");
+    core.core
+        .group_registered(&relay.group_id, next_seq)
+        .expect("group_registered");
+}
+
+#[test]
+fn a_group_info_of_another_group_id_is_refused_before_it_is_joined() {
+    // OTHER_GROUP is bound to CHANNEL; the join asks for GROUP on OTHER_CHANNEL. Joining first
+    // would refuse with the binding; the id is compared before anything is joined or written.
+    let instance = Instance::generate();
+    let mut relay = Relay::new(OTHER_GROUP);
+    let mut creator = ready_core(0xa1, "alice");
+    creator.create_and_register(&mut relay, &instance);
+    let mut joiner = ready_core(0xb2, "bob");
+    let err = joiner
+        .core
+        .group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &OTHER_CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )
+        .expect_err("another group's GroupInfo");
+    assert_eq!(err.code, "E_CORE_INPUT");
+    assert!(!err.detail.is_empty());
+    assert!(groups(&joiner.core).is_empty());
+}
+
+#[test]
+fn an_external_join_never_rebinds_an_existing_row_to_another_channel() {
+    let (instance, _relay, _a, mut b) = alice_and_bob();
+    // A group with Bob's group id, bound to OTHER_CHANNEL, served for a "resync".
+    let mut forged = Relay::new(GROUP);
+    let mut carol = ready_core(0xc3, "carol");
+    register_on(&mut carol, &mut forged, OTHER_CHANNEL, &instance);
+    let before = b.group(&GROUP).expect("row");
+    let err = b
+        .core
+        .group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &OTHER_CHANNEL,
+            POLICY,
+            &forged.info_body(),
+            &forged.tree_body(),
+        )
+        .expect_err("the row is bound to CHANNEL");
+    assert_eq!(err.code, "E_CORE_STATE");
+    assert_eq!(
+        b.group(&GROUP),
+        Some(before.clone()),
+        "row and group unchanged"
+    );
+    assert_eq!(b.reopen().group(&GROUP), Some(before));
+}
+
+#[test]
+fn a_welcome_never_rebinds_an_existing_row_to_another_channel() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut peer = RawPeer::new(0xe5, 0xe6);
+    peer.create(&mut relay, &instance);
+    let mut c = ready_core(0xc3, "carol");
+    let kp = c.first_key_package();
+    peer.add(&mut relay, &[kp.as_slice()]);
+    let joined = c
+        .core
+        .welcomes_apply(
+            &relay.welcomes_body(c.device),
+            &expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]),
+        )
+        .expect("welcomes_apply");
+    assert_eq!(decode_outcomes(&joined)[0].outcome, 0);
+    relay.push_handshake(1, vec![0xde, 0xad]);
+    assert_eq!(c.sync(&relay).state, 3);
+    let before = c.group(&GROUP).expect("row");
+
+    // Another group under the same id, bound to OTHER_CHANNEL, welcomes Carol.
+    let mut forged = Relay::new(GROUP);
+    let mut dave = ready_core(0xd4, "dave");
+    register_on(&mut dave, &mut forged, OTHER_CHANNEL, &instance);
+    let kp = c.first_key_package();
+    instance.propose_add(&mut forged, &kp);
+    dave.sync(&forged);
+    dave.commit(&mut forged);
+    let outcome = c
+        .core
+        .welcomes_apply(
+            &forged.welcomes_body(c.device),
+            &expected_body(&[(GROUP, COMMUNITY, OTHER_CHANNEL, POLICY)]),
+        )
+        .expect("welcomes_apply");
+    assert_eq!(
+        decode_outcomes(&outcome),
+        vec![WelcomeOutcome {
+            welcome_id: 1,
+            group_id: GROUP,
+            outcome: 2,
+            reason: "E_CORE_STATE".to_owned(),
+        }]
+    );
+    assert_eq!(c.group(&GROUP), Some(before));
+}
+
+#[test]
+fn a_refused_mislabelled_welcome_leaves_the_key_package_usable() {
+    let instance = Instance::generate();
+    let mut other = Relay::new(OTHER_GROUP);
+    let mut peer = RawPeer::new(0xe5, 0xe6);
+    peer.create(&mut other, &instance);
+    let mut c = ready_core(0xc3, "carol");
+    let kp = c.first_key_package();
+    peer.add(&mut other, &[kp.as_slice()]);
+    let honest = other.welcomes_body(c.device);
+    other.group_id = GROUP; // the delivery service labels OTHER_GROUP's Welcome as GROUP's
+    let refused = c
+        .core
+        .welcomes_apply(
+            &other.welcomes_body(c.device),
+            &expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]),
+        )
+        .expect("welcomes_apply");
+    assert_eq!(decode_outcomes(&refused)[0].outcome, 2);
+    assert!(groups(&c.core).is_empty(), "no row and no group");
+
+    let joined = c
+        .core
+        .welcomes_apply(
+            &honest,
+            &expected_body(&[(OTHER_GROUP, COMMUNITY, CHANNEL, POLICY)]),
+        )
+        .expect("welcomes_apply");
+    assert_eq!(
+        decode_outcomes(&joined)[0].outcome,
+        0,
+        "the refusal consumed nothing"
+    );
+}
+
+/// Replaces the MLS group stored under `group_id` in `core`'s database by a fresh group with the
+/// same id bound to `channel`: the state a join without the id check could leave behind.
+fn plant_group(core: &Core, group_id: [u8; 16], channel: [u8; 16]) {
+    use dilla_core::mls::{CIPHERSUITE, DillaGroup, DillaProvider};
+    use openmls::prelude::{BasicCredential, CredentialWithKey, GroupId};
+    use openmls_basic_credential::SignatureKeyPair;
+    let provider = DillaProvider::new(std::sync::Arc::clone(&core.probe));
+    let id = GroupId::from_slice(&group_id);
+    if let Some(mut g) = DillaGroup::load(&provider, &id).expect("load") {
+        g.delete(&provider).expect("delete");
+    }
+    let signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    signer.store(provider.storage()).expect("store signer");
+    let credential = CredentialWithKey {
+        credential: BasicCredential::new(b"planted".to_vec()).into(),
+        signature_key: signer.public().into(),
+    };
+    DillaGroup::create(
+        &provider,
+        &signer,
+        credential,
+        id,
+        text_binding(channel),
+        None,
+    )
+    .expect("create");
+}
+
+#[test]
+fn a_stored_group_whose_binding_is_not_its_rows_is_refused_until_a_resync() {
+    let (_instance, mut relay, mut a, b) = alice_and_bob();
+    plant_group(&b, GROUP, OTHER_CHANNEL);
+    let mut b = b.reopen();
+    a.send(&mut relay, &GROUP, "after the swap", NOW + 1);
+
+    let err = b
+        .try_sync(&relay)
+        .expect_err("the stored group is not the row's");
+    assert_eq!(err.code, "E_CORE_STATE");
+    assert!(err.detail.contains("resync"), "detail {:?}", err.detail);
+    let msg = b.prepare(&GROUP, "not under that group", NOW + 2);
+    assert_eq!(code(b.core.send_encrypt(&msg)), "E_CORE_STATE");
+    assert_eq!(b.outbox(&GROUP)[0].state, 0, "nothing was framed");
+
+    // A resync replaces the stored group and the row works again.
+    b.join_external(&mut relay);
+    assert_eq!(
+        b.group(&GROUP).map(|g| (g.state, g.target_id)),
+        Some((2, CHANNEL))
+    );
+    a.sync(&relay);
+    let (_, seq) = a.send(&mut relay, &GROUP, "after the resync", NOW + 3);
+    assert!(b.sync(&relay).new_seqs.contains(&seq));
+}

@@ -27,6 +27,17 @@ pub(super) struct GroupRow {
     pub next_seq: i64,
     pub resync: i64,
 }
+impl GroupRow {
+    /// Whether the row is the text group of `channel` in `community`: a join never changes this.
+    fn bound_to(&self, community: &[u8; 16], channel: &[u8; 16]) -> bool {
+        self.kind == 0
+            && self.community_id.as_deref() == Some(community.as_slice())
+            && self.target_id.as_slice() == channel.as_slice()
+    }
+}
+fn rebound() -> ClientError {
+    ClientError::new(E_CORE_STATE, "group is bound to another channel")
+}
 pub(super) fn group_row(
     c: &rusqlite::Connection,
     id: &[u8; 16],
@@ -261,7 +272,7 @@ impl ClientCore {
         if r.state != STATE_REGISTERING && r.state != STATE_JOINING {
             return Err(state(r.state));
         }
-        let mut group = self.take_group(id)?;
+        let mut group = self.take_group_unchecked(id)?;
         self.write(|ctx, u| {
             if let Some(g) = group.as_mut() {
                 g.delete(ctx.provider)?;
@@ -309,6 +320,15 @@ impl ClientCore {
             ));
         }
         let gi = group_info(&info.group_info)?;
+        // The group this GroupInfo describes must be the one the join is for; checked before
+        // anything is joined or written (OpenMLS would store the joined state under the
+        // GroupInfo's own id).
+        if gi.group_id().as_slice() != id {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "GroupInfo group id does not match",
+            ));
+        }
         let tree = tree(&tree_body.ratchet_tree)?;
         let r = self.read(|c| group_row(c, id))?;
         if let Some(r) = &r
@@ -316,13 +336,18 @@ impl ClientCore {
         {
             return Err(state(r.state));
         }
+        if let Some(r) = &r
+            && !r.bound_to(community, channel)
+        {
+            return Err(rebound());
+        }
         if let Some(h) = self.read(|c| holder(c, channel, id))? {
             return Err(ClientError::new(
                 E_CORE_STATE,
                 format!("channel has group {}", hex(&h)),
             ));
         }
-        let mut prior = self.take_group(id)?;
+        let mut prior = self.take_group_unchecked(id)?;
         let bind = binding(&own, community, channel, policy);
         let result = self.write(|ctx, u| {
             let signer = ctx
@@ -343,12 +368,6 @@ impl ClientCore {
                 tree,
                 &bind,
             )?;
-            if g.group_id().as_slice() != id {
-                return Err(ClientError::new(
-                    E_CORE_INPUT,
-                    "GroupInfo group id does not match",
-                ));
-            }
             let commit = wire::tls(&commit)?;
             let exported = wire::tls(&g.export_group_info(ctx.provider, signer)?)?;
             in_unit(u, |c| {
@@ -357,15 +376,11 @@ impl ClientCore {
                     [id.as_slice()],
                 )?;
                 if r.is_some() {
+                    // The row's binding (kind, community, target) was checked equal above and
+                    // is never rewritten by a join.
                     c.execute(
-                        "UPDATE app_groups SET kind=0,community_id=?2,target_id=?3, \
-                         state=1,resync=?4 WHERE group_id=?1",
-                        params![
-                            id.as_slice(),
-                            community.as_slice(),
-                            channel.as_slice(),
-                            i64::from(resync),
-                        ],
+                        "UPDATE app_groups SET state=1,resync=?2 WHERE group_id=?1",
+                        params![id.as_slice(), i64::from(resync)],
                     )?;
                 } else {
                     c.execute(
@@ -425,6 +440,12 @@ impl ClientCore {
                 let row = self.read(|c| group_row(c, id))?;
                 if row.as_ref().is_some_and(|r| r.state <= STATE_ACTIVE) {
                     outcome = 1;
+                } else if row
+                    .as_ref()
+                    .is_some_and(|r| !r.bound_to(&want.community_id, &want.channel_id))
+                {
+                    outcome = 2;
+                    reason = rebound().code;
                 } else if self.read(|c| holder(c, &want.channel_id, id))?.is_some() {
                     outcome = 2;
                     reason = E_CORE_STATE;
@@ -437,7 +458,7 @@ impl ClientCore {
                             reason = err.code;
                         }
                         Ok((w, t)) => {
-                            let mut prior = self.take_group(id)?;
+                            let mut prior = self.take_group_unchecked(id)?;
                             let bind = binding(
                                 &own,
                                 &want.community_id,
@@ -456,6 +477,10 @@ impl ClientCore {
                                     }
                                     let g =
                                         DillaGroup::join_from_welcome(ctx.provider, w, t, &bind)?;
+                                    // The Welcome's group id is inside its encrypted GroupInfo,
+                                    // so it is known only once OpenMLS has staged and stored the
+                                    // join; returning here rolls the whole unit back (the stored
+                                    // group, the KeyPackage and its keys, the deleted prior).
                                     if g.group_id().as_slice() != id {
                                         return Err(crate::ProtocolError::Binding.into());
                                     }
@@ -465,16 +490,12 @@ impl ClientCore {
                                             [id.as_slice()],
                                         )?;
                                         if row.is_some() {
+                                            // The binding was checked equal to the row's above.
                                             c.execute(
-                                                "UPDATE app_groups SET kind=0,community_id=?2, \
-                                             target_id=?3,state=2,next_seq=MAX(next_seq,?4), \
-                                             resync=0 WHERE group_id=?1",
-                                                params![
-                                                    id.as_slice(),
-                                                    want.community_id.as_slice(),
-                                                    want.channel_id.as_slice(),
-                                                    next,
-                                                ],
+                                                "UPDATE app_groups SET state=2, \
+                                                 next_seq=MAX(next_seq,?2),resync=0 \
+                                                 WHERE group_id=?1",
+                                                params![id.as_slice(), next],
                                             )?;
                                         } else {
                                             c.execute(

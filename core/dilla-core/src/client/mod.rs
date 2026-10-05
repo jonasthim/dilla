@@ -78,7 +78,46 @@ impl ClientCore {
             .ok_or_else(|| ClientError::new(E_CORE_NO_IDENTITY, ""))
     }
 
+    /// The group, from the cache or loaded from the store. A loaded group must be the one its
+    /// row describes: its MLS group id and its binding's community, target and kind equal the
+    /// row's. Otherwise `E_CORE_STATE` and nothing is cached; the caller repairs the row with a
+    /// resync (`group_join_external`, states 2 and 3), which replaces the stored group. The cache
+    /// only ever holds a group that passed this check or that a join of this core wrote.
     fn take_group(&mut self, group_id: &[u8; 16]) -> Result<Option<DillaGroup>, ClientError> {
+        if let Some(group) = self.groups.remove(group_id) {
+            return Ok(Some(group));
+        }
+        let Some(group) = self.take_group_unchecked(group_id)? else {
+            return Ok(None);
+        };
+        let row = self.read(|c| groups::group_row(c, group_id))?;
+        if let Some(row) = row {
+            let binding = group.binding();
+            let matches = group.group_id().as_slice() == group_id
+                && row.kind == 0
+                && binding.kind == crate::mls::GroupKind::Text
+                && binding.target_id.as_slice() == row.target_id.as_slice()
+                && binding
+                    .community_id
+                    .as_ref()
+                    .map(|c| c.as_bytes().as_slice())
+                    == row.community_id.as_deref();
+            if !matches {
+                return Err(ClientError::new(
+                    E_CORE_STATE,
+                    "the stored group does not match its row; resync the group",
+                ));
+            }
+        }
+        Ok(Some(group))
+    }
+
+    /// The group from the cache or the store without comparing it with its row: for the paths
+    /// that delete it (joins over a stale group, discard).
+    fn take_group_unchecked(
+        &mut self,
+        group_id: &[u8; 16],
+    ) -> Result<Option<DillaGroup>, ClientError> {
         if let Some(group) = self.groups.remove(group_id) {
             return Ok(Some(group));
         }

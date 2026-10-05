@@ -332,7 +332,12 @@ impl ClientCore {
                 e.array(2).bytes(&id).uint(response.seq);
                 return Ok(e.into_vec());
             }
-            let mut group = self.take_group(&id)?;
+            // A stored group that does not match its row has no leaf of this row: NULL, as when
+            // no MLS group is stored.
+            let mut group = match self.take_group(&id) {
+                Err(e) if e.code == E_CORE_STATE => None,
+                other => other?,
+            };
             let leaf = group.as_ref().map(|g| g.own_leaf_index().u32());
             let env = Envelope::decode(&o.envelope)
                 .map_err(|_| ClientError::new(E_CORE_STORAGE, "outbox envelope does not decode"))?;
