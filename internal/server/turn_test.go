@@ -1376,10 +1376,12 @@ func TestTheRelayCountsItsBytesBothWays(t *testing.T) {
 	if n, _, err := relay.ReadFrom(buf); err != nil || string(buf[:n]) != "reply!" {
 		t.Fatalf("the client read %q, %v", buf[:n], err)
 	}
-	_, toClient, toPeer, _ := m.snapshot()
-	if toPeer < len("media") || toClient < len("reply!") {
-		t.Fatalf("relay bytes to_peer %d, to_client %d", toPeer, toClient)
-	}
+	// The relay counts a datagram after its socket write returns, so the peer can have answered and the
+	// client read that answer before the count of the first write lands (seen on a 4-vCPU runner).
+	waitFor(t, "both relay byte counters", func() bool {
+		_, toClient, toPeer, _ := m.snapshot()
+		return toPeer >= len("media") && toClient >= len("reply!")
+	})
 }
 
 // tcpPeer is a TCP listener on addr that counts the connections it accepts.
