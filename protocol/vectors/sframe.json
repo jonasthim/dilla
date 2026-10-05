@@ -701,6 +701,14 @@
       "layer": 0,
       "seq": "4503599627370496",
       "error": "E_SFRAME_COUNTER_EXHAUSTED"
+    },
+    {
+      "name": "h264 with only an AUD and filler",
+      "codec": "h264",
+      "slot": 1,
+      "layer": 0,
+      "input": "0000000109f0000000010cffff",
+      "error": "E_SFRAME_NO_VCL_NAL"
     }
   ],
   "receiver": [
@@ -1462,6 +1470,101 @@
           "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
           "track_slot": 0,
           "now": 200,
+          "expect": "ok"
+        }
+      ]
+    },
+    {
+      "name": "a dropped epoch cannot be reinstalled 25 seconds after its drop",
+      "steps": [
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "install",
+          "epoch": 6,
+          "base_key": "06060606060606060606060606060606",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 0
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "900105d21b9071a113592ea435937655fdf055c277",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 10000,
+          "expect": "E_SFRAME_STALE_EPOCH"
+        },
+        {
+          "op": "install",
+          "epoch": 5,
+          "base_key": "05050505050505050505050505050505",
+          "roster": [
+            [
+              0,
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            [
+              1,
+              "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            ]
+          ],
+          "own_leaf": 0,
+          "now": 35000
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "910105976be04be050431c91e056e3f5895cc465f1",
+          "leaf": 1,
+          "epoch": 5,
+          "slot": 0,
+          "seq": 1,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 35000,
+          "expect": "E_SFRAME_UNKNOWN_KID"
+        },
+        {
+          "op": "decrypt",
+          "codec": "opus",
+          "frame": "90010691fc59d3da48d606daafd468efa635a309c8",
+          "leaf": 1,
+          "epoch": 6,
+          "slot": 0,
+          "seq": 0,
+          "device": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "track_slot": 0,
+          "now": 35000,
           "expect": "ok"
         }
       ]

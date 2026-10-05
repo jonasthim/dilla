@@ -125,6 +125,7 @@ rejects	sframe reject: truncated header: extended kid missing	decode
 rejects	sframe reject: vp8 key frame shorter than 10 bytes	open
 rejects	sframe sender reject: h264 sps a libwebrtc receiver would rewrite	encrypt
 rejects	sframe sender reject: h264 with no slice	encrypt
+rejects	sframe sender reject: h264 with only an AUD and filler	encrypt
 rejects	sframe sender reject: layer 16	encrypt
 rejects	sframe sender reject: reserved slot 4	encrypt
 rejects	sframe sender reject: sequence number 2^52	encrypt
@@ -282,6 +283,9 @@ sframe	leaf 65535 epoch 255	kid
 sframe	leaf 65535 epoch 255	nonce
 sframe	leaf 65535 epoch 255	salt
 sframe	receiver a device holding two leaves step 1	result
+sframe	receiver a dropped epoch cannot be reinstalled 25 seconds after its drop step 2	result
+sframe	receiver a dropped epoch cannot be reinstalled 25 seconds after its drop step 4	result
+sframe	receiver a dropped epoch cannot be reinstalled 25 seconds after its drop step 5	result
 sframe	receiver a dropped epoch installed again stays dropped step 2	result
 sframe	receiver a dropped epoch installed again stays dropped step 4	result
 sframe	receiver a late install more than 255 epochs old step 2	result

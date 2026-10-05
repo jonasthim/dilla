@@ -154,7 +154,9 @@ within an epoch, so three rules keep its counters unique across worker restarts,
   `epoch mod 256` (RFC 9605 §5.2); installing an epoch already held changes nothing and keeps its
   replay windows. An install of an epoch older than the newest held one changes nothing either when
   the receiver dropped that epoch or when it is more than 255 commits behind the newest, so a late
-  install can neither evict the current epoch nor revive a dropped one; installing a new newest
+  install can neither evict the current epoch nor revive a dropped one. Each receiver keeps a floor
+  equal to the highest epoch it has ever dropped; an install at or below that floor changes nothing,
+  regardless of how long ago the drop happened. Installing a new newest
   epoch drops every held epoch more than 255 commits behind it. A frame whose KID names an epoch the
   receiver dropped is `E_SFRAME_STALE_EPOCH` for 20 seconds after the drop, then
   `E_SFRAME_UNKNOWN_KID` (and so held, then dropped by the hold's limits).
@@ -404,10 +406,10 @@ every section and refuses every reject with the named code:
   slice header ending inside `pic_parameter_set_id`, `pic_parameter_set_id` 256), each with its
   `E_SFRAME_*` code. A header row is refused by the receiver's header step (step 1 of "Receiver
   rules"), a frame row by the receiver's path up to the AEAD;
-- `sender_rejects`: 6 inputs a fresh sender (leaf 1, epoch 41) refuses — an SPS a receiver would
+- `sender_rejects`: 7 inputs a fresh sender (leaf 1, epoch 41) refuses — an SPS a receiver would
   rewrite, an H.264 frame with no slice, a short VP8 key frame, layer 16, slot 4 — and a counter
   whose `seq` is 2^52;
-- `receiver`: 10 scripts, each from an empty key ring: `install` steps and `decrypt` steps whose
+- `receiver`: 11 scripts, each from an empty key ring: `install` steps and `decrypt` steps whose
   outcome is `ok` or a code. They pin the replay window (127 behind accepted, 128 refused), the own-KID,
   leaf, sender and slot bindings, a device holding two leaves, `E_SFRAME_UNKNOWN_KID` before an
   install, the 10-second retention, `E_SFRAME_STALE_EPOCH` for 20 seconds then

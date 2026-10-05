@@ -21,6 +21,15 @@ func TestTheVectorFrameHasATwentyEightBytePrefix(t *testing.T) {
 	}
 }
 
+func TestOnlyAUDAndFillerHasNoVCLNAL(t *testing.T) {
+	for _, input := range []string{"0000000109f0", "0000000109f0000000010cffff"} {
+		_, _, err := canonicalizeH264(unhex(t, input))
+		if !errors.Is(err, ErrNoVCLNAL) {
+			t.Fatalf("%s: %v, want %v", input, err, ErrNoVCLNAL)
+		}
+	}
+}
+
 // The server-sdk-go example key frame: libdave's rule keeps the byte holding pic_parameter_set_id
 // clear, where the SDK's own "+2" would encrypt it.
 func TestThePrefixRunsThroughThePPSIDOfTheSDKExample(t *testing.T) {

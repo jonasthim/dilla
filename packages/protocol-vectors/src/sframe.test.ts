@@ -85,6 +85,10 @@ describe('the frame cipher reference (protocol/05 "Frame format")', () => {
     expect(c.prefixLen).toBe(8 + 4 + 1 + 2);
   });
 
+  it('reports no VCL NAL when only AUD and filler remain', async () => {
+    expect(await codeOf(() => canonicalizeH264(fromHex('0000000109f0000000010cffff')))).toBe('E_SFRAME_NO_VCL_NAL');
+  });
+
   it('refuses the H.264 shapes protocol/05 refuses', async () => {
     expect(await codeOf(() => prefixLen('h264', fromHex('000000016742c01e95a0501ec80000000168ce3c80')))).toBe('E_SFRAME_NO_VCL_NAL');
     expect(await codeOf(() => prefixLen('h264', fromHex('000000016742c01e95a0501ec80000000162888421')))).toBe('E_SFRAME_UNSUPPORTED_CODEC');

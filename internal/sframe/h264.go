@@ -65,6 +65,9 @@ func canonicalizeH264(frame []byte) ([]byte, int, error) {
 		out = append(out, 0, 0, 0, 1)
 		out = append(out, nal...)
 	}
+	if len(out) == 0 {
+		return nil, 0, ErrNoVCLNAL
+	}
 	p, err := h264PrefixLen(out)
 	if err != nil {
 		return nil, 0, err

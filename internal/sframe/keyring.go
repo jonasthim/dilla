@@ -92,10 +92,12 @@ type retiredEpoch struct {
 // bound, in that epoch, to the device the track belongs to. Safe for concurrent use: one ring
 // serves every DecryptLoop of a participant.
 type KeyRing struct {
-	mu      sync.Mutex
-	now     func() time.Time
-	epochs  []*epochEntry
-	retired []retiredEpoch
+	mu              sync.Mutex
+	now             func() time.Time
+	epochs          []*epochEntry
+	retired         []retiredEpoch
+	droppedFloor    uint64 // highest epoch ever dropped; older installs can never revive it
+	hasDroppedFloor bool
 }
 
 // NewKeyRing reads time from now (time.Now when nil).
@@ -116,15 +118,15 @@ func NewKeyRing(now func() time.Time) *KeyRing {
 func (r *KeyRing) InstallEpoch(epoch uint64, baseKey [16]byte, roster []RosterEntry, ownLeaf int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.now()
+	r.expireLocked(now)
 	for _, e := range r.epochs {
 		if e.epoch == epoch {
 			return
 		}
 	}
-	now := r.now()
-	r.expireLocked(now)
 	if len(r.epochs) > 0 && epoch < r.epochs[0].epoch {
-		if r.epochs[0].epoch-epoch > KIDEpochWindow || slices.ContainsFunc(r.retired, func(x retiredEpoch) bool { return x.epoch == epoch }) {
+		if r.epochs[0].epoch-epoch > KIDEpochWindow || (r.hasDroppedFloor && epoch <= r.droppedFloor) {
 			return
 		}
 	}
@@ -188,6 +190,9 @@ func (r *KeyRing) dropLocked(gone func(*epochEntry) bool) []*epochEntry {
 	n := len(r.epochs)
 	for _, e := range r.epochs {
 		if gone(e) {
+			if !r.hasDroppedFloor || e.epoch > r.droppedFloor {
+				r.droppedFloor, r.hasDroppedFloor = e.epoch, true
+			}
 			e.wipe()
 			continue
 		}

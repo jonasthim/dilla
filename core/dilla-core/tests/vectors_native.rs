@@ -20,14 +20,14 @@ fn every_suite_passes() {
 fn each_suite_reports_the_expected_number_of_cases() {
     // 4 envelope cases x 3 fields; the franking file's own `envelope_cbor` -> commitment, plus
     // 3 franking cases x 1 field; sframe: 4 key-schedule cases x 6 fields, 34 RFC 9605 C.1 headers
-    // x 2, the C.3 frame x 5, 10 media frames x 3, 8 escapes x 2 and the 30 `decrypt` steps of the
-    // 10 `receiver` scripts (24 + 68 + 5 + 30 + 16 + 30 = 173; CRYPTO-2 added 6 H.264 frames and
+    // x 2, the C.3 frame x 5, 10 media frames x 3, 8 escapes x 2 and the 33 `decrypt` steps of the
+    // 11 `receiver` scripts (24 + 68 + 5 + 30 + 16 + 33 = 176; CRYPTO-2 added 6 H.264 frames and
     // the scripts); 8 identity cases (5 identity fields,
     // the credential CBOR, and the two credential signatures checked separately - interfaces.md
     // section 2.9); the reject corpus.
     assert_eq!(run_envelope().cases.len(), 12);
     assert_eq!(run_franking().cases.len(), 4);
-    assert_eq!(run_sframe().cases.len(), 173);
+    assert_eq!(run_sframe().cases.len(), 176);
     assert_eq!(run_identity().cases.len(), 8);
     // The gateway frame corpus: one case per opcode of protocol/02's catalogue plus the second
     // `mls.handshake` (instance-sent, `sender = null`), checked as one `frame` field each. Pinned
@@ -39,10 +39,10 @@ fn each_suite_reports_the_expected_number_of_cases() {
     // pre-existing delete tombstone with a non-empty body), the short `authenticated_data`, and
     // sframe.json's 37 `rejects` (13 non-minimal or truncated headers, 3 headers with a KID of
     // 2^24 or more, 5 AEAD, 1 codec prefix, 1 frame sealed under a non-canonical KID, and
-    // CRYPTO-2's 14 H.264 prefix refusals) and its 6 `sender_rejects`.
+    // CRYPTO-2's 14 H.264 prefix refusals) and its 7 `sender_rejects`.
     // A `>=` here would let a vector-file reject case silently stop being run.
     let rejects = run_rejects();
-    assert_eq!(rejects.cases.len(), 91);
+    assert_eq!(rejects.cases.len(), 92);
     for (name, code) in [
         (
             "sframe sender reject: h264 sps a libwebrtc receiver would rewrite",

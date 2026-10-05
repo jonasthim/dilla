@@ -23,6 +23,17 @@ func newRing() (*KeyRing, *clock) {
 	return NewKeyRing(c.now), c
 }
 
+func TestDroppedEpochCannotBeReinstalledAfterRetirementMemoryExpires(t *testing.T) {
+	r, c := newRing()
+	r.InstallEpoch(5, testBase, roster, 2)
+	r.InstallEpoch(6, testBase, roster, 2)
+	c.advance(35 * time.Second)
+	r.InstallEpoch(5, testBase, roster, 2)
+	if len(r.epochs) != 1 || r.epochs[0].epoch != 6 {
+		t.Fatalf("epochs after late reinstall: %+v", r.epochs)
+	}
+}
+
 // sealed is one Opus frame from leaf in epoch at (slot, seq), as a sender would emit it.
 func sealed(t *testing.T, leaf uint16, epoch uint64, slot Slot, seq uint64) []byte {
 	t.Helper()

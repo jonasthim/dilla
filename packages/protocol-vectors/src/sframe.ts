@@ -213,6 +213,7 @@ export function canonicalizeH264(frame: Uint8Array): { frame: Uint8Array; prefix
     kept.push(concat(new Uint8Array([0, 0, 0, 1]), nal));
   }
   const out = concat(...kept);
+  if (out.length === 0) throw new SframeError('E_SFRAME_NO_VCL_NAL');
   return { frame: out, prefixLen: h264PrefixLen(out) };
 }
 

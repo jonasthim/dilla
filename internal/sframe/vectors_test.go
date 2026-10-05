@@ -177,8 +177,8 @@ func TestTheSuitesOfSframeJSONArePresent(t *testing.T) {
 			}
 		}
 	}
-	if len(v.SenderRejects) != 6 || len(v.Receiver) != 10 || steps != 30 {
-		t.Fatalf("sender rejects %d, receiver scripts %d with %d decrypt steps; want 6, 10, 30",
+	if len(v.SenderRejects) != 7 || len(v.Receiver) != 11 || steps != 33 {
+		t.Fatalf("sender rejects %d, receiver scripts %d with %d decrypt steps; want 7, 11, 33",
 			len(v.SenderRejects), len(v.Receiver), steps)
 	}
 }

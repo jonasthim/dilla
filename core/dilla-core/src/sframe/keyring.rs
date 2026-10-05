@@ -91,6 +91,8 @@ pub struct KeyRing {
     /// `StaleEpoch` (dropped) rather than `UnknownKid` (held). Remembered for two retention
     /// periods, which no honest sender can wrap 256 epochs inside.
     retired: Vec<(u64, u64)>,
+    /// Highest epoch ever dropped, even after its stale-KID memory expires.
+    dropped_floor: Option<u64>,
     /// How many frame keys this ring has derived, for the tests that pin when derivation happens.
     #[cfg(test)]
     derived: usize,
@@ -120,19 +122,26 @@ impl KeyRing {
         own_leaf: Option<u16>,
         now_ms: u64,
     ) {
+        self.expire(now_ms);
         if self.epochs.iter().any(|e| e.epoch == epoch) {
             return;
         }
-        self.expire(now_ms);
         if let Some(newest) = self.current_epoch()
             && epoch < newest
-            && (newest - epoch > KID_EPOCH_WINDOW || self.retired.iter().any(|(e, _)| *e == epoch))
+            && (newest - epoch > KID_EPOCH_WINDOW
+                || self.dropped_floor.is_some_and(|floor| epoch <= floor))
         {
             return;
         }
         let low = epoch % 256;
         // RFC 9605 section 5.2: a new epoch evicts any held epoch with the same low byte, and a
         // KID with that byte now names the new epoch, so nothing about the old one is remembered.
+        for e in self.epochs.iter().filter(|e| e.epoch % 256 == low) {
+            self.dropped_floor = Some(
+                self.dropped_floor
+                    .map_or(e.epoch, |floor| floor.max(e.epoch)),
+            );
+        }
         self.epochs.retain(|e| e.epoch % 256 != low);
         self.retired.retain(|(e, _)| e % 256 != low);
         let newest = self.epochs.first().is_none_or(|e| epoch > e.epoch);
@@ -147,6 +156,12 @@ impl KeyRing {
                 .partition(|e| epoch - e.epoch <= KID_EPOCH_WINDOW);
             self.epochs = keep;
             self.retired.extend(gone.iter().map(|e| (e.epoch, now_ms)));
+            for e in &gone {
+                self.dropped_floor = Some(
+                    self.dropped_floor
+                        .map_or(e.epoch, |floor| floor.max(e.epoch)),
+                );
+            }
         }
         let mut key = Box::new(Zeroizing::new([0u8; NK]));
         key.copy_from_slice(base_key);
@@ -177,6 +192,12 @@ impl KeyRing {
             });
         self.epochs = keep;
         self.retired.extend(gone.iter().map(|e| (e.epoch, now_ms)));
+        for e in &gone {
+            self.dropped_floor = Some(
+                self.dropped_floor
+                    .map_or(e.epoch, |floor| floor.max(e.epoch)),
+            );
+        }
         self.retired
             .retain(|(_, at)| now_ms.saturating_sub(*at) < 2 * OLD_EPOCH_RETENTION_MS);
     }
@@ -664,6 +685,16 @@ mod tests {
             Err(SframeError::StaleEpoch)
         );
         assert_eq!(r.epochs.len(), 1);
+    }
+
+    #[test]
+    fn a_dropped_epoch_cannot_be_reinstalled_after_retirement_memory_expires() {
+        let mut r = ring_at(5, 0);
+        r.install_epoch(6, &base(6), &[(0, ALICE), (1, BOB)], Some(0), 0);
+        r.expire(35_000);
+        r.install_epoch(5, &base(5), &[(0, ALICE), (1, BOB)], Some(0), 35_001);
+        assert_eq!(r.epochs.len(), 1);
+        assert_eq!(r.current_epoch(), Some(6));
     }
 
     /// CRYPTO-4: a new newest epoch drops every held epoch more than 255 commits behind it.

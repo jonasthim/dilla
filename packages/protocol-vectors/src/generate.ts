@@ -236,6 +236,7 @@ export async function sframeVectors() {
     { name: 'layer 16', codec: 'opus', slot: 0, layer: 16, input: 'fc01', error: 'E_SFRAME_LAYER_RANGE' },
     { name: 'reserved slot 4', codec: 'opus', slot: 4, layer: 0, input: 'fc01', error: 'E_SFRAME_SLOT_MISMATCH' },
     { name: 'sequence number 2^52', slot: 0, layer: 0, seq: (1n << 52n).toString(), error: 'E_SFRAME_COUNTER_EXHAUSTED' },
+    { name: 'h264 with only an AUD and filler', codec: 'h264', slot: 1, layer: 0, input: '0000000109f0000000010cffff', error: 'E_SFRAME_NO_VCL_NAL' },
   ];
 
   return { version: 1, suite: SUITE, description: 'dilla-sframe/1 (05-media-frames.md): base_key = MLS-Exporter("SFrame 1.0 Base Key", "", 16); key/salt per RFC 9605 §4.4.2; CTR = slot(8)|layer(4)|seq(52); nonce = salt XOR CTR; header per RFC 9605 §4.3. rfc9605_c1/rfc9605_c3 = RFC 9605 appendix C; media_frames = P || H || C || T with AAD H || P after the codec prefix rule (H.264: canonical start codes, seeded RBSP escape; canonical = what the receiver opens to when the sender rewrote the input); escapes = seeded WriteRbsp; rejects = inputs a receiver must refuse with the named code; sender_rejects = what a sender must refuse; receiver = scripted key-ring runs (05 "Rotation", "Receiver rules"), each from an empty ring.',
@@ -329,6 +330,14 @@ async function receiverScripts() {
       install(6, AB, 0, 100),
       await decrypt(3, 5, 0, 0, B, 0, 200, 'ok'),
       await decrypt(1, 6, 0, 0, B, 0, 200, 'ok'),
+    ] },
+    { name: 'a dropped epoch cannot be reinstalled 25 seconds after its drop', steps: [
+      install(5, AB, 0, 0),
+      install(6, AB, 0, 0),
+      await decrypt(1, 5, 0, 0, B, 0, 10_000, 'E_SFRAME_STALE_EPOCH'),
+      install(5, AB, 0, 35_000),
+      await decrypt(1, 5, 0, 1, B, 0, 35_000, 'E_SFRAME_UNKNOWN_KID'),
+      await decrypt(1, 6, 0, 0, B, 0, 35_000, 'ok'),
     ] },
   ];
 }

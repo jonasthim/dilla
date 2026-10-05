@@ -82,6 +82,9 @@ pub fn canonicalize_h264(frame: &[u8]) -> Result<(Vec<u8>, usize), SframeError> 
         out.extend_from_slice(&START_CODE);
         out.extend_from_slice(nal);
     }
+    if out.is_empty() {
+        return Err(SframeError::NoVclNal);
+    }
     let prefix = h264_prefix_len(&out)?;
     Ok((out, prefix))
 }
@@ -565,6 +568,13 @@ mod tests {
         let f = unhex("000000016742c01e95a0501ec80000000168ce3c80");
         assert_eq!(h264_prefix_len(&f), Err(SframeError::NoVclNal));
         assert_eq!(canonicalize_h264(&f), Err(SframeError::NoVclNal));
+    }
+
+    #[test]
+    fn only_aud_and_filler_have_no_vcl_nal() {
+        for frame in ["0000000109f0", "0000000109f0000000010cffff"] {
+            assert_eq!(canonicalize_h264(&unhex(frame)), Err(SframeError::NoVclNal));
+        }
     }
 
     #[test]

@@ -61,18 +61,19 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // The client-half crypto fixes (CRYPTO-2) added six H.264 media frames and ten scripted receiver
 // runs (30 decrypt steps) to sframe, and fourteen H.264 prefix refusals and six sender refusals to
 // rejects: sframe 125 -> 173, rejects 71 -> 91, total 245 -> 313.
+// A3 adds three receiver checks and one sender refusal: 176 / 92 / 317.
 var wantSuiteCases = map[string]int{
 	"envelope": 12,
 	"franking": 4,
-	"sframe":   173,
+	"sframe":   176,
 	"identity": 8,
 	"frames":   25,
-	"rejects":  91,
+	"rejects":  92,
 }
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 313
+const wantTotalCases = 317
 
 // The four case names run_identity emits, one per sub-object of identity.json.
 var wantIdentityCases = []string{"credential_identity", "recovery_key", "safety_number", "sas"}
