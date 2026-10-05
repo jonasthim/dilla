@@ -97,6 +97,11 @@ const REQUIRED_STEPS = {
     'timeout-minutes: 20',
   ],
   'browser-media': [
+    'actions/upload-artifact@v7',
+    'if: failure()',
+    'name: browser-media-results',
+    'path: e2e/test-results',
+    'if-no-files-found: error',
     'timeout-minutes: 25',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',

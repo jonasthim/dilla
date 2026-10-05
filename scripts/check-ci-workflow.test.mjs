@@ -116,6 +116,12 @@ jobs:
         env:
           DILLA_MEDIA_SFU_AV1: '1'
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-media-results
+          path: e2e/test-results
+          if-no-files-found: error
 
   go-ds:
     runs-on: ubuntu-latest
@@ -640,4 +646,9 @@ test('the video publishing tests retain a non-race CI step', () => {
   const needle = "go test -timeout 5m ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
   const problems = checkWorkflow(fixture(GOOD.replace(needle, 'go test ./cmd/dilla-mediabot')));
   assert.ok(problems.some((p) => p.includes('job "go"') && p.includes(needle)), problems.join('\n'));
+});
+
+test('browser-media must upload failure traces and host logs', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('name: browser-media-results', 'name: removed-results')));
+  assert.ok(problems.some((p) => p.includes('browser-media') && p.includes('browser-media-results')), problems.join('\n'));
 });

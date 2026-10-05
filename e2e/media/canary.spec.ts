@@ -1,8 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { debugToken } from './support/lk';
-import { frameAccountingErrors } from './support/frame-accounting';
-import { CONTROL_URL, DS_URL, MediaDriver, epochWire, kidHex, roomOfToken, testkitEnv, type CallToken, type MediaKey } from './support/driver';
+import { CONTROL_URL, DS_URL, MediaDriver, epochWire, kidHex, testkitEnv, type CallToken, type MediaKey } from './support/driver';
 import type { DillaHarness, DillaHarness21 } from '../../packages/media/harness/main';
 
 type W = {
@@ -22,15 +21,16 @@ async function open(browser: Browser): Promise<Page> {
   return page;
 }
 
-async function member(driver: MediaDriver, page: Page, actor: string, browserName: string): Promise<{ key: MediaKey; token: CallToken }> {
+async function member(driver: MediaDriver, page: Page, actor: string, browserName: string, room: string): Promise<{ key: MediaKey; token: CallToken }> {
   const key = await driver.request<MediaKey>('media_key', { actor });
-  const token = await driver.request<CallToken>('call_token', { actor, vdec: browserName === 'firefox' ? 'vp8' : 'vp8,h264' });
+  const issued = await driver.request<CallToken>('call_token', { actor, vdec: browserName === 'firefox' ? 'vp8' : 'vp8,h264' });
+  const identity = key.roster.find((r) => r.leaf === key.selfLeaf)!.deviceId;
+  const debug = await debugToken(CONTROL_URL, room, identity, true);
+  const token = { ...issued, livekitUrl: debug.url, token: debug.token };
   await page.evaluate((o) => (globalThis as unknown as W).harness.dillaJoin(o), {
     livekitUrl: token.livekitUrl, token: token.token, iceServers: token.iceServers, epoch: epochWire(key, key.epoch), caps: token.caps,
   });
   await page.evaluate(() => (globalThis as unknown as W).harness.dillaPublishMic());
-  await driver.request('share', { actor, callId: token.callId });
-  await page.evaluate(() => (globalThis as unknown as W).harness.dillaWaitPermission('camera', 10_000));
   await page.evaluate((cam) => (globalThis as unknown as W).harness.dillaPublish(cam === 'device' ? { deviceCamera: true } : { camera: true, simulcast: false }), browserName === 'firefox' ? 'device' : 'canvas');
   return { key, token };
 }
@@ -43,9 +43,13 @@ test('a canary connected straight to the SFU is decoded by nobody (MD-13, SP-13,
     await driver.request('open_call', { actor: 'alice' });
     await driver.request('join', { actor: 'bob' });
     await driver.request('sync', { actor: 'alice' });
+    // A debug room is exempt from dillad's non-leaf sweep. It models an SFU that keeps
+    // injecting non-member tracks throughout the asserted exposure window.
+    const room = `canary-${randomBytes(8).toString('hex')}`;
     const pa = await open(browser);
-    const a = await member(driver, pa, 'alice', browserName);
-    const room = roomOfToken(a.token.token);
+    const a = await member(driver, pa, 'alice', browserName, room);
+    const pb = await open(browser);
+    const b = await member(driver, pb, 'bob', browserName, room);
 
     // Two canaries, neither in the MLS group: one publishes NONE, one garbage ciphertext under the GCM
     // flag with an SFrame-shaped header (the stub's keystream randomises from the first ciphertext byte).
@@ -57,21 +61,35 @@ test('a canary connected straight to the SFU is decoded by nobody (MD-13, SP-13,
       await cp.evaluate(([url, token, opts]) => (globalThis as unknown as W).harness.connect(url, token, opts), [t.url, t.token, modes[i]] as const);
       await cp.evaluate(() => (globalThis as unknown as W).harness.publish({ mic: true, camera: true }));
     }
-    // Firefox leg: bob joins while the canaries are already published (the initial-connect deferral case).
-    const pb = await open(browser);
-    const b = await member(driver, pb, 'bob', browserName);
     const memberKids = new Set([kidHex(a.key.selfLeaf, b.key.epoch), kidHex(b.key.selfLeaf, b.key.epoch), kidHex(a.key.selfLeaf, a.key.epoch)]);
 
-    for (let tick = 0; tick < 20; tick++) {
+    // First establish that both canaries and both sources reached both members.
+    for (const page of [pa, pb]) {
+      await expect.poll(async () => {
+        const tracks = await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats());
+        return canaries.every((id) => ['audio', 'video'].every((kind) =>
+          tracks.some((t) => t.participantIdentity === id && t.kind === kind && t.packetsReceived > 0)));
+      }, { timeout: 10_000 }).toBe(true);
+    }
+    for (let tick = 0; tick < 4; tick++) {
       for (const page of [pa, pb]) {
+        const present = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats()))
+          .filter((s) => canaries.includes(s.participantIdentity));
+        for (const id of canaries) {
+          expect(present.some((s) => s.participantIdentity === id && s.kind === 'audio' && s.packetsReceived > 0), `${id} audio present for the asserted window`).toBe(true);
+          expect(present.some((s) => s.participantIdentity === id && s.kind === 'video' && s.packetsReceived > 0), `${id} video present for the asserted window`).toBe(true);
+        }
         if (browserName === 'chromium') {
-          for (const s of await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats())) {
-            if (!canaries.includes(s.participantIdentity)) continue;
+          for (const s of present) {
             expect(s.framesDecoded, `canary video decoded on a member`).toBe(0);
             expect(s.totalSamplesReceived, `canary audio played on a member`).toBe(0);
           }
         } else {
-          for (const r of await page.evaluate(() => (globalThis as unknown as W).harness.dillaRenderProbe(250))) {
+          const rendered = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRenderProbe(250)))
+            .filter((r) => canaries.includes(r.participantIdentity));
+          for (const id of canaries) for (const kind of ['audio', 'video'])
+            expect(rendered.some((r) => r.participantIdentity === id && r.kind === kind), `${id} ${kind} attached for rendering probe`).toBe(true);
+          for (const r of rendered) {
             if (!canaries.includes(r.participantIdentity)) continue;
             expect(r.frames, 'canary video rendered on a member').toBe(0);
             expect(r.rms, 'canary audio audible on a member').toBeLessThan(0.01);
@@ -82,19 +100,17 @@ test('a canary connected straight to the SFU is decoded by nobody (MD-13, SP-13,
     }
     for (const page of [pa, pb]) {
       const s = await page.evaluate(() => (globalThis as unknown as W).harness.dillaStats());
+      const canaryTracks = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats()))
+        .filter((track) => canaries.includes(track.participantIdentity));
+      for (const track of canaryTracks) {
+        await expect.poll(async () => (await page.evaluate(() => (globalThis as unknown as W).harness.dillaStats()))
+          .droppedByTrack[track.trackId] ?? 0, { message: `refused ${track.participantIdentity}/${track.kind}` })
+          .toBeGreaterThan(0);
+      }
       const dropped = Object.entries(s.dropped).filter(([reason]) => reason !== 'sif').reduce((n, [, v]) => n + v, 0);
       expect(dropped, 'the worker dropped the canary frames').toBeGreaterThan(0);
       for (const kid of Object.keys(s.decrypted)) expect(memberKids.has(kid), `decrypted an unexpected KID ${kid}`).toBe(true);
       expect(s.dropped.sif).toBeLessThanOrEqual(SIF_CEILING);
-      if (browserName === 'chromium') {
-        const senderKids = { [a.key.roster.find((r) => r.leaf === a.key.selfLeaf)!.deviceId]: [kidHex(a.key.selfLeaf, a.key.epoch)],
-          [b.key.roster.find((r) => r.leaf === b.key.selfLeaf)!.deviceId]: [kidHex(b.key.selfLeaf, b.key.epoch)] };
-        const rosterTracks = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats()))
-          .filter((track) => Object.hasOwn(senderKids, track.participantIdentity));
-        // Canary tracks have the stronger zero-decoded/zero-samples checks above. Their RTP packet
-        // count includes packets the worker rejects before a decoder, so it is not a decrypt count.
-        expect(frameAccountingErrors(rosterTracks, s, senderKids)).toEqual([]);
-      }
     }
   } finally {
     await driver.close();

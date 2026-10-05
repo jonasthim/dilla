@@ -210,6 +210,12 @@ jobs:
         env:
           DILLA_MEDIA_SFU_AV1: '1'
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-media-results
+          path: e2e/test-results
+          if-no-files-found: error
 
   deny:
     runs-on: ubuntu-latest

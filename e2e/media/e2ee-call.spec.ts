@@ -60,6 +60,25 @@ const count = async (p: Page, kid: string) => (await stats(p)).decrypted[kid] ??
 const kidOf = (m: Member, epoch: bigint) => kidHex(m.key.selfLeaf, epoch);
 const pairs = (ms: Member[]) => ms.flatMap((rx) => ms.filter((tx) => tx !== rx).map((tx) => [rx, tx] as const));
 
+async function assertKinds(rx: Member, tx: Member, epoch: bigint): Promise<void> {
+  const kid = kidOf(tx, epoch);
+  await expect.poll(async () => {
+    const tracks = (await remote(rx.page)).filter((r) => r.participantIdentity === tx.device);
+    const s = await stats(rx.page);
+    const audio = tracks.find((r) => r.kind === 'audio');
+    const video = tracks.find((r) => r.source === 'camera');
+    return [
+      (s.decrypted[kid] ?? 0) > 0,
+      (s.verified[tx.device] ?? 0) > 0,
+      audio !== undefined && (s.decryptedByTrackKid[audio.trackId]?.[kid] ?? 0) > 0 &&
+        (s.verifiedByTrack[audio.trackId] ?? 0) > 0 && audio.totalSamplesReceived > 0,
+      video !== undefined && (s.decryptedByTrackKid[video.trackId]?.[kid] ?? 0) > 0 &&
+        (s.verifiedByTrack[video.trackId] ?? 0) > 0 && video.framesDecoded > 0,
+    ];
+  }, { timeout: 20_000, message: `${rx.actor} authenticates ${tx.actor}'s microphone and camera under ${kid}` })
+    .toEqual([true, true, true, true]);
+}
+
 async function record(info: TestInfo, name: string, body: unknown): Promise<void> {
   await info.attach(name, { body: JSON.stringify(body, null, 2), contentType: 'application/json' });
   console.log(`TASK21_MEASUREMENT ${name} ${JSON.stringify(body)}`);
@@ -93,7 +112,7 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
 
     // Every receiver decrypts every sender, per KID (DEV-16).
     for (const [rx, tx] of pairs([alice, bob, carol])) {
-      await expect.poll(() => count(rx.page, kidOf(tx, e)), { timeout: 20_000, message: `${rx.actor} decrypts ${tx.actor}` }).toBeGreaterThan(0);
+      await assertKinds(rx, tx, e);
     }
     // The fake getDisplayMedia share decrypts and renders on bob.
     await expect
@@ -126,6 +145,17 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
 
     // SP-06 simulcast half: three rids sent; no receiver sees a replayed (KID, slot, layer, seq).
     await expect.poll(async () => (await alice.page.evaluate(() => (globalThis as unknown as W).harness.dillaSenderRids())).length, { timeout: 15_000 }).toBe(3);
+    await expect.poll(async () => {
+      const layers = await alice.page.evaluate(() => (globalThis as unknown as W).harness.dillaSenderLayerStats());
+      const encrypted = (await stats(alice.page)).encrypted[kidOf(alice, e)]?.[1] ?? 0;
+      return layers.length === 3 && layers.every((layer) => layer.framesEncoded > 0) &&
+        encrypted >= layers.reduce((sum, layer) => sum + layer.framesEncoded, 0);
+    }, { timeout: 10_000, message: 'every simulcast layer is covered by camera encryption' }).toBe(true)
+      .catch(async (err) => {
+        console.log('SIMULCAST_DIAG', JSON.stringify({ layers: await alice.page.evaluate(() => (globalThis as unknown as W).harness.dillaSenderLayerStats()),
+          encrypted: (await stats(alice.page)).encrypted[kidOf(alice, e)]?.[1] ?? 0 }));
+        throw err;
+      });
     for (const m of [bob, carol]) expect((await stats(m.page)).dropped.replay).toBe(0);
 
     // ---- dave joins: epoch e+1 ----
@@ -145,6 +175,7 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
     const oldBob = await count(alice.page, kidOf(bob, e));
     for (const [rx, tx] of pairs([alice, bob, carol])) {
       await expect.poll(() => count(rx.page, kidOf(tx, e1)), { timeout: 2_000, message: `${rx.actor} moves to ${tx.actor}'s e+1 KID` }).toBeGreaterThan(0);
+      await assertKinds(rx, tx, e1);
     }
     await alice.page.waitForTimeout(2_000);
     expect((await count(alice.page, kidOf(bob, e))) - oldBob).toBeLessThanOrEqual(2);
@@ -163,6 +194,7 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
       .toBeGreaterThan(0);
     expect(tFrame - tDavePublishStart).toBeLessThanOrEqual(2_000);
     for (const rx of [bob, carol]) await expect.poll(() => count(rx.page, kidOf(dave, e1)), { timeout: 2_000 }).toBeGreaterThan(0);
+    for (const [rx, tx] of pairs([alice, bob, carol, dave])) await assertKinds(rx, tx, e1);
 
     // Key-frame latency: the joiner's time to first frame; existing members never freeze (held frames).
     await expect.poll(async () => (await remote(dave.page)).filter((s) => s.kind === 'video' && s.framesDecoded > 0).length, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
@@ -170,6 +202,8 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
     const videoAfter = (await remote(alice.page)).find((s) => s.participantIdentity === bob.device && s.source === 'camera')!;
     expect(videoAfter.freezeCount - videoBefore.freezeCount).toBe(0);
     const audioAfter = (await remote(alice.page)).find((s) => s.participantIdentity === bob.device && s.kind === 'audio')!;
+    expect(audioAfter.totalSamplesReceived - audioBefore.totalSamplesReceived, 'bob microphone stays audible across the commit').toBeGreaterThan(0);
+    expect(audioAfter.jitterBufferEmittedCount - audioBefore.jitterBufferEmittedCount).toBeGreaterThan(0);
     const seen = await alice.page.evaluate(() => (globalThis as unknown as W).harness.dillaParticipantSeen());
 
     await record(info, 'sp12-join-visibility.json', {
@@ -180,7 +214,9 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
     await record(info, 'sp07-audio-across-commit.json', {
       hold_ms: 2000,
       concealedSamples: audioAfter.concealedSamples - audioBefore.concealedSamples,
-      jitterBufferDelay: audioAfter.jitterBufferDelay - audioBefore.jitterBufferDelay,
+      jitterBufferDelayPerEmittedSampleMs: 1000 * (audioAfter.jitterBufferDelay - audioBefore.jitterBufferDelay) /
+        (audioAfter.jitterBufferEmittedCount - audioBefore.jitterBufferEmittedCount),
+      emittedSamples: audioAfter.jitterBufferEmittedCount - audioBefore.jitterBufferEmittedCount,
     });
     await record(info, 'keyframe-latency.json', { joiner_time_to_first_frame_ms: ttff, existing_member_freezes: 0 });
 
@@ -192,6 +228,7 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
     for (const m of [alice, bob, dave]) expect(BigInt(m.key.epoch)).toBe(e2);
     for (const [rx, tx] of pairs([alice, bob, dave])) {
       await expect.poll(() => count(rx.page, kidOf(tx, e2)), { timeout: 2_000 }).toBeGreaterThan(0);
+      await assertKinds(rx, tx, e2);
     }
     // The evictor cut carol's SFU session at the commit (DEV-44): her e+1 KID stops, and stays
     // stopped past the 10 s retention of e+1; her leaf never has a KID in e+2.

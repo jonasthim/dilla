@@ -15,9 +15,8 @@ export function frameAccountingErrors(
     } else {
       // Zero-byte Opus frames are explicitly excluded; refused SIF and bad frames never reach the decoder.
       const empty = stats.emptyFramesByTrack[track.trackId] ?? 0;
-      const dropped = stats.droppedByTrack[track.trackId] ?? 0;
-      const ceiling = authenticated + empty + dropped + 4; // RTP and worker snapshots are not atomic
-      if (track.packetsReceived > ceiling) errors.push(`audio ${track.participantIdentity}/${track.trackId}: packets ${track.packetsReceived}, authenticated ${authenticated}, empty ${empty}, dropped ${dropped}`);
+      const ceiling = authenticated + empty + 4; // RTP and worker snapshots are not atomic; refused frames cannot count as authenticated
+      if (track.packetsReceived > ceiling) errors.push(`audio ${track.participantIdentity}/${track.trackId}: packets ${track.packetsReceived}, authenticated ${authenticated}, empty ${empty}`);
     }
   }
   return errors;

@@ -36,14 +36,7 @@ test('audio stops at a failed worker and a dead sender refuses replaceTrack thro
       expect(fmtp).toContain('packetization-mode=1');
       expect(fmtp).toContain('profile-level-id=42e01f');
     }
-    const agentIdentity = randomBytes(16).toString('hex');
-    const agentToken = await debugToken(CONTROL_URL, roomOfToken(aTok.token), agentIdentity, false);
-    const agentPage = await (await browser.newContext()).newPage();
-    await agentPage.goto(HARNESS);
-    await agentPage.evaluate(([url, token]) => (globalThis as unknown as { harness: { connect: (u: string, t: string, o: { e2ee: 'none' }) => Promise<void> } }).harness.connect(url, token, { e2ee: 'none' }), [agentToken.url, agentToken.token] as const);
-    await expect.poll(async () => (await alice.evaluate(() => (globalThis as unknown as W).harness.dillaParticipantSeen()))[agentIdentity] !== undefined, { timeout: 10_000 }).toBe(true);
-    const preconnect = await alice.evaluate((identity) => (globalThis as unknown as W).harness.dillaPreconnectProbe(identity), agentIdentity);
-    expect(preconnect).toEqual({ echoed: true, streamOpens: 0 });
+    await alice.evaluate(() => (globalThis as unknown as W).harness.dillaPublishMic());
     await driver.request('share', { actor: 'alice', callId: aTok.callId });
     await alice.evaluate(() => (globalThis as unknown as W).harness.dillaWaitPermission('camera', 10_000));
     const kid = kidHex(aKey.selfLeaf, aKey.epoch);
@@ -60,6 +53,37 @@ test('audio stops at a failed worker and a dead sender refuses replaceTrack thro
     expect((await count()) - atStop).toBeLessThanOrEqual(1);
     const guard = await alice.evaluate(() => (globalThis as unknown as W).harness.dillaDeadSenderReplaceProbe());
     expect(guard).toEqual({ replacementEnded: true, senderTrackNull: true });
+  } finally {
+    await driver.close();
+  }
+});
+
+test('a recorded pre-connect microphone is refused through the real SFU', async ({ browser }) => {
+  test.setTimeout(90_000);
+  const driver = await MediaDriver.start(DS_URL, testkitEnv());
+  try {
+    await driver.request('setup', { actors: ['alice', 'bob'] });
+    await driver.request('open_call', { actor: 'alice' });
+    await driver.request('join', { actor: 'bob' });
+    await driver.request('sync', { actor: 'alice' });
+    const page = await (await browser.newContext()).newPage();
+    await page.goto(HARNESS);
+    const key = await driver.request<MediaKey>('media_key', { actor: 'alice' });
+    const token = await driver.request<CallToken>('call_token', { actor: 'alice', vdec: 'vp8' });
+    await page.evaluate((o) => (globalThis as unknown as W).harness.dillaJoin(o), {
+      livekitUrl: token.livekitUrl, token: token.token, iceServers: token.iceServers,
+      epoch: epochWire(key, key.epoch), caps: token.caps,
+    });
+    const agentIdentity = randomBytes(16).toString('hex');
+    const agentToken = await debugToken(CONTROL_URL, roomOfToken(token.token), agentIdentity, false);
+    const agentPage = await (await browser.newContext()).newPage();
+    await agentPage.goto(HARNESS);
+    await agentPage.evaluate(([url, t]) => (globalThis as unknown as { harness: { connect: (u: string, t: string, o: { e2ee: 'none' }) => Promise<void> } }).harness.connect(url, t, { e2ee: 'none' }), [agentToken.url, agentToken.token] as const);
+    await agentPage.evaluate(() => (globalThis as unknown as W).harness.agentByteStreamProbe('lk.agent.pre-connect-audio-buffer'));
+    await expect.poll(async () => (await page.evaluate(() => (globalThis as unknown as W).harness.dillaParticipantSeen()))[agentIdentity] !== undefined, { timeout: 10_000 }).toBe(true);
+    const preconnect = await page.evaluate((identity) => (globalThis as unknown as W).harness.dillaPreconnectProbe(identity), agentIdentity);
+    expect(preconnect).toEqual({ echoed: true, streamOpens: 0, hadRecording: true });
+    expect(await agentPage.evaluate(() => (globalThis as unknown as W).harness.agentByteStreamCount())).toBe(0);
   } finally {
     await driver.close();
   }

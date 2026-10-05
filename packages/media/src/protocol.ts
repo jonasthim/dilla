@@ -80,6 +80,8 @@ export interface DillaMediaStats {
   encrypted: Record<string /* kid hex */, Record<SlotId, number>>;
   decrypted: Record<string, number>; // AEAD-verified only; keyed by a JS peek of the KID, for statistics only
   decryptedByTrack: Record<string, number>; // AEAD-verified frames by receiver MediaStreamTrack.id
+  decryptedByTrackKid: Record<string, Record<string, number>>; // authenticated KIDs on each receiver track
+  verifiedByTrack: Record<string, number>; // authenticated frames on each receiver track
   // N6: device_id hex → frames the cipher authenticated AND bound to that device (the decode handle's mapped
   // participantIdentity is the expectedDevice of the decrypt). The only input of verifiedIdentities().
   verified: Record<string, number>;

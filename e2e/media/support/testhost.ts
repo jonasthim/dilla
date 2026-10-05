@@ -2,7 +2,7 @@
 // in-process LiveKit (-sfu) on the ports the specs use, start the media harness (Vite, 5179), and
 // return the teardown that stops both.
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,6 +68,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     for (const child of children.reverse()) await stop(child);
   };
   try {
+    const resultDir = join(REPO_ROOT, 'e2e', 'test-results');
+    mkdirSync(resultDir, { recursive: true });
+    const hostLog = createWriteStream(join(resultDir, 'testhost.log'));
+    const viteLog = createWriteStream(join(resultDir, 'vite.log'));
     const host = spawn(bin, [
       '-listen', '127.0.0.1:8443', '-control', '127.0.0.1:8444', '-core', core, '-log-level', 'warn',
       '-sfu', '-sfu-port', String(SFU_PORT), '-sfu-udp-port', String(SFU_UDP_PORT),
@@ -75,19 +79,24 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       ...(process.env.DILLA_MEDIA_SFU_AV1 === '1' ? ['-sfu-av1'] : []),
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(host);
+    host.stdout?.on('data', (c: Buffer) => hostLog.write(c.toString().replace(/DILLA_TESTKIT_INVITE=\S+/g, 'DILLA_TESTKIT_INVITE=[redacted]')));
+    host.stderr?.on('data', (c: Buffer) => hostLog.write(c));
+    host.once('exit', () => hostLog.end());
     const banner = await waitForLine(host, /DILLA_TESTKIT_INVITE=\S+/, 'dilla-testhost', 60_000);
     const invite = parseInvite(banner);
     if (!invite) throw new Error(`dilla-testhost printed no DILLA_TESTKIT_INVITE= line:\n${banner}`);
     process.env.DILLA_TESTKIT_INVITE = invite;
     process.env.DILLA_TESTKIT_CONTROL = CONTROL_URL;
 
+    const mediaRoot = process.env.DILLA_MEDIA_SCRATCH_DIR ?? join(REPO_ROOT, 'packages', 'media');
     const vite = spawn(process.execPath, [
       join(REPO_ROOT, 'node_modules', 'vite', 'bin', 'vite.js'),
-      '--config', join(REPO_ROOT, 'packages', 'media', 'vite.config.ts'), '--port', '5179', '--strictPort',
-    ], { cwd: join(REPO_ROOT, 'packages', 'media'), stdio: ['ignore', 'pipe', 'pipe'] });
+      '--config', join(mediaRoot, 'vite.config.ts'), '--port', '5179', '--strictPort',
+    ], { cwd: mediaRoot, stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(vite);
-    vite.stdout?.resume(); // drained, never read: an unread pipe would fill up on a long run
-    vite.stderr?.on('data', (c: Buffer) => process.stderr.write(c));
+    vite.stdout?.on('data', (c: Buffer) => viteLog.write(c));
+    vite.stderr?.on('data', (c: Buffer) => { viteLog.write(c); process.stderr.write(c); });
+    vite.once('exit', () => viteLog.end());
     await waitForHttp(`${HARNESS}/`, 60_000);
   } catch (err) {
     await teardown();

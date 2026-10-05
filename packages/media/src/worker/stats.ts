@@ -10,6 +10,8 @@ export function newStats(): DillaMediaStats {
     encrypted: {},
     decrypted: {},
     decryptedByTrack: {},
+    decryptedByTrackKid: {},
+    verifiedByTrack: {},
     verified: {},
     emptyFrames: { encode: 0, decode: 0 },
     emptyFramesByTrack: {},

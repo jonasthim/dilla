@@ -40,6 +40,8 @@ export interface HarnessApi {
   installEpoch(k: EpochKeysWire): Promise<void>;
   mediaStats(): Promise<DillaMediaStats>;
   session(): CallSession | null;
+  agentByteStreamProbe(topic: string): void;
+  agentByteStreamCount(): number;
   /** Task 17 fix round 1: the real manager and worker on a loopback PeerConnection pair (harness/failclosed.ts). */
   failClosed(sc: FailClosedScenario): Promise<FailClosedResult>;
 }
@@ -53,6 +55,7 @@ worker.onmessage = (ev: MessageEvent<{ kind: string; id: number; stats: Record<s
 };
 
 const elements = new Map<RemoteTrack, HTMLMediaElement>();
+let agentByteStreamOpens = 0;
 
 function attachElement(track: RemoteTrack): void {
   const el = track.attach();
@@ -238,6 +241,11 @@ const harness: HarnessApi = {
   installEpoch: installEpochWire,
   mediaStats,
   session: () => dillaSession,
+  agentByteStreamProbe(topic) {
+    agentByteStreamOpens = 0;
+    mustRoom().registerByteStreamHandler(topic, () => { agentByteStreamOpens++; });
+  },
+  agentByteStreamCount: () => agentByteStreamOpens,
   failClosed: runFailClosed,
 };
 
@@ -385,6 +393,7 @@ export interface DillaRemoteStats {
   totalSamplesReceived: number;
   concealedSamples: number;
   jitterBufferDelay: number;
+  jitterBufferEmittedCount: number;
 }
 
 export interface DillaHarness21 {
@@ -396,13 +405,14 @@ export interface DillaHarness21 {
   dillaRemoteSdp(): Promise<string[]>;
   dillaLocalSdp(): Promise<string[]>;
   dillaSenderRids(): Promise<string[]>;
+  dillaSenderLayerStats(): Promise<Array<{ rid: string; framesEncoded: number }>>;
   dillaParticipantSeen(): Promise<Record<string, number>>;
   dillaActiveVideoCodecs(): Promise<string[]>;
   dillaNegotiatedVideoSdp(): string[];
   dillaFailWorker(): Promise<void>;
   dillaAudioOutBytes(): Promise<number>;
   dillaDeadSenderReplaceProbe(): Promise<{ replacementEnded: boolean; senderTrackNull: boolean }>;
-  dillaPreconnectProbe(agentIdentity: string): Promise<{ echoed: boolean; streamOpens: number }>;
+  dillaPreconnectProbe(agentIdentity: string): Promise<{ echoed: boolean; streamOpens: number; hadRecording: boolean }>;
   dillaOfferedPublishCodecs(): string[];
   dillaEncryptionErrors(): string[];
   dillaPublishedVideoCount(): number;
@@ -489,6 +499,7 @@ const dillaHarness21: DillaHarness21 & Pick<DillaHarness, 'dillaJoin'> = {
             totalSamplesReceived: Number(s.totalSamplesReceived ?? 0),
             concealedSamples: Number(s.concealedSamples ?? 0),
             jitterBufferDelay: Number(s.jitterBufferDelay ?? 0),
+            jitterBufferEmittedCount: Number(s.jitterBufferEmittedCount ?? 0),
           });
         });
       }
@@ -574,6 +585,20 @@ const dillaHarness21: DillaHarness21 & Pick<DillaHarness, 'dillaJoin'> = {
       });
     }
     return [...rids];
+  },
+  async dillaSenderLayerStats() {
+    const layers: Array<{ rid: string; framesEncoded: number }> = [];
+    const cameraId = dillaRoom().localParticipant.getTrackPublication(dillaLk.Track.Source.Camera)?.track?.mediaStreamTrack.id;
+    for (const pc of dillaPcs) {
+      for (const sender of pc.getSenders()) {
+        if (sender.track?.id !== cameraId) continue;
+        (await sender.getStats()).forEach((s: Record<string, unknown>) => {
+          if (s.type === 'outbound-rtp' && s.kind === 'video' && typeof s.rid === 'string')
+            layers.push({ rid: s.rid, framesEncoded: Number(s.framesEncoded ?? 0) });
+        });
+      }
+    }
+    return layers;
   },
   async dillaParticipantSeen() {
     return { ...dillaSeen };
@@ -671,9 +696,15 @@ const dillaHarness21: DillaHarness21 & Pick<DillaHarness, 'dillaJoin'> = {
     if (!agent) throw new Error('the real SFU agent participant is absent');
     room.localParticipant.setActiveAgent(agent);
     try {
-      await dillaHarness.dillaPublishMic();
+      const [track] = await dillaRoom().localParticipant.createTracks({ audio: DILLA_MIC_CAPTURE });
+      const mic = track as dillaLk.LocalAudioTrack;
+      mic.startPreConnectBuffer();
       await new Promise((resolve) => setTimeout(resolve, 500));
-      return { echoed, streamOpens };
+      const hadRecording = mic.getPreConnectBuffer() !== undefined;
+      dillaMic = mic;
+      await dillaRoom().localParticipant.publishTrack(mic, dillaMicOptions(dillaCaps));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return { echoed, streamOpens, hadRecording };
     } finally {
       room.engine.addTrack = addTrack;
     }
