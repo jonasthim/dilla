@@ -1578,3 +1578,326 @@ fn received_application_debug_prints_no_body_and_no_credential_material() {
     assert!(!printed.contains("sig_ssk_dev"), "{printed}");
     assert!(!printed.contains("Envelope"), "{printed}");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Leaf credentials are immutable once a leaf has joined (protocol/01 "Client policy for proposals
+// from members", hardening F3 of the 2026-10-05 dilla-web-1 security review). MLS lets a member's
+// Update proposal and a commit's UpdatePath replace the member's credential; the credential is
+// what binds the leaf to a user id and a device id, and receivers store a message's sender from
+// it, so a member that could rotate it could write under another user's name.
+// ---------------------------------------------------------------------------------------------
+
+/// Alice (user 0xaa, device 0x01) creates a text group and adds Bob (user 0xbb, device 0x02); both
+/// are at epoch 1, and the delivery service's view is seeded from Alice's epoch-1 GroupInfo.
+struct TwoMembers {
+    alice_p: DillaProvider,
+    alice_signer: SignatureKeyPair,
+    alice: DillaGroup,
+    bob_p: DillaProvider,
+    bob_signer: SignatureKeyPair,
+    bob: DillaGroup,
+    ds: DillaPublicGroup,
+    group_id: GroupId,
+}
+
+fn two_members_and_the_ds() -> TwoMembers {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+
+    let group_id = GroupId::from_slice(&[0x44; 16]);
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        b.clone(),
+        None,
+    )
+    .expect("create");
+    let add = alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    let bob = DillaGroup::join_from_welcome(
+        &bob_p,
+        into_welcome(add.welcomes[0].1.clone()),
+        alice.export_ratchet_tree().into(),
+        &b,
+    )
+    .expect("join");
+    let info = alice
+        .export_group_info(&alice_p, &alice_signer)
+        .expect("group info");
+    let (ds, _) = DillaPublicGroup::from_external(
+        &openmls_rust_crypto::RustCrypto::default(),
+        alice.export_ratchet_tree().into(),
+        into_group_info(info),
+    )
+    .expect("from_external");
+    TwoMembers {
+        alice_p,
+        alice_signer,
+        alice,
+        bob_p,
+        bob_signer,
+        bob,
+        ds,
+        group_id,
+    }
+}
+
+/// `user`'s credential identity for `device` on `signer`'s key: what a client rotating its
+/// credential with the ordinary OpenMLS API (`LeafNodeParameters::with_credential_with_key`) puts
+/// in its new leaf.
+fn rotated_credential(user: u8, device: u8, signer: &SignatureKeyPair) -> LeafNodeParameters {
+    LeafNodeParameters::builder()
+        .with_credential_with_key(CredentialWithKey {
+            credential: BasicCredential::new(identity(user, device)).into(),
+            signature_key: signer.public().into(),
+        })
+        .build()
+}
+
+/// A handshake message's bytes as a receiver gets them off the wire.
+fn protocol_in(bytes: &[u8]) -> ProtocolMessage {
+    use tls_codec::Deserialize as _;
+    MlsMessageIn::tls_deserialize_exact(bytes)
+        .expect("deserialize")
+        .try_into_protocol_message()
+        .expect("a handshake message is a ProtocolMessage")
+}
+
+fn wire_bytes(message: &MlsMessageOut) -> Vec<u8> {
+    use tls_codec::Serialize as _;
+    message.tls_serialize_detached().expect("serialize")
+}
+
+/// The behaviour every honest commit relies on, stated next to the refusals below: a self-update
+/// whose UpdatePath keeps the committer's credential (which is what `DillaGroup::self_update`
+/// builds, `LeafNodeParameters::default()`) is accepted by a receiving member and by the delivery
+/// service, and both reach the committer's epoch.
+#[test]
+fn a_self_update_that_keeps_the_credential_is_accepted_by_a_member_and_the_ds() {
+    let mut g = two_members_and_the_ds();
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let bundle = g
+        .alice
+        .self_update(&g.alice_p, &g.alice_signer)
+        .expect("self_update");
+    g.alice.merge_pending_commit(&g.alice_p).expect("merge");
+
+    match g
+        .bob
+        .process_message(&g.bob_p, into_protocol(bundle.commit.clone()))
+        .expect("an honest self-update is accepted")
+    {
+        DillaProcessed::StagedCommit(staged) => {
+            assert!(
+                staged.update_path_leaf_node().is_some(),
+                "a self-update carries an UpdatePath"
+            );
+            g.bob
+                .merge_staged_commit(&g.bob_p, *staged)
+                .expect("merge_staged_commit");
+        }
+        other => panic!("expected a staged commit, got {other:?}"),
+    }
+    assert_eq!(g.bob.epoch(), 2);
+
+    let staged = match g
+        .ds
+        .process_message(&crypto, into_protocol(bundle.commit))
+        .expect("an honest self-update is accepted by the DS")
+    {
+        PublicProcessed::StagedCommit { staged, .. } => *staged,
+        other => panic!("expected a staged commit, got {other:?}"),
+    };
+    g.ds.merge_commit(staged).expect("merge_commit");
+    assert_eq!(g.ds.epoch(), g.alice.epoch());
+}
+
+/// F3's member path: Alice commits a self-update whose UpdatePath leaf keeps her signature key and
+/// her device id but names Bob's user id. A receiving member refuses it with `E_CREDENTIAL`, its
+/// group is left exactly where it was (an honest commit from the same epoch is accepted after the
+/// refusal), and the delivery service refuses the same bytes without staging or writing anything.
+#[test]
+fn a_self_update_that_changes_the_credential_is_refused_by_a_member_and_the_ds() {
+    let mut g = two_members_and_the_ds();
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+
+    // `DillaGroup` builds no such commit, so the hostile member drives the raw `MlsGroup` in its
+    // own storage, as a patched client would.
+    let mut raw = MlsGroup::load(g.alice_p.storage(), &g.group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let (commit, _, _) = raw
+        .self_update(
+            &g.alice_p,
+            &g.alice_signer,
+            rotated_credential(0xbb, 0x01, &g.alice_signer),
+        )
+        .expect("OpenMLS builds a credential-rotating self-update; the receiver must refuse it")
+        .into_contents();
+    let commit = wire_bytes(&commit);
+
+    let err = g
+        .bob
+        .process_message(&g.bob_p, protocol_in(&commit))
+        .expect_err("a commit that rewrites the committer's credential must be refused");
+    assert!(
+        matches!(err, MlsError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+    assert_eq!(g.bob.epoch(), 1, "the refused commit must not advance Bob");
+
+    let before = g.ds.export_state();
+    let err =
+        g.ds.process_message(&crypto, protocol_in(&commit))
+            .expect_err("the DS must refuse the same commit");
+    assert!(
+        matches!(err, PublicGroupError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+    assert_eq!(g.ds.epoch(), 1);
+    assert_eq!(
+        g.ds.export_state(),
+        before,
+        "the refusal writes nothing to the DS view"
+    );
+
+    // Bob's state is unchanged: the honest commit Alice makes instead, from the same epoch, is
+    // accepted by him and by the DS.
+    raw.clear_pending_commit(g.alice_p.storage())
+        .expect("clear the refused commit");
+    let mut alice = DillaGroup::load(&g.alice_p, &g.group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let honest = alice
+        .self_update(&g.alice_p, &g.alice_signer)
+        .expect("self_update");
+    match g
+        .bob
+        .process_message(&g.bob_p, into_protocol(honest.commit.clone()))
+        .expect("the honest commit is accepted after the refusal")
+    {
+        DillaProcessed::StagedCommit(staged) => g
+            .bob
+            .merge_staged_commit(&g.bob_p, *staged)
+            .expect("merge_staged_commit"),
+        other => panic!("expected a staged commit, got {other:?}"),
+    }
+    assert_eq!(g.bob.epoch(), 2);
+    assert!(matches!(
+        g.ds.process_message(&crypto, into_protocol(honest.commit))
+            .expect("the DS accepts the honest commit"),
+        PublicProcessed::StagedCommit { .. }
+    ));
+}
+
+/// The same rule for an `Update` proposal: Bob proposes an Update whose leaf keeps his key and
+/// device id but names Alice's user id. Alice refuses the standalone proposal rather than handing
+/// it back for queueing, and the delivery service refuses it on both of its routes, so it is never
+/// queued, stored or fanned out.
+#[test]
+fn an_update_proposal_that_changes_the_credential_is_refused_by_a_member_and_the_ds() {
+    let mut g = two_members_and_the_ds();
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let mut raw = MlsGroup::load(g.bob_p.storage(), &g.group_id)
+        .expect("load")
+        .expect("bob's group is stored");
+    let (proposal, _) = raw
+        .propose_self_update(
+            &g.bob_p,
+            &g.bob_signer,
+            rotated_credential(0xaa, 0x02, &g.bob_signer),
+        )
+        .expect("OpenMLS builds a credential-rotating Update; the receiver must refuse it");
+    let proposal = wire_bytes(&proposal);
+
+    let err = g
+        .alice
+        .process_message(&g.alice_p, protocol_in(&proposal))
+        .expect_err("an Update that rewrites the proposer's credential must not be queued");
+    assert!(
+        matches!(err, MlsError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+
+    let err =
+        g.ds.process_message(&crypto, protocol_in(&proposal))
+            .expect_err("the DS's proposal route parses with process_message first");
+    assert!(
+        matches!(err, PublicGroupError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+    let err =
+        g.ds.queue_proposal(&crypto, protocol_in(&proposal))
+            .expect_err("and queue_proposal refuses it too");
+    assert!(
+        matches!(err, PublicGroupError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+    assert!(
+        g.ds.queued_proposals()
+            .expect("queued_proposals")
+            .is_empty(),
+        "nothing is queued"
+    );
+}
+
+/// A commit that carries such an `Update` by reference. A conforming receiver never queues the
+/// proposal (above), so this is a commit built over a proposal the receiver holds from elsewhere:
+/// Bob's own client stored its proposal when it made it, and Alice, driving the raw `MlsGroup`,
+/// queues it and commits it. Bob refuses the commit and stays at epoch 1.
+#[test]
+fn a_commit_carrying_an_update_that_changes_the_credential_is_refused() {
+    let g = two_members_and_the_ds();
+    let mut raw_bob = MlsGroup::load(g.bob_p.storage(), &g.group_id)
+        .expect("load")
+        .expect("bob's group is stored");
+    let (proposal, _) = raw_bob
+        .propose_self_update(
+            &g.bob_p,
+            &g.bob_signer,
+            rotated_credential(0xaa, 0x02, &g.bob_signer),
+        )
+        .expect("propose_self_update");
+
+    let mut raw_alice = MlsGroup::load(g.alice_p.storage(), &g.group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let queued = match raw_alice
+        .process_message(&g.alice_p, into_protocol(proposal))
+        .expect("OpenMLS itself accepts the Update")
+        .into_content()
+    {
+        ProcessedMessageContent::ProposalMessage(p) => *p,
+        other => panic!("expected a proposal, got {other:?}"),
+    };
+    raw_alice
+        .store_pending_proposal(g.alice_p.storage(), queued)
+        .expect("store_pending_proposal");
+    let (commit, _, _) = raw_alice
+        .commit_to_pending_proposals(&g.alice_p, &g.alice_signer)
+        .expect("commit_to_pending_proposals");
+
+    // Bob's `DillaGroup` is reloaded because the raw handle above wrote his own proposal to the
+    // storage they share.
+    let mut bob = DillaGroup::load(&g.bob_p, &g.group_id)
+        .expect("load")
+        .expect("bob's group is stored");
+    let err = bob
+        .process_message(&g.bob_p, into_protocol(commit))
+        .expect_err("a commit applying a credential-rotating Update must be refused");
+    assert!(
+        matches!(err, MlsError::Protocol(ProtocolError::Credential)),
+        "{err:?}"
+    );
+    assert_eq!(bob.epoch(), 1, "the refused commit must not advance Bob");
+}

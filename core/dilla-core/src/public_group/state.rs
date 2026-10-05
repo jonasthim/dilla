@@ -4,7 +4,10 @@
 use super::{PublicStore, PublicStoreError};
 use crate::error::ProtocolError;
 use crate::identity::CredentialIdentity;
-use crate::mls::{DILLA_BINDING, DillaBinding, instance_sender_index};
+use crate::mls::{
+    DILLA_BINDING, DillaBinding, instance_sender_index, leaf_credentials_unchanged,
+    proposal_credential_verdict,
+};
 // None of these four is re-exported by `openmls::prelude` in 0.9.0 (the same finding as
 // `mls::group`: the prelude re-exports `hash_ref::KeyPackageRef` but not `ProposalRef`,
 // `treesync::RatchetTreeIn` but not `RatchetTree`, and nothing from `messages::group_info`).
@@ -183,10 +186,7 @@ impl DillaPublicGroup {
         if matches!(message, ProtocolMessage::PrivateMessage(_)) {
             return Ok(PublicProcessed::Rejected(ProtocolError::EnvelopeShape));
         }
-        let processed = self
-            .group
-            .process_message(crypto, message)
-            .map_err(openmls)?;
+        let processed = self.process_with_policy(crypto, message)?;
         let leaf = sender_leaf(processed.sender());
         Ok(match processed.into_content() {
             ProcessedMessageContent::ProposalMessage(p) => PublicProcessed::Proposal {
@@ -206,6 +206,34 @@ impl DillaPublicGroup {
         })
     }
 
+    /// `PublicGroup::process_message` followed by the one dilla-level rule the delivery service
+    /// enforces inside the core: a member's leaf keeps its credential (protocol/01, protocol/02
+    /// invariant 4; `mls::leaf_credentials_unchanged`). It runs on every handshake the DS parses -
+    /// `process_message` for `POST /commit`, `/resync`, `/heal` and `/proposal`, and
+    /// `queue_proposal` for the queue itself - so a commit or an `Update` that swaps a leaf's
+    /// credential is refused before a staged handle exists or anything is queued, stored or fanned
+    /// out. Read-only like the call it wraps: `self.group` is the pre-merge tree.
+    fn process_with_policy(
+        &self,
+        crypto: &impl OpenMlsCrypto,
+        message: ProtocolMessage,
+    ) -> Result<ProcessedMessage, PublicGroupError> {
+        let processed = self
+            .group
+            .process_message(crypto, message)
+            .map_err(openmls)?;
+        match processed.content() {
+            ProcessedMessageContent::StagedCommitMessage(staged) => {
+                leaf_credentials_unchanged(&self.group, processed.sender(), staged)?;
+            }
+            ProcessedMessageContent::ProposalMessage(proposal) => {
+                proposal_credential_verdict(&self.group, proposal)?;
+            }
+            _ => {}
+        }
+        Ok(processed)
+    }
+
     /// `PublicGroup::merge_commit` calls `clear_proposal_queue` (gap-1 section 4's call table), and
     /// under ledger ruling A the received `MLSMessage` bytes live in the same queue entries, so
     /// they are dropped with the queue. Without that the map would grow for the lifetime of the
@@ -216,8 +244,9 @@ impl DillaPublicGroup {
     /// context wholesale (`merge_diff`, vendored `group/public_group/mod.rs:362-367`), so a
     /// structurally valid GroupContextExtensions commit moves the real `dilla_binding` underneath
     /// a cache that was only ever filled in `from_external`/`import_state`. The DS runs no
-    /// dilla-level commit policy - `DillaGroup::process_message` refuses such a commit, the public
-    /// view has no equivalent - so one really can arrive here, and `binding()` is exactly what
+    /// dilla-level commit policy beyond the leaf-credential rule (`process_with_policy`) -
+    /// `DillaGroup::process_message` refuses such a commit, the public view has no equivalent - so
+    /// one really can arrive here, and `binding()` is exactly what
     /// interfaces section 2.10 export 12 (`public_group_state`) hands to clients. A stale cache
     /// would serve a binding that contradicts the DS's own stored state.
     ///
@@ -265,10 +294,7 @@ impl DillaPublicGroup {
         // Refuses a `PrivateMessage` exactly as `process_message` refuses it.
         let received = reframe_mls_message(&message)?;
 
-        let processed = self
-            .group
-            .process_message(crypto, message)
-            .map_err(openmls)?;
+        let processed = self.process_with_policy(crypto, message)?;
         let queued = match processed.into_content() {
             ProcessedMessageContent::ProposalMessage(p)
             | ProcessedMessageContent::ExternalJoinProposalMessage(p) => *p,

@@ -46,7 +46,8 @@ pub fn past_epoch_sweep(kind: GroupKind) -> Option<PastEpochDeletion> {
 /// the staged commit and aborts without merging (facts-openmls "Is there a credential-validation
 /// hook on Add?").
 ///
-/// - `Update` from a member: accept.
+/// - `Update` from a member, and the committer's UpdatePath: accept only if the leaf node keeps the
+///   credential the leaf holds before the commit (`E_CREDENTIAL`; `leaf_credentials_unchanged`).
 /// - `Remove`: accept only when the target leaf belongs to the proposer's own user — the
 ///   committer's for a Remove carried by value, the proposing member's for a referenced member
 ///   proposal (a member leaving, DEV-47) — (`E_MEMBER_REMOVE_FORBIDDEN`). Removing other users is
@@ -97,6 +98,10 @@ pub fn validate_staged_commit(
         &[0u8; 16],
         "own_user must be the receiver's user id"
     );
+
+    // A member's leaf keeps the credential it joined with: the UpdatePath and every Update the
+    // commit applies are measured against the pre-merge tree.
+    leaf_credentials_unchanged(tree, sender, staged)?;
 
     // Each Add and Remove is judged by ITS OWN sender (protocol/01 has one table for proposals
     // from the external sender and one for proposals from members). The instance's own Add and
@@ -218,6 +223,84 @@ pub(crate) fn removal_verdict(
 /// already use and settling it is a protocol/07-versioning.md change.
 pub(crate) fn extension_change_verdict(_proposal_sender: &Sender) -> Result<(), ProtocolError> {
     Err(ProtocolError::MemberRemoveForbidden)
+}
+
+/// Once a leaf is in a group its credential is immutable (protocol/01 "Client policy for proposals
+/// from members"). The credential is what binds a leaf to a user id and a device id
+/// (protocol/03 "Credential"), and a receiver stores a message's sender from it, so a member that
+/// could swap it would write under another user's name from then on. MLS allows the swap - an
+/// `Update` proposal's leaf node and a commit's UpdatePath leaf node may carry any credential the
+/// group's capabilities admit (RFC 9420 §12.1.2, §12.4.2) - and OpenMLS 0.9.0 checks only that its
+/// credential *type* is supported (`group/public_group/validation.rs:795-835`), never that it is
+/// the leaf's old one: it hands the new credentials to the application in
+/// `StagedCommit::credentials_to_verify()` and leaves the decision there.
+///
+/// So the comparison is made here, byte for byte (`Credential`'s `PartialEq` covers its type and
+/// its serialized content, which is the TLS encoding), against the credential the leaf holds in
+/// `tree`, the **pre-merge** view:
+///
+/// - a member commit's UpdatePath leaf node, against the committer's leaf;
+/// - every `Update` the commit applies, against its proposer's leaf.
+///
+/// An external commit's UpdatePath leaf is a new leaf, not a changed one: the joiner is in no leaf
+/// of `tree`, and binding a new leaf to its device is the Add and external-join rules' job. The
+/// signature key is not compared: MLS lets a leaf rotate it, and protocol/03 rule 1 (the key is the
+/// `dsk_pub` that `sig_ssk_dev` covers) is the leaf validation a later wave adds.
+///
+/// Shared by both enforcement points so they cannot drift: `validate_staged_commit` (a receiving
+/// member) and `DillaPublicGroup::process_message` (the delivery service, which runs no other
+/// dilla-level commit policy).
+pub(crate) fn leaf_credentials_unchanged(
+    tree: &PublicGroup,
+    sender: &Sender,
+    staged: &StagedCommit,
+) -> Result<(), ProtocolError> {
+    if let (Sender::Member(committer), Some(path_leaf)) = (sender, staged.update_path_leaf_node()) {
+        credential_unchanged(tree, *committer, path_leaf.credential())?;
+    }
+    for update in staged.update_proposals() {
+        update_credential_verdict(tree, update.sender(), update.update_proposal())?;
+    }
+    Ok(())
+}
+
+/// The same rule for a standalone proposal, before anyone queues it: an `Update` whose leaf node
+/// carries another credential than its proposer's leaf is refused, every other proposal is left to
+/// the rules that govern it.
+pub(crate) fn proposal_credential_verdict(
+    tree: &PublicGroup,
+    proposal: &QueuedProposal,
+) -> Result<(), ProtocolError> {
+    match proposal.proposal() {
+        Proposal::Update(update) => update_credential_verdict(tree, proposal.sender(), update),
+        _ => Ok(()),
+    }
+}
+
+/// An `Update` is always a member's own leaf (RFC 9420 §12.1.2: the leaf of its sender), so the
+/// leaf it changes is the sender's; any other sender is refused rather than assumed away.
+fn update_credential_verdict(
+    tree: &PublicGroup,
+    sender: &Sender,
+    update: &UpdateProposal,
+) -> Result<(), ProtocolError> {
+    match sender {
+        Sender::Member(leaf) => credential_unchanged(tree, *leaf, update.leaf_node().credential()),
+        _ => Err(ProtocolError::Credential),
+    }
+}
+
+fn credential_unchanged(
+    tree: &PublicGroup,
+    leaf: LeafNodeIndex,
+    new: &Credential,
+) -> Result<(), ProtocolError> {
+    let old = tree.leaf(leaf).ok_or(ProtocolError::Credential)?;
+    if old.credential() == new {
+        Ok(())
+    } else {
+        Err(ProtocolError::Credential)
+    }
 }
 
 /// The user a leaf belongs to, read from the group's own pre-merge tree.

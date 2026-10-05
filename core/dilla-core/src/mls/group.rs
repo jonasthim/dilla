@@ -7,7 +7,8 @@
 
 use super::{
     DillaBinding, DillaProvider, GroupKind, StorageError, TxError, create_config, join_config,
-    past_epoch_sweep, policy::extension_change_verdict, validate_staged_commit,
+    past_epoch_sweep, policy::extension_change_verdict, proposal_credential_verdict,
+    validate_staged_commit,
 };
 use crate::envelope::Envelope;
 use crate::error::ProtocolError;
@@ -636,6 +637,11 @@ impl DillaGroup {
                 if matches!(p.proposal(), Proposal::GroupContextExtensions(_)) {
                     extension_change_verdict(p.sender()).map_err(MlsError::Protocol)?;
                 }
+                // An `Update` keeps its proposer's credential (protocol/01), read against the
+                // current tree - the same rule `validate_staged_commit` applies to the commit that
+                // would carry it.
+                proposal_credential_verdict(self.group.public_group(), &p)
+                    .map_err(MlsError::Protocol)?;
                 DillaProcessed::Proposal(p)
             }
             ProcessedMessageContent::ExternalJoinProposalMessage(p) => {

@@ -1532,6 +1532,127 @@ mod tests {
         assert_eq!(state.as_deref(), Some(signer.public()));
     }
 
+    /// The leaf-credential rule as the delivery service meets it across the ABI (protocol/02
+    /// invariant 4). A fresh client joins the fixture by external commit and then commits a
+    /// self-update whose UpdatePath keeps its key and device id but names another user:
+    /// `public_group_process` answers an `E_CREDENTIAL` failure frame - which dillad turns into
+    /// `422 E_COMMIT_INVALID`, rule `structural` (`internal/ds/commit.go`, step 4) - and leaves no
+    /// staged handle behind. The same member's honest self-update is processed as usual.
+    #[test]
+    fn a_member_commit_that_changes_its_leafs_credential_is_an_e_credential_frame() {
+        use openmls_rust_crypto::OpenMlsRustCrypto;
+        use tls_codec::Serialize as _;
+
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let provider = OpenMlsRustCrypto::default();
+        let signer = SignatureKeyPair::new(SignatureScheme::ED25519).expect("keygen");
+        let identity = |user: u8| {
+            use dilla_core::identity::{
+                CredentialIdentity, Kind, SignerTier, SskSigner, Tier, UmkSigner,
+            };
+            use dilla_core::ids::{DeviceId, UserId};
+            let umk = UmkSigner::from_bytes(&[0x61; 32]);
+            let ssk = SskSigner::from_bytes(&[0x62; 32]);
+            CredentialIdentity {
+                v: 1,
+                umk_pub: umk.public(),
+                user_id: UserId::from_bytes([user; 16]),
+                device_id: DeviceId::from_bytes([0x64; 16]),
+                kind: Kind::User,
+                tier: Tier::Native,
+                signer_tier: SignerTier::Native,
+                ssk_pub: ssk.public(),
+                sig_umk_ssk: umk.sign_ssk(&ssk.public()),
+                sig_ssk_dev: [0u8; 64],
+            }
+            .encode()
+        };
+        let with_key = |user: u8| CredentialWithKey {
+            credential: BasicCredential::new(identity(user)).into(),
+            signature_key: signer.public().into(),
+        };
+        #[allow(deprecated)]
+        let (mut joined, commit, _info) = MlsGroup::join_by_external_commit(
+            &provider,
+            &signer,
+            Some(tls::ratchet_tree_in(FIXTURE_TREE).expect("tree")),
+            tls::verifiable_group_info(FIXTURE_GROUP_INFO).expect("group info"),
+            // dilla's own join configuration: handshakes go out as PublicMessages, which is the
+            // only form the delivery service parses (a PrivateMessage is `kind 3`, rejected).
+            &dilla_core::mls::join_config(dilla_core::mls::GroupKind::Text),
+            Some(dilla_core::mls::leaf_capabilities()),
+            None,
+            &[],
+            with_key(0x63),
+        )
+        .expect("a fresh client joins the fixture by external commit");
+        joined
+            .merge_pending_commit(&provider)
+            .expect("the joiner merges its own external commit");
+        let commit = commit.tls_serialize_detached().expect("serialize");
+        let (_, _, staged, _) = process_external(handle, &commit);
+        let merged = dispatch(
+            "public_group_merge",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .uint(staged.expect("a staged handle"));
+            }),
+        );
+        decode_strict(&merged, |d: &mut Decoder<'_>| {
+            d.array(2)?;
+            assert_eq!(d.uint()?, 0, "the external commit merges");
+            d.skip()?;
+            Ok(())
+        })
+        .unwrap();
+        let staged_before = with_table(|t| t.staged_count());
+
+        // The same signature key and device id, another user id.
+        let (rotating, _, _) = joined
+            .self_update(
+                &provider,
+                &signer,
+                LeafNodeParameters::builder()
+                    .with_credential_with_key(with_key(0x65))
+                    .build(),
+            )
+            .expect("OpenMLS builds the commit; the delivery service must refuse it")
+            .into_contents();
+        let rotating = rotating.tls_serialize_detached().expect("serialize");
+        let (code, detail) = failure(&dispatch(
+            "public_group_process",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .bytes(&rotating);
+            }),
+        ));
+        assert_eq!(code, "E_CREDENTIAL", "{detail}");
+        assert_eq!(
+            with_table(|t| t.staged_count()),
+            staged_before,
+            "a refused commit must not leave a staged handle"
+        );
+
+        // The honest self-update from the same epoch is still a commit the guest stages.
+        joined
+            .clear_pending_commit(provider.storage())
+            .expect("clear the refused commit");
+        let (honest, _, _) = joined
+            .self_update(&provider, &signer, LeafNodeParameters::default())
+            .expect("self_update")
+            .into_contents();
+        let honest = honest.tls_serialize_detached().expect("serialize");
+        let (kind, _, sender_leaf, staged, _, committer_updated) = process(handle, &honest);
+        assert_eq!(kind, 1, "a commit");
+        assert!(sender_leaf.is_some(), "a member commit names its leaf");
+        assert!(staged.is_some(), "the honest commit stages");
+        assert_eq!(committer_updated, 1);
+    }
+
     /// `public_group_staged_group_info_validate` -> `(epoch, signature_ok)`.
     fn staged_group_info_validate(handle: u64, staged: u64, group_info: &[u8]) -> (u64, bool) {
         let out = dispatch(
