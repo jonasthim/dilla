@@ -1,4 +1,4 @@
-# SP-09 Opus and SDP: MIC and SCREEN_AUDIO held with processing-on capture; the RNNoise destination sets channelCount = 1 anyway; encrypted DTX silence still sends 50 packets/s
+# SP-09 Opus and SDP: DTX silence sent 50 packets/s until faa3dec; 4.7 packets/s after
 
 Date: 2026-10-04. Host: Linux dev box (Arch, PipeWire running), Playwright 1.63.0, Chromium 153.0.8010.12, Firefox
 155.0, LiveKit v1.13.7 in process, livekit-client 2.22.3 with the real `DillaE2EEManager` (task 17, harness
@@ -6,6 +6,18 @@ Date: 2026-10-04. Host: Linux dev box (Arch, PipeWire running), Playwright 1.63.
 Every number below comes from two complete runs of that spec on 2026-10-04 (run 1 and run 2, each `8 passed`,
 `8 skipped`, 14.8 min), made outside any sandbox. Where the runs agree, one number is given; where they differ,
 both are.
+
+> **Superseded DTX conclusion (2026-10-05).** Commit `faa3dec` passes the encoder's 0-byte Opus frame through as an empty frame, without spending a counter. The earlier silence rows and decision 5 below describe the pre-change worker. They are retained as historical measurements. Packet absence now reveals silence in addition to packet size.
+
+## After faa3dec — current DTX wire measurement
+
+The committed `e2e/spikes/opus-sdp.spec.ts` disabled the microphone's underlying `MediaStreamTrack` (`enabled = false`) for the silent phase. It sampled RTP and worker counters after a settling interval. On **Chromium 153, n=1 run on 2026-10-05**, the silent phase emitted **4.7 RTP packets/s**, **96.9 payload bytes/s**, **4.7 encrypted nonempty frames/s**, **45.35 empty frames/s** and **4.7 authenticated receiver frames/s** over **20 s**. The active phase emitted **50 packets/s** and **50 encrypted frames/s** over **10 s**. The silence line printed by that run was:
+
+```text
+SPIKE opus-sdp.chromium-dtx-wire {"silence":{"enabled":false,"ms":20000,"packetsPerSecond":4.7,"bytesPerSecond":96.9,"encryptedPerSecond":4.7,"emptyFramesPerSecond":45.35,"decryptedAtBPerSecond":4.7},"active":{"enabled":true,"ms":10000,"packetsPerSecond":50,"encryptedPerSecond":50}}
+```
+
+The Firefox 155 leg in this sandbox did not yield a measurement: `window.harness.session()` became null before the wire-counter read. Its prior-run numbers below are historical and are not evidence from this run. The 0-byte frame is the only unencrypted exception; nonempty Opus frames remain sealed.
 
 ## Question
 

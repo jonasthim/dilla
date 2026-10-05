@@ -1,31 +1,22 @@
-# SP-12 and SP-07 — measured in the three-context E2EE call (task 21)
+# SP-12 and SP-07 — current media call measurements
 
-Date: 2026-10-04. Host: dev box, Playwright 1.63.0 (Chromium 153.0.8010.12), LiveKit v1.13.7 in process. Spec: `e2e/media/e2ee-call.spec.ts`. Values below are the `TASK21_MEASUREMENT` JSON lines from one passing run (`1 passed (18.9s)`).
+Date: 2026-10-05. Host: local dev box. Engine: Playwright Chromium 153 with the in-process LiveKit SFU. The source is the passing Chromium `e2e/media/e2ee-call.spec.ts` leg in the first full media-suite run at this tree, plus the independent `e2e/spikes/join-visibility.spec.ts` run. Every latency below is an observation from these runs; acceptance limits are stated separately in protocol/05.
 
-## SP-12 — join visibility (`sp12-join-visibility.json`)
+## SP-12 — join visibility
 
-| Measurement | Value (ms) |
-|---|---:|
-| `t_pc_minus_t_merge_ms` (dave visible at alice after alice merged the join Commit) | 2460 |
-| `t_frame_minus_t_merge_ms` (dave's first decrypted frame at alice after the merge) | 2615 |
-| `joiner_kid_decrypt_after_publish_start_ms` (upper bound: poll after publish returned) | 194 |
+The spike ran **n=20** independent call joins. The interval starts before the delivery-service join request and ends at the existing member's `ParticipantConnected` event. It includes MLS sync, browser page creation and media connection. The joiner-KID interval starts immediately before microphone publication and ends when the existing receiver first reports the authenticated KID; it is a polling upper bound. No test sleep lies inside either measured interval. Percentiles use nearest rank.
 
-The KID assertion retained its 2,000 ms bound and passed. This was one join, so it does not establish a p99. The 2,615 ms merge-to-first-frame observation includes starting dave's call and publication; it is distinct from the 2,000 ms per-frame hold.
+| Chromium 153, n=20 | p50 | p95 | p99 |
+|---|---:|---:|---:|
+| Join request to participant visibility, ms | 2,881 | 2,884 | 2,888 |
+| Publish start to first observed authenticated joiner KID, ms | 137 | 141 | 142 |
 
-## SP-07 — audio across the join Commit with the 2000 ms hold (`sp07-audio-across-commit.json`)
+The KID observations met the protocol/05 acceptance limit in all **20/20** joins. The earlier merge-to-first-frame number included the test's own fixed wait and is superseded by this event-driven run.
 
-| Measurement | Value |
-|---|---:|
-| `concealedSamples` | 0 |
-| `jitterBufferDelay` raw WebRTC stats delta | 3907.2 |
+## SP-07 — audio across a join Commit
 
-The raw `jitterBufferDelay` delta is implausibly large for this 2-second interval. The test records the browser's value without treating it as a latency bound; the stats collection or unit needs investigation.
+The Chromium three-context call (`n=1` call) reported `concealedSamples: 0` and `jitterBufferEmittedCount` delta **146,880**. Its cumulative `jitterBufferDelay` delta divided by that emitted-sample delta was **30 ms per emitted sample**. The test also required the receiver's microphone sample count to rise across the observation and required authenticated audio and video separately for every participant. The raw cumulative delay is not a per-sample delay.
 
-## Key frames (`keyframe-latency.json`)
+## Key frames and codec negotiation
 
-| Measurement | Value |
-|---|---:|
-| `joiner_time_to_first_frame_ms` | 203 |
-| `existing_member_freezes` | 0 |
-
-The browser's active H.264 sender reported `video/H264 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f`. The SDP offer and answer also listed unused mode-0 payload types. The current client does not remove those from the answer, so the stronger document statement that mode 0 is never negotiated is not established by this run.
+The same Chromium call (`n=1`) observed **502 ms** from the joiner's entry to its first decoded video and **0** camera freezes on the Alice-receives-Bob pair it actually asserted. The offer contained **5** H.264 fmtp entries and the answer **4**, each with `packetization-mode=1` and `profile-level-id=42e01f`. The test rejected mode 0 in both descriptions and observed an active H.264 sender with mode 1. This supersedes the pre-`codec-preferences.ts` statement that mode 0 remained in the answer.

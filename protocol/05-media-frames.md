@@ -174,12 +174,16 @@ within an epoch, so three rules keep its counters unique across worker restarts,
   The Go receiver in this repository (`internal/media`, used by the load rig and the media bot,
   which never rotate epochs mid-call) does not hold: it drops and counts an `E_SFRAME_UNKNOWN_KID`
   frame at once, so a Go subscriber stalls until the next key frame across an epoch change.
-- SP-12's three-context loopback call measured a **2 615 ms join visibility window** from an
-  existing member's merge of the join Commit to its first decrypted frame from the joiner;
-  the joiner's participant became visible after 2 460 ms, and its KID decrypted within 194 ms
-  of starting publication. This is an observed end-to-end window, including the joiner's call
-  start and publication, not a new hold limit. The receiver's 2 000 ms hold applies per frame
-  waiting for a key; the 10-second retired-epoch retention above covers older in-flight frames.
+- SP-12 measured **20 independent joins on Chromium 153** through the in-process SFU. From
+  the delivery service join request to the existing member's participant event, visibility was
+  p50 **2 881 ms**, p95 **2 884 ms**, p99 **2 888 ms** (nearest-rank, `n=20`). From the
+  joiner's microphone publish start to the first observed authenticated KID on that member,
+  the upper-bound observations were p50 **137 ms**, p95 **141 ms**, p99 **142 ms** (`n=20`).
+  Neither interval includes a fixed test sleep. The visibility interval includes MLS sync,
+  browser page creation and call connection; it is not the receiver's frame hold. The KID
+  observation retains the **2 000 ms** acceptance bound. The receiver's separate **2 000 ms**
+  hold applies per frame waiting for a key; the 10-second retired-epoch retention above covers
+  older in-flight frames.
 - Because `KID` carries only `epoch mod 256`, a receiver MUST bind a KID to the exact epoch it
   learned it in and reject a KID that it would have to resolve against an epoch more than 255
   commits ago.

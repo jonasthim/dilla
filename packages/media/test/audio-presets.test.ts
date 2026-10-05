@@ -14,8 +14,8 @@ import {
 
 describe('publish presets', () => {
   it('the mic is 64 kbit/s, DTX, no RED, mono — every value explicit (DEV-08)', () => {
-    // forceStereo and dtx are passed explicitly: a MediaStreamAudioDestinationNode track defaults to
-    // two channels, which livekit-client would otherwise classify as stereo (DTX off, stereo=1).
+    // forceStereo and dtx are passed explicitly. livekit-client derives TF_STEREO from the source
+    // track's channel count, not a processor's destination node.
     expect(MIC).toEqual({
       source: Track.Source.Microphone,
       dtx: true,
