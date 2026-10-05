@@ -96,7 +96,8 @@ let dillaSession: CallSession | null = null;
 
 async function connectDilla(url: string, token: string, iceServers: RTCIceServer[] | undefined, dilla: DillaConnectOptions | undefined): Promise<CallSession> {
   if (dilla === undefined) throw new Error("E_BAD_OPTIONS: e2ee 'dilla' needs opts.dilla");
-  dillaSession = await joinCall({ livekitUrl: url, token, iceServers: iceTuples(iceServers), epoch: epochFromWire(dilla.epoch), lock: dilla.lock, roomOptions: dilla.roomOptions });
+  // The dev server serves the worker and its imports unbundled; a 4-vCPU CI runner took over 15 s once.
+  dillaSession = await joinCall({ livekitUrl: url, token, iceServers: iceTuples(iceServers), epoch: epochFromWire(dilla.epoch), lock: dilla.lock, roomOptions: dilla.roomOptions, initTimeoutMs: 60_000 });
   return dillaSession;
 }
 

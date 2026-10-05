@@ -47,7 +47,8 @@ const h = vi.hoisted(() => {
       if (state.installError !== null) throw state.installError;
     });
     dispose = vi.fn(() => { state.order.push('dispose'); });
-    constructor(worker: unknown) { this.worker = worker; state.managers.push(this); }
+    opts: unknown;
+    constructor(worker: unknown, opts?: unknown) { this.worker = worker; this.opts = opts; state.managers.push(this); }
   }
   const createMediaWorker = vi.fn(() => ({ terminate: vi.fn(() => { state.order.push('terminate'); }) }));
   return { state, FakeRoom, FakeManager, createMediaWorker };
@@ -158,6 +159,18 @@ describe('joinCall (DEV-27)', () => {
     await vi.waitFor(() => expect(held.size).toBe(0));
     h.state.installError = null;
     await expect(joinCall(options())).resolves.toBeDefined(); // the call group is not stuck at E_CALL_IN_OTHER_TAB
+  });
+
+  it('hands the manager the caller\'s worker init timeout only inside 1 s to 120 s', async () => {
+    const cases: Array<[number | undefined, number | undefined]> = [
+      [undefined, undefined], [60_000, 60_000], [1_000, 1_000], [120_000, 120_000],
+      [999, undefined], [120_001, undefined], [1_500.5, undefined], [Number.NaN, undefined], [Infinity, undefined],
+    ];
+    for (const [given, used] of cases) {
+      const before = h.state.managers.length;
+      await (await joinCall(options({ lock: { instanceId: 'inst', callGroupId: `cg-init-${before}` }, initTimeoutMs: given }))).release();
+      expect(h.state.managers[before].opts, `initTimeoutMs ${given}`).toEqual({ initTimeoutMs: used });
+    }
   });
 
   it('always passes iceServers (also []) and max-bundle (DEV-52, DEV-54)', async () => {

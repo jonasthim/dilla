@@ -14,6 +14,13 @@ export interface JoinCallOptions {
   lock: { instanceId: string; callGroupId: string };
   /** Only the CALLER_ROOM_OPTIONS keys are used; every other key is ignored (I1). */
   roomOptions?: Partial<RoomOptions>;
+  /**
+   * How long the media worker may take to load and answer init before the join fails with E_WASM.
+   * Default INIT_TIMEOUT_MS (15 s). A slow device, or a development server that serves the worker
+   * unbundled, needs longer: a 4-vCPU CI runner missed 15 s once. Values outside 1 s to 120 s are
+   * ignored.
+   */
+  initTimeoutMs?: number;
 }
 
 export interface CallSession {
@@ -164,6 +171,11 @@ function waitForLocalEncryption(room: Room): Promise<void> {
  * after retry_after_ms; a call whose group was closed (room_finished) needs a fresh call group; and fresh
  * ice_servers come from a new start, handed in through refreshIceServers.
  */
+/** The caller's worker init timeout when it is a whole number of milliseconds from 1 s to 120 s. */
+function initTimeout(ms: number | undefined): number | undefined {
+  return typeof ms === 'number' && Number.isInteger(ms) && ms >= 1_000 && ms <= 120_000 ? ms : undefined;
+}
+
 export async function joinCall(o: JoinCallOptions): Promise<CallSession> {
   const support = isVoiceSupported();
   if (!support.ok) throw new Error(`E_E2EE_REQUIRED: ${support.reason}`);
@@ -171,7 +183,7 @@ export async function joinCall(o: JoinCallOptions): Promise<CallSession> {
   const releaseLock = await acquireMediaLock(`dilla-media:${o.lock.instanceId}:${o.lock.callGroupId}`);
   if (releaseLock === null) throw new Error('E_CALL_IN_OTHER_TAB');
   const worker = createMediaWorker();
-  const manager = new DillaE2EEManager(worker);
+  const manager = new DillaE2EEManager(worker, { initTimeoutMs: initTimeout(o.initTimeoutMs) });
   let room: Room | undefined;
   let restorePeerConnection: (() => void) | undefined;
   // N2 (task 17 re-review): every step runs, whatever an earlier one threw; the first error is rethrown at the end.

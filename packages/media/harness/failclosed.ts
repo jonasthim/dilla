@@ -94,7 +94,7 @@ async function manager(identity: string, selfLeaf: number, errors: string[]): Pr
   let terminated = false;
   const terminate = worker.terminate.bind(worker);
   worker.terminate = (): void => { terminated = true; terminate(); };
-  const m = new DillaE2EEManager(worker);
+  const m = new DillaE2EEManager(worker, { initTimeoutMs: 60_000 }); // unbundled dev-server worker on a slow runner
   m.on('encryptionError', (e: Error) => errors.push(`${identity.slice(0, 4)}: ${e.message}`));
   const s = new StandIns(identity);
   m.setup(s.room as unknown as Room);
