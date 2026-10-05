@@ -81,7 +81,11 @@ fn apply_message(
     group: &DillaGroup,
 ) -> Result<(bool, bool), StorageError> {
     if row.deleted {
-        let changed=c.execute("UPDATE app_messages SET status=2,body='',envelope=NULL,reason='' WHERE group_id=?1 AND seq=?2",params![id.as_slice(),row.seq as i64])?;
+        let changed = c.execute(
+            "UPDATE app_messages SET status=2,body='',envelope=NULL,reason='' \
+             WHERE group_id=?1 AND seq=?2",
+            params![id.as_slice(), row.seq as i64],
+        )?;
         if changed == 0 {
             insert_message(c, &empty_message(id, row, STATUS_DELETED, ""))?;
         }
@@ -186,56 +190,129 @@ impl ClientCore {
                 continue;
             }
             checked("seq", seq)?;
-            let (changed,adopted,epoch_changed)=self.retry_reload(id,|this|{
-                let mut group=this.take_group(id)?.ok_or_else(absent)?;
-                let mut mls_failed=false;
-                let result=this.write(|ctx,u|{
-                    let mut changed=false;let mut adopted=false;let mut epoch_changed=false;
+            let (changed, adopted, epoch_changed) = self.retry_reload(id, |this| {
+                let mut group = this.take_group(id)?.ok_or_else(absent)?;
+                let mut mls_failed = false;
+                let result = this.write(|ctx, u| {
+                    let mut changed = false;
+                    let mut adopted = false;
+                    let mut epoch_changed = false;
                     match &row {
-                        Row::Handshake(h)=>{
-                            let message=wire::protocol_message(&h.blob)?;
-                            if message.epoch().as_u64()>=group.epoch(){
-                                match group.process_message(ctx.provider,message)? {
-                                    DillaProcessed::StagedCommit(commit)=>{
-                                        group.merge_staged_commit(ctx.provider,*commit)?;
-                                        u.with_conn(|c|{c.execute("DELETE FROM app_proposals WHERE group_id=?1",[id.as_slice()])?;Ok(())})?;
-                                        epoch_changed=true;
+                        Row::Handshake(h) => {
+                            let message = wire::protocol_message(&h.blob)?;
+                            if message.epoch().as_u64() >= group.epoch() {
+                                match group.process_message(ctx.provider, message)? {
+                                    DillaProcessed::StagedCommit(commit) => {
+                                        group.merge_staged_commit(ctx.provider, *commit)?;
+                                        u.with_conn(|c| {
+                                            c.execute(
+                                                "DELETE FROM app_proposals WHERE group_id=?1",
+                                                [id.as_slice()],
+                                            )?;
+                                            Ok(())
+                                        })?;
+                                        epoch_changed = true;
                                     }
-                                    DillaProcessed::Proposal(proposal)=>{
-                                        let reference=proposal.proposal_reference_ref().as_slice().to_vec();
-                                        group.store_pending_proposal(ctx.provider,*proposal)?;
-                                        u.with_conn(|c|{c.execute("INSERT OR IGNORE INTO app_proposals(group_id,ref,epoch) VALUES(?1,?2,?3)",params![id.as_slice(),reference,group.epoch() as i64])?;Ok(())})?;
+                                    DillaProcessed::Proposal(proposal) => {
+                                        let reference =
+                                            proposal.proposal_reference_ref().as_slice().to_vec();
+                                        group.store_pending_proposal(ctx.provider, *proposal)?;
+                                        u.with_conn(|c| {
+                                            c.execute(
+                                                "INSERT OR IGNORE INTO app_proposals \
+                                                 (group_id,ref,epoch) VALUES(?1,?2,?3)",
+                                                params![
+                                                    id.as_slice(),
+                                                    reference,
+                                                    group.epoch() as i64,
+                                                ],
+                                            )?;
+                                            Ok(())
+                                        })?;
                                     }
-                                    _=>{}
+                                    _ => {}
                                 }
                             }
                         }
-                        Row::Message(m)=>{
+                        Row::Message(m) => {
                             // Do not borrow the connection across an OpenMLS call: `with_conn`
                             // releases it before process_message takes the storage handle.
-                            if m.deleted||m.blob.is_none()||m.uploader_device==own.device_id {
-                                (changed,adopted)=u.with_conn(|c|apply_message(c,id,m,&own,&group))?;
-                            }else{
-                                let parsed=wire::protocol_message(m.blob.as_deref().unwrap_or_default());
-                                let processed=parsed.and_then(|message|group.process_message(ctx.provider,message).map_err(Into::into));
-                                let (status,reason,application)=match processed {
-                                    Ok(DillaProcessed::Application(r)) if r.sender.device_id.as_bytes()==&m.uploader_device=>(STATUS_OK,"",Some(r)),
-                                    Ok(DillaProcessed::Application(_))=>(STATUS_CANNOT_DECRYPT,REASON_SENDER_MISMATCH,None),
-                                    Ok(_)=>(STATUS_CANNOT_DECRYPT,E_CORE_MLS,None),
-                                    Err(err)=>{if err.code==E_CORE_STORAGE||err.code==E_CORE_RELOAD{return Err(err);}mls_failed=true;(STATUS_CANNOT_DECRYPT,err.code,None)}
+                            if m.deleted || m.blob.is_none() || m.uploader_device == own.device_id {
+                                (changed, adopted) =
+                                    u.with_conn(|c| apply_message(c, id, m, &own, &group))?;
+                            } else {
+                                let parsed =
+                                    wire::protocol_message(m.blob.as_deref().unwrap_or_default());
+                                let processed = parsed.and_then(|message| {
+                                    group
+                                        .process_message(ctx.provider, message)
+                                        .map_err(Into::into)
+                                });
+                                let (status, reason, application) = match processed {
+                                    Ok(DillaProcessed::Application(r))
+                                        if r.sender.device_id.as_bytes() == &m.uploader_device =>
+                                    {
+                                        (STATUS_OK, "", Some(r))
+                                    }
+                                    Ok(DillaProcessed::Application(_)) => {
+                                        (STATUS_CANNOT_DECRYPT, REASON_SENDER_MISMATCH, None)
+                                    }
+                                    Ok(_) => (STATUS_CANNOT_DECRYPT, E_CORE_MLS, None),
+                                    Err(err) => {
+                                        if err.code == E_CORE_STORAGE || err.code == E_CORE_RELOAD {
+                                            return Err(err);
+                                        }
+                                        mls_failed = true;
+                                        (STATUS_CANNOT_DECRYPT, err.code, None)
+                                    }
                                 };
-                                let bytes=application.as_ref().map(|r|r.envelope.encode()).transpose()?;
-                                u.with_conn(|c|{
-                                    if let Some(r)=application.as_ref(){let msg=StoredMessage{group_id:id,seq:m.seq,epoch:r.epoch,recv_ts:m.recv_ts,status,reason,sender_user:Some(r.sender.user_id.as_bytes()),sender_device:r.sender.device_id.as_bytes(),sender_leaf:Some(r.sender_leaf),sender_kind:Some(r.sender.kind.as_u8()),sender_tier:Some(r.sender.tier.as_u8()),msg_id:Some(r.envelope.msg_id.as_bytes()),ty:Some(r.envelope.kind.as_u8()),body:&r.envelope.body,envelope:bytes.as_deref(),franking_tag:&m.franking_tag};insert_message(c,&msg)?;}
-                                    else{insert_message(c,&empty_message(id,m,status,reason))?;}Ok(())
-                                })?;changed=true;
+                                let bytes = application
+                                    .as_ref()
+                                    .map(|r| r.envelope.encode())
+                                    .transpose()?;
+                                u.with_conn(|c| {
+                                    if let Some(r) = application.as_ref() {
+                                        let msg = StoredMessage {
+                                            group_id: id,
+                                            seq: m.seq,
+                                            epoch: r.epoch,
+                                            recv_ts: m.recv_ts,
+                                            status,
+                                            reason,
+                                            sender_user: Some(r.sender.user_id.as_bytes()),
+                                            sender_device: r.sender.device_id.as_bytes(),
+                                            sender_leaf: Some(r.sender_leaf),
+                                            sender_kind: Some(r.sender.kind.as_u8()),
+                                            sender_tier: Some(r.sender.tier.as_u8()),
+                                            msg_id: Some(r.envelope.msg_id.as_bytes()),
+                                            ty: Some(r.envelope.kind.as_u8()),
+                                            body: &r.envelope.body,
+                                            envelope: bytes.as_deref(),
+                                            franking_tag: &m.franking_tag,
+                                        };
+                                        insert_message(c, &msg)?;
+                                    } else {
+                                        insert_message(c, &empty_message(id, m, status, reason))?;
+                                    }
+                                    Ok(())
+                                })?;
+                                changed = true;
                             }
                         }
                     }
-                    u.with_conn(|c|{c.execute("UPDATE app_groups SET next_seq=?2 WHERE group_id=?1",params![id.as_slice(),seq as i64+1])?;Ok(())})?;
-                    Ok((changed,adopted,epoch_changed))
+                    u.with_conn(|c| {
+                        c.execute(
+                            "UPDATE app_groups SET next_seq=?2 WHERE group_id=?1",
+                            params![id.as_slice(), seq as i64 + 1],
+                        )?;
+                        Ok(())
+                    })?;
+                    Ok((changed, adopted, epoch_changed))
                 });
-                if result.is_ok()&&!mls_failed{this.keep_group(*id,group);}result
+                if result.is_ok() && !mls_failed {
+                    this.keep_group(*id, group);
+                }
+                result
             })?;
             next = seq + 1;
             if changed {

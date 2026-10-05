@@ -31,14 +31,37 @@ pub(super) fn group_row(
     c: &rusqlite::Connection,
     id: &[u8; 16],
 ) -> Result<Option<GroupRow>, StorageError> {
-    c.query_row("SELECT kind, community_id, target_id, state, next_seq, resync FROM app_groups WHERE group_id = ?1", [id.as_slice()], |r| Ok(GroupRow {kind:r.get(0)?,community_id:r.get(1)?,target_id:r.get(2)?,state:r.get(3)?,next_seq:r.get(4)?,resync:r.get(5)?})).optional().map_err(Into::into)
+    c.query_row(
+        "SELECT kind, community_id, target_id, state, next_seq, resync \
+         FROM app_groups WHERE group_id = ?1",
+        [id.as_slice()],
+        |r| {
+            Ok(GroupRow {
+                kind: r.get(0)?,
+                community_id: r.get(1)?,
+                target_id: r.get(2)?,
+                state: r.get(3)?,
+                next_seq: r.get(4)?,
+                resync: r.get(5)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 fn holder(
     c: &rusqlite::Connection,
     channel: &[u8; 16],
     except: &[u8; 16],
 ) -> Result<Option<Vec<u8>>, StorageError> {
-    c.query_row("SELECT group_id FROM app_groups WHERE target_id = ?1 AND kind = 0 AND state <> 4 AND group_id <> ?2", params![channel.as_slice(),except.as_slice()], |r|r.get(0)).optional().map_err(Into::into)
+    c.query_row(
+        "SELECT group_id FROM app_groups \
+         WHERE target_id = ?1 AND kind = 0 AND state <> 4 AND group_id <> ?2",
+        params![channel.as_slice(), except.as_slice()],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 fn binding(own: &Own, community: &[u8; 16], channel: &[u8; 16], policy: u64) -> DillaBinding {
     DillaBinding {
@@ -104,9 +127,24 @@ impl ClientCore {
     pub fn groups(&self) -> Result<Vec<u8>, ClientError> {
         type ListedGroup = ([u8; 16], i64, Option<Vec<u8>>, Vec<u8>, i64, i64, i64);
         let rows: Vec<ListedGroup> = self.read(|c| {
-            let mut s=c.prepare("SELECT group_id,kind,community_id,target_id,state,next_seq,(SELECT COUNT(*) FROM app_proposals WHERE app_proposals.group_id=app_groups.group_id) FROM app_groups ORDER BY group_id")?;
-            let it=s.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
-            it.collect::<Result<_,_>>().map_err(Into::into)
+            let mut s = c.prepare(
+                "SELECT group_id, kind, community_id, target_id, state, next_seq, \
+                 (SELECT COUNT(*) FROM app_proposals \
+                  WHERE app_proposals.group_id = app_groups.group_id) \
+                 FROM app_groups ORDER BY group_id",
+            )?;
+            let it = s.query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            })?;
+            it.collect::<Result<_, _>>().map_err(Into::into)
         })?;
         let mut e = Encoder::new();
         e.array(rows.len());
@@ -156,13 +194,32 @@ impl ClientCore {
         }
         let bind = binding(&own, community, channel, policy);
         self.signer()?;
-        let (g,info,tree)=self.write(|ctx,u| {
-            let signer=ctx.signer.ok_or_else(||ClientError::new(super::error::E_CORE_NO_IDENTITY,""))?;
-            let g=DillaGroup::create(ctx.provider,signer,credential(&own),GroupId::from_slice(id),bind.clone(),Some(external_senders(SignaturePublicKey::from(&external[..]),&bind.instance_id)))?;
-            let info=wire::tls(&g.export_group_info(ctx.provider,signer)?)?;
-            let tree=wire::tls(&g.export_ratchet_tree())?;
-            in_unit(u,|c| {c.execute("INSERT INTO app_groups(group_id,kind,community_id,target_id,state) VALUES(?1,0,?2,?3,0)",params![id.as_slice(),community.as_slice(),channel.as_slice()])?;Ok(())})?;
-            Ok::<_,ClientError>((g,info,tree))
+        let (g, info, tree) = self.write(|ctx, u| {
+            let signer = ctx
+                .signer
+                .ok_or_else(|| ClientError::new(super::error::E_CORE_NO_IDENTITY, ""))?;
+            let g = DillaGroup::create(
+                ctx.provider,
+                signer,
+                credential(&own),
+                GroupId::from_slice(id),
+                bind.clone(),
+                Some(external_senders(
+                    SignaturePublicKey::from(&external[..]),
+                    &bind.instance_id,
+                )),
+            )?;
+            let info = wire::tls(&g.export_group_info(ctx.provider, signer)?)?;
+            let tree = wire::tls(&g.export_ratchet_tree())?;
+            in_unit(u, |c| {
+                c.execute(
+                    "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) \
+                     VALUES(?1,0,?2,?3,0)",
+                    params![id.as_slice(), community.as_slice(), channel.as_slice()],
+                )?;
+                Ok(())
+            })?;
+            Ok::<_, ClientError>((g, info, tree))
         })?;
         self.keep_group(*id, g);
         let mut e = Encoder::new();
@@ -267,16 +324,59 @@ impl ClientCore {
         }
         let mut prior = self.take_group(id)?;
         let bind = binding(&own, community, channel, policy);
-        let result=self.write(|ctx,u|{
-            let signer=ctx.signer.ok_or_else(||ClientError::new(super::error::E_CORE_NO_IDENTITY,""))?;
-            if matches!(r.as_ref().map(|r|r.state),Some(STATE_ACTIVE|STATE_NEEDS_RESYNC)) && let Some(g)=prior.as_mut(){g.delete(ctx.provider)?;}
-            let (g,commit,_)=DillaGroup::join_by_external_commit(ctx.provider,signer,credential(&own),gi,tree,&bind)?;
-            let commit=wire::tls(&commit)?;let exported=wire::tls(&g.export_group_info(ctx.provider,signer)?)?;
-            in_unit(u,|c|{
-                c.execute("DELETE FROM app_proposals WHERE group_id=?1",[id.as_slice()])?;
-                if r.is_some(){c.execute("UPDATE app_groups SET kind=0,community_id=?2,target_id=?3,state=1,resync=?4 WHERE group_id=?1",params![id.as_slice(),community.as_slice(),channel.as_slice(),i64::from(matches!(r.as_ref().map(|r|r.state),Some(STATE_ACTIVE|STATE_NEEDS_RESYNC)))])?;}
-                else {c.execute("INSERT INTO app_groups(group_id,kind,community_id,target_id,state) VALUES(?1,0,?2,?3,1)",params![id.as_slice(),community.as_slice(),channel.as_slice()])?;} Ok(())
-            })?; Ok::<_,ClientError>((g,commit,exported))
+        let result = self.write(|ctx, u| {
+            let signer = ctx
+                .signer
+                .ok_or_else(|| ClientError::new(super::error::E_CORE_NO_IDENTITY, ""))?;
+            let resync = matches!(
+                r.as_ref().map(|r| r.state),
+                Some(STATE_ACTIVE | STATE_NEEDS_RESYNC)
+            );
+            if resync && let Some(g) = prior.as_mut() {
+                g.delete(ctx.provider)?;
+            }
+            let (g, commit, _) = DillaGroup::join_by_external_commit(
+                ctx.provider,
+                signer,
+                credential(&own),
+                gi,
+                tree,
+                &bind,
+            )?;
+            if g.group_id().as_slice() != id {
+                return Err(ClientError::new(
+                    E_CORE_INPUT,
+                    "GroupInfo group id does not match",
+                ));
+            }
+            let commit = wire::tls(&commit)?;
+            let exported = wire::tls(&g.export_group_info(ctx.provider, signer)?)?;
+            in_unit(u, |c| {
+                c.execute(
+                    "DELETE FROM app_proposals WHERE group_id=?1",
+                    [id.as_slice()],
+                )?;
+                if r.is_some() {
+                    c.execute(
+                        "UPDATE app_groups SET kind=0,community_id=?2,target_id=?3, \
+                         state=1,resync=?4 WHERE group_id=?1",
+                        params![
+                            id.as_slice(),
+                            community.as_slice(),
+                            channel.as_slice(),
+                            i64::from(resync),
+                        ],
+                    )?;
+                } else {
+                    c.execute(
+                        "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) \
+                         VALUES(?1,0,?2,?3,1)",
+                        params![id.as_slice(), community.as_slice(), channel.as_slice()],
+                    )?;
+                }
+                Ok(())
+            })?;
+            Ok::<_, ClientError>((g, commit, exported))
         })?;
         self.keep_group(*id, result.0);
         let mut e = Encoder::new();
@@ -347,15 +447,51 @@ impl ClientCore {
                                     ClientError::new(E_CORE_INPUT, "commit_seq out of range")
                                 })
                             });
-                            let result=next.and_then(|next|self.write(|ctx,u|{
-                                if let Some(g)=prior.as_mut(){g.delete(ctx.provider)?;}
-                                let g=DillaGroup::join_from_welcome(ctx.provider,w,t,&bind)?;
-                                in_unit(u,|c|{
-                                    c.execute("DELETE FROM app_proposals WHERE group_id=?1",[id.as_slice()])?;
-                                    if row.is_some(){c.execute("UPDATE app_groups SET kind=0,community_id=?2,target_id=?3,state=2,next_seq=?4,resync=0 WHERE group_id=?1",params![id.as_slice(),want.community_id.as_slice(),want.channel_id.as_slice(),next])?;}
-                                    else {c.execute("INSERT INTO app_groups(group_id,kind,community_id,target_id,state,next_seq) VALUES(?1,0,?2,?3,2,?4)",params![id.as_slice(),want.community_id.as_slice(),want.channel_id.as_slice(),next])?;} Ok(())
-                                })?;Ok::<_,ClientError>(g)
-                            }));
+                            let result = next.and_then(|next| {
+                                self.write(|ctx, u| {
+                                    if let Some(g) = prior.as_mut() {
+                                        g.delete(ctx.provider)?;
+                                    }
+                                    let g =
+                                        DillaGroup::join_from_welcome(ctx.provider, w, t, &bind)?;
+                                    if g.group_id().as_slice() != id {
+                                        return Err(crate::ProtocolError::Binding.into());
+                                    }
+                                    in_unit(u, |c| {
+                                        c.execute(
+                                            "DELETE FROM app_proposals WHERE group_id=?1",
+                                            [id.as_slice()],
+                                        )?;
+                                        if row.is_some() {
+                                            c.execute(
+                                                "UPDATE app_groups SET kind=0,community_id=?2, \
+                                             target_id=?3,state=2,next_seq=?4,resync=0 \
+                                             WHERE group_id=?1",
+                                                params![
+                                                    id.as_slice(),
+                                                    want.community_id.as_slice(),
+                                                    want.channel_id.as_slice(),
+                                                    next,
+                                                ],
+                                            )?;
+                                        } else {
+                                            c.execute(
+                                                "INSERT INTO app_groups \
+                                             (group_id,kind,community_id,target_id,state,next_seq) \
+                                             VALUES(?1,0,?2,?3,2,?4)",
+                                                params![
+                                                    id.as_slice(),
+                                                    want.community_id.as_slice(),
+                                                    want.channel_id.as_slice(),
+                                                    next,
+                                                ],
+                                            )?;
+                                        }
+                                        Ok(())
+                                    })?;
+                                    Ok::<_, ClientError>(g)
+                                })
+                            });
                             match result {
                                 Ok(g) => {
                                     self.keep_group(*id, g);

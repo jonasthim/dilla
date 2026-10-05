@@ -269,6 +269,59 @@ fn an_external_join_into_a_group_of_another_channel_is_refused_with_e_binding() 
 }
 
 #[test]
+fn an_external_join_rejects_a_group_info_labelled_with_another_group_id() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(OTHER_GROUP);
+    let mut creator = ready_core(0xa1, "alice");
+    creator.create_and_register(&mut relay, &instance);
+    let mut joiner = ready_core(0xb2, "bob");
+
+    assert_eq!(
+        code(joiner.core.group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )),
+        "E_CORE_INPUT"
+    );
+    assert!(groups(&joiner.core).is_empty());
+    assert!(groups(&joiner.reopen().core).is_empty());
+}
+
+#[test]
+fn a_mislabelled_external_resync_preserves_the_existing_group() {
+    let (_instance, _relay, _a, mut joiner) = alice_and_bob();
+    let instance = Instance::generate();
+    let mut other_relay = Relay::new(OTHER_GROUP);
+    let mut creator = ready_core(0xc3, "carol");
+    creator.create_and_register(&mut other_relay, &instance);
+
+    assert_eq!(
+        code(joiner.core.group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &CHANNEL,
+            POLICY,
+            &other_relay.info_body(),
+            &other_relay.tree_body(),
+        )),
+        "E_CORE_INPUT"
+    );
+    assert_eq!(
+        joiner.group(&GROUP).map(|row| (row.state, row.epoch)),
+        Some((2, 1))
+    );
+    let joiner = joiner.reopen();
+    assert_eq!(
+        joiner.group(&GROUP).map(|row| (row.state, row.epoch)),
+        Some((2, 1))
+    );
+}
+
+#[test]
 fn a_resync_replaces_the_local_group_and_a_discarded_resync_returns_to_needs_resync() {
     let (_instance, mut relay, mut a, mut b) = alice_and_bob();
     a.send(&mut relay, &GROUP, "before the resync", NOW + 1);
@@ -413,6 +466,53 @@ fn a_welcome_joins_against_the_expected_binding_and_reports_every_outcome() {
         assert_eq!((row.sender_kind, row.sender_tier), (Some(0), Some(0)));
         assert_eq!(row.body, "welcome aboard");
     }
+}
+
+#[test]
+fn a_welcome_labelled_with_another_group_id_preserves_the_stale_group() {
+    let (_instance, _relay, _a, mut joiner) = alice_and_bob();
+    let key_package = joiner.first_key_package();
+    let instance = Instance::generate();
+    let mut other_relay = Relay::new(OTHER_GROUP);
+    let mut peer = RawPeer::new(0xe5, 0xe6);
+    peer.create(&mut other_relay, &instance);
+    peer.add(&mut other_relay, &[key_package.as_slice()]);
+    other_relay.group_id = GROUP; // The delivery service mislabels OTHER_GROUP's Welcome.
+
+    joiner
+        .probe
+        .lock()
+        .expect("connection")
+        .execute(
+            "UPDATE app_groups SET state=3 WHERE group_id=?1",
+            [GROUP.as_slice()],
+        )
+        .expect("mark the existing group as needing resync");
+    let outcome = joiner
+        .core
+        .welcomes_apply(
+            &other_relay.welcomes_body(joiner.device),
+            &expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]),
+        )
+        .expect("outcome");
+    assert_eq!(
+        decode_outcomes(&outcome),
+        vec![WelcomeOutcome {
+            welcome_id: 1,
+            group_id: GROUP,
+            outcome: 2,
+            reason: "E_BINDING".to_owned(),
+        }]
+    );
+    assert_eq!(
+        joiner.group(&GROUP).map(|row| (row.state, row.epoch)),
+        Some((3, 1))
+    );
+    let joiner = joiner.reopen();
+    assert_eq!(
+        joiner.group(&GROUP).map(|row| (row.state, row.epoch)),
+        Some((3, 1))
+    );
 }
 
 #[test]

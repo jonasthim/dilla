@@ -43,7 +43,30 @@ pub(super) fn insert_message(
     c: &rusqlite::Connection,
     m: &StoredMessage<'_>,
 ) -> Result<(), StorageError> {
-    c.execute("INSERT INTO app_messages(group_id,seq,epoch,recv_ts,status,reason,sender_user,sender_device,sender_leaf,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",params![m.group_id.as_slice(),m.seq as i64,m.epoch as i64,m.recv_ts as i64,m.status,m.reason,m.sender_user.map(|v|v.as_slice()),m.sender_device.as_slice(),m.sender_leaf,m.sender_kind,m.sender_tier,m.msg_id.map(|v|v.as_slice()),m.ty,m.body,m.envelope,m.franking_tag.as_slice()])?;
+    c.execute(
+        "INSERT INTO app_messages \
+         (group_id,seq,epoch,recv_ts,status,reason,sender_user,sender_device, \
+          sender_leaf,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+        params![
+            m.group_id.as_slice(),
+            m.seq as i64,
+            m.epoch as i64,
+            m.recv_ts as i64,
+            m.status,
+            m.reason,
+            m.sender_user.map(|v| v.as_slice()),
+            m.sender_device.as_slice(),
+            m.sender_leaf,
+            m.sender_kind,
+            m.sender_tier,
+            m.msg_id.map(|v| v.as_slice()),
+            m.ty,
+            m.body,
+            m.envelope,
+            m.franking_tag.as_slice(),
+        ],
+    )?;
     Ok(())
 }
 #[allow(dead_code)] // The creation time is part of the persisted row for later sync operations.
@@ -154,7 +177,17 @@ impl ClientCore {
         };
         env.validate()?;
         let bytes = env.encode()?;
-        self.write(|_,u|{u.with_conn(|c|{c.execute("INSERT INTO app_outbox(msg_id,group_id,envelope,created,state) VALUES(?1,?2,?3,?4,0)",params![msg_id.as_slice(),id.as_slice(),bytes,now])?;Ok(())})?;Ok(())})?;
+        self.write(|_, u| {
+            u.with_conn(|c| {
+                c.execute(
+                    "INSERT INTO app_outbox(msg_id,group_id,envelope,created,state) \
+                     VALUES(?1,?2,?3,?4,0)",
+                    params![msg_id.as_slice(), id.as_slice(), bytes, now],
+                )?;
+                Ok(())
+            })?;
+            Ok(())
+        })?;
         let mut e = Encoder::new();
         e.array(1).bytes(&msg_id);
         Ok(e.into_vec())
@@ -298,7 +331,17 @@ impl ClientCore {
             result?;
             (id, response.seq)
         } else {
-            self.read(|c|c.query_row("SELECT group_id,seq FROM app_messages WHERE msg_id=?1 AND sender_device=?2 ORDER BY seq DESC LIMIT 1",params![msg_id.as_slice(),own.device_id.as_slice()],|r|Ok((r.get(0)?,r.get::<_,i64>(1)? as u64))).optional().map_err(Into::into))?.ok_or_else(not_found)?
+            self.read(|c| {
+                c.query_row(
+                    "SELECT group_id,seq FROM app_messages \
+                     WHERE msg_id=?1 AND sender_device=?2 ORDER BY seq DESC LIMIT 1",
+                    params![msg_id.as_slice(), own.device_id.as_slice()],
+                    |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)),
+                )
+                .optional()
+                .map_err(Into::into)
+            })?
+            .ok_or_else(not_found)?
         };
         let mut e = Encoder::new();
         e.array(2).bytes(&id).uint(seq);
@@ -355,7 +398,16 @@ impl ClientCore {
     pub fn outbox(&self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
         self.read(|c| group_row(c, id))?.ok_or_else(not_found)?;
         type ListedOutbox = ([u8; 16], i64, String, i64, Vec<u8>);
-        let rows:Vec<ListedOutbox>=self.read(|c|{let mut s=c.prepare("SELECT msg_id,state,error,created,envelope FROM app_outbox WHERE group_id=?1 ORDER BY created,msg_id")?;let it=s.query_map([id.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;it.collect::<Result<_,_>>().map_err(Into::into)})?;
+        let rows: Vec<ListedOutbox> = self.read(|c| {
+            let mut s = c.prepare(
+                "SELECT msg_id,state,error,created,envelope FROM app_outbox \
+                 WHERE group_id=?1 ORDER BY created,msg_id",
+            )?;
+            let it = s.query_map([id.as_slice()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?;
+            it.collect::<Result<_, _>>().map_err(Into::into)
+        })?;
         let mut e = Encoder::new();
         e.array(rows.len());
         for (msg, state, error, created, env) in rows {
@@ -400,7 +452,30 @@ impl ClientCore {
             Option<i64>,
             String,
         );
-        let mut rows:Vec<Row>=self.read(|c|{let mut s=c.prepare("SELECT seq,epoch,recv_ts,status,reason,sender_user,sender_device,sender_kind,sender_tier,msg_id,type,body FROM app_messages WHERE group_id=?1 AND (?2=0 OR seq<?2) ORDER BY seq DESC LIMIT ?3")?;let it=s.query_map(params![id.as_slice(),before,i64::from(limit)],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?)))?;it.collect::<Result<_,_>>().map_err(Into::into)})?;
+        let mut rows: Vec<Row> = self.read(|c| {
+            let mut s = c.prepare(
+                "SELECT seq,epoch,recv_ts,status,reason,sender_user,sender_device, \
+                 sender_kind,sender_tier,msg_id,type,body FROM app_messages \
+                 WHERE group_id=?1 AND (?2=0 OR seq<?2) ORDER BY seq DESC LIMIT ?3",
+            )?;
+            let it = s.query_map(params![id.as_slice(), before, i64::from(limit)], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                    r.get(11)?,
+                ))
+            })?;
+            it.collect::<Result<_, _>>().map_err(Into::into)
+        })?;
         rows.reverse();
         let mut e = Encoder::new();
         e.array(rows.len());
