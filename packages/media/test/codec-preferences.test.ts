@@ -86,5 +86,28 @@ it('keeps payload decisions local to each video media section', () => {
   const parts = restrictH264Sdp(sdp).split('m=video ');
   expect(parts[1]).toContain('108');
   expect(parts[1]).toContain('a=rtpmap:108 H264/90000');
-  expect(parts[2]).not.toContain('a=rtpmap:108 H264/90000');
+  expect(parts[2]).toContain('0 UDP/TLS/RTP/SAVPF 108\r\n');
+  expect(parts[2]).toContain('a=inactive');
+});
+
+it('rejects an AV1-only video section with a parseable format and no playable direction', () => {
+  const sdp = 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 97\r\na=mid:1\r\na=sendrecv\r\na=rtpmap:97 AV1/90000\r\n';
+  const filtered = restrictH264Sdp(sdp);
+  expect(filtered).toContain('m=video 0 UDP/TLS/RTP/SAVPF 97\r\n');
+  expect(filtered).toContain('a=inactive\r\n');
+});
+
+it('rejects a video section when only RTX and FEC refer to removed codecs', () => {
+  const sdp = 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 97 98 99 100\r\na=mid:1\r\na=rtpmap:97 AV1/90000\r\na=rtpmap:98 rtx/90000\r\na=fmtp:98 apt=97\r\na=rtpmap:99 red/90000\r\na=fmtp:99 apt=97\r\na=rtpmap:100 ulpfec/90000\r\na=fmtp:100 apt=97\r\n';
+  const filtered = restrictH264Sdp(sdp);
+  expect(filtered).toContain('m=video 0 UDP/TLS/RTP/SAVPF 97\r\n');
+  expect(filtered).not.toContain('a=rtpmap:99');
+  expect(filtered).not.toContain('a=rtpmap:100');
+});
+
+it('removes RTX and FEC with apt to AV1 even if VP8 remains playable', () => {
+  const sdp = 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99\r\na=rtpmap:96 VP8/90000\r\na=rtpmap:97 AV1/90000\r\na=rtpmap:98 rtx/90000\r\na=fmtp:98 apt=97\r\na=rtpmap:99 flexfec-03/90000\r\na=fmtp:99 apt=97\r\n';
+  const filtered = restrictH264Sdp(sdp);
+  expect(filtered).toContain('m=video 9 UDP/TLS/RTP/SAVPF 96\r\n');
+  expect(filtered).not.toContain('a=rtpmap:99');
 });

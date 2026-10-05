@@ -30,8 +30,30 @@ export function restrictH264Sdp(sdp: string): string {
     for (const [pt, name] of codecs) {
       if (name !== 'rtx' && dillaVideoCodecs([{ mimeType: `video/${name}`, sdpFmtpLine: fmtp.get(pt) }]).length === 0) removed.add(pt);
     }
-    for (const [pt, name] of codecs) {
-      if (name === 'rtx' && removed.has(/(?:^|;)\s*apt=(\d+)/.exec(fmtp.get(pt) ?? '')?.[1] ?? '')) removed.add(pt);
+    // Repair payloads can depend on a removed primary codec (or another repair payload).
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const [pt] of codecs) {
+        if (!removed.has(pt) && removed.has(/(?:^|;)\s*apt=(\d+)/.exec(fmtp.get(pt) ?? '')?.[1] ?? '')) {
+          removed.add(pt);
+          changed = true;
+        }
+      }
+    }
+    const fields = lines[0].split(' ');
+    const formats = fields.slice(3);
+    const playable = formats.some((pt) => !removed.has(pt) && !['rtx', 'red', 'ulpfec', 'flexfec-03'].includes(codecs.get(pt) ?? ''));
+    if (!playable) {
+      // JSEP rejected m-sections still need one format for SDP parsing. Port 0 and inactive
+      // prevent this section from carrying media, including when only repair codecs remain.
+      const first = formats[0];
+      const rejected = lines.filter((line) => {
+        const pt = /^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)/.exec(line)?.[1];
+        return (pt === undefined || pt === first) && !/^a=(?:sendrecv|sendonly|recvonly|inactive)$/.test(line);
+      });
+      rejected[0] = [fields[0], '0', fields[2], first].join(' ');
+      rejected.splice(rejected[rejected.length - 1] === '' ? rejected.length - 1 : rejected.length, 0, 'a=inactive');
+      return rejected.join('\r\n');
     }
     return lines.filter((line) => {
       const pt = /^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)/.exec(line)?.[1];
