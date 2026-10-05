@@ -143,7 +143,7 @@ export class Controller {
   private readonly resyncing = new Set<string>();
   private readonly lookedUp = new Set<string>();
   private readonly open = new Map<string, OpenChannel>();
-  private readonly opening = new Map<string, Promise<null>>();
+  private readonly opening = new Map<string, { run: Promise<null>; entry: OpenChannel | null }>();
 
   constructor(private readonly deps: ControllerDeps) {
     this.parts = { ...REAL_PARTS, ...deps.parts };
@@ -603,19 +603,28 @@ export class Controller {
   }
 
   private openChannel(channelId: string): Promise<null> {
-    // Pre-flight ruling 1(i): one open per channel in flight; a later call awaits it.
+    // Pre-flight ruling 1(i): one open per channel in flight; a later call awaits it. A closeChannel
+    // between the two (ruling 1(ii)) only cleared the open mark, so the later call marks the channel
+    // open again with the in-flight open's own entry: the join's success then stores its group id in
+    // it, and a failed join removes it as it would have without the close.
     const inFlight = this.opening.get(channelId);
-    if (inFlight !== undefined) return inFlight;
-    const run = this.openOnce(channelId).finally(() => { this.opening.delete(channelId); });
-    this.opening.set(channelId, run);
-    return run;
+    if (inFlight !== undefined) {
+      if (inFlight.entry !== null && !this.open.has(channelId)) this.open.set(channelId, inFlight.entry);
+      return inFlight.run;
+    }
+    const opening: { run: Promise<null>; entry: OpenChannel | null } = { run: Promise.resolve(null), entry: null };
+    opening.run = this.openOnce(channelId, (entry) => { opening.entry = entry; })
+      .finally(() => { this.opening.delete(channelId); });
+    this.opening.set(channelId, opening);
+    return opening.run;
   }
 
-  private async openOnce(channelId: string): Promise<null> {
+  private async openOnce(channelId: string, marked: (entry: OpenChannel) => void): Promise<null> {
     const known = this.channels.get(channelId);
     if (known === undefined) throw new Refusal('E_BAD_INPUT', 'unknown channel');
     const entry: OpenChannel = { groupId: this.open.get(channelId)?.groupId ?? null, limit: TIMELINE_PAGE };
     this.open.set(channelId, entry);
+    marked(entry);
     if (this.groupState(channelId) === 'unsupported') {
       this.slices.set(`timeline:${channelId}`, { channelId, group: 'unsupported', items: [], hasEarlier: false });
       return null;

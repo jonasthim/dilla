@@ -661,6 +661,61 @@ describe('Controller command edge cases', () => {
     expect(w.sync.send).not.toHaveBeenCalled();
   });
 
+  it('(i)+(ii) an open, a close and a reopen while the join is in flight leave the channel open', async () => {
+    const w = world();
+    await toReady(w);
+    await selectFriends(w, 2);
+    const join = deferred<{ groupId: typeof GROUP; state: 2 }>();
+    w.sync.openChannel.mockImplementationOnce(() => join.promise);
+    w.call(3, { m: 'openChannel', channelId: toHex(CHANNEL) });
+    await vi.waitFor(() => expect(w.sync.openChannel).toHaveBeenCalledTimes(1));
+    w.call(4, { m: 'closeChannel', channelId: toHex(CHANNEL) });
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    w.call(5, { m: 'openChannel', channelId: toHex(CHANNEL) });
+    await settle();
+    expect(w.ret(5)).toBeUndefined();
+    w.state.groups = [textGroup(2)];
+    w.state.rows = [strangerRow(1)];
+    join.resolve({ groupId: GROUP, state: 2 });
+    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
+    expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: null });
+    expect(w.sync.openChannel).toHaveBeenCalledTimes(1);
+    expect(w.timeline()).toMatchObject({ group: 'active', items: [{ body: 'from a stranger 1' }] });
+    // Open again: a later change of the group refreshes the timeline, and sending is accepted.
+    w.state.rows = [strangerRow(1), strangerRow(2)];
+    w.sync.deps!.onGroupChanged(GROUP, applied(2));
+    expect(w.timeline()?.items.map((i) => i.body)).toEqual(['from a stranger 1', 'from a stranger 2']);
+    w.sync.send.mockReturnValueOnce(new Uint8Array(16).fill(0x77));
+    w.call(6, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
+    await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
+    expect(w.ret(6)).toEqual({ t: 'ret', id: 6, ok: true, value: { msgId: '77'.repeat(16) } });
+    expect(w.sync.send).toHaveBeenCalledWith(GROUP, 'hello');
+  });
+
+  it('(i)+(ii) a reopen while the join is in flight leaves the channel closed when the join fails', async () => {
+    const w = world();
+    await toReady(w);
+    await selectFriends(w, 2);
+    const join = deferred<{ groupId: typeof GROUP; state: 2 }>();
+    w.sync.openChannel.mockImplementationOnce(() => join.promise);
+    w.call(3, { m: 'openChannel', channelId: toHex(CHANNEL) });
+    await vi.waitFor(() => expect(w.sync.openChannel).toHaveBeenCalledTimes(1));
+    w.call(4, { m: 'closeChannel', channelId: toHex(CHANNEL) });
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    w.call(5, { m: 'openChannel', channelId: toHex(CHANNEL) });
+    await settle();
+    // The group is active locally, so only the missing open mark can refuse the send below.
+    w.state.groups = [textGroup(2)];
+    join.reject(new SyncError('E_REGISTER_RACE'));
+    const failed = { code: 'E_REGISTER_RACE', detail: '', status: 0, retryAfterMs: null };
+    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: false, error: failed }));
+    expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: false, error: failed });
+    w.call(6, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
+    await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the channel is not open' } });
+    expect(w.sync.send).not.toHaveBeenCalled();
+  });
+
   it('(iii) loadEarlier and closeChannel of a channel that is not open resolve null and publish nothing', async () => {
     const w = world();
     await toReady(w);
