@@ -44,12 +44,13 @@ export function deviceIdentity(): string {
  * decoded `minFrames` frames and every remote audio track has received samples (Chromium only:
  * Firefox resets inbound-rtp under a transform, use renderProbe there).
  */
-export async function waitForDecode(page: Page, minFrames: number, timeoutMs: number): Promise<RemoteTrackStats[]> {
+/** Resolves once at least minTracks remote tracks are present and every one of them decodes. */
+export async function waitForDecode(page: Page, minFrames: number, timeoutMs: number, minTracks = 1): Promise<RemoteTrackStats[]> {
   const deadline = Date.now() + timeoutMs;
   let last: RemoteTrackStats[] = [];
   for (;;) {
     last = await page.evaluate(() => (window as unknown as HarnessWindow).harness.remoteStats());
-    const ok = last.length > 0 && last.every((s) => (s.kind === 'video' ? s.framesDecoded >= minFrames : s.totalSamplesReceived > 0));
+    const ok = last.length >= minTracks && last.every((s) => (s.kind === 'video' ? s.framesDecoded >= minFrames : s.totalSamplesReceived > 0));
     if (ok) return last;
     if (Date.now() > deadline) throw new Error(`remote tracks did not decode within ${timeoutMs} ms: ${JSON.stringify(last)}`);
     await page.waitForTimeout(250);

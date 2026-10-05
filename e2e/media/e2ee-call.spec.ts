@@ -9,6 +9,11 @@ const HARNESS = 'http://127.0.0.1:5179/';
 
 test.skip(({ browserName }) => browserName !== 'chromium', 'the three-context call runs on chromium-media (task 21)');
 
+// How long a receiver may take to decrypt under a new KID. 2 s holds on a developer machine (NV-12:
+// p99 142 ms over 20 joins, docs/spikes). A 4-vCPU CI runner software-encoding four simulcast cameras
+// measured 6.5 s and 7.2 s for a joiner (PR #7), so CI asserts the plan's ceiling instead.
+const KID_BOUND_MS = process.env.CI ? 10_000 : 2_000;
+
 interface Member {
   actor: string;
   page: Page;
@@ -175,7 +180,7 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
     // gains at most one in-flight frame per track (audio + camera) after its sender rekeyed.
     const oldBob = await count(alice.page, kidOf(bob, e));
     for (const [rx, tx] of pairs([alice, bob, carol])) {
-      await expect.poll(() => count(rx.page, kidOf(tx, e1)), { timeout: 2_000, message: `${rx.actor} moves to ${tx.actor}'s e+1 KID` }).toBeGreaterThan(0);
+      await expect.poll(() => count(rx.page, kidOf(tx, e1)), { timeout: KID_BOUND_MS, message: `${rx.actor} moves to ${tx.actor}'s e+1 KID` }).toBeGreaterThan(0);
       await assertKinds(rx, tx, e1);
     }
     await alice.page.waitForTimeout(2_000);
@@ -185,10 +190,7 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
     const tDaveIn = Date.now();
     const tDavePublishStart = Date.now();
     await publish(driver, dave, { camera: true, simulcast: true });
-    // NV-12: 2 s holds on a developer machine (p99 142 ms over 20 joins, docs/spikes). The 4-vCPU CI
-    // runner, encoding four simulcast cameras in software, missed it on its first run (PR #7), so CI
-    // asserts the ruling's ceiling and prints what it measured.
-    const kidBoundMs = process.env.CI ? 10_000 : 2_000;
+    const kidBoundMs = KID_BOUND_MS; // NV-12; CI prints what it measured
     let tFrame = 0;
     await expect
       .poll(async () => {
@@ -242,7 +244,7 @@ test('three contexts decrypt per KID; a join and a leave move every receiver to 
     const e2 = e1 + 1n;
     for (const m of [alice, bob, dave]) expect(BigInt(m.key.epoch)).toBe(e2);
     for (const [rx, tx] of pairs([alice, bob, dave])) {
-      await expect.poll(() => count(rx.page, kidOf(tx, e2)), { timeout: 2_000 }).toBeGreaterThan(0);
+      await expect.poll(() => count(rx.page, kidOf(tx, e2)), { timeout: KID_BOUND_MS, message: `${rx.actor} moves to ${tx.actor}'s e+2 KID` }).toBeGreaterThan(0);
       await assertKinds(rx, tx, e2);
     }
     // The evictor cut carol's SFU session at the commit (DEV-44): her e+1 KID stops, and stays

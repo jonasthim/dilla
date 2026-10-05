@@ -38,7 +38,9 @@ test('two Chromium contexts and one Firefox context decode each other through th
   for (const p of [...chromiumPages, firefoxPage]) await join(p, url, room);
 
   for (const p of chromiumPages) {
-    const stats = await waitForDecode(p, 10, 30_000);
+    // Two remote participants, a camera and a microphone each: wait for all four tracks, not for the
+    // first participant's (a slow runner subscribes the second one seconds later; PR #7).
+    const stats = await waitForDecode(p, 10, 30_000, 4);
     expect(stats.filter((s) => s.kind === 'video')).toHaveLength(2);
     expect(stats.filter((s) => s.kind === 'audio')).toHaveLength(2);
     const stub = await p.evaluate(() => (window as unknown as HarnessWindow).harness.stubStats());
