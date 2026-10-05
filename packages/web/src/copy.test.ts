@@ -77,3 +77,29 @@ describe('copy lives in strings/en.ts', () => {
     for (const file of sources()) expect(literalCopy(file, readFileSync(file, 'utf8')), file).toEqual([]);
   });
 });
+
+const DETAIL_SWITCH = /\.detail\s*(===|!==|==|!=)|\.detail\.(startsWith|endsWith|includes|match)\(/;
+
+/** Lines of a source that compare or search an error's detail text (protocol/02: a client MUST NOT parse it). */
+export function detailSwitches(fileName: string, source: string): string[] {
+  return source.split('\n').flatMap((line, i) => (DETAIL_SWITCH.test(line) ? [`${fileName}:${i + 1}: ${line.trim()}`] : []));
+}
+
+function codeFiles(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true, recursive: true })
+    .filter(e => e.isFile() && /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name))
+    .map(e => join(e.parentPath, e.name));
+}
+
+describe('no code switches on a server detail', () => {
+  it('finds every form it looks for', () => {
+    const planted = ['if (e.detail === "username taken") x();', 'e.detail.startsWith("username:")', 'e.detail.includes("x")',
+      'err.detail != ""', 'e.detail.match(/x/)', 'e.detail.endsWith("y")', 'const ok = e.code === "E_X" && e.status === 409;'].join('\n');
+    expect(detailSwitches('x.ts', planted)).toHaveLength(6);
+  });
+  it('holds for packages/web/src and packages/client-core/src', () => {
+    const roots = [SRC, join(SRC, '..', '..', 'client-core', 'src')];
+    const found = roots.flatMap(codeFiles).flatMap(file => detailSwitches(file, readFileSync(file, 'utf8')));
+    expect(found).toEqual([]);
+  });
+});

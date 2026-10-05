@@ -21,6 +21,6 @@
   background: var(--danger); color: var(--accent-ink); border-color: var(--danger);
   box-shadow: inset 0 -3px 0 0 currentColor;
 }
-.d-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.d-btn:disabled, .d-btn[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
 .d-btn__pressed-mark { font: inherit; letter-spacing: -1px; opacity: 0.9; }
 .d-btn__kbd { font: inherit; font-size: var(--text-micro); padding: 0 4px; border: 1px solid currentColor; border-radius: var(--r-md); opacity: 0.8; }

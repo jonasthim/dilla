@@ -34,6 +34,8 @@ describe('OnboardingFrame', () => {
   it('moves focus to the heading on mount and whenever the title changes', () => {
     const { rerender } = render(frame('Join dilla.thim.dev', 'Step 1 of 5', 'one'));
     expect(screen.getByRole('heading', { level: 1, name: 'Join dilla.thim.dev' })).toHaveFocus();
+    // Focused by script only, never in the tab order: no focus ring is drawn on it (OnboardingFrame.css).
+    expect(screen.getByRole('heading', { level: 1, name: 'Join dilla.thim.dev' })).toHaveAttribute('tabindex', '-1');
     screen.getByRole('button', { name: 'Continue' }).focus();
     rerender(frame('Choose your name', 'Step 2 of 5', 'two'));
     expect(screen.getByRole('heading', { level: 1, name: 'Choose your name' })).toHaveFocus();

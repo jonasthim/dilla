@@ -1,4 +1,5 @@
 import { useMemo, useSyncExternalStore } from 'react';
+import { errorOf, type UiError } from './core/errors.ts';
 
 export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null }
   | { name: 'channel'; communityId: string; channelId: string | null };
@@ -32,6 +33,23 @@ function navigate(route: Route, replace = false): void {
   if (replace) history.replaceState(null, '', path);
   else history.pushState(null, '', path);
   for (const listener of listeners) listener();
+}
+
+/**
+ * The history state that carries a server join refused right after signup to /welcome?invite=…, so
+ * the shell's join dialog opens with that error shown (pre-flight ruling (e), tasks 23 and 24). The
+ * server's detail text is not carried: it is shown nowhere and parsed never.
+ */
+export function joinErrorState(error: UiError): { joinError: UiError } {
+  return { joinError: { code: error.code, detail: '', status: error.status, retryAfterMs: error.retryAfterMs } };
+}
+
+/** The refused join a history state carries, or null. */
+export function readJoinError(state: unknown): UiError | null {
+  if (typeof state !== 'object' || state === null) return null;
+  const { joinError } = state as Record<string, unknown>;
+  if (typeof joinError !== 'object' || joinError === null || typeof (joinError as Record<string, unknown>).code !== 'string') return null;
+  return errorOf(joinError);
 }
 
 export function useRoute(): [Route, (r: Route, replace?: boolean) => void] {

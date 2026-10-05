@@ -10,7 +10,7 @@ export class CoreCallError extends Error {
   readonly retryAfterMs: number | null;
 
   constructor(error: WorkerError) {
-    super(error.detail === '' ? error.code : `${error.code}: ${error.detail}`);
+    super(error.detail ? `${error.code}: ${error.detail}` : error.code);
     this.name = 'CoreCallError';
     this.code = error.code;
     this.detail = error.detail;
@@ -30,10 +30,10 @@ const DISPOSED: WorkerError = { code: 'E_DISPOSED', detail: '', status: 0, retry
 
 function workerError(value: unknown): WorkerError {
   if (typeof value === 'object' && value !== null) {
-    const e = value as Record<string, unknown>;
-    if (typeof e.code === 'string' && typeof e.detail === 'string' && typeof e.status === 'number'
-      && (typeof e.retryAfterMs === 'number' || e.retryAfterMs === null)) {
-      return { code: e.code, detail: e.detail, status: e.status, retryAfterMs: e.retryAfterMs };
+    const { code, detail, status, retryAfterMs } = value as Record<string, unknown>;
+    if (typeof code === 'string' && typeof detail === 'string' && typeof status === 'number'
+      && (typeof retryAfterMs === 'number' || retryAfterMs === null)) {
+      return { code, detail, status, retryAfterMs };
     }
   }
   return { code: 'E_INTERNAL', detail: 'malformed worker error', status: 0, retryAfterMs: null };
