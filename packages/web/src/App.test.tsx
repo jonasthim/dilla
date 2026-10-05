@@ -136,3 +136,14 @@ describe('App onboarding', () => {
     expect(screen.queryByRole('heading', { name: /Join/ })).toBeNull();
   });
 });
+
+describe('App shell', () => {
+  it('shows the shell to a ready account', () => {
+    const fake = new FakeClient();
+    fake.set('account', account({ phase: 'ready' }));
+    fake.set('communities', []);
+    render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+    expect(screen.getByRole('navigation', { name: 'servers' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'You are not in a server yet' })).toBeInTheDocument();
+  });
+});

@@ -1,0 +1,440 @@
+import { describe, it, expect } from 'vitest';
+import { act, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import type { ChannelSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
+import { CoreProvider } from '../core/context.tsx';
+import { FakeClient, refusal } from '../test/fake-client.ts';
+import { account, ME } from '../test/fixtures.ts';
+import { expectNoAxeViolations } from '../test/setup.ts';
+import { formatTime } from '../strings/index.ts';
+import { joinErrorState } from '../router.ts';
+import { Shell } from './Shell.tsx';
+
+const A = 'a1'.repeat(16);
+const B = 'b2'.repeat(16);
+const VOICE = 'e5'.repeat(16);
+const GEN = 'c3'.repeat(16);
+const CAT = '17'.repeat(16);
+const RAND = 'd4'.repeat(16);
+const READ = 'f6'.repeat(16);
+const PEER = '28'.repeat(16);
+const PEER_DEV = '29'.repeat(16);
+const BOT = '39'.repeat(16);
+const STRANGER = '4a'.repeat(16);
+const NOW = Math.floor(Date.now() / 1000);
+
+function ch(id: string, name: string, over: Partial<ChannelSummary> = {}): ChannelSummary {
+  return { id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, group: 'none', ...over };
+}
+const CHANNELS: ChannelSummary[] = [
+  ch(VOICE, 'lounge', { kind: 1, position: 0, group: 'unsupported' }),
+  ch(GEN, 'general', { position: 1, topic: 'say hi' }),
+  ch(CAT, 'more', { kind: 2, position: 2, group: 'unsupported' }),
+  ch(RAND, 'random', { parentId: CAT, position: 0 }),
+  ch(READ, 'lobby', { parentId: CAT, position: 1, mode: 1, group: 'unsupported' }),
+];
+const MEMBERS: MemberSummary[] = [
+  { userId: ME.id, username: 'ada', display: 'Ada L', kind: 0 },
+  { userId: PEER, username: 'bob', display: '', kind: 0 },
+  { userId: BOT, username: 'helper', display: 'Helper', kind: 1 },
+];
+function item(over: Partial<TimelineItem> & { key: string }): TimelineItem {
+  return { state: 'ok', reason: '', senderUser: PEER, senderDevice: PEER_DEV, own: false, web: false, bot: false, ts: NOW, body: '', msgId: null, ...over };
+}
+function timeline(over: Partial<TimelineState> = {}): TimelineState {
+  return { channelId: GEN, group: 'active', items: [], hasEarlier: false, ...over };
+}
+// `state` is the history entry's state (task 23 carries a refused join in it, pre-flight ruling (g)).
+function setup(path: string, opts: { channels?: boolean; communities?: { id: string; name: string }[]; state?: unknown } = {}) {
+  window.history.replaceState(opts.state ?? null, '', path);
+  const fake = new FakeClient();
+  fake.set('account', account());
+  fake.set('connection', { status: 'online', generation: '7' });
+  fake.set('communities', opts.communities ?? [{ id: A, name: 'Midgard' }, { id: B, name: 'Valhalla' }]);
+  if (opts.channels !== false) fake.set(`channels:${A}`, CHANNELS);
+  fake.set(`members:${A}`, MEMBERS);
+  const user = userEvent.setup();
+  const view = render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
+  return { fake, user, view };
+}
+const path = () => window.location.pathname;
+const composer = (name = 'general') => screen.getByRole('textbox', { name: `message #${name}` });
+const sendButton = () => screen.getByRole('button', { name: 'send' });
+// A blocked composer stays focusable: aria-disabled on the textarea, the native attribute on the button only (L-UI-13).
+function expectBlocked(name = 'general') {
+  expect(composer(name)).toHaveAttribute('aria-disabled', 'true');
+  expect(sendButton()).toBeDisabled();
+}
+const opens = (fake: FakeClient) => fake.calls.filter(c => c.m === 'openChannel' || c.m === 'closeChannel');
+
+describe('selection', () => {
+  it('takes / to the first server and its first readable text channel', () => {
+    const { fake } = setup('/', { channels: false });
+    expect(path()).toBe(`/c/${A}`);
+    expect(fake.callsOf('selectCommunity')).toEqual([{ m: 'selectCommunity', communityId: A }]);
+    expect(fake.callsOf('openChannel')).toEqual([]);
+    act(() => fake.set(`channels:${A}`, CHANNELS));
+    expect(path()).toBe(`/c/${A}/${GEN}`);
+    expect(fake.callsOf('openChannel')).toEqual([{ m: 'openChannel', channelId: GEN }]);
+  });
+  it('replaces a route to an unknown server', () => {
+    setup(`/c/${'ff'.repeat(16)}`);
+    expect(path()).toBe(`/c/${A}/${GEN}`);
+  });
+  it('replaces a route to an unknown channel', () => {
+    setup(`/c/${A}/${'ee'.repeat(16)}`);
+    expect(path()).toBe(`/c/${A}/${GEN}`);
+  });
+  it('lists channels in order without the category', () => {
+    setup(`/c/${A}/${GEN}`);
+    const list = screen.getByRole('navigation', { name: 'channels' });
+    const text = list.textContent ?? '';
+    expect(text).toContain('Midgard');
+    expect(text).not.toContain('more');
+    const at = (s: string) => text.indexOf(s);
+    expect(at('lounge')).toBeLessThan(at('general'));
+    expect(at('general')).toBeLessThan(at('random'));
+    expect(at('random')).toBeLessThan(at('lobby'));
+    expect(within(list).getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
+  });
+  it('switches channels and servers, closing what it leaves', async () => {
+    const { user, fake } = setup(`/c/${A}/${GEN}`);
+    await user.click(within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: /^random/ }));
+    expect(path()).toBe(`/c/${A}/${RAND}`);
+    expect(opens(fake)).toEqual([
+      { m: 'openChannel', channelId: GEN }, { m: 'closeChannel', channelId: GEN }, { m: 'openChannel', channelId: RAND },
+    ]);
+    await user.click(within(screen.getByRole('navigation', { name: 'servers' })).getByRole('button', { name: 'Valhalla' }));
+    expect(path()).toBe(`/c/${B}`);
+    expect(fake.callsOf('selectCommunity')).toEqual([
+      { m: 'selectCommunity', communityId: A }, { m: 'selectCommunity', communityId: B },
+    ]);
+    expect(opens(fake).at(-1)).toEqual({ m: 'closeChannel', channelId: RAND });
+  });
+  it('shows an unsupported channel without opening it', () => {
+    const { fake } = setup(`/c/${A}/${VOICE}`);
+    expect(screen.getByRole('heading', { name: 'This channel does not open here yet' })).toBeInTheDocument();
+    expect(screen.getByText('Voice channels arrive in a later version of the web client.')).toBeInTheDocument();
+    expect(screen.queryByRole('log')).toBeNull();
+    expect(composer('lounge')).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('button', { name: 'send' })).toBeDisabled();
+    expect(screen.getByText('this channel does not open here yet')).toBeInTheDocument();
+    expect(fake.callsOf('openChannel')).toEqual([]);
+  });
+  it('marks a readable channel in its header', () => {
+    setup(`/c/${A}/${READ}`);
+    expect(screen.getByText('Channels this server can read arrive in a later version of the web client.')).toBeInTheDocument();
+    expect(screen.getAllByRole('img', { name: 'Readable by this server' }).length).toBeGreaterThanOrEqual(2);
+  });
+  // Pre-flight ruling (c): a server whose channels did not load says so in the sidebar and can be retried.
+  it('shows a server that did not load and tries again', async () => {
+    let attempts = 0;
+    const { fake, user } = setupWith(c => {
+      if (c.m !== 'selectCommunity') return Promise.resolve(null);
+      attempts += 1;
+      return attempts === 1 ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null);
+    });
+    const sidebar = await screen.findByRole('region', { name: 'Midgard' });
+    expect(sidebar).toHaveTextContent('This server did not load (E_NETWORK).');
+    expect(screen.queryByText('loading channels…')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'try again' }));
+    expect(fake.callsOf('selectCommunity')).toEqual([
+      { m: 'selectCommunity', communityId: A }, { m: 'selectCommunity', communityId: A },
+    ]);
+    expect(screen.queryByText('This server did not load (E_NETWORK).')).toBeNull();
+    expect(screen.getByText('loading channels…')).toBeInTheDocument();
+    act(() => fake.set(`channels:${A}`, CHANNELS));
+    expect(path()).toBe(`/c/${A}/${GEN}`);
+  });
+});
+
+// A shell whose calls are answered by `handler` from the first render on, on /c/A with no channels yet.
+function setupWith(handler: FakeClient['handler']) {
+  window.history.replaceState(null, '', `/c/${A}`);
+  const fake = new FakeClient();
+  fake.handler = handler;
+  fake.set('account', account());
+  fake.set('connection', { status: 'online', generation: '7' });
+  fake.set('communities', [{ id: A, name: 'Midgard' }, { id: B, name: 'Valhalla' }]);
+  fake.set(`members:${A}`, MEMBERS);
+  const user = userEvent.setup();
+  const view = render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
+  return { fake, user, view };
+}
+
+describe('timeline', () => {
+  it('shows names, tags and every row state, and never an unreadable body', async () => {
+    const { fake, user, view } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
+      item({ key: 's1', body: 'hello from bob' }),
+      item({ key: 's2', senderUser: BOT, bot: true, body: 'beep' }),
+      item({ key: 's3', senderUser: ME.id, own: true, web: true, body: 'hi bob' }),
+      item({ key: 's4', senderUser: STRANGER, body: 'who am i' }),
+      item({ key: 's5', state: 'cannot-read', reason: 'E_SENDER_MISMATCH', senderUser: null, body: 'SECRET-PLAINTEXT' }),
+      item({ key: 's6', state: 'deleted', body: 'GONE-TEXT' }),
+      item({ key: `o${'ab'.repeat(16)}`, state: 'pending', senderUser: ME.id, own: true, web: true, body: 'on its way', msgId: 'ab'.repeat(16) }),
+      item({ key: `o${'cd'.repeat(16)}`, state: 'failed', reason: 'E_TOO_LARGE', senderUser: ME.id, own: true, web: true, body: 'too big', msgId: 'cd'.repeat(16) }),
+    ] })));
+    const log = screen.getByRole('log', { name: 'messages in #general' });
+    expect(log).toHaveAttribute('aria-live', 'polite');
+    for (const text of ['hello from bob', 'beep', 'hi bob', 'who am i', 'on its way', 'too big']) expect(within(log).getByText(text)).toBeInTheDocument();
+    // s1 and the deleted s6 (item()'s default sender is bob): a deleted row keeps its sender (L-CORE-08 rule 2) and
+    // MessageRow always renders its author (task 21), so bob is named twice.
+    expect(within(log).getAllByText('bob')).toHaveLength(2);
+    expect(within(log).getByText('Helper')).toBeInTheDocument();
+    expect(within(log).getAllByText('Ada L')).toHaveLength(3);
+    expect(within(log).getByText('4a4a4a4a')).toBeInTheDocument();
+    expect(within(log).getByText('device 29292929')).toBeInTheDocument();
+    expect(within(log).getAllByText('web')).toHaveLength(3);
+    expect(within(log).getAllByText('bot')).toHaveLength(1);
+    expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(8);
+    expect(within(log).getByText('This message could not be read on this device.')).toBeInTheDocument();
+    expect(within(log).getByText('E_SENDER_MISMATCH')).toBeInTheDocument();
+    expect(screen.queryByText(/SECRET-PLAINTEXT/)).toBeNull();
+    expect(within(log).getByText('message deleted')).toBeInTheDocument();
+    expect(screen.queryByText(/GONE-TEXT/)).toBeNull();
+    expect(within(log).getByText('sending…')).toBeInTheDocument();
+    expect(within(log).getByText('not sent')).toBeInTheDocument();
+    expect(within(log).getByText('E_TOO_LARGE')).toBeInTheDocument();
+    await user.click(within(log).getByRole('button', { name: 'retry' }));
+    await user.click(within(log).getByRole('button', { name: 'discard' }));
+    expect(fake.callsOf('retrySend')).toEqual([{ m: 'retrySend', msgId: 'cd'.repeat(16) }]);
+    expect(fake.callsOf('discardSend')).toEqual([{ m: 'discardSend', msgId: 'cd'.repeat(16) }]);
+    await expectNoAxeViolations(view.container);
+  });
+  it('says when it is loading, when it is empty, and loads earlier messages', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    expect(screen.getByText('loading messages…')).toBeInTheDocument();
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    expect(screen.getByText('nothing here yet. Messages sent before this browser joined are not shown.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'load earlier' })).toBeNull();
+    act(() => fake.set(`timeline:${GEN}`, timeline({ hasEarlier: true, items: [item({ key: 's9', body: 'x' })] })));
+    await user.click(screen.getByRole('button', { name: 'load earlier' }));
+    expect(fake.callsOf('loadEarlier')).toEqual([{ m: 'loadEarlier', channelId: GEN }]);
+  });
+  it('is busy before its first slice and while earlier messages load', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    const log = () => screen.getByRole('log', { name: 'messages in #general' });
+    expect(log()).toHaveAttribute('aria-busy', 'true');
+    act(() => fake.set(`timeline:${GEN}`, timeline({ hasEarlier: true, items: [item({ key: 's9', body: 'x' })] })));
+    expect(log()).not.toHaveAttribute('aria-busy');
+    let finish: (v: null) => void = () => {};
+    fake.handler = c => (c.m === 'loadEarlier' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(null));
+    await user.click(screen.getByRole('button', { name: 'load earlier' }));
+    expect(log()).toHaveAttribute('aria-busy', 'true');
+    await act(async () => { finish(null); await Promise.resolve(); });
+    expect(log()).not.toHaveAttribute('aria-busy');
+  });
+});
+
+describe('a channel that fails to open', () => {
+  it('says so and can be retried', async () => {
+    const { fake, user } = setup('/', { channels: false });
+    let attempts = 0;
+    fake.handler = c => {
+      if (c.m !== 'openChannel') return Promise.resolve(null);
+      attempts += 1;
+      return attempts === 1 ? Promise.reject(refusal({ code: 'E_COMMIT_CONFLICT', status: 409 })) : Promise.resolve(null);
+    };
+    act(() => fake.set(`channels:${A}`, CHANNELS));
+    expect(await screen.findByRole('heading', { name: 'This channel did not open' })).toBeInTheDocument();
+    expect(screen.getByText('Something went wrong while opening it (E_COMMIT_CONFLICT).')).toBeInTheDocument();
+    expect(screen.queryByRole('log')).toBeNull();
+    expectBlocked();
+    expect(screen.getByText('this channel did not open')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'try again' }));
+    expect(fake.callsOf('openChannel')).toEqual([{ m: 'openChannel', channelId: GEN }, { m: 'openChannel', channelId: GEN }]);
+    expect(screen.getByRole('log', { name: 'messages in #general' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'This channel did not open' })).toBeNull();
+  });
+});
+
+describe('composer', () => {
+  it.each([
+    ['active', null],
+    ['none', 'joining this channel…'],
+    ['joining', 'joining this channel…'],
+    ['resync', 'catching up with this channel…'],
+    ['not-member', 'you cannot post in this channel and new messages will not arrive. Reload, or ask the host.'],
+  ] as const)('in state %s', (group, reason) => {
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ group })));
+    if (reason === null) {
+      expect(composer()).not.toHaveAttribute('aria-disabled');
+    } else {
+      expect(composer()).toHaveAttribute('aria-disabled', 'true');
+      expect(screen.getByRole('button', { name: 'send' })).toBeDisabled();
+      expect(screen.getByText(reason)).toBeInTheDocument();
+      expect(composer()).toHaveAccessibleDescription(expect.stringContaining(reason));
+    }
+  });
+  it('sends what was typed', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    fake.handler = c => Promise.resolve(c.m === 'send' ? { msgId: 'ab'.repeat(16) } : null);
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    await user.type(composer(), 'hello{Enter}');
+    expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'hello' }]);
+  });
+  it('shows a failed command and lets it be dismissed', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    fake.handler = c => (c.m === 'send' ? Promise.reject(refusal({ code: 'E_NOT_READY', detail: 'the phase is loading' })) : Promise.resolve(null));
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    await user.type(composer(), 'hello{Enter}');
+    expect(await screen.findByRole('alert')).toHaveTextContent('That did not work (E_NOT_READY).');
+    await user.click(screen.getByRole('button', { name: 'dismiss' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  // Pre-flight ruling (d): the shell holds the composer's text; a send that resolves clears it, a refused one keeps it.
+  it('clears the text once a send resolves and keeps it when the send is refused', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    let refuse = false;
+    fake.handler = c => {
+      if (c.m !== 'send') return Promise.resolve(null);
+      return refuse ? Promise.reject(refusal({ code: 'E_BAD_INPUT', detail: 'body' })) : Promise.resolve({ msgId: 'ab'.repeat(16) });
+    };
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    await user.type(composer(), 'hello{Enter}');
+    expect(composer()).toHaveValue('');
+    refuse = true;
+    await user.type(composer(), 'keep me{Enter}');
+    // Pre-flight ruling (f): the banner says what to do, and never shows the server's detail.
+    expect(await screen.findByRole('alert')).toHaveTextContent('That did not work (E_BAD_INPUT). Try again, or reload the page.');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('body');
+    expect(composer()).toHaveValue('keep me');
+    expect(fake.callsOf('send')).toEqual([
+      { m: 'send', channelId: GEN, text: 'hello' }, { m: 'send', channelId: GEN, text: 'keep me' },
+    ]);
+  });
+});
+
+describe('servers and the join dialog', () => {
+  it('invites a person without servers to join one', async () => {
+    const { user, view } = setup('/', { communities: [] });
+    expect(path()).toBe('/');
+    expect(screen.getByRole('heading', { name: 'You are not in a server yet' })).toBeInTheDocument();
+    await expectNoAxeViolations(view.container);
+    await user.click(screen.getByRole('button', { name: 'Join a server' }));
+    expect(screen.getByRole('dialog', { name: 'Join a server' })).toBeInTheDocument();
+  });
+  it('joins from the rail, closes the dialog and opens the server', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    fake.handler = c => Promise.resolve(c.m === 'joinCommunity' ? { communityId: B } : null);
+    await user.click(screen.getByRole('button', { name: 'join a server' }));
+    await user.type(screen.getByRole('textbox', { name: 'Invite' }), 'https://dilla.test/i/ABCD-EFGH');
+    await user.click(screen.getByRole('button', { name: 'Join' }));
+    expect(fake.callsOf('joinCommunity')).toEqual([{ m: 'joinCommunity', invite: 'ABCD-EFGH' }]);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(path()).toBe(`/c/${B}`);
+  });
+  it('keeps a just-joined server selected until the server list catches up', async () => {
+    const NEW = '5b'.repeat(16);
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    fake.handler = c => Promise.resolve(c.m === 'joinCommunity' ? { communityId: NEW } : null);
+    await user.click(screen.getByRole('button', { name: 'join a server' }));
+    await user.type(screen.getByRole('textbox', { name: 'Invite' }), 'ABCD-EFGH');
+    await user.click(screen.getByRole('button', { name: 'Join' }));
+    expect(path()).toBe(`/c/${NEW}`);
+    expect(fake.callsOf('selectCommunity').map(c => c.communityId)).toEqual([A]);
+    act(() => fake.set('communities', [{ id: A, name: 'Midgard' }, { id: B, name: 'Valhalla' }, { id: NEW, name: 'Asgard' }]));
+    expect(path()).toBe(`/c/${NEW}`);
+    expect(fake.callsOf('selectCommunity').map(c => c.communityId)).toEqual([A, NEW]);
+  });
+  it('opens the join dialog prefilled when an invite link is followed while signed in', () => {
+    // channels: false keeps the default-channel redirect out of this test: the route stops at the first server.
+    setup('/welcome?invite=ABCD', { channels: false });
+    expect(screen.getByRole('dialog', { name: 'Join a server' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Invite' })).toHaveValue('ABCD');
+    expect(path()).toBe(`/c/${A}`);
+    expect(window.location.search).toBe('');
+  });
+  it('opens the same dialog without a server and leaves the address at /', () => {
+    setup('/welcome?invite=ABCD', { communities: [] });
+    expect(screen.getByRole('dialog', { name: 'Join a server' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Invite' })).toHaveValue('ABCD');
+    expect(path()).toBe('/');
+    expect(window.location.search).toBe('');
+  });
+  // Pre-flight ruling (g): the join refused right after signup (task 23) rides on the history entry and is shown on open.
+  it('shows the join refused at signup in the dialog it opens', () => {
+    const joinError = { code: 'E_INVITE_INVALID', detail: '', status: 410, retryAfterMs: null };
+    setup('/welcome?invite=ABCD', { communities: [], state: joinErrorState(joinError) });
+    expect(screen.getByRole('textbox', { name: 'Invite' })).toHaveValue('ABCD');
+    expect(screen.getByRole('textbox', { name: 'Invite' })).toHaveAccessibleDescription(expect.stringContaining('This invite is expired, used up or unknown.'));
+    expect(path()).toBe('/');
+    expect(window.history.state).toBeNull();
+  });
+});
+
+describe('connection', () => {
+  it('shows the offline banner and the status bar facts', () => {
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    const bar = screen.getByRole('region', { name: 'connection' });
+    expect(bar).toHaveTextContent('dilla.test');
+    expect(bar).toHaveTextContent('online');
+    expect(bar).toHaveTextContent('7');
+    expect(screen.queryByRole('alert')).toBeNull();
+    act(() => fake.set('connection', { status: 'connecting', generation: null }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(bar).toHaveTextContent('connecting');
+    expect(bar).toHaveTextContent('–');
+    act(() => fake.set('connection', { status: 'offline', generation: '7' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Connection lost. Reconnecting…');
+    expect(bar).toHaveTextContent('offline');
+    act(() => fake.set('connection', { status: 'online', generation: '8' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('keyboard', () => {
+  it('moves between channels with Alt+Arrow, clamped at both ends', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`);
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}');
+    expect(path()).toBe(`/c/${A}/${RAND}`);
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}');
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}');
+    expect(path()).toBe(`/c/${A}/${READ}`);
+    for (let i = 0; i < 4; i++) await user.keyboard('{Alt>}{ArrowUp}{/Alt}');
+    expect(path()).toBe(`/c/${A}/${VOICE}`);
+    await user.keyboard('{ArrowDown}');
+    expect(path()).toBe(`/c/${A}/${VOICE}`);
+  });
+  it('returns from the log to the composer on Escape', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' })] })));
+    act(() => screen.getByRole('log').focus());
+    expect(screen.getByRole('log')).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(composer()).toHaveFocus();
+  });
+  it('returns to a blocked composer too, so its reason is heard', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ group: 'not-member', items: [item({ key: 's1', body: 'x' })] })));
+    act(() => screen.getByRole('log').focus());
+    await user.keyboard('{Escape}');
+    expect(composer()).toHaveFocus();
+    expect(composer()).toHaveAttribute('aria-disabled', 'true');
+  });
+  it('tabs through skip link, rail, channels, log and composer in that order', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' })] })));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('link', { name: 'skip to messages' }));
+    await user.tab();
+    expect(screen.getByRole('navigation', { name: 'servers' })).toContainElement(document.activeElement as HTMLElement);
+    await user.tab();
+    expect(screen.getByRole('navigation', { name: 'channels' })).toContainElement(document.activeElement as HTMLElement);
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('log'));
+    await user.tab();
+    expect(composer()).toHaveFocus();
+  });
+  // Requirement 11: closing the join dialog puts focus in the composer.
+  it('moves focus to the composer when the join dialog closes', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`);
+    await user.click(screen.getByRole('button', { name: 'join a server' }));
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(composer()).toHaveFocus();
+  });
+});

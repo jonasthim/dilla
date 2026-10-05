@@ -7,6 +7,7 @@ import { useSlice } from './core/use-slice.ts';
 import { joinErrorState, useRoute } from './router.ts';
 import { Boot } from './screens/Boot.tsx';
 import { Onboarding, type SignupResult } from './screens/Onboarding.tsx';
+import { Shell } from './screens/Shell.tsx';
 
 export type Screen = 'boot' | 'onboarding' | 'shell';
 
@@ -51,6 +52,7 @@ export function App(props: { fatal: UiError | null }): React.JSX.Element {
   if (failed) return <Boot fatal={failed} />;
   if (screen === 'onboarding' || (onboarding && account?.phase === 'ready')) return <Onboarding onFinish={finish} />;
   switch (screen) {
-    case 'boot': case 'shell': return <Boot fatal={null} />;
+    case 'boot': return <Boot fatal={null} />;
+    case 'shell': return <Shell />;
   }
 }
