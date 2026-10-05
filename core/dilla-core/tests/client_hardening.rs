@@ -297,10 +297,11 @@ fn a_confirm_at_a_seq_holding_another_message_fails_the_row_and_the_group_sends_
 }
 
 // ---------------------------------------------------------------------------------------------
-// F5: an own echo is adopted only when its commitment is the in-flight envelope's.
+// F5: an own echo is adopted only for the outbox row whose envelope commitment it carries (the
+// row in flight, or an unresolved earlier one: follow-up ruling).
 
 #[test]
-fn the_echo_of_an_earlier_upload_is_not_adopted_as_the_message_in_flight() {
+fn the_echo_of_an_earlier_upload_is_adopted_as_that_upload_not_as_the_message_in_flight() {
     let (_instance, mut relay, _a, mut b) = alice_and_bob();
     // A is stored by the server, but a proxy answers 502: the engine fails A and sends B.
     let first = b.prepare(&GROUP, "first", NOW + 1);
@@ -312,18 +313,33 @@ fn the_echo_of_an_earlier_upload_is_not_adopted_as_the_message_in_flight() {
 
     let applied = b.sync(&relay);
     assert_eq!(applied.new_seqs, vec![stored]);
-    assert_eq!(applied.flags & OWN_ADOPTED, 0, "nothing was adopted");
-    let row = b.timeline(&GROUP).pop().expect("row");
+    assert_eq!(
+        applied.flags & OWN_ADOPTED,
+        OWN_ADOPTED,
+        "A's echo resolves A"
+    );
+    let rows = b.timeline(&GROUP);
+    assert_eq!(
+        rows.len(),
+        1,
+        "one stored own message, no E_OWN_UNKNOWN row"
+    );
+    let row = &rows[0];
     assert_eq!(
         (row.seq, row.status, row.reason.as_str(), row.body.as_str()),
-        (stored, 1, "E_OWN_UNKNOWN", "")
+        (stored, 0, "", "first")
     );
+    assert_eq!(row.msg_id, Some(first));
     let states: Vec<([u8; 16], u64)> = b
         .outbox(&GROUP)
         .into_iter()
         .map(|o| (o.msg_id, o.state))
         .collect();
-    assert_eq!(states, vec![(first, 2), (second, 1)], "B stays in flight");
+    assert_eq!(
+        states,
+        vec![(second, 1)],
+        "A is not left to retry; B stays in flight"
+    );
 
     // B's own echo is adopted at its own seq.
     let seq = seq_of_answer(&relay.post_message(b.device, &body).expect("upload"));
@@ -331,6 +347,59 @@ fn the_echo_of_an_earlier_upload_is_not_adopted_as_the_message_in_flight() {
     assert_eq!(applied.flags & OWN_ADOPTED, OWN_ADOPTED);
     let row = b.timeline(&GROUP).pop().expect("row");
     assert_eq!((row.seq, row.status, row.body.as_str()), (seq, 0, "second"));
+}
+
+#[test]
+fn a_failed_row_whose_commitment_no_echo_carries_is_untouched() {
+    let (_instance, mut relay, _a, mut b) = alice_and_bob();
+    // A was never stored: the request did not reach the server.
+    let first = b.prepare(&GROUP, "first", NOW + 1);
+    b.encrypt(&first);
+    b.core.send_fail(&first, "E_NETWORK").expect("fail");
+    // B's echo, and an own upload this device cannot place, arrive.
+    let second = b.prepare(&GROUP, "second", NOW + 2);
+    let (_, body) = b.encrypt(&second);
+    let seq = seq_of_answer(&relay.post_message(b.device, &body).expect("upload"));
+    let epoch = relay.epoch();
+    let unknown =
+        seq_of_answer(&relay.push_message(b.device, epoch, Some(vec![0x00, 0x01]), false));
+
+    let applied = b.sync(&relay);
+    assert_eq!(applied.new_seqs, vec![seq, unknown]);
+    let rows: Vec<(u64, u64, String)> = b
+        .timeline(&GROUP)
+        .into_iter()
+        .map(|r| (r.seq, r.status, r.body))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![(seq, 0, "second".to_owned()), (unknown, 1, String::new())]
+    );
+    let outbox = b.outbox(&GROUP);
+    assert_eq!(
+        outbox
+            .iter()
+            .map(|o| (o.msg_id, o.state, o.error.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(first, 2, "E_NETWORK")],
+        "A stays failed, for the person to retry"
+    );
+}
+
+#[test]
+fn the_deleted_echo_of_a_failed_upload_resolves_it() {
+    let (_instance, mut relay, _a, mut b) = alice_and_bob();
+    let first = b.prepare(&GROUP, "regret", NOW + 1);
+    let (_, body) = b.encrypt(&first);
+    let stored = seq_of_answer(&relay.post_message(b.device, &body).expect("upload"));
+    b.core.send_fail(&first, "E_HTTP_502").expect("fail");
+    relay.delete_message(stored);
+
+    let applied = b.sync(&relay);
+    assert_eq!(applied.flags & OWN_ADOPTED, OWN_ADOPTED);
+    assert!(b.outbox(&GROUP).is_empty(), "nothing is left to retry");
+    let row = b.timeline(&GROUP).pop().expect("row");
+    assert_eq!((row.seq, row.status, row.msg_id), (stored, 2, Some(first)));
 }
 
 #[test]
@@ -348,8 +417,16 @@ fn an_own_echo_without_a_served_commitment_is_judged_by_its_ciphertext() {
     let second = b.prepare(&GROUP, "second", NOW + 2);
     let (_, body) = b.encrypt(&second);
     let applied = apply(&mut b, &[&live], stored);
-    assert_eq!(applied.flags & OWN_ADOPTED, 0);
-    assert_eq!(b.timeline(&GROUP).pop().map(|r| r.status), Some(1));
+    assert_eq!(
+        applied.flags & OWN_ADOPTED,
+        OWN_ADOPTED,
+        "the failed first row is resolved"
+    );
+    assert_eq!(
+        b.timeline(&GROUP).pop().map(|r| (r.status, r.body)),
+        Some((0, "first".to_owned()))
+    );
+    assert_eq!(b.outbox(&GROUP).len(), 1, "B stays in flight");
 
     let seq = seq_of_answer(&relay.post_message(b.device, &body).expect("upload"));
     let live = MsgRow {
@@ -360,11 +437,7 @@ fn an_own_echo_without_a_served_commitment_is_judged_by_its_ciphertext() {
     assert_eq!(applied.flags & OWN_ADOPTED, OWN_ADOPTED);
     let row = b.timeline(&GROUP).pop().expect("row");
     assert_eq!((row.seq, row.status, row.body.as_str()), (seq, 0, "second"));
-    assert_eq!(
-        b.outbox(&GROUP).len(),
-        1,
-        "only the failed first row is left"
-    );
+    assert!(b.outbox(&GROUP).is_empty(), "both rows are resolved");
 
     // A served commitment that names the row in flight does not outvote a ciphertext that
     // carries another one.

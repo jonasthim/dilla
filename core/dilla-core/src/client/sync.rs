@@ -94,30 +94,35 @@ fn message_stored(c: &rusqlite::Connection, id: &[u8; 16], seq: u64) -> Result<b
     .is_some())
 }
 /// An outbox row: its `msg_id`, the stored envelope bytes and the envelope they decode to.
-type InFlight = ([u8; 16], Vec<u8>, Envelope);
-/// The group's in-flight outbox row when its envelope's commitment `C` is `served`: the served
-/// row is the upload of that row.
-fn in_flight_with(
+type OutboxEntry = ([u8; 16], Vec<u8>, Envelope);
+/// The group's unresolved outbox row (in any state: in flight, failed after a lost answer, or
+/// queued again after an echo wait) whose envelope commitment `C` is `served`: the served row is
+/// that row's upload, which the server stored. `C` is keyed by the envelope's random `k_f`, so it
+/// names one envelope; adopting it is what keeps a stored upload from being sent again.
+fn unresolved_with(
     c: &rusqlite::Connection,
     id: &[u8; 16],
     served: &[u8; 32],
-) -> Result<Option<InFlight>, StorageError> {
-    let outbox: Option<([u8; 16], Vec<u8>)> = c
-        .query_row(
-            "SELECT msg_id,envelope FROM app_outbox WHERE group_id=?1 AND state=1",
-            [id.as_slice()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    let Some((msg_id, bytes)) = outbox else {
-        return Ok(None);
-    };
-    let env = Envelope::decode(&bytes)
-        .map_err(|_| StorageError::Sqlite("outbox envelope does not decode".into()))?;
-    let commitment = env
-        .commitment()
-        .map_err(|_| StorageError::Sqlite("outbox envelope has no commitment".into()))?;
-    Ok((&commitment == served).then_some((msg_id, bytes, env)))
+) -> Result<Option<OutboxEntry>, StorageError> {
+    let mut stmt = c.prepare(
+        "SELECT msg_id,envelope FROM app_outbox WHERE group_id=?1 ORDER BY created,msg_id",
+    )?;
+    let rows = stmt
+        .query_map([id.as_slice()], |r| {
+            Ok((r.get::<_, [u8; 16]>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (msg_id, bytes) in rows {
+        let env = Envelope::decode(&bytes)
+            .map_err(|_| StorageError::Sqlite("outbox envelope does not decode".into()))?;
+        let commitment = env
+            .commitment()
+            .map_err(|_| StorageError::Sqlite("outbox envelope has no commitment".into()))?;
+        if &commitment == served {
+            return Ok(Some((msg_id, bytes, env)));
+        }
+    }
+    Ok(None)
 }
 fn apply_message(
     c: &rusqlite::Connection,
@@ -135,11 +140,11 @@ fn apply_message(
         if changed > 0 {
             return Ok((true, false));
         }
-        // The deleted upload of the row in flight (its commitment survives the deletion): the
+        // The deleted upload of an unresolved outbox row (its commitment survives the deletion): the
         // server stored it, so the outbox row is done and never resent.
         if row.uploader_device == own.device_id
             && let Some(served) = row.commitment.as_ref()
-            && let Some((msg_id, _, env)) = in_flight_with(c, id, served)?
+            && let Some((msg_id, _, env)) = unresolved_with(c, id, served)?
         {
             let marker = StoredMessage {
                 status: STATUS_DELETED,
@@ -173,16 +178,17 @@ fn apply_message(
         if message_stored(c, id, row.seq)? {
             return Ok((false, false));
         }
-        // Adopted only as the upload of the row in flight: the commitment the row carries (the
-        // served field and the ciphertext's authenticated data, which must agree when both are
-        // there) is that envelope's. Anything else is an own upload this device cannot place.
+        // Adopted only as the upload of the outbox row (in flight, failed or queued again) whose
+        // envelope commitment the row carries (the served field and the ciphertext's
+        // authenticated data, which must agree when both are there). Anything else is an own
+        // upload this device cannot place.
         let carried = row.blob.as_deref().and_then(wire::blob_commitment);
         let served = match (row.commitment, carried) {
             (Some(field), Some(blob)) if field != blob => None,
             (field, blob) => field.or(blob),
         };
         let adopt = match served {
-            Some(served) => in_flight_with(c, id, &served)?,
+            Some(served) => unresolved_with(c, id, &served)?,
             None => None,
         };
         if let Some((msg_id, bytes, env)) = adopt {
