@@ -143,6 +143,26 @@ Two counters exist and are never conflated: the per-group delivery-service **`se
 durable and appears inside payloads, and the per-session replay **`n`**, which lives only in memory
 and only in element 1.
 
+### Connecting
+
+A client opens the gateway with an HTTP/1.1 WebSocket upgrade, `GET /gateway`, on the instance's
+own origin, and offers the subprotocol `dilla.v1`; the instance echoes `dilla.v1` and never any
+other value. Messages are binary and carry one frame each; compression is not negotiated.
+
+The connection's session is, in this order: the `session_token` of `identify` when it is not
+empty; else the upgrade's `Authorization: Bearer <token>`; else a **gateway ticket**. A client that
+cannot set request headers (a browser's `WebSocket`) mints a ticket with `POST /v1/gateway/ticket`
+(`09-http-api.md` § Sessions endpoints: single use, valid 30 seconds), offers it as a second
+subprotocol beside the first — `new WebSocket(url, ["dilla.v1", "dilla.ticket.<ticket>"])` — and
+sends `identify` with an empty `session_token`. The upgrade spends the ticket whether or not the
+connection then identifies, and the ticket is never echoed, so the credential does not appear in
+the response.
+
+An upgrade whose `Origin` header names a host other than the request's `Host` (compared with the
+port, case-insensitively) and matches none of the instance's `http.trusted_origins` (default
+`dilla://app`) is refused with `403`; a request without `Origin` is not refused on this rule. A
+client served by the instance from its own origin therefore needs no configuration.
+
 ### Control (0–15) — `group_id = null`, `n = 0`
 
 Two exceptions to the heading, and only two. `ready` (3) and `resumed` (4) are replayable and
@@ -252,6 +272,15 @@ being silently dropped rather than refused.
 | 4008 | `rate_limited` | yes |
 | 4009 | `session_timeout` | no |
 | 4010 | `going_away` | yes |
+| 4100 | `client_hello_timeout` | — |
+| 4101 | `client_heartbeat_timeout` | — |
+| 4102 | `client_undecodable` | — |
+| 4109 | `client_too_large` | — |
+
+Codes 4100–4199 are reserved for closes initiated by a client. An instance never sends one and
+attaches no meaning to one it receives: a browser cannot close a socket with 1002 or 1009
+(`WebSocket.close` accepts only 1000 and 3000–4999), so a client that gives up on a connection
+names its reason here. The instance's own codes stay in 4000–4099.
 
 A structured failure is sent as an `error` frame **before** the close, because the close reason is
 capped at 123 bytes.
@@ -405,6 +434,14 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    advance the election. A device that an outstanding non-void DS `Remove` is removing is never
    elected — it cannot commit its own removal — and when it is the only candidate online nobody is
    elected.
+
+   The member list an election walks is also the list every group-scoped frame (`message.ct`,
+   `message.deleted`, `mls.handshake`) fans out to. The instance holds it, with each device's leaf
+   index, in memory, writes it after every registration, accepted commit and heal, and rebuilds it
+   from its member table for every open group when it starts, before it accepts a connection. A
+   restarted instance therefore delivers group frames and elects committers without waiting for a
+   group's next commit. Frames fanned out while a device had no connection are not replayed to a
+   fresh `identify`; a client catches each group up over HTTP after every `ready`.
 8. **Current-leaf sends.** Application messages are accepted only from a device session whose
    leaf is in the current `PublicGroup` (`403 E_LEAF_NOT_CURRENT`). The DS reads the franking
    commitment `C` from `private_message.authenticated_data` and MUST reject an upload whose

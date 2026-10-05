@@ -327,6 +327,11 @@ func New(o Options) (*DS, error) {
 	return ds, nil
 }
 
+// Start first reseeds the gateway's group registry from SQL (SeedGateway): the fan-out list and
+// leaf map are in memory, and a restarted instance would otherwise deliver nothing in a group
+// and elect nobody until that group's next commit (C12, gap G5). A store error there is returned
+// and nothing is started.
+//
 // Start runs the delivery service's background work: invariant 7's 2-second election watchdog and
 // the one-minute sweeper that voids proposals past invariant 6's TTL. Task 26 extends the sweeper
 // with retention pruning, on the same tick. dilla-media task 9 adds the call sweeper, which runs the
@@ -336,6 +341,9 @@ func New(o Options) (*DS, error) {
 // watchdog deterministically calls RunWatchdogOnce against a clock.Fake instead of starting it —
 // these tickers are wall-clock, because a fake clock in production would be a stopped one.
 func (d *DS) Start(ctx context.Context) error {
+	if _, err := d.SeedGateway(ctx); err != nil {
+		return err
+	}
 	d.wg.Add(3)
 	go func() {
 		defer d.wg.Done()
