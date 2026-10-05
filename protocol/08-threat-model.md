@@ -56,7 +56,11 @@ Stated plainly in the product's documentation and onboarding:
   never reaches long-lived MLS or store secrets, and every member derives every sender's frame keys
   from it anyway. The worker zeroes the transferred key and each copy it hands the wasm cipher, and
   the cipher zeroes the buffer each copy arrives in; the receiver's key install borrows the key and
-  copies it once into a zeroized-on-drop heap buffer it keeps for the retention period. Not zeroed:
+  copies it once into a zeroized-on-drop heap buffer it keeps for the retention period. The worker
+  also keeps one JavaScript copy of each held epoch's `base_key`, only to recognise an identical
+  duplicate install; it is zeroed when that epoch retires or is evicted, when its install fails, and
+  on `clearKeys`. The JavaScript engine may move that small buffer during garbage collection, so
+  earlier unzeroed images of it can remain in freed heap until overwritten. Not zeroed:
   the transient copies that key derivation leaves, because every derivation hashes `base_key` as the
   HKDF input keying material and the hasher's working buffers hold it until they are overwritten;
   they stay in the wasm stack region until later calls overwrite them; and any copy the browser

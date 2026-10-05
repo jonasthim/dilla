@@ -32577,6 +32577,7 @@ Claude-Session: https://claude.ai/code/session_01ATX5KV2uNfihoyAMASpNjz"
 22. **Audio input state** — origin: progress.md:118 (AUDIO-9). dilla-web presents a distinct "not heard yet" state for a policy-excluded peer with no camera, separate from "failed authentication"; roster presence alone cannot call the peer verified.
 23. **LiveKit join visibility batching** — origin: progress.md:121; livekit-server v1.13.7 `pkg/rtc/room.go:56` fixes `subscriberUpdateInterval` at 3 s. An existing caller sees a new participant about 2.5–2.9 s late (20 joins: 2.88 s p50); a scratch build with the constant at 100 ms measured about 300 ms. Choose a carried patch, an upstream knob, or join announcements through dillad's gateway.
 24. **RNNoise render-thread startup cost** — origin: progress.md:120 (E2E-14/AUDIO-5). Synchronous WebAssembly instantiation in the audio worklet's render thread has unmeasured startup cost; the old lost-quanta gate measured only the constructor. Measure render-thread startup cost before setting a bound.
+25. **Duplicate-install check inside the wasm key ring** — origin: the A4 re-review of the client-half fix wave, 2026-10-05. Make the duplicate-install check a constant-time compare inside the wasm key ring (for example `epoch_key_matches`), so the media worker keeps no JavaScript copy of `base_key`.
 
 ## Assembly notes
 

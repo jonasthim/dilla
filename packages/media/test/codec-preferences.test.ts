@@ -97,6 +97,18 @@ it('rejects an AV1-only video section with a parseable format and no playable di
   expect(filtered).toContain('a=inactive\r\n');
 });
 
+it('leaves the BUNDLE group line alone when it zeroes a video section', () => {
+  // Probed 2026-10-05: Chromium 153 and Firefox 155 accept a zeroed section that stays in the group, as offer and as answer.
+  const sdp = 'v=0\r\na=group:BUNDLE 0 1\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\na=rtpmap:111 opus/48000/2\r\nm=video 9 UDP/TLS/RTP/SAVPF 97 98\r\na=mid:1\r\na=sendrecv\r\na=rtpmap:97 AV1/90000\r\na=rtpmap:98 AV1/90000\r\n';
+  const filtered = restrictH264Sdp(sdp);
+  expect(filtered).toContain('a=group:BUNDLE 0 1\r\n');
+  const video = filtered.split('m=video ')[1] ?? '';
+  const mLine = video.split('\r\n')[0] ?? '';
+  expect(mLine.startsWith('0 ')).toBe(true);
+  expect(mLine.split(' ').slice(2)).toHaveLength(1);
+  expect(video).toContain('a=inactive\r\n');
+});
+
 it('rejects a video section when only RTX and FEC refer to removed codecs', () => {
   const sdp = 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 97 98 99 100\r\na=mid:1\r\na=rtpmap:97 AV1/90000\r\na=rtpmap:98 rtx/90000\r\na=fmtp:98 apt=97\r\na=rtpmap:99 red/90000\r\na=fmtp:99 apt=97\r\na=rtpmap:100 ulpfec/90000\r\na=fmtp:100 apt=97\r\n';
   const filtered = restrictH264Sdp(sdp);

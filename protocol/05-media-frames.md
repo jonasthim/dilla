@@ -148,7 +148,7 @@ within an epoch, so three rules keep its counters unique across worker restarts,
   `E_WASM` ends that worker: the client clears its keys, terminates it, reports the error and stops
   the call's media. It cannot continue sending under the superseded epoch. An initial install
   failure rejects the join, which releases the call lock. Every posted install gets a worker answer:
-  an identical duplicate of a held epoch is confirmed; a duplicate with a different roster or key
+  an identical duplicate of a held epoch is confirmed; a duplicate with a different group, self leaf, roster or key
   is refused with `E_BAD_OPTIONS` for that install alone; an epoch too old or at or below the
   dropped-epoch floor gets `epochIgnored` and the caller's promise rejects with `E_STALE_EPOCH`.
   An ignored install records no roster, does not count as a confirmed epoch and does not end the
