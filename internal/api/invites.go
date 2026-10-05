@@ -68,9 +68,10 @@ func (d Deps) RedeemInvite(w http.ResponseWriter, r *http.Request) {
 }
 
 // landingPage is the invite landing page. It carries no script, no external
-// reference and no form: it is one paragraph a human reads before pasting the
-// code into a client, and anything more is a phishing surface an instance hands
-// out to strangers by construction.
+// reference and no form, and one same-origin link into the web client: it is one
+// paragraph a human reads before following that link or pasting the code into a
+// client, and anything more is a phishing surface an instance hands out to
+// strangers by construction.
 var landingPage = template.Must(template.New("invite").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -80,8 +81,8 @@ var landingPage = template.Must(template.New("invite").Parse(`<!doctype html>
 {{if .Community}}<p>Community: {{.Community}}</p>{{end}}
 <p>Invite code: <code>{{.Code}}</code></p>
 <p>This invitation is valid until {{.Expires}} and can be used {{.Remaining}} more time(s).</p>
-<p>Open a dilla client, choose &ldquo;join an instance&rdquo;, enter <code>{{.Instance}}</code>
-and paste the code above. This page never asks for a password.</p>
+<p><a href="/welcome?invite={{.Code}}">Open dilla in this browser</a>, or paste the code above
+into a dilla client for <code>{{.Instance}}</code>. This page never asks for a password.</p>
 </body></html>
 `))
 

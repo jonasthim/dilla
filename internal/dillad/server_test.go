@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"go/build"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -34,6 +38,7 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	"github.com/jonasthim/dilla/internal/web"
 )
 
 // testConfig writes a dilla.toml under t.TempDir(), migrates the database it
@@ -726,5 +731,169 @@ func TestAPanickingHandlerIsStillLoggedAndCounted(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `dilla_http_request_duration_seconds_count{route="GET /v1/panic"} 1`) {
 		t.Fatal("the panicking request contributed no duration sample")
+	}
+}
+
+// webTree is a client tree with the manifest task 22's writer would emit for it.
+func webTree(t *testing.T, files map[string]string) fstest.MapFS {
+	t.Helper()
+	type entry struct {
+		Path   string `json:"path"`
+		SHA256 string `json:"sha256"`
+		Size   int    `json:"size"`
+	}
+	doc := struct {
+		V     int     `json:"v"`
+		Files []entry `json:"files"`
+	}{V: 1, Files: []entry{}}
+	fsys := fstest.MapFS{}
+	for _, p := range slices.Sorted(maps.Keys(files)) {
+		sum := sha256.Sum256([]byte(files[p]))
+		doc.Files = append(doc.Files, entry{Path: p, SHA256: hex.EncodeToString(sum[:]), Size: len(files[p])})
+		fsys[p] = &fstest.MapFile{Data: []byte(files[p])}
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal the manifest: %v", err)
+	}
+	fsys[web.ManifestName] = &fstest.MapFile{Data: append(raw, '\n')}
+	return fsys
+}
+
+func wantCSP(host string) string {
+	return "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; " +
+		"font-src 'self'; connect-src 'self' ws://" + host + " wss://" + host + "; worker-src 'self'; " +
+		"media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+}
+
+func serveOne(t *testing.T, h http.Handler, method, path, host string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), method, path, nil)
+	if host != "" {
+		req.Host = host
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// C9: the instance serves the client from its own origin; a binary built without one serves the
+// committed placeholder, through the whole handler chain.
+func TestTheEmbeddedWebClientIsServedAtTheRoot(t *testing.T) {
+	srv, h, _ := newInstance(t)
+	defer srv.Shutdown(context.Background())
+	for _, path := range []string{"/", "/welcome", "/c/0123456789abcdef0123456789abcdef"} {
+		rec := serveOne(t, h, http.MethodGet, path, "dilla.test")
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<meta name="dilla-web" content="placeholder">`) {
+			t.Fatalf("GET %s = %d %q, want the placeholder", path, rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Security-Policy"); got != wantCSP("dilla.test") {
+			t.Errorf("GET %s: CSP %q", path, got)
+		}
+		if rec.Header().Get("X-Dilla-Generation") == "" {
+			t.Errorf("GET %s carries no X-Dilla-Generation", path)
+		}
+	}
+}
+
+// The catch-all never answers for the API: every reserved or routed path answers exactly as it did
+// before the client was mounted (the mux's 404 body, its 405 with the route's Allow, the upgrade's
+// 426), and never with the page.
+func TestTheAPIAnswersAsBeforeBesideTheWebClient(t *testing.T) {
+	srv, h, _ := newInstance(t)
+	defer srv.Shutdown(context.Background())
+	message := "/v1/groups/" + id.New().String() + "/message"
+	for _, c := range []struct {
+		method, path string
+		status       int
+		allow, body  string
+	}{
+		{http.MethodGet, "/v1/nope", http.StatusNotFound, "", "404 page not found\n"},
+		{http.MethodPost, "/v1/nope", http.StatusNotFound, "", "404 page not found\n"},
+		{http.MethodGet, "/v1", http.StatusNotFound, "", "404 page not found\n"},
+		{http.MethodGet, message, http.StatusMethodNotAllowed, "POST", ""},
+		{http.MethodPost, "/", http.StatusMethodNotAllowed, "GET, HEAD", "method not allowed\n"},
+		{http.MethodPost, "/gateway", http.StatusMethodNotAllowed, "GET, HEAD", ""},
+		{http.MethodGet, "/gateway", http.StatusUpgradeRequired, "", ""},
+		{http.MethodGet, "/rtc/validate", http.StatusNotFound, "", "404 page not found\n"},
+		{http.MethodPost, "/debug/sfu/token", http.StatusNotFound, "", "404 page not found\n"},
+		{http.MethodGet, "/healthz", http.StatusOK, "", ""},
+	} {
+		rec := serveOne(t, h, c.method, c.path, "")
+		if rec.Code != c.status {
+			t.Errorf("%s %s = %d, want %d", c.method, c.path, rec.Code, c.status)
+		}
+		if c.allow != "" && rec.Header().Get("Allow") != c.allow {
+			t.Errorf("%s %s: Allow %q, want %q", c.method, c.path, rec.Header().Get("Allow"), c.allow)
+		}
+		if c.body != "" && rec.Body.String() != c.body {
+			t.Errorf("%s %s: body %q, want %q", c.method, c.path, rec.Body.String(), c.body)
+		}
+		if strings.Contains(rec.Body.String(), "dilla-web") {
+			t.Errorf("%s %s answered with the web client", c.method, c.path)
+		}
+		if rec.Header().Get("X-Dilla-Generation") == "" {
+			t.Errorf("%s %s carries no X-Dilla-Generation", c.method, c.path)
+		}
+	}
+}
+
+// With an SFU, New mounts /rtc and /rtc/ without a method (routes.go:241-242). The client must be
+// served beside them: a "GET /" pattern would make this New panic (ruling 32).
+func TestTheWebClientAndTheSignallingProxyServeSideBySide(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer upstream.Close()
+	srv, err := dillad.New(context.Background(), dillad.Options{
+		Config: testConfig(t), Clock: clock.System(), Wasm: sharedRuntime(t), SFU: upstreamSFU{url: upstream.URL},
+	})
+	if err != nil {
+		t.Fatalf("dillad.New with an SFU: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+	if rec := serveOne(t, srv.Handler(), http.MethodGet, "/", ""); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `content="placeholder"`) {
+		t.Fatalf("GET / beside the SFU = %d %q", rec.Code, rec.Body.String())
+	}
+	if rec := serveOne(t, srv.Handler(), http.MethodGet, "/rtc/validate?access_token=x", ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("GET /rtc/validate = %d, want the join gate's 403", rec.Code)
+	}
+	if rec := serveOne(t, srv.Handler(), http.MethodPost, "/rtc", ""); rec.Code != http.StatusMethodNotAllowed ||
+		rec.Header().Get("Allow") != http.MethodGet {
+		t.Fatalf("POST /rtc = %d (Allow %q), want the proxy's own 405 with Allow GET", rec.Code, rec.Header().Get("Allow"))
+	}
+}
+
+func TestOptionsWebReplacesTheEmbeddedClient(t *testing.T) {
+	const page = "<!doctype html><title>built</title>\n"
+	srv, err := dillad.New(context.Background(), dillad.Options{
+		Config: testConfig(t), Clock: clock.System(), Wasm: sharedRuntime(t),
+		Web: webTree(t, map[string]string{"index.html": page}),
+	})
+	if err != nil {
+		t.Fatalf("dillad.New: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+	if rec := serveOne(t, srv.Handler(), http.MethodGet, "/", ""); rec.Body.String() != page {
+		t.Fatalf("GET / = %q, want the tree passed in Options.Web", rec.Body.String())
+	}
+}
+
+// Ruling 12: a client tree its manifest does not describe stops the instance from starting.
+func TestNewRefusesAWebClientItsManifestDoesNotDescribe(t *testing.T) {
+	const page = "<!doctype html><title>built</title>\n"
+	tampered := webTree(t, map[string]string{"index.html": page})
+	tampered["index.html"] = &fstest.MapFile{Data: []byte(strings.ToUpper(page))}
+	srv, err := dillad.New(context.Background(), dillad.Options{
+		Config: testConfig(t), Clock: clock.System(), Wasm: sharedRuntime(t), Web: tampered,
+	})
+	if err == nil {
+		_ = srv.Shutdown(context.Background())
+		t.Fatal("dillad.New accepted a client whose index.html does not match its manifest")
+	}
+	if !strings.HasPrefix(err.Error(), "dillad: web client: ") ||
+		!strings.Contains(err.Error(), "index.html does not match its manifest sha256") {
+		t.Fatalf("dillad.New = %v", err)
 	}
 }

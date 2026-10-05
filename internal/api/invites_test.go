@@ -590,3 +590,27 @@ func TestOnlyThePermittedMayRevokeAnInvite(t *testing.T) {
 		t.Fatal("a refused DELETE revoked the invite")
 	}
 }
+
+// Ruling 34: the landing page is the only URL the instance mints for an invite, and it leads into
+// the web client on the same origin, still with no script and no form.
+func TestTheLandingPageLinksIntoTheWebClient(t *testing.T) {
+	e, cid, ownerTok := inviteEnv(t)
+	code := mintInvite(t, e, cid, ownerTok, 5, 3600)
+
+	resp, body := rawGet(t, e, "/i/"+code, "text/html")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /i/{code} = %d", resp.StatusCode)
+	}
+	page := string(body)
+	if !strings.Contains(page, `<a href="/welcome?invite=`+code+`">Open dilla in this browser</a>`) {
+		t.Fatalf("the landing page does not link into the web client:\n%s", page)
+	}
+	if !strings.Contains(page, "into a dilla client for <code>dilla.example</code>. This page never asks for a password.</p>") {
+		t.Fatalf("the landing page lost the paste-the-code sentence:\n%s", page)
+	}
+	for _, absent := range []string{"Open a dilla client", "<script", "<form"} {
+		if strings.Contains(page, absent) {
+			t.Fatalf("the landing page contains %q:\n%s", absent, page)
+		}
+	}
+}

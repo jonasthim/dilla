@@ -90,6 +90,11 @@ type HostOptions struct {
 	// takes it from DILLA_METRICS_TOKEN, as dillad does). Empty keeps dillad's default: a random
 	// token nobody holds, so every scrape is refused.
 	ScrapeToken string
+	// WebRoot is a built client directory, its dilla-manifest.json included, served at the
+	// instance's own origin instead of the embedded placeholder (dillad.Options.Web =
+	// os.DirFS(WebRoot)); "" keeps the placeholder. A directory its manifest does not describe
+	// fails NewHost and Restore with dillad's "dillad: web client: " error.
+	WebRoot string
 }
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
@@ -344,6 +349,9 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 	// interface holding a nil *ChannelModes would not be nil; the fields are simply not set.)
 	if !h.o.ProductionACL {
 		o.ACL, o.Channels = AllowEveryone{}, h.channels
+	}
+	if h.o.WebRoot != "" {
+		o.Web = os.DirFS(h.o.WebRoot)
 	}
 	// Set only when there is one: an interface holding a nil *sfu.Server is not a nil interface.
 	// The instance sees it without the debug rooms, which its room sweep would otherwise delete.

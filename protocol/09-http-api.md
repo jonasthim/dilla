@@ -1100,6 +1100,78 @@ configuration file is diffed and copied around, and the token is a credential (s
 the instance guards the endpoint with a random token nobody holds and logs that every scrape will be
 refused, so an unset token never leaves the endpoint open.
 
+## Web client and content manifest
+
+The instance serves the browser client from its own origin. The client therefore needs no CORS
+(the instance sends none) and passes the gateway's same-host `Origin` rule (`02` § Gateway frames,
+Connecting). The served tree is embedded in the binary when it is built; a binary built without the
+client serves a one-page placeholder that names itself with `<meta name="dilla-web"
+content="placeholder">`.
+
+**Which requests the client answers.** A request for which the instance has a route — every route
+of this document and of `02`, `GET /gateway`, `/rtc`, `GET /i/{code}` and the operational
+endpoints — is answered by that route when its method is routed. A path equal to or below one of the
+reserved prefixes `/v1/`, `/gateway`, `/rtc`, `/i/`, `/healthz`, `/readyz`, `/metrics` and `/debug/`
+(each also without its trailing `/`) is never answered by the client: an unknown one is
+`404` with the body `404 page not found`, a known one asked with the wrong method `405` with
+`Allow`. Every other request is the client's, in this order:
+
+1. A method other than `GET` or `HEAD` is `405` with `Allow: GET, HEAD`.
+2. A path containing `..` or a NUL byte is `404`. `/` is `index.html`.
+3. A path naming a file of the manifest is that file.
+4. A path whose last segment contains no `.` is `index.html` with `200`: the client's own routes
+   (`/welcome`, `/c/<community>/<channel>`) are resolved in the browser.
+5. Anything else is `404`.
+
+**Headers.** Every file is served with an explicit `Content-Type` chosen by extension and never
+sniffed: `.html` `text/html; charset=utf-8`, `.js` `text/javascript; charset=utf-8`, `.css`
+`text/css; charset=utf-8`, `.wasm` `application/wasm`, `.json` `application/json`, `.woff2`
+`font/woff2`, `.woff` `font/woff`, `.svg` `image/svg+xml`, `.png` `image/png`, `.ico` `image/x-icon`,
+`.txt` `text/plain; charset=utf-8`; a tree holding a file of any other extension is refused at
+start. `ETag` is the file's quoted SHA-256 from the manifest, and a request whose `If-None-Match`
+names it is `304` (which carries no `Content-Type`). Files under `/assets/` (content-hashed by the
+build) are `Cache-Control: public, max-age=31536000, immutable`; every other file, `index.html`
+included, is `Cache-Control: no-cache`.
+
+Every `200` and every `304` of every file, whatever its extension, carries the same set of headers:
+
+    X-Content-Type-Options: nosniff
+    Referrer-Policy: no-referrer
+    X-Frame-Options: DENY
+    Permissions-Policy: camera=(), microphone=(), display-capture=(), geolocation=()
+    Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' ws://HOST wss://HOST; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+
+The policy is on every file, not only on HTML, because a dedicated worker loaded from a URL takes
+its policy from its own script response, not from the document that started it, and the client's
+worker holds its keys and does its network calls. web-1 grants no camera, microphone, screen
+capture, `blob:` image or media source; the changes that need them widen these two headers with
+their own row in `07`. `HOST` is the request's `Host` header when it is a host name or IPv4 address
+of at most 253 characters, or a bracketed IPv6 literal, either with an optional port; for any other
+`Host` the two `ws` sources are left out. The client's own `404` and `405` answers carry only
+`X-Content-Type-Options: nosniff` from Go's `http.Error`; they carry no CSP, ETag, Cache-Control or
+policy headers. No `Strict-Transport-Security`, `Cross-Origin-Opener-Policy`,
+`Cross-Origin-Embedder-Policy` or `Access-Control-*` header is sent: TLS termination and HSTS belong
+to the operator's proxy, and the client needs no cross-origin isolation. Behind a proxy that
+rewrites `Host`, the CSP names the rewritten host and the browser refuses the gateway connection;
+such a proxy must forward the original `Host`.
+
+**The content manifest.** The root of the tree holds `dilla-manifest.json`, one JSON object on one
+line followed by a newline:
+
+    {"v":1,"files":[{"path":"assets/index-AbC123.js","sha256":"<64 lowercase hex>","size":12345},{"path":"index.html","sha256":"…","size":678}]}
+
+`files` lists every regular file of the tree except the manifest itself, by its `/`-separated path
+relative to the root, in strictly ascending byte order of `path`, with the SHA-256 of its bytes as
+64 lowercase hex digits and its length in bytes. The instance verifies the tree against it when it
+starts and refuses to start when `v` is not `1`, when an entry is malformed or out of order, when
+`index.html` is not listed, when a listed file is missing, differs in size or digest, or is not a
+regular file, or when a file is present that is not listed; it then serves only the bytes it
+verified. The manifest is the per-file integrity record a later client-side or third-party check
+can be built on; it is not itself served.
+
+**The invite landing page.** The invite landing page (`GET /i/{code}`, `text/html`) links to
+`/welcome?invite=<code>` on its own origin; the client prefills its invite field from it.
+
 ## Flags
 
 `users.flags` is a bitfield. Two bits are assigned at `wire_version = 1`:

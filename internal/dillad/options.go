@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 
@@ -70,6 +71,9 @@ type Options struct {
 	// Channels is invariant 1's channel-mode source and the registration
 	// ACL; nil means api.StructureChannels over the repository (Plan 2 task 2).
 	Channels ds.Channels
+	// Web is the built browser client dillad serves at its own origin, verified against its
+	// dilla-manifest.json by web.New; nil means web.Embedded().
+	Web fs.FS
 
 	// closeRepo records that New opened the repository itself, so Shutdown
 	// closes it. A caller that supplied its own keeps ownership of it: closing

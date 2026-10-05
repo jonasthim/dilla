@@ -30,6 +30,7 @@ import (
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
+	"github.com/jonasthim/dilla/internal/web"
 )
 
 type Server struct {
@@ -96,6 +97,14 @@ func deliverySeams(o Options) (ds.Channels, ds.ACL) {
 // every session signature preimage and the generation is in every response
 // header, and neither changes without a restart or a restore.
 func New(ctx context.Context, o Options) (*Server, error) {
+	tree := o.Web
+	if tree == nil {
+		tree = web.Embedded()
+	}
+	client, err := web.New(tree)
+	if err != nil {
+		return nil, fmt.Errorf("dillad: web client: %w", err)
+	}
 	if err := o.validate(ctx); err != nil {
 		return nil, err
 	}
@@ -408,7 +417,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		mux.Handle("GET "+o.Config.Metrics.Path, o.Metrics.Handler(o.Config.Metrics.RequireAdmin, token))
 	}
 
-	var h http.Handler = mux
+	// The browser client answers only what no route and no reserved prefix answers
+	// (internal/web.Fallback): the mux keeps its own 404s and 405s, and the
+	// method-less /rtc patterns mountRTC adds stay legal.
+	h := client.Fallback(mux)
 	h = generationHeader(h, instance.Generation)
 	// Recover sits INSIDE RequestLog, not outside it. server.RequestLog logs
 	// and calls observe after next.ServeHTTP returns, with no defer, so a panic
