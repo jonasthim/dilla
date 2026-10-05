@@ -8,7 +8,8 @@ Certificate of Origin in `DCO`. There is no contributor licence agreement and th
 ## Cryptography rule
 
 dilla uses only published standards, implemented in public code: MLS (RFC 9420), the RFC 9605
-SFrame shape for media frames, HKDF-SHA256, HMAC-SHA256, SHA-256, AES-128-GCM, Ed25519, X25519.
+SFrame shape for media frames, HKDF-SHA256, HMAC-SHA256, SHA-256, AES-128-GCM, AES-256-GCM (the
+protocol/06 header objects and protocol/04 attachments), Ed25519, X25519.
 A pull request that introduces a construction not defined in one of those documents, or a
 "simplified" variant of one, is closed without review. Ask first in an issue if you think an
 exception is needed.

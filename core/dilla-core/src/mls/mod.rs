@@ -54,7 +54,7 @@ pub use provider::DillaProvider;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 pub use storage::{ConnHandle, DillaStorage};
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
-pub use tx::TxError;
+pub use tx::{TxError, UnitScope};
 
 use serde::{Serialize, de::DeserializeOwned};
 

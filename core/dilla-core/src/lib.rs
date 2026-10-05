@@ -5,6 +5,9 @@
 #![forbid(unsafe_code)]
 
 pub mod cbor;
+// The client uses the SQLite half of `mls`, unavailable on wasm32-wasip1.
+#[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
+pub mod client;
 pub mod envelope;
 pub mod error;
 pub mod identity;
