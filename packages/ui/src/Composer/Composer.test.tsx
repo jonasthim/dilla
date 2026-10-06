@@ -25,6 +25,8 @@ function setup(over: Over = {}, owner: Owner = {}) {
   render(<Shell />);
   return { props: { ...base, onSend, onChange }, textarea: screen.getByRole('textbox', { name: 'message #general' }) as HTMLTextAreaElement };
 }
+// The visible counter; its polite status (A11Y-DESIGN-04) may hold the same words.
+const counterText = (text: string) => screen.getByText(text, { selector: '.d-composer__counter' });
 
 describe('Composer', () => {
   it('is a labelled textarea in a d-composer form with the placeholder', () => {
@@ -69,17 +71,18 @@ describe('Composer', () => {
     const user = userEvent.setup();
     const { props, textarea } = setup({ maxLength: 10 });
     await user.type(textarea, '€€€');
-    expect(screen.getByText('1 left')).toHaveClass('d-composer__counter');
+    expect(counterText('1 left')).toHaveClass('d-composer__counter');
     await user.keyboard('{Enter}');
     expect(props.onSend).toHaveBeenCalledTimes(1);
     expect(props.onSend).toHaveBeenCalledWith('€€€');
     expect(textarea).toHaveValue('');
     await user.type(textarea, '€€€€');
-    expect(screen.getByText('-2 left')).toHaveClass('d-composer__counter');
+    expect(counterText('-2 left')).toHaveClass('d-composer__counter');
     expect(textarea).toHaveAccessibleDescription('-2 left');
     await user.keyboard('{Enter}');
     expect(props.onSend).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('button', { name: 'send' })).toBeDisabled();
+    // Refused but focusable (A11Y-DESIGN-04, Global Constraints line 98): aria-disabled, not the native attribute.
+    expect(screen.getByRole('button', { name: 'send' })).toHaveAttribute('aria-disabled', 'true');
     expect(textarea).toHaveValue('€€€€');
   });
 
@@ -146,6 +149,18 @@ describe('Composer', () => {
     expect(props.onSend).toHaveBeenCalledWith('nihongo');
   });
 
+  // WEB-APP-01: a held Enter auto-repeats; the repeats neither send again nor insert line breaks.
+  it('sends once for a held Enter and inserts no line break on its repeats', async () => {
+    const user = userEvent.setup();
+    const { props, textarea } = setup({}, { clearOnSend: false });
+    await user.type(textarea, 'hello');
+    expect(fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' })).toBe(false);
+    expect(fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+    expect(fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+    expect(props.onSend).toHaveBeenCalledTimes(1);
+    expect(textarea).toHaveValue('hello');
+  });
+
   it('does not send whitespace and keeps it', async () => {
     const user = userEvent.setup();
     const { props, textarea } = setup();
@@ -170,17 +185,66 @@ describe('Composer', () => {
     expect(screen.queryByText(/ left$/)).toBeNull();
     expect(textarea).not.toHaveAttribute('aria-describedby');
     await user.type(textarea, 'i');
-    expect(screen.getByText('1 left')).toHaveClass('d-composer__counter');
+    expect(counterText('1 left')).toHaveClass('d-composer__counter');
     expect(textarea).toHaveAccessibleDescription('1 left');
     await user.type(textarea, 'j');
-    expect(screen.getByText('0 left')).toBeInTheDocument();
+    expect(counterText('0 left')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'send' })).toBeEnabled();
     await user.type(textarea, 'k');
     expect(textarea).toHaveValue('abcdefghijk');
-    expect(screen.getByText('-1 left')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'send' })).toBeDisabled();
+    expect(counterText('-1 left')).toBeInTheDocument();
+    // Refused but focusable (A11Y-DESIGN-04, Global Constraints line 98): aria-disabled, not the native attribute.
+    expect(screen.getByRole('button', { name: 'send' })).toHaveAttribute('aria-disabled', 'true');
     await user.keyboard('{Enter}');
     expect(props.onSend).not.toHaveBeenCalled();
+  });
+
+  // A11Y-DESIGN-04: the counter is a status message. A polite status speaks it when it appears and when the text
+  // crosses the budget, never on every keystroke; over the budget the counter carries the danger tone and the
+  // send button stays focusable (aria-disabled) with the counter as its reason.
+  const words = (n: number) => (n < 0 ? `${-n} bytes over the limit` : `${n} left`);
+  it('announces the counter when it appears and when the text crosses the budget', async () => {
+    const user = userEvent.setup();
+    setup({ maxLength: 10, counterLabel: words });
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent(/^$/);
+    await user.type(screen.getByRole('textbox', { name: 'message #general' }), 'abcdefgh');
+    expect(status).toHaveTextContent(/^$/);
+    await user.type(screen.getByRole('textbox', { name: 'message #general' }), 'i');
+    expect(status).toHaveTextContent('1 left');
+    await user.type(screen.getByRole('textbox', { name: 'message #general' }), 'j');
+    expect(screen.getByText('0 left')).toHaveClass('d-composer__counter');
+    expect(status).toHaveTextContent('1 left');
+    await user.type(screen.getByRole('textbox', { name: 'message #general' }), 'k');
+    expect(status).toHaveTextContent('1 bytes over the limit');
+    await user.type(screen.getByRole('textbox', { name: 'message #general' }), 'l');
+    expect(screen.getByText('2 bytes over the limit')).toHaveClass('d-composer__counter');
+    expect(status).toHaveTextContent('1 bytes over the limit');
+    await user.keyboard('{Backspace}{Backspace}');
+    expect(status).toHaveTextContent('0 left');
+    await user.keyboard('{Backspace}{Backspace}{Backspace}');
+    expect(screen.queryByText(/ left$/)).toBeNull();
+    expect(status).toHaveTextContent(/^$/);
+  });
+  it('marks the counter over the budget and keeps send focusable with the counter as its reason', async () => {
+    const user = userEvent.setup();
+    const { props, textarea } = setup({ maxLength: 10, counterLabel: words });
+    await user.type(textarea, 'abcdefghij');
+    const send = screen.getByRole('button', { name: 'send' });
+    expect(screen.getByText('0 left')).not.toHaveAttribute('data-over');
+    expect(send).not.toHaveAttribute('aria-disabled');
+    await user.type(textarea, 'xyz');
+    const counter = screen.getByText('3 bytes over the limit');
+    expect(counter).toHaveAttribute('data-over', 'true');
+    expect(send).not.toBeDisabled();
+    expect(send).toHaveAttribute('aria-disabled', 'true');
+    expect(send).toHaveAccessibleDescription('3 bytes over the limit');
+    await user.tab();
+    expect(send).toHaveFocus();
+    await user.keyboard('{Enter}');
+    await user.click(send);
+    expect(props.onSend).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue('abcdefghijxyz');
   });
 
   it('stays focusable but sends nothing while disabled, and says why', async () => {

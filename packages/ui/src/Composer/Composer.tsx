@@ -1,4 +1,4 @@
-import { useId, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
+import { useId, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { Button } from '../Button/Button.tsx';
 import './Composer.css';
 
@@ -35,6 +35,8 @@ function labelParts(label: string): { lead: string; target: string | null } {
  * textarea carries no native maxLength (that counts UTF-16 units and would cut
  * a paste silently). Blocked, the textarea stays focusable (readOnly with
  * aria-disabled) so its reason is heard; only the send button is disabled.
+ * Over the budget the counter takes the danger tone, a polite status says so,
+ * and send stays focusable (aria-disabled) with the counter as its reason.
  */
 export function Composer({
   label, placeholder, maxLength, value, onChange, disabled, disabledReason, onSend, sendLabel, counterLabel,
@@ -50,6 +52,14 @@ export function Composer({
   const described = [showReason ? reasonId : null, showCounter ? counterId : null].filter((x): x is string => x !== null);
   const describedBy = described.length > 0 ? described.join(' ') : undefined;
   const { lead, target } = labelParts(label);
+  // Over the budget (and not blocked) send stays focusable, so the counter is heard as its reason.
+  const sendRefused = disabled !== true && overBudget;
+
+  // The counter is a status message: the polite status speaks it when it appears and when the text crosses the
+  // budget, never on every keystroke (WCAG 4.1.3). State adjusted during render, React's pattern for derived state.
+  const phase = !showCounter ? 'none' : overBudget ? 'over' : 'near';
+  const [status, setStatus] = useState<{ phase: typeof phase; text: string }>({ phase: 'none', text: '' });
+  if (status.phase !== phase) setStatus({ phase, text: phase === 'none' ? '' : counterLabel(remaining) });
 
   const submit = () => {
     if (disabled) return;
@@ -64,6 +74,8 @@ export function Composer({
     if (e.shiftKey) return; // the browser inserts the line break
     if (e.nativeEvent.isComposing || e.keyCode === 229) return; // the IME owns this Enter
     e.preventDefault();
+    // A held Enter auto-repeats: its repeats neither send again nor break the line.
+    if (e.repeat) return;
     submit();
   };
 
@@ -85,10 +97,15 @@ export function Composer({
         <textarea id={inputId} className="d-composer__input" rows={1} value={value} placeholder={placeholder}
           readOnly={disabled} aria-disabled={disabled ? true : undefined} aria-describedby={describedBy}
           onChange={onInput} onKeyDown={onKeyDown} />
-        <Button type="submit" variant="accent" disabled={disabled === true || overBudget}>{sendLabel}</Button>
+        <Button type="submit" variant="accent" disabled={disabled === true}
+          aria-disabled={sendRefused ? true : undefined} aria-describedby={sendRefused ? counterId : undefined}>{sendLabel}</Button>
       </div>
       {showReason ? <p id={reasonId} className="d-composer__reason">{disabledReason}</p> : null}
-      {showCounter ? <p id={counterId} className="d-composer__counter">{counterLabel(remaining)}</p> : null}
+      {showCounter ? (
+        <p id={counterId} className="d-composer__counter" data-over={overBudget ? 'true' : undefined}>{counterLabel(remaining)}</p>
+      ) : null}
+      {/* The counter's polite status: heard, never seen (the visible counter says the same). */}
+      <p className="d-composer__status d-sr-only" role="status">{status.text}</p>
     </form>
   );
 }

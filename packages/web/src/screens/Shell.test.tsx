@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
@@ -212,6 +212,34 @@ describe('timeline', () => {
     await user.click(screen.getByRole('button', { name: 'load earlier' }));
     expect(fake.callsOf('loadEarlier')).toEqual([{ m: 'loadEarlier', channelId: GEN }]);
   });
+  // A11Y-DESIGN-01: a polite log announces rows added to it, but not the rows it mounts with. Each channel and its
+  // first slice get a log of their own, so history is never read out as new messages.
+  it('mounts a new log with its rows when the channel changes', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'in general' })] })));
+    act(() => fake.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'r1', body: 'in random' })] })));
+    const before = screen.getByRole('log', { name: 'messages in #general' });
+    await user.click(within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: /^random/ }));
+    const after = screen.getByRole('log', { name: 'messages in #random' });
+    expect(after).not.toBe(before);
+    expect(before.isConnected).toBe(false);
+    expect(within(after).getByText('in random')).toBeInTheDocument();
+    expect(after).not.toHaveAttribute('aria-busy');
+  });
+  it('mounts a new log when the first slice arrives, and keeps focus in it', () => {
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    const loading = screen.getByRole('log', { name: 'messages in #general' });
+    expect(loading).toHaveAttribute('aria-busy', 'true');
+    act(() => loading.focus());
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'first' })] })));
+    const ready = screen.getByRole('log', { name: 'messages in #general' });
+    expect(ready).not.toBe(loading);
+    expect(within(ready).getByText('first')).toBeInTheDocument();
+    expect(ready).toHaveFocus();
+    // Later slices of the same channel are added to the same log, and so are announced.
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'first' }), item({ key: 's2', body: 'second' })] })));
+    expect(screen.getByRole('log', { name: 'messages in #general' })).toBe(ready);
+  });
   it('is busy before its first slice and while earlier messages load', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     const log = () => screen.getByRole('log', { name: 'messages in #general' });
@@ -276,6 +304,36 @@ describe('composer', () => {
     await user.type(composer(), 'hello{Enter}');
     expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'hello' }]);
   });
+  // WEB-APP-01: while a send is in flight a second Enter, a click on send or a held Enter posts nothing more.
+  it('sends once while a send is in flight', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    let finish: (v: unknown) => void = () => {};
+    fake.handler = c => (c.m === 'send' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(null));
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    await user.type(composer(), 'hello{Enter}{Enter}');
+    await user.click(sendButton());
+    expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'hello' }]);
+    expect(composer()).toHaveValue('hello');
+    await act(async () => { finish({ msgId: 'ab'.repeat(16) }); await Promise.resolve(); });
+    expect(composer()).toHaveValue('');
+    // The in-flight mark is cleared: the next message goes out.
+    fake.handler = c => Promise.resolve(c.m === 'send' ? { msgId: 'cd'.repeat(16) } : null);
+    await user.type(composer(), 'again{Enter}');
+    expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'hello' }, { m: 'send', channelId: GEN, text: 'again' }]);
+  });
+  // A11Y-DESIGN-04: past the 4000-byte budget the counter says by how much, never a negative "left".
+  it('says how far a message is over the budget and sends nothing', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    fireEvent.change(composer(), { target: { value: 'x'.repeat(3990) } });
+    expect(screen.getByText('10 left', { selector: '.d-composer__counter' })).toBeInTheDocument();
+    fireEvent.change(composer(), { target: { value: 'x'.repeat(4070) } });
+    expect(screen.getByText('70 bytes over the limit', { selector: '.d-composer__counter' })).toBeInTheDocument();
+    expect(screen.queryByText(/-\d+ left/)).toBeNull();
+    expect(sendButton()).toHaveAttribute('aria-disabled', 'true');
+    await user.click(sendButton());
+    expect(fake.callsOf('send')).toEqual([]);
+  });
   it('shows a failed command and lets it be dismissed', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     fake.handler = c => (c.m === 'send' ? Promise.reject(refusal({ code: 'E_NOT_READY', detail: 'the phase is loading' })) : Promise.resolve(null));
@@ -305,6 +363,91 @@ describe('composer', () => {
     expect(fake.callsOf('send')).toEqual([
       { m: 'send', channelId: GEN, text: 'hello' }, { m: 'send', channelId: GEN, text: 'keep me' },
     ]);
+  });
+});
+
+// A11Y-DESIGN-05: a focused control that removes itself hands focus on, never to <body>.
+describe('focus after a control removes itself', () => {
+  const F1 = 'cd'.repeat(16);
+  const F2 = 'ef'.repeat(16);
+  const failed = (msgId: string, body: string) =>
+    item({ key: `o${msgId}`, state: 'failed', reason: 'E_NETWORK', senderUser: ME.id, own: true, web: true, body, msgId });
+  it('goes from a retried or discarded row to the next failed row, else to the log', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' }), failed(F1, 'one'), failed(F2, 'two')] })));
+    const log = screen.getByRole('log');
+    const [, retry2] = within(log).getAllByRole('button', { name: 'retry' });
+    act(() => within(log).getAllByRole('button', { name: 'retry' })[0].focus());
+    await user.keyboard('{Enter}');
+    expect(fake.callsOf('retrySend')).toEqual([{ m: 'retrySend', msgId: F1 }]);
+    expect(retry2).toHaveFocus();
+    // The worker turns the first row pending: focus stays where it went.
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
+      item({ key: 's1', body: 'x' }), { ...failed(F1, 'one'), state: 'pending', reason: '' }, failed(F2, 'two'),
+    ] })));
+    expect(retry2).toHaveFocus();
+    act(() => within(log).getByRole('button', { name: 'discard' }).focus());
+    await user.keyboard('{Enter}');
+    expect(fake.callsOf('discardSend')).toEqual([{ m: 'discardSend', msgId: F2 }]);
+    expect(screen.getByRole('log')).toHaveFocus();
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' }), { ...failed(F1, 'one'), state: 'pending', reason: '' }] })));
+    expect(screen.getByRole('log')).toHaveFocus();
+  });
+  it('goes from a discarded row to the same action of the next failed row', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [failed(F1, 'one'), failed(F2, 'two')] })));
+    const [discard1, discard2] = within(screen.getByRole('log')).getAllByRole('button', { name: 'discard' });
+    act(() => discard1.focus());
+    await user.keyboard('{Enter}');
+    expect(discard2).toHaveFocus();
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [failed(F2, 'two')] })));
+    expect(discard2).toHaveFocus();
+  });
+  it('goes from the dismissed command error to the composer', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    fake.handler = c => (c.m === 'send' ? Promise.reject(refusal({ code: 'E_NOT_READY' })) : Promise.resolve(null));
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    await user.type(composer(), 'hello{Enter}');
+    await screen.findByRole('alert');
+    act(() => screen.getByRole('button', { name: 'dismiss' }).focus());
+    await user.keyboard('{Enter}');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(composer()).toHaveFocus();
+  });
+  it('goes from the main pane’s try again to the log, and back to try again when it fails again', async () => {
+    const { fake, user } = setup('/', { channels: false });
+    let refuse = true;
+    fake.handler = c => (c.m === 'openChannel' && refuse ? Promise.reject(refusal({ code: 'E_COMMIT_CONFLICT', status: 409 })) : Promise.resolve(null));
+    act(() => fake.set(`channels:${A}`, CHANNELS));
+    await screen.findByRole('heading', { name: 'This channel did not open' });
+    act(() => screen.getByRole('button', { name: 'try again' }).focus());
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'try again' })).toHaveFocus());
+    expect(fake.callsOf('openChannel')).toHaveLength(2);
+    refuse = false;
+    await user.keyboard('{Enter}');
+    expect(screen.getByRole('log', { name: 'messages in #general' })).toHaveFocus();
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' })] })));
+    expect(screen.getByRole('log', { name: 'messages in #general' })).toHaveFocus();
+  });
+  it('goes from the sidebar’s try again to the channel list, and back to try again when it fails again', async () => {
+    let attempts = 0;
+    const { fake, user } = setupWith(c => {
+      if (c.m !== 'selectCommunity') return Promise.resolve(null);
+      attempts += 1;
+      return attempts <= 2 ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null);
+    });
+    await screen.findByRole('region', { name: 'Midgard' });
+    act(() => screen.getByRole('button', { name: 'try again' }).focus());
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'try again' })).toHaveFocus());
+    await user.keyboard('{Enter}');
+    expect(fake.callsOf('selectCommunity')).toHaveLength(3);
+    act(() => fake.set(`channels:${A}`, CHANNELS));
+    expect(path()).toBe(`/c/${A}/${GEN}`);
+    const general = within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: /^general/ });
+    expect(general).toHaveFocus();
+    expect(general).toHaveAttribute('tabindex', '0');
   });
 });
 

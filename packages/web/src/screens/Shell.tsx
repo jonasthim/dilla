@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ChannelGroupState, TimelineItem, TimelineItemState } from '@dilla/client-core';
 import {
   AppShell, Banner, ChannelHeader, ChannelList, CommunityRail, Composer, EmptyState, MessageLog, MessageRow, StatusBar, StatusChunk,
@@ -27,6 +27,38 @@ const STATE_LABEL: Record<TimelineItemState, StringKey | null> = {
 /** The composer textarea, blocked or not: a blocked one stays focusable so its reason is heard (L-UI-13). */
 function focusComposer(): void {
   document.querySelector<HTMLTextAreaElement>('.d-composer textarea')?.focus();
+}
+
+/** The message log, a keyboard-reachable region (tabIndex 0). */
+function focusLog(): void {
+  document.querySelector<HTMLElement>('[role="log"]')?.focus();
+}
+
+/** True when focus was dropped to the document, as it is when the focused element leaves the DOM. */
+function focusLost(): boolean {
+  return document.activeElement === null || document.activeElement === document.body;
+}
+
+/** Focuses the action of an EmptyState in one pane of the shell; false when there is none. */
+function focusEmptyAction(pane: 'content' | 'sidebar'): boolean {
+  const button = document.querySelector<HTMLElement>(`.d-app-shell__${pane} .d-empty-state button`);
+  button?.focus();
+  return button !== null;
+}
+
+/**
+ * A failed row's actions leave with its failed state (retry turns it pending, discard removes it), so a focused
+ * action hands focus to the same action of the next failed row, else to the log (A11Y-DESIGN-05). Nothing moves
+ * when focus is not in the row (a pointer that does not focus buttons).
+ */
+function handOnFromRow(action: number): void {
+  const row = document.activeElement?.closest('.d-message-row') ?? null;
+  if (row === null) return;
+  const rows = Array.from(document.querySelectorAll('[role="log"] .d-message-row[data-state="failed"]'));
+  const next = rows.slice(rows.indexOf(row) + 1).find(r => r.querySelector('.d-message-row__actions') !== null);
+  const target = next?.querySelectorAll<HTMLElement>('.d-message-row__actions button')[action];
+  if (target !== undefined) target.focus();
+  else focusLog();
 }
 
 /**
@@ -151,6 +183,48 @@ export function Shell(): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [ordered, channelId, communityId, joinOpen, navigate]);
 
+  // A11Y-DESIGN-01: the log is keyed by its channel and by its first slice, so it mounts with the rows it holds
+  // and a polite log announces only rows added later. A log that held focus hands it on to its successor.
+  const logKey = channel === null ? null : `${channel.id}:${timeline === undefined ? 'loading' : 'ready'}`;
+  const logFocused = useRef(false);
+  useEffect(() => {
+    const onFocusIn = (e: FocusEvent) => {
+      logFocused.current = e.target instanceof Element && e.target.getAttribute('role') === 'log';
+    };
+    window.addEventListener('focusin', onFocusIn);
+    return () => window.removeEventListener('focusin', onFocusIn);
+  }, []);
+  useLayoutEffect(() => {
+    if (logKey !== null && logFocused.current && focusLost()) focusLog();
+  }, [logKey]);
+
+  // A11Y-DESIGN-05: the two "try again" buttons are replaced in the render their click causes, so focus is placed
+  // after it: the main pane's goes to the log, the sidebar's to the channel list's roving stop once its rows are
+  // there and the route names a channel. A retry refused again puts focus back on the new "try again".
+  const refocus = useRef<'log' | 'channels' | null>(null);
+  useLayoutEffect(() => {
+    if (openError !== null && focusLost() && (refocus.current === 'log' || logFocused.current)) {
+      if (focusEmptyAction('content')) refocus.current = null;
+    }
+  }, [openError]);
+  useLayoutEffect(() => {
+    if (selectError !== null && focusLost() && refocus.current === 'channels') {
+      if (focusEmptyAction('sidebar')) refocus.current = null;
+    }
+  }, [selectError]);
+  const channelsReady = ordered.length > 0 && (channelId !== null || defaultChannel(ordered) === null);
+  // No dependency list: the target may appear several renders after the click.
+  useLayoutEffect(() => {
+    const want = refocus.current;
+    if (want === null) return;
+    if (!focusLost()) { refocus.current = null; return; }
+    const target = want === 'log' ? document.querySelector<HTMLElement>('[role="log"]')
+      : channelsReady ? document.querySelector<HTMLElement>('.d-channel-list button[tabindex="0"]') : null;
+    if (target === null) return;
+    target.focus();
+    refocus.current = null;
+  });
+
   // When the join dialog closes, focus goes to the composer (after the dialog returned it to its opener).
   const wasJoinOpen = useRef(false);
   useEffect(() => {
@@ -181,16 +255,22 @@ export function Shell(): React.JSX.Element {
     void run();
   };
 
+  // The channels whose send is in flight: a second Enter or a click on send meanwhile posts nothing (WEB-APP-01).
+  const sending = useRef(new Set<string>());
   // The text stays until the send resolves; a refused send keeps it (pre-flight ruling (d)).
   const send = (text: string) => {
     if (channelId === null) return;
     const id = channelId;
+    if (sending.current.has(id)) return;
+    sending.current.add(id);
     const run = async () => {
       try {
         await client.call({ m: 'send', channelId: id, text });
         setDraft(d => (d.channelId === id && d.text === text ? { channelId: id, text: '' } : d));
       } catch (e) {
         report(e);
+      } finally {
+        sending.current.delete(id);
       }
     };
     void run();
@@ -209,8 +289,8 @@ export function Shell(): React.JSX.Element {
         stateLabel={label === null ? undefined : t(label)}
         detail={item.state === 'failed' || item.state === 'cannot-read' ? item.reason : undefined}
         actions={item.state === 'failed' && msgId !== null ? [
-          { label: t('shell.message.retry'), onAction: () => { client.call({ m: 'retrySend', msgId }).catch(report); } },
-          { label: t('shell.message.discard'), onAction: () => { client.call({ m: 'discardSend', msgId }).catch(report); } },
+          { label: t('shell.message.retry'), onAction: () => { handOnFromRow(0); client.call({ m: 'retrySend', msgId }).catch(report); } },
+          { label: t('shell.message.discard'), onAction: () => { handOnFromRow(1); client.call({ m: 'discardSend', msgId }).catch(report); } },
         ] : undefined} />
     );
   };
@@ -226,10 +306,10 @@ export function Shell(): React.JSX.Element {
   } else if (channel !== null && openError !== null) {
     const id = channel.id;
     main = <EmptyState title={t('shell.openFailed.title')} body={t('shell.openFailed.body', { code: openError.code })}
-      action={{ label: t('shell.openFailed.action'), onAction: () => openChannel(id) }} />;
+      action={{ label: t('shell.openFailed.action'), onAction: () => { refocus.current = 'log'; openChannel(id); } }} />;
   } else if (channel !== null) {
     main = (
-      <MessageLog label={t('shell.log.label', { channel: channel.name })}
+      <MessageLog key={logKey} label={t('shell.log.label', { channel: channel.name })}
         emptyLabel={timeline === undefined ? t('shell.log.loading') : t('shell.log.empty')}
         earlier={timeline?.hasEarlier ? { label: t('shell.log.earlier'), onLoad: loadEarlier } : undefined}
         busy={timeline === undefined || loadingEarlier === channel.id}>
@@ -242,7 +322,7 @@ export function Shell(): React.JSX.Element {
   if (community !== null && selectError !== null) {
     const id = community.id;
     sidebar = <EmptyState title={community.name} body={t('shell.sidebar.loadError', { code: selectError.code })}
-      action={{ label: t('shell.sidebar.retry'), onAction: () => selectCommunity(id) }} />;
+      action={{ label: t('shell.sidebar.retry'), onAction: () => { refocus.current = 'channels'; selectCommunity(id); } }} />;
   } else if (community !== null) {
     sidebar = (
       <ChannelList label={t('shell.channels.label')} title={community.name}
@@ -258,7 +338,7 @@ export function Shell(): React.JSX.Element {
       maxLength={MESSAGE_BYTES} value={draft.channelId === channel.id ? draft.text : ''}
       onChange={text => setDraft({ channelId: channel.id, text })}
       disabled={reasonKey !== null} disabledReason={reasonKey === null ? undefined : t(reasonKey)}
-      onSend={send} sendLabel={t('shell.composer.send')} counterLabel={n => t('shell.composer.remaining', { n })} />
+      onSend={send} sendLabel={t('shell.composer.send')} counterLabel={n => (n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n }))} />
   );
 
   const status = connection?.status ?? 'connecting';
@@ -270,7 +350,7 @@ export function Shell(): React.JSX.Element {
         <Banner tone="warn">{t(connection.reason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
       ) : null}
       {commandError !== null ? (
-        <Banner tone="danger" action={{ label: t('shell.banner.dismiss'), onAction: () => setCommandError(null) }}>
+        <Banner tone="danger" action={{ label: t('shell.banner.dismiss'), onAction: () => { focusComposer(); setCommandError(null); } }}>
           {t('shell.banner.commandError', { code: commandError.code })}
         </Banner>
       ) : null}
