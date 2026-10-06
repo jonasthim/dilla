@@ -237,7 +237,7 @@ describe('FakeCore enrolment (phase 3)', () => {
     expect(core.identity().phase).toBe(2);
     const listed = member();
     const revoked = listed.deviceListRevoke({ recoveryKey: FAKE_RECOVERY_KEY, rootSealed: FAKE_ROOT_SEALED, stateSealed: new Uint8Array(0),
-      listBody: served(1n, [{ deviceId: DEV_A, revokedAt: null }, { deviceId: DEV_B, revokedAt: null }]), deviceIds: [DEV_B], now: 1_800_000_200n });
+      listBody: listed.deviceListBody(), deviceIds: [DEV_A], now: 1_800_000_200n });
     expect(revoked.stateSealed).toEqual(remade);
   });
 });
@@ -251,7 +251,8 @@ describe('FakeCore own list, revocation and settings', () => {
       [3, fakeListBlob(USER_A, [{ deviceId: DEV_A, revokedAt: 3n }, { deviceId: DEV_B, revokedAt: null }], 3n), new Uint8Array(64), new Uint8Array(32)],
     ]);
     expect(core.ownDeviceListUpdate(history)).toEqual({ version: 3n, listed: false });
-    expect(core.ownDeviceListUpdate(history)).toEqual({ version: 3n, listed: false });
+    expect(codeOf(() => core.ownDeviceListUpdate(history))).toBe('E_DEVICE_LIST_STALE');
+    expect(core.ownDeviceListUpdate(encode([]))).toEqual({ version: 3n, listed: false });
     expect(core.ownDeviceList().entries.map((e) => [e.deviceId, e.revokedAt])).toEqual([[DEV_A, 3n], [DEV_B, null]]);
   });
 
@@ -265,8 +266,9 @@ describe('FakeCore own list, revocation and settings', () => {
   });
 
   it('builds a revoking list for listed devices and refuses unknown ones', () => {
-    const core = member();
-    const listBody = served(1n, [{ deviceId: DEV_A, revokedAt: null }, { deviceId: DEV_B, revokedAt: null }]);
+    const core = FakeCore.identified({ instanceId: INSTANCE, userId: USER_A, deviceId: DEV_A, username: 'ada',
+      listEntries: [{ deviceId: DEV_A, revokedAt: null }, { deviceId: DEV_B, revokedAt: null }] });
+    const listBody = core.deviceListBody();
     const input = { recoveryKey: FAKE_RECOVERY_KEY, rootSealed: FAKE_ROOT_SEALED, stateSealed: FAKE_STATE_SEALED, listBody, deviceIds: [DEV_B], now: 1_800_000_200n };
     const out = core.deviceListRevoke(input);
     const put = arr(decode(out.deviceListBody), 4);

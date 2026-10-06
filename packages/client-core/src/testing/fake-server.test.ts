@@ -45,6 +45,19 @@ async function ada(server: FakeServer): Promise<{ c: ReturnType<typeof client>; 
 }
 
 describe('FakeServer answers the web-2a account routes as dillad does', () => {
+  it('lets an enrolled session read a peer list but forbids a pending session', async () => {
+    const server = new FakeServer();
+    const { c, user } = await ada(server);
+    const peer = server.register('bea', new Uint8Array(16).fill(0xbe));
+    server.publishList(peer, [{ deviceId: new Uint8Array(16).fill(0xbe) }]);
+    expect((await c.routes.getDeviceList(peer))?.version).toBe(1n);
+    await expect(c.routes.putDeviceList(peer, listBody(peer, 2n, []))).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+    const pending = await c.routes.postSessionPending(DEV_B, establishBody(DEV_B, (await c.routes.passwordLogin('ada', 'pw')).assertion));
+    c.use(pending.token);
+    expect((await c.routes.getDeviceList(user))?.version).toBe(1n);
+    await expect(c.routes.getDeviceList(peer)).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+  });
+
   it('spends an assertion after registration shape checks', async () => {
     const server = new FakeServer();
     const { c } = await ada(server);

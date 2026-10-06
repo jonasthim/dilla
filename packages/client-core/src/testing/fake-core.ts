@@ -37,11 +37,13 @@ export class FakeCore implements CorePort {
     this.tier = opts.tier ?? 1;
     this.idSeed = opts.idSeed ?? 0xf0;
   }
-  static identified(o: { instanceId: Id; userId: Id; deviceId: Id; username: string; tier?: number; listPublished?: boolean; stateUploaded?: boolean }): FakeCore {
+  static identified(o: { instanceId: Id; userId: Id; deviceId: Id; username: string; tier?: number; listPublished?: boolean; stateUploaded?: boolean;
+    listEntries?: { deviceId: Id; revokedAt: bigint | null }[] }): FakeCore {
     const core = new FakeCore({ deviceId: o.deviceId, tier: o.tier });
     core.info = { phase: 2, instanceId: o.instanceId, userId: o.userId, deviceId: o.deviceId,
       username: o.username, listPublished: o.listPublished ?? true };
-    core.listBody = core.makeList(o.userId, o.deviceId, 0n);
+    core.listBody = o.listEntries === undefined ? core.makeList(o.userId, o.deviceId, 0n)
+      : encode([1, fakeListBlob(o.userId, o.listEntries, 0n), new Uint8Array(64).fill(5), new Uint8Array(32)]);
     core.accepted = core.readBody(core.listBody);
     core.candidateVersion = 1n;
     core.sealed = { root: FAKE_ROOT_SEALED, state: FAKE_STATE_SEALED, stateUploaded: o.stateUploaded ?? false };

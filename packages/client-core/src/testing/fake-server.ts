@@ -157,8 +157,12 @@ export class FakeServer {
     if (device === undefined || user === undefined || this.revoked.has(device)) return refuse(401, 'E_UNAUTHENTICATED');
     const list = /^(PUT|GET) \/v1\/users\/([0-9a-f]{32})\/device-list$/.exec(line);
     if (list?.[2] !== undefined) {
-      if (user !== list[2]) return refuse(403, 'E_FORBIDDEN');
-      return list[1] === 'PUT' ? this.putList(user, list[2], r.body) : this.getList(list[2], r.query);
+      if (list[1] === 'PUT') {
+        if (user !== list[2]) return refuse(403, 'E_FORBIDDEN');
+        return this.putList(user, list[2], r.body);
+      }
+      if (user !== list[2] && this.tokenScope.get(r.auth!) === 1) return refuse(403, 'E_FORBIDDEN');
+      return this.getList(list[2], r.query);
     }
     if (this.tokenScope.get(r.auth!) === 1 && line !== 'GET /v1/backups' &&
         !/^GET \/v1\/backups\/[01]\/0$/.test(line)) return refuse(403, 'E_FORBIDDEN');

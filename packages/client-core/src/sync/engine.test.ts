@@ -490,7 +490,7 @@ describe('commit duty (rule 4)', () => {
     const g = await openRegistered(ds, d);
     ds.propose(g, 'add', THIRD.device);
     await settle();
-    ds.evict(g, ME.device);
+    ds.afterNextProposalsRead(g, () => ds.evict(g, ME.device));
     ds.elect(g, ME.device, 1n);
     await settle();
     expect(coreCalls(d, g, COMMIT_CALLS).slice(-2)).toEqual(['commitBuild', 'commitAbort']);

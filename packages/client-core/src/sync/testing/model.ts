@@ -1151,6 +1151,7 @@ export class ModelDs {
   private readonly drops = new Map<string, number>();
   private readonly injections = new Map<RouteName, Injection[]>();
   private readonly messageHooks = new Map<string, () => void>();
+  private readonly proposalHooks = new Map<string, () => void>();
   private counter = 0;
   private frameN = 0n;
   private welcomeIds = 0n;
@@ -1245,6 +1246,11 @@ export class ModelDs {
    */
   afterNextMessagesRead(groupId: Id, fn: () => void): void {
     this.messageHooks.set(toHex(groupId), fn);
+  }
+
+  /** One-shot race: remove a leaf after its proposal read and before its commit upload. */
+  afterNextProposalsRead(groupId: Id, fn: () => void): void {
+    this.proposalHooks.set(toHex(groupId), fn);
   }
 
   resetCalls(): void {
@@ -1425,7 +1431,13 @@ export class ModelDs {
         this.call(d, 'getProposals', id, null, () => {
           const g = this.must(id);
           if (!g.members.has(d)) throw httpError(404, 'E_NOT_FOUND');
-          return encode(g.proposals.filter((p) => p.epoch === g.epoch).map((p) => [p.ref, 0, null, p.blob, p.void ? 1 : 0]));
+          const answer = encode(g.proposals.filter((p) => p.epoch === g.epoch).map((p) => [p.ref, 0, null, p.blob, p.void ? 1 : 0]));
+          const hook = this.proposalHooks.get(toHex(id));
+          if (hook !== undefined) {
+            this.proposalHooks.delete(toHex(id));
+            hook();
+          }
+          return answer;
         }),
       postCommit: (id, body) => this.call(d, 'postCommit', id, null, () => this.postCommit(d, id, body)),
       postMessage: (id, body) => this.call(d, 'postMessage', id, null, () => this.postMessage(dev, id, body)),
