@@ -5,7 +5,8 @@ package ds
 //
 // Two rules make the directory what it is. Every published package is validated INSIDE THE GUEST —
 // the leaf must advertise 0xF001, the credential identity must decode and name the publishing
-// device, and the lifetime must not have passed — so a package the delivery service would later
+// device and user, the leaf's signature key must be the device's registered key, and the lifetime
+// must not have passed — so a package the delivery service would later
 // hand a joiner is never one it has not checked. And the LAST-RESORT package is never consumed:
 // once the ordinary ones are gone it is served for ever, which is what keeps a device that has run
 // out of packages addable rather than unreachable.
@@ -135,6 +136,17 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 		}
 	}
 
+	// The device's registered key: the dsk_pub the session was established under (or registered
+	// with, for the session POST /v1/accounts mints). Read once, before the guest is asked for
+	// anything; every package below is bound to it.
+	device, err := d.opts.Store.GetDevice(ctx, s.DeviceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, errForbidden("the session's device is unknown to this instance")
+	}
+	if err != nil {
+		return 0, err
+	}
+
 	inst, err := d.opts.Wasm.Acquire(ctx)
 	if err != nil {
 		return 0, err
@@ -149,6 +161,18 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 		}
 		if string(info.DeviceID) != string(s.DeviceID[:]) {
 			return errForbidden("a device may only publish KeyPackages for itself")
+		}
+		// A new leaf is bound to the authenticated device (protocol/02 invariant 4): the
+		// credential names the session's user as well as its device, and the leaf is keyed by the
+		// device's registered key. A package that fails either is one no Add may carry, and
+		// storing it would only hand a committer a KeyPackage invariant 4 then refuses.
+		if string(info.UserID) != string(s.UserID[:]) {
+			return errCommitInvalid("key_package",
+				"the package's credential names another user than the publishing session's")
+		}
+		if !leafKeyIsRegistered(device, info.SignatureKey) {
+			return errCommitInvalid("key_package",
+				"the package's leaf signature key is not the device's registered key")
 		}
 		if info.LastResort != last {
 			return errCommitInvalid("key_package",

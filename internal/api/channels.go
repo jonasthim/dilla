@@ -620,10 +620,11 @@ type channelResp struct {
 	Position        uint64
 	SlowmodeSeconds uint64
 	Seq             uint64
+	// TextGroupID is L-HTTP-02's text_group_id (textGroupID, discovery.go).
+	TextGroupID *id.ID
 }
 
-// listedChannel is one element of GET /v1/communities/{id}/channels: channelResp
-// without community_id, which the path already names.
+// listedChannel is one element of GET /v1/communities/{id}/channels: channelResp without community_id, which the path already names. TextGroupID is L-HTTP-02's.
 type listedChannel struct {
 	_               struct{} `cbor:",toarray"`
 	ChannelID       id.ID
@@ -636,6 +637,7 @@ type listedChannel struct {
 	Position        uint64
 	SlowmodeSeconds uint64
 	Seq             uint64
+	TextGroupID     *id.ID
 }
 
 // list is GET /v1/communities/{id}/channels (fix wave I10): the community's live
@@ -686,10 +688,15 @@ func (c *Channels) list(w http.ResponseWriter, r *http.Request) {
 		if !visible[ch.ID] {
 			continue
 		}
+		tg, err := textGroupID(r.Context(), c.repo, ch)
+		if err != nil {
+			c.fail(w, r, "list channels", err)
+			return
+		}
 		out = append(out, listedChannel{
 			ChannelID: ch.ID, Kind: uint64(ch.Kind), Mode: uint64(ch.Mode),
 			Visibility: uint64(ch.Visibility), ParentID: ch.ParentID, Name: ch.Name, Topic: ch.Topic,
-			Position: ch.Position, SlowmodeSeconds: ch.SlowmodeSeconds, Seq: ch.Seq,
+			Position: ch.Position, SlowmodeSeconds: ch.SlowmodeSeconds, Seq: ch.Seq, TextGroupID: tg,
 		})
 	}
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
@@ -703,11 +710,16 @@ func (c *Channels) get(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, "get channel", err)
 		return
 	}
+	tg, err := textGroupID(r.Context(), c.repo, row)
+	if err != nil {
+		c.fail(w, r, "get channel", err)
+		return
+	}
 	if err := server.EncodeBody(w, http.StatusOK, channelResp{
 		ChannelID: row.ID, CommunityID: row.CommunityID, Kind: uint64(row.Kind),
 		Mode: uint64(row.Mode), Visibility: uint64(row.Visibility), ParentID: row.ParentID,
 		Name: row.Name, Topic: row.Topic, Position: row.Position,
-		SlowmodeSeconds: row.SlowmodeSeconds, Seq: row.Seq,
+		SlowmodeSeconds: row.SlowmodeSeconds, Seq: row.Seq, TextGroupID: tg,
 	}); err != nil {
 		c.log.Error("encode channel", "err", err)
 	}

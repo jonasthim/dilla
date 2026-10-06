@@ -89,6 +89,10 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// ListBarredMembers is the reconcile sweeper's backstop for the Removes quarantined and
 			// revoked devices are owed (DS server-half re-review, R-2): one query per group.
 			"ListBarredMembers",
+			// DeleteKeyPackage is the hardening-C follow-up's: ProposeAdd deletes a directory
+			// package that is not bound to its device (one stored before uploads were bound)
+			// instead of proposing it, and a last-resort package has no other way out.
+			"DeleteKeyPackage",
 			// The pending-join queue: deviation B13 names QueuePendingJoins/TakePendingJoins,
 			// and Plan 2 task 7 (Plan 1 follow-up card 8) lands them with the length its tests
 			// and the debug state read and the paged walk the sweeper re-drives a stalled
@@ -141,6 +145,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// Plan 2 task 14: `dillad admin community list`, reached through the
 			// embedded Communities.
 			"ListCommunities",
+			// dilla-web-1 task 8 (L-SQL-02): GET /v1/communities, reached through the embedded
+			// Communities.
+			"ListCommunitiesForUser",
 			// §4.1 plus P2-D22's GetVoiceSession and the live-call listing POST
 			// /v1/channels/{id}/calls joins through (task 16), reached through the
 			// embedded VoiceSessions.
@@ -175,7 +182,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		// is what Repository embeds until the rest of Structure exists (P2-D23).
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
 			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity",
-			"GetMember", "GetRole", "ListCommunities", "ListMemberRoles", "ListMembersOfCommunity",
+			"GetMember", "GetRole", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
+			"ListMembersOfCommunity",
 			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SoftDeleteCommunity",
 			"UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},

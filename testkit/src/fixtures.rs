@@ -6,7 +6,9 @@ use dilla_core::envelope::{Envelope, EnvelopeType};
 use dilla_core::identity::{Kind, Tier};
 use dilla_core::ids::{InstanceId, MsgId, UserId};
 use dilla_core::mls::{
-    DillaBinding, DillaGroup, GroupKind, MAX_ADDS_PER_COMMIT, build_key_package, external_senders,
+    CIPHERSUITE, DILLA_BINDING, DillaBinding, DillaGroup, GroupKind, MAX_ADDS_PER_COMMIT,
+    PADDING_SIZE, build_key_package, external_senders, group_context_extensions, leaf_capabilities,
+    past_epoch_policy,
 };
 use dilla_core::public_group::{DillaPublicGroup, external_propose_remove};
 use openmls::prelude::*;
@@ -373,6 +375,407 @@ pub fn gen_public_group(spec: &FixtureSpec) -> Result<FixtureManifest, TestkitEr
         not_after: now + lifetime_secs,
         openmls_version: "0.9.0".to_owned(),
         files,
+    };
+    let json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| TestkitError::Scenario(e.to_string()))?;
+    std::fs::write(spec.out.join("manifest.json"), format!("{json}\n"))
+        .map_err(|e| TestkitError::Scenario(e.to_string()))?;
+    Ok(manifest)
+}
+
+/// The directory KeyPackage fixture: `count` KeyPackages, each built by its own device of its own
+/// user with the device's own signing key, exactly as an honest client publishes one.
+///
+/// The delivery service binds a KeyPackage to the device it is published for (its credential
+/// names that device and user, and its leaf key is the device's registered key), so a Go test that
+/// needs several devices with a KeyPackage each needs one real package per device: Go builds no
+/// MLS object, and `key_package.mls` of the 1,500-leaf fixture is a single device's.
+pub struct KeyPackageSetSpec {
+    pub count: usize,
+    pub out: PathBuf,
+    pub seed: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeyPackageSetEntry {
+    /// `NN.mls`: an `MLSMessage` framing a bare KeyPackage, the form `POST /v1/keypackages` takes.
+    pub path: String,
+    pub device_id_hex: String,
+    pub user_id_hex: String,
+    /// The device's DSK public key: the KeyPackage leaf's signature key, which the device
+    /// registers as `dsk_pub`.
+    pub dsk_pub_hex: String,
+    pub key_package_ref_hex: String,
+    pub sha256_hex: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeyPackageSetManifest {
+    /// Seconds since the Unix epoch; every package's lifetime ends here or later.
+    pub not_after: u64,
+    pub openmls_version: String,
+    pub key_packages: Vec<KeyPackageSetEntry>,
+}
+
+pub fn gen_key_packages(spec: &KeyPackageSetSpec) -> Result<KeyPackageSetManifest, TestkitError> {
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    std::fs::create_dir_all(&spec.out).map_err(|e| TestkitError::Scenario(e.to_string()))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| TestkitError::Scenario(e.to_string()))?
+        .as_secs();
+    let mut entries = Vec::with_capacity(spec.count);
+    for i in 0..spec.count {
+        // One user per device, so a test can give each its own ACL verdict and device list. Not a
+        // uniform byte array: the 1,500-leaf fixture's users are `[k; 16]` for every k in 1..=250
+        // (`gen_public_group` above), and a user id equal to one of them would already be a member
+        // of that group.
+        let mut user_bytes = [0xfd; 16];
+        user_bytes[1] = i as u8;
+        let user = UserId::from_bytes(user_bytes);
+        let client = TestClient::new(
+            &format!("kp{i}"),
+            user,
+            Tier::Native,
+            Kind::User,
+            spec.seed.wrapping_add(i as u64),
+        )?;
+        let kp = build_key_package(
+            client.provider(),
+            client.signer(),
+            client.credential(),
+            false,
+        )?;
+        let bytes = serialize(&MlsMessageOut::from(kp.key_package().clone()))?;
+        let path = format!("{i:02}.mls");
+        std::fs::write(spec.out.join(&path), &bytes)
+            .map_err(|e| TestkitError::Scenario(e.to_string()))?;
+        entries.push(KeyPackageSetEntry {
+            path,
+            device_id_hex: hex(client.device_id().as_bytes()),
+            user_id_hex: hex(client.user_id().as_bytes()),
+            dsk_pub_hex: hex(client.signer().public()),
+            key_package_ref_hex: hex(kp
+                .key_package()
+                .hash_ref(&crypto)
+                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?
+                .as_slice()),
+            sha256_hex: hex(&Sha256::digest(&bytes)),
+        });
+    }
+    let manifest = KeyPackageSetManifest {
+        not_after: now + dilla_core::mls::KEY_PACKAGE_LIFETIME_DAYS * 24 * 60 * 60,
+        openmls_version: "0.9.0".to_owned(),
+        key_packages: entries,
+    };
+    let json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| TestkitError::Scenario(e.to_string()))?;
+    std::fs::write(spec.out.join("manifest.json"), format!("{json}\n"))
+        .map_err(|e| TestkitError::Scenario(e.to_string()))?;
+    Ok(manifest)
+}
+
+/// The committed registration fixture: what an honest device uploads to `POST /v1/groups`.
+///
+/// The delivery service registers a group only when its tree holds exactly one leaf, the
+/// registering device's own (hardening G), and Go builds no MLS object, so a Go test that drives
+/// the registration route needs real one-leaf groups. Every group here is created by the 1,500-leaf
+/// fixture's creator (same seed, so the same user, device and signature key as that fixture's
+/// leaf 0), bound to this instance (`0x11…`) with the instance's external sender, on one channel
+/// target, so a test can register a group, a second group for the same target, and a re-creation.
+/// `hidden` is the one negative shape the 1,500-leaf fixture cannot supply: two leaves, the second
+/// carrying a credential that is not a dilla identity, so its member list names one leaf while its
+/// tree holds two. `pairing` and `pairing-sender` are one-leaf `pairing` groups on their own target
+/// (`0x68…`), without and with an external sender (DS-MEMBERSHIP-01: a `pairing` group carries
+/// none). `self-update` and `gce-swap` are honest one-leaf text groups that each also carry one
+/// commit by the creator at the creation epoch, with the GroupInfo after it: an honest self-update,
+/// and a GroupContextExtensions commit that swaps `external_senders` to the creator's own key.
+///
+/// Everything is written as hex inside one JSON file, so the fixture travels in a text diff.
+pub struct RegistrationSpec {
+    pub out: PathBuf,
+    pub seed: u64,
+    /// How many one-leaf groups to generate.
+    pub groups: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegistrationGroup {
+    pub name: String,
+    pub group_id_hex: String,
+    /// The `dilla_binding` CBOR, exactly as the group context carries it.
+    pub binding_hex: String,
+    pub group_info_hex: String,
+    pub ratchet_tree_hex: String,
+    /// Occupied leaves of the tree.
+    pub leaves: usize,
+    /// A commit by the creator at the group's creation epoch (`self-update` and `gce-swap` only),
+    /// and the creator-signed GroupInfo after it, without the tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_group_info_hex: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegistrationManifest {
+    pub user_id_hex: String,
+    pub device_id_hex: String,
+    /// The creator's signature key: the key its leaf carries and its device registers.
+    pub dsk_pub_hex: String,
+    pub target_id_hex: String,
+    /// Seconds since the Unix epoch; every leaf's lifetime ends here or later.
+    pub not_after: u64,
+    pub openmls_version: String,
+    pub groups: Vec<RegistrationGroup>,
+}
+
+pub fn gen_registration_groups(
+    spec: &RegistrationSpec,
+) -> Result<RegistrationManifest, TestkitError> {
+    std::fs::create_dir_all(&spec.out).map_err(|e| TestkitError::Scenario(e.to_string()))?;
+    let creator = TestClient::new(
+        "creator",
+        UserId::from_bytes([0x01; 16]),
+        Tier::Native,
+        Kind::User,
+        spec.seed,
+    )?;
+    // The instance's external-sender keypair, derived exactly as `gen_public_group` derives it.
+    let instance = TestClient::new(
+        "instance",
+        UserId::from_bytes([0x11; 16]),
+        Tier::Native,
+        Kind::User,
+        spec.seed ^ 0x0d15_0d15,
+    )?;
+    let target = [0x67; 16];
+    let binding = DillaBinding {
+        v: 1,
+        instance_id: InstanceId::from_bytes([0x11; 16]),
+        community_id: None,
+        target_id: target,
+        kind: GroupKind::Text,
+        policy_version: 1,
+        e2ee_version: 1,
+        media_version: 0,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| TestkitError::Scenario(e.to_string()))?
+        .as_secs();
+    let mut groups = Vec::with_capacity(spec.groups + 1);
+    for i in 0..=spec.groups {
+        let hidden = i == spec.groups;
+        let mut id = [0x67; 16];
+        id[15] = if hidden { 0xff } else { i as u8 };
+        let group_id = GroupId::from_slice(&id);
+        let mut group = DillaGroup::create(
+            creator.provider(),
+            creator.signer(),
+            creator.credential(),
+            group_id.clone(),
+            binding.clone(),
+            Some(external_senders(
+                SignaturePublicKey::from(instance.signer().public()),
+                &binding.instance_id,
+            )),
+        )?;
+        if hidden {
+            // A leaf nobody can name: its credential is not a dilla identity.
+            let nameless = TestClient::new(
+                "nameless",
+                UserId::from_bytes([0x69; 16]),
+                Tier::Native,
+                Kind::User,
+                spec.seed.wrapping_add(7_000_000),
+            )?;
+            let with_key = CredentialWithKey {
+                credential: BasicCredential::new(b"not a dilla identity".to_vec()).into(),
+                signature_key: nameless.signer().public().into(),
+            };
+            let kp = build_key_package(nameless.provider(), nameless.signer(), with_key, false)?;
+            // `DillaGroup::add_members` names every device it adds, so the nameless leaf goes in
+            // through the raw OpenMLS group, as a patched client would add it.
+            let mut raw = MlsGroup::load(creator.provider().storage(), &group_id)
+                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?
+                .ok_or_else(|| TestkitError::Scenario("the created group is not stored".into()))?;
+            raw.add_members(
+                creator.provider(),
+                creator.signer(),
+                &[kp.key_package().clone()],
+            )
+            .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
+            raw.merge_pending_commit(creator.provider())
+                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
+            group = DillaGroup::load(creator.provider(), &group_id)?
+                .ok_or_else(|| TestkitError::Scenario("the created group is not stored".into()))?;
+        }
+        let group_info =
+            serialize(&group.export_group_info(creator.provider(), creator.signer())?)?;
+        let tree = group.export_ratchet_tree();
+        groups.push(RegistrationGroup {
+            name: if hidden {
+                "hidden".to_owned()
+            } else {
+                format!("one-leaf-{i}")
+            },
+            group_id_hex: hex(group_id.as_slice()),
+            binding_hex: hex(&binding.encode()),
+            group_info_hex: hex(&group_info),
+            ratchet_tree_hex: hex(&serialize(&tree)?),
+            leaves: group.member_count(),
+            commit_hex: None,
+            commit_group_info_hex: None,
+        });
+    }
+    // Two honest one-leaf text groups that each carry one commit by the creator at their creation
+    // epoch (fix wave C): `self-update`, an honest self-update, and `gce-swap`, a
+    // GroupContextExtensions commit that keeps `required_capabilities` and `dilla_binding` and
+    // swaps `external_senders` to the creator's own key - what a patched client sends to make an
+    // honestly registered group one the instance cannot propose into. The group is registered as
+    // created; the commit and the GroupInfo after it are what the member then uploads.
+    for (name, last, swap) in [("self-update", 0xfdu8, false), ("gce-swap", 0xfe, true)] {
+        let mut id = [0x67; 16];
+        id[15] = last;
+        let group_id = GroupId::from_slice(&id);
+        let mut group = DillaGroup::create(
+            creator.provider(),
+            creator.signer(),
+            creator.credential(),
+            group_id.clone(),
+            binding.clone(),
+            Some(external_senders(
+                SignaturePublicKey::from(instance.signer().public()),
+                &binding.instance_id,
+            )),
+        )?;
+        let group_info =
+            serialize(&group.export_group_info(creator.provider(), creator.signer())?)?;
+        let tree = serialize(&group.export_ratchet_tree())?;
+        let commit = if swap {
+            let swapped = group_context_extensions(
+                &binding,
+                Some(external_senders(
+                    SignaturePublicKey::from(creator.signer().public()),
+                    &binding.instance_id,
+                )),
+            )?;
+            let mut raw = MlsGroup::load(creator.provider().storage(), &group_id)
+                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?
+                .ok_or_else(|| TestkitError::Scenario("the created group is not stored".into()))?;
+            let commit = raw
+                .update_group_context_extensions(creator.provider(), swapped, creator.signer())
+                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?
+                .0;
+            raw.merge_pending_commit(creator.provider())
+                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
+            group = DillaGroup::load(creator.provider(), &group_id)?
+                .ok_or_else(|| TestkitError::Scenario("the created group is not stored".into()))?;
+            commit
+        } else {
+            let bundle = group.self_update(creator.provider(), creator.signer())?;
+            group.merge_pending_commit(creator.provider())?;
+            bundle.commit
+        };
+        let commit_group_info =
+            serialize(&group.export_group_info(creator.provider(), creator.signer())?)?;
+        groups.push(RegistrationGroup {
+            name: name.to_owned(),
+            group_id_hex: hex(group_id.as_slice()),
+            binding_hex: hex(&binding.encode()),
+            group_info_hex: hex(&group_info),
+            ratchet_tree_hex: hex(&tree),
+            leaves: 1,
+            commit_hex: Some(hex(&serialize(&commit)?)),
+            commit_group_info_hex: Some(hex(&commit_group_info)),
+        });
+    }
+    // Two one-leaf `pairing` groups for DS-MEMBERSHIP-01, by the same creator on their own target:
+    // `pairing`, as an honest client creates one (no external sender - `create_config` refuses one
+    // for this kind), and `pairing-sender`, the same shape with the instance's external sender in
+    // its group context, which only a patched client builds: through OpenMLS's own builder, with
+    // the three extensions `group_context_extensions` would write for a text group.
+    let pairing = DillaBinding {
+        target_id: [0x68; 16],
+        kind: GroupKind::Pairing,
+        media_version: GroupKind::Pairing.media_version(),
+        ..binding.clone()
+    };
+    for (name, last, with_sender) in [("pairing", 0x00u8, false), ("pairing-sender", 0x01, true)] {
+        let mut id = [0x68; 16];
+        id[15] = last;
+        let group_id = GroupId::from_slice(&id);
+        let group = if with_sender {
+            let extensions = Extensions::try_from(vec![
+                Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
+                    &[DILLA_BINDING],
+                    &[],
+                    &[CredentialType::Basic],
+                )),
+                Extension::ExternalSenders(external_senders(
+                    SignaturePublicKey::from(instance.signer().public()),
+                    &pairing.instance_id,
+                )),
+                pairing.to_extension(),
+            ])
+            .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
+            let config = MlsGroupCreateConfig::builder()
+                .ciphersuite(CIPHERSUITE)
+                .use_ratchet_tree_extension(false)
+                .padding_size(PADDING_SIZE)
+                .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
+                .set_past_epoch_deletion_policy(past_epoch_policy(GroupKind::Pairing))
+                .with_group_context_extensions(extensions)
+                .capabilities(leaf_capabilities())
+                .build();
+            MlsGroup::new_with_group_id(
+                creator.provider(),
+                creator.signer(),
+                &config,
+                group_id.clone(),
+                creator.credential(),
+            )
+            .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
+            DillaGroup::load(creator.provider(), &group_id)?
+                .ok_or_else(|| TestkitError::Scenario("the created group is not stored".into()))?
+        } else {
+            DillaGroup::create(
+                creator.provider(),
+                creator.signer(),
+                creator.credential(),
+                group_id.clone(),
+                pairing.clone(),
+                None,
+            )?
+        };
+        let group_info =
+            serialize(&group.export_group_info(creator.provider(), creator.signer())?)?;
+        let tree = group.export_ratchet_tree();
+        groups.push(RegistrationGroup {
+            name: name.to_owned(),
+            group_id_hex: hex(group_id.as_slice()),
+            binding_hex: hex(&pairing.encode()),
+            group_info_hex: hex(&group_info),
+            ratchet_tree_hex: hex(&serialize(&tree)?),
+            leaves: group.member_count(),
+            commit_hex: None,
+            commit_group_info_hex: None,
+        });
+    }
+    // The creator's own leaf takes OpenMLS's default leaf lifetime (84 days: 28 * 3, openmls-0.9.0
+    // key_packages/lifetime.rs), shorter than the 90 days `build_key_package` gives the nameless
+    // leaf, and `from_external` validates every leaf's lifetime, so the shorter one is the
+    // fixture's expiry.
+    let not_after = now + 60 * 60 * 24 * 28 * 3;
+    let manifest = RegistrationManifest {
+        user_id_hex: hex(creator.user_id().as_bytes()),
+        device_id_hex: hex(creator.device_id().as_bytes()),
+        dsk_pub_hex: hex(creator.signer().public()),
+        target_id_hex: hex(&target),
+        not_after,
+        openmls_version: "0.9.0".to_owned(),
+        groups,
     };
     let json = serde_json::to_string_pretty(&manifest)
         .map_err(|e| TestkitError::Scenario(e.to_string()))?;

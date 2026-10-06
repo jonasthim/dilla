@@ -25,11 +25,14 @@ kick alice bob
 expect_reject E_COMMIT_INVALID rule=member_remove_scope remove alice chat bob
 commit alice
 # The external joiner's leaf: another device's commit under frank's session, the same on the resync
-# path under alice's, a leaf key that is not the DSK, no signed list, a list that revokes the
-# device, and a device the instance has revoked.
+# path under alice's, a leaf key that is not the DSK (on a join, and on alice's own resync, which
+# she then repeats honestly), no signed list, a list that revokes the device, and a device the
+# instance has revoked.
 expect_reject E_COMMIT_INVALID rule=external_joiner external_join carol chat as=frank
 expect_reject E_COMMIT_INVALID rule=external_joiner resync carol chat as=alice
 expect_reject E_COMMIT_INVALID rule=external_joiner external_join frank chat leaf_key=fresh
+expect_reject E_COMMIT_INVALID rule=external_joiner resync alice chat leaf_key=fresh
+resync alice chat
 expect_reject E_COMMIT_INVALID rule=external_joiner external_join dave chat
 expect_reject E_COMMIT_INVALID rule=external_joiner external_join erin chat
 mark_revoked mallory

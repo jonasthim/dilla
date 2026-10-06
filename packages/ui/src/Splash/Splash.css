@@ -1,0 +1,7 @@
+.d-splash { min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 1.25rem; padding: 1.5rem; background: var(--bg); color: var(--fg); text-align: center; animation: d-splash-in var(--duration-slow) var(--ease-out); }
+.d-splash__status { display: grid; gap: 0.5rem; justify-items: center; }
+.d-splash__line { margin: 0; font-size: var(--text-md); color: var(--fg); }
+.d-splash__line::before { content: "› " / ""; color: var(--accent); }
+.d-splash__detail { margin: 0; max-width: 46ch; font-size: var(--text-sm); color: var(--fg-2); }
+@keyframes d-splash-in { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .d-splash { animation: none; } }

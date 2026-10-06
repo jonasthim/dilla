@@ -130,6 +130,40 @@ func TestAnExternalCommitRemovingTheJoinersOwnLeafIsAccepted(t *testing.T) {
 	}
 }
 
+// One device, one leaf (finding G1 of the second hardening review): an external commit by a device
+// that already holds a leaf must remove that leaf. A commit that removes nothing would leave the
+// device with two leaves, the new one under whatever credential it carried. The device's leaves are
+// read from mls_members, the tree's own credentials, never from the request. Asserted over the
+// applied list, like guard 2 above; the core's public group refuses the same shape first (the
+// commit's Process), and that refusal is mapped to the same rule.
+func TestAnExternalCommitThatLeavesTheJoinersOwnLeafInPlaceIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 2)
+	other := g.leafOf(1)
+	for name, applied := range map[string][]mlswasi.AppliedProposal{
+		"no Remove at all":            nil,
+		"a Remove of another leaf":    {{Kind: mlswasi.ProposalRemove, TargetLeaf: &other}},
+		"only the ExternalInit kinds": {{Kind: mlswasi.ProposalExternalInit}},
+	} {
+		err := ds.CheckExternalCommitReplacesOwnLeafForTest(h.ds, context.Background(), g.id, g.sessionOf(0), applied)
+		var dsErr *ds.Error
+		if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" || dsErr.Rule != "external_joiner" {
+			t.Fatalf("%s: got %v, want E_COMMIT_INVALID/external_joiner", name, err)
+		}
+	}
+	// The honest resync removes the device's own leaf, and a device that holds no leaf (a first
+	// join) has nothing to remove.
+	own := g.leafOf(0)
+	if err := ds.CheckExternalCommitReplacesOwnLeafForTest(h.ds, context.Background(), g.id, g.sessionOf(0),
+		[]mlswasi.AppliedProposal{{Kind: mlswasi.ProposalRemove, TargetLeaf: &own}}); err != nil {
+		t.Fatalf("a resync that removes the device's own leaf: %v", err)
+	}
+	stranger := ds.Session{UserID: id.New(), DeviceID: id.New()}
+	if err := ds.CheckExternalCommitReplacesOwnLeafForTest(h.ds, context.Background(), g.id, stranger, nil); err != nil {
+		t.Fatalf("a first join removes nothing: %v", err)
+	}
+}
+
 // `reissueAll` elects a committer only when it actually re-issued something.
 //
 // On the resync path `commitLocked` step (9) has already run `reissueOmitted`, which replaces the

@@ -84,6 +84,11 @@ pub struct DillaStorage {
     /// through to SQLite's "cannot start a transaction within a transaction". See the ownership
     /// invariant on `ConnHandle` for what this flag cannot see.
     in_tx: core::sync::atomic::AtomicBool,
+    /// Unit state owned by `tx.rs`'s unit machinery.
+    pub(super) unit_state: core::sync::atomic::AtomicU8,
+    /// Unit owner owned by `tx.rs`'s unit machinery.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) unit_owner: std::sync::Mutex<Option<std::thread::ThreadId>>,
 }
 
 impl From<rusqlite::Error> for StorageError {
@@ -93,7 +98,7 @@ impl From<rusqlite::Error> for StorageError {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn with_conn<T>(
+pub(super) fn with_conn<T>(
     handle: &ConnHandle,
     f: impl FnOnce(&rusqlite::Connection) -> Result<T, StorageError>,
 ) -> Result<T, StorageError> {
@@ -102,7 +107,7 @@ fn with_conn<T>(
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn with_conn<T>(
+pub(super) fn with_conn<T>(
     handle: &ConnHandle,
     f: impl FnOnce(&rusqlite::Connection) -> Result<T, StorageError>,
 ) -> Result<T, StorageError> {
@@ -115,6 +120,9 @@ impl DillaStorage {
         Self {
             conn,
             in_tx: core::sync::atomic::AtomicBool::new(false),
+            unit_state: core::sync::atomic::AtomicU8::new(0),
+            #[cfg(not(target_arch = "wasm32"))]
+            unit_owner: std::sync::Mutex::new(None),
         }
     }
 

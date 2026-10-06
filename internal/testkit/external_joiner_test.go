@@ -44,6 +44,14 @@ func TestAnExternalCommitsLeafMustBeItsUploadersOwn(t *testing.T) {
 			probe: "expect_reject E_COMMIT_INVALID rule=external_joiner external_join frank chat leaf_key=fresh",
 		},
 		{
+			// Hardening C, point (c): the resync path skips the rest of the joiner clause, but not
+			// the key. alice holds a leaf, so her upload is a resync, and its leaf carries a key that
+			// is not her DSK. She then resyncs honestly, which must still be accepted.
+			name: "a resync's leaf key is not its DSK",
+			probe: "expect_reject E_COMMIT_INVALID rule=external_joiner resync alice chat leaf_key=fresh\n" +
+				"resync alice chat",
+		},
+		{
 			// dave's user signed no device list at all.
 			name:  "a joiner's user signed no device list",
 			probe: "expect_reject E_COMMIT_INVALID rule=external_joiner external_join dave chat",

@@ -34,6 +34,15 @@ export default defineConfig({
     // A default WebKit context is already ephemeral; Playwright documents OPFS as unsupported
     // there, which is exactly the case under test (gap-15 AC-2).
     { name: 'webkit', use: { ...devices['Desktop Safari'] } },
+    // web-1 task 3: a normal (non-private) Firefox profile, opened by the spec itself through
+    // launchPersistentContext at /tmp/dw/firefox-persistent-<worker>. It runs only the specs that need
+    // a persistent OPFS store; persistence-matrix.spec.ts asserts private-browsing behaviour and must
+    // not run here.
+    {
+      name: 'firefox-persistent',
+      testMatch: /(mls-store|core-handle)\.spec\.ts$/,
+      use: { ...devices['Desktop Firefox'] },
+    },
   ],
   webServer: {
     command: 'npm run dev -w @dilla/core-wasm-spike -- --port 5178 --strictPort --host 127.0.0.1',

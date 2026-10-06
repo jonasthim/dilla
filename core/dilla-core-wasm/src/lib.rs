@@ -3,11 +3,15 @@
 //! `u64` arguments cross as JavaScript `BigInt`. Errors are `JsError` carrying a `protocol/*.md`
 //! `E_*` code, except `store_open`, which rethrows the original DOMException so that
 //! [`store::is_sah_contention`] can classify it (deviation A2-3).
+//! `CoreHandle` is the browser face of `dilla_core::client::ClientCore`; `abi_version()` names the
+//! browser binding ABI independently of the wasi request ABI.
 
-// `store` and `probe` exist only on the browser target. The gate lives here, on the declarations and
+// `facade`, `store` and `probe` exist only on the browser target. The gate lives here, on the declarations and
 // the re-exports, and NOT as an inner `#![cfg(…)]` in the two files: a false inner cfg removes the
 // module *item*, so an unconditional `pub mod store;` + `pub use store::{…};` fails the native build
 // with `error[E0432]: unresolved import` and takes every native test of this crate with it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod facade;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod probe;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -33,9 +37,11 @@ use wasm_bindgen::prelude::*;
 pub use media::*;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use facade::{CoreHandle, core_open};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use probe::probe_persistence;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub use store::{StoreHandle, StoreOpenConfig, is_sah_contention, store_open};
+pub use store::{StoreHandle, StoreOpenConfig, is_sah_contention, store_mls_probe, store_open};
 
 fn err(code: &str, detail: &str) -> JsError {
     JsError::new(&format!("{code}: {detail}"))
@@ -112,9 +118,12 @@ pub fn core_version() -> String {
     dilla_core::CORE_VERSION.to_owned()
 }
 
+/// The browser binding ABI. Independent of the wasi request ABI.
+pub const BROWSER_ABI_VERSION: u32 = 4;
+
 #[wasm_bindgen]
 pub fn abi_version() -> u32 {
-    dilla_core::ABI_VERSION as u32
+    BROWSER_ABI_VERSION
 }
 
 #[wasm_bindgen]
@@ -552,6 +561,7 @@ mod tests {
     #[test]
     fn the_version_getters_match_dilla_core() {
         assert_eq!(core_version(), dilla_core::CORE_VERSION);
-        assert_eq!(u64::from(abi_version()), dilla_core::ABI_VERSION);
+        assert_eq!(abi_version(), BROWSER_ABI_VERSION);
+        assert_eq!(BROWSER_ABI_VERSION, 4);
     }
 }

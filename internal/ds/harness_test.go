@@ -18,6 +18,7 @@ import (
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/ds/dstest"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -66,6 +67,11 @@ type dsHarness struct {
 	sessions map[id.ID]auth.Session
 	conns    map[id.ID]*deviceConn
 	hello    recordedFrame
+
+	// keyPackagesUsed is how many devices of the committed KeyPackage set
+	// (testkit/fixtures/key-packages) this harness has registered; keypackage_set_test.go hands
+	// each new device the next entry, so no two devices of one test share a package.
+	keyPackagesUsed int
 }
 
 func newDSHarness(t *testing.T) *dsHarness {
@@ -249,16 +255,25 @@ func (h *dsHarness) registerRequest(t *testing.T, target id.ID) ds.RegisterReque
 	}
 }
 
-// mustRegister registers the fixture group on a private end-to-end-encrypted channel and returns
-// the result together with a session for the creating device, which every group-scoped read needs:
+// mustRegister puts the 1,500-leaf fixture group on a private end-to-end-encrypted channel and
+// returns it together with a session for the creating device, which every group-scoped read needs:
 // `Info` and `Tree` are member-only and answer E_NOT_FOUND to a non-member.
+//
+// It SEEDS the group (dstest.SeedGroup) rather than registering it: POST /v1/groups adopts one
+// leaf, the registering device's own (hardening G), and this fixture is a group at epoch 6 with
+// 1,500 members that no registration produces. What it leaves behind is what Register leaves: the
+// group row, the state blob and one member row per leaf. A test of Register itself registers a
+// one-leaf group of testkit/fixtures/registration (register_leaf_test.go's mustRegisterOneLeaf).
 func (h *dsHarness) mustRegister(t *testing.T) (ds.RegisterResult, auth.Session) {
 	t.Helper()
-	got, err := h.ds.Register(context.Background(), h.registerRequest(t, h.channel(t, 0, 0)))
-	if err != nil {
-		t.Fatalf("Register: %v", err)
+	req := h.registerRequest(t, h.channel(t, 0, 0))
+	if err := dstest.SeedGroup(context.Background(), h.ds, h.repo, h.wasm,
+		testInstanceKeys(t).ExternalSenderKeyID, h.clk.Now().Unix(), dstest.Group{
+			GroupID: req.GroupID, Binding: req.Binding, GroupInfo: req.GroupInfo, RatchetTree: req.RatchetTree,
+		}); err != nil {
+		t.Fatalf("seed the fixture group: %v", err)
 	}
-	return got, h.memberSession(t, got.GroupID, 0)
+	return ds.RegisterResult{GroupID: req.GroupID, NextSeq: 1}, h.memberSession(t, req.GroupID, 0)
 }
 
 // memberSession is a session for the device at the given leaf of a registered group, read back

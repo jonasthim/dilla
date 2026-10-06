@@ -8,14 +8,17 @@ Per user:
   stored **only** in the recovery-key-encrypted header (`06-backup-archive.md`) and, transiently,
   on the device performing signup or recovery. It signs exactly one thing: the SSK.
 - **SSK** (user signing key): Ed25519, signed by the UMK. The private key lives on every `native`
-  device of the user, never on a `browser` device. It signs device credentials and the device list.
+  device of the user and never on a `browser` device, with one exception: a `browser` device that
+  performs its own signup ("Browser-rooted signup" below). It signs device credentials and the
+  device list.
 
 Per device:
 
 - **DSK** (device signing key): Ed25519. It is the MLS leaf signature key. Generated on the device;
   the private key never leaves it. Stored in the OS keystore where one exists (Keychain, DPAPI,
-  libsecret or KWallet, Android Keystore, iOS Secure Enclave-backed keychain); in IndexedDB on the
-  `browser` tier.
+  libsecret or KWallet, Android Keystore, iOS Secure Enclave-backed keychain); on the `browser` tier,
+  in the device's encrypted store (the MLS library's signature-key table), whose 256-bit key is
+  random and is kept in IndexedDB only wrapped by a non-extractable WebCrypto key.
 
 Signature domains (the message signed is the domain string in UTF-8 followed by the fields, with
 no separators):
@@ -31,6 +34,27 @@ no separators):
 Instance key rotation: a new instance signing key is announced with
 `sig_old(new_pub || "dilla instance rotate v1")`; clients accept the `GroupContextExtensions`
 proposal that replaces `external_senders` only when that signature verifies under the previous key.
+
+### Browser-rooted signup
+
+A `browser` device may create an account without any `native` device. It performs, in order:
+
+1. Generate `UMK`, `SSK`, its `DSK`, a random `device_id` and `RK` ("Recovery"). Compute
+   `sig_umk_ssk` and `sig_ssk_dev` with `kind = 0`, `tier = 1`, `signer_tier = 1`, seal the root
+   object (`06-backup-archive.md`, "Header") under `K_header`, then erase `UMK_priv`, `RK` and
+   `K_header`. `SSK_priv` and `K_backup` are kept only in the device's encrypted store, in one
+   pending signup record.
+2. Show `RK` and require the acknowledgement that "Recovery" describes, before anything is sent.
+3. Register (`09-http-api.md`, `POST /v1/accounts`) with a credential whose `user_id` is 16 zero
+   bytes: the instance mints the `user_id`, and `sig_ssk_dev` does not cover it.
+4. Replace `user_id` in the credential with the minted one (no signature changes), sign device list
+   version 1 naming this device, seal the first state object under `K_backup`, and delete the
+   pending signup record, which erases `SSK_priv` and `K_backup`. Then publish the device list.
+
+From step 4 on no device of the account holds `SSK_priv`: adding or revoking a device needs `RK`
+("Recovery") or a `native` device. A device that is interrupted between steps 3 and 4 resumes from
+the pending record; a device that loses its store in that window has registered an account it
+cannot complete, and the user starts a new signup.
 
 ### Instance keys
 
@@ -99,6 +123,19 @@ accepted only if:
 Failing 1, 3 or 4 rejects the leaf (`E_CREDENTIAL`); failing 2 hard-rejects (`E_UMK_CHANGED`);
 failing 5 rejects the leaf (`E_TIER_MISMATCH`).
 
+The instance binds a new leaf to a device too, before any client sees it: a leaf's
+`signature_key` must be the `dsk_pub` its device registered (`POST /v1/accounts`,
+`POST /v1/devices`; the key the device's sessions are established under). No flow changes a
+registered `dsk_pub`, so the key is compared as it stands at the check. The delivery service applies
+this on every path a leaf enters a group by: a published KeyPackage, an `Add`, an external join or
+resync, the one leaf a group registration adopts, and every leaf of a tree heal's reseed adopts
+(`02-delivery-service.md`, "KeyPackage directory" and invariants 1, 4, 5 and 11; `ProposeAdd` takes
+only a directory KeyPackage bound this way, invariant 6). Once in a group a leaf keeps its key: an
+`Update` or an UpdatePath that changes it is refused by clients and the delivery service alike
+(`01-groups.md`, "Client policy for proposals from members"). It is the instance's check, made
+against its own device records; the client checks above, made against the signed device list, do
+not depend on it.
+
 ## Device list
 
 The user's devices are published as a hash-chained, SSK-signed list. The DS stores and serves it;
@@ -129,13 +166,13 @@ cryptographic and does not depend on the instance.
 | secret | native device | browser device |
 |---|---|---|
 | `UMK_priv` | never (only in the recovery header) | never |
-| `SSK_priv` | yes | never |
-| `DSK_priv` | yes, in the OS keystore | yes, in IndexedDB |
-| `K_backup` (archive key) | yes | only if the user enables "history in browser sessions" (default off) |
+| `SSK_priv` | yes | never, except during its own browser-rooted signup (pending signup record only) |
+| `DSK_priv` | yes, in the OS keystore | yes, in the encrypted store (its key wrapped in IndexedDB) |
+| `K_backup` (archive key) | yes | only if the user enables "history in browser sessions" (default off); and during its own browser-rooted signup (pending signup record only) |
 | MLS group state | yes | yes (OPFS) |
 
 A browser device can therefore decrypt and send in groups it belongs to, but cannot enrol other
-devices or publish device lists. Peers show a `web` tag on members whose message came from a
+devices or publish device lists once its own signup is complete. Peers show a `web` tag on members whose message came from a
 `browser`-tier leaf.
 
 ## Pairing
@@ -184,6 +221,9 @@ base32 characters in 13 groups of 4 (no checksum). 256 bits split into 5-bit Cro
 characters, not 64 — an arithmetic slip in an earlier draft of the design spec, noted here so it is
 not re-litigated. The client MUST require the user to acknowledge that the key was written down
 before continuing; it MUST NOT offer a copy button on that screen.
+The client shows `RK` before it registers the account and never stores it: the device performing
+signup keeps only the root object sealed under `K_header` and, after registration, the state object
+sealed under `K_backup`.
 
 Derived keys: `K_header = HKDF-SHA256(salt = "", IKM = RK, info = "dilla header v1", L = 32)` and
 `K_backup = HKDF-SHA256(salt = "", IKM = RK, info = "dilla archive v1", L = 32)`.

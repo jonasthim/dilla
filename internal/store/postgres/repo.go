@@ -1435,6 +1435,10 @@ func (r *Repo) CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) 
 	return n, wrap(err)
 }
 
+func (r *Repo) DeleteKeyPackage(ctx context.Context, deviceID id.ID, kpRef []byte) error {
+	return wrap(r.w.DeleteKeyPackage(ctx, pgdb.DeleteKeyPackageParams{DeviceID: deviceID, KpRef: kpRef}))
+}
+
 func (r *Repo) PurgeKeyPackages(ctx context.Context, keepLastResort bool) (int64, error) {
 	if keepLastResort {
 		n, err := r.w.PurgeKeyPackagesKeepingLastResort(ctx)
@@ -1828,6 +1832,30 @@ func (r *Repo) GetCommunity(ctx context.Context, communityID id.ID) (store.Commu
 
 func (r *Repo) ListCommunities(ctx context.Context, after id.ID, limit int32) ([]store.CommunityRow, error) {
 	rows, err := r.r.ListCommunities(ctx, pgdb.ListCommunitiesParams{ID: after, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.CommunityRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.CommunityRow{
+			ID:                   row.ID,
+			Owner:                row.Owner,
+			Name:                 row.Name,
+			IconBlob:             row.IconBlob,
+			PolicyJSON:           []byte(row.PolicyJson),
+			PolicyVersion:        uint64(row.PolicyVersion),
+			MinAccountAgeSeconds: uint64(row.MinAccountAgeSeconds),
+			RequireMod2FA:        uint8(row.RequireMod2fa),
+			Created:              row.Created,
+			DeletedAt:            ptrInt64(row.DeletedAt),
+		})
+	}
+	return out, nil
+}
+
+// ListCommunitiesForUser is GET /v1/communities (L-SQL-02): the live communities of userID.
+func (r *Repo) ListCommunitiesForUser(ctx context.Context, userID id.ID) ([]store.CommunityRow, error) {
+	rows, err := r.r.ListCommunitiesForUser(ctx, pgdb.ListCommunitiesForUserParams{UserID: userID})
 	if err != nil {
 		return nil, wrap(err)
 	}

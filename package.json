@@ -4,10 +4,17 @@
   "version": "0.0.0",
   "description": "dilla: self-hosted, end-to-end encrypted community chat, voice and video",
   "license": "AGPL-3.0-or-later",
-  "engines": { "node": ">=24" },
-  "workspaces": ["packages/*", "core/dilla-core-wasm/spike", "e2e"],
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "packages/*",
+    "core/dilla-core-wasm/spike",
+    "e2e"
+  ],
   "scripts": {
-    "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm run check:ci && npm test --workspaces --if-present",
+    "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm run check:ci && npm test --workspaces --if-present && npm run lint",
+    "lint": "eslint --max-warnings 0 --no-error-on-unmatched-pattern packages/client-core packages/web",
     "check:docs": "node scripts/check-protocol-docs.mjs",
     "test:docs-check": "node --test scripts/check-protocol-docs.test.mjs",
     "check:brief": "node scripts/check-design-brief.mjs",
@@ -16,7 +23,15 @@
     "test:copy-check": "node --test scripts/check-ui-copy.test.mjs",
     "check:ci": "node scripts/check-ci-workflow.mjs",
     "test:ci-check": "node --test scripts/check-ci-workflow.test.mjs",
+    "test:manifest-writer": "node --test scripts/write-manifest.test.mjs",
+    "test:wasm-size-check": "node --test scripts/check-wasm-size.test.mjs",
     "vectors": "[ ! -d packages ] || npm run vectors --workspaces --if-present",
     "test:e2e": "npm run test:e2e -w @dilla/e2e"
+  },
+  "devDependencies": {
+    "eslint": "9.39.5",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "typescript-eslint": "8.71.1"
   }
 }

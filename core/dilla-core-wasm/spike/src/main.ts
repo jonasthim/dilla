@@ -12,7 +12,14 @@ interface WorkerReport {
   wrongKeyMessage?: string;
   name?: string;
   message?: string;
+  id?: number;
+  ok?: boolean;
+  value?: string | Record<string, unknown>;
+  error?: string;
 }
+
+type MlsOp = 'create' | 'load' | 'hold' | 'release' | 'pause' | 'resume';
+type MlsReply = { ok: true; value: string } | { ok: false; error: string };
 
 const params = new URLSearchParams(location.search);
 const instance = params.get('instance') ?? 'default';
@@ -37,6 +44,24 @@ const state: Record<string, unknown> = { order: [], instance };
 (globalThis as unknown as { __dilla: Record<string, unknown> }).__dilla = state;
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+const coreMode = params.get('core') === '1';
+const coreCalls = new Map<number, (result: unknown) => void>();
+let coreSeq = 0;
+if (coreMode) {
+  state.core = (op: string): Promise<unknown> =>
+    new Promise((resolveCall) => {
+      coreSeq += 1;
+      coreCalls.set(coreSeq, resolveCall);
+      worker.postMessage({ type: 'core', id: coreSeq, op, instance });
+    });
+}
+const mlsWaiters = new Map<number, (reply: MlsReply) => void>();
+let nextMlsId = 0;
+state.mls = (op: MlsOp): Promise<MlsReply> => new Promise((resolve) => {
+  const id = ++nextMlsId;
+  mlsWaiters.set(id, resolve);
+  worker.postMessage({ type: 'mls', id, op });
+});
 
 const appendButton = document.getElementById('append') as HTMLButtonElement | null;
 
@@ -65,6 +90,16 @@ worker.addEventListener('message', (event: MessageEvent<WorkerReport>) => {
   if (report.order !== undefined) state.order = report.order;
 
   switch (report.type) {
+    case 'mls-result': {
+      if (report.id === undefined) break;
+      const resolve = mlsWaiters.get(report.id);
+      if (resolve === undefined) break;
+      mlsWaiters.delete(report.id);
+      resolve(report.ok === true
+        ? { ok: true, value: typeof report.value === 'string' ? report.value : '' }
+        : { ok: false, error: report.error ?? '' });
+      break;
+    }
     case 'probe':
       text('mode', report.mode ?? '');
       text('reason', report.reason ?? '');
@@ -132,6 +167,14 @@ worker.addEventListener('message', (event: MessageEvent<WorkerReport>) => {
       setAppendEnabled(false);
       banner(`Store error: ${report.message ?? 'unknown'}`);
       break;
+    case 'core-result': {
+      const resolveCall = report.id === undefined ? undefined : coreCalls.get(report.id);
+      if (resolveCall !== undefined && report.id !== undefined) {
+        coreCalls.delete(report.id);
+        resolveCall(report.ok === true ? { ok: true, value: report.value ?? {} } : { ok: false, error: report.error ?? '' });
+      }
+      break;
+    }
     default:
       break;
   }
@@ -146,4 +189,4 @@ document.getElementById('resign')?.addEventListener('click', () => {
   worker.postMessage({ type: 'resign' });
 });
 
-worker.postMessage({ type: 'start', instance, badKek });
+if (!coreMode) worker.postMessage({ type: 'start', instance, badKek });

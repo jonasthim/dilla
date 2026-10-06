@@ -36,6 +36,9 @@ func TestAnAdvancedWalltimeExpiresAKeyPackageWithoutRebuildingThePool(t *testing
 	if len(info.KPRef) != 32 {
 		t.Fatalf("KPRef = %d bytes, want 32", len(info.KPRef))
 	}
+	if len(info.SignatureKey) != 32 {
+		t.Fatalf("SignatureKey = %d bytes, want the leaf's 32-byte Ed25519 key (ABI v4)", len(info.SignatureKey))
+	}
 
 	// One second past not_after, on the same instance.
 	now = time.Unix(int64(info.NotAfter)+1, 0)

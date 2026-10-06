@@ -5,6 +5,9 @@
 #![forbid(unsafe_code)]
 
 pub mod cbor;
+// The client uses the SQLite half of `mls`, unavailable on wasm32-wasip1.
+#[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
+pub mod client;
 pub mod envelope;
 pub mod error;
 pub mod identity;
@@ -35,4 +38,23 @@ pub const WIRE_VERSION: u64 = 1;
 /// **3** since 2026-09-29 (dillad-1 task 27a, Ruling C): `public_group_process`'s response grew a
 /// ninth element, `new_leaf` — the leaf an external commit's joiner lands on — and the module
 /// grew `device_list_entries`, the verified decoder of a user's signed device list (NV-B8).
-pub const ABI_VERSION: u64 = 3;
+///
+/// **4** since 2026-10-05 (hardening C): `validate_key_package`'s response grew a seventh element,
+/// the KeyPackage leaf's `signature_key`, and each item of `public_group_process`'s applied list a
+/// sixth, the added leaf's `signature_key` (an Add's; null for every other proposal), so the
+/// delivery service can bind a new leaf to the device's registered key without parsing MLS.
+///
+/// **5** since 2026-10-05 (hardening G): `public_group_state`'s response grew a seventh element,
+/// `leaf_count`, the number of occupied leaves in the tree. The member list leaves out a leaf whose
+/// credential is not a dilla identity or whose key is not 32 bytes, so it cannot say how many
+/// leaves a tree holds; group registration and heal's reseed adopt a tree only when every leaf is
+/// one the delivery service can name.
+///
+/// **6** since 2026-10-06 (DS-MEMBERSHIP-01): `public_group_state`'s response grew an eighth
+/// element, `external_senders`, the group context's external-sender entries as
+/// `[credential_type, credential, signature_key]` each (empty when the extension is absent).
+/// Group registration and heal's reseed adopt a `text` or `call` group only when its one entry is
+/// this instance's key and `"instance"` credential, and a `pairing` or `interaction` group only
+/// when it carries none: a group whose extension names another key is one the instance can never
+/// propose into.
+pub const ABI_VERSION: u64 = 6;

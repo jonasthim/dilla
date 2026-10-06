@@ -315,9 +315,12 @@ func TestAHealWhoseTailAddsAnIneligibleDeviceIsRefused(t *testing.T) {
 // item for an EARLIER epoch is already in the tree it was built from. Replaying one would be a
 // wrong-epoch refusal of a legitimate heal, and tree plus tail is protocol/02's own shape. Only
 // what the tree does not already hold is replayed and appended.
+//
+// The group's devices are enrolled honestly (enrolledGroup): a reseed adopts the uploaded tree only
+// when every leaf passes the Add clause (hardening G2b).
 func TestAReseedingHealSkipsTheTailTheTreeAlreadyHolds(t *testing.T) {
 	h := newDSHarness(t)
-	g := h.group(t)
+	g := h.enrolledGroup(t)
 	tree := h.currentTree(t, g)
 	groupInfo := h.groupInfoAt(t, g, g.Epoch())
 	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
@@ -347,10 +350,10 @@ func TestAReseedingHealSkipsTheTailTheTreeAlreadyHolds(t *testing.T) {
 
 // The restored log already holds seq 1 and only the state blob is lost. A reseeding heal whose
 // tail carries seq 1 again replays it into the reseeded guest, but does not write it a second
-// time under a fresh seq.
+// time under a fresh seq. The devices are enrolled honestly, as above.
 func TestAReseedingHealDoesNotDuplicateTheRestoredLog(t *testing.T) {
 	h := newDSHarness(t)
-	g := h.group(t)
+	g := h.enrolledGroup(t)
 	tree := h.currentTree(t, g)
 	groupInfo := h.groupInfoAt(t, g, g.Epoch())
 	tail := h.proposalTail(t, g, 0)
@@ -376,10 +379,11 @@ func TestAReseedingHealDoesNotDuplicateTheRestoredLog(t *testing.T) {
 
 // A heal with no usable blob AND a supplied ratchet tree reseeds through from_external — the one
 // upload where the tree is allowed, because the instance has none, and RFC 9420 §12.4.3.3's
-// signed tree_hash is what makes that source safe.
+// signed tree_hash is what makes that source safe. Since hardening G2b every leaf of the tree also
+// passes the Add clause, so the group's devices are enrolled honestly.
 func TestAHealWithNoBlobReseedsFromTheSuppliedTree(t *testing.T) {
 	h := newDSHarness(t)
-	g := h.group(t)
+	g := h.enrolledGroup(t)
 	tree := h.currentTree(t, g)
 	groupInfo := h.groupInfoAt(t, g, g.Epoch())
 	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {

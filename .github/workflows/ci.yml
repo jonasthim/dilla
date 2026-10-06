@@ -22,6 +22,8 @@ jobs:
       - run: npm run test:brief-check
       - run: npm run test:copy-check
       - run: npm run test:ci-check
+      - run: npm run test:wasm-size-check
+      - run: npm run test:manifest-writer
       - run: npm test
       - name: vectors are up to date
         run: |
@@ -50,6 +52,16 @@ jobs:
           npx concurrently -k -s first -n SB,TEST \
             "npx http-server packages/ui/storybook-static --port 6006 --silent" \
             "npx wait-on tcp:127.0.0.1:6006 && npm run test:storybook -w packages/ui -- --url http://127.0.0.1:6006"
+      # F16 (web-1): every story of the thirteen new components and of the composed onboarding and shell
+      # screens (titles Form/, Ceremony/, Shell/, Conversation/, Screens/) in mesh, light and high-contrast,
+      # for the founder's review: three PNGs per story. The script fails when a prefix matches no story.
+      - name: Screenshots of the web-1 components and screens in the three themes
+        run: node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-1 form- ceremony- shell- conversation- screens-
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ui-screens
+          path: target/ui-screens/web-1
+          if-no-files-found: error
   rust-wasm-node:
     runs-on: ubuntu-latest
     steps:
@@ -57,6 +69,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: wasm32-unknown-unknown
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-wasm32-unknown-unknown
@@ -74,9 +87,14 @@ jobs:
           test "$want" = "$have" || { echo "wasm-bindgen-cli $have != crate $want"; exit 1; }
       - run: cargo test -p dilla-core --target wasm32-unknown-unknown --locked --features vectors
       - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
-      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      # Ruling 40: native clippy never compiles the wasm-only modules (store.rs, probe.rs, facade.rs).
+      - run: cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
+      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm ci
       - run: npm run typecheck -w @dilla/media
+      - run: npm run typecheck -w @dilla/core-wasm
       - run: npm run test:wasm -w @dilla/media
       - run: npm run check:schema -w @dilla/media
 
@@ -153,7 +171,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
-      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir spike/pkg
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg
       - run: npm ci
       # Deviation A2-6: the persistence matrix asserts Firefox private-browsing and WebKit
       # ephemeral behaviour, so those engines must be installed too.
@@ -197,7 +215,7 @@ jobs:
           name: dilla-testkit
           path: artifacts
       - run: chmod +x artifacts/dilla-testkit
-      - run: wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir ../../packages/media/wasm
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
       - run: npm ci
       - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
@@ -215,6 +233,107 @@ jobs:
         if: failure()
         with:
           name: browser-media-results
+          path: e2e/test-results
+          if-no-files-found: error
+
+  web-build:
+    runs-on: ubuntu-latest
+    # C9: the web client is built once here and handed to browser-web, go-release and image, so every
+    # consumer tests or ships the same bytes. The webdist test is web.New's manifest check over
+    # packages/web/dist, where the build left it: nothing is copied into internal/web/dist (ruling 38).
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-wasm32-unknown-unknown
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
+      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
+      - run: npm ci
+      - run: npm run typecheck -w @dilla/core-wasm
+      - run: npm run typecheck -w @dilla/client-core
+      - run: npm run typecheck -w @dilla/web
+      - run: npm run build -w @dilla/web
+      - run: npm run build:harness -w @dilla/client-core
+      - run: go test -tags webdist ./internal/web/...
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dilla-core-harness
+          path: packages/client-core/harness-dist/
+          if-no-files-found: error
+
+  browser-web:
+    runs-on: ubuntu-latest
+    # C18: the core-worker suite and the web suite against the test host serving the build same-origin,
+    # with the native testkit peer. The wasm arrives inside the two builds; no Rust toolchain here.
+    # Budget (ruling 41): max(30, ceil(5 x (0.2 + 3.7)) + 10) = 30, from task 25's local wall times
+    # 0.2 min (11.8s core-worker suite) and 3.7 min (42.2s Chromium+Firefox web suite plus 3.0 min
+    # allowance for three WebKit tests); measured 2026-10-06. The 10 min covers npm and all installs.
+    timeout-minutes: 30
+    needs: [rust-native, rust-wasi, web-build]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: Fetch the testkit binary built by the rust-native job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - run: chmod +x artifacts/dilla-testkit
+      - name: Fetch the web client built by the web-build job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - name: Fetch the core-worker harness built by the web-build job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-harness
+          path: packages/client-core/harness-dist
+      - run: npm ci
+      # Ruling 22: WebKit runs signup and reload here, and only here.
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npm run test:e2e:core -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+      - run: npm run test:e2e:web -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-web-results
           path: e2e/test-results
           if-no-files-found: error
 
@@ -336,9 +455,9 @@ jobs:
       - name: FTS5 on native linux/arm64
         run: go test ./internal/store/sqlite/...
 
-  # go-lint, go-vuln, go-sqlc and go-release carry no `needs:` on purpose: `go vet ./...` and
-  # `go build ./cmd/dillad` both exit 0 with the wasi artifact absent, so they start at t=0
-  # alongside rust-wasi for zero added wall clock.
+  # go-lint, go-vuln and go-sqlc carry no `needs:` on purpose: `go vet ./...` and `go build` exit 0 with
+  # the wasi artifact absent and with the committed web placeholder, so they start at t=0. go-release
+  # waits for web-build: the release binaries embed the real client, never the placeholder (C9).
   go-lint:
     runs-on: ubuntu-latest
     steps:
@@ -412,12 +531,29 @@ jobs:
 
   go-release:
     runs-on: ubuntu-latest
+    needs: [web-build]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - run: rm -rf internal/web/dist
+      - name: Fetch the web client built by the web-build job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-web-dist
+          path: internal/web/dist
+      - name: The binaries embed the real client, not the placeholder
+        run: |
+          test -f internal/web/dist/index.html
+          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
+      # Ruling 38: the webdist test reads DILLA_WEB_DIST through os.DirFS, so it proves the downloaded bytes
+      # that the build below embeds.
+      - name: the downloaded client passes the manifest check
+        run: go test -tags webdist ./internal/web/...
+        env:
+          DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist
       - name: linux/amd64
         run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-amd64 ./cmd/dillad
       - name: linux/arm64
@@ -433,7 +569,8 @@ jobs:
     # The wasi core is not built here: dillad loads it from beside its own binary
     # and the Dockerfile copies it in, so the image job fetches rust-wasi's
     # artifact into the build context first. `go`, `go-ds` and `go-lint` gate the push.
-    needs: [go, go-ds, go-lint, rust-wasi]
+    # The web client from web-build is fetched into internal/web/dist, where the builder's `go build` embeds it.
+    needs: [go, go-ds, go-lint, rust-wasi, web-build]
     permissions: { contents: read, packages: write }
     timeout-minutes: 30
     steps:
@@ -443,6 +580,16 @@ jobs:
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
+      - run: rm -rf internal/web/dist
+      - name: Fetch the web client into the image's build context
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-web-dist
+          path: internal/web/dist
+      - name: The image embeds the real client, not the placeholder
+        run: |
+          test -f internal/web/dist/index.html
+          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
       - uses: docker/setup-buildx-action@v4.4.1
       # A pull request only builds: the login is skipped there, so a fork's
       # read-only token never reaches it.

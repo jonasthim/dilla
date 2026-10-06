@@ -246,10 +246,11 @@ fn public_group_process(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> 
     e.opt_bytes(proposal_ref.as_deref());
     e.array(applied.len());
     for item in &applied {
-        e.array(5).bytes(&item.proposal_ref).uint(item.kind);
+        e.array(6).bytes(&item.proposal_ref).uint(item.kind);
         e.opt_uint(item.sender_leaf.map(u64::from));
         e.opt_uint(item.target_leaf.map(u64::from));
         e.opt_bytes(item.credential_identity.as_deref());
+        e.opt_bytes(item.signature_key.as_deref());
     }
     e.uint(committer_updated);
     e.opt_uint(new_leaf.map(u64::from));
@@ -285,12 +286,18 @@ fn with_staged_or_release<T>(
 }
 
 /// One entry of ABI v2 §3.1's `applied` array.
+///
+/// ABI v4: `signature_key` is the added leaf's signature key, for an Add only. The delivery
+/// service compares it with the registered key of the device the credential names (invariant 4's
+/// Add clause), which it cannot do from the credential alone: nothing in the credential is the
+/// leaf's key, and Go does not parse MLS.
 struct Applied {
     proposal_ref: Vec<u8>,
     kind: u64,
     sender_leaf: Option<u32>,
     target_leaf: Option<u32>,
     credential_identity: Option<Vec<u8>>,
+    signature_key: Option<Vec<u8>>,
 }
 
 /// Every proposal the commit resolved, in the order `StagedCommit` reports them.
@@ -309,8 +316,12 @@ fn applied_proposals(staged: &StagedCommit) -> Result<Vec<Applied>, AbiError> {
             _ => None,
         };
         let proposal_ref = queued.proposal_reference_ref().as_slice().to_vec();
+        let mut signature_key = None;
         let (kind, target_leaf, credential_identity) = match queued.proposal() {
-            Proposal::Add(add) => (1u64, None, Some(leaf_credential_bytes(add.key_package())?)),
+            Proposal::Add(add) => {
+                signature_key = Some(leaf_signature_key(add.key_package()));
+                (1u64, None, Some(leaf_credential_bytes(add.key_package())?))
+            }
             Proposal::Update(_) => (2, None, None),
             Proposal::Remove(remove) => (3, Some(remove.removed().u32()), None),
             Proposal::PreSharedKey(_) => (4, None, None),
@@ -330,6 +341,7 @@ fn applied_proposals(staged: &StagedCommit) -> Result<Vec<Applied>, AbiError> {
             sender_leaf,
             target_leaf,
             credential_identity,
+            signature_key,
         });
     }
     Ok(out)
@@ -408,14 +420,23 @@ fn public_group_state(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
     let group = t.group(handle)?;
     let binding = group.binding().encode();
     let members = group.members();
+    let senders = group.external_senders()?;
 
     // Deviation A2-13: element 5 is a CBOR byte string *wrapping* the 8-element dilla_binding array,
     // which is how §2.10's export table types it (`binding(bstr)`). The same section's field note
     // says "spliced verbatim"; that note is wrong, and splicing a bare array here would make
     // §2.13's mlswasi decoder read a major-4 head where it expects major 2. The Go side decodes the
     // bstr, then decodes the binding array out of those bytes.
+    //
+    // ABI v5: element 7 is `leaf_count`, every occupied leaf of the tree. The member list above
+    // leaves out a leaf it cannot name (no dilla identity, or not a 32-byte key), so a host that
+    // adopts a tree compares the two rather than trusting the list's length.
+    //
+    // ABI v6: element 8 is `external_senders`, the group context's entries in extension order, each
+    // `[credential_type, credential, signature_key]` (empty when the extension is absent). The host
+    // decides what a group of each kind may carry; the core only reports it (DS-MEMBERSHIP-01).
     let mut e = Encoder::new();
-    e.array(6)
+    e.array(8)
         .uint(0)
         .uint(group.epoch())
         .bytes(group.group_id().as_slice())
@@ -427,6 +448,14 @@ fn public_group_state(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
             .uint(u64::from(m.leaf_index))
             .bytes(&m.signature_key)
             .bytes(&m.identity.encode());
+    }
+    e.uint(group.leaf_count() as u64);
+    e.array(senders.len());
+    for s in &senders {
+        e.array(3)
+            .uint(u64::from(s.credential_type))
+            .bytes(&s.credential)
+            .bytes(&s.signature_key);
     }
     Ok(e.into_vec())
 }
@@ -647,14 +676,17 @@ fn validate_key_package_export(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, Ab
         .hash_ref(&crypto)
         .map_err(|e| AbiError::state(format!("key package ref: {e}")))?;
 
+    // ABI v4: the leaf's signature key, which the delivery service compares with the uploading
+    // device's registered key (protocol/02 invariant 4, the KeyPackage route).
     let mut e = Encoder::new();
-    e.array(6)
+    e.array(7)
         .uint(0)
         .bytes(identity.device_id.as_bytes())
         .bytes(identity.user_id.as_bytes())
         .uint(u64::from(is_last_resort(&kp)))
         .uint(lifetime_not_after(&kp))
-        .bytes(kp_ref.as_slice());
+        .bytes(kp_ref.as_slice())
+        .bytes(&leaf_signature_key(&kp));
     Ok(e.into_vec())
 }
 
@@ -777,6 +809,13 @@ fn leaf_credential_bytes(kp: &KeyPackage) -> Result<Vec<u8>, AbiError> {
     BasicCredential::try_from(credential.clone())
         .map(|b| b.identity().to_vec())
         .map_err(|e| AbiError::new("E_CREDENTIAL", e.to_string()))
+}
+
+/// The KeyPackage leaf's signature key, the key both of the KeyPackage's signatures verified under
+/// (`KeyPackageIn::validate`). It is what a dilla leaf's `sig_ssk_dev` covers and what the
+/// delivery service binds to the device's registered key (ABI v4).
+fn leaf_signature_key(kp: &KeyPackage) -> Vec<u8> {
+    kp.leaf_node().signature_key().as_slice().to_vec()
 }
 
 /// NV-3: `last_resort` is a KeyPackage extension, not a leaf-node one.
@@ -1043,10 +1082,10 @@ mod tests {
         let r = req(|e| {
             e.array(2).uint(dilla_core::ABI_VERSION).uint(imported);
         });
-        let (got_epoch, got_group_id, got_tree_hash, members) = decode_strict(
+        let (got_epoch, got_group_id, got_tree_hash, members, leaf_count, senders) = decode_strict(
             &dispatch("public_group_state", &r),
             |d: &mut Decoder<'_>| {
-                d.array(6)?;
+                d.array(8)?;
                 assert_eq!(d.uint()?, 0);
                 let epoch = d.uint()?;
                 let group_id = d.bytes()?.to_vec();
@@ -1064,7 +1103,19 @@ mod tests {
                     !binding.is_empty(),
                     "dilla_binding must survive the state round-trip"
                 );
-                Ok((epoch, group_id, tree_hash, members))
+                // ABI v5: element 7, every occupied leaf of the tree.
+                let leaf_count = d.uint()?;
+                // ABI v6: element 8, the external senders as [credential_type, credential, key].
+                let n = d.array_len()?;
+                let mut senders = Vec::with_capacity(n);
+                for _ in 0..n {
+                    d.array(3)?;
+                    let credential_type = d.uint()?;
+                    let credential = d.bytes()?.to_vec();
+                    let key = d.bytes()?.to_vec();
+                    senders.push((credential_type, credential, key));
+                }
+                Ok((epoch, group_id, tree_hash, members, leaf_count, senders))
             },
         )
         .unwrap();
@@ -1075,6 +1126,22 @@ mod tests {
             "the tree hash must survive export and import"
         );
         assert_eq!(members, 1_500, "the committed fixture has 1,500 leaves");
+        assert_eq!(
+            leaf_count, 1_500,
+            "leaf_count counts every occupied leaf; every fixture leaf is a dilla identity"
+        );
+        // The fixture's one external sender survives the round-trip: a basic credential naming the
+        // generator's instance, and its 32-byte key.
+        assert_eq!(senders.len(), 1, "the fixture names one external sender");
+        let (credential_type, credential, key) = &senders[0];
+        assert_eq!(*credential_type, 1, "a basic credential");
+        assert_eq!(
+            credential,
+            &dilla_core::mls::instance_credential_identity(
+                &dilla_core::ids::InstanceId::from_bytes([0x11; 16])
+            )
+        );
+        assert_eq!(key.len(), 32);
     }
 
     #[test]
@@ -1192,18 +1259,20 @@ mod tests {
             let n = d.array_len()?;
             let mut applied = Vec::with_capacity(n);
             for _ in 0..n {
-                d.array(5)?;
+                d.array(6)?;
                 let proposal_ref = d.bytes()?.to_vec();
                 let kind = d.uint()?;
                 let sender_leaf = d.opt_uint()?;
                 let target_leaf = d.opt_uint()?;
                 let credential_identity = d.opt_bytes()?.map(<[u8]>::to_vec);
+                let signature_key = d.opt_bytes()?.map(<[u8]>::to_vec);
                 applied.push(AppliedItem {
                     proposal_ref,
                     kind,
                     sender_leaf,
                     target_leaf,
                     credential_identity,
+                    signature_key,
                 });
             }
             let committer_updated = d.uint()?;
@@ -1222,13 +1291,17 @@ mod tests {
         sender_leaf: Option<u64>,
         target_leaf: Option<u64>,
         credential_identity: Option<Vec<u8>>,
+        signature_key: Option<Vec<u8>>,
     }
 
     /// interfaces §3: a response-shape change moves `abi_version`. 2 when the process and
     /// validate_key_package responses grew; 3 since `public_group_process` grew `new_leaf` and the
-    /// module grew `device_list_entries` (task 27a, Ruling C).
+    /// module grew `device_list_entries` (task 27a, Ruling C); 4 since `validate_key_package` and
+    /// the applied items grew the leaf's `signature_key` (hardening C); 5 since
+    /// `public_group_state` grew `leaf_count` (hardening G); 6 since it grew `external_senders`
+    /// (DS-MEMBERSHIP-01).
     #[test]
-    fn dilla_abi_reports_version_three() {
+    fn dilla_abi_reports_version_six() {
         let out = dispatch("dilla_abi", &version_only());
         let abi = decode_strict(&out, |d: &mut Decoder<'_>| {
             d.array(6)?;
@@ -1245,24 +1318,27 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            abi, 3,
-            "ABI v3: the process response grew new_leaf and device_list_entries was added"
+            abi, 6,
+            "ABI v6: public_group_state carries the group's external_senders"
         );
-        assert_eq!(dilla_core::ABI_VERSION, 3);
+        assert_eq!(dilla_core::ABI_VERSION, 6);
     }
 
-    /// An ABI v2 request must now be refused outright — there is no compatibility shim (§3).
+    /// An ABI v2, v3, v4 or v5 request must now be refused outright — there is no compatibility
+    /// shim (§3).
     #[test]
     fn an_abi_version_two_request_is_refused() {
-        let r = req(|e| {
-            e.array(1).uint(2);
-        });
-        let (code, detail) = failure(&dispatch("dilla_abi", &r));
-        assert_eq!(code, crate::abi::E_ABI_VERSION);
-        assert!(
-            detail.contains('2') && detail.contains('3'),
-            "detail: {detail}"
-        );
+        for old in [2u64, 3, 4, 5] {
+            let r = req(|e| {
+                e.array(1).uint(old);
+            });
+            let (code, detail) = failure(&dispatch("dilla_abi", &r));
+            assert_eq!(code, crate::abi::E_ABI_VERSION);
+            assert!(
+                detail.contains(&old.to_string()) && detail.contains('6'),
+                "detail: {detail}"
+            );
+        }
     }
 
     /// A signing key for the device lists below. The SSK is a plain Ed25519 key, and
@@ -1532,6 +1608,127 @@ mod tests {
         assert_eq!(state.as_deref(), Some(signer.public()));
     }
 
+    /// The leaf-credential rule as the delivery service meets it across the ABI (protocol/02
+    /// invariant 4). A fresh client joins the fixture by external commit and then commits a
+    /// self-update whose UpdatePath keeps its key and device id but names another user:
+    /// `public_group_process` answers an `E_CREDENTIAL` failure frame - which dillad turns into
+    /// `422 E_COMMIT_INVALID`, rule `structural` (`internal/ds/commit.go`, step 4) - and leaves no
+    /// staged handle behind. The same member's honest self-update is processed as usual.
+    #[test]
+    fn a_member_commit_that_changes_its_leafs_credential_is_an_e_credential_frame() {
+        use openmls_rust_crypto::OpenMlsRustCrypto;
+        use tls_codec::Serialize as _;
+
+        let (handle, _epoch, _group_id, _tree_hash) = create_fixture_group();
+        let provider = OpenMlsRustCrypto::default();
+        let signer = SignatureKeyPair::new(SignatureScheme::ED25519).expect("keygen");
+        let identity = |user: u8| {
+            use dilla_core::identity::{
+                CredentialIdentity, Kind, SignerTier, SskSigner, Tier, UmkSigner,
+            };
+            use dilla_core::ids::{DeviceId, UserId};
+            let umk = UmkSigner::from_bytes(&[0x61; 32]);
+            let ssk = SskSigner::from_bytes(&[0x62; 32]);
+            CredentialIdentity {
+                v: 1,
+                umk_pub: umk.public(),
+                user_id: UserId::from_bytes([user; 16]),
+                device_id: DeviceId::from_bytes([0x64; 16]),
+                kind: Kind::User,
+                tier: Tier::Native,
+                signer_tier: SignerTier::Native,
+                ssk_pub: ssk.public(),
+                sig_umk_ssk: umk.sign_ssk(&ssk.public()),
+                sig_ssk_dev: [0u8; 64],
+            }
+            .encode()
+        };
+        let with_key = |user: u8| CredentialWithKey {
+            credential: BasicCredential::new(identity(user)).into(),
+            signature_key: signer.public().into(),
+        };
+        #[allow(deprecated)]
+        let (mut joined, commit, _info) = MlsGroup::join_by_external_commit(
+            &provider,
+            &signer,
+            Some(tls::ratchet_tree_in(FIXTURE_TREE).expect("tree")),
+            tls::verifiable_group_info(FIXTURE_GROUP_INFO).expect("group info"),
+            // dilla's own join configuration: handshakes go out as PublicMessages, which is the
+            // only form the delivery service parses (a PrivateMessage is `kind 3`, rejected).
+            &dilla_core::mls::join_config(dilla_core::mls::GroupKind::Text),
+            Some(dilla_core::mls::leaf_capabilities()),
+            None,
+            &[],
+            with_key(0x63),
+        )
+        .expect("a fresh client joins the fixture by external commit");
+        joined
+            .merge_pending_commit(&provider)
+            .expect("the joiner merges its own external commit");
+        let commit = commit.tls_serialize_detached().expect("serialize");
+        let (_, _, staged, _) = process_external(handle, &commit);
+        let merged = dispatch(
+            "public_group_merge",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .uint(staged.expect("a staged handle"));
+            }),
+        );
+        decode_strict(&merged, |d: &mut Decoder<'_>| {
+            d.array(2)?;
+            assert_eq!(d.uint()?, 0, "the external commit merges");
+            d.skip()?;
+            Ok(())
+        })
+        .unwrap();
+        let staged_before = with_table(|t| t.staged_count());
+
+        // The same signature key and device id, another user id.
+        let (rotating, _, _) = joined
+            .self_update(
+                &provider,
+                &signer,
+                LeafNodeParameters::builder()
+                    .with_credential_with_key(with_key(0x65))
+                    .build(),
+            )
+            .expect("OpenMLS builds the commit; the delivery service must refuse it")
+            .into_contents();
+        let rotating = rotating.tls_serialize_detached().expect("serialize");
+        let (code, detail) = failure(&dispatch(
+            "public_group_process",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .uint(handle)
+                    .bytes(&rotating);
+            }),
+        ));
+        assert_eq!(code, "E_CREDENTIAL", "{detail}");
+        assert_eq!(
+            with_table(|t| t.staged_count()),
+            staged_before,
+            "a refused commit must not leave a staged handle"
+        );
+
+        // The honest self-update from the same epoch is still a commit the guest stages.
+        joined
+            .clear_pending_commit(provider.storage())
+            .expect("clear the refused commit");
+        let (honest, _, _) = joined
+            .self_update(&provider, &signer, LeafNodeParameters::default())
+            .expect("self_update")
+            .into_contents();
+        let honest = honest.tls_serialize_detached().expect("serialize");
+        let (kind, _, sender_leaf, staged, _, committer_updated) = process(handle, &honest);
+        assert_eq!(kind, 1, "a commit");
+        assert!(sender_leaf.is_some(), "a member commit names its leaf");
+        assert!(staged.is_some(), "the honest commit stages");
+        assert_eq!(committer_updated, 1);
+    }
+
     /// `public_group_staged_group_info_validate` -> `(epoch, signature_ok)`.
     fn staged_group_info_validate(handle: u64, staged: u64, group_info: &[u8]) -> (u64, bool) {
         let out = dispatch(
@@ -1631,6 +1828,12 @@ mod tests {
                 .expect("an Add carries the joiner's credential identity");
             dilla_core::identity::CredentialIdentity::decode(identity)
                 .expect("the credential identity is the core's 10-element CBOR array");
+            // ABI v4: the added leaf's signature key travels with the Add.
+            assert_eq!(
+                item.signature_key.as_ref().map(Vec::len),
+                Some(32),
+                "an Add carries its leaf's Ed25519 signature key"
+            );
         }
         assert_eq!(committer_updated, 1, "add_members forces a self-update");
     }
@@ -1657,6 +1860,10 @@ mod tests {
         assert!(
             applied[0].credential_identity.is_none(),
             "a Remove carries no credential"
+        );
+        assert!(
+            applied[0].signature_key.is_none(),
+            "a Remove carries no leaf key"
         );
         assert_eq!(
             committer_updated, 1,
@@ -1916,7 +2123,8 @@ mod tests {
     }
 
     /// §3.5: `validate_key_package` grew to six elements and the sixth is the RFC 9420
-    /// KeyPackageRef.
+    /// KeyPackageRef; ABI v4 adds a seventh, the leaf's signature key, which is the key the
+    /// KeyPackage's own signature verifies under.
     #[test]
     fn validate_key_package_returns_the_key_package_ref() {
         let out = dispatch(
@@ -1927,9 +2135,9 @@ mod tests {
                     .bytes(FIXTURE_KEY_PACKAGE);
             }),
         );
-        let (device_id, user_id, last_resort, not_after, kp_ref) =
+        let (device_id, user_id, last_resort, not_after, kp_ref, signature_key) =
             decode_strict(&out, |d: &mut Decoder<'_>| {
-                d.array(6)?;
+                d.array(7)?;
                 assert_eq!(
                     d.uint()?,
                     0,
@@ -1941,9 +2149,20 @@ mod tests {
                     d.uint()?,
                     d.uint()?,
                     d.bytes()?.to_vec(),
+                    d.bytes()?.to_vec(),
                 ))
             })
             .unwrap();
+        let kp = validate_key_package(
+            &RustCrypto::default(),
+            tls::key_package_in(FIXTURE_KEY_PACKAGE).expect("the fixture decodes"),
+        )
+        .expect("the fixture validates natively");
+        assert_eq!(
+            signature_key,
+            kp.leaf_node().signature_key().as_slice(),
+            "the seventh element is the leaf's own signature key"
+        );
         assert_eq!(device_id.len(), 16);
         assert_eq!(user_id.len(), 16);
         assert!(last_resort <= 1);

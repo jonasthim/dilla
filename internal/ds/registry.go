@@ -1,6 +1,7 @@
 package ds
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -83,10 +84,15 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 	}
 	// Invariant 1's instance_id: a group bound to another instance is that instance's group, and
 	// registering it here would let a client carry one instance's binding — and every signature
-	// over it — into another. (The external_senders check needs an ABI accessor; follow-up card.)
+	// over it — into another.
 	if binding.InstanceID != d.opts.Keys.InstanceID {
 		return RegisterResult{}, errBinding(fmt.Sprintf(
 			"dilla_binding names instance %s; this instance is %s", binding.InstanceID, d.opts.Keys.InstanceID))
+	}
+	// Invariant 1's external senders (DS-MEMBERSHIP-01): the group context names who may propose
+	// from outside the group, and the instance governs a text or call group only through that.
+	if problem := d.externalSendersProblem(binding.Kind, state.ExternalSenders); problem != "" {
+		return RegisterResult{}, errBinding(problem)
 	}
 	if err := d.checkChannelMode(ctx, binding); err != nil {
 		return RegisterResult{}, err
@@ -106,6 +112,11 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 		if err := d.checkNoLiveGroup(ctx, r.Session.UserID, binding); err != nil {
 			return RegisterResult{}, err
 		}
+	}
+	// The tree adopts exactly one leaf, the registering device's own (finding G2). It runs after
+	// every refusal above so each keeps its own code, and before anything is written.
+	if err := d.checkRegisteredLeaf(ctx, group, r.Session, state); err != nil {
+		return RegisterResult{}, err
 	}
 
 	row := store.GroupRow{
@@ -167,6 +178,103 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 	release = false
 	closeGroup = false
 	return RegisterResult{GroupID: r.GroupID, NextSeq: row.Seq + 1}, nil
+}
+
+// checkRegisteredLeaf is what registration adopts (finding G2 of the second hardening review): a
+// tree of exactly one leaf, the registering device's own. Every honest client registers the group
+// it has just created, before it adds anybody (`DillaGroup::create`, then the register call), so
+// every member after the first enters through a commit whose Adds invariant 4 checks, or through an
+// external join checkExternalJoiner checks; a registered tree with more leaves would put devices in
+// the group that passed neither.
+//
+// The one leaf passes what an external joiner's leaf passes (checkExternalJoiner): its credential
+// names the session's own device and user, its signature key is that device's registered key, the
+// device is not revoked, and its key is in the user's newest signed device list. The channel ACL
+// half is the registration ACL, which Register has already asked (checkRegistrant: the permission
+// invariant 4's ACL resolves too). The count is the tree's own `LeafCount`, not the member list's
+// length: the member list leaves out a leaf whose credential is no dilla identity.
+//
+// Every refusal is E_INVALID_REQUEST, the answer registration already gives a tree or GroupInfo it
+// cannot adopt.
+func (d *DS) checkRegisteredLeaf(ctx context.Context, v DeviceListVerifier, s Session, state mlswasi.GroupState) error {
+	if state.LeafCount != 1 || len(state.Members) != 1 {
+		return errInvalid(fmt.Sprintf(
+			"a registered group holds exactly one leaf, the registering device's own; this tree holds %d", state.LeafCount))
+	}
+	leaf := state.Members[0]
+	deviceID, userID, err := decodeCredentialIdentity(leaf.CredentialIdentity)
+	if err != nil {
+		return errInvalid("the registered leaf's credential is not a dilla identity")
+	}
+	if deviceID != s.DeviceID || userID != s.UserID {
+		return errInvalid("the registered leaf must be the registering device's own")
+	}
+	device, err := d.opts.Store.GetDevice(ctx, deviceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errInvalid("the registering device is unknown to this instance")
+	}
+	if err != nil {
+		return err
+	}
+	if device.UserID != userID {
+		return errInvalid("the registered leaf's user does not own the device")
+	}
+	if device.RevokedAt != nil {
+		return errInvalid("the registering device is revoked")
+	}
+	if !leafKeyIsRegistered(device, leaf.SignatureKey) {
+		return errInvalid("the registered leaf's key is not the device's registered key")
+	}
+	entries, err := d.opts.DeviceLists.Entries(ctx, v, userID)
+	if err != nil {
+		return errInvalid("no verifiable signed device list for the registering user: " + err.Error())
+	}
+	for _, dsk := range entries {
+		if bytes.Equal(dsk, device.DSKPub) {
+			return nil
+		}
+	}
+	return errInvalid("the registering device's key is not in its user's newest signed device list")
+}
+
+// basicCredentialType is RFC 9420's code point for a basic credential, the only kind dilla issues.
+const basicCredentialType = 1
+
+// externalSendersProblem is invariant 1's external-sender rule (DS-MEMBERSHIP-01), shared by
+// registration and heal's reseed, the two places the delivery service adopts a tree it did not
+// build. OpenMLS verifies every external proposal against the group context's external_senders
+// extension, so the instance can add to or remove from a group only when the extension names it:
+//
+//   - a `text` or `call` group carries exactly one entry, this instance's: a basic credential
+//     whose identity is CBOR [1, "instance", instance_id] (core/dilla-core/src/mls/binding.rs,
+//     instance_credential_identity) over the public half of the key the delivery service signs
+//     its proposals with (Keys.ExternalSenderPriv, the key GET /v1/instance publishes as
+//     external_sender_pub). A group naming any other key could never be governed: every
+//     registration Add, kick, ban, revocation, inactivity and election Remove would fail to queue
+//     for the group's life;
+//   - a `pairing` or `interaction` group carries none (protocol/01 § External senders).
+//
+// It answers "" when the rule holds and what is wrong otherwise; each caller wraps that in its own
+// refusal.
+func (d *DS) externalSendersProblem(kind uint8, senders []mlswasi.ExternalSender) string {
+	if !isChannelGroupKind(kind) {
+		if len(senders) != 0 {
+			return fmt.Sprintf("a group of kind %d carries no external sender; this one names %d", kind, len(senders))
+		}
+		return ""
+	}
+	if len(senders) != 1 {
+		return fmt.Sprintf(
+			"a text or call group names exactly one external sender, this instance; this one names %d", len(senders))
+	}
+	s := senders[0]
+	if s.CredentialType != basicCredentialType || !bytes.Equal(s.Credential, d.instanceCredential) {
+		return "the group's external sender is not this instance's \"instance\" credential"
+	}
+	if !bytes.Equal(s.SignatureKey, d.externalSenderPub) {
+		return "the group's external sender key is not this instance's external-sender key"
+	}
+	return ""
 }
 
 // Channels is the sliver of the community structure registration needs: invariant 1's channel

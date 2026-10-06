@@ -4,7 +4,10 @@
 use super::{PublicStore, PublicStoreError};
 use crate::error::ProtocolError;
 use crate::identity::CredentialIdentity;
-use crate::mls::{DILLA_BINDING, DillaBinding, instance_sender_index};
+use crate::mls::{
+    DILLA_BINDING, DillaBinding, commit_extensions_unchanged, instance_sender_index,
+    leaf_credentials_unchanged, proposal_credential_verdict, proposal_extensions_unchanged,
+};
 // None of these four is re-exported by `openmls::prelude` in 0.9.0 (the same finding as
 // `mls::group`: the prelude re-exports `hash_ref::KeyPackageRef` but not `ProposalRef`,
 // `treesync::RatchetTreeIn` but not `RatchetTree`, and nothing from `messages::group_info`).
@@ -13,7 +16,7 @@ use openmls::messages::group_info::{GroupInfo, VerifiableGroupInfo};
 use openmls::prelude::*;
 use openmls::treesync::RatchetTree;
 use openmls_traits::signatures::Signer;
-use tls_codec::Serialize as _;
+use tls_codec::{Deserialize as _, Serialize as _};
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -40,6 +43,18 @@ pub struct MemberInfo {
     pub leaf_index: u32,
     pub signature_key: [u8; 32],
     pub identity: CredentialIdentity,
+}
+
+/// One entry of the group context's `external_senders` extension (RFC 9420 §12.1.8.1), as the
+/// delivery service reads it: the credential's type and content, and the signature key OpenMLS
+/// verifies an external proposal from that sender under.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ExternalSenderInfo {
+    /// `CredentialType` as its RFC 9420 code point (1 = basic).
+    pub credential_type: u16,
+    /// The credential's content: for a basic credential, its identity bytes.
+    pub credential: Vec<u8>,
+    pub signature_key: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -183,10 +198,7 @@ impl DillaPublicGroup {
         if matches!(message, ProtocolMessage::PrivateMessage(_)) {
             return Ok(PublicProcessed::Rejected(ProtocolError::EnvelopeShape));
         }
-        let processed = self
-            .group
-            .process_message(crypto, message)
-            .map_err(openmls)?;
+        let processed = self.process_with_policy(crypto, message)?;
         let leaf = sender_leaf(processed.sender());
         Ok(match processed.into_content() {
             ProcessedMessageContent::ProposalMessage(p) => PublicProcessed::Proposal {
@@ -206,6 +218,39 @@ impl DillaPublicGroup {
         })
     }
 
+    /// `PublicGroup::process_message` followed by the two dilla-level rules the delivery service
+    /// enforces inside the core: a member's leaf keeps its credential (protocol/01, protocol/02
+    /// invariant 4; `mls::leaf_credentials_unchanged`), and the group context's extensions never
+    /// change (`mls::commit_extensions_unchanged` and `proposal_extensions_unchanged`, the helpers a
+    /// receiving member runs too: a `GroupContextExtensions` proposal could swap `external_senders`
+    /// and leave a group the instance cannot propose into, DS-MEMBERSHIP-01). It runs on every
+    /// handshake the DS parses - `process_message` for `POST /commit`, `/resync`, `/heal` (each
+    /// replayed tail item) and `/proposal`, and `queue_proposal` for the queue itself - so such a
+    /// commit or proposal is refused before a staged handle exists or anything is queued, stored or
+    /// fanned out. Read-only like the call it wraps: `self.group` is the pre-merge tree.
+    fn process_with_policy(
+        &self,
+        crypto: &impl OpenMlsCrypto,
+        message: ProtocolMessage,
+    ) -> Result<ProcessedMessage, PublicGroupError> {
+        let processed = self
+            .group
+            .process_message(crypto, message)
+            .map_err(openmls)?;
+        match processed.content() {
+            ProcessedMessageContent::StagedCommitMessage(staged) => {
+                leaf_credentials_unchanged(&self.group, processed.sender(), staged)?;
+                commit_extensions_unchanged(staged)?;
+            }
+            ProcessedMessageContent::ProposalMessage(proposal) => {
+                proposal_credential_verdict(&self.group, proposal)?;
+                proposal_extensions_unchanged(proposal)?;
+            }
+            _ => {}
+        }
+        Ok(processed)
+    }
+
     /// `PublicGroup::merge_commit` calls `clear_proposal_queue` (gap-1 section 4's call table), and
     /// under ledger ruling A the received `MLSMessage` bytes live in the same queue entries, so
     /// they are dropped with the queue. Without that the map would grow for the lifetime of the
@@ -215,9 +260,9 @@ impl DillaPublicGroup {
     /// The cached `binding` is re-derived here. `PublicGroup::merge_commit` replaces the group
     /// context wholesale (`merge_diff`, vendored `group/public_group/mod.rs:362-367`), so a
     /// structurally valid GroupContextExtensions commit moves the real `dilla_binding` underneath
-    /// a cache that was only ever filled in `from_external`/`import_state`. The DS runs no
-    /// dilla-level commit policy - `DillaGroup::process_message` refuses such a commit, the public
-    /// view has no equivalent - so one really can arrive here, and `binding()` is exactly what
+    /// a cache that was only ever filled in `from_external`/`import_state`. `process_with_policy`
+    /// now refuses every such commit (fix wave C), so none should reach a merge; the re-derivation
+    /// stays as defence in depth, because `binding()` is exactly what
     /// interfaces section 2.10 export 12 (`public_group_state`) hands to clients. A stale cache
     /// would serve a binding that contradicts the DS's own stored state.
     ///
@@ -265,10 +310,7 @@ impl DillaPublicGroup {
         // Refuses a `PrivateMessage` exactly as `process_message` refuses it.
         let received = reframe_mls_message(&message)?;
 
-        let processed = self
-            .group
-            .process_message(crypto, message)
-            .map_err(openmls)?;
+        let processed = self.process_with_policy(crypto, message)?;
         let queued = match processed.into_content() {
             ProcessedMessageContent::ProposalMessage(p)
             | ProcessedMessageContent::ExternalJoinProposalMessage(p) => *p,
@@ -338,6 +380,48 @@ impl DillaPublicGroup {
 
     pub fn binding(&self) -> &DillaBinding {
         &self.binding
+    }
+
+    /// The number of occupied leaves in the tree, every one of them: `members()` leaves out a leaf
+    /// whose credential is not a dilla identity or whose key is not 32 bytes, so its length is not
+    /// how many leaves the group holds. A caller that adopts a tree (registration, heal's reseed)
+    /// compares the two, so a tree cannot carry a leaf nobody can name.
+    pub fn leaf_count(&self) -> usize {
+        self.group.members().count()
+    }
+
+    /// The group context's `external_senders` entries, in extension order; empty when the extension
+    /// is absent. A caller that adopts a tree (registration, heal's reseed) compares them with the
+    /// instance's own key and credential: an external proposal is verified against exactly these
+    /// entries, so a group that names another key is one the instance can never propose into.
+    ///
+    /// OpenMLS 0.9.0 keeps `ExternalSender::credential()` and `signature_key()` `pub(crate)`
+    /// (`extensions/external_sender_extension.rs:41-47`), so each entry is read back out of its
+    /// public TLS encoding, `signature_key` then `credential` (RFC 9420 §12.1.8.1), with no byte
+    /// left over.
+    pub fn external_senders(&self) -> Result<Vec<ExternalSenderInfo>, PublicGroupError> {
+        let Some(senders) = self.group.group_context().extensions().external_senders() else {
+            return Ok(Vec::new());
+        };
+        senders
+            .iter()
+            .map(|sender| {
+                let bytes = sender.tls_serialize_detached().map_err(openmls)?;
+                let mut rest = bytes.as_slice();
+                let key = SignaturePublicKey::tls_deserialize(&mut rest).map_err(openmls)?;
+                let credential = Credential::tls_deserialize(&mut rest).map_err(openmls)?;
+                if !rest.is_empty() {
+                    return Err(PublicGroupError::OpenMls(
+                        "an external sender's encoding has trailing bytes".to_owned(),
+                    ));
+                }
+                Ok(ExternalSenderInfo {
+                    credential_type: credential.credential_type().into(),
+                    credential: credential.serialized_content().to_vec(),
+                    signature_key: key.as_slice().to_vec(),
+                })
+            })
+            .collect()
     }
 
     pub fn members(&self) -> Vec<MemberInfo> {
@@ -557,10 +641,8 @@ mod tests {
     use crate::mls::test_entities::TVal;
     use openmls_rust_crypto::RustCrypto;
     use openmls_traits::public_storage::PublicStorageProvider as _;
-    // `openmls::prelude::*` re-exports `tls_codec::*`, but the file's own
-    // `use tls_codec::Serialize as _;` above shadows nothing on the deserialise side; naming the
-    // trait here is what makes `MlsMessageIn::tls_deserialize_exact` resolve.
-    use tls_codec::Deserialize as _;
+    // `MlsMessageIn::tls_deserialize_exact` resolves through the module's own
+    // `use tls_codec::{Deserialize as _, ..}` above, which `external_senders` needs too.
 
     /// A torn write - one of the four entities missing - must surface as `StateMissing`, never as
     /// "this group does not exist" (gap-1 section 6.1 hazard 1).
@@ -619,6 +701,33 @@ mod tests {
         DillaPublicGroup::from_external(&RustCrypto::default(), tree, group_info)
             .expect("the committed fixture seeds the DS view")
             .0
+    }
+
+    /// DS-MEMBERSHIP-01: the view reports the group context's external senders as the fixture's
+    /// generator put them there - one entry, a basic credential `[1, "instance", instance_id]`
+    /// naming the fixture's instance, and a 32-byte Ed25519 key. The fixture's external Remove,
+    /// signed by the generator's instance key, still queues: the extension holds that one sender.
+    #[test]
+    fn external_senders_reports_the_fixtures_one_instance_entry() {
+        let mut public = fixture_public_group();
+        let senders = public.external_senders().expect("the extension decodes");
+        assert_eq!(senders.len(), 1, "{senders:?}");
+        let sender = &senders[0];
+        assert_eq!(sender.credential_type, 1, "a basic credential");
+        assert_eq!(
+            sender.credential,
+            crate::mls::instance_credential_identity(&crate::ids::InstanceId::from_bytes(
+                [0x11; 16]
+            )),
+        );
+        assert_eq!(sender.signature_key.len(), 32, "Ed25519");
+        let message = MlsMessageIn::tls_deserialize_exact(FIXTURE_EXTERNAL_REMOVE)
+            .expect("the committed external Remove decodes")
+            .try_into_protocol_message()
+            .expect("an external proposal is a handshake message");
+        public
+            .queue_proposal(&RustCrypto::default(), message)
+            .expect("the external Remove verifies under the group's one external sender");
     }
 
     /// ABI v2 §3.2's key source: a leaf inside the tree yields a verification key tagged with the

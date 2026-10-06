@@ -46,7 +46,10 @@ pub fn past_epoch_sweep(kind: GroupKind) -> Option<PastEpochDeletion> {
 /// the staged commit and aborts without merging (facts-openmls "Is there a credential-validation
 /// hook on Add?").
 ///
-/// - `Update` from a member: accept.
+/// - `Update` from a member, and the committer's UpdatePath: accept only if the leaf node keeps the
+///   credential and the signature key the leaf holds before the commit (`E_CREDENTIAL`;
+///   `leaf_credentials_unchanged`). An external commit by a device that already holds a leaf must
+///   remove that leaf and keep its credential (one device, one leaf; same code).
 /// - `Remove`: accept only when the target leaf belongs to the proposer's own user — the
 ///   committer's for a Remove carried by value, the proposing member's for a referenced member
 ///   proposal (a member leaving, DEV-47) — (`E_MEMBER_REMOVE_FORBIDDEN`). Removing other users is
@@ -98,6 +101,10 @@ pub fn validate_staged_commit(
         "own_user must be the receiver's user id"
     );
 
+    // A member's leaf keeps the credential it joined with: the UpdatePath and every Update the
+    // commit applies are measured against the pre-merge tree.
+    leaf_credentials_unchanged(tree, sender, staged)?;
+
     // Each Add and Remove is judged by ITS OWN sender (protocol/01 has one table for proposals
     // from the external sender and one for proposals from members). The instance's own Add and
     // Remove are accepted in `text` and `call` groups - they are how an offline device joins and
@@ -125,11 +132,10 @@ pub fn validate_staged_commit(
     // `StagedCommit` has no `group_context_ext_proposals()`/`reinit_proposals()` accessor in
     // 0.9.0 - staged_commit.rs:888-926 lists add/remove/update/psk and the untyped
     // `queued_proposals()` - so the two remaining rules are read off the proposal queue directly.
+    commit_extensions_unchanged(staged)?;
     for queued in staged.queued_proposals() {
-        match queued.proposal() {
-            Proposal::GroupContextExtensions(_) => extension_change_verdict(queued.sender())?,
-            Proposal::ReInit(_) => return Err(ProtocolError::MemberRemoveForbidden),
-            _ => {}
+        if matches!(queued.proposal(), Proposal::ReInit(_)) {
+            return Err(ProtocolError::MemberRemoveForbidden);
         }
     }
     for remove in staged.remove_proposals() {
@@ -218,6 +224,187 @@ pub(crate) fn removal_verdict(
 /// already use and settling it is a protocol/07-versioning.md change.
 pub(crate) fn extension_change_verdict(_proposal_sender: &Sender) -> Result<(), ProtocolError> {
     Err(ProtocolError::MemberRemoveForbidden)
+}
+
+/// The group context's extensions never change after creation (protocol/01 "Client policy for
+/// proposals from members", protocol/02 invariant 4): a commit that carries a
+/// `GroupContextExtensions` proposal, by value or by reference, is refused, whoever sent the
+/// proposal (`extension_change_verdict`). Shared by both enforcement points so they cannot drift:
+/// `validate_staged_commit` (a receiving member) and `DillaPublicGroup::process_with_policy` (the
+/// delivery service, on `/commit`, `/resync` and every commit of a heal's replayed tail). Without the
+/// delivery-service half a member could swap `external_senders` to its own key in an honestly
+/// registered group and leave the instance unable to propose into it (DS-MEMBERSHIP-01).
+///
+/// `StagedCommit::queued_proposals()` is every proposal the commit applies, the inline ones and the
+/// referenced ones alike (openmls-0.9.0 `staged_commit.rs`), so one walk covers both.
+pub(crate) fn commit_extensions_unchanged(staged: &StagedCommit) -> Result<(), ProtocolError> {
+    for queued in staged.queued_proposals() {
+        if matches!(queued.proposal(), Proposal::GroupContextExtensions(_)) {
+            extension_change_verdict(queued.sender())?;
+        }
+    }
+    Ok(())
+}
+
+/// The same rule for a standalone proposal, before anyone queues it: a `GroupContextExtensions`
+/// proposal is refused, so it can never sit in a queue waiting for some committer to carry it.
+pub(crate) fn proposal_extensions_unchanged(
+    proposal: &QueuedProposal,
+) -> Result<(), ProtocolError> {
+    if matches!(proposal.proposal(), Proposal::GroupContextExtensions(_)) {
+        extension_change_verdict(proposal.sender())?;
+    }
+    Ok(())
+}
+
+/// Once a leaf is in a group its credential is immutable (protocol/01 "Client policy for proposals
+/// from members"). The credential is what binds a leaf to a user id and a device id
+/// (protocol/03 "Credential"), and a receiver stores a message's sender from it, so a member that
+/// could swap it would write under another user's name from then on. MLS allows the swap - an
+/// `Update` proposal's leaf node and a commit's UpdatePath leaf node may carry any credential the
+/// group's capabilities admit (RFC 9420 §12.1.2, §12.4.2) - and OpenMLS 0.9.0 checks only that its
+/// credential *type* is supported (`group/public_group/validation.rs:795-835`), never that it is
+/// the leaf's old one: it hands the new credentials to the application in
+/// `StagedCommit::credentials_to_verify()` and leaves the decision there.
+///
+/// So the comparison is made here, byte for byte (`Credential`'s `PartialEq` covers its type and
+/// its serialized content, which is the TLS encoding), against the credential the leaf holds in
+/// `tree`, the **pre-merge** view:
+///
+/// - a member commit's UpdatePath leaf node, against the committer's leaf;
+/// - every `Update` the commit applies, against its proposer's leaf.
+///
+/// - a **resync** - an external commit whose inline `Remove` takes out a leaf of the joiner's own
+///   device (the device the path leaf's credential names) - against the leaf it replaces: the
+///   device keeps the credential it joined with across the resync (review residual R1).
+///
+/// The leaf's **signature key** is immutable in the same way (finding G1 of the second hardening
+/// review): the UpdatePath leaf and every `Update` must carry the key the leaf holds. MLS lets a
+/// leaf rotate it (`self_update_with_new_signer`, `propose_self_update_with_new_signer`), but a
+/// dilla leaf is keyed by its device's registered key (`dsk_pub`, protocol/03), which never
+/// changes, and no honest client rotates it (`DillaGroup::self_update` builds its path with
+/// `LeafNodeParameters::default()`). A leaf moved to another key would also escape the resync rule
+/// below: OpenMLS's external-commit builder removes the leaf that carries the joiner's key, and
+/// would find none. Both violations are `E_CREDENTIAL`: the credential and the key together are
+/// the leaf's identity, and protocol/01 names no other code for either.
+///
+/// **One device, one leaf.** An external commit whose new leaf names a device that already holds a
+/// leaf must remove that leaf (`resync_keeps_credential`). OpenMLS accepts at most one `Remove` in
+/// an external commit, so a device found at two leaves of the pre-commit tree is refused outright.
+/// The device is read from the credentials in the pre-commit tree, never from the commit's own
+/// claims about what it removes. An external commit by a device that holds no leaf is a first
+/// join: its UpdatePath leaf is a new leaf, and binding it to its device is the Add and
+/// external-join rules' job (the delivery service binds its key to the device's registered key).
+///
+/// Shared by both enforcement points so they cannot drift: `validate_staged_commit` (a receiving
+/// member) and `DillaPublicGroup::process_message` (the delivery service, which runs no other
+/// dilla-level commit policy).
+pub(crate) fn leaf_credentials_unchanged(
+    tree: &PublicGroup,
+    sender: &Sender,
+    staged: &StagedCommit,
+) -> Result<(), ProtocolError> {
+    match (sender, staged.update_path_leaf_node()) {
+        (Sender::Member(committer), Some(path_leaf)) => {
+            leaf_identity_unchanged(tree, *committer, path_leaf)?;
+        }
+        (Sender::NewMemberCommit, Some(path_leaf)) => {
+            resync_keeps_credential(tree, staged, path_leaf.credential())?;
+        }
+        _ => {}
+    }
+    for update in staged.update_proposals() {
+        update_credential_verdict(tree, update.sender(), update.update_proposal())?;
+    }
+    Ok(())
+}
+
+/// The same rule for a standalone proposal, before anyone queues it: an `Update` whose leaf node
+/// carries another credential or another signature key than its proposer's leaf is refused, every
+/// other proposal is left to the rules that govern it.
+pub(crate) fn proposal_credential_verdict(
+    tree: &PublicGroup,
+    proposal: &QueuedProposal,
+) -> Result<(), ProtocolError> {
+    match proposal.proposal() {
+        Proposal::Update(update) => update_credential_verdict(tree, proposal.sender(), update),
+        _ => Ok(()),
+    }
+}
+
+/// An `Update` is always a member's own leaf (RFC 9420 §12.1.2: the leaf of its sender), so the
+/// leaf it changes is the sender's; any other sender is refused rather than assumed away.
+fn update_credential_verdict(
+    tree: &PublicGroup,
+    sender: &Sender,
+    update: &UpdateProposal,
+) -> Result<(), ProtocolError> {
+    match sender {
+        Sender::Member(leaf) => leaf_identity_unchanged(tree, *leaf, update.leaf_node()),
+        _ => Err(ProtocolError::Credential),
+    }
+}
+
+/// The resync half of the rule. An external commit carries its proposals inline (RFC 9420
+/// §12.4.3.2), and the leaf it replaces is the one its `Remove` names; OpenMLS's builder emits that
+/// `Remove` for the leaf holding the joiner's signature key, but a hand-built commit may name any
+/// leaf, so the leaf is recognised by what it IS - a leaf whose credential names the same device as
+/// the new leaf - not by how the commit was built. Every such leaf must carry exactly the new
+/// leaf's credential. A credential on either side that does not decode as a dilla identity is
+/// refused rather than passed over.
+///
+/// And every leaf of the joiner's device must go (one device, one leaf; finding G1): the leaves are
+/// found by the device their credentials name in the pre-commit `tree`. A leaf whose credential
+/// does not decode names no device and is not one of them. Two such leaves cannot both be removed
+/// by one external commit, so they refuse it; one must be among the commit's Removes.
+fn resync_keeps_credential(
+    tree: &PublicGroup,
+    staged: &StagedCommit,
+    new: &Credential,
+) -> Result<(), ProtocolError> {
+    let joiner = device_of_credential(new)?;
+    let removed: Vec<LeafNodeIndex> = staged
+        .remove_proposals()
+        .map(|remove| remove.remove_proposal().removed())
+        .collect();
+    let mut own_leaves = tree.members().filter(|member| {
+        device_of_credential(&member.credential).is_ok_and(|device| device == joiner)
+    });
+    match (own_leaves.next(), own_leaves.next()) {
+        (Some(_), Some(_)) => return Err(ProtocolError::Credential),
+        (Some(only), None) if !removed.contains(&only.index) => {
+            return Err(ProtocolError::Credential);
+        }
+        _ => {}
+    }
+    for target in removed {
+        let old = tree.leaf(target).ok_or(ProtocolError::Credential)?;
+        if device_of_credential(old.credential())? == joiner && old.credential() != new {
+            return Err(ProtocolError::Credential);
+        }
+    }
+    Ok(())
+}
+
+fn device_of_credential(credential: &Credential) -> Result<crate::ids::DeviceId, ProtocolError> {
+    let basic =
+        BasicCredential::try_from(credential.clone()).map_err(|_| ProtocolError::Credential)?;
+    Ok(crate::identity::CredentialIdentity::decode(basic.identity())?.device_id)
+}
+
+/// A member's new leaf node (an UpdatePath leaf or an `Update`'s) against the leaf it replaces in
+/// the pre-commit `tree`: the same credential, byte for byte, and the same signature key.
+fn leaf_identity_unchanged(
+    tree: &PublicGroup,
+    leaf: LeafNodeIndex,
+    new: &LeafNode,
+) -> Result<(), ProtocolError> {
+    let old = tree.leaf(leaf).ok_or(ProtocolError::Credential)?;
+    if old.credential() == new.credential() && old.signature_key() == new.signature_key() {
+        Ok(())
+    } else {
+        Err(ProtocolError::Credential)
+    }
 }
 
 /// The user a leaf belongs to, read from the group's own pre-merge tree.

@@ -34,6 +34,11 @@ stored = CBOR [ v = 1, nonce (bstr 12), ciphertext (bstr) ]
           ; ciphertext = AES-256-GCM(K_backup, nonce, plaintext, aad = "dilla state v1")
 ```
 
+The device performing signup writes the first state object, holding device list version 1 and
+`pins = []`; under `03-identity.md` "Browser-rooted signup" that device is a `browser`. Until the
+instance serves the `/v1/backups` routes of `09-http-api.md`, the device performing signup keeps both
+stored objects in its encrypted store and uploads them unchanged once the routes exist.
+
 ## Archive
 
 Decrypted message history, not MLS keys: restoring MLS group state would clone a leaf (sender

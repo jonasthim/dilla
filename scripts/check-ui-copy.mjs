@@ -1,5 +1,5 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const FORBIDDEN = [
@@ -9,6 +9,14 @@ export const FORBIDDEN = [
   { word: 'Signal Protocol', re: /\bSignal Protocol\b/i }, { word: 'SQLCipher', re: /\bSQLCipher\b/i },
   { word: 'AES-256', re: /\bAES-\d{3}\b/ }, { word: 'MLS', re: /\bMLS\b/ },
 ];
+
+// Every source root whose strings reach a screen or a log a person reads (F10). A root that does
+// not exist yet is skipped, so the list can name packages that later tasks create.
+export const ROOTS = ['packages/ui/src', 'packages/web/src', 'packages/client-core/src'];
+// The one module allowed to say how messages are protected (F10): Settings → Privacy, the channel
+// mode settings and the report dialog. web-1 has none of those surfaces; the path is named here so
+// web-2 can add the file without touching this lint.
+export const ALLOWED_FILES = ['packages/web/src/strings/privacy.ts'];
 
 /** Pull string literals ('…', "…", `…`) and JSX text nodes out of a TSX source. Approximate by design. */
 export function extractCopy(source) {
@@ -52,8 +60,13 @@ function walk(dir, acc = []) {
 
 export function checkUiCopy(root) {
   const problems = [];
-  for (const file of walk(join(root, 'packages', 'ui', 'src'))) {
-    for (const hit of findForbidden(extractCopy(readFileSync(file, 'utf8')))) problems.push(`${file}: "${hit.word}" in "${hit.text}"`);
+  for (const entry of ROOTS) {
+    const dir = join(root, ...entry.split('/'));
+    if (!existsSync(dir)) continue;
+    for (const file of walk(dir)) {
+      if (ALLOWED_FILES.includes(relative(root, file).split(sep).join('/'))) continue;
+      for (const hit of findForbidden(extractCopy(readFileSync(file, 'utf8')))) problems.push(`${file}: "${hit.word}" in "${hit.text}"`);
+    }
   }
   return problems;
 }

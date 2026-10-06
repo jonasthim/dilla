@@ -13,7 +13,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
   mesh: {
     bg: '#070809', bg2: '#0C0D0F', bg3: '#101214', surface: '#0C0D0F', surface2: '#14171A', surfaceHi: '#1A1E22',
     hairline: '#1F2226', hairline2: '#363B41', edge: '#6B7370',
-    fg: '#E8ECE8', fg2: '#A0A6A0', fg3: '#767C76', fg4: '#5E635E', fgLink: '#7CFF8E',
+    fg: '#E8ECE8', fg2: '#A0A6A0', fg3: '#818780', fg4: '#5E635E', fgLink: '#7CFF8E',
     accent: '#7CFF8E', accent2: '#A8FFB6', accentInk: '#06150A', accentSoft: 'rgba(124,255,142,0.14)',
     danger: '#FF6E6E', warn: '#FFD16A', ok: '#7CFF8E', mention: '#FFD16A', mentionInk: '#1A1300',
     linkUnderline: 0,
@@ -22,7 +22,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     bg: '#F5F6F5', bg2: '#ECEEEC', bg3: '#E3E6E3', surface: '#FFFFFF', surface2: '#E6E9E6', surfaceHi: '#DDE1DD',
     hairline: '#CBD0CB', hairline2: '#8F978F', edge: '#6F776F',
     fg: '#14171A', fg2: '#3F453F', fg3: '#5C635C', fg4: '#A9B0A9', fgLink: '#1B7334',
-    accent: '#1B7334', accent2: '#238C41', accentInk: '#FFFFFF', accentSoft: 'rgba(27,115,52,0.14)',
+    accent: '#1B7334', accent2: '#196B30', accentInk: '#FFFFFF', accentSoft: 'rgba(27,115,52,0.14)',
     danger: '#B3261E', warn: '#8A5A00', ok: '#1B7334', mention: '#F2C14E', mentionInk: '#1A1300',
     linkUnderline: 0,
   },
@@ -42,9 +42,9 @@ export type ColorKey = Exclude<keyof ColorTokens, 'linkUnderline'>;
 export const TEXT_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
   ['fg', 'bg'], ['fg', 'bg2'], ['fg', 'surface'], ['fg', 'surface2'], ['fg', 'surfaceHi'],
   ['fg2', 'bg'], ['fg2', 'bg2'], ['fg2', 'surface2'],
-  ['fg3', 'bg'], ['fg3', 'bg2'], ['fg3', 'surface'],
+  ['fg3', 'bg'], ['fg3', 'bg2'], ['fg3', 'surface'], ['fg3', 'surface2'],
   ['fgLink', 'bg'], ['danger', 'bg'], ['warn', 'bg'], ['ok', 'bg2'],
-  ['accentInk', 'accent'], ['mentionInk', 'mention'],
+  ['accentInk', 'accent'], ['accentInk', 'accent2'], ['mentionInk', 'mention'],
 ];
 /** UI component and large-text pairs (≥ 3:1). */
 export const UI_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [

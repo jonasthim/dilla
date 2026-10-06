@@ -5,8 +5,17 @@
 //!
 //! `BEGIN IMMEDIATE` rather than the default deferred begin: it takes the write lock up front, so
 //! two clients sharing a file fail fast instead of half-way through a merge.
+//!
+//! A unit is one outer transaction opened by `ClientCore`. Transactions on the same storage
+//! inside it become savepoints, so MLS and app writes commit or roll back together.
 
 use super::{DillaStorage, StorageError};
+use core::sync::atomic::Ordering;
+
+const UNIT_NONE: u8 = 0;
+const UNIT_OPEN: u8 = 1;
+const UNIT_SAVEPOINT: u8 = 2;
+const SAVEPOINT: &str = "dilla_tx";
 
 /// What went wrong, and how far the transaction got.
 #[derive(Debug, thiserror::Error)]
@@ -55,7 +64,125 @@ impl Drop for TxGuard<'_> {
     }
 }
 
+struct SavepointGuard<'a> {
+    storage: &'a DillaStorage,
+    armed: bool,
+}
+
+impl Drop for SavepointGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.storage.exec("ROLLBACK TO dilla_tx");
+            let _ = self.storage.exec("RELEASE dilla_tx");
+        }
+        self.storage.unit_state.store(UNIT_OPEN, Ordering::Release);
+    }
+}
+
+struct UnitGuard<'a> {
+    storage: &'a DillaStorage,
+    armed: bool,
+}
+
+impl Drop for UnitGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.storage.exec("ROLLBACK");
+        }
+        self.storage.unit_state.store(UNIT_NONE, Ordering::Release);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            *self
+                .storage
+                .unit_owner
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = None;
+        }
+        self.storage.leave_tx();
+    }
+}
+
+/// The open unit; the only way to reach the connection while it is open.
+pub struct UnitScope<'a> {
+    storage: &'a DillaStorage,
+}
+
+impl UnitScope<'_> {
+    /// Runs `f` while the connection is borrowed. Do not call a storage or group method in `f`;
+    /// read raw values there and decode them after it returns.
+    pub fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Connection) -> Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        if self.storage.unit_state.load(Ordering::Acquire) == UNIT_SAVEPOINT {
+            return Err(StorageError::Sqlite(
+                "the unit connection is not usable inside a nested transaction".into(),
+            ));
+        }
+        super::storage::with_conn(self.storage.conn(), f)
+    }
+}
+
 impl DillaStorage {
+    fn owns_open_unit(&self) -> bool {
+        if self.unit_state.load(Ordering::Acquire) != UNIT_OPEN {
+            return false;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.unit_owner
+                .lock()
+                .is_ok_and(|owner| *owner == Some(std::thread::current().id()))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            true
+        }
+    }
+
+    /// Runs one outer transaction. `transaction` on its owner thread nests as a savepoint;
+    /// other callers are refused. An error or panic rolls back the unit. After rollback every
+    /// `DillaGroup` touched inside it is stale and must be reloaded.
+    pub fn unit<T, E: From<StorageError> + core::fmt::Debug>(
+        &self,
+        f: impl FnOnce(&UnitScope<'_>) -> Result<T, E>,
+    ) -> Result<T, TxError<E>> {
+        if !self.try_enter_tx() {
+            return Err(TxError::AlreadyOpen);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            *self.unit_owner.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(std::thread::current().id());
+        }
+        self.unit_state.store(UNIT_OPEN, Ordering::Release);
+        let mut guard = UnitGuard {
+            storage: self,
+            armed: false,
+        };
+        self.exec("BEGIN IMMEDIATE").map_err(TxError::Begin)?;
+        guard.armed = true;
+        match f(&UnitScope { storage: self }) {
+            Ok(value) => match self.exec("COMMIT") {
+                Ok(()) => {
+                    guard.armed = false;
+                    Ok(value)
+                }
+                Err(e) => Err(TxError::Commit(e)),
+            },
+            Err(cause) => {
+                guard.armed = false;
+                match self.exec("ROLLBACK") {
+                    Ok(()) => Err(TxError::RolledBack(cause)),
+                    Err(rollback) => Err(TxError::RollbackFailed {
+                        cause: format!("{cause:?}"),
+                        rollback,
+                    }),
+                }
+            }
+        }
+    }
+
     /// Runs `f` inside one SQLite transaction. On any error the transaction is rolled back and the
     /// caller's error is returned inside `TxError::RolledBack`. If `f` **panics**, the transaction
     /// is rolled back by an RAII guard and the panic continues to the caller.
@@ -77,6 +204,47 @@ impl DillaStorage {
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, TxError<E>> {
         if !self.try_enter_tx() {
+            if self.owns_open_unit()
+                && self
+                    .unit_state
+                    .compare_exchange(
+                        UNIT_OPEN,
+                        UNIT_SAVEPOINT,
+                        Ordering::Acquire,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+            {
+                let mut guard = SavepointGuard {
+                    storage: self,
+                    armed: false,
+                };
+                self.exec(&format!("SAVEPOINT {SAVEPOINT}"))
+                    .map_err(TxError::Begin)?;
+                guard.armed = true;
+                return match f() {
+                    Ok(value) => match self.exec(&format!("RELEASE {SAVEPOINT}")) {
+                        Ok(()) => {
+                            guard.armed = false;
+                            Ok(value)
+                        }
+                        Err(e) => Err(TxError::Commit(e)),
+                    },
+                    Err(cause) => {
+                        guard.armed = false;
+                        let rollback = self
+                            .exec(&format!("ROLLBACK TO {SAVEPOINT}"))
+                            .and_then(|()| self.exec(&format!("RELEASE {SAVEPOINT}")));
+                        match rollback {
+                            Ok(()) => Err(TxError::RolledBack(cause)),
+                            Err(rollback) => Err(TxError::RollbackFailed {
+                                cause: format!("{cause:?}"),
+                                rollback,
+                            }),
+                        }
+                    }
+                };
+            }
             return Err(TxError::AlreadyOpen);
         }
         // From here on the guard owns the slot: every return below, and every unwind, releases it.

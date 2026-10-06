@@ -31,13 +31,15 @@ const (
 )
 
 // AppliedProposal is one proposal a commit resolved. TargetLeaf is set for Remove only;
-// CredentialIdentity is the added leaf's credential identity, for Add only.
+// CredentialIdentity and SignatureKey (ABI v4) are the added leaf's credential identity and
+// signature key, for Add only.
 type AppliedProposal struct {
 	ProposalRef        []byte
 	Kind               ProposalKind
 	SenderLeaf         *uint32
 	TargetLeaf         *uint32
 	CredentialIdentity []byte
+	SignatureKey       []byte
 }
 
 // Processed is one processed handshake message.
@@ -104,6 +106,23 @@ type GroupState struct {
 	TreeHash []byte
 	Binding  []byte
 	Members  []Member
+	// LeafCount is every occupied leaf of the tree (ABI v5). Members leaves out a leaf whose
+	// credential is not a dilla identity or whose key is not 32 bytes, so a caller that adopts a
+	// tree compares the two instead of trusting len(Members).
+	LeafCount uint64
+	// ExternalSenders is the group context's external_senders extension, in extension order, empty
+	// when the extension is absent (ABI v6). An external proposal verifies only under one of these
+	// keys, so a caller that adopts a tree checks them against the instance's own.
+	ExternalSenders []ExternalSender
+}
+
+// ExternalSender is one entry of a group's external_senders extension (RFC 9420 §12.1.8.1).
+type ExternalSender struct {
+	// CredentialType is the RFC 9420 code point (1 = basic).
+	CredentialType uint16
+	// Credential is the credential's content: a basic credential's identity bytes.
+	Credential   []byte
+	SignatureKey []byte
 }
 
 // KeyPackageInfo is the validate_key_package response.
@@ -113,6 +132,9 @@ type KeyPackageInfo struct {
 	LastResort bool
 	NotAfter   uint64
 	KPRef      []byte // the RFC 9420 KeyPackageRef, the key_packages primary key
+	// SignatureKey is the KeyPackage leaf's signature key (ABI v4), the key its signatures verify
+	// under. The delivery service binds it to the publishing device's registered key.
+	SignatureKey []byte
 }
 
 func rawProposalKind(raw cbor.RawMessage) (ProposalKind, error) {
@@ -137,7 +159,7 @@ func decodeApplied(raw cbor.RawMessage) ([]AppliedProposal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := expectLen(fields, 5, "applied proposal"); err != nil {
+		if err := expectLen(fields, 6, "applied proposal"); err != nil {
 			return nil, err
 		}
 		var a AppliedProposal
@@ -154,6 +176,9 @@ func decodeApplied(raw cbor.RawMessage) ([]AppliedProposal, error) {
 			return nil, err
 		}
 		if a.CredentialIdentity, err = rawOptBytes(fields[4]); err != nil {
+			return nil, err
+		}
+		if a.SignatureKey, err = rawOptBytes(fields[5]); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -304,7 +329,7 @@ func (g *PublicGroup) State(ctx context.Context) (GroupState, error) {
 	if err != nil {
 		return GroupState{}, err
 	}
-	if err := expectLen(elems, 6, "public_group_state"); err != nil {
+	if err := expectLen(elems, 8, "public_group_state"); err != nil {
 		return GroupState{}, err
 	}
 	var s GroupState
@@ -345,7 +370,49 @@ func (g *PublicGroup) State(ctx context.Context) (GroupState, error) {
 		}
 		s.Members = append(s.Members, m)
 	}
+	if s.LeafCount, err = rawUint(elems[6]); err != nil {
+		return GroupState{}, err
+	}
+	if s.ExternalSenders, err = decodeExternalSenders(elems[7]); err != nil {
+		return GroupState{}, err
+	}
 	return s, nil
+}
+
+// decodeExternalSenders reads public_group_state's element 8 (ABI v6): an array of
+// [credential_type, credential, signature_key].
+func decodeExternalSenders(raw cbor.RawMessage) ([]ExternalSender, error) {
+	items, err := rawArray(raw)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ExternalSender, 0, len(items))
+	for _, item := range items {
+		fields, err := rawArray(item)
+		if err != nil {
+			return nil, err
+		}
+		if err := expectLen(fields, 3, "public_group_state external sender"); err != nil {
+			return nil, err
+		}
+		var s ExternalSender
+		credentialType, err := rawUint(fields[0])
+		if err != nil {
+			return nil, err
+		}
+		if credentialType > 0xffff {
+			return nil, fmt.Errorf("mlswasi: external sender credential type %d is not a u16", credentialType)
+		}
+		s.CredentialType = uint16(credentialType)
+		if s.Credential, err = rawBytes(fields[1]); err != nil {
+			return nil, err
+		}
+		if s.SignatureKey, err = rawBytes(fields[2]); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 // ProposalPut adds (op 0, blob = the proposal), removes (op 1, blob = the
@@ -406,7 +473,7 @@ func (i *Instance) ValidateKeyPackage(ctx context.Context, keyPackage []byte) (K
 	if err != nil {
 		return KeyPackageInfo{}, err
 	}
-	if err := expectLen(elems, 6, "validate_key_package"); err != nil {
+	if err := expectLen(elems, 7, "validate_key_package"); err != nil {
 		return KeyPackageInfo{}, err
 	}
 	var info KeyPackageInfo
@@ -423,6 +490,9 @@ func (i *Instance) ValidateKeyPackage(ctx context.Context, keyPackage []byte) (K
 		return KeyPackageInfo{}, err
 	}
 	if info.KPRef, err = rawBytes(elems[5]); err != nil {
+		return KeyPackageInfo{}, err
+	}
+	if info.SignatureKey, err = rawBytes(elems[6]); err != nil {
 		return KeyPackageInfo{}, err
 	}
 	return info, nil

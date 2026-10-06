@@ -5,11 +5,14 @@
 #![cfg(target_arch = "wasm32")]
 
 use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
+use dilla_core::client::ClientError;
+use dilla_core_wasm::facade::{client_js_error, core_open, fixed_arg, purpose_arg};
 use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
-    MediaReceiver, MediaSender, abi_version, core_version, credential_identity_cbor,
-    envelope_commitment, envelope_decode_json, envelope_encode, franking_tag, recovery_key_base32,
-    safety_number, sas, sframe_derive, sframe_header, vectors_check_json, vectors_check_ok,
+    BROWSER_ABI_VERSION, MediaReceiver, MediaSender, StoreOpenConfig, abi_version, core_version,
+    credential_identity_cbor, envelope_commitment, envelope_decode_json, envelope_encode,
+    franking_tag, recovery_key_base32, safety_number, sas, sframe_derive, sframe_header,
+    vectors_check_json, vectors_check_ok,
 };
 use wasm_bindgen::{JsError, JsValue};
 use wasm_bindgen_test::*;
@@ -261,12 +264,93 @@ fn a_redacted_probe_message_never_carries_the_statement() {
 #[wasm_bindgen_test]
 fn the_version_getters_agree_with_dilla_core_on_wasm() {
     assert_eq!(core_version(), dilla_core::CORE_VERSION);
-    assert_eq!(u64::from(abi_version()), dilla_core::ABI_VERSION);
+    assert_eq!(abi_version(), BROWSER_ABI_VERSION);
+    assert_eq!(BROWSER_ABI_VERSION, 4);
 }
 
 /// The message a `JsError` carries across the boundary: what the media worker matches on.
 fn message(e: JsError) -> String {
     js_sys::Error::from(JsValue::from(e)).message().into()
+}
+
+#[wasm_bindgen_test]
+fn a_wrong_length_argument_is_core_input_naming_the_argument() {
+    assert_eq!(
+        fixed_arg::<16>("group_id", &[0x5a; 15]).unwrap_err(),
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "group_id: expected 16 bytes, got 15".to_owned()
+        }
+    );
+    assert_eq!(
+        fixed_arg::<32>("nonce", &[]).unwrap_err(),
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "nonce: expected 32 bytes, got 0".to_owned()
+        }
+    );
+    let long = fixed_arg::<16>("msg_id", &[0x5a; 17]).unwrap_err();
+    assert_eq!(long.detail, "msg_id: expected 16 bytes, got 17");
+    assert!(
+        !long.detail.contains("5a"),
+        "the detail must not echo the argument bytes"
+    );
+    assert_eq!(fixed_arg::<16>("msg_id", &[7; 16]).unwrap(), [7u8; 16]);
+}
+
+#[wasm_bindgen_test]
+fn a_purpose_other_than_0_or_1_is_core_input_before_narrowing() {
+    let wrapped = purpose_arg(256).unwrap_err();
+    assert_eq!(
+        wrapped,
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "purpose: 256 is not 0 or 1".to_owned()
+        }
+    );
+    assert_eq!(
+        message(client_js_error(&wrapped)),
+        "E_CORE_INPUT: purpose: 256 is not 0 or 1"
+    );
+    let two = purpose_arg(2).unwrap_err();
+    assert_eq!(
+        message(client_js_error(&two)),
+        "E_CORE_INPUT: purpose: 2 is not 0 or 1"
+    );
+    assert_eq!(purpose_arg(0), Ok(0));
+    assert_eq!(purpose_arg(1), Ok(1));
+}
+
+#[wasm_bindgen_test]
+fn a_client_error_crosses_as_its_display() {
+    let bare = ClientError {
+        code: "E_CORE_NO_IDENTITY",
+        detail: String::new(),
+    };
+    assert_eq!(message(client_js_error(&bare)), "E_CORE_NO_IDENTITY");
+    let detailed = ClientError {
+        code: "E_CORE_INPUT",
+        detail: "limit: 0 is outside 1..=200".to_owned(),
+    };
+    assert_eq!(
+        message(client_js_error(&detailed)),
+        "E_CORE_INPUT: limit: 0 is outside 1..=200"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn core_open_hands_back_the_store_rejection_unchanged() {
+    let cfg = StoreOpenConfig::new(
+        "dilla/node".to_owned(),
+        "dilla.db".to_owned(),
+        "not-a-key".to_owned(),
+    );
+    let err = match core_open(cfg).await {
+        Ok(_) => panic!("core_open accepted a malformed KEK"),
+        Err(e) => e,
+    };
+    let text: String = js_sys::Error::from(err).message().into();
+    assert_eq!(text, "E_STORE_KEK: kek_hex must be 64 hex characters");
 }
 
 const BASE: [u8; 16] = [0x0a; 16];

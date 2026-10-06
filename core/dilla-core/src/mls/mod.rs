@@ -37,6 +37,10 @@ pub use policy::{
     CALL_SWEEP, PAST_EPOCHS_CALL, PAST_EPOCHS_TEXT, TEXT_SWEEP, past_epoch_policy,
     past_epoch_sweep, validate_staged_commit,
 };
+pub(crate) use policy::{
+    commit_extensions_unchanged, leaf_credentials_unchanged, proposal_credential_verdict,
+    proposal_extensions_unchanged,
+};
 
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 pub use config::{
@@ -45,13 +49,16 @@ pub use config::{
     leaf_capabilities, rotate_external_senders_extensions,
 };
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
-pub use group::{CommitBundle, DillaGroup, DillaProcessed, MediaEpoch, MlsError, RosterEntry};
+pub use group::{
+    CommitBundle, DillaGroup, DillaProcessed, MediaEpoch, MlsError, ReceivedApplication,
+    RosterEntry, WelcomeLabel,
+};
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 pub use provider::DillaProvider;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 pub use storage::{ConnHandle, DillaStorage};
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
-pub use tx::TxError;
+pub use tx::{TxError, UnitScope};
 
 use serde::{Serialize, de::DeserializeOwned};
 

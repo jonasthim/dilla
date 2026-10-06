@@ -686,6 +686,8 @@ dependencies = [
  "console_error_panic_hook",
  "dilla-core",
  "js-sys",
+ "openmls",
+ "openmls_basic_credential",
  "rusqlite",
  "serde_json",
  "sqlite-wasm-rs",

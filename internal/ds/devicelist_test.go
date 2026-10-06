@@ -177,6 +177,29 @@ func (h *dsHarness) memberIdentity(t *testing.T, groupID id.ID, leaf uint32) ([]
 	return identity, device, user
 }
 
+// memberLeafKey is the signature key the fixture member at `leaf` carries in the guest's own tree:
+// the key that member's device registered, for a test that models it honestly.
+func (h *dsHarness) memberLeafKey(t *testing.T, groupID id.ID, leaf uint32) []byte {
+	t.Helper()
+	var key []byte
+	err := ds.WithGroupForTest(h.ds, context.Background(), groupID, func(g *mlswasi.PublicGroup) error {
+		state, err := g.State(context.Background())
+		if err != nil {
+			return err
+		}
+		for _, m := range state.Members {
+			if m.LeafIndex == leaf {
+				key = m.SignatureKey
+			}
+		}
+		return nil
+	})
+	if err != nil || len(key) != 32 {
+		t.Fatalf("no 32-byte leaf key at leaf %d: %v", leaf, err)
+	}
+	return key
+}
+
 // The clause the ruling asks for: an Add of a device that is known, unrevoked, in its user's newest
 // signed device list and eligible under the ACL PASSES invariant 4's Add clause. The added device
 // here is a real fixture member, so DenyUnlessMember (NV-B6) sees its user in the group.
@@ -186,9 +209,11 @@ func TestAValidAddPassesInvariant4sAddClause(t *testing.T) {
 	identity, device, user := h.memberIdentity(t, reg.GroupID, 1)
 	ssk := testSSK(0x5b)
 	h.userWithSSK(t, user, ssk)
-	h.account(t, user, device) // the device row, DSKPub 0x04…
-	dsk := bytes.Repeat([]byte{4}, 32)
-	add := mlswasi.AppliedProposal{Kind: mlswasi.ProposalAdd, CredentialIdentity: identity}
+	// The device is registered, and listed, under the key its leaf really carries: an honest Add
+	// (hardening C binds the added leaf to the device's registered key).
+	dsk := h.memberLeafKey(t, reg.GroupID, 1)
+	h.accountWithKey(t, user, device, dsk)
+	add := mlswasi.AppliedProposal{Kind: mlswasi.ProposalAdd, CredentialIdentity: identity, SignatureKey: dsk}
 
 	// No list yet: refused, as before this task.
 	if err := ds.CheckAddedMemberForTest(h.ds, context.Background(), reg.GroupID, add); !hasRule(err, "add_key_package") {
@@ -231,7 +256,7 @@ func TestACommitWhoseAddsAreAllListedPassesTheAddClause(t *testing.T) {
 	reg, session := h.mustRegister(t)
 	commit := fixtureFile(t, "commits/00.mls")
 
-	var identities [][]byte
+	var identities, keys [][]byte
 	err := ds.WithGroupForTest(h.ds, context.Background(), reg.GroupID, func(g *mlswasi.PublicGroup) error {
 		p, err := g.Process(context.Background(), commit)
 		if err != nil {
@@ -239,6 +264,7 @@ func TestACommitWhoseAddsAreAllListedPassesTheAddClause(t *testing.T) {
 		}
 		for _, a := range p.Applied {
 			identities = append(identities, a.CredentialIdentity)
+			keys = append(keys, a.SignatureKey)
 		}
 		return g.Discard(context.Background(), *p.Staged)
 	})
@@ -249,10 +275,12 @@ func TestACommitWhoseAddsAreAllListedPassesTheAddClause(t *testing.T) {
 		t.Fatalf("commits/00.mls applies %d proposals, want 256 Adds", len(identities))
 	}
 
-	// One signed list per added user, naming every device of that user the commit adds.
+	// One signed list per added user, naming every device of that user the commit adds. Each
+	// device is registered and listed under the key its KeyPackage's leaf carries, as the honest
+	// device that built the package registered it (hardening C).
 	byUser := map[id.ID][]listEntry{}
 	var order []id.ID
-	for _, identity := range identities {
+	for i, identity := range identities {
 		device, user, err := ds.DecodeCredentialIdentityForTest(identity)
 		if err != nil {
 			t.Fatalf("decode: %v", err)
@@ -261,9 +289,9 @@ func TestACommitWhoseAddsAreAllListedPassesTheAddClause(t *testing.T) {
 			order = append(order, user)
 			h.userWithSSK(t, user, testSSK(0x60))
 		}
-		h.account(t, user, device)
+		h.accountWithKey(t, user, device, keys[i])
 		byUser[user] = append(byUser[user], listEntry{
-			DeviceID: device[:], DSKPub: bytes.Repeat([]byte{4}, 32), AddedAt: 1,
+			DeviceID: device[:], DSKPub: keys[i], AddedAt: 1,
 		})
 	}
 	for _, user := range order {
@@ -279,6 +307,140 @@ func TestACommitWhoseAddsAreAllListedPassesTheAddClause(t *testing.T) {
 	}
 	if got := h.wasmCalls("device_list_entries") - before; got != 256 {
 		t.Errorf("device_list_entries ran %d times, want once per Add (256)", got)
+	}
+}
+
+// The ruling of hardening C, point (b): an Add's leaf is bound to the registered key of the device
+// its credential names. commits/00.mls adds 256 devices; here every one of them is known, listed
+// and eligible, but registered (and listed) under a key that is NOT the key its KeyPackage's leaf
+// carries — the shape a committer produces by minting a KeyPackage in another device's name under
+// its own key. The Add clause refuses the commit before the GroupInfo is looked at.
+func TestACommitWhoseAddedLeafKeysAreNotTheDevicesRegisteredKeysIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	reg, session := h.mustRegister(t)
+	commit := fixtureFile(t, "commits/00.mls")
+
+	var identities [][]byte
+	err := ds.WithGroupForTest(h.ds, context.Background(), reg.GroupID, func(g *mlswasi.PublicGroup) error {
+		p, err := g.Process(context.Background(), commit)
+		if err != nil {
+			return err
+		}
+		for _, a := range p.Applied {
+			identities = append(identities, a.CredentialIdentity)
+		}
+		return g.Discard(context.Background(), *p.Staged)
+	})
+	if err != nil {
+		t.Fatalf("read the Adds: %v", err)
+	}
+	byUser := map[id.ID][]listEntry{}
+	var order []id.ID
+	for _, identity := range identities {
+		device, user, err := ds.DecodeCredentialIdentityForTest(identity)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if _, seen := byUser[user]; !seen {
+			order = append(order, user)
+			h.userWithSSK(t, user, testSSK(0x61))
+		}
+		h.account(t, user, device) // devices.dsk_pub = 0x04…, not the KeyPackage's leaf key
+		byUser[user] = append(byUser[user], listEntry{
+			DeviceID: device[:], DSKPub: bytes.Repeat([]byte{4}, 32), AddedAt: 1,
+		})
+	}
+	for _, user := range order {
+		h.publishDeviceList(t, user, signedDeviceList(t, testSSK(0x61), user, byUser[user]))
+	}
+	before := h.handshakeCount(t, reg.GroupID)
+
+	_, err = h.ds.Commit(context.Background(), session, reg.GroupID, ds.CommitRequest{
+		Epoch: 6, Commit: commit, GroupInfo: dsFixture(t).groupInfo,
+	})
+	if !hasRule(err, "add_key_package") {
+		t.Fatalf("got %v, want E_COMMIT_INVALID/add_key_package", err)
+	}
+	if got := h.handshakeCount(t, reg.GroupID); got != before {
+		t.Errorf("a refused commit wrote %d handshake rows", got-before)
+	}
+}
+
+// G3 of the second hardening review: POST /commit checks the uploaded GroupInfo against the group
+// it merges to, as heal does: its group id and its tree hash, not only its epoch and signature.
+// commits/00.mls (256 Adds by leaf 0) is uploaded with commits/09.group_info.mls: the GroupInfo of
+// epoch 7, of this group, signed by leaf 0 - but of the tree the fixture's self-update produced,
+// not of the tree these Adds produce. Every Add is honest (as in the test above), so the commit
+// passes every other clause; the GroupInfo would be served to every device that resyncs or joins
+// until the next commit, and none could build an external commit from it. Refused with the route's
+// rule for a bad GroupInfo, and nothing is written: the epoch, the handshake log and the stored
+// GroupInfo stay as they were. commits/09.mls with its own GroupInfo (TestARefusedCommitEvictsNobody)
+// is the accepted control.
+func TestACommitWhoseGroupInfoDescribesAnotherTreeIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	reg, session := h.mustRegister(t)
+	commit := fixtureFile(t, "commits/00.mls")
+
+	var identities, keys [][]byte
+	err := ds.WithGroupForTest(h.ds, context.Background(), reg.GroupID, func(g *mlswasi.PublicGroup) error {
+		p, err := g.Process(context.Background(), commit)
+		if err != nil {
+			return err
+		}
+		for _, a := range p.Applied {
+			identities = append(identities, a.CredentialIdentity)
+			keys = append(keys, a.SignatureKey)
+		}
+		return g.Discard(context.Background(), *p.Staged)
+	})
+	if err != nil {
+		t.Fatalf("read the Adds: %v", err)
+	}
+	byUser := map[id.ID][]listEntry{}
+	var order []id.ID
+	for i, identity := range identities {
+		device, user, err := ds.DecodeCredentialIdentityForTest(identity)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if _, seen := byUser[user]; !seen {
+			order = append(order, user)
+			h.userWithSSK(t, user, testSSK(0x62))
+		}
+		h.accountWithKey(t, user, device, keys[i])
+		byUser[user] = append(byUser[user], listEntry{DeviceID: device[:], DSKPub: keys[i], AddedAt: 1})
+	}
+	for _, user := range order {
+		h.publishDeviceList(t, user, signedDeviceList(t, testSSK(0x62), user, byUser[user]))
+	}
+	before, err := h.repo.GetGroup(context.Background(), reg.GroupID)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	handshakes := h.handshakeCount(t, reg.GroupID)
+
+	_, err = h.ds.Commit(context.Background(), session, reg.GroupID, ds.CommitRequest{
+		Epoch: 6, Commit: commit, GroupInfo: fixtureFile(t, "commits/09.group_info.mls"),
+	})
+	if !hasRule(err, "group_info") {
+		t.Fatalf("got %v, want E_COMMIT_INVALID/group_info: the GroupInfo's tree hash is not the merged tree's", err)
+	}
+	after, err := h.repo.GetGroup(context.Background(), reg.GroupID)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	if after.Epoch != before.Epoch || !bytes.Equal(after.GroupInfoBlob, before.GroupInfoBlob) ||
+		!bytes.Equal(after.TreeHash, before.TreeHash) {
+		t.Errorf("a refused commit moved the group: epoch %d -> %d", before.Epoch, after.Epoch)
+	}
+	if got := h.handshakeCount(t, reg.GroupID); got != handshakes {
+		t.Errorf("a refused commit wrote %d handshake rows", got-handshakes)
+	}
+	// The instance's own view is unchanged too: the honest self-update of epoch 6 still lands.
+	if _, err := h.ds.Commit(context.Background(), session, reg.GroupID, ds.CommitRequest{
+		Epoch: 6, Commit: fixtureFile(t, "commits/09.mls"), GroupInfo: fixtureFile(t, "commits/09.group_info.mls"),
+	}); err != nil {
+		t.Fatalf("the honest commit of epoch 6 after the refusal: %v", err)
 	}
 }
 

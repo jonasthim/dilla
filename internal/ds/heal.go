@@ -231,6 +231,12 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 				"the restored state blob does not import: "+err.Error())
 		}
 	case len(h.RatchetTree) > 0:
+		// The tree is the healer's upload, so the healer must be somebody the instance itself knew
+		// as a member: a device of the group as the restore left it (hardening G2b). A device that
+		// only its own tree names gets the refusal every heal by a non-member gets.
+		if err := d.requireRestoredMember(ctx, groupID, s.DeviceID); err != nil {
+			return CommitResult{}, err
+		}
 		group, err = inst.PublicGroupFromExternal(ctx, h.RatchetTree, h.GroupInfo)
 		if err != nil {
 			return CommitResult{}, errCommitInvalid("reseed", err.Error())
@@ -293,6 +299,22 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	if !bytes.Equal(check.TreeHash, state.TreeHash) {
 		return CommitResult{}, errCommitInvalid("tree_hash",
 			"the rebuilt tree does not match the GroupInfo's tree_hash")
+	}
+	// A reseeded tree is the member's upload, not the instance's own state: every leaf in it must
+	// be one an Add could have put there (finding G2b). The GroupInfo checks above only prove that
+	// the healer built the tree it claims.
+	if reseeded {
+		if err := checkReseededBinding(row.Binding, state.Binding); err != nil {
+			return CommitResult{}, err
+		}
+		// Invariant 1's external-sender rule (DS-MEMBERSHIP-01), on the tree as the replay leaves
+		// it: a reseeded group must still be one the instance can propose into.
+		if problem := d.externalSendersProblem(row.Kind, state.ExternalSenders); problem != "" {
+			return CommitResult{}, errCommitInvalid("reseed", problem)
+		}
+		if err := d.checkReseededLeaves(ctx, group, groupID, state); err != nil {
+			return CommitResult{}, err
+		}
 	}
 
 	// The replayed tail is APPENDED to mls_handshakes and the group's high-water advances with it.
@@ -693,12 +715,14 @@ func (d *DS) checkHealedExternalCommit(ctx context.Context, g DeviceListVerifier
 		present[who.device] = struct{}{}
 	}
 	now := make(map[id.ID][]byte, len(after.Members))
+	keys := make(map[id.ID][]byte, len(after.Members))
 	for _, m := range after.Members {
 		device, _, err := decodeCredentialIdentity(m.CredentialIdentity)
 		if err != nil {
 			continue
 		}
 		now[device] = m.CredentialIdentity
+		keys[device] = m.SignatureKey
 	}
 
 	var joiner id.ID
@@ -715,6 +739,15 @@ func (d *DS) checkHealedExternalCommit(ctx context.Context, g DeviceListVerifier
 		joiner, found = target.device, true
 	}
 	if found {
+		// A replayed resync creates a new leaf like any other: it is keyed by the device's
+		// registered key, as checkExternalJoiner requires of a live one.
+		device, err := d.opts.Store.GetDevice(ctx, joiner)
+		if err != nil {
+			return id.ID{}, err
+		}
+		if !leafKeyIsRegistered(device, keys[joiner]) {
+			return id.ID{}, errCommitInvalid("external_joiner", "the joiner's leaf key is not its device key")
+		}
 		return joiner, nil
 	}
 
@@ -727,12 +760,155 @@ func (d *DS) checkHealedExternalCommit(ctx context.Context, g DeviceListVerifier
 	if len(added) != 1 {
 		return id.ID{}, errCommitInvalid("structural", "an external commit must add exactly one device")
 	}
+	// The joiner's leaf key travels with its credential: checkAddedMember binds it to the device's
+	// registered key exactly as it binds an Add's.
 	if err := d.checkAddedMember(ctx, g, groupID, mlswasi.AppliedProposal{
-		Kind: mlswasi.ProposalAdd, CredentialIdentity: now[added[0]],
+		Kind: mlswasi.ProposalAdd, CredentialIdentity: now[added[0]], SignatureKey: keys[added[0]],
 	}); err != nil {
 		return id.ID{}, err
 	}
 	return added[0], nil
+}
+
+// checkReseededLeaves is what a reseed may adopt (finding G2b of the second hardening review). The
+// reseed builds the group from the healing member's uploaded ratchet tree, because the instance
+// lost its own state blob; nothing in that tree passed invariant 4 on its way in, so every leaf
+// passes here the clause an Add passes (`checkAddedMember`): the device the credential names is
+// known to this instance and owned by the credential's user, is not revoked, carries its
+// registered key, is in its user's newest signed device list, and the user is eligible under the
+// ACL. The verdicts are the Add clause's own rules (add_key_package, add_acl). The tree must also
+// hold no leaf the member list cannot name (LeafCount, ABI v5): such a leaf passes no check and
+// would still receive the group's secrets.
+//
+// It is batched over the tree - one device list per user, one ACL question per group where the ACL
+// answers in batches - because a reseeded channel group holds as many leaves as the channel has
+// devices. What it does NOT bound is the set of devices: a tree may hold a device the restored
+// member rows do not, because the members' commits after the backup are already inside the tree
+// and the reseed path has no state to replay them from (see the hardening-G report).
+func (d *DS) checkReseededLeaves(ctx context.Context, v DeviceListVerifier, groupID id.ID, state mlswasi.GroupState) error {
+	if state.LeafCount != uint64(len(state.Members)) {
+		return errCommitInvalid("reseed", fmt.Sprintf(
+			"the reseeded tree holds %d leaves and names %d: a leaf's credential is no dilla identity",
+			state.LeafCount, len(state.Members)))
+	}
+	type leafDevice struct {
+		device store.DeviceRow
+		user   id.ID
+	}
+	byUser := map[id.ID][]leafDevice{}
+	var users []id.ID
+	for _, m := range state.Members {
+		deviceID, userID, err := decodeCredentialIdentity(m.CredentialIdentity)
+		if err != nil {
+			return errCommitInvalid("add_key_package", "undecodable credential identity")
+		}
+		device, err := d.opts.Store.GetDevice(ctx, deviceID)
+		if errors.Is(err, store.ErrNotFound) {
+			return errCommitInvalid("add_key_package", "a reseeded leaf's device is unknown to this instance")
+		}
+		if err != nil {
+			return err
+		}
+		if device.UserID != userID {
+			return errCommitInvalid("add_key_package", "a reseeded leaf's user does not own the device")
+		}
+		if device.RevokedAt != nil {
+			return errCommitInvalid("add_key_package", "a reseeded leaf's device is revoked")
+		}
+		if !leafKeyIsRegistered(device, m.SignatureKey) {
+			return errCommitInvalid("add_key_package",
+				"a reseeded leaf's signature key is not the device's registered key")
+		}
+		if _, seen := byUser[userID]; !seen {
+			users = append(users, userID)
+		}
+		byUser[userID] = append(byUser[userID], leafDevice{device: device, user: userID})
+	}
+	for _, userID := range users {
+		entries, err := d.opts.DeviceLists.Entries(ctx, v, userID)
+		if err != nil {
+			return errCommitInvalid("add_key_package",
+				"no verifiable signed device list for a reseeded leaf's user: "+err.Error())
+		}
+		for _, leaf := range byUser[userID] {
+			listed := false
+			for _, dsk := range entries {
+				if bytes.Equal(dsk, leaf.device.DSKPub) {
+					listed = true
+					break
+				}
+			}
+			if !listed {
+				return errCommitInvalid("add_key_package",
+					"a reseeded leaf's device is not in its user's newest signed device list")
+			}
+		}
+	}
+	eligible, err := d.eligibleUsers(ctx, groupID, users)
+	if err != nil {
+		return errCommitInvalid("add_acl", "the channel ACL cannot be resolved: "+err.Error())
+	}
+	for _, userID := range users {
+		if !eligible[userID] {
+			return errCommitInvalid("add_acl", "a reseeded leaf's user is not eligible under the channel's ACL")
+		}
+	}
+	return nil
+}
+
+// requireRestoredMember is the reseed's gate on its healer: the uploading device holds a live leaf
+// in mls_members as the restore left them, the instance's own record of the group. Otherwise
+// 403 E_FORBIDDEN, the answer signerLeafOf gives a heal by a device that is not a member.
+func (d *DS) requireRestoredMember(ctx context.Context, groupID, deviceID id.ID) error {
+	members, err := d.opts.Store.ListMembers(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	for _, m := range members {
+		if m.RemovedEpoch == nil && m.DeviceID == deviceID {
+			return nil
+		}
+	}
+	return errForbidden("a reseeding heal needs a healer the restored group holds as a member")
+}
+
+// checkReseededBinding is the reseed's binding check: the uploaded tree's dilla_binding names the
+// group the instance holds - the same kind, community and target as the binding stored with the
+// group. The GroupInfo checks only tie the tree to the group id; without this a reseed could move
+// a group to another target or kind. Rule "reseed".
+func checkReseededBinding(stored, uploaded []byte) error {
+	want, err := decodeBinding(stored)
+	if err != nil {
+		return errCommitInvalid("reseed", "the instance's stored binding does not decode: "+err.Error())
+	}
+	got, err := decodeBinding(uploaded)
+	if err != nil {
+		return errCommitInvalid("reseed", "the reseeded tree's binding does not decode: "+err.Error())
+	}
+	sameCommunity := (want.CommunityID == nil) == (got.CommunityID == nil) &&
+		(want.CommunityID == nil || *want.CommunityID == *got.CommunityID)
+	if got.Kind != want.Kind || got.TargetID != want.TargetID || !sameCommunity {
+		return errCommitInvalid("reseed",
+			"the reseeded tree's dilla_binding (kind, community, target) is not the group's")
+	}
+	return nil
+}
+
+// eligibleUsers is the ACL's verdict for many users of one group: one question when the ACL
+// answers in batches (BatchACL), one per user otherwise.
+func (d *DS) eligibleUsers(ctx context.Context, groupID id.ID, users []id.ID) (map[id.ID]bool, error) {
+	if b, ok := d.opts.ACL.(BatchACL); ok {
+		return b.EligibleUsers(ctx, groupID, users)
+	}
+	out := make(map[id.ID]bool, len(users))
+	for _, u := range users {
+		ok, err := d.opts.ACL.Eligible(ctx, groupID, u)
+		if err != nil {
+			return nil, err
+		}
+		out[u] = ok
+	}
+	return out, nil
 }
 
 // signerLeafOf is the leaf the healing device occupies in the rebuilt tree.

@@ -37,7 +37,10 @@ use std::sync::{Arc, Mutex};
 pub struct Received {
     pub group_id: Vec<u8>,
     pub seq: u64,
+    /// The device authenticated by the MLS sender's credential.
     pub sender: DeviceId,
+    pub sender_user: UserId,
+    pub tier: Tier,
     pub envelope: Envelope,
 }
 
@@ -444,11 +447,19 @@ impl TestClient {
             .find(|w| w.group_id == group_id)
             .ok_or_else(|| TestkitError::Assertion("no welcome for this device".into()))?;
         let welcome = deserialize_welcome(&item.blob)?;
-        let group = DillaGroup::join_from_welcome(
+        // Joined through the delivery service's label, as `ClientCore::welcomes_apply` joins: the
+        // served group id, epoch and tree hash must be the Welcome's own (protocol/01 rule 5), so
+        // every Welcome a scenario joins through a real dillad pins what dillad labels it with.
+        let group = DillaGroup::join_from_welcome_labelled(
             &self.provider,
             welcome,
             deserialize_tree(&item.ratchet_tree)?,
             expected,
+            dilla_core::mls::WelcomeLabel {
+                group_id: &item.group_id,
+                epoch: item.epoch,
+                tree_hash: &item.tree_hash,
+            },
         )?;
         ds.ack_welcome(item.welcome_id)?;
         self.groups.insert(group_id.to_vec(), group);
@@ -549,6 +560,17 @@ impl TestClient {
         let (epoch, message, msg_id) = self.seal(group_id, body)?;
         ds.post_message_from(group_id, epoch, message)?;
         Ok(msg_id)
+    }
+
+    /// Sends a type-0 envelope and returns the delivery service sequence number.
+    pub fn send_seq(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        body: &str,
+    ) -> Result<u64, TestkitError> {
+        let (epoch, message, _) = self.seal(group_id, body)?;
+        Ok(ds.post_message_from(group_id, epoch, message)?.seq)
     }
 
     /// Invariant 8's malformed upload: a real message of this group whose `authenticated_data` —
@@ -820,14 +842,25 @@ impl TestClient {
                 Frame::MessageCt { group_id, item } => {
                     if let Some(group) = self.groups.get_mut(&group_id) {
                         let message = deserialize_protocol(&item.blob)?;
-                        if let DillaProcessed::Application(envelope) =
+                        if let DillaProcessed::Application(app) =
                             group.process_message(&self.provider, message)?
                         {
+                            if app.sender.device_id != item.uploader_device {
+                                return Err(TestkitError::Assertion(format!(
+                                    "message seq {} in group {}: the MLS sender {} is not the uploader {}",
+                                    item.seq,
+                                    hex::encode(&group_id),
+                                    app.sender.device_id.to_hex(),
+                                    item.uploader_device.to_hex()
+                                )));
+                            }
                             let received = Received {
                                 group_id: group_id.clone(),
                                 seq: item.seq,
-                                sender: item.uploader_device,
-                                envelope,
+                                sender: app.sender.device_id,
+                                sender_user: app.sender.user_id,
+                                tier: app.sender.tier,
+                                envelope: app.envelope,
                             };
                             self.inbox.push(received.clone());
                             new.push(received);
@@ -849,10 +882,26 @@ impl TestClient {
         group_id: &[u8],
         expected: &DillaBinding,
     ) -> Result<(), TestkitError> {
+        self.resync_with(ds, group_id, expected, false)
+    }
+
+    /// `resync`, optionally with a leaf whose signature key is a fresh one rather than this
+    /// device's DSK — the resync half of the probe `join_external_with` makes for a joiner. With a
+    /// fresh key OpenMLS finds no leaf carrying the joiner's key, so the commit removes nothing and
+    /// the device would end with two leaves. The delivery service refuses it twice over: the new
+    /// leaf's key is not the device's registered key, and a device that holds a leaf must remove it
+    /// (one device, one leaf; its public group refuses that first, under the joiner's rule).
+    pub fn resync_with(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        expected: &DillaBinding,
+        fresh_leaf_key: bool,
+    ) -> Result<(), TestkitError> {
         if let Some(mut stale) = self.groups.remove(group_id) {
             stale.delete(&self.provider)?;
         }
-        self.join_external(ds, group_id, expected)
+        self.join_external_with(ds, group_id, expected, fresh_leaf_key)
     }
 
     /// Invariant 9: reports the last commit this client received for the group as one it cannot
@@ -953,6 +1002,11 @@ impl TestClient {
     /// How many members this client's tree of the group holds.
     pub fn member_count(&self, group_id: &[u8]) -> Option<usize> {
         self.groups.get(group_id).map(DillaGroup::member_count)
+    }
+
+    /// The group's members in leaf order, when this client holds its tree.
+    pub fn roster(&self, group_id: &[u8]) -> Option<Vec<dilla_core::mls::RosterEntry>> {
+        self.groups.get(group_id).map(DillaGroup::roster)
     }
 
     pub fn inbox(&self) -> &[Received] {

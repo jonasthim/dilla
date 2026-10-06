@@ -6,3 +6,4 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 export const Confirm: Story = { args: { children: <p>You can rejoin longhouse any time.</p>, footer: <Button variant="danger" keyHint="↵">Leave</Button> } };
 export const Info: Story = { args: { title: 'Compare the code', children: <p>Read the six digits aloud. They must match on every screen.</p> } };
+export const CloseLabel: Story = { args: { title: 'Compare the code', closeLabel: 'Done', children: <p>Read the six digits aloud. They must match on every screen.</p> } };

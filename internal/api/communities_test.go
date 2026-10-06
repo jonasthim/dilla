@@ -385,11 +385,14 @@ func TestCommunityMembershipGates(t *testing.T) {
 		t.Fatalf("GET members = %d (%x)", status, body)
 	}
 	var members []struct {
-		_      struct{} `cbor:",toarray"`
-		UserID id.ID
-		Joined int64
-		Nick   string
-		Roles  []id.ID
+		_        struct{} `cbor:",toarray"`
+		UserID   id.ID
+		Joined   int64
+		Nick     string
+		Roles    []id.ID
+		Username string
+		Display  string
+		Kind     uint64
 	}
 	mustUnmarshal(t, body, &members)
 	if len(members) != 2 {
@@ -512,11 +515,14 @@ func TestRoleGrantGates(t *testing.T) {
 		t.Fatalf("GET members = %d", status)
 	}
 	var members []struct {
-		_      struct{} `cbor:",toarray"`
-		UserID id.ID
-		Joined int64
-		Nick   string
-		Roles  []id.ID
+		_        struct{} `cbor:",toarray"`
+		UserID   id.ID
+		Joined   int64
+		Nick     string
+		Roles    []id.ID
+		Username string
+		Display  string
+		Kind     uint64
 	}
 	mustUnmarshal(t, body, &members)
 	for _, m := range members {

@@ -48,6 +48,17 @@ describe('Dialog', () => {
     expect(screen.getByRole('dialog', { name: 'Leave voice?' })).toBe(first);
     expect(screen.getByRole('dialog', { name: 'Compare the code' })).toBe(second);
   });
+  it('names its close button Close when no closeLabel is given', () => {
+    render(<Dialog open title="Leave voice?" onClose={() => {}}><p>You can rejoin any time.</p></Dialog>);
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+  });
+  it('names its close button by closeLabel, and then has no button named Close', async () => {
+    const onClose = vi.fn();
+    render(<Dialog open title="Lämna röst?" onClose={onClose} closeLabel="Stäng"><p>Du kan gå med igen när som helst.</p></Dialog>);
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Stäng' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><Dialog open title="Leave voice?" onClose={() => {}} footer={<Button variant="danger">Leave</Button>}><p>You can rejoin any time.</p></Dialog></div>);
     await expectNoAxeViolations(container);

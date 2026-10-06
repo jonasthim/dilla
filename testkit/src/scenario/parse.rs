@@ -30,12 +30,17 @@ pub enum Stmt {
     Sync {
         client: String,
     },
+    /// `group <name> kind=<kind> target=<hex> [community=<hex>|none] creator=<client>
+    /// [external_sender=forged]`. A `text` or `call` group carries the instance's external sender;
+    /// with `external_sender=forged` it names the creator's own key under the instance's
+    /// credential instead, as a patched client would (DS-MEMBERSHIP-01, invariant 1).
     Group {
         name: String,
         kind: GroupKind,
         target: [u8; 16],
         community: Option<CommunityId>,
         creator: String,
+        forged_sender: bool,
     },
     /// `join <client> <group> [via=welcome|external]` and `external_join <client> <group>`. An
     /// external join may also say `as=<uploader>` — the commit is the client's own but is uploaded
@@ -151,13 +156,15 @@ pub enum Stmt {
     ExpectClosed {
         group: String,
     },
-    /// `resync <client> <group> [as=<uploader>]`: the client drops its copy of the group and
-    /// returns by an own-leaf external commit (`POST /resync`, invariant 9 and R25). With `as=`,
-    /// the commit is uploaded under the uploader's session instead.
+    /// `resync <client> <group> [as=<uploader>] [leaf_key=fresh]`: the client drops its copy of
+    /// the group and returns by an own-leaf external commit (`POST /resync`, invariant 9 and R25).
+    /// With `as=`, the commit is uploaded under the uploader's session instead; with
+    /// `leaf_key=fresh`, the new leaf carries a signature key that is not the device's DSK.
     Resync {
         client: String,
         group: String,
         uploader: Option<String>,
+        fresh_leaf_key: bool,
     },
     /// `fork_report <client> <group>`: the client reports the last commit it received for the
     /// group as one it cannot process (`POST /fork-report`, invariant 9).
@@ -277,6 +284,18 @@ fn hex16(s: &str, line: usize) -> Result<[u8; 16], ParseError> {
 
 fn named<'a>(args: &[&'a str], key: &str) -> Option<&'a str> {
     args.iter().find_map(|a| a.strip_prefix(key))
+}
+
+/// `leaf_key=fresh`, the one leaf-key probe an external commit (a join or a resync) takes.
+fn leaf_key_probe(args: &[&str], line: usize) -> Result<bool, ParseError> {
+    match named(args, "leaf_key=") {
+        None => Ok(false),
+        Some("fresh") => Ok(true),
+        Some(other) => Err(err(
+            line,
+            format!("unknown leaf_key {other:?}; the only probe is leaf_key=fresh"),
+        )),
+    }
 }
 
 /// `key=<32 hex>` when present.
@@ -443,12 +462,23 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
             let creator = named(args, "creator=")
                 .ok_or_else(|| err(line_no, "group needs creator="))?
                 .to_owned();
+            let forged_sender = match named(args, "external_sender=") {
+                None => false,
+                Some("forged") => true,
+                Some(other) => {
+                    return Err(err(
+                        line_no,
+                        format!("unknown external_sender {other:?}; the one value is forged"),
+                    ));
+                }
+            };
             Stmt::Group {
                 name: args[0].to_owned(),
                 kind,
                 target,
                 community,
                 creator,
+                forged_sender,
             }
         }
         "join" | "external_join" => {
@@ -462,16 +492,7 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                 return Err(err(line_no, format!("unknown via= {via:?}")));
             }
             let uploader = named(args, "as=").map(str::to_owned);
-            let fresh_leaf_key = match named(args, "leaf_key=") {
-                None => false,
-                Some("fresh") => true,
-                Some(other) => {
-                    return Err(err(
-                        line_no,
-                        format!("unknown leaf_key {other:?}; the only probe is leaf_key=fresh"),
-                    ));
-                }
-            };
+            let fresh_leaf_key = leaf_key_probe(args, line_no)?;
             if !external && (uploader.is_some() || fresh_leaf_key) {
                 return Err(err(
                     line_no,
@@ -699,6 +720,7 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                     client,
                     group,
                     uploader: named(args, "as=").map(str::to_owned),
+                    fresh_leaf_key: leaf_key_probe(args, line_no)?,
                 },
                 "fork_report" => Stmt::ForkReport { client, group },
                 _ => Stmt::Heal { client, group },
@@ -890,12 +912,17 @@ expect_reject E_BINDING join bob chat
                 target,
                 community,
                 creator,
+                forged_sender,
             } => {
                 assert_eq!(name, "chat");
                 assert_eq!(*kind, GroupKind::Text);
                 assert_eq!(*target, [0x33; 16]);
                 assert!(community.is_none());
                 assert_eq!(creator, "alice");
+                assert!(
+                    !forged_sender,
+                    "the instance's own sender unless the line forges one"
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -940,6 +967,24 @@ expect_reject E_BINDING join bob chat
         let e = one(line).expect_err(line);
         assert_eq!(e.line, 1, "{line}");
         assert!(e.message.contains(needle), "{line}: {}", e.message);
+    }
+
+    /// DS-MEMBERSHIP-01: `external_sender=forged` makes the group name the creator's own key; any
+    /// other value is refused rather than read as the instance's.
+    #[test]
+    fn group_parses_a_forged_external_sender() {
+        assert!(matches!(
+            one("group g kind=text target=33333333333333333333333333333333 creator=alice external_sender=forged")
+                .unwrap(),
+            Stmt::Group {
+                forged_sender: true,
+                ..
+            }
+        ));
+        refused(
+            "group g kind=text target=33333333333333333333333333333333 creator=alice external_sender=mine",
+            "the one value is forged",
+        );
     }
 
     #[test]
@@ -1201,6 +1246,7 @@ expect_reject E_BINDING join bob chat
                 client: "bob".into(),
                 group: "chat".into(),
                 uploader: None,
+                fresh_leaf_key: false,
             }
         );
         assert_eq!(
@@ -1361,8 +1407,19 @@ expect_reject E_BINDING join bob chat
                 client: "carol".into(),
                 group: "chat".into(),
                 uploader: Some("alice".into()),
+                fresh_leaf_key: false,
             }
         );
+        assert_eq!(
+            one("resync alice chat leaf_key=fresh").unwrap(),
+            Stmt::Resync {
+                client: "alice".into(),
+                group: "chat".into(),
+                uploader: None,
+                fresh_leaf_key: true,
+            }
+        );
+        refused("resync alice chat leaf_key=old", "leaf_key");
         assert_eq!(
             one("mark_revoked mallory").unwrap(),
             Stmt::MarkRevoked {

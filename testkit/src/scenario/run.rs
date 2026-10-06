@@ -260,6 +260,7 @@ impl Runner {
                 target,
                 community,
                 creator,
+                forged_sender,
             } => {
                 let binding = DillaBinding {
                     v: 1,
@@ -273,6 +274,12 @@ impl Runner {
                 };
                 let mut client = self.take(creator)?;
                 let senders = match (&self.external_sender, kind) {
+                    // A patched client's group (DS-MEMBERSHIP-01): the instance's credential over
+                    // the creator's own key, so no instance proposal could ever verify in it.
+                    _ if *forged_sender => Some(external_senders(
+                        client.signer().public().to_vec().into(),
+                        &self.instance_id,
+                    )),
                     (Some(key), GroupKind::Text | GroupKind::Call) => {
                         Some(external_senders(key.clone().into(), &self.instance_id))
                     }
@@ -544,12 +551,13 @@ impl Runner {
                 client,
                 group,
                 uploader,
+                fresh_leaf_key,
             } => {
                 let target = self.group(group)?;
                 let (id, binding) = (target.id.clone(), target.binding.clone());
                 let uploader = uploader.as_deref().unwrap_or(client);
                 self.with_client_via(client, uploader, |actor, ds| {
-                    actor.resync(ds, &id, &binding)
+                    actor.resync_with(ds, &id, &binding, *fresh_leaf_key)
                 })
             }
             Stmt::ForkReport { client, group } => {

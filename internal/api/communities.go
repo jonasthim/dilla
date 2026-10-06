@@ -69,6 +69,7 @@ func (c *Communities) WithInviteMeter(l *server.RateLimiter, trustedProxies []ne
 
 func (c *Communities) Register(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/communities", c.create)
+	mux.HandleFunc("GET /v1/communities", c.mine)
 	mux.HandleFunc("GET /v1/communities/{id}", c.get)
 	mux.HandleFunc("PATCH /v1/communities/{id}", c.patch)
 	mux.HandleFunc("DELETE /v1/communities/{id}", c.delete)
@@ -585,6 +586,10 @@ type memberResp struct {
 	Joined int64
 	Nick   string
 	Roles  []id.ID
+	// Username, Display and Kind are L-HTTP-03's names (dilla-web-1 task 9): "", "", 0 when the user row is gone.
+	Username string
+	Display  string
+	Kind     uint64
 }
 
 func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
@@ -615,7 +620,19 @@ func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
 		if roles == nil {
 			roles = []id.ID{} // an array on the wire, never null
 		}
-		out = append(out, memberResp{UserID: m.UserID, Joined: m.Joined, Nick: m.Nick, Roles: roles})
+		var username, display string
+		var kind uint64
+		u, err := c.repo.GetUser(r.Context(), m.UserID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+		case err != nil:
+			c.fail(w, r, "list members", err)
+			return
+		default:
+			username, display, kind = u.Username, u.Display, uint64(u.Kind)
+		}
+		out = append(out, memberResp{UserID: m.UserID, Joined: m.Joined, Nick: m.Nick, Roles: roles,
+			Username: username, Display: display, Kind: kind})
 	}
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
 		c.log.Error("encode members", "err", err)

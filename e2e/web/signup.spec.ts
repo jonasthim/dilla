@@ -1,0 +1,80 @@
+import { expect } from '@playwright/test';
+import {
+  CLASS, COPY, HEX32, RK_GROUP, TEST_TIMEOUT, WAIT, copy, expectHeading, expectShell, nextButton, onboardingFrame,
+  openChannel, railNav, readKekRecord, readRecoveryKey, submitButton, test,
+} from './support/app';
+
+test.describe.configure({ timeout: TEST_TIMEOUT });
+
+test('a server invite, a name and a written-down key make an account that lands in that server', async ({ page, context, peer, instanceName }) => {
+  const setup = await peer.setup();
+  await peer.register();
+  const invite = setup.invite_code;
+
+  await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
+  await expectHeading(page, COPY.connectTitle, { instance: instanceName });
+  await expect(page.getByLabel(copy(COPY.inviteLabel), { exact: true })).toHaveValue(invite);
+  await nextButton(page).click();
+
+  await expectHeading(page, COPY.identityTitle);
+  await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(`w${setup.user_id.slice(0, 8)}`);
+  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill('signup tester');
+  await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill('e2e-password-1234');
+  await nextButton(page).click();
+
+  // The recovery key: 13 groups of 4 Crockford characters, selectable, never offered for copying (F2).
+  await expectHeading(page, COPY.keysTitle);
+  const groups = await readRecoveryKey(page);
+  expect(groups).toHaveLength(13);
+  for (const group of groups) expect(group).toMatch(RK_GROUP);
+  await expect(page.locator(CLASS.recoveryKey).getByRole('button', { name: /copy/i })).toHaveCount(0);
+  await expect(nextButton(page)).toBeDisabled();
+  await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
+  await expect(nextButton(page)).toBeEnabled();
+  await nextButton(page).click();
+
+  // Step 4 registers: its forward button is `Create account`, not `Continue` (L-COPY-01).
+  await expectHeading(page, COPY.deviceTitle);
+  await submitButton(page).click();
+  await expectHeading(page, COPY.doneTitle);
+  await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
+  await expectShell(page);
+
+  // The server invite registered the account and joined its server: the person lands in it, with no
+  // join dialog and no second paste (ruling 34).
+  await expect(page).toHaveURL(new RegExp(`^http://127\\.0\\.0\\.1:8463/c/${setup.community_id}(/[0-9a-f]{32})?$`), { timeout: WAIT });
+  await expect(railNav(page).getByRole('button', { name: peer.communityName, exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  // The key crossed to the page once, for display: it is gone from the DOM, the URL and web storage.
+  const keyText = groups.join('');
+  const bodyText = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ''));
+  expect(bodyText).not.toContain(groups.slice(0, 3).join(''));
+  expect(page.url()).not.toContain(keyText.slice(0, 12));
+  expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length, cookie: document.cookie })))
+    .toEqual({ local: 0, session: 0, cookie: '' });
+  expect(await context.cookies()).toEqual([]);
+
+  // The device KEK is wrapped by a non-extractable WebCrypto key (C7, L-TS-05).
+  expect(await readKekRecord(page)).toEqual({
+    count: 1,
+    keys: [expect.stringMatching(HEX32)],
+    v: 1,
+    type: 'secret',
+    extractable: false,
+    algorithm: 'AES-GCM',
+    length: 256,
+    usages: ['decrypt', 'encrypt'],
+    iv: 12,
+    ct: 48,
+    exportRefused: true,
+  });
+
+  // The new device enters the peer's text group: the peer's roster holds both devices.
+  await openChannel(page, peer.communityName, peer.channelName);
+  const devices = await peer.waitForDevices(2);
+  expect(devices).toContain(setup.device_id);
+  const browserDevice = devices.find((d) => d !== setup.device_id);
+  expect(browserDevice).toMatch(HEX32);
+  await expect(onboardingFrame(page)).toHaveCount(0);
+});

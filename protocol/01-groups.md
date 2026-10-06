@@ -64,6 +64,25 @@ Rules:
 2. `dilla_binding` MUST be listed in `required_capabilities.extension_types`, so a leaf that does
    not understand it cannot be added.
 3. The extension is immutable for the life of the group. A change requires a new group.
+4. The group id inside a Welcome's or a GroupInfo's GroupContext MUST equal the id of the group the
+   client is joining: the `group_id` the DS serves the Welcome under, or the group whose GroupInfo
+   the client fetched for an external join. A client rejects any other before it stores anything
+   (a Welcome so rejected is reported as `E_BINDING`). The id and the binding are public, so
+   neither alone ties a Welcome or a GroupInfo to the group the DS sequences.
+5. A Welcome's GroupContext `epoch` and `tree_hash` MUST equal the `epoch` and `tree_hash` the DS
+   serves with it (`02-delivery-service.md`, `GET /v1/welcomes` and `mls.welcome`: the group's
+   epoch and tree hash right after the commit the Welcome was uploaded with, from the instance's
+   own public view of the group). A client rejects a Welcome that does not match before it stores
+   anything, and the KeyPackage it was addressed to stays usable. A member can otherwise address,
+   to a device the group adds, the Welcome of a private group with the same id and binding.
+6. A client keeps, per group id, the highest epoch it has held: every epoch it reached by a
+   Welcome, by an external commit the DS accepted, or by a commit it merged. Rejoining over a
+   group it has held, it MUST reject a Welcome whose epoch is at or below that epoch (a replay: a
+   real re-admission is committed after it) and a GroupInfo whose epoch is below it (an external
+   commit lands one epoch above the GroupInfo). A first join has no such floor. A heal after a
+   restore (`02-delivery-service.md`, invariant 11) adopts a member's GroupInfo at or above the
+   instance's restored epoch; a device whose floor is above the healed epoch can rejoin only once
+   the group has passed it.
 
 ## External senders
 
@@ -84,7 +103,27 @@ Client policy for proposals from the external sender:
 
 Client policy for proposals from members:
 
-- `Update`: accept.
+- `Update`: accept only if its leaf node carries a credential byte-identical to the one the
+  proposer's leaf holds before the commit, and the same `signature_key`; reject otherwise
+  (`E_CREDENTIAL`). The same rule binds a member commit's UpdatePath: its leaf node keeps the
+  committer's credential and signature key. It binds a resync too: an external commit that removes
+  a leaf of the joiner's own device (the `device_id` its new leaf names) carries, in its UpdatePath
+  leaf node, exactly the credential the removed leaf held. Once a leaf is in a group its credential
+  — which binds the leaf to a `user_id` and a `device_id` (`03-identity.md`, "Credential") — and its
+  signature key (the device's `dsk_pub`, which never changes) are immutable, across a resync
+  included. An external commit whose new leaf names a device that already holds a leaf in the
+  tree before the commit must remove that leaf (OpenMLS allows one `Remove` in an external commit,
+  so a device found at two leaves cannot resync at all); otherwise `E_CREDENTIAL`. The device is
+  read from the credentials of the tree before the commit. A client refuses such a proposal before
+  queueing it and such a commit before merging it; the DS refuses both
+  (`02-delivery-service.md`, invariants 4 and 5). This client rule covers external commits only:
+  it does not judge an `Add`, so a client by itself does not refuse an `Add` that gives a device
+  that already holds a leaf a second one on another key. The DS does: it binds every added leaf's
+  `signature_key` to the device's registered key (invariant 4's `Add` clause), so a second leaf of
+  a device would carry the key its first leaf already carries, and OpenMLS refuses an `Add` whose
+  signature key a leaf of the tree already holds. Through a conforming DS a device therefore
+  holds at most one leaf, and a new credential enters a group only with the leaf of a device that
+  holds none (a first join, or an `Add`).
 - `Remove`: accept only if the target leaf belongs to the proposer's own user — the committer's for
   a `Remove` carried in the commit (device revocation), the proposing member's for a `Remove`
   proposal the commit references (a member leaving, below); reject otherwise
@@ -98,7 +137,11 @@ Client policy for proposals from members:
   satisfied (`02-delivery-service.md`, invariant 4).
 - `Add`: accept only in `pairing` (first join of the second leaf) and `interaction` groups (the
   user's device adding the bot device or a new own device); reject in `text` and `call` groups.
-- `GroupContextExtensions`, `ReInit`, `PreSharedKey`: reject.
+- `GroupContextExtensions`, `ReInit`, `PreSharedKey`: reject. dilla has no feature that changes a
+  group's context extensions after creation, so a `GroupContextExtensions` proposal is refused
+  standalone (before queueing) and in a commit, by value or by reference, whoever sent it, and the
+  group state is left unchanged; the DS refuses the same (`02-delivery-service.md`, invariant 4),
+  so a member cannot replace `external_senders` with a key the instance does not hold.
 
 External commits (RFC 9420 §12.4.3.2) are accepted in `text` and `call` groups for: joining a
 community's channels, adding a new device of an existing member, joining a call, and resyncing.

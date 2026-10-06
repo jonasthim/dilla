@@ -151,6 +151,38 @@ func (d *DS) checkExternalCommitScope(ctx context.Context, groupID id.ID, s Sess
 	return nil
 }
 
+// checkExternalCommitReplacesOwnLeaf is one device, one leaf (finding G1 of the second hardening
+// review): an external commit by a device that already holds a leaf must remove every leaf that
+// device holds, or the device ends with two leaves and the new one is a second identity beside the
+// old. The device's leaves are the mls_members rows written from the pre-commit tree's own
+// credentials, never anything the request names; the joiner is the session's device, which
+// checkExternalJoiner then requires the new leaf to name. OpenMLS lets an external commit remove one
+// leaf, so a device holding two can never pass. The core's public group applies the same rule in
+// Process (`leaf_credentials_unchanged`), so this is the delivery service's own statement of it,
+// under the joiner's rule name.
+func (d *DS) checkExternalCommitReplacesOwnLeaf(ctx context.Context, groupID id.ID, s Session, applied []mlswasi.AppliedProposal) error {
+	removed := make(map[uint32]struct{}, len(applied))
+	for _, a := range applied {
+		if a.Kind == mlswasi.ProposalRemove && a.TargetLeaf != nil {
+			removed[*a.TargetLeaf] = struct{}{}
+		}
+	}
+	members, err := d.opts.Store.ListMembers(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	for _, m := range members {
+		if m.RemovedEpoch != nil || m.DeviceID != s.DeviceID {
+			continue
+		}
+		if _, ok := removed[m.LeafIndex]; !ok {
+			return errCommitInvalid("external_joiner",
+				"an external commit must remove the leaf its device already holds (one device, one leaf)")
+		}
+	}
+	return nil
+}
+
 // reissueAll re-issues every non-void instance proposal still outstanding at the epoch the resync
 // replaced, for the new one, and elects a committer for what it re-issued.
 //

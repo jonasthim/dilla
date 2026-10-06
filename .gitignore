@@ -23,6 +23,14 @@ core/dilla-core-wasm/spike/pkg/
 core/dilla-core-wasm/spike/node_modules/
 e2e/test-results/
 packages/media/wasm/
+packages/core-wasm/pkg/
+
+# the web client: a real build copied into the embed directory stays untracked; the placeholder is tracked
+internal/web/dist/*
+!internal/web/dist/index.html
+!internal/web/dist/dilla-manifest.json
+packages/web/dist/
+packages/client-core/harness-dist/
 
 # go build output when run from the repository root (CI builds it in a runner)
 /dillad

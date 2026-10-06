@@ -54,6 +54,14 @@ column below uses four scopes:
 and its first session in the same transaction, because the device's key is the one being
 registered and there is no prior key to prove possession of.
 
+The `credential` of the `device` sub-array is opaque to the instance: it is stored as sent (1 to
+8192 bytes) and never parsed or read back. Because the instance mints `user_id` in this response,
+a registering client cannot know it when it builds the credential: it sends the credential with
+16 zero bytes as `user_id`, and after the response rebuilds its MLS credential with the minted
+`user_id` without signing anything again (`sig_ssk_dev` does not cover `user_id` and
+`sig_umk_ssk` covers `ssk_pub` only, `03` § Keys). Every leaf the device creates carries the
+rebuilt credential; the placeholder never appears in a group.
+
 Two rows above describe more than any released instance does. They are recorded here so a client
 plans against what an instance answers, not against what the table would otherwise promise:
 
@@ -138,7 +146,7 @@ never reaches `/v1` beyond that one endpoint.
 
 | Area | Routes |
 |---|---|
-| communities | `POST /v1/communities`, `GET/PATCH/DELETE /v1/communities/{id}`, `GET /v1/communities/{id}/members`, `DELETE /v1/communities/{id}/members/{user_id}`, `POST /v1/communities/{id}/join`, `POST /v1/communities/{id}/leave` |
+| communities | `POST/GET /v1/communities`, `GET/PATCH/DELETE /v1/communities/{id}`, `GET /v1/communities/{id}/members`, `DELETE /v1/communities/{id}/members/{user_id}`, `POST /v1/communities/{id}/join`, `POST /v1/communities/{id}/leave` |
 | channels | `POST/GET /v1/communities/{id}/channels`, `GET/PATCH/DELETE /v1/channels/{id}`, `PUT /v1/channels/{id}/overwrites/{kind}/{target_id}`, `DELETE` the same, `GET /v1/channels/{id}/members`, `PUT/DELETE /v1/channels/{id}/members/{user_id}` |
 | roles | `POST /v1/communities/{id}/roles`, `PATCH/DELETE /v1/roles/{id}`, `PUT/DELETE /v1/communities/{id}/members/{user_id}/roles/{role_id}` |
 | bans | `PUT /v1/communities/{id}/bans/{user_id}`, `DELETE` the same, `GET /v1/communities/{id}/bans` |
@@ -165,10 +173,11 @@ community answers `404` to everyone.
 | Method and path | Request | Response |
 |---|---|---|
 | `POST /v1/communities` | `[name(tstr), policy(bstr), min_account_age_seconds(uint), require_mod_2fa(uint)]` | `201 [community_id(bstr16), role_everyone(bstr16), policy_version(uint)]` |
+| `GET /v1/communities` | — | `[[community_id(bstr16), name(tstr), owner(bstr16), policy_version(uint)]]`: the live communities the caller is a member of, ordered by `community_id`, unpaginated; `[]` for none |
 | `GET /v1/communities/{id}` | — | `[community_id, owner, name, policy, policy_version, min_account_age_seconds, require_mod_2fa, created]` |
 | `PATCH /v1/communities/{id}` | `[name(tstr\|null), policy(bstr\|null), min_account_age_seconds(uint\|null), require_mod_2fa(uint\|null)]` | `[policy_version(uint)]` |
 | `DELETE /v1/communities/{id}` | — | `204` |
-| `GET /v1/communities/{id}/members?after=` | — | `[[user_id, joined, nick, [role_id]]]`, at most 200 per page, ordered by `user_id`; `after` is the last `user_id` of the previous page |
+| `GET /v1/communities/{id}/members?after=` | — | `[[user_id, joined, nick, [role_id], username(tstr), display(tstr), kind(uint)]]`, at most 200 per page, ordered by `user_id`; `after` is the last `user_id` of the previous page |
 | `DELETE /v1/communities/{id}/members/{user_id}` | — | `204` |
 | `POST /v1/communities/{id}/join` | `[invite(tstr\|null)]` | `[community_id]` |
 | `POST /v1/communities/{id}/leave` | `[]` | `204` |
@@ -205,6 +214,13 @@ community answers `404` to everyone.
 - A member's `nick` is a **display name**, not a handle: free Unicode, NFC, at most 64 characters,
   no control or bidi character. The handle rules do not apply to it. An empty `nick` means the
   member's own display name shows.
+- `GET /v1/communities` lists the caller's own memberships and nothing else: a community the
+  caller left or was removed from, or one that is soft-deleted, is not listed. It names no
+  community in its path, so it has no `404`.
+- A member row's `username`, `display` and `kind` (`0` user, `1` bot) are the member's account
+  fields, as `GET /v1/accounts/me` answers them to that user; a member whose account row is gone
+  answers `""`, `""`, `0`. Only a member of the community reaches the route, so these names are
+  visible exactly to the people the member shares the community with.
 
 The **policy document** is a UTF-8 JSON object of at most 16 KiB. The instance stores the bytes the
 owner sent and serves them back unchanged, but refuses (`400 E_INVALID_REQUEST`) a document that is
@@ -229,8 +245,8 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
 | Method and path | Request | Response |
 |---|---|---|
 | `POST /v1/communities/{id}/channels` | `[kind(uint), mode(uint), visibility(uint), parent_id(bstr16\|null), name(tstr), topic(tstr), position(uint), slowmode_seconds(uint)]` | `201 [channel_id(bstr16), mode(uint), visibility(uint)]` |
-| `GET /v1/channels/{id}` | — | `[channel_id, community_id(bstr16\|null), kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq]` |
-| `GET /v1/communities/{id}/channels` | — | `200 [[channel_id, kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq]]`: the live channels the caller may view (`view_channel`, overwrites applied) by `position` then `channel_id`; a category is listed when it or one of its children is visible; `404` for a non-member |
+| `GET /v1/channels/{id}` | — | `[channel_id, community_id(bstr16\|null), kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]` |
+| `GET /v1/communities/{id}/channels` | — | `200 [[channel_id, kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]]`: the live channels the caller may view (`view_channel`, overwrites applied) by `position` then `channel_id`; a category is listed when it or one of its children is visible; `404` for a non-member |
 | `PATCH /v1/channels/{id}` | `[name(tstr\|null), topic(tstr\|null), mode(uint\|null), visibility(uint\|null), parent_id(bstr16\|null), position(uint\|null), slowmode_seconds(uint\|null)]` | `204` |
 | `DELETE /v1/channels/{id}` | — | `204` |
 
@@ -260,6 +276,12 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   `slowmode_seconds` at most 21 600. A community's channels are ordered by `position`, ties broken
   by `channel_id` (bytewise), the same on every engine.
 - `seq` is the channel's own sequence, which the server-readable message path advances.
+- `text_group_id` is the `group_id` of the channel's oldest open `text` group (`01` § Group kinds),
+  an epoch-unknown one included (`02` invariant 11), for a channel that carries one: kind `0`, `3`
+  or `4` in mode `0`. It is `null` while no such group is open — the client then registers one
+  (`02`, `POST /v1/groups`) — and always `null` for a server-readable channel, a voice channel and
+  a category. A client joins the group it names (`01` § Joining) and does not register another
+  while it is not `null`.
 - Deleting a community deletes its channels in the same transaction. Deleting a channel, or its
   community, closes the channel's open `text` and `call` groups (`02`) once the deletion has
   committed.
@@ -1077,6 +1099,78 @@ configuration file is diffed and copied around, and the token is a credential (s
 `EnvironmentFile=` is where it belongs). With `metrics.require_admin = true` and the variable unset,
 the instance guards the endpoint with a random token nobody holds and logs that every scrape will be
 refused, so an unset token never leaves the endpoint open.
+
+## Web client and content manifest
+
+The instance serves the browser client from its own origin. The client therefore needs no CORS
+(the instance sends none) and passes the gateway's same-host `Origin` rule (`02` § Gateway frames,
+Connecting). The served tree is embedded in the binary when it is built; a binary built without the
+client serves a one-page placeholder that names itself with `<meta name="dilla-web"
+content="placeholder">`.
+
+**Which requests the client answers.** A request for which the instance has a route — every route
+of this document and of `02`, `GET /gateway`, `/rtc`, `GET /i/{code}` and the operational
+endpoints — is answered by that route when its method is routed. A path equal to or below one of the
+reserved prefixes `/v1/`, `/gateway`, `/rtc`, `/i/`, `/healthz`, `/readyz`, `/metrics` and `/debug/`
+(each also without its trailing `/`) is never answered by the client: an unknown one is
+`404` with the body `404 page not found`, a known one asked with the wrong method `405` with
+`Allow`. Every other request is the client's, in this order:
+
+1. A method other than `GET` or `HEAD` is `405` with `Allow: GET, HEAD`.
+2. A path containing `..` or a NUL byte is `404`. `/` is `index.html`.
+3. A path naming a file of the manifest is that file.
+4. A path whose last segment contains no `.` is `index.html` with `200`: the client's own routes
+   (`/welcome`, `/c/<community>/<channel>`) are resolved in the browser.
+5. Anything else is `404`.
+
+**Headers.** Every file is served with an explicit `Content-Type` chosen by extension and never
+sniffed: `.html` `text/html; charset=utf-8`, `.js` `text/javascript; charset=utf-8`, `.css`
+`text/css; charset=utf-8`, `.wasm` `application/wasm`, `.json` `application/json`, `.woff2`
+`font/woff2`, `.woff` `font/woff`, `.svg` `image/svg+xml`, `.png` `image/png`, `.ico` `image/x-icon`,
+`.txt` `text/plain; charset=utf-8`; a tree holding a file of any other extension is refused at
+start. `ETag` is the file's quoted SHA-256 from the manifest, and a request whose `If-None-Match`
+names it is `304` (which carries no `Content-Type`). Files under `/assets/` (content-hashed by the
+build) are `Cache-Control: public, max-age=31536000, immutable`; every other file, `index.html`
+included, is `Cache-Control: no-cache`.
+
+Every `200` and every `304` of every file, whatever its extension, carries the same set of headers:
+
+    X-Content-Type-Options: nosniff
+    Referrer-Policy: no-referrer
+    X-Frame-Options: DENY
+    Permissions-Policy: camera=(), microphone=(), display-capture=(), geolocation=()
+    Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' ws://HOST wss://HOST; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+
+The policy is on every file, not only on HTML, because a dedicated worker loaded from a URL takes
+its policy from its own script response, not from the document that started it, and the client's
+worker holds its keys and does its network calls. web-1 grants no camera, microphone, screen
+capture, `blob:` image or media source; the changes that need them widen these two headers with
+their own row in `07`. `HOST` is the request's `Host` header when it is a host name or IPv4 address
+of at most 253 characters, or a bracketed IPv6 literal, either with an optional port; for any other
+`Host` the two `ws` sources are left out. The client's own `404` and `405` answers carry only
+`X-Content-Type-Options: nosniff` from Go's `http.Error`; they carry no CSP, ETag, Cache-Control or
+policy headers. No `Strict-Transport-Security`, `Cross-Origin-Opener-Policy`,
+`Cross-Origin-Embedder-Policy` or `Access-Control-*` header is sent: TLS termination and HSTS belong
+to the operator's proxy, and the client needs no cross-origin isolation. Behind a proxy that
+rewrites `Host`, the CSP names the rewritten host and the browser refuses the gateway connection;
+such a proxy must forward the original `Host`.
+
+**The content manifest.** The root of the tree holds `dilla-manifest.json`, one JSON object on one
+line followed by a newline:
+
+    {"v":1,"files":[{"path":"assets/index-AbC123.js","sha256":"<64 lowercase hex>","size":12345},{"path":"index.html","sha256":"…","size":678}]}
+
+`files` lists every regular file of the tree except the manifest itself, by its `/`-separated path
+relative to the root, in strictly ascending byte order of `path`, with the SHA-256 of its bytes as
+64 lowercase hex digits and its length in bytes. The instance verifies the tree against it when it
+starts and refuses to start when `v` is not `1`, when an entry is malformed or out of order, when
+`index.html` is not listed, when a listed file is missing, differs in size or digest, or is not a
+regular file, or when a file is present that is not listed; it then serves only the bytes it
+verified. The manifest is the per-file integrity record a later client-side or third-party check
+can be built on; it is not itself served.
+
+**The invite landing page.** The invite landing page (`GET /i/{code}`, `text/html`) links to
+`/welcome?invite=<code>` on its own origin; the client prefills its invite field from it.
 
 ## Flags
 

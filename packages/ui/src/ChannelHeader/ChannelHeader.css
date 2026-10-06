@@ -1,0 +1,6 @@
+.d-channel-header { display: flex; align-items: center; gap: 0.75rem; height: var(--channel-header-h); padding: 0 var(--row-pad-x); background: var(--bg); border-bottom: 1px solid var(--hairline); min-width: 0; flex-shrink: 0; }
+/* The channel name is never case-transformed (pre-flight ruling (c)): names of servers, channels and people keep their case. */
+.d-channel-header__name { margin: 0; font-size: var(--text-md); font-weight: var(--weight-display); letter-spacing: var(--label-tracking); color: var(--fg); white-space: nowrap; }
+.d-channel-header__bracket { color: var(--fg-3); font-weight: var(--weight-body); }
+.d-channel-header__readable { font-size: var(--text-xs); color: var(--fg-3); }
+.d-channel-header__topic { margin: 0; min-width: 0; padding-left: 0.75rem; border-left: 1px solid var(--hairline-2); font-size: var(--text-sm); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

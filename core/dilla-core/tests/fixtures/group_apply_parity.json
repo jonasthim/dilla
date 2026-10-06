@@ -1,0 +1,10 @@
+{"v":1,"cases":[
+{"name":"peer message","rows":[{"stream":"m","seq":2,"what":"peer-message"}],"through":2,"expect":{"state":2,"epoch":1,"next_seq":3,"new_seqs":[2],"proposals_pending":0,"flags":0},"result":"8602010381020000"},
+{"name":"commit before the message of its epoch","rows":[{"stream":"m","seq":3,"what":"peer-message"},{"stream":"h","seq":2,"what":"peer-commit"}],"through":3,"expect":{"state":2,"epoch":2,"next_seq":4,"new_seqs":[3],"proposals_pending":0,"flags":1},"result":"8602020481030001"},
+{"name":"through beyond the rows","rows":[{"stream":"m","seq":2,"what":"peer-message"}],"through":5,"expect":{"state":2,"epoch":1,"next_seq":6,"new_seqs":[2],"proposals_pending":0,"flags":0},"result":"8602010681020000"},
+{"name":"a row above through is ignored","rows":[{"stream":"m","seq":2,"what":"peer-message"},{"stream":"m","seq":3,"what":"peer-message"}],"through":2,"expect":{"state":2,"epoch":1,"next_seq":3,"new_seqs":[2],"proposals_pending":0,"flags":0},"result":"8602010381020000"},
+{"name":"own echo is adopted","rows":[{"stream":"m","seq":2,"what":"own-echo"}],"through":2,"expect":{"state":2,"epoch":1,"next_seq":3,"new_seqs":[2],"proposals_pending":0,"flags":2},"result":"8602010381020002"},
+{"name":"a commit that cannot be processed stops the group","rows":[{"stream":"h","seq":2,"what":"bad-commit"},{"stream":"m","seq":3,"what":"peer-message"}],"through":3,"expect":{"state":3,"epoch":1,"next_seq":2,"new_seqs":[],"proposals_pending":0,"flags":0},"result":"86030102800000"},
+{"name":"pruned and deleted rows","rows":[{"stream":"m","seq":2,"what":"pruned"},{"stream":"m","seq":3,"what":"deleted"}],"through":3,"expect":{"state":2,"epoch":1,"next_seq":4,"new_seqs":[2,3],"proposals_pending":0,"flags":0},"result":"860201048202030000"},
+{"name":"a proposal is queued","rows":[{"stream":"h","seq":2,"what":"add-proposal"}],"through":2,"expect":{"state":2,"epoch":1,"next_seq":3,"new_seqs":[],"proposals_pending":1,"flags":0},"result":"86020103800100"}
+]}

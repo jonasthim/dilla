@@ -223,6 +223,9 @@ type MLS interface {
 	PutKeyPackages(ctx context.Context, deviceID id.ID, kps []KeyPackageRow) error
 	TakeKeyPackage(ctx context.Context, deviceID id.ID, now int64) (KeyPackageRow, error)
 	CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) (int64, error)
+	// DeleteKeyPackage removes one package from a device's directory, consumed or not, last
+	// resort or not. Deleting a package that is not there is not an error.
+	DeleteKeyPackage(ctx context.Context, deviceID id.ID, kpRef []byte) error
 	PurgeKeyPackages(ctx context.Context, keepLastResort bool) (int64, error)
 	PutWelcomePayload(ctx context.Context, w WelcomePayloadRow) error
 	PutEpochTree(ctx context.Context, t EpochTreeRow) error
@@ -355,6 +358,9 @@ type Communities interface {
 	// with id > after, ordered by id (so the order is the same on both engines),
 	// at most limit. A soft-deleted community is left out, as GetCommunity does.
 	ListCommunities(ctx context.Context, after id.ID, limit int32) ([]CommunityRow, error)
+	// ListCommunitiesForUser is GET /v1/communities: the live communities userID is a member of,
+	// ordered by community id (the same order on both engines). A soft-deleted community is left out.
+	ListCommunitiesForUser(ctx context.Context, userID id.ID) ([]CommunityRow, error)
 	// UpdateCommunityPolicy writes the policy under version, which must be
 	// greater than the stored one. The version is monotone, so a writer that
 	// lost a race to the same successor gets ErrConflict rather than landing a

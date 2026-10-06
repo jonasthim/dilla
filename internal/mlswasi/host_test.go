@@ -108,6 +108,10 @@ func TestClockAndRandomnessConfigurationIsLoadBearing(t *testing.T) {
 	if len(state.Members) != f.manifest.Leaves {
 		t.Fatalf("members = %d, want %d", len(state.Members), f.manifest.Leaves)
 	}
+	// ABI v5: every occupied leaf, which for the fixture is every member.
+	if state.LeafCount != uint64(f.manifest.Leaves) {
+		t.Fatalf("LeafCount = %d, want %d", state.LeafCount, f.manifest.Leaves)
+	}
 
 	// Control: the same module with wazero's defaults must fail.
 	ctrlRT := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
@@ -135,15 +139,15 @@ func TestClockAndRandomnessConfigurationIsLoadBearing(t *testing.T) {
 	}
 }
 
-func TestABIReportsVersionThree(t *testing.T) {
+func TestABIReportsVersionSix(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRuntime(t, Options{PoolSize: 1})
 	info, err := r.ABI(ctx)
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 3 {
-		t.Errorf("ABIVersion = %d, want 3", info.ABIVersion)
+	if info.ABIVersion != 6 {
+		t.Errorf("ABIVersion = %d, want 6", info.ABIVersion)
 	}
 	if info.E2EEVersion != 1 || info.MediaVersion != 1 {
 		t.Errorf("E2EEVersion/MediaVersion = %d/%d, want 1/1", info.E2EEVersion, info.MediaVersion)
@@ -691,9 +695,9 @@ func TestNewNamesTheMissingExport(t *testing.T) {
 	}
 }
 
-func TestABIVersionIsThreeAndTwentyThreeExportsAreRequired(t *testing.T) {
-	if ABIVersion != 3 {
-		t.Fatalf("ABIVersion = %d, want 3", ABIVersion)
+func TestABIVersionIsSixAndTwentyThreeExportsAreRequired(t *testing.T) {
+	if ABIVersion != 6 {
+		t.Fatalf("ABIVersion = %d, want 6", ABIVersion)
 	}
 	if len(RequiredExports) != 23 {
 		t.Fatalf("RequiredExports has %d names, want 23", len(RequiredExports))
@@ -721,8 +725,67 @@ func TestABIVersionIsThreeAndTwentyThreeExportsAreRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 3 {
-		t.Fatalf("dilla_abi reports abi_version %d, want 3", info.ABIVersion)
+	if info.ABIVersion != 6 {
+		t.Fatalf("dilla_abi reports abi_version %d, want 6", info.ABIVersion)
+	}
+}
+
+// ABI v6 fails closed against a v5 module: every request this host builds carries version 6, which
+// a v5 guest answers E_ABI_VERSION, so State (and every other call) errors and the delivery
+// service adopts nothing. A request built at version 5 against this module is refused the same
+// way, which is the guest's half.
+func TestAVersionFiveRequestIsRefusedByTheVersionSixModule(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRuntime(t, Options{PoolSize: 1})
+	inst, err := r.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer inst.Release()
+	req, err := encodeRequestVersion(5)
+	if err != nil {
+		t.Fatalf("encodeRequestVersion: %v", err)
+	}
+	resp, err := inst.Call(ctx, "dilla_abi", req)
+	if err != nil {
+		t.Fatalf("dilla_abi at version 5: %v", err)
+	}
+	var abiErr *ABIError
+	if _, err := responseElements(resp); !errors.As(err, &abiErr) || abiErr.Code != "E_ABI_VERSION" {
+		t.Fatalf("a version-5 request gave %v, want an *ABIError with code E_ABI_VERSION", err)
+	}
+}
+
+// ABI v6's eighth element: the committed 1,500-leaf fixture's group context names one external
+// sender, the generator's instance: a basic credential [1, "instance", 0x11 * 16] and a 32-byte key.
+func TestStateCarriesTheGroupsExternalSenders(t *testing.T) {
+	ctx := context.Background()
+	f := loadDS1500(t)
+	r := newTestRuntime(t, Options{PoolSize: 1})
+	inst, err := r.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer inst.Release()
+	g, err := inst.PublicGroupImport(ctx, f.baseState, f.groupID)
+	if err != nil {
+		t.Fatalf("PublicGroupImport: %v", err)
+	}
+	defer g.Close(ctx)
+	state, err := g.State(ctx)
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if len(state.ExternalSenders) != 1 {
+		t.Fatalf("external senders = %+v, want the fixture's one", state.ExternalSenders)
+	}
+	s := state.ExternalSenders[0]
+	want := append([]byte{0x83, 0x01, 0x68}, "instance"...)
+	want = append(want, 0x50)
+	want = append(want, bytes.Repeat([]byte{0x11}, 16)...)
+	if s.CredentialType != 1 || !bytes.Equal(s.Credential, want) || len(s.SignatureKey) != 32 {
+		t.Fatalf("external sender = type %d, credential %x, key %d bytes; want basic, %x, 32 bytes",
+			s.CredentialType, s.Credential, len(s.SignatureKey), want)
 	}
 }
 
@@ -806,6 +869,9 @@ func TestProcessReportsTheAppliedListAndTheCommitterUpdateFlag(t *testing.T) {
 	if p.Applied[0].CredentialIdentity != nil {
 		t.Error("a Remove carries no credential identity")
 	}
+	if p.Applied[0].SignatureKey != nil {
+		t.Error("a Remove carries no leaf signature key")
+	}
 	if err := g.Discard(ctx, *p.Staged); err != nil {
 		t.Fatalf("Discard: %v", err)
 	}
@@ -829,9 +895,27 @@ func TestProcessReportsTheAppliedListAndTheCommitterUpdateFlag(t *testing.T) {
 		if len(a.CredentialIdentity) == 0 {
 			t.Fatalf("Applied[%d] carries no credential identity", i)
 		}
+		if len(a.SignatureKey) != 32 {
+			t.Fatalf("Applied[%d] carries a %d-byte leaf signature key, want 32 (ABI v4)", i, len(a.SignatureKey))
+		}
 	}
+	added := p.Applied
 	if _, err := g.Merge(ctx, *p.Staged); err != nil {
 		t.Fatalf("Merge: %v", err)
+	}
+	// ABI v4: the key each Add reports is the key its leaf holds in the merged tree.
+	state, err := g.State(ctx)
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	keyOf := make(map[string][]byte, len(state.Members))
+	for _, m := range state.Members {
+		keyOf[string(m.CredentialIdentity)] = m.SignatureKey
+	}
+	for i, a := range added {
+		if got, ok := keyOf[string(a.CredentialIdentity)]; !ok || !bytes.Equal(got, a.SignatureKey) {
+			t.Fatalf("Applied[%d].SignatureKey is not the key its leaf holds after the merge", i)
+		}
 	}
 }
 

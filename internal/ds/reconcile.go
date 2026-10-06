@@ -83,18 +83,7 @@ func (d *DS) leafHoldersEligible(ctx context.Context, groupID id.ID, members []s
 			users = append(users, m.UserID)
 		}
 	}
-	if b, ok := d.opts.ACL.(BatchACL); ok {
-		return b.EligibleUsers(ctx, groupID, users)
-	}
-	eligible := make(map[id.ID]bool, len(users))
-	for _, u := range users {
-		ok, err := d.opts.ACL.Eligible(ctx, groupID, u)
-		if err != nil {
-			return nil, err
-		}
-		eligible[u] = ok
-	}
-	return eligible, nil
+	return d.eligibleUsers(ctx, groupID, users)
 }
 
 // reconcileGroupLocked is reconcileLeaves for one group, with its lock held. With acl set (a text or

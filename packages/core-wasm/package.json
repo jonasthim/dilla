@@ -1,0 +1,13 @@
+{
+  "name": "@dilla/core-wasm",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": { "typecheck": "tsc -p tsconfig.json" },
+  "devDependencies": { "typescript": "^5.6" },
+  "exports": {
+    ".": { "types": "./pkg/dilla_core_wasm.d.ts", "default": "./pkg/dilla_core_wasm.js" },
+    "./wasm": "./pkg/dilla_core_wasm_bg.wasm"
+  }
+}

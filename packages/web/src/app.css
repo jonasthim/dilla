@@ -1,0 +1,2 @@
+html, body { margin: 0; height: 100%; background: var(--bg); }
+#root { min-height: 100%; }

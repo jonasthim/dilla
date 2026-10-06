@@ -17,6 +17,16 @@ WHERE id > $1 AND deleted_at IS NULL
 ORDER BY id
 LIMIT sqlc.arg(max_rows)::bigint;
 
+-- name: ListCommunitiesForUser :many
+-- GET /v1/communities (dilla-web-1 L-SQL-02): the live communities the user is a member of, by id
+-- (the same order on both engines), over members_by_user (00013_members_by_user.sql).
+SELECT c.id, c.owner, c.name, c.icon_blob, c.policy_json, c.policy_version,
+       c.min_account_age_seconds, c.require_mod_2fa, c.created, c.deleted_at
+FROM members m
+JOIN communities c ON c.id = m.community_id
+WHERE m.user_id = $1 AND c.deleted_at IS NULL
+ORDER BY c.id;
+
 -- name: UpdateCommunityPolicy :execrows
 -- The version is MONOTONE: two writers that read the same version both compute
 -- the same successor, and the second must not land a different policy under a

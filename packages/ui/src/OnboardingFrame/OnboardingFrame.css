@@ -1,0 +1,13 @@
+.d-onboarding-frame { min-height: 100dvh; display: grid; grid-template-rows: var(--topbar-h) 1fr; background: var(--bg); color: var(--fg); }
+.d-onboarding-frame__bar { display: flex; align-items: center; background: var(--bg-2); border-bottom: 1px solid var(--hairline); }
+.d-onboarding-frame__card { width: 100%; max-width: 40rem; margin: 0 auto; padding: 3rem 1.5rem; display: grid; gap: 1.25rem; align-content: start; min-width: 0; }
+.d-onboarding-frame__title { margin: 0; font-size: var(--text-xl); font-weight: var(--weight-display); letter-spacing: 0.02em; color: var(--fg); }
+/* The one exception to base.css's focus-ring rule, scoped to this title: the heading takes focus only
+   by script (tabindex -1, never in the tab order) so a screen reader reads the new step. It is not an
+   operable control, and a ring around it reads as an error box. Every operable control keeps the ring. */
+.d-onboarding-frame .d-onboarding-frame__title[tabindex="-1"]:focus-visible { outline: none; }
+.d-onboarding-frame__step { margin: -0.75rem 0 0; }
+.d-onboarding-frame__body { display: grid; gap: 1rem; font-size: var(--text-base); color: var(--fg-2); min-width: 0; }
+.d-onboarding-frame__body p { margin: 0; }
+.d-onboarding-frame__footer { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 0.5rem; padding-top: 1rem; border-top: 1px solid var(--hairline); }
+@media print { .d-onboarding-frame__bar, .d-onboarding-frame__step, .d-onboarding-frame__footer { display: none; } .d-onboarding-frame { color-scheme: light; } .d-onboarding-frame, .d-onboarding-frame__card, .d-onboarding-frame__title, .d-onboarding-frame__body { color: CanvasText; background: Canvas; border-color: CanvasText; } }

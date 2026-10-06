@@ -18,6 +18,7 @@ mod ds;
 mod fixtures;
 mod media_driver;
 mod scenario;
+mod web_driver;
 
 pub use client::{Received, TestClient};
 pub use ds::{
@@ -27,11 +28,16 @@ pub use ds::{
     MessageAccepted, MessageItem, NewAccount, RegisterGroup, RegisterRequest, RegisterResult,
     ResyncRequest, TreeResp, TreeResponse, UploadResult, WelcomeItem,
 };
-pub use fixtures::{FixtureFile, FixtureManifest, FixtureSpec, gen_public_group};
+pub use fixtures::{
+    FixtureFile, FixtureManifest, FixtureSpec, KeyPackageSetEntry, KeyPackageSetManifest,
+    KeyPackageSetSpec, RegistrationGroup, RegistrationManifest, RegistrationSpec, gen_key_packages,
+    gen_public_group, gen_registration_groups,
+};
 pub use media_driver::MediaDriver;
 pub use scenario::{
     DeviceListMode, ParseError, RunReport, Runner, Scenario, StepResult, Stmt, parse,
 };
+pub use web_driver::WebDriver;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

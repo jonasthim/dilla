@@ -78,6 +78,65 @@ func TestConcurrentTakesNeverServeOneKeyPackageTwice(t *testing.T) {
 	}
 }
 
+// DeleteKeyPackage takes exactly the named package out of the named device's directory — an
+// unconsumed ordinary one, the last-resort one alike — and touches no other row. The delivery
+// service uses it for a package it will never propose (one not bound to its device), which for a
+// last-resort package is the only way out of the directory: a take never consumes it.
+func TestDeleteKeyPackageRemovesExactlyTheNamedPackage(t *testing.T) {
+	ctx := context.Background()
+	for name, repo := range engines(t) {
+		t.Run(name, func(t *testing.T) {
+			user := seedUser(ctx, t, repo)
+			devices := make([]id.ID, 2)
+			for i := range devices {
+				devices[i] = id.New()
+				if err := repo.CreateDevice(ctx, store.DeviceRow{
+					ID: devices[i], UserID: user.ID, DSKPub: make([]byte, 32),
+					CredentialBlob: []byte{1}, LastSeen: 1_700_000_000, Created: 1_700_000_000,
+				}); err != nil {
+					t.Fatalf("CreateDevice: %v", err)
+				}
+			}
+			ref := func(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
+			for _, d := range devices {
+				if err := repo.PutKeyPackages(ctx, d, []store.KeyPackageRow{
+					{DeviceID: d, KPRef: ref(1), Blob: []byte{1}, Expires: 2_000_000_000, Created: 1_700_000_000},
+					{DeviceID: d, KPRef: ref(9), Blob: []byte{9}, LastResort: 1, Expires: 2_000_000_000, Created: 1_700_000_000},
+				}); err != nil {
+					t.Fatalf("PutKeyPackages: %v", err)
+				}
+			}
+			const now = 1_700_000_001
+			if err := repo.DeleteKeyPackage(ctx, devices[0], ref(1)); err != nil {
+				t.Fatalf("DeleteKeyPackage (ordinary): %v", err)
+			}
+			if n, _ := repo.CountKeyPackages(ctx, devices[0], now); n != 0 {
+				t.Fatalf("device 0 has %d ordinary packages after the delete, want 0", n)
+			}
+			if n, _ := repo.CountKeyPackages(ctx, devices[1], now); n != 1 {
+				t.Fatalf("device 1 has %d ordinary packages, want its own 1 untouched", n)
+			}
+			// Device 0's take now falls back to its last-resort package; deleting that leaves nothing.
+			if kp, err := repo.TakeKeyPackage(ctx, devices[0], now); err != nil || kp.LastResort != 1 {
+				t.Fatalf("take after deleting the ordinary package = %+v, %v; want the last-resort one", kp, err)
+			}
+			if err := repo.DeleteKeyPackage(ctx, devices[0], ref(9)); err != nil {
+				t.Fatalf("DeleteKeyPackage (last resort): %v", err)
+			}
+			if _, err := repo.TakeKeyPackage(ctx, devices[0], now); err == nil {
+				t.Fatal("device 0's directory must be empty after both deletes")
+			}
+			// Deleting what is not there is not an error.
+			if err := repo.DeleteKeyPackage(ctx, devices[0], ref(9)); err != nil {
+				t.Fatalf("a second delete of the same package: %v", err)
+			}
+			if kp, err := repo.TakeKeyPackage(ctx, devices[1], now); err != nil || !bytes.Equal(kp.KPRef, ref(1)) {
+				t.Fatalf("device 1's take = %+v, %v; want its own ordinary package", kp, err)
+			}
+		})
+	}
+}
+
 // A device holds AT MOST ONE last-resort KeyPackage, and publishing a new one REPLACES the old.
 //
 // The rule lives here, in the adapters, because it is the only bound there is on the last-resort

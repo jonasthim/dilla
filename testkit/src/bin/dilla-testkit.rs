@@ -38,6 +38,13 @@ enum Command {
         #[arg(long, default_value_t = 0x5eed)]
         seed: u64,
     },
+    /// Drive the native peer of the browser web tests, one JSON request per stdin line.
+    WebDriver {
+        #[arg(long)]
+        ds: String,
+        #[arg(long, default_value_t = 0x5eed)]
+        seed: u64,
+    },
     /// Generate the committed PublicGroup benchmark fixture.
     GenPublicGroup {
         #[arg(long, default_value_t = 1500)]
@@ -45,6 +52,29 @@ enum Command {
         #[arg(long)]
         out: std::path::PathBuf,
         #[arg(long, default_value_t = 0x5eed)]
+        seed: u64,
+    },
+    /// Generate the committed registration fixture: one-leaf groups as an honest device registers
+    /// them, and one tree that hides a leaf the member list cannot name.
+    GenRegistrationGroups {
+        #[arg(long, default_value_t = 4)]
+        groups: usize,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// The 1,500-leaf fixture's seed, so the creator is that fixture's leaf 0.
+        #[arg(long, default_value_t = 0x5eed)]
+        seed: u64,
+    },
+    /// Generate the committed directory KeyPackage fixture: one honest KeyPackage per device.
+    GenKeyPackages {
+        #[arg(long, default_value_t = 16)]
+        count: usize,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Not the public-group fixture's 0x5eed: a device's id is derived from its seed, and the
+        /// 1,500-leaf fixture's members take seeds 0x5eed + 1 .. 0x5eed + 1499, so a package set
+        /// from the same seed would name devices that are already members of that group.
+        #[arg(long, default_value_t = 0x00c0_ffee_0000)]
         seed: u64,
     },
 }
@@ -60,6 +90,18 @@ fn main() -> std::process::ExitCode {
                 Ok(()) => std::process::ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("media-driver: {e}");
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+        Command::WebDriver { ds, seed } => {
+            let mut driver = dilla_testkit::WebDriver::new(ds, seed);
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            match driver.serve(stdin.lock(), stdout.lock()) {
+                Ok(()) => std::process::ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("web-driver: {e}");
                     std::process::ExitCode::FAILURE
                 }
             }
@@ -118,6 +160,46 @@ fn main() -> std::process::ExitCode {
                         manifest.epoch,
                         manifest.tree_hash_hex,
                         manifest.files.len(),
+                        manifest.not_after
+                    );
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+        Command::GenRegistrationGroups { groups, out, seed } => {
+            match dilla_testkit::gen_registration_groups(&dilla_testkit::RegistrationSpec {
+                out,
+                seed,
+                groups,
+            }) {
+                Ok(manifest) => {
+                    println!(
+                        "{} groups, not_after {}",
+                        manifest.groups.len(),
+                        manifest.not_after
+                    );
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+        Command::GenKeyPackages { count, out, seed } => {
+            match dilla_testkit::gen_key_packages(&dilla_testkit::KeyPackageSetSpec {
+                count,
+                out,
+                seed,
+            }) {
+                Ok(manifest) => {
+                    println!(
+                        "{} key packages, not_after {}",
+                        manifest.key_packages.len(),
                         manifest.not_after
                     );
                     std::process::ExitCode::SUCCESS

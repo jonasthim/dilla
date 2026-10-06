@@ -147,6 +147,9 @@ ON CONFLICT (device_id, kp_ref) DO NOTHING;
 DELETE FROM key_packages
 WHERE device_id = $1 AND last_resort = 1 AND kp_ref <> $2;
 
+-- name: DeleteKeyPackage :exec
+DELETE FROM key_packages WHERE device_id = $1 AND kp_ref = $2;
+
 -- name: TakeKeyPackage :one
 -- FOR UPDATE SKIP LOCKED is the one difference from the SQLite form: on Postgres two concurrent
 -- takes for one device read the same snapshot, and a join storm makes that routine.

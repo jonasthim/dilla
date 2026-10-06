@@ -1,6 +1,82 @@
 //! The committed 1,500-leaf fixture, and the generator that produces it.
 
-use dilla_testkit::{FixtureSpec, gen_public_group};
+use dilla_testkit::{FixtureSpec, KeyPackageSetManifest, gen_public_group};
+
+const KEY_PACKAGE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/key-packages");
+
+/// The committed directory KeyPackage set (`dilla-testkit gen-key-packages`) is what the Go
+/// delivery-service tests publish and propose: each file must be the bytes the manifest records,
+/// validate as the instance validates it, and name exactly the device, user and signature key the
+/// manifest gives it — those are what the Go tests register the device under, and an entry that
+/// disagreed would make an honest-device test a dishonest one.
+#[test]
+fn the_committed_key_package_set_is_one_honest_package_per_device() {
+    use openmls::prelude::*;
+    use tls_codec::Deserialize as _;
+    let manifest: KeyPackageSetManifest = serde_json::from_str(
+        &std::fs::read_to_string(std::path::Path::new(KEY_PACKAGE_DIR).join("manifest.json"))
+            .expect("fixtures/key-packages/manifest.json"),
+    )
+    .expect("the manifest is JSON");
+    assert!(
+        manifest.key_packages.len() >= 8,
+        "the Go tests use up to 8 devices at once"
+    );
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let mut devices = std::collections::BTreeSet::new();
+    for entry in &manifest.key_packages {
+        let bytes = std::fs::read(std::path::Path::new(KEY_PACKAGE_DIR).join(&entry.path))
+            .expect("a committed KeyPackage");
+        assert_eq!(sha256_hex(&bytes), entry.sha256_hex, "{}", entry.path);
+        let kp_in = match MlsMessageIn::tls_deserialize_exact(&bytes)
+            .expect("an MLSMessage")
+            .extract()
+        {
+            MlsMessageBodyIn::KeyPackage(kp) => kp,
+            other => panic!("{} is not a KeyPackage: {other:?}", entry.path),
+        };
+        let kp = dilla_core::public_group::validate_key_package(&crypto, kp_in)
+            .unwrap_or_else(|e| panic!("{} does not validate: {e:?}", entry.path));
+        let leaf = kp.leaf_node();
+        let basic = BasicCredential::try_from(leaf.credential().clone()).expect("basic");
+        let identity =
+            dilla_core::identity::CredentialIdentity::decode(basic.identity()).expect("identity");
+        assert_eq!(
+            hex(identity.device_id.as_bytes()),
+            entry.device_id_hex,
+            "{}",
+            entry.path
+        );
+        assert_eq!(
+            hex(identity.user_id.as_bytes()),
+            entry.user_id_hex,
+            "{}",
+            entry.path
+        );
+        assert_eq!(
+            hex(leaf.signature_key().as_slice()),
+            entry.dsk_pub_hex,
+            "{}",
+            entry.path
+        );
+        assert_eq!(
+            hex(kp.hash_ref(&crypto).expect("ref").as_slice()),
+            entry.key_package_ref_hex,
+            "{}",
+            entry.path
+        );
+        assert!(!kp.last_resort(), "{}: an ordinary package", entry.path);
+        assert!(
+            devices.insert(entry.device_id_hex.clone()),
+            "{}: one package per device",
+            entry.path
+        );
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/ds-1500");
 

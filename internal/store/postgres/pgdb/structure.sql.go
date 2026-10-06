@@ -690,6 +690,55 @@ func (q *Queries) ListCommunities(ctx context.Context, arg ListCommunitiesParams
 	return items, nil
 }
 
+const listCommunitiesForUser = `-- name: ListCommunitiesForUser :many
+SELECT c.id, c.owner, c.name, c.icon_blob, c.policy_json, c.policy_version,
+       c.min_account_age_seconds, c.require_mod_2fa, c.created, c.deleted_at
+FROM members m
+JOIN communities c ON c.id = m.community_id
+WHERE m.user_id = $1 AND c.deleted_at IS NULL
+ORDER BY c.id
+`
+
+type ListCommunitiesForUserParams struct {
+	UserID id.ID
+}
+
+// GET /v1/communities (dilla-web-1 L-SQL-02): the live communities the user is a member of, by id
+// (the same order on both engines), over members_by_user (00013_members_by_user.sql).
+func (q *Queries) ListCommunitiesForUser(ctx context.Context, arg ListCommunitiesForUserParams) ([]Communities, error) {
+	rows, err := q.db.QueryContext(ctx, listCommunitiesForUser, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Communities{}
+	for rows.Next() {
+		var i Communities
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Name,
+			&i.IconBlob,
+			&i.PolicyJson,
+			&i.PolicyVersion,
+			&i.MinAccountAgeSeconds,
+			&i.RequireMod2fa,
+			&i.Created,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLiveVoiceSessions = `-- name: ListLiveVoiceSessions :many
 SELECT call_id, channel_id, group_id, livekit_room, started, ended
 FROM voice_sessions WHERE channel_id = $1 AND ended IS NULL
