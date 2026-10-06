@@ -442,6 +442,32 @@ describe('Gateway reconnect', () => {
     expect(h.last().protocols).toEqual(['dilla.v1', 'dilla.ticket.t']);
   });
 
+  it('bounds a ticket mint that never settles by the hello timeout, then reconnects and ignores the late ticket (GATEWAY-RESEED-02)', async () => {
+    const releases: ((ticket: string) => void)[] = [];
+    const h = harness({ mint: () => new Promise<string>((resolve) => { releases.push(resolve); }) });
+    h.gw.start();
+    await flush();
+    expect(h.gw.status).toBe('connecting');
+    h.clock.advance(GATEWAY.helloTimeoutMs - 1);
+    await flush();
+    expect(h.gw.status).toBe('connecting');
+    h.clock.advance(1);
+    await flush();
+    expect(h.gw.status).toBe('waiting');
+    expect(h.events.at(-1)).toEqual({ type: 'status', status: 'waiting', closeCode: null });
+    expect(h.clock.pending()).toEqual([500]);
+    releases[0]?.('late');
+    await flush();
+    expect(FakeSocket.instances).toHaveLength(0);
+    h.clock.advance(500);
+    await flush();
+    expect(releases).toHaveLength(2);
+    releases[1]?.('fresh');
+    await flush();
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(h.last().protocols).toEqual(['dilla.v1', 'dilla.ticket.fresh']);
+  });
+
   it('never sends resume, subscribe or unsubscribe, and identifies afresh on every connect', async () => {
     const h = harness();
     const s1 = await connected(h);

@@ -138,7 +138,11 @@ export class Gateway {
 
   private connect(): void {
     this.phase = 'minting';
-    void this.open(++this.attempt);
+    const id = ++this.attempt;
+    // The mint is the first step of the handshake and is bounded like the others: a ticket request stalled
+    // on a dead connection fails the attempt (the late ticket is then ignored by the attempt check).
+    this.arm('handshakeTimer', GATEWAY.helloTimeoutMs, () => { this.fail(null); });
+    void this.open(id);
   }
 
   private async open(id: number): Promise<void> {
