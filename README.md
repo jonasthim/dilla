@@ -16,28 +16,27 @@ machine their group can reach can host it.
 
 ## What works today
 
-As of 2026-10-06.
+As of 2026-10-07.
 
 | Part | State |
 |---|---|
 | The server, `dillad` | Accounts and devices, servers (communities in the API), text channels, DMs, roles, permissions and channel overwrites, kicks and bans, invites, attachments (blobs), reports, encrypted backup objects; `dillad init`, `serve`, `doctor`, `backup`, `restore` and `admin`; TLS by ACME (TLS-ALPN, DNS or IP) or behind a proxy. Container image, systemd unit and Proxmox helper: see the [operator guide](docs/deploy/README.md). |
 | Encrypted calls, at the protocol and media level | Voice, camera and screen share through the in-process LiveKit SFU and TURN relay, with every media frame encrypted end to end (SFrame keys from MLS), driven by the browser package `packages/media` and tested in Chromium and Firefox. The web client has no call screens yet. |
-| The web client, first slice ("web-1") | Served by `dillad` from its own address. Sign up in a browser with an invite, see your servers and channels, read and send text in end-to-end encrypted channels, reload and keep the history. One tab at a time. Tested in Chromium and Firefox, and in WebKit for sign-up and reload. See [Getting started](docs/user/getting-started.md). |
+| The web client ("web-2a") | Served by `dillad` from its own address. Sign up with an invite, then add a second browser with your password and recovery key. Read and send text in channels and DMs; unread and mention badges appear in the channel list and server rail. Settings has devices, notifications and appearance; desktop notifications require opt-in and an open tab. Messages sent before a new browser joins are not shown there. One tab at a time per browser. Tested in Chromium and Firefox, and in WebKit for sign-up and reload. See [Getting started](docs/user/getting-started.md). |
 
 ![Step 3 of the sign-up: the recovery key, shown once](docs/user/screenshots/onboarding-3-recovery-key.png)
 
 ## What is not there yet
 
-As of 2026-10-06, in the web client:
+As of 2026-10-07, in the web client:
 
-- A second browser or device for an account, and getting an account back with the recovery key. The key is
-  shown at sign-up but restores nothing yet; this is being built now ("web-2a"). Until then an account
-  lives in one browser, and clearing that browser's site data loses it.
-- Creating servers, channels and invites, and any settings, roles, profile or sign-out screens. A server
+- A native app or phone client. The recovery key adds another browser with the account password; it does not
+  restore messages sent before that browser joined. Pins are not shared between browsers.
+- Creating servers, channels and invites, or editing roles, permissions and profiles in the web client. A server
   is created through the HTTP API today.
-- DMs, voice, camera and screen share.
+- Voice, camera and screen share in the web client.
 - Edits, deletes, reactions, replies, threads, mentions, attachments and link previews.
-- Search, notifications, unread markers, typing and presence.
+- Search, typing and presence. Desktop notifications stop when every tab is closed.
 - Safety numbers and device verification.
 - More than one open tab per browser (a second tab waits for the first).
 

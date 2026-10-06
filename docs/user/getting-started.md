@@ -1,8 +1,8 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance. It describes the web client
-as it is on 2026-10-06 (the "web-1" slice): signing up in a browser, reading and sending text in a
-server's channels, and what the client cannot do yet. Every quoted line is the text the screen shows;
+as it is on 2026-10-07 ("web-2a"): signing up, adding a second browser, using channels and direct
+messages, and what the client cannot do yet. Every quoted line is the text the screen shows;
 `{instance}` stands for the instance's address and `{username}` for yours.
 
 If you run the instance yourself, start with the [operator guide](../deploy/README.md).
@@ -44,8 +44,8 @@ invite is expired, used up or unknown. Ask for a new one." An instance that take
   lower case. If someone has it already: "That username is taken. Try another."
 - **Display name (optional)**: "Up to 64 characters. Your username is shown when this is empty." This is
   the name shown on your messages.
-- **Password**: only when the instance offers passwords. "At least 8 characters." This version of the web
-  client never asks for it again: it signs in with the key this browser holds (section 3).
+- **Password**: only when the instance offers passwords. "At least 8 characters." Keep it: a second browser
+  asks for this password and your recovery key.
 
 Going forward from this step makes your keys. That can take a moment ("Making your keys").
 
@@ -59,11 +59,7 @@ it, and keep it away from this computer." **Print** opens the browser's print di
 the key and the two paragraphs, not the rest of the screen. There is no copy button, on purpose: the
 clipboard is readable by other programs. You can still select the text yourself.
 
-**What the key does not do yet.** The screen says it plainly: "Getting an account back with this key is not
-available in this version. Until it is, your account lives only in this browser: if this browser loses its
-data, the account and its history are gone, and the host cannot bring them back. Keep the key for when
-recovery arrives." Write it down anyway: it is the key a later version uses to get the account back, and it
-cannot be shown again once you leave this step.
+The screen says: "This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back." It cannot be shown again after you leave this step.
 
 Tick "I have written down or printed my recovery key" to continue ("Tick the box to continue.").
 
@@ -75,8 +71,7 @@ Tick "I have written down or printed my recovery key" to continue ("Tick the box
   browser."
 - "Clearing this site’s data removes the key and the messages kept here, and this browser stops being your
   device."
-- "This version cannot add a second browser or restore an account from the recovery key yet. For now, your
-  account works in this browser only."
+- "To use this account in another browser, sign in there with your password and this recovery key. Messages sent before that browser joins are not shown in it."
 - "A private window forgets all of this when it closes."
 
 **Create account** creates the account on the instance ("Creating your account on {instance}…").
@@ -94,7 +89,7 @@ If the invite was for the instance only, the app shows "You are not in a server 
 
 ## 3. What "this browser holds your key" means
 
-Your account in this version is this browser. When you sign up, the browser makes a key for itself (a
+Each browser you add is a device of your account. When you sign up, the browser makes a key for itself (a
 "device" key) and keeps it in its storage for the instance's address. The messages of a text channel are
 encrypted end to end with MLS (RFC 9420) between the members' devices, and the instance stores and forwards
 them encrypted. This browser decrypts them and keeps a copy in that same storage, itself encrypted with a key
@@ -105,9 +100,8 @@ version still trusts the instance to check which devices join a channel; see the
 What follows from that:
 
 - **Clearing the site's data** (the browser's "clear cookies and site data" for the instance, or removing
-  the browser profile) deletes the device key and the kept messages. The account then cannot be used from
-  this browser, and in this version it cannot be used from anywhere else either: the recovery key does not
-  restore it yet. The host cannot bring it back.
+  the browser profile) deletes that browser's device key and kept messages. You can add a fresh browser with
+  your password and recovery key, but messages from before it joins are not shown there.
 - **If only the key is gone** and the stored data is still there, the app says "This browser can no longer
   open its saved data" and offers **Reset this browser**, which, after "Reset this browser?", deletes dilla's
   data for this site so you can sign up again.
@@ -120,7 +114,7 @@ What follows from that:
 - **Another tab.** Only one tab runs dilla at a time. A second tab shows "dilla is open in another tab" and
   takes over when the first one closes.
 - **Signed out by the account.** If the account no longer accepts this browser, the app says "This browser
-  was signed out". There is no sign-out button in this version.
+  was signed out". Settings → Devices can remove a device or "sign out and remove this browser".
 
 ## 4. The app
 
@@ -130,10 +124,12 @@ in #general and the message field](screenshots/shell-conversation.png)
 From left to right:
 
 - **The server rail.** One tile per server you are in, with its initials. The dashed **+** tile is "join a
-  server": paste a server invite ("A server invite, as a code or a link.") and press **Join**.
+  server": paste a server invite ("A server invite, as a code or a link.") and press **Join**. The last tile
+  is "settings"; a number on a server tile counts its unread channels.
 - **The channel list.** The server's name and its channels. Text channels open here. Voice channels and
   channels the server can read ("Readable by this server") are listed, and selecting one shows "This channel
-  does not open here yet".
+  does not open here yet". The "channels" and "direct messages" tabs switch the list; an unread channel has
+  a badge, and mentions have their own count. Opening a channel marks it read.
 - **The conversation.** The channel's name and topic at the top, the messages, and the message field
   ("message #general") with **send**. Each message shows the author's display name, a small `web` tag when it
   was sent from a browser, and the time. A message is at most 4000 bytes; in the last 400 the field shows
@@ -157,6 +153,9 @@ At phone width the channel list sits above the conversation:
 | Escape | In the message list: back to the message field. In a dialog: closes it |
 | Tab, Shift+Tab | Moves between the regions: "skip to messages", the server rail, the channel list, the channel header, the messages, the message field, the status bar |
 | Arrow keys | Move within the server rail and the channel list, which are one Tab stop each |
+
+The sidebar tabs are one more Tab stop. Arrow Left and Arrow Right switch between "channels" and "direct messages".
+Settings uses Arrow Up, Arrow Down, Home and End to move between sections; Escape closes it.
 
 Every step of the sign-up works with the keyboard alone: Tab to a field or button, Space ticks the
 recovery-key box, Enter submits a step.
@@ -199,18 +198,60 @@ a short code (for example `E_CORE_MLS`) instead of its text. Nothing in this ver
 | "dilla could not start" | **Reload** |
 | "Too many attempts from this network." | Wait as long as it says, then try again |
 
-## 6. Known limits (2026-10-06)
+## 6. Add another browser
 
-- One browser per account. No second browser, phone or desktop app, and the recovery key restores nothing
-  yet (being built now).
-- No server, channel or invite can be created from the web client, and there are no roles, permissions,
-  settings, profile or sign-out screens. A server invite has to come from someone who can make one through
+![The sign-in ceremony's password step](screenshots/signin-1-login.png)
+
+On a new browser choose **Use an existing account**. "Sign in to {instance}" asks for your username and
+password. If the account uses a second factor, "Your second factor" asks for its six-digit code. Then
+"Your recovery key" says: "Type or paste the recovery key you wrote down when the account was created.
+Spaces and hyphens do not matter." **Add this browser** adds its device.
+
+![The recovery-key step of sign-in](screenshots/signin-3-recovery-key.png)
+
+The final step says "This browser is now a device of {username} on {instance}. Messages sent before now are
+not shown here." The new browser sees new messages, not the earlier channel archive. A rejected key says
+"This is not the recovery key of this account. Check every character." A registration 429 says "Too many
+sign-in attempts. Try again in {seconds} s." and asks you to wait briefly.
+
+![The final sign-in step](screenshots/signin-4-done.png)
+
+## 7. Devices and notifications
+
+Open **settings** in the server rail, then **devices**. "Every browser and app signed in to your account.
+Removing a device needs your recovery key." A row marked "this browser" is the one you are using. **remove**
+on another listed device asks for the recovery key; "sign out and remove this browser" clears this browser
+and removes its device. "forget this browser" clears its data here but leaves its device in the account list
+until removed elsewhere.
+
+![Two browsers in Settings → Devices](screenshots/settings-devices.png)
+
+Under **notifications**, "Desktop notifications show while a dilla tab is open. Nothing is shown when every
+tab is closed." Choose **turn on** to ask the browser for permission. The default "notify me about" choices
+are "direct messages and mentions", "every message" and "nothing". "Per channel" lets you choose "default",
+"all", "mentions" or "nothing", and "mute" a channel. A muted channel still shows its mention badge.
+
+![Notification permission before opt-in](screenshots/settings-notifications.png)
+
+![A channel and server rail with unread badges](screenshots/shell-unread-badge.png)
+
+In **direct messages**, choose **message someone**, pick a member and send text. Replies badge the DM until
+you open it. A DM that another member starts also appears without reloading.
+
+![A direct message with Ada](screenshots/dm-conversation.png)
+
+## 8. Known limits (2026-10-07)
+
+- No native phone or desktop app. A second browser needs both the password and recovery key. Pins are local
+  to one browser; a new browser does not get messages from before it joined.
+- No server, channel or invite can be created from the web client, and there are no roles, permissions or
+  profile screens. A server invite has to come from someone who can make one through
   the instance's API, or from the host (`dillad admin invite create`).
-- Text channels only. No DMs, no voice, camera or screen share (the server and the media layer support
+- Text channels and DMs only. No voice, camera or screen share (the server and the media layer support
   encrypted calls; the web client has no call screens yet).
 - Plain text only. No edits, deletes, reactions, replies, threads, mentions, attachments, link previews,
   markdown or emoji picker.
-- No search, notifications, unread markers, typing or presence.
+- No search, typing or presence. Notifications require an open tab and browser permission.
 - Messages from before this browser joined a channel are not shown.
 - No safety numbers and no device verification. The name on a message is the device that encrypted it, as
   the channel's encryption group authenticates it; nothing in the client checks yet that the device belongs
@@ -223,13 +264,13 @@ a short code (for example `E_CORE_MLS`) instead of its text. Nothing in this ver
 ## Re-shooting these screenshots
 
 The screenshots are real: `e2e/scripts/shoot-docs.mjs` starts a `dilla-testhost` that serves the built
-client, creates the server "Midgard Crew", signs ada, björn and mira up in three Chromium profiles and
-photographs mira's screens. Every name and message is made up, and the accounts are deleted with the test
+client, creates the server "Midgard Crew", signs ada, björn and mira up in three Chromium profiles, signs
+mira into a fourth, and photographs the flows. Every name and message is made up, and the accounts are deleted with the test
 host. To re-shoot them (not part of CI):
 
 ```sh
 npm run build -w @dilla/web
-GO=$(command -v go) npm run docs:shots -w @dilla/e2e
+GO=/home/thim/.local/go/bin/go TMPDIR=/tmp/w23 npm run docs:shots -w @dilla/e2e
 ```
 
 It needs `internal/mlswasi/testdata/dilla_core_wasi.wasm` and Playwright's Chromium, uses
