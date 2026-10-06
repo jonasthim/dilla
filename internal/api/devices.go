@@ -16,22 +16,46 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 )
 
+// createDeviceRequest is POST /v1/devices' body: the device array of POST /v1/accounts followed by
+// the proof of possession of dsk_pub, [device_id, dsk_pub, tier, signer_tier, credential,
+// nonce(32), sig(64)], where nonce comes from POST /v1/devices/{device_id}/sessions/challenge for
+// the new device_id and sig is the establish signature by the new DSK over it (purpose 0).
+type createDeviceRequest struct {
+	_          struct{} `cbor:",toarray"`
+	DeviceID   id.ID
+	DSKPub     []byte
+	Tier       uint8
+	SignerTier uint8
+	Credential []byte
+	Nonce      []byte
+	Sig        []byte
+}
+
 // CreateDevice is POST /v1/devices: [device_id, dsk_pub, tier, signer_tier,
-// credential] → [device_id]. The device is always the session's own user's; a
-// body cannot name another user. Admission uses the same live-row cap, expiry,
-// oldest-unlisted eviction and live-row hourly rate as assertion registration.
+// credential, nonce, sig] → [device_id]. The device is always the session's own
+// user's; a body cannot name another user. The caller proves it holds dsk_pub's
+// private half exactly as establish does (security review F2), and no other live
+// row of the user may hold the same key (409). Admission uses the same live-row
+// cap, expiry, oldest-unlisted replacement and live-row hourly rate as assertion
+// registration.
 func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
-	var req deviceRequest
-	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+	var body createDeviceRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &body); err != nil {
 		server.WriteError(w, err)
 		return
 	}
+	req := deviceRequest{DeviceID: body.DeviceID, DSKPub: body.DSKPub, Tier: body.Tier,
+		SignerTier: body.SignerTier, Credential: body.Credential}
 	if err := req.validate(); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := d.Sessions.ProveDeviceKey(req.DeviceID, req.DSKPub, body.Nonce, body.Sig); err != nil {
 		server.WriteError(w, err)
 		return
 	}
@@ -44,10 +68,10 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
-	keys, listErr := d.Sessions.DeviceLists.ListedKeys(r.Context(), sess.UserID)
+	entries, listErr := d.Sessions.DeviceLists.ListedDevices(r.Context(), sess.UserID)
 	noList := errors.Is(listErr, auth.ErrNoDeviceList)
 	if noList {
-		keys = nil
+		entries = nil
 	} else if listErr != nil {
 		server.WriteError(w, auth.ListError(listErr))
 		return
@@ -55,7 +79,7 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 	var evicted id.ID
 	err := d.Repo.Tx(r.Context(), func(tx store.Repository) error {
 		var err error
-		evicted, err = d.Sessions.AdmitDevice(r.Context(), tx, sess.UserID, keys, noList, now)
+		evicted, err = d.Sessions.AdmitDevice(r.Context(), tx, sess.UserID, entries, noList, req.DSKPub, now)
 		if err != nil {
 			return err
 		}
@@ -130,17 +154,17 @@ func (d Deps) DeleteDevice(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInternal, "device-list lookup is not wired"))
 		return
 	}
-	keys, listErr := d.Sessions.DeviceLists.ListedKeys(r.Context(), sess.UserID)
+	entries, listErr := d.Sessions.DeviceLists.ListedDevices(r.Context(), sess.UserID)
 	if listErr != nil && !errors.Is(listErr, auth.ErrNoDeviceList) {
 		server.WriteError(w, auth.ListError(listErr))
 		return
 	}
-	for _, key := range keys {
-		if bytes.Equal(key, row.DSKPub) {
-			server.WriteError(w, server.WithStatus(http.StatusConflict,
-				server.Errorf(server.CodeInvalidRequest, "a listed device is revoked by a signed device list")))
-			return
-		}
+	// Listed means the (device_id, dsk_pub) pair (security review F2): a row that only copies a
+	// listed key is not the listed device, and the owner removes it here like any unlisted row.
+	if auth.Listed(entries, row.ID, row.DSKPub) {
+		server.WriteError(w, server.WithStatus(http.StatusConflict,
+			server.Errorf(server.CodeInvalidRequest, "a listed device is revoked by a signed device list")))
+		return
 	}
 	if err := d.Sessions.RevokeDevice(r.Context(), deviceID); err != nil {
 		server.WriteError(w, d.storeError(r, err))

@@ -33,6 +33,12 @@ type PurgeRequest struct {
 	At     int64
 }
 
+// ErrBackupObject refuses a purge of bytes a backups row names (security review F10). A backup
+// object is a user's sealed key material, not an attachment: the root object is written once, so
+// tombstoning its bytes would make the user's root unreadable and its re-upload 410, and the
+// account's recovery would be gone for good. Nothing is written: no tombstone, no audit row.
+var ErrBackupObject = errors.New("blob: a backup object names these bytes")
+
 // PurgeResult reports the half of a purge that can fail after the commit.
 type PurgeResult struct {
 	// UnlinkErr is the error from unlinking the file. The row and every
@@ -65,6 +71,15 @@ func Purge(ctx context.Context, repo store.Repository, bs *Store, req PurgeReque
 	}
 	target := hex.EncodeToString(req.BlobID)
 	if err := repo.Tx(ctx, func(tx store.Repository) error {
+		// Inside the transaction that would write the tombstone, so the answer is the one the
+		// commit acts on.
+		backup, err := tx.BackupRefersToBlob(ctx, req.BlobID)
+		if err != nil {
+			return err
+		}
+		if backup {
+			return ErrBackupObject
+		}
 		if err := tx.PutBlobTombstone(ctx, req.BlobID, req.Reason, req.By, req.At); err != nil {
 			return err
 		}

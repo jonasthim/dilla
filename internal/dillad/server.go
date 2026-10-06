@@ -151,6 +151,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Registration: o.Config.Registration, Config: o.Config,
 		Sessions: sessions, Hasher: hasher, Throttle: throttle, Passkeys: passkeys,
 		Assertions: api.NewAssertions(o.Clock, api.AssertionTTL),
+		// One upload meter for the attachment routes and PUT /v1/backups (security review F3).
+		UploadMeter: api.NewUploadMeter(o.Clock, o.Config.Blobs),
 	}
 	// GET /v1/instance publishes the external-sender public key, derived from the seed the
 	// delivery service signs with, so the two cannot disagree. An ed25519.PrivateKey is
@@ -395,7 +397,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// paths when this process runs an SFU.
 	callRoutes = mountPlanTwo(mux, planTwo{
 		o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
-		blobs: blobs, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
+		blobs: blobs, uploads: deps.UploadMeter, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
 	})
 	if o.SFU != nil {
 		if err := mountRTC(mux, o.SFU, callRoutes, o.Config.Server.TrustedProxyCIDRs, limiter); err != nil {
@@ -687,10 +689,10 @@ func generationHeader(next http.Handler, generation uint64) http.Handler {
 // list through the same guest decoder, so they cannot disagree about which devices a user listed.
 type deviceListGate struct{ lists ds.DeviceLists }
 
-func (g deviceListGate) ListedKeys(ctx context.Context, userID id.ID) ([][]byte, error) {
-	keys, err := g.lists.Entries(ctx, nil, userID)
+func (g deviceListGate) ListedDevices(ctx context.Context, userID id.ID) ([]auth.ListedDevice, error) {
+	entries, err := g.lists.Entries(ctx, nil, userID)
 	if errors.Is(err, ds.ErrNoDeviceList) {
 		return nil, auth.ErrNoDeviceList
 	}
-	return keys, err
+	return entries, err
 }

@@ -75,6 +75,30 @@ func pendingSession(t *testing.T, h http.Handler, d api.Deps, user id.ID) (id.ID
 	return device, token
 }
 
+// devicePostBody is POST /v1/devices' seven-element body for device under pub, with the proof of
+// possession of security review F2: a challenge nonce for device signed by signer over the
+// establish preimage (purpose 0). An honest client signs with pub's own private half.
+func devicePostBody(t *testing.T, d api.Deps, device id.ID, pub []byte, signer ed25519.PrivateKey) []any {
+	t.Helper()
+	nonce, _, err := d.Sessions.Challenge(context.Background(), device)
+	if err != nil {
+		t.Fatalf("Challenge: %v", err)
+	}
+	sig := ed25519.Sign(signer, auth.SessionPreimage(d.Sessions.InstanceID(), device, nonce, auth.PurposeSession))
+	return []any{device, pub, uint64(1), uint64(1), []byte{1}, nonce, sig}
+}
+
+// postFreshDevice registers a fresh browser device under a fresh key through POST /v1/devices.
+func postFreshDevice(t *testing.T, h http.Handler, d api.Deps, token string) (store.DeviceRow, *httptest.ResponseRecorder) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := store.DeviceRow{ID: id.New(), DSKPub: pub}
+	return row, cborCall(t, h, http.MethodPost, "/v1/devices", token, devicePostBody(t, d, row.ID, pub, priv))
+}
+
 // L-HTTP-57. Attacker statement for the 403s: a pending session is a host login without the
 // recovery key; it reads and publishes only its own list (what its own enrolment needs) and no
 // other route, so a stolen password reaches nothing of another user and nothing of the groups.
@@ -82,7 +106,7 @@ func TestAPendingSessionReachesItsOwnDeviceListAndNothingElse(t *testing.T) {
 	h, deps := newTestAPI(t)
 	ctx := context.Background()
 	owner, dev, _ := seedAPIDevice(t, deps)
-	listerOf(t, deps).list(owner.ID, dev.DSKPub)
+	listerOf(t, deps).list(owner.ID, dev)
 	other, _, otherToken := seedAPISession(t, deps)
 	stored := store.DeviceListRow{UserID: owner.ID, Version: 1, Blob: []byte{0x80},
 		SSKSignature: bytes.Repeat([]byte{7}, 64), PrevHash: make([]byte, 32), Created: deps.Clock.Now().Unix()}
@@ -130,30 +154,28 @@ func TestAPendingSessionReachesItsOwnDeviceListAndNothingElse(t *testing.T) {
 }
 
 // An enrolled token alone must not bypass the same device cap and hourly rate as
-// assertion registration. A stolen enrolled token cannot fill unlimited rows.
+// assertion registration. A stolen enrolled token cannot fill unlimited rows: a cap of listed rows
+// refuses, and past the rate the oldest unlisted row is replaced (F1).
 func TestPostDevicesAppliesTheCapAndRate(t *testing.T) {
 	h, deps := newTestAPI(t)
 	user, first, token := seedAPISession(t, deps)
-	keys := [][]byte{first.DSKPub}
+	listed := []store.DeviceRow{first}
 	for i := 0; i < 7; i++ {
 		pub, _, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
-		keys = append(keys, pub)
-		if err := deps.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: id.New(), UserID: user.ID,
-			DSKPub: pub, CredentialBlob: []byte{1}, Created: 1, LastSeen: 1}); err != nil {
+		row := store.DeviceRow{ID: id.New(), UserID: user.ID,
+			DSKPub: pub, CredentialBlob: []byte{1}, Created: 1, LastSeen: 1}
+		listed = append(listed, row)
+		if err := deps.Repo.CreateDevice(t.Context(), row); err != nil {
 			t.Fatal(err)
 		}
 	}
-	listerOf(t, deps).list(user.ID, keys...)
+	listerOf(t, deps).list(user.ID, listed...)
 	create := func() *httptest.ResponseRecorder {
-		pub, _, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return cborCall(t, h, http.MethodPost, "/v1/devices", token,
-			[]any{id.New(), []byte(pub), uint64(1), uint64(1), []byte{1}})
+		_, rec := postFreshDevice(t, h, deps, token)
+		return rec
 	}
 	if rec := create(); rec.Code != http.StatusForbidden || refusalCode(t, rec) != "E_FORBIDDEN" {
 		t.Fatalf("POST /v1/devices at cap = %d %q, want 403 E_FORBIDDEN", rec.Code, refusalCode(t, rec))
@@ -168,13 +190,28 @@ func TestPostDevicesAppliesTheCapAndRate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	var created []id.ID
 	for i := 0; i < 3; i++ {
-		if rec := create(); rec.Code != http.StatusOK {
+		rec := create()
+		if rec.Code != http.StatusOK {
 			t.Fatalf("POST /v1/devices #%d = %d", i+1, rec.Code)
 		}
+		var out []id.ID
+		if err := cborx.Unmarshal(rec.Body.Bytes(), &out); err != nil || len(out) != 1 {
+			t.Fatalf("POST /v1/devices #%d answered %x (err %v)", i+1, rec.Body.Bytes(), err)
+		}
+		created = append(created, out[0])
+		deps.Clock.(*clock.Fake).Advance(time.Second)
 	}
-	if rec := create(); rec.Code != http.StatusTooManyRequests || refusalCode(t, rec) != "E_RATE_LIMITED" {
-		t.Fatalf("POST /v1/devices over rate = %d %q, want 429 E_RATE_LIMITED", rec.Code, refusalCode(t, rec))
+	// F1: past the hourly rate the fourth replaces the oldest unlisted row instead of answering 429.
+	if rec := create(); rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/devices past the rate = %d %x, want 200", rec.Code, rec.Body.Bytes())
+	}
+	for i, wantLive := range []bool{false, true, true} {
+		row, err := deps.Repo.GetDevice(t.Context(), created[i])
+		if err != nil || (row.RevokedAt == nil) != wantLive {
+			t.Fatalf("row %d after the fourth = %+v, err %v; want live %t", i, row, err, wantLive)
+		}
 	}
 }
 
@@ -183,19 +220,20 @@ func TestPostDevicesAppliesTheCapAndRate(t *testing.T) {
 func TestPostDevicesEvictsOldestUnlistedAtCap(t *testing.T) {
 	h, deps := newTestAPI(t)
 	user, first, token := seedAPISession(t, deps)
-	keys := [][]byte{first.DSKPub}
+	listed := []store.DeviceRow{first}
 	for i := 0; i < 5; i++ {
 		pub, _, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
-		keys = append(keys, pub)
-		if err := deps.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: id.New(), UserID: user.ID,
-			DSKPub: pub, CredentialBlob: []byte{1}, Created: 1, LastSeen: 1}); err != nil {
+		row := store.DeviceRow{ID: id.New(), UserID: user.ID,
+			DSKPub: pub, CredentialBlob: []byte{1}, Created: 1, LastSeen: 1}
+		listed = append(listed, row)
+		if err := deps.Repo.CreateDevice(t.Context(), row); err != nil {
 			t.Fatal(err)
 		}
 	}
-	listerOf(t, deps).list(user.ID, keys...)
+	listerOf(t, deps).list(user.ID, listed...)
 	now := deps.Clock.Now().Unix()
 	var unlisted [2]id.ID
 	for i := range unlisted {
@@ -204,19 +242,12 @@ func TestPostDevicesEvictsOldestUnlistedAtCap(t *testing.T) {
 			t.Fatal(err)
 		}
 		unlisted[i] = id.New()
-		// Two hours old: boundary ruling 3 makes only a row older than the hourly rate window an
-		// eviction candidate.
 		if err := deps.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: unlisted[i], UserID: user.ID,
-			DSKPub: pub, CredentialBlob: []byte{1}, Created: now - 7200 - int64(2-i), LastSeen: now}); err != nil {
+			DSKPub: pub, CredentialBlob: []byte{1}, Created: now - int64(2-i), LastSeen: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec := cborCall(t, h, http.MethodPost, "/v1/devices", token,
-		[]any{id.New(), []byte(pub), uint64(1), uint64(1), []byte{1}})
+	_, rec := postFreshDevice(t, h, deps, token)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST at cap = %d %x, want 200", rec.Code, rec.Body.Bytes())
 	}
@@ -231,7 +262,7 @@ func TestPostDevicesEvictsOldestUnlistedAtCap(t *testing.T) {
 func TestPostDevicesSweepsExpiredUnlistedRow(t *testing.T) {
 	h, deps := newTestAPI(t)
 	user, first, token := seedAPISession(t, deps)
-	listerOf(t, deps).list(user.ID, first.DSKPub)
+	listerOf(t, deps).list(user.ID, first)
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -241,12 +272,7 @@ func TestPostDevicesSweepsExpiredUnlistedRow(t *testing.T) {
 		DSKPub: pub, CredentialBlob: []byte{1}, Created: deps.Clock.Now().Unix() - 86400, LastSeen: 1}); err != nil {
 		t.Fatal(err)
 	}
-	newPub, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec := cborCall(t, h, http.MethodPost, "/v1/devices", token,
-		[]any{id.New(), []byte(newPub), uint64(1), uint64(1), []byte{1}})
+	_, rec := postFreshDevice(t, h, deps, token)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST after expiry = %d %x, want 200", rec.Code, rec.Body.Bytes())
 	}
@@ -262,12 +288,7 @@ func TestPostDevicesDoesNotExpireANoListAccount(t *testing.T) {
 	h, deps := newTestAPI(t)
 	user, first, token := seedAPISession(t, deps)
 	deps.Clock.(*clock.Fake).Advance(24 * time.Hour)
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec := cborCall(t, h, http.MethodPost, "/v1/devices", token,
-		[]any{id.New(), []byte(pub), uint64(1), uint64(1), []byte{1}})
+	_, rec := postFreshDevice(t, h, deps, token)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("no-list device creation = %d", rec.Code)
 	}
@@ -397,6 +418,14 @@ func TestAPublishedDeviceListIsVerified(t *testing.T) {
 
 	genesis2, _ := signedListPut(t, lu.SSK, lu.User.ID, 2, nil, entries)
 	wantListRefusal(t, put(genesis2), http.StatusConflict, "E_INVALID_REQUEST", "device-list version 2 is not the next version")
+	// The genesis pin (security review F8, m3b): version 1 chains from 32 zero bytes. A signed v1
+	// with any other prev_hash is refused and nothing is stored; every client's accept would refuse
+	// it, so storing it would lock the SSK holder's own devices out.
+	orphan, _ := signedListPut(t, lu.SSK, lu.User.ID, 1, []byte("no parent"), entries)
+	wantListRefusal(t, put(orphan), http.StatusConflict, "E_INVALID_REQUEST", "device-list version 1 is not the next version")
+	if _, err := deps.Repo.GetDeviceList(context.Background(), lu.User.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a v1 with a non-zero prev_hash was stored (GetDeviceList err %v)", err)
+	}
 	body1, blob1 := signedListPut(t, lu.SSK, lu.User.ID, 1, nil, entries)
 	if rec := put(body1); rec.Code != http.StatusNoContent {
 		t.Fatalf("v1 = %d %x, want 204", rec.Code, rec.Body.Bytes())
@@ -660,7 +689,7 @@ func TestTheDeviceListHistoryIsServedAfterAVersion(t *testing.T) {
 		t.Fatalf("history after 64: %d rows, want 6 ending at 70", len(rows))
 	}
 
-	listerOf(t, deps).list(lu.User.ID, lu.Devs[0].DSKPub)
+	listerOf(t, deps).list(lu.User.ID, lu.Devs[0])
 	_, pending := pendingSession(t, h, deps, lu.User.ID)
 	if rows := history(pending, path, "0"); len(rows) != 64 {
 		t.Fatalf("a pending session's own history: %d rows, want 64", len(rows))
@@ -680,7 +709,7 @@ func TestKeylessDeleteRefusesAListedDevice(t *testing.T) {
 	if rec := cborCall(t, h, http.MethodPut, path, lu.Tokens[0], body); rec.Code != http.StatusNoContent {
 		t.Fatalf("publish = %d %x, want 204", rec.Code, rec.Body.Bytes())
 	}
-	listerOf(t, deps).list(lu.User.ID, lu.Devs[0].DSKPub)
+	listerOf(t, deps).list(lu.User.ID, lu.Devs[0])
 	listed := "/v1/devices/" + lu.Devs[0].ID.String()
 	wantListRefusal(t, cborCall(t, h, http.MethodDelete, listed, lu.Tokens[0], nil),
 		http.StatusConflict, "E_INVALID_REQUEST", "a listed device is revoked by a signed device list")
@@ -690,5 +719,18 @@ func TestKeylessDeleteRefusesAListedDevice(t *testing.T) {
 	unlisted := "/v1/devices/" + lu.Devs[1].ID.String()
 	if rec := cborCall(t, h, http.MethodDelete, unlisted, lu.Tokens[0], nil); rec.Code != http.StatusNoContent {
 		t.Fatalf("unlisted DELETE = %d %x, want 204", rec.Code, rec.Body.Bytes())
+	}
+	// Another user's device (security review F8, m24): 404, as for an unknown id, and nothing is
+	// revoked. Device ids travel in every device list an enrolled session may read, so without
+	// this an enrolled session revokes any user's unlisted device.
+	stranger := seedListedUser(t, deps, 0x6b, 1)
+	theirs := "/v1/devices/" + stranger.Devs[0].ID.String()
+	wantListRefusal(t, cborCall(t, h, http.MethodDelete, theirs, lu.Tokens[0], nil),
+		http.StatusNotFound, "E_NOT_FOUND", "not found")
+	if row, err := deps.Repo.GetDevice(t.Context(), stranger.Devs[0].ID); err != nil || row.RevokedAt != nil {
+		t.Fatalf("another user's device after a cross-user DELETE = %+v, %v; want live", row, err)
+	}
+	if got := doAuth(h, http.MethodGet, "/v1/accounts/me", stranger.Tokens[0]).Code; got != http.StatusOK {
+		t.Fatalf("another user's session after a cross-user DELETE answered %d, want 200", got)
 	}
 }

@@ -109,7 +109,7 @@ func newTestAPIFull(t *testing.T, tune func(*config.Config), wire func(*api.Deps
 		t.Fatalf("CreateInstance: %v", err)
 	}
 	sessions := auth.NewSessions(repo, clk, cfg.Auth.Session, instance.InstanceID, instance.Generation)
-	sessions.DeviceLists = &testLister{keys: map[id.ID][][]byte{}}
+	sessions.DeviceLists = &testLister{entries: map[id.ID][]auth.ListedDevice{}}
 
 	deps := api.Deps{
 		Repo:         repo,
@@ -251,29 +251,34 @@ func postCBORAuth(h http.Handler, path string, body []byte, token string) *httpt
 	return rec
 }
 
-// testLister is the device-list gate the api tests run behind: a user it has no keys for has
+// testLister is the device-list gate the api tests run behind: a user it has no entries for has
 // published no list (the no-list clause, so every seeded device establishes enrolled, exactly as
-// web-1's fixtures always did), and a test lists a user's keys to drive the listed and unlisted
-// branches of protocol/02 § Device sessions item 4.
+// web-1's fixtures always did), and a test lists a user's (device_id, dsk_pub) pairs to drive the
+// listed and unlisted branches of protocol/02 § Device sessions item 4.
 type testLister struct {
-	mu   sync.Mutex
-	keys map[id.ID][][]byte
+	mu      sync.Mutex
+	entries map[id.ID][]auth.ListedDevice
 }
 
-func (l *testLister) ListedKeys(_ context.Context, user id.ID) ([][]byte, error) {
+func (l *testLister) ListedDevices(_ context.Context, user id.ID) ([]auth.ListedDevice, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	keys, ok := l.keys[user]
+	entries, ok := l.entries[user]
 	if !ok {
 		return nil, auth.ErrNoDeviceList
 	}
-	return keys, nil
+	return entries, nil
 }
 
-func (l *testLister) list(user id.ID, keys ...[]byte) {
+// list makes rows the user's newest verified list: each row's id and key, one entry each.
+func (l *testLister) list(user id.ID, rows ...store.DeviceRow) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.keys[user] = keys
+	entries := make([]auth.ListedDevice, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, auth.ListedDevice{DeviceID: row.ID, DSKPub: row.DSKPub})
+	}
+	l.entries[user] = entries
 }
 
 func listerOf(t *testing.T, d api.Deps) *testLister {

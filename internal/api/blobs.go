@@ -32,16 +32,22 @@ type Blobs struct {
 	cfg   config.Blobs
 	clk   clock.Clock
 	log   *slog.Logger
-	meter *blobMeter // nil when neither upload limit is set
+	meter *UploadMeter // nil when neither upload limit is set
 }
 
 // NewBlobs wires the routes over one blob store and the [blobs] configuration,
 // including the per-user upload meter uploads_per_minute and
-// upload_bytes_per_day configure (blobMeter).
+// upload_bytes_per_day configure (UploadMeter).
 func NewBlobs(repo store.Repository, bs *blob.Store, res *Resolver, cfg config.Blobs, clk clock.Clock, log *slog.Logger) *Blobs {
-	b := &Blobs{repo: repo, store: bs, res: res, cfg: cfg, clk: clk, log: log}
-	if cfg.UploadsPerMinute > 0 || cfg.UploadBytesPerDay > 0 {
-		b.meter = newBlobMeter(clk, cfg.UploadsPerMinute, cfg.UploadBytesPerDay)
+	return &Blobs{repo: repo, store: bs, res: res, cfg: cfg, clk: clk, log: log, meter: NewUploadMeter(clk, cfg)}
+}
+
+// WithUploadMeter makes the routes spend m, the meter the composition root also hands
+// PUT /v1/backups (Deps.UploadMeter), so the two routes draw on one per-user budget. A nil m keeps
+// the routes' own meter.
+func (b *Blobs) WithUploadMeter(m *UploadMeter) *Blobs {
+	if m != nil {
+		b.meter = m
 	}
 	return b
 }

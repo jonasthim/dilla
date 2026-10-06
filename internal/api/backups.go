@@ -84,8 +84,29 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the backup store is not wired"))
 		return
 	}
+	// The blob upload meter, before a byte of the body is read, exactly as the attachment PUT
+	// spends it (security review F3): without it the state object, replaced on every PUT and each
+	// replaced one kept for blobs.gc_grace, was a disk-exhaustion path bounded only by the device
+	// write bucket. The reservation is the body cap or the announced length, and every byte read
+	// spends the day's budget whatever happens to the object.
+	reserve := limit
+	if r.ContentLength >= 0 && r.ContentLength < reserve {
+		reserve = r.ContentLength
+	}
+	held, err := d.UploadMeter.begin(sess.UserID, reserve)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	counted := &countingReader{r: r.Body}
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{counted, r.Body}
 	var raw cbor.RawMessage
-	if err := server.DecodeBody(w, r, limit, &raw); err != nil {
+	err = server.DecodeBody(w, r, limit, &raw)
+	d.UploadMeter.settle(sess.UserID, held, counted.n)
+	if err != nil {
 		server.WriteError(w, err)
 		return
 	}

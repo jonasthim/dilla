@@ -116,8 +116,10 @@ func TestTheDeviceListVerifierReturnsTheUnrevokedKeysOfAVerifiedList(t *testing.
 	if err != nil {
 		t.Fatalf("Entries: %v", err)
 	}
-	if len(entries) != 1 || !bytes.Equal(entries[0], bytes.Repeat([]byte{0x11}, 32)) {
-		t.Fatalf("entries = %x, want only the unrevoked device's key", entries)
+	// The pair, not the key alone (security review F2): a row is listed only under both.
+	if len(entries) != 1 || entries[0].DeviceID != id.ID(bytes.Repeat([]byte{1}, 16)) ||
+		!bytes.Equal(entries[0].DSKPub, bytes.Repeat([]byte{0x11}, 32)) {
+		t.Fatalf("entries = %v, want only the unrevoked device's id and key", entries)
 	}
 }
 

@@ -183,6 +183,11 @@ func (a *Admin) purgeBlob(w http.ResponseWriter, r *http.Request) {
 	res, err := blob.Purge(r.Context(), a.repo, a.store, blob.PurgeRequest{
 		BlobID: blobID, Reason: req.Reason, By: admin, At: a.clk.Now().Unix(),
 	})
+	if errors.Is(err, blob.ErrBackupObject) {
+		server.WriteError(w, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
+			"a backup object names these bytes; purging them would make the user's backup unrecoverable")))
+		return
+	}
 	if err != nil {
 		server.WriteError(w, err)
 		return

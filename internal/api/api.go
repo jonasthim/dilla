@@ -102,6 +102,12 @@ type Deps struct {
 	// sealed header objects to: the instance's one blob store, shared with Plan 2's attachment
 	// routes. Nil refuses PUT and the single-object GET with E_INTERNAL rather than half-writing.
 	Blobs *blob.Store
+
+	// UploadMeter is the per-user blob upload meter (blobs.uploads_per_minute and
+	// blobs.upload_bytes_per_day) PUT /v1/backups spends, the one the composition root also hands
+	// the attachment routes (Blobs.WithUploadMeter). Register builds one from Config when it is nil,
+	// so the route is never unmetered.
+	UploadMeter *UploadMeter
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -135,6 +141,9 @@ const maxCBORBody = 64 << 10
 // route that exists in the document and not in the binary is a missing line
 // here rather than a forgotten wiring in a composition root.
 func Register(m *server.Mux, d Deps) {
+	if d.UploadMeter == nil && d.Config != nil {
+		d.UploadMeter = NewUploadMeter(d.Clock, d.Config.Blobs)
+	}
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
 

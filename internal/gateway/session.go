@@ -176,8 +176,22 @@ func (c *conn) tryResume(token []byte, generation, lastN, current uint64) (resum
 // The return type is auth.Session, the leaf type of deviation B9 — not a `ds.Session`, which
 // would make this package import internal/ds while internal/ds imports this one.
 func (g *Gateway) identify(ctx context.Context, token string) (auth.Session, error) {
-	return g.opts.Auth.Resolve(ctx, token)
+	session, err := g.opts.Auth.Resolve(ctx, token)
+	if err != nil {
+		return auth.Session{}, err
+	}
+	// A pending session reaches its own backup reads and device list and nothing else (protocol/02
+	// § Device sessions item 4, L-HTTP-57; security review F4): no gateway connection, so a holder
+	// of the password alone holds no connection slot and reads no `ready`. It is refused like a
+	// token that does not resolve.
+	if session.Scope == auth.ScopePending {
+		return auth.Session{}, errPendingSession
+	}
+	return session, nil
 }
+
+// errPendingSession is identify's refusal of a pending session.
+var errPendingSession = errors.New("gateway: a pending session opens no gateway connection")
 
 // wsSink adapts a coder/websocket connection to the writer's sink. Binary frames only: dilla's
 // wire is CBOR, never text.

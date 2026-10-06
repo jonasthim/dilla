@@ -121,7 +121,29 @@ type AssertionSpender interface {
 
 // DeviceLister reads the newest verified device list through the delivery service.
 type DeviceLister interface {
-	ListedKeys(ctx context.Context, userID id.ID) ([][]byte, error)
+	// ListedDevices answers the unrevoked entries of the user's newest verified list.
+	ListedDevices(ctx context.Context, userID id.ID) ([]ListedDevice, error)
+}
+
+// ListedDevice is one unrevoked entry of a user's newest verified device list: the
+// (device_id, dsk_pub) pair the user's SSK signed. A device row is listed only when both its id
+// and its key match one entry (security review F2): judged by the key alone, a row that copies a
+// listed key under a new id would pass for listed, never expire, never be evicted, refuse the
+// key-less DELETE and be unrevocable by the owner's client, which revokes list entries by id.
+type ListedDevice struct {
+	DeviceID id.ID
+	DSKPub   []byte
+}
+
+// Listed reports whether the newest verified list names exactly this device: its id and its
+// signing key in one unrevoked entry.
+func Listed(entries []ListedDevice, deviceID id.ID, pub []byte) bool {
+	for _, e := range entries {
+		if e.DeviceID == deviceID && bytes.Equal(e.DSKPub, pub) {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrNoDeviceList marks the no-list clause of protocol/02 device sessions.
@@ -326,6 +348,29 @@ func (s *Sessions) compactOrderLocked() {
 	s.head = 0
 }
 
+// ProveDeviceKey checks that the caller holds the private half of dskPub, the key a device row is
+// about to be registered under, by the establish route's own proof: a nonce from
+// POST /v1/devices/{device_id}/sessions/challenge for that device_id, consumed here, and an Ed25519
+// signature by dskPub over SessionPreimage(instance_id, device_id, nonce, purpose 0) (security
+// review F2). Without it POST /v1/devices took any dsk_pub, and a stolen enrolled session could
+// plant rows under a key it does not hold. A nonce is single use, so a proof spent here cannot be
+// replayed as an establish. It answers 403 E_FORBIDDEN: the caller's session is good, its claim
+// on the key is not.
+func (s *Sessions) ProveDeviceKey(deviceID id.ID, dskPub, nonce, sig []byte) error {
+	refused := server.Errorf(server.CodeForbidden, "possession of dsk_pub is not proven")
+	if len(dskPub) != ed25519.PublicKeySize || len(nonce) != nonceBytes || len(sig) != ed25519.SignatureSize {
+		return refused
+	}
+	if !s.takeNonce(nonce, deviceID) {
+		return refused
+	}
+	s.verifies.Add(1)
+	if !ed25519.Verify(ed25519.PublicKey(dskPub), SessionPreimage(s.instanceID, deviceID, nonce, PurposeSession), sig) {
+		return refused
+	}
+	return nil
+}
+
 func (s *Sessions) Establish(ctx context.Context, r EstablishRequest) (Token, error) {
 	return s.issue(ctx, r)
 }
@@ -391,12 +436,12 @@ func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error)
 		return Token{}, server.Errorf(server.CodeForbidden, "account disabled")
 	}
 	if len(r.Login) > 0 && s.DeviceLists != nil && device.Created <= s.clk.Now().Unix()-86400 {
-		keys, listErr := s.DeviceLists.ListedKeys(ctx, device.UserID)
+		entries, listErr := s.DeviceLists.ListedDevices(ctx, device.UserID)
 		if listErr != nil && !errors.Is(listErr, ErrNoDeviceList) {
 			return Token{}, ListError(listErr)
 		}
 		if listErr == nil {
-			if !ListedKey(keys, device.DSKPub) {
+			if !Listed(entries, device.ID, device.DSKPub) {
 				if err := s.RevokeDevice(ctx, device.ID); err != nil {
 					return Token{}, err
 				}
@@ -428,16 +473,6 @@ func ListError(err error) error {
 	return server.Unavailable(1000, "device list unavailable")
 }
 
-// ListedKey reports whether the newest verified list names a device signing key.
-func ListedKey(keys [][]byte, pub []byte) bool {
-	for _, key := range keys {
-		if bytes.Equal(key, pub) {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Sessions) scopeFor(ctx context.Context, r EstablishRequest, device store.DeviceRow) (Scope, error) {
 	unauth := server.Errorf(server.CodeUnauthenticated, "")
 	if len(r.Login) > 0 {
@@ -456,14 +491,14 @@ func (s *Sessions) scopeFor(ctx context.Context, r EstablishRequest, device stor
 	if s.DeviceLists == nil {
 		return 0, unauth
 	}
-	keys, err := s.DeviceLists.ListedKeys(ctx, device.UserID)
+	entries, err := s.DeviceLists.ListedDevices(ctx, device.UserID)
 	if errors.Is(err, ErrNoDeviceList) {
 		return ScopeEnrolled, nil
 	}
 	if err != nil {
 		return 0, ListError(err)
 	}
-	if ListedKey(keys, device.DSKPub) {
+	if Listed(entries, device.ID, device.DSKPub) {
 		return ScopeEnrolled, nil
 	}
 	if device.Created <= s.clk.Now().Unix()-86400 {
@@ -476,9 +511,8 @@ func (s *Sessions) scopeFor(ctx context.Context, r EstablishRequest, device stor
 }
 
 // register spends an assertion after shape and signature checks, then admits only a listed
-// account's browser device. The cap evicts an unlisted row older than the rate window; expiry
-// and the rate exclude revoked rows so a password holder cannot lock out a recovering owner
-// permanently.
+// account's browser device. Past the cap or the hourly rate it replaces the oldest unlisted row
+// (AdmitDevice) rather than refuse, so a password holder cannot lock out a recovering owner.
 func (s *Sessions) register(ctx context.Context, r EstablishRequest) (Token, error) {
 	unauth := server.Errorf(server.CodeUnauthenticated, "")
 	if s.Assertions == nil {
@@ -515,7 +549,7 @@ func (s *Sessions) register(ctx context.Context, r EstablishRequest) (Token, err
 	if s.DeviceLists == nil {
 		return Token{}, unauth
 	}
-	keys, err := s.DeviceLists.ListedKeys(ctx, userID)
+	entries, err := s.DeviceLists.ListedDevices(ctx, userID)
 	if errors.Is(err, ErrNoDeviceList) {
 		return Token{}, unauth
 	}
@@ -527,7 +561,7 @@ func (s *Sessions) register(ctx context.Context, r EstablishRequest) (Token, err
 	var evicted id.ID
 	err = s.repo.Tx(ctx, func(tx store.Repository) error {
 		var err error
-		evicted, err = s.AdmitDevice(ctx, tx, userID, keys, false, now)
+		evicted, err = s.AdmitDevice(ctx, tx, userID, entries, false, reg.DSKPub, now)
 		if err != nil {
 			return err
 		}
@@ -551,9 +585,11 @@ func (s *Sessions) register(ctx context.Context, r EstablishRequest) (Token, err
 }
 
 // AdmitDevice applies the common device cap, expiry and hourly rate inside the
-// caller's transaction. The caller inserts its new row in that same transaction
-// and closes any evicted device's gateway connections after commit.
-func (s *Sessions) AdmitDevice(ctx context.Context, tx store.Repository, userID id.ID, keys [][]byte, noList bool, now int64) (id.ID, error) {
+// caller's transaction. Neither the cap nor the rate refuses while an unlisted live
+// row exists: past either, the oldest unlisted live row is evicted. Only a cap of
+// listed rows refuses (403). The caller inserts its new row in that same
+// transaction and closes any evicted device's gateway connections after commit.
+func (s *Sessions) AdmitDevice(ctx context.Context, tx store.Repository, userID id.ID, entries []ListedDevice, noList bool, dskPub []byte, now int64) (id.ID, error) {
 	if err := tx.LockUserForDeviceRegistration(ctx, userID); err != nil {
 		return id.ID{}, err
 	}
@@ -563,7 +599,7 @@ func (s *Sessions) AdmitDevice(ctx context.Context, tx store.Repository, userID 
 	}
 	listed := make([]id.ID, 0, len(rows))
 	for _, row := range rows {
-		if noList || ListedKey(keys, row.DSKPub) {
+		if noList || Listed(entries, row.ID, row.DSKPub) {
 			listed = append(listed, row.ID)
 		}
 	}
@@ -578,40 +614,58 @@ func (s *Sessions) AdmitDevice(ctx context.Context, tx store.Repository, userID 
 			}
 		}
 	}
+	// One live row per signing key (security review F2): a second row under a key a live row of
+	// the user already holds would share that row's proof of possession and, judged by key, its
+	// listing. Rows the sweep above just revoked hold their key no longer.
+	for _, row := range rows {
+		expired := row.Created < cutoff && !slices.Contains(listed, row.ID)
+		if row.RevokedAt == nil && !expired && bytes.Equal(row.DSKPub, dskPub) {
+			return id.ID{}, server.WithStatus(http.StatusConflict,
+				server.Errorf(server.CodeInvalidRequest, "dsk_pub is already registered to a live device"))
+		}
+	}
 	live, err := tx.CountLiveDevicesByUser(ctx, userID)
 	if err != nil {
 		return id.ID{}, err
 	}
-	// window is the hourly rate window: a row created inside it is never an eviction candidate, so a
-	// holder of the password registering at the cap cannot evict the owner's device in the minutes
-	// between its registration and the list that names it.
-	window := now - 3599
-	var evicted id.ID
-	var oldest int64
-	if live >= int64(s.cfg.MaxDevicesPerUser) {
-		for _, row := range rows {
-			if row.RevokedAt == nil && row.Created >= cutoff && row.Created < window && !slices.Contains(listed, row.ID) &&
-				(evicted.IsZero() || row.Created < oldest || (row.Created == oldest && bytes.Compare(row.ID[:], evicted[:]) < 0)) {
-				evicted, oldest = row.ID, row.Created
-			}
-		}
-		if evicted.IsZero() {
-			return id.ID{}, server.Errorf(server.CodeForbidden, "device cap reached")
-		}
-		if err := tx.RevokeDevice(ctx, evicted, now); err != nil {
-			return id.ID{}, err
-		}
-		if _, err := tx.DeleteSessionsByDevice(ctx, evicted); err != nil {
-			return id.ID{}, err
-		}
-	}
-	creations, err := tx.ListLiveDeviceCreationsSince(ctx, userID, listed, window, cutoff)
+	creations, err := tx.ListLiveDeviceCreationsSince(ctx, userID, listed, now-3599, cutoff)
 	if err != nil {
 		return id.ID{}, err
 	}
-	if len(creations) >= s.cfg.EnrolmentsPerHour {
-		wait := creations[len(creations)-s.cfg.EnrolmentsPerHour] + 3600 - now
-		return id.ID{}, server.RateLimited(uint64(wait) * 1000) //nolint:gosec // bounded by the hourly window
+	atCap := live >= int64(s.cfg.MaxDevicesPerUser)
+	if !atCap && len(creations) < s.cfg.EnrolmentsPerHour {
+		return id.ID{}, nil
+	}
+	// The cap and the hourly rate decide WHICH row this registration replaces, never WHETHER it is
+	// admitted (security review F1): the oldest live unlisted row, whatever its age. At registration
+	// the instance cannot tell the owner from a holder of the password alone — the recovery key that
+	// tells them apart is used only after it — so a refusal that a password holder can keep
+	// saturated (three logins an hour against the rate, or young unlisted rows against the cap) would
+	// lock the owner's recovery out. The owner's own new row is exposed only for the seconds between
+	// its registration and the list PUT that names it, at one password login per eviction, and the
+	// per-address `login` and `establish` buckets bound that churn. The one refusal left is a cap of
+	// rows every one of which the user's signed list names.
+	var evicted id.ID
+	var oldest int64
+	for _, row := range rows {
+		if row.RevokedAt == nil && row.Created >= cutoff && !slices.Contains(listed, row.ID) &&
+			(evicted.IsZero() || row.Created < oldest || (row.Created == oldest && bytes.Compare(row.ID[:], evicted[:]) < 0)) {
+			evicted, oldest = row.ID, row.Created
+		}
+	}
+	if evicted.IsZero() {
+		if atCap {
+			return id.ID{}, server.Errorf(server.CodeForbidden, "device cap reached")
+		}
+		// Past the rate with every live row listed: nothing to replace, and an honest person
+		// enrolling a fourth listed device in an hour is not refused.
+		return id.ID{}, nil
+	}
+	if err := tx.RevokeDevice(ctx, evicted, now); err != nil {
+		return id.ID{}, err
+	}
+	if _, err := tx.DeleteSessionsByDevice(ctx, evicted); err != nil {
+		return id.ID{}, err
 	}
 	return evicted, nil
 }
@@ -686,11 +740,11 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 			return Session{}, server.Errorf(server.CodeUnauthenticated, "")
 		}
 		if device.Created <= now.Unix()-86400 {
-			keys, err := s.DeviceLists.ListedKeys(ctx, row.UserID)
+			entries, err := s.DeviceLists.ListedDevices(ctx, row.UserID)
 			if err != nil && !errors.Is(err, ErrNoDeviceList) {
 				return Session{}, ListError(err)
 			}
-			if err == nil && !ListedKey(keys, device.DSKPub) {
+			if err == nil && !Listed(entries, device.ID, device.DSKPub) {
 				if err := s.RevokeDevice(ctx, device.ID); err != nil {
 					return Session{}, err
 				}

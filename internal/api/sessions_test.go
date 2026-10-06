@@ -340,7 +340,7 @@ func TestElementThreeIsARegistrationArrayOnlyWhenLoginIsPresent(t *testing.T) {
 	ctx := context.Background()
 	lister := listerOf(t, deps)
 	u, dev, priv := seedAPIDevice(t, deps)
-	lister.list(u.ID, dev.DSKPub)
+	lister.list(u.ID, dev)
 	path := func(d id.ID) string { return "/v1/devices/" + d.String() + "/sessions" }
 	assertion := func() []byte { return []byte(deps.Assertions.Issue(u.ID, false)) }
 

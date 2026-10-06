@@ -559,30 +559,32 @@ func signed(t *testing.T, s *auth.Sessions, device id.ID, nonce []byte, p auth.P
 }
 
 // staticLister is the device-list gate's view of the instance in these tests: a user it holds no
-// entry for has published no list (auth.ErrNoDeviceList); a user it holds keys for has a verified
-// newest list naming exactly those unrevoked dsk_pubs; err, when set, is what every call answers
-// (a verifier that is down, or a stored list that no longer verifies).
+// entry for has published no list (auth.ErrNoDeviceList); a user it holds entries for has a
+// verified newest list naming exactly those unrevoked (device_id, dsk_pub) pairs; err, when set, is
+// what every call answers (a verifier that is down, or a stored list that no longer verifies).
 type staticLister struct {
-	mu    sync.Mutex
-	keys  map[id.ID][][]byte
-	err   error
-	calls int
+	mu      sync.Mutex
+	entries map[id.ID][]auth.ListedDevice
+	err     error
+	calls   int
 }
 
-func newStaticLister() *staticLister { return &staticLister{keys: map[id.ID][][]byte{}} }
+func newStaticLister() *staticLister {
+	return &staticLister{entries: map[id.ID][]auth.ListedDevice{}}
+}
 
-func (l *staticLister) ListedKeys(_ context.Context, user id.ID) ([][]byte, error) {
+func (l *staticLister) ListedDevices(_ context.Context, user id.ID) ([]auth.ListedDevice, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.calls++
 	if l.err != nil {
 		return nil, l.err
 	}
-	keys, ok := l.keys[user]
+	entries, ok := l.entries[user]
 	if !ok {
 		return nil, auth.ErrNoDeviceList
 	}
-	return keys, nil
+	return entries, nil
 }
 
 func (l *staticLister) resetCalls() {
@@ -597,10 +599,16 @@ func (l *staticLister) callCount() int {
 	return l.calls
 }
 
-func (l *staticLister) list(user id.ID, keys ...[]byte) {
+// list makes entries the user's newest verified list; an empty call is a list naming no device.
+func (l *staticLister) list(user id.ID, entries ...auth.ListedDevice) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.keys[user] = keys
+	l.entries[user] = append([]auth.ListedDevice{}, entries...)
+}
+
+// entry is one list entry: a device id and its key.
+func entry(device id.ID, pub []byte) auth.ListedDevice {
+	return auth.ListedDevice{DeviceID: device, DSKPub: pub}
 }
 
 func (l *staticLister) fail(err error) {
@@ -717,7 +725,7 @@ func TestTheDeviceListGateDecidesTheScope(t *testing.T) {
 	if got := scope(auth.PurposeSession); got != auth.ScopeEnrolled {
 		t.Fatalf("a user with no device list: scope %d, want enrolled (the no-list clause)", got)
 	}
-	lister.list(user, pubOf(priv))
+	lister.list(user, entry(device, pubOf(priv)))
 	if got := scope(auth.PurposeSession); got != auth.ScopeEnrolled {
 		t.Fatalf("a device its user's newest list names: scope %d, want enrolled", got)
 	}
@@ -725,7 +733,7 @@ func TestTheDeviceListGateDecidesTheScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	lister.list(user, pubOf(otherPriv))
+	lister.list(user, entry(id.New(), pubOf(otherPriv)))
 	if got := scope(auth.PurposeSession); got != auth.ScopePending {
 		t.Fatalf("a listed user's unlisted device: scope %d, want pending", got)
 	}
@@ -769,12 +777,12 @@ func TestAPendingDeviceIsEnrolledByEstablishingAgainOnceListed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	lister.list(user, pubOf(otherPriv))
+	lister.list(user, entry(id.New(), pubOf(otherPriv)))
 	pending, err := establishOnce(t, s, device, priv, auth.PurposeSession)
 	if err != nil || pending.Scope != auth.ScopePending {
 		t.Fatalf("before the list names it: scope %d, err %v; want pending", pending.Scope, err)
 	}
-	lister.list(user, pubOf(otherPriv), pubOf(priv))
+	lister.list(user, entry(id.New(), pubOf(otherPriv)), entry(device, pubOf(priv)))
 	enrolled, err := establishOnce(t, s, device, priv, auth.PurposeRenew)
 	if err != nil || enrolled.Scope != auth.ScopeEnrolled {
 		t.Fatalf("after the list names it: scope %d, err %v; want enrolled", enrolled.Scope, err)
@@ -796,8 +804,8 @@ func TestAssertionRegistrationCreatesAPendingBrowserDevice(t *testing.T) {
 	assertions := newFakeAssertions()
 	s.Assertions = assertions
 	lister := listerOf(t, s)
-	user, _, priv := seedDevice(t, repo)
-	lister.list(user, pubOf(priv))
+	user, owner, priv := seedDevice(t, repo)
+	lister.list(user, entry(owner, pubOf(priv)))
 
 	reg, regPriv := newRegistration(t)
 	login := assertions.issue(user)
@@ -833,7 +841,7 @@ func TestAssertionRegistrationCreatesAPendingBrowserDevice(t *testing.T) {
 	if err != nil || plain.Scope != auth.ScopePending {
 		t.Fatalf("the unlisted registered device: scope %d, err %v; want pending", plain.Scope, err)
 	}
-	lister.list(user, pubOf(priv), reg.DSKPub)
+	lister.list(user, entry(owner, pubOf(priv)), entry(reg.DeviceID, reg.DSKPub))
 	plain, err = establishOnce(t, s, reg.DeviceID, regPriv, auth.PurposeSession)
 	if err != nil || plain.Scope != auth.ScopeEnrolled {
 		t.Fatalf("the listed registered device: scope %d, err %v; want enrolled", plain.Scope, err)
@@ -866,9 +874,9 @@ func TestAssertionRegistrationDistinguishesListFaultFromBadList(t *testing.T) {
 	s, repo, _ := newSessions(t)
 	a := newFakeAssertions()
 	s.Assertions = a
-	user, _, priv := seedDevice(t, repo)
+	user, owner, priv := seedDevice(t, repo)
 	l := listerOf(t, s)
-	l.list(user, pubOf(priv))
+	l.list(user, entry(owner, pubOf(priv)))
 	reg, signer := newRegistration(t)
 	l.fail(errors.New("guest closed"))
 	login := a.issue(user)
@@ -895,8 +903,8 @@ func TestAssertionRegistrationRefusals(t *testing.T) {
 	assertions := newFakeAssertions()
 	s.Assertions = assertions
 	lister := listerOf(t, s)
-	user, _, priv := seedDevice(t, repo)
-	lister.list(user, pubOf(priv))
+	user, owner, priv := seedDevice(t, repo)
+	lister.list(user, entry(owner, pubOf(priv)))
 	reg, regPriv := newRegistration(t)
 	login := assertions.issue(user)
 
@@ -970,15 +978,14 @@ func TestAssertionRegistrationRefusals(t *testing.T) {
 	noDeviceRow(t, repo, mismatched.DeviceID)
 }
 
-// Q04: at most 8 live devices per user. Attacker statement (head L-HTTP-54, ruling 30): the
-// registration path creates a live, unlisted row for every spent assertion, so a holder of the
-// password without the recovery key can register at most enrolments_per_hour rows per hour and fill
-// the cap in ⌈cap ÷ rate⌉ hours (three at the defaults), after which the owner's own enrolment is
-// refused. The owner clears it without the key: Settings → Devices lists such rows as `not yet in
-// the device list` and their `remove` calls DELETE /v1/devices/{id} (an existing E route,
-// internal/api/devices.go:76-103), which revokes the row; the rows are evidence of the compromise.
-// An honest person reaches 8 live devices by owning 8 and 3 enrolments in an hour by enrolling 3;
-// another user cannot spend this user's allowance.
+// Q04: at most 8 live devices per user. Attacker statement (head L-HTTP-54, ruling 30, as amended
+// by the security review's F1): the registration path creates a live, unlisted row for every spent
+// assertion, and a registration at the cap replaces the oldest unlisted row, so a holder of the
+// password without the recovery key never fills the cap against the owner; only eight LISTED rows
+// refuse, which only the SSK holder can produce. The owner also clears unlisted rows without the
+// key: Settings → Devices lists them as `not yet in the device list` and their `remove` calls
+// DELETE /v1/devices/{id}; the rows are evidence of the compromise. Another user cannot spend this
+// user's allowance.
 func TestTheDeviceCapIsEightLiveDevices(t *testing.T) {
 	s, repo, clk := newSessions(t)
 	ctx := context.Background()
@@ -991,25 +998,26 @@ func TestTheDeviceCapIsEightLiveDevices(t *testing.T) {
 	s.Assertions = assertions
 	lister := listerOf(t, s)
 	user, first, priv := seedDevice(t, repo)
-	listed := [][]byte{pubOf(priv)}
-	// Six more listed live devices, created two hours ago so the hourly rate is not what refuses.
+	listed := []auth.ListedDevice{entry(first, pubOf(priv))}
+	// Six more listed live devices, created two hours ago so the hourly rate is not what replaces.
 	for i := 0; i < 6; i++ {
 		pub, _, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatalf("GenerateKey: %v", err)
 		}
-		if err := repo.CreateDevice(ctx, store.DeviceRow{ID: id.New(), UserID: user, DSKPub: pub,
-			CredentialBlob: []byte{1}, LastSeen: 1, Created: clk.Now().Unix() - 7200}); err != nil {
+		row := store.DeviceRow{ID: id.New(), UserID: user, DSKPub: pub,
+			CredentialBlob: []byte{1}, LastSeen: 1, Created: clk.Now().Unix() - 7200}
+		if err := repo.CreateDevice(ctx, row); err != nil {
 			t.Fatalf("CreateDevice: %v", err)
 		}
-		listed = append(listed, pub)
+		listed = append(listed, entry(row.ID, pub))
 	}
 	lister.list(user, listed...)
 	eighth, eighthPriv := newRegistration(t)
 	if _, err := registerWith(t, s, eighth, eighthPriv, assertions.issue(user)); err != nil {
 		t.Fatalf("the eighth live device: %v", err)
 	}
-	lister.list(user, append(listed, eighth.DSKPub)...)
+	lister.list(user, append(listed, entry(eighth.DeviceID, eighth.DSKPub))...)
 	ninth, ninthPriv := newRegistration(t)
 	_, err := registerWith(t, s, ninth, ninthPriv, assertions.issue(user))
 	if e := refusal(t, err); e.Code != server.CodeForbidden || e.Status() != http.StatusForbidden || e.Detail != "device cap reached" {
@@ -1025,61 +1033,66 @@ func TestTheDeviceCapIsEightLiveDevices(t *testing.T) {
 	}
 }
 
-// Q04: at most 3 device rows created per user in any hour, derived from devices.created. Attacker
-// statement: only the account's own host login reaches this; the honest person waits the
-// retry_after_ms the refusal carries, which is never zero.
+// Q04 as amended by the security review's F1: enrolments_per_hour counts the live rows created in
+// any hour (derived from devices.created), and past it a registration REPLACES the oldest unlisted
+// live row instead of being refused. Attacker statement: a holder of the password alone could keep
+// the owner's own registration at 429 for ever with three logins an hour while the rate refused; now
+// each of its registrations costs one password login (the per-address `login` bucket) and evicts its
+// own oldest row first. A creation leaves the window exactly 3600 s after it.
 func TestTheEnrolmentRateIsThreePerHour(t *testing.T) {
 	s, repo, clk := newSessions(t)
 	assertions := newFakeAssertions()
 	s.Assertions = assertions
 	lister := listerOf(t, s)
-	user, _, priv := seedDevice(t, repo) // created at unix second 1, outside every window here
-	lister.list(user, pubOf(priv))
+	user, owner, priv := seedDevice(t, repo) // created at unix second 1, outside every window here
+	lister.list(user, entry(owner, pubOf(priv)))
 
 	start := clk.Now().Unix()
+	var regs []auth.DeviceRegistration
 	for i := 0; i < 3; i++ {
 		reg, p := newRegistration(t)
 		if _, err := registerWith(t, s, reg, p, assertions.issue(user)); err != nil {
 			t.Fatalf("enrolment %d of 3: %v", i+1, err)
 		}
+		regs = append(regs, reg)
 		clk.Advance(time.Minute)
 	}
-	// Assertion 1 — the fourth creation in the hour is refused with
-	// retry_after_ms = (creations[0] + 3600 − now) × 1000. now = start + 180, creations[0] = start.
-	now := clk.Now().Unix()
+	// Assertion 1 — the fourth creation in the hour (start + 180) is admitted and replaces the
+	// oldest unlisted row, the one created at start; the two younger rows stay.
 	fourth, fourthPriv := newRegistration(t)
-	_, err := registerWith(t, s, fourth, fourthPriv, assertions.issue(user))
-	e := refusal(t, err)
-	if want := uint64(start+3600-now) * 1000; e.Code != server.CodeRateLimited || e.Status() != http.StatusTooManyRequests ||
-		e.RetryAfterMS == nil || *e.RetryAfterMS != want || want != 3_420_000 {
-		t.Fatalf("assertion 1, the fourth enrolment in an hour: %s %d retry %v, want 429 E_RATE_LIMITED retry %d",
-			e.Code, e.Status(), e.RetryAfterMS, want)
+	if tok, err := registerWith(t, s, fourth, fourthPriv, assertions.issue(user)); err != nil || tok.Scope != auth.ScopePending {
+		t.Fatalf("assertion 1, the fourth enrolment in an hour: scope %d, err %v; want a pending registration", tok.Scope, err)
 	}
-	noDeviceRow(t, repo, fourth.DeviceID)
-	// Assertion 2 — at start + 3599 the first creation is still inside the hour: 429, retry 1000.
-	clk.Advance(time.Duration(3600-180-1) * time.Second)
-	if clk.Now().Unix() != start+3599 {
-		t.Fatalf("the clock is at %d, want start + 3599", clk.Now().Unix()-start)
+	wantLive(t, repo, "the first enrolment after the fourth", regs[0].DeviceID, false)
+	wantLive(t, repo, "the second enrolment after the fourth", regs[1].DeviceID, true)
+	wantLive(t, repo, "the third enrolment after the fourth", regs[2].DeviceID, true)
+	// Assertion 2 — at start + 60 + 3599 the second creation is still inside the hour: three live
+	// creations in the window, so the fifth replaces the oldest unlisted row, the second.
+	clk.Advance(time.Duration(60+3599-180) * time.Second)
+	if clk.Now().Unix() != start+60+3599 {
+		t.Fatalf("the clock is at %d, want start + 3659", clk.Now().Unix()-start)
 	}
-	_, err = registerWith(t, s, fourth, fourthPriv, assertions.issue(user))
-	if e := refusal(t, err); e.Code != server.CodeRateLimited || e.Status() != http.StatusTooManyRequests ||
-		e.RetryAfterMS == nil || *e.RetryAfterMS != 1000 {
-		t.Fatalf("assertion 2, one second before the first leaves the hour: %s %d retry %v, want 429 E_RATE_LIMITED retry 1000",
-			e.Code, e.Status(), e.RetryAfterMS)
+	fifth, fifthPriv := newRegistration(t)
+	if _, err := registerWith(t, s, fifth, fifthPriv, assertions.issue(user)); err != nil {
+		t.Fatalf("assertion 2, one second before the second creation leaves the hour: %v, want admitted", err)
 	}
-	noDeviceRow(t, repo, fourth.DeviceID)
-	// Assertion 3 — at exactly start + 3600 the boundary second is admitted (201 at the handler).
-	clk.Advance(time.Second)
-	tok, err := registerWith(t, s, fourth, fourthPriv, assertions.issue(user))
-	if err != nil || tok.Scope != auth.ScopePending {
-		t.Fatalf("assertion 3, the boundary second start + 3600: scope %d, err %v; want a pending registration", tok.Scope, err)
+	wantLive(t, repo, "the second enrolment after the fifth", regs[1].DeviceID, false)
+	wantLive(t, repo, "the third enrolment after the fifth", regs[2].DeviceID, true)
+	// Assertion 3 — at exactly start + 120 + 3600 the third creation has left the hour: two live
+	// creations in the window (the fourth and the fifth), so the sixth replaces nothing.
+	clk.Advance(time.Duration(120+3600-60-3599) * time.Second)
+	sixth, sixthPriv := newRegistration(t)
+	if _, err := registerWith(t, s, sixth, sixthPriv, assertions.issue(user)); err != nil {
+		t.Fatalf("assertion 3, the boundary second start + 3720: %v, want admitted", err)
+	}
+	for _, r := range []auth.DeviceRegistration{regs[2], fourth, fifth, sixth} {
+		wantLive(t, repo, "a row inside the hour or older after the sixth", r.DeviceID, true)
 	}
 }
 
-// Head ruling 32: a fresh account gets two enrolments in its first hour and three afterwards;
-// recorded as a deviation from Q04's literal three in progress.md. The rate counts every device row
-// the user created inside the window, the account's first device included. Attacker statement: as
-// TestTheEnrolmentRateIsThreePerHour; the first device's row is the owner's own.
+// Head ruling 32 as amended by F1: the rate counts every live device row the user created inside
+// the window, the account's first device included, so in a fresh account's first hour the third
+// enrolment already replaces the oldest unlisted row. The listed first device is never replaced.
 func TestTheEnrolmentRateCountsTheAccountsFirstDevice(t *testing.T) {
 	s, repo, clk := newSessions(t)
 	ctx := context.Background()
@@ -1097,28 +1110,31 @@ func TestTheEnrolmentRateCountsTheAccountsFirstDevice(t *testing.T) {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	verified := start
-	if err := repo.CreateDevice(ctx, store.DeviceRow{ID: id.New(), UserID: user.ID, DSKPub: firstPub, Tier: 1,
+	firstID := id.New()
+	if err := repo.CreateDevice(ctx, store.DeviceRow{ID: firstID, UserID: user.ID, DSKPub: firstPub, Tier: 1,
 		SignerTier: 1, CredentialBlob: []byte{1}, VerifiedAt: &verified, LastSeen: start, Created: start}); err != nil {
 		t.Fatalf("CreateDevice (the account's first device, at start): %v", err)
 	}
-	lister.list(user.ID, firstPub)
+	lister.list(user.ID, entry(firstID, firstPub))
 
+	var regs []auth.DeviceRegistration
 	for i := int64(1); i <= 2; i++ {
 		clk.Advance(time.Second) // start + 1, start + 2
 		reg, p := newRegistration(t)
 		if _, err := registerWith(t, s, reg, p, assertions.issue(user.ID)); err != nil {
 			t.Fatalf("enrolment at start + %d: %v, want 201 (the first device and %d enrolments are fewer than 3)", i, err, i-1)
 		}
+		regs = append(regs, reg)
 	}
+	wantLive(t, repo, "the first enrolment before the rate is reached", regs[0].DeviceID, true)
 	clk.Advance(time.Second) // start + 3
 	third, thirdPriv := newRegistration(t)
-	_, err = registerWith(t, s, third, thirdPriv, assertions.issue(user.ID))
-	if e := refusal(t, err); e.Code != server.CodeRateLimited || e.Status() != http.StatusTooManyRequests ||
-		e.RetryAfterMS == nil || *e.RetryAfterMS != uint64(3600-3)*1000 {
-		t.Fatalf("the third enrolment in the account's first hour: %s %d retry %v, want 429 E_RATE_LIMITED retry 3597000 (the first device counts)",
-			e.Code, e.Status(), e.RetryAfterMS)
+	if _, err := registerWith(t, s, third, thirdPriv, assertions.issue(user.ID)); err != nil {
+		t.Fatalf("the third enrolment in the account's first hour: %v, want admitted", err)
 	}
-	noDeviceRow(t, repo, third.DeviceID)
+	wantLive(t, repo, "the first enrolment (the first device counted toward the rate)", regs[0].DeviceID, false)
+	wantLive(t, repo, "the second enrolment", regs[1].DeviceID, true)
+	wantLive(t, repo, "the account's listed first device", firstID, true)
 }
 
 // A password holder's unlisted pending row and its session stop working after 24 hours.
@@ -1127,8 +1143,8 @@ func TestUnlistedRegistrationExpiresWithItsPendingSession(t *testing.T) {
 	s, repo, clk := newSessions(t)
 	a := newFakeAssertions()
 	s.Assertions = a
-	user, _, priv := seedDevice(t, repo)
-	listerOf(t, s).list(user, pubOf(priv))
+	user, owner, priv := seedDevice(t, repo)
+	listerOf(t, s).list(user, entry(owner, pubOf(priv)))
 	reg, signer := newRegistration(t)
 	tok, err := registerWith(t, s, reg, signer, a.issue(user))
 	if err != nil {
@@ -1152,8 +1168,8 @@ func TestExpiredUnlistedRowRejectsAnotherAssertion(t *testing.T) {
 	s, repo, clk := newSessions(t)
 	a := newFakeAssertions()
 	s.Assertions = a
-	user, _, priv := seedDevice(t, repo)
-	listerOf(t, s).list(user, pubOf(priv))
+	user, owner, priv := seedDevice(t, repo)
+	listerOf(t, s).list(user, entry(owner, pubOf(priv)))
 	reg, signer := newRegistration(t)
 	if _, err := registerWith(t, s, reg, signer, a.issue(user)); err != nil {
 		t.Fatal(err)
@@ -1174,9 +1190,9 @@ func TestYoungPendingSessionSkipsDeviceListInResolveAndLogin(t *testing.T) {
 	s, repo, _ := newSessions(t)
 	a := newFakeAssertions()
 	s.Assertions = a
-	user, _, priv := seedDevice(t, repo)
+	user, owner, priv := seedDevice(t, repo)
 	l := listerOf(t, s)
-	l.list(user, pubOf(priv))
+	l.list(user, entry(owner, pubOf(priv)))
 	reg, signer := newRegistration(t)
 	tok, err := registerWith(t, s, reg, signer, a.issue(user))
 	if err != nil {
@@ -1201,16 +1217,17 @@ func TestRegistrationAtCapEvictsOldestUnlistedRow(t *testing.T) {
 	s, repo, clk := newSessions(t)
 	a := newFakeAssertions()
 	s.Assertions = a
-	user, _, priv := seedDevice(t, repo)
-	keys := [][]byte{pubOf(priv)}
+	user, owner, priv := seedDevice(t, repo)
+	keys := []auth.ListedDevice{entry(owner, pubOf(priv))}
 	for i := 0; i < 5; i++ {
 		pub, _, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
-		keys = append(keys, pub)
-		if err := repo.CreateDevice(t.Context(), store.DeviceRow{ID: id.New(), UserID: user, DSKPub: pub,
-			CredentialBlob: []byte{1}, Created: 1, LastSeen: 1}); err != nil {
+		row := store.DeviceRow{ID: id.New(), UserID: user, DSKPub: pub,
+			CredentialBlob: []byte{1}, Created: 1, LastSeen: 1}
+		keys = append(keys, entry(row.ID, pub))
+		if err := repo.CreateDevice(t.Context(), row); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1225,9 +1242,7 @@ func TestRegistrationAtCapEvictsOldestUnlistedRow(t *testing.T) {
 	if _, err := registerWith(t, s, newer, newerKey, a.issue(user)); err != nil {
 		t.Fatalf("second unlisted registration: %v", err)
 	}
-	// Boundary ruling 3: only a row older than the hourly rate window is an eviction candidate
-	// (TestCapEvictionSparesARowInsideTheRateWindow), so both unlisted rows age out of it first.
-	clk.Advance(2 * time.Hour)
+	clk.Advance(time.Second)
 	next, nextKey := newRegistration(t)
 	if _, err := registerWith(t, s, next, nextKey, a.issue(user)); err != nil {
 		t.Fatalf("cap eviction: %v", err)
@@ -1247,66 +1262,53 @@ func TestRegistrationAtCapEvictsOldestUnlistedRow(t *testing.T) {
 	}
 }
 
-// Boundary ruling 3 (task 7 scan): the cap evicts only a row created before the hourly rate
-// window. Attacker: a holder of the host password registering at the cap would otherwise evict the
-// owner's own browser in the minutes between its registration and the list that names it, and the
-// rate (three an hour) bounds how often but not whether. A row inside the window is never a
-// candidate; with no other candidate the registration is refused 403 "device cap reached", and the
-// owner's device stays. An honest person meets the refusal only by registering a ninth device
-// within an hour of an eighth, and clears it by removing an unlisted row or waiting the hour out.
-func TestCapEvictionSparesARowInsideTheRateWindow(t *testing.T) {
+// F1 (replacing boundary ruling 3 of the first fix round): the cap evicts the oldest unlisted row
+// whatever its age. The first round spared a row younger than the hourly window and refused 403
+// instead; a holder of the password alone then kept the owner at 403 by refreshing its young
+// unlisted rows every hour (the review's probe B). A row mid-enrolment is now exposed for the
+// seconds before the list PUT that names it, which is the owner's to make.
+func TestCapEvictsTheOldestUnlistedRowWhateverItsAge(t *testing.T) {
 	s, repo, clk := newSessions(t)
 	ctx := context.Background()
 	a := newFakeAssertions()
 	s.Assertions = a
-	user, _, priv := seedDevice(t, repo)
-	keys := [][]byte{pubOf(priv)}
+	user, owner, priv := seedDevice(t, repo)
+	keys := []auth.ListedDevice{entry(owner, pubOf(priv))}
 	for i := 0; i < 6; i++ {
 		pub, _, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
-		keys = append(keys, pub)
-		if err := repo.CreateDevice(ctx, store.DeviceRow{ID: id.New(), UserID: user, DSKPub: pub,
-			CredentialBlob: []byte{1}, Created: clk.Now().Unix() - 7200, LastSeen: 1}); err != nil {
+		row := store.DeviceRow{ID: id.New(), UserID: user, DSKPub: pub,
+			CredentialBlob: []byte{1}, Created: clk.Now().Unix() - 7200, LastSeen: 1}
+		keys = append(keys, entry(row.ID, pub))
+		if err := repo.CreateDevice(ctx, row); err != nil {
 			t.Fatal(err)
 		}
 	}
 	listerOf(t, s).list(user, keys...)
-	// The owner's browser mid-enrolment: registered 30 minutes ago, not yet in the list.
-	enrolling, _ := newRegistration(t)
-	if err := repo.CreateDevice(ctx, store.DeviceRow{ID: enrolling.DeviceID, UserID: user, DSKPub: enrolling.DSKPub,
-		Tier: 1, SignerTier: 1, CredentialBlob: enrolling.Credential, Created: clk.Now().Unix() - 1800, LastSeen: 1}); err != nil {
+	// An unlisted row registered 30 minutes ago, not yet in the list.
+	young, _ := newRegistration(t)
+	if err := repo.CreateDevice(ctx, store.DeviceRow{ID: young.DeviceID, UserID: user, DSKPub: young.DSKPub,
+		Tier: 1, SignerTier: 1, CredentialBlob: young.Credential, Created: clk.Now().Unix() - 1800, LastSeen: 1}); err != nil {
 		t.Fatal(err)
 	}
-	intruder, intruderKey := newRegistration(t)
-	_, err := registerWith(t, s, intruder, intruderKey, a.issue(user))
-	if e := refusal(t, err); e.Code != server.CodeForbidden || e.Status() != http.StatusForbidden || e.Detail != "device cap reached" {
-		t.Fatalf("a registration at the cap whose only unlisted row is 30 minutes old: %s %d %q, want 403 E_FORBIDDEN \"device cap reached\"",
-			e.Code, e.Status(), e.Detail)
+	next, nextKey := newRegistration(t)
+	if _, err := registerWith(t, s, next, nextKey, a.issue(user)); err != nil {
+		t.Fatalf("a registration at the cap whose only unlisted row is 30 minutes old: %v, want it admitted", err)
 	}
-	noDeviceRow(t, repo, intruder.DeviceID)
-	if row, err := repo.GetDevice(ctx, enrolling.DeviceID); err != nil || row.RevokedAt != nil {
-		t.Fatalf("the row 30 minutes old = %+v, err %v; want it live", row, err)
-	}
-
-	// Ninety minutes on, the same row is two hours old and outside the window: it is the candidate.
-	clk.Advance(90 * time.Minute)
-	if _, err := registerWith(t, s, intruder, intruderKey, a.issue(user)); err != nil {
-		t.Fatalf("a registration at the cap whose unlisted row is 2 hours old: %v, want it admitted", err)
-	}
-	if row, err := repo.GetDevice(ctx, enrolling.DeviceID); err != nil || row.RevokedAt == nil {
-		t.Fatalf("the row 2 hours old = %+v, err %v; want it evicted", row, err)
-	}
+	wantLive(t, repo, "the unlisted row 30 minutes old", young.DeviceID, false)
+	wantLive(t, repo, "the replacement row", next.DeviceID, true)
 }
 
-// The live-row rate releases a revoked row immediately and an expired row after 24 hours.
+// Revoked rows release the rate immediately and expired rows after 24 hours: neither counts toward
+// the three live creations an hour, so neither makes a registration replace a live row.
 func TestEnrolmentRateReleasesRevokedAndExpiredRows(t *testing.T) {
 	s, repo, clk := newSessions(t)
 	a := newFakeAssertions()
 	s.Assertions = a
-	user, _, priv := seedDevice(t, repo)
-	listerOf(t, s).list(user, pubOf(priv))
+	user, owner, priv := seedDevice(t, repo)
+	listerOf(t, s).list(user, entry(owner, pubOf(priv)))
 	var regs []auth.DeviceRegistration
 	for i := 0; i < 3; i++ {
 		reg, key := newRegistration(t)
@@ -1315,19 +1317,20 @@ func TestEnrolmentRateReleasesRevokedAndExpiredRows(t *testing.T) {
 		}
 		regs = append(regs, reg)
 	}
-	fourth, fourthKey := newRegistration(t)
-	if _, err := registerWith(t, s, fourth, fourthKey, a.issue(user)); refusal(t, err).Code != server.CodeRateLimited {
-		t.Fatalf("fourth live creation: %v", err)
-	}
 	if err := repo.RevokeDevice(t.Context(), regs[0].DeviceID, clk.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	fourth, fourthKey := newRegistration(t)
 	if _, err := registerWith(t, s, fourth, fourthKey, a.issue(user)); err != nil {
 		t.Fatalf("after revocation: %v", err)
 	}
+	// Two live creations and a revoked one in the hour: the fourth replaced nothing.
+	wantLive(t, repo, "the second enrolment after the fourth", regs[1].DeviceID, true)
+	wantLive(t, repo, "the third enrolment after the fourth", regs[2].DeviceID, true)
 	clk.Advance(24 * time.Hour)
 	fifth, fifthKey := newRegistration(t)
 	if _, err := registerWith(t, s, fifth, fifthKey, a.issue(user)); err != nil {
 		t.Fatalf("after expiry: %v", err)
 	}
+	wantLive(t, repo, "the fifth enrolment", fifth.DeviceID, true)
 }
