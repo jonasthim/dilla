@@ -1,15 +1,12 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net/http"
-	"slices"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
@@ -47,74 +44,15 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 	if noList {
 		keys = nil
 	} else if listErr != nil {
-		var abi *mlswasi.ABIError
-		if errors.As(listErr, &abi) && abi.Code == "E_CREDENTIAL" {
-			server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
-		} else {
-			server.WriteError(w, server.Unavailable(1000, "device list unavailable"))
-		}
+		server.WriteError(w, auth.ListError(listErr))
 		return
 	}
 	var evicted id.ID
 	err := d.Repo.Tx(r.Context(), func(tx store.Repository) error {
-		if err := tx.LockUserForDeviceRegistration(r.Context(), sess.UserID); err != nil {
-			return err
-		}
-		rows, err := tx.ListDevicesByUser(r.Context(), sess.UserID)
+		var err error
+		evicted, err = d.Sessions.AdmitDevice(r.Context(), tx, sess.UserID, keys, noList, now)
 		if err != nil {
 			return err
-		}
-		listed := make([]id.ID, 0, len(rows))
-		for _, device := range rows {
-			if noList {
-				listed = append(listed, device.ID)
-				continue
-			}
-			for _, key := range keys {
-				if bytes.Equal(key, device.DSKPub) {
-					listed = append(listed, device.ID)
-					break
-				}
-			}
-		}
-		cutoff := now - 86399
-		for _, device := range rows {
-			if device.RevokedAt == nil && device.Created < cutoff && !slices.Contains(listed, device.ID) {
-				if err := tx.RevokeDevice(r.Context(), device.ID, now); err != nil {
-					return err
-				}
-				if _, err := tx.DeleteSessionsByDevice(r.Context(), device.ID); err != nil {
-					return err
-				}
-			}
-		}
-		live, err := tx.CountLiveDevicesByUser(r.Context(), sess.UserID)
-		if err != nil {
-			return err
-		}
-		if live >= int64(d.Config.Auth.Session.MaxDevicesPerUser) {
-			for _, device := range rows {
-				if device.RevokedAt == nil && device.Created >= cutoff && !slices.Contains(listed, device.ID) && evicted.IsZero() {
-					evicted = device.ID
-				}
-			}
-			if evicted.IsZero() {
-				return server.Errorf(server.CodeForbidden, "device cap reached")
-			}
-			if err := tx.RevokeDevice(r.Context(), evicted, now); err != nil {
-				return err
-			}
-			if _, err := tx.DeleteSessionsByDevice(r.Context(), evicted); err != nil {
-				return err
-			}
-		}
-		creations, err := tx.ListLiveDeviceCreationsSince(r.Context(), sess.UserID, listed, now-3599, cutoff)
-		if err != nil {
-			return err
-		}
-		if len(creations) >= d.Config.Auth.Session.EnrolmentsPerHour {
-			wait := creations[len(creations)-d.Config.Auth.Session.EnrolmentsPerHour] + 3600 - now
-			return server.RateLimited(uint64(wait) * 1000) //nolint:gosec // bounded by the hourly window
 		}
 		return tx.CreateDevice(r.Context(), row)
 	})

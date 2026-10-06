@@ -169,6 +169,82 @@ func TestPostDevicesAppliesTheCapAndRate(t *testing.T) {
 	}
 }
 
+// The enrolled route uses the same deterministic oldest-unlisted eviction as
+// assertion registration; a newer pending row retains its place.
+func TestPostDevicesEvictsOldestUnlistedAtCap(t *testing.T) {
+	h, deps := newTestAPI(t)
+	user, first, token := seedAPISession(t, deps)
+	keys := [][]byte{first.DSKPub}
+	for i := 0; i < 5; i++ {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, pub)
+		if err := deps.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: id.New(), UserID: user.ID,
+			DSKPub: pub, CredentialBlob: []byte{1}, Created: 1, LastSeen: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listerOf(t, deps).list(user.ID, keys...)
+	now := deps.Clock.Now().Unix()
+	var unlisted [2]id.ID
+	for i := range unlisted {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unlisted[i] = id.New()
+		if err := deps.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: unlisted[i], UserID: user.ID,
+			DSKPub: pub, CredentialBlob: []byte{1}, Created: now - int64(2-i), LastSeen: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := cborCall(t, h, http.MethodPost, "/v1/devices", token,
+		[]any{id.New(), []byte(pub), uint64(1), uint64(1), []byte{1}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST at cap = %d %x, want 200", rec.Code, rec.Body.Bytes())
+	}
+	for i, wantRevoked := range []bool{true, false} {
+		row, err := deps.Repo.GetDevice(t.Context(), unlisted[i])
+		if err != nil || (row.RevokedAt != nil) != wantRevoked {
+			t.Fatalf("unlisted row %d = %+v, err %v; want revoked %t", i, row, err, wantRevoked)
+		}
+	}
+}
+
+func TestPostDevicesSweepsExpiredUnlistedRow(t *testing.T) {
+	h, deps := newTestAPI(t)
+	user, first, token := seedAPISession(t, deps)
+	listerOf(t, deps).list(user.ID, first.DSKPub)
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := id.New()
+	if err := deps.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: old, UserID: user.ID,
+		DSKPub: pub, CredentialBlob: []byte{1}, Created: deps.Clock.Now().Unix() - 86400, LastSeen: 1}); err != nil {
+		t.Fatal(err)
+	}
+	newPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := cborCall(t, h, http.MethodPost, "/v1/devices", token,
+		[]any{id.New(), []byte(newPub), uint64(1), uint64(1), []byte{1}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST after expiry = %d %x, want 200", rec.Code, rec.Body.Bytes())
+	}
+	row, err := deps.Repo.GetDevice(t.Context(), old)
+	if err != nil || row.RevokedAt == nil {
+		t.Fatalf("expired unlisted row = %+v, err %v; want revoked", row, err)
+	}
+}
+
 // The no-list clause keeps a web-1 account's first device live while its owner
 // uses the enrolled route; an absent list is not an omitted entry in a list.
 func TestPostDevicesDoesNotExpireANoListAccount(t *testing.T) {

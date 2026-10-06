@@ -563,9 +563,10 @@ func signed(t *testing.T, s *auth.Sessions, device id.ID, nonce []byte, p auth.P
 // newest list naming exactly those unrevoked dsk_pubs; err, when set, is what every call answers
 // (a verifier that is down, or a stored list that no longer verifies).
 type staticLister struct {
-	mu   sync.Mutex
-	keys map[id.ID][][]byte
-	err  error
+	mu    sync.Mutex
+	keys  map[id.ID][][]byte
+	err   error
+	calls int
 }
 
 func newStaticLister() *staticLister { return &staticLister{keys: map[id.ID][][]byte{}} }
@@ -573,6 +574,7 @@ func newStaticLister() *staticLister { return &staticLister{keys: map[id.ID][][]
 func (l *staticLister) ListedKeys(_ context.Context, user id.ID) ([][]byte, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.calls++
 	if l.err != nil {
 		return nil, l.err
 	}
@@ -581,6 +583,18 @@ func (l *staticLister) ListedKeys(_ context.Context, user id.ID) ([][]byte, erro
 		return nil, auth.ErrNoDeviceList
 	}
 	return keys, nil
+}
+
+func (l *staticLister) resetCalls() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = 0
+}
+
+func (l *staticLister) callCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.calls
 }
 
 func (l *staticLister) list(user id.ID, keys ...[]byte) {
@@ -1154,6 +1168,33 @@ func TestExpiredUnlistedRowRejectsAnotherAssertion(t *testing.T) {
 	}
 }
 
+// A young pending row cannot expire, so resolving it or logging in again must
+// not acquire a device-list guest. An unavailable guest must not block it.
+func TestYoungPendingSessionSkipsDeviceListInResolveAndLogin(t *testing.T) {
+	s, repo, _ := newSessions(t)
+	a := newFakeAssertions()
+	s.Assertions = a
+	user, _, priv := seedDevice(t, repo)
+	l := listerOf(t, s)
+	l.list(user, pubOf(priv))
+	reg, signer := newRegistration(t)
+	tok, err := registerWith(t, s, reg, signer, a.issue(user))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.resetCalls()
+	l.fail(errors.New("guest unavailable"))
+	if _, err := s.Resolve(t.Context(), tok.Token); err != nil {
+		t.Fatalf("young pending Resolve: %v", err)
+	}
+	if _, err := registerWith(t, s, reg, signer, a.issue(user)); err != nil {
+		t.Fatalf("young pending login: %v", err)
+	}
+	if got := l.callCount(); got != 0 {
+		t.Fatalf("young pending list calls = %d, want 0", got)
+	}
+}
+
 // At the cap, the oldest live unlisted row is evicted while listed rows remain.
 // A password holder therefore cannot permanently bar the owner's recovery.
 func TestRegistrationAtCapEvictsOldestUnlistedRow(t *testing.T) {
@@ -1162,7 +1203,7 @@ func TestRegistrationAtCapEvictsOldestUnlistedRow(t *testing.T) {
 	s.Assertions = a
 	user, _, priv := seedDevice(t, repo)
 	keys := [][]byte{pubOf(priv)}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 5; i++ {
 		pub, _, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
@@ -1180,6 +1221,11 @@ func TestRegistrationAtCapEvictsOldestUnlistedRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	clk.Advance(time.Second)
+	newer, newerKey := newRegistration(t)
+	if _, err := registerWith(t, s, newer, newerKey, a.issue(user)); err != nil {
+		t.Fatalf("second unlisted registration: %v", err)
+	}
+	clk.Advance(time.Second)
 	next, nextKey := newRegistration(t)
 	if _, err := registerWith(t, s, next, nextKey, a.issue(user)); err != nil {
 		t.Fatalf("cap eviction: %v", err)
@@ -1190,6 +1236,9 @@ func TestRegistrationAtCapEvictsOldestUnlistedRow(t *testing.T) {
 	}
 	if _, err := s.Resolve(t.Context(), oldToken.Token); refusal(t, err).Code != server.CodeUnauthenticated {
 		t.Fatalf("evicted pending session: %v", err)
+	}
+	if row, err := repo.GetDevice(t.Context(), newer.DeviceID); err != nil || row.RevokedAt != nil {
+		t.Fatalf("newer unlisted row = %+v, err %v; want live", row, err)
 	}
 	if row, err := repo.GetDevice(t.Context(), next.DeviceID); err != nil || row.RevokedAt != nil {
 		t.Fatalf("replacement row = %+v, err %v", row, err)

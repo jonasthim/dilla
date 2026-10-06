@@ -393,17 +393,10 @@ func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error)
 	if len(r.Login) > 0 && s.DeviceLists != nil && device.Created <= s.clk.Now().Unix()-86400 {
 		keys, listErr := s.DeviceLists.ListedKeys(ctx, device.UserID)
 		if listErr != nil && !errors.Is(listErr, ErrNoDeviceList) {
-			return Token{}, listError(listErr)
+			return Token{}, ListError(listErr)
 		}
 		if listErr == nil {
-			listed := false
-			for _, key := range keys {
-				if bytes.Equal(key, device.DSKPub) {
-					listed = true
-					break
-				}
-			}
-			if !listed {
+			if !ListedKey(keys, device.DSKPub) {
 				if err := s.RevokeDevice(ctx, device.ID); err != nil {
 					return Token{}, err
 				}
@@ -426,12 +419,23 @@ func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error)
 	return tok, nil
 }
 
-func listError(err error) error {
+// ListError maps a verified-list failure to the session/API refusal.
+func ListError(err error) error {
 	var abi *mlswasi.ABIError
 	if errors.As(err, &abi) && abi.Code == "E_CREDENTIAL" {
 		return server.Errorf(server.CodeUnauthenticated, "")
 	}
 	return server.Unavailable(1000, "device list unavailable")
+}
+
+// ListedKey reports whether the newest verified list names a device signing key.
+func ListedKey(keys [][]byte, pub []byte) bool {
+	for _, key := range keys {
+		if bytes.Equal(key, pub) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Sessions) scopeFor(ctx context.Context, r EstablishRequest, device store.DeviceRow) (Scope, error) {
@@ -457,12 +461,10 @@ func (s *Sessions) scopeFor(ctx context.Context, r EstablishRequest, device stor
 		return ScopeEnrolled, nil
 	}
 	if err != nil {
-		return 0, listError(err)
+		return 0, ListError(err)
 	}
-	for _, key := range keys {
-		if bytes.Equal(key, device.DSKPub) {
-			return ScopeEnrolled, nil
-		}
+	if ListedKey(keys, device.DSKPub) {
+		return ScopeEnrolled, nil
 	}
 	if device.Created <= s.clk.Now().Unix()-86400 {
 		if err := s.RevokeDevice(ctx, device.ID); err != nil {
@@ -517,67 +519,16 @@ func (s *Sessions) register(ctx context.Context, r EstablishRequest) (Token, err
 		return Token{}, unauth
 	}
 	if err != nil {
-		return Token{}, listError(err)
+		return Token{}, ListError(err)
 	}
 	now := s.clk.Now().Unix()
 	var tok Token
 	var evicted id.ID
-	var oldest int64
 	err = s.repo.Tx(ctx, func(tx store.Repository) error {
-		if err := tx.LockUserForDeviceRegistration(ctx, userID); err != nil {
-			return err
-		}
-		rows, err := tx.ListDevicesByUser(ctx, userID)
+		var err error
+		evicted, err = s.AdmitDevice(ctx, tx, userID, keys, false, now)
 		if err != nil {
 			return err
-		}
-		listed := make([]id.ID, 0, len(rows))
-		for _, row := range rows {
-			for _, key := range keys {
-				if bytes.Equal(key, row.DSKPub) {
-					listed = append(listed, row.ID)
-					break
-				}
-			}
-		}
-		cutoff := now - 86399
-		for _, row := range rows {
-			if row.RevokedAt == nil && row.Created < cutoff && !slices.Contains(listed, row.ID) {
-				if err := tx.RevokeDevice(ctx, row.ID, now); err != nil {
-					return err
-				}
-				if _, err := tx.DeleteSessionsByDevice(ctx, row.ID); err != nil {
-					return err
-				}
-			}
-		}
-		live, err := tx.CountLiveDevicesByUser(ctx, userID)
-		if err != nil {
-			return err
-		}
-		if live >= int64(s.cfg.MaxDevicesPerUser) {
-			for _, row := range rows {
-				if row.RevokedAt == nil && row.Created >= cutoff && !slices.Contains(listed, row.ID) && (evicted.IsZero() || row.Created < oldest) {
-					evicted, oldest = row.ID, row.Created
-				}
-			}
-			if evicted.IsZero() {
-				return server.Errorf(server.CodeForbidden, "device cap reached")
-			}
-			if err := tx.RevokeDevice(ctx, evicted, now); err != nil {
-				return err
-			}
-			if _, err := tx.DeleteSessionsByDevice(ctx, evicted); err != nil {
-				return err
-			}
-		}
-		creations, err := tx.ListLiveDeviceCreationsSince(ctx, userID, listed, now-3599, cutoff)
-		if err != nil {
-			return err
-		}
-		if len(creations) >= s.cfg.EnrolmentsPerHour {
-			wait := creations[len(creations)-s.cfg.EnrolmentsPerHour] + 3600 - now
-			return server.RateLimited(uint64(wait) * 1000) //nolint:gosec // bounded by the hourly window
 		}
 		if err := tx.CreateDevice(ctx, store.DeviceRow{ID: r.DeviceID, UserID: userID, DSKPub: reg.DSKPub,
 			Tier: 1, SignerTier: 1, CredentialBlob: reg.Credential, LastSeen: now, Created: now}); err != nil {
@@ -596,6 +547,68 @@ func (s *Sessions) register(ctx context.Context, r EstablishRequest) (Token, err
 		s.OnRevoke(evicted)
 	}
 	return tok, nil
+}
+
+// AdmitDevice applies the common device cap, expiry and hourly rate inside the
+// caller's transaction. The caller inserts its new row in that same transaction
+// and closes any evicted device's gateway connections after commit.
+func (s *Sessions) AdmitDevice(ctx context.Context, tx store.Repository, userID id.ID, keys [][]byte, noList bool, now int64) (id.ID, error) {
+	if err := tx.LockUserForDeviceRegistration(ctx, userID); err != nil {
+		return id.ID{}, err
+	}
+	rows, err := tx.ListDevicesByUser(ctx, userID)
+	if err != nil {
+		return id.ID{}, err
+	}
+	listed := make([]id.ID, 0, len(rows))
+	for _, row := range rows {
+		if noList || ListedKey(keys, row.DSKPub) {
+			listed = append(listed, row.ID)
+		}
+	}
+	cutoff := now - 86399
+	for _, row := range rows {
+		if row.RevokedAt == nil && row.Created < cutoff && !slices.Contains(listed, row.ID) {
+			if err := tx.RevokeDevice(ctx, row.ID, now); err != nil {
+				return id.ID{}, err
+			}
+			if _, err := tx.DeleteSessionsByDevice(ctx, row.ID); err != nil {
+				return id.ID{}, err
+			}
+		}
+	}
+	live, err := tx.CountLiveDevicesByUser(ctx, userID)
+	if err != nil {
+		return id.ID{}, err
+	}
+	var evicted id.ID
+	var oldest int64
+	if live >= int64(s.cfg.MaxDevicesPerUser) {
+		for _, row := range rows {
+			if row.RevokedAt == nil && row.Created >= cutoff && !slices.Contains(listed, row.ID) &&
+				(evicted.IsZero() || row.Created < oldest || (row.Created == oldest && bytes.Compare(row.ID[:], evicted[:]) < 0)) {
+				evicted, oldest = row.ID, row.Created
+			}
+		}
+		if evicted.IsZero() {
+			return id.ID{}, server.Errorf(server.CodeForbidden, "device cap reached")
+		}
+		if err := tx.RevokeDevice(ctx, evicted, now); err != nil {
+			return id.ID{}, err
+		}
+		if _, err := tx.DeleteSessionsByDevice(ctx, evicted); err != nil {
+			return id.ID{}, err
+		}
+	}
+	creations, err := tx.ListLiveDeviceCreationsSince(ctx, userID, listed, now-3599, cutoff)
+	if err != nil {
+		return id.ID{}, err
+	}
+	if len(creations) >= s.cfg.EnrolmentsPerHour {
+		wait := creations[len(creations)-s.cfg.EnrolmentsPerHour] + 3600 - now
+		return id.ID{}, server.RateLimited(uint64(wait) * 1000) //nolint:gosec // bounded by the hourly window
+	}
+	return evicted, nil
 }
 
 // mint writes one session row through tx and returns the bearer token. It is
@@ -667,19 +680,12 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 		if err != nil || device.RevokedAt != nil {
 			return Session{}, server.Errorf(server.CodeUnauthenticated, "")
 		}
-		keys, err := s.DeviceLists.ListedKeys(ctx, row.UserID)
-		if err != nil && !errors.Is(err, ErrNoDeviceList) {
-			return Session{}, listError(err)
-		}
-		if err == nil && device.Created <= now.Unix()-86400 {
-			listed := false
-			for _, key := range keys {
-				if bytes.Equal(key, device.DSKPub) {
-					listed = true
-					break
-				}
+		if device.Created <= now.Unix()-86400 {
+			keys, err := s.DeviceLists.ListedKeys(ctx, row.UserID)
+			if err != nil && !errors.Is(err, ErrNoDeviceList) {
+				return Session{}, ListError(err)
 			}
-			if !listed {
+			if err == nil && !ListedKey(keys, device.DSKPub) {
 				if err := s.RevokeDevice(ctx, device.ID); err != nil {
 					return Session{}, err
 				}
