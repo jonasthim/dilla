@@ -64,7 +64,8 @@ Every endpoint in this document requires a **device session**. A device session 
 4. **Scope** is `0 enrolled`, `1 pending`, `2 provisional`. An establish with `login` is `pending`;
    purpose 2 is `provisional`. Otherwise the newest list verified against `users.ssk_pub` decides:
    no list or an unrevoked entry naming the device's `dsk_pub` gives `enrolled`; an omitted device
-   gets `pending`. A list that fails verification gives `401 E_UNAUTHENTICATED`; a verifier or
+   gets `pending`. A list that fails verification, a stored list that cannot be decoded
+   included, gives `401 E_UNAUTHENTICATED` (only an absent list is "no list"); a verifier or
    instance fault gives `503 E_UNAVAILABLE`, so a transient failure is retryable. Scope is fixed
    at mint: a pending device becomes enrolled by establishing again after a list names it.
    `enrolled` reaches every endpoint subject to ordinary ACL; `pending` reaches only its own two

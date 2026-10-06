@@ -1108,3 +1108,46 @@ func TestTheDeviceListGateRunsThroughTheCompositionRoot(t *testing.T) {
 		t.Fatalf("a stolen password created a device row: %v", err)
 	}
 }
+
+// Boundary ruling 4 (task 7 scan): only an absent list is "no list". A stored list that exists but
+// cannot be decoded answers 401 E_UNAUTHENTICATED, as a list failing verification does, through
+// the real verifier behind the composition root's lister: never the no-list clause's enrolled
+// scope, and never 503, which stays for instance faults. Attacker: whoever could put unreadable
+// bytes in device_lists (a damaged row, a restore gone wrong) would otherwise make every device of
+// the user enrolled, an unlisted one included.
+func TestAStoredListThatCannotBeDecodedIsRefused(t *testing.T) {
+	srv, h, _ := newInstance(t)
+	defer srv.Shutdown(context.Background())
+	const password = "correct horse battery staple"
+	for i, garbage := range map[string][]byte{
+		"bytes that are not CBOR":         bytes.Repeat([]byte{0xff}, 96),
+		"a CBOR array of the wrong shape": {0x83, 0x01, 0x02, 0x03},
+		"a truncated list":                {0x86, 0x01, 0x50},
+	} {
+		t.Run(i, func(t *testing.T) {
+			ssk := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{byte(len(i))}, 32))
+			d0 := newTestDevice(t)
+			name := "u" + id.New().String()[:12]
+			user, _ := accountWithKeys(t, h, mintInvite(t, srv), name, password, d0, ssk)
+			if err := srv.Repo().PutDeviceList(context.Background(), store.DeviceListRow{
+				UserID: user, Version: 1, Blob: garbage, SSKSignature: make([]byte, 64),
+				PrevHash: make([]byte, 32), Created: srv.Now().Unix(),
+			}); err != nil {
+				t.Fatalf("PutDeviceList: %v", err)
+			}
+			rec := establishAs(t, h, srv, d0, nil, nil)
+			if rec.Code != http.StatusUnauthorized || errorCode(rec) != "E_UNAUTHENTICATED" {
+				t.Fatalf("establish under an undecodable list = %d %q, want 401 E_UNAUTHENTICATED", rec.Code, errorCode(rec))
+			}
+			d1 := newTestDevice(t)
+			reg := []any{d1.ID, pubOf(d1), uint64(1), uint64(1), bytes.Repeat([]byte{0}, 10)}
+			rec = establishAs(t, h, srv, d1, reg, []byte(loginAssertion(t, h, name, password)))
+			if rec.Code != http.StatusUnauthorized || errorCode(rec) != "E_UNAUTHENTICATED" {
+				t.Fatalf("registration under an undecodable list = %d %q, want 401 E_UNAUTHENTICATED", rec.Code, errorCode(rec))
+			}
+			if _, err := srv.Repo().GetDevice(context.Background(), d1.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("a registration under an undecodable list created a device row: %v", err)
+			}
+		})
+	}
+}
