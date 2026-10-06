@@ -4,12 +4,14 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { en } from './strings/en.ts';
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 // Props of @dilla/ui components (and of DOM elements) whose value a person sees or hears.
 const VISIBLE_PROPS = new Set(['label', 'title', 'placeholder', 'aria-label', 'alt', 'status', 'detail', 'body',
   'stateLabel', 'emptyLabel', 'skipLabel', 'joinLabel', 'sendLabel', 'printLabel', 'acknowledgeLabel',
-  'readableLabel', 'stepLabel', 'disabledReason', 'hint', 'error', 'author', 'name', 'topic', 'time']);
+  'readableLabel', 'stepLabel', 'disabledReason', 'hint', 'error', 'author', 'name', 'topic', 'time',
+  'closeLabel', 'ownLabel', 'tierLabel', 'lastSeen', 'settingsLabel']);
 const LETTER = /[A-Za-z]/;
 
 function stringOf(e: ts.Expression | undefined): string | null {
@@ -78,11 +80,21 @@ describe('copy lives in strings/en.ts', () => {
   });
 });
 
-const DETAIL_SWITCH = /\.detail\s*(===|!==|==|!=)|\.detail\.(startsWith|endsWith|includes|match)\(/;
+// Card 53: every way a line can compare, search, switch on, test or case-fold a detail value, including a
+// destructured alias compared with a non-empty literal; `typeof detail === 'string'` and `detail === ''` (the error
+// constructors) are not switches.
+const DETAIL_SWITCH: readonly RegExp[] = [
+  /\.detail\s*(===|!==|==|!=)/,
+  /\bdetail\??\.(startsWith|endsWith|includes|match|matchAll|indexOf|lastIndexOf|search|localeCompare|split)\(/,
+  /\bdetail\??\.(toLowerCase|toUpperCase|toLocaleLowerCase|toLocaleUpperCase|trim|normalize)\(\)\s*(===|!==|==|!=)/,
+  /switch\s*\(\s*[\w.?]*\bdetail\s*\)/,
+  /\.test\(\s*[\w.?]*\bdetail\b/,
+  /(?<!typeof\s+)\bdetail\s*(===|!==|==|!=)\s*(['"`])(?!\2)/,
+];
 
 /** Lines of a source that compare or search an error's detail text (protocol/02: a client MUST NOT parse it). */
 export function detailSwitches(fileName: string, source: string): string[] {
-  return source.split('\n').flatMap((line, i) => (DETAIL_SWITCH.test(line) ? [`${fileName}:${i + 1}: ${line.trim()}`] : []));
+  return source.split('\n').flatMap((line, i) => (DETAIL_SWITCH.some(p => p.test(line)) ? [`${fileName}:${i + 1}: ${line.trim()}`] : []));
 }
 
 function codeFiles(root: string): string[] {
@@ -92,14 +104,76 @@ function codeFiles(root: string): string[] {
 }
 
 describe('no code switches on a server detail', () => {
-  it('finds every form it looks for', () => {
-    const planted = ['if (e.detail === "username taken") x();', 'e.detail.startsWith("username:")', 'e.detail.includes("x")',
-      'err.detail != ""', 'e.detail.match(/x/)', 'e.detail.endsWith("y")', 'const ok = e.code === "E_X" && e.status === 409;'].join('\n');
-    expect(detailSwitches('x.ts', planted)).toHaveLength(6);
+  it('finds every form it looks for, and leaves the error constructors alone', () => {
+    const planted = [
+      'if (e.detail === "username taken") x();',
+      'e.detail.startsWith("username:")',
+      'e.detail.includes("x")',
+      'err.detail != ""',
+      'e.detail.match(/x/)',
+      'e.detail.endsWith("y")',
+      'switch (e.detail) { default: }',
+      'if (/taken/.test(err.detail)) y();',
+      'const at = e.detail.indexOf("x");',
+      'if (e.detail.search(/x/) >= 0) y();',
+      'if (e.detail.toLowerCase() === "x") y();',
+      'const { detail } = e; if (detail === "taken") y();',
+      'const ok = e.code === "E_X" && e.status === 409;',
+      'if (typeof detail === "string") z();',
+      'super(detail === "" ? code : `${code}: ${detail}`);',
+    ].join('\n');
+    const found = detailSwitches('x.ts', planted);
+    expect(found).toHaveLength(12);
+    expect(found.at(-1)).toBe('x.ts:12: const { detail } = e; if (detail === "taken") y();');
   });
   it('holds for packages/web/src and packages/client-core/src', () => {
     const roots = [SRC, join(SRC, '..', '..', 'client-core', 'src')];
     const found = roots.flatMap(codeFiles).flatMap(file => detailSwitches(file, readFileSync(file, 'utf8')));
     expect(found).toEqual([]);
+  });
+});
+
+const FLOWS = join(SRC, '..', '..', '..', 'docs', 'design', 'flows');
+const FLOW_FILES = ['01-onboarding.md', '02-recovery-key.md', '03-sign-in.md'] as const;
+const COPY_HEADER = /^\|\s*key\s*\|\s*text\s*\|/;
+const COPY_ROW = /^\|\s*`([^`]+)`\s*\|\s*`([^`]*)`\s*\|/;
+// Key prefixes the flows quote before en.ts holds them: task 19 removes 'settings.' and 'devices.', task 20
+// removes 'shell.' and deletes this constant.
+const COPY_PENDING: readonly string[] = ['settings.', 'devices.', 'shell.'];
+
+/** The [key, text] rows of every table in a flow document whose header starts `| key | text |`. */
+export function copyRows(source: string): { rows: [string, string][]; unparsed: string[] } {
+  const rows: [string, string][] = [];
+  const unparsed: string[] = [];
+  let inTable = false;
+  for (const line of source.split('\n')) {
+    if (COPY_HEADER.test(line)) { inTable = true; continue; }
+    if (!inTable) continue;
+    if (!line.startsWith('|')) { inTable = false; continue; }
+    if (/^\|\s*-/.test(line)) continue;
+    const m = COPY_ROW.exec(line);
+    if (m === null) unparsed.push(line); else rows.push([m[1], m[2]]);
+  }
+  return { rows, unparsed };
+}
+
+describe('the flows quote en.ts', () => {
+  it('reads every row of a copy table and nothing else', () => {
+    const doc = [
+      '| key | text | where |', '|---|---|---|', '| `a.b` | `One` | x |', '| `c.d` | `Two’s` |', '',
+      '| check | where |', '|---|---|', '| `e.f` | `no` |', '',
+      '| key | text |', '|---|---|', '| g.h | `x` |',
+    ].join('\n');
+    expect(copyRows(doc)).toEqual({ rows: [['a.b', 'One'], ['c.d', 'Two’s']], unparsed: ['| g.h | `x` |'] });
+  });
+  it.each(FLOW_FILES)('every Copy row of %s equals en.ts', file => {
+    const table = en as Readonly<Record<string, string>>;
+    const { rows, unparsed } = copyRows(readFileSync(join(FLOWS, file), 'utf8'));
+    expect(unparsed, file).toEqual([]);
+    expect(rows.length, file).toBeGreaterThan(0);
+    const wrong = rows
+      .filter(([key, text]) => !COPY_PENDING.some(p => key.startsWith(p)) && table[key] !== text)
+      .map(([key]) => `${file}: ${key}`);
+    expect(wrong).toEqual([]);
   });
 });

@@ -1,12 +1,15 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { errorOf, type UiError } from './core/errors.ts';
 
-export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null }
+export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null; signin: 'race' | null }
   | { name: 'channel'; communityId: string; channelId: string | null };
 
 export function parseRoute(pathname: string, search: string): Route {
   if (pathname === '/') return { name: 'root' };
-  if (pathname === '/welcome') return { name: 'welcome', invite: new URLSearchParams(search).get('invite') || null };
+  if (pathname === '/welcome') {
+    const params = new URLSearchParams(search);
+    return { name: 'welcome', invite: params.get('invite') || null, signin: params.get('signin') === 'race' ? 'race' : null };
+  }
   const match = /^\/c\/([0-9a-f]{32})(?:\/([0-9a-f]{32}))?$/.exec(pathname);
   if (match) return { name: 'channel', communityId: match[1], channelId: match[2] ?? null };
   return { name: 'root' };
@@ -15,7 +18,12 @@ export function parseRoute(pathname: string, search: string): Route {
 export function routePath(route: Route): string {
   switch (route.name) {
     case 'root': return '/';
-    case 'welcome': return route.invite ? `/welcome?invite=${encodeURIComponent(route.invite)}` : '/welcome';
+    case 'welcome': {
+      const parts: string[] = [];
+      if (route.invite) parts.push(`invite=${encodeURIComponent(route.invite)}`);
+      if (route.signin === 'race') parts.push('signin=race');
+      return parts.length > 0 ? `/welcome?${parts.join('&')}` : '/welcome';
+    }
     case 'channel': return `/c/${route.communityId}${route.channelId ? `/${route.channelId}` : ''}`;
   }
 }

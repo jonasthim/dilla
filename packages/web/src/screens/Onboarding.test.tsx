@@ -175,7 +175,7 @@ describe('recovery key', () => {
     for (const group of KEY) expect(screen.getByText(group)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
     expect(screen.getByText('This key is shown once and is kept nowhere. Write it down or print it, and keep it away from this computer.')).toBeInTheDocument();
-    expect(screen.getByText('Getting an account back with this key is not available in this version. Until it is, your account lives only in this browser: if this browser loses its data, the account and its history are gone, and the host cannot bring them back. Keep the key for when recovery arrives.')).toBeInTheDocument();
+    expect(screen.getByText('This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.')).toBeInTheDocument();
     // Blocked for a reason the person must hear, so focusable (Global Constraints line 98, A11Y-DESIGN-03).
     expect(button('Continue')).toHaveAttribute('aria-disabled', 'true');
     expect(button('Continue')).toHaveAccessibleDescription('Tick the box to continue.');
@@ -232,7 +232,7 @@ describe('creating the account', () => {
     const paragraphs = [
       'This browser now holds the key of this device, in its storage for dilla.test. The key never leaves this browser.',
       'Clearing this site’s data removes the key and the messages kept here, and this browser stops being your device.',
-      'This version cannot add a second browser or restore an account from the recovery key yet. For now, your account works in this browser only.',
+      'To use this account in another browser, sign in there with your password and this recovery key. Messages sent before that browser joins are not shown in it.',
       'A private window forgets all of this when it closes.',
     ].map(text => screen.getByText(text));
     for (let i = 1; i < paragraphs.length; i++) {
@@ -484,6 +484,75 @@ describe('refusals', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     await user.click(button('Continue'));
     expect(h1()).toHaveTextContent('What this browser keeps');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('signing in instead', () => {
+  it('offers an existing account below the invite when the instance takes passwords', async () => {
+    const { user, fake, view } = setup({ instance: { ...INSTANCE, passwordSignup: true } });
+    const entry = button('Use an existing account');
+    expect(entry).toHaveAttribute('type', 'button');
+    expect(field('Invite').compareDocumentPosition(entry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(entry.compareDocumentPosition(button('Continue')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await expectNoAxeViolations(view.container);
+    await user.click(entry);
+    expect(fake.callsOf('signInBegin')).toEqual([{ m: 'signInBegin' }]);
+    expect(fake.callsOf('signupBegin')).toEqual([]);
+  });
+  it('offers no entry when the instance has no password login', () => {
+    setup();
+    expect(screen.queryByRole('button', { name: 'Use an existing account' })).toBeNull();
+  });
+  it('offers the entry on a closed instance too, as its only control', () => {
+    setup({ instance: { ...INSTANCE, registrationMode: 2, passwordSignup: true } });
+    expect(h1()).toHaveTextContent('dilla.test is not taking new accounts');
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['Use an existing account']);
+  });
+  it('is not offered after the first step', async () => {
+    const { user } = setup({ instance: { ...INSTANCE, passwordSignup: true } });
+    await toIdentity(user);
+    expect(screen.queryByRole('button', { name: 'Use an existing account' })).toBeNull();
+  });
+  it('shows a refused entry and sends it once while in flight', async () => {
+    const { user, fake } = setup({ instance: { ...INSTANCE, passwordSignup: true } });
+    let release: (e: unknown) => void = () => {};
+    fake.handler = c => (c.m === 'signInBegin' ? new Promise((_, reject) => { release = reject; }) : Promise.resolve(null));
+    await user.click(button('Use an existing account'));
+    expect(button('Use an existing account')).toHaveAttribute('aria-disabled', 'true');
+    await user.click(button('Use an existing account'));
+    expect(fake.callsOf('signInBegin')).toHaveLength(1);
+    await act(async () => { release(refusal({ code: 'E_STATE' })); await Promise.resolve(); });
+    expect(screen.getByRole('alert')).toHaveTextContent('Signing in did not work (E_STATE). Try again.');
+    expect(button('Use an existing account')).not.toHaveAttribute('aria-disabled');
+  });
+});
+
+describe('after a list race', () => {
+  const RACE = 'The account’s devices changed while you were signing in. Sign in again.';
+  it('says the devices changed on the connect step, and drops the query when it moves on', async () => {
+    const { user, view } = setup({ instance: { ...INSTANCE, passwordSignup: true } }, '/welcome?signin=race');
+    expect(h1()).toHaveTextContent('Join dilla.test');
+    expect(screen.getByRole('alert')).toHaveTextContent(RACE);
+    await expectNoAxeViolations(view.container);
+    await toIdentity(user);
+    expect(window.location.pathname + window.location.search).toBe('/welcome');
+    expect(screen.queryByText(RACE)).toBeNull();
+  });
+  it('keeps the invite in the address when the entry drops the race', async () => {
+    const { user, fake } = setup({ instance: { ...INSTANCE, passwordSignup: true } }, '/welcome?invite=ABCD-EFGH&signin=race');
+    expect(field('Invite')).toHaveValue('ABCD-EFGH');
+    await user.click(button('Use an existing account'));
+    expect(fake.callsOf('signInBegin')).toEqual([{ m: 'signInBegin' }]);
+    expect(window.location.pathname + window.location.search).toBe('/welcome?invite=ABCD-EFGH');
+    expect(screen.queryByText(RACE)).toBeNull();
+  });
+  it('says it on a closed instance too', () => {
+    setup({ instance: { ...INSTANCE, registrationMode: 2, passwordSignup: true } }, '/welcome?signin=race');
+    expect(screen.getByRole('alert')).toHaveTextContent(RACE);
+  });
+  it('says nothing without the query', () => {
+    setup({}, '/welcome');
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });

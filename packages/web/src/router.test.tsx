@@ -9,10 +9,13 @@ const CH = 'fedcba9876543210'.repeat(2);
 describe('parseRoute', () => {
   const cases: [string, string, Route][] = [
     ['/', '', { name: 'root' }],
-    ['/welcome', '', { name: 'welcome', invite: null }],
-    ['/welcome', '?invite=ABCD-EFGH', { name: 'welcome', invite: 'ABCD-EFGH' }],
-    ['/welcome', '?invite=', { name: 'welcome', invite: null }],
-    ['/welcome', '?invite=a%20b', { name: 'welcome', invite: 'a b' }],
+    ['/welcome', '', { name: 'welcome', invite: null, signin: null }],
+    ['/welcome', '?invite=ABCD-EFGH', { name: 'welcome', invite: 'ABCD-EFGH', signin: null }],
+    ['/welcome', '?invite=', { name: 'welcome', invite: null, signin: null }],
+    ['/welcome', '?invite=a%20b', { name: 'welcome', invite: 'a b', signin: null }],
+    ['/welcome', '?signin=race', { name: 'welcome', invite: null, signin: 'race' }],
+    ['/welcome', '?invite=ABCD-EFGH&signin=race', { name: 'welcome', invite: 'ABCD-EFGH', signin: 'race' }],
+    ['/welcome', '?signin=other', { name: 'welcome', invite: null, signin: null }],
     [`/c/${C}`, '', { name: 'channel', communityId: C, channelId: null }],
     [`/c/${C}/${CH}`, '?x=1', { name: 'channel', communityId: C, channelId: CH }],
     [`/c/${C.toUpperCase()}`, '', { name: 'root' }],
@@ -30,13 +33,15 @@ describe('parseRoute', () => {
 describe('routePath', () => {
   it('inverts parseRoute', () => {
     expect(routePath({ name: 'root' })).toBe('/');
-    expect(routePath({ name: 'welcome', invite: null })).toBe('/welcome');
-    expect(routePath({ name: 'welcome', invite: 'a b&c' })).toBe('/welcome?invite=a%20b%26c');
+    expect(routePath({ name: 'welcome', invite: null, signin: null })).toBe('/welcome');
+    expect(routePath({ name: 'welcome', invite: 'a b&c', signin: null })).toBe('/welcome?invite=a%20b%26c');
+    expect(routePath({ name: 'welcome', invite: null, signin: 'race' })).toBe('/welcome?signin=race');
     expect(routePath({ name: 'channel', communityId: C, channelId: null })).toBe(`/c/${C}`);
     expect(routePath({ name: 'channel', communityId: C, channelId: CH })).toBe(`/c/${C}/${CH}`);
-    const p = routePath({ name: 'welcome', invite: 'a b&c' });
+    const p = routePath({ name: 'welcome', invite: 'a b&c', signin: 'race' });
+    expect(p).toBe('/welcome?invite=a%20b%26c&signin=race');
     const [path, search] = [p.slice(0, p.indexOf('?')), p.slice(p.indexOf('?'))];
-    expect(parseRoute(path, search)).toEqual({ name: 'welcome', invite: 'a b&c' });
+    expect(parseRoute(path, search)).toEqual({ name: 'welcome', invite: 'a b&c', signin: 'race' });
   });
 });
 
@@ -46,7 +51,7 @@ function Probe() {
     <>
       <output>{JSON.stringify(route)}</output>
       <button type="button" onClick={() => go({ name: 'channel', communityId: C, channelId: null })}>push</button>
-      <button type="button" onClick={() => go({ name: 'welcome', invite: 'X' }, true)}>replace</button>
+      <button type="button" onClick={() => go({ name: 'welcome', invite: 'X', signin: null }, true)}>replace</button>
     </>
   );
 }

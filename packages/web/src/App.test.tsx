@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { StrictMode } from 'react';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CoreProvider } from './core/context.tsx';
@@ -14,6 +15,8 @@ describe('screenFor', () => {
     for (const p of ['loading', 'unsupported', 'other-tab', 'store-lost', 'revoked', 'error'] as const) expect(screenFor(p)).toBe('boot');
     for (const p of ['needs-signup', 'signup-keys', 'registering'] as const) expect(screenFor(p)).toBe('onboarding');
     expect(screenFor('ready')).toBe('shell');
+    for (const p of ['signin-login', 'signin-totp', 'signin-key', 'enrolling'] as const) expect(screenFor(p)).toBe('signin');
+    expect(screenFor('cleared')).toBe('boot');
   });
 });
 
@@ -145,5 +148,109 @@ describe('App shell', () => {
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     expect(screen.getByRole('navigation', { name: 'servers' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'You are not in a server yet' })).toBeInTheDocument();
+  });
+});
+
+describe('App sign-in', () => {
+  function signInWorker(fake: FakeClient) {
+    const move = (over: Partial<ReturnType<typeof account>>) => fake.set('account', { ...fake.get('account')!, ...over });
+    fake.handler = c => {
+      if (c.m === 'signInBegin') move({ phase: 'signin-login', signIn: { username: null, needsTotp: false } });
+      if (c.m === 'signInLogin') move({ phase: 'signin-key', signIn: { username: 'ada', needsTotp: false } });
+      if (c.m === 'signInKey') move({ phase: 'ready', user: { id: 'bb'.repeat(16), username: 'ada' }, signIn: null });
+      if (c.m === 'signInCancel') move({ phase: 'needs-signup', signIn: null });
+      return Promise.resolve(c.m === 'signInLogin' ? { needsTotp: false } : null);
+    };
+  }
+  const startAt = (fake: FakeClient) => {
+    fake.set('account', account({ phase: 'needs-signup', user: null, instance: { ...account().instance!, passwordSignup: true } }));
+    signInWorker(fake);
+    window.history.replaceState(null, '', '/');
+    return render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+  };
+  it('enters the ceremony from onboarding and lands at / after done', async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient();
+    startAt(fake);
+    await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Sign in to dilla.test');
+    await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
+    await user.type(screen.getByLabelText('Password'), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
+    await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
+    await user.click(screen.getByRole('button', { name: 'Add this browser' }));
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('You’re in');
+    window.history.replaceState(null, '', '/welcome');
+    const depth = window.history.length;
+    await user.click(screen.getByRole('button', { name: 'Open dilla' }));
+    expect(screen.queryByRole('heading', { name: 'You’re in' })).toBeNull();
+    expect(window.location.pathname).toBe('/');
+    expect(window.history.length).toBe(depth);
+    expect(screen.getByRole('navigation', { name: 'servers' })).toBeInTheDocument();
+  });
+  it('returns to onboarding on cancel, and a later signup is not followed by the sign-in done step', async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient();
+    startAt(fake);
+    await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
+    await user.click(screen.getByRole('button', { name: 'Create a new account instead' }));
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
+    act(() => fake.set('account', account({ phase: 'ready' })));
+    expect(screen.getByText('Step 5 of 5')).toBeInTheDocument();
+    expect(screen.queryByText(/This browser is now a device of/)).toBeNull();
+    expect(screen.queryByText('Step 4 of 4')).toBeNull();
+  });
+});
+
+describe('App cleared', () => {
+  const RACE = { code: 'E_LIST_RACE', detail: '', status: 0, retryAfterMs: null };
+  it('reloads to the race message after a list race, once', () => {
+    const fake = new FakeClient();
+    const reload = vi.fn();
+    fake.set('account', account({ phase: 'cleared', user: null, deviceId: null, signIn: null, error: RACE }));
+    const view = render(<CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider>);
+    expect(screen.getByRole('status')).toHaveTextContent('Starting dilla');
+    act(() => fake.set('account', { ...fake.get('account')! }));
+    view.rerender(<CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider>);
+    expect(reload.mock.calls).toEqual([['/welcome?signin=race']]);
+  });
+  // main.tsx renders under StrictMode, whose double effect on mount is what the once-per-mount guard is for.
+  it('reloads once under StrictMode', () => {
+    const fake = new FakeClient();
+    const reload = vi.fn();
+    fake.set('account', account({ phase: 'cleared', user: null, deviceId: null, signIn: null, error: RACE }));
+    render(<StrictMode><CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider></StrictMode>);
+    expect(reload.mock.calls).toEqual([['/welcome?signin=race']]);
+  });
+  it('reloads to / after a sign-out or a forget', () => {
+    const fake = new FakeClient();
+    const reload = vi.fn();
+    fake.set('account', account({ phase: 'ready' }));
+    render(<CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider>);
+    expect(reload).not.toHaveBeenCalled();
+    act(() => fake.set('account', account({ phase: 'cleared', user: null, deviceId: null, signIn: null, error: null })));
+    expect(screen.queryByRole('navigation', { name: 'servers' })).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('Starting dilla');
+    expect(reload.mock.calls).toEqual([['/']]);
+  });
+  it('a list race during the recovery key replaces the ceremony with the splash and reloads', async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient();
+    const reload = vi.fn();
+    fake.set('account', account({ phase: 'signin-key', user: null, deviceId: null, signIn: { username: 'ada', needsTotp: false } }));
+    fake.handler = c => {
+      if (c.m !== 'signInKey') return Promise.resolve(null);
+      fake.set('account', account({ phase: 'cleared', user: null, deviceId: null, signIn: null, error: RACE }));
+      return Promise.reject(refusal({ code: 'E_LIST_RACE' }));
+    };
+    window.history.replaceState(null, '', '/');
+    render(<CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider>);
+    await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
+    await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
+    await user.click(screen.getByRole('button', { name: 'Add this browser' }));
+    expect(screen.queryByRole('heading', { name: 'Your recovery key' })).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('Starting dilla');
+    expect(reload.mock.calls).toEqual([['/welcome?signin=race']]);
   });
 });
