@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { ChannelSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
+import type { ChannelSummary, DeviceSummary, DmSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, ME } from '../test/fixtures.ts';
@@ -45,7 +45,7 @@ function timeline(over: Partial<TimelineState> = {}): TimelineState {
   return { channelId: GEN, group: 'active', items: [], hasEarlier: false, ...over };
 }
 // `state` is the history entry's state (task 23 carries a refused join in it, pre-flight ruling (g)).
-function setup(path: string, opts: { channels?: boolean; communities?: { id: string; name: string }[]; state?: unknown } = {}) {
+function setup(path: string, opts: { channels?: boolean; communities?: { id: string; name: string }[]; state?: unknown; before?(fake: FakeClient): void } = {}) {
   window.history.replaceState(opts.state ?? null, '', path);
   const fake = new FakeClient();
   fake.set('account', account());
@@ -53,6 +53,7 @@ function setup(path: string, opts: { channels?: boolean; communities?: { id: str
   fake.set('communities', opts.communities ?? [{ id: A, name: 'Midgard' }, { id: B, name: 'Valhalla' }]);
   if (opts.channels !== false) fake.set(`channels:${A}`, CHANNELS);
   fake.set(`members:${A}`, MEMBERS);
+  opts.before?.(fake);
   const user = userEvent.setup();
   const view = render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
   return { fake, user, view };
@@ -573,7 +574,7 @@ describe('keyboard', () => {
     expect(composer()).toHaveFocus();
     expect(composer()).toHaveAttribute('aria-disabled', 'true');
   });
-  it('tabs through skip link, rail, channels, log and composer in that order', async () => {
+  it('tabs through skip link, rail, sidebar tabs, channels, log and composer in that order', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' })] })));
     await user.tab();
@@ -581,7 +582,9 @@ describe('keyboard', () => {
     await user.tab();
     expect(screen.getByRole('navigation', { name: 'servers' })).toContainElement(document.activeElement as HTMLElement);
     await user.tab();
-    expect(screen.getByRole('navigation', { name: 'channels' })).toContainElement(document.activeElement as HTMLElement);
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'channels' }));
+    await user.tab();
+    expect(screen.getByRole('tabpanel', { name: 'channels' })).toContainElement(document.activeElement as HTMLElement);
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('log'));
     await user.tab();
@@ -594,5 +597,210 @@ describe('keyboard', () => {
     await user.click(screen.getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(composer()).toHaveFocus();
+  });
+});
+
+const DM = '9a'.repeat(16);
+const DMS: DmSummary[] = [{ id: DM, kind: 3, members: [ME.id, PEER], name: 'bob', group: 'active' }];
+const withDms = (fake: FakeClient) => fake.set('dms', DMS);
+
+describe('direct messages', () => {
+  it('is one list: the server name, then the tabs, then the active tab’s rows', async () => {
+    const { user, view } = setup(`/c/${A}/${GEN}`, { before: withDms });
+    const sidebar = screen.getByRole('navigation', { name: 'channels' });
+    const name = within(sidebar).getByRole('heading', { level: 1, name: 'Midgard' });
+    const tabs = within(sidebar).getByRole('tablist', { name: 'sidebar' });
+    const panel = within(sidebar).getByRole('tabpanel', { name: 'channels' });
+    expect(name.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(tabs.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole('tablist')).toHaveLength(1);
+    expect(within(tabs).getByRole('tab', { name: 'channels' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(panel).getByRole('button', { name: 'general' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'message someone' })).toBeNull();
+    await user.click(within(tabs).getByRole('tab', { name: 'direct messages' }));
+    expect(path()).toBe(`/c/${A}/${GEN}`);
+    const list = screen.getByRole('navigation', { name: 'direct messages' });
+    expect(within(list).getByRole('heading', { level: 1, name: 'Midgard' })).toBeInTheDocument();
+    expect(screen.getAllByRole('tablist')).toHaveLength(1);
+    expect(within(screen.getByRole('tabpanel', { name: 'direct messages' })).getByRole('button', { name: 'message someone' })).toBeInTheDocument();
+    expect(within(list).getByRole('button', { name: 'bob' })).toHaveAttribute('data-kind', 'dm');
+    await expectNoAxeViolations(view.container);
+    await user.click(within(list).getByRole('button', { name: 'bob' }));
+    expect(path()).toBe(`/dm/${DM}`);
+  });
+  it('says when there are none', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`, { before: f => f.set('dms', []) });
+    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    expect(screen.getByText('no direct messages yet')).toBeInTheDocument();
+  });
+  it('opens a DM with its own log and composer, sends into it and closes it when left', async () => {
+    const { fake, user, view } = setup(`/dm/${DM}`, { before: withDms });
+    expect(fake.callsOf('openChannel')).toEqual([{ m: 'openChannel', channelId: DM }]);
+    expect(screen.getByRole('tab', { name: 'direct messages' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('heading', { level: 2, name: 'bob' })).toHaveTextContent('[ @ bob ]');
+    act(() => fake.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 's1', body: 'hey' })] })));
+    expect(screen.getByRole('log', { name: 'messages with bob' })).toHaveTextContent('hey');
+    await expectNoAxeViolations(view.container);
+    // shell.dm.composer is `message @{name}` (pre-flight row 1.10): the name is the composer's untransformed target.
+    expect(document.querySelector('.d-composer__target')).toHaveTextContent('@bob');
+    await user.type(screen.getByRole('textbox', { name: 'message @bob' }), 'hi bob{Enter}');
+    expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: DM, text: 'hi bob' }]);
+    await user.click(screen.getByRole('tab', { name: 'channels' }));
+    await user.click(within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: /^random/ }));
+    expect(opens(fake)).toEqual([
+      { m: 'openChannel', channelId: DM }, { m: 'closeChannel', channelId: DM }, { m: 'openChannel', channelId: RAND },
+    ]);
+  });
+  it('leaves a DM it does not know for the first server', () => {
+    setup(`/dm/${'7b'.repeat(16)}`, { before: withDms });
+    expect(path()).toBe(`/c/${A}/${GEN}`);
+  });
+  it('starts a DM with a member of this server', async () => {
+    const { fake, user, view } = setup(`/c/${A}/${GEN}`, { before: withDms });
+    fake.handler = c => Promise.resolve(c.m === 'openDm' ? { channelId: DM } : null);
+    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    await user.click(screen.getByRole('button', { name: 'message someone' }));
+    const dialog = screen.getByRole('dialog', { name: 'Message someone' });
+    expect(within(dialog).getByText('Pick a member of this server.')).toBeInTheDocument();
+    expect(within(dialog).getByText('bob')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Ada L')).toBeNull();
+    expect(within(dialog).queryByText('Helper')).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'message' })).toHaveAccessibleDescription('bob');
+    await expectNoAxeViolations(view.container);
+    await user.click(within(dialog).getByRole('button', { name: 'message' }));
+    expect(fake.callsOf('openDm')).toEqual([{ m: 'openDm', userId: PEER }]);
+    expect(path()).toBe(`/dm/${DM}`);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('shows a refused DM in its dialog', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { before: withDms });
+    fake.handler = c => (c.m === 'openDm' ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })) : Promise.resolve(null));
+    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    await user.click(screen.getByRole('button', { name: 'message someone' }));
+    await user.click(screen.getByRole('button', { name: 'message' }));
+    expect(within(screen.getByRole('dialog', { name: 'Message someone' })).getByRole('alert'))
+      .toHaveTextContent('That did not work (E_FORBIDDEN). Try again, or reload the page.');
+    expect(path()).toBe(`/c/${A}/${GEN}`);
+  });
+});
+
+describe('badges', () => {
+  const HALL = 'b9'.repeat(16);
+  const badged = (badges: Record<string, { unread: number; mentions: number }>, settings: Record<string, string> = {}) => (fake: FakeClient) => {
+    fake.set(`channels:${B}`, [ch(HALL, 'hall', { communityId: B })]);
+    fake.set('badges', badges);
+    fake.set('settings', settings);
+    withDms(fake);
+  };
+  it('badges rows, the rail and the tabs, and names them by their counts', async () => {
+    const { view } = setup(`/c/${A}/${GEN}`, { before: badged({ [RAND]: { unread: 3, mentions: 0 }, [HALL]: { unread: 2, mentions: 1 }, [DM]: { unread: 1, mentions: 0 } }) });
+    const list = screen.getByRole('navigation', { name: 'channels' });
+    expect(within(list).getByRole('button', { name: 'random, unread 3, mentions 0' })).toHaveAttribute('data-unread', '3');
+    expect(within(list).getByRole('button', { name: 'general' })).toHaveAttribute('data-unread', '0');
+    const rail = screen.getByRole('navigation', { name: 'servers' });
+    expect(within(rail).getByRole('button', { name: 'Midgard, unread 3, mentions 0' })).toBeInTheDocument();
+    expect(within(rail).getByRole('button', { name: 'Valhalla, unread 2, mentions 1' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /^channels/ })).toHaveAttribute('data-count', '3');
+    expect(screen.getByRole('tab', { name: /^direct messages/ })).toHaveAttribute('data-count', '1');
+    await expectNoAxeViolations(view.container);
+  });
+  it('hides a muted channel’s unread count and keeps its mentions', () => {
+    setup(`/c/${A}/${GEN}`, { before: badged({ [RAND]: { unread: 3, mentions: 1 } }, { [`mute.channel.${RAND}`]: '1' }) });
+    expect(within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: 'random, muted, mentions 1' })).toHaveAttribute('data-unread', '0');
+    expect(within(screen.getByRole('navigation', { name: 'servers' })).getByRole('button', { name: 'Midgard, unread 0, mentions 1' })).toBeInTheDocument();
+  });
+  it('follows the badge slice', () => {
+    const { fake } = setup(`/c/${A}/${GEN}`, { before: badged({}) });
+    expect(within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: /^random$/ })).toBeInTheDocument();
+    act(() => fake.set('badges', { [RAND]: { unread: 1, mentions: 0 } }));
+    expect(within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: 'random, unread 1, mentions 0' })).toBeInTheDocument();
+  });
+});
+
+describe('reading', () => {
+  let shown: DocumentVisibilityState = 'visible';
+  beforeEach(() => {
+    shown = 'visible';
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => shown });
+  });
+  afterEach(() => { delete (document as Partial<Record<'visibilityState', unknown>>).visibilityState; });
+
+  it('marks the open channel read while it shows something unread, once per change', () => {
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'a' })] })));
+    expect(fake.callsOf('markRead')).toEqual([]);
+    act(() => fake.set('badges', { [GEN]: { unread: 1, mentions: 0 } }));
+    expect(fake.callsOf('markRead')).toEqual([{ m: 'markRead', channelId: GEN }]);
+    act(() => fake.set('badges', { [GEN]: { unread: 1, mentions: 0 } }));
+    expect(fake.callsOf('markRead')).toHaveLength(1);
+    act(() => fake.set('badges', { [GEN]: { unread: 0, mentions: 0 } }));
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'a' }), item({ key: 's2', body: 'b' })] })));
+    act(() => fake.set('badges', { [GEN]: { unread: 1, mentions: 0 } }));
+    expect(fake.callsOf('markRead')).toHaveLength(2);
+  });
+  it('waits while the page is hidden and marks when it is shown', () => {
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    shown = 'hidden';
+    act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'a' })] })));
+    act(() => fake.set('badges', { [GEN]: { unread: 2, mentions: 1 } }));
+    expect(fake.callsOf('markRead')).toEqual([]);
+    shown = 'visible';
+    act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(fake.callsOf('markRead')).toEqual([{ m: 'markRead', channelId: GEN }]);
+  });
+  // Added to the brief's tests (red proof (c)): the effect's dependency list already skips a republished badge with
+  // the same counts, so only a change of another dependency (the page hidden and shown again) reaches the ref check.
+  it('does not mark again when the page is shown again with nothing new', () => {
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'a' })] })));
+    act(() => fake.set('badges', { [GEN]: { unread: 1, mentions: 0 } }));
+    expect(fake.callsOf('markRead')).toEqual([{ m: 'markRead', channelId: GEN }]);
+    shown = 'hidden';
+    act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+    shown = 'visible';
+    act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(fake.callsOf('markRead')).toHaveLength(1);
+  });
+  it('never marks a channel that is not open', () => {
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'a' })] })));
+    act(() => fake.set('badges', { [RAND]: { unread: 5, mentions: 1 } }));
+    expect(fake.callsOf('markRead')).toEqual([]);
+  });
+  it('marks an open DM too', () => {
+    const { fake } = setup(`/dm/${DM}`, { before: withDms });
+    act(() => fake.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 's1', body: 'a' })] })));
+    act(() => fake.set('badges', { [DM]: { unread: 1, mentions: 0 } }));
+    expect(fake.callsOf('markRead')).toEqual([{ m: 'markRead', channelId: DM }]);
+  });
+});
+
+describe('devices and settings', () => {
+  const dev = (id: string, revokedAt: number | null): DeviceSummary =>
+    ({ id, tier: 1, signerTier: 1, lastSeen: NOW, revokedAt, listed: true, own: id === 'cc'.repeat(16) });
+  it('asks for the device list once and shows how many devices the account has', () => {
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    expect(fake.callsOf('refreshDevices')).toEqual([{ m: 'refreshDevices' }]);
+    const chunk = () => within(screen.getByRole('region', { name: 'connection' })).getByText('devices').closest('.d-chunk');
+    expect(chunk()).toHaveTextContent('–');
+    act(() => fake.set('devices', [dev('cc'.repeat(16), null), dev('d1'.repeat(16), null), dev('e2'.repeat(16), NOW)]));
+    expect(chunk()).toHaveTextContent('2');
+  });
+  it('opens settings from the rail, remembering the channel', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`);
+    await user.click(within(screen.getByRole('navigation', { name: 'servers' })).getByRole('button', { name: 'settings' }));
+    expect(path()).toBe('/settings/devices');
+    expect(window.history.state).toEqual({ settingsFrom: `/c/${A}/${GEN}` });
+  });
+  it('keeps the shell where it was while settings is open over it', () => {
+    const { fake } = setup('/settings/notifications', { state: { settingsFrom: `/c/${A}/${RAND}` } });
+    expect(path()).toBe('/settings/notifications');
+    expect(fake.callsOf('selectCommunity')).toEqual([{ m: 'selectCommunity', communityId: A }]);
+    expect(fake.callsOf('openChannel')).toEqual([{ m: 'openChannel', channelId: RAND }]);
+  });
+  it('goes nowhere under a deep link to settings', () => {
+    setup('/settings/devices');
+    expect(path()).toBe('/settings/devices');
   });
 });

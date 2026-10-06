@@ -13,3 +13,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-settings-actions--below { border-top: 1px solid var(--hairline); padding-top: var(--group-gap); }
 /* Focused only by script (after a removal, or after the permission answer): no ring that reads as an error box (ruling 23(h)). */
 .dw-settings-heading[tabindex="-1"]:focus-visible, .dw-settings-answer[tabindex="-1"]:focus-visible { outline: none; }
+
+/* The DM picker (task 20): one row per member, the name and its "message" button, as the Screens/Shell DmPicker story draws it. */
+.dw-dm-picker { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--row-gap); }
+.dw-dm-picker__row { display: flex; justify-content: space-between; align-items: center; gap: var(--group-gap); }

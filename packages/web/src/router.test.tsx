@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { parseRoute, routeOf, routePath, SETTINGS_FROM, useRoute, type Route } from './router.ts';
+import { baseRoute, parseRoute, routeOf, routePath, SETTINGS_FROM, useRoute, type Route } from './router.ts';
 
 const C = '0123456789abcdef'.repeat(2);
 const CH = 'fedcba9876543210'.repeat(2);
@@ -126,5 +126,13 @@ describe('the settings route', () => {
     expect(window.location.pathname).toBe('/settings/appearance');
     expect(window.history.state).toEqual({ [SETTINGS_FROM]: `/c/${C}/${CH}` });
     expect(window.history.length).toBe(before + 1);
+  });
+});
+
+describe('baseRoute', () => {
+  it('shows what settings was opened over', () => {
+    expect(baseRoute({ name: 'settings', section: 'devices', from: `/c/${C}/${CH}` })).toEqual({ name: 'channel', communityId: C, channelId: CH });
+    expect(baseRoute({ name: 'settings', section: 'notifications', from: null })).toEqual({ name: 'root' });
+    expect(baseRoute({ name: 'dm', channelId: CH })).toEqual({ name: 'dm', channelId: CH });
   });
 });

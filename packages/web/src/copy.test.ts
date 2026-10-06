@@ -139,8 +139,6 @@ const FLOWS = join(SRC, '..', '..', '..', 'docs', 'design', 'flows');
 const FLOW_FILES = ['01-onboarding.md', '02-recovery-key.md', '03-sign-in.md'] as const;
 const COPY_HEADER = /^\|\s*key\s*\|\s*text\s*\|/;
 const COPY_ROW = /^\|\s*`([^`]+)`\s*\|\s*`([^`]*)`\s*\|/;
-// Key prefixes the flows quote before en.ts holds them: task 20 removes 'shell.' and deletes this constant.
-const COPY_PENDING: readonly string[] = ['shell.'];
 
 /** The [key, text] rows of every table in a flow document whose header starts `| key | text |`. */
 export function copyRows(source: string): { rows: [string, string][]; unparsed: string[] } {
@@ -173,7 +171,7 @@ describe('the flows quote en.ts', () => {
     expect(unparsed, file).toEqual([]);
     expect(rows.length, file).toBeGreaterThan(0);
     const wrong = rows
-      .filter(([key, text]) => !COPY_PENDING.some(p => key.startsWith(p)) && table[key] !== text)
+      .filter(([key, text]) => table[key] !== text)
       .map(([key]) => `${file}: ${key}`);
     expect(wrong).toEqual([]);
   });

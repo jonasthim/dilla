@@ -62,6 +62,15 @@ export function routeOf(path: string): Route {
   return parseRoute(mark < 0 ? path : path.slice(0, mark), mark < 0 ? '' : path.slice(mark), null);
 }
 
+/**
+ * The route the shell shows (L-TS-27): under a settings route, the route Settings was opened over (`/` when it
+ * names none); any other route as it is. `fromState` never yields a settings path, so the result is never one.
+ */
+export function baseRoute(route: Route): Route {
+  if (route.name !== 'settings') return route;
+  return route.from === null ? { name: 'root' } : routeOf(route.from);
+}
+
 const listeners = new Set<() => void>();
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);

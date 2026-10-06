@@ -57,6 +57,17 @@ describe('the copy rules', () => {
     expect(Object.keys(en)).not.toContain('devices.error.other');
     expect(Object.keys(en)).not.toContain('devices.cap');
   });
+  it('keeps the shell chrome in lower case and names badges by count (L-COPY-02)', () => {
+    for (const k of ['shell.rail.settings', 'shell.tabs.label', 'shell.tabs.channels', 'shell.tabs.dms', 'shell.dms.label', 'shell.dms.empty',
+      'shell.dms.new', 'shell.dms.open', 'shell.status.devices', 'shell.dm.log', 'shell.dm.composer'] as const) expect(en[k], k).toMatch(/^[a-z]/);
+    expect(en['shell.channels.rowLabel']).toBe('{name}, unread {unread}, mentions {mentions}');
+    expect(en['shell.channels.rowLabelMuted']).toBe('{name}, muted, mentions {mentions}');
+    expect(en['shell.rail.itemLabel']).toBe('{name}, unread {unread}, mentions {mentions}');
+    expect(en['shell.dm.log']).toBe('messages with {name}');
+    // Pre-flight ruling (rows 1.10, loop note 15): `@` before the name, so the composer keeps the name's case (web-1's label rule).
+    expect(en['shell.dm.composer']).toBe('message @{name}');
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(70);
+  });
 });
 
 describe('dates', () => {

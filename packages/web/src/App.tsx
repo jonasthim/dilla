@@ -4,10 +4,13 @@ import { browser } from './browser.ts';
 import { useCore } from './core/context.tsx';
 import { errorOf, type UiError } from './core/errors.ts';
 import { useSlice } from './core/use-slice.ts';
-import { joinErrorState, useRoute } from './router.ts';
+import { notificationCtor, startNotifier } from './notify.ts';
+import { joinErrorState, useRoute, type Route } from './router.ts';
 import { Boot } from './screens/Boot.tsx';
 import { Onboarding, type SignupResult } from './screens/Onboarding.tsx';
-import { Shell } from './screens/Shell.tsx';
+import { Settings } from './screens/Settings.tsx';
+import { focusRailSettings, Shell } from './screens/Shell.tsx';
+import { visibleChannel } from './screens/shell-model.ts';
 import { SignIn } from './screens/SignIn.tsx';
 
 export type Screen = 'boot' | 'onboarding' | 'signin' | 'shell';
@@ -51,7 +54,33 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     reloaded.current = true;
     (reload ?? defaultReload)(errorCode === 'E_LIST_RACE' ? '/welcome?signin=race' : '/');
   }, [phase, errorCode, reload]);
-  const [, navigate] = useRoute();
+  const [route, navigate] = useRoute();
+  // The route as of the last commit, for the notifier's callbacks: the channel on screen, and whether Settings is open.
+  const shown = useRef<Route>(route);
+  useEffect(() => { shown.current = route; }, [route]);
+  // Desktop notifications (Q30, L-TS-25): the page follows the worker's notices once per client. A click opens the
+  // notice's channel or DM; one that leaves Settings that way must not then pull focus back to the rail.
+  const leftByNotice = useRef(false);
+  useEffect(() => startNotifier({
+    client,
+    Notification: notificationCtor(),
+    visible: () => document.visibilityState === 'visible',
+    onScreen: () => visibleChannel(shown.current),
+    focus: () => window.focus(),
+    open: n => {
+      leftByNotice.current = shown.current.name === 'settings';
+      navigate(n.communityId === null ? { name: 'dm', channelId: n.channelId } : { name: 'channel', communityId: n.communityId, channelId: n.channelId });
+    },
+  }), [client, navigate]);
+  // When Settings closes (Escape, its close button, the browser's back), focus returns to the rail's settings button
+  // after the commit, so after the dialog's own close (pre-flight row 1.22: not when a notification click left it).
+  const wasSettings = useRef(false);
+  useEffect(() => {
+    const isSettings = route.name === 'settings';
+    if (wasSettings.current && !isSettings && !leftByNotice.current) focusRailSettings();
+    if (!isSettings) leftByNotice.current = false;
+    wasSettings.current = isSettings;
+  }, [route.name]);
   const screen = screenFor(phase);
   // Onboarding stays mounted after the phase turns ready, until its done step calls onFinish; so does SignIn.
   const [onboarding, setOnboarding] = useState(false);
@@ -83,6 +112,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   // The two lines above narrow `screen` to 'boot' | 'shell' ('cleared' is 'boot'), so this switch is total.
   switch (screen) {
     case 'boot': return <Boot fatal={null} />;
-    case 'shell': return <Shell />;
+    // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
+    case 'shell': return <><Shell />{route.name === 'settings' ? <Settings /> : null}</>;
   }
 }

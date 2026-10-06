@@ -1,7 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { StrictMode } from 'react';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { DmSummary, Notice } from '@dilla/client-core';
 import { CoreProvider } from './core/context.tsx';
 import { FakeClient, refusal } from './test/fake-client.ts';
 import { account } from './test/fixtures.ts';
@@ -252,5 +253,58 @@ describe('App cleared', () => {
     expect(screen.queryByRole('heading', { name: 'Your recovery key' })).toBeNull();
     expect(screen.getByRole('status')).toHaveTextContent('Starting dilla');
     expect(reload.mock.calls).toEqual([['/welcome?signin=race']]);
+  });
+});
+
+describe('App settings and notifications', () => {
+  const C = 'c4'.repeat(16);
+  const DM = '9a'.repeat(16);
+  afterEach(() => { vi.unstubAllGlobals(); });
+  function ready(fake: FakeClient) {
+    fake.set('account', account({ phase: 'ready' }));
+    fake.set('communities', [{ id: C, name: 'Midgard' }]);
+    fake.set(`channels:${C}`, []);
+    fake.set('dms', [{ id: DM, kind: 3, members: [], name: 'bob', group: 'active' }] satisfies DmSummary[]);
+    fake.set('settings', {});
+  }
+  it('opens settings over the shell and returns focus to the rail’s settings button on Escape', async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient();
+    ready(fake);
+    window.history.replaceState(null, '', `/c/${C}`);
+    render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+    const rail = screen.getByRole('navigation', { name: 'servers' });
+    await user.click(within(rail).getByRole('button', { name: 'settings' }));
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'servers' })).toBe(rail);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+    expect(window.location.pathname).toBe(`/c/${C}`);
+    expect(within(rail).getByRole('button', { name: 'settings' })).toHaveFocus();
+  });
+  it('shows a desktop notification for a new notice and opens its DM on click', () => {
+    class Note {
+      static permission: NotificationPermission = 'granted';
+      static made: Note[] = [];
+      onclick: ((ev: Event) => unknown) | null = null;
+      closed = false;
+      constructor(readonly title: string, readonly options: NotificationOptions) { Note.made.push(this); }
+      close(): void { this.closed = true; }
+    }
+    vi.stubGlobal('Notification', Note);
+    const focus = vi.spyOn(window, 'focus').mockImplementation(() => {});
+    const fake = new FakeClient();
+    ready(fake);
+    fake.set('notices', { nextId: 0, items: [] });
+    window.history.replaceState(null, '', `/c/${C}`);
+    render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+    const n: Notice = { id: 0, channelId: DM, communityId: null, kind: 'dm', senderUser: '28'.repeat(16), senderName: 'bob', body: 'yo', ts: 1_790_000_000 };
+    act(() => fake.set('notices', { nextId: 1, items: [n] }));
+    expect(Note.made.map(x => [x.title, x.options.body, x.options.tag])).toEqual([['bob', 'yo', `dilla:${DM}`]]);
+    act(() => { Note.made[0].onclick?.(new Event('click')); });
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(window.location.pathname).toBe(`/dm/${DM}`);
+    expect(Note.made[0].closed).toBe(true);
+    focus.mockRestore();
   });
 });
