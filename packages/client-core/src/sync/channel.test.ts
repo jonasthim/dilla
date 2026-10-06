@@ -257,4 +257,63 @@ describe('opening a channel (rule 6)', () => {
     await settle();
     expect(d.core.group(r.groupId)?.state).toBe(2);
   });
+
+  /** An open whose outcome is read after the gates open, so an early rejection is never unhandled. */
+  const outcome = (textGroupId: Id): Promise<{ ok: unknown } | { err: unknown }> =>
+    open(textGroupId).then((ok) => ({ ok }), (err: unknown) => ({ err }));
+
+  it('answers state 2 when opened while the group is joining by a background resync (CLIENT-CORE-TS-02)', async () => {
+    const r = await open(null);
+    await settle();
+    ds.join(r.groupId, PEER.device);
+    const gate = deferred();
+    ds.inject('postResync', { gate: gate.promise });
+    ds.garbageCommit(r.groupId);
+    await settle();
+    expect(d.core.group(r.groupId)?.state).toBe(1);
+    const opened = outcome(r.groupId);
+    await settle();
+    gate.resolve();
+    expect(await opened).toEqual({ ok: { groupId: r.groupId, state: 2 } });
+    expect(d.core.group(r.groupId)?.state).toBe(2);
+    expect(count('postResync')).toBe(1);
+    expect(coreCalls(d, r.groupId, ['groupDiscard'])).toEqual([]);
+    expect(d.membership.map((m) => m.status)).toEqual(['resyncing']);
+  });
+
+  it('answers state 3 when the background resync it waited for is refused (CLIENT-CORE-TS-02)', async () => {
+    const r = await open(null);
+    await settle();
+    ds.join(r.groupId, PEER.device);
+    ds.denyJoin.add(toHex(ME.device));
+    const gate = deferred();
+    ds.inject('postResync', { gate: gate.promise });
+    ds.garbageCommit(r.groupId);
+    await settle();
+    expect(d.core.group(r.groupId)?.state).toBe(1);
+    const opened = outcome(r.groupId);
+    await settle();
+    gate.resolve();
+    expect(await opened).toEqual({ ok: { groupId: r.groupId, state: 3 } });
+    // The background join, then the open's own resync of the state-3 row (rule 7), both refused.
+    expect(count('postResync')).toBe(2);
+    expect(d.core.group(r.groupId)?.state).toBe(3);
+  });
+
+  it('does not join a second time when a background resync of a state-3 group finishes first (CLIENT-CORE-TS-02)', async () => {
+    const r = await open(null);
+    await settle();
+    ds.join(r.groupId, PEER.device);
+    const gate = deferred();
+    ds.inject('getGroupInfo', { gate: gate.promise });
+    ds.garbageCommit(r.groupId);
+    await settle();
+    expect(d.core.group(r.groupId)?.state).toBe(3);
+    const opened = outcome(r.groupId);
+    await settle();
+    gate.resolve();
+    expect(await opened).toEqual({ ok: { groupId: r.groupId, state: 2 } });
+    expect(count('postResync')).toBe(1);
+    expect(coreCalls(d, r.groupId, ['groupJoinExternal'])).toEqual(['groupJoinExternal']);
+  });
 });

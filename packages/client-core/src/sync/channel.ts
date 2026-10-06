@@ -114,11 +114,25 @@ export async function openChannelFlow(
     const local = s.deps.core.groups().find((r) => same(r.targetId, ch.channelId) && r.kind === 0 && r.state !== 4);
     if (local !== undefined) {
       if (local.state === 2) return { groupId: local.groupId, state: 2 };
+      // The state was read on the channel lane; a job on the group lane runs only after the job ahead of it
+      // (a background resync or join in flight), so each job re-reads it and acts only if it still holds,
+      // otherwise the loop looks again (state 2 returns, state 3 resyncs).
+      const g = local.groupId;
       if (local.state === 3) {
-        await s.queues.run(groupKey(local.groupId), () => resyncGroup(s, local.groupId, true));
-        return { groupId: local.groupId, state: s.row(local.groupId)?.state ?? 4 };
+        const ran = await s.queues.run(groupKey(g), async () => {
+          if (s.row(g)?.state !== 3) return false;
+          await resyncGroup(s, g, true);
+          return true;
+        });
+        if (ran) return { groupId: g, state: s.row(g)?.state ?? 4 };
+        continue;
       }
-      await s.queues.run(groupKey(local.groupId), () => { s.deps.core.groupDiscard(local.groupId); return Promise.resolve(); });
+      // A row still in state 0 or 1 once the lane is free is a registration or join an earlier page never finished.
+      await s.queues.run(groupKey(g), () => {
+        const state = s.row(g)?.state;
+        if (state === 0 || state === 1) s.deps.core.groupDiscard(g);
+        return Promise.resolve();
+      });
       continue;
     }
     if (textGroupId !== null) {
