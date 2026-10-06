@@ -1,13 +1,15 @@
 // The state slices the worker publishes and the page renders (L-TS-08). Every id is 32 lower-case hex
 // characters; every slice value is immutable and replaced whole.
-export type BootPhase = 'loading' | 'unsupported' | 'other-tab' | 'store-lost' | 'needs-signup' | 'signup-keys' | 'registering' | 'ready' | 'revoked' | 'error';
+export type BootPhase = 'loading' | 'unsupported' | 'other-tab' | 'store-lost' | 'needs-signup' | 'signup-keys' | 'registering' | 'ready' | 'revoked' | 'error'
+  | 'signin-login' | 'signin-totp' | 'signin-key' | 'enrolling' | 'cleared';
 export interface AccountState {
   phase: BootPhase;
   instance: { id: string; name: string; registrationMode: 0 | 1 | 2; passwordSignup: boolean } | null;
   user: { id: string; username: string } | null;
   deviceId: string | null;
   recoveryKey: string[] | null;                 // 13 groups of 4; only while phase is 'signup-keys' or 'registering'
-  error: WorkerError | null;                    // the last signup or boot error
+  error: WorkerError | null;                    // the last signup, sign-in or boot error
+  signIn: { username: string | null; needsTotp: boolean } | null;   // set during signin-*; null otherwise
 }
 /** The one error shape that crosses the worker boundary (ret errors and AccountState.error). For a
  *  DillaHttpError, code and detail are the server's error-array elements 0 and 1 passed through
@@ -34,7 +36,14 @@ export interface TimelineItem {
   msgId: string | null;
 }
 export interface TimelineState { channelId: string; group: ChannelGroupState; items: TimelineItem[]; hasEarlier: boolean; }
-export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`;
+export interface DmSummary { id: string; kind: 3 | 4; members: string[]; name: string; group: ChannelGroupState; }
+export interface DeviceSummary { id: string; tier: 0 | 1; signerTier: 0 | 1; lastSeen: number; revokedAt: number | null; listed: boolean; own: boolean; }
+export interface BadgeState { unread: number; mentions: number; }
+export interface Notice { id: number; channelId: string; communityId: string | null; kind: 'message' | 'mention' | 'dm'; senderUser: string | null; senderName: string; body: string; ts: number; }
+export interface NoticesState { nextId: number; items: Notice[]; }      // items ≤ 32, oldest first; ids increase for the worker's life
+export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`
+  | 'dms' | 'devices' | 'badges' | 'notices' | 'settings';
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
-  [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState; }
+  [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
+  dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>; }
 export const TIMELINE_PAGE = 100;

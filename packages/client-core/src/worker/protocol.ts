@@ -14,7 +14,19 @@ export type Command =
   | { m: 'loadEarlier'; channelId: string }
   | { m: 'send'; channelId: string; text: string }
   | { m: 'retrySend'; msgId: string }
-  | { m: 'discardSend'; msgId: string };
+  | { m: 'discardSend'; msgId: string }
+  | { m: 'signInBegin' }                                         // needs-signup → signin-login
+  | { m: 'signInLogin'; username: string; password: string }     // signin-login → signin-totp | signin-key
+  | { m: 'signInTotp'; code: string }                            // signin-totp → signin-key
+  | { m: 'signInKey'; recoveryKey: string }                      // signin-key → ready
+  | { m: 'signInCancel' }                                        // signin-* → needs-signup
+  | { m: 'refreshDevices' }                                      // ready: GET /v1/devices + own list → slice devices
+  | { m: 'revokeDevice'; deviceId: string; recoveryKey: string | null } // ready: another device; the key is required for a listed device, ignored (null) for an unlisted live row
+  | { m: 'signOutRevoke'; recoveryKey: string }                  // ready: this device → store wiped → cleared
+  | { m: 'forgetBrowser' }                                       // ready (and revoked, pre-flight ruling d): sessions deleted, store wiped → cleared
+  | { m: 'markRead'; channelId: string }                         // ready
+  | { m: 'setSetting'; key: string; value: string | null }       // ready; null deletes; key must match L-TS-25, value its allowed set
+  | { m: 'openDm'; userId: string };                             // ready → { channelId }
 export type ToWorker = { t: 'call'; id: number; command: Command };
 export type FromWorker =
   | { t: 'ret'; id: number; ok: true; value: unknown }
