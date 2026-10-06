@@ -512,6 +512,21 @@ describe('commit duty (rule 4)', () => {
     expect(count('postResync')).toBe(1);
     expect(d.core.group(g)).toMatchObject({ state: 2, epoch: 1n });
   });
+
+  it('a leaf removed before the election: getProposals answers 404 as dillad does, and the duty resyncs without building', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.propose(g, 'add', THIRD.device);
+    await settle();
+    ds.evict(g, ME.device);
+    ds.elect(g, ME.device, 1n);
+    await settle();
+    expect(count('getProposals')).toBe(1);
+    expect(count('postCommit')).toBe(0);
+    expect(coreCalls(d, g, ['commitBuild', 'commitConfirm', 'commitAbort'])).toEqual([]);
+    expect(d.membership).toEqual([{ group: toHex(g), status: 'resyncing' }]);
+    expect(count('postResync')).toBe(1);
+  });
 });
 
 describe('resync (rule 7)', () => {
