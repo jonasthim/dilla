@@ -1059,6 +1059,14 @@ export class ModelDs {
   readonly cursors = new Map<string, readonly [bigint, bigint]>();
   /** Device hexes whose external commits are refused with 403 E_FORBIDDEN. */
   readonly denyJoin = new Set<string>();
+  /**
+   * Device hexes the community's ACL does not admit (a kicked user's devices until the user joins
+   * again): getGroupInfo, getGroupTree and postResync answer 404 E_NOT_FOUND, as the delivery
+   * service's requireReader does (internal/ds/registry.go).
+   */
+  readonly aclDeny = new Set<string>();
+  /** `${group hex}/${device hex}` of leaves a kick took: getProposals answers 404 E_NOT_FOUND too (requireMember). */
+  private readonly removed = new Set<string>();
   private readonly groups = new Map<string, DsGroup>();
   private readonly channels = new Map<string, { communityId: Id; channelId: Id }>();
   private readonly welcomes: DsWelcome[] = [];
@@ -1181,6 +1189,22 @@ export class ModelDs {
     this.must(groupId).members.delete(toHex(dev));
   }
 
+  /**
+   * The kick (internal/api/communities.go removeMember): the member row goes, so the ACL refuses the
+   * device, and its leaf goes, so every requireMember read (messages, handshakes, proposals) answers
+   * 404 E_NOT_FOUND. No frame tells the device: the gateway's roster no longer holds it.
+   */
+  kick(groupId: Id, dev: Id): void {
+    this.must(groupId).members.delete(toHex(dev));
+    this.removed.add(`${toHex(groupId)}/${toHex(dev)}`);
+    this.aclDeny.add(toHex(dev));
+  }
+
+  /** The kicked user joins the community again: the ACL admits the device; its leaf stays gone. */
+  readmit(dev: Id): void {
+    this.aclDeny.delete(toHex(dev));
+  }
+
   peerSend(groupId: Id, from: Peer, body: string): bigint {
     this.counter += 1;
     return this.appendMessage(this.must(groupId), from.device, wire.app(from, idOf(0x7e, this.counter), body)).seq;
@@ -1259,11 +1283,13 @@ export class ModelDs {
       getGroupInfo: (id) =>
         this.call(d, 'getGroupInfo', id, null, () => {
           const g = this.must(id);
+          if (this.aclDeny.has(d)) throw httpError(404, 'E_NOT_FOUND');
           return encode([g.epoch, wire.info(g.id, g.epoch), new Uint8Array(32), g.next]);
         }),
       getGroupTree: (id) =>
         this.call(d, 'getGroupTree', id, null, () => {
           const g = this.must(id);
+          if (this.aclDeny.has(d)) throw httpError(404, 'E_NOT_FOUND');
           return encode([g.epoch, wire.tree(g.id, g.epoch), new Uint8Array(32)]);
         }),
       getHandshakes: (id, from, limit) => this.call(d, 'getHandshakes', id, from, () => this.page(d, id, from, limit, true)),
@@ -1280,6 +1306,7 @@ export class ModelDs {
       getProposals: (id) =>
         this.call(d, 'getProposals', id, null, () => {
           const g = this.must(id);
+          if (this.removed.has(`${toHex(id)}/${d}`)) throw httpError(404, 'E_NOT_FOUND');
           return encode(g.proposals.filter((p) => p.epoch === g.epoch).map((p) => [p.ref, 0, null, p.blob, p.void ? 1 : 0]));
         }),
       postCommit: (id, body) => this.call(d, 'postCommit', id, null, () => this.postCommit(d, id, body)),
@@ -1380,6 +1407,7 @@ export class ModelDs {
 
   private postResync(dev: Id, id: Id, body: Uint8Array): { seq: bigint; epoch: bigint } {
     const g = this.must(id);
+    if (this.aclDeny.has(toHex(dev))) throw httpError(404, 'E_NOT_FOUND');
     if (this.denyJoin.has(toHex(dev))) throw httpError(403, 'E_FORBIDDEN');
     const v = arr(decode(body), 2);
     const commit = bin(at(v, 0));
@@ -1444,6 +1472,7 @@ export class ModelDs {
     for (const a of adds) {
       g.members.add(toHex(a));
       audience.add(toHex(a));
+      this.removed.delete(`${toHex(g.id)}/${toHex(a)}`);
     }
     for (const r of removes) g.members.delete(toHex(r));
     for (const m of audience) this.emit(m, 16, g.id, [e.seq, e.epoch, BigInt(kind), sender, blob]);

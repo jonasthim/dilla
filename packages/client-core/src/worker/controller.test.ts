@@ -414,6 +414,22 @@ describe('Controller in the ready phase', () => {
     expect(w.timeline()?.group).toBe('not-member');
   });
 
+  it('a refused resync of an active row shows not-member until a state-2 report clears it', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.groups = [textGroup(2)];
+    // The engine's order on a refusal before the join: resyncing, the row's snapshot (still state 2), not-member.
+    w.sync.deps!.onMembership(GROUP, 'resyncing');
+    w.sync.deps!.onGroupChanged(GROUP, applied(2));
+    w.sync.deps!.onMembership(GROUP, 'not-member');
+    expect(w.channels()?.[0]?.group).toBe('not-member');
+    expect(w.timeline()?.group).toBe('not-member');
+    w.sync.deps!.onGroupChanged(GROUP, applied(2));
+    expect(w.channels()?.[0]?.group).toBe('active');
+    expect(w.timeline()?.group).toBe('active');
+  });
+
   it('a successful resync clears it', async () => {
     const w = world();
     await toReady(w);

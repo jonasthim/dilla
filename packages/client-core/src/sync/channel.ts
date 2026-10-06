@@ -76,12 +76,31 @@ export async function resyncGroup(s: SyncInternals, g: Id, fromOpen: boolean): P
     if (row.communityId === null) throw new SyncError('E_NO_COMMUNITY');
     await externalJoin(s, { groupId: g, communityId: row.communityId, channelId: row.targetId, policyVersion: s.deps.instance.policyVersion }, { joins: 0 });
     return true;
-  } catch {
+  } catch (e) {
+    // A refusal before the join leaves an active row in state 2; it is never discarded (group_discard of
+    // an active row deletes its history), and the not-member report below is what the page shows.
     if (s.row(g)?.state === 1) s.deps.core.groupDiscard(g);
     const snap = s.snapshot(g); if (snap !== null) s.deps.onGroupChanged(g, snap);
     s.deps.onMembership(g, 'not-member');
+    if (row.state === 2) failOutbox(s, g, codeOf(e));
     return false;
   }
+}
+function codeOf(e: unknown): string {
+  return e instanceof DillaHttpError || e instanceof CoreError || e instanceof SyncError ? e.code : 'E_INTERNAL';
+}
+/** A refused resync of a group that was active: its queued and in-flight messages will not leave, so they
+ *  fail (the page offers retry and discard) instead of showing "sending…" for ever. */
+function failOutbox(s: SyncInternals, g: Id, code: string): void {
+  const hex = toHex(g);
+  const echo = s.echoWait.get(hex); if (echo !== undefined) { s.cancelTimer(echo.timer); s.echoWait.delete(hex); }
+  const epoch = s.epochWait.get(hex); if (epoch !== undefined) { s.cancelTimer(epoch); s.epochWait.delete(hex); }
+  let changed = false;
+  for (const r of s.deps.core.outbox(g)) {
+    if (r.state === 2) continue;
+    s.deps.core.sendFail(r.msgId, code); s.count425.delete(toHex(r.msgId)); changed = true;
+  }
+  if (changed) s.deps.onOutboxChanged(g);
 }
 export async function openChannelFlow(
   s: SyncInternals, ch: { communityId: Id; channelId: Id; textGroupId: Id | null },

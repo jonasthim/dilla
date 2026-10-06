@@ -161,4 +161,10 @@ describe('channelGroupState', () => {
     expect(channelGroupState(channel(), [group(0x50, 3)], known({ notMember: [hex(0x62)] }))).toBe('resync');
     expect(channelGroupState(channel(), [group(0x50, 2)], known({ resyncing: [hex(0x63)] }))).toBe('active');
   });
+
+  it('reports not-member for an active row whose resync was refused (a kicked device keeps its row in state 2)', () => {
+    expect(channelGroupState(channel(), [group(0x50, 2)], known({ notMember: [hex(0x62)] }))).toBe('not-member');
+    // Another group's report changes nothing.
+    expect(channelGroupState(channel(), [group(0x50, 2)], known({ notMember: [hex(0x63)] }))).toBe('active');
+  });
 });

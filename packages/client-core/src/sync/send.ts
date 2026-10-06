@@ -19,7 +19,11 @@ export function retrySend(s: SyncInternals, msgId: Id): void {
   s.deps.core.sendRetry(msgId);
   const g = owner(s, msgId);
   s.count425.delete(toHex(msgId));
-  if (g !== undefined) { s.deps.onOutboxChanged(g); s.requestDrain(g); }
+  if (g === undefined) return;
+  // A person's retry asks for the group's duties again, as a ready does: a membership refused earlier in
+  // this ready is tried once more, and a commit-quiet group commits once more.
+  s.resyncTried.delete(toHex(g)); s.quiet.delete(toHex(g));
+  s.deps.onOutboxChanged(g); s.requestDrain(g);
 }
 export function discardSend(s: SyncInternals, msgId: Id): void {
   const g = owner(s, msgId);

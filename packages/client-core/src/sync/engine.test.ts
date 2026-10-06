@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { toHex } from '../hex';
 import { SYNC, throughOf, type PageInfo } from './engine';
-import { catchSync, coreCalls, device, openRegistered, readyInfo } from './testing/harness';
+import { catchSync, coreCalls, device, openRegistered, readyInfo, type Device } from './testing/harness';
 import {
   CHANNEL_2, COMMUNITY, CHANNEL, FOURTH, ME, ManualClock, ModelDs, PEER, THIRD, at, deferred, httpError, idOf, settle, type RouteName,
 } from './testing/model';
@@ -547,5 +547,107 @@ describe('resync (rule 7)', () => {
     expect(count('postResync')).toBe(1);
     expect(d.core.group(g)).toMatchObject({ state: 2, epoch: 1n, nextSeq: 8n });
     expect(d.core.bodies(g)).toEqual([]);
+  });
+});
+
+describe('membership loss: a kicked device (rule 7, INTEGRATION-SEAMS-01)', () => {
+  /** The kick as the delivery service runs it: the instance's Remove reaches the device while it still holds
+   *  its leaf, then the leaf goes and a peer commits the Remove, which the device never sees. */
+  async function kicked(): Promise<{ d: Device; g: Uint8Array }> {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.propose(g, 'remove', ME.device);
+    await settle();
+    expect(d.core.group(g)).toMatchObject({ state: 2, proposalsPending: 1 });
+    ds.kick(g, ME.device);
+    ds.peerCommit(g, PEER);
+    await settle();
+    d.core.resetLog();
+    ds.resetCalls();
+    return { d, g };
+  }
+
+  it('a 404 on the catch-up of an active group is a membership loss: re-admitted, the device rejoins and hears again', async () => {
+    const { d, g } = await kicked();
+    ds.readmit(ME.device);
+    d.gateway.ready(readyInfo(ME));
+    await settle();
+    expect(count('getMessages')).toBeGreaterThanOrEqual(1);
+    expect(d.membership).toEqual([{ group: toHex(g), status: 'resyncing' }]);
+    expect(count('postResync')).toBe(1);
+    expect(d.core.group(g)).toMatchObject({ state: 2, proposalsPending: 0 });
+    expect(at(d.changes, d.changes.length - 1).result.state).toBe(2);
+    ds.peerSend(g, PEER, 'welcome back');
+    await settle();
+    expect(d.core.bodies(g)).toEqual(['welcome back']);
+    d.engine.send(g, 'here again');
+    await settle();
+    expect(ds.view(g).messages.map((m) => m.body)).toEqual(['welcome back', 'here again']);
+    expect(d.core.outbox(g)).toEqual([]);
+  });
+
+  it('a 404 on getProposals of an active group is a membership loss: the queued message is sent after the rejoin', async () => {
+    const { d, g } = await kicked();
+    ds.readmit(ME.device);
+    d.engine.send(g, 'still here');
+    await settle();
+    expect(count('getProposals')).toBe(1);
+    expect(d.membership).toEqual([{ group: toHex(g), status: 'resyncing' }]);
+    expect(count('postResync')).toBe(1);
+    expect(ds.view(g).messages.map((m) => m.body)).toEqual(['still here']);
+    expect(d.core.outbox(g)).toEqual([]);
+  });
+
+  it('a refused resync of an active group reports not-member, keeps the row active, and fails its queued messages', async () => {
+    const { d, g } = await kicked();
+    const m1 = d.engine.send(g, 'lost one');
+    const m2 = d.engine.send(g, 'lost two');
+    await settle();
+    expect(d.membership).toEqual([
+      { group: toHex(g), status: 'resyncing' },
+      { group: toHex(g), status: 'not-member' },
+    ]);
+    expect(count('getGroupInfo')).toBe(1);
+    expect(count('postResync')).toBe(0);
+    expect(count('postMessage')).toBe(0);
+    // Never discarded: group_discard of an active row deletes its history.
+    expect(coreCalls(d, g, ['groupDiscard'])).toEqual([]);
+    expect(d.core.group(g)?.state).toBe(2);
+    expect(d.core.outbox(g)).toMatchObject([
+      { msgId: m1, state: 2, error: 'E_NOT_FOUND' },
+      { msgId: m2, state: 2, error: 'E_NOT_FOUND' },
+    ]);
+    await clock.advance(60_000);
+    expect(count('getGroupInfo')).toBe(1);
+    // A retry by the person tries the membership again; still refused, the row fails again.
+    d.engine.retry(m1);
+    await settle();
+    expect(count('getGroupInfo')).toBe(2);
+    expect(d.core.outbox(g)).toMatchObject([{ msgId: m1, state: 2 }, { msgId: m2, state: 2 }]);
+    // Re-admitted, the next retry rejoins and sends.
+    ds.readmit(ME.device);
+    d.engine.retry(m1);
+    await settle();
+    expect(count('postResync')).toBe(1);
+    expect(d.core.group(g)).toMatchObject({ state: 2, proposalsPending: 0 });
+    expect(ds.view(g).messages.map((m) => m.body)).toEqual(['lost one']);
+    expect(d.core.outbox(g)).toMatchObject([{ msgId: m2, state: 2 }]);
+  });
+
+  it('a refused resync after a 404 on the catch-up reports not-member once per ready', async () => {
+    const { d, g } = await kicked();
+    d.gateway.ready(readyInfo(ME));
+    await settle();
+    expect(d.membership).toEqual([
+      { group: toHex(g), status: 'resyncing' },
+      { group: toHex(g), status: 'not-member' },
+    ]);
+    expect(count('getGroupInfo')).toBe(1);
+    expect(d.core.group(g)?.state).toBe(2);
+    await clock.advance(60_000);
+    expect(count('getGroupInfo')).toBe(1);
+    d.gateway.ready(readyInfo(ME));
+    await settle();
+    expect(count('getGroupInfo')).toBe(2);
   });
 });

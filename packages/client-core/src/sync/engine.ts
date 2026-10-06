@@ -198,10 +198,16 @@ export class SyncEngine implements SyncInternals {
       }
       await this.cursorStep(g);
     } catch (e) {
-      if (e instanceof DillaHttpError && e.status === 410 && e.code === 'E_PRUNED' && !this.resyncTried.has(toHex(g))) {
+      if ((this.membershipLost(g, e) || (e instanceof DillaHttpError && e.status === 410 && e.code === 'E_PRUNED'))
+        && !this.resyncTried.has(toHex(g))) {
         await resyncGroup(this, g, false);
       }
     }
+  }
+  /** A group read answering 404 E_NOT_FOUND for an active group: the device holds no leaf any more (a kick
+   *  or a removal it never saw; protocol/02 invariant 5), which only an external join can repair. */
+  private membershipLost(g: Id, e: unknown): boolean {
+    return e instanceof DillaHttpError && e.status === 404 && e.code === 'E_NOT_FOUND' && this.row(g)?.state === 2;
   }
   async applyHook(g: Id, r: ApplyResult, source: 'frame' | 'catch-up' | 'commit'): Promise<void> {
     this.deps.onGroupChanged(g, r);
@@ -259,7 +265,7 @@ export class SyncEngine implements SyncInternals {
         } else if (e.status === 425 || e.status === 422) {
           await this.catchUpNow(g, 'commit');
           if (e.status === 422) this.quiet.add(toHex(g));
-        } else if (e.status === 403 && e.code === 'E_LEAF_NOT_CURRENT' && !this.resyncTried.has(toHex(g))) {
+        } else if (((e.status === 403 && e.code === 'E_LEAF_NOT_CURRENT') || this.membershipLost(g, e)) && !this.resyncTried.has(toHex(g))) {
           await resyncGroup(this, g, false);
         }
       }

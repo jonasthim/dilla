@@ -76,7 +76,9 @@ export function channelGroupState(channel: { id: Id; kind: number; mode: number 
     case 1:
       return 'joining';
     case 2:
-      return membership.resyncing.has(g) ? 'resync' : 'active';
+      // A resync refused before the join leaves the row in state 2 (a kicked device): notMember holds it
+      // until the next state-2 report from the engine (a successful rejoin) clears it.
+      return membership.resyncing.has(g) ? 'resync' : membership.notMember.has(g) ? 'not-member' : 'active';
     case 3:
       return membership.notMember.has(g) || membership.refusedChannel ? 'not-member' : 'resync';
     case 4:
