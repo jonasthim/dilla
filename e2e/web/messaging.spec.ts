@@ -6,7 +6,7 @@ import {
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
 
-test('text flows both ways with the MLS-authenticated sender, and a send that meets an Update arrives once', async ({ page, peer, instanceName }) => {
+test('text flows both ways with the MLS-authenticated sender, and a send after the peer’s Update arrives once', async ({ page, peer, instanceName }) => {
   const setup = await peer.setup();
   await peer.register();
   const channel = peer.channelName;
@@ -34,7 +34,9 @@ test('text flows both ways with the MLS-authenticated sender, and a send that me
   expect(received.sender_user).toMatch(HEX32);
   expect(received.sender_user).not.toBe(setup.user_id);
 
-  // A send racing the peer's Update commit: whichever lands first, the message exists exactly once.
+  // A send after the peer committed a self-Update (serialised by ruling 25(b), not a race): the browser applies the
+  // commit from the live frame, its send goes out at the new epoch (a stale one would be refused 422 and show as
+  // failed), and the message exists exactly once on both sides.
   const before = (await peer.sync()).epoch;
   const racing = `during the update ${tag()}`;
   const update = await peer.update();

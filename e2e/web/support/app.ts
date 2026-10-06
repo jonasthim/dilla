@@ -26,6 +26,8 @@ export const PAST_BROWSER_SESSION_S = 169 * 3600;
 /** One recovery-key group: four Crockford base32 characters (protocol/03 "Recovery"). */
 export const RK_GROUP = /^[0-9A-HJKMNP-TV-Z]{4}$/;
 export const HEX32 = /^[0-9a-f]{32}$/;
+/** The console line Chromium and WebKit print for a response the client answers or retries by design (E2E-CI-01). */
+export const BY_DESIGN_RESOURCE_LINE = /^Failed to load resource: the server responded with a status of (401|404|409|410|429|503) \(/;
 
 // The copy keys the e2e drives: L-COPY-01 (onboarding) and the keys tasks 22 and 24 add to en.ts. The
 // values always come from the app's own strings, so a reworded text never breaks the suite.
@@ -210,10 +212,11 @@ function newGuard(projectName: string): Guard {
       });
       context.on('console', (m) => {
         // Chromium and WebKit print every 4xx/5xx response as "Failed to load resource: …" (WebKit
-        // measured on CI's first run: the expired session's 401 of the reload spec); the client answers
-        // 401, 404, 409 and 410 by design (L-TS-02, L-TS-06), so those lines are not errors of the app.
+        // measured on CI's first run: the expired session's 401 of the reload spec). Only the statuses the
+        // client answers or retries by design are exempt: 401, 404, 409 and 410 (L-TS-02, L-TS-06) and the
+        // paced 429 and 503; any other status, or a line of another shape, still fails the test (E2E-CI-01).
         // Firefox printed nothing for them and keeps the full guard.
-        const resourceLine = (projectName === 'chromium-web' || projectName === 'webkit-web') && m.text().startsWith('Failed to load resource:');
+        const resourceLine = (projectName === 'chromium-web' || projectName === 'webkit-web') && BY_DESIGN_RESOURCE_LINE.test(m.text());
         if (m.type() === 'error' && !resourceLine) {
           consoleErrors.push(m.text());
         }
