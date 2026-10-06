@@ -15,7 +15,15 @@ export interface AccountCreated { userId: Uint8Array; deviceId: Uint8Array; toke
 export interface Challenge { nonce: Uint8Array; expires: bigint; }
 export interface EstablishedSession { token: string; scope: 0 | 1 | 2; userId: Uint8Array; deviceId: Uint8Array;
   expires: bigint; idleExpires: bigint; generation: bigint; }
-export interface DeviceListRecord { version: bigint; blob: Uint8Array; }
+export interface DeviceListRecord { version: bigint; blob: Uint8Array; raw: Uint8Array; }
+export interface PasswordLogin { assertion: string; needsTotp: boolean; }
+export interface BackupItem { kind: 0 | 1; chunkSeq: number; size: number; created: bigint; }
+export interface BackupObject { object: Uint8Array; created: bigint; }
+export interface BackupStored { blobId: Uint8Array; size: number; created: boolean; }
+export interface DeviceRow { id: Uint8Array; tier: 0 | 1; signerTier: 0 | 1; verifiedAt: bigint | null; revokedAt: bigint | null; lastSeen: bigint; }
+export interface DeviceListHistory { raw: Uint8Array; count: number; lastVersion: bigint | null; }
+export interface DmOpened { channelId: Uint8Array; created: boolean; }
+export interface DmRow { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[]; }
 export interface Ticket { ticket: string; expires: bigint; }
 export interface CommunityRow { id: Uint8Array; name: string; owner: Uint8Array; policyVersion: bigint; }
 export interface ChannelRow { id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null;
@@ -36,6 +44,10 @@ function id(name: string, v: Uint8Array): string {
 function count(name: string, v: bigint): string {
   if (v < 0n) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must not be negative');
   return String(v);
+}
+function kindOf(kind: number): string {
+  if (kind !== 0 && kind !== 1) throw new RangeError('E_ROUTE_INPUT: kind must be 0 or 1');
+  return String(kind);
 }
 function limit(name: string, v: number, max: number): number {
   if (!Number.isInteger(v) || v < 1 || v > max) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 1..' + max);
@@ -69,7 +81,7 @@ export class Routes {
   constructor(private readonly http: HttpClient) {}
 
   private async body(method: HttpRequest['method'], path: string, bucket: Bucket, idempotent: boolean,
-    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok'> = {}): Promise<Uint8Array> {
+    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429'> = {}): Promise<Uint8Array> {
     return (await this.http.request({ method, path, bucket, idempotent, ...options })).body;
   }
 
@@ -94,9 +106,12 @@ export class Routes {
   }
   async postSession(deviceId: Uint8Array, body: Uint8Array): Promise<EstablishedSession> {
     const path = `/v1/devices/${id('deviceId', deviceId)}/sessions`;
-    const a = atLeast(decode(await this.body('POST', path, 'none', false, { body, auth: false })), 7);
+    const a = atLeast(decode(await this.body('POST', path, 'none', false, { body, auth: false, retry429: false })), 7);
     return { token: str(a[0]), scope: oneOf(a[1], [0, 1, 2]), userId: bin(a[2], 16), deviceId: bin(a[3], 16),
       expires: u64(a[4]), idleExpires: u64(a[5]), generation: u64(a[6]) };
+  }
+  async postSessionPending(deviceId: Uint8Array, body: Uint8Array): Promise<EstablishedSession> {
+    return this.postSession(deviceId, body);
   }
   async putDeviceList(userId: Uint8Array, body: Uint8Array): Promise<void> {
     await this.body('PUT', `/v1/users/${id('userId', userId)}/device-list`, 'write', true, { body });
@@ -106,7 +121,7 @@ export class Routes {
       bucket: 'read', idempotent: true, ok: [200, 404] });
     if (response.status === 404) return null;
     const a = atLeast(decode(response.body), 2);
-    return { version: u64(a[0]), blob: bin(a[1]) };
+    return { version: u64(a[0]), blob: bin(a[1]), raw: response.body };
   }
   async postKeyPackages(body: Uint8Array): Promise<number> {
     return u53(atLeast(decode(await this.body('POST', '/v1/keypackages', 'write', false, { body })), 1)[0]);
@@ -201,5 +216,72 @@ export class Routes {
     const a = atLeast(decode(await this.body('GET', '/v1/instance/limits', 'read', true, { auth: false })), 9);
     return { maxCiphertextBytes: u53(a[0]), keypackagesPerDevice: u53(a[4]), keypackageRefillThreshold: u53(a[5]),
       heartbeatMs: u53(a[7]), maxFrameBytes: u53(a[8]) };
+  }
+  async passwordLogin(username: string, password: string): Promise<PasswordLogin> {
+    const a = atLeast(decode(await this.body('POST', '/v1/auth/password/login', 'none', false,
+      { body: encode([username, password]), auth: false, retry429: false })), 2);
+    return { assertion: str(a[0]), needsTotp: oneOf(a[1], [0, 1]) === 1 };
+  }
+  async totpVerify(assertion: string, code: string): Promise<{ assertion: string }> {
+    const a = atLeast(decode(await this.body('POST', '/v1/auth/totp/verify', 'none', false,
+      { body: encode([assertion, code]), auth: false })), 1);
+    return { assertion: str(a[0]) };
+  }
+  async listBackups(): Promise<BackupItem[]> {
+    return arr(decode(await this.body('GET', '/v1/backups', 'read', true))).map((value) => {
+      const a = atLeast(value, 4);
+      return { kind: oneOf(a[0], [0, 1]), chunkSeq: u53(a[1]), size: u53(a[2]), created: u64(a[3]) };
+    });
+  }
+  async getBackup(kind: 0 | 1): Promise<BackupObject | null> {
+    const response = await this.http.request({ method: 'GET', path: `/v1/backups/${kindOf(kind)}/0`, bucket: 'read',
+      idempotent: true, ok: [200, 404] });
+    if (response.status === 404) return null;
+    const a = atLeast(decode(response.body), 2);
+    return { object: bin(a[0]), created: u64(a[1]) };
+  }
+  async putBackup(kind: 0 | 1, object: Uint8Array): Promise<BackupStored> {
+    const response = await this.http.request({ method: 'PUT', path: `/v1/backups/${kindOf(kind)}/0`, bucket: 'write',
+      idempotent: true, body: encode([object]) });
+    const a = atLeast(decode(response.body), 2);
+    return { blobId: bin(a[0], 32), size: u53(a[1]), created: response.status === 201 };
+  }
+  async listDevices(): Promise<DeviceRow[]> {
+    return arr(decode(await this.body('GET', '/v1/devices', 'read', true))).map((value) => {
+      const a = atLeast(value, 6);
+      return { id: bin(a[0], 16), tier: oneOf(a[1], [0, 1]), signerTier: oneOf(a[2], [0, 1]),
+        verifiedAt: opt(a[3], u64), revokedAt: opt(a[4], u64), lastSeen: u64(a[5]) };
+    });
+  }
+  async deleteSessions(deviceId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/devices/${id('deviceId', deviceId)}/sessions`, 'write', true, { ok: [204] });
+  }
+  async getDeviceListHistory(userId: Uint8Array, after: bigint): Promise<DeviceListHistory> {
+    const path = `/v1/users/${id('userId', userId)}/device-list?after=${count('after', after)}`;
+    const p = page(await this.body('GET', path, 'read', true));
+    return { raw: p.raw, count: p.count, lastVersion: p.last };
+  }
+  async postDm(recipients: Uint8Array[]): Promise<DmOpened> {
+    if (recipients.length < 1 || recipients.length > 64) throw new RangeError('E_ROUTE_INPUT: recipients must be 1..64');
+    recipients.forEach((recipient) => id('recipient', recipient));
+    const response = await this.http.request({ method: 'POST', path: '/v1/dms', bucket: 'write', idempotent: false,
+      body: encode([recipients]) });
+    return { channelId: bin(atLeast(decode(response.body), 1)[0], 16), created: response.status === 201 };
+  }
+  async listDms(): Promise<DmRow[]> {
+    return arr(decode(await this.body('GET', '/v1/dms', 'read', true))).map((value) => {
+      const a = atLeast(value, 3);
+      return { channelId: bin(a[0], 16), kind: oneOf(a[1], [3, 4]),
+        members: a[2] === null ? [] : arr(a[2]).map((member) => bin(member, 16)) };
+    });
+  }
+  async getChannel(channelId: Uint8Array): Promise<ChannelRow> {
+    const a = atLeast(decode(await this.body('GET', `/v1/channels/${id('channelId', channelId)}`, 'read', true)), 12);
+    return { id: bin(a[0], 16), kind: u53(a[2]), mode: u53(a[3]), visibility: u53(a[4]),
+      parentId: opt(a[5], (v) => bin(v, 16)), name: str(a[6]), topic: str(a[7]), position: u53(a[8]),
+      seq: u64(a[10]), textGroupId: opt(a[11], (v) => bin(v, 16)) };
+  }
+  async deleteDevice(deviceId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/devices/${id('deviceId', deviceId)}`, 'write', false, { ok: [204] });
   }
 }

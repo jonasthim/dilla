@@ -31,6 +31,13 @@ const HASH = fill(32, 0x10);
 const REF = fill(32, 0x11);
 const WIN = fill(48, 0x12);
 
+const DEVICE_2 = fill(16, 0x19);
+const PEER_USER = fill(16, 0x18);
+const BLOB_ID = fill(32, 0x17);
+const ASSERTION = 'asrt-1';
+const OBJECT = encode([1, fill(12, 0x15), fill(86, 0x16)]);
+const HISTORY = encode([[2, BLOB, SIG, HASH], [3, BLOB, SIG, HASH]]);
+
 const BODY = encode(['request body built by the core', 1]);
 const EMPTY_ARRAY = encode([]);
 const INFO = encode([3, BLOB, HASH, 12]);
@@ -115,7 +122,7 @@ const CASES: Case[] = [
   {
     name: 'getDeviceList', call: (r) => r.getDeviceList(USER),
     method: 'GET', path: `/v1/users/${hex(USER)}/device-list`, bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [1, BLOB, SIG, ZERO32]), expected: { version: 1n, blob: BLOB },
+    reply: () => cborReply(200, [1, BLOB, SIG, ZERO32]), expected: { version: 1n, blob: BLOB, raw: encode([1, BLOB, SIG, ZERO32]) },
   },
   {
     name: 'getDeviceList answers null for a 404', call: (r) => r.getDeviceList(USER),
@@ -254,6 +261,110 @@ const CASES: Case[] = [
     reply: () => cborReply(200, [131072, 104857600, 4, 2, 32, 8, 10737418240, 30000, 131584, 30, 30]),
     expected: { maxCiphertextBytes: 131072, keypackagesPerDevice: 32, keypackageRefillThreshold: 8, heartbeatMs: 30000, maxFrameBytes: 131584 },
   },
+  {
+    name: 'passwordLogin sends both strings without a token', call: (r) => r.passwordLogin('ada', 'hunter2 hunter2'),
+    method: 'POST', path: '/v1/auth/password/login', bucket: 'none', idempotent: false, auth: false, sent: encode(['ada', 'hunter2 hunter2']),
+    reply: () => cborReply(200, [ASSERTION, 1]), expected: { assertion: ASSERTION, needsTotp: true },
+  },
+  {
+    name: 'passwordLogin without a second factor', call: (r) => r.passwordLogin('ada', 'pw'),
+    method: 'POST', path: '/v1/auth/password/login', bucket: 'none', idempotent: false, auth: false, sent: encode(['ada', 'pw']),
+    reply: () => cborReply(200, [ASSERTION, 0]), expected: { assertion: ASSERTION, needsTotp: false },
+  },
+  {
+    name: 'totpVerify', call: (r) => r.totpVerify(ASSERTION, '123456'),
+    method: 'POST', path: '/v1/auth/totp/verify', bucket: 'none', idempotent: false, auth: false, sent: encode([ASSERTION, '123456']),
+    reply: () => cborReply(200, ['asrt-2']), expected: { assertion: 'asrt-2' },
+  },
+  {
+    name: 'postSessionPending reads the pending answer', call: (r) => r.postSessionPending(DEVICE, BODY),
+    method: 'POST', path: `/v1/devices/${hex(DEVICE)}/sessions`, bucket: 'none', idempotent: false, auth: false, sent: BODY,
+    reply: () => cborReply(201, ['tok-p', 1, USER, DEVICE, 1_800_604_800, 1_800_043_200, 7]),
+    expected: { token: 'tok-p', scope: 1, userId: USER, deviceId: DEVICE, expires: 1_800_604_800n, idleExpires: 1_800_043_200n, generation: 7n },
+  },
+  {
+    name: 'listBackups', call: (r) => r.listBackups(),
+    method: 'GET', path: '/v1/backups', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [[0, 0, 103, 1_800_000_000], [1, 0, 2048, 1_800_000_100]]),
+    expected: [{ kind: 0, chunkSeq: 0, size: 103, created: 1_800_000_000n }, { kind: 1, chunkSeq: 0, size: 2048, created: 1_800_000_100n }],
+  },
+  {
+    name: 'getBackup of the root object', call: (r) => r.getBackup(0),
+    method: 'GET', path: '/v1/backups/0/0', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [OBJECT, 1_800_000_000]), expected: { object: OBJECT, created: 1_800_000_000n },
+  },
+  {
+    name: 'getBackup answers null for a 404', call: (r) => r.getBackup(1),
+    method: 'GET', path: '/v1/backups/1/0', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => refusal(404, 'E_NOT_FOUND', 'no such backup'), expected: null,
+  },
+  {
+    name: 'putBackup of a new object', call: (r) => r.putBackup(0, OBJECT),
+    method: 'PUT', path: '/v1/backups/0/0', bucket: 'write', idempotent: true, auth: true, sent: encode([OBJECT]),
+    reply: () => cborReply(201, [BLOB_ID, 103]), expected: { blobId: BLOB_ID, size: 103, created: true },
+  },
+  {
+    name: 'putBackup of a replaced object', call: (r) => r.putBackup(1, OBJECT),
+    method: 'PUT', path: '/v1/backups/1/0', bucket: 'write', idempotent: true, auth: true, sent: encode([OBJECT]),
+    reply: () => cborReply(200, [BLOB_ID, 103]), expected: { blobId: BLOB_ID, size: 103, created: false },
+  },
+  {
+    name: 'listDevices', call: (r) => r.listDevices(),
+    method: 'GET', path: '/v1/devices', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [[DEVICE, 1, 1, null, null, 1_800_000_000], [DEVICE_2, 0, 0, 1_799_000_000, 1_800_000_050, 1_799_999_999]]),
+    expected: [
+      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_800_000_000n },
+      { id: DEVICE_2, tier: 0, signerTier: 0, verifiedAt: 1_799_000_000n, revokedAt: 1_800_000_050n, lastSeen: 1_799_999_999n },
+    ],
+  },
+  {
+    name: 'deleteSessions', call: (r) => r.deleteSessions(DEVICE),
+    method: 'DELETE', path: `/v1/devices/${hex(DEVICE)}/sessions`, bucket: 'write', idempotent: true, auth: true, sent: null,
+    reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'getDeviceListHistory returns the body for the core and its last version', call: (r) => r.getDeviceListHistory(USER, 1n),
+    method: 'GET', path: `/v1/users/${hex(USER)}/device-list?after=1`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => bytesReply(200, HISTORY), expected: { raw: HISTORY, count: 2, lastVersion: 3n },
+  },
+  {
+    name: 'getDeviceListHistory with nothing newer', call: (r) => r.getDeviceListHistory(USER, 3n),
+    method: 'GET', path: `/v1/users/${hex(USER)}/device-list?after=3`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => bytesReply(200, EMPTY_ARRAY), expected: { raw: EMPTY_ARRAY, count: 0, lastVersion: null },
+  },
+  {
+    name: 'postDm opens a new DM', call: (r) => r.postDm([PEER_USER]),
+    method: 'POST', path: '/v1/dms', bucket: 'write', idempotent: false, auth: true, sent: encode([[PEER_USER]]),
+    reply: () => cborReply(201, [CHANNEL]), expected: { channelId: CHANNEL, created: true },
+  },
+  {
+    name: 'postDm finds the existing DM', call: (r) => r.postDm([PEER_USER]),
+    method: 'POST', path: '/v1/dms', bucket: 'write', idempotent: false, auth: true, sent: encode([[PEER_USER]]),
+    reply: () => cborReply(200, [CHANNEL]), expected: { channelId: CHANNEL, created: false },
+  },
+  {
+    name: 'listDms reads a null member list as empty', call: (r) => r.listDms(),
+    method: 'GET', path: '/v1/dms', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [[CHANNEL, 3, [USER, PEER_USER]], [CATEGORY, 4, null]]),
+    expected: [{ channelId: CHANNEL, kind: 3, members: [USER, PEER_USER] }, { channelId: CATEGORY, kind: 4, members: [] }],
+  },
+  {
+    name: 'getChannel of a DM reads the twelve-element row', call: (r) => r.getChannel(CHANNEL),
+    method: 'GET', path: `/v1/channels/${hex(CHANNEL)}`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, null, 3, 0, 0, null, '', '', 0, 0, 4, GROUP]),
+    expected: { id: CHANNEL, kind: 3, mode: 0, visibility: 0, parentId: null, name: '', topic: '', position: 0, seq: 4n, textGroupId: GROUP },
+  },
+  {
+    name: 'getChannel skips community_id and slow mode', call: (r) => r.getChannel(CHANNEL),
+    method: 'GET', path: `/v1/channels/${hex(CHANNEL)}`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, COMMUNITY, 0, 0, 0, CATEGORY, 'general', 'say hi', 1, 30, 5, null]),
+    expected: { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: CATEGORY, name: 'general', topic: 'say hi', position: 1, seq: 5n, textGroupId: null },
+  },
+  {
+    name: 'deleteDevice removes an unlisted device row (73)', call: (r) => r.deleteDevice(DEVICE_2),
+    method: 'DELETE', path: `/v1/devices/${hex(DEVICE_2)}`, bucket: 'write', idempotent: false, auth: true, sent: null,
+    reply: () => noContent(), expected: undefined,
+  },
 ];
 
 describe('Routes: one request per call, decoded as the server answers it', () => {
@@ -306,6 +417,20 @@ const REFUSALS: RefusalCase[] = [
   { name: 'deleteWelcome 403', call: (r) => r.deleteWelcome(5n), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
   { name: 'getAccountMe 401', call: (r) => r.getAccountMe(), reply: () => refusal(401, 'E_UNAUTHENTICATED'), status: 401, code: 'E_UNAUTHENTICATED' },
   { name: 'getLimits 501', call: (r) => r.getLimits(), reply: () => refusal(501, 'E_INTERNAL'), status: 501, code: 'E_INTERNAL' },
+  { name: 'passwordLogin 401', call: (r) => r.passwordLogin('ada', 'x'), reply: () => refusal(401, 'E_UNAUTHENTICATED'), status: 401, code: 'E_UNAUTHENTICATED' },
+  { name: 'totpVerify 401', call: (r) => r.totpVerify(ASSERTION, '000000'), reply: () => refusal(401, 'E_UNAUTHENTICATED'), status: 401, code: 'E_UNAUTHENTICATED' },
+  { name: 'postSessionPending 429 beyond the retry window', call: (r) => r.postSessionPending(DEVICE, BODY), reply: () => refusal(429, 'E_RATE_LIMITED', '', 1_200_000), status: 429, code: 'E_RATE_LIMITED' },
+  { name: 'postSessionPending 403 device cap', call: (r) => r.postSessionPending(DEVICE, BODY), reply: () => refusal(403, 'E_FORBIDDEN', 'device cap reached'), status: 403, code: 'E_FORBIDDEN' },
+  { name: 'listBackups 403', call: (r) => r.listBackups(), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
+  { name: 'getBackup 403', call: (r) => r.getBackup(0), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
+  { name: 'putBackup 409 root stored', call: (r) => r.putBackup(0, OBJECT), reply: () => refusal(409, 'E_INVALID_REQUEST', 'root object already stored'), status: 409, code: 'E_INVALID_REQUEST' },
+  { name: 'listDevices 403', call: (r) => r.listDevices(), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
+  { name: 'deleteSessions 404', call: (r) => r.deleteSessions(DEVICE), reply: () => refusal(404, 'E_NOT_FOUND', 'not found'), status: 404, code: 'E_NOT_FOUND' },
+  { name: 'getDeviceListHistory 400', call: (r) => r.getDeviceListHistory(USER, 0n), reply: () => refusal(400, 'E_INVALID_REQUEST'), status: 400, code: 'E_INVALID_REQUEST' },
+  { name: 'postDm 404', call: (r) => r.postDm([PEER_USER]), reply: () => refusal(404, 'E_NOT_FOUND', 'no such user'), status: 404, code: 'E_NOT_FOUND' },
+  { name: 'listDms 403', call: (r) => r.listDms(), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
+  { name: 'getChannel 404', call: (r) => r.getChannel(CHANNEL), reply: () => refusal(404, 'E_NOT_FOUND'), status: 404, code: 'E_NOT_FOUND' },
+  { name: 'deleteDevice 404', call: (r) => r.deleteDevice(DEVICE_2), reply: () => refusal(404, 'E_NOT_FOUND', 'not found'), status: 404, code: 'E_NOT_FOUND' },
 ];
 
 describe('Routes: a refusal propagates unchanged and is sent once', () => {
@@ -337,6 +462,38 @@ describe('Routes: a refusal propagates unchanged and is sent once', () => {
 });
 
 describe('Routes: retries and inputs', () => {
+  it('sends one request for a short 429 on login and session routes', async () => {
+    for (const call of [
+      (routes: Routes) => routes.passwordLogin('ada', 'pw'),
+      (routes: Routes) => routes.postSession(DEVICE, BODY),
+      (routes: Routes) => routes.postSessionPending(DEVICE, BODY),
+    ]) {
+      const { t, routes } = setup();
+      t.replies.push(refusal(429, 'E_RATE_LIMITED', '', 1000));
+      await expect(call(routes)).rejects.toMatchObject({ status: 429, retryAfterMs: 1000 });
+      expect(t.seen).toHaveLength(1);
+      expect(t.sleeps).toEqual([]);
+    }
+  });
+  it('refuses bad web-2a inputs before sending', async () => {
+    const { t, routes } = setup();
+    const attempts: (() => Promise<unknown>)[] = [
+      () => routes.getBackup(2 as 0),
+      () => routes.putBackup(3 as 1, OBJECT),
+      () => routes.deleteSessions(new Uint8Array(15)),
+      () => routes.getDeviceListHistory(USER, -1n),
+      () => routes.getDeviceListHistory(new Uint8Array(17), 0n),
+      () => routes.postDm([]),
+      () => routes.postDm([new Uint8Array(15)]),
+      () => routes.postDm(Array.from({ length: 65 }, () => PEER_USER)),
+      () => routes.getChannel(new Uint8Array(17)),
+      () => routes.deleteDevice(new Uint8Array(15)),
+    ];
+    for (const [i, attempt] of attempts.entries()) {
+      await expect(attempt(), `attempt ${i}`).rejects.toThrow(/^E_ROUTE_INPUT: /);
+    }
+    expect(t.seen).toHaveLength(0);
+  });
   it('postMessage is sent once after a network failure', async () => {
     const { t, routes } = setup();
     t.replies.push(new TypeError('fetch failed'), bytesReply(200, UPLOADED));
