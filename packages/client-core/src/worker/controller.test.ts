@@ -4,7 +4,10 @@ import type { Enrol } from '../account/enrol';
 import type { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
-import { CoreError, type ActivityRow, type ApplyResult, type CorePort, type GroupInfo, type IdentityInfo, type OwnDeviceList, type TimelineRow } from '../core-port';
+import {
+  CoreError, type ActivityRow, type ApplyResult, type CorePort, type GroupInfo, type IdentityInfo, type OwnDeviceList, type SealedObjects,
+  type TimelineRow,
+} from '../core-port';
 import { CLIENT_CLOSE, type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
@@ -297,6 +300,7 @@ const RECOVERY_KEY = 'QRST'.repeat(13);
 const PASSWORD = 'correct horse battery staple';
 const ROOT = new Uint8Array([1, 2, 3]);
 const STATE_OBJECT = new Uint8Array([4, 5, 6]);
+const LOCAL_STATE = new Uint8Array([4, 5, 7]);
 const LIST_RAW = new Uint8Array([0x84, 0x01, 0x41, 0x09]);
 const FETCHED = { root: ROOT, state: STATE_OBJECT, listBody: LIST_RAW };
 const NOW_S = 1_700_000_000n;
@@ -334,6 +338,8 @@ function world(opts: { phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: 
     ownDeviceList: (): OwnDeviceList => state.ownList,
     deviceListRevoke: vi.fn((_input: unknown) => { calls.push('core.deviceListRevoke'); return { deviceListBody: new Uint8Array([7]), stateSealed: new Uint8Array([8]) }; }),
     stateSealedUploaded: vi.fn((): void => { calls.push('core.stateSealedUploaded'); }),
+    // An addition to the brief's double (task-14 fix round 1): the state object this device sealed, as the core keeps it.
+    sealedObjects: vi.fn((): SealedObjects => ({ root: ROOT, state: LOCAL_STATE, stateUploaded: true })),
     deviceListPublished: vi.fn((): void => { calls.push('core.deviceListPublished'); }),
     pause: vi.fn((): void => { calls.push('core.pause'); }),
     close: (): void => {},
@@ -1817,6 +1823,123 @@ describe('Controller pre-flight rulings (task 14)', () => {
     w.routes.listDms.mockImplementationOnce(() => Promise.reject(refusal(503, 'E_UNAVAILABLE', 1000)));
     await toReady(w);
     expect(w.last<DmSummary[]>('dms')).toEqual([]);
+  });
+});
+
+// ---- Task-14 fix round 1: a root mismatch is not dropped; an unusable served state object cannot block a revocation. ----
+
+describe('Controller task-14 fix round 1', () => {
+  /** The worker's record of a root mismatch (pre-flight row 1.5). How it reaches the page awaits the controller's
+   *  ruling (a ledger change: no L-TS-24 slice can carry it), so the test reads the record itself. */
+  const rootMismatch = (w: World): unknown => (w.controller as unknown as { rootMismatch: unknown }).rootMismatch;
+  const STATE_MISSING = 'the backup state is missing';
+  const STATE_UNREADABLE = 'the backup state could not be read';
+  const listedBoth = (w: World): void => {
+    w.state.ownList = { version: 2n, published: true, entries: [
+      { deviceId: DEVICE, dskPub: new Uint8Array(32), tier: 1, addedAt: 1n, revokedAt: null },
+      { deviceId: OTHER_DEVICE, dskPub: new Uint8Array(32), tier: 1, addedAt: 2n, revokedAt: null },
+    ] };
+  };
+
+  it('a root mismatch from ensureBackups at ready is recorded, the client still reaches ready, and the wipe drops it', async () => {
+    const w = world();
+    w.account.ensureBackups.mockImplementationOnce(() => { w.calls.push('ensureBackups'); return Promise.reject(new Error('E_ROOT_MISMATCH')); });
+    await toReady(w);
+    expect(rootMismatch(w)).toBe(true);
+    w.call(2, { m: 'forgetBrowser' });
+    await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+    expect(rootMismatch(w)).toBe(false);
+  });
+
+  it('every other ensureBackups rejection is still swallowed and records nothing; a gateway ready records a mismatch; a later success clears it', async () => {
+    const w = world();
+    w.account.ensureBackups.mockImplementationOnce(() => Promise.reject(refusal(503, 'E_UNAVAILABLE', 1000)));
+    await toReady(w);
+    expect(rootMismatch(w)).toBe(false);
+    w.account.ensureBackups.mockImplementationOnce(() => Promise.reject(new Error('E_ROOT_MISMATCH')));
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(rootMismatch(w)).toBe(true));
+    w.account.ensureBackups.mockImplementationOnce(() => Promise.reject(refusal(503, 'E_UNAVAILABLE', 1000)));
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await settle();
+    expect(rootMismatch(w)).toBe(true);
+    w.gateway.emit({ type: 'ready', info: READY_INFO });         // the operator removed the planted root: the upload succeeds
+    await vi.waitFor(() => expect(rootMismatch(w)).toBe(false));
+  });
+
+  it('a served state object the core refuses is replaced by this device\'s own sealed state, and the re-sealed one repairs the instance\'s copy', async () => {
+    for (const detail of [STATE_MISSING, STATE_UNREADABLE]) {
+      const w = world();
+      await toReady(w);
+      listedBoth(w);
+      w.core.deviceListRevoke.mockImplementationOnce(() => { w.calls.push('core.deviceListRevoke'); throw new CoreError('E_CORE_INPUT', detail); });
+      const from = w.calls.length;
+      w.call(2, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+      expect(w.calls.slice(from)).toEqual([
+        'refreshOwnDeviceList', 'getBackup(0)', 'getBackup(1)', 'getDeviceList', 'core.deviceListRevoke', 'core.deviceListRevoke',
+        'putBackup(1)', 'core.stateSealedUploaded', 'putDeviceList', 'core.deviceListPublished', 'refreshOwnDeviceList', 'listDevices',
+      ]);
+      expect(w.core.deviceListRevoke).toHaveBeenNthCalledWith(1, expect.objectContaining({ stateSealed: STATE_OBJECT, deviceIds: [OTHER_DEVICE] }));
+      expect(w.core.deviceListRevoke).toHaveBeenNthCalledWith(2, {
+        recoveryKey: RECOVERY_KEY, rootSealed: ROOT, stateSealed: LOCAL_STATE, listBody: LIST_RAW, deviceIds: [OTHER_DEVICE], now: NOW_S,
+      });
+      expect(w.routes.putBackup).toHaveBeenCalledWith(1, new Uint8Array([8]));
+    }
+  });
+
+  it('a sign-out over a refused served state object signs with this device\'s own state and wipes to cleared', async () => {
+    const w = world();
+    await toReady(w);
+    w.core.deviceListRevoke.mockImplementationOnce(() => { w.calls.push('core.deviceListRevoke'); throw new CoreError('E_CORE_INPUT', STATE_MISSING); });
+    const from = w.calls.length;
+    w.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+    expect(w.calls.slice(from)).toEqual([
+      'getBackup(0)', 'getBackup(1)', 'getDeviceList', 'core.deviceListRevoke', 'core.deviceListRevoke', 'putBackup(1)',
+      'sync.stop', 'gateway.stop', 'putDeviceList', 'core.pause', 'resetDevice',
+    ]);
+    expect(w.core.deviceListRevoke).toHaveBeenLastCalledWith(expect.objectContaining({ stateSealed: LOCAL_STATE, deviceIds: [DEVICE] }));
+    expect(w.account()?.phase).toBe('cleared');
+  });
+
+  it('when this device\'s own state is refused too, or there is none, the revocation is E_NO_BACKUP with nothing uploaded or stopped', async () => {
+    const want = { code: 'E_NO_BACKUP', detail: '', status: 0, retryAfterMs: null };
+    // (i) the own state is refused as well: two core calls, then E_NO_BACKUP.
+    const w = world();
+    await toReady(w);
+    listedBoth(w);
+    w.core.deviceListRevoke.mockImplementation(() => { throw new CoreError('E_CORE_INPUT', STATE_UNREADABLE); });
+    w.call(2, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
+    expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: false, error: want });
+    expect(w.core.deviceListRevoke).toHaveBeenCalledTimes(2);
+    expect(w.routes.putBackup).not.toHaveBeenCalled();
+    expect(w.routes.putDeviceList).not.toHaveBeenCalled();
+    expect(w.account()?.phase).toBe('ready');
+    // (ii) this device holds no state object: one core call, then E_NO_BACKUP; a sign-out stops nothing.
+    const v = world();
+    await toReady(v);
+    v.core.sealedObjects.mockImplementation(() => ({ root: ROOT, state: null, stateUploaded: false }));
+    v.core.deviceListRevoke.mockImplementation(() => { throw new CoreError('E_CORE_INPUT', STATE_MISSING); });
+    v.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(v.ret(2)).toBeDefined());
+    expect(v.ret(2)).toEqual({ t: 'ret', id: 2, ok: false, error: want });
+    expect(v.core.deviceListRevoke).toHaveBeenCalledTimes(1);
+    expect(v.routes.putBackup).not.toHaveBeenCalled();
+    expect(v.gateway.stops).toBe(0);
+    expect(v.account()?.phase).toBe('ready');
+  });
+
+  it('any other core refusal of the revocation is not retried with the own state', async () => {
+    const w = world();
+    await toReady(w);
+    w.core.deviceListRevoke.mockImplementationOnce(() => { throw new CoreError('E_RECOVERY_KEY', ''); });
+    w.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
+    expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: false, error: { code: 'E_RECOVERY_KEY', detail: '', status: 0, retryAfterMs: null } });
+    expect(w.core.deviceListRevoke).toHaveBeenCalledTimes(1);
+    expect(w.core.sealedObjects).not.toHaveBeenCalled();
   });
 });
 

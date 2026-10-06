@@ -227,6 +227,9 @@ export class Controller {
   private noticeFloor: bigint | null = null;
   /** The instance clock when the last gateway ticket was minted (the connection that reports the next ready). */
   private ticketTime: bigint | null = null;
+  /** ensureBackups found a root this device did not seal on the instance (pre-flight row 1.5). How it reaches the
+   *  page (a flag on a slice) awaits the controller's ruling: no L-TS-24 slice can carry it yet. Dropped by the wipe. */
+  private rootMismatch = false;
   private readonly refusedChannels = new Set<string>();
   private readonly notMember = new Set<string>();
   private readonly resyncing = new Set<string>();
@@ -487,8 +490,8 @@ export class Controller {
       userId = identity.userId;
       deviceId = identity.deviceId;
       this.me = { userId, deviceId };
-      // (e) the next ready retries a failed upload.
-      try { await this.parts.ensureBackups(core, this.routes); } catch { /* L-TS-21: retried on the next ready */ }
+      // (e) the next ready retries a failed upload; a root mismatch is recorded, never dropped.
+      await this.ensureBackups(core);
       if (this.revoked()) return;
       // (f)
       const own = await this.parts.refreshOwnDeviceList(core, this.routes, userId);
@@ -577,6 +580,18 @@ export class Controller {
     sync.start();
   }
 
+  /** Requirements 11(e) and 13: a rejection is swallowed (the next ready retries, L-TS-21), except that a root
+   *  mismatch (task 11 ruling (b), pre-flight row 1.5: the instance holds a root this device did not seal, so every
+   *  later recovery on it fails as a wrong key) is recorded in rootMismatch; a later success clears the record. */
+  private async ensureBackups(core: CorePort): Promise<void> {
+    try {
+      await this.parts.ensureBackups(core, this.routes);
+      this.rootMismatch = false;
+    } catch (e) {
+      if (isCode(e, 'E_ROOT_MISMATCH')) this.rootMismatch = true;
+    }
+  }
+
   /** Read through a call: tsc keeps a narrowing of this.phase across awaits, but a revocation can land in any of them. */
   private revoked(): boolean { return this.phase === 'revoked'; }
 
@@ -625,7 +640,7 @@ export class Controller {
     // Requirement 13 (Q27: clients refetch on ready), not awaited in the ready path.
     const me = this.me;
     if (core !== null && me !== null) {
-      this.parts.ensureBackups(core, this.routes).catch(() => undefined);
+      void this.ensureBackups(core);
       this.parts.refreshOwnDeviceList(core, this.routes, me.userId)
         .then((own) => { if (!own.listed) this.enterRevoked(); }, () => undefined);
     }
@@ -1170,16 +1185,28 @@ export class Controller {
     for (let attempt = 0; ; attempt += 1) {
       const root = await this.routes.getBackup(0);
       if (root === null) throw new Error('E_NO_BACKUP');
-      // A missing state object is not a refusal (head ruling 28): the re-sealed one repairs it.
+      // A missing state object is not a refusal here (head ruling 28): the re-sealed one repairs it.
       const state = await this.routes.getBackup(1);
       const list = await this.routes.getDeviceList(me.userId);
       if (list === null) throw new Error('E_NO_BACKUP');
+      const now = this.nowS();
+      const sign = (stateSealed: Uint8Array): { deviceListBody: Uint8Array; stateSealed: Uint8Array } =>
+        core.deviceListRevoke({ recoveryKey, rootSealed: root.object, stateSealed, listBody: list.raw, deviceIds: ids, now });
       let signed: { deviceListBody: Uint8Array; stateSealed: Uint8Array };
       try {
-        signed = core.deviceListRevoke({
-          recoveryKey, rootSealed: root.object, stateSealed: state?.object ?? new Uint8Array(0), listBody: list.raw,
-          deviceIds: ids, now: this.nowS(),
-        });
+        try {
+          signed = sign(state?.object ?? new Uint8Array(0));
+        } catch (e) {
+          // The core accepts a missing or unopenable served state only at list version 1 (core-block security
+          // ruling 1): past it, a session that deleted or spoiled the object would block every revocation with
+          // the key. This device's own sealed state is authentic, and its list is not newer than the list this
+          // device stores, so the floor still holds; the re-sealed object then repairs the instance's copy.
+          if (!coreInput(e, STATE_UNUSABLE)) throw e;
+          const own = core.sealedObjects().state;
+          if (own === null) throw new Error('E_NO_BACKUP');
+          try { signed = sign(own); }
+          catch (again) { throw coreInput(again, STATE_UNUSABLE) ? new Error('E_NO_BACKUP') : again; }
+        }
       } catch (e) {
         if (!coreInput(e, LIST_CONFLICT)) throw e;
         if (attempt > 0) throw new Error('E_LIST_RACE');
@@ -1292,6 +1319,7 @@ export class Controller {
     const timelines = [...this.open.keys()];
     this.core = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
+    this.rootMismatch = false;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
     this.noticesState = { nextId: this.noticesState.nextId, items: [] };
