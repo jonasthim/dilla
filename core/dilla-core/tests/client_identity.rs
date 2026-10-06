@@ -1654,6 +1654,12 @@ fn an_enrol_record_beside_another_phase_or_without_its_key_is_refused() {
 //   recovers by re-establishing.
 // - E_DEVICE_LIST_STALE from own_device_list_update: only an instance that serves a gap or a lower
 //   version. The honest instance serves the contiguous chain (L-HTTP-56).
+// - "the instance served an older device list" (E_CORE_INPUT): only an instance that serves a
+//   signed list older than the stored newest or the list in the opened state object. A hostile
+//   instance must not make the device sign old+1, which could re-list a device revoked in between.
+//   The honest instance serves its newest accepted list. Clients must publish the candidate list
+//   before uploading a state object that carries its version; otherwise the honest instance can
+//   temporarily hold state(v+1) while serving list v and this floor refuses it too.
 // - the device_ids refusals: only the caller's own arguments.
 // None can be triggered by another member or another user: every input is the own user's objects.
 
@@ -3211,6 +3217,7 @@ fn an_enrolled_browser_joins_a_group_of_its_account_and_both_read_each_other() {
     }
 }
 
+// A served list older than the opened state list can re-list a revoked device when signed at old+1.
 #[test]
 fn enrol_refuses_a_served_list_older_than_the_opened_state_list() {
     let m = material();
@@ -3234,6 +3241,7 @@ fn enrol_refuses_a_served_list_older_than_the_opened_state_list() {
     assert_eq!(snapshot(&b.c), before);
 }
 
+// A served list older than the stored newest can re-list a revoked device when signed at old+1.
 #[test]
 fn revoke_refuses_a_served_list_older_than_the_stored_newest() {
     let (mut a, ac, rk_text, reg, put_v1) = signed_up();
