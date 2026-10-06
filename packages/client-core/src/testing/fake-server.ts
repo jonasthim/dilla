@@ -47,7 +47,9 @@ export class FakeServer {
   readonly keyPackages: { device: string; count: number; lastResort: boolean }[] = [];
   scope: 0 | 1 | null = null;
   readonly passwords = new Map<string, { password: string; totp: string | null }>();
-  readonly assertions = new Map<string, { user: string; needsTotp: boolean }>();
+  /** Every assertion issued, including ones subsequently spent. */
+  readonly assertions: string[] = [];
+  private readonly activeAssertions = new Map<string, { user: string; needsTotp: boolean }>();
   readonly backups = new Map<string, { object: Uint8Array; created: bigint }>();
   readonly listHistory = new Map<string, { version: bigint; blob: Uint8Array; sig: Uint8Array; prev: Uint8Array }[]>();
   readonly revoked = new Map<string, number>();
@@ -137,8 +139,8 @@ export class FakeServer {
       const body = arr(decode(r.body), 2);
       const value = str(body[0] ?? null);
       const code = str(body[1] ?? null);
-      const assertion = this.assertions.get(value);
-      this.assertions.delete(value);
+      const assertion = this.activeAssertions.get(value);
+      this.activeAssertions.delete(value);
       if (assertion === undefined || !assertion.needsTotp || this.passwords.get(assertion.user)?.totp !== code)
         return refuse(401, 'E_UNAUTHENTICATED');
       return reply(200, [this.assertion(assertion.user, false)]);
@@ -223,7 +225,8 @@ export class FakeServer {
 
   private assertion(user: string, needsTotp: boolean): string {
     const value = `asrt-${++this.assertionN}`;
-    this.assertions.set(value, { user, needsTotp });
+    this.assertions.push(value);
+    this.activeAssertions.set(value, { user, needsTotp });
     return value;
   }
   private mint(deviceHex: string, scope: 0 | 1): string {
@@ -251,8 +254,8 @@ export class FakeServer {
         if (!(registration[1] instanceof Uint8Array) || registration[1].length !== 32)
           return refuse(400, 'E_INVALID_REQUEST');
       }
-      const assertion = this.assertions.get(login);
-      this.assertions.delete(login);
+      const assertion = this.activeAssertions.get(login);
+      this.activeAssertions.delete(login);
       if (assertion === undefined || assertion.needsTotp) return refuse(401, 'E_UNAUTHENTICATED');
       const account = [...this.accounts].find(([, value]) => value.username === assertion.user);
       if (account === undefined) return refuse(401, 'E_UNAUTHENTICATED');
@@ -288,6 +291,7 @@ export class FakeServer {
         }
       }
     }
+    if (this.scope !== null) scope = this.scope;
     return reply(201, [this.mint(deviceHex, scope), scope, fromHex(user), fromHex(deviceHex),
       this.nowS + SESSION_S, this.nowS + IDLE_S, 1]);
   }
