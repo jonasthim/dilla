@@ -32,7 +32,8 @@ export class Session {
       if (this.deps.core.identity().phase === 2) this.deps.core.sessionClear();
       return false;
     }
-    if (result.scope !== 0) throw new Error('E_SESSION_SCOPE');
+    const want = id.phase === 3 ? 1 : 0;
+    if (result.scope !== want) throw new Error('E_SESSION_SCOPE');
     this.deps.core.sessionStore({ token: result.token, expires: result.expires, idleExpires: result.idleExpires });
     return true;
   }
