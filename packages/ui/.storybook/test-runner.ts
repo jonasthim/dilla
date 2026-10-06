@@ -11,6 +11,15 @@ const config: TestRunnerConfig = {
       detailedReport: true, detailedReportOptions: { html: true }, includedImpacts: ['critical', 'serious'],
       ...(strict ? { axeOptions: { rules: { 'target-size': { enabled: true } } } } : {}),
     });
+    // A container focused only by script, an opened dialog, draws no ring: around the whole dialog it reads
+    // as an error box (design ruling 23(h), A11Y-DESIGN-11). Its operable controls keep the ring (below).
+    const dialogRing = await page.evaluate(() => {
+      const el = document.activeElement;
+      return el instanceof HTMLDialogElement ? getComputedStyle(el).outlineStyle : null;
+    });
+    if (dialogRing !== null && dialogRing !== 'none') {
+      throw new Error(`${context.title} / ${context.name}: the opened dialog, focused by script, draws a ring (outline-style: ${dialogRing})`);
+    }
     // Focus-ring guard. The visible ring is an outline, never a box-shadow,
     // so that a component's own box-shadow state cue (the active channel
     // row's inset bar, the pressed button's underline) cannot swallow it.

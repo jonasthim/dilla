@@ -19,8 +19,9 @@ that they wrote it down before continuing, and the screen offers no copy button.
 - The acknowledgement: a native checkbox labelled `onboarding.keys.acknowledge`, not ticked when the step
   opens.
 - The print button `onboarding.keys.print`.
-- The footer: `Back`, and `Continue`, which is disabled until the box is ticked. While it is disabled the
-  hint `onboarding.keys.ackHint` stands under it and is its description.
+- The footer: `Back`, and `Continue`, which is blocked until the box is ticked: `aria-disabled="true"`,
+  never the native `disabled`, so it stays in the tab order and its reason is heard. While it is blocked the
+  hint `onboarding.keys.ackHint` stands under it and is its description, and activating it does nothing.
 
 ## Wireframe at 1280
 
@@ -38,7 +39,7 @@ as many fit as the column allows; no breakpoint decides it). The grid label is d
                       [ ] I have written down or printed my recovery key   [ Print ]
                       --------------------------------------------------
                                                [ Back ]  [ Continue ]
-                                                         (disabled)
+                                                         (blocked)
                                                          Tick the box to continue.
 
   after ticking:      [x] I have written down or printed my recovery key   [ Print ]
@@ -83,7 +84,7 @@ The print rules use system colours (`CanvasText` on `Canvas`), because browsers 
 ## Keyboard and assistive technology
 
 - Tab order: the grid's text is not a tab stop; Tab goes from the last field above to the checkbox, then
-  `Print`, then `Back`, then `Continue` (when enabled).
+  `Print`, then `Back`, then `Continue` (also while it is blocked, when focus on it reads the hint).
 - Space toggles the checkbox; Enter or Space activates `Print`, `Back` and `Continue`.
 - A screen reader reads the label `Recovery key` and then a list of 13 items, each one group; the numbers
   are not read (the CSS counter has empty alternative text). The groups can be read character by

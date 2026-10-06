@@ -53,7 +53,20 @@ describe('JoinCommunity', () => {
     fake.handler = () => new Promise(() => {});
     await user.type(invite(), 'ABCD-EFGH{Enter}');
     expect(fake.calls).toEqual([{ m: 'joinCommunity', invite: 'ABCD-EFGH' }]);
-    expect(screen.getByRole('button', { name: 'Joining…' })).toBeDisabled();
+    // Busy, but focusable (A11Y-DESIGN-06, WEB-APP-04; Global Constraints line 98, ruling 20(e)).
+    expect(screen.getByRole('button', { name: 'Joining…' })).toHaveAttribute('aria-disabled', 'true');
+  });
+  it('keeps focus on Join while joining, and sends nothing more', async () => {
+    const { user, fake } = setup();
+    fake.handler = () => new Promise(() => {});
+    await user.type(invite(), 'ABCD-EFGH');
+    await user.click(screen.getByRole('button', { name: 'Join' }));
+    const joining = screen.getByRole('button', { name: 'Joining…' });
+    expect(joining).toHaveFocus();
+    expect(joining).not.toBeDisabled();
+    await user.keyboard('{Enter}');
+    await user.click(joining);
+    expect(fake.calls).toEqual([{ m: 'joinCommunity', invite: 'ABCD-EFGH' }]);
   });
   it.each([
     ['E_INVITE_INVALID', 'This invite is expired, used up or unknown.'],

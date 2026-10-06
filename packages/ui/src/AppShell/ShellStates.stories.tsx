@@ -58,7 +58,7 @@ function Screen(p: { active?: string | null; servers?: { id: string; name: strin
         // The Composer is controlled (task 21); a story holds no text, so it passes an empty value.
         composer={channel ? <Composer label={t('shell.composer.label', { channel: channel.name })} placeholder={t('shell.composer.placeholder', { channel: channel.name })}
           maxLength={4000} value="" onChange={noop} disabled={Boolean(p.reason)} disabledReason={p.reason ?? undefined} onSend={noop} sendLabel={t('shell.composer.send')}
-          counterLabel={n => t('shell.composer.remaining', { n })} /> : null}
+          counterLabel={n => (n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n }))} /> : null}
         statusBar={
           <StatusBar position="bottom" label={t('shell.status.label')}>
             <StatusChunk label={t('shell.status.node')}>dilla.test</StatusChunk>

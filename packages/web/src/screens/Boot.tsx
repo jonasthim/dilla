@@ -30,7 +30,11 @@ export function Boot(props: { fatal: UiError | null }): React.JSX.Element {
   const reset = () => {
     setConfirming(false);
     setResetting(true);
-    void client.call({ m: 'resetDevice' }).catch(e => { setResetting(false); setResetError(errorOf(e)); });
+    // The clearing splash lasts while the call is pending (WEB-APP-02): a reset that settles with the store still
+    // lost shows the store-lost splash and its reset again, never the splash for ever.
+    void client.call({ m: 'resetDevice' })
+      .catch(e => { setResetError(errorOf(e)); })
+      .finally(() => setResetting(false));
   };
   const splash = (() => {
     switch (phase) {

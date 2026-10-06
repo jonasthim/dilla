@@ -102,6 +102,7 @@ export const en = {
   'shell.composer.placeholder': 'message #{channel}',
   'shell.composer.send': 'send',
   'shell.composer.remaining': '{n} left',
+  'shell.composer.over': '{n} bytes over the limit',
   'shell.composer.joining': 'joining this channel…',
   'shell.composer.resync': 'catching up with this channel…',
   'shell.composer.notMember': 'you cannot post in this channel and new messages will not arrive. Reload, or ask the host.',

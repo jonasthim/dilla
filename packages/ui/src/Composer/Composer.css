@@ -9,4 +9,6 @@
 .d-composer[data-disabled="true"] .d-composer__input { color: var(--fg-3); cursor: not-allowed; }
 .d-composer__reason { margin: 0; font-size: var(--text-sm); color: var(--fg-2); }
 .d-composer__counter { margin: 0; font-size: var(--text-xs); color: var(--fg-3); text-align: right; }
-@media (prefers-reduced-motion: reduce) { .d-composer__box { transition: none; } }
+/* Over the budget: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
+.d-composer__counter[data-over="true"] { color: var(--danger); }
+.d-composer__counter[data-over="true"]::before { content: "✕ " / ""; }@media (prefers-reduced-motion: reduce) { .d-composer__box { transition: none; } }

@@ -4,11 +4,12 @@ import { Composer } from './Composer.tsx';
 
 // The Composer is controlled (L-UI-13): each story passes the text as `value`. 69 bytes per line, so 53
 // lines (less the last space) leave 344 of the 4000-byte budget and 59 lines are 70 bytes over it.
+// The counter words a negative remainder as the shell does (shell.composer.over): never a negative "left".
 const LINE = 'meet at the harbour after nine, bring the rope and the good lantern. ';
 const meta = {
   title: 'Conversation/Composer', component: Composer,
   args: { label: 'message #general', placeholder: 'message #general', maxLength: 4000, value: '', onChange: () => {}, onSend: () => {},
-    sendLabel: 'send', counterLabel: (n: number) => `${n} left` },
+    sendLabel: 'send', counterLabel: (n: number) => (n < 0 ? `${-n} bytes over the limit` : `${n} left`) },
   decorators: [Story => <div style={{ maxWidth: 720 }}><Story /></div>],
 } satisfies Meta<typeof Composer>;
 export default meta;

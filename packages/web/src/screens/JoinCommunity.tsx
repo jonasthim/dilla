@@ -82,7 +82,7 @@ export function JoinCommunity(props: {
 
   return (
     <Dialog open={open} title={t('join.title')} closeLabel={t('dialog.close')} onClose={() => props.onClose()}
-      footer={<Button variant="accent" type="submit" form="join-form" disabled={busy}>{busy ? t('join.joining') : t('join.submit')}</Button>}>
+      footer={<Button variant="accent" type="submit" form="join-form" aria-disabled={busy || undefined}>{busy ? t('join.joining') : t('join.submit')}</Button>}>
       <form id="join-form" noValidate onSubmit={submit}>
         <TextField id={FIELD_ID} label={t('join.invite')} value={value} onChange={v => { setValue(v); setError(null); }}
           hint={t('join.inviteHint')} error={error ?? undefined} required autoComplete="off" spellCheck={false} />

@@ -140,7 +140,7 @@ Step 3, recovery key (the grid in detail: `02-recovery-key.md`):
 |                      +--------------------------------------------------+                    |
 |                      [ ] I have written down or printed my recovery key       [ Print ]      |
 |                      --------------------------------------------------                      |
-|                                               [ Back ]    [ Continue ] (disabled)            |
+|                                               [ Back ]    [ Continue ] (blocked)             |
 |                                                           Tick the box to continue.          |
 +----------------------------------------------------------------------------------------------+
 ```
@@ -380,7 +380,7 @@ Tab order inside each step: the fields in visual order, then (step 3) the checkb
 | `onboarding.keys.loss` | `Getting an account back with this key is not available in this version. Until it is, your account lives only in this browser: if this browser loses its data, the account and its history are gone, and the host cannot bring them back. Keep the key for when recovery arrives.` | second paragraph, step 3 |
 | `onboarding.keys.label` | `Recovery key` | grid label, step 3 |
 | `onboarding.keys.acknowledge` | `I have written down or printed my recovery key` | checkbox label, step 3 |
-| `onboarding.keys.ackHint` | `Tick the box to continue.` | hint under the disabled `Continue`, step 3; its description while disabled |
+| `onboarding.keys.ackHint` | `Tick the box to continue.` | hint under the blocked (`aria-disabled`) `Continue`, step 3; its description while blocked |
 | `onboarding.keys.print` | `Print` | button, step 3 |
 | `onboarding.keys.preparing` | `Making your keys` | status line, step 3, while the key is not there yet |
 | `onboarding.browser.title` | `What this browser keeps` | step heading, step 4 |

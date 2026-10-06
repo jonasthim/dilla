@@ -53,7 +53,7 @@ Colours, mesh theme (the default):
 | `--edge` | `#6B7370` | borders of interactive controls (buttons, inputs, kbd, tags): 4.1:1 on `--bg`, so a control is identifiable without hover |
 | `--fg` | `#E8ECE8` | primary text |
 | `--fg-2` | `#A0A6A0` | secondary text |
-| `--fg-3` | `#767C76` | muted text and labels (Mesh had `#5E635E`, 3.3:1; raised to pass 4.5:1) |
+| `--fg-3` | `#818780` | muted text and labels (Mesh had `#5E635E`, 3.3:1; raised to pass 4.5:1 on every surface it sits on, `--surface-2` included: 4.89:1 there) |
 | `--fg-4` | `#5E635E` | decorative only: never text, never an icon that carries meaning |
 | `--fg-link` | `#7CFF8E` | links |
 | `--accent` | `#7CFF8E` | live, active, selected, focus ring, brand caret |

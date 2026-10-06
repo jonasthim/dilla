@@ -176,14 +176,21 @@ describe('recovery key', () => {
     expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
     expect(screen.getByText('This key is shown once and is kept nowhere. Write it down or print it, and keep it away from this computer.')).toBeInTheDocument();
     expect(screen.getByText('Getting an account back with this key is not available in this version. Until it is, your account lives only in this browser: if this browser loses its data, the account and its history are gone, and the host cannot bring them back. Keep the key for when recovery arrives.')).toBeInTheDocument();
-    expect(button('Continue')).toBeDisabled();
+    // Blocked for a reason the person must hear, so focusable (Global Constraints line 98, A11Y-DESIGN-03).
+    expect(button('Continue')).toHaveAttribute('aria-disabled', 'true');
     expect(button('Continue')).toHaveAccessibleDescription('Tick the box to continue.');
+    act(() => button('Back').focus());
+    await user.tab();
+    expect(button('Continue')).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(h1()).toHaveTextContent('Your recovery key');
     await user.click(screen.getByRole('checkbox', { name: ACK }));
     expect(button('Continue')).toBeEnabled();
+    expect(button('Continue')).not.toHaveAttribute('aria-disabled');
     expect(button('Continue')).not.toHaveAttribute('aria-describedby');
     expect(screen.queryByText('Tick the box to continue.')).toBeNull();
     await user.click(screen.getByRole('checkbox', { name: ACK }));
-    expect(button('Continue')).toBeDisabled();
+    expect(button('Continue')).toHaveAttribute('aria-disabled', 'true');
     expect(button('Continue')).toHaveAccessibleDescription('Tick the box to continue.');
     await user.click(button('Print'));
     expect(print).toHaveBeenCalledTimes(1);
@@ -197,7 +204,9 @@ describe('recovery key', () => {
     expect(h1()).toHaveTextContent('Your recovery key');
     expect(screen.getByRole('status')).toHaveTextContent('Making your keys');
     expect(screen.queryByRole('checkbox')).toBeNull();
-    expect(button('Continue')).toBeDisabled();
+    expect(button('Continue')).toHaveAttribute('aria-disabled', 'true');
+    await user.click(button('Continue'));
+    expect(h1()).toHaveTextContent('Your recovery key');
     act(() => fake.set('account', account({ phase: 'signup-keys', user: null, recoveryKey: KEY })));
     expect(screen.getByRole('checkbox', { name: ACK })).not.toBeChecked();
   });

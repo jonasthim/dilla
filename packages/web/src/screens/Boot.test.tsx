@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { BootPhase } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
@@ -68,6 +68,8 @@ describe('Boot', () => {
   it('resets the device only after a confirmation', async () => {
     const user = userEvent.setup();
     const { fake } = show('store-lost');
+    // Pending, as the worker's resetDevice is until its bootStore settles: the splash lasts that long (WEB-APP-02).
+    fake.handler = c => (c.m === 'resetDevice' ? new Promise(() => {}) : Promise.resolve(null));
     await user.click(screen.getByRole('button', { name: 'Reset this browser' }));
     const dialog = screen.getByRole('dialog', { name: 'Reset this browser?' });
     expect(dialog).toHaveTextContent('This deletes dilla’s data for this site from this browser. It cannot be undone.');
@@ -80,6 +82,21 @@ describe('Boot', () => {
     await user.click(screen.getByRole('button', { name: 'Reset' }));
     expect(fake.callsOf('resetDevice')).toEqual([{ m: 'resetDevice' }]);
     expect(screen.getByRole('status')).toHaveTextContent('Clearing this browser’s data');
+  });
+
+  // WEB-APP-02: the clearing splash lasts while the reset is pending; a reset that settles with the store still
+  // lost offers the reset again instead of staying on the splash for ever.
+  it('offers the reset again when the store is still lost after it', async () => {
+    const user = userEvent.setup();
+    const { fake } = show('store-lost');
+    let finish: (v: null) => void = () => {};
+    fake.handler = c => (c.m === 'resetDevice' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(null));
+    await user.click(screen.getByRole('button', { name: 'Reset this browser' }));
+    await user.click(screen.getByRole('button', { name: 'Reset' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Clearing this browser’s data');
+    await act(async () => { finish(null); await Promise.resolve(); });
+    expect(screen.getByRole('status')).toHaveTextContent('This browser can no longer open its saved data');
+    expect(screen.getByRole('button', { name: 'Reset this browser' })).toBeInTheDocument();
   });
 
   it('shows a failed reset as an error', async () => {

@@ -233,7 +233,7 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   // A blocked button stays focusable (aria-disabled, never the native attribute): the person who
   // pressed it keeps focus there while the step works (pre-flight ruling (c)).
   const blockedProps = blocked ? { 'aria-disabled': true } : {};
-  const footer = (backTo: Step | null, next: string, nextProps: { disabled?: boolean; 'aria-describedby'?: string } = {}) => (
+  const footer = (backTo: Step | null, next: string, nextProps: { 'aria-disabled'?: boolean; 'aria-describedby'?: string } = {}) => (
     <>
       {backTo === null ? null : <Button variant="ghost" type="button" onClick={back(backTo)} {...blockedProps}>{t('onboarding.back')}</Button>}
       <Button variant="accent" type="submit" {...blockedProps} {...nextProps}>{next}</Button>
@@ -293,8 +293,9 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   } else if (shown === 'keys') {
     const key = account.recoveryKey;
     content = form(t('onboarding.keys.title'), 3,
+      // Blocked until the tick, but focusable so its reason is heard (Global Constraints line 98); keysNext guards it.
       footer('identity', t('onboarding.next'), {
-        disabled: !acknowledged || key === null,
+        ...(!acknowledged || key === null ? { 'aria-disabled': true } : {}),
         'aria-describedby': acknowledged ? undefined : 'onboarding-ack-hint',
       }), <>
         <p>{t('onboarding.keys.body')}</p>

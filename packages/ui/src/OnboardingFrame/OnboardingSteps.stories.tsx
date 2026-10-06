@@ -60,7 +60,7 @@ function Keys({ initiallyAcknowledged }: { initiallyAcknowledged: boolean }) {
   const [acknowledged, setAcknowledged] = useState(initiallyAcknowledged);
   return (
     <Step n={3} title={t('onboarding.keys.title')} footer={<><Button variant="ghost">{t('onboarding.back')}</Button><Button variant="accent"
-      disabled={!acknowledged} aria-describedby={acknowledged ? undefined : 'story-ack-hint'}>{t('onboarding.next')}</Button></>}>
+      aria-disabled={acknowledged ? undefined : true} aria-describedby={acknowledged ? undefined : 'story-ack-hint'}>{t('onboarding.next')}</Button></>}>
       <p>{t('onboarding.keys.body')}</p>
       <p>{t('onboarding.keys.loss')}</p>
       <RecoveryKey groups={KEY} label={t('onboarding.keys.label')} acknowledgeLabel={t('onboarding.keys.acknowledge')}
