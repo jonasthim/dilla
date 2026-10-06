@@ -97,6 +97,12 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	sum := sha256.Sum256(object)
 	blobID := sum[:]
+	// The blob routes' tombstone gate: content addressing would otherwise let anyone holding the
+	// ciphertext of an administrator-purged blob store it again as a backup object.
+	if err := refuseTombstoned(ctx, d.Repo, blobID); err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
 	if maxBytes := d.Config.Blobs.StoreMaxBytes; maxBytes > 0 {
 		_, err := d.Repo.GetBlob(ctx, blobID)
 		switch {
@@ -129,6 +135,15 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 			StorageRef: blob.StorageRef(d.Config.Blobs.Backend, blobID), Created: now,
 		}); err != nil {
 			return err
+		}
+		// The tombstone again, inside the transaction that records the object: a purge that
+		// committed after the first check must not be undone by this upload (blobs.go, fix wave I9).
+		tomb, err := tx.GetBlobTombstone(ctx, blobID)
+		if err != nil {
+			return err
+		}
+		if tomb {
+			return errTombstoned
 		}
 		if err := tx.ClearBlobUnreferenced(ctx, blobID); err != nil {
 			return err
@@ -165,6 +180,15 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, errTombstoned) {
+			// The purge's own unlink may have run before this upload wrote the file; purged bytes
+			// stay removed, so they go now, row or none.
+			if derr := d.Blobs.Delete(blobID); derr != nil {
+				d.logf(r, "api: remove purged bytes a backup rewrote", "err", derr)
+			}
+			server.WriteError(w, errPruned())
+			return
+		}
 		if created {
 			d.orphanBackup(ctx, blobID, n, now)
 		}

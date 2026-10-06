@@ -595,6 +595,8 @@ object under `SHA-256(object)` in its blob store and cannot open it.
   unlinked once `blobs.gc_grace` has passed, unless they are stored again first.
 - **Storage.** Backup objects count against `blobs.store_max_bytes` (new bytes that would pass it
   are `507 E_STORAGE_FULL` and nothing is stored) and never against `blobs.quota_bytes_per_user`.
+  An object whose bytes an instance administrator removed (§ Admin) is `410 E_PRUNED` and nothing
+  is stored, as for a blob: content addressing would otherwise hand the removed name straight back.
 - **Pending.** The two reads admit a `pending` session (`02` § Device sessions item 4), so a
   device entering the recovery key reads both objects before it holds a credential; `PUT` and
   `DELETE` need an `enrolled` one (`403 E_FORBIDDEN`).

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
@@ -423,6 +424,81 @@ func TestBackupsCountAgainstTheInstanceStoreButNotTheUserQuota(t *testing.T) {
 	wantStored(t, "the stored root again (no new bytes)", putObject(t, h, "0", s.enrolled, root), http.StatusOK, root)
 	small := sealedObject(t, 60, 0x83) // 77 bytes: 103 + 77 <= 200
 	wantStored(t, "a state that fits", putObject(t, h, "1", s.enrolled, small), http.StatusCreated, small)
+}
+
+// wantNothingStored asserts that a refused PUT left no row, no blobs row and no file for object.
+func wantNothingStored(t *testing.T, d api.Deps, user store.UserRow, kind int32, object []byte) {
+	t.Helper()
+	ctx := t.Context()
+	if rows, err := d.Repo.ListBackups(ctx, user.ID, kind); err != nil || len(rows) != 0 {
+		t.Fatalf("kind %d rows = %+v, %v; want none", kind, rows, err)
+	}
+	if _, err := d.Repo.GetBlob(ctx, objectID(object)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the refused object's blobs row: %v, want ErrNotFound", err)
+	}
+	if _, err := d.Blobs.Stat(objectID(object)); !errors.Is(err, blob.ErrNotFound) {
+		t.Fatalf("the refused object's file: %v, want blob.ErrNotFound", err)
+	}
+}
+
+// Boundary ruling 1 (task 6 scan): an administrator's purge tombstones a blob id, and every route
+// that stores bytes under their hash refuses those bytes again with the blob route's 410 E_PRUNED;
+// without it, content addressing would let anyone holding the purged ciphertext re-upload it as a
+// backup object and get the same name back. Attacker: only an enrolled session of the uploader
+// reaches the route, and the refusal is about the bytes, not the user: no honest client's backup
+// object is the hash of content an administrator removed.
+func TestAPurgedBlobCannotBeStoredAsABackup(t *testing.T) {
+	h, d := newBackupAPI(t, nil)
+	s := backupSessions(t, d)
+	root, state := rootObject(t, 0xc1), sealedObject(t, 200, 0xc2)
+	for _, object := range [][]byte{root, state} {
+		if err := d.Repo.PutBlobTombstone(t.Context(), objectID(object), "takedown", s.user.ID, d.Clock.Now().Unix()); err != nil {
+			t.Fatalf("PutBlobTombstone: %v", err)
+		}
+	}
+	wantRefusal(t, "PUT of a purged root", putObject(t, h, "0", s.enrolled, root), http.StatusGone, "E_PRUNED")
+	wantNothingStored(t, d, s.user, 0, root)
+	wantRefusal(t, "PUT of a purged state", putObject(t, h, "1", s.enrolled, state), http.StatusGone, "E_PRUNED")
+	wantNothingStored(t, d, s.user, 1, state)
+}
+
+// purgeAfterFirstCheck is the repository the backup handler reads through, with an administrator's
+// purge committing right after the handler's first tombstone read: the bytes were not purged when
+// the request arrived and are by the time its row would be written.
+type purgeAfterFirstCheck struct {
+	store.Repository
+	by   store.UserRow
+	at   int64
+	done bool
+}
+
+func (p *purgeAfterFirstCheck) GetBlobTombstone(ctx context.Context, blobID []byte) (bool, error) {
+	tomb, err := p.Repository.GetBlobTombstone(ctx, blobID)
+	if !p.done {
+		p.done = true
+		if perr := p.Repository.PutBlobTombstone(ctx, blobID, "takedown", p.by.ID, p.at); perr != nil {
+			return false, perr
+		}
+	}
+	return tomb, err
+}
+
+// Boundary ruling 1, the transaction half: a purge that commits between the first check and the
+// transaction that records the object is honoured there too, as the blob route's fix wave I9 does,
+// and the bytes the request wrote are removed.
+func TestABackupRacingAPurgeOfTheSameBytesLeavesNothing(t *testing.T) {
+	_, d := newBackupAPI(t, nil)
+	s := backupSessions(t, d)
+	racing := &purgeAfterFirstCheck{Repository: d.Repo, by: s.user, at: d.Clock.Now().Unix()}
+	d.Repo = racing
+	m := server.NewMux()
+	api.Register(m, d)
+	state := sealedObject(t, 200, 0xc3)
+	wantRefusal(t, "PUT racing a purge", putObject(t, m, "1", s.enrolled, state), http.StatusGone, "E_PRUNED")
+	if !racing.done {
+		t.Fatal("the handler never read the tombstone before the transaction; the race was not run")
+	}
+	wantNothingStored(t, d, s.user, 1, state)
 }
 
 // L-HTTP common rule: the four routes spend the device session's read and write buckets.

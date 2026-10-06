@@ -265,7 +265,7 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 				b.log.ErrorContext(r.Context(), "remove purged bytes an upload rewrote",
 					"blob_id", hex.EncodeToString(blobID), "err", derr)
 			}
-			server.WriteError(w, server.Errorf(server.CodePruned, "these bytes were removed by the server operator"))
+			server.WriteError(w, errPruned())
 			return
 		}
 		if created {
@@ -315,14 +315,24 @@ func (b *Blobs) orphan(ctx context.Context, blobID []byte, n, now int64) {
 // and on GET alike: the purge removed every reference, and the answer says why
 // rather than a bare 404.
 func (b *Blobs) refuseTombstoned(ctx context.Context, blobID []byte) error {
-	tomb, err := b.repo.GetBlobTombstone(ctx, blobID)
+	return refuseTombstoned(ctx, b.repo, blobID)
+}
+
+// refuseTombstoned is the tombstone gate every route that stores bytes under their hash applies:
+// the blob routes and PUT /v1/backups alike.
+func refuseTombstoned(ctx context.Context, repo store.Repository, blobID []byte) error {
+	tomb, err := repo.GetBlobTombstone(ctx, blobID)
 	if err != nil {
 		return err
 	}
 	if tomb {
-		return server.Errorf(server.CodePruned, "these bytes were removed by the server operator")
+		return errPruned()
 	}
 	return nil
+}
+
+func errPruned() *server.Error {
+	return server.Errorf(server.CodePruned, "these bytes were removed by the server operator")
 }
 
 func errStorageFull() *server.Error {
