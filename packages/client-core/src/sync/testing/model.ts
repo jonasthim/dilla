@@ -1039,7 +1039,8 @@ export class ModelDs {
      * peer-commit: a self-update commit by PEER (kind 1), framed in `epoch`. Stand-in convention
      * (CORE-ENGINE-02): element 1 is the pre-commit epoch here and in appendCommit, while dillad and the
      * Rust relay label a commit row with the post-commit epoch; the Rust core reads the epoch from the
-     * MLS message and the engine never reads the label, so no rule may key on it without changing both.
+     * handshake blob itself and the engine never reads the label, so no rule may key on it without
+     * changing both.
      */
     peerCommit: (seq: bigint, epoch: bigint): CborInput[] => [seq, epoch, 1, 1n, wire.commit(epoch + 1n, PEER.device, [], [])],
     /** bad-commit: a kind-1 row whose blob no core can process. */
