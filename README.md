@@ -4,9 +4,57 @@
 > independent security review, and the project makes no end-to-end encryption claim until one is
 > published. Run it only to develop it.
 
-dilla is an open-source, self-hosted alternative to Discord: communities with text channels and
-drop-in voice, DMs, roles and permissions, screen share and bots, with end-to-end encryption as the
-silent default. One binary per instance. Runnable by anyone who can host it somewhere.
+dilla is an open-source, self-hosted alternative to Discord, for a group that wants to leave Discord and
+host its own place to talk: servers with text channels and drop-in voice, DMs, roles and permissions,
+screen share and bots, with end-to-end encryption as the silent default. An instance is one Go binary,
+`dillad`, that serves the HTTP API, the WebSocket gateway, the MLS delivery service, the LiveKit media
+server, the TURN relay and the web client, on SQLite or Postgres. Anyone who can run one process on a
+machine their group can reach can host it.
+
+![The web client: the server Midgard Crew, its channels general and loot, and a conversation in
+#general](docs/user/screenshots/shell-conversation.png)
+
+## What works today
+
+As of 2026-10-06.
+
+| Part | State |
+|---|---|
+| The server, `dillad` | Accounts and devices, servers (communities in the API), text channels, DMs, roles, permissions and channel overwrites, kicks and bans, invites, attachments (blobs), reports, encrypted backup objects; `dillad init`, `serve`, `doctor`, `backup`, `restore` and `admin`; TLS by ACME (TLS-ALPN, DNS or IP) or behind a proxy. Container image, systemd unit and Proxmox helper: see the [operator guide](docs/deploy/README.md). |
+| Encrypted calls, at the protocol and media level | Voice, camera and screen share through the in-process LiveKit SFU and TURN relay, with every media frame encrypted end to end (SFrame keys from MLS), driven by the browser package `packages/media` and tested in Chromium and Firefox. The web client has no call screens yet. |
+| The web client, first slice ("web-1") | Served by `dillad` from its own address. Sign up in a browser with an invite, see your servers and channels, read and send text in end-to-end encrypted channels, reload and keep the history. One tab at a time. Tested in Chromium and Firefox, and in WebKit for sign-up and reload. See [Getting started](docs/user/getting-started.md). |
+
+![Step 3 of the sign-up: the recovery key, shown once](docs/user/screenshots/onboarding-3-recovery-key.png)
+
+## What is not there yet
+
+As of 2026-10-06, in the web client:
+
+- A second browser or device for an account, and getting an account back with the recovery key. The key is
+  shown at sign-up but restores nothing yet; this is being built now ("web-2a"). Until then an account
+  lives in one browser, and clearing that browser's site data loses it.
+- Creating servers, channels and invites, and any settings, roles, profile or sign-out screens. A server
+  is created through the HTTP API today.
+- DMs, voice, camera and screen share.
+- Edits, deletes, reactions, replies, threads, mentions, attachments and link previews.
+- Search, notifications, unread markers, typing and presence.
+- Safety numbers and device verification.
+- More than one open tab per browser (a second tab waits for the first).
+
+Beyond the web client: no desktop or mobile app, no published security review, and no published capacity
+figures yet.
+
+## Run it
+
+The [operator guide](docs/deploy/README.md) covers the container image, the systemd unit and the Proxmox
+helper, the TLS modes, the TURN relay and LiveKit settings, and backup and restore.
+
+## Use it
+
+[Getting started](docs/user/getting-started.md) is for a person with an invite: the sign-up, what the
+browser keeps, the app and its keyboard, and the known limits.
+
+![The app at phone width](docs/user/screenshots/shell-phone.png)
 
 ## Repository layout
 
@@ -17,6 +65,8 @@ silent default. One binary per instance. Runnable by anyone who can host it some
 | `docs/superpowers/specs` | Product and system design specifications |
 | `docs/superpowers/plans` | Implementation plans |
 | `docs/design` | Design brief and the Mesh design reference |
+| `docs/deploy` | The operator guide |
+| `docs/user` | The user guide and its screenshots |
 
 ## Licence
 
