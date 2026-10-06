@@ -83,6 +83,52 @@ describe('sending (rule 5)', () => {
     expect(d.core.outbox(g)).toEqual([]);
   });
 
+  it('keeps a lost upload in flight while the catch-ups cannot reach the server: one stored copy (CLIENT-CORE-TS-01)', async () => {
+    ds.detach(ME.device);
+    ds.inject('postMessage', { lose: true });
+    for (let i = 0; i < 4; i++) ds.inject('getMessages', { fail: httpError(0, 'E_NETWORK') });
+    d.engine.send(g, 'once');
+    await settle();
+    expect(posts()).toBe(1);
+    expect(states()).toEqual([1]);
+    await clock.advance(SYNC.echoWaitMs);
+    expect(ds.callsOf(ME.device, 'getMessages')).toHaveLength(2);
+    expect(posts()).toBe(1);
+    expect(sent()).toEqual(['once']);
+    expect(states()).toEqual([1]);
+  });
+
+  it('a later catch-up that reaches the server adopts the lost upload without a resend (CLIENT-CORE-TS-01)', async () => {
+    ds.detach(ME.device);
+    ds.inject('postMessage', { lose: true });
+    for (let i = 0; i < 4; i++) ds.inject('getMessages', { fail: httpError(0, 'E_NETWORK') });
+    d.engine.send(g, 'once');
+    await settle();
+    for (let i = 0; i < 3; i++) await clock.advance(SYNC.echoWaitMs);
+    expect(ds.callsOf(ME.device, 'getMessages')).toHaveLength(4);
+    expect(states()).toEqual([1]);
+    await clock.advance(SYNC.echoWaitMs);
+    expect(ds.callsOf(ME.device, 'getMessages')).toHaveLength(5);
+    expect(posts()).toBe(1);
+    expect(sent()).toEqual(['once']);
+    expect(d.core.outbox(g)).toEqual([]);
+    expect(d.core.bodies(g)).toEqual(['once']);
+  });
+
+  it('does not requeue after a catch-up that ended in a resync (410 E_PRUNED): the resync cannot see an earlier copy (CLIENT-CORE-TS-01)', async () => {
+    ds.detach(ME.device);
+    ds.inject('postMessage', { fail: httpError(0, 'E_NETWORK') });
+    d.engine.send(g, 'unknown fate');
+    await settle();
+    expect(states()).toEqual([1]);
+    ds.inject('getMessages', { fail: httpError(410, 'E_PRUNED') });
+    await clock.advance(SYNC.echoWaitMs);
+    expect(ds.callsOf(ME.device, 'postResync')).toHaveLength(1);
+    expect(d.core.group(g)?.state).toBe(2);
+    expect(posts()).toBe(1);
+    expect(states()).toEqual([1]);
+  });
+
   it('settles a row left in flight by an earlier page through a catch-up, not a resend', async () => {
     ds.detach(ME.device);
     const earlier = d.core.sendPrepare(g, 'earlier', 1n);

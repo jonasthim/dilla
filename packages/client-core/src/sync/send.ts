@@ -31,15 +31,25 @@ export function discardSend(s: SyncInternals, msgId: Id): void {
   if (g !== undefined) s.deps.onOutboxChanged(g);
 }
 async function afterLostResponse(s: SyncInternals, g: Id, msgId: Id): Promise<void> {
-  const hex = toHex(g); const msgHex = toHex(msgId);
   await s.catchUpNow(g, 'catch-up');
-  const row = s.deps.core.outbox(g).find((x) => toHex(x.msgId) === msgHex);
+  const row = s.deps.core.outbox(g).find((x) => toHex(x.msgId) === toHex(msgId));
   if (row?.state !== 1) { s.deps.onOutboxChanged(g); s.requestDrain(g); return; }
-  if (s.echoWait.has(hex)) return;
+  if (!s.echoWait.has(toHex(g))) armEchoWait(s, g, msgId);
+}
+/** Waits echoWaitMs, catches up once more, and requeues the row only when that catch-up reached the server
+ *  and did not see the upload; a catch-up that did not reach it proves nothing, so the row stays in flight
+ *  and the wait starts again (TS-01: a resend after it would store a second copy). */
+function armEchoWait(s: SyncInternals, g: Id, msgId: Id): void {
+  const hex = toHex(g); const msgHex = toHex(msgId);
   const timer = s.armTimer(SYNC.echoWaitMs, () => {
     void s.queues.run(`g:${hex}`, async () => {
-      await s.catchUpNow(g, 'catch-up');
+      const reached = await s.catchUpNow(g, 'catch-up');
       const fresh = s.deps.core.outbox(g).find((x) => toHex(x.msgId) === msgHex);
+      if (fresh?.state === 1 && !reached) {
+        // A group that left state 2 drains its in-flight row again when it is activated (drainOne).
+        s.echoWait.delete(hex); if (!s.stopped() && s.row(g)?.state === 2) armEchoWait(s, g, msgId);
+        return;
+      }
       if (fresh?.state === 1) { s.deps.core.sendRequeue(msgId); s.deps.onOutboxChanged(g); }
       s.echoWait.delete(hex); s.requestDrain(g);
     }).catch(() => undefined);

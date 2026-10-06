@@ -10,7 +10,7 @@ export interface SyncInternals {
   snapshot(groupId: Id): ApplyResult | null;
   expected(): ExpectedGroup[];
   addExpected(g: ExpectedGroup): void;
-  catchUpNow(groupId: Id, source: 'catch-up' | 'commit'): Promise<void>;
+  catchUpNow(groupId: Id, source: 'catch-up' | 'commit'): Promise<boolean>;
   applyHook(groupId: Id, result: ApplyResult, source: 'frame' | 'catch-up' | 'commit'): Promise<void>;
   requestCatchUp(groupId: Id): void;
   requestDrain(groupId: Id): void;

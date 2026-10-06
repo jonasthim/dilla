@@ -178,30 +178,38 @@ export class SyncEngine implements SyncInternals {
       if (!this.isStopped) this.deps.core.cursorAcked(g, u64(p[0]), u64(p[1]));
     } catch { /* next catch-up retries */ }
   }
-  async catchUpNow(g: Id, source: 'catch-up' | 'commit'): Promise<void> {
+  /**
+   * Catches the group up to what the server holds. Resolves true only when it read the group to the end
+   * with the group still active, so the caller may conclude that a row the server stored would have been
+   * seen; false when it stopped early, met a refusal (HTTP layer retries spent, network down), or ended
+   * in a resync, which restarts above the resync commit and can never see an earlier row (TS-01).
+   */
+  async catchUpNow(g: Id, source: 'catch-up' | 'commit'): Promise<boolean> {
     this.disarmCursor(g);
     let carry: bigint | null = null;
     try {
       for (;;) {
-        if (this.isStopped) return;
-        const r = this.row(g); if (r?.state !== 2) return;
+        if (this.isStopped) return false;
+        const r = this.row(g); if (r?.state !== 2) return false;
         const from = r.nextSeq;
         const ms = await this.deps.routes.getMessages(g, from, SYNC.messagePage);
-        if (this.isStopped) return;
+        if (this.isStopped) return false;
         const hs = await this.deps.routes.getHandshakes(g, from, SYNC.handshakePage);
-        if (this.isStopped) return;
+        if (this.isStopped) return false;
         const through = throughOf(ms, hs, carry);
         if (through >= from) await this.applyHook(g, this.deps.core.groupApply(g, hs.raw, ms.raw, through), source);
         carry = hs.lastSeq;
-        if (this.row(g)?.state !== 2) return;
+        if (this.row(g)?.state !== 2) return false;
         if (ms.count < SYNC.messagePage && hs.count < SYNC.handshakePage && !(hs.lastSeq !== null && hs.lastSeq > through)) break;
       }
       await this.cursorStep(g);
+      return true;
     } catch (e) {
       if ((this.membershipLost(g, e) || (e instanceof DillaHttpError && e.status === 410 && e.code === 'E_PRUNED'))
         && !this.resyncTried.has(toHex(g))) {
         await resyncGroup(this, g, false);
       }
+      return false;
     }
   }
   /** A group read answering 404 E_NOT_FOUND for an active group: the device holds no leaf any more (a kick
@@ -231,7 +239,7 @@ export class SyncEngine implements SyncInternals {
       if (r.proposalsPending > 0) this.armVolunteer(g); else this.disarmVolunteer(g);
     }
   }
-  requestCatchUp(g: Id): void { if (!this.isStopped) this.queues.coalesce(key(g), 'catch-up', () => this.catchUpNow(g, 'catch-up')); }
+  requestCatchUp(g: Id): void { if (!this.isStopped) this.queues.coalesce(key(g), 'catch-up', async () => { await this.catchUpNow(g, 'catch-up'); }); }
   requestDrain(g: Id): void { if (!this.isStopped) this.queues.coalesce(key(g), 'drain', () => drainOne(this, g)); }
   requestCommit(g: Id, attempt: number): void {
     if (!this.isStopped) this.queues.coalesce(key(g), 'commit', async () => { await this.commitNow(g, attempt); });
