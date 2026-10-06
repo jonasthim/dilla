@@ -204,8 +204,10 @@ func TestPostDevicesEvictsOldestUnlistedAtCap(t *testing.T) {
 			t.Fatal(err)
 		}
 		unlisted[i] = id.New()
+		// Two hours old: boundary ruling 3 makes only a row older than the hourly rate window an
+		// eviction candidate.
 		if err := deps.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: unlisted[i], UserID: user.ID,
-			DSKPub: pub, CredentialBlob: []byte{1}, Created: now - int64(2-i), LastSeen: now}); err != nil {
+			DSKPub: pub, CredentialBlob: []byte{1}, Created: now - 7200 - int64(2-i), LastSeen: now}); err != nil {
 			t.Fatal(err)
 		}
 	}

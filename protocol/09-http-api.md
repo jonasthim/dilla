@@ -68,7 +68,8 @@ with a registration array and assertion (`02` § Device sessions item 2). The es
 most 8192 bytes and its credential at most 2048 bytes. Both that route and `POST /v1/devices`
 enforce 8 live devices and 3 live rows created per user per hour (a live first device counts).
 An unlisted row and its pending sessions expire after 24 hours. At the cap, the oldest unlisted
-row is evicted; only a cap consisting entirely of listed rows refuses with `403 E_FORBIDDEN`.
+row created more than an hour ago is evicted; a cap with no such row (every live row listed, or
+unlisted and younger than an hour) refuses with `403 E_FORBIDDEN`.
 Revoked and expired rows do not count toward the rate (`429 E_RATE_LIMITED`). An owner with an
 enrolled session can also remove an unlisted row with `DELETE /v1/devices/{device_id}`.
 

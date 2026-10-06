@@ -53,7 +53,9 @@ Every endpoint in this document requires a **device session**. A device session 
    Its user must be active and have published a device list. The new unverified row stores the
    opaque credential and receives a `pending` session. An unlisted row expires 24 hours after
    creation, revoking its pending sessions. At 8 live devices, registration evicts the oldest
-   unlisted row; if every live row is listed it refuses with `403 E_FORBIDDEN`. The hourly rate
+   unlisted row created more than an hour ago (the hourly rate's window), so a device in the
+   middle of its enrolment is never evicted; if no live row qualifies, every live row being listed
+   or young, it refuses with `403 E_FORBIDDEN`. The hourly rate
    counts only live rows created in the window, including a live first device; revoked and expired
    rows release capacity. `POST /v1/devices` applies the same cap and rate.
 3. The **token** is 32 bytes from the platform CSPRNG, base64url without padding, stored only as

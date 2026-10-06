@@ -1225,7 +1225,9 @@ func TestRegistrationAtCapEvictsOldestUnlistedRow(t *testing.T) {
 	if _, err := registerWith(t, s, newer, newerKey, a.issue(user)); err != nil {
 		t.Fatalf("second unlisted registration: %v", err)
 	}
-	clk.Advance(time.Second)
+	// Boundary ruling 3: only a row older than the hourly rate window is an eviction candidate
+	// (TestCapEvictionSparesARowInsideTheRateWindow), so both unlisted rows age out of it first.
+	clk.Advance(2 * time.Hour)
 	next, nextKey := newRegistration(t)
 	if _, err := registerWith(t, s, next, nextKey, a.issue(user)); err != nil {
 		t.Fatalf("cap eviction: %v", err)
@@ -1242,6 +1244,59 @@ func TestRegistrationAtCapEvictsOldestUnlistedRow(t *testing.T) {
 	}
 	if row, err := repo.GetDevice(t.Context(), next.DeviceID); err != nil || row.RevokedAt != nil {
 		t.Fatalf("replacement row = %+v, err %v", row, err)
+	}
+}
+
+// Boundary ruling 3 (task 7 scan): the cap evicts only a row created before the hourly rate
+// window. Attacker: a holder of the host password registering at the cap would otherwise evict the
+// owner's own browser in the minutes between its registration and the list that names it, and the
+// rate (three an hour) bounds how often but not whether. A row inside the window is never a
+// candidate; with no other candidate the registration is refused 403 "device cap reached", and the
+// owner's device stays. An honest person meets the refusal only by registering a ninth device
+// within an hour of an eighth, and clears it by removing an unlisted row or waiting the hour out.
+func TestCapEvictionSparesARowInsideTheRateWindow(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	ctx := context.Background()
+	a := newFakeAssertions()
+	s.Assertions = a
+	user, _, priv := seedDevice(t, repo)
+	keys := [][]byte{pubOf(priv)}
+	for i := 0; i < 6; i++ {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, pub)
+		if err := repo.CreateDevice(ctx, store.DeviceRow{ID: id.New(), UserID: user, DSKPub: pub,
+			CredentialBlob: []byte{1}, Created: clk.Now().Unix() - 7200, LastSeen: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listerOf(t, s).list(user, keys...)
+	// The owner's browser mid-enrolment: registered 30 minutes ago, not yet in the list.
+	enrolling, _ := newRegistration(t)
+	if err := repo.CreateDevice(ctx, store.DeviceRow{ID: enrolling.DeviceID, UserID: user, DSKPub: enrolling.DSKPub,
+		Tier: 1, SignerTier: 1, CredentialBlob: enrolling.Credential, Created: clk.Now().Unix() - 1800, LastSeen: 1}); err != nil {
+		t.Fatal(err)
+	}
+	intruder, intruderKey := newRegistration(t)
+	_, err := registerWith(t, s, intruder, intruderKey, a.issue(user))
+	if e := refusal(t, err); e.Code != server.CodeForbidden || e.Status() != http.StatusForbidden || e.Detail != "device cap reached" {
+		t.Fatalf("a registration at the cap whose only unlisted row is 30 minutes old: %s %d %q, want 403 E_FORBIDDEN \"device cap reached\"",
+			e.Code, e.Status(), e.Detail)
+	}
+	noDeviceRow(t, repo, intruder.DeviceID)
+	if row, err := repo.GetDevice(ctx, enrolling.DeviceID); err != nil || row.RevokedAt != nil {
+		t.Fatalf("the row 30 minutes old = %+v, err %v; want it live", row, err)
+	}
+
+	// Ninety minutes on, the same row is two hours old and outside the window: it is the candidate.
+	clk.Advance(90 * time.Minute)
+	if _, err := registerWith(t, s, intruder, intruderKey, a.issue(user)); err != nil {
+		t.Fatalf("a registration at the cap whose unlisted row is 2 hours old: %v, want it admitted", err)
+	}
+	if row, err := repo.GetDevice(ctx, enrolling.DeviceID); err != nil || row.RevokedAt == nil {
+		t.Fatalf("the row 2 hours old = %+v, err %v; want it evicted", row, err)
 	}
 }
 

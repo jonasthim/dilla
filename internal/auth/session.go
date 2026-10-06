@@ -476,8 +476,9 @@ func (s *Sessions) scopeFor(ctx context.Context, r EstablishRequest, device stor
 }
 
 // register spends an assertion after shape and signature checks, then admits only a listed
-// account's browser device. The cap evicts an old unlisted row; expiry and the rate exclude
-// revoked rows so a password holder cannot lock out a recovering owner permanently.
+// account's browser device. The cap evicts an unlisted row older than the rate window; expiry
+// and the rate exclude revoked rows so a password holder cannot lock out a recovering owner
+// permanently.
 func (s *Sessions) register(ctx context.Context, r EstablishRequest) (Token, error) {
 	unauth := server.Errorf(server.CodeUnauthenticated, "")
 	if s.Assertions == nil {
@@ -581,11 +582,15 @@ func (s *Sessions) AdmitDevice(ctx context.Context, tx store.Repository, userID 
 	if err != nil {
 		return id.ID{}, err
 	}
+	// window is the hourly rate window: a row created inside it is never an eviction candidate, so a
+	// holder of the password registering at the cap cannot evict the owner's device in the minutes
+	// between its registration and the list that names it.
+	window := now - 3599
 	var evicted id.ID
 	var oldest int64
 	if live >= int64(s.cfg.MaxDevicesPerUser) {
 		for _, row := range rows {
-			if row.RevokedAt == nil && row.Created >= cutoff && !slices.Contains(listed, row.ID) &&
+			if row.RevokedAt == nil && row.Created >= cutoff && row.Created < window && !slices.Contains(listed, row.ID) &&
 				(evicted.IsZero() || row.Created < oldest || (row.Created == oldest && bytes.Compare(row.ID[:], evicted[:]) < 0)) {
 				evicted, oldest = row.ID, row.Created
 			}
@@ -600,7 +605,7 @@ func (s *Sessions) AdmitDevice(ctx context.Context, tx store.Repository, userID 
 			return id.ID{}, err
 		}
 	}
-	creations, err := tx.ListLiveDeviceCreationsSince(ctx, userID, listed, now-3599, cutoff)
+	creations, err := tx.ListLiveDeviceCreationsSince(ctx, userID, listed, window, cutoff)
 	if err != nil {
 		return id.ID{}, err
 	}
