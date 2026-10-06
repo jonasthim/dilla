@@ -91,7 +91,11 @@ type Deps struct {
 	// device that published its KeyPackages before the list that names it (protocol/03 § Pairing,
 	// steps 2 and 5) is brought into its user's DMs here. The composition root wires it to
 	// SyncUserDMs; a failure is the hook's to log.
-	AfterDeviceList func(ctx context.Context, userID id.ID)
+	// DeviceLists verifies every published device list in the guest; nil refuses every publish
+	// with 500, fail closed.
+	DeviceLists DeviceListVerifier
+	// revoked is the devices this publish revoked (nil when none).
+	AfterDeviceList func(ctx context.Context, userID id.ID, revoked []id.ID)
 
 	// Blobs is the content-addressed store the backup routes (protocol/09 § Backups) write the
 	// sealed header objects to: the instance's one blob store, shared with Plan 2's attachment

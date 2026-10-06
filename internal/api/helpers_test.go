@@ -66,6 +66,11 @@ func newTestAPI(t *testing.T) (http.Handler, api.Deps) {
 // keeps the defaults.
 func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler, api.Deps) {
 	t.Helper()
+	return newTestAPIFull(t, tune, nil)
+}
+
+func newTestAPIFull(t *testing.T, tune func(*config.Config), wire func(*api.Deps)) (http.Handler, api.Deps) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "api.db")
 	write, err := sqlite.OpenWrite(path)
 	if err != nil {
@@ -122,9 +127,18 @@ func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler
 		Blobs:        bs,
 	}
 	deps.Sessions.Assertions = deps.Assertions
+	if wire != nil {
+		wire(&deps)
+	}
 	m := server.NewMux()
 	api.Register(m, deps)
 	return m, deps
+}
+
+// newTestAPIWired fills Deps fields before registration; handlers hold Deps by value.
+func newTestAPIWired(t *testing.T, wire func(*api.Deps)) (http.Handler, api.Deps) {
+	t.Helper()
+	return newTestAPIFull(t, nil, wire)
 }
 
 // seedInvite mints an ordinary invite with max_uses uses and no admin grant,

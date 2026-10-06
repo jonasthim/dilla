@@ -73,9 +73,18 @@ Every endpoint in this document requires a **device session**. A device session 
 5. **Lifetime** is a sliding 30 days for `native` devices and 7 days with a 12-hour idle window for
    `browser` devices, renewed by `purpose = 1`. At most **8** live sessions exist per device; the
    oldest is evicted.
-6. **Revocation.** Accepting a signed device list that revokes a device MUST delete that device's
-   session rows and close its gateway connections in the same transaction. Setting
-   `users.disabled_at` does the same for every device of that user. Every instance process that
+6. **Revocation.** The instance verifies every list published with
+   `PUT /v1/users/{user_id}/device-list` before storing it: `blob` is the six-element signed list of
+   `03-identity.md` § Device list, whose `version`, `prev_hash` and `sig_ssk` must equal the body's
+   `version`, `prev_hash` and `ssk_signature` (`400 E_INVALID_REQUEST`); its signature must verify
+   under `users.ssk_pub` and it must name the publishing user (`400 E_INVALID_REQUEST`); its
+   `version` must be the stored newest's plus one with `prev_hash = SHA-256` of the newest's blob,
+   or `1` with 32 zero bytes when none is stored (`409 E_INVALID_REQUEST`). Accepting a list that
+   revokes a device of the publishing user MUST mark the device revoked and delete its session rows
+   in the transaction that stores the list, then close its gateway connections and propose its
+   `Remove` in every group it holds a leaf in; the publishing device may revoke itself. Entries for
+   another user's devices are ignored. Setting `users.disabled_at` does the same for every device of
+   that user. Every instance process that
    serves the gateway also re-reads each ready connection's session row once per
    `gateway.heartbeat_interval`, and closes a connection whose session no longer resolves (deleted,
    pruned or past its expiry) with close `4004 session_revoked`, which is not resumable. A session

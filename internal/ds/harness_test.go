@@ -76,6 +76,11 @@ type dsHarness struct {
 
 func newDSHarness(t *testing.T) *dsHarness {
 	t.Helper()
+	return newDSHarnessWithFrameBudget(t, 0)
+}
+
+func newDSHarnessWithFrameBudget(t *testing.T, maxFrameBytes uint64) *dsHarness {
+	t.Helper()
 	ctx := context.Background()
 	// The fake clock starts at the wall clock's current second rather than a fixed epoch. The
 	// guest sees this clock (mlswasi.Options.Now) and OpenMLS validates every leaf's KeyPackage
@@ -127,6 +132,7 @@ func newDSHarness(t *testing.T) *dsHarness {
 	h.gw = gateway.New(gateway.Options{
 		Clock: clk, Store: gatewayStore{repo}, Generation: 1, Auth: h.auth,
 		Backoff: ds.DefaultPolicy().Backoff, BackoffJitter: ds.DefaultPolicy().BackoffJitter,
+		MaxFrameBytes: maxFrameBytes,
 	})
 	t.Cleanup(func() { _ = h.gw.Shutdown(context.Background()) })
 

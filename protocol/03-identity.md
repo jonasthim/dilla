@@ -161,19 +161,26 @@ fails. A leaf whose `device_id` is absent or has `revoked_at` set in the newest 
 (`E_DEVICE_UNLISTED`) and any message from it is not rendered. Revocation is therefore
 cryptographic and does not depend on the instance.
 
+A verifier that holds version *n* and is served a list of version *m* > *n* + 1 fetches the
+versions after *n* (`GET /v1/users/{user_id}/device-list?after=n`, `09`) and walks them one version
+at a time under the rules above; the instance serves them in order and stores only lists that verify
+and chain (`02` § Device sessions item 6). A verifier with no validated version for the user accepts
+the served list on its signature alone (first sight); only version 1 may carry a zero `prev_hash`.
+
 ## Custody by tier
 
 | secret | native device | browser device |
 |---|---|---|
-| `UMK_priv` | never (only in the recovery header) | never |
-| `SSK_priv` | yes | never, except during its own browser-rooted signup (pending signup record only) |
+| `UMK_priv` | never (only in the recovery header) | never, except transiently at a one-shot recovery-key entry (it signs the SSK binding of the new device's credential and is zeroised at once) |
+| `SSK_priv` | yes | never, except during its own browser-rooted signup (pending signup record only), and transiently at a one-shot recovery-key entry, zeroised afterwards |
 | `DSK_priv` | yes, in the OS keystore | yes, in the encrypted store (its key wrapped in IndexedDB) |
-| `K_backup` (archive key) | yes | only if the user enables "history in browser sessions" (default off); and during its own browser-rooted signup (pending signup record only) |
+| `K_backup` (archive key) | yes | only if the user enables "history in browser sessions" (default off); and during its own browser-rooted signup (pending signup record only); and transiently at a one-shot recovery-key entry, zeroised afterwards |
 | MLS group state | yes | yes (OPFS) |
 
 A browser device can therefore decrypt and send in groups it belongs to, but cannot enrol other
-devices or publish device lists once its own signup is complete. Peers show a `web` tag on members whose message came from a
-`browser`-tier leaf.
+devices or publish device lists, except during its own browser-rooted signup and at a one-shot
+recovery-key entry, when it holds `SSK_priv` transiently and zeroises it. Peers show a `web` tag on
+members whose message came from a `browser`-tier leaf.
 
 ## Pairing
 

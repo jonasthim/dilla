@@ -310,9 +310,29 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	deps.Tickets = gw.Tickets()
 	// The backup routes store the sealed header objects content-addressed in the same blob store as attachments (protocol/09 § Backups).
 	deps.Blobs = blobs
+	deps.DeviceLists = deviceLists
 	// A device is proposed into a DM only once its user's signed list names it (invariant 4), and
 	// pairing publishes the KeyPackages before the list: the list's publish is the second trigger.
-	deps.AfterDeviceList = func(ctx context.Context, userID id.ID) {
+	deps.AfterDeviceList = func(ctx context.Context, userID id.ID, revoked []id.ID) {
+		if len(revoked) > 0 {
+			o.Log.InfoContext(ctx, "removing revoked devices", "user", userID.String())
+			if err := api.RemoveRevokedDevices(ctx, o.Repo, delivery, revoked); err != nil {
+				joined := []error{err}
+				if many, ok := err.(interface{ Unwrap() []error }); ok {
+					joined = many.Unwrap()
+				}
+				for _, one := range joined {
+					var re *api.RevokedRemoveError
+					if errors.As(one, &re) {
+						o.Log.ErrorContext(ctx, "proposing a revoked device's Remove failed",
+							"user", userID.String(), "group", re.Group.String(), "device", re.Device.String(), "err", re.Err)
+					} else {
+						o.Log.ErrorContext(ctx, "reading a revoked device's groups failed",
+							"user", userID.String(), "err", one)
+					}
+				}
+			}
+		}
 		if err := api.SyncUserDMs(ctx, o.Repo, delivery, userID, o.Clock.Now().Unix()); err != nil {
 			o.Log.ErrorContext(ctx, "bringing a user's DMs in line after a device-list publish failed",
 				"user", userID, "err", err)

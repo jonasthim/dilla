@@ -15,6 +15,8 @@ import (
 // core's (`core/dilla-core/src/identity/device_list.rs`), reached through the guest's
 // `device_list_entries` export (ABI v3), so the Go side never re-implements the format and cannot
 // disagree with the client that produced it.
+// Entries reads and verifies the stored newest list; Verify checks a candidate before
+// PUT /v1/users/{id}/device-list stores it.
 //
 // It is declared here, with its Plan-1 implementation, because ds.Options names the seam (the same
 // reason as ACL and Channels).
@@ -29,6 +31,10 @@ type DeviceLists interface {
 	// state cache may have filled, which is the deadlock state.go's accounting exists to rule out.
 	// nil means "acquire one", for a caller that holds none.
 	Entries(ctx context.Context, v DeviceListVerifier, userID id.ID) ([][]byte, error)
+	// Verify decodes a candidate list in the guest and verifies its ssk_signature against
+	// sskPub and that it names userID; it reads nothing from the store and returns every
+	// entry, revoked ones flagged.
+	Verify(ctx context.Context, blob, sskPub []byte, userID id.ID) ([]mlswasi.DeviceListEntry, error)
 }
 
 // DeviceListVerifier is the guest a device list is decoded and verified in: *mlswasi.Instance and
@@ -62,6 +68,18 @@ func NewDeviceLists(repo store.Repository, wasm *mlswasi.Runtime) DeviceLists {
 type coreDeviceLists struct {
 	repo store.Repository
 	wasm *mlswasi.Runtime
+}
+
+func (c *coreDeviceLists) Verify(ctx context.Context, blob, sskPub []byte, userID id.ID) ([]mlswasi.DeviceListEntry, error) {
+	if c.wasm == nil {
+		return nil, ErrDeviceListUnavailable
+	}
+	inst, err := c.wasm.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer inst.Release()
+	return inst.DeviceListEntries(ctx, blob, sskPub, userID[:])
 }
 
 func (c *coreDeviceLists) Entries(ctx context.Context, v DeviceListVerifier, userID id.ID) ([][]byte, error) {
