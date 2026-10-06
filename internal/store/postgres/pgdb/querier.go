@@ -12,6 +12,8 @@ import (
 
 type Querier interface {
 	AppendHandshake(ctx context.Context, arg AppendHandshakeParams) error
+	// COUNT, not EXISTS, for the reason GetBlobTombstone gives.
+	BackupRefersToBlob(ctx context.Context, arg BackupRefersToBlobParams) (int64, error)
 	BumpGeneration(ctx context.Context) (int64, error)
 	BumpGroupSeq(ctx context.Context, arg BumpGroupSeqParams) (int64, error)
 	ClearBlobUnreferenced(ctx context.Context, arg ClearBlobUnreferencedParams) error
@@ -25,6 +27,8 @@ type Querier interface {
 	CountBlobRefs(ctx context.Context, arg CountBlobRefsParams) (int64, error)
 	CountForkReporters(ctx context.Context, arg CountForkReportersParams) (int64, error)
 	CountKeyPackages(ctx context.Context, arg CountKeyPackagesParams) (int64, error)
+	// dilla-web-2a (L-SQL-21, Q04): the per-user device cap counts unrevoked devices only.
+	CountLiveDevicesByUser(ctx context.Context, arg CountLiveDevicesByUserParams) (int64, error)
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
 	CountPendingJoins(ctx context.Context, arg CountPendingJoinsParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
@@ -89,6 +93,7 @@ type Querier interface {
 	EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error
 	EndVoiceSession(ctx context.Context, arg EndVoiceSessionParams) (int64, error)
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
+	GetBackup(ctx context.Context, arg GetBackupParams) (Backups, error)
 	GetBan(ctx context.Context, arg GetBanParams) (Bans, error)
 	GetBlob(ctx context.Context, arg GetBlobParams) (Blobs, error)
 	GetBlobRef(ctx context.Context, arg GetBlobRefParams) (BlobRefs, error)
@@ -128,6 +133,9 @@ type Querier interface {
 	// here instead of scanning every open group of the instance.
 	GroupsForTarget(ctx context.Context, arg GroupsForTargetParams) ([]MlsGroups, error)
 	InsertAudit(ctx context.Context, arg InsertAuditParams) error
+	// dilla-web-2a (L-SQL-21, F3, Q27): the root object is written once. No ON CONFLICT: a taken
+	// (user_id, kind, device_id, chunk_seq) is a unique violation, which the adapters map to ErrConflict.
+	InsertBackup(ctx context.Context, arg InsertBackupParams) error
 	// Fix wave C7: blobs.store_max_bytes. Every row counts, referenced or not: an orphaned or
 	// unreferenced blob's file is on disk until the sweeper collects it. The cast keeps SUM's
 	// NUMERIC an int64, as UserBlobBytes does.
@@ -155,11 +163,17 @@ type Querier interface {
 	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
 	// participant of, newest first, ties broken by id.
 	ListChannelsForUser(ctx context.Context, arg ListChannelsForUserParams) ([]Channels, error)
+	// dilla-web-2a (L-SQL-21): a blob a backups row names is never collectable; backups have no blob_refs row.
 	ListCollectableBlobs(ctx context.Context, arg ListCollectableBlobsParams) ([]Blobs, error)
 	ListCommunities(ctx context.Context, arg ListCommunitiesParams) ([]Communities, error)
 	// GET /v1/communities (dilla-web-1 L-SQL-02): the live communities the user is a member of, by id
 	// (the same order on both engines), over members_by_user (00013_members_by_user.sql).
 	ListCommunitiesForUser(ctx context.Context, arg ListCommunitiesForUserParams) ([]Communities, error)
+	// dilla-web-2a (L-SQL-21, Q04): the enrolment rate counts every enrolment, revoked devices
+	// included, so enrol-revoke-enrol inside the hour still counts twice.
+	ListDeviceCreationsSince(ctx context.Context, arg ListDeviceCreationsSinceParams) ([]int64, error)
+	// dilla-web-2a (L-SQL-21, L-HTTP-56): the history a client walks from the version it holds.
+	ListDeviceListsAfter(ctx context.Context, arg ListDeviceListsAfterParams) ([]DeviceLists, error)
 	ListDevicesByUser(ctx context.Context, arg ListDevicesByUserParams) ([]Devices, error)
 	// A community's references created strictly before the retention cutoff, oldest first.
 	ListExpiredBlobRefs(ctx context.Context, arg ListExpiredBlobRefsParams) ([]BlobRefs, error)
@@ -198,6 +212,8 @@ type Querier interface {
 	// a ban under READ COMMITTED. FOR NO KEY UPDATE: two lockers conflict, while the
 	// FOR KEY SHARE a foreign-key check on members or channels takes does not.
 	LockCommunity(ctx context.Context, arg LockCommunityParams) (id.ID, error)
+	// The row lock serializes count and insert for one user until Tx commits.
+	LockUserForDeviceRegistration(ctx context.Context, arg LockUserForDeviceRegistrationParams) (id.ID, error)
 	// Invariant 11's first half, as ONE statement rather than a paged loop: a restore runs once and
 	// correctness, not latency, governs it, while a loop that stopped at a fixed batch would leave
 	// every group past the batch serving state the restored database no longer matches. Closed groups

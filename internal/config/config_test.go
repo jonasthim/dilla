@@ -539,3 +539,99 @@ func TestTheLiveKitMediaKeys(t *testing.T) {
 		t.Fatalf("LiveKit off with webhook_listen set: Validate = %v, want a refusal naming the key", err)
 	}
 }
+
+// dilla-web-2a (L-HTTP-54, Q04): the per-user device cap and enrolment rate default to 8 and 3,
+// and a file written before the keys existed loads with those defaults.
+func TestTheEnrolmentLimitsDefault(t *testing.T) {
+	d := config.Default().Auth.Session
+	if d.MaxDevicesPerUser != 8 || d.EnrolmentsPerHour != 3 {
+		t.Fatalf("defaults = %d devices, %d enrolments an hour; want 8 and 3 (Q04)", d.MaxDevicesPerUser, d.EnrolmentsPerHour)
+	}
+	c, err := loadTestdata(t, "minimal.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Auth.Session.MaxDevicesPerUser != 8 || c.Auth.Session.EnrolmentsPerHour != 3 {
+		t.Fatalf("a file without the keys = %d, %d; want the defaults 8 and 3",
+			c.Auth.Session.MaxDevicesPerUser, c.Auth.Session.EnrolmentsPerHour)
+	}
+}
+
+func TestTheEnrolmentLimitsAreValidated(t *testing.T) {
+	valid := func(t *testing.T) *config.Config {
+		t.Helper()
+		c := base()
+		c.Instance.PublicIP = netipMustParse(t, "203.0.113.7")
+		c.TURN.Enabled = false
+		c.LiveKit.APISecretFile = writeSecretFile(t)
+		c.Derive()
+		return c
+	}
+	if err := valid(t).Validate(); err != nil {
+		t.Fatalf("the defaults: %v", err)
+	}
+	for name, set := range map[string]func(*config.Config){
+		"auth.session.max_devices_per_user 0":  func(c *config.Config) { c.Auth.Session.MaxDevicesPerUser = 0 },
+		"auth.session.max_devices_per_user 65": func(c *config.Config) { c.Auth.Session.MaxDevicesPerUser = 65 },
+		"auth.session.enrolments_per_hour 0":   func(c *config.Config) { c.Auth.Session.EnrolmentsPerHour = 0 },
+		"auth.session.enrolments_per_hour 61":  func(c *config.Config) { c.Auth.Session.EnrolmentsPerHour = 61 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := valid(t)
+			set(c)
+			key, _, _ := strings.Cut(name, " ")
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "the range is") {
+				t.Fatalf("Validate = %v, want an error naming %s and its range", err, key)
+			}
+		})
+	}
+	for name, set := range map[string]func(*config.Config){
+		"the lower ends": func(c *config.Config) { c.Auth.Session.MaxDevicesPerUser, c.Auth.Session.EnrolmentsPerHour = 1, 1 },
+		"the upper ends": func(c *config.Config) { c.Auth.Session.MaxDevicesPerUser, c.Auth.Session.EnrolmentsPerHour = 64, 60 },
+	} {
+		t.Run("accepted: "+name, func(t *testing.T) {
+			c := valid(t)
+			set(c)
+			if err := c.Validate(); err != nil {
+				t.Fatalf("Validate = %v", err)
+			}
+		})
+	}
+}
+
+func TestTheEnrolmentLimitsRoundTripThroughWriteToAndLoad(t *testing.T) {
+	dir := t.TempDir()
+	writeSecrets(t, dir)
+	t.Chdir(dir) // restores the working directory when the test ends
+
+	c := config.Default()
+	c.Instance.Domain = "chat.example"
+	c.Instance.PublicIP = netipMustParse(t, "203.0.113.7")
+	c.TLS.Agreed = true
+	c.TURN.SharedSecretFile = "turn.secret"
+	c.TURN.RelayIP = "203.0.113.7"
+	c.LiveKit.APISecretFile = "livekit.secret"
+	c.Auth.Session.MaxDevicesPerUser = 5
+	c.Auth.Session.EnrolmentsPerHour = 7
+	var buf bytes.Buffer
+	if err := c.WriteConfig(&buf); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+	for _, line := range []string{"max_devices_per_user = 5", "enrolments_per_hour = 7"} {
+		if !strings.Contains(buf.String(), line) {
+			t.Fatalf("WriteConfig output lacks %q", line)
+		}
+	}
+	path := filepath.Join(dir, "written.toml")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	back, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load(WriteConfig output): %v", err)
+	}
+	if back.Auth.Session.MaxDevicesPerUser != 5 || back.Auth.Session.EnrolmentsPerHour != 7 {
+		t.Fatalf("after Load = %d, %d; want 5, 7", back.Auth.Session.MaxDevicesPerUser, back.Auth.Session.EnrolmentsPerHour)
+	}
+}

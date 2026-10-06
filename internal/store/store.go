@@ -95,6 +95,18 @@ type Devices interface {
 	RevokeDevice(ctx context.Context, deviceID id.ID, at int64) error
 	PutDeviceList(ctx context.Context, l DeviceListRow) error
 	GetDeviceList(ctx context.Context, userID id.ID) (DeviceListRow, error)
+	// ListDeviceListsAfter is the history read of GET /v1/users/{id}/device-list?after= (L-HTTP-56).
+	ListDeviceListsAfter(ctx context.Context, userID id.ID, after uint64, limit int32) ([]DeviceListRow, error)
+	// CountLiveDevicesByUser counts the user's unrevoked devices (the per-user cap, Q04).
+	CountLiveDevicesByUser(ctx context.Context, userID id.ID) (int64, error)
+	// ListDeviceCreationsSince lists the creation times of the user's devices since a cutoff, revoked ones included (the enrolment rate, Q04).
+	ListDeviceCreationsSince(ctx context.Context, userID id.ID, since int64) ([]int64, error)
+	// LockUserForDeviceRegistration serializes a user's count and insert within Tx.
+	LockUserForDeviceRegistration(ctx context.Context, userID id.ID) error
+	// CountLiveUnlistedDevicesByUser excludes listed, revoked, and expired unlisted rows.
+	CountLiveUnlistedDevicesByUser(ctx context.Context, userID id.ID, listed []id.ID, unlistedCutoff int64) (int64, error)
+	// ListLiveDeviceCreationsSince includes listed live rows and unexpired unlisted live rows.
+	ListLiveDeviceCreationsSince(ctx context.Context, userID id.ID, listed []id.ID, since, unlistedCutoff int64) ([]int64, error)
 }
 
 type Sessions interface {
@@ -604,6 +616,12 @@ type Ops interface {
 type OpsBackups interface {
 	PutBackup(ctx context.Context, b BackupRow) error
 	ListBackups(ctx context.Context, userID id.ID, kind int32) ([]BackupRow, error)
+	// InsertBackup never replaces: a taken key is ErrConflict (the write-once root object, F3).
+	InsertBackup(ctx context.Context, b BackupRow) error
+	// GetBackup reads one row by its full key; ErrNotFound when there is none.
+	GetBackup(ctx context.Context, userID id.ID, kind int32, deviceID id.ID, chunkSeq int64) (BackupRow, error)
+	// BackupRefersToBlob reports whether any backups row of any user names the blob.
+	BackupRefersToBlob(ctx context.Context, blobID []byte) (bool, error)
 }
 
 // All thirteen sub-interfaces of §4.1 are declared above, as deviation ID1
