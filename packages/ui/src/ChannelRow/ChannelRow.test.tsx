@@ -32,6 +32,46 @@ describe('ChannelRow', () => {
     expect(row).toHaveAttribute('data-muted', 'true');
     expect(screen.getByRole('img', { name: 'Private' })).toBeInTheDocument();
   });
+  it('carries the shown unread count, the mention count and the muted flag as data', () => {
+    render(<>
+      <ChannelRow name="general" kind="text" unread={3} onSelect={() => {}} />
+      <ChannelRow name="random" kind="text" unread={7} mentions={2} muted onSelect={() => {}} />
+      <ChannelRow name="lfg" kind="text" onSelect={() => {}} />
+    </>);
+    const general = screen.getByRole('button', { name: 'general 3 unread' });
+    expect(general).toHaveAttribute('data-unread', '3');
+    expect(general).toHaveAttribute('data-mentions', '0');
+    expect(general).not.toHaveAttribute('data-muted');
+    const random = screen.getByRole('button', { name: 'random 2 mentions' });
+    expect(random).toHaveAttribute('data-unread', '0');
+    expect(random).toHaveAttribute('data-mentions', '2');
+    expect(random).toHaveAttribute('data-muted', 'true');
+    const lfg = screen.getByRole('button', { name: 'lfg' });
+    expect(lfg).toHaveAttribute('data-unread', '0');
+    expect(lfg).toHaveAttribute('data-mentions', '0');
+  });
+  it('hides the unread pill of a muted row and keeps its mention pill', () => {
+    render(<>
+      <ChannelRow name="random" kind="text" unread={7} muted onSelect={() => {}} />
+      <ChannelRow name="loot" kind="text" unread={7} mentions={2} muted onSelect={() => {}} />
+    </>);
+    expect(screen.getByRole('button', { name: 'random' })).toBeInTheDocument();
+    expect(screen.queryByText('7 unread')).toBeNull();
+    expect(screen.getByRole('button', { name: 'loot 2 mentions' })).toBeInTheDocument();
+  });
+  it('draws a direct message with a decorative dot in place of the channel glyph', () => {
+    const { container } = render(<ChannelRow name="ada" kind="dm" unread={2} onSelect={() => {}} />);
+    const row = screen.getByRole('button', { name: 'ada 2 unread' });
+    expect(row).toHaveAttribute('data-kind', 'dm');
+    const glyph = container.querySelector('.d-chrow__glyph');
+    expect(glyph).toHaveAttribute('aria-hidden', 'true');
+    expect(glyph?.querySelector('.d-chrow__dot')).not.toBeNull();
+    expect(row.textContent).not.toMatch(/[#♪]/);
+  });
+  it('takes its accessible name from ariaLabel when one is given', () => {
+    render(<ChannelRow name="general" kind="text" unread={3} mentions={1} ariaLabel="general, unread 3, mentions 1" onSelect={() => {}} />);
+    expect(screen.getByRole('button', { name: 'general, unread 3, mentions 1' })).toHaveAttribute('aria-label', 'general, unread 3, mentions 1');
+  });
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><ChannelRow name="loot" kind="text" active unread={4} onSelect={() => {}} /></div>);
     await expectNoAxeViolations(container);
