@@ -85,16 +85,17 @@ type Deps struct {
 	// and the two routes answer 501 rather than panicking.
 	OIDC *auth.OIDC
 
+	// DeviceLists verifies every published device list in the guest; nil refuses every publish
+	// with 500, fail closed.
+	DeviceLists DeviceListVerifier
+
 	// AfterDeviceList, when set, runs after an accepted PUT /v1/users/{id}/device-list, once the
 	// 204 is flushed, on a context the request's cancellation does not reach. The delivery service
 	// proposes an Add only for a device its user's newest signed list names (invariant 4), so a
 	// device that published its KeyPackages before the list that names it (protocol/03 § Pairing,
 	// steps 2 and 5) is brought into its user's DMs here. The composition root wires it to
-	// SyncUserDMs; a failure is the hook's to log.
-	// DeviceLists verifies every published device list in the guest; nil refuses every publish
-	// with 500, fail closed.
-	DeviceLists DeviceListVerifier
-	// revoked is the devices this publish revoked (nil when none).
+	// SyncUserDMs; a failure is the hook's to log. revoked is the devices this publish revoked
+	// (nil when none).
 	AfterDeviceList func(ctx context.Context, userID id.ID, revoked []id.ID)
 
 	// Blobs is the content-addressed store the backup routes (protocol/09 § Backups) write the

@@ -722,6 +722,7 @@ impl Runner {
             Some(Backend::Stub(_)) => None,
             Some(Backend::Remote { base, .. }) => Some(base.clone()),
         };
+        let mut packages_published = false;
         if let Some(base) = remote_base {
             let codes = std::env::var(INVITE_ENV).map_err(|_| {
                 TestkitError::Scenario(format!(
@@ -770,17 +771,25 @@ impl Runner {
                 DeviceListMode::Signed => {
                     ds.put_device_list(&enrolled.user_id, &client.signed_device_list(added_at))?;
                 }
-                DeviceListMode::Revoked => ds.put_device_list(
-                    &enrolled.user_id,
-                    &client.signed_device_list_with(added_at, Some(added_at)),
-                )?,
+                DeviceListMode::Revoked => {
+                    // Publishing this list deletes the client's session. Upload its KeyPackages
+                    // while the session still exists, then use the dead session only for probes.
+                    if let Some(n) = key_packages {
+                        client.publish_key_packages(&mut ds, n)?;
+                        packages_published = true;
+                    }
+                    ds.put_device_list(
+                        &enrolled.user_id,
+                        &client.signed_device_list_with(added_at, Some(added_at)),
+                    )?;
+                }
                 DeviceListMode::None => {}
             }
             if let Some(Backend::Remote { clients, .. }) = self.backend.as_mut() {
                 clients.insert(name.to_owned(), ds);
             }
         }
-        let result = match key_packages {
+        let result = match key_packages.filter(|_| !packages_published) {
             Some(n) => self
                 .ds_for(&client)
                 .and_then(|ds| client.publish_key_packages(ds, n)),
