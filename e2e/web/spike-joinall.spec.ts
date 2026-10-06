@@ -92,9 +92,10 @@ test('SP-W201: join-all and the load-free core at 200 groups', async ({ page, re
     const groupsCall = await page.evaluate(() => (window as unknown as HarnessWindow).dilla.spike.timeGroups());
     expect(groupsCall.ok).toBe(true);
     expect(groupsCall.rows).toBe(GROUPS);
-    // The mechanism (head ruling 41): groups() is a query; no route call happened while it ran 21 times.
+    // Record equal route counts across 21 groups() calls. This says nothing about MLS state loads;
+    // task 1's native groups() test owns the single-store-query, load-free mechanism.
     // medianMs and maxMs are recorded below and never bounded (lesson c).
-    expect(groupsCall.routeCalls.after, 'groups() issues no request').toBe(groupsCall.routeCalls.before);
+    expect(groupsCall.routeCalls.after, 'route counts recorded across groups() calls').toBe(groupsCall.routeCalls.before);
 
     const { page: again } = await relaunch();
     again.on('pageerror', (e) => pageErrors.push(e.message));
