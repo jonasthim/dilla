@@ -12,11 +12,13 @@ mod wire;
 
 pub use error::ClientError;
 pub use identity::session_preimage;
+pub use messages::mentions_me;
 pub use schema::{HANDSHAKE_TAIL, migrate_app};
 
-use crate::cbor::decode_strict;
 use crate::identity::CredentialIdentity;
-use crate::mls::{CIPHERSUITE, ConnHandle, DillaGroup, DillaProvider, StorageError, UnitScope};
+use crate::mls::{
+    CIPHERSUITE, ConnHandle, DillaGroup, DillaProvider, DillaStorage, StorageError, UnitScope,
+};
 use error::{E_CORE_NO_IDENTITY, E_CORE_RELOAD, E_CORE_STATE, E_CORE_STORAGE};
 use openmls::prelude::GroupId;
 use openmls_basic_credential::SignatureKeyPair;
@@ -185,35 +187,35 @@ impl ClientCore {
         let provider = DillaProvider::new(conn);
         provider.storage().exec("PRAGMA secure_delete = ON")?;
         provider.storage().migrate()?;
-        schema::migrate_app(provider.storage())?;
-        let schema = provider
+        let version = provider
             .storage()
-            .unit(|u| u.with_conn(|c| schema::meta_get(c, schema::SCHEMA)))
-            .map_err(|e| match e {
-                crate::mls::TxError::RolledBack(e) => e.into(),
-                other => ClientError::new(E_CORE_STORAGE, other.to_string()),
-            })?;
-        let version = schema
-            .and_then(|b| decode_strict(&b, |d| d.uint()).ok())
-            .ok_or_else(|| ClientError::new(E_CORE_STORAGE, "app_meta schema is malformed"))?;
-        if version > 1 {
+            .unit(|u| -> Result<u64, ClientError> {
+                let found = u.with_conn(schema::migrate_conn).map_err(schema_error)?;
+                if found == 1 {
+                    backfill(provider.storage(), u).map_err(schema_error)?;
+                }
+                Ok(found)
+            })
+            .map_err(ClientError::from)?;
+        if version > 2 {
             return Err(ClientError::new(
                 E_CORE_STATE,
                 format!("app schema {version} is newer than this build"),
             ));
         }
-        let (identity, signup) = provider
+        let (identity, signup, enrol) = provider
             .storage()
             .unit(|u| u.with_conn(identity::load_phase))
             .map_err(|e| match e {
                 crate::mls::TxError::RolledBack(e) => e.into(),
                 other => ClientError::new(E_CORE_STORAGE, other.to_string()),
             })?;
-        let phase = identity::decode_phase(identity, signup)?;
+        let phase = identity::decode_phase(identity, signup, enrol)?;
         let dsk_pub = match &phase {
             identity::Phase::None => None,
             identity::Phase::Pending(rec) => Some(rec.dsk_pub()),
             identity::Phase::Ready(rec) => Some(rec.dsk_pub),
+            identity::Phase::Enrolling(rec) => Some(rec.dsk_pub),
         };
         let signer = dsk_pub
             .map(|pubkey| {
@@ -237,4 +239,75 @@ impl ClientCore {
     pub fn unload(&mut self) {
         self.groups.clear();
     }
+}
+
+/// `open`'s mapping of the migration unit's storage errors: a `Codec` error carries its own
+/// detail ("app_meta schema is malformed", "app_meta identity is malformed"), every other one is
+/// `ClientError::from`.
+fn schema_error(e: StorageError) -> ClientError {
+    match e {
+        StorageError::Codec(m) => ClientError::new(E_CORE_STORAGE, m),
+        other => other.into(),
+    }
+}
+
+/// The v1 -> v2 backfill (L-CORE-20), inside the unit that ran `MIGRATE_V1_TO_V2`, so a failure
+/// anywhere rolls the `ALTER TABLE`s back with it and the store stays v1 until the next open:
+/// (a) the identity record, when present, is rewritten as v2; (b) `mention` is set on every
+/// status-0 type-0 row from another user (by `sender_user`: the own user's other devices are
+/// excluded too, ruling 29) whose body `mentions_me`; (c) `epoch` and `pending_commit` of every
+/// row in states 0-3 are read from its stored MLS group.
+///
+/// A row with no stored MLS group (a discarded resync) keeps `0, 0`, which is what the writers
+/// leave for it. Any other load error (storage, decode, binding) fails the migration: a store
+/// this build cannot read now may read fine at the next open (a transient storage error), and
+/// `take_group` compares only the id, kind, target and community, so a column backfilled as 0
+/// for a group that does load would be wrong until its next merge, with nothing to report it.
+/// The store is device-local and written only by this browser: only a store this build did not
+/// write, or a failing disk, fails here.
+///
+/// Loads through `storage`, the unit's own: no second `DillaStorage` over the connection.
+fn backfill(storage: &DillaStorage, u: &UnitScope<'_>) -> Result<(), StorageError> {
+    let own_user =
+        identity::upgrade_identity_record(u).map_err(|e| StorageError::Codec(e.detail))?;
+    // (b) and the ids of (c), in one `with_conn`. The mention flag is `mentions_me` evaluated by
+    // SQLite: the same three needles (`mention_needle`, "<@everyone>", "<@here>") and the same
+    // byte match (`instr` compares the bytes of its two text arguments), in one statement, which
+    // costs the browser build far less than a row loop calling `mentions_me`.
+    // `a_v1_store_flags_mentions_as_mentions_me_does` pins the equivalence on mentions_me's own
+    // vectors.
+    let ids = u.with_conn(|c| {
+        if let Some(user) = own_user {
+            c.execute(
+                "UPDATE app_messages SET mention = 1 \
+                 WHERE status = 0 AND type = 0 AND sender_user <> ?1 \
+                 AND (instr(body, CAST(?2 AS TEXT)) > 0 \
+                 OR instr(body, '<@everyone>') > 0 OR instr(body, '<@here>') > 0)",
+                rusqlite::params![user.as_slice(), messages::mention_needle(&user).as_slice()],
+            )?;
+        }
+        let mut s = c.prepare(
+            "SELECT group_id FROM app_groups WHERE state IN (0, 1, 2, 3) ORDER BY group_id",
+        )?;
+        let mut rows = s.query([])?;
+        let mut ids: Vec<[u8; 16]> = Vec::new();
+        while let Some(r) = rows.next()? {
+            ids.push(r.get(0)?);
+        }
+        Ok(ids)
+    })?;
+    for id in ids {
+        // Outside `with_conn`: the load reads through the storage, which takes the connection.
+        match DillaGroup::load_stored(storage, &GroupId::from_slice(&id)) {
+            Ok(Some(g)) => {
+                let epoch = i64::try_from(g.epoch())
+                    .map_err(|_| StorageError::Codec("epoch out of range".into()))?;
+                u.with_conn(|c| groups::set_mls(c, &id, epoch, g.has_pending_commit()))?;
+            }
+            Ok(None) => {}
+            Err(crate::mls::MlsError::Storage(e)) => return Err(e),
+            Err(e) => return Err(StorageError::Codec(e.to_string())),
+        }
+    }
+    Ok(())
 }

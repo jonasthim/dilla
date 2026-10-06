@@ -135,6 +135,30 @@ fn own_message<'a>(
     }
 }
 
+/// true when `body` contains "<@" + the 32 lower-case hex characters of `user_id` + ">", or "<@everyone>",
+/// or "<@here>" — the readable mention syntax of protocol/09 (`<@(everyone|here|[0-9a-f]{32})>`), matched
+/// literally (no regex, no case folding; upper-case hex does not match).
+///
+/// It refuses nothing: a member who types `<@everyone>` raises a count, which is the readable
+/// syntax's meaning (Q09, Q20).
+pub fn mentions_me(body: &str, user_id: &[u8; 16]) -> bool {
+    // A byte search: every needle is ASCII, so a byte match is a match of the same characters.
+    // (`str::contains` would add its two-way searcher to the browser build.)
+    let has = |n: &[u8]| body.as_bytes().windows(n.len()).any(|w| w == n);
+    has(&mention_needle(user_id)) || has(b"<@everyone>") || has(b"<@here>")
+}
+
+/// `mentions_me`'s needle for one user: "<@" + the 32 lower-case hex characters + ">".
+pub(super) fn mention_needle(user_id: &[u8; 16]) -> [u8; 35] {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut needle = *b"<@0123456789abcdef0123456789abcdef>";
+    for (i, b) in user_id.iter().enumerate() {
+        needle[2 + 2 * i] = HEX[usize::from(b >> 4)];
+        needle[3 + 2 * i] = HEX[usize::from(b & 0x0f)];
+    }
+    needle
+}
+
 impl ClientCore {
     pub fn send_prepare(
         &mut self,
@@ -537,5 +561,32 @@ impl ClientCore {
                 .text(&body);
         }
         Ok(e.into_vec())
+    }
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::mentions_me;
+
+    const ME: [u8; 16] = [0xa1; 16];
+
+    #[test]
+    fn the_readable_mention_syntax_is_matched_literally() {
+        let me = "a1".repeat(16);
+        for (body, want) in [
+            (format!("hi <@{me}>"), true),
+            (format!("<@{me}>"), true),
+            ("<@everyone> standup".to_owned(), true),
+            ("x<@here>y".to_owned(), true),
+            (format!("hi <@{}>", "A1".repeat(16)), false),
+            (format!("hi <@{}>", "b2".repeat(16)), false),
+            (format!("hi <@{me}"), false),
+            (format!("hi @{me}"), false),
+            ("<@Everyone>".to_owned(), false),
+            ("<@everyone >".to_owned(), false),
+            (String::new(), false),
+        ] {
+            assert_eq!(mentions_me(&body, &ME), want, "{body:?}");
+        }
     }
 }

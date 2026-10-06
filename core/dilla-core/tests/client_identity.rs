@@ -597,14 +597,17 @@ fn client_errors_render_and_convert_as_the_code_table_says() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// app schema v1 (L-SQL-10) and ClientCore::open (L-CORE-05)
+// app schema v2 (L-SQL-20) and ClientCore::open (L-CORE-05)
 
 #[test]
-fn open_creates_app_schema_v1_and_reopens_idempotently() {
+fn open_creates_app_schema_v2_and_reopens_idempotently() {
     let c = conn();
     drop(ClientCore::open(c.clone()).expect("first open"));
     drop(ClientCore::open(c.clone()).expect("second open over the same database"));
-    migrate_app(&DillaStorage::new(c.clone())).expect("migrate_app is idempotent on its own");
+    assert_eq!(
+        migrate_app(&DillaStorage::new(c.clone())).expect("migrate_app is idempotent on its own"),
+        2
+    );
     let guard = c.lock().expect("lock");
     let names: Vec<String> = guard
         .prepare(
@@ -628,6 +631,8 @@ fn open_creates_app_schema_v1_and_reopens_idempotently() {
             "app_outbox",
             "app_outbox_by_group",
             "app_proposals",
+            "app_read_state",
+            "app_settings",
         ]
     );
     let schema: Vec<u8> = guard
@@ -635,7 +640,7 @@ fn open_creates_app_schema_v1_and_reopens_idempotently() {
             r.get(0)
         })
         .expect("schema row");
-    assert_eq!(schema, [0x01]);
+    assert_eq!(schema, [0x02]);
     let resync: i64 = guard
         .query_row(
             "SELECT count(*) FROM pragma_table_info('app_groups') WHERE name = 'resync'",
@@ -652,6 +657,20 @@ fn open_creates_app_schema_v1_and_reopens_idempotently() {
         )
         .expect("pragma_table_info app_outbox");
     assert_eq!(epoch, 1, "app_outbox.epoch exists (task 5 reads it)");
+    for (table, column) in [
+        ("app_groups", "epoch"),
+        ("app_groups", "pending_commit"),
+        ("app_messages", "mention"),
+    ] {
+        let n: i64 = guard
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                [table, column],
+                |r| r.get(0),
+            )
+            .expect("pragma_table_info");
+        assert_eq!(n, 1, "{table}.{column} exists at schema 2");
+    }
     let secure: i64 = guard
         .query_row("PRAGMA secure_delete", [], |r| r.get(0))
         .expect("pragma");
@@ -743,7 +762,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         .expect("lock")
         .execute_batch(
             "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
-             INSERT INTO app_meta (k, v) VALUES ('schema', x'02');",
+             INSERT INTO app_meta (k, v) VALUES ('schema', x'03');",
         )
         .expect("seed");
     let e = match ClientCore::open(c) {
@@ -754,7 +773,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         e,
         ClientError {
             code: "E_CORE_STATE",
-            detail: "app schema 2 is newer than this build".into()
+            detail: "app schema 3 is newer than this build".into()
         }
     );
 }
@@ -1025,17 +1044,20 @@ fn signup_complete_signs_device_list_v1_and_seals_the_state_object() {
     .expect("[1, device_list, pins]");
     assert_eq!((v, inner, pins), (1, blob.clone(), 0));
     let record = meta(&c, "identity").expect("identity record");
-    let cred_bytes = decode_strict(&record, |d| {
-        d.array(11)?;
-        for _ in 0..8 {
+    let (v, cred_bytes, list, uploaded) = decode_strict(&record, |d| {
+        d.array(13)?;
+        let v = d.uint()?;
+        for _ in 0..7 {
             d.skip()?;
         }
         let cred = d.bytes()?.to_vec();
         d.skip()?;
         d.skip()?;
-        Ok(cred)
+        Ok((v, cred, d.bytes()?.to_vec(), d.uint()?))
     })
-    .expect("the eleven-element identity record");
+    .expect("the thirteen-element identity record");
+    assert_eq!((v, uploaded), (2, 0));
+    assert_eq!(list, blob, "device_list is list v1 from signup on");
     let cred = CredentialIdentity::decode(&cred_bytes).expect("credential");
     let placeholder = CredentialIdentity::decode(&reg.credential).expect("placeholder");
     assert_eq!(cred.user_id, UserId::from_bytes(USER));
@@ -1448,4 +1470,165 @@ fn key_packages_are_mls_messages_the_instance_validates() {
     })
     .expect("[packages, null]");
     assert_eq!((n, last_is_null), (32, true));
+}
+
+/// A store holding only an `enrol` record (L-CORE-22), written by hand as task 3's enrol_begin
+/// will write it, with its DSK in OpenMLS's signature-key table.
+fn enrolling(user: Option<[u8; 16]>) -> (ClientCore, ConnHandle, [u8; 16], [u8; 32]) {
+    let c = conn();
+    drop(ClientCore::open(c.clone()).expect("open"));
+    let signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    signer
+        .store(DillaProvider::new(c.clone()).storage())
+        .expect("store the DSK");
+    let dsk_pub: [u8; 32] = signer.public().try_into().expect("32 bytes");
+    let device = [0x5d; 16];
+    let mut e = Encoder::new();
+    e.array(5)
+        .uint(1)
+        .bytes(&INSTANCE)
+        .bytes(&device)
+        .bytes(&dsk_pub);
+    match user {
+        Some(u) => {
+            e.bytes(&u);
+        }
+        None => {
+            e.null();
+        }
+    }
+    c.lock()
+        .expect("lock")
+        .execute(
+            "INSERT INTO app_meta (k, v) VALUES ('enrol', ?1)",
+            [e.into_vec()],
+        )
+        .expect("enrol record");
+    let core = ClientCore::open(c.clone()).expect("open in phase 3");
+    (core, c, device, dsk_pub)
+}
+
+/// session_sign's phase-3 answer is not asserted here: task 1's forced arm is phase 0's refusal and
+/// task 3 replaces it with the enrol record's ids (head L-CORE-22's split), asserting it there.
+#[test]
+fn an_enrol_record_is_phase_3_stores_sessions_and_refuses_the_identity_calls() {
+    let (mut core, _c, device, _dsk_pub) = enrolling(None);
+    let i = info(&core);
+    assert_eq!(
+        (
+            i.phase,
+            i.instance,
+            i.user,
+            i.device,
+            i.username.as_str(),
+            i.published
+        ),
+        (3, Some(INSTANCE), None, Some(device), "", 0)
+    );
+    core.session_store("pending-token", NOW + 60, NOW + 30)
+        .expect("phase 3 stores a session");
+    assert_eq!(
+        session_of(&core),
+        Some(("pending-token".into(), NOW + 60, NOW + 30))
+    );
+    assert_eq!(
+        err(core.signup_begin(&INSTANCE)),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "an enrolment is pending".into(),
+        }
+    );
+    let no_signup = ClientError {
+        code: "E_CORE_STATE",
+        detail: "no signup is pending".into(),
+    };
+    assert_eq!(err(core.signup_request("i", "u", "d", None)), no_signup);
+    assert_eq!(err(core.signup_complete(&USER, "alice", NOW)), no_signup);
+    assert_eq!(err(core.signup_reset()), no_signup);
+    for code in [
+        err(core.device_list_body()).code,
+        err(core.device_list_published()).code,
+        err(core.key_packages(1, false)).code,
+        err(core.send_prepare(&GROUP, "x", NOW)).code,
+    ] {
+        assert_eq!(code, "E_CORE_NO_IDENTITY");
+    }
+    assert_eq!(
+        core.sealed_objects().expect("every phase"),
+        sealed(None, None)
+    );
+    core.session_clear().expect("every phase");
+
+    let (core, _c, _, _) = enrolling(Some(USER));
+    assert_eq!(info(&core).user, Some(USER), "the recorded user is shown");
+}
+
+#[test]
+fn an_enrol_record_beside_another_phase_or_without_its_key_is_refused() {
+    let beside = ClientError {
+        code: "E_CORE_STATE",
+        detail: "enrol record beside another phase".into(),
+    };
+    let enrol = |device: u8| {
+        let mut e = Encoder::new();
+        e.array(5)
+            .uint(1)
+            .bytes(&INSTANCE)
+            .bytes(&[device; 16])
+            .bytes(&[0x09; 32])
+            .null();
+        e.into_vec()
+    };
+    // Beside a pending signup.
+    let (core, c, _rk, _reg) = begun();
+    drop(core);
+    c.lock()
+        .expect("lock")
+        .execute(
+            "INSERT INTO app_meta (k, v) VALUES ('enrol', ?1)",
+            [enrol(1)],
+        )
+        .expect("seed");
+    assert_eq!(err(ClientCore::open(c.clone())), beside);
+    // Beside a complete identity.
+    let (mut core, c, _rk, _reg) = begun();
+    core.signup_complete(&USER, "alice", NOW).expect("complete");
+    drop(core);
+    c.lock()
+        .expect("lock")
+        .execute(
+            "INSERT INTO app_meta (k, v) VALUES ('enrol', ?1)",
+            [enrol(2)],
+        )
+        .expect("seed");
+    assert_eq!(err(ClientCore::open(c.clone())), beside);
+    // Alone, but its DSK is not stored.
+    let c = conn();
+    drop(ClientCore::open(c.clone()).expect("open"));
+    c.lock()
+        .expect("lock")
+        .execute(
+            "INSERT INTO app_meta (k, v) VALUES ('enrol', ?1)",
+            [enrol(3)],
+        )
+        .expect("seed");
+    assert_eq!(
+        err(ClientCore::open(c.clone())),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "the device key is missing from the store".into()
+        }
+    );
+    // Malformed.
+    c.lock()
+        .expect("lock")
+        .execute("UPDATE app_meta SET v = x'8102' WHERE k = 'enrol'", [])
+        .expect("corrupt");
+    assert_eq!(
+        err(ClientCore::open(c)),
+        ClientError {
+            code: "E_CORE_STORAGE",
+            detail: "app_meta enrol is malformed".into()
+        }
+    );
 }

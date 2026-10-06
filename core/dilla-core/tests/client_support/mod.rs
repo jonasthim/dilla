@@ -91,28 +91,85 @@ pub struct GroupRow {
     pub pending_commit: u64,
 }
 
+fn listed_row(
+    d: &mut dilla_core::cbor::Decoder<'_>,
+) -> Result<GroupRow, dilla_core::cbor::CborError> {
+    d.array(9)?;
+    Ok(GroupRow {
+        group_id: d.bytes_exact::<16>()?,
+        kind: d.uint()?,
+        community_id: d.opt_bytes_exact::<16>()?,
+        target_id: d.bytes_exact::<16>()?,
+        state: d.uint()?,
+        epoch: d.uint()?,
+        next_seq: d.uint()?,
+        proposals_pending: d.uint()?,
+        pending_commit: d.uint()?,
+    })
+}
+
 pub fn groups(core: &ClientCore) -> Vec<GroupRow> {
     let bytes = core.groups().expect("groups");
     decode_strict(&bytes, |d| {
         let n = d.array_len()?;
         let mut out = Vec::with_capacity(n);
         for _ in 0..n {
-            d.array(9)?;
-            out.push(GroupRow {
-                group_id: d.bytes_exact::<16>()?,
-                kind: d.uint()?,
-                community_id: d.opt_bytes_exact::<16>()?,
-                target_id: d.bytes_exact::<16>()?,
-                state: d.uint()?,
-                epoch: d.uint()?,
-                next_seq: d.uint()?,
-                proposals_pending: d.uint()?,
-                pending_commit: d.uint()?,
-            });
+            out.push(listed_row(d)?);
         }
         Ok(out)
     })
     .expect("groups shape")
+}
+
+/// `ClientCore::group_row`, decoded: `None` for CBOR null.
+pub fn group_row_of(core: &ClientCore, group_id: &[u8; 16]) -> Option<GroupRow> {
+    let bytes = core.group_row(group_id).expect("group_row");
+    decode_strict(&bytes, |d| {
+        if d.try_null()? {
+            return Ok(None);
+        }
+        listed_row(d).map(Some)
+    })
+    .expect("group_row shape")
+}
+
+/// L-CORE-21's invariant: for every row in state 0–3 whose MLS group loads, epoch/pending_commit
+/// equal the loaded group's; for a state-4 row and for a state-3 row whose group was deleted, both
+/// are 0; and `group_row` answers the `groups()` entry. Loads through a second provider over the
+/// probe, between core calls only.
+pub fn assert_mls_columns(core: &ClientCore, probe: &ConnHandle, step: &str) {
+    let provider = DillaProvider::new(Arc::clone(probe));
+    for row in groups(core) {
+        let loaded =
+            DillaGroup::load(&provider, &GroupId::from_slice(&row.group_id)).expect("load");
+        let epoch = loaded.as_ref().map_or(0, DillaGroup::epoch);
+        let pending = u64::from(loaded.as_ref().is_some_and(DillaGroup::has_pending_commit));
+        assert_eq!(
+            (row.epoch, row.pending_commit),
+            (epoch, pending),
+            "after {step}: group {:02x} in state {}",
+            row.group_id[0],
+            row.state
+        );
+        if row.state == 4 {
+            assert_eq!(
+                (row.epoch, row.pending_commit),
+                (0, 0),
+                "after {step}: a gone row"
+            );
+        }
+        assert_eq!(
+            group_row_of(core, &row.group_id),
+            Some(row.clone()),
+            "after {step}: group_row is the groups() row"
+        );
+    }
+}
+
+impl Core {
+    pub fn check_columns(&self, step: &str) {
+        assert_mls_columns(&self.core, &self.probe, step);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

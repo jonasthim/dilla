@@ -8,7 +8,7 @@ use crate::identity::{
     Tier, UmkSigner, k_backup, k_header, recovery_key_base32,
 };
 use crate::ids::{DeviceId, UserId};
-use crate::mls::{CIPHERSUITE, DillaProvider, StorageError, build_key_package};
+use crate::mls::{CIPHERSUITE, DillaProvider, StorageError, UnitScope, build_key_package};
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use openmls::prelude::{BasicCredential, CredentialWithKey, MlsMessageOut};
@@ -121,17 +121,19 @@ pub(super) struct IdentityRecord {
     pub(super) credential: Vec<u8>,
     pub(super) device_list_body: Vec<u8>,
     pub(super) list_published: bool,
+    pub(super) device_list: Vec<u8>,
+    pub(super) state_uploaded: bool,
 }
 impl core::fmt::Debug for IdentityRecord {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("IdentityRecord { instance_id, user_id, device_id, dsk_pub, umk_pub, ssk_pub, username, credential, device_list_body, list_published }")
+        f.write_str("IdentityRecord { instance_id, user_id, device_id, dsk_pub, umk_pub, ssk_pub, username, credential, device_list_body, list_published, device_list, state_uploaded }")
     }
 }
 impl IdentityRecord {
     fn encode(&self) -> Vec<u8> {
         let mut e = Encoder::new();
-        e.array(11)
-            .uint(1)
+        e.array(13)
+            .uint(2)
             .bytes(&self.instance_id)
             .bytes(&self.user_id)
             .bytes(&self.device_id)
@@ -141,15 +143,37 @@ impl IdentityRecord {
             .text(&self.username)
             .bytes(&self.credential)
             .bytes(&self.device_list_body)
-            .uint(u64::from(self.list_published));
+            .uint(u64::from(self.list_published))
+            .bytes(&self.device_list)
+            .uint(u64::from(self.state_uploaded));
         e.into_vec()
     }
+    /// The v2 record (thirteen elements, element 0 = 2); anything else is
+    /// `E_CORE_STORAGE` "app_meta identity is malformed".
     pub(super) fn decode(bytes: &[u8]) -> Result<Self, ClientError> {
+        Self::decode_version(bytes, 2)
+    }
+
+    /// The web-1 record (eleven elements, element 0 = 1), read once by the v1 -> v2 migration:
+    /// `device_list` is element 1 (the signed list) of its `device_list_body`
+    /// `[version uint, blob bstr, ssk_signature b64, prev_hash b32]`, and `state_uploaded` is 0.
+    pub(super) fn decode_v1(bytes: &[u8]) -> Result<Self, ClientError> {
+        Self::decode_version(bytes, 1)
+    }
+
+    /// Both versions share one decoder: the first ten fields are the same, so the record costs
+    /// one `decode_strict` instance in the browser build, not two.
+    fn decode_version(bytes: &[u8], version: u64) -> Result<Self, ClientError> {
         decode_strict(bytes, |d| {
-            d.array(11)?;
-            if d.uint()? != 1 {
+            d.array(if version == 2 { 13 } else { 11 })?;
+            if d.uint()? != version {
                 return Err(shape());
             }
+            let flag = |d: &mut crate::cbor::Decoder<'_>| match d.uint()? {
+                0 => Ok(false),
+                1 => Ok(true),
+                _ => Err(shape()),
+            };
             let instance_id = d.bytes_exact()?;
             let user_id = d.bytes_exact()?;
             let device_id = d.bytes_exact()?;
@@ -159,10 +183,19 @@ impl IdentityRecord {
             let username = d.text()?.to_owned();
             let credential = d.bytes()?.to_vec();
             let device_list_body = d.bytes()?.to_vec();
-            let list_published = match d.uint()? {
-                0 => false,
-                1 => true,
-                _ => return Err(shape()),
+            let list_published = flag(d)?;
+            let (device_list, state_uploaded) = if version == 2 {
+                (d.bytes()?.to_vec(), flag(d)?)
+            } else {
+                // decode_strict's two steps, inline (one generic instance fewer).
+                let mut l = crate::cbor::Decoder::new(&device_list_body);
+                l.array(4)?;
+                l.uint()?;
+                let blob = l.bytes()?.to_vec();
+                l.bytes_exact::<64>()?;
+                l.bytes_exact::<32>()?;
+                l.finish()?;
+                (blob, false)
             };
             Ok(Self {
                 instance_id,
@@ -175,9 +208,66 @@ impl IdentityRecord {
                 credential,
                 device_list_body,
                 list_published,
+                device_list,
+                state_uploaded,
             })
         })
         .map_err(|_| malformed(schema::IDENTITY))
+    }
+}
+
+/// The backfill's step (a): the identity record, when present, is read as v1 and written back
+/// as v2. Returns the record's `user_id` (the mention flag excludes by user, ruling 29).
+/// Any decode failure is `E_CORE_STORAGE` "app_meta identity is malformed", which fails the
+/// migration unit: the store stays v1.
+pub(super) fn upgrade_identity_record(u: &UnitScope<'_>) -> Result<Option<[u8; 16]>, ClientError> {
+    let Some(bytes) = u.with_conn(|c| schema::meta_get(c, schema::IDENTITY))? else {
+        return Ok(None);
+    };
+    let rec = IdentityRecord::decode_v1(&bytes)?;
+    u.with_conn(|c| schema::meta_put(c, schema::IDENTITY, &rec.encode()))?;
+    Ok(Some(rec.user_id))
+}
+
+pub(super) struct EnrolRecord {
+    pub(super) instance_id: [u8; 16],
+    pub(super) device_id: [u8; 16],
+    pub(super) dsk_pub: [u8; 32],
+    pub(super) user_id: Option<[u8; 16]>,
+}
+impl EnrolRecord {
+    #[allow(dead_code)] // web-2a task 3's enrol_begin is the first non-test caller.
+    pub(super) fn encode(&self) -> Vec<u8> {
+        let mut e = Encoder::new();
+        e.array(5)
+            .uint(1)
+            .bytes(&self.instance_id)
+            .bytes(&self.device_id)
+            .bytes(&self.dsk_pub);
+        match self.user_id {
+            Some(u) => {
+                e.bytes(&u);
+            }
+            None => {
+                e.null();
+            }
+        }
+        e.into_vec()
+    }
+    pub(super) fn decode(bytes: &[u8]) -> Result<Self, ClientError> {
+        decode_strict(bytes, |d| {
+            d.array(5)?;
+            if d.uint()? != 1 {
+                return Err(shape());
+            }
+            Ok(Self {
+                instance_id: d.bytes_exact()?,
+                device_id: d.bytes_exact()?,
+                dsk_pub: d.bytes_exact()?,
+                user_id: d.opt_bytes_exact()?,
+            })
+        })
+        .map_err(|_| malformed(schema::ENROL))
     }
 }
 
@@ -212,28 +302,36 @@ pub(super) enum Phase {
     None,
     Pending(SignupRecord),
     Ready(IdentityRecord),
+    Enrolling(EnrolRecord),
 }
 #[allow(clippy::type_complexity)] // L-CORE-06 fixes this public-to-sibling signature.
 pub(super) fn load_phase(
     c: &rusqlite::Connection,
-) -> Result<(Option<Vec<u8>>, Option<Zeroizing<Vec<u8>>>), StorageError> {
+) -> Result<(Option<Vec<u8>>, Option<Zeroizing<Vec<u8>>>, Option<Vec<u8>>), StorageError> {
     Ok((
         schema::meta_get(c, schema::IDENTITY)?,
         schema::meta_get(c, schema::SIGNUP)?.map(Zeroizing::new),
+        schema::meta_get(c, schema::ENROL)?,
     ))
 }
 pub(super) fn decode_phase(
     identity: Option<Vec<u8>>,
     signup: Option<Zeroizing<Vec<u8>>>,
+    enrol: Option<Vec<u8>>,
 ) -> Result<Phase, ClientError> {
-    match (identity, signup) {
-        (Some(_), Some(_)) => Err(ClientError::new(
+    match (identity, signup, enrol) {
+        (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => Err(ClientError::new(
+            E_CORE_STATE,
+            "enrol record beside another phase",
+        )),
+        (Some(_), Some(_), None) => Err(ClientError::new(
             E_CORE_STATE,
             "identity and signup records both present",
         )),
-        (Some(b), None) => Ok(Phase::Ready(IdentityRecord::decode(&b)?)),
-        (None, Some(b)) => Ok(Phase::Pending(SignupRecord::decode(&b)?)),
-        (None, None) => Ok(Phase::None),
+        (Some(b), None, None) => Ok(Phase::Ready(IdentityRecord::decode(&b)?)),
+        (None, Some(b), None) => Ok(Phase::Pending(SignupRecord::decode(&b)?)),
+        (None, None, Some(b)) => Ok(Phase::Enrolling(EnrolRecord::decode(&b)?)),
+        (None, None, None) => Ok(Phase::None),
     }
 }
 
@@ -283,7 +381,9 @@ fn credential(rec: &SignupRecord, user_id: [u8; 16]) -> CredentialIdentity {
 fn pending(phase: Phase) -> Result<SignupRecord, ClientError> {
     match phase {
         Phase::Pending(rec) => Ok(rec),
-        Phase::None => Err(ClientError::new(E_CORE_STATE, "no signup is pending")),
+        Phase::None | Phase::Enrolling(_) => {
+            Err(ClientError::new(E_CORE_STATE, "no signup is pending"))
+        }
         Phase::Ready(_) => Err(ClientError::new(E_CORE_STATE, "the identity is complete")),
     }
 }
@@ -296,8 +396,8 @@ fn ready(phase: Phase) -> Result<IdentityRecord, ClientError> {
 
 impl ClientCore {
     fn phase(&self) -> Result<Phase, ClientError> {
-        let (identity, signup) = self.read(load_phase)?;
-        decode_phase(identity, signup)
+        let (identity, signup, enrol) = self.read(load_phase)?;
+        decode_phase(identity, signup, enrol)
     }
     pub fn identity(&self) -> Result<Vec<u8>, ClientError> {
         Ok(match self.phase()? {
@@ -313,6 +413,14 @@ impl ClientCore {
                 &r.username,
                 r.list_published,
             ),
+            Phase::Enrolling(r) => wire::identity_info(
+                3,
+                Some(&r.instance_id),
+                r.user_id.as_ref(),
+                Some(&r.device_id),
+                "",
+                false,
+            ),
         })
     }
     pub fn signup_begin(&mut self, instance_id: &[u8; 16]) -> Result<String, ClientError> {
@@ -320,6 +428,9 @@ impl ClientCore {
             Phase::None => {}
             Phase::Pending(_) => return Err(ClientError::new(E_CORE_STATE, "a signup is pending")),
             Phase::Ready(_) => return Err(ClientError::new(E_CORE_STATE, "an identity exists")),
+            Phase::Enrolling(_) => {
+                return Err(ClientError::new(E_CORE_STATE, "an enrolment is pending"));
+            }
         }
         let (signer, rk_text) = self.write(|ctx, u| {
             let umk_seed = random::<32>(ctx.provider)?;
@@ -404,8 +515,8 @@ impl ClientCore {
             return Err(ClientError::new(E_CORE_INPUT, "user_id is all zero"));
         }
         self.write(|ctx, u| {
-            let (identity, signup) = u.with_conn(load_phase)?;
-            let rec = pending(decode_phase(identity, signup)?)?;
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let rec = pending(decode_phase(identity, signup, enrol)?)?;
             let cred = credential(&rec, *user_id);
             cred.verify_signatures(&rec.dsk_pub)?;
             let unsigned = DeviceListUnsigned {
@@ -440,6 +551,8 @@ impl ClientCore {
                 credential: cred.encode(),
                 device_list_body: put.clone(),
                 list_published: false,
+                device_list: list.encode(),
+                state_uploaded: false,
             };
             u.with_conn(|c| {
                 schema::meta_put(c, schema::STATE_SEALED, &state)?;
@@ -451,9 +564,9 @@ impl ClientCore {
     }
     pub fn signup_reset(&mut self) -> Result<(), ClientError> {
         self.write(|ctx, u| {
-            let ((identity, signup), session) =
+            let ((identity, signup, enrol), session) =
                 u.with_conn(|c| Ok((load_phase(c)?, schema::meta_get(c, schema::SESSION)?)))?;
-            let rec = pending(decode_phase(identity, signup)?)?;
+            let rec = pending(decode_phase(identity, signup, enrol)?)?;
             if session.is_some() {
                 return Err(ClientError::new(E_CORE_STATE, "the account is registered"));
             }
@@ -476,8 +589,8 @@ impl ClientCore {
     }
     pub fn device_list_published(&mut self) -> Result<(), ClientError> {
         self.write(|_, u| {
-            let (identity, signup) = u.with_conn(load_phase)?;
-            let mut rec = ready(decode_phase(identity, signup)?)?;
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let mut rec = ready(decode_phase(identity, signup, enrol)?)?;
             rec.list_published = true;
             u.with_conn(|c| schema::meta_put(c, schema::IDENTITY, &rec.encode()))?;
             Ok(())
@@ -491,6 +604,7 @@ impl ClientCore {
             Phase::None => return Err(ClientError::new(E_CORE_NO_IDENTITY, "")),
             Phase::Pending(r) => (r.instance_id, r.device_id),
             Phase::Ready(r) => (r.instance_id, r.device_id),
+            Phase::Enrolling(_) => return Err(ClientError::new(E_CORE_NO_IDENTITY, "")),
         };
         let signer = self
             .signer
@@ -514,8 +628,8 @@ impl ClientCore {
             ));
         }
         self.write(|_, u| {
-            let (identity, signup) = u.with_conn(load_phase)?;
-            if matches!(decode_phase(identity, signup)?, Phase::None) {
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            if matches!(decode_phase(identity, signup, enrol)?, Phase::None) {
                 return Err(ClientError::new(E_CORE_NO_IDENTITY, ""));
             }
             let rec = SessionRecord {
@@ -545,8 +659,8 @@ impl ClientCore {
             return Err(ClientError::new(E_CORE_INPUT, "count must be 1..=32"));
         }
         self.write(|ctx, u| {
-            let (identity, signup) = u.with_conn(load_phase)?;
-            let rec = ready(decode_phase(identity, signup)?)?;
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let rec = ready(decode_phase(identity, signup, enrol)?)?;
             let signer = ctx
                 .signer
                 .ok_or_else(|| ClientError::new(E_CORE_STATE, "the device key is not loaded"))?;
@@ -616,6 +730,8 @@ mod debug_tests {
             credential: vec![0xc7; 32],
             device_list_body: Vec::new(),
             list_published: false,
+            device_list: vec![0xd8; 16],
+            state_uploaded: false,
         };
         let session = SessionRecord {
             token: "private-token-marker".into(),
@@ -627,9 +743,55 @@ mod debug_tests {
         assert!(!s.contains("165") && !s.contains("182") && !s.contains("a5") && !s.contains("b6"));
         let i = format!("{identity:?}");
         assert!(i.contains("username") && i.contains("credential"));
+        assert!(i.contains("device_list") && i.contains("state_uploaded"));
+        assert!(!i.contains("216"));
         assert!(!i.contains("private-name-marker") && !i.contains("199"));
         let t = format!("{session:?}");
         assert!(t.contains("token"));
         assert!(!t.contains("private-token-marker"));
+    }
+}
+
+#[cfg(test)]
+mod enrol_record_tests {
+    use super::EnrolRecord;
+
+    #[test]
+    fn the_enrol_record_round_trips_with_and_without_a_user() {
+        for user_id in [None, Some([0x42; 16])] {
+            let rec = EnrolRecord {
+                instance_id: [0x11; 16],
+                device_id: [0x5d; 16],
+                dsk_pub: [0x09; 32],
+                user_id,
+            };
+            let bytes = rec.encode();
+            let mut want = vec![0x85, 0x01, 0x50];
+            want.extend_from_slice(&[0x11; 16]);
+            want.push(0x50);
+            want.extend_from_slice(&[0x5d; 16]);
+            want.extend_from_slice(&[0x58, 0x20]);
+            want.extend_from_slice(&[0x09; 32]);
+            match user_id {
+                Some(u) => {
+                    want.push(0x50);
+                    want.extend_from_slice(&u);
+                }
+                None => want.push(0xf6),
+            }
+            assert_eq!(
+                bytes, want,
+                "[1, instance_id, device_id, dsk_pub, user_id|null]"
+            );
+            let back = EnrolRecord::decode(&bytes).expect("decode");
+            assert_eq!(
+                (back.instance_id, back.device_id, back.dsk_pub, back.user_id),
+                (rec.instance_id, rec.device_id, rec.dsk_pub, rec.user_id)
+            );
+        }
+        assert!(
+            EnrolRecord::decode(&[0x85, 0x02]).is_err(),
+            "element 0 must be 1"
+        );
     }
 }

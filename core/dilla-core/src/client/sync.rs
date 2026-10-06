@@ -3,7 +3,9 @@
 use super::error::{
     E_CORE_INPUT, E_CORE_MLS, E_CORE_NOT_FOUND, E_CORE_RELOAD, E_CORE_STATE, E_CORE_STORAGE,
 };
-use super::groups::{STATE_ACTIVE, STATE_GONE, STATE_NEEDS_RESYNC, checked, group_row};
+use super::groups::{
+    STATE_ACTIVE, STATE_GONE, STATE_NEEDS_RESYNC, checked, group_row, set_mls, set_pending,
+};
 use super::messages::{
     REASON_OWN_UNKNOWN, REASON_PRUNED, REASON_SENDER_MISMATCH, STATUS_CANNOT_DECRYPT,
     STATUS_DELETED, STATUS_OK, StoredMessage, insert_message,
@@ -260,6 +262,7 @@ impl ClientCore {
                 }
                 let epoch = group.epoch();
                 let bundle = group.self_update(ctx.provider, ctx.signer.ok_or_else(|| ClientError::new(super::error::E_CORE_NO_IDENTITY, ""))?)?;
+                u.with_conn(|c| set_pending(c, id, true))?;
                 let info = bundle.group_info.ok_or_else(|| ClientError::new(E_CORE_MLS, "the staged commit carries no GroupInfo"))?;
                 let mut out = Encoder::new();
                 out.array(5).uint(epoch).bytes(&wire::tls(&bundle.commit)?).bytes(&wire::tls(&MlsMessageOut::from(info))?);
@@ -294,7 +297,8 @@ impl ClientCore {
                         "DELETE FROM app_proposals WHERE group_id=?1",
                         [id.as_slice()],
                     )?;
-                    raise_floor(c, id, held)
+                    raise_floor(c, id, held)?;
+                    set_mls(c, id, held, false)
                 })?;
                 Ok(wire::encode_apply_result(&wire::ApplyResult {
                     state: 2,
@@ -323,8 +327,9 @@ impl ClientCore {
                 this.keep_group(*id, group);
                 return Ok(());
             }
-            let result = this.write(|ctx, _| {
+            let result = this.write(|ctx, u| {
                 group.clear_pending_commit(ctx.provider)?;
+                u.with_conn(|c| set_pending(c, id, false))?;
                 Ok(())
             });
             if result.is_ok() {
@@ -336,12 +341,12 @@ impl ClientCore {
 
     pub fn cursor_body(&self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
         self.own()?;
-        let (state, next_seq, acked_seq): (i64, i64, i64) = self
+        let (state, next_seq, acked_seq, epoch): (i64, i64, i64, i64) = self
             .read(|c| {
                 c.query_row(
-                    "SELECT state,next_seq,acked_seq FROM app_groups WHERE group_id=?1",
+                    "SELECT state,next_seq,acked_seq,epoch FROM app_groups WHERE group_id=?1",
                     [id.as_slice()],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()
                 .map_err(Into::into)
@@ -353,21 +358,11 @@ impl ClientCore {
                 format!("group state {state}"),
             ));
         }
-        let loaded = if self.groups.contains_key(id) {
-            None
-        } else {
-            DillaGroup::load(&self.provider, &GroupId::from_slice(id))?
-        };
-        let group = self
-            .groups
-            .get(id)
-            .or(loaded.as_ref())
-            .ok_or_else(|| ClientError::new(E_CORE_STATE, format!("group state {state}")))?;
         let mut out = Encoder::new();
         if next_seq - 1 <= acked_seq {
             out.null();
         } else {
-            out.array(2).uint((next_seq - 1) as u64).uint(group.epoch());
+            out.array(2).uint((next_seq - 1) as u64).uint(epoch as u64);
         }
         Ok(out.into_vec())
     }
@@ -502,7 +497,7 @@ impl ClientCore {
                                             u.with_conn(|c| {
                                                 c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?;
                                                 c.execute(
-                                                    "UPDATE app_groups SET state=4,next_seq=?2 WHERE group_id=?1",
+                                                    "UPDATE app_groups SET state=4,next_seq=?2,epoch=0,pending_commit=0 WHERE group_id=?1",
                                                     params![id.as_slice(), seq as i64 + 1],
                                                 )?;
                                                 Ok(())
@@ -510,16 +505,22 @@ impl ClientCore {
                                             epoch_changed = true;
                                             return Ok(true);
                                         }
-                                        if group.has_pending_commit() { group.clear_pending_commit(ctx.provider)?; }
+                                        // The clear is persisted with its column at once: a merge
+                                        // that then fails is caught below and commits the unit
+                                        // (pre-flight ruling (c)).
+                                        if group.has_pending_commit() {
+                                            group.clear_pending_commit(ctx.provider)?;
+                                            u.with_conn(|c| set_pending(c, id, false))?;
+                                        }
                                         group.merge_staged_commit(ctx.provider, *commit)?;
                                         let held = checked("epoch", group.epoch())?;
-                                        u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; raise_floor(c, id, held) })?;
+                                        u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; raise_floor(c, id, held)?; set_mls(c, id, held, false) })?;
                                         epoch_changed = true;
                                     }
                                     DillaProcessed::OwnPendingCommit => {
                                         group.merge_pending_commit(ctx.provider)?;
                                         let held = checked("epoch", group.epoch())?;
-                                        u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; raise_floor(c, id, held) })?;
+                                        u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; raise_floor(c, id, held)?; set_mls(c, id, held, false) })?;
                                         epoch_changed = true;
                                     }
                                     DillaProcessed::Proposal(proposal) => {

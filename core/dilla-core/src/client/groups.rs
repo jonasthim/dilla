@@ -152,49 +152,115 @@ fn in_unit<T>(
     u.with_conn(f).map_err(Into::into)
 }
 
+pub(super) fn set_mls(
+    c: &rusqlite::Connection,
+    id: &[u8; 16],
+    epoch: i64,
+    pending: bool,
+) -> Result<(), StorageError> {
+    c.execute(
+        "UPDATE app_groups SET epoch = ?2, pending_commit = ?3 WHERE group_id = ?1",
+        params![id.as_slice(), epoch, i64::from(pending)],
+    )?;
+    Ok(())
+}
+pub(super) fn set_pending(
+    c: &rusqlite::Connection,
+    id: &[u8; 16],
+    pending: bool,
+) -> Result<(), StorageError> {
+    c.execute(
+        "UPDATE app_groups SET pending_commit = ?2 WHERE group_id = ?1",
+        params![id.as_slice(), i64::from(pending)],
+    )?;
+    Ok(())
+}
+
+/// The select of one `groups()` row, as a macro so each query is one literal (`concat!`), not a
+/// `format!` at run time.
+macro_rules! listed {
+    ($tail:literal) => {
+        concat!(
+            "SELECT group_id, kind, community_id, target_id, state, epoch, next_seq, \
+             (SELECT COUNT(*) FROM app_proposals WHERE app_proposals.group_id = app_groups.group_id), \
+             pending_commit FROM app_groups ",
+            $tail
+        )
+    };
+}
+type ListedGroup = (
+    [u8; 16],
+    i64,
+    Option<Vec<u8>>,
+    Vec<u8>,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
+fn listed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ListedGroup> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+        r.get(7)?,
+        r.get(8)?,
+    ))
+}
+fn encode_listed(e: &mut Encoder, row: &ListedGroup) {
+    let (id, kind, community, target, state, epoch, next, proposals, pending) = row;
+    e.array(9)
+        .bytes(id)
+        .uint(*kind as u64)
+        .opt_bytes(community.as_deref())
+        .bytes(target)
+        .uint(*state as u64)
+        .uint(*epoch as u64)
+        .uint(*next as u64)
+        .uint(*proposals as u64)
+        .uint(*pending as u64);
+}
+
 impl ClientCore {
+    /// [[group_id b16, kind uint, community_id b16|null, target_id b16, state uint, epoch uint,
+    ///   next_seq uint, proposals_pending uint, pending_commit uint 0|1]] ordered by group_id —
+    /// epoch and pending_commit are app_groups.epoch and app_groups.pending_commit; no MLS state is loaded.
     pub fn groups(&self) -> Result<Vec<u8>, ClientError> {
-        type ListedGroup = ([u8; 16], i64, Option<Vec<u8>>, Vec<u8>, i64, i64, i64);
         let rows: Vec<ListedGroup> = self.read(|c| {
-            let mut s = c.prepare(
-                "SELECT group_id, kind, community_id, target_id, state, next_seq, \
-                 (SELECT COUNT(*) FROM app_proposals \
-                  WHERE app_proposals.group_id = app_groups.group_id) \
-                 FROM app_groups ORDER BY group_id",
-            )?;
-            let it = s.query_map([], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                ))
-            })?;
+            let mut s = c.prepare(listed!("ORDER BY group_id"))?;
+            let it = s.query_map([], listed_row)?;
             it.collect::<Result<_, _>>().map_err(Into::into)
         })?;
         let mut e = Encoder::new();
         e.array(rows.len());
-        for (id, kind, community, target, state, next, proposals) in rows {
-            let loaded;
-            let group = if let Some(g) = self.groups.get(&id) {
-                Some(g)
-            } else {
-                loaded = DillaGroup::load(&self.provider, &GroupId::from_slice(&id))?;
-                loaded.as_ref()
-            };
-            e.array(9)
-                .bytes(&id)
-                .uint(kind as u64)
-                .opt_bytes(community.as_deref())
-                .bytes(&target)
-                .uint(state as u64)
-                .uint(group.map_or(0, DillaGroup::epoch))
-                .uint(next as u64)
-                .uint(proposals as u64)
-                .uint(u64::from(group.is_some_and(DillaGroup::has_pending_commit)));
+        for row in &rows {
+            encode_listed(&mut e, row);
+        }
+        Ok(e.into_vec())
+    }
+
+    /// CBOR null for an unknown id, else the one row of groups() for it (the same 9 elements).
+    pub fn group_row(&self, group_id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
+        let row: Option<ListedGroup> = self.read(|c| {
+            c.query_row(
+                listed!("WHERE group_id = ?1"),
+                [group_id.as_slice()],
+                listed_row,
+            )
+            .optional()
+            .map_err(Into::into)
+        })?;
+        let mut e = Encoder::new();
+        match row {
+            Some(row) => encode_listed(&mut e, &row),
+            None => {
+                e.null();
+            }
         }
         Ok(e.into_vec())
     }
@@ -302,14 +368,14 @@ impl ClientCore {
                 )?;
                 if r.state == STATE_JOINING && r.resync == 1 {
                     c.execute(
-                        "UPDATE app_groups SET state=3,resync=0 WHERE group_id=?1",
+                        "UPDATE app_groups SET state=3,resync=0,epoch=0,pending_commit=0 WHERE group_id=?1",
                         [id.as_slice()],
                     )?;
                 } else if r.state == STATE_JOINING && r.was_gone == 1 {
                     // A rejoin of a gone row that did not complete: the row goes back to gone with
                     // its timeline and outbox (history outranks the discard of a fresh join).
                     c.execute(
-                        "UPDATE app_groups SET state=4,was_gone=0 WHERE group_id=?1",
+                        "UPDATE app_groups SET state=4,was_gone=0,epoch=0,pending_commit=0 WHERE group_id=?1",
                         [id.as_slice()],
                     )?;
                 } else {
@@ -403,6 +469,7 @@ impl ClientCore {
                 tree,
                 &bind,
             )?;
+            let joined = checked("epoch", g.epoch())?;
             let commit = wire::tls(&commit)?;
             let exported = wire::tls(&g.export_group_info(ctx.provider, signer)?)?;
             in_unit(u, |c| {
@@ -415,14 +482,14 @@ impl ClientCore {
                     // is never rewritten by a join.
                     let was_gone = r.state == STATE_GONE;
                     c.execute(
-                        "UPDATE app_groups SET state=1,resync=?2,was_gone=?3 WHERE group_id=?1",
-                        params![id.as_slice(), i64::from(resync), i64::from(was_gone)],
+                        "UPDATE app_groups SET state=1,resync=?2,was_gone=?3,epoch=?4,pending_commit=0 WHERE group_id=?1",
+                        params![id.as_slice(), i64::from(resync), i64::from(was_gone), joined],
                     )?;
                 } else {
                     c.execute(
-                        "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) \
-                         VALUES(?1,0,?2,?3,1)",
-                        params![id.as_slice(), community.as_slice(), channel.as_slice()],
+                        "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,epoch) \
+                         VALUES(?1,0,?2,?3,1,?4)",
+                        params![id.as_slice(), community.as_slice(), channel.as_slice(), joined],
                     )?;
                 }
                 Ok(())
@@ -460,7 +527,7 @@ impl ClientCore {
                 // next_seq never moves back: rows below the stored value were applied or skipped.
                 c.execute(
                     "UPDATE app_groups SET state=2,next_seq=MAX(next_seq,?2),resync=0, \
-                     was_gone=0,max_epoch=MAX(max_epoch,?3) WHERE group_id=?1",
+                     was_gone=0,max_epoch=MAX(max_epoch,?3),epoch=?3 WHERE group_id=?1",
                     params![id.as_slice(), seq + 1, held],
                 )?;
                 Ok(())
@@ -558,15 +625,15 @@ impl ClientCore {
                                             c.execute(
                                                 "UPDATE app_groups SET state=2, \
                                                  next_seq=MAX(next_seq,?2),resync=0, \
-                                                 max_epoch=MAX(max_epoch,?3) WHERE group_id=?1",
+                                                 max_epoch=MAX(max_epoch,?3),epoch=?3,pending_commit=0 WHERE group_id=?1",
                                                 params![id.as_slice(), next, held],
                                             )?;
                                         } else {
                                             c.execute(
                                                 "INSERT INTO app_groups \
                                                  (group_id,kind,community_id,target_id,state, \
-                                                 next_seq,max_epoch) \
-                                                 VALUES(?1,0,?2,?3,2,?4,?5)",
+                                                 next_seq,max_epoch,epoch) \
+                                                 VALUES(?1,0,?2,?3,2,?4,?5,?5)",
                                                 params![
                                                     id.as_slice(),
                                                     want.community_id.as_slice(),

@@ -565,6 +565,238 @@ fn commit_build_needs_an_active_group_without_a_pending_commit() {
     assert_eq!(code(a.core.commit_confirm(&OTHER_GROUP)), "E_CORE_STATE");
 }
 
+/// L-CORE-21: every writer keeps app_groups.epoch and pending_commit equal to the stored MLS
+/// group, through create, external join, merged and lost commits, an own commit's echo, a resync
+/// discarded and completed, a Welcome, a removal and a discarded rejoin of the gone row.
+#[test]
+fn every_writer_keeps_the_persisted_epoch_and_pending_commit_equal_to_the_mls_group() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut a = ready_core(0xa1, "alice");
+    let mut b = ready_core(0xb2, "bob");
+    let body = a
+        .core
+        .group_create(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &instance.public())
+        .expect("group_create");
+    a.check_columns("group_create");
+    let created = relay.register(&body).expect("register");
+    let next_seq = decode_strict(&created, |d| {
+        d.array(2)?;
+        d.bytes_exact::<16>()?;
+        d.uint()
+    })
+    .expect("201 body");
+    a.core
+        .group_registered(&GROUP, next_seq)
+        .expect("group_registered");
+    a.check_columns("group_registered");
+
+    let join = b
+        .core
+        .group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )
+        .expect("group_join_external");
+    assert_eq!(
+        b.group(&GROUP)
+            .map(|g| (g.state, g.epoch, g.pending_commit)),
+        Some((1, 1, 0)),
+        "the external commit is merged when the join returns"
+    );
+    b.check_columns("group_join_external");
+    let answer = relay.resync(&join).expect("resync");
+    let seq = decode_strict(&answer, |d| {
+        d.array(2)?;
+        let seq = d.uint()?;
+        d.uint()?;
+        Ok(seq)
+    })
+    .expect("200 body");
+    b.core.group_joined(&GROUP, seq).expect("group_joined");
+    b.check_columns("group_joined");
+    a.sync(&relay);
+    assert_eq!(a.group(&GROUP).map(|g| g.epoch), Some(1));
+    a.check_columns("a merged external commit");
+
+    a.core
+        .commit_build(&GROUP, &relay.proposals_body())
+        .expect("commit_build");
+    assert_eq!(a.group(&GROUP).map(|g| g.pending_commit), Some(1));
+    a.check_columns("commit_build");
+    a.core.commit_abort(&GROUP).expect("commit_abort");
+    a.check_columns("commit_abort");
+    a.commit(&mut relay);
+    assert_eq!(
+        a.group(&GROUP).map(|g| (g.epoch, g.pending_commit)),
+        Some((2, 0))
+    );
+    a.check_columns("commit_confirm");
+    b.sync(&relay);
+    b.check_columns("a staged commit");
+
+    // A commit that loses the race: Alice's merged commit clears Bob's pending one.
+    b.core
+        .commit_build(&GROUP, &relay.proposals_body())
+        .expect("commit_build");
+    b.check_columns("a second commit_build");
+    a.commit(&mut relay);
+    b.sync(&relay);
+    assert_eq!(
+        b.group(&GROUP).map(|g| (g.epoch, g.pending_commit)),
+        Some((3, 0))
+    );
+    b.check_columns("a lost race");
+
+    // The echo of an own commit is merged by group_apply.
+    let body = b
+        .core
+        .commit_build(&GROUP, &relay.proposals_body())
+        .expect("commit_build");
+    relay.commit(&body).expect("accepted");
+    b.sync(&relay);
+    assert_eq!(
+        b.group(&GROUP).map(|g| (g.epoch, g.pending_commit)),
+        Some((4, 0))
+    );
+    b.check_columns("an own commit's echo");
+    a.sync(&relay);
+    a.check_columns("Bob's commit");
+
+    // A resync begun and discarded, then completed.
+    b.core
+        .group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )
+        .expect("resync body");
+    b.check_columns("a resync begun");
+    b.core.group_discard(&GROUP).expect("discard");
+    assert_eq!(
+        b.group(&GROUP)
+            .map(|g| (g.state, g.epoch, g.pending_commit)),
+        Some((3, 0, 0))
+    );
+    b.check_columns("a discarded resync");
+    b.join_external(&mut relay);
+    b.check_columns("a completed resync");
+    a.sync(&relay);
+    a.check_columns("Bob's resync");
+
+    // A Welcome, a removal, and a discarded rejoin of the gone row.
+    let mut c = ready_core(0xc3, "carol");
+    let kp = c.first_key_package();
+    instance.propose_add(&mut relay, &kp);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    let outcomes = decode_outcomes(
+        &c.core
+            .welcomes_apply(
+                &relay.welcomes_body(c.device),
+                &expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]),
+            )
+            .expect("welcomes_apply"),
+    );
+    assert_eq!(outcomes[0].outcome, 0);
+    c.check_columns("welcomes_apply");
+    b.sync(&relay);
+    instance.propose_remove(&mut relay, b.device);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).state, 4);
+    assert_eq!(
+        b.group(&GROUP)
+            .map(|g| (g.state, g.epoch, g.pending_commit)),
+        Some((4, 0, 0))
+    );
+    b.check_columns("the removal");
+    b.core
+        .group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )
+        .expect("rejoin body");
+    b.check_columns("a rejoin begun");
+    b.core.group_discard(&GROUP).expect("discard");
+    assert_eq!(b.group(&GROUP).map(|g| (g.state, g.epoch)), Some((4, 0)));
+    b.check_columns("a discarded rejoin");
+
+    // Nothing above lives only in the cache.
+    let before = groups(&a.core);
+    let a = a.reopen();
+    assert_eq!(groups(&a.core), before);
+    a.check_columns("a reload");
+}
+
+/// L-CORE-21: groups(), group_row and cursor_body answer from app_groups even when the stored
+/// MLS group is gone (web-1 loaded it and answered epoch 0 or an error).
+#[test]
+fn groups_and_the_cursor_body_read_the_row_without_loading_the_mls_group() {
+    let (_instance, _relay, a, _b) = alice_and_bob();
+    let a = a.reopen();
+    let head = a.group(&GROUP).expect("row").next_seq - 1;
+    a.probe
+        .lock()
+        .expect("lock")
+        .execute("DELETE FROM openmls_group_data", [])
+        .expect("drop the stored MLS group");
+    assert_eq!(
+        a.group(&GROUP)
+            .map(|g| (g.state, g.epoch, g.pending_commit)),
+        Some((2, 1, 0)),
+        "groups() is a query over app_groups"
+    );
+    assert_eq!(group_row_of(&a.core, &GROUP), a.group(&GROUP));
+    assert_eq!(group_row_of(&a.core, &OTHER_GROUP), None);
+    assert_eq!(a.core.group_row(&OTHER_GROUP).expect("group_row"), [0xf6]);
+    assert_eq!(
+        cursor(&a.core),
+        Some((head, 1)),
+        "cursor_body reads app_groups.epoch"
+    );
+}
+
+/// L-CORE-21: after a discarded resync the state-3 row has no stored MLS group and epoch 0, and
+/// cursor_body answers [next_seq − 1, 0] from the row (web-1 answered E_CORE_STATE "group state 3").
+/// Pinned so the change is deliberate.
+#[test]
+fn a_discarded_resync_answers_the_cursor_from_the_row_with_epoch_0() {
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    a.send(&mut relay, &GROUP, "before the resync", NOW + 1);
+    b.sync(&relay);
+    b.core
+        .group_join_external(
+            &GROUP,
+            &COMMUNITY,
+            &CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )
+        .expect("resync body");
+    b.core.group_discard(&GROUP).expect("discard");
+    let row = b.group(&GROUP).expect("the row stays");
+    assert_eq!((row.state, row.epoch, row.pending_commit), (3, 0, 0));
+    assert!(
+        row.next_seq > 2,
+        "Bob applied Alice's message before the resync"
+    );
+    assert_eq!(cursor(&b.core), Some((row.next_seq - 1, 0)));
+    b.check_columns("a discarded resync");
+}
+
 #[test]
 fn a_deleted_frame_clears_a_stored_row() {
     let (_instance, mut relay, mut a, mut b) = alice_and_bob();
