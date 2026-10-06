@@ -536,7 +536,7 @@ func (p *purgeAfterFirstCheck) GetBlobTombstone(ctx context.Context, blobID []by
 	tomb, err := p.Repository.GetBlobTombstone(ctx, blobID)
 	if !p.done {
 		p.done = true
-		if perr := p.Repository.PutBlobTombstone(ctx, blobID, "takedown", p.by.ID, p.at); perr != nil {
+		if perr := p.PutBlobTombstone(ctx, blobID, "takedown", p.by.ID, p.at); perr != nil {
 			return false, perr
 		}
 	}
