@@ -34,7 +34,7 @@ export interface ControllerDeps {
   resetDevice(instance: Instance): Promise<void>;  // removes the KEK record and the OPFS directory dilla/<instance hex>
   post(message: FromWorker): void;
   testHooks: boolean;
-  parts?: Partial<ControllerParts>;                // unit tests only; the runtime passes none
+  parts?: Partial<ControllerParts>;                // unit tests and the core-worker harness only; src/worker/entry.ts passes none
 }
 
 /** The composition seams. REAL_PARTS builds the real classes; a unit test replaces any of them with a double

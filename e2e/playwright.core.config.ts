@@ -12,7 +12,7 @@ const dillaHost: HostConfig = { port: 8453, control: 8454, webRoot: 'packages/cl
 // (e2e/web/support/persistent.ts), because the store lives in OPFS and IndexedDB.
 export default defineConfig({
   testDir: resolve(here, 'web'),
-  testMatch: /(^|\/)(support|core-worker)\.spec\.ts$/,
+  testMatch: /(^|\/)(support|core-worker|spike-joinall)\.spec\.ts$/,
   globalSetup: resolve(here, 'web', 'support', 'host.ts'),
   metadata: { dillaHost },
   fullyParallel: false,

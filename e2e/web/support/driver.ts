@@ -18,7 +18,7 @@ export function testHostUrl(): string {
 }
 export function testkitBinary(): string { return process.env.DILLA_TESTKIT ?? join(REPO_ROOT, 'target', 'release', 'dilla-testkit'); }
 
-export interface PeerSetup { username: string; display: string; user_id: string; device_id: string; community_id: string; channel_id: string; invite_code: string }
+export interface PeerSetup { username: string; display: string; user_id: string; device_id: string; community_id: string; channel_id: string; channel_ids: string[]; invite_code: string }
 export interface PeerReceived { seq: number; body: string; sender_user: string; sender_device: string; tier: number }
 export interface PeerSync { epoch: number; members: number; received: PeerReceived[] }
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
@@ -58,7 +58,7 @@ export class WebDriver {
     const { id: _id, ok: _ok, ...fields } = answer;
     return fields as T;
   }
-  async setup(a: { community: string; channel: string }): Promise<PeerSetup> { return this.strip(await this.request<PeerSetup & { id: number; ok: boolean }>('setup', a)); }
+  async setup(a: { community: string; channel: string; password?: string; channels?: number }): Promise<PeerSetup> { return this.strip(await this.request<PeerSetup & { id: number; ok: boolean }>('setup', a)); }
   async register(): Promise<{ group_id: string; epoch: number }> { return this.strip(await this.request<{ group_id: string; epoch: number; id: number; ok: boolean }>('register', {})); }
   async join(a: { community_id: string; channel_id: string; group_id: string; invite_code: string }): Promise<{ group_id: string; epoch: number }> { return this.strip(await this.request<{ group_id: string; epoch: number; id: number; ok: boolean }>('join', a)); }
   async send(body: string): Promise<{ seq: number }> { return this.strip(await this.request<{ seq: number; id: number; ok: boolean }>('send', { body })); }

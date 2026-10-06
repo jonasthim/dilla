@@ -9,7 +9,7 @@ const dillaHost: HostConfig = { port: 8463, control: 8464, webRoot: 'packages/we
 
 export default defineConfig({
   testDir: resolve(here, 'web'),
-  testIgnore: /(^|\/)(support|core-worker)\.spec\.ts$/,
+  testIgnore: /(^|\/)(support|core-worker|spike-joinall)\.spec\.ts$/,
   globalSetup: resolve(here, 'web', 'support', 'host.ts'),
   metadata: { dillaHost },
   fullyParallel: false,

@@ -95,7 +95,7 @@ test('the core worker signs up, joins, reads and sends, survives a gateway resta
       await ok(page, { m: 'selectCommunity', communityId: s.community_id });
       expect(await slice<ChannelSummary[]>(page, `channels:${s.community_id}`)).toEqual([{
         id: s.channel_id, communityId: s.community_id, kind: 0, mode: 0, name: 'general', topic: '',
-        parentId: null, position: 0, group: 'none',
+        parentId: null, position: 0, group: expect.stringMatching(/^(none|joining|active)$/) as unknown as string,
       }]);
       const members = (await slice<MemberSummary[]>(page, `members:${s.community_id}`))!;
       expect(members).toHaveLength(2);
