@@ -1,6 +1,6 @@
 # Flow 02 — the recovery-key ceremony (web-1)
 
-The strings of this document are L-COPY-01 of the web-1 plan, quoted. A change is made there first.
+The strings of this document are L-COPY-01 of the web-1 plan, quoted, except `onboarding.keys.loss`, which is L-COPY-02 of the web-2a plan. A change is made there first.
 
 Step 3 of `01-onboarding.md`, drawn in detail. Built by web-1 task 20 (`RecoveryKey` in `@dilla/ui`) and
 task 23 (the onboarding screen). The rules come from `protocol/03-identity.md` "Recovery": the key is 256
@@ -96,13 +96,12 @@ The print rules use system colours (`CanvasText` on `Canvas`), because browsers 
 
 | not offered | why |
 |---|---|
-| getting an account back with this key | not available in this version: the sealed root object the key opens is kept only in this browser's storage until the backup routes exist, so losing this browser's data alone loses the account. The screen says so (`onboarding.keys.loss`) |
 | a copy button | `protocol/03-identity.md` "Recovery": the client MUST NOT offer one on this screen (DEV-W15, F2). A copy button puts the key on the clipboard, where other programs and clipboard history can read it. Selecting the text by hand stays possible. |
 | the 24-word form | F2 defers the word list (DEV-W16); the core has no word list (`core/dilla-core/src/identity/recovery.rs:4-5`). Only the 52-character form is shown. |
 | showing the key again later | the key is never stored (plan web-1 ruling 6); once the step is left forward and the account exists, it cannot be shown again |
 | a download as a file | a file in a downloads folder is a copy the person did not choose to make |
 | a QR code | nothing in web-1 scans one |
-| typing the key back to check it | entering a key belongs to recovery, which web-1 does not have; when it arrives, paste is allowed in that field (F2, WCAG 3.3.8) |
+| typing the key back to check it | the key is typed only where it is used: signing in on another browser and removing a device (`03-sign-in.md`), where paste is allowed (F2, WCAG 3.3.8) |
 
 ## Copy
 
@@ -110,7 +109,7 @@ The print rules use system colours (`CanvasText` on `Canvas`), because browsers 
 |---|---|
 | `onboarding.keys.title` | `Your recovery key` |
 | `onboarding.keys.body` | `This key is shown once and is kept nowhere. Write it down or print it, and keep it away from this computer.` |
-| `onboarding.keys.loss` | `Getting an account back with this key is not available in this version. Until it is, your account lives only in this browser: if this browser loses its data, the account and its history are gone, and the host cannot bring them back. Keep the key for when recovery arrives.` |
+| `onboarding.keys.loss` | `This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.` |
 | `onboarding.keys.label` | `Recovery key` |
 | `onboarding.keys.acknowledge` | `I have written down or printed my recovery key` |
 | `onboarding.keys.ackHint` | `Tick the box to continue.` |
