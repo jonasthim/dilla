@@ -45,7 +45,8 @@ describe('the copy rules', () => {
   // place of the one `devices.cap`, so the settings rows are 62; the two buttons under the list are lower-case chrome.
   it('names settings in lower case in the chrome and sentence case on its surfaces (Q14)', () => {
     for (const k of ['settings.nav.devices', 'settings.nav.notifications', 'settings.nav.appearance', 'devices.revoke', 'devices.refresh',
-      'devices.signOut', 'devices.forget', 'notify.channel.default', 'notify.mute', 'appearance.theme.contrast'] as const) expect(en[k], k).toMatch(/^[a-z#]/);
+      'devices.signOut', 'devices.forget', 'notify.channel.default', 'notify.mute', 'appearance.theme.contrast',
+      'notify.permission.label', 'notify.permission.ask', 'notify.default.label', 'appearance.theme.label'] as const) expect(en[k], k).toMatch(/^[a-z#]/);
     for (const k of ['settings.title', 'devices.title', 'devices.revokeTitle', 'devices.removeUnlistedTitle', 'devices.signOutTitle',
       'devices.forgetTitle', 'devices.keyLabel', 'notify.title', 'appearance.title', 'notify.channels.title'] as const) expect(en[k], k).toMatch(/^[A-Z]/);
     expect(en['notify.title.channel']).toBe('#{channel} · {server}');

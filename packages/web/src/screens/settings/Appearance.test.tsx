@@ -18,7 +18,7 @@ function setup(stored: 'system' | 'mesh' | 'light' | 'high-contrast' | null) {
   const user = userEvent.setup();
   return { idb, user, ready: stored === null ? Promise.resolve() : writeTheme(stored, idb.factory) };
 }
-const theme = () => screen.getByRole('radiogroup', { name: 'Theme' });
+const theme = () => screen.getByRole('radiogroup', { name: 'theme' });
 
 describe('Appearance', () => {
   it('shows the stored preference and applies and stores a new one', async () => {

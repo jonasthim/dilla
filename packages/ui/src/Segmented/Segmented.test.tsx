@@ -16,7 +16,7 @@ function Controlled({ initial = 'system', onValue }: { initial?: string; onValue
   return (
     <>
       <button type="button">before</button>
-      <Segmented id="theme" label="Theme" options={THEMES} value={value} onChange={v => { setValue(v); onValue?.(v); }} />
+      <Segmented id="theme" label="theme" options={THEMES} value={value} onChange={v => { setValue(v); onValue?.(v); }} />
       <button type="button">after</button>
     </>
   );
@@ -25,8 +25,8 @@ const radio = (name: string) => screen.getByRole('radio', { name });
 
 describe('Segmented', () => {
   it('is a radiogroup named by its label, one radio button per option, the value checked', () => {
-    const { container } = render(<Segmented id="theme" label="Theme" options={THEMES} value="mesh" onChange={() => {}} />);
-    const group = screen.getByRole('radiogroup', { name: 'Theme' });
+    const { container } = render(<Segmented id="theme" label="theme" options={THEMES} value="mesh" onChange={() => {}} />);
+    const group = screen.getByRole('radiogroup', { name: 'theme' });
     expect(group).toHaveAttribute('id', 'theme');
     expect(container.firstElementChild).toHaveClass('d-segmented');
     const radios = screen.getAllByRole('radio');
@@ -82,7 +82,7 @@ describe('Segmented', () => {
   });
 
   it('has no serious axe violations', async () => {
-    const { container } = render(<div className="d-root"><Segmented id="theme" label="Theme" options={THEMES} value="system" onChange={() => {}} /></div>);
+    const { container } = render(<div className="d-root"><Segmented id="theme" label="theme" options={THEMES} value="system" onChange={() => {}} /></div>);
     await expectNoAxeViolations(container);
   });
 });

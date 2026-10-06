@@ -7,10 +7,10 @@ const THEMES = [{ value: 'system', label: 'system' }, { value: 'mesh', label: 'm
 const MODES = [{ value: 'default', label: 'default' }, { value: 'all', label: 'all' }, { value: 'mentions', label: 'mentions' }, { value: 'nothing', label: 'nothing' }];
 const meta = {
   title: 'Form/Segmented', component: Segmented,
-  args: { id: 'notify-default', label: 'Notify me about', options: NOTIFY, value: 'dms-mentions', onChange: () => {} },
+  args: { id: 'notify-default', label: 'notify me about', options: NOTIFY, value: 'dms-mentions', onChange: () => {} },
 } satisfies Meta<typeof Segmented>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const NotifyDefault: Story = {};
-export const Theme: Story = { args: { id: 'theme', label: 'Theme', options: THEMES, value: 'system' } };
+export const Theme: Story = { args: { id: 'theme', label: 'theme', options: THEMES, value: 'system' } };
 export const ChannelMode: Story = { args: { id: 'notify-general', label: '#general · Midgard Crew', options: MODES, value: 'mentions' } };

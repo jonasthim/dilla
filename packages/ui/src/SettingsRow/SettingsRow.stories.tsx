@@ -14,12 +14,12 @@ const meta: Meta = { title: 'Settings/SettingsRow', decorators: [Story => <div s
 export default meta;
 type Story = StoryObj;
 export const Permission: Story = {
-  render: () => <SettingsRow id="notify-permission" label="Desktop notifications" hint={BODY}><Button variant="accent">Turn on</Button></SettingsRow>,
+  render: () => <SettingsRow id="notify-permission" label="desktop notifications" hint={BODY}><Button variant="accent">turn on</Button></SettingsRow>,
 };
 export const NotifyDefault: Story = {
   render: () => (
-    <SettingsRow id="notify-default" label="Notify me about">
-      <Segmented id="notify-default-control" label="Notify me about" options={NOTIFY} value="dms-mentions" onChange={noop} />
+    <SettingsRow id="notify-default" label="notify me about">
+      <Segmented id="notify-default-control" label="notify me about" options={NOTIFY} value="dms-mentions" onChange={noop} />
     </SettingsRow>
   ),
 };

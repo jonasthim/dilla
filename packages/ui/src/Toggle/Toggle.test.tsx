@@ -59,8 +59,8 @@ describe('Toggle', () => {
   });
 
   it('is described by its hint', () => {
-    render(<Toggle id="notify-permission" label="Desktop notifications" checked onChange={() => {}} hint={HINT} />);
-    const sw = screen.getByRole('switch', { name: 'Desktop notifications' });
+    render(<Toggle id="notify-permission" label="desktop notifications" checked onChange={() => {}} hint={HINT} />);
+    const sw = screen.getByRole('switch', { name: 'desktop notifications' });
     expect(sw).toHaveAccessibleDescription(HINT);
     expect(sw).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByText(HINT)).toHaveAttribute('id', 'notify-permission-hint');
@@ -85,7 +85,7 @@ describe('Toggle', () => {
     const { container } = render(
       <div className="d-root">
         <Toggle id="a" label="mute" checked={false} onChange={() => {}} />
-        <Toggle id="b" label="Desktop notifications" checked onChange={() => {}} hint={HINT} />
+        <Toggle id="b" label="desktop notifications" checked onChange={() => {}} hint={HINT} />
         <Toggle id="c" label="mute" checked onChange={() => {}} showLabel />
       </div>,
     );

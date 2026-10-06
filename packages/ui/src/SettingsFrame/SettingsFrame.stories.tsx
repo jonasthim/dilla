@@ -46,9 +46,9 @@ function NotificationsSection() {
     <section aria-labelledby="notify-title">
       <h2 id="notify-title">Notifications</h2>
       <p>Desktop notifications show while a dilla tab is open. Nothing is shown when every tab is closed.</p>
-      <SettingsRow id="notify-permission" label="Desktop notifications"><Button variant="accent">Turn on</Button></SettingsRow>
-      <SettingsRow id="notify-default" label="Notify me about">
-        <Segmented id="notify-default-control" label="Notify me about" options={NOTIFY} value="dms-mentions" onChange={noop} />
+      <SettingsRow id="notify-permission" label="desktop notifications"><Button variant="accent">turn on</Button></SettingsRow>
+      <SettingsRow id="notify-default" label="notify me about">
+        <Segmented id="notify-default-control" label="notify me about" options={NOTIFY} value="dms-mentions" onChange={noop} />
       </SettingsRow>
       <h3>Per channel</h3>
       <p>Every channel and direct message. Rows left on default follow the choice above.</p>

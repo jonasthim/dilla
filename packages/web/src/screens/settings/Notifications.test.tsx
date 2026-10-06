@@ -54,30 +54,30 @@ describe('the permission', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'Notifications' })).toBeInTheDocument();
     expect(screen.getByText('Desktop notifications show while a dilla tab is open. Nothing is shown when every tab is closed.')).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
-    await user.click(within(group('Desktop notifications')).getByRole('button', { name: 'Turn on' }));
+    await user.click(within(group('desktop notifications')).getByRole('button', { name: 'turn on' }));
     expect(FakeNotification.asked).toBe(1);
-    expect(await within(group('Desktop notifications')).findByText('on')).toBeInTheDocument();
-    expect(within(group('Desktop notifications')).queryByRole('button')).toBeNull();
+    expect(await within(group('desktop notifications')).findByText('on')).toBeInTheDocument();
+    expect(within(group('desktop notifications')).queryByRole('button')).toBeNull();
   });
   it.each([
     ['granted', 'on'],
     ['denied', 'Blocked in the browser. Allow notifications for this site in the browser’s settings.'],
   ] as const)('shows %s as it is', (permission, text) => {
     setup({ permission });
-    expect(within(group('Desktop notifications')).getByText(text)).toBeInTheDocument();
-    expect(within(group('Desktop notifications')).queryByRole('button')).toBeNull();
+    expect(within(group('desktop notifications')).getByText(text)).toBeInTheDocument();
+    expect(within(group('desktop notifications')).queryByRole('button')).toBeNull();
     expect(FakeNotification.asked).toBe(0);
   });
   it('says when the browser has no notifications', () => {
     setup({ permission: null });
-    expect(within(group('Desktop notifications')).getByText('This browser cannot show notifications.')).toBeInTheDocument();
+    expect(within(group('desktop notifications')).getByText('This browser cannot show notifications.')).toBeInTheDocument();
   });
 });
 
 describe('the default and per channel', () => {
   it('writes the default', async () => {
     const { fake, user } = setup();
-    const choice = screen.getByRole('radiogroup', { name: 'Notify me about' });
+    const choice = screen.getByRole('radiogroup', { name: 'notify me about' });
     expect(within(choice).getByRole('radio', { name: 'direct messages and mentions' })).toHaveAttribute('aria-checked', 'true');
     await user.click(within(choice).getByRole('radio', { name: 'every message' }));
     expect(fake.callsOf('setSetting')).toEqual([{ m: 'setSetting', key: 'notify.default', value: 'everything' }]);
@@ -86,7 +86,7 @@ describe('the default and per channel', () => {
     const { view } = setup();
     expect(screen.getByRole('heading', { level: 3, name: 'Per channel' })).toBeInTheDocument();
     expect(screen.getByText('Every channel and direct message. Rows left on default follow the choice above.')).toBeInTheDocument();
-    const order = ['Notify me about', '#general · Midgard', '#random · Midgard', 'bob'].map(name => screen.getByRole('radiogroup', { name }));
+    const order = ['notify me about', '#general · Midgard', '#random · Midgard', 'bob'].map(name => screen.getByRole('radiogroup', { name }));
     for (let i = 1; i < order.length; i++) {
       expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
