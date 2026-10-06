@@ -1,13 +1,17 @@
-//! `dilla-testkit web-driver`: the native peer of the browser tests (dilla-web-1, L-E2E-01).
+//! `dilla-testkit web-driver`: the native peer of the browser tests (dilla-web-1, L-E2E-01; the
+//! enrolment, revocation, DM and per-channel verbs of dilla-web-2a, L-E2E-10).
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use dilla_core::identity::DeviceList;
 use dilla_core::ids::{CommunityId, InstanceId};
 use dilla_core::mls::{DillaBinding, GroupKind};
 use serde_json::{Value, json};
 
-use crate::ds::remote::instance_document;
-use crate::{DsError, Received, Runner, TestkitError};
+use crate::ds::remote::{HttpDs, instance_document};
+use crate::{DsError, Received, Runner, TestClient, TestkitError};
 
 const GROUP: &str = "text";
 const BODY_MAX_BYTES: usize = 4000;
@@ -20,6 +24,16 @@ struct Peer {
     name: String,
     community: [u8; 16],
     channel: [u8; 16],
+    channels: Vec<[u8; 16]>,
+    password: Option<String>,
+}
+
+/// The device `enrol` added to the peer's account, kept until `revoke` names it.
+struct Second {
+    client: TestClient,
+    /// Held so the enrolled device's session lives as long as the device; nothing reads it.
+    #[allow(dead_code)]
+    ds: HttpDs,
 }
 
 pub struct WebDriver {
@@ -29,6 +43,10 @@ pub struct WebDriver {
     peer: Option<Peer>,
     group: Option<Vec<u8>>,
     pending: Vec<Received>,
+    groups: BTreeMap<[u8; 16], Vec<u8>>,
+    registered_all: bool,
+    dms: BTreeMap<[u8; 16], Vec<u8>>,
+    second: Option<Second>,
 }
 
 impl WebDriver {
@@ -40,6 +58,10 @@ impl WebDriver {
             peer: None,
             group: None,
             pending: Vec::new(),
+            groups: BTreeMap::new(),
+            registered_all: false,
+            dms: BTreeMap::new(),
+            second: None,
         }
     }
 
@@ -112,6 +134,23 @@ impl WebDriver {
                 if !(1..=100).contains(&channel.len()) {
                     return Err(scenario("channel must be 1..=100 bytes"));
                 }
+                let channels = req
+                    .get("channels")
+                    .map(Value::as_u64)
+                    .unwrap_or(Some(1))
+                    .filter(|n| (1..=200).contains(n))
+                    .ok_or_else(|| scenario("channels must be 1..=200"))?;
+                if channels > 1 && channel.len() > 96 {
+                    return Err(scenario("channel must be 1..=96 bytes when channels > 1"));
+                }
+                if let Some(password) = req.get("password") {
+                    let valid = password
+                        .as_str()
+                        .is_some_and(|s| (1..=128).contains(&s.len()));
+                    if !valid {
+                        return Err(scenario("password must be 1..=128 bytes"));
+                    }
+                }
             }
             "join" => {
                 Self::hex16(req, "community_id")?;
@@ -124,8 +163,32 @@ impl WebDriver {
                 if !(1..=BODY_MAX_BYTES).contains(&body.len()) {
                     return Err(scenario("body must be 1..=4000 bytes"));
                 }
+                if req.get("channel_id").is_some() {
+                    Self::hex16(req, "channel_id")?;
+                }
             }
-            "register" | "sync" | "members" | "update" => {}
+            "send_dm" => {
+                Self::hex16(req, "channel_id")?;
+                let body = Self::text(req, "body")?;
+                if !(1..=BODY_MAX_BYTES).contains(&body.len()) {
+                    return Err(scenario("body must be 1..=4000 bytes"));
+                }
+            }
+            "sync_dm" => {
+                Self::hex16(req, "channel_id")?;
+            }
+            "sync" | "members" => {
+                if req.get("channel_id").is_some() {
+                    Self::hex16(req, "channel_id")?;
+                }
+            }
+            "revoke" => {
+                Self::hex16(req, "device_id")?;
+            }
+            "open_dm" => {
+                Self::hex16(req, "user_id")?;
+            }
+            "register" | "update" | "enrol" | "dms" => {}
             _ => return Err(scenario(format!("unknown op {op}"))),
         }
         Ok(())
@@ -139,7 +202,10 @@ impl WebDriver {
         if matches!(op, "send" | "sync" | "members" | "update") && self.group.is_none() {
             return Err(scenario("no group yet: register or join first"));
         }
-        if matches!(op, "register" | "join") && self.group.is_some() {
+        if matches!(op, "register" | "join")
+            && self.group.is_some()
+            && !(op == "register" && self.registered_all)
+        {
             return Err(scenario("the driver already holds a group"));
         }
         match op {
@@ -147,9 +213,15 @@ impl WebDriver {
             "register" => self.register(),
             "join" => self.join(req),
             "send" => self.send(req),
-            "sync" => self.sync(),
-            "members" => self.members(),
+            "sync" => self.sync_group(self.group_of(req)?),
+            "members" => self.members(self.group_of(req)?),
             "update" => self.update(),
+            "enrol" => self.enrol(),
+            "revoke" => self.revoke(req),
+            "open_dm" => self.open_dm(req),
+            "dms" => self.list_dms(),
+            "send_dm" => self.send_dm(req),
+            "sync_dm" => self.sync_dm(req),
             _ => unreachable!(),
         }
     }
@@ -160,31 +232,76 @@ impl WebDriver {
         }
         let community_name = Self::text(req, "community")?;
         let channel_name = Self::text(req, "channel")?;
+        let channel_count = req.get("channels").and_then(Value::as_u64).unwrap_or(1);
+        let password = req
+            .get("password")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let name = Self::username(self.seed);
         self.runner.exec_line("instance web")?;
         self.runner
             .exec_line(&format!("client {name} key_packages=none"))?;
         self.runner
             .exec_line(&format!("publish_key_packages {name} 32"))?;
-        let (user_id, device_id, community, channel, invite_code) = self.runner.with_session(&name, |client, ds| {
+        let (user_id, device_id, community, channels, invite_code) = self.runner.with_session(&name, |client, ds| {
             let user_id = client.user_id().to_hex();
             let device_id = client.device_id().to_hex();
+            if let Some(password) = &password { ds.set_password(password)?; }
             let community = ds.create_community(community_name)?;
-            let (channel, mode, visibility) = ds.create_text_channel(&community, channel_name)?;
-            if mode != 0 || visibility != 0 {
-                return Err(scenario(format!("the instance answered mode {mode} visibility {visibility} for a text channel")));
+            let mut channels = Vec::new();
+            for k in 1..=channel_count {
+                let channel_label = if k == 1 { channel_name.to_owned() } else { format!("{channel_name}-{k}") };
+                let mut retries = 0;
+                let (channel, mode, visibility) = loop {
+                    match ds.create_text_channel(&community, &channel_label) {
+                        Ok(v) => break v,
+                        Err(e) if e.retry_after_ms().is_some() && retries < 10 => {
+                            retries += 1;
+                            std::thread::sleep(Duration::from_millis(e.retry_after_ms().unwrap_or(0).min(60_000)));
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
+                };
+                if mode != 0 || visibility != 0 {
+                    return Err(scenario(format!("the instance answered mode {mode} visibility {visibility} for a text channel")));
+                }
+                channels.push(channel);
             }
             let invite_code = ds.create_invite(&community, 100, 3600)?;
-            Ok((user_id, device_id, community, channel, invite_code))
+            Ok((user_id, device_id, community, channels, invite_code))
         })?;
+        let channel = channels[0];
         self.peer = Some(Peer {
             name: name.clone(),
             community,
             channel,
+            channels: channels.clone(),
+            password,
         });
+        if channel_count > 1 {
+            for (index, channel) in channels.iter().enumerate() {
+                let label = if index == 0 {
+                    GROUP.to_owned()
+                } else {
+                    format!("text-{}", index + 1)
+                };
+                self.runner.exec_line(&format!(
+                    "group {label} kind=text target={} community={} creator={name}",
+                    hex::encode(channel),
+                    hex::encode(community)
+                ))?;
+                let group = self.runner.group_id(&label)?;
+                self.groups.insert(*channel, group.clone());
+                if index == 0 {
+                    self.group = Some(group);
+                }
+            }
+            self.registered_all = true;
+        }
         Ok(
             json!({"username": name, "display": name, "user_id": user_id, "device_id": device_id,
-            "community_id": hex::encode(community), "channel_id": hex::encode(channel), "invite_code": invite_code}),
+            "community_id": hex::encode(community), "channel_id": hex::encode(channel),
+            "channel_ids": channels.iter().map(hex::encode).collect::<Vec<_>>(), "invite_code": invite_code}),
         )
     }
 
@@ -195,9 +312,272 @@ impl WebDriver {
         self.group.as_ref().expect("dispatch checked group").clone()
     }
 
-    fn register(&mut self) -> Result<Value, TestkitError> {
+    fn group_of(&self, req: &Value) -> Result<Vec<u8>, TestkitError> {
+        if req.get("channel_id").is_none() {
+            return Ok(self.group());
+        }
+        let channel = Self::hex16(req, "channel_id")?;
+        self.groups
+            .get(&channel)
+            .cloned()
+            .ok_or_else(|| scenario("channel_id is not a channel of this driver with a group"))
+    }
+
+    fn take_pending(&mut self, group: &[u8]) -> Vec<Received> {
+        let mut taken = Vec::new();
+        self.pending.retain(|row| {
+            if row.group_id == group {
+                taken.push(row.clone());
+                false
+            } else {
+                true
+            }
+        });
+        taken
+    }
+
+    fn now_unix() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    fn binding(
+        &self,
+        channel: [u8; 16],
+        community: Option<[u8; 16]>,
+    ) -> Result<DillaBinding, TestkitError> {
+        let doc = instance_document(&self.ds_url)?;
+        Ok(DillaBinding {
+            v: 1,
+            instance_id: InstanceId::from_bytes(doc.instance_id),
+            community_id: community.map(CommunityId::from_bytes),
+            target_id: channel,
+            kind: GroupKind::Text,
+            policy_version: 1,
+            e2ee_version: 1,
+            media_version: GroupKind::Text.media_version(),
+        })
+    }
+
+    fn served_list(blob: &[u8], version: u64) -> Result<DeviceList, TestkitError> {
+        let list = DeviceList::decode(blob)?;
+        if list.unsigned.version != version {
+            return Err(scenario(
+                "the served device list disagrees with its outer version",
+            ));
+        }
+        Ok(list)
+    }
+
+    /// Requirement 8 of web-2a task 9. The password precondition is checked before the held-group
+    /// one: the harness proves the password refusal on a peer that was set up and holds no group.
+    fn enrol(&mut self) -> Result<Value, TestkitError> {
         let peer = self.peer();
         let name = peer.name.clone();
+        let password = peer
+            .password
+            .clone()
+            .ok_or_else(|| scenario("enrol needs setup with a password"))?;
+        let group = self
+            .group
+            .as_ref()
+            .ok_or_else(|| scenario("no group yet: register or join first"))?
+            .clone();
+        if self.second.is_some() {
+            return Err(scenario("the driver already holds an enrolled device"));
+        }
+        let login = HttpDs::password_login(&self.ds_url, &name, &password)?;
+        if login.needs_totp {
+            return Err(scenario("the peer's account asks for a second factor"));
+        }
+        let seed = self.seed.wrapping_add(0x1_0000_0000);
+        let second = self.runner.with_member(&name, |first, _| {
+            first.second_device(&format!("{name}-enrolled"), seed)
+        })?;
+        let (pending, established) = HttpDs::establish_with_login(
+            &self.ds_url,
+            &second.device(),
+            &second.registration(),
+            &login.assertion,
+        )?;
+        let _backups = pending.list_backups()?;
+        let served = pending.get_device_list(&established.user_id)?;
+        let prev = Self::served_list(&served.blob, served.version)?;
+        let now = Self::now_unix();
+        let next = self.runner.with_member(&name, |first, _| {
+            let mut entries = prev.unsigned.entries.clone();
+            entries.push(second.device_entry(now));
+            Ok(first.sign_device_list_v(&prev, entries))
+        })?;
+        pending.put_device_list(&established.user_id, &next)?;
+        let enrolled =
+            HttpDs::establish_scoped(&self.ds_url, &second.device(), &second.credential_blob())?;
+        if enrolled.scope != 0 {
+            return Err(DsError::Protocol(format!(
+                "the re-established session is scope {}, want 0",
+                enrolled.scope
+            ))
+            .into());
+        }
+        let mut ds = HttpDs::with_session(&self.ds_url, second.device_id(), enrolled.token)?;
+        ds.set_session_expires(enrolled.expires);
+        let mut second = second;
+        second.publish_key_packages(&mut ds, 8)?;
+        let binding = self.binding(self.peer().channel, Some(self.peer().community))?;
+        second.join_external(&mut ds, &group, &binding)?;
+        let epoch = second
+            .epoch_of(&group)
+            .ok_or_else(|| scenario("the join left no group state"))?;
+        let device_id = second.device_id().to_hex();
+        self.second = Some(Second { client: second, ds });
+        Ok(
+            json!({"device_id": device_id, "version": next.unsigned.version, "epoch": epoch, "scopes": [1, 0]}),
+        )
+    }
+
+    fn revoke(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let target = Self::hex16(req, "device_id")?;
+        let name = self.peer().name.clone();
+        let next = self.runner.with_session(&name, |first, ds| {
+            let user_id = *first.user_id().as_bytes();
+            let served = ds.get_device_list(&user_id)?;
+            let prev = Self::served_list(&served.blob, served.version)?;
+            let mut entries = prev.unsigned.entries.clone();
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.device_id.as_bytes() == &target && e.revoked_at.is_none())
+                .ok_or_else(|| {
+                    scenario("device_id is not an unrevoked entry of the device list")
+                })?;
+            entry.revoked_at = Some(Self::now_unix());
+            let next = first.sign_device_list_v(&prev, entries);
+            ds.put_device_list(&user_id, &next)?;
+            Ok(next)
+        })?;
+        if self
+            .second
+            .as_ref()
+            .is_some_and(|s| s.client.device_id().as_bytes() == &target)
+        {
+            self.second = None;
+        }
+        Ok(json!({"version": next.unsigned.version}))
+    }
+
+    fn open_dm(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let user = Self::hex16(req, "user_id")?;
+        let name = self.peer().name.clone();
+        let (channel, created, info) = self.runner.with_session(&name, |_, ds| {
+            let (channel, created) = ds.post_dm(&[user])?;
+            let info = ds.get_channel(&channel)?;
+            Ok((channel, created, info))
+        })?;
+        let group = match info.text_group_id {
+            None => {
+                let label = format!("dm-{}", hex::encode(channel));
+                self.runner.exec_line(&format!(
+                    "group {label} kind=text target={} community=none creator={name}",
+                    hex::encode(channel)
+                ))?;
+                let group = self.runner.group_id(&label)?;
+                self.dms.insert(channel, group.clone());
+                group
+            }
+            Some(id) => self
+                .dms
+                .get(&channel)
+                .filter(|g| g.as_slice() == id)
+                .cloned()
+                .ok_or_else(|| scenario("the DM's group exists: run dms to join it"))?,
+        };
+        let epoch = self.runner.with_member(&name, |c, _| {
+            c.epoch_of(&group)
+                .ok_or_else(|| scenario("the peer holds no state for its group"))
+        })?;
+        Ok(
+            json!({"channel_id": hex::encode(channel), "group_id": hex::encode(group), "epoch": epoch, "created": created}),
+        )
+    }
+
+    fn list_dms(&mut self) -> Result<Value, TestkitError> {
+        let name = self.peer().name.clone();
+        let list = self
+            .runner
+            .with_session(&name, |_, ds| Ok(ds.list_dms()?))?;
+        let mut held = Vec::new();
+        for dm in list {
+            let info = self
+                .runner
+                .with_session(&name, |_, ds| Ok(ds.get_channel(&dm.channel_id)?))?;
+            let Some(group_id) = info.text_group_id else {
+                continue;
+            };
+            let group = group_id.to_vec();
+            if !self.dms.contains_key(&dm.channel_id) {
+                let binding = self.binding(dm.channel_id, None)?;
+                let joined = self.runner.with_member(&name, |c, ds| {
+                    // A group the peer already holds is never joined a second time.
+                    if c.epoch_of(&group).is_some() {
+                        return Ok(true);
+                    }
+                    // Welcome-first (Q25): no external join; a Welcome for a group no listed DM
+                    // names stays in the queue.
+                    if ds.welcomes()?.iter().any(|w| w.group_id == group) {
+                        c.join_welcome(ds, &group, &binding)?;
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                })?;
+                if joined {
+                    self.dms.insert(dm.channel_id, group.clone());
+                }
+            }
+            if self.dms.get(&dm.channel_id) == Some(&group) {
+                let epoch = self.runner.with_member(&name, |c, _| {
+                    c.epoch_of(&group)
+                        .ok_or_else(|| scenario("the peer holds no state for its group"))
+                })?;
+                held.push(json!({"channel_id": hex::encode(dm.channel_id), "group_id": hex::encode(&group), "epoch": epoch}));
+            }
+        }
+        held.sort_by(|a, b| a["channel_id"].as_str().cmp(&b["channel_id"].as_str()));
+        Ok(json!({"dms": held}))
+    }
+
+    fn dm_group(&self, req: &Value) -> Result<Vec<u8>, TestkitError> {
+        let channel = Self::hex16(req, "channel_id")?;
+        self.dms
+            .get(&channel)
+            .cloned()
+            .ok_or_else(|| scenario("no DM group for channel_id: open_dm or dms first"))
+    }
+
+    fn send_dm(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let group = self.dm_group(req)?;
+        let name = self.peer().name.clone();
+        let body = Self::text(req, "body")?;
+        let seq = self
+            .runner
+            .with_member(&name, |c, ds| c.send_seq(ds, &group, body))?;
+        Ok(json!({"seq": seq}))
+    }
+
+    fn sync_dm(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        self.sync_group(self.dm_group(req)?)
+    }
+
+    fn register(&mut self) -> Result<Value, TestkitError> {
+        if self.registered_all {
+            return Ok(
+                json!({"group_id": hex::encode(self.group()), "epoch": self.runner.epoch_of(&self.peer().name, GROUP)?}),
+            );
+        }
+        let peer = self.peer();
+        let name = peer.name.clone();
+        let channel = peer.channels[0];
         let line = format!(
             "group {GROUP} kind=text target={} community={} creator={name}",
             hex::encode(peer.channel),
@@ -207,6 +587,7 @@ impl WebDriver {
         let group = self.runner.group_id(GROUP)?;
         let epoch = self.runner.epoch_of(&name, GROUP)?;
         self.group = Some(group.clone());
+        self.groups.insert(channel, group.clone());
         Ok(json!({"group_id": hex::encode(group), "epoch": epoch}))
     }
 
@@ -238,12 +619,13 @@ impl WebDriver {
                 .ok_or_else(|| scenario("the join left no group state"))
         })?;
         self.group = Some(group.to_vec());
+        self.groups.insert(channel, group.to_vec());
         Ok(json!({"group_id": hex::encode(group), "epoch": epoch}))
     }
 
     fn send(&mut self, req: &Value) -> Result<Value, TestkitError> {
         let name = self.peer().name.clone();
-        let group = self.group();
+        let group = self.group_of(req)?;
         let body = Self::text(req, "body")?;
         let seq = self
             .runner
@@ -256,9 +638,8 @@ impl WebDriver {
             "sender_device": r.sender.to_hex(), "tier": r.tier as u8})
     }
 
-    fn sync(&mut self) -> Result<Value, TestkitError> {
+    fn sync_group(&mut self, group: Vec<u8>) -> Result<Value, TestkitError> {
         let name = self.peer().name.clone();
-        let group = self.group();
         let (mut got, epoch, members) = self.runner.with_member(&name, |c, ds| {
             let mut got = c.sync(ds)?;
             for attempt in 1..=3 {
@@ -279,19 +660,17 @@ impl WebDriver {
         })?;
         let epoch = epoch.ok_or_else(|| scenario("the peer holds no state for its group"))?;
         let members = members.ok_or_else(|| scenario("the peer holds no state for its group"))?;
-        let mut received = std::mem::take(&mut self.pending);
-        received.append(&mut got);
-        let received: Vec<Value> = received
+        self.pending.append(&mut got);
+        let received: Vec<Value> = self
+            .take_pending(&group)
             .iter()
-            .filter(|r| r.group_id == group)
             .map(Self::received_json)
             .collect();
         Ok(json!({"epoch": epoch, "members": members, "received": received}))
     }
 
-    fn members(&mut self) -> Result<Value, TestkitError> {
+    fn members(&mut self, group: Vec<u8>) -> Result<Value, TestkitError> {
         let name = self.peer().name.clone();
-        let group = self.group();
         let (got, roster) = self.runner.with_member(&name, |c, ds| {
             let got = c.sync(ds)?;
             Ok((got, c.roster(&group)))
@@ -319,6 +698,9 @@ impl WebDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dilla_core::envelope::{Envelope, EnvelopeType};
+    use dilla_core::identity::Tier;
+    use dilla_core::ids::{DeviceId, MsgId, UserId};
     use serde_json::json;
 
     fn driver(seed: u64) -> WebDriver {
@@ -468,5 +850,152 @@ mod tests {
             "{}",
             lines[1]
         );
+    }
+
+    #[test]
+    fn the_web_2a_ops_validate_their_fields_before_the_setup_check() {
+        let mut d = driver(1);
+        let cases = [
+            (
+                json!({"id": 1, "op": "revoke"}),
+                "scenario: the request carries no device_id",
+            ),
+            (
+                json!({"id": 2, "op": "revoke", "device_id": "AB".repeat(16)}),
+                "scenario: device_id is not 32 lowercase hex",
+            ),
+            (
+                json!({"id": 3, "op": "open_dm", "user_id": "1".repeat(31)}),
+                "scenario: user_id is not 32 lowercase hex",
+            ),
+            (
+                json!({"id": 4, "op": "open_dm"}),
+                "scenario: the request carries no user_id",
+            ),
+            (
+                json!({"id": 5, "op": "send_dm", "channel_id": "11".repeat(16), "body": ""}),
+                "scenario: body must be 1..=4000 bytes",
+            ),
+            (
+                json!({"id": 6, "op": "send_dm", "body": "hi"}),
+                "scenario: the request carries no channel_id",
+            ),
+            (
+                json!({"id": 7, "op": "sync_dm", "channel_id": "zz".repeat(16)}),
+                "scenario: channel_id is not 32 lowercase hex",
+            ),
+            (
+                json!({"id": 8, "op": "send", "body": "hi", "channel_id": "x"}),
+                "scenario: channel_id is not 32 lowercase hex",
+            ),
+            (
+                json!({"id": 9, "op": "setup", "community": "c", "channel": "general", "channels": 0}),
+                "scenario: channels must be 1..=200",
+            ),
+            (
+                json!({"id": 10, "op": "setup", "community": "c", "channel": "general", "channels": 201}),
+                "scenario: channels must be 1..=200",
+            ),
+            (
+                json!({"id": 11, "op": "setup", "community": "c", "channel": "general", "channels": "3"}),
+                "scenario: channels must be 1..=200",
+            ),
+            (
+                json!({"id": 12, "op": "setup", "community": "c", "channel": "x".repeat(97), "channels": 2}),
+                "scenario: channel must be 1..=96 bytes when channels > 1",
+            ),
+            (
+                json!({"id": 13, "op": "setup", "community": "c", "channel": "general", "password": ""}),
+                "scenario: password must be 1..=128 bytes",
+            ),
+            (
+                json!({"id": 14, "op": "setup", "community": "c", "channel": "general", "password": "p".repeat(129)}),
+                "scenario: password must be 1..=128 bytes",
+            ),
+            (
+                json!({"id": 15, "op": "setup", "community": "c", "channel": "general", "password": 7}),
+                "scenario: password must be 1..=128 bytes",
+            ),
+            (
+                json!({"id": 16, "op": "sync", "channel_id": "AB".repeat(16)}),
+                "scenario: channel_id is not 32 lowercase hex",
+            ),
+            (
+                json!({"id": 17, "op": "members", "channel_id": "1".repeat(31)}),
+                "scenario: channel_id is not 32 lowercase hex",
+            ),
+        ];
+        for (req, want) in cases {
+            assert_eq!(error_of(&d.handle(&req)), want, "{req}");
+        }
+        // Well-formed requests of every new op reach the setup check.
+        for req in [
+            json!({"id": 20, "op": "enrol"}),
+            json!({"id": 21, "op": "dms"}),
+            json!({"id": 22, "op": "revoke", "device_id": "ab".repeat(16)}),
+            json!({"id": 23, "op": "open_dm", "user_id": "ab".repeat(16)}),
+            json!({"id": 24, "op": "send_dm", "channel_id": "ab".repeat(16), "body": "hi"}),
+            json!({"id": 25, "op": "sync_dm", "channel_id": "ab".repeat(16)}),
+            json!({"id": 26, "op": "send", "channel_id": "ab".repeat(16), "body": "hi"}),
+            json!({"id": 27, "op": "sync", "channel_id": "ab".repeat(16)}),
+            json!({"id": 28, "op": "members", "channel_id": "ab".repeat(16)}),
+        ] {
+            assert_eq!(error_of(&d.handle(&req)), "scenario: setup first", "{req}");
+        }
+    }
+
+    fn held(group: u8, seq: u64) -> Received {
+        Received {
+            group_id: vec![group; 16],
+            seq,
+            sender: DeviceId::from_bytes([0x0d; 16]),
+            sender_user: UserId::from_bytes([0x0e; 16]),
+            tier: Tier::Native,
+            envelope: Envelope {
+                v: 1,
+                msg_id: MsgId::from_bytes([group; 16]),
+                kind: EnvelopeType::Message,
+                thread_id: None,
+                reply_to: None,
+                body: format!("row {seq} of group {group:#04x}"),
+                attachments: Vec::new(),
+                previews: Vec::new(),
+                k_f: [0x06; 32],
+            },
+        }
+    }
+
+    /// Requirement 13 (head task 9, mutation (b)): a sync of one group takes that group's held rows and
+    /// leaves every other group's rows for the sync that addresses them. No network is used.
+    #[test]
+    fn a_channel_sync_takes_only_its_groups_rows_and_leaves_the_others_pending() {
+        let mut d = driver(1);
+        d.pending.push(held(0xaa, 1));
+        d.pending.push(held(0xbb, 2));
+        let taken = d.take_pending(&[0xaa; 16]);
+        assert_eq!(
+            d.pending.len(),
+            1,
+            "pending still holds 1 row, got {}",
+            d.pending.len()
+        );
+        assert_eq!(
+            taken.len(),
+            1,
+            "the sync of group A answers 1 row, got {}",
+            taken.len()
+        );
+        assert_eq!(
+            (taken[0].group_id.clone(), taken[0].seq),
+            (vec![0xaa; 16], 1)
+        );
+        assert_eq!(
+            (d.pending[0].group_id.clone(), d.pending[0].seq),
+            (vec![0xbb; 16], 2)
+        );
+        let rest = d.take_pending(&[0xbb; 16]);
+        assert_eq!(rest.len(), 1);
+        assert!(d.pending.is_empty());
+        assert!(d.take_pending(&[0xaa; 16]).is_empty());
     }
 }

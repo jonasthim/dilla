@@ -10,6 +10,7 @@ client carol
 client frank
 client dave device_list=none
 client erin device_list=revoked
+client ulla device_list=unlisted
 client mallory
 group chat kind=text target=f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4 community=none creator=alice
 join bob chat via=welcome
@@ -36,6 +37,8 @@ expect_reject E_COMMIT_INVALID rule=external_joiner resync alice chat leaf_key=f
 resync alice chat
 expect_reject E_COMMIT_INVALID rule=external_joiner external_join dave chat
 expect_reject E_UNAUTHENTICATED external_join erin chat
+# an unlisted but authenticated device: the joiner clause itself
+expect_reject E_COMMIT_INVALID rule=external_joiner external_join ulla chat
 mark_revoked mallory
 expect_reject E_COMMIT_INVALID rule=external_joiner external_join mallory chat
 external_join carol chat

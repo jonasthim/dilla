@@ -366,3 +366,203 @@ func TestTheWebDriverPeersExchangeMessagesUnderTheProductionACL(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+// waitRoster asks d for its roster until it holds exactly want; with commit set it first runs `sync`,
+// which commits any outstanding instance proposal (the Remove a revocation proposes).
+func waitRoster(t *testing.T, d *webDriver, commit bool, want ...string) {
+	t.Helper()
+	deadline := time.Now().Add(driverWait)
+	for {
+		if commit {
+			d.ok("sync", nil)
+		}
+		got := d.ok("members", nil)["devices"].([]any)
+		match := len(got) == len(want)
+		for _, w := range want {
+			match = match && slices.Contains(got, any(w))
+		}
+		if match {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s's roster is %v, want exactly %v", d.name, got, want)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// waitForDM runs sync_dm on channel until a message with body arrives and returns it.
+func (d *webDriver) waitForDM(channel any, body string) map[string]any {
+	d.t.Helper()
+	deadline := time.Now().Add(driverWait)
+	for {
+		for _, item := range d.ok("sync_dm", map[string]any{"channel_id": channel})["received"].([]any) {
+			if m := item.(map[string]any); m["body"] == body {
+				return m
+			}
+		}
+		if time.Now().After(deadline) {
+			d.t.Fatalf("%s never received %q in DM %v within %v", d.name, body, channel, driverWait)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// dilla-web-2a task 9: the peer enrols a second device with its password and its SSK, revokes it, and
+// opens a DM that another peer joins by its Welcome, all against the production wiring.
+func TestTheWebDriverPeerEnrolsRevokesAndOpensDMs(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true})
+	t.Cleanup(h.Stop)
+	ctx := context.Background()
+	repo := h.Repo()
+	alice := startWebDriver(t, h, h.BaseURL(), "alice", 0xa11ce2)
+	bob := startWebDriver(t, h, h.BaseURL(), "bob", 0xb0b2)
+
+	// setup: a password and three channels, each with its registered text group.
+	sa := alice.ok("setup", map[string]any{"community": "enrol", "channel": "general",
+		"password": "correct horse battery staple", "channels": 3})
+	aliceUser := mustID(t, sa["user_id"])
+	ids, _ := sa["channel_ids"].([]any)
+	if len(ids) != 3 || ids[0] != sa["channel_id"] {
+		t.Fatalf("setup answered channel_ids %v with channel_id %v; want three, the first being channel_id", ids, sa["channel_id"])
+	}
+	var firstGroup id.ID
+	for i, v := range ids {
+		ch := mustID(t, v)
+		row, err := repo.GetChannel(ctx, ch)
+		want := "general"
+		if i > 0 {
+			want = fmt.Sprintf("general-%d", i+1)
+		}
+		if err != nil || row.Name != want {
+			t.Fatalf("channel %d = %+v, %v; want it named %q", i, row, err, want)
+		}
+		groups, err := repo.GroupsForTarget(ctx, ch, api.GroupText)
+		if err != nil || len(groups) != 1 {
+			t.Fatalf("text groups of channel %d = %v, %v; want exactly one, registered by setup", i, groups, err)
+		}
+		if i == 0 {
+			firstGroup = groups[0].GroupID
+		}
+	}
+	if phc, err := repo.GetPasswordCredential(ctx, aliceUser); err != nil || phc == "" {
+		t.Fatalf("alice's password credential = %q, %v; want one stored", phc, err)
+	}
+	ra := alice.ok("register", nil)
+	if mustID(t, ra["group_id"]) != firstGroup || ra["epoch"] != float64(0) {
+		t.Fatalf("register after setup{channels: 3} answered %v; want the first channel's group %s at epoch 0", ra, firstGroup)
+	}
+
+	// A peer set up without a password cannot enrol.
+	sb := bob.ok("setup", map[string]any{"community": "bob's own", "channel": "elsewhere"})
+	bobUser := mustID(t, sb["user_id"])
+	if a := bob.call("enrol", nil); a["ok"] != false || !strings.Contains(fmt.Sprint(a["error"]), "enrol needs setup with a password") {
+		t.Fatalf("enrol without a password answered %v", a)
+	}
+
+	// bob joins alice's first channel: two leaves.
+	bob.ok("join", map[string]any{"community_id": sa["community_id"], "channel_id": sa["channel_id"],
+		"group_id": ra["group_id"], "invite_code": sa["invite_code"]})
+	waitRoster(t, alice, false, sa["device_id"].(string), sb["device_id"].(string))
+
+	// members takes the channel it addresses: bob joined the first channel only, so channel 3's group
+	// holds alice alone (the instance's Add of bob there is a proposal nobody committed; members never
+	// commits). A driver that ignored channel_id would answer the first channel's two devices.
+	if got := alice.ok("members", map[string]any{"channel_id": ids[2]})["devices"].([]any); len(got) != 1 || got[0] != sa["device_id"] {
+		t.Fatalf("members of channel 3: got %d devices, want 1 (%v)", len(got), got)
+	}
+	if got := alice.ok("members", nil)["devices"].([]any); len(got) != 2 {
+		t.Fatalf("members of the first channel: got %d devices, want 2 (%v)", len(got), got)
+	}
+
+	// enrol: pending first, enrolled after the PUT, the third leaf in the group.
+	en := alice.ok("enrol", nil)
+	enrolDev := mustID(t, en["device_id"])
+	if en["version"] != float64(2) || fmt.Sprint(en["scopes"]) != "[1 0]" {
+		t.Fatalf("enrol answered %v; want version 2 and scopes [1 0] (a pending session, then an enrolled one)", en)
+	}
+	if epoch, _ := en["epoch"].(float64); epoch < 2 {
+		t.Fatalf("enrol answered epoch %v; the external join must land above the two-member epoch", en["epoch"])
+	}
+	dev, err := repo.GetDevice(ctx, enrolDev)
+	if err != nil || dev.UserID != aliceUser || dev.Tier != 1 || dev.SignerTier != 1 || dev.RevokedAt != nil {
+		t.Fatalf("the enrolled device row = %+v, %v; want a live browser-tier (1) device of alice", dev, err)
+	}
+	if list, err := repo.GetDeviceList(ctx, aliceUser); err != nil || list.Version != 2 {
+		t.Fatalf("alice's newest device list = %+v, %v; want version 2", list, err)
+	}
+	if n, err := repo.CountSessionsByDevice(ctx, enrolDev); err != nil || n != 2 {
+		t.Fatalf("sessions of the enrolled device = %d, %v; want 2 (the pending one and the enrolled one)", n, err)
+	}
+	waitRoster(t, alice, false, sa["device_id"].(string), sb["device_id"].(string), en["device_id"].(string))
+
+	// revoke: the row is revoked, its sessions are gone, and its leaf leaves after alice's next commit.
+	rv := alice.ok("revoke", map[string]any{"device_id": en["device_id"]})
+	if rv["version"] != float64(3) {
+		t.Fatalf("revoke answered %v; want version 3", rv)
+	}
+	if dev, err := repo.GetDevice(ctx, enrolDev); err != nil || dev.RevokedAt == nil {
+		t.Fatalf("the revoked device row = %+v, %v; want revoked_at set", dev, err)
+	}
+	if n, err := repo.CountSessionsByDevice(ctx, enrolDev); err != nil || n != 0 {
+		t.Fatalf("sessions of the revoked device = %d, %v; want 0", n, err)
+	}
+	if list, err := repo.GetDeviceList(ctx, aliceUser); err != nil || list.Version != 3 {
+		t.Fatalf("alice's newest device list = %+v, %v; want version 3", list, err)
+	}
+	waitRoster(t, alice, true, sa["device_id"].(string), sb["device_id"].(string))
+	if a := alice.call("revoke", map[string]any{"device_id": en["device_id"]}); a["ok"] != false ||
+		!strings.Contains(fmt.Sprint(a["error"]), "device_id is not an unrevoked entry of the device list") {
+		t.Fatalf("a second revoke of the same device answered %v", a)
+	}
+
+	// DMs: alice opens one and registers its group; bob joins by the Welcome of alice's commit.
+	od := alice.ok("open_dm", map[string]any{"user_id": sb["user_id"]})
+	dmCh, dmGroup := mustID(t, od["channel_id"]), mustID(t, od["group_id"])
+	if dmCh != api.DMChannelID([]id.ID{aliceUser, bobUser}) || od["created"] != true || od["epoch"] != float64(0) {
+		t.Fatalf("open_dm answered %v; want the derived 1:1 channel, created, epoch 0", od)
+	}
+	if ch, err := repo.GetChannel(ctx, dmCh); err != nil || ch.CommunityID != nil || ch.Kind != api.ChannelDM {
+		t.Fatalf("the DM channel row = %+v, %v; want kind 3 with no community", ch, err)
+	}
+	if groups, err := repo.GroupsForTarget(ctx, dmCh, api.GroupText); err != nil || len(groups) != 1 || groups[0].GroupID != dmGroup {
+		t.Fatalf("text groups of the DM = %v, %v; want exactly %s", groups, err, dmGroup)
+	}
+	deadline := time.Now().Add(driverWait)
+	for joined := false; !joined; {
+		alice.ok("sync_dm", map[string]any{"channel_id": od["channel_id"]})
+		for _, item := range bob.ok("dms", nil)["dms"].([]any) {
+			m := item.(map[string]any)
+			if m["channel_id"] != od["channel_id"] {
+				continue
+			}
+			if m["group_id"] != od["group_id"] {
+				t.Fatalf("bob holds DM %v in group %v; want %v", m["channel_id"], m["group_id"], od["group_id"])
+			}
+			if epoch, _ := m["epoch"].(float64); epoch < 1 {
+				t.Fatalf("bob joined the DM at epoch %v; a Welcome lands at 1 or above", m["epoch"])
+			}
+			joined = true
+		}
+		if !joined && time.Now().After(deadline) {
+			t.Fatalf("bob never joined the DM within %v", driverWait)
+		}
+		if !joined {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	sent := alice.ok("send_dm", map[string]any{"channel_id": od["channel_id"], "body": "dm from alice"})
+	got := bob.waitForDM(od["channel_id"], "dm from alice")
+	if got["seq"] != sent["seq"] || got["sender_user"] != sa["user_id"] || got["sender_device"] != sa["device_id"] {
+		t.Fatalf("bob received %v; want seq %v from alice's user and device", got, sent["seq"])
+	}
+	bob.ok("send_dm", map[string]any{"channel_id": od["channel_id"], "body": "dm from bob"})
+	back := alice.waitForDM(od["channel_id"], "dm from bob")
+	if back["sender_user"] != sb["user_id"] || back["sender_device"] != sb["device_id"] {
+		t.Fatalf("alice received %v; want bob's user and device", back)
+	}
+	again := alice.ok("open_dm", map[string]any{"user_id": sb["user_id"]})
+	if again["channel_id"] != od["channel_id"] || again["group_id"] != od["group_id"] || again["created"] != false {
+		t.Fatalf("a second open_dm answered %v; want the same DM and group, not created", again)
+	}
+}

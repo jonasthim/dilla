@@ -21,7 +21,7 @@ import (
 func TestAnExternalCommitsLeafMustBeItsUploadersOwn(t *testing.T) {
 	cases := []struct {
 		name string
-		// probe runs after alice's group `chat` exists and carol, frank, dave, erin and mallory
+		// probe runs after alice's group `chat` exists and carol, frank, dave, erin, ulla and mallory
 		// are enrolled; it must end in the refusal the case is about.
 		probe string
 		// the stdout substring the refusal prints
@@ -73,6 +73,14 @@ func TestAnExternalCommitsLeafMustBeItsUploadersOwn(t *testing.T) {
 			want:  "E_UNAUTHENTICATED",
 		},
 		{
+			// ulla's user signed a list that omits ulla's device: the device is authenticated
+			// and unrevoked, so the refusal is the joiner clause itself (task 8 made erin's
+			// probe end at the session).
+			name:  "a joiner's DSK is in no entry of its user's newest list",
+			probe: "expect_reject E_COMMIT_INVALID rule=external_joiner external_join ulla chat",
+			want:  "E_COMMIT_INVALID: external_joiner",
+		},
+		{
 			// mallory's device row is revoked while its session still resolves.
 			name: "a joiner's device is revoked",
 			probe: "mark_revoked mallory\n" +
@@ -90,6 +98,7 @@ client carol
 client frank
 client dave device_list=none
 client erin device_list=revoked
+client ulla device_list=unlisted
 client mallory
 group chat kind=text target=e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5 community=none creator=alice
 `+c.probe+`

@@ -761,8 +761,9 @@ impl Runner {
             // The user signs its one device into its device list, as a real client does right
             // after registering: invariant 4 refuses any Add whose DSK is in no list the user
             // signed, so a client without one could never be added to anything.
-            // `device_list=none` and `device_list=revoked` are invariant 4's probes: a user who
-            // signed no list, and one whose list revokes this device.
+            // `device_list=none`, `device_list=revoked` and `device_list=unlisted` are invariant 4's
+            // probes: a user who signed no list, one whose list revokes this device, and a user
+            // whose newest list omits this device.
             let added_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -784,6 +785,9 @@ impl Runner {
                     )?;
                 }
                 DeviceListMode::None => {}
+                DeviceListMode::Unlisted => {
+                    ds.put_device_list(&enrolled.user_id, &client.signed_device_list_empty())?;
+                }
             }
             if let Some(Backend::Remote { clients, .. }) = self.backend.as_mut() {
                 clients.insert(name.to_owned(), ds);

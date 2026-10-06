@@ -13,8 +13,8 @@ use crate::ds::{
 use crate::{Frame, TestkitError};
 use dilla_core::envelope::{Envelope, EnvelopeType};
 use dilla_core::identity::{
-    CredentialIdentity, DeviceEntry, DeviceList, DeviceListUnsigned, Kind, SskSigner, Tier,
-    UmkSigner,
+    CredentialIdentity, DeviceEntry, DeviceList, DeviceListUnsigned, Kind, SignerTier, SskSigner,
+    Tier, UmkSigner,
 };
 use dilla_core::ids::{DeviceId, MsgId, UserId};
 use dilla_core::mls::{
@@ -91,6 +91,33 @@ impl TestClient {
         kind: Kind,
         seed: u64,
     ) -> Result<Self, TestkitError> {
+        let (material, device_id, dsk) = Self::device_keys(seed);
+        let umk = UmkSigner::from_bytes(&material);
+        let mut ssk_seed = material;
+        ssk_seed[0] ^= 0x40;
+        let ssk = SskSigner::from_bytes(&ssk_seed);
+        let dsk_pub = dsk.verifying_key().to_bytes();
+        let signer_tier = match tier {
+            Tier::Native => SignerTier::Native,
+            Tier::Browser => SignerTier::Browser,
+        };
+        let identity = CredentialIdentity {
+            v: 1,
+            umk_pub: umk.public(),
+            user_id,
+            device_id,
+            kind,
+            tier,
+            signer_tier,
+            ssk_pub: ssk.public(),
+            sig_umk_ssk: umk.sign_ssk(&ssk.public()),
+            sig_ssk_dev: ssk.sign_device(&device_id, &dsk_pub, kind, tier, signer_tier),
+        };
+        Self::assemble(name, device_id, dsk, identity, ssk_seed)
+    }
+
+    /// The seed's key material, the device id (its bytes 0..16) and the DSK drawn from it.
+    fn device_keys(seed: u64) -> ([u8; 32], DeviceId, ed25519_dalek::SigningKey) {
         let mut material = [0u8; 32];
         material[..8].copy_from_slice(&seed.to_be_bytes());
         material[8..16].copy_from_slice(&seed.wrapping_mul(0x9e37_79b9).to_be_bytes());
@@ -99,7 +126,24 @@ impl TestClient {
             id.copy_from_slice(&material[..16]);
             id
         });
+        let mut dsk_seed = [0u8; 32];
+        ChaCha20Rng::from_seed(material).fill_bytes(&mut dsk_seed);
+        (
+            material,
+            device_id,
+            ed25519_dalek::SigningKey::from_bytes(&dsk_seed),
+        )
+    }
 
+    /// The OpenMLS provider, the stored signature keypair and the verified credential around an
+    /// identity whose device keys are `device_id` and `dsk`.
+    fn assemble(
+        name: &str,
+        device_id: DeviceId,
+        dsk: ed25519_dalek::SigningKey,
+        identity: CredentialIdentity,
+        ssk_seed: [u8; 32],
+    ) -> Result<Self, TestkitError> {
         let conn = rusqlite::Connection::open_in_memory()
             .map_err(|e| TestkitError::Scenario(e.to_string()))?;
         let provider = DillaProvider::new(Arc::new(Mutex::new(conn)));
@@ -112,9 +156,6 @@ impl TestClient {
                 "the seeded signature keypair assumes an Ed25519 ciphersuite".into(),
             ));
         }
-        let mut dsk_seed = [0u8; 32];
-        ChaCha20Rng::from_seed(material).fill_bytes(&mut dsk_seed);
-        let dsk = ed25519_dalek::SigningKey::from_bytes(&dsk_seed);
         let signer = SignatureKeyPair::from_raw(
             CIPHERSUITE.signature_algorithm(),
             dsk.to_bytes().to_vec(),
@@ -122,10 +163,6 @@ impl TestClient {
         );
         signer.store(provider.storage())?;
 
-        let umk = UmkSigner::from_bytes(&material);
-        let mut ssk_seed = material;
-        ssk_seed[0] ^= 0x40;
-        let ssk = SskSigner::from_bytes(&ssk_seed);
         let mut dsk_pub = [0u8; 32];
         let public = signer.public();
         if public.len() != 32 {
@@ -135,30 +172,6 @@ impl TestClient {
         }
         dsk_pub.copy_from_slice(public);
 
-        let identity = CredentialIdentity {
-            v: 1,
-            umk_pub: umk.public(),
-            user_id,
-            device_id,
-            kind,
-            tier,
-            signer_tier: match tier {
-                Tier::Native => dilla_core::identity::SignerTier::Native,
-                Tier::Browser => dilla_core::identity::SignerTier::Browser,
-            },
-            ssk_pub: ssk.public(),
-            sig_umk_ssk: umk.sign_ssk(&ssk.public()),
-            sig_ssk_dev: ssk.sign_device(
-                &device_id,
-                &dsk_pub,
-                kind,
-                tier,
-                match tier {
-                    Tier::Native => dilla_core::identity::SignerTier::Native,
-                    Tier::Browser => dilla_core::identity::SignerTier::Browser,
-                },
-            ),
-        };
         identity.verify_signatures(&dsk_pub)?;
 
         let credential = CredentialWithKey {
@@ -182,6 +195,32 @@ impl TestClient {
             queued: BTreeMap::new(),
             next_msg: 1,
         })
+    }
+
+    /// Same user, UMK and SSK; a new device id and DSK derived from `seed` exactly as `new` derives them;
+    /// tier and signer tier Browser (L-HTTP-54 refuses a native registration by assertion).
+    pub fn second_device(&self, name: &str, seed: u64) -> Result<Self, TestkitError> {
+        let (_, device_id, dsk) = Self::device_keys(seed);
+        let dsk_pub = dsk.verifying_key().to_bytes();
+        let identity = CredentialIdentity {
+            v: 1,
+            umk_pub: self.identity.umk_pub,
+            user_id: self.identity.user_id,
+            device_id,
+            kind: self.identity.kind,
+            tier: Tier::Browser,
+            signer_tier: SignerTier::Browser,
+            ssk_pub: self.identity.ssk_pub,
+            sig_umk_ssk: self.identity.sig_umk_ssk,
+            sig_ssk_dev: SskSigner::from_bytes(&self.ssk_seed).sign_device(
+                &device_id,
+                &dsk_pub,
+                self.identity.kind,
+                Tier::Browser,
+                SignerTier::Browser,
+            ),
+        };
+        Self::assemble(name, device_id, dsk, identity, self.ssk_seed)
     }
 
     pub fn name(&self) -> &str {
@@ -257,6 +296,55 @@ impl TestClient {
         };
         let sig_ssk = SskSigner::from_bytes(&self.ssk_seed).sign_device_list(&unsigned);
         DeviceList { unsigned, sig_ssk }
+    }
+
+    /// DeviceListUnsigned { v: 1, user_id, version: prev.version + 1, prev_hash: prev.hash(), entries } signed by this user's SSK.
+    pub fn sign_device_list_v(&self, prev: &DeviceList, entries: Vec<DeviceEntry>) -> DeviceList {
+        let unsigned = DeviceListUnsigned {
+            v: 1,
+            user_id: self.user_id(),
+            version: prev.unsigned.version + 1,
+            prev_hash: prev.hash(),
+            entries,
+        };
+        let sig_ssk = SskSigner::from_bytes(&self.ssk_seed).sign_device_list(&unsigned);
+        DeviceList { unsigned, sig_ssk }
+    }
+
+    /// DeviceListUnsigned { v: 1, user_id, version: 1, prev_hash: [0; 32], entries: vec![] } signed by this user's SSK:
+    /// a list that names no device (the scenario mode `device_list=unlisted`).
+    pub fn signed_device_list_empty(&self) -> DeviceList {
+        let unsigned = DeviceListUnsigned {
+            v: 1,
+            user_id: self.user_id(),
+            version: 1,
+            prev_hash: [0; 32],
+            entries: vec![],
+        };
+        let sig_ssk = SskSigner::from_bytes(&self.ssk_seed).sign_device_list(&unsigned);
+        DeviceList { unsigned, sig_ssk }
+    }
+
+    /// DeviceEntry { device_id, dsk_pub, tier: this tier, added_at, revoked_at: None }.
+    pub fn device_entry(&self, added_at: u64) -> DeviceEntry {
+        DeviceEntry {
+            device_id: self.device_id,
+            dsk_pub: self.dsk.verifying_key().to_bytes(),
+            tier: self.identity.tier,
+            added_at,
+            revoked_at: None,
+        }
+    }
+
+    /// The registration array of this device: its id, DSK, tier, signer tier and the CredentialIdentity CBOR.
+    pub fn registration(&self) -> crate::ds::remote::Registration {
+        crate::ds::remote::Registration {
+            device_id: self.device_id,
+            dsk_pub: self.dsk.verifying_key().to_bytes(),
+            tier: self.identity.tier as u8,
+            signer_tier: self.identity.signer_tier as u8,
+            credential: self.identity.encode(),
+        }
     }
 
     /// The groups this client is a member of, in id order.
@@ -1327,5 +1415,113 @@ mod tests {
         assert!(write_varint(0x4000_0000).is_err());
         assert!(read_varint(&[0xc0], 0).is_err());
         assert!(read_varint(&[0x40], 0).is_err());
+    }
+
+    fn alice() -> TestClient {
+        TestClient::new(
+            "alice",
+            UserId::from_bytes([0x01; 16]),
+            Tier::Native,
+            Kind::User,
+            7,
+        )
+        .expect("client")
+    }
+
+    #[test]
+    fn a_second_device_shares_the_users_keys_and_has_its_own() {
+        let first = alice();
+        let second = first
+            .second_device("alice-enrolled", 7 + (1 << 32))
+            .expect("second");
+        assert_ne!(second.device_id(), first.device_id());
+        assert_eq!(second.user_id(), first.user_id());
+        assert_eq!(second.identity.umk_pub, first.identity.umk_pub);
+        assert_eq!(second.identity.ssk_pub, first.identity.ssk_pub);
+        assert_eq!(second.identity.sig_umk_ssk, first.identity.sig_umk_ssk);
+        assert_ne!(
+            second.dsk.verifying_key().to_bytes(),
+            first.dsk.verifying_key().to_bytes()
+        );
+        let cred = CredentialIdentity::decode(&second.credential_blob()).expect("decodes");
+        cred.verify_signatures(&second.dsk.verifying_key().to_bytes())
+            .expect("verifies under the second DSK");
+        assert_eq!(cred.device_id, second.device_id());
+        // Ruling 31: the enrolled device is Browser-tier and Browser-signed (L-HTTP-54 refuses a native one).
+        assert_eq!(second.identity.tier, Tier::Browser);
+        assert_eq!(second.identity.signer_tier, SignerTier::Browser);
+        assert_eq!(
+            (cred.tier, cred.signer_tier),
+            (Tier::Browser, SignerTier::Browser)
+        );
+        assert_eq!(second.device_entry(200).tier, Tier::Browser);
+        let again = first
+            .second_device("alice-enrolled", 7 + (1 << 32))
+            .expect("again");
+        assert_eq!(again.device_id(), second.device_id());
+        let reg = second.registration();
+        assert_eq!(
+            (reg.device_id, reg.dsk_pub, reg.tier, reg.signer_tier),
+            (
+                second.device_id(),
+                second.dsk.verifying_key().to_bytes(),
+                1,
+                1
+            )
+        );
+        assert_eq!(reg.credential, second.credential_blob());
+    }
+
+    /// The scenario mode `device_list=unlisted`: a v1 list the user's SSK signed that names no device.
+    #[test]
+    fn an_empty_list_verifies_under_the_users_ssk_and_names_no_device() {
+        let first = alice();
+        let empty = first.signed_device_list_empty();
+        assert_eq!(
+            (
+                empty.unsigned.v,
+                empty.unsigned.version,
+                empty.unsigned.prev_hash
+            ),
+            (1, 1, [0u8; 32])
+        );
+        assert_eq!(empty.unsigned.user_id, first.user_id());
+        assert!(empty.unsigned.entries.is_empty());
+        empty
+            .verify(&first.identity.ssk_pub)
+            .expect("verifies under the user's SSK");
+        assert!(
+            empty.lookup(&first.device_id()).is_none(),
+            "the list must not name the device"
+        );
+        let decoded = DeviceList::decode(&empty.encode()).expect("decodes");
+        assert!(decoded.unsigned.entries.is_empty());
+        decoded
+            .verify(&first.identity.ssk_pub)
+            .expect("the decoded list verifies too");
+    }
+
+    #[test]
+    fn the_next_list_chains_from_the_previous_and_verifies_under_the_users_ssk() {
+        let first = alice();
+        let second = first
+            .second_device("alice-enrolled", 7 + (1 << 32))
+            .expect("second");
+        let v1 = first.signed_device_list(100);
+        let mut entries = v1.unsigned.entries.clone();
+        entries.push(second.device_entry(200));
+        let v2 = first.sign_device_list_v(&v1, entries.clone());
+        assert_eq!(v2.unsigned.version, 2);
+        assert_eq!(v2.unsigned.prev_hash, v1.hash());
+        assert_eq!(v2.unsigned.user_id, first.user_id());
+        assert_eq!(v2.unsigned.entries, entries);
+        assert_eq!(v2.unsigned.entries[1].revoked_at, None);
+        v2.accept(Some(&v1), &first.identity.ssk_pub)
+            .expect("accepted after v1");
+        // One SSK: the second device signs the same bytes (Ed25519 is deterministic).
+        assert_eq!(second.sign_device_list_v(&v1, entries).sig_ssk, v2.sig_ssk);
+        let mut skipped = v2.clone();
+        skipped.unsigned.prev_hash = [0u8; 32];
+        assert!(skipped.accept(Some(&v1), &first.identity.ssk_pub).is_err());
     }
 }
