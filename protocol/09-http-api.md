@@ -44,16 +44,19 @@ column below uses four scopes:
 | `GET /v1/accounts/me` | E | — | `[user_id, username, display, kind, flags, created]` |
 | `PATCH /v1/accounts/me` | E | `[display(tstr\|null), status_msg(tstr\|null)]` | `204` |
 | `DELETE /v1/accounts/me` | E (step-up) | `[]` | `204` — credential purge, Removes from every group, tombstone keeping `username` |
-| `POST /v1/devices` | E | `[device_id, dsk_pub, tier, signer_tier, credential]` | `[device_id]` |
+| `POST /v1/devices` | E | `[device_id, dsk_pub, tier, signer_tier, credential, nonce(bstr32), sig(bstr64)]` | `[device_id]`; `403 E_FORBIDDEN` when `sig` does not prove possession of `dsk_pub` (`02` § Device sessions item 7); `409 E_INVALID_REQUEST` when `device_id` exists or a live device of the user holds `dsk_pub` |
 | `GET /v1/devices` | E | — | `[[device_id, tier, signer_tier, verified_at, revoked_at, last_seen]]` |
-| `DELETE /v1/devices/{device_id}` | E | — | `204` for an unlisted row — revokes, deletes sessions, closes sockets; `409 E_INVALID_REQUEST` for a listed device, which is revoked by a signed device list |
+| `DELETE /v1/devices/{device_id}` | E | — | `204` for an unlisted row — revokes, deletes sessions, closes sockets; `409 E_INVALID_REQUEST` for a listed device (its `device_id` and `dsk_pub` in one unrevoked entry of the newest list), which is revoked by a signed device list; `404 E_NOT_FOUND` for another user's device |
 | `PUT /v1/users/{user_id}/device-list` | E or P (own list only for P) | `[version(uint), blob(bstr), ssk_signature(bstr64), prev_hash(bstr32)]` | `204`; `400 E_INVALID_REQUEST` when `blob`'s outer elements disagree with the body or the list does not verify; `409 E_INVALID_REQUEST` when `version` is not the newest plus one or `prev_hash` does not chain |
 | `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]` |
 | `GET /v1/users/{user_id}/device-list?after=N` | E or P (own list only for P) | — | `[[version, blob, ssk_signature, prev_hash]]` of the stored versions greater than `N`, ascending, at most 64; `[]` when none; a malformed `N` is `400` |
 
 `POST /v1/accounts` is the sole exception to the device-session proof rule: it creates the device
 and its first session in the same transaction, because the device's key is the one being
-registered and there is no prior key to prove possession of.
+registered and there is no prior key to prove possession of. `POST /v1/devices` is not an
+exception: `nonce` comes from `POST /v1/devices/{device_id}/sessions/challenge` for the new
+`device_id`, and `sig` is the establish signature over it (`02` § Device sessions item 2's
+preimage, purpose `0`) by the private half of the `dsk_pub` being registered.
 
 The `credential` of the `device` sub-array is opaque to the instance: it is stored as sent (1 to
 8192 bytes) and never parsed or read back. Because the instance mints `user_id` in this response,
@@ -66,12 +69,13 @@ rebuilt credential; the placeholder never appears in a group.
 A device created through a host login is registered by `POST /v1/devices/{device_id}/sessions`
 with a registration array and assertion (`02` § Device sessions item 2). The establish body is at
 most 8192 bytes and its credential at most 2048 bytes. Both that route and `POST /v1/devices`
-enforce 8 live devices and 3 live rows created per user per hour (a live first device counts).
-An unlisted row and its pending sessions expire after 24 hours. At the cap, the oldest unlisted
-row created more than an hour ago is evicted; a cap with no such row (every live row listed, or
-unlisted and younger than an hour) refuses with `403 E_FORBIDDEN`.
-Revoked and expired rows do not count toward the rate (`429 E_RATE_LIMITED`). An owner with an
-enrolled session can also remove an unlisted row with `DELETE /v1/devices/{device_id}`.
+keep at most 8 live devices per user and at most 3 live rows created per user in any hour (a live
+first device counts; revoked and expired rows do not), and neither limit refuses while the user
+has an unlisted live row: past either, the oldest unlisted live row is revoked, whatever its age,
+and the registration is admitted (`02` § Device sessions item 2). A cap of 8 listed devices
+refuses with `403 E_FORBIDDEN`; neither route answers `429` for the per-user rate. An unlisted row
+and its pending sessions expire after 24 hours. An owner with an enrolled session can also remove
+an unlisted row with `DELETE /v1/devices/{device_id}`.
 
 Two rows above describe more than any released instance does. They are recorded here so a client
 plans against what an instance answers, not against what the table would otherwise promise:
@@ -541,7 +545,8 @@ are CBOR as everywhere else.
   `blobs.store_max_bytes` bounds the whole instance the same way (every stored blob counts,
   including one no channel references any more), `507 E_STORAGE_FULL` before the body is read.
 - **Upload rate.** Each user may start `blobs.uploads_per_minute` uploads a minute and upload
-  `blobs.upload_bytes_per_day` bytes a day (both refill continuously); over either the answer is
+  `blobs.upload_bytes_per_day` bytes a day (both refill continuously), attachment `PUT`s and backup
+  `PUT`s (§ Backups) drawing on the one budget; over either the answer is
   `429 E_RATE_LIMITED` with its `retry_after_ms`, before the body is read. Every byte the instance
   reads spends the day's budget, whether the upload is stored, refused or later deleted: deleting
   an attachment frees quota, never budget.
@@ -605,7 +610,12 @@ object under `SHA-256(object)` in its blob store and cannot open it.
 - **Pending.** The two reads admit a `pending` session (`02` § Device sessions item 4), so a
   device entering the recovery key reads both objects before it holds a credential; `PUT` and
   `DELETE` need an `enrolled` one (`403 E_FORBIDDEN`).
-- Every route spends the device session's `read` or `write` bucket (§ Rate limits).
+- Every route spends the device session's `read` or `write` bucket (§ Rate limits). A `PUT` also
+  spends the user's blob upload budget exactly as an attachment upload does (§ Blobs, "Upload
+  rate"): one upload of `blobs.uploads_per_minute` and the bytes it reads of
+  `blobs.upload_bytes_per_day`, `429 E_RATE_LIMITED` with its `retry_after_ms` over either, before
+  the body is read. A replaced state object stays on disk for `blobs.gc_grace`, so without this
+  budget one session could fill the instance's storage with replaced objects.
 
 ### Voice
 
@@ -984,7 +994,12 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
   `GET` or `HEAD` of those bytes is `410 E_PRUNED`. Without the tombstone, content addressing would
   hand the purged name straight back to anyone still holding the ciphertext. Purging bytes the
   instance does not hold still records the tombstone, so the table is also the operator's
-  blocklist; a second purge of the same bytes is `204`. `reason` is 1..1024 bytes with no NUL and
+  blocklist; a second purge of the same bytes is `204`. Bytes a stored backup object names
+  (§ Backups) are refused with `409 E_INVALID_REQUEST` and nothing is written, no tombstone and no
+  audit row: the root object is written once, so a tombstone on its bytes would leave the account
+  with a root it can neither read nor store again, and no recovery (`dillad admin blob purge`
+  refuses them too, exit 65). A replaced state object's bytes are no longer named and can be
+  purged. `reason` is 1..1024 bytes with no NUL and
   becomes the audit row's `detail` under the action `blob.purge`, whose `target` is the blob id in
   hex. A purge removes **bytes, not content**: every attachment is encrypted under its own random
   key, so the same file sent again by anyone has a different `blob_id`.

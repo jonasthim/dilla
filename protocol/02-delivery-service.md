@@ -52,25 +52,35 @@ Every endpoint in this document requires a **device session**. A device session 
    checks and before the list, cap and rate checks: a refusal after the spend needs a fresh login.
    Its user must be active and have published a device list. The new unverified row stores the
    opaque credential and receives a `pending` session. An unlisted row expires 24 hours after
-   creation, revoking its pending sessions. At 8 live devices, registration evicts the oldest
-   unlisted row created more than an hour ago (the hourly rate's window), so a device in the
-   middle of its enrolment is never evicted; if no live row qualifies, every live row being listed
-   or young, it refuses with `403 E_FORBIDDEN`. The hourly rate
-   counts only live rows created in the window, including a live first device; revoked and expired
-   rows release capacity. `POST /v1/devices` applies the same cap and rate.
+   creation, revoking its pending sessions. A registration is never refused while the user has an
+   unlisted live row: at 8 live devices, or past 3 live rows created in the last hour (a live first
+   device included; revoked and expired rows do not count), it revokes the oldest unlisted live
+   row, whatever its age, with its sessions and gateway connections, and is admitted. Only 8 live
+   devices that the newest list all names refuse, with `403 E_FORBIDDEN`. At registration the
+   instance cannot tell the owner from a holder of the password alone (the recovery key that tells
+   them apart is used after registration), so a per-user refusal a password holder could keep
+   saturated would lock the owner's recovery out; instead the owner's new row is exposed only
+   between its registration and the list `PUT` that names it, and each replacement costs a host
+   login, metered per source address by the auth ceremonies' `login` bucket, and an establish,
+   metered per source address and per `device_id`. `POST /v1/devices` applies the same rule.
 3. The **token** is 32 bytes from the platform CSPRNG, base64url without padding, stored only as
    `SHA-256(token)`. It is sent as `Authorization: Bearer <token>` on HTTP and in the gateway's
    `IDENTIFY` frame. There is no cookie and therefore no CSRF surface on `/v1`.
 4. **Scope** is `0 enrolled`, `1 pending`, `2 provisional`. An establish with `login` is `pending`;
    purpose 2 is `provisional`. Otherwise the newest list verified against `users.ssk_pub` decides:
-   no list or an unrevoked entry naming the device's `dsk_pub` gives `enrolled`; an omitted device
-   gets `pending`. A list that fails verification, a stored list that cannot be decoded
-   included, gives `401 E_UNAUTHENTICATED` (only an absent list is "no list"); a verifier or
+   no list or an unrevoked entry naming the device's `device_id` and `dsk_pub` together gives
+   `enrolled`; any other device, one whose key a list entry names under another `device_id`
+   included, is unlisted and gets `pending`. Wherever the instance asks whether a device is listed
+   (the scope, the 24-hour expiry, the cap's replacement, the key-less `DELETE /v1/devices/{id}`
+   and invariant 4) it compares this pair. A list that fails verification, a stored list that
+   cannot be decoded included, gives `401 E_UNAUTHENTICATED` (only an absent list is "no list"); a verifier or
    instance fault gives `503 E_UNAVAILABLE`, so a transient failure is retryable. Scope is fixed
    at mint: a pending device becomes enrolled by establishing again after a list names it.
    `enrolled` reaches every endpoint subject to ordinary ACL; `pending` reaches only its own two
    backup reads (`06-backup-archive.md`), its own device-list GET and PUT, and the session routes
-   needing no session. Other routes answer `403 E_FORBIDDEN`. `provisional` reaches only
+   needing no session. Other routes answer `403 E_FORBIDDEN`, and the gateway's `IDENTIFY` with a
+   pending session's token, sent in the frame, as a bearer or through a ticket, is refused like a
+   token that does not resolve (`E_UNAUTHENTICATED`, close `4003`). `provisional` reaches only
    KeyPackage publication for one `pairing` group and that group's Welcome and handshakes;
    outside them the answer is `E_PROVISIONAL_OUTSIDE_PAIRING`.
 5. **Lifetime** is a sliding 30 days for `native` devices and 7 days with a 12-hour idle window for
@@ -97,14 +107,20 @@ Every endpoint in this document requires a **device session**. A device session 
 7. The sole exception to the proof rule above is `POST /v1/accounts`, which creates the device and
    its first session in the same transaction: the device's key is the one being registered, so there
    is no prior key to prove possession of. Every later session for that device goes through the
-   challenge.
+   challenge. `POST /v1/devices` proves the key it registers the way item 2's registration does:
+   its body carries a nonce from item 1's challenge for the new `device_id` and `sig` over item 2's
+   preimage with purpose `0`, by the `dsk_pub` being registered (`403 E_FORBIDDEN` otherwise; the
+   nonce is spent either way). Both device creation routes refuse a `dsk_pub` that a live device of
+   the same user already holds (`409 E_INVALID_REQUEST`), so a stolen session can register no row
+   under a key it does not hold, and no row shares another's listing.
 
 Refusals: `401 E_UNAUTHENTICATED` for an absent, replayed or expired nonce, a bad signature, an
 unknown device without a registration assertion, an unknown or spent assertion, a user with no
 list on registration, or a list that fails verification; `400 E_INVALID_REQUEST` for a malformed
 registration array or a tier other than `browser`; `403 E_FORBIDDEN` for a disabled account or a
-cap of entirely listed devices; `429 E_RATE_LIMITED` per source address, per `device_id` and per
-user's live-row enrolment rate; `503 E_UNAVAILABLE` for an instance list-verifier fault.
+cap of entirely listed devices; `429 E_RATE_LIMITED` per source address and per `device_id` (the
+per-user enrolment rate replaces a row and never refuses); `503 E_UNAVAILABLE` for an instance
+list-verifier fault.
 
 ## API
 
@@ -418,8 +434,9 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    credential whose user is eligible under the channel's
    ACL (for a community group, the same permission invariant 1 asks of a registrant, resolved
    through `09` § Permissions; for a DM or group DM, being one of its participants; for any other
-   group, being in it already) and whose DSK is in the
-   newest signed device list the DS holds; the `PublicGroup` validates
+   group, being in it already) and whose device the
+   newest signed device list the DS holds names, by its `device_id` and DSK in one unrevoked
+   entry (§ Device sessions item 4); the `PublicGroup` validates
    it structurally; and the uploaded GroupInfo's epoch is `n + 1`, and its `group_id` and
    `tree_hash` are those of the group the commit merges to (`rule = "group_info"`), since that
    GroupInfo is what every device that resyncs or joins builds its external commit from until the
