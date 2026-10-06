@@ -145,7 +145,7 @@ export async function openChannelFlow(
       } catch (e) {
         if (e instanceof DillaHttpError && e.status === 425 && e.code === 'E_COMMIT_REQUIRED' && budget.joins < SYNC.commitRetryMax) {
           // Defensive: a later delivery service may propose Adds at community join; today's join uses an external commit.
-          await new Promise<void>((resolve) => { s.armTimer(SYNC.membershipWaitMs, resolve); });
+          await s.wait(SYNC.membershipWaitMs);
           if (s.stopped()) throw new SyncError('E_SYNC_STOPPED');
           continue;
         }

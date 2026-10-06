@@ -50,6 +50,7 @@ export class SyncEngine implements SyncInternals {
   private readonly volunteer = new Map<string, number>();
   private readonly cursorTimer = new Map<string, number>();
   private readonly timers = new Set<number>();
+  private readonly waiters = new Set<() => void>();
   private unsubscribe: (() => void) | null = null;
   private isStopped = false;
 
@@ -66,6 +67,17 @@ export class SyncEngine implements SyncInternals {
     for (const id of this.timers) this.deps.clearTimeout(id);
     this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.echoWait.clear();
     this.queues.clear();
+    for (const wake of this.waiters) wake();
+    this.waiters.clear();
+  }
+  /** Resolves after ms, or at once when the engine stops (its timers are cleared); the caller checks stopped(). */
+  wait(ms: number): Promise<void> {
+    if (this.isStopped) return Promise.resolve();
+    return new Promise((resolve) => {
+      const wake = (): void => { this.waiters.delete(wake); resolve(); };
+      this.waiters.add(wake);
+      this.armTimer(ms, wake);
+    });
   }
   setChannels(channels: ExpectedGroup[]): void { this.channels = [...channels]; }
   expected(): ExpectedGroup[] {

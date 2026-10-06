@@ -19,6 +19,7 @@ export interface SyncInternals {
   activate(groupId: Id): Promise<void>;
   pollWelcomes(): Promise<void>;
   armTimer(ms: number, fn: () => void): number;
+  wait(ms: number): Promise<void>;
   cancelTimer(id: number): void;
   echoWait: Map<string, { msgHex: string; timer: number }>;
   epochWait: Map<string, number>;

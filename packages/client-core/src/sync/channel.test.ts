@@ -161,6 +161,18 @@ describe('opening a channel (rule 6)', () => {
     expect(ds.welcomesFor(ME.device)).toEqual([]);
   });
 
+  it('rejects E_SYNC_STOPPED when stopped during the 425 wait (CLIENT-CORE-TS-05)', async () => {
+    const pg = ds.peerCreate(PEER, CHANNEL);
+    ds.inject('postResync', { fail: httpError(425, 'E_COMMIT_REQUIRED', 2000) });
+    const opening = open(pg).then((ok) => ({ ok }), (err: unknown) => ({ err }));
+    await settle();
+    expect(count('postResync')).toBe(1);
+    d.engine.stop();
+    await settle();
+    expect(await opening).toEqual({ err: new SyncError('E_SYNC_STOPPED') });
+    expect(count('postResync')).toBe(1);
+  });
+
   it('starts the join again at once when it raced a commit (409 E_COMMIT_CONFLICT)', async () => {
     const pg = ds.peerCreate(PEER, CHANNEL);
     ds.inject('postResync', { fail: httpError(409, 'E_COMMIT_CONFLICT') });
