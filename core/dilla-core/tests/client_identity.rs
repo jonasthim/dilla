@@ -1645,19 +1645,26 @@ fn an_enrol_record_beside_another_phase_or_without_its_key_is_refused() {
 // Who can trigger each refusal tested below against an honest person (lesson e):
 // - E_RECOVERY_KEY: the instance can make every key fail by serving other bytes (a denial it
 //   can mount anyway), but cannot make a wrong key pass under K_header.
-// - The state object refuses nothing (ruling 28): an enrolled session or the instance can replace it
-//   with bytes that do not open; the recovering device then carries no pins ([]) and re-seals a sound
-//   object, so the worst case is lost pins, of which browsers hold none in web-2a.
+// - The state object (ruling 28 as amended by the core-block security review): missing or not
+//   opening under K_backup is accepted with no pins ([]) only while the served list is version 1,
+//   where the signup's state holds pins = [] and nothing is protected; at any later version it is
+//   "the backup state is missing" / "the backup state could not be read" (E_CORE_INPUT). An
+//   enrolled session or the instance can trigger both by deleting or replacing the object; the
+//   honest cure is a re-upload of the state from a device that holds it (the web liveness rule).
+// - "the instance served a different device list at the stored version" (E_CORE_INPUT): only an
+//   instance serving a fork the account's own SSK signed at the version this device stored.
 // - E_CREDENTIAL on a served list: only a list the user's SSK did not sign (a hostile instance, or a
 //   stored list for another user). The honest instance serves the user's own list, which verifies.
-// - "device is listed": an honest caller reaches it only by repeating a completed enrolment, and
-//   recovers by re-establishing.
+// - "device is listed" (any entry with this device id, live, revoked or under another key): an
+//   honest caller reaches it only by repeating a completed enrolment, and recovers by
+//   re-establishing (enrol_reset draws a fresh id).
 // - E_DEVICE_LIST_STALE from own_device_list_update: only an instance that serves a gap or a lower
 //   version. The honest instance serves the contiguous chain (L-HTTP-56).
 // - "the instance served an older device list" (E_CORE_INPUT): only an instance that serves a
 //   signed list older than the stored newest or the list in the opened state object. A hostile
-//   instance must not make the device sign old+1, which could re-list a device revoked in between.
-//   The honest instance serves its newest accepted list. Clients must publish the candidate list
+//   instance must not make the device sign old+1, which could re-list a device revoked in between;
+//   it still can with a consistent pair (list k and the state object written at k), the residue
+//   documented at `floor` in client/identity.rs. The honest instance serves its newest accepted list. Clients must publish the candidate list
 //   before uploading a state object that carries its version; otherwise the honest instance can
 //   temporarily hold state(v+1) while serving list v and this floor refuses it too.
 // - the device_ids refusals: only the caller's own arguments.
@@ -2491,8 +2498,9 @@ fn enrol_complete_refuses_malformed_objects_and_lists_and_writes_nothing() {
     wrong_root.array(3).uint(2).bytes(&m.umk).bytes(&m.ssk);
     let wrong_root = seal_with(&k_header(&m.rk), b"dilla root v1", &wrong_root.into_vec());
     let blob = m.v1.encode();
-    // The state object is never a refusal (ruling 28): its cases are in
-    // `an_unopenable_or_missing_state_object_yields_no_pins_and_the_enrolment_succeeds`.
+    // The state object is no refusal at version 1 (ruling 28 as amended): its cases are in
+    // `an_unopenable_or_missing_state_object_yields_no_pins_and_the_enrolment_succeeds`, the
+    // refusals at later versions in `enrol_accepts_a_missing_or_unreadable_state_only_at_version_1`.
     type RefusalCase = (Vec<u8>, Vec<u8>, Vec<u8>, ClientError);
     let cases: Vec<RefusalCase> = vec![
         (
@@ -2572,8 +2580,9 @@ fn enrol_complete_refuses_malformed_objects_and_lists_and_writes_nothing() {
     assert_eq!(info(&b.core).phase, 3);
 }
 
-/// L-CORE-26 step 3 (ruling 28): a state object that is absent, malformed, sealed under another key or
-/// shaped wrongly is no refusal; the enrolment proceeds with no pins and re-seals a sound object.
+/// L-CORE-26 step 3 (ruling 28 as amended): with the served list at version 1, a state object that is
+/// absent, malformed, sealed under another key or shaped wrongly is no refusal; the enrolment proceeds
+/// with no pins and re-seals a sound object.
 #[test]
 fn an_unopenable_or_missing_state_object_yields_no_pins_and_the_enrolment_succeeds() {
     let m = material();
@@ -2640,12 +2649,16 @@ fn an_unopenable_or_missing_state_object_yields_no_pins_and_the_enrolment_succee
     );
 }
 
-/// Requirement 18: step 3's tolerance holds for device_list_revoke too.
+/// Requirement 18, as amended by the core-block security review: step 3's tolerance holds for
+/// device_list_revoke at version 1 only. At a later version a missing or unreadable state object is
+/// refused, so a 404 during a revoke cannot overwrite the account's state with an empty pin table.
 #[test]
-fn device_list_revoke_with_no_state_object_reseals_with_no_pins() {
+fn device_list_revoke_with_no_state_object_reseals_with_no_pins_only_at_version_1() {
     let (mut a, ac, rk_text, reg, put_v1) = signed_up();
     let m = material_of(&a, rk_text, reg, put_v1);
     let own_id = m.v1.unsigned.entries[0].device_id;
+
+    // Version 1: accepted, re-sealed with no pins.
     let (put_v2, state_a2) = list_and_state(
         &a.device_list_revoke(
             &m.rk_text,
@@ -2655,7 +2668,7 @@ fn device_list_revoke_with_no_state_object_reseals_with_no_pins() {
             own_id.as_bytes(),
             NOW + 60,
         )
-        .expect("an empty state_sealed is no refusal"),
+        .expect("an empty state_sealed is no refusal at version 1"),
     );
     let (version, blob_v2, _, prev_v2) = put_parts(&put_v2);
     assert_eq!((version, prev_v2), (2, m.v1.hash()));
@@ -2667,6 +2680,401 @@ fn device_list_revoke_with_no_state_object_reseals_with_no_pins() {
     assert_eq!(meta(&ac, "state_sealed"), Some(state_a2.clone()));
     assert_eq!(sealed_of(&a), (Some(m.root.clone()), Some(state_a2), 0));
     assert_eq!(a.device_list_body().expect("candidate"), put_v2);
+
+    // Version 2: refused (changed: the test pinned a reseal with no pins, which the amendment refuses
+    // here; the version-1 acceptance above is unchanged). B enrols from v1 and stores v2.
+    let mut b = second();
+    let (put_v2, _) = list_and_state(
+        &b.core
+            .enrol_complete(&m.rk_text, &m.root, &m.state, &m.put_v1, "alice", LATER)
+            .expect("enrol"),
+    );
+    b.core.device_list_published().expect("published");
+    let before = snapshot(&b.c);
+    assert_eq!(
+        err(b
+            .core
+            .device_list_revoke(&m.rk_text, &m.root, &[], &put_v2, own_id.as_bytes(), LATER)),
+        core_input("the backup state is missing")
+    );
+    for (name, state_in) in unreadable_states(&m) {
+        assert_eq!(
+            err(b.core.device_list_revoke(
+                &m.rk_text,
+                &m.root,
+                &state_in,
+                &put_v2,
+                own_id.as_bytes(),
+                LATER
+            )),
+            core_input("the backup state could not be read"),
+            "{name}"
+        );
+    }
+    assert_eq!(snapshot(&b.c), before, "every refusal wrote nothing");
+    let state_v2 = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&put_parts(&put_v2).1, &pins()),
+    );
+    let (_, state_out) = list_and_state(
+        &b.core
+            .device_list_revoke(
+                &m.rk_text,
+                &m.root,
+                &state_v2,
+                &put_v2,
+                own_id.as_bytes(),
+                LATER,
+            )
+            .expect("a readable state at v2 revokes"),
+    );
+    assert_eq!(
+        state_parts(&k_backup(&m.rk), &state_out).1,
+        pins(),
+        "the pins are carried"
+    );
+}
+
+fn core_input(detail: &str) -> ClientError {
+    ClientError {
+        code: "E_CORE_INPUT",
+        detail: detail.to_owned(),
+    }
+}
+
+/// State objects that exist but do not yield a state under K_backup.
+fn unreadable_states(m: &Material) -> Vec<(&'static str, Vec<u8>)> {
+    let mut two = Encoder::new();
+    two.array(2).uint(1).bytes(&m.v1.encode());
+    vec![
+        ("not [1, nonce, ct]", vec![0x80]),
+        (
+            "sealed under K_header",
+            seal_with(
+                &k_header(&m.rk),
+                b"dilla state v1",
+                &state_plain(&m.v1.encode(), &[0x80]),
+            ),
+        ),
+        (
+            "sealed under another recovery key's K_backup",
+            seal_with(
+                &k_backup(&[0x0b; 32]),
+                b"dilla state v1",
+                &state_plain(&m.v1.encode(), &[0x80]),
+            ),
+        ),
+        (
+            "a two-element plaintext",
+            seal_with(&k_backup(&m.rk), b"dilla state v1", &two.into_vec()),
+        ),
+        (
+            "pins that are not an array",
+            seal_with(
+                &k_backup(&m.rk),
+                b"dilla state v1",
+                &state_plain(&m.v1.encode(), &[0x07]),
+            ),
+        ),
+        (
+            "an inner list that does not decode",
+            seal_with(
+                &k_backup(&m.rk),
+                b"dilla state v1",
+                &state_plain(&[0x01], &[0x80]),
+            ),
+        ),
+    ]
+}
+
+/// v2 and v3 of `m`'s account: the signup device plus X, then X revoked.
+fn chain_to_v3(m: &Material) -> (DeviceList, DeviceList) {
+    let own = m.v1.unsigned.entries[0].clone();
+    let v2 = signed(
+        &m.ssk,
+        USER,
+        2,
+        m.v1.hash(),
+        vec![own.clone(), browser([0x0d; 16], [0x0e; 32], NOW + 10, None)],
+    );
+    let v3 = signed(
+        &m.ssk,
+        USER,
+        3,
+        v2.hash(),
+        vec![
+            own,
+            browser([0x0d; 16], [0x0e; 32], NOW + 10, Some(NOW + 20)),
+        ],
+    );
+    (v2, v3)
+}
+
+/// Ruling 28 as amended (core-block security review §1): at version 1 a missing or unreadable state
+/// object enrols with no pins; at version 3 it is refused with the two details and writes nothing.
+#[test]
+fn enrol_accepts_a_missing_or_unreadable_state_only_at_version_1() {
+    let m = material();
+    let states: Vec<(&str, Vec<u8>)> = std::iter::once(("missing", vec![]))
+        .chain(unreadable_states(&m))
+        .collect();
+    for (name, state_in) in &states {
+        let mut b = second();
+        let (put_v2, state_b) = list_and_state(
+            &b.core
+                .enrol_complete(&m.rk_text, &m.root, state_in, &m.put_v1, "alice", LATER)
+                .unwrap_or_else(|e| panic!("version 1, {name}: {e:?}")),
+        );
+        assert_eq!(put_parts(&put_v2).0, 2, "{name}");
+        assert_eq!(
+            state_parts(&k_backup(&m.rk), &state_b).1,
+            vec![0x80],
+            "{name}: no pins"
+        );
+    }
+
+    let (_, v3) = chain_to_v3(&m);
+    let mut b = second();
+    let before = snapshot(&b.c);
+    for (name, state_in) in &states {
+        let want = if state_in.is_empty() {
+            core_input("the backup state is missing")
+        } else {
+            core_input("the backup state could not be read")
+        };
+        assert_eq!(
+            err(b.core.enrol_complete(
+                &m.rk_text,
+                &m.root,
+                state_in,
+                &put_body(&v3),
+                "alice",
+                LATER
+            )),
+            want,
+            "version 3, {name}"
+        );
+        assert_eq!(snapshot(&b.c), before, "version 3, {name} wrote something");
+    }
+    let state_v3 = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&v3.encode(), &pins()),
+    );
+    let (put_v4, state_b) = list_and_state(
+        &b.core
+            .enrol_complete(
+                &m.rk_text,
+                &m.root,
+                &state_v3,
+                &put_body(&v3),
+                "alice",
+                LATER,
+            )
+            .expect("a readable state at v3 enrols"),
+    );
+    assert_eq!(put_parts(&put_v4).0, 4);
+    assert_eq!(state_parts(&k_backup(&m.rk), &state_b).1, pins());
+}
+
+/// The rollback probe: the real list is v3 (X revoked); a hostile instance serves the signed v2 (X
+/// live) and withholds or spoils the state object, which would lift the floor. Signing v2 + 1 would
+/// re-list X.
+#[test]
+fn enrol_refuses_an_older_list_served_with_the_state_object_withheld() {
+    let m = material();
+    let (v2, v3) = chain_to_v3(&m);
+    let mut b = second();
+    let before = snapshot(&b.c);
+    let stale = put_body(&v2);
+    let state_v3 = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&v3.encode(), &pins()),
+    );
+    for (state_in, want) in [
+        (vec![], core_input("the backup state is missing")),
+        (vec![0x80], core_input("the backup state could not be read")),
+        (
+            state_v3,
+            core_input("the instance served an older device list"),
+        ),
+    ] {
+        assert_eq!(
+            err(b
+                .core
+                .enrol_complete(&m.rk_text, &m.root, &state_in, &stale, "alice", LATER)),
+            want
+        );
+        assert_eq!(snapshot(&b.c), before);
+    }
+}
+
+/// F2: an entry with this device id refuses the enrolment whether it is live, revoked or under
+/// another key, so the id is never listed twice (lookup would find the stale entry first).
+#[test]
+fn enrol_complete_refuses_a_list_that_names_this_device_id_in_any_entry() {
+    let m = material();
+    let mut b = second();
+    let before = snapshot(&b.c);
+    for (name, entry) in [
+        ("revoked", browser(b.device, b.dsk, NOW, Some(NOW + 1))),
+        (
+            "under another key",
+            browser(b.device, [0x0e; 32], NOW, None),
+        ),
+        (
+            "revoked under another key",
+            browser(b.device, [0x0e; 32], NOW, Some(NOW + 1)),
+        ),
+    ] {
+        let listed = signed(
+            &m.ssk,
+            USER,
+            2,
+            m.v1.hash(),
+            vec![m.v1.unsigned.entries[0].clone(), entry],
+        );
+        assert_eq!(
+            err(b.core.enrol_complete(
+                &m.rk_text,
+                &m.root,
+                &m.state,
+                &put_body(&listed),
+                "alice",
+                LATER
+            )),
+            ClientError {
+                code: "E_CORE_STATE",
+                detail: "device is listed".into()
+            },
+            "{name}"
+        );
+        assert_eq!(snapshot(&b.c), before, "{name}");
+    }
+}
+
+/// F6: at the stored version the served list must be the stored list byte for byte; a fork the
+/// account's SSK signed at that version is refused rather than taken as the base.
+#[test]
+fn revoke_refuses_a_different_list_at_the_stored_version() {
+    let (mut a, ac, rk_text, reg, put_v1) = signed_up();
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let (v2, _) = chain_to_v3(&m);
+    a.own_device_list_update(&history(&[&v2]))
+        .expect("adopt v2");
+    let fork = signed(
+        &m.ssk,
+        USER,
+        2,
+        m.v1.hash(),
+        vec![
+            m.v1.unsigned.entries[0].clone(),
+            browser([0x0f; 16], [0x0e; 32], NOW + 10, None),
+        ],
+    );
+    let state_of = |l: &DeviceList| {
+        seal_with(
+            &k_backup(&m.rk),
+            b"dilla state v1",
+            &state_plain(&l.encode(), &pins()),
+        )
+    };
+    let before = snapshot(&ac);
+    assert_eq!(
+        err(a.device_list_revoke(
+            &m.rk_text,
+            &m.root,
+            &state_of(&fork),
+            &put_body(&fork),
+            &m.reg.device_id,
+            LATER
+        )),
+        core_input("the instance served a different device list at the stored version")
+    );
+    assert_eq!(snapshot(&ac), before);
+    a.device_list_revoke(
+        &m.rk_text,
+        &m.root,
+        &state_of(&v2),
+        &put_body(&v2),
+        &m.reg.device_id,
+        LATER,
+    )
+    .expect("the stored list itself is a base");
+}
+
+/// F3: revoke compares the keys the root object yields with the identity record. Another account's
+/// root, state and a list its own SSK signed for the same user id are all consistent with each other,
+/// so only that comparison refuses them, before the state object is read.
+#[test]
+fn revoke_refuses_another_accounts_root_even_when_its_list_and_state_agree() {
+    let (mut a, ac, _, _, _) = signed_up();
+    let other = material();
+    let other_v2 = signed(
+        &other.ssk,
+        USER,
+        2,
+        other.v1.hash(),
+        other.v1.unsigned.entries.clone(),
+    );
+    let other_id = other.v1.unsigned.entries[0].device_id;
+    let before = snapshot(&ac);
+    for (name, state_in) in [("its state", other.state.clone()), ("no state", vec![])] {
+        assert_eq!(
+            err(a.device_list_revoke(
+                &other.rk_text,
+                &other.root,
+                &state_in,
+                &put_body(&other_v2),
+                other_id.as_bytes(),
+                LATER
+            )),
+            ClientError {
+                code: "E_CREDENTIAL",
+                detail: String::new()
+            },
+            "{name}"
+        );
+        assert_eq!(snapshot(&ac), before, "{name}");
+    }
+}
+
+/// F5: enrolment applies the first-sight rules of `accept(None)` to the served list: version 0 is no
+/// version and only version 1 chains from 32 zero bytes.
+#[test]
+fn enrol_refuses_a_served_list_with_no_version_or_a_v1_with_a_prev_hash() {
+    let m = material();
+    let mut b = second();
+    let before = snapshot(&b.c);
+    for (name, list) in [
+        (
+            "version 0",
+            signed(&m.ssk, USER, 0, [0; 32], m.v1.unsigned.entries.clone()),
+        ),
+        (
+            "version 1 with a non-zero prev_hash",
+            signed(&m.ssk, USER, 1, [0x01; 32], m.v1.unsigned.entries.clone()),
+        ),
+    ] {
+        assert_eq!(
+            err(b.core.enrol_complete(
+                &m.rk_text,
+                &m.root,
+                &m.state,
+                &put_body(&list),
+                "alice",
+                LATER
+            )),
+            ClientError {
+                code: "E_DEVICE_LIST_STALE",
+                detail: String::new()
+            },
+            "{name}"
+        );
+        assert_eq!(snapshot(&b.c), before, "{name}");
+    }
 }
 
 #[test]

@@ -436,36 +436,12 @@ fn recover(
         return Err(ProtocolError::Credential.into());
     }
     let k_backup = Zeroizing::new(k_backup(&rk));
-    let state = if state_sealed.is_empty() {
-        None
-    } else {
-        open_sealed(&k_backup, AAD_STATE, state_sealed).ok()
-    };
-    let state_parts = state.as_ref().and_then(|plain| {
-        decode_strict(plain, |d| {
-            d.array(3)?;
-            if d.uint()? != 1 {
-                return Err(shape());
-            }
-            let list = d.bytes()?.to_vec();
-            let pins = d.skip()?;
-            if pins.first().is_none_or(|b| b >> 5 != 4) {
-                return Err(shape());
-            }
-            Ok((list, pins.to_vec()))
-        })
-        .ok()
-    });
-    let (state_list_version, pins) = state_parts.map_or((None, vec![0x80]), |(blob, pins)| {
-        (
-            DeviceList::decode(&blob).ok().map(|l| l.unsigned.version),
-            pins,
-        )
-    });
     let served = wire::decode_device_list_body(list_body)
         .map_err(|_| ClientError::new(E_CORE_INPUT, "list_body is malformed"))?;
     let list = DeviceList::decode(&served.blob)?;
-    list.verify(&ssk_pub)?;
+    // First-sight rules, as own_device_list_update applies them: version 0 is no version, and only
+    // version 1 chains from 32 zero bytes.
+    list.accept(None, &ssk_pub)?;
     if list.unsigned.user_id != UserId::from_bytes(*user_id) {
         return Err(ProtocolError::Credential.into());
     }
@@ -478,6 +454,44 @@ fn recover(
             "list_body elements disagree",
         ));
     }
+    // The state object: [1, device_list, pins] under K_backup; its list must decode, as the floor
+    // reads its version.
+    let state = if state_sealed.is_empty() {
+        Err("the backup state is missing")
+    } else {
+        open_sealed(&k_backup, AAD_STATE, state_sealed)
+            .ok()
+            .and_then(|plain| {
+                decode_strict(&plain, |d| {
+                    d.array(3)?;
+                    if d.uint()? != 1 {
+                        return Err(shape());
+                    }
+                    let version = DeviceList::decode(d.bytes()?)
+                        .map_err(|_| shape())?
+                        .unsigned
+                        .version;
+                    let pins = d.skip()?;
+                    if pins.first().is_none_or(|b| b >> 5 != 4) {
+                        return Err(shape());
+                    }
+                    Ok((version, pins.to_vec()))
+                })
+                .ok()
+            })
+            .ok_or("the backup state could not be read")
+    };
+    let (state_list_version, pins) = match state {
+        Ok((version, pins)) => (Some(version), pins),
+        // Version 1 is exempt: the signup wrote list v1 with pins = [] (protocol/06 "Header"), so
+        // a missing state there is an account that never uploaded one, and an unopenable one at v1
+        // protects nothing; refusing would let a stolen session that spoiled the object brick
+        // every recovery-key action of a single-device account for ever (ruling 28). At any later
+        // version some device uploaded a state, so its absence is withholding: accepting it would
+        // lift the rollback floor and wipe the UMK pins in the re-sealed object.
+        Err(_) if list.unsigned.version == 1 => (None, vec![0x80]),
+        Err(detail) => return Err(ClientError::new(E_CORE_INPUT, detail)),
+    };
     Ok(Recovered {
         umk_priv,
         ssk_priv,
@@ -488,6 +502,40 @@ fn recover(
         state_list_version,
         list,
     })
+}
+
+/// The rollback floor of enrol_complete (`stored` = None) and device_list_revoke (the stored newest
+/// list): the served list must not be older than the list in the opened state object, nor older
+/// than the stored newest, and at the stored version it must be the stored list byte for byte.
+/// Signing `old + 1` on an older base could re-list a device revoked in between.
+///
+/// Residue (core-block security review §1, recorded for the plan head's L-CORE-26 attacker
+/// statement): the floor refuses a mismatched pair, never a consistent replay. An instance that
+/// kept list k and the state object written at k serves both; both are authentic, so the floor
+/// passes and the device signs k + 1 on a fork that may re-list a device revoked in k+1..n.
+/// Devices holding a newer list refuse the fork by version; one still at k accepts it. Nothing in
+/// the state object (AAD "dilla state v1", plaintext [1, list, pins]) is monotonic, so no check
+/// here can catch it; a mitigation (a counter the instance cannot roll back) is design-level.
+fn floor(r: &Recovered, stored: Option<&DeviceList>) -> Result<(), ClientError> {
+    let served = &r.list.unsigned;
+    if let Some(s) = stored
+        && served.version == s.unsigned.version
+        && r.list.encode() != s.encode()
+    {
+        return Err(ClientError::new(
+            E_CORE_INPUT,
+            "the instance served a different device list at the stored version",
+        ));
+    }
+    if stored.is_some_and(|s| served.version < s.unsigned.version)
+        || r.state_list_version.is_some_and(|v| served.version < v)
+    {
+        return Err(ClientError::new(
+            E_CORE_INPUT,
+            "the instance served an older device list",
+        ));
+    }
+    Ok(())
 }
 
 fn signed_next(
@@ -1019,19 +1067,13 @@ impl ClientCore {
                 &user_id,
                 None,
             )?;
-            if recovered
-                .state_list_version
-                .is_some_and(|v| recovered.list.unsigned.version < v)
-            {
-                return Err(ClientError::new(
-                    E_CORE_INPUT,
-                    "the instance served an older device list",
-                ));
-            }
+            floor(&recovered, None)?;
+            // Any entry with this id, live, revoked or under another key: a second entry would
+            // never be found, as lookup returns the first.
             if recovered
                 .list
                 .lookup(&DeviceId::from_bytes(rec.device_id))
-                .is_some_and(|e| e.revoked_at.is_none() && e.dsk_pub == rec.dsk_pub)
+                .is_some()
             {
                 return Err(ClientError::new(E_CORE_STATE, "device is listed"));
             }
@@ -1136,16 +1178,7 @@ impl ClientCore {
             )?;
             let stored =
                 DeviceList::decode(&rec.device_list).map_err(|_| malformed(schema::IDENTITY))?;
-            if recovered.list.unsigned.version < stored.unsigned.version
-                || recovered
-                    .state_list_version
-                    .is_some_and(|v| recovered.list.unsigned.version < v)
-            {
-                return Err(ClientError::new(
-                    E_CORE_INPUT,
-                    "the instance served an older device list",
-                ));
-            }
+            floor(&recovered, Some(&stored))?;
             for id in ids {
                 if !recovered
                     .list
