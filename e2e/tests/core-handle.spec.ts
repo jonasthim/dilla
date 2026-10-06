@@ -102,7 +102,7 @@ test('the facade keeps one identity, group and outbox across pause, resume and a
   // [[msg_id, state 1 (in flight), "", created 1760000000, "still queued"]]
   expect(String(before.outbox)).toMatch(new RegExp(`^818550[0-9a-f]{32}01601a68e778006c${QUEUED_HEX}$`));
   expect(String(before.deviceList)).toMatch(/^8401/);
-  expect(String(before.sealed)).toMatch(/^825867/); // root object: exactly 103 bytes
+  expect(String(before.sealed)).toMatch(/^835867/); // three elements; root object: exactly 103 bytes
   // [nonce 0x22…, purpose 0, sig (64 bytes), null, null]: 104 bytes
   expect(String(before.session)).toMatch(new RegExp(`^855820${rep('22', 32)}005840[0-9a-f]{128}f6f6$`));
 

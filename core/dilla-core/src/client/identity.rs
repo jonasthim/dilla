@@ -1,11 +1,16 @@
 //! Browser-rooted identity, signup, session and KeyPackage operations.
 
-use super::error::{E_CORE_INPUT, E_CORE_MLS, E_CORE_NO_IDENTITY, E_CORE_STATE, E_CORE_STORAGE};
+use super::error::{
+    E_CORE_INPUT, E_CORE_MLS, E_CORE_NO_IDENTITY, E_CORE_NOT_FOUND, E_CORE_STATE, E_CORE_STORAGE,
+    E_RECOVERY_KEY,
+};
 use super::{ClientCore, ClientError, schema, wire};
+use crate::ProtocolError;
 use crate::cbor::{Encoder, decode_strict};
 use crate::identity::{
     CredentialIdentity, DeviceEntry, DeviceList, DeviceListUnsigned, Kind, SignerTier, SskSigner,
-    Tier, UmkSigner, k_backup, k_header, recovery_key_base32,
+    Tier, UmkSigner, k_backup, k_header, recovery_key_base32, recovery_key_from_base32,
+    recovery_key_normalise,
 };
 use crate::ids::{DeviceId, UserId};
 use crate::mls::{CIPHERSUITE, DillaProvider, StorageError, UnitScope, build_key_package};
@@ -16,6 +21,7 @@ use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::OpenMlsProvider;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::signatures::Signer;
+use std::collections::BTreeSet;
 use tls_codec::Serialize;
 use zeroize::Zeroizing;
 
@@ -236,7 +242,6 @@ pub(super) struct EnrolRecord {
     pub(super) user_id: Option<[u8; 16]>,
 }
 impl EnrolRecord {
-    #[allow(dead_code)] // web-2a task 3's enrol_begin is the first non-test caller.
     pub(super) fn encode(&self) -> Vec<u8> {
         let mut e = Encoder::new();
         e.array(5)
@@ -363,6 +368,158 @@ fn seal(
     let mut e = Encoder::new();
     e.array(3).uint(1).bytes(&*nonce).bytes(&ciphertext);
     Ok(e.into_vec())
+}
+
+enum Unsealed {
+    Malformed,
+    Refused,
+}
+
+fn open_sealed(key: &[u8; 32], aad: &[u8], stored: &[u8]) -> Result<Zeroizing<Vec<u8>>, Unsealed> {
+    let (nonce, ct) = decode_strict(stored, |d| {
+        d.array(3)?;
+        if d.uint()? != 1 {
+            return Err(shape());
+        }
+        Ok((d.bytes_exact::<12>()?, d.bytes()?.to_vec()))
+    })
+    .map_err(|_| Unsealed::Malformed)?;
+    let aead = Aes256Gcm::new_from_slice(key).map_err(|_| Unsealed::Refused)?;
+    aead.decrypt(Nonce::from_slice(&nonce), Payload { msg: &ct, aad })
+        .map(Zeroizing::new)
+        .map_err(|_| Unsealed::Refused)
+}
+
+struct Recovered {
+    umk_priv: Zeroizing<[u8; 32]>,
+    ssk_priv: Zeroizing<[u8; 32]>,
+    umk_pub: [u8; 32],
+    ssk_pub: [u8; 32],
+    k_backup: Zeroizing<[u8; 32]>,
+    pins: Vec<u8>,
+    state_list_version: Option<u64>,
+    list: DeviceList,
+}
+
+fn recover(
+    recovery_key: &str,
+    root_sealed: &[u8],
+    state_sealed: &[u8],
+    list_body: &[u8],
+    user_id: &[u8; 16],
+    expect: Option<(&[u8; 32], &[u8; 32])>,
+) -> Result<Recovered, ClientError> {
+    let normalised = Zeroizing::new(recovery_key_normalise(recovery_key));
+    let rk = Zeroizing::new(
+        recovery_key_from_base32(&normalised).map_err(|_| ClientError::new(E_RECOVERY_KEY, ""))?,
+    );
+    let k_header = Zeroizing::new(k_header(&rk));
+    let plain = open_sealed(&k_header, AAD_ROOT, root_sealed).map_err(|e| match e {
+        Unsealed::Malformed => ClientError::new(E_CORE_INPUT, "root_sealed is malformed"),
+        Unsealed::Refused => ClientError::new(E_RECOVERY_KEY, ""),
+    })?;
+    let (umk_priv, ssk_priv) = decode_strict(&plain, |d| {
+        d.array(3)?;
+        if d.uint()? != 1 {
+            return Err(shape());
+        }
+        Ok((
+            Zeroizing::new(d.bytes_exact::<32>()?),
+            Zeroizing::new(d.bytes_exact::<32>()?),
+        ))
+    })
+    .map_err(|_| ClientError::new(E_CORE_INPUT, "root object is malformed"))?;
+    let umk_pub = UmkSigner::from_bytes(&umk_priv).public();
+    let ssk_pub = SskSigner::from_bytes(&ssk_priv).public();
+    if let Some((expected_umk, expected_ssk)) = expect
+        && (&umk_pub != expected_umk || &ssk_pub != expected_ssk)
+    {
+        return Err(ProtocolError::Credential.into());
+    }
+    let k_backup = Zeroizing::new(k_backup(&rk));
+    let state = if state_sealed.is_empty() {
+        None
+    } else {
+        open_sealed(&k_backup, AAD_STATE, state_sealed).ok()
+    };
+    let state_parts = state.as_ref().and_then(|plain| {
+        decode_strict(plain, |d| {
+            d.array(3)?;
+            if d.uint()? != 1 {
+                return Err(shape());
+            }
+            let list = d.bytes()?.to_vec();
+            let pins = d.skip()?;
+            if pins.first().is_none_or(|b| b >> 5 != 4) {
+                return Err(shape());
+            }
+            Ok((list, pins.to_vec()))
+        })
+        .ok()
+    });
+    let (state_list_version, pins) = state_parts.map_or((None, vec![0x80]), |(blob, pins)| {
+        (
+            DeviceList::decode(&blob).ok().map(|l| l.unsigned.version),
+            pins,
+        )
+    });
+    let served = wire::decode_device_list_body(list_body)
+        .map_err(|_| ClientError::new(E_CORE_INPUT, "list_body is malformed"))?;
+    let list = DeviceList::decode(&served.blob)?;
+    list.verify(&ssk_pub)?;
+    if list.unsigned.user_id != UserId::from_bytes(*user_id) {
+        return Err(ProtocolError::Credential.into());
+    }
+    if served.version != list.unsigned.version
+        || served.prev_hash != list.unsigned.prev_hash
+        || served.ssk_signature != list.sig_ssk
+    {
+        return Err(ClientError::new(
+            E_CORE_INPUT,
+            "list_body elements disagree",
+        ));
+    }
+    Ok(Recovered {
+        umk_priv,
+        ssk_priv,
+        umk_pub,
+        ssk_pub,
+        k_backup,
+        pins,
+        state_list_version,
+        list,
+    })
+}
+
+fn signed_next(
+    ssk_priv: &[u8; 32],
+    ssk_pub: &[u8; 32],
+    list: &DeviceList,
+    entries: Vec<DeviceEntry>,
+) -> Result<DeviceList, ClientError> {
+    let unsigned = DeviceListUnsigned {
+        v: 1,
+        user_id: list.unsigned.user_id,
+        version: list.unsigned.version + 1,
+        prev_hash: list.hash(),
+        entries,
+    };
+    let sig_ssk = SskSigner::from_bytes(ssk_priv).sign_device_list(&unsigned);
+    let next = DeviceList { unsigned, sig_ssk };
+    next.verify(ssk_pub)?;
+    Ok(next)
+}
+
+fn reseal_state(
+    provider: &DillaProvider,
+    k_backup: &[u8; 32],
+    next: &DeviceList,
+    pins: &[u8],
+) -> Result<Vec<u8>, ClientError> {
+    let mut e = Encoder::new();
+    e.array(3).uint(1).bytes(&next.encode()).raw(pins);
+    let plain = Zeroizing::new(e.into_vec());
+    seal(provider, k_backup, AAD_STATE, &plain)
 }
 fn credential(rec: &SignupRecord, user_id: [u8; 16]) -> CredentialIdentity {
     CredentialIdentity {
@@ -591,6 +748,9 @@ impl ClientCore {
         self.write(|_, u| {
             let (identity, signup, enrol) = u.with_conn(load_phase)?;
             let mut rec = ready(decode_phase(identity, signup, enrol)?)?;
+            rec.device_list = wire::decode_device_list_body(&rec.device_list_body)
+                .map_err(|_| malformed(schema::IDENTITY))?
+                .blob;
             rec.list_published = true;
             u.with_conn(|c| schema::meta_put(c, schema::IDENTITY, &rec.encode()))?;
             Ok(())
@@ -604,7 +764,7 @@ impl ClientCore {
             Phase::None => return Err(ClientError::new(E_CORE_NO_IDENTITY, "")),
             Phase::Pending(r) => (r.instance_id, r.device_id),
             Phase::Ready(r) => (r.instance_id, r.device_id),
-            Phase::Enrolling(_) => return Err(ClientError::new(E_CORE_NO_IDENTITY, "")),
+            Phase::Enrolling(r) => (r.instance_id, r.device_id),
         };
         let signer = self
             .signer
@@ -691,13 +851,405 @@ impl ClientCore {
         })
     }
     pub fn sealed_objects(&self) -> Result<Vec<u8>, ClientError> {
-        let (root, state) = self.read(|c| {
+        let (phase, root, state) = self.read(|c| {
             Ok((
+                load_phase(c)?,
                 schema::meta_get(c, schema::ROOT_SEALED)?,
                 schema::meta_get(c, schema::STATE_SEALED)?,
             ))
         })?;
-        Ok(wire::sealed_objects(root.as_deref(), state.as_deref()))
+        let uploaded = match decode_phase(phase.0, phase.1, phase.2)? {
+            Phase::Ready(rec) => rec.state_uploaded,
+            _ => false,
+        };
+        Ok(wire::sealed_objects(
+            root.as_deref(),
+            state.as_deref(),
+            uploaded,
+        ))
+    }
+
+    pub fn enrol_begin(&mut self, instance_id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
+        let (signer, device_id, dsk_pub) = self.write(|ctx, u| {
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            match decode_phase(identity, signup, enrol)? {
+                Phase::None => {}
+                Phase::Pending(_) => {
+                    return Err(ClientError::new(E_CORE_STATE, "a signup is pending"));
+                }
+                Phase::Ready(_) => {
+                    return Err(ClientError::new(E_CORE_STATE, "an identity exists"));
+                }
+                Phase::Enrolling(_) => {
+                    return Err(ClientError::new(E_CORE_STATE, "an enrolment is pending"));
+                }
+            }
+            let device_id = random::<16>(ctx.provider)?;
+            let signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm())
+                .map_err(|e| ClientError::new(E_CORE_MLS, format!("keygen: {e:?}")))?;
+            signer.store(ctx.provider.storage())?;
+            let dsk_pub: [u8; 32] = signer
+                .public()
+                .try_into()
+                .map_err(|_| ClientError::new(E_CORE_STATE, "dsk is not 32 bytes"))?;
+            let rec = EnrolRecord {
+                instance_id: *instance_id,
+                device_id: *device_id,
+                dsk_pub,
+                user_id: None,
+            };
+            u.with_conn(|c| schema::meta_put(c, schema::ENROL, &rec.encode()))?;
+            Ok((signer, *device_id, dsk_pub))
+        })?;
+        self.signer = Some(signer);
+        Ok(wire::bytes_pair(&device_id, &dsk_pub))
+    }
+
+    pub fn enrol_session_sign(
+        &self,
+        nonce: &[u8; 32],
+        login: &[u8],
+    ) -> Result<Vec<u8>, ClientError> {
+        if !(1..=256).contains(&login.len()) {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "login must be 1..=256 bytes",
+            ));
+        }
+        let Phase::Enrolling(rec) = self.phase()? else {
+            return Err(ClientError::new(E_CORE_STATE, "no enrolment is pending"));
+        };
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| ClientError::new(E_CORE_STATE, "the device key is not loaded"))?;
+        let sig = signer
+            .sign(&session_preimage(
+                &rec.instance_id,
+                &rec.device_id,
+                nonce,
+                0,
+            ))
+            .map_err(|e| ClientError::new(E_CORE_MLS, format!("sign: {e:?}")))?;
+        let placeholder = CredentialIdentity {
+            v: 1,
+            umk_pub: [0; 32],
+            user_id: UserId::from_bytes([0; 16]),
+            device_id: DeviceId::from_bytes(rec.device_id),
+            kind: Kind::User,
+            tier: Tier::Browser,
+            signer_tier: SignerTier::Browser,
+            ssk_pub: [0; 32],
+            sig_umk_ssk: [0; 64],
+            sig_ssk_dev: [0; 64],
+        };
+        Ok(wire::enrol_session_body(
+            nonce,
+            &sig,
+            &rec.device_id,
+            &rec.dsk_pub,
+            &placeholder.encode(),
+            login,
+        ))
+    }
+
+    pub fn enrol_registered(&mut self, user_id: &[u8; 16]) -> Result<(), ClientError> {
+        if *user_id == [0; 16] {
+            return Err(ClientError::new(E_CORE_INPUT, "user_id is all zero"));
+        }
+        self.write(|_, u| {
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let Phase::Enrolling(mut rec) = decode_phase(identity, signup, enrol)? else {
+                return Err(ClientError::new(E_CORE_STATE, "no enrolment is pending"));
+            };
+            match rec.user_id {
+                Some(id) if id == *user_id => Ok(()),
+                Some(_) => Err(ClientError::new(E_CORE_STATE, "user already recorded")),
+                None => {
+                    rec.user_id = Some(*user_id);
+                    u.with_conn(|c| schema::meta_put(c, schema::ENROL, &rec.encode()))?;
+                    Ok(())
+                }
+            }
+        })
+    }
+
+    pub fn enrol_reset(&mut self) -> Result<(), ClientError> {
+        self.write(|ctx, u| {
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let Phase::Enrolling(rec) = decode_phase(identity, signup, enrol)? else {
+                return Err(ClientError::new(E_CORE_STATE, "no enrolment is pending"));
+            };
+            SignatureKeyPair::delete(
+                ctx.provider.storage(),
+                &rec.dsk_pub,
+                CIPHERSUITE.signature_algorithm(),
+            )?;
+            u.with_conn(|c| {
+                schema::meta_del(c, schema::ENROL)?;
+                schema::meta_del(c, schema::SESSION)
+            })?;
+            Ok(())
+        })?;
+        self.signer = None;
+        Ok(())
+    }
+
+    pub fn enrol_complete(
+        &mut self,
+        recovery_key: &str,
+        root_sealed: &[u8],
+        state_sealed: &[u8],
+        list_body: &[u8],
+        username: &str,
+        now: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.write(|ctx, u| {
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let Phase::Enrolling(rec) = decode_phase(identity, signup, enrol)? else {
+                return Err(ClientError::new(E_CORE_STATE, "no enrolment is pending"));
+            };
+            let user_id = rec
+                .user_id
+                .ok_or_else(|| ClientError::new(E_CORE_STATE, "no user recorded"))?;
+            let recovered = recover(
+                recovery_key,
+                root_sealed,
+                state_sealed,
+                list_body,
+                &user_id,
+                None,
+            )?;
+            if recovered
+                .state_list_version
+                .is_some_and(|v| recovered.list.unsigned.version < v)
+            {
+                return Err(ClientError::new(
+                    E_CORE_INPUT,
+                    "the instance served an older device list",
+                ));
+            }
+            if recovered
+                .list
+                .lookup(&DeviceId::from_bytes(rec.device_id))
+                .is_some_and(|e| e.revoked_at.is_none() && e.dsk_pub == rec.dsk_pub)
+            {
+                return Err(ClientError::new(E_CORE_STATE, "device is listed"));
+            }
+            let umk = UmkSigner::from_bytes(&recovered.umk_priv);
+            let ssk = SskSigner::from_bytes(&recovered.ssk_priv);
+            let cred = CredentialIdentity {
+                v: 1,
+                umk_pub: recovered.umk_pub,
+                user_id: UserId::from_bytes(user_id),
+                device_id: DeviceId::from_bytes(rec.device_id),
+                kind: Kind::User,
+                tier: Tier::Browser,
+                signer_tier: SignerTier::Browser,
+                ssk_pub: recovered.ssk_pub,
+                sig_umk_ssk: umk.sign_ssk(&recovered.ssk_pub),
+                sig_ssk_dev: ssk.sign_device(
+                    &DeviceId::from_bytes(rec.device_id),
+                    &rec.dsk_pub,
+                    Kind::User,
+                    Tier::Browser,
+                    SignerTier::Browser,
+                ),
+            };
+            cred.verify_signatures(&rec.dsk_pub)
+                .map_err(|_| ClientError::new(E_CORE_STATE, "credential does not verify"))?;
+            let mut entries = recovered.list.unsigned.entries.clone();
+            entries.push(DeviceEntry {
+                device_id: DeviceId::from_bytes(rec.device_id),
+                dsk_pub: rec.dsk_pub,
+                tier: Tier::Browser,
+                added_at: now,
+                revoked_at: None,
+            });
+            let next = signed_next(
+                &recovered.ssk_priv,
+                &recovered.ssk_pub,
+                &recovered.list,
+                entries,
+            )?;
+            let state = reseal_state(ctx.provider, &recovered.k_backup, &next, &recovered.pins)?;
+            let put = wire::device_list_put_body(&next);
+            let identity = IdentityRecord {
+                instance_id: rec.instance_id,
+                user_id,
+                device_id: rec.device_id,
+                dsk_pub: rec.dsk_pub,
+                umk_pub: recovered.umk_pub,
+                ssk_pub: recovered.ssk_pub,
+                username: username.to_owned(),
+                credential: cred.encode(),
+                device_list_body: put.clone(),
+                list_published: false,
+                device_list: recovered.list.encode(),
+                state_uploaded: false,
+            };
+            u.with_conn(|c| {
+                schema::meta_put(c, schema::STATE_SEALED, &state)?;
+                schema::meta_put(c, schema::ROOT_SEALED, root_sealed)?;
+                schema::meta_put(c, schema::IDENTITY, &identity.encode())?;
+                schema::meta_del(c, schema::ENROL)
+            })?;
+            Ok(wire::bytes_pair(&put, &state))
+        })
+    }
+
+    pub fn device_list_revoke(
+        &mut self,
+        recovery_key: &str,
+        root_sealed: &[u8],
+        state_sealed: &[u8],
+        list_body: &[u8],
+        device_ids: &[u8],
+        now: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        if device_ids.is_empty()
+            || device_ids.len() > 64 * 16
+            || !device_ids.len().is_multiple_of(16)
+        {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "device_ids must be 1..=64 ids of 16 bytes",
+            ));
+        }
+        let mut ids = BTreeSet::new();
+        for &id in device_ids.as_chunks::<16>().0 {
+            if !ids.insert(id) {
+                return Err(ClientError::new(E_CORE_INPUT, "device_ids repeats an id"));
+            }
+        }
+        self.write(|ctx, u| {
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let mut rec = ready(decode_phase(identity, signup, enrol)?)?;
+            let recovered = recover(
+                recovery_key,
+                root_sealed,
+                state_sealed,
+                list_body,
+                &rec.user_id,
+                Some((&rec.umk_pub, &rec.ssk_pub)),
+            )?;
+            let stored =
+                DeviceList::decode(&rec.device_list).map_err(|_| malformed(schema::IDENTITY))?;
+            if recovered.list.unsigned.version < stored.unsigned.version
+                || recovered
+                    .state_list_version
+                    .is_some_and(|v| recovered.list.unsigned.version < v)
+            {
+                return Err(ClientError::new(
+                    E_CORE_INPUT,
+                    "the instance served an older device list",
+                ));
+            }
+            for id in &ids {
+                if !recovered
+                    .list
+                    .lookup(&DeviceId::from_bytes(*id))
+                    .is_some_and(|e| e.revoked_at.is_none())
+                {
+                    return Err(ClientError::new(
+                        E_CORE_NOT_FOUND,
+                        "device is not an unrevoked entry of the list",
+                    ));
+                }
+            }
+            let mut entries = recovered.list.unsigned.entries.clone();
+            for entry in &mut entries {
+                if ids.contains(entry.device_id.as_bytes()) {
+                    entry.revoked_at = Some(now);
+                }
+            }
+            let next = signed_next(
+                &recovered.ssk_priv,
+                &recovered.ssk_pub,
+                &recovered.list,
+                entries,
+            )?;
+            let state = reseal_state(ctx.provider, &recovered.k_backup, &next, &recovered.pins)?;
+            let put = wire::device_list_put_body(&next);
+            rec.device_list_body = put.clone();
+            rec.list_published = false;
+            rec.device_list = recovered.list.encode();
+            rec.state_uploaded = false;
+            u.with_conn(|c| {
+                schema::meta_put(c, schema::STATE_SEALED, &state)?;
+                schema::meta_put(c, schema::IDENTITY, &rec.encode())
+            })?;
+            Ok(wire::bytes_pair(&put, &state))
+        })
+    }
+
+    pub fn own_device_list_update(&mut self, history_body: &[u8]) -> Result<Vec<u8>, ClientError> {
+        let rows = wire::decode_history_body(history_body)
+            .map_err(|_| ClientError::new(E_CORE_INPUT, "history_body is malformed"))?;
+        self.write(|_, u| {
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let mut rec = ready(decode_phase(identity, signup, enrol)?)?;
+            let mut newest =
+                DeviceList::decode(&rec.device_list).map_err(|_| malformed(schema::IDENTITY))?;
+            let mut adopted = false;
+            for row in &rows {
+                let list = DeviceList::decode(&row.blob)?;
+                if row.version == newest.unsigned.version && row.blob == newest.encode() {
+                    continue;
+                }
+                list.accept(Some(&newest), &rec.ssk_pub)?;
+                if row.version != list.unsigned.version
+                    || row.prev_hash != list.unsigned.prev_hash
+                    || row.ssk_signature != list.sig_ssk
+                {
+                    return Err(ClientError::new(
+                        E_CORE_INPUT,
+                        "history row elements disagree",
+                    ));
+                }
+                if list.unsigned.user_id != UserId::from_bytes(rec.user_id) {
+                    return Err(ProtocolError::Credential.into());
+                }
+                newest = list;
+                adopted = true;
+            }
+            if adopted {
+                if !rec.list_published {
+                    let candidate = wire::decode_device_list_body(&rec.device_list_body)
+                        .map_err(|_| malformed(schema::IDENTITY))?;
+                    if candidate.version <= newest.unsigned.version {
+                        rec.device_list_body = wire::device_list_put_body(&newest);
+                        rec.list_published = true;
+                    }
+                }
+                rec.device_list = newest.encode();
+                u.with_conn(|c| schema::meta_put(c, schema::IDENTITY, &rec.encode()))?;
+            }
+            let listed = newest
+                .lookup(&DeviceId::from_bytes(rec.device_id))
+                .is_some_and(|e| e.revoked_at.is_none() && e.dsk_pub == rec.dsk_pub);
+            Ok(wire::list_status(newest.unsigned.version, listed))
+        })
+    }
+
+    pub fn own_device_list(&self) -> Result<Vec<u8>, ClientError> {
+        let rec = ready(self.phase()?)?;
+        let list = DeviceList::decode(&rec.device_list).map_err(|_| malformed(schema::IDENTITY))?;
+        Ok(wire::own_device_list(
+            list.unsigned.version,
+            rec.list_published,
+            &list.unsigned.entries,
+        ))
+    }
+
+    pub fn state_sealed_uploaded(&mut self) -> Result<(), ClientError> {
+        self.write(|_, u| {
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let mut rec = ready(decode_phase(identity, signup, enrol)?)?;
+            rec.state_uploaded = true;
+            u.with_conn(|c| schema::meta_put(c, schema::IDENTITY, &rec.encode()))?;
+            Ok(())
+        })
     }
 }
 

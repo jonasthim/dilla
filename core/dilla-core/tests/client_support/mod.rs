@@ -1399,3 +1399,86 @@ impl RawPeer {
         .expect("200 body")
     }
 }
+
+fn device_of(core: &ClientCore) -> [u8; 16] {
+    let identity = core.identity().expect("identity");
+    decode_strict(&identity, |d| {
+        d.array(6)?;
+        assert_eq!(d.uint()?, 2, "phase 2");
+        d.opt_bytes_exact::<16>()?;
+        d.opt_bytes_exact::<16>()?;
+        let device = d.opt_bytes_exact::<16>()?;
+        d.text()?;
+        d.uint()?;
+        Ok(device)
+    })
+    .expect("identity shape")
+    .expect("a device id in phase 2")
+}
+
+/// `ready_core` that also returns the recovery key `signup_begin` showed, its list v1 accepted
+/// (web-2a task 3).
+pub fn ready_core_with_key(user: u8, username: &str) -> (Core, String) {
+    let conn = memory();
+    let probe = Arc::clone(&conn);
+    let mut core = ClientCore::open(conn).expect("open");
+    let rk = core.signup_begin(&INSTANCE).expect("signup_begin");
+    core.signup_complete(&[user; 16], username, NOW)
+        .expect("signup_complete");
+    core.device_list_published().expect("device_list_published");
+    let device = device_of(&core);
+    (
+        Core {
+            core,
+            probe,
+            user: [user; 16],
+            device,
+        },
+        rk,
+    )
+}
+
+/// A second browser of `first`'s account, enrolled by recovery key from `first`'s sealed objects and
+/// its current list, then published (web-2a task 3): enrol_begin → enrol_session_sign →
+/// enrol_registered → enrol_complete → device_list_published.
+pub fn enrolled_core(first: &Core, recovery_key: &str, now: u64) -> Core {
+    let conn = memory();
+    let probe = Arc::clone(&conn);
+    let mut core = ClientCore::open(conn).expect("open");
+    core.enrol_begin(&INSTANCE).expect("enrol_begin");
+    core.enrol_session_sign(&[0x5e; 32], b"assertion")
+        .expect("enrol_session_sign");
+    core.enrol_registered(&first.user)
+        .expect("enrol_registered");
+    let sealed = first.core.sealed_objects().expect("sealed_objects");
+    let (root, state) = decode_strict(&sealed, |d| {
+        d.array(3)?;
+        let root = d.bytes()?.to_vec();
+        let state = d.bytes()?.to_vec();
+        d.uint()?;
+        Ok((root, state))
+    })
+    .expect("[root, state, state_uploaded]");
+    let identity = first.core.identity().expect("identity");
+    let username = decode_strict(&identity, |d| {
+        d.array(6)?;
+        for _ in 0..4 {
+            d.skip()?;
+        }
+        let name = d.text()?.to_owned();
+        d.uint()?;
+        Ok(name)
+    })
+    .expect("identity shape");
+    let list = first.core.device_list_body().expect("device_list_body");
+    core.enrol_complete(recovery_key, &root, &state, &list, &username, now)
+        .expect("enrol_complete");
+    core.device_list_published().expect("device_list_published");
+    let device = device_of(&core);
+    Core {
+        core,
+        probe,
+        user: first.user,
+        device,
+    }
+}

@@ -20,7 +20,9 @@ mod safety;
 pub use credential::{CredentialIdentity, SskSigner, UmkSigner};
 pub use device_list::{DeviceEntry, DeviceList, DeviceListUnsigned};
 pub use pairing::{PairingPayload, PairingQr, Pin, fingerprint};
-pub use recovery::{k_backup, k_header, recovery_key_base32, recovery_key_from_base32};
+pub use recovery::{
+    k_backup, k_header, recovery_key_base32, recovery_key_from_base32, recovery_key_normalise,
+};
 pub use safety::{DISPLAY_GROUP, decimal_digits, group_digits, safety_number, sas};
 
 // Domain separation strings (protocol/03-identity.md "Keys", protocol/06-backup-archive.md).

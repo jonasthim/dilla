@@ -14,8 +14,8 @@ use dilla_core::ProtocolError;
 use dilla_core::cbor::{Encoder, decode_strict};
 use dilla_core::client::{ClientCore, ClientError, HANDSHAKE_TAIL, migrate_app, session_preimage};
 use dilla_core::identity::{
-    CredentialIdentity, DeviceList, Kind, SignerTier, SskSigner, Tier, UmkSigner, k_backup,
-    k_header, recovery_key_from_base32,
+    CredentialIdentity, DeviceEntry, DeviceList, DeviceListUnsigned, Kind, SignerTier, SskSigner,
+    Tier, UmkSigner, k_backup, k_header, recovery_key_base32, recovery_key_from_base32,
 };
 use dilla_core::ids::{DeviceId, InstanceId, UserId};
 use dilla_core::mls::{
@@ -28,6 +28,9 @@ use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use rusqlite::OptionalExtension;
 use std::sync::{Arc, Mutex};
+
+mod client_support;
+use client_support::{Instance, Relay, enrolled_core, ready_core_with_key};
 
 const INSTANCE: [u8; 16] = [0x11; 16];
 const USER: [u8; 16] = [0x42; 16];
@@ -253,9 +256,12 @@ fn signup_record(bytes: &[u8]) -> ([u8; 16], [u8; 16], [u8; 32], [u8; 32], [u8; 
     .expect("the ten-element signup record")
 }
 
-fn sealed(root: Option<&[u8]>, state: Option<&[u8]>) -> Vec<u8> {
+fn sealed(root: Option<&[u8]>, state: Option<&[u8]>, state_uploaded: u64) -> Vec<u8> {
     let mut e = Encoder::new();
-    e.array(2).opt_bytes(root).opt_bytes(state);
+    e.array(3)
+        .opt_bytes(root)
+        .opt_bytes(state)
+        .uint(state_uploaded);
     e.into_vec()
 }
 
@@ -829,7 +835,7 @@ fn a_fresh_store_is_phase_0_and_refuses_every_identity_bound_call() {
     core.session_clear().expect("a no-op without a record");
     assert_eq!(
         core.sealed_objects().expect("sealed_objects"),
-        [0x82, 0xf6, 0xf6]
+        [0x83, 0xf6, 0xf6, 0x00]
     );
     core.unload();
     assert_eq!(info(&core).phase, 0);
@@ -908,7 +914,7 @@ fn signup_begin_seals_the_root_object_under_the_returned_recovery_key() {
     assert!(meta(&c, "state_sealed").is_none());
     assert_eq!(
         core.sealed_objects().expect("sealed"),
-        sealed(Some(&root), None)
+        sealed(Some(&root), None, 0)
     );
     assert_eq!(
         err(core.signup_begin(&INSTANCE)),
@@ -1075,7 +1081,7 @@ fn signup_complete_signs_device_list_v1_and_seals_the_state_object() {
     let root = meta(&c, "root_sealed").expect("root kept");
     assert_eq!(
         core.sealed_objects().expect("sealed"),
-        sealed(Some(&root), Some(&state))
+        sealed(Some(&root), Some(&state), 0)
     );
     core.device_list_published().expect("mark published");
     core.device_list_published().expect("idempotent");
@@ -1555,7 +1561,7 @@ fn an_enrol_record_is_phase_3_stores_sessions_and_refuses_the_identity_calls() {
     }
     assert_eq!(
         core.sealed_objects().expect("every phase"),
-        sealed(None, None)
+        sealed(None, None, 0)
     );
     core.session_clear().expect("every phase");
 
@@ -1631,4 +1637,1624 @@ fn an_enrol_record_beside_another_phase_or_without_its_key_is_refused() {
             detail: "app_meta enrol is malformed".into()
         }
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// enrolment by recovery key, revocation and the own list (web-2a task 3; L-CORE-26…28)
+//
+// Who can trigger each refusal tested below against an honest person (lesson e):
+// - E_RECOVERY_KEY: the instance can make every key fail by serving other bytes (a denial it
+//   can mount anyway), but cannot make a wrong key pass under K_header.
+// - The state object refuses nothing (ruling 28): an enrolled session or the instance can replace it
+//   with bytes that do not open; the recovering device then carries no pins ([]) and re-seals a sound
+//   object, so the worst case is lost pins, of which browsers hold none in web-2a.
+// - E_CREDENTIAL on a served list: only a list the user's SSK did not sign (a hostile instance, or a
+//   stored list for another user). The honest instance serves the user's own list, which verifies.
+// - "device is listed": an honest caller reaches it only by repeating a completed enrolment, and
+//   recovers by re-establishing.
+// - E_DEVICE_LIST_STALE from own_device_list_update: only an instance that serves a gap or a lower
+//   version. The honest instance serves the contiguous chain (L-HTTP-56).
+// - the device_ids refusals: only the caller's own arguments.
+// None can be triggered by another member or another user: every input is the own user's objects.
+
+const LATER: u64 = NOW + 60;
+
+/// One pin row of protocol/06's state object, so the carried-through `pins` value is not `[]`.
+fn pins() -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(1)
+        .array(4)
+        .bytes(&[0x55; 16])
+        .bytes(&[0x66; 32])
+        .uint(1_789_000_000)
+        .uint(1);
+    e.into_vec()
+}
+
+/// Core A after signup, its list v1 accepted: (core, connection, the key as shown, registration,
+/// the v1 PUT body, which is also the shape of the GET 200 body).
+fn signed_up() -> (ClientCore, ConnHandle, String, Registration, Vec<u8>) {
+    let (mut core, c) = core();
+    let rk_text = core.signup_begin(&INSTANCE).expect("signup_begin");
+    let reg = registration(
+        &core
+            .signup_request("INV-1", "alice", "Alice", None)
+            .expect("signup_request"),
+    );
+    let put = core
+        .signup_complete(&USER, "alice", NOW)
+        .expect("signup_complete");
+    core.device_list_published().expect("device_list_published");
+    (core, c, rk_text, reg, put)
+}
+
+/// `[root_sealed|null, state_sealed|null, state_uploaded]`.
+fn sealed_of(core: &ClientCore) -> (Option<Vec<u8>>, Option<Vec<u8>>, u64) {
+    let bytes = core.sealed_objects().expect("sealed_objects");
+    decode_strict(&bytes, |d| {
+        d.array(3)?;
+        Ok((
+            d.opt_bytes()?.map(<[u8]>::to_vec),
+            d.opt_bytes()?.map(<[u8]>::to_vec),
+            d.uint()?,
+        ))
+    })
+    .expect("[root|null, state|null, state_uploaded]")
+}
+
+fn begin_enrol(core: &mut ClientCore) -> ([u8; 16], [u8; 32]) {
+    let bytes = core.enrol_begin(&INSTANCE).expect("enrol_begin");
+    decode_strict(&bytes, |d| {
+        d.array(2)?;
+        Ok((d.bytes_exact::<16>()?, d.bytes_exact::<32>()?))
+    })
+    .expect("[device_id, dsk_pub]")
+}
+
+fn list_and_state(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    decode_strict(bytes, |d| {
+        d.array(2)?;
+        Ok((d.bytes()?.to_vec(), d.bytes()?.to_vec()))
+    })
+    .expect("[device_list_put_body, state_sealed]")
+}
+
+fn put_parts(body: &[u8]) -> (u64, Vec<u8>, [u8; 64], [u8; 32]) {
+    decode_strict(body, |d| {
+        d.array(4)?;
+        Ok((
+            d.uint()?,
+            d.bytes()?.to_vec(),
+            d.bytes_exact::<64>()?,
+            d.bytes_exact::<32>()?,
+        ))
+    })
+    .expect("[version, blob, ssk_signature, prev_hash]")
+}
+
+fn raw_put_body(version: u64, blob: &[u8], sig: &[u8; 64], prev: &[u8; 32]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(4).uint(version).bytes(blob).bytes(sig).bytes(prev);
+    e.into_vec()
+}
+
+fn put_body(list: &DeviceList) -> Vec<u8> {
+    raw_put_body(
+        list.unsigned.version,
+        &list.encode(),
+        &list.sig_ssk,
+        &list.unsigned.prev_hash,
+    )
+}
+
+/// The 200 body of `GET …/device-list?after=N`.
+fn history(lists: &[&DeviceList]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(lists.len());
+    for l in lists {
+        e.array(4)
+            .uint(l.unsigned.version)
+            .bytes(&l.encode())
+            .bytes(&l.sig_ssk)
+            .bytes(&l.unsigned.prev_hash);
+    }
+    e.into_vec()
+}
+
+fn seal_with(key: &[u8; 32], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
+    let nonce = [0x24u8; 12];
+    let ct = Aes256Gcm::new_from_slice(key)
+        .expect("key")
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .expect("seal");
+    let mut e = Encoder::new();
+    e.array(3).uint(1).bytes(&nonce).bytes(&ct);
+    e.into_vec()
+}
+
+fn state_plain(list_blob: &[u8], pins: &[u8]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(3).uint(1).bytes(list_blob).raw(pins);
+    e.into_vec()
+}
+
+/// (device_list blob, raw pins) of a stored state object.
+fn state_parts(key: &[u8; 32], stored: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let plain = open_sealed(key, b"dilla state v1", stored);
+    decode_strict(&plain, |d| {
+        d.array(3)?;
+        assert_eq!(d.uint()?, 1);
+        Ok((d.bytes()?.to_vec(), d.skip()?.to_vec()))
+    })
+    .expect("[1, device_list, pins]")
+}
+
+/// The key as a person types it from paper: lower case, groups of four, hyphens, spaces, a newline.
+fn as_typed(rk_text: &str) -> String {
+    let groups: Vec<String> = rk_text
+        .as_bytes()
+        .chunks(4)
+        .map(|g| String::from_utf8(g.to_vec()).expect("ascii").to_lowercase())
+        .collect();
+    format!("{}\n", groups.join(" - "))
+}
+
+fn browser(id: [u8; 16], dsk: [u8; 32], added: u64, revoked: Option<u64>) -> DeviceEntry {
+    DeviceEntry {
+        device_id: DeviceId::from_bytes(id),
+        dsk_pub: dsk,
+        tier: Tier::Browser,
+        added_at: added,
+        revoked_at: revoked,
+    }
+}
+
+fn signed(
+    ssk: &[u8; 32],
+    user: [u8; 16],
+    version: u64,
+    prev_hash: [u8; 32],
+    entries: Vec<DeviceEntry>,
+) -> DeviceList {
+    let unsigned = DeviceListUnsigned {
+        v: 1,
+        user_id: UserId::from_bytes(user),
+        version,
+        prev_hash,
+        entries,
+    };
+    let sig_ssk = SskSigner::from_bytes(ssk).sign_device_list(&unsigned);
+    DeviceList { unsigned, sig_ssk }
+}
+
+type OwnEntry = ([u8; 16], [u8; 32], u64, u64, Option<u64>);
+
+fn own_list(core: &ClientCore) -> (u64, u64, Vec<OwnEntry>) {
+    let bytes = core.own_device_list().expect("own_device_list");
+    decode_strict(&bytes, |d| {
+        d.array(3)?;
+        let version = d.uint()?;
+        let published = d.uint()?;
+        let n = d.array_len()?;
+        let mut entries = Vec::new();
+        for _ in 0..n {
+            d.array(5)?;
+            entries.push((
+                d.bytes_exact::<16>()?,
+                d.bytes_exact::<32>()?,
+                d.uint()?,
+                d.uint()?,
+                d.opt_uint()?,
+            ));
+        }
+        Ok((version, published, entries))
+    })
+    .expect("[version, published, [[device_id, dsk_pub, tier, added_at, revoked_at]]]")
+}
+
+fn status(bytes: &[u8]) -> (u64, u64) {
+    decode_strict(bytes, |d| {
+        d.array(2)?;
+        Ok((d.uint()?, d.uint()?))
+    })
+    .expect("[version, listed]")
+}
+
+struct IdentityV2 {
+    user: [u8; 16],
+    device: [u8; 16],
+    dsk: [u8; 32],
+    umk: [u8; 32],
+    ssk: [u8; 32],
+    username: String,
+    credential: Vec<u8>,
+    device_list_body: Vec<u8>,
+    published: u64,
+    device_list: Vec<u8>,
+    state_uploaded: u64,
+}
+
+fn identity_v2(c: &ConnHandle) -> IdentityV2 {
+    let record = meta(c, "identity").expect("identity record");
+    decode_strict(&record, |d| {
+        d.array(13)?;
+        assert_eq!(d.uint()?, 2, "record version");
+        assert_eq!(d.bytes_exact::<16>()?, INSTANCE);
+        Ok(IdentityV2 {
+            user: d.bytes_exact()?,
+            device: d.bytes_exact()?,
+            dsk: d.bytes_exact()?,
+            umk: d.bytes_exact()?,
+            ssk: d.bytes_exact()?,
+            username: d.text()?.to_owned(),
+            credential: d.bytes()?.to_vec(),
+            device_list_body: d.bytes()?.to_vec(),
+            published: d.uint()?,
+            device_list: d.bytes()?.to_vec(),
+            state_uploaded: d.uint()?,
+        })
+    })
+    .expect("the thirteen-element identity record")
+}
+
+fn enrol_record(c: &ConnHandle) -> ([u8; 16], [u8; 16], [u8; 32], Option<[u8; 16]>) {
+    let record = meta(c, "enrol").expect("enrol record");
+    decode_strict(&record, |d| {
+        d.array(5)?;
+        assert_eq!(d.uint()?, 1);
+        Ok((
+            d.bytes_exact::<16>()?,
+            d.bytes_exact::<16>()?,
+            d.bytes_exact::<32>()?,
+            d.opt_bytes_exact::<16>()?,
+        ))
+    })
+    .expect("[1, instance_id, device_id, dsk_pub, user_id|null]")
+}
+
+fn keys(c: &ConnHandle) -> i64 {
+    c.lock()
+        .expect("lock")
+        .query_row("SELECT count(*) FROM openmls_signature_keys", [], |r| {
+            r.get(0)
+        })
+        .expect("count")
+}
+
+/// Everything a refused call must leave as it was: app_meta and the signature-key count.
+fn snapshot(c: &ConnHandle) -> (Vec<(String, Vec<u8>)>, i64) {
+    let mut rows = meta_rows(c);
+    rows.sort();
+    (rows, keys(c))
+}
+
+/// What a second browser fetches: A's account, its objects and its served list.
+struct Material {
+    rk_text: String,
+    rk: [u8; 32],
+    reg: Registration,
+    root: Vec<u8>,
+    state: Vec<u8>,
+    put_v1: Vec<u8>,
+    v1: DeviceList,
+    umk: [u8; 32],
+    ssk: [u8; 32],
+}
+
+/// The material of an account whose core the caller keeps (to adopt or revoke afterwards).
+fn material_of(core: &ClientCore, rk_text: String, reg: Registration, put_v1: Vec<u8>) -> Material {
+    let rk = recovery_key_from_base32(&rk_text).expect("rk");
+    let (root, state, _) = sealed_of(core);
+    let (root, state) = (root.expect("root"), state.expect("state"));
+    let (umk, ssk) = root_keys(&root, &rk);
+    let v1 = DeviceList::decode(&put_parts(&put_v1).1).expect("v1");
+    Material {
+        rk_text,
+        rk,
+        reg,
+        root,
+        state,
+        put_v1,
+        v1,
+        umk,
+        ssk,
+    }
+}
+
+/// The material of a fresh account whose core is dropped.
+fn material() -> Material {
+    let (core, _c, rk_text, reg, put_v1) = signed_up();
+    material_of(&core, rk_text, reg, put_v1)
+}
+
+/// Core B: enrol_begin, then enrol_registered for USER.
+struct Second {
+    core: ClientCore,
+    c: ConnHandle,
+    device: [u8; 16],
+    dsk: [u8; 32],
+}
+
+fn second() -> Second {
+    let (mut core, c) = core();
+    let (device, dsk) = begin_enrol(&mut core);
+    core.enrol_registered(&USER).expect("enrol_registered");
+    Second {
+        core,
+        c,
+        device,
+        dsk,
+    }
+}
+
+#[test]
+fn an_enrolling_core_is_phase_3_and_signs_its_registration_with_the_login() {
+    let (mut b, bc) = core();
+    for e in [
+        err(b.enrol_session_sign(&[0xab; 32], b"x")),
+        err(b.enrol_registered(&USER)),
+        err(b.enrol_reset()),
+        err(b.enrol_complete("k", &[0x80], &[0x80], &[0x80], "alice", NOW)),
+    ] {
+        assert_eq!(
+            e,
+            ClientError {
+                code: "E_CORE_STATE",
+                detail: "no enrolment is pending".into()
+            }
+        );
+    }
+    for e in [
+        err(b.own_device_list()),
+        err(b.own_device_list_update(&[0x80])),
+        err(b.state_sealed_uploaded()),
+        err(b.device_list_revoke("k", &[0x80], &[0x80], &[0x80], &[0x77; 16], NOW)),
+    ] {
+        assert_eq!(
+            e,
+            ClientError {
+                code: "E_CORE_NO_IDENTITY",
+                detail: String::new()
+            }
+        );
+    }
+
+    let (device, dsk) = begin_enrol(&mut b);
+    let i = info(&b);
+    assert_eq!(
+        (
+            i.phase,
+            i.instance,
+            i.user,
+            i.device,
+            i.username.as_str(),
+            i.published
+        ),
+        (3, Some(INSTANCE), None, Some(device), "", 0)
+    );
+    // Task 1's phase-3 answer of identity(), byte for byte: [3, instance_id, null, device_id, "", 0].
+    let mut phase3 = Encoder::new();
+    phase3
+        .array(6)
+        .uint(3)
+        .bytes(&INSTANCE)
+        .null()
+        .bytes(&device)
+        .text("")
+        .uint(0);
+    assert_eq!(
+        b.identity().expect("identity in phase 3"),
+        phase3.into_vec()
+    );
+    assert_eq!(enrol_record(&bc), (INSTANCE, device, dsk, None));
+    assert_eq!(keys(&bc), 1, "the DSK is stored");
+    assert_eq!(
+        err(b.enrol_begin(&INSTANCE)),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "an enrolment is pending".into()
+        }
+    );
+    assert_eq!(
+        b.sealed_objects().expect("sealed"),
+        [0x83, 0xf6, 0xf6, 0x00]
+    );
+
+    let nonce = [0xab; 32];
+    let body = b
+        .enrol_session_sign(&nonce, b"assertion-token")
+        .expect("enrol_session_sign");
+    let (n, purpose, sig, reg_device, reg_dsk, tier, signer_tier, placeholder, login) =
+        decode_strict(&body, |d| {
+            d.array(5)?;
+            let n = d.bytes_exact::<32>()?;
+            let purpose = d.uint()?;
+            let sig = d.bytes_exact::<64>()?;
+            d.array(5)?;
+            let reg_device = d.bytes_exact::<16>()?;
+            let reg_dsk = d.bytes_exact::<32>()?;
+            let tier = d.uint()?;
+            let signer_tier = d.uint()?;
+            let placeholder = d.bytes()?.to_vec();
+            let login = d.bytes()?.to_vec();
+            Ok((
+                n,
+                purpose,
+                sig,
+                reg_device,
+                reg_dsk,
+                tier,
+                signer_tier,
+                placeholder,
+                login,
+            ))
+        })
+        .expect("[nonce, 0, sig, [device_id, dsk_pub, 1, 1, credential], login]");
+    assert_eq!((n, purpose), (nonce, 0));
+    assert_eq!(
+        (reg_device, reg_dsk, tier, signer_tier),
+        (device, dsk, 1, 1)
+    );
+    assert_eq!(login, b"assertion-token");
+    VerifyingKey::from_bytes(&dsk)
+        .expect("dsk_pub")
+        .verify_strict(
+            &session_preimage(&INSTANCE, &device, &nonce, 0),
+            &Signature::from_bytes(&sig),
+        )
+        .expect("purpose-0 signature over the registering device's preimage");
+    assert_eq!(
+        CredentialIdentity::decode(&placeholder).expect("ten-element placeholder"),
+        CredentialIdentity {
+            v: 1,
+            umk_pub: [0; 32],
+            user_id: UserId::from_bytes([0; 16]),
+            device_id: DeviceId::from_bytes(device),
+            kind: Kind::User,
+            tier: Tier::Browser,
+            signer_tier: SignerTier::Browser,
+            ssk_pub: [0; 32],
+            sig_umk_ssk: [0; 64],
+            sig_ssk_dev: [0; 64],
+        }
+    );
+    for bad in [0usize, 257] {
+        assert_eq!(
+            err(b.enrol_session_sign(&nonce, &vec![0x61; bad])),
+            ClientError {
+                code: "E_CORE_INPUT",
+                detail: "login must be 1..=256 bytes".into()
+            }
+        );
+    }
+    b.enrol_session_sign(&nonce, &[0x61; 256])
+        .expect("256 bytes is the bound");
+
+    let renew = b.session_sign(&nonce, 1).expect("phase 3 signs sessions");
+    let renew_sig = decode_strict(&renew, |d| {
+        d.array(5)?;
+        d.skip()?;
+        assert_eq!(d.uint()?, 1);
+        let s = d.bytes_exact::<64>()?;
+        d.null()?;
+        d.null()?;
+        Ok(s)
+    })
+    .expect("[nonce, 1, sig, null, null]");
+    VerifyingKey::from_bytes(&dsk)
+        .expect("dsk_pub")
+        .verify_strict(
+            &session_preimage(&INSTANCE, &device, &nonce, 1),
+            &Signature::from_bytes(&renew_sig),
+        )
+        .expect("purpose-1 signature");
+    b.session_store("pending-token", 10, 10)
+        .expect("phase 3 stores its pending session");
+    assert_eq!(session_of(&b), Some(("pending-token".to_owned(), 10, 10)));
+
+    assert_eq!(err(b.key_packages(1, false)).code, "E_CORE_NO_IDENTITY");
+    assert_eq!(err(b.device_list_body()).code, "E_CORE_NO_IDENTITY");
+    assert_eq!(err(b.device_list_published()).code, "E_CORE_NO_IDENTITY");
+    assert_eq!(err(b.own_device_list()).code, "E_CORE_NO_IDENTITY");
+    assert_eq!(
+        err(b.signup_request("i", "u", "d", None)),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "no signup is pending".into()
+        }
+    );
+    assert_eq!(
+        err(b.signup_begin(&INSTANCE)),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "an enrolment is pending".into()
+        },
+        "task 1's phase-3 arm of signup_begin"
+    );
+
+    assert_eq!(
+        err(b.enrol_complete("k", &[0x80], &[0x80], &[0x80], "alice", NOW)),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "no user recorded".into()
+        }
+    );
+    assert_eq!(
+        err(b.enrol_registered(&[0; 16])),
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "user_id is all zero".into()
+        }
+    );
+    b.enrol_registered(&USER).expect("enrol_registered");
+    b.enrol_registered(&USER)
+        .expect("the same id again is a no-op");
+    assert_eq!(
+        err(b.enrol_registered(&[0x43; 16])),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "user already recorded".into()
+        }
+    );
+    assert_eq!(enrol_record(&bc), (INSTANCE, device, dsk, Some(USER)));
+    assert_eq!((info(&b).phase, info(&b).user), (3, Some(USER)));
+
+    drop(b);
+    let b = ClientCore::open(bc.clone()).expect("reopen in phase 3");
+    assert_eq!((info(&b).phase, info(&b).device), (3, Some(device)));
+    let again = b
+        .session_sign(&[0x01; 32], 0)
+        .expect("the DSK of the enrol record was reloaded");
+    // 0x85 | 0x58 0x20 nonce | 0x00 | 0x58 0x40 sig | 0xf6 0xf6
+    assert_eq!(again.len(), 1 + 34 + 1 + 66 + 2);
+
+    let (mut a, _ac, _rk, _reg, _put) = signed_up();
+    assert_eq!(
+        err(a.enrol_begin(&INSTANCE)),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "an identity exists".into()
+        }
+    );
+    let (mut p, _pc, _prk, _preg) = begun();
+    assert_eq!(
+        err(p.enrol_begin(&INSTANCE)),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "a signup is pending".into()
+        }
+    );
+}
+
+#[test]
+fn enrol_complete_adds_this_browser_to_the_list_the_root_object_vouches_for() {
+    let (mut a, _ac, rk_text, reg, put_v1) = signed_up();
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let state_in = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&m.v1.encode(), &pins()),
+    );
+    let mut b = second();
+    let out = b
+        .core
+        .enrol_complete(
+            &as_typed(&m.rk_text),
+            &m.root,
+            &state_in,
+            &m.put_v1,
+            "alice",
+            LATER,
+        )
+        .expect("enrol_complete with the key as typed from paper");
+    let (put_v2, state_b) = list_and_state(&out);
+
+    let (version, blob_v2, sig_v2, prev_v2) = put_parts(&put_v2);
+    let v2 = DeviceList::decode(&blob_v2).expect("v2");
+    assert_eq!((version, prev_v2, v2.sig_ssk), (2, m.v1.hash(), sig_v2));
+    assert_eq!(
+        (
+            v2.unsigned.user_id,
+            v2.unsigned.version,
+            v2.unsigned.prev_hash
+        ),
+        (UserId::from_bytes(USER), 2, m.v1.hash())
+    );
+    assert_eq!(
+        v2.unsigned.entries,
+        vec![
+            m.v1.unsigned.entries[0].clone(),
+            browser(b.device, b.dsk, LATER, None)
+        ]
+    );
+    v2.accept(Some(&m.v1), &m.reg.ssk_pub)
+        .expect("v2 chains from v1 under the account's SSK");
+
+    let (inner, carried) = state_parts(&k_backup(&m.rk), &state_b);
+    assert_eq!(inner, blob_v2, "the state object carries the new list");
+    assert_eq!(
+        carried,
+        pins(),
+        "the pins are carried through byte for byte"
+    );
+
+    let i = info(&b.core);
+    assert_eq!(
+        (
+            i.phase,
+            i.instance,
+            i.user,
+            i.device,
+            i.username.as_str(),
+            i.published
+        ),
+        (2, Some(INSTANCE), Some(USER), Some(b.device), "alice", 0)
+    );
+    assert!(meta(&b.c, "enrol").is_none(), "the enrol record is gone");
+    assert_eq!(meta(&b.c, "root_sealed"), Some(m.root.clone()));
+    assert_eq!(meta(&b.c, "state_sealed"), Some(state_b.clone()));
+    assert_eq!(
+        sealed_of(&b.core),
+        (Some(m.root.clone()), Some(state_b.clone()), 0)
+    );
+
+    let rec = identity_v2(&b.c);
+    assert_eq!(
+        (
+            rec.user,
+            rec.device,
+            rec.dsk,
+            rec.umk,
+            rec.ssk,
+            rec.username.as_str()
+        ),
+        (USER, b.device, b.dsk, m.reg.umk_pub, m.reg.ssk_pub, "alice")
+    );
+    assert_eq!(
+        (
+            rec.device_list_body.clone(),
+            rec.published,
+            rec.state_uploaded
+        ),
+        (put_v2.clone(), 0, 0)
+    );
+    assert_eq!(
+        rec.device_list,
+        m.v1.encode(),
+        "the accepted list is the served one"
+    );
+    let cred = CredentialIdentity::decode(&rec.credential).expect("credential");
+    assert_eq!(
+        (
+            cred.user_id,
+            cred.device_id,
+            cred.kind,
+            cred.tier,
+            cred.signer_tier
+        ),
+        (
+            UserId::from_bytes(USER),
+            DeviceId::from_bytes(b.device),
+            Kind::User,
+            Tier::Browser,
+            SignerTier::Browser
+        )
+    );
+    assert_eq!((cred.umk_pub, cred.ssk_pub), (m.reg.umk_pub, m.reg.ssk_pub));
+    cred.verify_signatures(&b.dsk)
+        .expect("the credential signed with the recovered keys verifies");
+
+    assert_eq!(b.core.device_list_body().expect("candidate"), put_v2);
+    let (v, published, entries) = own_list(&b.core);
+    assert_eq!((v, published, entries.len()), (1, 0, 1));
+    b.core.device_list_published().expect("published");
+    let (v, published, entries) = own_list(&b.core);
+    assert_eq!((v, published), (2, 1), "the candidate was promoted");
+    assert_eq!(
+        entries[1],
+        (b.device, b.dsk, 1, LATER, None),
+        "this browser's entry"
+    );
+    assert_eq!(info(&b.core).published, 1);
+    b.core.state_sealed_uploaded().expect("uploaded");
+    b.core.state_sealed_uploaded().expect("idempotent");
+    assert_eq!(sealed_of(&b.core).2, 1);
+
+    let kp_body = b
+        .core
+        .key_packages(1, false)
+        .expect("key_packages in phase 2");
+    let package = decode_strict(&kp_body, |d| {
+        d.array(2)?;
+        d.array(1)?;
+        let p = d.bytes()?.to_vec();
+        d.null()?;
+        Ok(p)
+    })
+    .expect("[[package], null]");
+    let kp = validated(&package);
+    let basic =
+        BasicCredential::try_from(kp.leaf_node().credential().clone()).expect("basic credential");
+    let leaf = CredentialIdentity::decode(basic.identity()).expect("credential identity");
+    assert_eq!(
+        (leaf.user_id, leaf.device_id),
+        (UserId::from_bytes(USER), DeviceId::from_bytes(b.device))
+    );
+    assert_eq!(kp.leaf_node().signature_key().as_slice(), &b.dsk[..]);
+
+    let Second {
+        core: bcore, c: bc, ..
+    } = b;
+    drop(bcore);
+    let mut reopened = ClientCore::open(bc).expect("reopen in phase 2");
+    assert_eq!(info(&reopened).phase, 2);
+    reopened
+        .key_packages(1, false)
+        .expect("the DSK survives a reopen");
+
+    // A, the first browser, adopts v2 from the history route: listed, published.
+    assert_eq!(
+        status(
+            &a.own_device_list_update(&history(&[&v2]))
+                .expect("adopt v2")
+        ),
+        (2, 1)
+    );
+    let (v, published, entries) = own_list(&a);
+    assert_eq!((v, published, entries.len()), (2, 1, 2));
+    assert_eq!(
+        status(
+            &a.own_device_list_update(&history(&[&v2]))
+                .expect("same row")
+        ),
+        (2, 1)
+    );
+    assert_eq!(
+        status(&a.own_device_list_update(&[0x80]).expect("empty history")),
+        (2, 1)
+    );
+}
+
+#[test]
+fn a_wrong_or_malformed_recovery_key_is_e_recovery_key_and_writes_nothing() {
+    let m = material();
+    let mut b = second();
+    let before = snapshot(&b.c);
+    let recovery_key = ClientError {
+        code: "E_RECOVERY_KEY",
+        detail: String::new(),
+    };
+    let other_key = recovery_key_base32(&[0x0b; 32]);
+    let with_u = format!("U{}", &m.rk_text[1..]);
+    for key in [
+        other_key.as_str(),
+        "not a recovery key",
+        &m.rk_text[..51],
+        with_u.as_str(),
+        "",
+    ] {
+        assert_eq!(
+            err(b
+                .core
+                .enrol_complete(key, &m.root, &m.state, &m.put_v1, "alice", LATER)),
+            recovery_key,
+            "key {key:?}"
+        );
+        assert_eq!(snapshot(&b.c), before, "a refused key writes nothing");
+    }
+    let plain = open_sealed(&k_header(&m.rk), b"dilla root v1", &m.root);
+    let resealed = seal_with(&k_header(&[0x0b; 32]), b"dilla root v1", &plain);
+    assert_eq!(
+        err(b
+            .core
+            .enrol_complete(&m.rk_text, &resealed, &m.state, &m.put_v1, "alice", LATER)),
+        recovery_key,
+        "a root object sealed under another key"
+    );
+    let wrong_aad = seal_with(&k_header(&m.rk), b"dilla state v1", &plain);
+    assert_eq!(
+        err(b
+            .core
+            .enrol_complete(&m.rk_text, &wrong_aad, &m.state, &m.put_v1, "alice", LATER)),
+        recovery_key,
+        "a root object bound to another aad"
+    );
+    assert_eq!(snapshot(&b.c), before);
+    assert_eq!(info(&b.core).phase, 3);
+    b.core
+        .enrol_complete(&m.rk_text, &m.root, &m.state, &m.put_v1, "alice", LATER)
+        .expect("the right key still enrols after the refusals");
+}
+
+#[test]
+fn enrol_complete_refuses_malformed_objects_and_lists_and_writes_nothing() {
+    let m = material();
+    let mut b = second();
+    let before = snapshot(&b.c);
+    let input = |detail: &str| ClientError {
+        code: "E_CORE_INPUT",
+        detail: detail.to_owned(),
+    };
+    let mut wrong_root = Encoder::new();
+    wrong_root.array(3).uint(2).bytes(&m.umk).bytes(&m.ssk);
+    let wrong_root = seal_with(&k_header(&m.rk), b"dilla root v1", &wrong_root.into_vec());
+    let blob = m.v1.encode();
+    // The state object is never a refusal (ruling 28): its cases are in
+    // `an_unopenable_or_missing_state_object_yields_no_pins_and_the_enrolment_succeeds`.
+    type RefusalCase = (Vec<u8>, Vec<u8>, Vec<u8>, ClientError);
+    let cases: Vec<RefusalCase> = vec![
+        (
+            vec![0x01, 0x02],
+            m.state.clone(),
+            m.put_v1.clone(),
+            input("root_sealed is malformed"),
+        ),
+        (
+            wrong_root,
+            m.state.clone(),
+            m.put_v1.clone(),
+            input("root object is malformed"),
+        ),
+        (
+            m.root.clone(),
+            m.state.clone(),
+            vec![0xa0],
+            input("list_body is malformed"),
+        ),
+        // outer version disagrees (3 against the blob's 1)
+        (
+            m.root.clone(),
+            m.state.clone(),
+            raw_put_body(3, &blob, &m.v1.sig_ssk, &[0; 32]),
+            input("list_body elements disagree"),
+        ),
+        // outer prev_hash disagrees (0x01… against the blob's zero hash)
+        (
+            m.root.clone(),
+            m.state.clone(),
+            raw_put_body(1, &blob, &m.v1.sig_ssk, &[0x01; 32]),
+            input("list_body elements disagree"),
+        ),
+        // outer ssk_signature disagrees (zeros against the blob's signature, which verifies)
+        (
+            m.root.clone(),
+            m.state.clone(),
+            raw_put_body(1, &blob, &[0; 64], &[0; 32]),
+            input("list_body elements disagree"),
+        ),
+        (
+            m.root.clone(),
+            m.state.clone(),
+            raw_put_body(1, &[0x01], &m.v1.sig_ssk, &[0; 32]),
+            ClientError {
+                code: "E_CREDENTIAL",
+                detail: String::new(),
+            },
+        ),
+        (
+            m.root.clone(),
+            m.state.clone(),
+            put_body(&signed(
+                &m.ssk,
+                [0x43; 16],
+                1,
+                [0; 32],
+                m.v1.unsigned.entries.clone(),
+            )),
+            ClientError {
+                code: "E_CREDENTIAL",
+                detail: String::new(),
+            },
+        ),
+    ];
+    for (n, (root, state, list, want)) in cases.into_iter().enumerate() {
+        assert_eq!(
+            err(b
+                .core
+                .enrol_complete(&m.rk_text, &root, &state, &list, "alice", LATER)),
+            want,
+            "case {n}"
+        );
+        assert_eq!(snapshot(&b.c), before, "case {n} wrote something");
+    }
+    assert_eq!(info(&b.core).phase, 3);
+}
+
+/// L-CORE-26 step 3 (ruling 28): a state object that is absent, malformed, sealed under another key or
+/// shaped wrongly is no refusal; the enrolment proceeds with no pins and re-seals a sound object.
+#[test]
+fn an_unopenable_or_missing_state_object_yields_no_pins_and_the_enrolment_succeeds() {
+    let m = material();
+    let state_under_header = seal_with(
+        &k_header(&m.rk),
+        b"dilla state v1",
+        &state_plain(&m.v1.encode(), &[0x80]),
+    );
+    let mut two = Encoder::new();
+    two.array(2).uint(1).bytes(&m.v1.encode());
+    let state_two = seal_with(&k_backup(&m.rk), b"dilla state v1", &two.into_vec());
+    let state_pins_uint = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&m.v1.encode(), &[0x07]),
+    );
+    for (name, state_in) in [
+        ("empty: the instance holds no state object", vec![]),
+        ("not [1, nonce, ct]", vec![0x80]),
+        ("sealed under K_header", state_under_header),
+        ("a two-element plaintext", state_two),
+        ("pins that are not an array", state_pins_uint),
+    ] {
+        let mut b = second();
+        let out = b
+            .core
+            .enrol_complete(&m.rk_text, &m.root, &state_in, &m.put_v1, "alice", LATER)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let (put_v2, state_b) = list_and_state(&out);
+        let (version, blob_v2, _, prev_v2) = put_parts(&put_v2);
+        assert_eq!((version, prev_v2), (2, m.v1.hash()), "{name}");
+        let v2 = DeviceList::decode(&blob_v2).expect("v2");
+        v2.accept(Some(&m.v1), &m.reg.ssk_pub)
+            .expect("v2 chains from v1 under the account's SSK");
+        assert_eq!(
+            state_parts(&k_backup(&m.rk), &state_b),
+            (blob_v2.clone(), vec![0x80]),
+            "{name}: the re-sealed state opens under K_backup and carries the empty pins array"
+        );
+        assert_eq!(
+            b.core.device_list_body().expect("candidate"),
+            put_v2,
+            "{name}: the candidate is the v2 PUT body"
+        );
+        assert_eq!(meta(&b.c, "state_sealed"), Some(state_b), "{name}");
+        assert_eq!(info(&b.core).phase, 2, "{name}");
+    }
+
+    // An array of pins is carried byte for byte (any major-type-4 item is accepted).
+    let one_pin = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&m.v1.encode(), &[0x81, 0x07]),
+    );
+    let mut b = second();
+    let (put_v2, state_b) = list_and_state(
+        &b.core
+            .enrol_complete(&m.rk_text, &m.root, &one_pin, &m.put_v1, "alice", LATER)
+            .expect("enrol with a one-element pins array"),
+    );
+    assert_eq!(
+        state_parts(&k_backup(&m.rk), &state_b),
+        (put_parts(&put_v2).1, vec![0x81, 0x07])
+    );
+}
+
+/// Requirement 18: step 3's tolerance holds for device_list_revoke too.
+#[test]
+fn device_list_revoke_with_no_state_object_reseals_with_no_pins() {
+    let (mut a, ac, rk_text, reg, put_v1) = signed_up();
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let own_id = m.v1.unsigned.entries[0].device_id;
+    let (put_v2, state_a2) = list_and_state(
+        &a.device_list_revoke(
+            &m.rk_text,
+            &m.root,
+            &[],
+            &m.put_v1,
+            own_id.as_bytes(),
+            NOW + 60,
+        )
+        .expect("an empty state_sealed is no refusal"),
+    );
+    let (version, blob_v2, _, prev_v2) = put_parts(&put_v2);
+    assert_eq!((version, prev_v2), (2, m.v1.hash()));
+    assert_eq!(
+        state_parts(&k_backup(&m.rk), &state_a2),
+        (blob_v2, vec![0x80]),
+        "the re-sealed state carries the empty pins array"
+    );
+    assert_eq!(meta(&ac, "state_sealed"), Some(state_a2.clone()));
+    assert_eq!(sealed_of(&a), (Some(m.root.clone()), Some(state_a2), 0));
+    assert_eq!(a.device_list_body().expect("candidate"), put_v2);
+}
+
+#[test]
+fn enrol_complete_refuses_a_list_the_ssk_did_not_sign() {
+    let m = material();
+    let mut b = second();
+    let before = snapshot(&b.c);
+    let forged = signed(&[0x99; 32], USER, 1, [0; 32], m.v1.unsigned.entries.clone());
+    let mut flipped = m.v1.clone();
+    flipped.sig_ssk[0] ^= 0x01;
+    for (name, list) in [("another SSK", forged), ("a flipped signature", flipped)] {
+        assert_eq!(
+            err(b.core.enrol_complete(
+                &m.rk_text,
+                &m.root,
+                &m.state,
+                &put_body(&list),
+                "alice",
+                LATER
+            )),
+            ClientError {
+                code: "E_CREDENTIAL",
+                detail: String::new()
+            },
+            "{name}"
+        );
+        assert_eq!(snapshot(&b.c), before);
+    }
+    assert_eq!(info(&b.core).phase, 3);
+}
+
+#[test]
+fn enrol_complete_refuses_a_list_that_already_names_this_device() {
+    let m = material();
+    let mut b = second();
+    let before = snapshot(&b.c);
+    let listed = signed(
+        &m.ssk,
+        USER,
+        2,
+        m.v1.hash(),
+        vec![
+            m.v1.unsigned.entries[0].clone(),
+            browser(b.device, b.dsk, NOW, None),
+        ],
+    );
+    assert_eq!(
+        err(b.core.enrol_complete(
+            &m.rk_text,
+            &m.root,
+            &m.state,
+            &put_body(&listed),
+            "alice",
+            LATER
+        )),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "device is listed".into()
+        }
+    );
+    assert_eq!(snapshot(&b.c), before);
+}
+
+#[test]
+fn enrol_reset_returns_to_phase_0_and_deletes_the_device_key() {
+    let mut b = second();
+    b.core
+        .session_store("pending-token", 10, 10)
+        .expect("store");
+    b.core.enrol_reset().expect("enrol_reset");
+    let i = info(&b.core);
+    assert_eq!(
+        (i.phase, i.instance, i.user, i.device),
+        (0, None, None, None)
+    );
+    assert!(meta(&b.c, "enrol").is_none());
+    assert!(
+        meta(&b.c, "session").is_none(),
+        "the pending session record is gone"
+    );
+    assert_eq!(keys(&b.c), 0, "the DSK is deleted");
+    assert_eq!(
+        err(b.core.session_sign(&[1; 32], 0)).code,
+        "E_CORE_NO_IDENTITY"
+    );
+    assert_eq!(
+        err(b.core.enrol_reset()),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "no enrolment is pending".into()
+        }
+    );
+    let (again, _) = begin_enrol(&mut b.core);
+    assert_ne!(again, b.device, "a new enrolment draws a new device id");
+}
+
+#[test]
+fn device_list_revoke_signs_the_next_version_with_the_devices_revoked() {
+    let (mut a, ac, rk_text, reg, put_v1) = signed_up();
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let state_in = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&m.v1.encode(), &pins()),
+    );
+    let mut b = second();
+    let (put_v2, state_b) = list_and_state(
+        &b.core
+            .enrol_complete(&m.rk_text, &m.root, &state_in, &m.put_v1, "alice", LATER)
+            .expect("enrol"),
+    );
+    b.core.device_list_published().expect("published");
+    let v2 = DeviceList::decode(&put_parts(&put_v2).1).expect("v2");
+    a.own_device_list_update(&history(&[&v2]))
+        .expect("A adopts v2");
+
+    let before = snapshot(&ac);
+    let input = |detail: &str| ClientError {
+        code: "E_CORE_INPUT",
+        detail: detail.to_owned(),
+    };
+    let shape = input("device_ids must be 1..=64 ids of 16 bytes");
+    for ids in [vec![], vec![0x77; 15], vec![0x77; 17], vec![0x77; 16 * 65]] {
+        assert_eq!(
+            err(a.device_list_revoke(&m.rk_text, &m.root, &state_b, &put_v2, &ids, NOW)),
+            shape
+        );
+    }
+    let twice = [b.device, b.device].concat();
+    assert_eq!(
+        err(a.device_list_revoke(&m.rk_text, &m.root, &state_b, &put_v2, &twice, NOW)),
+        input("device_ids repeats an id")
+    );
+    assert_eq!(
+        err(a.device_list_revoke(&m.rk_text, &m.root, &state_b, &put_v2, &[0x77; 16], NOW)),
+        ClientError {
+            code: "E_CORE_NOT_FOUND",
+            detail: "device is not an unrevoked entry of the list".into()
+        }
+    );
+    assert_eq!(
+        err(a.device_list_revoke(
+            &recovery_key_base32(&[0x0b; 32]),
+            &m.root,
+            &state_b,
+            &put_v2,
+            &b.device,
+            NOW
+        ))
+        .code,
+        "E_RECOVERY_KEY"
+    );
+    let for_other = put_body(&signed(
+        &m.ssk,
+        [0x43; 16],
+        3,
+        v2.hash(),
+        v2.unsigned.entries.clone(),
+    ));
+    assert_eq!(
+        err(a.device_list_revoke(&m.rk_text, &m.root, &state_b, &for_other, &b.device, NOW)).code,
+        "E_CREDENTIAL"
+    );
+    let c_side = material();
+    assert_eq!(
+        err(a.device_list_revoke(
+            &c_side.rk_text,
+            &c_side.root,
+            &c_side.state,
+            &put_v2,
+            &b.device,
+            NOW
+        )),
+        ClientError {
+            code: "E_CREDENTIAL",
+            detail: String::new()
+        },
+        "another account's root object"
+    );
+    assert_eq!(snapshot(&ac), before, "every refusal wrote nothing");
+
+    let (put_v3, state_a3) = list_and_state(
+        &a.device_list_revoke(
+            &as_typed(&m.rk_text),
+            &m.root,
+            &state_b,
+            &put_v2,
+            &b.device,
+            NOW + 120,
+        )
+        .expect("revoke B"),
+    );
+    let (version, blob_v3, _, prev_v3) = put_parts(&put_v3);
+    let v3 = DeviceList::decode(&blob_v3).expect("v3");
+    assert_eq!((version, prev_v3), (3, v2.hash()));
+    assert_eq!(
+        v3.unsigned.entries,
+        vec![
+            v2.unsigned.entries[0].clone(),
+            browser(b.device, b.dsk, LATER, Some(NOW + 120))
+        ]
+    );
+    v3.accept(Some(&v2), &m.reg.ssk_pub)
+        .expect("v3 chains from v2");
+    let (inner, carried) = state_parts(&k_backup(&m.rk), &state_a3);
+    assert_eq!((inner, carried), (blob_v3.clone(), pins()));
+    assert_eq!(a.device_list_body().expect("candidate"), put_v3);
+    assert_eq!(info(&a).published, 0);
+    let (v, published, _) = own_list(&a);
+    assert_eq!((v, published), (2, 0), "the accepted list is still v2");
+    assert_eq!(
+        sealed_of(&a),
+        (Some(m.root.clone()), Some(state_a3.clone()), 0)
+    );
+    a.device_list_published().expect("published");
+    let (v, published, entries) = own_list(&a);
+    assert_eq!((v, published), (3, 1));
+    assert_eq!(entries[1].4, Some(NOW + 120), "B is revoked");
+
+    assert_eq!(
+        status(
+            &b.core
+                .own_device_list_update(&history(&[&v3]))
+                .expect("B adopts v3")
+        ),
+        (3, 0),
+        "B learns it is no longer listed"
+    );
+    assert_eq!(
+        err(a.device_list_revoke(&m.rk_text, &m.root, &state_a3, &put_v3, &b.device, NOW)),
+        ClientError {
+            code: "E_CORE_NOT_FOUND",
+            detail: "device is not an unrevoked entry of the list".into()
+        },
+        "an already revoked device"
+    );
+    let own = put_parts(&m.put_v1).1;
+    let own_id = DeviceList::decode(&own).expect("v1").unsigned.entries[0].device_id;
+    let (put_v4, _) = list_and_state(
+        &a.device_list_revoke(
+            &m.rk_text,
+            &m.root,
+            &state_a3,
+            &put_v3,
+            own_id.as_bytes(),
+            NOW + 180,
+        )
+        .expect("Q13: a device may revoke itself"),
+    );
+    let v4 = DeviceList::decode(&put_parts(&put_v4).1).expect("v4");
+    assert_eq!(v4.unsigned.entries[0].revoked_at, Some(NOW + 180));
+}
+
+#[test]
+fn own_device_list_update_walks_the_chain_and_refuses_a_gap() {
+    let (mut a, ac, rk_text, reg, put_v1) = signed_up();
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let own = m.v1.unsigned.entries[0].clone();
+    assert_eq!(own.device_id, DeviceId::from_bytes(m.reg.device_id));
+    let x = browser([0x0d; 16], [0x0e; 32], NOW + 10, None);
+    let x_gone = browser([0x0d; 16], [0x0e; 32], NOW + 10, Some(NOW + 20));
+    let v2 = signed(&m.ssk, USER, 2, m.v1.hash(), vec![own.clone(), x]);
+    let v3 = signed(
+        &m.ssk,
+        USER,
+        3,
+        v2.hash(),
+        vec![own.clone(), x_gone.clone()],
+    );
+    let v4 = signed(
+        &m.ssk,
+        USER,
+        4,
+        v3.hash(),
+        vec![own.clone(), x_gone.clone()],
+    );
+    let v5 = signed(
+        &m.ssk,
+        USER,
+        5,
+        v4.hash(),
+        vec![own.clone(), x_gone.clone()],
+    );
+
+    assert_eq!(
+        status(
+            &a.own_device_list_update(&history(&[&v2, &v3]))
+                .expect("v2, v3")
+        ),
+        (3, 1)
+    );
+    assert_eq!(own_list(&a).0, 3);
+    let before = snapshot(&ac);
+    let stale = ClientError {
+        code: "E_DEVICE_LIST_STALE",
+        detail: String::new(),
+    };
+    assert_eq!(
+        err(a.own_device_list_update(&history(&[&v5]))),
+        stale,
+        "a gap"
+    );
+    assert_eq!(
+        err(a.own_device_list_update(&history(&[&v2]))),
+        stale,
+        "a lower version"
+    );
+    let forged5 = signed(&[0x99; 32], USER, 5, v4.hash(), vec![own.clone()]);
+    assert_eq!(
+        err(a.own_device_list_update(&history(&[&v4, &forged5]))).code,
+        "E_CREDENTIAL"
+    );
+    assert_eq!(
+        snapshot(&ac),
+        before,
+        "v4 is not kept when a later row is refused"
+    );
+    let mut outer = Encoder::new();
+    outer
+        .array(1)
+        .array(4)
+        .uint(5)
+        .bytes(&v4.encode())
+        .bytes(&v4.sig_ssk)
+        .bytes(&v4.unsigned.prev_hash);
+    assert_eq!(
+        err(a.own_device_list_update(&outer.into_vec())),
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "history row elements disagree".into()
+        }
+    );
+    let other_user = signed(&m.ssk, [0x43; 16], 4, v3.hash(), vec![own.clone()]);
+    assert_eq!(
+        err(a.own_device_list_update(&history(&[&other_user]))).code,
+        "E_CREDENTIAL"
+    );
+    assert_eq!(
+        err(a.own_device_list_update(&[0xa0])),
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "history_body is malformed".into()
+        }
+    );
+    let mut junk = Encoder::new();
+    junk.array(1)
+        .array(4)
+        .uint(4)
+        .bytes(&[0x01, 0x02])
+        .bytes(&v4.sig_ssk)
+        .bytes(&v4.unsigned.prev_hash);
+    assert_eq!(
+        err(a.own_device_list_update(&junk.into_vec())).code,
+        "E_CREDENTIAL"
+    );
+    assert_eq!(snapshot(&ac), before, "no refusal wrote anything");
+
+    assert_eq!(
+        status(
+            &a.own_device_list_update(&history(&[&v3, &v4, &v5]))
+                .expect("v3 skipped, v4, v5")
+        ),
+        (5, 1)
+    );
+    let gone = DeviceEntry {
+        revoked_at: Some(NOW + 30),
+        ..own.clone()
+    };
+    let v6 = signed(&m.ssk, USER, 6, v5.hash(), vec![gone, x_gone]);
+    assert_eq!(
+        status(&a.own_device_list_update(&history(&[&v6])).expect("v6")),
+        (6, 0),
+        "a list that revokes this device says so"
+    );
+}
+
+#[test]
+fn own_device_list_update_drops_a_candidate_the_chain_overtook() {
+    let (mut a, _ac) = core();
+    let rk_text = a.signup_begin(&INSTANCE).expect("signup_begin");
+    let reg = registration(&a.signup_request("i", "alice", "A", None).expect("request"));
+    let put_v1 = a.signup_complete(&USER, "alice", NOW).expect("complete");
+    let m = material_of(&a, rk_text, reg, put_v1);
+    assert_eq!(
+        info(&a).published,
+        0,
+        "v1 is a candidate the instance has not accepted"
+    );
+    let own = m.v1.unsigned.entries[0].clone();
+    let x = browser([0x0d; 16], [0x0e; 32], NOW + 10, None);
+    let v2 = signed(&m.ssk, USER, 2, m.v1.hash(), vec![own.clone(), x.clone()]);
+    assert_eq!(
+        status(&a.own_device_list_update(&history(&[&v2])).expect("v2")),
+        (2, 1)
+    );
+    assert_eq!(
+        a.device_list_body().expect("body"),
+        put_body(&v2),
+        "candidate v1 dropped"
+    );
+    assert_eq!(info(&a).published, 1);
+
+    let (put_v3, _) = list_and_state(
+        &a.device_list_revoke(
+            &m.rk_text,
+            &m.root,
+            &m.state,
+            &put_body(&v2),
+            &[0x0d; 16],
+            NOW + 40,
+        )
+        .expect("revoke X"),
+    );
+    assert_eq!(info(&a).published, 0);
+    assert_eq!(
+        status(
+            &a.own_device_list_update(&history(&[&v2]))
+                .expect("v2 again")
+        ),
+        (2, 1)
+    );
+    assert_eq!(
+        (a.device_list_body().expect("body"), info(&a).published),
+        (put_v3.clone(), 0),
+        "a skipped row adopts nothing, so the newer candidate stays"
+    );
+    let y = browser([0x0f; 16], [0x10; 32], NOW + 50, None);
+    let v3_elsewhere = signed(&m.ssk, USER, 3, v2.hash(), vec![own, x, y]);
+    assert_eq!(
+        status(
+            &a.own_device_list_update(&history(&[&v3_elsewhere]))
+                .expect("v3 from another device")
+        ),
+        (3, 1)
+    );
+    assert_eq!(
+        (a.device_list_body().expect("body"), info(&a).published),
+        (put_body(&v3_elsewhere), 1),
+        "the candidate of the same version is dropped"
+    );
+}
+
+#[test]
+fn no_recovered_secret_rests_in_the_store_after_enrol_complete() {
+    let m = material();
+    let mut b = second();
+    b.core
+        .enrol_complete(&m.rk_text, &m.root, &m.state, &m.put_v1, "alice", LATER)
+        .expect("enrol");
+    let kh = k_header(&m.rk);
+    let kb = k_backup(&m.rk);
+    let root_plain = open_sealed(&kh, b"dilla root v1", &m.root);
+    for (table, cell) in cells(&b.c) {
+        for (name, secret) in [
+            ("UMK_priv", &m.umk[..]),
+            ("SSK_priv", &m.ssk[..]),
+            ("the recovery key", &m.rk[..]),
+            ("K_header", &kh[..]),
+            ("K_backup", &kb[..]),
+            ("the root plaintext", &root_plain[..]),
+        ] {
+            assert!(!contains(&cell, secret), "{name} found in {table}");
+        }
+    }
+}
+
+#[test]
+fn the_enrol_record_and_the_recovered_keys_leave_no_trace_in_the_database_file() {
+    let m = material();
+    let dir = std::env::temp_dir().join(format!("dilla-client-enrol-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("tmp dir");
+    let path = dir.join("secure-delete-enrol.sqlite");
+    let _ = std::fs::remove_file(&path);
+    let c: ConnHandle = Arc::new(Mutex::new(
+        rusqlite::Connection::open(&path).expect("open file"),
+    ));
+    let mut core = ClientCore::open(c.clone()).expect("open");
+    begin_enrol(&mut core);
+    let unregistered = meta(&c, "enrol").expect("enrol record");
+    core.enrol_registered(&USER).expect("registered");
+    let registered = meta(&c, "enrol").expect("enrol record");
+    let before = std::fs::read(&path).expect("read db");
+    assert!(
+        contains(&before, &registered),
+        "the scan sees the live enrol record"
+    );
+    core.enrol_complete(&m.rk_text, &m.root, &m.state, &m.put_v1, "alice", LATER)
+        .expect("enrol");
+    drop(core);
+    drop(c);
+    let after = std::fs::read(&path).expect("read db");
+    let kh = k_header(&m.rk);
+    let kb = k_backup(&m.rk);
+    let root_plain = open_sealed(&kh, b"dilla root v1", &m.root);
+    for (name, secret) in [
+        ("the first enrol record", &unregistered[..]),
+        ("the second enrol record", &registered[..]),
+        ("UMK_priv", &m.umk[..]),
+        ("SSK_priv", &m.ssk[..]),
+        ("the 32 decoded recovery-key bytes", &m.rk[..]),
+        ("the recovery key as text", m.rk_text.as_bytes()),
+        ("K_header", &kh[..]),
+        ("K_backup", &kb[..]),
+        ("the root plaintext", &root_plain[..]),
+    ] {
+        assert!(
+            !contains(&after, secret),
+            "{name} left in the database file"
+        );
+    }
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn an_enrolled_browser_joins_a_group_of_its_account_and_both_read_each_other() {
+    let instance = Instance::generate();
+    let group = client_support::GROUP;
+    let mut relay = Relay::new(group);
+    let (mut first, rk_text) = ready_core_with_key(0xa1, "alice");
+    let mut added = enrolled_core(&first, &rk_text, LATER);
+    assert_eq!(added.user, first.user);
+    assert_ne!(added.device, first.device);
+    first.create_and_register(&mut relay, &instance);
+    added.join_external(&mut relay);
+    first.sync(&relay);
+    added.send(&mut relay, &group, "from the second browser", LATER + 1);
+    first.send(&mut relay, &group, "from the first browser", LATER + 2);
+    first.sync(&relay);
+    added.sync(&relay);
+    for (reader, author, body) in [
+        (&first, &added, "from the second browser"),
+        (&added, &first, "from the first browser"),
+    ] {
+        let row = reader
+            .timeline(&group)
+            .into_iter()
+            .find(|r| r.body == body)
+            .expect("the other browser's message is in the timeline");
+        assert_eq!(
+            (
+                row.status,
+                row.sender_user,
+                row.sender_device,
+                row.sender_tier
+            ),
+            (0, Some(author.user), author.device, Some(1))
+        );
+    }
+}
+
+#[test]
+fn enrol_refuses_a_served_list_older_than_the_opened_state_list() {
+    let m = material();
+    let mut b = second();
+    let v2 = signed(&m.ssk, USER, 2, m.v1.hash(), m.v1.unsigned.entries.clone());
+    let state = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&v2.encode(), &pins()),
+    );
+    let before = snapshot(&b.c);
+    assert_eq!(
+        err(b
+            .core
+            .enrol_complete(&m.rk_text, &m.root, &state, &m.put_v1, "alice", LATER)),
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "the instance served an older device list".into()
+        }
+    );
+    assert_eq!(snapshot(&b.c), before);
+}
+
+#[test]
+fn revoke_refuses_a_served_list_older_than_the_stored_newest() {
+    let (mut a, ac, rk_text, reg, put_v1) = signed_up();
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let v2 = signed(&m.ssk, USER, 2, m.v1.hash(), m.v1.unsigned.entries.clone());
+    a.own_device_list_update(&history(&[&v2]))
+        .expect("adopt v2");
+    let before = snapshot(&ac);
+    assert_eq!(
+        err(a.device_list_revoke(
+            &m.rk_text,
+            &m.root,
+            &m.state,
+            &m.put_v1,
+            &m.reg.device_id,
+            LATER
+        )),
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "the instance served an older device list".into()
+        }
+    );
+    assert_eq!(snapshot(&ac), before);
 }
