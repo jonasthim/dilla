@@ -21,7 +21,6 @@ use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::OpenMlsProvider;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::signatures::Signer;
-use std::collections::BTreeSet;
 use tls_codec::Serialize;
 use zeroize::Zeroizing;
 
@@ -1116,9 +1115,11 @@ impl ClientCore {
                 "device_ids must be 1..=64 ids of 16 bytes",
             ));
         }
-        let mut ids = BTreeSet::new();
-        for &id in device_ids.as_chunks::<16>().0 {
-            if !ids.insert(id) {
+        // At most 64 ids: a quadratic scan of the slice instead of a set keeps the browser core
+        // smaller (web-2a task 4's size budget).
+        let ids = device_ids.as_chunks::<16>().0;
+        for (i, id) in ids.iter().enumerate() {
+            if ids[..i].contains(id) {
                 return Err(ClientError::new(E_CORE_INPUT, "device_ids repeats an id"));
             }
         }
@@ -1145,7 +1146,7 @@ impl ClientCore {
                     "the instance served an older device list",
                 ));
             }
-            for id in &ids {
+            for id in ids {
                 if !recovered
                     .list
                     .lookup(&DeviceId::from_bytes(*id))
