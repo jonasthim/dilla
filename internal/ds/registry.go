@@ -84,10 +84,15 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 	}
 	// Invariant 1's instance_id: a group bound to another instance is that instance's group, and
 	// registering it here would let a client carry one instance's binding — and every signature
-	// over it — into another. (The external_senders check needs an ABI accessor; follow-up card.)
+	// over it — into another.
 	if binding.InstanceID != d.opts.Keys.InstanceID {
 		return RegisterResult{}, errBinding(fmt.Sprintf(
 			"dilla_binding names instance %s; this instance is %s", binding.InstanceID, d.opts.Keys.InstanceID))
+	}
+	// Invariant 1's external senders (DS-MEMBERSHIP-01): the group context names who may propose
+	// from outside the group, and the instance governs a text or call group only through that.
+	if problem := d.externalSendersProblem(binding.Kind, state.ExternalSenders); problem != "" {
+		return RegisterResult{}, errBinding(problem)
 	}
 	if err := d.checkChannelMode(ctx, binding); err != nil {
 		return RegisterResult{}, err
@@ -230,6 +235,46 @@ func (d *DS) checkRegisteredLeaf(ctx context.Context, v DeviceListVerifier, s Se
 		}
 	}
 	return errInvalid("the registering device's key is not in its user's newest signed device list")
+}
+
+// basicCredentialType is RFC 9420's code point for a basic credential, the only kind dilla issues.
+const basicCredentialType = 1
+
+// externalSendersProblem is invariant 1's external-sender rule (DS-MEMBERSHIP-01), shared by
+// registration and heal's reseed, the two places the delivery service adopts a tree it did not
+// build. OpenMLS verifies every external proposal against the group context's external_senders
+// extension, so the instance can add to or remove from a group only when the extension names it:
+//
+//   - a `text` or `call` group carries exactly one entry, this instance's: a basic credential
+//     whose identity is CBOR [1, "instance", instance_id] (core/dilla-core/src/mls/binding.rs,
+//     instance_credential_identity) over the public half of the key the delivery service signs
+//     its proposals with (Keys.ExternalSenderPriv, the key GET /v1/instance publishes as
+//     external_sender_pub). A group naming any other key could never be governed: every
+//     registration Add, kick, ban, revocation, inactivity and election Remove would fail to queue
+//     for the group's life;
+//   - a `pairing` or `interaction` group carries none (protocol/01 § External senders).
+//
+// It answers "" when the rule holds and what is wrong otherwise; each caller wraps that in its own
+// refusal.
+func (d *DS) externalSendersProblem(kind uint8, senders []mlswasi.ExternalSender) string {
+	if !isChannelGroupKind(kind) {
+		if len(senders) != 0 {
+			return fmt.Sprintf("a group of kind %d carries no external sender; this one names %d", kind, len(senders))
+		}
+		return ""
+	}
+	if len(senders) != 1 {
+		return fmt.Sprintf(
+			"a text or call group names exactly one external sender, this instance; this one names %d", len(senders))
+	}
+	s := senders[0]
+	if s.CredentialType != basicCredentialType || !bytes.Equal(s.Credential, d.instanceCredential) {
+		return "the group's external sender is not this instance's \"instance\" credential"
+	}
+	if !bytes.Equal(s.SignatureKey, d.externalSenderPub) {
+		return "the group's external sender key is not this instance's external-sender key"
+	}
+	return ""
 }
 
 // Channels is the sliver of the community structure registration needs: invariant 1's channel

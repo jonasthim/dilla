@@ -6,7 +6,9 @@ use dilla_core::envelope::{Envelope, EnvelopeType};
 use dilla_core::identity::{Kind, Tier};
 use dilla_core::ids::{InstanceId, MsgId, UserId};
 use dilla_core::mls::{
-    DillaBinding, DillaGroup, GroupKind, MAX_ADDS_PER_COMMIT, build_key_package, external_senders,
+    CIPHERSUITE, DILLA_BINDING, DillaBinding, DillaGroup, GroupKind, MAX_ADDS_PER_COMMIT,
+    PADDING_SIZE, build_key_package, external_senders, group_context_extensions, leaf_capabilities,
+    past_epoch_policy,
 };
 use dilla_core::public_group::{DillaPublicGroup, external_propose_remove};
 use openmls::prelude::*;
@@ -483,7 +485,11 @@ pub fn gen_key_packages(spec: &KeyPackageSetSpec) -> Result<KeyPackageSetManifes
 /// target, so a test can register a group, a second group for the same target, and a re-creation.
 /// `hidden` is the one negative shape the 1,500-leaf fixture cannot supply: two leaves, the second
 /// carrying a credential that is not a dilla identity, so its member list names one leaf while its
-/// tree holds two.
+/// tree holds two. `pairing` and `pairing-sender` are one-leaf `pairing` groups on their own target
+/// (`0x68…`), without and with an external sender (DS-MEMBERSHIP-01: a `pairing` group carries
+/// none). `self-update` and `gce-swap` are honest one-leaf text groups that each also carry one
+/// commit by the creator at the creation epoch, with the GroupInfo after it: an honest self-update,
+/// and a GroupContextExtensions commit that swaps `external_senders` to the creator's own key.
 ///
 /// Everything is written as hex inside one JSON file, so the fixture travels in a text diff.
 pub struct RegistrationSpec {
@@ -503,6 +509,12 @@ pub struct RegistrationGroup {
     pub ratchet_tree_hex: String,
     /// Occupied leaves of the tree.
     pub leaves: usize,
+    /// A commit by the creator at the group's creation epoch (`self-update` and `gce-swap` only),
+    /// and the creator-signed GroupInfo after it, without the tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_group_info_hex: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -613,6 +625,142 @@ pub fn gen_registration_groups(
             group_info_hex: hex(&group_info),
             ratchet_tree_hex: hex(&serialize(&tree)?),
             leaves: group.member_count(),
+            commit_hex: None,
+            commit_group_info_hex: None,
+        });
+    }
+    // Two honest one-leaf text groups that each carry one commit by the creator at their creation
+    // epoch (fix wave C): `self-update`, an honest self-update, and `gce-swap`, a
+    // GroupContextExtensions commit that keeps `required_capabilities` and `dilla_binding` and
+    // swaps `external_senders` to the creator's own key - what a patched client sends to make an
+    // honestly registered group one the instance cannot propose into. The group is registered as
+    // created; the commit and the GroupInfo after it are what the member then uploads.
+    for (name, last, swap) in [("self-update", 0xfdu8, false), ("gce-swap", 0xfe, true)] {
+        let mut id = [0x67; 16];
+        id[15] = last;
+        let group_id = GroupId::from_slice(&id);
+        let mut group = DillaGroup::create(
+            creator.provider(),
+            creator.signer(),
+            creator.credential(),
+            group_id.clone(),
+            binding.clone(),
+            Some(external_senders(
+                SignaturePublicKey::from(instance.signer().public()),
+                &binding.instance_id,
+            )),
+        )?;
+        let group_info =
+            serialize(&group.export_group_info(creator.provider(), creator.signer())?)?;
+        let tree = serialize(&group.export_ratchet_tree())?;
+        let commit = if swap {
+            let swapped = group_context_extensions(
+                &binding,
+                Some(external_senders(
+                    SignaturePublicKey::from(creator.signer().public()),
+                    &binding.instance_id,
+                )),
+            )?;
+            let mut raw = MlsGroup::load(creator.provider().storage(), &group_id)
+                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?
+                .ok_or_else(|| TestkitError::Scenario("the created group is not stored".into()))?;
+            let commit = raw
+                .update_group_context_extensions(creator.provider(), swapped, creator.signer())
+                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?
+                .0;
+            raw.merge_pending_commit(creator.provider())
+                .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
+            group = DillaGroup::load(creator.provider(), &group_id)?
+                .ok_or_else(|| TestkitError::Scenario("the created group is not stored".into()))?;
+            commit
+        } else {
+            let bundle = group.self_update(creator.provider(), creator.signer())?;
+            group.merge_pending_commit(creator.provider())?;
+            bundle.commit
+        };
+        let commit_group_info =
+            serialize(&group.export_group_info(creator.provider(), creator.signer())?)?;
+        groups.push(RegistrationGroup {
+            name: name.to_owned(),
+            group_id_hex: hex(group_id.as_slice()),
+            binding_hex: hex(&binding.encode()),
+            group_info_hex: hex(&group_info),
+            ratchet_tree_hex: hex(&tree),
+            leaves: 1,
+            commit_hex: Some(hex(&serialize(&commit)?)),
+            commit_group_info_hex: Some(hex(&commit_group_info)),
+        });
+    }
+    // Two one-leaf `pairing` groups for DS-MEMBERSHIP-01, by the same creator on their own target:
+    // `pairing`, as an honest client creates one (no external sender - `create_config` refuses one
+    // for this kind), and `pairing-sender`, the same shape with the instance's external sender in
+    // its group context, which only a patched client builds: through OpenMLS's own builder, with
+    // the three extensions `group_context_extensions` would write for a text group.
+    let pairing = DillaBinding {
+        target_id: [0x68; 16],
+        kind: GroupKind::Pairing,
+        media_version: GroupKind::Pairing.media_version(),
+        ..binding.clone()
+    };
+    for (name, last, with_sender) in [("pairing", 0x00u8, false), ("pairing-sender", 0x01, true)] {
+        let mut id = [0x68; 16];
+        id[15] = last;
+        let group_id = GroupId::from_slice(&id);
+        let group = if with_sender {
+            let extensions = Extensions::try_from(vec![
+                Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
+                    &[DILLA_BINDING],
+                    &[],
+                    &[CredentialType::Basic],
+                )),
+                Extension::ExternalSenders(external_senders(
+                    SignaturePublicKey::from(instance.signer().public()),
+                    &pairing.instance_id,
+                )),
+                pairing.to_extension(),
+            ])
+            .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
+            let config = MlsGroupCreateConfig::builder()
+                .ciphersuite(CIPHERSUITE)
+                .use_ratchet_tree_extension(false)
+                .padding_size(PADDING_SIZE)
+                .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
+                .set_past_epoch_deletion_policy(past_epoch_policy(GroupKind::Pairing))
+                .with_group_context_extensions(extensions)
+                .capabilities(leaf_capabilities())
+                .build();
+            MlsGroup::new_with_group_id(
+                creator.provider(),
+                creator.signer(),
+                &config,
+                group_id.clone(),
+                creator.credential(),
+            )
+            .map_err(|e| TestkitError::Scenario(format!("{e:?}")))?;
+            DillaGroup::load(creator.provider(), &group_id)?
+                .ok_or_else(|| TestkitError::Scenario("the created group is not stored".into()))?
+        } else {
+            DillaGroup::create(
+                creator.provider(),
+                creator.signer(),
+                creator.credential(),
+                group_id.clone(),
+                pairing.clone(),
+                None,
+            )?
+        };
+        let group_info =
+            serialize(&group.export_group_info(creator.provider(), creator.signer())?)?;
+        let tree = group.export_ratchet_tree();
+        groups.push(RegistrationGroup {
+            name: name.to_owned(),
+            group_id_hex: hex(group_id.as_slice()),
+            binding_hex: hex(&pairing.encode()),
+            group_info_hex: hex(&group_info),
+            ratchet_tree_hex: hex(&serialize(&tree)?),
+            leaves: group.member_count(),
+            commit_hex: None,
+            commit_group_info_hex: None,
         });
     }
     // The creator's own leaf takes OpenMLS's default leaf lifetime (84 days: 28 * 3, openmls-0.9.0

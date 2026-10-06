@@ -307,6 +307,11 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 		if err := checkReseededBinding(row.Binding, state.Binding); err != nil {
 			return CommitResult{}, err
 		}
+		// Invariant 1's external-sender rule (DS-MEMBERSHIP-01), on the tree as the replay leaves
+		// it: a reseeded group must still be one the instance can propose into.
+		if problem := d.externalSendersProblem(row.Kind, state.ExternalSenders); problem != "" {
+			return CommitResult{}, errCommitInvalid("reseed", problem)
+		}
 		if err := d.checkReseededLeaves(ctx, group, groupID, state); err != nil {
 			return CommitResult{}, err
 		}

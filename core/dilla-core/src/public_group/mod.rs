@@ -8,7 +8,7 @@ mod state;
 mod storage;
 
 pub use state::{
-    DillaPublicGroup, MemberInfo, PublicGroupError, PublicProcessed, external_propose_add,
-    external_propose_remove, validate_key_package,
+    DillaPublicGroup, ExternalSenderInfo, MemberInfo, PublicGroupError, PublicProcessed,
+    external_propose_add, external_propose_remove, validate_key_package,
 };
 pub use storage::{PublicStore, PublicStoreError};

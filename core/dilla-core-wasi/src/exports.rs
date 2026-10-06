@@ -420,6 +420,7 @@ fn public_group_state(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
     let group = t.group(handle)?;
     let binding = group.binding().encode();
     let members = group.members();
+    let senders = group.external_senders()?;
 
     // Deviation A2-13: element 5 is a CBOR byte string *wrapping* the 8-element dilla_binding array,
     // which is how §2.10's export table types it (`binding(bstr)`). The same section's field note
@@ -430,8 +431,12 @@ fn public_group_state(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
     // ABI v5: element 7 is `leaf_count`, every occupied leaf of the tree. The member list above
     // leaves out a leaf it cannot name (no dilla identity, or not a 32-byte key), so a host that
     // adopts a tree compares the two rather than trusting the list's length.
+    //
+    // ABI v6: element 8 is `external_senders`, the group context's entries in extension order, each
+    // `[credential_type, credential, signature_key]` (empty when the extension is absent). The host
+    // decides what a group of each kind may carry; the core only reports it (DS-MEMBERSHIP-01).
     let mut e = Encoder::new();
-    e.array(7)
+    e.array(8)
         .uint(0)
         .uint(group.epoch())
         .bytes(group.group_id().as_slice())
@@ -445,6 +450,13 @@ fn public_group_state(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
             .bytes(&m.identity.encode());
     }
     e.uint(group.leaf_count() as u64);
+    e.array(senders.len());
+    for s in &senders {
+        e.array(3)
+            .uint(u64::from(s.credential_type))
+            .bytes(&s.credential)
+            .bytes(&s.signature_key);
+    }
     Ok(e.into_vec())
 }
 
@@ -1070,10 +1082,10 @@ mod tests {
         let r = req(|e| {
             e.array(2).uint(dilla_core::ABI_VERSION).uint(imported);
         });
-        let (got_epoch, got_group_id, got_tree_hash, members, leaf_count) = decode_strict(
+        let (got_epoch, got_group_id, got_tree_hash, members, leaf_count, senders) = decode_strict(
             &dispatch("public_group_state", &r),
             |d: &mut Decoder<'_>| {
-                d.array(7)?;
+                d.array(8)?;
                 assert_eq!(d.uint()?, 0);
                 let epoch = d.uint()?;
                 let group_id = d.bytes()?.to_vec();
@@ -1093,7 +1105,17 @@ mod tests {
                 );
                 // ABI v5: element 7, every occupied leaf of the tree.
                 let leaf_count = d.uint()?;
-                Ok((epoch, group_id, tree_hash, members, leaf_count))
+                // ABI v6: element 8, the external senders as [credential_type, credential, key].
+                let n = d.array_len()?;
+                let mut senders = Vec::with_capacity(n);
+                for _ in 0..n {
+                    d.array(3)?;
+                    let credential_type = d.uint()?;
+                    let credential = d.bytes()?.to_vec();
+                    let key = d.bytes()?.to_vec();
+                    senders.push((credential_type, credential, key));
+                }
+                Ok((epoch, group_id, tree_hash, members, leaf_count, senders))
             },
         )
         .unwrap();
@@ -1108,6 +1130,18 @@ mod tests {
             leaf_count, 1_500,
             "leaf_count counts every occupied leaf; every fixture leaf is a dilla identity"
         );
+        // The fixture's one external sender survives the round-trip: a basic credential naming the
+        // generator's instance, and its 32-byte key.
+        assert_eq!(senders.len(), 1, "the fixture names one external sender");
+        let (credential_type, credential, key) = &senders[0];
+        assert_eq!(*credential_type, 1, "a basic credential");
+        assert_eq!(
+            credential,
+            &dilla_core::mls::instance_credential_identity(
+                &dilla_core::ids::InstanceId::from_bytes([0x11; 16])
+            )
+        );
+        assert_eq!(key.len(), 32);
     }
 
     #[test]
@@ -1264,9 +1298,10 @@ mod tests {
     /// validate_key_package responses grew; 3 since `public_group_process` grew `new_leaf` and the
     /// module grew `device_list_entries` (task 27a, Ruling C); 4 since `validate_key_package` and
     /// the applied items grew the leaf's `signature_key` (hardening C); 5 since
-    /// `public_group_state` grew `leaf_count` (hardening G).
+    /// `public_group_state` grew `leaf_count` (hardening G); 6 since it grew `external_senders`
+    /// (DS-MEMBERSHIP-01).
     #[test]
-    fn dilla_abi_reports_version_five() {
+    fn dilla_abi_reports_version_six() {
         let out = dispatch("dilla_abi", &version_only());
         let abi = decode_strict(&out, |d: &mut Decoder<'_>| {
             d.array(6)?;
@@ -1283,24 +1318,24 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            abi, 5,
-            "ABI v5: public_group_state carries the tree's leaf_count"
+            abi, 6,
+            "ABI v6: public_group_state carries the group's external_senders"
         );
-        assert_eq!(dilla_core::ABI_VERSION, 5);
+        assert_eq!(dilla_core::ABI_VERSION, 6);
     }
 
-    /// An ABI v2, v3 or v4 request must now be refused outright — there is no compatibility shim
-    /// (§3).
+    /// An ABI v2, v3, v4 or v5 request must now be refused outright — there is no compatibility
+    /// shim (§3).
     #[test]
     fn an_abi_version_two_request_is_refused() {
-        for old in [2u64, 3, 4] {
+        for old in [2u64, 3, 4, 5] {
             let r = req(|e| {
                 e.array(1).uint(old);
             });
             let (code, detail) = failure(&dispatch("dilla_abi", &r));
             assert_eq!(code, crate::abi::E_ABI_VERSION);
             assert!(
-                detail.contains(&old.to_string()) && detail.contains('5'),
+                detail.contains(&old.to_string()) && detail.contains('6'),
                 "detail: {detail}"
             );
         }

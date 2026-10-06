@@ -37,7 +37,10 @@ pub use policy::{
     CALL_SWEEP, PAST_EPOCHS_CALL, PAST_EPOCHS_TEXT, TEXT_SWEEP, past_epoch_policy,
     past_epoch_sweep, validate_staged_commit,
 };
-pub(crate) use policy::{leaf_credentials_unchanged, proposal_credential_verdict};
+pub(crate) use policy::{
+    commit_extensions_unchanged, leaf_credentials_unchanged, proposal_credential_verdict,
+    proposal_extensions_unchanged,
+};
 
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 pub use config::{

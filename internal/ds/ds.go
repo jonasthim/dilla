@@ -9,12 +9,15 @@ package ds
 
 import (
 	"context"
+	"crypto/ed25519"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -287,6 +290,12 @@ type DS struct {
 	// accepted counts the commits this DS has accepted, for AcceptedCommits (debug.go).
 	accepted atomic.Int64
 
+	// instanceCredential and externalSenderPub are the one external sender a text or call group
+	// must name (externalSendersProblem): the basic credential's identity [1, "instance",
+	// instance_id] and the public half of Keys.ExternalSenderPriv.
+	instanceCredential []byte
+	externalSenderPub  []byte
+
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
@@ -318,10 +327,20 @@ func New(o Options) (*DS, error) {
 	if o.DeviceLists == nil {
 		o.DeviceLists = NewDeviceLists(o.Store, o.Wasm)
 	}
+	// Invariant 1's external sender (DS-MEMBERSHIP-01): the one entry a text or call group's
+	// external_senders must carry, derived once from the keys the delivery service signs with.
+	credential, err := cborx.Marshal([]any{uint64(1), "instance", o.Keys.InstanceID[:]})
+	if err != nil {
+		return nil, fmt.Errorf("ds: encode the instance's external-sender credential: %w", err)
+	}
 	ds := &DS{
-		opts:   o,
-		states: newStateCache(o.Wasm),
-		stop:   make(chan struct{}),
+		opts:               o,
+		states:             newStateCache(o.Wasm),
+		stop:               make(chan struct{}),
+		instanceCredential: credential,
+		// An Ed25519 private key is the seed followed by the public key (crypto/ed25519), as
+		// internal/dillad derives the external_sender_pub it publishes.
+		externalSenderPub: []byte(ed25519.NewKeyFromSeed(o.Keys.ExternalSenderPriv[:])[ed25519.SeedSize:]),
 	}
 	ds.elections.m = map[id.ID]*election{}
 	return ds, nil

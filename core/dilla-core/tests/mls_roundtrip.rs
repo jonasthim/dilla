@@ -1267,12 +1267,14 @@ fn queue_proposal_keeps_the_mls_message_the_ds_received() {
 
 /// Fix round 1, finding 1. `binding()` is what interfaces section 2.10 export 12
 /// (`public_group_state`) serves to clients, so it must never contradict the group context the DS
-/// itself holds. A GroupContextExtensions commit rewrites that context: `PublicGroup::merge_commit`
-/// replaces it wholesale (`merge_diff`), and the DS runs no dilla-level commit policy - unlike
-/// `DillaGroup::process_message`, which refuses such a commit outright - so one really can reach
-/// `merge_commit` here. The cached binding must move with it.
+/// itself holds. A GroupContextExtensions commit would rewrite that context: `PublicGroup::merge_commit`
+/// replaces it wholesale (`merge_diff`). This test used to drive such a commit through the DS view
+/// and check that the cached binding moved with it; since fix wave C the DS refuses the commit at
+/// process time (the extensions never change after creation, the rule a receiving member already
+/// applied), so the binding cannot move at all. What it now pins: the commit is refused, the cached
+/// binding is still the created one, and it agrees with the binding the exported state derives.
 #[test]
-fn the_ds_view_re_derives_its_binding_when_a_commit_rewrites_the_group_context() {
+fn the_ds_view_refuses_a_commit_rewriting_the_group_context_and_keeps_its_binding() {
     let alice_p = provider();
     let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
     alice_signer.store(alice_p.storage()).expect("store signer");
@@ -1294,7 +1296,7 @@ fn the_ds_view_re_derives_its_binding_when_a_commit_rewrites_the_group_context()
         .expect("group info");
     let verifiable = into_group_info(info_message);
     let crypto = openmls_rust_crypto::RustCrypto::default();
-    let (mut ds, _) =
+    let (ds, _) =
         DillaPublicGroup::from_external(&crypto, alice.export_ratchet_tree().into(), verifiable)
             .expect("from_external");
     assert_eq!(ds.binding(), &b);
@@ -1315,20 +1317,23 @@ fn the_ds_view_re_derives_its_binding_when_a_commit_rewrites_the_group_context()
         .expect("a member can build the commit")
         .0;
 
-    let staged = match ds
+    let err = ds
         .process_message(&crypto, into_protocol(commit))
-        .expect("process")
-    {
-        PublicProcessed::StagedCommit { staged, .. } => *staged,
-        other => panic!("expected a staged commit, got {other:?}"),
-    };
-    ds.merge_commit(staged).expect("merge_commit");
+        .expect_err("the DS refuses a commit that rewrites the group context");
+    assert!(
+        matches!(
+            err,
+            PublicGroupError::Protocol(ProtocolError::MemberRemoveForbidden)
+        ),
+        "{err:?}"
+    );
 
     assert_eq!(
         ds.binding(),
-        &rewritten,
-        "the merged group context is what the DS must serve"
+        &b,
+        "the refused commit must not have changed the binding the DS serves"
     );
+    assert_ne!(ds.binding(), &rewritten);
     // The same view rebuilt from the exported state derives the binding from scratch, so it is the
     // arbiter of what the DS's own state actually says.
     let reloaded = DillaPublicGroup::import_state(&ds.export_state(), &group_id).expect("import");
@@ -1337,6 +1342,147 @@ fn the_ds_view_re_derives_its_binding_when_a_commit_rewrites_the_group_context()
         reloaded.binding(),
         "the cached binding must not contradict the stored group context"
     );
+}
+
+/// DS-MEMBERSHIP-01's second route (fix wave C): dilla has no feature that changes a group's
+/// context extensions after creation, so a member's `GroupContextExtensions` proposal - by value in
+/// a commit, or standalone - is refused by the delivery service's public group as it is by a
+/// receiving member, and the state is left unchanged. The hostile shape is the one that matters:
+/// the extension set keeps `required_capabilities` and `dilla_binding` byte-identical and swaps
+/// `external_senders` to the member's own key, which would leave a group the instance can no longer
+/// propose into. An honest self-update commit through the same view still processes.
+#[test]
+fn a_member_cannot_swap_the_external_senders_on_the_ds_or_on_a_receiver() {
+    let alice_p = provider();
+    let bob_p = provider();
+    let (alice_signer, alice_cred) = signer_and_credential(0xaa, 0x01);
+    let (bob_signer, bob_cred) = signer_and_credential(0xbb, 0x02);
+    alice_signer.store(alice_p.storage()).expect("store signer");
+    bob_signer.store(bob_p.storage()).expect("store signer");
+    let bob_kp = build_key_package(&bob_p, &bob_signer, bob_cred, false).expect("key package");
+
+    let instance = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+    let group_id = GroupId::from_slice(&[0x45; 16]);
+    let b = binding(GroupKind::Text);
+    let mut alice = DillaGroup::create(
+        &alice_p,
+        &alice_signer,
+        alice_cred,
+        group_id.clone(),
+        b.clone(),
+        Some(external_senders(instance.public().into(), &b.instance_id)),
+    )
+    .expect("create");
+    let add = alice
+        .add_members(&alice_p, &alice_signer, &[bob_kp.key_package().clone()])
+        .expect("add_members");
+    alice.merge_pending_commit(&alice_p).expect("merge");
+    let mut bob = DillaGroup::join_from_welcome(
+        &bob_p,
+        into_welcome(add.welcomes[0].1.clone()),
+        alice.export_ratchet_tree().into(),
+        &b,
+    )
+    .expect("join");
+    let crypto = openmls_rust_crypto::RustCrypto::default();
+    let (mut ds, _) = DillaPublicGroup::from_external(
+        &crypto,
+        alice.export_ratchet_tree().into(),
+        into_group_info(
+            alice
+                .export_group_info(&alice_p, &alice_signer)
+                .expect("group info"),
+        ),
+    )
+    .expect("from_external");
+    let senders_before = ds.external_senders().expect("senders");
+    let epoch_before = ds.epoch();
+
+    // The patched client: the same three extensions, external_senders naming Alice's own key.
+    let swapped = group_context_extensions(
+        &b,
+        Some(external_senders(
+            alice_signer.public().into(),
+            &b.instance_id,
+        )),
+    )
+    .expect("extensions");
+    let mut raw = MlsGroup::load(alice_p.storage(), &group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let gce_commit = raw
+        .update_group_context_extensions(&alice_p, swapped.clone(), &alice_signer)
+        .expect("a member can build the commit")
+        .0;
+    raw.clear_pending_commit(alice_p.storage())
+        .expect("clear the commit");
+    let (gce_proposal, _) = raw
+        .propose_group_context_extensions(&alice_p, swapped, &alice_signer)
+        .expect("a member can build the proposal");
+    raw.clear_pending_proposals(alice_p.storage())
+        .expect("clear the proposal");
+
+    // The delivery service: the commit is refused at process time, nothing staged, nothing merged.
+    let err = ds
+        .process_message(&crypto, into_protocol(gce_commit.clone()))
+        .expect_err("the DS must refuse a member commit that swaps the external senders");
+    assert!(
+        matches!(
+            err,
+            PublicGroupError::Protocol(ProtocolError::MemberRemoveForbidden)
+        ),
+        "{err:?}"
+    );
+    // ...and the standalone proposal is neither processed nor queued.
+    let err = ds
+        .process_message(&crypto, into_protocol(gce_proposal.clone()))
+        .expect_err("the DS must refuse a standalone GroupContextExtensions proposal");
+    assert!(
+        matches!(
+            err,
+            PublicGroupError::Protocol(ProtocolError::MemberRemoveForbidden)
+        ),
+        "{err:?}"
+    );
+    ds.queue_proposal(&crypto, into_protocol(gce_proposal.clone()))
+        .expect_err("the DS must not queue a GroupContextExtensions proposal");
+    assert!(ds.queued_proposals().expect("queued").is_empty());
+    assert_eq!(ds.external_senders().expect("senders"), senders_before);
+    assert_eq!(ds.epoch(), epoch_before);
+
+    // A receiving member refuses both, with the same verdict.
+    for message in [gce_commit, gce_proposal] {
+        let err = bob
+            .process_message(&bob_p, into_protocol(message))
+            .expect_err("a receiver must refuse it");
+        assert!(
+            matches!(
+                err,
+                MlsError::Protocol(ProtocolError::MemberRemoveForbidden)
+            ),
+            "{err:?}"
+        );
+    }
+    assert_eq!(bob.binding(), &b);
+
+    // The honest control: a self-update commit from the same member still processes on the DS.
+    let mut alice = DillaGroup::load(&alice_p, &group_id)
+        .expect("load")
+        .expect("alice's group is stored");
+    let honest = alice
+        .self_update(&alice_p, &alice_signer)
+        .expect("self_update");
+    match ds
+        .process_message(&crypto, into_protocol(honest.commit))
+        .expect("an honest commit processes")
+    {
+        PublicProcessed::StagedCommit { staged, .. } => {
+            ds.merge_commit(*staged).expect("merge_commit");
+        }
+        other => panic!("expected a staged commit, got {other:?}"),
+    }
+    assert_eq!(ds.epoch(), epoch_before + 1);
+    assert_eq!(ds.external_senders().expect("senders"), senders_before);
 }
 
 /// The KeyPackage wire round trip a delivery service performs on `POST /v1/keypackages`.

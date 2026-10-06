@@ -7,7 +7,7 @@
 
 use super::{
     DillaBinding, DillaProvider, GroupKind, StorageError, TxError, create_config, join_config,
-    past_epoch_sweep, policy::extension_change_verdict, proposal_credential_verdict,
+    past_epoch_sweep, proposal_credential_verdict, proposal_extensions_unchanged,
     validate_staged_commit,
 };
 use crate::envelope::Envelope;
@@ -685,10 +685,9 @@ impl DillaGroup {
                 // is the one proposal type whose sender rule dilla can evaluate on its own -
                 // Add/Remove need the role snapshot and the leaf credential, which
                 // `validate_staged_commit` reads off the staged commit. The sender is the
-                // proposal's own, as everywhere else in this policy.
-                if matches!(p.proposal(), Proposal::GroupContextExtensions(_)) {
-                    extension_change_verdict(p.sender()).map_err(MlsError::Protocol)?;
-                }
+                // proposal's own, as everywhere else in this policy. The helper is the one the
+                // delivery service's public group runs too (`mls::policy`).
+                proposal_extensions_unchanged(&p).map_err(MlsError::Protocol)?;
                 // An `Update` keeps its proposer's credential (protocol/01), read against the
                 // current tree - the same rule `validate_staged_commit` applies to the commit that
                 // would carry it.

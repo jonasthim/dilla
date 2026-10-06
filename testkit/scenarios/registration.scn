@@ -5,7 +5,10 @@
 # channels table is Plan 2's. A registration adopts exactly one leaf, the registering device's
 # own, listed in its user's signed device list: dave's user has published no list, so his
 # registration of either kind is 400 E_INVALID_REQUEST (hardening G), and the same channels then
-# take alice's and bob's groups, so the refusals left nothing behind.
+# take alice's and bob's groups, so the refusals left nothing behind. A text group whose
+# external_senders names a key other than the instance's (carol's own, under the instance's
+# credential, as a patched client builds it) is one the instance could never propose into, so it is
+# 400 E_BINDING_INVALID (DS-MEMBERSHIP-01), and the same channel then takes alice's honest group.
 instance dilla
 client alice
 client bob
@@ -31,3 +34,6 @@ group voice kind=call target=f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6 community=none cre
 join carol chat via=welcome
 send alice chat the private e2ee channel's group works
 expect_decrypts carol chat the private e2ee channel's group works
+channel f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7 visibility=private mode=e2ee
+expect_reject E_BINDING_INVALID group forged kind=text target=f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7 community=none creator=carol external_sender=forged
+group governed kind=text target=f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7 community=none creator=alice

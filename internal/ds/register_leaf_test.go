@@ -38,6 +38,10 @@ type registrationGroup struct {
 	groupInfo   []byte
 	ratchetTree []byte
 	leaves      int
+	// commit and commitGroupInfo are set for `self-update` and `gce-swap` only: one commit by the
+	// creator at the creation epoch, and the GroupInfo after it.
+	commit          []byte
+	commitGroupInfo []byte
 }
 
 // registrationFixtureData is the creator every group of the fixture was created by, and the groups.
@@ -83,6 +87,8 @@ func loadRegistrationFixture() (registrationFixtureData, error) {
 			GroupInfoHex   string `json:"group_info_hex"`
 			RatchetTreeHex string `json:"ratchet_tree_hex"`
 			Leaves         int    `json:"leaves"`
+			CommitHex      string `json:"commit_hex"`
+			CommitGIHex    string `json:"commit_group_info_hex"`
 		} `json:"groups"`
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -113,7 +119,10 @@ func loadRegistrationFixture() (registrationFixtureData, error) {
 		for _, field := range []struct {
 			dst *[]byte
 			src string
-		}{{&rg.binding, g.BindingHex}, {&rg.groupInfo, g.GroupInfoHex}, {&rg.ratchetTree, g.RatchetTreeHex}} {
+		}{
+			{&rg.binding, g.BindingHex}, {&rg.groupInfo, g.GroupInfoHex}, {&rg.ratchetTree, g.RatchetTreeHex},
+			{&rg.commit, g.CommitHex}, {&rg.commitGroupInfo, g.CommitGIHex},
+		} {
 			if *field.dst, err = hex.DecodeString(field.src); err != nil {
 				return registrationFixtureData{}, err
 			}

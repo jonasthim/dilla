@@ -393,6 +393,9 @@ func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels)
 	for i := range keys.InstanceID {
 		keys.InstanceID[i] = 0x11
 	}
+	// And the fixtures' text groups name the generator's external-sender key, which Register
+	// requires to be this instance's (protocol/02 invariant 1, DS-MEMBERSHIP-01).
+	keys.ExternalSenderPriv = fixtureExternalSenderKey()
 	d, err := ds.New(ds.Options{
 		Store: deps.Repo, Wasm: wasm, Gateway: gw, Clock: clk,
 		Policy: ds.DefaultPolicy(), Keys: keys, Channels: channels(deps.Repo),

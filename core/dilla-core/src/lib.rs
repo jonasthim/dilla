@@ -49,4 +49,12 @@ pub const WIRE_VERSION: u64 = 1;
 /// credential is not a dilla identity or whose key is not 32 bytes, so it cannot say how many
 /// leaves a tree holds; group registration and heal's reseed adopt a tree only when every leaf is
 /// one the delivery service can name.
-pub const ABI_VERSION: u64 = 5;
+///
+/// **6** since 2026-10-06 (DS-MEMBERSHIP-01): `public_group_state`'s response grew an eighth
+/// element, `external_senders`, the group context's external-sender entries as
+/// `[credential_type, credential, signature_key]` each (empty when the extension is absent).
+/// Group registration and heal's reseed adopt a `text` or `call` group only when its one entry is
+/// this instance's key and `"instance"` credential, and a `pairing` or `interaction` group only
+/// when it carries none: a group whose extension names another key is one the instance can never
+/// propose into.
+pub const ABI_VERSION: u64 = 6;

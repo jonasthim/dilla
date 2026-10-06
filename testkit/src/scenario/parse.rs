@@ -30,12 +30,17 @@ pub enum Stmt {
     Sync {
         client: String,
     },
+    /// `group <name> kind=<kind> target=<hex> [community=<hex>|none] creator=<client>
+    /// [external_sender=forged]`. A `text` or `call` group carries the instance's external sender;
+    /// with `external_sender=forged` it names the creator's own key under the instance's
+    /// credential instead, as a patched client would (DS-MEMBERSHIP-01, invariant 1).
     Group {
         name: String,
         kind: GroupKind,
         target: [u8; 16],
         community: Option<CommunityId>,
         creator: String,
+        forged_sender: bool,
     },
     /// `join <client> <group> [via=welcome|external]` and `external_join <client> <group>`. An
     /// external join may also say `as=<uploader>` — the commit is the client's own but is uploaded
@@ -457,12 +462,23 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
             let creator = named(args, "creator=")
                 .ok_or_else(|| err(line_no, "group needs creator="))?
                 .to_owned();
+            let forged_sender = match named(args, "external_sender=") {
+                None => false,
+                Some("forged") => true,
+                Some(other) => {
+                    return Err(err(
+                        line_no,
+                        format!("unknown external_sender {other:?}; the one value is forged"),
+                    ));
+                }
+            };
             Stmt::Group {
                 name: args[0].to_owned(),
                 kind,
                 target,
                 community,
                 creator,
+                forged_sender,
             }
         }
         "join" | "external_join" => {
@@ -896,12 +912,17 @@ expect_reject E_BINDING join bob chat
                 target,
                 community,
                 creator,
+                forged_sender,
             } => {
                 assert_eq!(name, "chat");
                 assert_eq!(*kind, GroupKind::Text);
                 assert_eq!(*target, [0x33; 16]);
                 assert!(community.is_none());
                 assert_eq!(creator, "alice");
+                assert!(
+                    !forged_sender,
+                    "the instance's own sender unless the line forges one"
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -946,6 +967,24 @@ expect_reject E_BINDING join bob chat
         let e = one(line).expect_err(line);
         assert_eq!(e.line, 1, "{line}");
         assert!(e.message.contains(needle), "{line}: {}", e.message);
+    }
+
+    /// DS-MEMBERSHIP-01: `external_sender=forged` makes the group name the creator's own key; any
+    /// other value is refused rather than read as the instance's.
+    #[test]
+    fn group_parses_a_forged_external_sender() {
+        assert!(matches!(
+            one("group g kind=text target=33333333333333333333333333333333 creator=alice external_sender=forged")
+                .unwrap(),
+            Stmt::Group {
+                forged_sender: true,
+                ..
+            }
+        ));
+        refused(
+            "group g kind=text target=33333333333333333333333333333333 creator=alice external_sender=mine",
+            "the one value is forged",
+        );
     }
 
     #[test]

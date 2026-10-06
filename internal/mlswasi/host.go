@@ -60,10 +60,15 @@ import (
 // each public_group_process applied item a sixth, the leaf's signature key, which the delivery
 // service binds to the device's registered key. **5** since 2026-10-05 (hardening G):
 // public_group_state grew a seventh element, leaf_count, every occupied leaf of the tree, which
-// registration and heal's reseed compare with the member list before adopting a tree.
-const ABIVersion uint64 = 5
+// registration and heal's reseed compare with the member list before adopting a tree. **6** since
+// 2026-10-06 (DS-MEMBERSHIP-01): public_group_state grew an eighth element, external_senders, the
+// group context's [credential_type, credential, signature_key] entries, which registration and
+// heal's reseed compare with the instance's own key and credential before adopting a tree. A
+// module of another version answers every request E_ABI_VERSION, and a v5 response has seven
+// elements where State expects eight: either way the request fails, nothing is adopted.
+const ABIVersion uint64 = 6
 
-// RequiredExports is the 23-export ABI v5 surface (v4 and v5 added no export). New refuses any module that does not carry all
+// RequiredExports is the 23-export ABI v6 surface (v4, v5 and v6 added no export). New refuses any module that does not carry all
 // of them. _initialize is deliberately absent: see the package comment.
 var RequiredExports = []string{
 	"dilla_alloc",

@@ -27,6 +27,14 @@ func CheckChannelModeForTest(d *DS, ctx context.Context, b Binding) error {
 	return d.checkChannelMode(ctx, b)
 }
 
+// ExternalSendersProblemForTest is invariant 1's external-sender rule on its own
+// (DS-MEMBERSHIP-01). The fixtures supply the wrong-key and the pairing-with-a-sender shapes end to
+// end; the wrong credential, a second entry and a missing one are shapes only a patched client
+// builds, so the rule's every branch is pinned here.
+func ExternalSendersProblemForTest(d *DS, kind uint8, senders []mlswasi.ExternalSender) string {
+	return d.externalSendersProblem(kind, senders)
+}
+
 // ReconcileLeavesForTest is the sweeper's leaf reconcile on its own, without the rest of Sweep
 // (whose inactivity pass would also propose Removes over the fixture's devices).
 func ReconcileLeavesForTest(d *DS, ctx context.Context) (int, error) { return d.reconcileLeaves(ctx) }

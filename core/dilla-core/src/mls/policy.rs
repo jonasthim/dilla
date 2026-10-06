@@ -132,11 +132,10 @@ pub fn validate_staged_commit(
     // `StagedCommit` has no `group_context_ext_proposals()`/`reinit_proposals()` accessor in
     // 0.9.0 - staged_commit.rs:888-926 lists add/remove/update/psk and the untyped
     // `queued_proposals()` - so the two remaining rules are read off the proposal queue directly.
+    commit_extensions_unchanged(staged)?;
     for queued in staged.queued_proposals() {
-        match queued.proposal() {
-            Proposal::GroupContextExtensions(_) => extension_change_verdict(queued.sender())?,
-            Proposal::ReInit(_) => return Err(ProtocolError::MemberRemoveForbidden),
-            _ => {}
+        if matches!(queued.proposal(), Proposal::ReInit(_)) {
+            return Err(ProtocolError::MemberRemoveForbidden);
         }
     }
     for remove in staged.remove_proposals() {
@@ -225,6 +224,37 @@ pub(crate) fn removal_verdict(
 /// already use and settling it is a protocol/07-versioning.md change.
 pub(crate) fn extension_change_verdict(_proposal_sender: &Sender) -> Result<(), ProtocolError> {
     Err(ProtocolError::MemberRemoveForbidden)
+}
+
+/// The group context's extensions never change after creation (protocol/01 "Client policy for
+/// proposals from members", protocol/02 invariant 4): a commit that carries a
+/// `GroupContextExtensions` proposal, by value or by reference, is refused, whoever sent the
+/// proposal (`extension_change_verdict`). Shared by both enforcement points so they cannot drift:
+/// `validate_staged_commit` (a receiving member) and `DillaPublicGroup::process_with_policy` (the
+/// delivery service, on `/commit`, `/resync` and every commit of a heal's replayed tail). Without the
+/// delivery-service half a member could swap `external_senders` to its own key in an honestly
+/// registered group and leave the instance unable to propose into it (DS-MEMBERSHIP-01).
+///
+/// `StagedCommit::queued_proposals()` is every proposal the commit applies, the inline ones and the
+/// referenced ones alike (openmls-0.9.0 `staged_commit.rs`), so one walk covers both.
+pub(crate) fn commit_extensions_unchanged(staged: &StagedCommit) -> Result<(), ProtocolError> {
+    for queued in staged.queued_proposals() {
+        if matches!(queued.proposal(), Proposal::GroupContextExtensions(_)) {
+            extension_change_verdict(queued.sender())?;
+        }
+    }
+    Ok(())
+}
+
+/// The same rule for a standalone proposal, before anyone queues it: a `GroupContextExtensions`
+/// proposal is refused, so it can never sit in a queue waiting for some committer to carry it.
+pub(crate) fn proposal_extensions_unchanged(
+    proposal: &QueuedProposal,
+) -> Result<(), ProtocolError> {
+    if matches!(proposal.proposal(), Proposal::GroupContextExtensions(_)) {
+        extension_change_verdict(proposal.sender())?;
+    }
+    Ok(())
 }
 
 /// Once a leaf is in a group its credential is immutable (protocol/01 "Client policy for proposals
