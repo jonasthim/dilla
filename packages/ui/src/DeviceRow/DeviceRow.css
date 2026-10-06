@@ -1,0 +1,6 @@
+.d-device-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.5rem 1rem; padding: 0.625rem 0; border-bottom: 1px solid var(--hairline); }
+.d-device-row__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; min-width: 0; }
+.d-device-row__name { font-size: var(--text-base); color: var(--fg); font-variant-numeric: tabular-nums; }
+.d-device-row__tag { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; padding: 0 0.25rem; color: var(--fg-3); border: 1px solid var(--edge); border-radius: var(--r-md); }
+.d-device-row__tag[data-kind="own"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.d-device-row__meta { margin-top: 0.125rem; font-size: var(--text-sm); color: var(--fg-3); }

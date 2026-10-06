@@ -1,0 +1,6 @@
+.d-settings-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem 1.5rem; padding: 0.75rem 0; border-bottom: 1px solid var(--hairline); min-width: 0; }
+.d-settings-row:last-child { border-bottom: 0; }
+.d-settings-row__text { flex: 1 1 16rem; min-width: 0; }
+.d-settings-row__label { display: block; font-size: var(--text-base); font-weight: var(--weight-label); color: var(--fg); }
+.d-settings-row__hint { margin: 0.125rem 0 0; max-width: 60ch; font-size: var(--text-sm); color: var(--fg-3); }
+.d-settings-row__control { flex: 0 1 auto; min-width: 0; max-width: 100%; }

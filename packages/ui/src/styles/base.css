@@ -17,14 +17,14 @@
    and a box-shadow ring would be swallowed by those. An outline also keeps
    the Windows forced-colors focus indicator. Never set `outline: none`, except on
    an element focused only by script whose ring would read as an error box (ruling
-   23(h)): the onboarding title and the opened dialog, each scoped to tabindex -1. */
+   23(h)): the onboarding title, the opened dialog and the settings frame's title, each scoped to tabindex -1. */
 .d-root :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 /* Visually hidden, still read aloud: the text half of a non-colour cue. */
 .d-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .d-label { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
 .d-root a { color: var(--fg-link); text-decoration-line: none; }
 [data-theme="high-contrast"] .d-root a, .d-root a[data-underline] { text-decoration-line: underline; }
-/* The component library's only stacking value and only width breakpoint (Global Constraints, plan
+/* The component library's only stacking value and its first width breakpoint (Global Constraints, plan
    web-1). The skip link paints above the rail's positioned tiles. Below 48rem of shell width the
    sidebar stacks above the main pane, so the shell fits a 360px phone without sideways scrolling.
    The selectors carry two classes so they win over AppShell.css whatever the load order. */
@@ -32,4 +32,16 @@
 @container d-shell (max-width: 47.99rem) {
   .d-app-shell .d-app-shell__grid { grid-template-columns: var(--rail-w) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; grid-template-areas: "banner banner" "rail sidebar" "rail main" "status status"; }
   .d-app-shell .d-app-shell__sidebar { max-height: 35dvh; overflow-y: auto; border-bottom: 1px solid var(--hairline); }
+}
+/* The settings frame (L-UI-24). Under 45rem of viewport it fills the viewport; under 45rem of its own
+   width the navigation stacks above the section. The second is a container query on the frame, so a
+   story can show it at any viewport through --d-settings-w and --d-settings-h. The frame's container
+   declaration lives here with the two rules that read it. */
+.d-settings-frame { container: d-settings / inline-size; }
+@media (max-width: 44.99rem) {
+  .d-settings-frame.d-settings-frame { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
+}
+@container d-settings (max-width: 44.99rem) {
+  .d-settings-frame .d-settings-frame__panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .d-settings-frame .d-settings-frame__side { border-right: 0; border-bottom: 1px solid var(--hairline-2); }
 }
