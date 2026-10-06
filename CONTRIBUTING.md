@@ -44,6 +44,23 @@ distribution-packaged Rust keeps working if you remove the `PATH` entry.
 2. regenerated vectors (`npm run vectors`) with the diff explained,
 3. a note in `protocol/07-versioning.md` describing the compatibility window.
 
+## Documentation
+
+The README's "What works today" and "What is not there yet", the user guide in `docs/user/` and its
+screenshots describe what a person can do with the code at `main`, with a date. Every plan's closing task
+brings them up to date in the same pull request:
+
+1. update the README's "What works today" table and "What is not there yet" list, and their date;
+2. update `docs/user/` for every screen, string or limit the plan changed (quote the strings from
+   `packages/web/src/strings/en.ts`);
+3. re-shoot the screenshots: `npm run build -w @dilla/web`, then
+   `GO=$(command -v go) npm run docs:shots -w @dilla/e2e` (`e2e/scripts/shoot-docs.mjs`; it starts its own
+   `dilla-testhost` on 127.0.0.1:8471 and 8472, and `--port`/`--control` pick others). Add a shot to the
+   script when the plan adds a screen worth showing. The script is not part of CI.
+
+The operator guide, `docs/deploy/README.md`, is updated by the task that changes what an operator runs or
+configures.
+
 ## Commits
 
 Conventional commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, `ci:`.

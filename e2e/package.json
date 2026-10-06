@@ -11,7 +11,8 @@
     "test:e2e:spike": "playwright test --config playwright.media.config.ts --project=spike-chromium --project=spike-firefox",
     "test:e2e:core": "playwright test --config playwright.core.config.ts --project=chromium-core --project=firefox-core",
     "test:e2e:web": "playwright test --config playwright.web.config.ts --project=chromium-web --project=firefox-web --project=webkit-web",
-    "demo:web": "playwright test --config playwright.demo.config.ts"
+    "demo:web": "playwright test --config playwright.demo.config.ts",
+    "docs:shots": "node scripts/shoot-docs.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
