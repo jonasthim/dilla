@@ -21,6 +21,7 @@ export function testkitBinary(): string { return process.env.DILLA_TESTKIT ?? jo
 export interface PeerSetup { username: string; display: string; user_id: string; device_id: string; community_id: string; channel_id: string; channel_ids: string[]; invite_code: string }
 export interface PeerReceived { seq: number; body: string; sender_user: string; sender_device: string; tier: number }
 export interface PeerSync { epoch: number; members: number; received: PeerReceived[] }
+export interface PeerEnrolled { device_id: string; version: number; epoch: number; scopes: number[] }
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 
 export class WebDriver {
@@ -65,6 +66,10 @@ export class WebDriver {
   async sync(): Promise<PeerSync> { return this.strip(await this.request<PeerSync & { id: number; ok: boolean }>('sync', {})); }
   async members(): Promise<{ devices: string[] }> { return this.strip(await this.request<{ devices: string[]; id: number; ok: boolean }>('members', {})); }
   async update(): Promise<{ epoch: number }> { return this.strip(await this.request<{ epoch: number; id: number; ok: boolean }>('update', {})); }
+  /** L-E2E-10 `enrol`: a second Browser-tier device of the peer's account, by host login, pending then listed. */
+  async enrol(): Promise<PeerEnrolled> { return this.strip(await this.request<PeerEnrolled & { id: number; ok: boolean }>('enrol', {})); }
+  /** L-E2E-10 `revoke`: list v+1 with that device revoked, signed and published by the peer's first device. */
+  async revoke(deviceId: string): Promise<{ version: number }> { return this.strip(await this.request<{ version: number; id: number; ok: boolean }>('revoke', { device_id: deviceId })); }
   async close(): Promise<void> {
     this.child.stdin.end();
     await new Promise<void>((done) => {

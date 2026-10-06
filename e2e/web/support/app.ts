@@ -8,7 +8,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, type BrowserContext, type Locator, type Page, type Worker } from '@playwright/test';
 import { test as persistentTest } from './persistent';
-import { WebDriver } from './driver';
+import { WebDriver, type PeerEnrolled, type PeerSetup } from './driver';
+export type { PeerEnrolled, PeerSetup } from './driver';
 import { runAxe } from './axe';
 import { arr, decode } from '../../../packages/client-core/src/cbor/index';
 import { en } from '../../../packages/web/src/strings/en';
@@ -62,6 +63,16 @@ export const COPY = {
   statusBarLabel: 'shell.status.label',
 } as const;
 
+export const SIGNIN = {
+  entry: 'onboarding.connect.signIn', step: 'signin.step',
+  loginTitle: 'signin.login.title', username: 'signin.login.username',
+  password: 'signin.login.password', loginSubmit: 'signin.login.submit',
+  keyTitle: 'signin.key.title', keyLabel: 'signin.key.label',
+  keyHint: 'signin.key.hint', keySubmit: 'signin.key.submit',
+  keyLength: 'signin.error.keyLength', wrongKey: 'signin.error.wrongKey',
+  doneTitle: 'signin.done.title', doneBody: 'signin.done.body', doneNext: 'signin.done.next',
+} as const;
+
 // The root classes of five L-UI components (plan head, L-UI class rule: d-<kebab-case component name>).
 export const CLASS = {
   onboardingFrame: '.d-onboarding-frame',
@@ -69,6 +80,8 @@ export const CLASS = {
   channelHeader: '.d-channel-header',
   messageRow: '.d-message-row',
   composer: '.d-composer',
+  deviceRow: '.d-device-row',
+  channelRow: '.d-chrow',
 } as const;
 
 export function copy(key: string, vars?: Record<string, string | number>): string {
@@ -81,10 +94,8 @@ export function copy(key: string, vars?: Record<string, string | number>): strin
 // ---------------------------------------------------------------------------------------------------
 // The native peer: one web-driver process per test.
 
-export interface PeerSetup {
-  username: string; display: string; user_id: string; device_id: string;
-  community_id: string; channel_id: string; invite_code: string;
-}
+export interface PeerSetupOptions { password?: string; channels?: number; }
+export const PEER_PASSWORD = 'peer-password-1234';
 export interface PeerMessage { seq: number; body: string; sender_user: string; sender_device: string; tier: number; }
 interface SyncAnswer { epoch: number; members: number; received: PeerMessage[]; }
 
@@ -93,6 +104,7 @@ export class Peer {
   readonly inbox: PeerMessage[] = [];
   /** The one text channel setup creates; the specs name it when they address the log and the composer. */
   readonly channelName = 'general';
+  channelNames: string[] = ['general'];
   communityName = '';
 
   private constructor(private readonly driver: WebDriver, readonly seed: number) {}
@@ -105,10 +117,19 @@ export class Peer {
     return new Peer(driver, seed);
   }
 
-  async setup(): Promise<PeerSetup> {
+  async setup(opts: PeerSetupOptions = {}): Promise<PeerSetup> {
     this.communityName = `e2e-${this.seed.toString(16)}`;
-    const s = await this.driver.request<PeerSetup>('setup', { community: this.communityName, channel: this.channelName });
-    for (const id of [s.user_id, s.device_id, s.community_id, s.channel_id]) expect(id).toMatch(HEX32);
+    const channels = opts.channels ?? 1;
+    const s = await this.driver.setup({
+      community: this.communityName, channel: this.channelName,
+      ...(opts.password === undefined ? {} : { password: opts.password }),
+      ...(opts.channels === undefined ? {} : { channels: opts.channels }),
+    });
+    for (const id of [s.user_id, s.device_id, s.community_id, s.channel_id, ...s.channel_ids]) expect(id).toMatch(HEX32);
+    expect(s.channel_ids).toHaveLength(channels);
+    expect(s.channel_ids[0]).toBe(s.channel_id);
+    // L-E2E-10: the channels are named <channel>, <channel>-2 … <channel>-<n> in creation order.
+    this.channelNames = [this.channelName, ...Array.from({ length: channels - 1 }, (_, i) => `${this.channelName}-${i + 2}`)];
     return s;
   }
 
@@ -116,6 +137,10 @@ export class Peer {
   send(body: string): Promise<{ seq: number }> { return this.driver.request('send', { body }); }
   /** L-E2E-01 `update`: drains and applies, then commits a self Update and answers the new epoch. */
   update(): Promise<{ epoch: number }> { return this.driver.request('update', {}); }
+  /** L-E2E-10 `enrol` through the driver's wrapper (driver.ts, this task). */
+  enrol(): Promise<PeerEnrolled> { return this.driver.enrol(); }
+  /** L-E2E-10 `revoke` through the driver's wrapper (driver.ts, this task). */
+  revoke(deviceId: string): Promise<{ version: number }> { return this.driver.revoke(deviceId); }
 
   async sync(): Promise<SyncAnswer> {
     const answer = await this.driver.request<SyncAnswer>('sync', {});
@@ -358,12 +383,12 @@ export async function joinCommunity(page: Page, peer: Peer, setup: PeerSetup): P
   await dialog.getByLabel(copy(COPY.joinInvite), { exact: true }).fill(setup.invite_code);
   await dialog.getByRole('button', { name: copy(COPY.joinSubmit), exact: true }).click();
   await expect(dialog).toBeHidden({ timeout: WAIT });
-  await expect(rail.getByRole('button', { name: peer.communityName, exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(railItem(page, peer.communityName)).toBeVisible({ timeout: WAIT });
 }
 
 export async function openChannel(page: Page, community: string, channel: string): Promise<void> {
-  await railNav(page).getByRole('button', { name: community, exact: true }).click();
-  await channelsNav(page).getByRole('button', { name: channel }).click();
+  await railItem(page, community).click();
+  await channelRow(page, channel).click();
   await expectComposerReady(page, channel);
 }
 
@@ -400,6 +425,71 @@ export async function tabTo(page: Page, target: Locator, maxPresses = 40): Promi
   }
   throw new Error(`Tab did not reach the target within ${maxPresses} presses`);
 }
+
+// web-2a (task 21): rows by name, the sign-in ceremony, Settings.
+export function escapeRegExp(text: string): string { return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+/** A rail item or channel row by the name it shows: its accessible name is the name alone, or the name followed
+ *  by ", " and the counts (shell.rail.itemLabel, shell.channels.rowLabel, shell.channels.rowLabelMuted). */
+export function namedRow(scope: Locator, name: string): Locator {
+  return scope.getByRole('button', { name: new RegExp(`^${escapeRegExp(name)}(, |$)`) });
+}
+export function railItem(page: Page, community: string): Locator { return namedRow(railNav(page), community); }
+export function channelRow(page: Page, channel: string): Locator { return namedRow(channelsNav(page), channel); }
+
+/** The recovery key as written down: its 13 groups joined by `separator`. */
+export function keyText(account: Account, separator = ' '): string { return account.recoveryKey.join(separator); }
+/** A well-formed key that is not this account's: the first character replaced by another character of the alphabet. */
+export function wrongKey(account: Account): string {
+  const key = account.recoveryKey.join('');
+  return `${key[0] === '0' ? '1' : '0'}${key.slice(1)}`;
+}
+export function keyField(page: Page): Locator { return page.getByLabel(copy(SIGNIN.keyLabel), { exact: true }); }
+export function keySubmit(page: Page): Locator { return page.getByRole('button', { name: copy(SIGNIN.keySubmit), exact: true }); }
+
+/** From a fresh profile to the recovery-key step: onboarding step 1's entry, the host login. */
+export async function signInToKeyStep(page: Page, account: Account, instanceName: string): Promise<void> {
+  await page.goto('/welcome');
+  await expectHeading(page, COPY.connectTitle, { instance: instanceName });
+  await page.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
+  await expectHeading(page, SIGNIN.loginTitle, { instance: instanceName });
+  await page.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
+  await page.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
+  await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
+  await expectHeading(page, SIGNIN.keyTitle);
+}
+/** The key step to the shell: type, submit, the done step, `Open dilla`. */
+export async function finishSignIn(page: Page, account: Account, instanceName: string, typed: string): Promise<void> {
+  await keyField(page).fill(typed);
+  await keySubmit(page).click();
+  await expectHeading(page, SIGNIN.doneTitle);
+  await expect(page.getByText(copy(SIGNIN.doneBody, { username: account.username, instance: instanceName }), { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: copy(SIGNIN.doneNext), exact: true }).click();
+  await expectShell(page);
+}
+export async function signIn(page: Page, account: Account, instanceName: string, typed = keyText(account)): Promise<void> {
+  await signInToKeyStep(page, account, instanceName);
+  await finishSignIn(page, account, instanceName, typed);
+}
+
+export type SettingsSection = 'devices' | 'notifications' | 'appearance';
+export function settingsDialog(page: Page): Locator { return page.getByRole('dialog', { name: copy('settings.title'), exact: true }); }
+/** The rail's settings button, then the section from the settings navigation; resolves with the dialog. */
+export async function openSettings(page: Page, section: SettingsSection): Promise<Locator> {
+  await railNav(page).getByRole('button', { name: copy('shell.rail.settings'), exact: true }).click();
+  const dialog = settingsDialog(page);
+  await expect(dialog).toBeVisible({ timeout: WAIT });
+  await dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })
+    .getByRole('button', { name: copy(`settings.nav.${section}`), exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/settings/${section}$`), { timeout: WAIT });
+  return dialog;
+}
+/** Escape closes Settings and returns to the route it was opened from (L-TS-27). */
+export async function closeSettings(page: Page): Promise<void> {
+  await page.keyboard.press('Escape');
+  await expect(settingsDialog(page)).toBeHidden({ timeout: WAIT });
+}
+export function deviceRows(page: Page): Locator { return settingsDialog(page).locator(CLASS.deviceRow); }
 
 // ---------------------------------------------------------------------------------------------------
 // Probes.

@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test';
 import {
   CLASS, COPY, TEST_TIMEOUT, WAIT, channelsNav, composerBox, copy, expectComposerReady, expectShell,
-  heading, instanceInvite, logRegion, messageRow, nextButton, railNav, submitButton, tabTo, tag, test,
+  heading, instanceInvite, logRegion, messageRow, nextButton, railItem, railNav, submitButton, tabTo, tag, test,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -57,7 +57,7 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   // Rail and channel list by their single tab stops (the active item, else the first).
   await tabTo(page, rail.getByRole('button', { name: copy(COPY.railJoin), exact: true }));
   await press('ArrowUp');
-  await expect(rail.getByRole('button', { name: peer.communityName, exact: true })).toBeFocused();
+  await expect(railItem(page, peer.communityName)).toBeFocused();
   await press('Enter');
   await tabTo(page, channelsNav(page).getByRole('button', { name: channel }));
   await press('Enter');
@@ -124,6 +124,6 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   expect(lap, `focus order ${lap.join(' > ')}`).toEqual([...lap].sort((a, b) => a - b));
   expect(new Set(lap).size, `each region entered once: ${lap.join(' > ')}`).toBe(lap.length);
   for (const required of [0, 1, 2, 4, 5]) expect(lap).toContain(required);
-  expect(stops.get(2), 'the channel list is one tab stop').toBe(1);
+  expect(stops.get(2), 'the sidebar is two tab stops: the tabs and the rows').toBe(2);
   expect(stops.get(1), 'the rail is one tab stop, its join button included').toBe(1);
 });
