@@ -29,10 +29,17 @@ jobs:
       - run: npm test
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
+      - run: npm run test:manifest-writer
   ui:
     runs-on: ubuntu-latest
     steps:
       - run: npm test -w packages/ui
+      - run: node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-1 form- ceremony- shell- conversation- screens-
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ui-screens
+          path: target/ui-screens/web-1
+          if-no-files-found: error
   rust-native:
     runs-on: ubuntu-latest
     steps:
@@ -48,12 +55,18 @@ jobs:
   rust-wasm-node:
     runs-on: ubuntu-latest
     steps:
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
       - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
+      - run: cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
       - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm ci
       - run: npm run typecheck -w @dilla/media
+      - run: npm run typecheck -w @dilla/core-wasm
       - run: npm run test:wasm -w @dilla/media
       - run: npm run check:schema -w @dilla/media
   rust-wasi:
@@ -124,6 +137,63 @@ jobs:
         if: failure()
         with:
           name: browser-media-results
+          path: e2e/test-results
+          if-no-files-found: error
+
+  web-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
+      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
+      - run: npm run typecheck -w @dilla/client-core
+      - run: npm run typecheck -w @dilla/web
+      - run: npm run build -w @dilla/web
+      - run: npm run build:harness -w @dilla/client-core
+      - run: go test -tags webdist ./internal/web/...
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dilla-core-harness
+          path: packages/client-core/harness-dist/
+          if-no-files-found: error
+
+  browser-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [rust-native, rust-wasi, web-build]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-harness
+          path: packages/client-core/harness-dist
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npm run test:e2e:core -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - run: npm run test:e2e:web -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-web-results
           path: e2e/test-results
           if-no-files-found: error
 
@@ -198,7 +268,21 @@ jobs:
 
   go-release:
     runs-on: ubuntu-latest
+    needs: [web-build]
     steps:
+      - run: rm -rf internal/web/dist
+      - name: Fetch the web client built by the web-build job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-web-dist
+          path: internal/web/dist
+      - run: |
+          test -f internal/web/dist/index.html
+          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
+      - name: the downloaded client passes the manifest check
+        run: go test -tags webdist ./internal/web/...
+        env:
+          DILLA_WEB_DIST: \${{ github.workspace }}/internal/web/dist
       - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/dillad-linux-amd64 ./cmd/dillad
       - uses: actions/upload-artifact@v7
         with:
@@ -208,7 +292,7 @@ jobs:
 
   image:
     runs-on: ubuntu-latest
-    needs: [go, go-ds, go-lint, rust-wasi]
+    needs: [go, go-ds, go-lint, rust-wasi, web-build]
     permissions: { contents: read, packages: write }
     timeout-minutes: 30
     steps:
@@ -217,6 +301,16 @@ jobs:
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
+      - run: rm -rf internal/web/dist
+      - name: Fetch the web client into the image's build context
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-web-dist
+          path: internal/web/dist
+      - name: The image embeds the real client, not the placeholder
+        run: |
+          test -f internal/web/dist/index.html
+          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
       - uses: docker/setup-buildx-action@v4.4.1
       - uses: docker/login-action@v4.6.0
       - uses: docker/metadata-action@v6.2.0
@@ -358,7 +452,7 @@ test('a workflow without the go-harness job is reported', () => {
 });
 
 test('a go-harness job that lost its own timeout is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('    timeout-minutes: 30\n', '')));
+  const problems = checkWorkflow(fixture(GOOD.replace('  go-harness:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n', '  go-harness:\n    runs-on: ubuntu-latest\n')));
   assert.ok(problems.some((p) => p.includes('timeout-minutes: 30')), problems.join('\n'));
 });
 
@@ -444,7 +538,7 @@ test('a go-ds job without needs: rust-wasi is reported', () => {
 });
 
 test('an image job that does not wait for go-ds is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi]', 'needs: [go, go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-ds"')), problems.join('\n'));
 });
 
@@ -585,12 +679,12 @@ test('setup-qemu-action anywhere in the workflow is reported', () => {
 // `go` is a prefix of `go-lint`: an image job that waits only for go-lint and rust-wasi must still be
 // reported as not waiting for go.
 test('an image job that does not wait for the go job is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi]', 'needs: [go-ds, go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go-ds, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go"')), problems.join('\n'));
 });
 
 test('an image job that does not wait for go-lint is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi]', 'needs: [go, go-ds, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-lint"')), problems.join('\n'));
 });
 
@@ -776,4 +870,141 @@ test('a wasm-pack build with no profile at all is reported', () => {
   assert.notEqual(body, GOOD, 'fixture sanity');
   const problems = checkWorkflow(fixture(body));
   assert.ok(problems.some((p) => p.endsWith('wasm-pack build must use --profile wasm-release, not --release (C16)')), problems.join('\n'));
+});
+
+// Task 26 (web-1): the web client's build, its browser suites, and its hand-off to release and image.
+
+/** One job of GOOD, from its key line to the line before the next job key. */
+function jobBody(job) {
+  const lines = GOOD.split('\n');
+  const from = lines.indexOf(`  ${job}:`);
+  assert.ok(from !== -1, `fixture sanity: job ${job}`);
+  let to = from + 1;
+  while (to < lines.length && !/^ {2}[A-Za-z0-9_-]+:\s*$/.test(lines[to])) to++;
+  return lines.slice(from, to).join('\n');
+}
+
+const PLACEHOLDER_GUARD_IMAGE =
+  '      - name: The image embeds the real client, not the placeholder\n' +
+  '        run: |\n' +
+  '          test -f internal/web/dist/index.html\n' +
+  `          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi\n`;
+
+for (const job of ['web-build', 'browser-web']) {
+  test(`a workflow without the ${job} job is reported`, () => {
+    const problems = checkWorkflow(fixture(GOOD.replace(jobBody(job), '')));
+    assert.ok(problems.some((p) => p.includes(`missing job "${job}"`)), problems.join('\n'));
+  });
+}
+
+for (const [job, needle] of [
+  ['web-build', 'timeout-minutes: 15'],
+  ['web-build', 'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg'],
+  ['web-build', 'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm'],
+  ['web-build', 'npm run typecheck -w @dilla/client-core'],
+  ['web-build', 'npm run typecheck -w @dilla/web'],
+  ['web-build', 'npm run build -w @dilla/web'],
+  ['web-build', 'npm run build:harness -w @dilla/client-core'],
+  ['web-build', 'go test -tags webdist ./internal/web/...'],
+  ['web-build', 'name: dilla-web-dist'],
+  ['web-build', 'path: packages/web/dist/'],
+  ['web-build', 'name: dilla-core-harness'],
+  ['web-build', 'path: packages/client-core/harness-dist/'],
+  ['browser-web', 'timeout-minutes: 30'],
+  ['browser-web', 'name: dilla-core-wasi'],
+  ['browser-web', 'path: internal/mlswasi/testdata'],
+  ['browser-web', 'name: dilla-testkit'],
+  ['browser-web', 'name: dilla-web-dist'],
+  ['browser-web', 'path: packages/web/dist'],
+  ['browser-web', 'name: dilla-core-harness'],
+  ['browser-web', 'path: packages/client-core/harness-dist'],
+  ['browser-web', 'npx playwright install --with-deps chromium firefox webkit'],
+  ['browser-web', 'npm run test:e2e:core -w @dilla/e2e'],
+  ['browser-web', 'npm run test:e2e:web -w @dilla/e2e'],
+  ['browser-web', 'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit'],
+  ['browser-web', 'if: failure()'],
+  ['browser-web', 'name: browser-web-results'],
+  ['browser-web', 'path: e2e/test-results'],
+  ['go-release', 'name: dilla-web-dist'],
+  ['go-release', 'path: internal/web/dist'],
+  ['go-release', 'content="placeholder"'],
+  ['go-release', 'go test -tags webdist ./internal/web/...'],
+  ['image', 'name: dilla-web-dist'],
+  ['image', 'path: internal/web/dist'],
+  ['image', 'content="placeholder"'],
+  ['ui', 'node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-1'],
+  ['ui', 'name: ui-screens'],
+  ['ui', 'path: target/ui-screens/web-1'],
+  ['node', 'npm run test:manifest-writer'],
+  ['rust-wasm-node', 'npm run typecheck -w @dilla/core-wasm'],
+  ['rust-wasm-node', 'cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings'],
+  ['rust-wasm-node', 'components: clippy'],
+]) {
+  test(`a ${job} job that lost "${needle}" is reported (web-1)`, () => {
+    const body = jobBody(job);
+    assert.ok(body.includes(needle), 'fixture sanity: ' + needle);
+    const gutted = body.split('\n').filter((l) => !l.includes(needle)).join('\n');
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => gutted)));
+    assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(needle)), problems.join('\n'));
+  });
+}
+
+for (const need of ['rust-native', 'rust-wasi', 'web-build']) {
+  test(`a browser-web job without needs: ${need} is reported`, () => {
+    const kept = ['rust-native', 'rust-wasi', 'web-build'].filter((n) => n !== need).join(', ');
+    const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-native, rust-wasi, web-build]\n', `    needs: [${kept}]\n`)));
+    assert.ok(problems.some((p) => p.includes('"browser-web"') && p.includes(`needs: ${need}`)), problems.join('\n'));
+  });
+}
+
+test('go-release must point the webdist test at the downloaded client', () => {
+  const line = '          DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist\n';
+  const body = jobBody('go-release');
+  assert.ok(body.includes(line), 'fixture sanity: the DILLA_WEB_DIST line');
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(line, ''))));
+  assert.ok(
+    problems.some((p) => p.includes('"go-release"') && p.includes('DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist')),
+    problems.join('\n'),
+  );
+});
+
+test('a go-release job without needs: web-build is reported', () => {
+  const body = jobBody('go-release');
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [web-build]\n', ''))));
+  assert.ok(problems.some((p) => p.includes('"go-release"') && p.includes('needs: web-build')), problems.join('\n'));
+});
+
+test('an image job that does not wait for web-build is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, go-lint, rust-wasi]')));
+  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"web-build"')), problems.join('\n'));
+});
+
+// The plan's named mutation for this task: the whole download step, not one line of it.
+test('an image job without the dilla-web-dist download step is reported by name', () => {
+  const step =
+    '      - name: Fetch the web client into the image\'s build context\n' +
+    '        uses: actions/download-artifact@v8\n' +
+    '        with:\n' +
+    '          name: dilla-web-dist\n' +
+    '          path: internal/web/dist\n';
+  const body = jobBody('image');
+  assert.ok(body.includes(step), 'fixture sanity: the image download step');
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(step, ''))));
+  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('name: dilla-web-dist')), problems.join('\n'));
+});
+
+test('a go-release job that builds before it fetches the web client is reported', () => {
+  const build = '      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/dillad-linux-amd64 ./cmd/dillad\n';
+  const body = jobBody('go-release');
+  assert.ok(body.includes(build), 'fixture sanity: the amd64 build');
+  const moved = body.replace(build, '').replace('    steps:\n', `    steps:\n${build}`);
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => moved)));
+  assert.ok(problems.some((p) => p.includes('"go-release"') && p.includes('before it builds')), problems.join('\n'));
+});
+
+test('an image job that checks for the placeholder only after the build is reported', () => {
+  assert.ok(GOOD.includes(PLACEHOLDER_GUARD_IMAGE), 'fixture sanity: the image guard');
+  // image is the last job of GOOD, so appending puts the guard after docker/build-push-action.
+  const problems = checkWorkflow(fixture(GOOD.replace(PLACEHOLDER_GUARD_IMAGE, '') + PLACEHOLDER_GUARD_IMAGE));
+  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('before it builds')), problems.join('\n'));
 });

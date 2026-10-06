@@ -34,6 +34,9 @@ export const REQUIRED_JOBS = [
   'go-release',
   // Plan 2 task 18: the multi-arch container image, built on every run and pushed from main.
   'image',
+  // Task 26 (web-1): build the client once and run its browser integration suites.
+  'web-build',
+  'browser-web',
 ];
 
 /**
@@ -71,6 +74,9 @@ const REQUIRED_STEPS = {
   ],
   'rust-wasm-node': [
     'cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked',
+    // Ruling 40/task 26: lint wasm-only modules and typecheck the browser wrapper.
+    'cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings',
+    'components: clippy',
     // Task 17 (dilla-media): the media worker's wasm-backed tests, the BaseE2EEManager type contract and the
     // JS half of the signalling-schema contract (DEV-66) run where the web wasm is built.
     'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
@@ -78,6 +84,7 @@ const REQUIRED_STEPS = {
     'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg',
     'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm',
     'npm run typecheck -w @dilla/media',
+    'npm run typecheck -w @dilla/core-wasm',
     'npm run test:wasm -w @dilla/media',
     'npm run check:schema -w @dilla/media',
   ],
@@ -96,7 +103,10 @@ const REQUIRED_STEPS = {
   // The repository's pattern is that every scripts/check-*.mjs gate runs its own unit tests in the
   // `node` job (test:docs-check, test:brief-check, test:copy-check). This gate enforces that for
   // itself, so it cannot silently rot.
-  node: ['npm run test:ci-check', 'npm run test:wasm-size-check'],
+  // Task 26: exercise the manifest writer beside the other script gates.
+  node: ['npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer'],
+  // Task 26/F16: capture the five web-1 story groups in all three themes.
+  ui: ['node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-1', 'name: ui-screens', 'path: target/ui-screens/web-1'],
   vectors: [
     'npm run vectors',
     'git diff --exit-code -- protocol/vectors',
@@ -128,6 +138,39 @@ const REQUIRED_STEPS = {
     'unsupported-sfu-codec.spec.ts',
     "DILLA_MEDIA_SFU_AV1: '1'",
     'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
+  ],
+  // Task 26/C9: the release and both browser suites consume these same build artifacts.
+  'web-build': [
+    'timeout-minutes: 15',
+    'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg',
+    'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm',
+    'npm run typecheck -w @dilla/client-core',
+    'npm run typecheck -w @dilla/web',
+    'npm run build -w @dilla/web',
+    'npm run build:harness -w @dilla/client-core',
+    'go test -tags webdist ./internal/web/...',
+    'name: dilla-web-dist',
+    'path: packages/web/dist/',
+    'name: dilla-core-harness',
+    'path: packages/client-core/harness-dist/',
+  ],
+  // Task 26/C18: three engines and the native peer against the downloaded web and core builds.
+  'browser-web': [
+    'timeout-minutes: 30',
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'name: dilla-testkit',
+    'name: dilla-web-dist',
+    'path: packages/web/dist',
+    'name: dilla-core-harness',
+    'path: packages/client-core/harness-dist',
+    'npx playwright install --with-deps chromium firefox webkit',
+    'npm run test:e2e:core -w @dilla/e2e',
+    'npm run test:e2e:web -w @dilla/e2e',
+    'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
+    'if: failure()',
+    'name: browser-web-results',
+    'path: e2e/test-results',
   ],
   deny: ['cargo deny --all-features check advisories bans licenses sources'],
   // Ruling M. The first two lines are the hand-off from `rust-wasi`: without the download, or with it
@@ -187,7 +230,8 @@ const REQUIRED_STEPS = {
     // among them, with an explicit -timeout that fits the job's budget.
     'go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...',
   ],
-  'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error'],
+  // Task 26/C9: release verifies the downloaded client before embedding it.
+  'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error', 'name: dilla-web-dist', 'path: internal/web/dist', 'content="placeholder"', 'go test -tags webdist ./internal/web/...', 'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist'],
   // Task 18. The pins are the versions P2-11 resolved against the registries and the marketplace
   // release lists; `actions/checkout@v7` and `runs-on: ubuntu-latest` are the house style of every
   // other job. The download of rust-wasi's artifact is load-bearing: dillad loads the wasi core from
@@ -199,6 +243,10 @@ const REQUIRED_STEPS = {
     'actions/download-artifact@v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
+    // Task 26/C9: the image embeds the same checked client.
+    'name: dilla-web-dist',
+    'path: internal/web/dist',
+    'content="placeholder"',
     'docker/setup-buildx-action@v4.4.1',
     'docker/login-action@v4.6.0',
     'docker/metadata-action@v6.2.0',
@@ -382,7 +430,7 @@ export function checkWorkflow(root) {
   if ('image' in jobs) {
     // A push of an image nobody tested would be a release of untested code: the two Go gates come first.
     // rust-wasi is named too, because the job downloads its artifact.
-    for (const need of ['go', 'go-ds', 'go-lint', 'rust-wasi']) {
+    for (const need of ['go', 'go-ds', 'go-lint', 'rust-wasi', 'web-build']) {
       if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs.image)) {
         problems.push(`ci.yml: job "image" must list "${need}" in its needs:`);
       }
@@ -447,6 +495,31 @@ export function checkWorkflow(root) {
       if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs['browser-media'])) {
         problems.push(`ci.yml: job "browser-media" downloads the ${need} artifact but has no "needs: ${need}"`);
       }
+    }
+  }
+
+  // Task 26: every artifact consumer waits for the producer in the same workflow run.
+  for (const [job, needs] of [
+    ['browser-web', ['rust-native', 'rust-wasi', 'web-build']],
+    ['go-release', ['web-build']],
+  ]) {
+    if (!(job in jobs)) continue;
+    for (const need of needs) {
+      if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs[job])) {
+        problems.push(`ci.yml: job "${job}" downloads the ${need} artifact but has no "needs: ${need}"`);
+      }
+    }
+  }
+
+  // Task 26: downloading and refusing the placeholder must precede the release build.
+  for (const [job, build] of [['go-release', 'go build'], ['image', 'docker/build-push-action@']]) {
+    if (!(job in jobs)) continue;
+    const body = jobs[job];
+    const fetchAt = body.indexOf('name: dilla-web-dist');
+    const guardAt = body.indexOf('content="placeholder"');
+    const buildAt = body.indexOf(build);
+    if (fetchAt !== -1 && guardAt !== -1 && buildAt !== -1 && !(fetchAt < guardAt && guardAt < buildAt)) {
+      problems.push(`ci.yml: job "${job}" must fetch dilla-web-dist into internal/web/dist and refuse the placeholder before it builds`);
     }
   }
 

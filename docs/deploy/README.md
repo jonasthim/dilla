@@ -244,6 +244,35 @@ The traps, in the order people meet them:
 - **Update deliberately.** The CA bundle in the image is fixed when the image is built; pin the
   image by digest and pull a new build rather than floating `:latest`.
 
+### Build dillad with the web client from source
+
+The committed `internal/web/dist/index.html` is a placeholder. Build the browser client before
+compiling dillad from source, then place the built files in the directory that `go:embed` reads.
+These are the build and manifest-check commands used by CI's `web-build` and `go-release` jobs,
+run from the repository root:
+
+```sh
+wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
+node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
+npm ci
+npm run typecheck -w @dilla/core-wasm
+npm run typecheck -w @dilla/client-core
+npm run typecheck -w @dilla/web
+npm run build -w @dilla/web
+npm run build:harness -w @dilla/client-core
+go test -tags webdist ./internal/web/...
+rm -rf internal/web/dist
+cp -a packages/web/dist internal/web/dist
+test -f internal/web/dist/index.html
+if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
+DILLA_WEB_DIST="$PWD/internal/web/dist" go test -tags webdist ./internal/web/...
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-amd64 ./cmd/dillad
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-arm64 ./cmd/dillad
+```
+
+CI downloads the `dilla-web-dist` artifact into `internal/web/dist` in place of the local `cp`.
+The `DILLA_WEB_DIST` test checks those exact bytes before either release binary is compiled.
+
 ## 3. systemd
 
 `deploy/dilla.service` is a `Type=notify` unit: dillad sends `READY=1` once it is listening, so
