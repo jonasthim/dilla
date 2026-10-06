@@ -48,6 +48,29 @@ describe('sending (rule 5)', () => {
     expect(d.core.outbox(g)).toEqual([]);
   });
 
+  it('re-frames the same message once after a rule epoch refusal following a peer commit', async () => {
+    ds.inject('postMessage', { before: () => { ds.peerCommit(g, PEER); } });
+    const msgId = d.engine.send(g, 'after peer joined');
+    await settle();
+    expect(posts()).toBe(2);
+    expect(sent()).toEqual(['after peer joined']);
+    expect(d.core.outbox(g)).toEqual([]);
+    expect(d.core.calls.filter((c) => c.m === 'sendPrepare')).toHaveLength(1);
+    expect(d.core.calls.filter((c) => c.m === 'sendEncrypt')).toHaveLength(2);
+    expect(d.core.bodies(g)).toEqual(['after peer joined']);
+    expect(toHex(msgId)).toHaveLength(32);
+  });
+
+  it('fails the same row after a second rule epoch refusal', async () => {
+    ds.inject('postMessage', { before: () => { ds.peerCommit(g, PEER); } });
+    ds.inject('postMessage', { fail: httpError(422, 'E_COMMIT_INVALID', null, ['epoch']) });
+    const msgId = d.engine.send(g, 'twice refused');
+    await settle();
+    expect(posts()).toBe(2);
+    expect(d.core.outbox(g)).toMatchObject([{ msgId, state: 2, error: 'E_COMMIT_INVALID', body: 'twice refused' }]);
+    expect(sent()).toEqual([]);
+  });
+
   it('never resends after a lost response: the catch-up adopts the stored copy', async () => {
     ds.detach(ME.device);
     ds.inject('postMessage', { lose: true });

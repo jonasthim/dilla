@@ -95,6 +95,37 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
     if (s.stopped()) return;
     const status = e instanceof DillaHttpError ? e.status : 0;
     const code = e instanceof DillaHttpError ? e.code : 'E_NETWORK';
+    if (status === 422 && code === 'E_COMMIT_INVALID' && e instanceof DillaHttpError && e.extra[0] === 'epoch') {
+      // The instance rejected this upload before storing it. Re-frame the same outbox row at the
+      // current epoch, once; this is separate from the lost-response path, where storage is unknown.
+      const reached = await s.catchUpNow(g, 'catch-up');
+      const current = s.deps.core.outbox(g).find((x) => toHex(x.msgId) === msgHex);
+      if (!reached || current?.state !== 1 || s.row(g)?.state !== 2) {
+        if (current?.state === 1) s.deps.core.sendFail(msgId, code);
+        s.deps.onOutboxChanged(g); s.requestDrain(g);
+        return;
+      }
+      try {
+        s.deps.core.sendRequeue(msgId);
+        const reframed = s.deps.core.sendEncrypt(msgId).messageBody;
+        const answer = await s.deps.routes.postMessage(g, reframed);
+        if (s.stopped()) return;
+        try { s.deps.core.sendConfirm(msgId, answer.raw); }
+        catch (confirmError) {
+          if (!(confirmError instanceof CoreError)) throw confirmError;
+          s.deps.onOutboxChanged(g); s.count425.delete(msgHex); s.requestCatchUp(g); s.requestDrain(g);
+          return;
+        }
+      } catch (retryError) {
+        if (s.stopped()) return;
+        const fresh = s.deps.core.outbox(g).find((x) => toHex(x.msgId) === msgHex);
+        if (fresh !== undefined && fresh.state !== 2) {
+          s.deps.core.sendFail(msgId, retryError instanceof DillaHttpError ? retryError.code : 'E_INTERNAL');
+        }
+      }
+      s.deps.onOutboxChanged(g); s.count425.delete(msgHex); s.requestDrain(g);
+      return;
+    }
     if (status === 425) {
       s.deps.core.sendRequeue(msgId); s.deps.onOutboxChanged(g);
       const n = (s.count425.get(msgHex) ?? 0) + 1; s.count425.set(msgHex, n);

@@ -1587,7 +1587,7 @@ export class ModelDs {
     const v = arr(decode(body), 2);
     const blob = bin(at(v, 1));
     if (blob.length > 131072) throw httpError(413, 'E_TOO_LARGE');
-    if (u64(at(v, 0)) !== g.epoch) throw httpError(422, 'E_COMMIT_INVALID');
+    if (u64(at(v, 0)) !== g.epoch) throw httpError(422, 'E_COMMIT_INVALID', null, ['epoch']);
     const e = this.appendMessage(g, dev, blob);
     return { raw: encode([e.seq, e.franking, e.recvTs]), seq: e.seq };
   }
