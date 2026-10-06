@@ -229,8 +229,9 @@ Derived keys: `K_header = HKDF-SHA256(salt = "", IKM = RK, info = "dilla header 
 `K_backup = HKDF-SHA256(salt = "", IKM = RK, info = "dilla archive v1", L = 32)`.
 
 The **root object** (`06-backup-archive.md`, "Header") holds `UMK_priv` and `SSK_priv` under
-`K_header`; it is written only at signup and at recovery, never on ordinary changes, because
-`UMK_priv` is never on a device otherwise. The **state object** holds the device list and the UMK
+`K_header`; it is written once, at signup, and never replaced (the instance stores it insert-only, `06`
+"Header"); recovery reads it and writes nothing to it, because `UMK_priv` is never on a device
+otherwise. The **state object** holds the device list and the UMK
 pin table under `K_backup`; any native device rewrites it on every change. Recovering on a new
 device with only `RK`: derive `K_header` and `K_backup`, fetch and decrypt the root object, enrol
 the new device by signing its credential with the recovered `SSK_priv`, fetch and decrypt the state

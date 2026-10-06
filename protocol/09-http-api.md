@@ -154,7 +154,7 @@ never reaches `/v1` beyond that one endpoint.
 | DMs | `POST /v1/dms` `[recipients([bstr16])]` → `[channel_id]`; `GET /v1/dms` |
 | readable | `POST /v1/channels/{id}/messages` `[envelope(bstr)]` → `[seq, franking_tag, recv_ts]`; `GET /v1/channels/{id}/messages?from=`; `PATCH`/`DELETE /v1/channels/{id}/messages/{seq}`; `GET /v1/channels/{id}/search?q=&limit=&before=`; `PUT /v1/channels/{id}/read-state` |
 | blobs | `PUT/GET/HEAD/DELETE /v1/channels/{cid}/blobs/{blob_id}` (raw octets, `201` new / `200` already present, `422 E_INVALID_REQUEST` on a hash mismatch, `507 E_STORAGE_FULL`), `DELETE /v1/admin/blobs/{blob_id}` |
-| backups | `PUT /v1/backups/{kind}/{chunk_seq}`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}`, `DELETE` the same |
+| backups | `PUT /v1/backups/{kind}/{chunk_seq}` `[object(bstr)]` → `[blob_id, size]`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}` → `[object, created]`, `DELETE` the same (`501` at wire 1); see § Backups |
 | reports | `POST /v1/reports` `[group_id, seq, envelope(bstr), k_f(bstr32)]`, `GET /v1/reports`, `PATCH /v1/reports/{id}` |
 | voice | `POST /v1/channels/{id}/calls` → `[call_id, group_id, livekit_url, token, ice_servers]`, `DELETE /v1/calls/{call_id}` |
 | admin | `GET /v1/admin/diagnostics`, `GET /v1/admin/audit`, `POST /v1/admin/users/{id}/disable` |
@@ -550,6 +550,39 @@ are CBOR as everywhere else.
   follows the deletion rule above. A community without `retention_days`, a DM and a group DM keep
   attachments indefinitely. Deleting a channel removes its references. Attachment retention never
   follows `02`'s 30-day delivery window, because an archive restore needs attachments far older.
+
+### Backups
+
+The two header objects of `06-backup-archive.md` ("Header"), for the session's own user: no route
+names a user. `{kind}` is `0` (the root object) or `1` (the state object) and `{chunk_seq}` is `0`,
+both as plain decimal path segments; any other value of either, kind `2` (archive chunks)
+included, is `404 E_NOT_FOUND`: this wire version serves no archive. The instance stores each
+object under `SHA-256(object)` in its blob store and cannot open it.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `PUT /v1/backups/{kind}/{chunk_seq}` | E | `[object(bstr)]` | `201 [blob_id(bstr 32), size(uint)]` when the user had no object of this kind, `200` with the same body when it was replaced or already held these bytes |
+| `GET /v1/backups` | E or P | — | `[[kind(uint), chunk_seq(uint), size(uint), created(uint)]]`, kind `0` first; `[]` when none |
+| `GET /v1/backups/{kind}/{chunk_seq}` | E or P | — | `[object(bstr), created(uint)]`; `404 E_NOT_FOUND` when none is stored |
+| `DELETE /v1/backups/{kind}/{chunk_seq}` | E | — | `501 E_INTERNAL`: not served at wire 1 |
+
+- **Shape.** `object` is a stored object of `06`, `[1, nonce(bstr 12), ciphertext(bstr)]` in
+  deterministic CBOR with at least 16 bytes of ciphertext; anything else is `400 E_INVALID_REQUEST`.
+  A root object is exactly 103 bytes (`400 E_INVALID_REQUEST` otherwise). The body is at most 256
+  bytes for kind `0` and 1,048,640 bytes for kind `1` (`413 E_TOO_LARGE`).
+- **The root object is written once.** The first `PUT` of kind `0` stores it; the same bytes again
+  answer `200` and change nothing; different bytes answer `409 E_INVALID_REQUEST` and the stored
+  object stays. A stolen enrolled session can upload a junk root before the owner's first upload;
+  the owner's first upload then gets `409`, fetches the stored root, compares it, and raises
+  `E_ROOT_MISMATCH` with an alert. The server's `409` detail reveals nothing about stored bytes.
+- **The state object is replaced.** Each `PUT` of kind `1` replaces it; the replaced bytes are
+  unlinked once `blobs.gc_grace` has passed, unless they are stored again first.
+- **Storage.** Backup objects count against `blobs.store_max_bytes` (new bytes that would pass it
+  are `507 E_STORAGE_FULL` and nothing is stored) and never against `blobs.quota_bytes_per_user`.
+- **Pending.** The two reads admit a `pending` session (`02` § Device sessions item 4), so a
+  device entering the recovery key reads both objects before it holds a credential; `PUT` and
+  `DELETE` need an `enrolled` one (`403 E_FORBIDDEN`).
+- Every route spends the device session's `read` or `write` bucket (§ Rate limits).
 
 ### Voice
 
@@ -1030,8 +1063,9 @@ committer-election watchdog removes a device.
 Body caps: `max_ciphertext_bytes + 4096` on `POST /v1/groups/{id}/message`; 96 KiB on
 `POST /v1/channels/{id}/messages`, `PATCH /v1/channels/{id}/messages/{seq}` and `POST /v1/reports`
 (`protocol/04`'s own worst-case legal envelope is ≈ 74 KiB, so a smaller cap would refuse a maximal
-but valid envelope before the validator ever saw it); 64 KiB on every other CBOR route; `blobs.max_blob_bytes` on a
-blob `PUT`.
+but valid envelope before the validator ever saw it); `PUT /v1/backups/0/0` 256 bytes,
+`PUT /v1/backups/1/0` 1,048,640 bytes (1 MiB + 64); 64 KiB on every other CBOR route;
+`blobs.max_blob_bytes` on a blob `PUT`.
 
 ## Instance
 

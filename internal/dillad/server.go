@@ -306,6 +306,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// POST /v1/gateway/ticket mints from the gateway's own store; a second
 	// store would mint tickets the upgrade has never heard of.
 	deps.Tickets = gw.Tickets()
+	// The backup routes store the sealed header objects content-addressed in the same blob store as attachments (protocol/09 § Backups).
+	deps.Blobs = blobs
 	// A device is proposed into a DM only once its user's signed list names it (invariant 4), and
 	// pairing publishes the KeyPackages before the list: the list's publish is the second trigger.
 	deps.AfterDeviceList = func(ctx context.Context, userID id.ID) {

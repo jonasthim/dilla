@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
@@ -91,6 +92,11 @@ type Deps struct {
 	// steps 2 and 5) is brought into its user's DMs here. The composition root wires it to
 	// SyncUserDMs; a failure is the hook's to log.
 	AfterDeviceList func(ctx context.Context, userID id.ID)
+
+	// Blobs is the content-addressed store the backup routes (protocol/09 § Backups) write the
+	// sealed header objects to: the instance's one blob store, shared with Plan 2's attachment
+	// routes. Nil refuses PUT and the single-object GET with E_INTERNAL rather than half-writing.
+	Blobs *blob.Store
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -176,6 +182,14 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("DELETE /v1/devices/{device_id}", d.enrolled(d.DeleteDevice))
 	m.Handle("PUT /v1/users/{user_id}/device-list", d.enrolled(d.PutDeviceList))
 	m.Handle("GET /v1/users/{user_id}/device-list", d.enrolled(d.GetDeviceList))
+
+	// Backups (protocol/09 § Backups; C14, F3, Q27). Mounted here and not through SessionRoute,
+	// because the two reads admit a pending session (protocol/02 § Device sessions item 4): a device
+	// entering the recovery key fetches the sealed objects before it holds a credential.
+	m.Handle("PUT /v1/backups/{kind}/{chunk_seq}", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PutBackup)))
+	m.Handle("GET /v1/backups", d.scoped(dsMeter(d.Limiter, dsClassRead, d.ListBackups), auth.ScopePending))
+	m.Handle("GET /v1/backups/{kind}/{chunk_seq}", d.scoped(dsMeter(d.Limiter, dsClassRead, d.GetBackup), auth.ScopePending))
+	m.Handle("DELETE /v1/backups/{kind}/{chunk_seq}", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.DeleteBackup)))
 
 	// Sessions. The challenge and establish routes carry NO session middleware:
 	// they are how a session is obtained, so requiring one would be circular.

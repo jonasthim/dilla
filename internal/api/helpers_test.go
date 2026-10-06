@@ -20,6 +20,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
@@ -82,6 +83,11 @@ func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler
 	}
 	repo := sqlite.New(write, read)
 	t.Cleanup(func() { repo.Close() })
+	bs, err := blob.Open(filepath.Join(t.TempDir(), "blobs"), "fs")
+	if err != nil {
+		t.Fatalf("blob.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = bs.Close() })
 
 	clk := clock.NewFake(time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC))
 	cfg := config.Default()
@@ -110,7 +116,9 @@ func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler
 		Hasher:     testHasher{},
 		Throttle:   auth.NewThrottle(cfg.Limits.Rate, cfg.Auth.Lockout, clk),
 		Assertions: api.NewAssertions(clk, api.AssertionTTL),
+		Blobs:      bs,
 	}
+	deps.Sessions.Assertions = deps.Assertions
 	m := server.NewMux()
 	api.Register(m, deps)
 	return m, deps
