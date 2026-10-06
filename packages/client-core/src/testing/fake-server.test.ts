@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { arr, decode, encode, str, u64 } from '../cbor';
+import { decode, encode, type CborValue } from '../cbor';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { Routes } from '../http/routes';
-import { fakeListBlob } from './fake-list';
-import { FakeServer, NOW_S, routesFor } from './fake-server';
+import { fakeDskPub, fakeListBlob, type FakeListEntry } from './fake-list';
+import { FakeServer, NOW_S, fakeDeviceProof, routesFor } from './fake-server';
 
 const DEV_A = new Uint8Array(16).fill(0xa1);
 const DEV_B = new Uint8Array(16).fill(0xb1);
@@ -15,15 +15,31 @@ function client(server: FakeServer): { routes: Routes; use(token: string | null)
   return { routes, use(token) { holder.token = token; } };
 }
 
-function listBody(user: Uint8Array, v: bigint, entries: { deviceId: Uint8Array; revokedAt: bigint | null }[]): Uint8Array {
+function listBody(user: Uint8Array, v: bigint, entries: FakeListEntry[]): Uint8Array {
   return encode([v, fakeListBlob(user, entries, 1n), new Uint8Array(64), new Uint8Array(32)]);
 }
 
-/** An establish body: the registration array and the login when login is set, else a credential bstr and null. */
-function establishBody(device: Uint8Array, login: string | null): Uint8Array {
+/** An establish body: the registration array and the login when login is set, else a credential bstr and null.
+ *  The registration names the device's own key (fakeDskPub) unless `key` is given: one live row per key (F2). */
+function establishBody(device: Uint8Array, login: string | null, key: Uint8Array = fakeDskPub(device)): Uint8Array {
   return encode([new Uint8Array(32), 0, new Uint8Array(64),
-    login === null ? new Uint8Array([1]) : [device, new Uint8Array(32), 1, 1, new Uint8Array([2])],
+    login === null ? new Uint8Array([1]) : [device, key, 1, 1, new Uint8Array([2])],
     login === null ? null : new TextEncoder().encode(login)]);
+}
+
+/** One request straight to the model, outside HttpClient (which would retry a short 429). */
+async function raw(server: FakeServer, method: string, path: string, token: string | null, body?: Uint8Array):
+  Promise<{ status: number; body: CborValue }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/cbor' };
+  if (token !== null) headers.Authorization = `Bearer ${token}`;
+  const response = await server.fetch(`http://127.0.0.1:8453${path}`, { method, headers, body: body as BodyInit | undefined });
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return { status: response.status, body: bytes.length === 0 ? null : decode(bytes) };
+}
+
+/** A POST /v1/devices body: the device array, then a challenge nonce for `device` and the purpose-0 proof by `key`. */
+function devicePostBody(device: Uint8Array, key: Uint8Array, nonce: Uint8Array, signer: Uint8Array = key): Uint8Array {
+  return encode([device, key, 1, 1, new Uint8Array([2]), nonce, fakeDeviceProof(signer, device, nonce)]);
 }
 
 async function refusalOf(p: Promise<unknown>): Promise<DillaHttpError> {
@@ -130,31 +146,179 @@ describe('FakeServer answers the web-2a account routes as dillad does', () => {
     expect((await c.routes.postSessionPending(DEV_B, establishBody(DEV_B, cleared.assertion))).scope).toBe(1);
   });
 
-  it('counts the enrolment rate with the server arithmetic, the first device included, and caps live devices', async () => {
+  it('past the hourly rate replaces the oldest unlisted row and admits, the first device counting (ruling 32), never 429', async () => {
     const server = new FakeServer();
     const { c } = await ada(server);   // DEV_A created at NOW_S counts (ruling 32)
     server.enrolmentsPerHour = 2;
     const dev = (n: number) => new Uint8Array(16).fill(0x40 + n);
     const enrol = async (d: Uint8Array) => c.routes.postSessionPending(d, establishBody(d, (await c.routes.passwordLogin('ada', 'pw')).assertion));
-    expect((await enrol(dev(1))).scope).toBe(1);   // creations [NOW_S, NOW_S] afterwards
-    const limited = await refusalOf(enrol(dev(2)));
-    expect([limited.status, limited.code, limited.retryAfterMs]).toEqual([429, 'E_RATE_LIMITED', 3_600_000]);
-    // One second inside the window: since = nowS − 3599 = NOW_S still counts both creations. Read raw: through
-    // Routes the HttpClient would retry a 1000 ms 429 (RETRY.maxWaitMs 60000) with the already spent assertion.
-    server.nowS = NOW_S + 3599;
-    const edge = await server.fetch(`http://127.0.0.1:8453/v1/devices/${toHex(dev(2))}/sessions`, {
-      method: 'POST', headers: { 'Content-Type': 'application/cbor' },
-      body: establishBody(dev(2), (await c.routes.passwordLogin('ada', 'pw')).assertion) as BodyInit,
-    });
-    expect(edge.status).toBe(429);
-    const refusalBody = arr(decode(new Uint8Array(await edge.arrayBuffer())));
-    expect([str(refusalBody[0] ?? null), u64(refusalBody[2] ?? null)]).toEqual(['E_RATE_LIMITED', 1000n]);
-    // The boundary second: a creation leaves the window exactly 3600 s after it.
-    server.nowS = NOW_S + 3600;
-    server.maxDevices = 3;
+    const first = await enrol(dev(1));   // one creation (DEV_A) in the window: below the rate
+    expect(first.scope).toBe(1);
+    // Two live creations in the window: dev(2) replaces dev(1), the oldest unlisted row, and is admitted.
     expect((await enrol(dev(2))).scope).toBe(1);
-    const capped = await refusalOf(enrol(dev(3)));
+    expect([server.revoked.get(toHex(dev(1))), server.revoked.has(toHex(DEV_A)), server.revoked.has(toHex(dev(2)))])
+      .toEqual([NOW_S, false, false]);
+    expect(server.tokens.has(first.token)).toBe(false);   // the replaced row's sessions are deleted
+    // One second inside the window: since = nowS − 3599 = NOW_S still counts DEV_A and dev(2) (dev(1) is revoked).
+    server.nowS = NOW_S + 3599;
+    expect((await enrol(dev(3))).scope).toBe(1);
+    expect(server.revoked.get(toHex(dev(2)))).toBe(NOW_S + 3599);
+    // The boundary second for dev(3)'s window is NOW_S + 3599 + 3600; at NOW_S + 3600 DEV_A has left it, one remains.
+    server.nowS = NOW_S + 3600;
+    expect((await enrol(dev(4))).scope).toBe(1);
+    expect(server.revoked.has(toHex(dev(3)))).toBe(false);
+    expect(server.paths().filter((p) => p.endsWith('/sessions'))).toHaveLength(5);   // ada's establish and four registrations, none refused
+  });
+
+  it('past the rate with every live row listed replaces nothing and refuses nothing', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.enrolmentsPerHour = 1;   // DEV_A alone fills it, and DEV_A is listed
+    const login = await c.routes.passwordLogin('ada', 'pw');
+    expect((await c.routes.postSessionPending(DEV_B, establishBody(DEV_B, login.assertion))).scope).toBe(1);
+    expect([server.revoked.size, server.devices.get(toHex(DEV_B))]).toEqual([0, server.devices.get(toHex(DEV_A))]);
+  });
+
+  it('at the cap replaces the oldest unlisted row whatever its age, ties by id, and admits', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.maxDevices = 3;
+    server.enrolmentsPerHour = 60;
+    const dev = (n: number) => new Uint8Array(16).fill(0x40 + n);
+    const enrol = async (d: Uint8Array) => c.routes.postSessionPending(d, establishBody(d, (await c.routes.passwordLogin('ada', 'pw')).assertion));
+    await enrol(dev(2));
+    await enrol(dev(1));   // the same second as dev(2): the smaller id is the older
+    expect((await enrol(dev(3))).scope).toBe(1);   // live A, dev(1), dev(2): at the cap; dev(1) is replaced, 0 s old
+    expect([...server.revoked.keys()]).toEqual([toHex(dev(1))]);
+  });
+
+  it('refuses 403 device cap reached only when every live row is listed', async () => {
+    const server = new FakeServer();
+    const { c, user } = await ada(server);
+    server.maxDevices = 2;
+    await c.routes.postSessionPending(DEV_B, establishBody(DEV_B, (await c.routes.passwordLogin('ada', 'pw')).assertion));
+    await c.routes.putDeviceList(user, listBody(user, 2n, [{ deviceId: DEV_A, revokedAt: null }, { deviceId: DEV_B, revokedAt: null }]));
+    const third = new Uint8Array(16).fill(0x77);
+    const capped = await refusalOf(c.routes.postSessionPending(third, establishBody(third, (await c.routes.passwordLogin('ada', 'pw')).assertion)));
     expect([capped.status, capped.code, capped.detail]).toEqual([403, 'E_FORBIDDEN', 'device cap reached']);
+    expect([server.devices.has(toHex(third)), server.revoked.size]).toEqual([false, 0]);
+  });
+
+  it('sweeps an unlisted row older than 24 hours at the next registration', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    await c.routes.postSessionPending(DEV_B, establishBody(DEV_B, (await c.routes.passwordLogin('ada', 'pw')).assertion));
+    server.nowS = NOW_S + 86_400;
+    const late = new Uint8Array(16).fill(0x78);
+    expect((await c.routes.postSessionPending(late, establishBody(late, (await c.routes.passwordLogin('ada', 'pw')).assertion))).scope).toBe(1);
+    expect(server.revoked.get(toHex(DEV_B))).toBe(NOW_S + 86_400);
+  });
+
+  it('refuses 409 a registration whose dsk_pub a live row of the user holds, and writes nothing', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const copy = await refusalOf(c.routes.postSessionPending(DEV_B,
+      establishBody(DEV_B, (await c.routes.passwordLogin('ada', 'pw')).assertion, fakeDskPub(DEV_A))));
+    expect([copy.status, copy.code, copy.detail]).toEqual([409, 'E_INVALID_REQUEST', 'dsk_pub is already registered to a live device']);
+    expect(server.devices.has(toHex(DEV_B))).toBe(false);
+  });
+
+  it('judges listed by the (device_id, dsk_pub) pair: a listed id under another key is pending, and is deletable', async () => {
+    const server = new FakeServer();
+    const { c, user } = await ada(server);
+    await c.routes.postSessionPending(DEV_B, establishBody(DEV_B, (await c.routes.passwordLogin('ada', 'pw')).assertion));
+    // v2 names DEV_B, but with another key than the row's.
+    await c.routes.putDeviceList(user, listBody(user, 2n, [{ deviceId: DEV_A, revokedAt: null },
+      { deviceId: DEV_B, revokedAt: null, dskPub: new Uint8Array(32).fill(0x5a) }]));
+    expect((await c.routes.postSession(DEV_B, establishBody(DEV_B, null))).scope).toBe(1);
+    await expect(c.routes.deleteDevice(DEV_A)).rejects.toMatchObject({ status: 409, code: 'E_INVALID_REQUEST' });
+    await c.routes.deleteDevice(DEV_B);
+    expect(server.revoked.has(toHex(DEV_B))).toBe(true);
+    // The pair, listed: enrolled.
+    const fresh = new Uint8Array(16).fill(0x79);
+    await c.routes.postSessionPending(fresh, establishBody(fresh, (await c.routes.passwordLogin('ada', 'pw')).assertion));
+    await c.routes.putDeviceList(user, listBody(user, 3n, [{ deviceId: DEV_A, revokedAt: null }, { deviceId: fresh, revokedAt: null }]));
+    expect((await c.routes.postSession(fresh, establishBody(fresh, null))).scope).toBe(0);
+  });
+
+  it('POST /v1/devices proves possession of dsk_pub with a challenge nonce for the new id (403), and refuses a held key (409)', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const token = server.log.at(-1)?.auth ?? null;
+    const challenge = async (d: Uint8Array) => (await c.routes.postChallenge(d)).nonce;
+    const key = fakeDskPub(DEV_B);
+    // The web-2a five-element body is 400.
+    expect((await raw(server, 'POST', '/v1/devices', token, encode([DEV_B, key, 1, 1, new Uint8Array([2])]))).status).toBe(400);
+    const notProven = ['E_FORBIDDEN', 'possession of dsk_pub is not proven', null];
+    // Signed by another key (a stolen session copying DEV_A's key cannot sign for it; here: any wrong signer).
+    expect(await raw(server, 'POST', '/v1/devices', token, devicePostBody(DEV_B, key, await challenge(DEV_B), fakeDskPub(DEV_A))))
+      .toEqual({ status: 403, body: notProven });
+    // A nonce issued for another device id.
+    expect(await raw(server, 'POST', '/v1/devices', token, devicePostBody(DEV_B, key, await challenge(DEV_A))))
+      .toEqual({ status: 403, body: notProven });
+    expect(server.devices.has(toHex(DEV_B))).toBe(false);
+    // The key holder: 200 [device_id], a row.
+    const body = devicePostBody(DEV_B, key, await challenge(DEV_B));
+    expect(await raw(server, 'POST', '/v1/devices', token, body)).toEqual({ status: 200, body: [DEV_B] });
+    expect(server.devices.get(toHex(DEV_B))).toBe(server.devices.get(toHex(DEV_A)));
+    // The nonce is spent: the same body replayed is 403.
+    expect((await raw(server, 'POST', '/v1/devices', token, body)).status).toBe(403);
+    // The same key under a second id: 409.
+    const second = new Uint8Array(16).fill(0x7a);
+    expect(await raw(server, 'POST', '/v1/devices', token, devicePostBody(second, key, await challenge(second))))
+      .toEqual({ status: 409, body: ['E_INVALID_REQUEST', 'dsk_pub is already registered to a live device', null] });
+    // An expired nonce (60 s).
+    const old = await challenge(second);
+    server.nowS += 61;
+    expect((await raw(server, 'POST', '/v1/devices', token, devicePostBody(second, fakeDskPub(second), old))).status).toBe(403);
+    // A pending session never reaches the route.
+    const pending = await c.routes.postSessionPending(second, establishBody(second, (await c.routes.passwordLogin('ada', 'pw')).assertion));
+    const third = new Uint8Array(16).fill(0x7b);
+    expect((await raw(server, 'POST', '/v1/devices', pending.token, devicePostBody(third, fakeDskPub(third), await challenge(third)))).status)
+      .toBe(403);
+  });
+
+  it('meters PUT /v1/backups on the upload budget: 429 E_RATE_LIMITED past 20 a minute and past the daily bytes, nothing stored', async () => {
+    const server = new FakeServer();
+    const { user } = await ada(server);
+    const token = server.log.at(-1)?.auth ?? null;
+    const object = (n: number) => encode([1, new Uint8Array(12).fill(n), new Uint8Array(40)]);
+    const state = (n: number) => encode([object(n)]);
+    for (let n = 0; n < 20; n++) expect((await raw(server, 'PUT', '/v1/backups/1/0', token, state(n))).status).toBe(n === 0 ? 201 : 200);
+    // 20 a minute refill one request every 3 s.
+    expect(await raw(server, 'PUT', '/v1/backups/1/0', token, state(20))).toEqual({ status: 429, body: ['E_RATE_LIMITED', 'rate limited', 3000n] });
+    expect(server.backups.get(`${toHex(user)}/1`)?.object).toEqual(object(19));
+    server.nowS += 60;
+    expect((await raw(server, 'PUT', '/v1/backups/1/0', token, state(20))).status).toBe(200);
+
+    const daily = new FakeServer();
+    daily.uploadBytesPerDay = 150;
+    const d = await ada(daily);
+    const dt = daily.log.at(-1)?.auth ?? null;
+    const size = state(1).length;   // each PUT reserves and spends its body's bytes
+    expect((await raw(daily, 'PUT', '/v1/backups/1/0', dt, state(1))).status).toBe(201);
+    expect((await raw(daily, 'PUT', '/v1/backups/1/0', dt, state(2))).status).toBe(200);
+    const wait = BigInt(Math.floor((size - (150 - 2 * size)) * 86_400 / 150 * 1000));
+    expect(await raw(daily, 'PUT', '/v1/backups/1/0', dt, state(3))).toEqual({ status: 429, body: ['E_RATE_LIMITED', 'rate limited', wait] });
+    expect(daily.backups.get(`${toHex(d.user)}/1`)?.object).toEqual(object(2));
+    daily.nowS += 86_400;
+    expect((await raw(daily, 'PUT', '/v1/backups/1/0', dt, state(3))).status).toBe(200);
+  });
+
+  it('identify refuses a pending session with E_UNAUTHENTICATED and close 4003, by token or ticket', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const enrolled = server.log.at(-1)?.auth ?? '';
+    const ticket = await c.routes.postTicket();
+    expect(ticket.expires).toBe(BigInt(NOW_S + 30));
+    expect(server.identify(ticket.ticket)).toEqual({ op: 'ready' });
+    expect(server.identify(ticket.ticket)).toEqual({ op: 'error', code: 'E_UNAUTHENTICATED', close: 4003 });   // single use
+    expect(server.identify(enrolled)).toEqual({ op: 'ready' });
+    const pending = await c.routes.postSessionPending(DEV_B, establishBody(DEV_B, (await c.routes.passwordLogin('ada', 'pw')).assertion));
+    expect(server.identify(pending.token)).toEqual({ op: 'error', code: 'E_UNAUTHENTICATED', close: 4003 });
+    c.use(pending.token);
+    await expect(c.routes.postTicket()).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+    expect(server.identify('tok-unknown')).toEqual({ op: 'error', code: 'E_UNAUTHENTICATED', close: 4003 });
   });
 
   it('refuses a native registration by assertion (ruling 31)', async () => {

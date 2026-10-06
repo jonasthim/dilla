@@ -29,7 +29,7 @@ import type { GatewayEvent, ReadyInfo } from '../../gateway/gateway';
 import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
 import type { Routes } from '../../http/routes';
-import { fakeListBlob, fakeListNames, readFakeList } from '../../testing/fake-list';
+import { fakeDskPub, fakeListBlob, fakeListNames, readFakeList } from '../../testing/fake-list';
 
 export interface Peer {
   device: Id;
@@ -1188,7 +1188,8 @@ export class ModelDs {
     if (rows === undefined || rows.length === 0) return false;
     const list = readFakeList(at(rows, rows.length - 1).blob);
     const id = this.devices.get(device);
-    return list === null || id === undefined || !fakeListNames(list, id);
+    // Invariant 4 judges the (device_id, dsk_pub) pair; every ModelDs device holds its default key.
+    return list === null || id === undefined || !fakeListNames(list, id, fakeDskPub(id));
   }
   private storeList(user: string, version: bigint, blob: Uint8Array, sig: Uint8Array, prev: Uint8Array): void {
     const rows = this.lists.get(user) ?? [];

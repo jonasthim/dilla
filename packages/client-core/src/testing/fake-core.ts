@@ -3,7 +3,7 @@ import { arr, bin, decode, encode, u64 } from '../cbor';
 import { CoreError, type CorePort, type Id, type IdentityInfo, type SessionRecord, type GroupInfo, type ExpectedGroup,
   type WelcomeOutcome, type ApplyResult, type OutboxRow, type TimelineRow, type ActivityRow, type OwnDeviceList,
   type SealedObjects } from '../core-port';
-import { fakeListBlob, fakeListNames, readFakeList, type FakeList } from './fake-list';
+import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from './fake-list';
 
 export const FAKE_RECOVERY_KEY = '0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJK';
 export const FAKE_ROOT_SEALED = encode([1, new Uint8Array(12).fill(0x31), new Uint8Array(86).fill(0x32)]);
@@ -129,7 +129,7 @@ export class FakeCore implements CorePort {
     const deviceId = this.info.deviceId;
     if (deviceId === null) throw new CoreError('E_CORE_NO_IDENTITY');
     return encode([invite, username, display, new Uint8Array(32).fill(1), new Uint8Array(32).fill(2),
-      new Uint8Array(64).fill(3), password, [deviceId, new Uint8Array(32).fill(4), 1, 1,
+      new Uint8Array(64).fill(3), password, [deviceId, fakeDskPub(deviceId), 1, 1,
         encode(['fake.cred', new Uint8Array(16), deviceId])]]);
   }
   signupComplete(userId: Id, username: string, now: bigint): Uint8Array {
@@ -187,14 +187,14 @@ export class FakeCore implements CorePort {
       this.info.phase === 2 ? 'an identity exists' : 'an enrolment is pending');
     const deviceId = this.preferredDevice ?? this.nextId();
     this.info = { phase: 3, instanceId, deviceId, userId: null, username: '', listPublished: false };
-    return { deviceId, dskPub: new Uint8Array(32).fill(4) };
+    return { deviceId, dskPub: fakeDskPub(deviceId) };
   }
   enrolSessionSign(nonce: Uint8Array, login: Uint8Array): Uint8Array {
     this.enter('enrolSessionSign');
     if (login.length < 1 || login.length > 256 || nonce.length !== 32) throw new CoreError('E_CORE_INPUT');
     if (this.info.phase !== 3 || this.info.deviceId === null) throw new CoreError('E_CORE_STATE', 'no enrolment is pending');
     return encode([nonce, 0, new Uint8Array(64).fill(6),
-      [this.info.deviceId, new Uint8Array(32).fill(4), 1, 1, encode(['fake.placeholder', this.info.deviceId])], login]);
+      [this.info.deviceId, fakeDskPub(this.info.deviceId), 1, 1, encode(['fake.placeholder', this.info.deviceId])], login]);
   }
   enrolRegistered(userId: Id): void {
     this.enter('enrolRegistered');
@@ -229,7 +229,7 @@ export class FakeCore implements CorePort {
     const list = readFakeList(this.accepted.blob);
     if (list === null) throw new CoreError('E_CORE_STATE');
     return { version: this.accepted.version, published: this.info.listPublished, entries: list.entries.map((entry) => ({
-      deviceId: entry.deviceId, dskPub: new Uint8Array(32).fill(same(entry.deviceId, this.info.deviceId!) ? 4 : 0x44),
+      deviceId: entry.deviceId, dskPub: entryKey(entry),
       tier: (same(entry.deviceId, this.info.deviceId!) ? this.tier : 1) as 0 | 1,
       addedAt: list.at, revokedAt: entry.revokedAt,
     })) };
@@ -252,7 +252,8 @@ export class FakeCore implements CorePort {
     }
     const list = readFakeList(this.accepted.blob);
     if (list === null) throw new CoreError('E_CREDENTIAL');
-    return { version: this.accepted.version, listed: fakeListNames(list, this.info.deviceId) };
+    // The core's own judgement is the pair too: its device_id and its dsk_pub in one unrevoked entry.
+    return { version: this.accepted.version, listed: fakeListNames(list, this.info.deviceId, fakeDskPub(this.info.deviceId)) };
   }
   deviceListRevoke(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; deviceIds: Id[]; now: bigint }): { deviceListBody: Uint8Array; stateSealed: Uint8Array } {
     this.enter('deviceListRevoke');

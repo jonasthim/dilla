@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
-import { arr, bin, decode, encode, str, u64, type CborInput } from '../cbor';
+import { arr, bin, decode, encode, str, u64, type CborInput, type CborValue } from '../cbor';
 import { Session } from '../account/session';
 import type { CorePort } from '../core-port';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { Routes } from '../http/routes';
-import { fakeListBlob, fakeListNames, readFakeList } from './fake-list';
+import { fakeDskPub, fakeListBlob, fakeListNames, readFakeList } from './fake-list';
 
 /** The fixed clock of every account test, in unix seconds. */
 export const NOW_S = 1_800_000_000;
@@ -17,6 +17,12 @@ export function nonceAt(k: number): Uint8Array {
   const nonce = NONCE.slice();
   nonce[0] = 0x6e + k - 1;
   return nonce;
+}
+
+/** The fake's stand-in for Ed25519(DSK, SessionPreimage(instance, device_id, nonce, purpose 0)): only the holder of
+ *  `dskPub` is taken to produce it, so a body signed for another key or nonce fails as a real signature would. */
+export function fakeDeviceProof(dskPub: Uint8Array, deviceId: Uint8Array, nonce: Uint8Array): Uint8Array {
+  return new Uint8Array(createHash('sha512').update('fake.proof').update(dskPub).update(deviceId).update(nonce).update(new Uint8Array([0])).digest());
 }
 
 export interface LoggedRequest { method: string; path: string; query: string; auth: string | null; body: Uint8Array }
@@ -56,13 +62,23 @@ export class FakeServer {
   readonly createdAt = new Map<string, number>();
   readonly tiers = new Map<string, 0 | 1>();
   readonly tokenScope = new Map<string, 0 | 1>();
+  /** device hex → the hex of the dsk_pub its row holds; a row planted without one holds fakeDskPub(device). */
+  readonly keys = new Map<string, string>();
+  /** Challenge nonces not yet spent by POST /v1/devices: nonce hex → the device id it was issued for, its expiry. */
+  private readonly nonces = new Map<string, { device: string; expires: number }>();
+  private readonly tickets = new Map<string, { token: string; expires: number }>();
+  private readonly uploadBuckets = new Map<string, { requests: number; bytes: number; at: number }>();
   nowS = NOW_S;
   maxDevices = 8;
   enrolmentsPerHour = 3;
+  /** blobs.uploads_per_minute and blobs.upload_bytes_per_day, the defaults of internal/config/defaults.go. */
+  uploadsPerMinute = 20;
+  uploadBytesPerDay = 5_368_709_120;
   private users = 0;
   private sessions = 0;
   private challenges = 0;
   private assertionN = 0;
+  private ticketN = 0;
   private readonly overrides: { method: string; path: string; reply: Reply }[] = [];
 
   /** The next request with this method and path gets `answer` instead of the model's. */
@@ -92,14 +108,75 @@ export class FakeServer {
   }
 
   /** An account and device as if an earlier tab's registration had succeeded. */
-  register(username: string, deviceId: Uint8Array): Uint8Array {
+  register(username: string, deviceId: Uint8Array, dskPub: Uint8Array = fakeDskPub(deviceId)): Uint8Array {
     this.users += 1;
     const userId = new Uint8Array(16).fill(0x30 + this.users);
     this.accounts.set(toHex(userId), { userId, username, display: username });
     this.devices.set(toHex(deviceId), toHex(userId));
     this.createdAt.set(toHex(deviceId), this.nowS);
     this.tiers.set(toHex(deviceId), 1);
+    this.keys.set(toHex(deviceId), toHex(dskPub));
     return userId;
+  }
+
+  /** What the gateway's identify answers for a session token or a ticket (protocol/02 item 4, security review F4):
+   *  `ready` for an enrolled session; a pending, unknown, revoked or spent one is an E_UNAUTHENTICATED error frame
+   *  and close 4003. A ticket is single use and lives 30 s. */
+  identify(credential: string): { op: 'ready' } | { op: 'error'; code: 'E_UNAUTHENTICATED'; close: 4003 } {
+    const refused = { op: 'error', code: 'E_UNAUTHENTICATED', close: 4003 } as const;
+    let token = credential;
+    const ticket = this.tickets.get(credential);
+    if (ticket !== undefined) {
+      this.tickets.delete(credential);
+      if (this.nowS > ticket.expires) return refused;
+      token = ticket.token;
+    }
+    const device = this.tokens.get(token);
+    if (device === undefined || this.revoked.has(device) || this.tokenScope.get(token) !== 0) return refused;
+    return { op: 'ready' };
+  }
+
+  private keyOf(device: string): string {
+    return this.keys.get(device) ?? toHex(fakeDskPub(fromHex(device)));
+  }
+
+  /** Whether the user's newest list names the row by its (device_id, dsk_pub) pair; with no list every row counts. */
+  private listed(user: string, device: string): boolean {
+    const newest = this.deviceLists.get(user);
+    if (newest === undefined) return true;
+    const list = readFakeList(newest.blob);
+    return list !== null && fakeListNames(list, fromHex(device), fromHex(this.keyOf(device)));
+  }
+
+  /** auth.Sessions.AdmitDevice: the 24-hour sweep, one live row per key (409), then the cap and the hourly rate,
+   *  which decide which row the registration replaces (the oldest live unlisted one, whatever its age, ties by id),
+   *  never whether it is admitted; only a cap of listed rows refuses (403). Nothing is written on a refusal (the
+   *  real one runs in the registration's transaction). */
+  private admit(user: string, keyHex: string): Response | { apply(): void } {
+    const rows = [...this.devices].filter(([, owner]) => owner === user).map(([id]) => id);
+    const cutoff = this.nowS - 86_399;
+    const created = (id: string): number => this.createdAt.get(id) ?? this.nowS;
+    const listed = new Set(rows.filter((id) => this.listed(user, id)));
+    const swept = rows.filter((id) => !this.revoked.has(id) && created(id) < cutoff && !listed.has(id));
+    const live = rows.filter((id) => !this.revoked.has(id) && !swept.includes(id));
+    if (live.some((id) => this.keyOf(id) === keyHex))
+      return refuse(409, 'E_INVALID_REQUEST', 'dsk_pub is already registered to a live device');
+    const creations = live.filter((id) => created(id) >= this.nowS - 3599).length;
+    const atCap = live.length >= this.maxDevices;
+    let evicted: string | undefined;
+    if (atCap || creations >= this.enrolmentsPerHour) {
+      evicted = live.filter((id) => !listed.has(id))
+        .sort((a, b) => created(a) - created(b) || (a < b ? -1 : a > b ? 1 : 0))[0];
+      if (evicted === undefined && atCap) return refuse(403, 'E_FORBIDDEN', 'device cap reached');
+    }
+    return {
+      apply: () => {
+        for (const id of evicted === undefined ? swept : [...swept, evicted]) {
+          this.revoked.set(id, this.nowS);
+          this.dropTokens(id);
+        }
+      },
+    };
   }
 
   readonly fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -148,9 +225,12 @@ export class FakeServer {
     if (line === 'GET /v1/instance/limits') {
       return reply(200, [131072, 104857600, 4, 2, 32, 8, 1073741824, 30000, 131584, 30, 30]);
     }
-    if (/^POST \/v1\/devices\/[0-9a-f]{32}\/sessions\/challenge$/.test(line)) {
+    const challenge = /^POST \/v1\/devices\/([0-9a-f]{32})\/sessions\/challenge$/.exec(line);
+    if (challenge?.[1] !== undefined) {
       this.challenges += 1;
-      return reply(201, [nonceAt(this.challenges), this.nowS + 60]);
+      const nonce = nonceAt(this.challenges);
+      this.nonces.set(toHex(nonce), { device: challenge[1], expires: this.nowS + 60 });
+      return reply(201, [nonce, this.nowS + 60]);
     }
     const establish = /^POST \/v1\/devices\/([0-9a-f]{32})\/sessions$/.exec(line);
     if (establish?.[1] !== undefined) return this.establish(establish[1], r.body);
@@ -190,9 +270,18 @@ export class FakeServer {
     if (deleteDevice !== null) {
       const target = deleteDevice[1];
       if (this.devices.get(target) !== user) return refuse(404, 'E_NOT_FOUND');
+      // Listed is the pair: a row that only copies a listed key, or a listed id under another key, is removed here.
+      if (this.deviceLists.has(user) && this.listed(user, target))
+        return refuse(409, 'E_INVALID_REQUEST', 'a listed device is revoked by a signed device list');
       this.revoked.set(target, this.nowS);
       this.dropTokens(target);
       return reply(204);
+    }
+    if (line === 'POST /v1/devices') return this.createDevice(user, r.body);
+    if (line === 'POST /v1/gateway/ticket') {
+      const ticket = `tkt-${++this.ticketN}`;
+      this.tickets.set(ticket, { token: r.auth!, expires: this.nowS + 30 });
+      return reply(201, [ticket, this.nowS + 30]);
     }
     if (line === 'POST /v1/keypackages') {
       const b = arr(decode(r.body), 2);
@@ -214,9 +303,10 @@ export class FakeServer {
     const username = str(b[1] ?? null);
     const display = str(b[2] ?? null);
     const deviceId = bin(arr(b[7] ?? null, 5)[0] ?? null, 16);
+    const dskPub = bin(arr(b[7] ?? null, 5)[1] ?? null, 32);
     if (!this.invites.has(invite)) return refuse(410, 'E_INVITE_INVALID');
     if ([...this.accounts.values()].some((a) => a.username === username)) return refuse(409, 'E_INVALID_REQUEST', 'username taken');
-    const userId = this.register(username, deviceId);
+    const userId = this.register(username, deviceId, dskPub);
     this.tiers.set(toHex(deviceId), Number(arr(b[7] ?? null, 5)[2]) as 0 | 1);
     const account = this.accounts.get(toHex(userId));
     if (account !== undefined) account.display = display;
@@ -264,18 +354,14 @@ export class FakeServer {
       } else {
         user = account[0];
         if (!this.deviceLists.has(user)) return refuse(401, 'E_UNAUTHENTICATED');
-        const live = [...this.devices].filter(([id, owner]) => owner === user && !this.revoked.has(id));
-        if (live.length >= this.maxDevices) return refuse(403, 'E_FORBIDDEN', 'device cap reached');
-        const since = this.nowS - 3599;
-        const creations = [...this.devices].filter(([, owner]) => owner === user).map(([id]) => this.createdAt.get(id) ?? this.nowS)
-          .filter((at) => at >= since).sort((a, b) => a - b);
-        if (creations.length >= this.enrolmentsPerHour) {
-          const oldest = creations[creations.length - this.enrolmentsPerHour];
-          return refuse(429, 'E_RATE_LIMITED', '', (oldest + 3600 - this.nowS) * 1000);
-        }
+        const key = toHex(bin(arr(b[3] ?? null, 5)[1] ?? null, 32));
+        const admitted = this.admit(user, key);
+        if (admitted instanceof Response) return admitted;
+        admitted.apply();
         this.devices.set(deviceHex, user);
         this.createdAt.set(deviceHex, this.nowS);
         this.tiers.set(deviceHex, 1);
+        this.keys.set(deviceHex, key);
       }
       scope = 1;
     } else {
@@ -287,13 +373,74 @@ export class FakeServer {
         else {
           const list = readFakeList(newest.blob);
           if (list === null || toHex(list.userId) !== user) return refuse(401, 'E_UNAUTHENTICATED');
-          scope = fakeListNames(list, fromHex(deviceHex)) ? 0 : 1;
+          scope = fakeListNames(list, fromHex(deviceHex), fromHex(this.keyOf(deviceHex))) ? 0 : 1;
         }
       }
     }
     if (this.scope !== null) scope = this.scope;
     return reply(201, [this.mint(deviceHex, scope), scope, fromHex(user), fromHex(deviceHex),
       this.nowS + SESSION_S, this.nowS + IDLE_S, 1]);
+  }
+
+  /** POST /v1/devices (enrolled): [device_id, dsk_pub, tier, signer_tier, credential, nonce b32, sig b64] → 200
+   *  [device_id]. The nonce is a challenge for the new device_id, spent here; sig is the purpose-0 proof by dsk_pub
+   *  (403 "possession of dsk_pub is not proven"); then the registration's admission (409 for a held key, the cap's
+   *  403, the replacement); a device_id that exists is 409. */
+  private createDevice(user: string, body: Uint8Array): Response {
+    let device: Uint8Array, key: Uint8Array, tier: bigint, nonce: CborValue, sig: CborValue;
+    try {
+      const b = arr(decode(body), 7);
+      device = bin(b[0] ?? null, 16);
+      key = bin(b[1] ?? null);
+      tier = u64(b[2] ?? null);
+      const signer = u64(b[3] ?? null);
+      const credential = bin(b[4] ?? null);
+      nonce = b[5] ?? null;
+      sig = b[6] ?? null;
+      if (device.every((x) => x === 0) || key.length !== 32 || tier > 1n || signer > 1n || credential.length < 1 ||
+          credential.length > 8192) throw new Error('shape');
+    } catch { return refuse(400, 'E_INVALID_REQUEST'); }
+    const deviceHex = toHex(device);
+    const notProven = refuse(403, 'E_FORBIDDEN', 'possession of dsk_pub is not proven');
+    if (!(nonce instanceof Uint8Array) || nonce.length !== 32 || !(sig instanceof Uint8Array) || sig.length !== 64) return notProven;
+    const issued = this.nonces.get(toHex(nonce));
+    this.nonces.delete(toHex(nonce));
+    if (issued === undefined || issued.device !== deviceHex || this.nowS > issued.expires ||
+        !same(sig, fakeDeviceProof(key, device, nonce))) return notProven;
+    const admitted = this.admit(user, toHex(key));
+    if (admitted instanceof Response) return admitted;
+    if (this.devices.has(deviceHex)) return refuse(409, 'E_INVALID_REQUEST', 'device_id already exists');
+    admitted.apply();
+    this.devices.set(deviceHex, user);
+    this.createdAt.set(deviceHex, this.nowS);
+    this.tiers.set(deviceHex, Number(tier) as 0 | 1);
+    this.keys.set(deviceHex, toHex(key));
+    return reply(200, [device]);
+  }
+
+  /** The blob upload meter PUT /v1/backups shares with the attachment routes (api.UploadMeter): two token buckets
+   *  per user, refilled continuously from full. Answers the refusal, or null having spent one request and `bytes`. */
+  private meter(user: string, bytes: number): Response | null {
+    const perMinute = this.uploadsPerMinute;
+    const perDay = this.uploadBytesPerDay;
+    if (perMinute <= 0 && perDay <= 0) return null;
+    let u = this.uploadBuckets.get(user);
+    if (u === undefined) {
+      u = { requests: perMinute, bytes: perDay, at: this.nowS };
+      this.uploadBuckets.set(user, u);
+    } else if (this.nowS > u.at) {
+      const elapsed = this.nowS - u.at;
+      u.requests = Math.min(perMinute, u.requests + elapsed * perMinute / 60);
+      u.bytes = Math.min(perDay, u.bytes + elapsed * perDay / 86_400);
+      u.at = this.nowS;
+    }
+    const after = (seconds: number): Response => refuse(429, 'E_RATE_LIMITED', 'rate limited', Math.floor(seconds * 1000));
+    if (perMinute > 0 && u.requests < 1) return after((1 - u.requests) * 60 / perMinute);
+    const held = perDay <= 0 ? 0 : Math.min(bytes, perDay);
+    if (held > 0 && u.bytes < held) return after((held - u.bytes) * 86_400 / perDay);
+    if (perMinute > 0) u.requests -= 1;
+    u.bytes -= held;
+    return null;
   }
 
   private putList(user: string, target: string, body: Uint8Array): Response {
@@ -344,6 +491,10 @@ export class FakeServer {
     const key = `${user}/${kind}`;
     const existing = this.backups.get(key);
     if (method === 'GET') return existing === undefined ? refuse(404, 'E_NOT_FOUND') : reply(200, [existing.object, existing.created]);
+    // The upload meter before a byte is read: the reservation is the body cap or the body's length, whichever is
+    // smaller, and every byte read spends the day's budget whatever happens to the object (security review F3).
+    const metered = this.meter(user, Math.min(body.length, kind === 0 ? 256 : 1_048_640));
+    if (metered !== null) return metered;
     let object: Uint8Array;
     try {
       const a = arr(decode(body), 1);

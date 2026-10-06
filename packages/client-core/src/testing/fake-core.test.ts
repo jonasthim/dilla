@@ -3,7 +3,7 @@ import { arr, bin, decode, encode, str, u64 } from '../cbor';
 import { CoreError } from '../core-port';
 import { FAKE_RECOVERY_KEY, FAKE_ROOT_SEALED, FAKE_STATE_SEALED, FakeCore } from './fake-core';
 
-import { fakeListBlob, readFakeList } from './fake-list';
+import { fakeDskPub, fakeListBlob, readFakeList } from './fake-list';
 
 const INSTANCE = new Uint8Array(16).fill(0xab);
 const COMMUNITY = new Uint8Array(16).fill(0xc1);
@@ -172,7 +172,7 @@ describe('FakeCore enrolment (phase 3)', () => {
     const core = new FakeCore({ deviceId: DEV_B });
     expect(core.sealedObjects()).toEqual({ root: null, state: null, stateUploaded: false });
     const begun = core.enrolBegin(INSTANCE);
-    expect(begun).toEqual({ deviceId: DEV_B, dskPub: new Uint8Array(32).fill(4) });
+    expect(begun).toEqual({ deviceId: DEV_B, dskPub: fakeDskPub(DEV_B) });
     expect(core.identity()).toEqual({ phase: 3, instanceId: INSTANCE, userId: null, deviceId: DEV_B, username: '', listPublished: false });
     expect(codeOf(() => core.keyPackages(1, false))).toBe('E_CORE_NO_IDENTITY');
     expect(codeOf(() => core.deviceListBody())).toBe('E_CORE_NO_IDENTITY');

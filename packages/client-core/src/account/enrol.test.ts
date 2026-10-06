@@ -171,14 +171,14 @@ describe('Enrol', () => {
   it('a registration the instance refused before creating a row is retried with the same device, which registers it then', async () => {
     const { server, core, enrol, userId } = account();
     const sessions = `/v1/devices/${B_HEX}/sessions`;
-    // 3 600 000 ms is above RETRY.maxWaitMs, so HttpClient hands the 429 to the caller instead of waiting it out.
-    server.once('POST', sessions, { status: 429, body: ['E_RATE_LIMITED', '', 3_600_000] });
+    // The one refusal a registration meets before its row exists: a cap whose live rows are all listed (DEVICE_A).
+    server.maxDevices = 1;
     await enrol.login('ada', PASSWORD);
     const refused = await httpError(enrol.register(INSTANCE));
-    expect([refused.status, refused.code, refused.retryAfterMs]).toEqual([429, 'E_RATE_LIMITED', 3_600_000]);
+    expect([refused.status, refused.code, refused.detail]).toEqual([403, 'E_FORBIDDEN', 'device cap reached']);
     expect(core.identity()).toMatchObject({ phase: 3, userId: null, deviceId: DEVICE_B });
     expect(server.devices.has(B_HEX)).toBe(false);
-    server.nowS += 3600;
+    server.maxDevices = 8; // the operator raised the cap (or the owner revoked a listed device)
     await enrol.login('ada', PASSWORD);
     expect(await enrol.register(INSTANCE)).toEqual({ userId });
     const posts = server.log.filter((r) => r.method === 'POST' && r.path.endsWith('/sessions')).map((r) => r.path);
@@ -188,6 +188,7 @@ describe('Enrol', () => {
     expect(server.devices.get(B_HEX)).toBe(toHex(userId));
   });
 
+  // A 429 at registration comes only from the per-address and per-device establish meter now (protocol/02 refusals).
   it('does not retry a spent registration assertion when the rate wait is 1000 ms', async () => {
     const a = account();
     a.server.once('POST', `/v1/devices/${B_HEX}/sessions`, { status: 429, body: ['E_RATE_LIMITED', '', 1000] });
@@ -198,7 +199,7 @@ describe('Enrol', () => {
     expect(a.core.identity()).toMatchObject({ phase: 3, userId: null });
   });
 
-  it('the device cap and the hourly enrolment rate reach the caller as the instance answers them', async () => {
+  it('a cap of listed devices reaches the caller as 403 device cap reached; the cap and the rate otherwise replace, never refuse', async () => {
     const capped = account();
     capped.server.maxDevices = 1;
     await capped.enrol.login('ada', PASSWORD);
@@ -208,11 +209,20 @@ describe('Enrol', () => {
     expect(capped.core.identity()).toMatchObject({ phase: 3, userId: null });
 
     const rated = account();
-    rated.server.enrolmentsPerHour = 1; // DEVICE_A, created this hour, already fills it (ruling 32)
+    rated.server.enrolmentsPerHour = 1; // DEVICE_A, created this hour, already fills it (ruling 32), and it is listed
     await rated.enrol.login('ada', PASSWORD);
-    const rate = await httpError(rated.enrol.register(INSTANCE));
-    expect([rate.status, rate.code, rate.retryAfterMs]).toEqual([429, 'E_RATE_LIMITED', 3_600_000]);
-    expect(rated.server.devices.has(B_HEX)).toBe(false);
+    expect(await rated.enrol.register(INSTANCE)).toEqual({ userId: rated.userId });
+    expect([rated.server.devices.get(B_HEX), rated.server.revoked.size]).toEqual([rated.U, 0]);
+
+    // A password holder's unlisted row at the cap: this browser's registration replaces it and is admitted.
+    const full = account();
+    const planted = new Uint8Array(16).fill(0xee);
+    full.server.devices.set(toHex(planted), full.U);
+    full.server.createdAt.set(toHex(planted), NOW_S);
+    full.server.maxDevices = 2;
+    await full.enrol.login('ada', PASSWORD);
+    expect(await full.enrol.register(INSTANCE)).toEqual({ userId: full.userId });
+    expect([full.server.revoked.has(toHex(planted)), full.server.revoked.has(toHex(DEVICE_A))]).toEqual([true, false]);
   });
 
   it('a missing root object is E_NO_BACKUP and nothing more is read', async () => {
