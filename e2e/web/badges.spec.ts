@@ -68,7 +68,8 @@ test('unopened channels badge their unread messages and mentions, opening reads 
   await expectAccessible(page, 'shell with badges');
 
   // Opening channel two reads it (markRead on open).
-  await openChannel(page, peer.communityName, two);
+  await channelRow(page, two).click();
+  await expectComposerReady(page, two);
   await expect(row2).toHaveAccessibleName(two, { timeout: WAIT });
   await expect(row2).toHaveAttribute('data-unread', '0');
   await expect(rail).toHaveAttribute('data-unread', '1', { timeout: WAIT });
