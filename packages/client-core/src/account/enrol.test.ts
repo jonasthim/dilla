@@ -329,7 +329,7 @@ describe('ensureBackups', () => {
     expect(marked).toHaveBeenCalledTimes(1);
     e.server.log.splice(0);
     await ensureBackups(e.core, e.routes);
-    expect(e.server.paths()).toEqual(['GET /v1/backups', 'GET /v1/backups/1/0']);
+    expect(e.server.paths()).toEqual(['GET /v1/backups']);
     expect(marked).toHaveBeenCalledTimes(1);
     expect((await e.routes.getBackup(0))?.object).toEqual(ROOT);
     expect((await e.routes.getBackup(1))?.object).toEqual(STATE);
@@ -350,6 +350,19 @@ describe('ensureBackups', () => {
     expect(marked).not.toHaveBeenCalled();
   });
 
+  it('detects a planted root already shown in the listing before uploading state', async () => {
+    const e = enrolled();
+    const marked = sealed(e.core, ROOT, STATE);
+    const other = encode([1, new Uint8Array(12).fill(9), new Uint8Array(86).fill(8)]);
+    e.server.putBackupObject(e.userId, 0, other);
+    await e.session.establish();
+    e.server.log.splice(0);
+    // A stolen enrolled session can pre-empt the owner's first root upload.
+    await expect(ensureBackups(e.core, e.routes)).rejects.toThrow('E_ROOT_MISMATCH');
+    expect(e.server.paths()).toEqual(['GET /v1/backups', 'GET /v1/backups/0/0']);
+    expect(marked).not.toHaveBeenCalled();
+  });
+
   it('accepts equal root bytes after a raced 409 and uploads state', async () => {
     const e = enrolled();
     const marked = sealed(e.core, ROOT, STATE);
@@ -363,17 +376,15 @@ describe('ensureBackups', () => {
     expect(marked).toHaveBeenCalledTimes(1);
   });
 
-  it('re-uploads a missing state despite the uploaded hint', async () => {
+  it('re-uploads a state absent from the listing despite the uploaded hint', async () => {
     const e = enrolled();
     e.server.putBackupObject(e.userId, 0, ROOT);
-    e.server.putBackupObject(e.userId, 1, STATE);
     const marked = sealed(e.core, ROOT, STATE);
     e.core.stateSealedUploaded();
     await e.session.establish();
     e.server.log.splice(0);
-    e.server.once('GET', '/v1/backups/1/0', { status: 404, body: ['E_NOT_FOUND', '', null] });
     await ensureBackups(e.core, e.routes);
-    expect(e.server.paths()).toEqual(['GET /v1/backups', 'GET /v1/backups/1/0', 'PUT /v1/backups/1/0']);
+    expect(e.server.paths()).toEqual(['GET /v1/backups', 'GET /v1/backups/0/0', 'PUT /v1/backups/1/0']);
     expect(marked).toHaveBeenCalledTimes(2);
     expect((await e.routes.getBackup(1))?.object).toEqual(STATE);
   });
@@ -382,8 +393,10 @@ describe('ensureBackups', () => {
     const e = enrolled();
     e.server.putBackupObject(e.userId, 0, ROOT);
     e.server.putBackupObject(e.userId, 1, encode([1, new Uint8Array(12), new Uint8Array(8)]));
-    const marked = sealed(e.core, ROOT, STATE);
+    sealed(e.core, ROOT, null);
     await e.session.establish();
+    await ensureBackups(e.core, e.routes); // confirms the pre-existing root once
+    const marked = sealed(e.core, ROOT, STATE);
     e.server.log.splice(0);
     await ensureBackups(e.core, e.routes);
     expect(e.server.paths()).toEqual(['GET /v1/backups', 'PUT /v1/backups/1/0']);

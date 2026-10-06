@@ -93,22 +93,31 @@ export async function refreshOwnDeviceList(core: CorePort, routes: Routes, userI
 }
 
 const same = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((value, i) => value === b[i]);
+const confirmedRoots = new WeakMap<CorePort, Uint8Array>();
 
 export async function ensureBackups(core: CorePort, routes: Routes): Promise<void> {
   const rows = await routes.listBackups();
   const sealed = core.sealedObjects();
-  if (!rows.some((row) => row.kind === 0) && sealed.root !== null) {
-    try { await routes.putBackup(0, sealed.root); }
-    catch (err) {
-      if (!(err instanceof DillaHttpError) || err.status !== 409) throw err;
-      const stored = await routes.getBackup(0);
-      if (stored === null || !same(stored.object, sealed.root)) throw new Error('E_ROOT_MISMATCH');
+  if (sealed.root !== null) {
+    if (rows.some((row) => row.kind === 0)) {
+      if (!same(confirmedRoots.get(core) ?? new Uint8Array(0), sealed.root)) {
+        const stored = await routes.getBackup(0);
+        if (stored === null || !same(stored.object, sealed.root)) throw new Error('E_ROOT_MISMATCH');
+        confirmedRoots.set(core, sealed.root.slice());
+      }
+    } else {
+      try { await routes.putBackup(0, sealed.root); }
+      catch (err) {
+        if (!(err instanceof DillaHttpError) || err.status !== 409) throw err;
+        const stored = await routes.getBackup(0);
+        if (stored === null || !same(stored.object, sealed.root)) throw new Error('E_ROOT_MISMATCH');
+      }
+      confirmedRoots.set(core, sealed.root.slice());
     }
   }
   if (sealed.state === null) return;
   const listed = rows.some((row) => row.kind === 1);
-  const storedState = listed && sealed.stateUploaded ? await routes.getBackup(1) : null;
-  if (!listed || !sealed.stateUploaded || storedState === null) {
+  if (!listed || !sealed.stateUploaded) {
     await routes.putBackup(1, sealed.state);
     core.stateSealedUploaded();
   }
