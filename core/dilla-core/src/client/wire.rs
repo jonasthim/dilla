@@ -104,7 +104,7 @@ pub(crate) struct WelcomeItem {
 }
 pub(crate) struct ExpectedGroup {
     pub group_id: [u8; 16],
-    pub community_id: [u8; 16],
+    pub community_id: Option<[u8; 16]>,
     pub channel_id: [u8; 16],
     pub policy_version: u64,
 }
@@ -261,7 +261,7 @@ pub(crate) fn decode_expected(bytes: &[u8]) -> Result<Vec<ExpectedGroup>, Client
             d.array(4)?;
             v.push(ExpectedGroup {
                 group_id: d.bytes_exact()?,
-                community_id: d.bytes_exact()?,
+                community_id: d.opt_bytes_exact()?,
                 channel_id: d.bytes_exact()?,
                 policy_version: d.uint()?,
             });

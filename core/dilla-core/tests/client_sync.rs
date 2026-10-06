@@ -9,7 +9,8 @@ mod client_support;
 
 use client_support::*;
 use dilla_core::cbor::{Encoder, decode_strict};
-use dilla_core::client::ClientCore;
+use dilla_core::client::{ClientCore, ClientError};
+use dilla_core::envelope::EnvelopeType;
 
 /// (epoch, the devices the Welcomes are addressed to) of a POST …/commit body.
 fn commit_body(body: &[u8]) -> (u64, Vec<[u8; 16]>) {
@@ -460,7 +461,7 @@ fn a_commit_that_removes_this_device_marks_the_group_gone_and_keeps_its_history(
     b.core
         .group_create(
             &OTHER_GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &instance.public(),
@@ -552,7 +553,7 @@ fn commit_build_needs_an_active_group_without_a_pending_commit() {
     a.core
         .group_create(
             &OTHER_GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &OTHER_CHANNEL,
             POLICY,
             &instance.public(),
@@ -576,7 +577,13 @@ fn every_writer_keeps_the_persisted_epoch_and_pending_commit_equal_to_the_mls_gr
     let mut b = ready_core(0xb2, "bob");
     let body = a
         .core
-        .group_create(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &instance.public())
+        .group_create(
+            &GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &instance.public(),
+        )
         .expect("group_create");
     a.check_columns("group_create");
     let created = relay.register(&body).expect("register");
@@ -595,7 +602,7 @@ fn every_writer_keeps_the_persisted_epoch_and_pending_commit_equal_to_the_mls_gr
         .core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -671,7 +678,7 @@ fn every_writer_keeps_the_persisted_epoch_and_pending_commit_equal_to_the_mls_gr
     b.core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -721,7 +728,7 @@ fn every_writer_keeps_the_persisted_epoch_and_pending_commit_equal_to_the_mls_gr
     b.core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -779,7 +786,7 @@ fn a_discarded_resync_answers_the_cursor_from_the_row_with_epoch_0() {
     b.core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -1048,4 +1055,295 @@ fn the_parity_fixture_holds() {
             "case {name}: the returned bytes"
         );
     }
+}
+
+fn flagged_seqs(core: &Core, group: &[u8; 16]) -> Vec<u64> {
+    let c = core.probe.lock().expect("lock");
+    let mut stmt = c
+        .prepare("SELECT seq FROM app_messages WHERE group_id = ?1 AND mention = 1 ORDER BY seq")
+        .expect("prepare");
+    stmt.query_map([group.as_slice()], |r| r.get::<_, i64>(0))
+        .expect("query")
+        .map(|s| s.map(|s| s as u64))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("rows")
+}
+
+fn read_marker(core: &Core, group: &[u8; 16]) -> Option<(i64, i64)> {
+    use rusqlite::OptionalExtension;
+    let c = core.probe.lock().expect("lock");
+    c.query_row(
+        "SELECT last_read_seq, last_read_at FROM app_read_state WHERE group_id = ?1",
+        [group.as_slice()],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+    .expect("app_read_state")
+}
+
+/// The own user's rows are excluded by user (ruling 29): Alice's confirmed message from this device
+/// and a mentioning message from Alice's other device (user 0xa1, device 0x5e) neither count nor
+/// carry the flag; the other user's status-0 type-0 rows after the marker do.
+#[test]
+fn activity_excludes_the_own_users_rows_from_this_device_and_from_another_device() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut a = ready_core(0xa1, "alice");
+    a.create_and_register(&mut relay, &instance);
+    let alice = "a1".repeat(16);
+    // Alice's other browser joins first and sends at its epoch, before Bob's peer joins.
+    let mut twin = RawPeer::new(0xa1, 0x5e);
+    twin.join_external(&mut relay);
+    let twin_named = twin.send(&mut relay, &format!("from my other browser <@{alice}>"));
+    let mut peer = RawPeer::new(0xe5, 0xe6);
+    peer.join_external(&mut relay);
+    a.sync(&relay);
+    let twin_row: (Vec<u8>, Vec<u8>, i64, i64) = a
+        .probe
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT sender_user, sender_device, status, type FROM app_messages \
+             WHERE group_id = ?1 AND seq = ?2",
+            rusqlite::params![GROUP.as_slice(), twin_named as i64],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .expect("the other device's row");
+    assert_eq!(
+        twin_row,
+        (vec![0xa1; 16], vec![0x5e; 16], 0, 0),
+        "a readable type-0 row of the own user from another device"
+    );
+    let plain = peer.send(&mut relay, "plain");
+    let named = peer.send(&mut relay, &format!("hi <@{alice}>"));
+    let shouted = peer.send(&mut relay, &format!("hi <@{}>", "A1".repeat(16)));
+    let everyone = peer.send(&mut relay, "<@everyone> standup");
+    let here = peer.send(&mut relay, "anyone <@here>");
+    let edit = peer.send_typed(
+        &mut relay,
+        EnvelopeType::Edit,
+        &format!("edited <@{alice}>"),
+    );
+    let epoch = relay.epoch();
+    let pruned = seq_of_answer(&relay.push_message(peer.device, epoch, None, false));
+    a.send(
+        &mut relay,
+        &GROUP,
+        &format!("note to self <@{alice}>"),
+        NOW + 1,
+    );
+    a.sync(&relay);
+    assert!(twin_named < plain);
+    assert!(plain < named && named < shouted && shouted < everyone && everyone < here);
+    assert!(here < edit && edit < pruned);
+
+    let first = Activity {
+        group_id: GROUP,
+        unread: 5,
+        mentions: 3,
+        last_seq: here,
+        last_ts: NOW + here,
+        last_read_seq: 0,
+    };
+    assert_eq!(
+        activity(&a.core),
+        vec![first.clone()],
+        "the own user's rows (this device and the other device), the type-1 row and the unreadable row are not counted"
+    );
+    assert_eq!(
+        flagged_seqs(&a, &GROUP),
+        vec![named, everyone, here],
+        "only status-0 type-0 rows of other users carry the flag; the other device's mention does not"
+    );
+
+    a.core
+        .mark_read(&GROUP, named, NOW + 10)
+        .expect("mark_read");
+    assert_eq!(
+        activity(&a.core),
+        vec![Activity {
+            unread: 3,
+            mentions: 2,
+            last_read_seq: named,
+            ..first.clone()
+        }]
+    );
+    a.core
+        .mark_read(&GROUP, plain, NOW + 11)
+        .expect("an older marker");
+    assert_eq!(
+        activity(&a.core)[0].last_read_seq,
+        named,
+        "the marker never moves back"
+    );
+    assert_eq!(
+        read_marker(&a, &GROUP),
+        Some((named as i64, (NOW + 11) as i64))
+    );
+    a.core
+        .mark_read(&GROUP, u64::MAX, NOW + 12)
+        .expect("beyond the head");
+    let head = a.group(&GROUP).expect("row").next_seq - 1;
+    assert_eq!(
+        activity(&a.core),
+        vec![Activity {
+            group_id: GROUP,
+            unread: 0,
+            mentions: 0,
+            last_seq: 0,
+            last_ts: 0,
+            last_read_seq: head
+        }],
+        "clamped to next_seq - 1"
+    );
+    assert_eq!(
+        code(a.core.mark_read(&GROUP, 1, u64::MAX)),
+        "E_CORE_INPUT",
+        "now out of range"
+    );
+    let _ = shouted;
+}
+
+#[test]
+fn mark_read_and_activity_follow_the_group_states_and_the_phase() {
+    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+
+    // A registering group may be marked (clamped to 0) and is not listed; a discard takes the marker.
+    a.core
+        .group_create(
+            &OTHER_GROUP,
+            Some(&COMMUNITY),
+            &OTHER_CHANNEL,
+            POLICY,
+            &instance.public(),
+        )
+        .expect("group_create");
+    a.core
+        .mark_read(&OTHER_GROUP, 5, NOW)
+        .expect("state 0 may be marked");
+    assert_eq!(read_marker(&a, &OTHER_GROUP), Some((0, NOW as i64)));
+    assert_eq!(
+        activity(&a.core)
+            .iter()
+            .map(|r| r.group_id)
+            .collect::<Vec<_>>(),
+        vec![GROUP]
+    );
+    a.core.group_discard(&OTHER_GROUP).expect("discard");
+    assert_eq!(
+        read_marker(&a, &OTHER_GROUP),
+        None,
+        "a discarded group's marker goes with it"
+    );
+
+    // Two active groups are listed in group_id order.
+    let mut other = Relay::new(OTHER_GROUP);
+    let body = a
+        .core
+        .group_create(
+            &OTHER_GROUP,
+            Some(&COMMUNITY),
+            &OTHER_CHANNEL,
+            POLICY,
+            &instance.public(),
+        )
+        .expect("group_create");
+    let created = other.register(&body).expect("register");
+    let next_seq = decode_strict(&created, |d| {
+        d.array(2)?;
+        d.bytes_exact::<16>()?;
+        d.uint()
+    })
+    .expect("201 body");
+    a.core
+        .group_registered(&OTHER_GROUP, next_seq)
+        .expect("group_registered");
+    assert_eq!(
+        activity(&a.core)
+            .iter()
+            .map(|r| r.group_id)
+            .collect::<Vec<_>>(),
+        vec![GROUP, OTHER_GROUP]
+    );
+
+    // A gone group is not listed and cannot be marked.
+    instance.propose_remove(&mut relay, b.device);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    assert_eq!(b.sync(&relay).state, 4);
+    assert!(activity(&b.core).is_empty());
+    assert_eq!(
+        b.core.mark_read(&GROUP, 1, NOW),
+        Err(ClientError {
+            code: "E_CORE_STATE",
+            detail: "group state 4".into()
+        })
+    );
+    assert_eq!(
+        code(a.core.mark_read(&[0x77; 16], 1, NOW)),
+        "E_CORE_NOT_FOUND"
+    );
+
+    // Without an identity there is no own user to exclude.
+    let mut fresh = ClientCore::open(memory()).expect("open");
+    assert_eq!(code(fresh.activity()), "E_CORE_NO_IDENTITY");
+    assert_eq!(code(fresh.mark_read(&GROUP, 1, NOW)), "E_CORE_NO_IDENTITY");
+}
+
+#[test]
+fn settings_are_bounded_ordered_and_answer_in_every_phase() {
+    let conn = memory();
+    let probe = std::sync::Arc::clone(&conn);
+    let mut core = ClientCore::open(conn).expect("open");
+    assert!(settings_of(&core).is_empty());
+    core.setting_put("b", "2").expect("phase 0");
+    core.setting_put("a", "").expect("an empty value");
+    core.setting_put("b", "two").expect("upsert");
+    assert_eq!(
+        settings_of(&core),
+        vec![
+            ("a".to_owned(), String::new()),
+            ("b".to_owned(), "two".to_owned())
+        ]
+    );
+    core.signup_begin(&INSTANCE).expect("phase 1");
+    core.setting_put("c", "3").expect("phase 1");
+    core.signup_complete(&[0x42; 16], "alice", NOW)
+        .expect("phase 2");
+    core.setting_delete("a").expect("delete");
+    core.setting_delete("absent").expect("absent is a no-op");
+    let key = "k".repeat(128);
+    let value = "v".repeat(1024);
+    core.setting_put(&key, &value).expect("at the bounds");
+    let bad_key = ClientError {
+        code: "E_CORE_INPUT",
+        detail: "key must be 1..=128 bytes".into(),
+    };
+    for k in [String::new(), "k".repeat(129), "é".repeat(65)] {
+        assert_eq!(
+            core.setting_put(&k, "x"),
+            Err(bad_key.clone()),
+            "{} bytes",
+            k.len()
+        );
+    }
+    let bad_value = ClientError {
+        code: "E_CORE_INPUT",
+        detail: "value must be at most 1024 bytes".into(),
+    };
+    assert_eq!(
+        core.setting_put("d", &"v".repeat(1025)),
+        Err(bad_value.clone())
+    );
+    assert_eq!(core.setting_put("d", &"é".repeat(513)), Err(bad_value));
+    drop(core);
+    let core = ClientCore::open(probe).expect("reopen");
+    assert_eq!(
+        settings_of(&core),
+        vec![
+            ("b".to_owned(), "two".to_owned()),
+            ("c".to_owned(), "3".to_owned()),
+            (key, value)
+        ]
+    );
 }

@@ -288,7 +288,7 @@ impl CoreHandle {
         self.with_core(|c| {
             c.group_create(
                 &group_id,
-                &community_id,
+                Some(&community_id),
                 &channel_id,
                 policy_version,
                 &external_sender_pub,
@@ -324,7 +324,7 @@ impl CoreHandle {
         self.with_core(|c| {
             c.group_join_external(
                 &group_id,
-                &community_id,
+                Some(&community_id),
                 &channel_id,
                 policy_version,
                 info_body,

@@ -230,7 +230,7 @@ fn write_the_v1_fixture() {
         .core
         .group_create(
             &OTHER_GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &OTHER_CHANNEL,
             POLICY,
             &instance.public(),

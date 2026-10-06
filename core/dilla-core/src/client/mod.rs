@@ -7,6 +7,7 @@ mod groups;
 mod identity;
 mod messages;
 mod schema;
+mod settings;
 mod sync;
 mod wire;
 

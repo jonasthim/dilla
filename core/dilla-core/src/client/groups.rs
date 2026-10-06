@@ -33,9 +33,9 @@ pub(super) struct GroupRow {
 }
 impl GroupRow {
     /// Whether the row is the text group of `channel` in `community`: a join never changes this.
-    fn bound_to(&self, community: &[u8; 16], channel: &[u8; 16]) -> bool {
+    fn bound_to(&self, community: Option<&[u8; 16]>, channel: &[u8; 16]) -> bool {
         self.kind == 0
-            && self.community_id.as_deref() == Some(community.as_slice())
+            && self.community_id.as_deref() == community.map(|c| c.as_slice())
             && self.target_id.as_slice() == channel.as_slice()
     }
 }
@@ -92,11 +92,16 @@ fn holder(
     .optional()
     .map_err(Into::into)
 }
-fn binding(own: &Own, community: &[u8; 16], channel: &[u8; 16], policy: u64) -> DillaBinding {
+fn binding(
+    own: &Own,
+    community: Option<&[u8; 16]>,
+    channel: &[u8; 16],
+    policy: u64,
+) -> DillaBinding {
     DillaBinding {
         v: 1,
         instance_id: InstanceId::from_bytes(own.instance_id),
-        community_id: Some(CommunityId::from_bytes(*community)),
+        community_id: community.map(|c| CommunityId::from_bytes(*c)),
         target_id: *channel,
         kind: GroupKind::Text,
         policy_version: policy,
@@ -268,7 +273,7 @@ impl ClientCore {
     pub fn group_create(
         &mut self,
         id: &[u8; 16],
-        community: &[u8; 16],
+        community: Option<&[u8; 16]>,
         channel: &[u8; 16],
         policy: u64,
         external: &[u8; 32],
@@ -310,7 +315,11 @@ impl ClientCore {
                 c.execute(
                     "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) \
                      VALUES(?1,0,?2,?3,0)",
-                    params![id.as_slice(), community.as_slice(), channel.as_slice()],
+                    params![
+                        id.as_slice(),
+                        community.map(|c| c.as_slice()),
+                        channel.as_slice()
+                    ],
                 )?;
                 Ok(())
             })?;
@@ -379,7 +388,7 @@ impl ClientCore {
                         [id.as_slice()],
                     )?;
                 } else {
-                    for table in ["app_handshake_tail", "app_messages", "app_outbox"] {
+                    for table in ["app_handshake_tail", "app_messages", "app_outbox", "app_read_state"] {
                         c.execute(
                             &format!("DELETE FROM {table} WHERE group_id=?1"),
                             [id.as_slice()],
@@ -395,7 +404,7 @@ impl ClientCore {
     pub fn group_join_external(
         &mut self,
         id: &[u8; 16],
-        community: &[u8; 16],
+        community: Option<&[u8; 16]>,
         channel: &[u8; 16],
         policy: u64,
         info_body: &[u8],
@@ -489,7 +498,7 @@ impl ClientCore {
                     c.execute(
                         "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,epoch) \
                          VALUES(?1,0,?2,?3,1,?4)",
-                        params![id.as_slice(), community.as_slice(), channel.as_slice(), joined],
+                        params![id.as_slice(), community.map(|c| c.as_slice()), channel.as_slice(), joined],
                     )?;
                 }
                 Ok(())
@@ -555,7 +564,7 @@ impl ClientCore {
                     outcome = 1;
                 } else if row
                     .as_ref()
-                    .is_some_and(|r| !r.bound_to(&want.community_id, &want.channel_id))
+                    .is_some_and(|r| !r.bound_to(want.community_id.as_ref(), &want.channel_id))
                 {
                     outcome = 2;
                     reason = rebound().code;
@@ -575,7 +584,7 @@ impl ClientCore {
                             let floor = epoch_floor(row.as_ref(), prior.as_ref());
                             let bind = binding(
                                 &own,
-                                &want.community_id,
+                                want.community_id.as_ref(),
                                 &want.channel_id,
                                 want.policy_version,
                             );
@@ -636,7 +645,7 @@ impl ClientCore {
                                                  VALUES(?1,0,?2,?3,2,?4,?5,?5)",
                                                 params![
                                                     id.as_slice(),
-                                                    want.community_id.as_slice(),
+                                                    want.community_id.as_ref().map(|c| c.as_slice()),
                                                     want.channel_id.as_slice(),
                                                     next,
                                                     held,

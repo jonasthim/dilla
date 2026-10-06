@@ -33,6 +33,8 @@ pub const CHANNEL: [u8; 16] = [0x33; 16];
 pub const OTHER_CHANNEL: [u8; 16] = [0x99; 16];
 pub const GROUP: [u8; 16] = [0x44; 16];
 pub const OTHER_GROUP: [u8; 16] = [0x45; 16];
+pub const DM_CHANNEL: [u8; 16] = [0x66; 16];
+pub const DM_GROUP: [u8; 16] = [0x46; 16];
 pub const POLICY: u64 = 1;
 pub const NOW: u64 = 1_790_000_000;
 pub const EPOCH_CHANGED: u64 = 1;
@@ -61,22 +63,86 @@ pub fn text_binding(channel: [u8; 16]) -> DillaBinding {
     }
 }
 
-#[allow(clippy::type_complexity)] // The fixture names each byte-array position at its call sites.
-pub fn expected_body(entries: &[([u8; 16], [u8; 16], [u8; 16], u64)]) -> Vec<u8> {
+/// The binding of a DM's text group: no community, the DM's channel id as the target.
+pub fn dm_binding(channel: [u8; 16]) -> DillaBinding {
+    DillaBinding {
+        community_id: None,
+        ..text_binding(channel)
+    }
+}
+
+/// `welcomes_apply`'s `expected` with a nullable community.
+#[allow(clippy::type_complexity)] // The fixture names each position at its call sites.
+pub fn expected_entries(entries: &[([u8; 16], Option<[u8; 16]>, [u8; 16], u64)]) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(entries.len());
     for (group, community, channel, policy) in entries {
         e.array(4)
             .bytes(group)
-            .bytes(community)
+            .opt_bytes(community.as_ref().map(|c| c.as_slice()))
             .bytes(channel)
             .uint(*policy);
     }
     e.into_vec()
 }
 
+#[allow(clippy::type_complexity)] // The fixture names each byte-array position at its call sites.
+pub fn expected_body(entries: &[([u8; 16], [u8; 16], [u8; 16], u64)]) -> Vec<u8> {
+    expected_entries(
+        &entries
+            .iter()
+            .map(|(g, c, ch, p)| (*g, Some(*c), *ch, *p))
+            .collect::<Vec<_>>(),
+    )
+}
+
 // ---------------------------------------------------------------------------------------------
 // What ClientCore returns, decoded.
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Activity {
+    pub group_id: [u8; 16],
+    pub unread: u64,
+    pub mentions: u64,
+    pub last_seq: u64,
+    pub last_ts: u64,
+    pub last_read_seq: u64,
+}
+
+pub fn activity(core: &ClientCore) -> Vec<Activity> {
+    let bytes = core.activity().expect("activity");
+    decode_strict(&bytes, |d| {
+        let n = d.array_len()?;
+        let mut rows = Vec::with_capacity(n);
+        for _ in 0..n {
+            d.array(6)?;
+            rows.push(Activity {
+                group_id: d.bytes_exact::<16>()?,
+                unread: d.uint()?,
+                mentions: d.uint()?,
+                last_seq: d.uint()?,
+                last_ts: d.uint()?,
+                last_read_seq: d.uint()?,
+            });
+        }
+        Ok(rows)
+    })
+    .expect("activity shape")
+}
+
+pub fn settings_of(core: &ClientCore) -> Vec<(String, String)> {
+    let bytes = core.settings().expect("settings");
+    decode_strict(&bytes, |d| {
+        let n = d.array_len()?;
+        let mut rows = Vec::with_capacity(n);
+        for _ in 0..n {
+            d.array(2)?;
+            rows.push((d.text()?.to_owned(), d.text()?.to_owned()));
+        }
+        Ok(rows)
+    })
+    .expect("settings shape")
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupRow {
@@ -409,12 +475,22 @@ impl Core {
 
     /// group_create → POST /v1/groups → group_registered.
     pub fn create_and_register(&mut self, relay: &mut Relay, instance: &Instance) {
+        self.create_and_register_in(relay, instance, Some(&COMMUNITY), &CHANNEL);
+    }
+
+    pub fn create_and_register_in(
+        &mut self,
+        relay: &mut Relay,
+        instance: &Instance,
+        community: Option<&[u8; 16]>,
+        channel: &[u8; 16],
+    ) {
         let body = self
             .core
             .group_create(
                 &relay.group_id,
-                &COMMUNITY,
-                &CHANNEL,
+                community,
+                channel,
                 POLICY,
                 &instance.public(),
             )
@@ -433,12 +509,21 @@ impl Core {
 
     /// group_join_external → POST /v1/groups/{id}/resync → group_joined.
     pub fn join_external(&mut self, relay: &mut Relay) {
+        self.join_external_in(relay, Some(&COMMUNITY), &CHANNEL);
+    }
+
+    pub fn join_external_in(
+        &mut self,
+        relay: &mut Relay,
+        community: Option<&[u8; 16]>,
+        channel: &[u8; 16],
+    ) {
         let body = self
             .core
             .group_join_external(
                 &relay.group_id,
-                &COMMUNITY,
-                &CHANNEL,
+                community,
+                channel,
                 POLICY,
                 &relay.info_body(),
                 &relay.tree_body(),
@@ -1090,11 +1175,15 @@ impl RawPeer {
 
     /// Uploads one text message; answers its seq.
     pub fn send(&mut self, relay: &mut Relay, body: &str) -> u64 {
+        self.send_typed(relay, EnvelopeType::Message, body)
+    }
+
+    pub fn send_typed(&mut self, relay: &mut Relay, kind: EnvelopeType, body: &str) -> u64 {
         let group = self.group.as_mut().expect("created");
         let envelope = Envelope {
             v: 1,
             msg_id: MsgId::from_bytes([0x5a; 16]),
-            kind: EnvelopeType::Message,
+            kind,
             thread_id: None,
             reply_to: None,
             body: body.to_owned(),

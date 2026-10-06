@@ -8,7 +8,7 @@ use super::groups::{
 };
 use super::messages::{
     REASON_OWN_UNKNOWN, REASON_PRUNED, REASON_SENDER_MISMATCH, STATUS_CANNOT_DECRYPT,
-    STATUS_DELETED, STATUS_OK, StoredMessage, insert_message,
+    STATUS_DELETED, STATUS_OK, StoredMessage, insert_message, mentions_me,
 };
 use super::{ClientCore, ClientError, Own, wire};
 use crate::cbor::Encoder;
@@ -48,6 +48,7 @@ fn empty_message<'a>(
         body: "",
         envelope: None,
         franking_tag: &row.franking_tag,
+        mention: false,
     }
 }
 fn own_message<'a>(
@@ -75,6 +76,7 @@ fn own_message<'a>(
         body: &env.body,
         envelope: Some(bytes),
         franking_tag: &row.franking_tag,
+        mention: false,
     }
 }
 /// Raises `app_groups.max_epoch` (the F6 floor of a rejoin) to `epoch`, a newly held epoch.
@@ -611,6 +613,9 @@ impl ClientCore {
                                             body: &r.envelope.body,
                                             envelope: bytes.as_deref(),
                                             franking_tag: &m.franking_tag,
+                                            mention: r.envelope.kind.as_u8() == 0
+                                                && mentions_me(&r.envelope.body, &own.user_id)
+                                                && r.sender.user_id.as_bytes() != &own.user_id,
                                         };
                                         insert_message(c, &msg)?;
                                     } else {

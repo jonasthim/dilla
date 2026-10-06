@@ -393,8 +393,10 @@ route is `E`.
   non-participant. A group DM's `channel_id` is random, because its membership changes.
 - A DM's `text` and `call` groups are registered by a participant (`02` invariant 1) with a
   binding whose `community_id` is null and whose `target_id` is the `channel_id`; the instance
-  proposes the `Add` of every other participant's devices (below), and a participant's own client
-  may add them itself (`02` invariant 4).
+  proposes the `Add` of every other participant's devices (below). A participant's client never
+  `Add`s anyone to a DM's `text` group (`01` "Client policy for proposals from members"): a device
+  enters it by the Welcome of the commit that carries the instance's `Add`, or by its own external
+  commit.
 - The member routes set a **group DM**'s participants; any participant may add or remove any
   other, and themself. A 1:1 DM's pair is fixed, and a community channel's membership follows its
   permissions: `PUT` and `DELETE` on either are `403 E_FORBIDDEN`. `GET` lists a community
