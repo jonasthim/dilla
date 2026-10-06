@@ -153,9 +153,10 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		if kind == 0 {
 			if err := tx.InsertBackup(ctx, row); errors.Is(err, store.ErrConflict) {
 				return errRootStored
-			} else {
+			} else if err != nil {
 				return err
 			}
+			return d.withinQuota(ctx, tx, sess.UserID)
 		}
 		prev, err := tx.GetBackup(ctx, sess.UserID, 1, id.ID{}, 0)
 		if errors.Is(err, store.ErrNotFound) {
@@ -166,6 +167,10 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusOK
 		}
 		if err := tx.PutBackup(ctx, row); err != nil {
+			return err
+		}
+		// After the upsert, so the replaced object has left the count and a replacement nets out.
+		if err := d.withinQuota(ctx, tx, sess.UserID); err != nil {
 			return err
 		}
 		if prev.BlobID != nil && !bytes.Equal(prev.BlobID, blobID) {
@@ -192,6 +197,10 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		if created {
 			d.orphanBackup(ctx, blobID, n, now)
 		}
+		if errors.Is(err, errQuota) {
+			server.WriteError(w, errStorageFull())
+			return
+		}
 		if errors.Is(err, errRootStored) {
 			existing, readErr := d.Repo.GetBackup(ctx, sess.UserID, 0, id.ID{}, 0)
 			if readErr != nil {
@@ -209,6 +218,24 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.write(w, r, status, []any{blobID, uint64(n)}) //nolint:gosec // G115: n is a nonnegative byte count
+}
+
+// withinQuota is the blob route's exact quota check, run inside the transaction that records the
+// object: backup objects count toward blobs.quota_bytes_per_user with the user's attachments, each
+// distinct blob once (store.UserBlobBytes).
+func (d Deps) withinQuota(ctx context.Context, tx store.Repository, userID id.ID) error {
+	quota := d.Config.Blobs.QuotaBytesPerUser
+	if quota <= 0 {
+		return nil
+	}
+	used, err := tx.UserBlobBytes(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if used > quota {
+		return errQuota
+	}
+	return nil
 }
 
 func (d Deps) orphanBackup(ctx context.Context, blobID []byte, n, now int64) {

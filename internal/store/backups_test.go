@@ -122,6 +122,58 @@ func TestBackupRefersToBlobSeesEveryKindAndUser(t *testing.T) {
 	}
 }
 
+// Boundary ruling 2 (task 6 scan): blobs.quota_bytes_per_user counts the user's backup objects
+// with their attachments, each distinct blob once; a replaced state object drops out of the count
+// with its row, and another user's objects never count.
+func TestUserBlobBytesCountsTheUsersBackupObjects(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			ch := seedChannel(ctx, t, repo)
+			user, other := seedUser(ctx, t, repo).ID, seedUser(ctx, t, repo).ID
+			dev := seedDevice(ctx, t, repo, user)
+			var none id.ID
+			for b, size := range map[byte]uint64{0x71: 103, 0x72: 137, 0x73: 200, 0x74: 1000} {
+				if err := repo.PutBlob(ctx, store.BlobRow{BlobID: digest(b), Size: size, StorageRef: "fs:x", Created: 1}); err != nil {
+					t.Fatalf("PutBlob %x: %v", b, err)
+				}
+			}
+			want := func(what string, u id.ID, n int64) {
+				t.Helper()
+				if used, err := repo.UserBlobBytes(ctx, u); err != nil || used != n {
+					t.Fatalf("%s: UserBlobBytes = %d, %v; want %d", what, used, err, n)
+				}
+			}
+			if err := repo.InsertBackup(ctx, store.BackupRow{UserID: user, Kind: 0, DeviceID: none, BlobID: digest(0x71), Created: 2}); err != nil {
+				t.Fatalf("InsertBackup: %v", err)
+			}
+			if err := repo.PutBackup(ctx, store.BackupRow{UserID: user, Kind: 1, DeviceID: none, BlobID: digest(0x72), Created: 2}); err != nil {
+				t.Fatalf("PutBackup: %v", err)
+			}
+			want("root and state", user, 240)
+			if err := repo.PutBlobRef(ctx, digest(0x74), ch, dev, "", 3); err != nil {
+				t.Fatalf("PutBlobRef: %v", err)
+			}
+			want("root, state and an attachment", user, 1240)
+			if err := repo.PutBackup(ctx, store.BackupRow{UserID: user, Kind: 1, DeviceID: none, BlobID: digest(0x73), Created: 4}); err != nil {
+				t.Fatalf("PutBackup replace: %v", err)
+			}
+			want("the replaced state drops out", user, 1303)
+			// The same bytes as an attachment and as the state object count once.
+			if err := repo.PutBackup(ctx, store.BackupRow{UserID: user, Kind: 1, DeviceID: none, BlobID: digest(0x74), Created: 5}); err != nil {
+				t.Fatalf("PutBackup the attachment's bytes: %v", err)
+			}
+			want("a blob named twice counts once", user, 1103)
+			want("another user before any object", other, 0)
+			if err := repo.PutBackup(ctx, store.BackupRow{UserID: other, Kind: 1, DeviceID: none, BlobID: digest(0x71), Created: 6}); err != nil {
+				t.Fatalf("PutBackup other: %v", err)
+			}
+			want("another user's state", other, 103)
+			want("the first user, unchanged by another user's state", user, 1103)
+		})
+	}
+}
+
 // L-SQL-21's guard: ListCollectableBlobs never lists a blob a backups row names, whatever its
 // unref_since. The control blob, marked the same way and named by no backup, is listed.
 func TestABackupBlobIsNeverCollectable(t *testing.T) {

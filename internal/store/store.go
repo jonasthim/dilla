@@ -573,6 +573,8 @@ type Blobs interface {
 	DeleteBlob(ctx context.Context, blobID []byte) error
 	PutBlobTombstone(ctx context.Context, blobID []byte, reason string, by id.ID, at int64) error
 	GetBlobTombstone(ctx context.Context, blobID []byte) (bool, error)
+	// UserBlobBytes is what blobs.quota_bytes_per_user bounds: the size of each distinct blob the
+	// user references from any device or names in one of their backups rows, counted once.
 	UserBlobBytes(ctx context.Context, userID id.ID) (int64, error)
 	// UserReferencesBlob reports whether the user already references the blob in any channel,
 	// that is, whether its bytes already count toward their quota (M3).

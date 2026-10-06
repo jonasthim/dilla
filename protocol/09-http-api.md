@@ -533,7 +533,8 @@ are CBOR as everywhere else.
   are `410 E_PRUNED`, because content addressing would otherwise hand the removed name straight
   back.
 - **Quota.** `blobs.quota_bytes_per_user` bounds the ciphertext bytes of the distinct blobs a user
-  references, from any of their devices; a blob in several channels counts once. An upload that
+  references, from any of their devices, and of their backup objects (§ Backups); a blob in several
+  channels counts once. An upload that
   would pass it is `507 E_STORAGE_FULL`, and so is any upload once it is reached; an upload that
   announces a `Content-Length` taking the user past the quota is refused before its body is read.
   `blobs.store_max_bytes` bounds the whole instance the same way (every stored blob counts,
@@ -594,8 +595,11 @@ object under `SHA-256(object)` in its blob store and cannot open it.
 - **The state object is replaced.** Each `PUT` of kind `1` replaces it; the replaced bytes are
   unlinked once `blobs.gc_grace` has passed, unless they are stored again first.
 - **Storage.** Backup objects count against `blobs.store_max_bytes` (new bytes that would pass it
-  are `507 E_STORAGE_FULL` and nothing is stored) and never against `blobs.quota_bytes_per_user`.
-  An object whose bytes an instance administrator removed (§ Admin) is `410 E_PRUNED` and nothing
+  are `507 E_STORAGE_FULL` and nothing is stored) and toward the uploader's
+  `blobs.quota_bytes_per_user` together with their attachments, each distinct blob once (§ Blobs);
+  an upload that would take the user past it is `507 E_STORAGE_FULL` and the stored object stays.
+  A replaced state object leaves the count, so replacing it with one of the same size never passes
+  the quota. An object whose bytes an instance administrator removed (§ Admin) is `410 E_PRUNED` and nothing
   is stored, as for a blob: content addressing would otherwise hand the removed name straight back.
 - **Pending.** The two reads admit a `pending` session (`02` § Device sessions item 4), so a
   device entering the recovery key reads both objects before it holds a credential; `PUT` and

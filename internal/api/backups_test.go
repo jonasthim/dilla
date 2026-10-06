@@ -397,19 +397,18 @@ func TestTheBodyCapsAndTheObjectShape(t *testing.T) {
 	}
 }
 
-// L-HTTP-50: backup bytes count against blobs.store_max_bytes and never against the user quota.
-// Attacker: another user can fill the instance store with attachments (each bounded by
-// quota_bytes_per_user) and so fail an honest user's upload; the client keeps its objects and
-// retries, and no user can spend another user's quota through backups.
-func TestBackupsCountAgainstTheInstanceStoreButNotTheUserQuota(t *testing.T) {
+// L-HTTP-50: backup bytes count against blobs.store_max_bytes (and, by boundary ruling 2, against
+// the uploader's quota: TestBackupsCountTowardTheUploadersQuota). Attacker: another user can fill
+// the instance store with attachments (each bounded by quota_bytes_per_user) and so fail an honest
+// user's upload; the client keeps its objects and retries.
+func TestBackupsCountAgainstTheInstanceStore(t *testing.T) {
 	h, d := newBackupAPI(t, func(c *config.Config) {
 		c.Blobs.StoreMaxBytes = 200
-		c.Blobs.QuotaBytesPerUser = 1
 	})
 	s := backupSessions(t, d)
 	ctx := t.Context()
 	root := rootObject(t, 0x81)
-	wantStored(t, "a 103-byte root under a 200-byte store and a 1-byte quota", putObject(t, h, "0", s.enrolled, root), http.StatusCreated, root)
+	wantStored(t, "a 103-byte root under a 200-byte store", putObject(t, h, "0", s.enrolled, root), http.StatusCreated, root)
 
 	state := sealedObject(t, 120, 0x82) // 137 bytes: 103 + 137 > 200
 	wantRefusal(t, "a state that overflows the store", putObject(t, h, "1", s.enrolled, state), http.StatusInsufficientStorage, "E_STORAGE_FULL")
@@ -424,6 +423,67 @@ func TestBackupsCountAgainstTheInstanceStoreButNotTheUserQuota(t *testing.T) {
 	wantStored(t, "the stored root again (no new bytes)", putObject(t, h, "0", s.enrolled, root), http.StatusOK, root)
 	small := sealedObject(t, 60, 0x83) // 77 bytes: 103 + 77 <= 200
 	wantStored(t, "a state that fits", putObject(t, h, "1", s.enrolled, small), http.StatusCreated, small)
+}
+
+// Boundary ruling 2 (task 6 scan): backup objects count toward the uploader's
+// blobs.quota_bytes_per_user with their attachments, each distinct blob once, and a refusal is the
+// blob route's 507 E_STORAGE_FULL. A replaced state object leaves the count with its row, so
+// replacing it at the quota nets out. Attacker: before this, backups counted only against the
+// instance-wide store_max_bytes, so one user could fill the instance through state replacements
+// alone; now each user's own quota bounds what their sessions store. Only the user's own enrolled
+// sessions reach the route, so no one can spend another user's quota.
+func TestBackupsCountTowardTheUploadersQuota(t *testing.T) {
+	h, d := newBackupAPI(t, func(c *config.Config) {
+		c.Blobs.QuotaBytesPerUser = 240
+	})
+	s := backupSessions(t, d)
+	ctx := t.Context()
+	used := func(what string, want int64) {
+		t.Helper()
+		if n, err := d.Repo.UserBlobBytes(ctx, s.user.ID); err != nil || n != want {
+			t.Fatalf("%s: UserBlobBytes = %d, %v; want %d", what, n, err, want)
+		}
+	}
+	root := rootObject(t, 0x91)
+	wantStored(t, "a root under the quota", putObject(t, h, "0", s.enrolled, root), http.StatusCreated, root)
+	used("after the root", 103)
+	s1 := sealedObject(t, 120, 0x92) // 137 bytes: 103 + 137 = 240, exactly the quota
+	wantStored(t, "a state that reaches the quota", putObject(t, h, "1", s.enrolled, s1), http.StatusCreated, s1)
+	used("at the quota", 240)
+
+	s2 := sealedObject(t, 120, 0x93) // the same size: the replacement nets out
+	wantStored(t, "a same-size replacement at the quota", putObject(t, h, "1", s.enrolled, s2), http.StatusOK, s2)
+	used("after a replacement", 240)
+
+	big := sealedObject(t, 121, 0x94) // 138 bytes: 103 + 138 > 240
+	wantRefusal(t, "a replacement past the quota", putObject(t, h, "1", s.enrolled, big), http.StatusInsufficientStorage, "E_STORAGE_FULL")
+	used("after the refusal", 240)
+	rec := backupReq(t, h, http.MethodGet, "/v1/backups/1/0", s.enrolled, nil)
+	if out := cborArray(t, rec); rec.Code != http.StatusOK || len(out) != 2 || !bytes.Equal(out[0].([]byte), s2) {
+		t.Fatalf("the state after a refused replacement = %d %v, want s2 unchanged", rec.Code, out)
+	}
+	// The refused bytes were written before the exact check: an orphan, marked for the sweeper and
+	// counted toward nobody's quota.
+	if row, err := d.Repo.GetBlob(ctx, objectID(big)); err != nil || row.UnrefSince == nil {
+		t.Fatalf("the refused state's blobs row = %+v, %v; want it marked unreferenced", row, err)
+	}
+
+	// Another user at zero is under the quota; the first user's objects are not theirs.
+	other := backupSessions(t, d)
+	wantStored(t, "another user's root", putObject(t, h, "0", other.enrolled, rootObject(t, 0x95)), http.StatusCreated, rootObject(t, 0x95))
+	if n, err := d.Repo.UserBlobBytes(ctx, other.user.ID); err != nil || n != 103 {
+		t.Fatalf("the other user's count = %d, %v; want 103", n, err)
+	}
+
+	// A user whose quota is already spent is refused even a root.
+	full, fd := newBackupAPI(t, func(c *config.Config) {
+		c.Blobs.QuotaBytesPerUser = 102
+	})
+	fs := backupSessions(t, fd)
+	wantRefusal(t, "a root over the quota", putObject(t, full, "0", fs.enrolled, rootObject(t, 0x96)), http.StatusInsufficientStorage, "E_STORAGE_FULL")
+	if rows, err := fd.Repo.ListBackups(ctx, fs.user.ID, 0); err != nil || len(rows) != 0 {
+		t.Fatalf("root rows after a quota refusal = %+v, %v; want none", rows, err)
+	}
 }
 
 // wantNothingStored asserts that a refused PUT left no row, no blobs row and no file for object.

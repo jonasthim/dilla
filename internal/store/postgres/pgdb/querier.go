@@ -369,8 +369,9 @@ type Querier interface {
 	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error
 	UpdateWebauthnCredential(ctx context.Context, arg UpdateWebauthnCredentialParams) error
 	// The quota counts each distinct blob a user uploaded once, however many
-	// channels they published it into. SUM over BIGINT is NUMERIC on Postgres; the
-	// cast keeps it int64 like the SQLite twin.
+	// channels they published it into, and the user's own backup objects with them (dilla-web-2a
+	// boundary ruling 2): a replaced state object leaves the count with its row. SUM over BIGINT is
+	// NUMERIC on Postgres; the cast keeps it int64 like the SQLite twin.
 	UserBlobBytes(ctx context.Context, arg UserBlobBytesParams) (int64, error)
 	// Whether the user already references the blob in some channel, so the bytes already count
 	// toward their quota. COUNT, not EXISTS, for the reason GetBlobTombstone gives.

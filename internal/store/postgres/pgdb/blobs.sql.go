@@ -637,9 +637,12 @@ func (q *Queries) PutBlobTombstone(ctx context.Context, arg PutBlobTombstonePara
 const userBlobBytes = `-- name: UserBlobBytes :one
 SELECT CAST(COALESCE(SUM(b.size), 0) AS BIGINT) FROM blobs b
 WHERE b.blob_id IN (
-  SELECT DISTINCT r.blob_id FROM blob_refs r
+  SELECT r.blob_id FROM blob_refs r
   JOIN devices d ON d.id = r.uploader_device
   WHERE d.user_id = $1
+  UNION
+  SELECT k.blob_id FROM backups k
+  WHERE k.user_id = $1
 )
 `
 
@@ -648,8 +651,9 @@ type UserBlobBytesParams struct {
 }
 
 // The quota counts each distinct blob a user uploaded once, however many
-// channels they published it into. SUM over BIGINT is NUMERIC on Postgres; the
-// cast keeps it int64 like the SQLite twin.
+// channels they published it into, and the user's own backup objects with them (dilla-web-2a
+// boundary ruling 2): a replaced state object leaves the count with its row. SUM over BIGINT is
+// NUMERIC on Postgres; the cast keeps it int64 like the SQLite twin.
 func (q *Queries) UserBlobBytes(ctx context.Context, arg UserBlobBytesParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, userBlobBytes, arg.UserID)
 	var column_1 int64
