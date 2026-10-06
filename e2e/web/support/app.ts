@@ -8,8 +8,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, type BrowserContext, type Locator, type Page, type Worker } from '@playwright/test';
 import { test as persistentTest } from './persistent';
-import { WebDriver, type PeerEnrolled, type PeerSetup } from './driver';
-export type { PeerEnrolled, PeerSetup } from './driver';
+import { WebDriver, type PeerDm, type PeerEnrolled, type PeerSetup } from './driver';
+export type { PeerDm, PeerEnrolled, PeerOpenedDm, PeerSetup } from './driver';
 import { runAxe } from './axe';
 import { arr, decode } from '../../../packages/client-core/src/cbor/index';
 import { en } from '../../../packages/web/src/strings/en';
@@ -133,23 +133,23 @@ export class Peer {
     return s;
   }
 
-  register(): Promise<{ group_id: string; epoch: number }> { return this.driver.request('register', {}); }
-  send(body: string): Promise<{ seq: number }> { return this.driver.request('send', { body }); }
+  register(): Promise<{ group_id: string; epoch: number }> { return this.driver.register(); }
+  send(body: string, channelId?: string): Promise<{ seq: number }> { return this.driver.send(body, channelId); }
   /** L-E2E-01 `update`: drains and applies, then commits a self Update and answers the new epoch. */
-  update(): Promise<{ epoch: number }> { return this.driver.request('update', {}); }
+  update(): Promise<{ epoch: number }> { return this.driver.update(); }
   /** L-E2E-10 `enrol` through the driver's wrapper (driver.ts, this task). */
   enrol(): Promise<PeerEnrolled> { return this.driver.enrol(); }
   /** L-E2E-10 `revoke` through the driver's wrapper (driver.ts, this task). */
   revoke(deviceId: string): Promise<{ version: number }> { return this.driver.revoke(deviceId); }
 
-  async sync(): Promise<SyncAnswer> {
-    const answer = await this.driver.request<SyncAnswer>('sync', {});
+  async sync(channelId?: string): Promise<SyncAnswer> {
+    const answer = await this.driver.sync(channelId);
     this.inbox.push(...answer.received);
     return answer;
   }
 
-  async devices(): Promise<string[]> {
-    return (await this.driver.request<{ devices: string[] }>('members', {})).devices;
+  async devices(channelId?: string): Promise<string[]> {
+    return (await this.driver.members(channelId)).devices;
   }
 
   /** Syncs until a message with exactly this body has been decrypted, and returns it. */
@@ -164,14 +164,54 @@ export class Peer {
   }
 
   /** Syncs until the text group's roster holds `count` devices, and returns them. */
-  async waitForDevices(count: number): Promise<string[]> {
+  async waitForDevices(count: number, channelId?: string): Promise<string[]> {
     let devices: string[] = [];
     await expect.poll(async () => {
-      await this.sync();
-      devices = await this.devices();
+      await this.sync(channelId);
+      devices = await this.devices(channelId);
       return devices.length;
     }, { timeout: WAIT, intervals: [250, 500, 1000, 2000] }).toBe(count);
     return devices;
+  }
+
+  readonly dmInbox: PeerMessage[] = [];
+  async dms(): Promise<PeerDm[]> { return (await this.driver.dms()).dms; }
+  async waitForDm(channelId: string): Promise<PeerDm> {
+    let found: PeerDm | undefined;
+    await expect.poll(async () => {
+      found = (await this.dms()).find((d) => d.channel_id === channelId);
+      return found !== undefined;
+    }, { timeout: WAIT, intervals: [250, 500, 1000, 2000] }).toBe(true);
+    return found as PeerDm;
+  }
+  async openDm(userId: string): Promise<{ channelId: string; groupId: string; epoch: number; created: boolean }> {
+    const o = await this.driver.openDm(userId);
+    return { channelId: o.channel_id, groupId: o.group_id, epoch: o.epoch, created: o.created };
+  }
+  sendDm(channelId: string, body: string): Promise<{ seq: number }> { return this.driver.sendDm(channelId, body); }
+  async syncDm(channelId: string): Promise<PeerMessage[]> {
+    const answer = await this.driver.syncDm(channelId);
+    this.dmInbox.push(...answer.received);
+    return answer.received;
+  }
+  async waitForDmMembers(channelId: string, count: number): Promise<number> {
+    let members = 0;
+    await expect.poll(async () => {
+      const answer = await this.driver.syncDm(channelId);
+      this.dmInbox.push(...answer.received);
+      members = answer.members;
+      return members;
+    }, { timeout: WAIT, intervals: [250, 500, 1000, 2000] }).toBe(count);
+    return members;
+  }
+  async waitForDmMessage(channelId: string, body: string): Promise<PeerMessage> {
+    await expect.poll(async () => {
+      await this.syncDm(channelId);
+      return this.dmInbox.some((m) => m.body === body);
+    }, { timeout: WAIT, intervals: [250, 500, 1000, 2000] }).toBe(true);
+    const found = this.dmInbox.find((m) => m.body === body);
+    if (!found) throw new Error(`the peer never decrypted ${JSON.stringify(body)} in its DM`);
+    return found;
   }
 
   close(): Promise<void> { return this.driver.close(); }
@@ -560,4 +600,75 @@ export interface ManifestFile { path: string; sha256: string; size: number; }
 /** The manifest of the build the test host serves (-web-root packages/web/dist). */
 export function readManifest(): { v: number; files: ManifestFile[] } {
   return JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages', 'web', 'dist', 'dilla-manifest.json'), 'utf8')) as { v: number; files: ManifestFile[] };
+}
+
+// web-2a (task 22): the sidebar tabs, DMs, notifications.
+export function sidebarTab(page: Page, tab: 'channels' | 'dms'): Locator {
+  const label = copy(tab === 'channels' ? 'shell.tabs.channels' : 'shell.tabs.dms');
+  // A tab's name is its label, followed by its Pill's hidden count when it has one.
+  return page.getByRole('tablist', { name: copy('shell.tabs.label'), exact: true })
+    .getByRole('tab', { name: new RegExp(`^${escapeRegExp(label)}`) });
+}
+export function dmsNav(page: Page): Locator { return page.getByRole('navigation', { name: copy('shell.dms.label'), exact: true }); }
+/** The one message log on screen (a DM's log is named by the DM's name, which the spec does not fix). */
+export function dmLog(page: Page): Locator { return page.getByRole('log'); }
+export function dmComposer(page: Page): Locator { return page.locator(CLASS.composer).getByRole('textbox'); }
+
+export interface ShownNotification { title: string; body: string; tag: string; closed: boolean; }
+type Recorded = EventTarget & ShownNotification & { onclick: ((this: Recorded, e: Event) => unknown) | null; close(): void; click(): void };
+type RecorderWindow = Window & { __dillaNotifications: Recorded[]; __dillaPermissionRequests: number };
+
+/** Replaces window.Notification, before any page script runs, by a recorder that shows nothing: each
+ *  `new Notification(title, options)` returns a stand-in with `onclick` and `close()` and is recorded;
+ *  `permission` reads the browser's; `requestPermission` is counted and forwarded. An init script is
+ *  injected by the protocol, so the page's CSP does not govern it. Call before the first navigation. */
+export async function recordNotifications(context: BrowserContext): Promise<void> {
+  await context.addInitScript(() => {
+    const native = window.Notification;
+    const w = window as unknown as RecorderWindow;
+    w.__dillaNotifications = [];
+    w.__dillaPermissionRequests = 0;
+    const Recording = function (title: string, options?: NotificationOptions): Recorded {
+      const n = new EventTarget() as Recorded;
+      n.title = title;
+      n.body = options?.body ?? '';
+      n.tag = options?.tag ?? '';
+      n.closed = false;
+      n.onclick = null;
+      n.close = () => { n.closed = true; };
+      n.click = () => { const e = new Event('click'); n.onclick?.call(n, e); n.dispatchEvent(e); };
+      w.__dillaNotifications.push(n);
+      return n;
+    };
+    Object.defineProperty(Recording, 'permission', { get: () => native.permission });
+    Object.defineProperty(Recording, 'requestPermission', {
+      value: (...args: Parameters<typeof Notification.requestPermission>) => {
+        w.__dillaPermissionRequests += 1;
+        return native.requestPermission(...args);
+      },
+    });
+    Object.defineProperty(window, 'Notification', { value: Recording, configurable: true, writable: true });
+  });
+}
+export async function notificationsShown(page: Page): Promise<ShownNotification[]> {
+  return page.evaluate(() => (window as unknown as RecorderWindow).__dillaNotifications
+    .map((n) => ({ title: n.title, body: n.body, tag: n.tag, closed: n.closed })));
+}
+export async function permissionRequests(page: Page): Promise<number> {
+  return page.evaluate(() => (window as unknown as RecorderWindow).__dillaPermissionRequests);
+}
+/** What a click on the desktop notification does: the page's own onclick handler runs. */
+export async function clickNotification(page: Page, index: number): Promise<void> {
+  await page.evaluate((i) => { (window as unknown as RecorderWindow).__dillaNotifications[i].click(); }, index);
+}
+
+export type NotifyDefault = 'dmsMentions' | 'everything' | 'nothing';
+/** Settings → Notifications → the default; waits for the radio to be checked from the settings slice, then closes. */
+export async function setNotifyDefault(page: Page, mode: NotifyDefault): Promise<void> {
+  const dialog = await openSettings(page, 'notifications');
+  const radio = dialog.getByRole('radiogroup', { name: copy('notify.default.label'), exact: true })
+    .getByRole('radio', { name: copy(`notify.default.${mode}`), exact: true });
+  await radio.click();
+  await expect(radio).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
+  await closeSettings(page);
 }
