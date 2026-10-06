@@ -63,7 +63,9 @@ export function literalCopy(fileName: string, source: string): string[] {
 function sources(): string[] {
   const screens = join(SRC, 'screens');
   return [join(SRC, 'App.tsx'), join(SRC, 'main.tsx'),
-    ...readdirSync(screens).filter(f => f.endsWith('.tsx') && !f.endsWith('.test.tsx')).map(f => join(screens, f))];
+    ...readdirSync(screens, { withFileTypes: true, recursive: true })
+      .filter(e => e.isFile() && e.name.endsWith('.tsx') && !e.name.endsWith('.test.tsx'))
+      .map(e => join(e.parentPath, e.name))];
 }
 
 describe('copy lives in strings/en.ts', () => {
@@ -137,9 +139,8 @@ const FLOWS = join(SRC, '..', '..', '..', 'docs', 'design', 'flows');
 const FLOW_FILES = ['01-onboarding.md', '02-recovery-key.md', '03-sign-in.md'] as const;
 const COPY_HEADER = /^\|\s*key\s*\|\s*text\s*\|/;
 const COPY_ROW = /^\|\s*`([^`]+)`\s*\|\s*`([^`]*)`\s*\|/;
-// Key prefixes the flows quote before en.ts holds them: task 19 removes 'settings.' and 'devices.', task 20
-// removes 'shell.' and deletes this constant.
-const COPY_PENDING: readonly string[] = ['settings.', 'devices.', 'shell.'];
+// Key prefixes the flows quote before en.ts holds them: task 20 removes 'shell.' and deletes this constant.
+const COPY_PENDING: readonly string[] = ['shell.'];
 
 /** The [key, text] rows of every table in a flow document whose header starts `| key | text |`. */
 export function copyRows(source: string): { rows: [string, string][]; unparsed: string[] } {

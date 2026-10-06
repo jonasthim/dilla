@@ -41,6 +41,21 @@ describe('the copy rules', () => {
     expect(en['signin.error.required']).toBe('Fill in this field.');
     expect(Object.keys(en).filter(k => k.startsWith('signin.'))).toHaveLength(33);
   });
+  // Flow 03 as task 15 froze it (L-COPY-02): the count line has two forms, `devices.cap.one` and `devices.cap.other`, in
+  // place of the one `devices.cap`, so the settings rows are 62; the two buttons under the list are lower-case chrome.
+  it('names settings in lower case in the chrome and sentence case on its surfaces (Q14)', () => {
+    for (const k of ['settings.nav.devices', 'settings.nav.notifications', 'settings.nav.appearance', 'devices.revoke', 'devices.refresh',
+      'devices.signOut', 'devices.forget', 'notify.channel.default', 'notify.mute', 'appearance.theme.contrast'] as const) expect(en[k], k).toMatch(/^[a-z#]/);
+    for (const k of ['settings.title', 'devices.title', 'devices.revokeTitle', 'devices.removeUnlistedTitle', 'devices.signOutTitle',
+      'devices.forgetTitle', 'devices.keyLabel', 'notify.title', 'appearance.title', 'notify.channels.title'] as const) expect(en[k], k).toMatch(/^[A-Z]/);
+    expect(en['notify.title.channel']).toBe('#{channel} · {server}');
+    expect(en['devices.cap.other']).toBe('{n} devices');
+    expect(en['devices.cap.one']).toBe('one device');
+    expect(en['settings.error.other']).toBe('That did not work ({code}). Try again.');
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(62);
+    expect(Object.keys(en)).not.toContain('devices.error.other');
+    expect(Object.keys(en)).not.toContain('devices.cap');
+  });
 });
 
 describe('dates', () => {

@@ -1,2 +1,15 @@
 html, body { margin: 0; height: 100%; background: var(--bg); }
 #root { min-height: 100%; }
+
+/* Settings sections (task 19): tokens only. The 960x640 frame, the 220px navigation and the narrow layout are SettingsFrame's. */
+.dw-settings-section { display: flex; flex-direction: column; gap: var(--group-gap); }
+.dw-settings-section h2, .dw-settings-section h3 { margin: 0; }
+.dw-settings-section p { margin: 0; color: var(--fg-2); }
+.dw-device-list, .dw-notify-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--row-gap); }
+.dw-notify-list > li + li { border-top: 1px solid var(--hairline); padding-top: var(--row-gap); }
+/* Buttons and controls side by side keep the group gap: --row-gap is 0 at compact density, where they would touch. */
+.dw-settings-actions, .dw-notify-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--group-gap); }
+/* Flow 03: the two actions on this browser stand under a hairline. */
+.dw-settings-actions--below { border-top: 1px solid var(--hairline); padding-top: var(--group-gap); }
+/* Focused only by script (after a removal, or after the permission answer): no ring that reads as an error box (ruling 23(h)). */
+.dw-settings-heading[tabindex="-1"]:focus-visible, .dw-settings-answer[tabindex="-1"]:focus-visible { outline: none; }
