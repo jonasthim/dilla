@@ -209,9 +209,12 @@ function newGuard(projectName: string): Guard {
         });
       });
       context.on('console', (m) => {
-        // Chromium prints every 4xx/5xx response as "Failed to load resource: …"; the client answers
+        // Chromium and WebKit print every 4xx/5xx response as "Failed to load resource: …" (WebKit
+        // measured on CI's first run: the expired session's 401 of the reload spec); the client answers
         // 401, 404, 409 and 410 by design (L-TS-02, L-TS-06), so those lines are not errors of the app.
-        if (m.type() === 'error' && !(projectName === 'chromium-web' && m.text().startsWith('Failed to load resource:'))) {
+        // Firefox printed nothing for them and keeps the full guard.
+        const resourceLine = (projectName === 'chromium-web' || projectName === 'webkit-web') && m.text().startsWith('Failed to load resource:');
+        if (m.type() === 'error' && !resourceLine) {
           consoleErrors.push(m.text());
         }
       });
