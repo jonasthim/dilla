@@ -137,7 +137,11 @@ Client policy for proposals from members:
   satisfied (`02-delivery-service.md`, invariant 4).
 - `Add`: accept only in `pairing` (first join of the second leaf) and `interaction` groups (the
   user's device adding the bot device or a new own device); reject in `text` and `call` groups.
-- `GroupContextExtensions`, `ReInit`, `PreSharedKey`: reject.
+- `GroupContextExtensions`, `ReInit`, `PreSharedKey`: reject. dilla has no feature that changes a
+  group's context extensions after creation, so a `GroupContextExtensions` proposal is refused
+  standalone (before queueing) and in a commit, by value or by reference, whoever sent it, and the
+  group state is left unchanged; the DS refuses the same (`02-delivery-service.md`, invariant 4),
+  so a member cannot replace `external_senders` with a key the instance does not hold.
 
 External commits (RFC 9420 §12.4.3.2) are accepted in `text` and `call` groups for: joining a
 community's channels, adding a new device of an existing member, joining a call, and resyncing.

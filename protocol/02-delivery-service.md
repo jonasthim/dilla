@@ -337,7 +337,14 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    device is not revoked and is in its user's newest signed device list — the checks an external
    joiner's leaf passes, the ACL half being the registration gate above. Anything else is
    `400 E_INVALID_REQUEST` and nothing is stored. Every other member enters through a commit
-   (invariant 4) or an external join (invariant 5).
+   (invariant 4) or an external join (invariant 5). The group context's `external_senders`
+   extension must be the one `01-groups.md` § External senders gives the group's kind, because the
+   instance governs a group only through it (every external `Add` and `Remove` is verified against
+   it): a `text` or `call` group carries exactly one entry, whose `signature_key` is this instance's
+   current external-sender key (`external_sender_pub` of `GET /v1/instance`) and whose credential is
+   `basic` with the identity `[1, "instance", instance_id]` of this instance; a `pairing` or
+   `interaction` group carries none. Anything else is `400 E_BINDING_INVALID` and nothing is
+   stored. Heal's reseed (invariant 11) adopts an uploaded tree under the same rule.
 2. **Tree service.** The DS keeps a `PublicGroup` per group. Committers upload a GroupInfo
    **without** the ratchet tree; the DS serves the tree from its own `PublicGroup`, and a joiner
    MUST verify `tree_hash` in the GroupInfo against the served tree before joining.
@@ -361,7 +368,14 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    that changes either is refused on `POST /v1/groups/{id}/proposal` the same way, and neither is
    stored or fanned out; these refusals are `422 E_COMMIT_INVALID` with `rule = "structural"`,
    because the `PublicGroup`'s own processing refuses the message, except on an external commit,
-   where the rule is the joiner's, `rule = "external_joiner"`); every member-originated
+   where the rule is the joiner's, `rule = "external_joiner"`); it applies no
+   `GroupContextExtensions` proposal, by value or by reference, from any sender: a group's context
+   extensions never change after creation (`01-groups.md`, "Client policy for proposals from
+   members"), so its `external_senders` stays the one invariant 1 checked at registration (a
+   `422 E_COMMIT_INVALID` with `rule = "structural"`, refused by the `PublicGroup`'s own processing;
+   a member's standalone `GroupContextExtensions` proposal is refused on
+   `POST /v1/groups/{id}/proposal` the same way, and a heal's replayed tail that carries one is
+   refused with `rule = "tail"`, invariant 11); every member-originated
    `Remove` targets its proposer's
    own user (the committer's for a `Remove` the commit carries, the proposing member's for a member
    `Remove` proposal it references — how a member leaves, `01-groups.md`), the proposer being the
@@ -521,12 +535,14 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     credential's user, not revoked, keyed by its registered key, in its user's newest signed device
     list, its user eligible under the ACL; `422 E_COMMIT_INVALID` with `rule = "add_key_package"` or
     `"add_acl"`), and the tree may hold no leaf whose credential is no dilla identity
-    (`rule = "reseed"`). Two more conditions bind a reseed: the healing device must hold a leaf of
-    the group as the instance restored it (its own member record; otherwise `403 E_FORBIDDEN`, as
-    for any heal by a non-member), and the uploaded tree's `dilla_binding` must name the group the
+    (`rule = "reseed"`). Three more conditions bind a reseed: the healing device must hold a leaf
+    of the group as the instance restored it (its own member record; otherwise `403 E_FORBIDDEN`,
+    as for any heal by a non-member); the uploaded tree's `dilla_binding` must name the group the
     instance holds — the same `kind`, `community_id` and `target_id` as the binding stored with
-    the group (`rule = "reseed"`). The reseed does not bound which devices the tree holds beyond
-    that: the commits after the backup are already inside the uploaded tree. A device that is the target
+    the group (`rule = "reseed"`); and its `external_senders`, as the tree stands after the
+    replayed tail, must pass invariant 1's rule for the group's kind (`rule = "reseed"`). The
+    reseed does not bound which devices the tree holds beyond that: the commits after the backup
+    are already inside the uploaded tree. A device that is the target
     of an outstanding non-void DS `Remove` at the restored epoch, or that is quarantined, cannot
     heal (`403 E_FORBIDDEN`, as for a resync). The replay does not apply invariant 4's first clause
     or invariant 5 (the restored queue describes the backup's epoch); instead, after a heal that
@@ -643,7 +659,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | HTTP | code | meaning | client action |
 |---|---|---|---|
 | 400 | `E_INVALID_REQUEST` | malformed body, malformed identifier, wrong array length | do not retry unchanged |
-| 400 | `E_BINDING_INVALID` | `dilla_binding` absent, wrong version, or not matching the object | do not retry |
+| 400 | `E_BINDING_INVALID` | `dilla_binding` absent, wrong version, or not matching the object; or a registered group's `external_senders` not the one its kind carries (invariant 1) | do not retry |
 | 400 | `E_VERSION` | no version in common; the extra elements list what the instance supports | reconnect with a supported version, or tell the user to update |
 | 400 | `E_ENVELOPE_SHAPE` | the envelope is not a 9-element deterministic CBOR array, or a field has the wrong type or length | do not retry unchanged |
 | 400 | `E_ENVELOPE_TYPE` | the type byte names no envelope type this version knows | do not retry unchanged |
