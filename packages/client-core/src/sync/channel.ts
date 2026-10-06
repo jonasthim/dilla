@@ -103,7 +103,7 @@ function failOutbox(s: SyncInternals, g: Id, code: string): void {
   let changed = false;
   for (const r of s.deps.core.outbox(g)) {
     if (r.state === 2) continue;
-    s.deps.core.sendFail(r.msgId, code); s.count425.delete(toHex(r.msgId)); changed = true;
+    s.deps.core.sendFail(r.msgId, code); s.count425.delete(toHex(r.msgId)); s.reframedOnce.delete(`${hex}:${toHex(r.msgId)}`); changed = true;
   }
   if (changed) s.deps.onOutboxChanged(g);
 }

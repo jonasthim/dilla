@@ -24,6 +24,7 @@ export interface SyncInternals {
   echoWait: Map<string, { msgHex: string; timer: number }>;
   epochWait: Map<string, number>;
   count425: Map<string, number>;
+  reframedOnce: Set<string>;
   resyncTried: Set<string>;
   quiet: Set<string>;
 }

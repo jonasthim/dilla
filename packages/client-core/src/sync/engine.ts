@@ -45,6 +45,7 @@ export class SyncEngine implements SyncInternals {
   readonly echoWait = new Map<string, { msgHex: string; timer: number }>();
   readonly epochWait = new Map<string, number>();
   readonly count425 = new Map<string, number>();
+  readonly reframedOnce = new Set<string>();
   readonly resyncTried = new Set<string>();
   readonly quiet = new Set<string>();
   private expectedList: ExpectedGroup[] = [];
@@ -71,7 +72,7 @@ export class SyncEngine implements SyncInternals {
     this.isStopped = true;
     this.unsubscribe?.(); this.unsubscribe = null;
     for (const id of this.timers) this.deps.clearTimeout(id);
-    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.echoWait.clear();
+    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.echoWait.clear(); this.reframedOnce.clear();
     this.queues.clear();
     for (const wake of this.waiters) wake();
     this.waiters.clear();
@@ -246,6 +247,9 @@ export class SyncEngine implements SyncInternals {
     if (r.ownAdopted) {
       const rows = this.deps.core.outbox(g);
       for (const id of this.count425.keys()) if (!rows.some((x) => toHex(x.msgId) === id)) this.count425.delete(id);
+      for (const id of this.reframedOnce) {
+        if (id.startsWith(`${hex}:`) && !rows.some((x) => `${hex}:${toHex(x.msgId)}` === id && x.state !== 2)) this.reframedOnce.delete(id);
+      }
       this.deps.onOutboxChanged(g);
       const wait = this.echoWait.get(hex);
       if (wait !== undefined && !rows.some((x) => toHex(x.msgId) === wait.msgHex && x.state === 1)) {
