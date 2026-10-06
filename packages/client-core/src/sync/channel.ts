@@ -11,8 +11,14 @@ const groupKey = (g: Id): string => `g:${toHex(g)}`;
 const same = (a: Id, b: Id): boolean => toHex(a) === toHex(b);
 
 export async function judgeWelcomes(s: SyncInternals, outcomes: WelcomeOutcome[]): Promise<void> {
+  const reported = new Set<string>();
   for (const o of outcomes) {
-    if (o.outcome !== 0 && !(o.outcome === 1 && s.row(o.groupId)?.state === 2)) continue;
+    if (o.outcome === 3) {
+      const hex = toHex(o.groupId);
+      if (!reported.has(hex)) { reported.add(hex); s.deps.onUnexpectedWelcome(o.groupId); }
+      continue;
+    }
+    if (o.outcome === 1 && s.row(o.groupId)?.state !== 2) continue;
     try { await s.deps.routes.deleteWelcome(o.welcomeId); } catch { /* later poll can retry */ }
     if (o.outcome === 0) void s.queues.run(groupKey(o.groupId), () => s.activate(o.groupId)).catch(() => undefined);
   }
@@ -73,7 +79,6 @@ export async function resyncGroup(s: SyncInternals, g: Id, fromOpen: boolean): P
   s.resyncTried.add(hex);
   s.deps.onMembership(g, 'resyncing');
   try {
-    if (row.communityId === null) throw new SyncError('E_NO_COMMUNITY');
     await externalJoin(s, { groupId: g, communityId: row.communityId, channelId: row.targetId, policyVersion: s.deps.instance.policyVersion }, { joins: 0 });
     return true;
   } catch (e) {
@@ -103,11 +108,12 @@ function failOutbox(s: SyncInternals, g: Id, code: string): void {
   if (changed) s.deps.onOutboxChanged(g);
 }
 export async function openChannelFlow(
-  s: SyncInternals, ch: { communityId: Id; channelId: Id; textGroupId: Id | null },
+  s: SyncInternals, ch: { communityId: Id | null; channelId: Id; textGroupId: Id | null },
 ): Promise<{ groupId: Id; state: 0 | 1 | 2 | 3 | 4 }> {
   let textGroupId = ch.textGroupId;
   const budget = { joins: 0 };
   let registrations = 0;
+  if (ch.communityId === null && textGroupId === null) textGroupId = await dmGroupOf(s, ch.channelId);
   if (textGroupId !== null) s.addExpected({ groupId: textGroupId, communityId: ch.communityId, channelId: ch.channelId, policyVersion: s.deps.instance.policyVersion });
   for (;;) {
     if (s.stopped()) throw new SyncError('E_SYNC_STOPPED');
@@ -140,7 +146,10 @@ export async function openChannelFlow(
       if (s.row(textGroupId)?.state === 2) return { groupId: textGroupId, state: 2 };
       const eg = { groupId: textGroupId, communityId: ch.communityId, channelId: ch.channelId, policyVersion: s.deps.instance.policyVersion };
       try {
-        await s.queues.run(groupKey(textGroupId), () => externalJoin(s, eg, budget));
+        await s.queues.run(groupKey(textGroupId), async () => {
+          if (s.row(eg.groupId)?.state === 2) return;
+          await externalJoin(s, eg, budget);
+        });
         return { groupId: textGroupId, state: 2 };
       } catch (e) {
         if (e instanceof DillaHttpError && e.status === 425 && e.code === 'E_COMMIT_REQUIRED' && budget.joins < SYNC.commitRetryMax) {
@@ -168,11 +177,22 @@ export async function openChannelFlow(
       return { groupId: g, state: 2 };
     } catch (e) {
       if (!(e instanceof DillaHttpError && e.status === 409 && e.code === 'E_GROUP_EXISTS')) throw e;
-      const rows = await s.deps.routes.listChannels(ch.communityId);
-      const channel = rows.find((r) => same(r.id, ch.channelId));
-      if (channel === undefined) throw new SyncError('E_CHANNEL_GONE');
-      textGroupId = channel.textGroupId;
+      if (ch.communityId === null) textGroupId = await dmGroupOf(s, ch.channelId);
+      else {
+        const rows = await s.deps.routes.listChannels(ch.communityId);
+        const channel = rows.find((r) => same(r.id, ch.channelId));
+        if (channel === undefined) throw new SyncError('E_CHANNEL_GONE');
+        textGroupId = channel.textGroupId;
+      }
       if (textGroupId !== null) s.addExpected({ groupId: textGroupId, communityId: ch.communityId, channelId: ch.channelId, policyVersion: s.deps.instance.policyVersion });
     }
+  }
+}
+
+async function dmGroupOf(s: SyncInternals, channelId: Id): Promise<Id | null> {
+  try { return (await s.deps.routes.getChannel(channelId)).textGroupId; }
+  catch (e) {
+    if (e instanceof DillaHttpError && e.status === 404 && e.code === 'E_NOT_FOUND') throw new SyncError('E_CHANNEL_GONE');
+    throw e;
   }
 }

@@ -34,8 +34,22 @@ describe('constants and the through bound', () => {
   it('fixes the sync constants', () => {
     expect(SYNC).toEqual({
       handshakePage: 512, messagePage: 256, commitRetryMax: 5, commitJitterMs: 400, membershipWaitMs: 2000, echoWaitMs: 5000,
-      registerRetryMax: 3, cursorDebounceMs: 30000,
+      registerRetryMax: 3, cursorDebounceMs: 30000, joinAllConcurrency: 1, joinAllRetryMs: 60000,
     });
+  });
+
+  it('setChannels is setExpected under its web-1 name, and neither starts anything before a ready', async () => {
+    const d = device(ds, clock, ME);
+    const w = ds.peerCreate(PEER, CHANNEL_2);
+    const eg = [{ groupId: w, communityId: COMMUNITY, channelId: CHANNEL_2, policyVersion: 1n }];
+    d.engine.setChannels(eg);
+    expect(d.engine.expected()).toEqual(eg);
+    d.engine.setExpected([]);
+    expect(d.engine.expected()).toEqual([]);
+    d.engine.setExpected(eg);
+    await settle();
+    expect(ds.calls).toEqual([]);
+    expect(d.joinAll).toEqual([]);
   });
 
   // [name, message page (256), handshake page (512), carry, through]

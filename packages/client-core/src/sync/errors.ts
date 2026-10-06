@@ -1,4 +1,4 @@
-export type SyncErrorCode = 'E_SYNC_STOPPED' | 'E_REGISTER_RACE' | 'E_CHANNEL_GONE' | 'E_NO_COMMUNITY';
+export type SyncErrorCode = 'E_SYNC_STOPPED' | 'E_REGISTER_RACE' | 'E_CHANNEL_GONE';
 
 export class SyncError extends Error {
   readonly code: SyncErrorCode;

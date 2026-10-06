@@ -329,3 +329,75 @@ describe('opening a channel (rule 6)', () => {
     expect(coreCalls(d, r.groupId, ['groupJoinExternal'])).toEqual(['groupJoinExternal']);
   });
 });
+
+  describe('DMs: a null community (L-TS-22 rule 3, Q25)', () => {
+    const DM = idOf(0xd3, 1);
+    const openDm = (textGroupId: Id | null): Promise<{ groupId: Id; state: 0 | 1 | 2 | 3 | 4 }> =>
+      d.engine.openChannel({ communityId: null, channelId: DM, textGroupId });
+
+    beforeEach(() => {
+      ds.addDm(DM, [ME, PEER]);
+    });
+
+    it('registers the DM group with a null community when the DM has none', async () => {
+      const r = await openDm(null);
+      expect(r.state).toBe(2);
+      expect(d.core.group(r.groupId)).toMatchObject({ state: 2, communityId: null, targetId: DM });
+      expect(count('getChannel')).toBe(1);
+      expect(count('postGroup')).toBe(1);
+      expect(count('listChannels')).toBe(0);
+      expect((await ds.routesFor(PEER.device).getChannel(DM)).textGroupId).toEqual(r.groupId);
+    });
+
+    it('learns the DM group from getChannel and joins it by external commit when no Welcome waits', async () => {
+      const g = ds.peerCreate(PEER, DM);
+      expect(await openDm(null)).toEqual({ groupId: g, state: 2 });
+      await settle();
+      expect([count('getChannel'), count('getWelcomes'), count('postResync'), count('postGroup')]).toEqual([1, 1, 1, 0]);
+      expect(d.core.group(g)).toMatchObject({ state: 2, communityId: null, targetId: DM });
+    });
+
+    it('joins the DM by its waiting Welcome', async () => {
+      const g = ds.peerCreate(PEER, DM);
+      ds.detach(ME.device);
+      ds.peerCommit(g, PEER, [ME.device]);
+      ds.peerSend(g, PEER, 'dm hello');
+      ds.reattach(ME.device);
+      expect(await openDm(null)).toEqual({ groupId: g, state: 2 });
+      await settle();
+      expect(count('postResync')).toBe(0);
+      expect(count('deleteWelcome')).toBe(1);
+      expect(d.core.bodies(g)).toEqual(['dm hello']);
+    });
+
+    it('a lost DM registration race is re-read through getChannel, never listChannels', async () => {
+      const winners: Id[] = [];
+      ds.inject('postGroup', {
+        before: () => {
+          winners.push(ds.peerCreate(PEER, DM));
+        },
+      });
+      const r = await openDm(null);
+      expect(r).toEqual({ groupId: at(winners, 0), state: 2 });
+      expect(count('getChannel')).toBe(2);
+      expect(count('listChannels')).toBe(0);
+      expect(count('postResync')).toBe(1);
+    });
+
+    it('a DM the instance does not show is E_CHANNEL_GONE and registers nothing', async () => {
+      const err: unknown = await d.engine.openChannel({ communityId: null, channelId: idOf(0xd3, 9), textGroupId: null }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(SyncError);
+      expect(err).toMatchObject({ code: 'E_CHANNEL_GONE' });
+      expect(count('postGroup')).toBe(0);
+    });
+
+    it('a DM group resyncs with its null community', async () => {
+      const r = await openDm(null);
+      await settle();
+      ds.garbageCommit(r.groupId);
+      await settle();
+      expect(d.membership).toEqual([{ group: toHex(r.groupId), status: 'resyncing' }]);
+      expect(count('postResync')).toBe(1);
+      expect(d.core.group(r.groupId)).toMatchObject({ state: 2, communityId: null });
+    });
+  });

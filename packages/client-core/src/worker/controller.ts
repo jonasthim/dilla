@@ -361,6 +361,8 @@ export class Controller {
         onGroupChanged: (g, result) => { this.onGroupChanged(g, result); },
         onOutboxChanged: (g) => { this.safely(() => { this.touchGroup(g); }); },
         onMembership: (g, status) => { this.onMembership(g, status); },
+        onJoinAll: () => undefined,
+        onUnexpectedWelcome: () => undefined,
       });
       this.sync = sync;
       // Pre-flight ruling 2: the engine subscribes before the gateway can report its first ready.
