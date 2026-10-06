@@ -175,13 +175,13 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("PATCH /v1/accounts/me", d.enrolled(d.PatchMe))
 	m.Handle("DELETE /v1/accounts/me", d.enrolled(d.DeleteMe))
 
-	// Devices. POST /v1/devices also accepts a `pending` session: a device
-	// enrolled through a host login holds one until it is paired.
-	m.Handle("POST /v1/devices", d.scoped(d.CreateDevice, auth.ScopePending))
+	// Devices. POST /v1/devices is enrolled only. The enrolling browser registers inside
+	// establish; while pending it reads and publishes only its own device list.
+	m.Handle("POST /v1/devices", d.enrolled(d.CreateDevice))
 	m.Handle("GET /v1/devices", d.enrolled(d.ListDevices))
 	m.Handle("DELETE /v1/devices/{device_id}", d.enrolled(d.DeleteDevice))
-	m.Handle("PUT /v1/users/{user_id}/device-list", d.enrolled(d.PutDeviceList))
-	m.Handle("GET /v1/users/{user_id}/device-list", d.enrolled(d.GetDeviceList))
+	m.Handle("PUT /v1/users/{user_id}/device-list", d.scoped(dsMeter(d.Limiter, dsClassWrite, d.PutDeviceList), auth.ScopePending))
+	m.Handle("GET /v1/users/{user_id}/device-list", d.scoped(dsMeter(d.Limiter, dsClassRead, d.GetDeviceList), auth.ScopePending))
 
 	// Backups (protocol/09 § Backups; C14, F3, Q27). Mounted here and not through SessionRoute,
 	// because the two reads admit a pending session (protocol/02 § Device sessions item 4): a device

@@ -195,6 +195,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 		ownsBlobs = true
 	}
+	deviceLists := ds.NewDeviceLists(o.Repo, wasm)
+	sessions.DeviceLists = deviceListGate{lists: deviceLists}
 
 	// The gateway, then the delivery service: ds holds *gateway.Gateway, and
 	// the gateway calls back into ds for ready's per-group digest and for
@@ -259,7 +261,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Channels: channels,
 		ACL:      acl,
 		// The device lists are verified in the guest (NV-B8, deviation B32).
-		DeviceLists: ds.NewDeviceLists(o.Repo, wasm),
+		DeviceLists: deviceLists,
 		// A fork-quarantined device is queued to be cut from every live call; the hook only enqueues,
 		// so the fork-report path never waits on the SFU (dilla-media task 10).
 		OnQuarantine: cutFromCalls,
@@ -658,4 +660,17 @@ func generationHeader(next http.Handler, generation uint64) http.Handler {
 		w.Header().Set("X-Dilla-Generation", value)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// deviceListGate is auth.DeviceLister over the delivery service's device lists: the session
+// gate of protocol/02 § Device sessions item 4 and invariant 4's DSK clause read the same newest
+// list through the same guest decoder, so they cannot disagree about which devices a user listed.
+type deviceListGate struct{ lists ds.DeviceLists }
+
+func (g deviceListGate) ListedKeys(ctx context.Context, userID id.ID) ([][]byte, error) {
+	keys, err := g.lists.Entries(ctx, nil, userID)
+	if errors.Is(err, ds.ErrNoDeviceList) {
+		return nil, auth.ErrNoDeviceList
+	}
+	return keys, err
 }

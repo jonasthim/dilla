@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -102,6 +103,9 @@ func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler
 	if err := repo.CreateInstance(context.Background(), instance); err != nil {
 		t.Fatalf("CreateInstance: %v", err)
 	}
+	sessions := auth.NewSessions(repo, clk, cfg.Auth.Session, instance.InstanceID, instance.Generation)
+	sessions.DeviceLists = &testLister{keys: map[id.ID][][]byte{}}
+
 	deps := api.Deps{
 		Repo:         repo,
 		Clock:        clk,
@@ -111,12 +115,11 @@ func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler
 		Domain:       cfg.Instance.Domain,
 		Config:       cfg,
 		Registration: cfg.Registration,
-		Sessions: auth.NewSessions(repo, clk, cfg.Auth.Session, instance.InstanceID,
-			instance.Generation),
-		Hasher:     testHasher{},
-		Throttle:   auth.NewThrottle(cfg.Limits.Rate, cfg.Auth.Lockout, clk),
-		Assertions: api.NewAssertions(clk, api.AssertionTTL),
-		Blobs:      bs,
+		Sessions:     sessions,
+		Hasher:       testHasher{},
+		Throttle:     auth.NewThrottle(cfg.Limits.Rate, cfg.Auth.Lockout, clk),
+		Assertions:   api.NewAssertions(clk, api.AssertionTTL),
+		Blobs:        bs,
 	}
 	deps.Sessions.Assertions = deps.Assertions
 	m := server.NewMux()
@@ -232,4 +235,38 @@ func postCBORAuth(h http.Handler, path string, body []byte, token string) *httpt
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// testLister is the device-list gate the api tests run behind: a user it has no keys for has
+// published no list (the no-list clause, so every seeded device establishes enrolled, exactly as
+// web-1's fixtures always did), and a test lists a user's keys to drive the listed and unlisted
+// branches of protocol/02 § Device sessions item 4.
+type testLister struct {
+	mu   sync.Mutex
+	keys map[id.ID][][]byte
+}
+
+func (l *testLister) ListedKeys(_ context.Context, user id.ID) ([][]byte, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	keys, ok := l.keys[user]
+	if !ok {
+		return nil, auth.ErrNoDeviceList
+	}
+	return keys, nil
+}
+
+func (l *testLister) list(user id.ID, keys ...[]byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.keys[user] = keys
+}
+
+func listerOf(t *testing.T, d api.Deps) *testLister {
+	t.Helper()
+	l, ok := d.Sessions.DeviceLists.(*testLister)
+	if !ok {
+		t.Fatalf("Sessions.DeviceLists is %T, want the harness's *testLister", d.Sessions.DeviceLists)
+	}
+	return l
 }

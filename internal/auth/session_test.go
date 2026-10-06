@@ -9,10 +9,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +25,8 @@ import (
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
@@ -57,7 +61,11 @@ func newSessions(t *testing.T) (*auth.Sessions, store.Repository, *clock.Fake) {
 	t.Cleanup(func() { repo.Close() })
 	authDBPaths[repo] = path
 	clk := clock.NewFake(time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC))
-	return auth.NewSessions(repo, clk, config.Default().Auth.Session, id.New(), 7), repo, clk
+	s := auth.NewSessions(repo, clk, config.Default().Auth.Session, id.New(), 7)
+	// The device-list gate of protocol/02 § Device sessions item 4: a user the lister has no entry
+	// for has published no list, which is the no-list clause every fixture here relies on.
+	s.DeviceLists = newStaticLister()
+	return s, repo, clk
 }
 
 // seedDevice creates a user and one native device, and returns the device's
@@ -105,13 +113,26 @@ func corruptDSKPub(repo store.Repository, device id.ID, n int) error {
 // fakeAssertions is the enrolment-assertion store Sessions spends on the
 // pending path. The concrete type lives in internal/api (task 9); Sessions
 // takes the one-method interface, so a test needs no import cycle.
-type fakeAssertions struct{ items map[string]id.ID }
+type fakeAssertions struct {
+	items map[string]id.ID
+	needs map[string]bool // tokens still waiting for their second factor
+}
 
-func newFakeAssertions() *fakeAssertions { return &fakeAssertions{items: map[string]id.ID{}} }
+func newFakeAssertions() *fakeAssertions {
+	return &fakeAssertions{items: map[string]id.ID{}, needs: map[string]bool{}}
+}
 
 func (f *fakeAssertions) issue(user id.ID) string {
 	token := id.New().String()
 	f.items[token] = user
+	return token
+}
+
+// issueNeedingSecondFactor is an assertion from a password login on an account with TOTP whose
+// code was never verified.
+func (f *fakeAssertions) issueNeedingSecondFactor(user id.ID) string {
+	token := f.issue(user)
+	f.needs[token] = true
 	return token
 }
 
@@ -120,8 +141,17 @@ func (f *fakeAssertions) Spend(token string) (id.ID, bool, bool) {
 	if !ok {
 		return id.ID{}, false, false
 	}
+	needs := f.needs[token]
 	delete(f.items, token)
-	return user, false, true
+	delete(f.needs, token)
+	return user, needs, true
+}
+
+// unspent reports whether token is still in the store: a refusal that comes before the spend must
+// leave the person's assertion usable.
+func (f *fakeAssertions) unspent(token string) bool {
+	_, ok := f.items[token]
+	return ok
 }
 
 func TestPreimageIsEightyOneBytesAndMatchesTheVector(t *testing.T) {
@@ -526,4 +556,674 @@ func signed(t *testing.T, s *auth.Sessions, device id.ID, nonce []byte, p auth.P
 	t.Helper()
 	pre := auth.SessionPreimage(s.InstanceID(), device, nonce, p)
 	return auth.EstablishRequest{DeviceID: device, Nonce: nonce, Purpose: p, Sig: ed25519.Sign(priv, pre)}
+}
+
+// staticLister is the device-list gate's view of the instance in these tests: a user it holds no
+// entry for has published no list (auth.ErrNoDeviceList); a user it holds keys for has a verified
+// newest list naming exactly those unrevoked dsk_pubs; err, when set, is what every call answers
+// (a verifier that is down, or a stored list that no longer verifies).
+type staticLister struct {
+	mu   sync.Mutex
+	keys map[id.ID][][]byte
+	err  error
+}
+
+func newStaticLister() *staticLister { return &staticLister{keys: map[id.ID][][]byte{}} }
+
+func (l *staticLister) ListedKeys(_ context.Context, user id.ID) ([][]byte, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.err != nil {
+		return nil, l.err
+	}
+	keys, ok := l.keys[user]
+	if !ok {
+		return nil, auth.ErrNoDeviceList
+	}
+	return keys, nil
+}
+
+func (l *staticLister) list(user id.ID, keys ...[]byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.keys[user] = keys
+}
+
+func (l *staticLister) fail(err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.err = err
+}
+
+func listerOf(t *testing.T, s *auth.Sessions) *staticLister {
+	t.Helper()
+	l, ok := s.DeviceLists.(*staticLister)
+	if !ok {
+		t.Fatalf("Sessions.DeviceLists is %T, want the test's *staticLister", s.DeviceLists)
+	}
+	return l
+}
+
+func pubOf(priv ed25519.PrivateKey) []byte { return []byte(priv.Public().(ed25519.PublicKey)) }
+
+func makeDeviceYoung(t *testing.T, repo store.Repository, device id.ID, now int64) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+authDBPaths[repo])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(context.Background(), `UPDATE devices SET created = ? WHERE id = ?`, now, device[:]); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// refusal is err as the *server.Error the handler would write.
+func refusal(t *testing.T, err error) *server.Error {
+	t.Helper()
+	var se *server.Error
+	if !errors.As(err, &se) {
+		t.Fatalf("got %v, want a *server.Error refusal", err)
+	}
+	return se
+}
+
+// establishOnce runs one challenge and one establish (or renew, for purpose 1) for an existing device.
+func establishOnce(t *testing.T, s *auth.Sessions, device id.ID, priv ed25519.PrivateKey, p auth.Purpose) (auth.Token, error) {
+	t.Helper()
+	nonce, _, err := s.Challenge(context.Background(), device)
+	if err != nil {
+		t.Fatalf("Challenge: %v", err)
+	}
+	req := signed(t, s, device, nonce, p, priv)
+	if p == auth.PurposeRenew {
+		return s.Renew(context.Background(), req)
+	}
+	return s.Establish(context.Background(), req)
+}
+
+// newRegistration is one browser device the assertion path registers: a fresh id and key and the
+// five-element array element 3 carries, as auth receives it after the handler decoded it. The
+// credential is the zero-signed placeholder of L-CORE-26 in spirit; auth never reads it.
+func newRegistration(t *testing.T) (auth.DeviceRegistration, ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	return auth.DeviceRegistration{DeviceID: id.New(), DSKPub: pub, Tier: 1, SignerTier: 1,
+		Credential: bytes.Repeat([]byte{0}, 10)}, priv
+}
+
+// registerWith runs challenge and establish for reg's device with the login and the registration
+// array, signing with signer (reg's own key for an honest client).
+func registerWith(t *testing.T, s *auth.Sessions, reg auth.DeviceRegistration, signer ed25519.PrivateKey, login string) (auth.Token, error) {
+	t.Helper()
+	nonce, _, err := s.Challenge(context.Background(), reg.DeviceID)
+	if err != nil {
+		t.Fatalf("Challenge: %v", err)
+	}
+	req := signed(t, s, reg.DeviceID, nonce, auth.PurposeSession, signer)
+	req.Login = []byte(login)
+	req.Registration = &reg
+	return s.Establish(context.Background(), req)
+}
+
+func noDeviceRow(t *testing.T, repo store.Repository, device id.ID) {
+	t.Helper()
+	if _, err := repo.GetDevice(context.Background(), device); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("device %s has a row (GetDevice err %v); a refused registration must write nothing", device, err)
+	}
+}
+
+// protocol/02 § Device sessions item 4 (Q26): without a login, the newest verified device list
+// decides the scope. Attacker statement: a listed user's unlisted device — a stolen password's
+// device — gets `pending`, which reaches only its own backups and its own list; the honest
+// enroller's next establish after its list is accepted is enrolled. The 401s are triggered only by
+// an instance fault (no verifier, a stored list that no longer verifies) and refuse rather than admit.
+func TestTheDeviceListGateDecidesTheScope(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	lister := listerOf(t, s)
+	user, device, priv := seedDevice(t, repo)
+	makeDeviceYoung(t, repo, device, clk.Now().Unix())
+	scope := func(p auth.Purpose) auth.Scope {
+		t.Helper()
+		tok, err := establishOnce(t, s, device, priv, p)
+		if err != nil {
+			t.Fatalf("establish (purpose %d): %v", p, err)
+		}
+		return tok.Scope
+	}
+	refused := func(p auth.Purpose) *server.Error {
+		t.Helper()
+		_, err := establishOnce(t, s, device, priv, p)
+		return refusal(t, err)
+	}
+
+	if got := scope(auth.PurposeSession); got != auth.ScopeEnrolled {
+		t.Fatalf("a user with no device list: scope %d, want enrolled (the no-list clause)", got)
+	}
+	lister.list(user, pubOf(priv))
+	if got := scope(auth.PurposeSession); got != auth.ScopeEnrolled {
+		t.Fatalf("a device its user's newest list names: scope %d, want enrolled", got)
+	}
+	_, otherPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	lister.list(user, pubOf(otherPriv))
+	if got := scope(auth.PurposeSession); got != auth.ScopePending {
+		t.Fatalf("a listed user's unlisted device: scope %d, want pending", got)
+	}
+	if got := scope(auth.PurposeRenew); got != auth.ScopePending {
+		t.Fatalf("a listed user's unlisted device renewing: scope %d, want pending", got)
+	}
+	lister.list(user)
+	if got := scope(auth.PurposeSession); got != auth.ScopePending {
+		t.Fatalf("a list that names no unrevoked key: scope %d, want pending", got)
+	}
+	if got := scope(auth.PurposeProvisional); got != auth.ScopeProvisional {
+		t.Fatalf("purpose 2: scope %d, want provisional (pairing is not gated)", got)
+	}
+	lister.fail(errors.New("the device-list verifier is down"))
+	if e := refused(auth.PurposeSession); e.Code != server.CodeUnavailable || e.Status() != http.StatusServiceUnavailable {
+		t.Fatalf("a verifier fault: %s %d, want 503 E_UNAVAILABLE", e.Code, e.Status())
+	}
+	lister.fail(&mlswasi.ABIError{Code: "E_CREDENTIAL"})
+	if e := refused(auth.PurposeSession); e.Code != server.CodeUnauthenticated || e.Status() != http.StatusUnauthorized {
+		t.Fatalf("a list that fails verification: %s %d, want 401 E_UNAUTHENTICATED", e.Code, e.Status())
+	}
+	s.DeviceLists = nil
+	for _, p := range []auth.Purpose{auth.PurposeSession, auth.PurposeRenew} {
+		if e := refused(p); e.Code != server.CodeUnauthenticated || e.Status() != http.StatusUnauthorized {
+			t.Fatalf("no lister wired, purpose %d: %s %d, want 401 E_UNAUTHENTICATED (fail closed)", p, e.Code, e.Status())
+		}
+	}
+	if got := scope(auth.PurposeProvisional); got != auth.ScopeProvisional {
+		t.Fatalf("purpose 2 with no lister: scope %d, want provisional", got)
+	}
+}
+
+// Q26: the upgrade is by re-establish. A pending token keeps its scope; the device's next
+// establish after a list names it is enrolled.
+func TestAPendingDeviceIsEnrolledByEstablishingAgainOnceListed(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	lister := listerOf(t, s)
+	user, device, priv := seedDevice(t, repo)
+	makeDeviceYoung(t, repo, device, clk.Now().Unix())
+	_, otherPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	lister.list(user, pubOf(otherPriv))
+	pending, err := establishOnce(t, s, device, priv, auth.PurposeSession)
+	if err != nil || pending.Scope != auth.ScopePending {
+		t.Fatalf("before the list names it: scope %d, err %v; want pending", pending.Scope, err)
+	}
+	lister.list(user, pubOf(otherPriv), pubOf(priv))
+	enrolled, err := establishOnce(t, s, device, priv, auth.PurposeRenew)
+	if err != nil || enrolled.Scope != auth.ScopeEnrolled {
+		t.Fatalf("after the list names it: scope %d, err %v; want enrolled", enrolled.Scope, err)
+	}
+	sess, err := s.Resolve(context.Background(), pending.Token)
+	if err != nil {
+		t.Fatalf("Resolve the pending token: %v", err)
+	}
+	if sess.Scope != auth.ScopePending {
+		t.Fatalf("the pending token now resolves to scope %d; a scope is fixed at mint", sess.Scope)
+	}
+}
+
+// L-HTTP-54 step 2: a host-login assertion plus the registration array registers a browser
+// device and mints a pending session for it.
+func TestAssertionRegistrationCreatesAPendingBrowserDevice(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	ctx := context.Background()
+	assertions := newFakeAssertions()
+	s.Assertions = assertions
+	lister := listerOf(t, s)
+	user, _, priv := seedDevice(t, repo)
+	lister.list(user, pubOf(priv))
+
+	reg, regPriv := newRegistration(t)
+	login := assertions.issue(user)
+	tok, err := registerWith(t, s, reg, regPriv, login)
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	if tok.Scope != auth.ScopePending || tok.UserID != user || tok.DeviceID != reg.DeviceID {
+		t.Fatalf("token = scope %d user %s device %s; want pending, %s, %s",
+			tok.Scope, tok.UserID, tok.DeviceID, user, reg.DeviceID)
+	}
+	if want := clk.Now().Add(config.Default().Auth.Session.BrowserIdle.Value()).Unix(); tok.IdleExpires != want {
+		t.Fatalf("idle_expires = %d, want %d: the registered tier is browser", tok.IdleExpires, want)
+	}
+	row, err := repo.GetDevice(ctx, reg.DeviceID)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	if row.UserID != user || !bytes.Equal(row.DSKPub, reg.DSKPub) || row.Tier != 1 || row.SignerTier != 1 ||
+		!bytes.Equal(row.CredentialBlob, reg.Credential) || row.VerifiedAt != nil || row.RevokedAt != nil ||
+		row.Created != clk.Now().Unix() || row.LastSeen != clk.Now().Unix() {
+		t.Fatalf("device row = %+v, want the registration as sent, unverified, created now", row)
+	}
+	// The assertion was spent: the same bytes register nothing more.
+	again, againPriv := newRegistration(t)
+	_, err = registerWith(t, s, again, againPriv, login)
+	if e := refusal(t, err); e.Code != server.CodeUnauthenticated {
+		t.Fatalf("a spent assertion: %s, want E_UNAUTHENTICATED", e.Code)
+	}
+	noDeviceRow(t, repo, again.DeviceID)
+	// The registered device is unlisted: its ordinary establish is pending until a list names it.
+	plain, err := establishOnce(t, s, reg.DeviceID, regPriv, auth.PurposeSession)
+	if err != nil || plain.Scope != auth.ScopePending {
+		t.Fatalf("the unlisted registered device: scope %d, err %v; want pending", plain.Scope, err)
+	}
+	lister.list(user, pubOf(priv), reg.DSKPub)
+	plain, err = establishOnce(t, s, reg.DeviceID, regPriv, auth.PurposeSession)
+	if err != nil || plain.Scope != auth.ScopeEnrolled {
+		t.Fatalf("the listed registered device: scope %d, err %v; want enrolled", plain.Scope, err)
+	}
+}
+
+// Q26, gap-G7 §2. Attacker statement: a stolen host password alone cannot create a device row for
+// an account whose owner never published a device list; an honest person enrolling into a web-1
+// account always has list v1, which web-1 publishes at signup.
+func TestAssertionRegistrationIsRefusedForAUserWithNoList(t *testing.T) {
+	s, repo, _ := newSessions(t)
+	assertions := newFakeAssertions()
+	s.Assertions = assertions
+	user, _, _ := seedDevice(t, repo) // the lister has no entry: no list
+
+	reg, priv := newRegistration(t)
+	_, err := registerWith(t, s, reg, priv, assertions.issue(user))
+	if err == nil {
+		t.Fatal("a stolen password registered a device for a user with no device list")
+	}
+	if e := refusal(t, err); e.Code != server.CodeUnauthenticated || e.Status() != http.StatusUnauthorized {
+		t.Fatalf("no list: %s %d, want 401 E_UNAUTHENTICATED", e.Code, e.Status())
+	}
+	noDeviceRow(t, repo, reg.DeviceID)
+}
+
+// A transient verifier fault costs an assertion but answers 503 so the browser
+// retries the login ceremony; only E_CREDENTIAL is a confirmed 401 refusal.
+func TestAssertionRegistrationDistinguishesListFaultFromBadList(t *testing.T) {
+	s, repo, _ := newSessions(t)
+	a := newFakeAssertions()
+	s.Assertions = a
+	user, _, priv := seedDevice(t, repo)
+	l := listerOf(t, s)
+	l.list(user, pubOf(priv))
+	reg, signer := newRegistration(t)
+	l.fail(errors.New("guest closed"))
+	login := a.issue(user)
+	if _, err := registerWith(t, s, reg, signer, login); refusal(t, err).Code != server.CodeUnavailable {
+		t.Fatalf("verifier fault: %v, want 503 E_UNAVAILABLE", err)
+	}
+	if a.unspent(login) {
+		t.Fatal("assertion was not spent before the list fault")
+	}
+	noDeviceRow(t, repo, reg.DeviceID)
+	l.fail(&mlswasi.ABIError{Code: "E_CREDENTIAL"})
+	if _, err := registerWith(t, s, reg, signer, a.issue(user)); refusal(t, err).Code != server.CodeUnauthenticated {
+		t.Fatalf("bad signed list: %v, want 401 E_UNAUTHENTICATED", err)
+	}
+	noDeviceRow(t, repo, reg.DeviceID)
+}
+
+// Every refusal of the registration path writes nothing, and the ones before the spend leave the
+// person's assertion usable. Attacker statement: each is triggered only by the registering
+// client's own request (its array, its key, its login); none can be aimed at another device.
+func TestAssertionRegistrationRefusals(t *testing.T) {
+	s, repo, _ := newSessions(t)
+	ctx := context.Background()
+	assertions := newFakeAssertions()
+	s.Assertions = assertions
+	lister := listerOf(t, s)
+	user, _, priv := seedDevice(t, repo)
+	lister.list(user, pubOf(priv))
+	reg, regPriv := newRegistration(t)
+	login := assertions.issue(user)
+
+	// A login and no registration array for an unknown device.
+	nonce, _, _ := s.Challenge(ctx, reg.DeviceID)
+	req := signed(t, s, reg.DeviceID, nonce, auth.PurposeSession, regPriv)
+	req.Login = []byte(login)
+	_, err := s.Establish(ctx, req)
+	if e := refusal(t, err); e.Code != server.CodeInvalidRequest || e.Detail != "registration array required" {
+		t.Fatalf("no array: %s %q, want E_INVALID_REQUEST \"registration array required\"", e.Code, e.Detail)
+	}
+	// The array names another device than the path.
+	mismatched := reg
+	mismatched.DeviceID = id.New()
+	nonce, _, _ = s.Challenge(ctx, reg.DeviceID)
+	req = signed(t, s, reg.DeviceID, nonce, auth.PurposeSession, regPriv)
+	req.Login = []byte(login)
+	req.Registration = &mismatched
+	_, err = s.Establish(ctx, req)
+	if e := refusal(t, err); e.Code != server.CodeInvalidRequest || e.Detail != "device_id does not match" {
+		t.Fatalf("mismatched array: %s %q, want E_INVALID_REQUEST \"device_id does not match\"", e.Code, e.Detail)
+	}
+	// Head ruling 31: a native tier or a native signer tier. Attacker statement: only the
+	// registering client's own body; a password alone can no longer mint a `native` row with 30-day
+	// sessions and the `app` label in Settings; protocol/03's pairing ceremony is the native path.
+	for name, tiers := range map[string][2]uint8{"a native tier": {0, 0}, "a native signer tier": {1, 0}} {
+		native := reg
+		native.Tier, native.SignerTier = tiers[0], tiers[1]
+		_, err = registerWith(t, s, native, regPriv, login)
+		if e := refusal(t, err); e.Code != server.CodeInvalidRequest || e.Status() != http.StatusBadRequest ||
+			e.Detail != "assertion registration is for browser devices" {
+			t.Fatalf("%s: %s %d %q, want 400 E_INVALID_REQUEST \"assertion registration is for browser devices\"",
+				name, e.Code, e.Status(), e.Detail)
+		}
+	}
+	// The signature is not by the array's key.
+	_, wrongPriv, _ := ed25519.GenerateKey(rand.Reader)
+	_, err = registerWith(t, s, reg, wrongPriv, login)
+	if e := refusal(t, err); e.Code != server.CodeUnauthenticated {
+		t.Fatalf("a signature by another key: %s, want E_UNAUTHENTICATED", e.Code)
+	}
+	if !assertions.unspent(login) {
+		t.Fatal("a refusal before the spend burned the person's assertion")
+	}
+	// An assertion still waiting for its second factor, and an unknown one.
+	_, err = registerWith(t, s, reg, regPriv, assertions.issueNeedingSecondFactor(user))
+	if e := refusal(t, err); e.Code != server.CodeUnauthenticated {
+		t.Fatalf("an assertion without its second factor: %s, want E_UNAUTHENTICATED", e.Code)
+	}
+	_, err = registerWith(t, s, reg, regPriv, "not-an-assertion")
+	if e := refusal(t, err); e.Code != server.CodeUnauthenticated {
+		t.Fatalf("an unknown assertion: %s, want E_UNAUTHENTICATED", e.Code)
+	}
+	// No assertion store wired.
+	s.Assertions = nil
+	_, err = registerWith(t, s, reg, regPriv, assertions.issue(user))
+	if e := refusal(t, err); e.Code != server.CodeUnauthenticated {
+		t.Fatalf("no assertion store: %s, want E_UNAUTHENTICATED", e.Code)
+	}
+	s.Assertions = assertions
+	// The asserted user is disabled.
+	disabledAt := int64(1)
+	if err := repo.SetUserDisabled(ctx, user, &disabledAt); err != nil {
+		t.Fatalf("SetUserDisabled: %v", err)
+	}
+	_, err = registerWith(t, s, reg, regPriv, assertions.issue(user))
+	if e := refusal(t, err); e.Code != server.CodeForbidden || e.Status() != http.StatusForbidden {
+		t.Fatalf("a disabled user: %s %d, want 403 E_FORBIDDEN", e.Code, e.Status())
+	}
+	noDeviceRow(t, repo, reg.DeviceID)
+	noDeviceRow(t, repo, mismatched.DeviceID)
+}
+
+// Q04: at most 8 live devices per user. Attacker statement (head L-HTTP-54, ruling 30): the
+// registration path creates a live, unlisted row for every spent assertion, so a holder of the
+// password without the recovery key can register at most enrolments_per_hour rows per hour and fill
+// the cap in ⌈cap ÷ rate⌉ hours (three at the defaults), after which the owner's own enrolment is
+// refused. The owner clears it without the key: Settings → Devices lists such rows as `not yet in
+// the device list` and their `remove` calls DELETE /v1/devices/{id} (an existing E route,
+// internal/api/devices.go:76-103), which revokes the row; the rows are evidence of the compromise.
+// An honest person reaches 8 live devices by owning 8 and 3 enrolments in an hour by enrolling 3;
+// another user cannot spend this user's allowance.
+func TestTheDeviceCapIsEightLiveDevices(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	ctx := context.Background()
+	c := config.Default().Auth.Session
+	if c.MaxDevicesPerUser != 8 || c.EnrolmentsPerHour != 3 {
+		t.Fatalf("defaults are %d devices and %d enrolments an hour, want 8 and 3 (Q04)",
+			c.MaxDevicesPerUser, c.EnrolmentsPerHour)
+	}
+	assertions := newFakeAssertions()
+	s.Assertions = assertions
+	lister := listerOf(t, s)
+	user, first, priv := seedDevice(t, repo)
+	listed := [][]byte{pubOf(priv)}
+	// Six more listed live devices, created two hours ago so the hourly rate is not what refuses.
+	for i := 0; i < 6; i++ {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+		if err := repo.CreateDevice(ctx, store.DeviceRow{ID: id.New(), UserID: user, DSKPub: pub,
+			CredentialBlob: []byte{1}, LastSeen: 1, Created: clk.Now().Unix() - 7200}); err != nil {
+			t.Fatalf("CreateDevice: %v", err)
+		}
+		listed = append(listed, pub)
+	}
+	lister.list(user, listed...)
+	eighth, eighthPriv := newRegistration(t)
+	if _, err := registerWith(t, s, eighth, eighthPriv, assertions.issue(user)); err != nil {
+		t.Fatalf("the eighth live device: %v", err)
+	}
+	lister.list(user, append(listed, eighth.DSKPub)...)
+	ninth, ninthPriv := newRegistration(t)
+	_, err := registerWith(t, s, ninth, ninthPriv, assertions.issue(user))
+	if e := refusal(t, err); e.Code != server.CodeForbidden || e.Status() != http.StatusForbidden || e.Detail != "device cap reached" {
+		t.Fatalf("the ninth live device: %s %d %q, want 403 E_FORBIDDEN \"device cap reached\"", e.Code, e.Status(), e.Detail)
+	}
+	noDeviceRow(t, repo, ninth.DeviceID)
+	// A revoked device does not count.
+	if err := repo.RevokeDevice(ctx, first, clk.Now().Unix()); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	if _, err := registerWith(t, s, ninth, ninthPriv, assertions.issue(user)); err != nil {
+		t.Fatalf("after one revocation the next device registers: %v", err)
+	}
+}
+
+// Q04: at most 3 device rows created per user in any hour, derived from devices.created. Attacker
+// statement: only the account's own host login reaches this; the honest person waits the
+// retry_after_ms the refusal carries, which is never zero.
+func TestTheEnrolmentRateIsThreePerHour(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	assertions := newFakeAssertions()
+	s.Assertions = assertions
+	lister := listerOf(t, s)
+	user, _, priv := seedDevice(t, repo) // created at unix second 1, outside every window here
+	lister.list(user, pubOf(priv))
+
+	start := clk.Now().Unix()
+	for i := 0; i < 3; i++ {
+		reg, p := newRegistration(t)
+		if _, err := registerWith(t, s, reg, p, assertions.issue(user)); err != nil {
+			t.Fatalf("enrolment %d of 3: %v", i+1, err)
+		}
+		clk.Advance(time.Minute)
+	}
+	// Assertion 1 — the fourth creation in the hour is refused with
+	// retry_after_ms = (creations[0] + 3600 − now) × 1000. now = start + 180, creations[0] = start.
+	now := clk.Now().Unix()
+	fourth, fourthPriv := newRegistration(t)
+	_, err := registerWith(t, s, fourth, fourthPriv, assertions.issue(user))
+	e := refusal(t, err)
+	if want := uint64(start+3600-now) * 1000; e.Code != server.CodeRateLimited || e.Status() != http.StatusTooManyRequests ||
+		e.RetryAfterMS == nil || *e.RetryAfterMS != want || want != 3_420_000 {
+		t.Fatalf("assertion 1, the fourth enrolment in an hour: %s %d retry %v, want 429 E_RATE_LIMITED retry %d",
+			e.Code, e.Status(), e.RetryAfterMS, want)
+	}
+	noDeviceRow(t, repo, fourth.DeviceID)
+	// Assertion 2 — at start + 3599 the first creation is still inside the hour: 429, retry 1000.
+	clk.Advance(time.Duration(3600-180-1) * time.Second)
+	if clk.Now().Unix() != start+3599 {
+		t.Fatalf("the clock is at %d, want start + 3599", clk.Now().Unix()-start)
+	}
+	_, err = registerWith(t, s, fourth, fourthPriv, assertions.issue(user))
+	if e := refusal(t, err); e.Code != server.CodeRateLimited || e.Status() != http.StatusTooManyRequests ||
+		e.RetryAfterMS == nil || *e.RetryAfterMS != 1000 {
+		t.Fatalf("assertion 2, one second before the first leaves the hour: %s %d retry %v, want 429 E_RATE_LIMITED retry 1000",
+			e.Code, e.Status(), e.RetryAfterMS)
+	}
+	noDeviceRow(t, repo, fourth.DeviceID)
+	// Assertion 3 — at exactly start + 3600 the boundary second is admitted (201 at the handler).
+	clk.Advance(time.Second)
+	tok, err := registerWith(t, s, fourth, fourthPriv, assertions.issue(user))
+	if err != nil || tok.Scope != auth.ScopePending {
+		t.Fatalf("assertion 3, the boundary second start + 3600: scope %d, err %v; want a pending registration", tok.Scope, err)
+	}
+}
+
+// Head ruling 32: a fresh account gets two enrolments in its first hour and three afterwards;
+// recorded as a deviation from Q04's literal three in progress.md. The rate counts every device row
+// the user created inside the window, the account's first device included. Attacker statement: as
+// TestTheEnrolmentRateIsThreePerHour; the first device's row is the owner's own.
+func TestTheEnrolmentRateCountsTheAccountsFirstDevice(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	ctx := context.Background()
+	assertions := newFakeAssertions()
+	s.Assertions = assertions
+	lister := listerOf(t, s)
+	start := clk.Now().Unix()
+	user := store.UserRow{ID: id.New(), Username: "fresh" + id.New().String()[:8], Display: "Fresh",
+		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: start}
+	if err := repo.CreateUser(ctx, user); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	firstPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	verified := start
+	if err := repo.CreateDevice(ctx, store.DeviceRow{ID: id.New(), UserID: user.ID, DSKPub: firstPub, Tier: 1,
+		SignerTier: 1, CredentialBlob: []byte{1}, VerifiedAt: &verified, LastSeen: start, Created: start}); err != nil {
+		t.Fatalf("CreateDevice (the account's first device, at start): %v", err)
+	}
+	lister.list(user.ID, firstPub)
+
+	for i := int64(1); i <= 2; i++ {
+		clk.Advance(time.Second) // start + 1, start + 2
+		reg, p := newRegistration(t)
+		if _, err := registerWith(t, s, reg, p, assertions.issue(user.ID)); err != nil {
+			t.Fatalf("enrolment at start + %d: %v, want 201 (the first device and %d enrolments are fewer than 3)", i, err, i-1)
+		}
+	}
+	clk.Advance(time.Second) // start + 3
+	third, thirdPriv := newRegistration(t)
+	_, err = registerWith(t, s, third, thirdPriv, assertions.issue(user.ID))
+	if e := refusal(t, err); e.Code != server.CodeRateLimited || e.Status() != http.StatusTooManyRequests ||
+		e.RetryAfterMS == nil || *e.RetryAfterMS != uint64(3600-3)*1000 {
+		t.Fatalf("the third enrolment in the account's first hour: %s %d retry %v, want 429 E_RATE_LIMITED retry 3597000 (the first device counts)",
+			e.Code, e.Status(), e.RetryAfterMS)
+	}
+	noDeviceRow(t, repo, third.DeviceID)
+}
+
+// A password holder's unlisted pending row and its session stop working after 24 hours.
+// Its expiry frees capacity without an owner device being online.
+func TestUnlistedRegistrationExpiresWithItsPendingSession(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	a := newFakeAssertions()
+	s.Assertions = a
+	user, _, priv := seedDevice(t, repo)
+	listerOf(t, s).list(user, pubOf(priv))
+	reg, signer := newRegistration(t)
+	tok, err := registerWith(t, s, reg, signer, a.issue(user))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(24 * time.Hour)
+	if _, err := establishOnce(t, s, reg.DeviceID, signer, auth.PurposeSession); refusal(t, err).Code != server.CodeUnauthenticated {
+		t.Fatalf("expired device re-established: %v", err)
+	}
+	if _, err := s.Resolve(t.Context(), tok.Token); refusal(t, err).Code != server.CodeUnauthenticated {
+		t.Fatalf("expired pending session: %v, want 401", err)
+	}
+	row, err := repo.GetDevice(t.Context(), reg.DeviceID)
+	if err != nil || row.RevokedAt == nil {
+		t.Fatalf("expired row = %+v, err %v; want revoked", row, err)
+	}
+}
+
+// A fresh host login cannot renew the lifetime of a 24-hour-old unlisted row.
+func TestExpiredUnlistedRowRejectsAnotherAssertion(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	a := newFakeAssertions()
+	s.Assertions = a
+	user, _, priv := seedDevice(t, repo)
+	listerOf(t, s).list(user, pubOf(priv))
+	reg, signer := newRegistration(t)
+	if _, err := registerWith(t, s, reg, signer, a.issue(user)); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(24 * time.Hour)
+	if _, err := registerWith(t, s, reg, signer, a.issue(user)); refusal(t, err).Code != server.CodeUnauthenticated {
+		t.Fatalf("a renewed host assertion resurrected the expired row: %v", err)
+	}
+	row, err := repo.GetDevice(t.Context(), reg.DeviceID)
+	if err != nil || row.RevokedAt == nil {
+		t.Fatalf("expired row = %+v, err %v; want revoked", row, err)
+	}
+}
+
+// At the cap, the oldest live unlisted row is evicted while listed rows remain.
+// A password holder therefore cannot permanently bar the owner's recovery.
+func TestRegistrationAtCapEvictsOldestUnlistedRow(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	a := newFakeAssertions()
+	s.Assertions = a
+	user, _, priv := seedDevice(t, repo)
+	keys := [][]byte{pubOf(priv)}
+	for i := 0; i < 6; i++ {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, pub)
+		if err := repo.CreateDevice(t.Context(), store.DeviceRow{ID: id.New(), UserID: user, DSKPub: pub,
+			CredentialBlob: []byte{1}, Created: 1, LastSeen: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listerOf(t, s).list(user, keys...)
+	old, oldKey := newRegistration(t)
+	oldToken, err := registerWith(t, s, old, oldKey, a.issue(user))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(time.Second)
+	next, nextKey := newRegistration(t)
+	if _, err := registerWith(t, s, next, nextKey, a.issue(user)); err != nil {
+		t.Fatalf("cap eviction: %v", err)
+	}
+	row, err := repo.GetDevice(t.Context(), old.DeviceID)
+	if err != nil || row.RevokedAt == nil {
+		t.Fatalf("oldest unlisted row = %+v, err %v; want revoked", row, err)
+	}
+	if _, err := s.Resolve(t.Context(), oldToken.Token); refusal(t, err).Code != server.CodeUnauthenticated {
+		t.Fatalf("evicted pending session: %v", err)
+	}
+	if row, err := repo.GetDevice(t.Context(), next.DeviceID); err != nil || row.RevokedAt != nil {
+		t.Fatalf("replacement row = %+v, err %v", row, err)
+	}
+}
+
+// The live-row rate releases a revoked row immediately and an expired row after 24 hours.
+func TestEnrolmentRateReleasesRevokedAndExpiredRows(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	a := newFakeAssertions()
+	s.Assertions = a
+	user, _, priv := seedDevice(t, repo)
+	listerOf(t, s).list(user, pubOf(priv))
+	var regs []auth.DeviceRegistration
+	for i := 0; i < 3; i++ {
+		reg, key := newRegistration(t)
+		if _, err := registerWith(t, s, reg, key, a.issue(user)); err != nil {
+			t.Fatal(err)
+		}
+		regs = append(regs, reg)
+	}
+	fourth, fourthKey := newRegistration(t)
+	if _, err := registerWith(t, s, fourth, fourthKey, a.issue(user)); refusal(t, err).Code != server.CodeRateLimited {
+		t.Fatalf("fourth live creation: %v", err)
+	}
+	if err := repo.RevokeDevice(t.Context(), regs[0].DeviceID, clk.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registerWith(t, s, fourth, fourthKey, a.issue(user)); err != nil {
+		t.Fatalf("after revocation: %v", err)
+	}
+	clk.Advance(24 * time.Hour)
+	fifth, fifthKey := newRegistration(t)
+	if _, err := registerWith(t, s, fifth, fifthKey, a.issue(user)); err != nil {
+		t.Fatalf("after expiry: %v", err)
+	}
 }

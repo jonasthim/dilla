@@ -30,7 +30,7 @@ Every endpoint in this document requires a **device session**. A device session 
    `201 [nonce(bstr 32), expires(uint)]`. The nonce is 32 CSPRNG bytes, single use, 60-second TTL,
    held in memory, deleted on read. The answer is identical for an unknown `device_id`.
 2. `POST /v1/devices/{device_id}/sessions` — body
-   `[nonce(bstr 32), purpose(uint), sig(bstr 64), credential(bstr|null), login(bstr|null)]`, where
+   `[nonce(bstr 32), purpose(uint), sig(bstr 64), registration(array)|credential(bstr)|null, login(bstr|null)]`, where
 
    ```
    sig = Ed25519(DSK_priv,
@@ -43,14 +43,33 @@ Every endpoint in this document requires a **device session**. A device session 
 
    The instance answers
    `201 [token(tstr), scope(uint), user_id(bstr 16), device_id(bstr 16), expires(uint), idle_expires(uint), generation(uint)]`.
+   The establish body is at most 8192 bytes. `login`, when present, is an enrolment assertion
+   (`09` § Auth ceremonies) sent as the token's UTF-8 bytes in a bstr. Element 3 must then be
+   `[device_id(bstr 16), dsk_pub(bstr 32), tier(uint 0|1), signer_tier(uint 0|1), credential(bstr, 1 to 2048 bytes)]`;
+   without `login`, element 3 is ignored whatever its type. For a device with no row, the array's
+   `device_id` must match the path, both tiers must be `browser` (the `03` pairing ceremony is the
+   native path), and `sig` must verify under its `dsk_pub`. The assertion is spent after these
+   checks and before the list, cap and rate checks: a refusal after the spend needs a fresh login.
+   Its user must be active and have published a device list. The new unverified row stores the
+   opaque credential and receives a `pending` session. An unlisted row expires 24 hours after
+   creation, revoking its pending sessions. At 8 live devices, registration evicts the oldest
+   unlisted row; if every live row is listed it refuses with `403 E_FORBIDDEN`. The hourly rate
+   counts only live rows created in the window, including a live first device; revoked and expired
+   rows release capacity. `POST /v1/devices` applies the same cap and rate.
 3. The **token** is 32 bytes from the platform CSPRNG, base64url without padding, stored only as
    `SHA-256(token)`. It is sent as `Authorization: Bearer <token>` on HTTP and in the gateway's
    `IDENTIFY` frame. There is no cookie and therefore no CSRF surface on `/v1`.
-4. **Scope** is `0 enrolled`, `1 pending`, `2 provisional`. `enrolled` reaches every endpoint
-   subject to the ordinary ACL; `pending` reaches only the two own-backup reads of
-   `06-backup-archive.md`; `provisional` reaches only KeyPackage publication for one `pairing`
-   group and that group's Welcome and handshakes, and anything else is
-   `E_PROVISIONAL_OUTSIDE_PAIRING`.
+4. **Scope** is `0 enrolled`, `1 pending`, `2 provisional`. An establish with `login` is `pending`;
+   purpose 2 is `provisional`. Otherwise the newest list verified against `users.ssk_pub` decides:
+   no list or an unrevoked entry naming the device's `dsk_pub` gives `enrolled`; an omitted device
+   gets `pending`. A list that fails verification gives `401 E_UNAUTHENTICATED`; a verifier or
+   instance fault gives `503 E_UNAVAILABLE`, so a transient failure is retryable. Scope is fixed
+   at mint: a pending device becomes enrolled by establishing again after a list names it.
+   `enrolled` reaches every endpoint subject to ordinary ACL; `pending` reaches only its own two
+   backup reads (`06-backup-archive.md`), its own device-list GET and PUT, and the session routes
+   needing no session. Other routes answer `403 E_FORBIDDEN`. `provisional` reaches only
+   KeyPackage publication for one `pairing` group and that group's Welcome and handshakes;
+   outside them the answer is `E_PROVISIONAL_OUTSIDE_PAIRING`.
 5. **Lifetime** is a sliding 30 days for `native` devices and 7 days with a 12-hour idle window for
    `browser` devices, renewed by `purpose = 1`. At most **8** live sessions exist per device; the
    oldest is evicted.
@@ -68,9 +87,12 @@ Every endpoint in this document requires a **device session**. A device session 
    is no prior key to prove possession of. Every later session for that device goes through the
    challenge.
 
-Refusals: `401 E_UNAUTHENTICATED` for an absent, replayed or expired nonce, a bad signature, or an
-unknown device; `403 E_FORBIDDEN` for a disabled account; `429 E_RATE_LIMITED` per source address
-and per `device_id`.
+Refusals: `401 E_UNAUTHENTICATED` for an absent, replayed or expired nonce, a bad signature, an
+unknown device without a registration assertion, an unknown or spent assertion, a user with no
+list on registration, or a list that fails verification; `400 E_INVALID_REQUEST` for a malformed
+registration array or a tier other than `browser`; `403 E_FORBIDDEN` for a disabled account or a
+cap of entirely listed devices; `429 E_RATE_LIMITED` per source address, per `device_id` and per
+user's live-row enrolment rate; `503 E_UNAVAILABLE` for an instance list-verifier fault.
 
 ## API
 

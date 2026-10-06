@@ -1,18 +1,23 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
 // CreateDevice is POST /v1/devices: [device_id, dsk_pub, tier, signer_tier,
 // credential] → [device_id]. The device is always the session's own user's; a
-// body cannot name another user, so there is nothing to authorise beyond the
-// session itself.
+// body cannot name another user. Admission uses the same live-row cap, expiry,
+// oldest-unlisted eviction and live-row hourly rate as assertion registration.
 func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -33,7 +38,87 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 		ID: req.DeviceID, UserID: sess.UserID, DSKPub: req.DSKPub, Tier: req.Tier,
 		SignerTier: req.SignerTier, CredentialBlob: req.Credential, LastSeen: now, Created: now,
 	}
-	if err := d.Repo.CreateDevice(r.Context(), row); err != nil {
+	if d.Sessions.DeviceLists == nil {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	keys, listErr := d.Sessions.DeviceLists.ListedKeys(r.Context(), sess.UserID)
+	noList := errors.Is(listErr, auth.ErrNoDeviceList)
+	if noList {
+		keys = nil
+	} else if listErr != nil {
+		var abi *mlswasi.ABIError
+		if errors.As(listErr, &abi) && abi.Code == "E_CREDENTIAL" {
+			server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		} else {
+			server.WriteError(w, server.Unavailable(1000, "device list unavailable"))
+		}
+		return
+	}
+	var evicted id.ID
+	err := d.Repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.LockUserForDeviceRegistration(r.Context(), sess.UserID); err != nil {
+			return err
+		}
+		rows, err := tx.ListDevicesByUser(r.Context(), sess.UserID)
+		if err != nil {
+			return err
+		}
+		listed := make([]id.ID, 0, len(rows))
+		for _, device := range rows {
+			if noList {
+				listed = append(listed, device.ID)
+				continue
+			}
+			for _, key := range keys {
+				if bytes.Equal(key, device.DSKPub) {
+					listed = append(listed, device.ID)
+					break
+				}
+			}
+		}
+		cutoff := now - 86399
+		for _, device := range rows {
+			if device.RevokedAt == nil && device.Created < cutoff && !slices.Contains(listed, device.ID) {
+				if err := tx.RevokeDevice(r.Context(), device.ID, now); err != nil {
+					return err
+				}
+				if _, err := tx.DeleteSessionsByDevice(r.Context(), device.ID); err != nil {
+					return err
+				}
+			}
+		}
+		live, err := tx.CountLiveDevicesByUser(r.Context(), sess.UserID)
+		if err != nil {
+			return err
+		}
+		if live >= int64(d.Config.Auth.Session.MaxDevicesPerUser) {
+			for _, device := range rows {
+				if device.RevokedAt == nil && device.Created >= cutoff && !slices.Contains(listed, device.ID) && evicted.IsZero() {
+					evicted = device.ID
+				}
+			}
+			if evicted.IsZero() {
+				return server.Errorf(server.CodeForbidden, "device cap reached")
+			}
+			if err := tx.RevokeDevice(r.Context(), evicted, now); err != nil {
+				return err
+			}
+			if _, err := tx.DeleteSessionsByDevice(r.Context(), evicted); err != nil {
+				return err
+			}
+		}
+		creations, err := tx.ListLiveDeviceCreationsSince(r.Context(), sess.UserID, listed, now-3599, cutoff)
+		if err != nil {
+			return err
+		}
+		if len(creations) >= d.Config.Auth.Session.EnrolmentsPerHour {
+			wait := creations[len(creations)-d.Config.Auth.Session.EnrolmentsPerHour] + 3600 - now
+			return server.RateLimited(uint64(wait) * 1000) //nolint:gosec // bounded by the hourly window
+		}
+		return tx.CreateDevice(r.Context(), row)
+	})
+	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			server.WriteError(w, server.WithStatus(http.StatusConflict,
 				server.Errorf(server.CodeInvalidRequest, "device_id already exists")))
@@ -41,6 +126,9 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 		}
 		server.WriteError(w, d.storeError(r, err))
 		return
+	}
+	if !evicted.IsZero() && d.Sessions.OnRevoke != nil {
+		d.Sessions.OnRevoke(evicted)
 	}
 	d.write(w, r, http.StatusOK, []any{row.ID})
 }
@@ -163,16 +251,20 @@ func (d Deps) PutDeviceList(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GetDeviceList answers the newest list of any user: every member of a group
-// needs to read every other member's list, so this route is not self-scoped.
+// GetDeviceList permits enrolled sessions to read any user and pending sessions only their own.
 func (d Deps) GetDeviceList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := session(r); !ok {
+	sess, ok := session(r)
+	if !ok {
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
 	userID, err := server.PathID(r, "user_id")
 	if err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	if sess.Scope == auth.ScopePending && sess.UserID != userID {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "a pending session reads only its own device list"))
 		return
 	}
 	row, err := d.Repo.GetDeviceList(r.Context(), userID)

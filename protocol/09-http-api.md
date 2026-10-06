@@ -44,11 +44,11 @@ column below uses four scopes:
 | `GET /v1/accounts/me` | E | — | `[user_id, username, display, kind, flags, created]` |
 | `PATCH /v1/accounts/me` | E | `[display(tstr\|null), status_msg(tstr\|null)]` | `204` |
 | `DELETE /v1/accounts/me` | E (step-up) | `[]` | `204` — credential purge, Removes from every group, tombstone keeping `username` |
-| `POST /v1/devices` | E or P | `[device_id, dsk_pub, tier, signer_tier, credential]` | `[device_id]` |
+| `POST /v1/devices` | E | `[device_id, dsk_pub, tier, signer_tier, credential]` | `[device_id]` |
 | `GET /v1/devices` | E | — | `[[device_id, tier, signer_tier, verified_at, revoked_at, last_seen]]` |
 | `DELETE /v1/devices/{device_id}` | E | — | `204` — revokes, deletes sessions, closes sockets |
-| `PUT /v1/users/{user_id}/device-list` | E | `[version(uint), blob(bstr), ssk_signature(bstr64), prev_hash(bstr32)]` | `204` |
-| `GET /v1/users/{user_id}/device-list` | E | — | `[version, blob, ssk_signature, prev_hash]` |
+| `PUT /v1/users/{user_id}/device-list` | E or P (own list only for P) | `[version(uint), blob(bstr), ssk_signature(bstr64), prev_hash(bstr32)]` | `204` |
+| `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]` |
 
 `POST /v1/accounts` is the sole exception to the device-session proof rule: it creates the device
 and its first session in the same transaction, because the device's key is the one being
@@ -61,6 +61,15 @@ a registering client cannot know it when it builds the credential: it sends the 
 `user_id` without signing anything again (`sig_ssk_dev` does not cover `user_id` and
 `sig_umk_ssk` covers `ssk_pub` only, `03` § Keys). Every leaf the device creates carries the
 rebuilt credential; the placeholder never appears in a group.
+
+A device created through a host login is registered by `POST /v1/devices/{device_id}/sessions`
+with a registration array and assertion (`02` § Device sessions item 2). The establish body is at
+most 8192 bytes and its credential at most 2048 bytes. Both that route and `POST /v1/devices`
+enforce 8 live devices and 3 live rows created per user per hour (a live first device counts).
+An unlisted row and its pending sessions expire after 24 hours. At the cap, the oldest unlisted
+row is evicted; only a cap consisting entirely of listed rows refuses with `403 E_FORBIDDEN`.
+Revoked and expired rows do not count toward the rate (`429 E_RATE_LIMITED`). An owner with an
+enrolled session can also remove an unlisted row with `DELETE /v1/devices/{device_id}`.
 
 Two rows above describe more than any released instance does. They are recorded here so a client
 plans against what an instance answers, not against what the table would otherwise promise:
@@ -81,12 +90,14 @@ plans against what an instance answers, not against what the table would otherwi
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `POST /v1/devices/{device_id}/sessions/challenge` | — | `[]` | `201 [nonce(bstr32), expires(uint)]` |
-| `POST /v1/devices/{device_id}/sessions` | — | `[nonce, purpose, sig, credential\|null, login\|null]` | `201 [token, scope, user_id, device_id, expires, idle_expires, generation]` |
+| `POST /v1/devices/{device_id}/sessions` | — | `[nonce, purpose, sig, registration\|credential\|null, login\|null]` | `201 [token, scope, user_id, device_id, expires, idle_expires, generation]` |
 | `DELETE /v1/devices/{device_id}/sessions` | E | — | `204` (all sessions of that device) |
 | `POST /v1/gateway/ticket` | E | `[]` | `201 [ticket(tstr), expires(uint)]` — single use, 30 s |
 
 The full session issuance and lifetime rules — scopes, lifetimes, revocation — are
 `02-delivery-service.md`'s `§ Device sessions`; this table only locates the routes.
+An assertion registration with a native `tier` or `signer_tier` is `400 E_INVALID_REQUEST`:
+assertion registration is for browser devices; `03`'s pairing ceremony is the native path.
 
 ## Invites
 
@@ -139,8 +150,9 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 | `GET /v1/auth/oidc/callback` | — | — | `302` back to the client with a one-time `assertion` |
 
 The `assertion` is a short-lived one-time **enrolment assertion**: it proves host login and is spent
-by `POST /v1/devices/{device_id}/sessions` on the `pending` path. It is never a session token and
-never reaches `/v1` beyond that one endpoint.
+by `POST /v1/devices/{device_id}/sessions`, sent as the token's UTF-8 bytes in a bstr (element 4).
+With a registration array in element 3 it registers the device; either way the minted session is
+`pending`. It is never a session token and never reaches `/v1` beyond that one endpoint.
 
 ## Communities and content
 

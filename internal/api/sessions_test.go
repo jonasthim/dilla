@@ -4,17 +4,22 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // The challenge answer is identical for an unknown device: the route is
@@ -299,5 +304,147 @@ func TestAnUnwiredLimiterRefusesTheSessionRoutes(t *testing.T) {
 		if got := refusalCode(t, rec); got != "E_INTERNAL" {
 			t.Fatalf("%s refusal code = %q, want E_INTERNAL", path, got)
 		}
+	}
+}
+
+// establishBody is the five-element establish body for device, signed by priv over a fresh
+// challenge, with element 3 and element 4 exactly as given (nil encodes as CBOR null).
+func establishBody(t *testing.T, h http.Handler, d api.Deps, device id.ID, priv ed25519.PrivateKey, element3, login any) []byte {
+	t.Helper()
+	// The unauthenticated challenge meter allows one request per second per address.
+	if fake, ok := d.Clock.(*clock.Fake); ok {
+		fake.Advance(time.Second)
+	}
+	rec := postCBOR(h, "/v1/devices/"+device.String()+"/sessions/challenge", nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("challenge = %d", rec.Code)
+	}
+	var challenge []any
+	if err := cborx.Unmarshal(rec.Body.Bytes(), &challenge); err != nil {
+		t.Fatalf("decode challenge: %v", err)
+	}
+	nonce, _ := challenge[0].([]byte)
+	pre := auth.SessionPreimage(d.Instance.InstanceID, device, nonce, auth.PurposeSession)
+	body, err := cborx.Marshal([]any{nonce, uint64(auth.PurposeSession), ed25519.Sign(priv, pre), element3, login})
+	if err != nil {
+		t.Fatalf("marshal establish: %v", err)
+	}
+	return body
+}
+
+// L-HTTP-54: element 3 is a registration array only when login is present; without login it is
+// ignored whatever its type. Attacker statement for the 400s: only the registering client's own
+// malformed body triggers them, and nothing is spent or written.
+func TestElementThreeIsARegistrationArrayOnlyWhenLoginIsPresent(t *testing.T) {
+	h, deps := newTestAPI(t)
+	ctx := context.Background()
+	lister := listerOf(t, deps)
+	u, dev, priv := seedAPIDevice(t, deps)
+	lister.list(u.ID, dev.DSKPub)
+	path := func(d id.ID) string { return "/v1/devices/" + d.String() + "/sessions" }
+	assertion := func() []byte { return []byte(deps.Assertions.Issue(u.ID, false)) }
+
+	// No login: the testkit's bstr credential is ignored.
+	rec := postCBOR(h, path(dev.ID), establishBody(t, h, deps, dev.ID, priv, []byte{0xa1, 0x01}, nil))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("a bstr element 3 without login = %d %x, want 201", rec.Code, rec.Body.Bytes())
+	}
+	var out []any
+	if err := cborx.Unmarshal(rec.Body.Bytes(), &out); err != nil || out[1] != uint64(auth.ScopeEnrolled) {
+		t.Fatalf("scope %v (err %v), want 0", out, err)
+	}
+
+	newPub, newPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	newID := id.New()
+	for name, element3 := range map[string]any{
+		"a bstr":                   []byte{1},
+		"null":                     nil,
+		"a four-element array":     []any{newID, []byte(newPub), uint64(1), uint64(1)},
+		"a 31-byte dsk_pub":        []any{newID, make([]byte, 31), uint64(1), uint64(1), []byte{0}},
+		"a tier of 2":              []any{newID, []byte(newPub), uint64(2), uint64(1), []byte{0}},
+		"an empty credential":      []any{newID, []byte(newPub), uint64(1), uint64(1), []byte{}},
+		"another device than path": []any{id.New(), []byte(newPub), uint64(1), uint64(1), []byte{0}},
+	} {
+		rec := postCBOR(h, path(newID), establishBody(t, h, deps, newID, newPriv, element3, assertion()))
+		if rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_INVALID_REQUEST" {
+			t.Fatalf("%s with login = %d %q, want 400 E_INVALID_REQUEST", name, rec.Code, refusalCode(t, rec))
+		}
+	}
+	if _, err := deps.Repo.GetDevice(ctx, newID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a refused registration wrote a row: %v", err)
+	}
+	// Head ruling 31. Attacker statement: only the registering client's own body; a password alone
+	// can no longer mint a `native` row with 30-day sessions and the `app` label in Settings;
+	// protocol/03's pairing ceremony is the native path.
+	cred := bytes.Repeat([]byte{0}, 10)
+	for name, element3 := range map[string]any{
+		"a native tier":        []any{newID, []byte(newPub), uint64(0), uint64(0), cred},
+		"a native signer tier": []any{newID, []byte(newPub), uint64(1), uint64(0), cred},
+	} {
+		rec := postCBOR(h, path(newID), establishBody(t, h, deps, newID, newPriv, element3, assertion()))
+		var refusalBody []any
+		if err := cborx.Unmarshal(rec.Body.Bytes(), &refusalBody); err != nil || len(refusalBody) < 2 {
+			t.Fatalf("%s: undecodable answer %d %x (err %v)", name, rec.Code, rec.Body.Bytes(), err)
+		}
+		if rec.Code != http.StatusBadRequest || refusalBody[0] != "E_INVALID_REQUEST" ||
+			refusalBody[1] != "assertion registration is for browser devices" {
+			t.Fatalf("%s with login = %d %v %q, want 400 E_INVALID_REQUEST \"assertion registration is for browser devices\"",
+				name, rec.Code, refusalBody[0], refusalBody[1])
+		}
+		if _, err := deps.Repo.GetDevice(ctx, newID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("%s: a refused registration wrote a row: %v", name, err)
+		}
+	}
+
+	reg := []any{newID, []byte(newPub), uint64(1), uint64(1), cred}
+	tooLong := []any{newID, []byte(newPub), uint64(1), uint64(1), bytes.Repeat([]byte{0}, 2049)}
+	rec = postCBOR(h, path(newID), establishBody(t, h, deps, newID, newPriv, tooLong, assertion()))
+	if rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_INVALID_REQUEST" {
+		t.Fatalf("2049-byte credential = %d %q, want 400 E_INVALID_REQUEST", rec.Code, refusalCode(t, rec))
+	}
+	rec = postCBOR(h, path(newID), bytes.Repeat([]byte{0}, 8193))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("8193-byte establish body = %d, want 413", rec.Code)
+	}
+	rec = postCBOR(h, path(newID), establishBody(t, h, deps, newID, newPriv, reg, assertion()))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("registration = %d %x, want 201", rec.Code, rec.Body.Bytes())
+	}
+	out = nil
+	if err := cborx.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	userID, _ := out[2].([]byte)
+	deviceID, _ := out[3].([]byte)
+	if out[1] != uint64(auth.ScopePending) || !bytes.Equal(userID, u.ID[:]) || !bytes.Equal(deviceID, newID[:]) {
+		t.Fatalf("registration answered %v, want scope 1 for %s's device %s", out, u.ID, newID)
+	}
+	row, err := deps.Repo.GetDevice(ctx, newID)
+	if err != nil || row.UserID != u.ID || row.VerifiedAt != nil || row.Tier != 1 || row.SignerTier != 1 {
+		t.Fatalf("the registered row = %+v (err %v), want an unverified browser row", row, err)
+	}
+}
+
+// Q26 through the handler. Attacker statement: a stolen password for an account whose owner never
+// published a list registers nothing.
+func TestAStolenPasswordCannotRegisterADeviceForAUserWithNoList(t *testing.T) {
+	h, deps := newTestAPI(t)
+	u, _, _ := seedAPIDevice(t, deps) // never listed: the harness lister answers ErrNoDeviceList
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	newID := id.New()
+	reg := []any{newID, []byte(pub), uint64(1), uint64(1), []byte{0}}
+	rec := postCBOR(h, "/v1/devices/"+newID.String()+"/sessions",
+		establishBody(t, h, deps, newID, priv, reg, []byte(deps.Assertions.Issue(u.ID, false))))
+	if rec.Code != http.StatusUnauthorized || refusalCode(t, rec) != "E_UNAUTHENTICATED" {
+		t.Fatalf("registration for a no-list user = %d %q, want 401 E_UNAUTHENTICATED", rec.Code, refusalCode(t, rec))
+	}
+	if _, err := deps.Repo.GetDevice(context.Background(), newID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a stolen password created a device row: %v", err)
 	}
 }
