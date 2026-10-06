@@ -129,6 +129,19 @@ describe('sending (rule 5)', () => {
     expect(states()).toEqual([1]);
   });
 
+  const proxy: [number][] = [[502], [504]];
+  it.each(proxy)("takes a proxy's %i (E_HTTP) as a lost response: the stored upload is adopted, never sent twice (CLIENT-CORE-TS-03)", async (status) => {
+    ds.detach(ME.device);
+    ds.inject('postMessage', { after: () => { throw httpError(status, 'E_HTTP'); } });
+    d.engine.send(g, 'behind a proxy');
+    await settle();
+    await clock.advance(30_000);
+    expect(posts()).toBe(1);
+    expect(sent()).toEqual(['behind a proxy']);
+    expect(d.core.outbox(g)).toEqual([]);
+    expect(d.core.bodies(g)).toEqual(['behind a proxy']);
+  });
+
   it('settles a row left in flight by an earlier page through a catch-up, not a resend', async () => {
     ds.detach(ME.device);
     const earlier = d.core.sendPrepare(g, 'earlier', 1n);

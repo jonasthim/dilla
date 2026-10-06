@@ -111,7 +111,8 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       if (!s.resyncTried.has(hex)) await resyncGroup(s, g, false);
     } else if (status === 401) {
       s.deps.core.sendRequeue(msgId); s.deps.onOutboxChanged(g);
-    } else if (status === 0 || status === 500) {
+    } else if (status === 0 || status === 500 || status === 502 || status === 504) {
+      // 502/504 come from the operator's proxy (L-HTTP-10) and say nothing about whether dillad stored it.
       await afterLostResponse(s, g, msgId);
     } else {
       s.deps.core.sendFail(msgId, code); s.deps.onOutboxChanged(g); s.requestDrain(g);
