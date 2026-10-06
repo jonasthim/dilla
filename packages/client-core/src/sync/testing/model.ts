@@ -1035,7 +1035,12 @@ export class ModelDs {
       seq, epoch, PEER.device, wire.app(PEER, idOf(0x7e, Number(seq)), `parity ${String(seq)}`), new Uint8Array(32), new Uint8Array(32),
       1_700_000_000n + seq, 0,
     ],
-    /** peer-commit: a self-update commit by PEER (kind 1), framed in `epoch`. */
+    /**
+     * peer-commit: a self-update commit by PEER (kind 1), framed in `epoch`. Stand-in convention
+     * (CORE-ENGINE-02): element 1 is the pre-commit epoch here and in appendCommit, while dillad and the
+     * Rust relay label a commit row with the post-commit epoch; the Rust core reads the epoch from the
+     * MLS message and the engine never reads the label, so no rule may key on it without changing both.
+     */
     peerCommit: (seq: bigint, epoch: bigint): CborInput[] => [seq, epoch, 1, 1n, wire.commit(epoch + 1n, PEER.device, [], [])],
     /** bad-commit: a kind-1 row whose blob no core can process. */
     badCommit: (seq: bigint, epoch: bigint): CborInput[] => [seq, epoch, 1, 1n, new Uint8Array([0xff])],
@@ -1458,7 +1463,10 @@ export class ModelDs {
     return e;
   }
 
-  /** Appends a commit framed at the current epoch, advances the epoch, voids its proposals, fans out op 16. */
+  /**
+   * Appends a commit framed at the current epoch, advances the epoch, voids its proposals, fans out op 16.
+   * The row is labelled with the pre-commit epoch, unlike dillad (see ModelDs.row.peerCommit, CORE-ENGINE-02).
+   */
   private appendCommit(g: DsGroup, kind: number, sender: bigint | null, blob: Uint8Array, adds: readonly Id[], removes: readonly Id[]): bigint {
     const e: DsEntry = {
       seq: g.next, epoch: g.epoch, hs: { kind, sender }, uploader: null, blob, commitment: null, deleted: false,

@@ -108,6 +108,11 @@ describe('the parity fixture (L-CORE-10)', () => {
       const core = await commonStart();
       const { handshakes, messages } = rowsOf(core, c);
       expect(core.groupApply(G, encode(handshakes), encode(messages), BigInt(c.through))).toEqual(expected(c));
+      // new_seqs lists every inserted row, readable or not; the ordering cases are named for readability
+      // (CORE-ENGINE-01), so every peer message the apply inserted must have been decrypted.
+      const inserted = new Set(c.expect.new_seqs);
+      const peerMessages = c.rows.filter((r) => r.what === 'peer-message' && inserted.has(r.seq)).map((r) => BigInt(r.seq));
+      expect(core.unreadable(G).filter((u) => peerMessages.includes(u.seq))).toEqual([]);
     });
 
     it(`decoder: ${c.name}`, () => {
