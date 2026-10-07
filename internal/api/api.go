@@ -222,7 +222,9 @@ func Register(m *server.Mux, d Deps) {
 	// The challenge route meters itself on its own two keys inside the handler.
 	m.Handle("POST /v1/devices/{device_id}/sessions/challenge", http.HandlerFunc(d.SessionChallenge))
 	m.Handle("POST /v1/devices/{device_id}/sessions", http.HandlerFunc(d.SessionEstablish))
-	m.Handle("DELETE /v1/devices/{device_id}/sessions", d.enrolled(d.SessionDelete))
+	// The sessions DELETE is on the device write bucket like DELETE /v1/devices/{device_id}, and
+	// keeps the same ten-minute grace for another device's unlisted row (fix-wave review NEW-1).
+	m.Handle("DELETE /v1/devices/{device_id}/sessions", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.SessionDelete)))
 
 	// The gateway ticket. The route is mounted here and answers 501 until part
 	// 1b task 17 fills Deps.Tickets, so the document and the binary agree on

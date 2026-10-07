@@ -32,8 +32,12 @@ export class Session {
       if (this.deps.core.identity().phase === 2) this.deps.core.sessionClear();
       return false;
     }
-    const want = id.phase === 3 ? 1 : 0;
-    if (result.scope !== want) throw new Error('E_SESSION_SCOPE');
+    // An enrolment (phase 3) holds a pending session. So does phase 2 while the own list is unpublished (fix-wave review
+    // NEW-1): the instance enrols the row only once a list names it, so a session cut before that list PUT re-establishes
+    // pending, and that is this enrolment's own session, not a revocation. Past the publication only scope 0 is accepted.
+    const current = this.deps.core.identity();
+    const accepted = id.phase === 3 ? [1] : current.phase === 2 && !current.listPublished ? [0, 1] : [0];
+    if (!accepted.includes(result.scope)) throw new Error('E_SESSION_SCOPE');
     this.deps.core.sessionStore({ token: result.token, expires: result.expires, idleExpires: result.idleExpires });
     return true;
   }

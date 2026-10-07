@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -217,6 +218,27 @@ func (d Deps) SessionDelete(w http.ResponseWriter, r *http.Request) {
 	if device.UserID != sess.UserID {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "not found"))
 		return
+	}
+	// The same ten-minute grace as the key-less DELETE /v1/devices/{device_id} (fix-wave review
+	// NEW-1): without it a stolen enrolled session polling GET /v1/devices cut a recovering owner's
+	// pending session the moment its row appeared, at no login cost, and so kept the owner from
+	// publishing the list that revokes the thief. A listed row and the caller's own device are
+	// never refused.
+	if sess.DeviceID != device.ID && device.Created > d.Clock.Now().Unix()-keylessDeleteGrace {
+		if d.Sessions.DeviceLists == nil {
+			server.WriteError(w, server.Errorf(server.CodeInternal, "device-list lookup is not wired"))
+			return
+		}
+		entries, listErr := d.Sessions.DeviceLists.ListedDevices(r.Context(), sess.UserID)
+		if listErr != nil && !errors.Is(listErr, auth.ErrNoDeviceList) {
+			server.WriteError(w, auth.ListError(listErr))
+			return
+		}
+		if !auth.Listed(entries, device.ID, device.DSKPub) {
+			server.WriteError(w, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
+				"the device registered less than 10 minutes ago and is too new to remove its sessions; its own session may remove them, or it expires unlisted after 24 hours")))
+			return
+		}
 	}
 	if _, err := d.Sessions.DeleteDeviceSessions(r.Context(), deviceID); err != nil {
 		server.WriteError(w, d.storeError(r, err))

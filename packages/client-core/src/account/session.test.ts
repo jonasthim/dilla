@@ -92,6 +92,20 @@ describe('Session', () => {
     expect(core.session()).toBeNull();
   });
 
+  it('accepts a pending scope in phase 2 only while the own list is unpublished (fix-wave review NEW-1)', async () => {
+    const server = new FakeServer();
+    const userId = server.register('ada', DEVICE);
+    const core = FakeCore.identified({ instanceId: INSTANCE, userId, deviceId: DEVICE, username: 'ada', listPublished: false });
+    const { session } = sessionFor(server, core);
+    server.scope = 1;
+    expect(await session.establish()).toBe(true);
+    expect(core.session()?.token).toBe('tok-1');
+    core.deviceListPublished();
+    core.sessionClear();
+    await expect(session.establish()).rejects.toThrow('E_SESSION_SCOPE');
+    expect(core.session()).toBeNull();
+  });
+
   it('ensure renews only within the margin', async () => {
     const { server, core, session } = setup();
     expect(await session.ensure()).toBe(true);

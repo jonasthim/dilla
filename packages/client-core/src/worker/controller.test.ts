@@ -1256,6 +1256,72 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(phasesOf(w)).not.toContain('revoked');
   });
 
+  /** Fix-wave review NEW-1: another enrolled session cuts this browser's pending session after enrolComplete, before
+   *  the list PUT. The row is live and unlisted, so the re-establish answers a pending scope; while the own list is
+   *  unpublished that is this enrolment's own session, never a revocation. `cuts` is how many list PUTs answer 401. */
+  function cutDuringEnrolment(cuts: number) {
+    const paths: string[] = [];
+    const base = fakeFetch(paths);
+    const user = toHex(USER);
+    let left = cuts;
+    let published = false;
+    const cutting = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname;
+      paths.push(`${request.method} ${path}`);
+      const list = `/v1/users/${user}/device-list`;
+      if (path === '/v1/backups/0/0') return Promise.resolve(cbor([ROOT, 1]));
+      if (path === '/v1/backups/1/0' && request.method === 'GET') return Promise.resolve(cbor([STATE_OBJECT, 1]));
+      if (path === '/v1/backups/1/0') return Promise.resolve(cbor([new Uint8Array(32), 3]));
+      if (path === list && request.method === 'GET') return Promise.resolve(cbor([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]));
+      if (path === list) {
+        if (left > 0) { left -= 1; return Promise.resolve(cbor(['E_UNAUTHENTICATED', '', null], 401)); }
+        published = true;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path.endsWith('/sessions/challenge')) return Promise.resolve(cbor([new Uint8Array(32), 1_700_000_060], 201));
+      if (path.endsWith('/sessions')) {
+        // The instance enrols the session only once the list names this device; before that the row is pending.
+        return Promise.resolve(cbor([published ? 'enrolled' : 'pending-again', published ? 0 : 1, USER, DEVICE,
+          1_700_604_800, 1_700_043_200, 7], 201));
+      }
+      if (path === '/v1/accounts/me') return Promise.resolve(cbor([USER, 'web', 'Web', 0, 0]));
+      if (path === '/v1/communities' || path === '/v1/dms') return Promise.resolve(cbor([]));
+      return base(input, init);
+    }) as typeof fetch;
+    const w = world({ phase: 3, enrolUser: true, realRoutes: true, realAccount: true, fetch: cutting });
+    w.state.session = { token: 'pending', expires: NOW_S + 604_800n, idleExpires: NOW_S + 43_200n };
+    return { w, paths, user };
+  }
+
+  it('a pending session cut once during the enrolment re-establishes pending, publishes and reaches ready, never revoked', async () => {
+    const { w, paths, user } = cutDuringEnrolment(1);
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('signin-key'));
+    w.call(2, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
+    expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null });
+    expect(paths.filter((p) => p === `PUT /v1/users/${user}/device-list`)).toHaveLength(2);
+    expect(w.state.session?.token).toBe('enrolled');
+    expect(w.account()?.phase).toBe('ready');
+    expect(phasesOf(w)).not.toContain('revoked');
+  });
+
+  it('a pending session cut again after its pending re-establish is the eviction (E_SIGNIN_EVICTED), never revoked', async () => {
+    const { w, paths, user } = cutDuringEnrolment(5);
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('signin-key'));
+    w.call(2, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
+    const want = { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null };
+    expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: false, error: want });
+    // One re-establish, one retried PUT: the second 401 is not chased further.
+    expect(paths.filter((p) => p === `PUT /v1/users/${user}/device-list`)).toHaveLength(2);
+    expect(paths.filter((p) => p.endsWith('/sessions') && p.startsWith('POST'))).toHaveLength(1);
+    expect(w.account()).toMatchObject({ phase: 'cleared', error: want });
+    expect(phasesOf(w)).not.toContain('revoked');
+  });
+
   it('a list race wipes the store and ends in cleared; nothing reopens it in this worker', async () => {
     const w = world({ phase: 0 });
     w.enrol.complete.mockImplementationOnce(() => { w.state.phase = 2; return Promise.reject(new Error('E_LIST_RACE')); });

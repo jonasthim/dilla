@@ -387,6 +387,101 @@ func TestADeviceMayRemoveItsOwnNewRow(t *testing.T) {
 	wantAPIDeviceLive(t, deps, "the other device", first.ID, true)
 }
 
+// Fix-wave review NEW-1. Attacker statement: as above, the attacker holds an enrolled session of
+// the user and polls GET /v1/devices; the sibling route DELETE /v1/devices/{id}/sessions cut the
+// recovering owner's pending session (200 DELETEs, all 204, then the owner's token answered 401)
+// with no meter and no grace. Now it spends the write bucket and refuses another device's
+// unlisted row younger than ten minutes with 409, so 200 DELETEs inside the grace leave the
+// owner's pending token valid; after the grace a stray row's sessions are removable again.
+func TestAnEnrolledSessionCannotCutARecoveringOwnersPendingSession(t *testing.T) {
+	h, deps := newTestAPI(t)
+	clk := deps.Clock.(*clock.Fake)
+	user, thief, thiefToken := seedAPISession(t, deps)
+	listerOf(t, deps).list(user.ID, thief)
+	owner, ownerToken := pendingSession(t, h, deps, user.ID)
+	clk.Advance(time.Minute)
+
+	path := "/v1/devices/" + owner.String() + "/sessions"
+	ownList := "/v1/users/" + user.ID.String() + "/device-list"
+	const detail = "the device registered less than 10 minutes ago and is too new to remove its sessions; its own session may remove them, or it expires unlisted after 24 hours"
+	refused, limited := 0, 0
+	for i := 0; i < 200; i++ {
+		rec := cborCall(t, h, http.MethodDelete, path, thiefToken, nil)
+		switch {
+		case rec.Code == http.StatusConflict:
+			wantListRefusal(t, rec, http.StatusConflict, "E_INVALID_REQUEST", detail)
+			refused++
+		case rec.Code == http.StatusTooManyRequests && refusalCode(t, rec) == "E_RATE_LIMITED":
+			limited++
+		default:
+			t.Fatalf("DELETE #%d of the owner's sessions = %d %x, want 409 or 429", i+1, rec.Code, rec.Body.Bytes())
+		}
+	}
+	if refused == 0 || limited == 0 {
+		t.Fatalf("200 DELETEs: %d refused by the grace, %d by the write bucket; want both", refused, limited)
+	}
+	if rec := cborCall(t, h, http.MethodGet, ownList, ownerToken, nil); rec.Code == http.StatusUnauthorized {
+		t.Fatal("the owner's pending session was cut inside the grace")
+	}
+
+	// After the grace (and a refilled bucket) the young-row rule no longer applies.
+	clk.Advance(10 * time.Minute)
+	if rec := cborCall(t, h, http.MethodDelete, path, thiefToken, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE of a 11-minute-old unlisted row's sessions = %d %x, want 204", rec.Code, rec.Body.Bytes())
+	}
+	if rec := cborCall(t, h, http.MethodGet, ownList, ownerToken, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the stray row's token after the DELETE = %d, want 401", rec.Code)
+	}
+}
+
+// The sessions DELETE's grace covers unlisted rows only, and never the caller's own device: a
+// listed device's sessions are removable at any age, and a young unlisted device logs itself out.
+func TestTheSessionsDeleteGraceSparesListedRowsAndTheCallersOwnDevice(t *testing.T) {
+	h, deps := newTestAPI(t)
+	user, first, firstToken := seedAPISession(t, deps)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := deps.Clock.Now().Unix()
+	second := store.DeviceRow{ID: id.New(), UserID: user.ID, DSKPub: pub, CredentialBlob: []byte{1}, Created: now, LastSeen: now}
+	if err := deps.Repo.CreateDevice(t.Context(), second); err != nil {
+		t.Fatal(err)
+	}
+	establish := func() string {
+		nonce, _, err := deps.Sessions.Challenge(t.Context(), second.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tok, err := deps.Sessions.Establish(t.Context(), auth.EstablishRequest{DeviceID: second.ID, Nonce: nonce,
+			Purpose: auth.PurposeSession, Sig: ed25519.Sign(priv, auth.SessionPreimage(deps.Sessions.InstanceID(), second.ID, nonce, auth.PurposeSession))})
+		if err != nil || tok.Scope != auth.ScopeEnrolled {
+			t.Fatalf("establish the second device: %v (scope %d)", err, tok.Scope)
+		}
+		return tok.Token
+	}
+	path := "/v1/devices/" + second.ID.String() + "/sessions"
+	// No list yet (a web-1 account): the young second row is unlisted, so another device is refused
+	// and the row's own session is not.
+	secondToken := establish()
+	if rec := cborCall(t, h, http.MethodDelete, path, firstToken, nil); rec.Code != http.StatusConflict {
+		t.Fatalf("another device's sessions DELETE of a new unlisted row = %d %x, want 409", rec.Code, rec.Body.Bytes())
+	}
+	if rec := cborCall(t, h, http.MethodDelete, path, secondToken, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("a device's sessions DELETE of its own new row = %d %x, want 204", rec.Code, rec.Body.Bytes())
+	}
+	// Listed, the same young row's sessions are removable by another device.
+	listerOf(t, deps).list(user.ID, first, second)
+	secondToken = establish()
+	deps.Clock.(*clock.Fake).Advance(time.Minute)
+	if rec := cborCall(t, h, http.MethodDelete, path, firstToken, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("another device's sessions DELETE of a listed new row = %d %x, want 204", rec.Code, rec.Body.Bytes())
+	}
+	if rec := cborCall(t, h, http.MethodGet, "/v1/accounts/me", secondToken, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the listed row's token after the DELETE = %d, want 401", rec.Code)
+	}
+}
+
 // REGISTRATION-DEVICES-03 (c): the three /v1/devices routes spend the device session's buckets,
 // GET the read bucket and POST and DELETE the write bucket, as the other web-2a routes do.
 func TestTheDeviceRoutesSpendTheDeviceBuckets(t *testing.T) {
@@ -410,6 +505,13 @@ func TestTheDeviceRoutesSpendTheDeviceBuckets(t *testing.T) {
 		t.Fatalf("a DELETE past the write burst = %d %q, want 429 E_RATE_LIMITED", rec.Code, refusalCode(t, rec))
 	}
 	wantAPIDeviceLive(t, deps, "the device a metered DELETE named", first.ID, true)
+	// NEW-1: the sessions DELETE spends the same write bucket.
+	if rec := cborCall(t, h, http.MethodDelete, "/v1/devices/"+first.ID.String()+"/sessions", token, nil); rec.Code != http.StatusTooManyRequests || refusalCode(t, rec) != "E_RATE_LIMITED" {
+		t.Fatalf("a sessions DELETE past the write burst = %d %q, want 429 E_RATE_LIMITED", rec.Code, refusalCode(t, rec))
+	}
+	if rec := cborCall(t, h, http.MethodGet, "/v1/accounts/me", token, nil); rec.Code != http.StatusOK {
+		t.Fatalf("the session a metered sessions DELETE named = %d, want 200", rec.Code)
+	}
 }
 
 // signedListPut is version `version` of user's list chained to prevBlob (nil: 32 zero bytes),

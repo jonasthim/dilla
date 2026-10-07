@@ -290,6 +290,11 @@ export class FakeServer {
     if (deleteSessions !== null) {
       const target = deleteSessions[1];
       if (this.devices.get(target) !== user) return refuse(404, 'E_NOT_FOUND');
+      // The same grace for another device's young unlisted row (fix-wave review NEW-1).
+      const listed = this.deviceLists.has(user) && this.listed(user, target);
+      if (target !== device && !listed && (this.createdAt.get(target) ?? this.nowS) > this.nowS - 600)
+        return refuse(409, 'E_INVALID_REQUEST', 'the device registered less than 10 minutes ago and is too new to remove ' +
+          'its sessions; its own session may remove them, or it expires unlisted after 24 hours');
       this.dropTokens(target);
       return reply(204);
     }

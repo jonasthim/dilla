@@ -107,11 +107,19 @@ on its revocations (`02` § Device sessions item 6).
 |---|---|---|---|
 | `POST /v1/devices/{device_id}/sessions/challenge` | — | `[]` | `201 [nonce(bstr32), expires(uint)]` |
 | `POST /v1/devices/{device_id}/sessions` | — | `[nonce, purpose, sig, registration\|credential\|null, login\|null]` | `201 [token, scope, user_id, device_id, expires, idle_expires, generation]` |
-| `DELETE /v1/devices/{device_id}/sessions` | E | — | `204` (all sessions of that device) |
+| `DELETE /v1/devices/{device_id}/sessions` | E | — | `204` (all sessions of that device, sockets closed); `409 E_INVALID_REQUEST` for another device's unlisted row created less than 10 minutes ago; `404 E_NOT_FOUND` for another user's device; spends the device session's write bucket (`429 E_RATE_LIMITED`) |
 | `POST /v1/gateway/ticket` | E | `[]` | `201 [ticket(tstr), expires(uint)]` — single use, 30 s |
 
 The full session issuance and lifetime rules — scopes, lifetimes, revocation — are
 `02-delivery-service.md`'s `§ Device sessions`; this table only locates the routes.
+`DELETE /v1/devices/{device_id}/sessions` keeps the grace of the key-less
+`DELETE /v1/devices/{device_id}`: another device's sessions of an unlisted row younger than 10
+minutes are not removed (`409`), and the caller's own device always is. Without it a stolen enrolled
+session polling `GET /v1/devices` cut a recovering owner's pending session on sight, before the list
+`PUT` that names the new row. A listed device's sessions, and an unlisted row's after 10 minutes,
+are removed by any enrolled session of the user. A client whose own list is unpublished accepts a
+`pending` answer when it re-establishes after such a cut; a second `401` on the list `PUT` is the
+row's eviction, not a revocation.
 An assertion registration with a native `tier` or `signer_tier` is `400 E_INVALID_REQUEST`:
 assertion registration is for browser devices; `03`'s pairing ceremony is the native path.
 
