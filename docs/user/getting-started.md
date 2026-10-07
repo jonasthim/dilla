@@ -1,8 +1,8 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance. It describes the web client
-as it is on 2026-10-07 ("web-2a"): signing up, adding a second browser, using channels and direct
-messages, and what the client cannot do yet. Every quoted line is the text the screen shows;
+as it is on 2026-10-07 ("web-2a"): signing up, using the account in a second browser, devices, channels,
+direct messages, badges and notifications, and what the client cannot do yet. Every quoted line is the text the screen shows;
 `{instance}` stands for the instance's address and `{username}` for yours.
 
 If you run the instance yourself, start with the [operator guide](../deploy/README.md).
@@ -113,8 +113,8 @@ What follows from that:
   it.
 - **Another tab.** Only one tab runs dilla at a time. A second tab shows "dilla is open in another tab" and
   takes over when the first one closes.
-- **Signed out by the account.** If the account no longer accepts this browser, the app says "This browser
-  was signed out". Settings → Devices can remove a device or "sign out and remove this browser".
+- **Signed out by the account.** If the account no longer accepts this browser (another browser removed it
+  in Settings → Devices), the app says "This browser was signed out". See [Devices](#7-devices).
 
 ## 4. The app
 
@@ -198,33 +198,123 @@ a short code (for example `E_CORE_MLS`) instead of its text. Nothing in this ver
 | "dilla could not start" | **Reload** |
 | "Too many attempts from this network." | Wait as long as it says, then try again |
 
-## 6. Add another browser
+## 6. Use your account in a second browser
 
-![The sign-in ceremony's password step](screenshots/signin-1-login.png)
+You need three things: your username, your password and the recovery key you wrote down at sign-up. The
+sign-in has four steps, in this order: the recovery key, then your username and password, then the code of
+your second factor (only if the account has one), then done. Nothing is sent to the instance until the
+second step, and the key is never written to the browser's storage.
 
-On a new browser choose **Use an existing account**. "Sign in to {instance}" asks for your username and
-password. If the account uses a second factor, "Your second factor" asks for its six-digit code. Then
-"Your recovery key" says: "Type or paste the recovery key you wrote down when the account was created.
-Spaces and hyphens do not matter." **Add this browser** adds its device.
+![Onboarding step 1 on a new browser, with the button "Use an existing account" under the invite
+field](screenshots/signin-0-entry.png)
 
-![The recovery-key step of sign-in](screenshots/signin-3-recovery-key.png)
+On the new browser, open the instance's address and choose **Use an existing account** under the invite
+field. The instance offers it only when it takes password logins. An instance that takes no new accounts
+still shows the button.
 
-The final step says "This browser is now a device of {username} on {instance}. Messages sent before now are
-not shown here." The new browser sees new messages, not the earlier channel archive. A rejected key says
-"This is not the recovery key of this account. Check every character." A registration 429 says "Too many
-sign-in attempts. Try again in {seconds} s." and asks you to wait briefly.
+### Step 1 of 4: Your recovery key
 
-![The final sign-in step](screenshots/signin-4-done.png)
+![Step 1: "Your recovery key", the key typed in groups and "52 of 52 characters"](screenshots/signin-1-recovery-key.png)
 
-## 7. Devices and notifications
+"Type or paste the recovery key you wrote down when the account was created. Spaces and hyphens do not
+matter." The line under the field counts what you typed ("{n} of 52 characters"); **Continue** works once
+it reads 52 ("A recovery key has 52 characters."). This step sends nothing: the page holds the key until
+step 2. A key that cannot be a recovery key is refused when you continue from step 2, before your password
+is sent, and a key of another account once the instance has answered; either way this step shows again with
+what you typed and "This is not the recovery key of this account. Check every character." (after the
+instance has answered, its button reads **Add this browser** and you do not sign in again). **Create a new
+account instead** goes back to the sign-up.
+
+### Step 2 of 4: Sign in to {instance}
+
+![Step 2: "Sign in to dilla.test" with the username mira and a password](screenshots/signin-2-login.png)
+
+"Use the username and password of your account on {instance}." **Continue** checks them ("Checking…"). A
+wrong pair says "That username and password did not work." and empties the password field. **Cancel** goes
+back to the sign-up.
+
+If the account has no second factor, this same step adds the browser to the account ("Adding this browser to
+your account…") and goes straight to step 4.
+
+### Step 3 of 4: Your second factor
+
+Only for an account with a second factor: "Enter the six-digit code from your authenticator app." A wrong
+code sends you back to step 2 with "That code did not work. Sign in again with a fresh code.", because the
+instance has used up that login; type the password again and then a new code. A right code adds the
+browser and goes on to step 4.
+
+### Step 4 of 4: You’re in
+
+![Step 4: "You’re in" and the Open dilla button](screenshots/signin-4-done.png)
+
+"This browser is now a device of {username} on {instance}. Messages sent before now are not shown here."
+**Open dilla** opens the app. The new browser sees new messages, not what was said before it joined.
+
+### If the sign-in stops
+
+| The page shows | What it means and what to do |
+|---|---|
+| "This is not the recovery key of this account. Check every character." | The key is wrong (a typo, or another account's key). Correct it and continue |
+| "Someone else is signing in to this account. Change your password from a device you still have, or ask the operator." | Another sign-in with your password took this browser's place before it was added. If that was not you, someone else has your password. The web client cannot change a password yet, so tell whoever runs the instance; meanwhile your other browsers keep working, and a device that signed in with the password alone cannot read anything. You land on step 2 or on the first page; sign in again once it is sorted out |
+| "The account’s devices changed while you were signing in. Sign in again." | Another of your browsers changed the account's devices meanwhile. This browser's data was cleared; start again from **Use an existing account** |
+| "This account already has as many devices as {instance} allows. Remove one in Settings on another device first." | Remove a device in Settings → Devices on a browser you still have, then continue |
+| "Too many sign-in attempts. Try again in {seconds} s." | Wait that long, then continue |
+| "This account has no backup to recover from on {instance}. Sign in on a device that still holds this account and open dilla there; it repairs the backup. Then try again." | Open dilla in a browser that already holds the account and let it connect; then sign in here again |
+| "The connection dropped. Check it and try again." | Check the network and continue |
+
+## 7. Devices
 
 Open **settings** in the server rail, then **devices**. "Every browser and app signed in to your account.
-Removing a device needs your recovery key." A row marked "this browser" is the one you are using. **remove**
-on another listed device asks for the recovery key; "sign out and remove this browser" clears this browser
-and removes its device. "forget this browser" clears its data here but leaves its device in the account list
-until removed elsewhere.
+Removing a device needs your recovery key." Each row is a device, named by the first eight characters of its
+id, with the tag "browser" or "app" and when it was last seen. The row marked "this browser" is the one you
+are using. "not yet in the device list" marks a device that signed in with your password but was never
+added; "removed" marks one that was removed. **refresh** reads the list again.
 
-![Two browsers in Settings → Devices](screenshots/settings-devices.png)
+![Settings → Devices in Mira's first browser: this browser and a second browser, the buttons "sign out and
+remove this browser" and "forget this browser"](screenshots/settings-devices.png)
+
+- **remove** on another device: "Remove this device?" "The device is signed out everywhere and leaves every
+  conversation. Enter your recovery key to confirm." **Remove** does it. A wrong key says "This is not the
+  recovery key of this account." A device that is "not yet in the device list" is removed without the key:
+  "This device signed in with your password but is not in the device list, so it cannot read anything.
+  Removing it needs no recovery key."
+- **sign out and remove this browser**: "This browser is removed from your account and its data here is
+  cleared. You can sign in again later with your password and recovery key. Enter the key to confirm."
+  **Sign out** removes it and reloads to the first page.
+- **forget this browser**: "This clears dilla’s data from this browser and signs it out. The device stays in
+  your account’s device list until you remove it from another device." No key is needed. Remove the row from
+  another browser afterwards.
+
+![The dialog "Sign out and remove this browser?" with the recovery key field](screenshots/settings-devices-signout.png)
+
+**If the recovery data is not yours.** If the instance holds recovery data that this account did not make,
+a red warning stays at the top of the app and of Settings → Devices: "The recovery data stored for this
+account on {instance} is not this account’s. The recovery key will not work until the operator resets it."
+It cannot be dismissed. Until it goes away, removing a device with the key and adding a browser will fail;
+keep using the browsers you have and ask whoever runs the instance to reset the account's recovery data.
+
+Settings works at phone width and at high zoom: the sections stack above their content and the whole panel
+scrolls as one column.
+
+## 8. Badges, direct messages and notifications
+
+![Mira in #general: the server tile in the rail shows 1, #loot shows 1, and the direct messages tab shows 1
+for a reply from Ada](screenshots/shell-dm-badge.png)
+
+A channel with unread messages shows a count, and mentions have their own count. The server's tile in the
+rail counts its unread channels, and each sidebar tab adds up its rows: here #loot is unread and Ada has
+answered a direct message. Opening a channel or a direct message marks it read. Your own messages, from any
+of your browsers, never count as unread.
+
+![A channel and server rail with unread badges](screenshots/shell-unread-badge.png)
+
+In **direct messages**, choose **message someone** ("Pick a member of this server."), choose **message** next
+to a person and write. A direct message someone else starts appears without reloading. Direct messages stay
+reachable when you are in no server, or when a server did not load: the **direct messages** tab is still
+there, and the channels tab says what is wrong. Starting a new one needs a server, because the list of
+people comes from it.
+
+![A direct message with Ada](screenshots/dm-conversation.png)
 
 Under **notifications**, "Desktop notifications show while a dilla tab is open. Nothing is shown when every
 tab is closed." Choose **turn on** to ask the browser for permission. The default "notify me about" choices
@@ -233,17 +323,11 @@ are "direct messages and mentions", "every message" and "nothing". "Per channel"
 
 ![Notification permission before opt-in](screenshots/settings-notifications.png)
 
-![A channel and server rail with unread badges](screenshots/shell-unread-badge.png)
+## 9. Known limits (2026-10-07)
 
-In **direct messages**, choose **message someone**, pick a member and send text. Replies badge the DM until
-you open it. A DM that another member starts also appears without reloading.
-
-![A direct message with Ada](screenshots/dm-conversation.png)
-
-## 8. Known limits (2026-10-07)
-
-- No native phone or desktop app. A second browser needs both the password and recovery key. Pins are local
-  to one browser; a new browser does not get messages from before it joined.
+- No native phone or desktop app. A second browser needs the recovery key and the password (and the code,
+  for an account with a second factor). Pins are local to one browser; a new browser does not get messages
+  from before it joined. Devices have no names, and the password cannot be changed from the web client.
 - No server, channel or invite can be created from the web client, and there are no roles, permissions or
   profile screens. A server invite has to come from someone who can make one through
   the instance's API, or from the host (`dillad admin invite create`).
@@ -265,12 +349,14 @@ you open it. A DM that another member starts also appears without reloading.
 
 The screenshots are real: `e2e/scripts/shoot-docs.mjs` starts a `dilla-testhost` that serves the built
 client, creates the server "Midgard Crew", signs ada, björn and mira up in three Chromium profiles, signs
-mira into a fourth, and photographs the flows. Every name and message is made up, and the accounts are deleted with the test
-host. To re-shoot them (not part of CI):
+mira into a fourth (recovery key, then username and password), and photographs the flows. Every name and
+message is made up, and the accounts are deleted with the test host. The account has no second factor, so
+step 3 of the sign-in has no screenshot, and the two warnings of sections 6 and 7 that need a second
+sign-in at the same moment or foreign recovery data are quoted, not shown. To re-shoot them (not part of CI):
 
 ```sh
 npm run build -w @dilla/web
-GO=/home/thim/.local/go/bin/go TMPDIR=/tmp/w23 npm run docs:shots -w @dilla/e2e
+GO=/path/to/go npm run docs:shots -w @dilla/e2e
 ```
 
 It needs `internal/mlswasi/testdata/dilla_core_wasi.wasm` and Playwright's Chromium, uses

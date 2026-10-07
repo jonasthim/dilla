@@ -14,7 +14,8 @@
 //      only part not done through the client; the owner never posts and holds no MLS state;
 //   3. signs ada, björn and mira up through the real onboarding in three Chromium profiles (Mesh theme,
 //      1280×800), lets them talk in #general, and shoots mira's screens;
-//   4. signs mira in from a fourth browser, then shoots Devices, notifications, badges and a DM;
+//   4. signs mira in from a fourth browser (recovery key, then username and password, then done), then
+//      shoots Devices in both browsers, notifications, badges, a DM and a DM's badge;
 //   5. removes mira from the server through the owner's session and shoots the "no longer a member" state;
 //   6. closes every browser, stops the host and deletes the temporary directories.
 //
@@ -285,6 +286,8 @@ async function onboard(page, person, invite, shots) {
 
 async function send(page, channel, text) {
   const box = composer(page, channel);
+  // A composer that is joining or catching up is read-only (aria-disabled), not disabled.
+  await box.and(page.locator(':not([readonly])')).waitFor({ timeout: WAIT });
   await box.fill(text);
   await box.press('Enter');
   // A send that raced a member's join is refused at its stale epoch and shown "not sent" (by design,
@@ -390,25 +393,30 @@ async function main(argv) {
     await shoot('shell-phone');
     await mira.setViewportSize(DESKTOP);
 
-    // Sign-in ceremony in a clean fourth browser: the key is held only in this short-lived process.
+    // Sign-in ceremony in a clean fourth browser, in the shipped order: recovery key, then username and
+    // password, then (no second factor on this account) done. The key is held only in this short-lived process.
     const second = await open('mira-second');
+    const shootSecond = shotsOf(second);
     await second.goto('/welcome');
+    await byText(second, 'button', 'onboarding.connect.signIn').waitFor({ timeout: WAIT });
+    await settle(second);
+    await shootSecond('signin-0-entry');
     await byText(second, 'button', 'onboarding.connect.signIn').click();
-    await second.getByRole('heading', { name: /^Sign in to / }).waitFor({ timeout: WAIT });
-    await settle(second);
-    await shotsOf(second)('signin-1-login');
-    await second.getByLabel(t('signin.login.username'), { exact: true }).fill(PEOPLE.mira.username);
-    await second.getByLabel(t('signin.login.password'), { exact: true }).fill(MIRA_PASSWORD);
-    await byText(second, 'button', 'signin.login.submit').click();
     await byText(second, 'heading', 'signin.key.title').waitFor({ timeout: WAIT });
-    await settle(second);
-    await shotsOf(second)('signin-3-recovery-key');
     if (miraKey === null) throw new Error('mira recovery key was not captured');
     await second.getByRole('textbox', { name: t('signin.key.label'), exact: true }).fill(miraKey);
-    await byText(second, 'button', 'signin.key.submit').click();
+    await settle(second);
+    await shootSecond('signin-1-recovery-key');
+    await byText(second, 'button', 'signin.login.submit').click();
+    await second.getByRole('heading', { name: /^Sign in to / }).waitFor({ timeout: WAIT });
+    await second.getByLabel(t('signin.login.username'), { exact: true }).fill(PEOPLE.mira.username);
+    await second.getByLabel(t('signin.login.password'), { exact: true }).fill(MIRA_PASSWORD);
+    await settle(second);
+    await shootSecond('signin-2-login');
+    await byText(second, 'button', 'signin.login.submit').click();
     await byText(second, 'heading', 'signin.done.title').waitFor({ timeout: WAIT });
     await settle(second);
-    await shotsOf(second)('signin-4-done');
+    await shootSecond('signin-4-done');
     await byText(second, 'button', 'signin.done.next').click();
     await byText(second, 'navigation', 'shell.rail.label').waitFor({ timeout: WAIT });
 
@@ -418,6 +426,17 @@ async function main(argv) {
     await mira.locator('.d-device-row').nth(1).waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('settings-devices');
+    // The sign-out dialog of the second browser, opened and closed again without sending anything.
+    await byText(second, 'button', 'shell.rail.settings').click();
+    await byText(second, 'heading', 'devices.title').waitFor({ timeout: WAIT });
+    await second.locator('.d-device-row').nth(1).waitFor({ timeout: WAIT });
+    await byText(second, 'button', 'devices.signOut').click();
+    await byText(second, 'heading', 'devices.signOutTitle').waitFor({ timeout: WAIT });
+    await settle(second, { keepFocus: true });
+    await shootSecond('settings-devices-signout');
+    await second.keyboard.press('Escape');
+    await byText(second, 'heading', 'devices.signOutTitle').waitFor({ state: 'hidden', timeout: WAIT });
+    await byText(second, 'button', 'settings.close').click();
     await byText(mira, 'button', 'settings.nav.notifications').click();
     await byText(mira, 'heading', 'notify.title').waitFor({ timeout: WAIT });
     await byText(mira, 'button', 'notify.permission.ask').waitFor({ timeout: WAIT });
@@ -459,6 +478,22 @@ async function main(argv) {
       .getByRole('tab', { name: /^channels/ }).click();
     await mira.getByRole('button', { name: 'general', exact: true }).click();
     await composer(mira, 'general').waitFor({ timeout: WAIT });
+
+    // Ada answers the DM while Mira reads #general: the DMs tab counts it, and #loot (still unread) keeps the
+    // server's badge in the rail.
+    // The tab's name carries its pill's words once a count shows, so it is matched by its start.
+    await pages.ada.getByRole('tab', { name: new RegExp(`^${t('shell.tabs.dms')}`) }).click();
+    await pages.ada.getByRole('button', { name: new RegExp(`^${PEOPLE.mira.display}`) }).click();
+    const adaDm = pages.ada.getByRole('textbox', { name: t('shell.dm.composer', { name: PEOPLE.mira.display }), exact: true });
+    await adaDm.and(pages.ada.locator(':enabled')).waitFor({ timeout: WAIT });
+    await adaDm.fill('rope is packed. bring the torches');
+    await adaDm.press('Enter');
+    await pages.ada.getByRole('log', { name: t('shell.dm.log', { name: PEOPLE.mira.display }) })
+      .locator('.d-message-row[data-state="ok"]').filter({ hasText: 'rope is packed' }).waitFor({ timeout: WAIT });
+    await mira.getByRole('tablist', { name: t('shell.tabs.label'), exact: true })
+      .locator('[data-count="1"]').filter({ hasText: t('shell.tabs.dms') }).waitFor({ timeout: WAIT });
+    await settle(mira);
+    await shoot('shell-dm-badge');
 
     // Mira is removed from the server with her tab open; her next message meets the lost membership.
     const miraId = await memberId(publicUrl, owner, community, PEOPLE.mira.username);

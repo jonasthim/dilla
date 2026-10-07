@@ -22,9 +22,11 @@ As of 2026-10-07.
 |---|---|
 | The server, `dillad` | Accounts and devices, servers (communities in the API), text channels, DMs, roles, permissions and channel overwrites, kicks and bans, invites, attachments (blobs), reports, encrypted backup objects; `dillad init`, `serve`, `doctor`, `backup`, `restore` and `admin`; TLS by ACME (TLS-ALPN, DNS or IP) or behind a proxy. Container image, systemd unit and Proxmox helper: see the [operator guide](docs/deploy/README.md). |
 | Encrypted calls, at the protocol and media level | Voice, camera and screen share through the in-process LiveKit SFU and TURN relay, with every media frame encrypted end to end (SFrame keys from MLS), driven by the browser package `packages/media` and tested in Chromium and Firefox. The web client has no call screens yet. |
-| The web client ("web-2a") | Served by `dillad` from its own address. Sign up with an invite, then add a second browser with your password and recovery key. Read and send text in channels and DMs; unread and mention badges appear in the channel list and server rail. Settings has devices, notifications and appearance; desktop notifications require opt-in and an open tab. Messages sent before a new browser joins are not shown there. One tab at a time per browser. Tested in Chromium and Firefox, and in WebKit for sign-up and reload. See [Getting started](docs/user/getting-started.md). |
+| The web client ("web-2a") | Served by `dillad` from its own address. Sign up with an invite, then use the account in a second browser: the recovery key first, then username and password, then the second-factor code if the account has one. Read and send text in channels and DMs; DMs stay reachable with no server or when a server did not load. Unread and mention badges appear in the channel list, the sidebar tabs and the server rail. Settings → Devices lists every browser and removes one with the recovery key, signs this browser out and removes it, or forgets it; it works at phone width and high zoom. A persistent warning shows when the instance holds recovery data that is not this account's, and a sign-in that another sign-in pushed out says so. Desktop notifications require opt-in and an open tab. Messages sent before a new browser joins are not shown there. One tab at a time per browser. Tested in Chromium and Firefox, and in WebKit for sign-up and reload. See [Getting started](docs/user/getting-started.md). |
 
 ![Step 3 of the sign-up: the recovery key, shown once](docs/user/screenshots/onboarding-3-recovery-key.png)
+
+![Settings → Devices with two browsers of one account](docs/user/screenshots/settings-devices.png)
 
 ## What is not there yet
 
@@ -32,6 +34,8 @@ As of 2026-10-07, in the web client:
 
 - A native app or phone client. The recovery key adds another browser with the account password; it does not
   restore messages sent before that browser joined. Pins are not shared between browsers.
+- Changing the password, setting up a second factor, or naming devices in the web client. There is no
+  dedicated operator command yet to reset an account's recovery data, which the recovery-data warning asks for.
 - Creating servers, channels and invites, or editing roles, permissions and profiles in the web client. A server
   is created through the HTTP API today.
 - Voice, camera and screen share in the web client.
