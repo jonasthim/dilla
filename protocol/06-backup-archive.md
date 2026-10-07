@@ -12,8 +12,9 @@ AES-256-GCM with a random 96-bit nonce per object; the nonce is stored with the 
 Two objects per user, kept separate because `UMK_priv` must never be written back to a device after
 signup or recovery while the device list and pin table change often.
 
-**Root object.** Written only at signup and at recovery, never on ordinary changes, by the device
-performing that operation:
+**Root object.** Written once, at signup, by the device performing it, and never again: the
+instance stores it insert-only (`09-http-api.md` § Backups), so neither a later device nor a
+recovery replaces it, and the recovery key is not rotated. A recovering device reads it:
 
 ```
 plaintext = CBOR [ v = 1, umk_priv (bstr 32), ssk_priv (bstr 32) ]
@@ -22,7 +23,10 @@ stored = CBOR [ v = 1, nonce (bstr 12), ciphertext (bstr) ]
 ```
 
 **State object.** Rewritten by any `native` device on every change (new device paired, device
-revoked, a UMK pinned or verified):
+revoked, a UMK pinned or verified), and by the device that holds `K_backup` transiently at a
+recovery-key entry (`03-identity.md`, "Recovery"), a browser included: that device writes the
+device list it published and the `pins` of the stored object merged with its own (a browser holds
+no pins, so they are carried through unchanged):
 
 ```
 plaintext = CBOR [
@@ -35,9 +39,49 @@ stored = CBOR [ v = 1, nonce (bstr 12), ciphertext (bstr) ]
 ```
 
 The device performing signup writes the first state object, holding device list version 1 and
-`pins = []`; under `03-identity.md` "Browser-rooted signup" that device is a `browser`. Until the
-instance serves the `/v1/backups` routes of `09-http-api.md`, the device performing signup keeps both
-stored objects in its encrypted store and uploads them unchanged once the routes exist.
+`pins = []`; under `03-identity.md` "Browser-rooted signup" that device is a `browser`.
+The device performing signup keeps both stored objects in its encrypted store until it has
+uploaded them (`PUT /v1/backups/0/0` and `PUT /v1/backups/1/0`, `09-http-api.md` § Backups); a
+device that signed up before the instance served those routes uploads them unchanged at its first
+session once they exist.
+
+**At the instance.** One root object per user, stored insert-only: a second, different root object
+is refused and the first stays; the same bytes again are accepted and change nothing. One state
+object per user, replaced by each upload; the bytes it replaced are collected after
+`blobs.gc_grace`. A device recovering by key that cannot open the stored state object (missing,
+corrupt, replaced, or sealed under another key) treats it as holding no pins and writes a sound
+object in its place only while the served device list is version 1, when no device has written
+another state object yet. Past version 1 it refuses (`E_CORE_INPUT`, "the backup state is missing"
+or "could not be read"): the object's list is the rollback floor, and accepting its absence would let
+an instance serve an older signed list and have a revoked device listed again. The repair is the
+devices': at each session a `browser` reads the stored state object and, when its own sealed state
+object carries the newest list it accepted (it published that list) and the stored bytes differ,
+uploads its own, since the stored one is then behind that list or junk (a browser holds no
+`K_backup` and cannot open it); a device revoking another with the recovery key re-seals and uploads
+the object too. Both are read by the user's own `enrolled` and `pending` sessions, so a device
+entering the recovery key fetches them before it holds a credential. Archive chunks and the
+manifest are not served at wire 1. The instance cannot open either object.
+
+**An interrupted publication.** A device that changes the device list writes the state object
+naming the new list before or after it publishes that list; when the list `PUT` is lost (a failed
+sign-out, a browser forgotten before its next session), the instance holds list `v` and a state
+object whose list is `v + 1`. A device recovering by key that finds the state object's list to be
+exactly the served list's successor, chaining from it (`prev_hash`) and verifying under the recovered
+`SSK`, treats it as the newest list: it publishes that list first and signs its own change as
+`v + 2` on it. A state object whose list is further on, or does not chain, or does not verify, is
+refused as an older served list (the rollback floor). A browser that is told to forget itself
+publishes an unpublished list it signed before it erases its store, and a browser whose sign-out
+failed drops its unpublished self-revoking list together with the state object it sealed for it:
+it keeps the state object it held before, never uploads the dropped one, and when the dropped one
+already reached the instance it puts back the object the instance held before, so its own next
+revocation does not find its sign-out as an interrupted publication. A candidate overtaken by a
+list another device published is dropped with its state object in the same way.
+
+A stolen enrolled session can upload a well-formed junk root before the owner's first upload.
+The owner's first upload then gets `409`; the client fetches and compares the stored root and
+raises `E_ROOT_MISMATCH` with an alert. The server does not prevent this first-writer attack.
+An operator can repair that account by deleting its kind-0 backup row after verifying ownership;
+there is no wire-1 DELETE route for the owner to do so.
 
 ## Archive
 

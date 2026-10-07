@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"go/build"
 	"maps"
 	"net"
@@ -589,6 +590,11 @@ func TestNewDefaultsTheCollaboratorsItIsNotGiven(t *testing.T) {
 	if srv.DS() == nil || srv.Gateway() == nil {
 		t.Fatal("DS() and Gateway() must be what New built")
 	}
+	// protocol/02 § Device sessions item 4: a nil device-list gate refuses every establish, which
+	// no handler test would notice, so the composition root's wiring is asserted here.
+	if srv.Sessions().DeviceLists == nil {
+		t.Fatal("Sessions().DeviceLists is nil: every no-login establish would answer 401")
+	}
 }
 
 // Options.Extra is the registrar hook parts 1b and 2 mount through.
@@ -899,5 +905,249 @@ func TestNewRefusesAWebClientItsManifestDoesNotDescribe(t *testing.T) {
 	if !strings.HasPrefix(err.Error(), "dillad: web client: ") ||
 		!strings.Contains(err.Error(), "index.html does not match its manifest sha256") {
 		t.Fatalf("dillad.New = %v", err)
+	}
+}
+
+// gateEntry is one entry of protocol/03-identity.md's device list:
+// [device_id, dsk_pub, tier, added_at, revoked_at|null].
+type gateEntry struct {
+	_         struct{} `cbor:",toarray"`
+	DeviceID  []byte
+	DSKPub    []byte
+	Tier      uint64
+	AddedAt   uint64
+	RevokedAt *uint64
+}
+
+// gateListUnsigned is the five-element array the SSK signs.
+type gateListUnsigned struct {
+	_        struct{} `cbor:",toarray"`
+	V        uint64
+	UserID   []byte
+	Version  uint64
+	PrevHash []byte
+	Entries  []gateEntry
+}
+
+// gateListSigned is the six-element list the instance stores and serves.
+type gateListSigned struct {
+	_        struct{} `cbor:",toarray"`
+	V        uint64
+	UserID   []byte
+	Version  uint64
+	PrevHash []byte
+	Entries  []gateEntry
+	SigSSK   []byte
+}
+
+// signedDeviceList builds version `version` of user's list, chained to prevBlob (nil: 32 zero
+// bytes, the genesis rule), signed by ssk under "dilla devices v1" exactly as a client signs it,
+// and returns the PUT body [version, blob, ssk_signature, prev_hash] and the blob, whose SHA-256
+// the next version carries.
+func signedDeviceList(t *testing.T, ssk ed25519.PrivateKey, user id.ID, version uint64, prevBlob []byte, entries []gateEntry) ([]any, []byte) {
+	t.Helper()
+	prev := make([]byte, 32)
+	if prevBlob != nil {
+		sum := sha256.Sum256(prevBlob)
+		prev = sum[:]
+	}
+	unsigned, err := cborx.Marshal(gateListUnsigned{V: 1, UserID: user[:], Version: version, PrevHash: prev, Entries: entries})
+	if err != nil {
+		t.Fatalf("encode the unsigned list: %v", err)
+	}
+	sig := ed25519.Sign(ssk, append([]byte("dilla devices v1"), unsigned...))
+	blob, err := cborx.Marshal(gateListSigned{V: 1, UserID: user[:], Version: version, PrevHash: prev,
+		Entries: entries, SigSSK: sig})
+	if err != nil {
+		t.Fatalf("encode the signed list: %v", err)
+	}
+	return []any{version, blob, sig, prev}, blob
+}
+
+func pubOf(dev testDevice) []byte { return []byte(dev.Priv.Public().(ed25519.PublicKey)) }
+
+func entryFor(dev testDevice, tier uint64, revokedAt *uint64) gateEntry {
+	return gateEntry{DeviceID: dev.ID[:], DSKPub: pubOf(dev), Tier: tier, AddedAt: 1, RevokedAt: revokedAt}
+}
+
+// accountWithKeys registers username with a password and with ssk's public half as users.ssk_pub,
+// which is what the instance verifies the user's lists against; dev is the first (native) device.
+func accountWithKeys(t *testing.T, h http.Handler, code, username, password string, dev testDevice, ssk ed25519.PrivateKey) (id.ID, string) {
+	t.Helper()
+	rec := call(t, h, http.MethodPost, "/v1/accounts", "", []any{
+		code, username, "Test", make([]byte, 32), []byte(ssk.Public().(ed25519.PublicKey)), make([]byte, 64),
+		password, []any{dev.ID, pubOf(dev), uint64(0), uint64(0), []byte{1}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/accounts %s = %d %q", username, rec.Code, errorCode(rec))
+	}
+	out := decodeArray(t, rec)
+	token, _ := out[2].(string)
+	return idOf(t, out[0]), token
+}
+
+// mintInvite writes one more one-use invite, as an admin's invite would.
+func mintInvite(t *testing.T, srv *dillad.Server) string {
+	t.Helper()
+	code, hash := auth.NewInviteCode()
+	now := srv.Now().Unix()
+	if err := srv.Repo().CreateInvite(context.Background(), store.InviteRow{ID: id.New(), CodeHash: hash,
+		MaxUses: 1, Created: now, ExpiresAt: now + int64(24*time.Hour/time.Second)}); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+	return code
+}
+
+// loginAssertion runs the password ceremony and returns the enrolment assertion.
+func loginAssertion(t *testing.T, h http.Handler, username, password string) string {
+	t.Helper()
+	rec := call(t, h, http.MethodPost, "/v1/auth/password/login", "", []any{username, password})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("password login %s = %d %q", username, rec.Code, errorCode(rec))
+	}
+	out := decodeArray(t, rec)
+	assertion, _ := out[0].(string)
+	if assertion == "" || out[1] != uint64(0) {
+		t.Fatalf("password login answered %v, want [assertion, 0]", out)
+	}
+	return assertion
+}
+
+// establishAs runs challenge and establish for dev with element 3 and login as given (nil → null).
+func establishAs(t *testing.T, h http.Handler, srv *dillad.Server, dev testDevice, element3 any, login []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := post(t, h, "/v1/devices/"+dev.ID.String()+"/sessions/challenge", nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("challenge = %d", rec.Code)
+	}
+	nonce, _ := decodeArray(t, rec)[0].([]byte)
+	pre := auth.SessionPreimage(srv.Sessions().InstanceID(), dev.ID, nonce, auth.PurposeSession)
+	var l any
+	if login != nil {
+		l = login
+	}
+	return call(t, h, http.MethodPost, "/v1/devices/"+dev.ID.String()+"/sessions", "",
+		[]any{nonce, uint64(auth.PurposeSession), ed25519.Sign(dev.Priv, pre), element3, l})
+}
+
+// scopeOf requires a 201 and returns its scope and token.
+func scopeOf(t *testing.T, rec *httptest.ResponseRecorder) (uint64, string) {
+	t.Helper()
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("establish = %d %q (%x), want 201", rec.Code, errorCode(rec), rec.Body.Bytes())
+	}
+	out := decodeArray(t, rec)
+	scope, _ := out[1].(uint64)
+	token, _ := out[0].(string)
+	return scope, token
+}
+
+// The gate through the composition root: the real wasm verifier behind the real lister adapter,
+// the real password ceremony, the real assertion store. Attacker statements as in
+// internal/auth: a stolen password registers nothing for a no-list account and only a pending
+// device for a listed one.
+func TestTheDeviceListGateRunsThroughTheCompositionRoot(t *testing.T) {
+	srv, h, code := newInstance(t)
+	defer srv.Shutdown(context.Background())
+	const password = "correct horse battery staple"
+	ssk := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x5a}, 32))
+	d0 := newTestDevice(t)
+	alice, tok0 := accountWithKeys(t, h, code, "alice", password, d0, ssk)
+	own := "/v1/users/" + alice.String() + "/device-list"
+
+	if scope, _ := scopeOf(t, establishAs(t, h, srv, d0, nil, nil)); scope != 0 {
+		t.Fatalf("no list yet: scope %d, want 0 (the no-list clause)", scope)
+	}
+	body1, blob1 := signedDeviceList(t, ssk, alice, 1, nil, []gateEntry{entryFor(d0, 0, nil)})
+	if rec := call(t, h, http.MethodPut, own, tok0, body1); rec.Code != http.StatusNoContent {
+		t.Fatalf("PUT v1 = %d %q", rec.Code, errorCode(rec))
+	}
+	if scope, _ := scopeOf(t, establishAs(t, h, srv, d0, nil, nil)); scope != 0 {
+		t.Fatalf("listed: scope %d, want 0", scope)
+	}
+
+	d1 := newTestDevice(t)
+	reg := []any{d1.ID, pubOf(d1), uint64(1), uint64(1), bytes.Repeat([]byte{0}, 10)}
+	scope, p1 := scopeOf(t, establishAs(t, h, srv, d1, reg, []byte(loginAssertion(t, h, "alice", password))))
+	if scope != 1 {
+		t.Fatalf("a host-login registration: scope %d, want 1 (pending)", scope)
+	}
+	if rec := call(t, h, http.MethodGet, own, p1, nil); rec.Code != http.StatusOK {
+		t.Fatalf("pending GET own list = %d %q, want 200", rec.Code, errorCode(rec))
+	}
+	for _, r := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/keypackages"},
+		{http.MethodPost, "/v1/devices"},
+		{http.MethodGet, "/v1/communities"},
+	} {
+		if rec := call(t, h, r.method, r.path, p1, []any{}); rec.Code != http.StatusForbidden || errorCode(rec) != "E_FORBIDDEN" {
+			t.Errorf("pending %s %s = %d %q, want 403 E_FORBIDDEN", r.method, r.path, rec.Code, errorCode(rec))
+		}
+	}
+	if scope, _ := scopeOf(t, establishAs(t, h, srv, d1, nil, nil)); scope != 1 {
+		t.Fatalf("an unlisted device of a listed user re-establishing: scope %d, want 1", scope)
+	}
+	body2, _ := signedDeviceList(t, ssk, alice, 2, blob1, []gateEntry{entryFor(d0, 0, nil), entryFor(d1, 1, nil)})
+	if rec := call(t, h, http.MethodPut, own, tok0, body2); rec.Code != http.StatusNoContent {
+		t.Fatalf("PUT v2 = %d %q", rec.Code, errorCode(rec))
+	}
+	if scope, _ := scopeOf(t, establishAs(t, h, srv, d1, nil, nil)); scope != 0 {
+		t.Fatalf("once listed: scope %d, want 0", scope)
+	}
+
+	// A stolen password for an account that never published a list.
+	bobSSK := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x6b}, 32))
+	accountWithKeys(t, h, mintInvite(t, srv), "bob", password, newTestDevice(t), bobSSK)
+	d2 := newTestDevice(t)
+	reg2 := []any{d2.ID, pubOf(d2), uint64(1), uint64(1), bytes.Repeat([]byte{0}, 10)}
+	rec := establishAs(t, h, srv, d2, reg2, []byte(loginAssertion(t, h, "bob", password)))
+	if rec.Code != http.StatusUnauthorized || errorCode(rec) != "E_UNAUTHENTICATED" {
+		t.Fatalf("registration for a no-list account = %d %q, want 401 E_UNAUTHENTICATED", rec.Code, errorCode(rec))
+	}
+	if _, err := srv.Repo().GetDevice(context.Background(), d2.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a stolen password created a device row: %v", err)
+	}
+}
+
+// Boundary ruling 4 (task 7 scan): only an absent list is "no list". A stored list that exists but
+// cannot be decoded answers 401 E_UNAUTHENTICATED, as a list failing verification does, through
+// the real verifier behind the composition root's lister: never the no-list clause's enrolled
+// scope, and never 503, which stays for instance faults. Attacker: whoever could put unreadable
+// bytes in device_lists (a damaged row, a restore gone wrong) would otherwise make every device of
+// the user enrolled, an unlisted one included.
+func TestAStoredListThatCannotBeDecodedIsRefused(t *testing.T) {
+	srv, h, _ := newInstance(t)
+	defer srv.Shutdown(context.Background())
+	const password = "correct horse battery staple"
+	for i, garbage := range map[string][]byte{
+		"bytes that are not CBOR":         bytes.Repeat([]byte{0xff}, 96),
+		"a CBOR array of the wrong shape": {0x83, 0x01, 0x02, 0x03},
+		"a truncated list":                {0x86, 0x01, 0x50},
+	} {
+		t.Run(i, func(t *testing.T) {
+			ssk := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{byte(len(i))}, 32))
+			d0 := newTestDevice(t)
+			name := "u" + id.New().String()[:12]
+			user, _ := accountWithKeys(t, h, mintInvite(t, srv), name, password, d0, ssk)
+			if err := srv.Repo().PutDeviceList(context.Background(), store.DeviceListRow{
+				UserID: user, Version: 1, Blob: garbage, SSKSignature: make([]byte, 64),
+				PrevHash: make([]byte, 32), Created: srv.Now().Unix(),
+			}); err != nil {
+				t.Fatalf("PutDeviceList: %v", err)
+			}
+			rec := establishAs(t, h, srv, d0, nil, nil)
+			if rec.Code != http.StatusUnauthorized || errorCode(rec) != "E_UNAUTHENTICATED" {
+				t.Fatalf("establish under an undecodable list = %d %q, want 401 E_UNAUTHENTICATED", rec.Code, errorCode(rec))
+			}
+			d1 := newTestDevice(t)
+			reg := []any{d1.ID, pubOf(d1), uint64(1), uint64(1), bytes.Repeat([]byte{0}, 10)}
+			rec = establishAs(t, h, srv, d1, reg, []byte(loginAssertion(t, h, name, password)))
+			if rec.Code != http.StatusUnauthorized || errorCode(rec) != "E_UNAUTHENTICATED" {
+				t.Fatalf("registration under an undecodable list = %d %q, want 401 E_UNAUTHENTICATED", rec.Code, errorCode(rec))
+			}
+			if _, err := srv.Repo().GetDevice(context.Background(), d1.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("a registration under an undecodable list created a device row: %v", err)
+			}
+		})
 	}
 }

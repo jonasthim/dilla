@@ -1,7 +1,7 @@
 //! Prepared sends, delivery confirmation, outbox and timeline reads.
 
 use super::error::{E_CORE_INPUT, E_CORE_MLS, E_CORE_NOT_FOUND, E_CORE_STATE, E_CORE_STORAGE};
-use super::groups::{STATE_ACTIVE, checked, group_row};
+use super::groups::{STATE_ACTIVE, STATE_GONE, checked, group_row};
 use super::{ClientCore, ClientError, Own, wire};
 use crate::cbor::Encoder;
 use crate::envelope::{Envelope, EnvelopeType};
@@ -38,6 +38,7 @@ pub(super) struct StoredMessage<'a> {
     pub body: &'a str,
     pub envelope: Option<&'a [u8]>,
     pub franking_tag: &'a [u8; 32],
+    pub mention: bool,
 }
 pub(super) fn insert_message(
     c: &rusqlite::Connection,
@@ -46,8 +47,8 @@ pub(super) fn insert_message(
     c.execute(
         "INSERT INTO app_messages \
          (group_id,seq,epoch,recv_ts,status,reason,sender_user,sender_device, \
-          sender_leaf,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag) \
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+          sender_leaf,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag,mention) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
         params![
             m.group_id.as_slice(),
             m.seq as i64,
@@ -65,6 +66,7 @@ pub(super) fn insert_message(
             m.body,
             m.envelope,
             m.franking_tag.as_slice(),
+            i64::from(m.mention),
         ],
     )?;
     Ok(())
@@ -100,6 +102,74 @@ pub(super) fn outbox_row(
 fn not_found() -> ClientError {
     ClientError::new(E_CORE_NOT_FOUND, "")
 }
+
+impl ClientCore {
+    /// Advance this device's read marker, clamped to the group's current head.
+    pub fn mark_read(&mut self, id: &[u8; 16], seq: u64, now: u64) -> Result<(), ClientError> {
+        self.own()?;
+        let now = checked("now", now)?;
+        let row = self.read(|c| group_row(c, id))?.ok_or_else(not_found)?;
+        if row.state == STATE_GONE {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                format!("group state {}", row.state),
+            ));
+        }
+        let target = seq.min((row.next_seq - 1) as u64);
+        let target = checked("seq", target)?;
+        self.write(|_, u| {
+            u.with_conn(|c| {
+                c.execute(
+                    "INSERT INTO app_read_state (group_id, last_read_seq, last_read_at) VALUES (?1, ?2, ?3) \
+                     ON CONFLICT (group_id) DO UPDATE SET last_read_seq = MAX(last_read_seq, excluded.last_read_seq), \
+                     last_read_at = excluded.last_read_at",
+                    params![id.as_slice(), target, now],
+                )?;
+                Ok(())
+            })?;
+            Ok(())
+        })
+    }
+
+    /// Per-group unread and mention counts for joined or resyncing groups.
+    pub fn activity(&self) -> Result<Vec<u8>, ClientError> {
+        let own = self.own()?;
+        type ActivityRow = ([u8; 16], i64, i64, i64, i64, i64);
+        let rows: Vec<ActivityRow> = self.read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT g.group_id, \
+                 (SELECT COUNT(*) FROM app_messages m WHERE m.group_id = g.group_id AND m.status = 0 AND m.type = 0 \
+                    AND m.sender_user <> ?1 AND m.seq > COALESCE(r.last_read_seq, 0)), \
+                 (SELECT COUNT(*) FROM app_messages m WHERE m.group_id = g.group_id AND m.status = 0 AND m.type = 0 \
+                    AND m.sender_user <> ?1 AND m.seq > COALESCE(r.last_read_seq, 0) AND m.mention = 1), \
+                 COALESCE((SELECT m.seq FROM app_messages m WHERE m.group_id = g.group_id AND m.status = 0 AND m.type = 0 \
+                    AND m.sender_user <> ?1 AND m.seq > COALESCE(r.last_read_seq, 0) ORDER BY m.seq DESC LIMIT 1), 0), \
+                 COALESCE((SELECT m.recv_ts FROM app_messages m WHERE m.group_id = g.group_id AND m.status = 0 AND m.type = 0 \
+                    AND m.sender_user <> ?1 AND m.seq > COALESCE(r.last_read_seq, 0) ORDER BY m.seq DESC LIMIT 1), 0), \
+                 COALESCE(r.last_read_seq, 0) \
+                 FROM app_groups g LEFT JOIN app_read_state r ON r.group_id = g.group_id \
+                 WHERE g.state IN (2, 3) ORDER BY g.group_id",
+            )?;
+            stmt.query_map([own.user_id.as_slice()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+        })?;
+        let mut e = Encoder::new();
+        e.array(rows.len());
+        for (id, unread, mentions, last_seq, last_ts, last_read_seq) in rows {
+            e.array(6)
+                .bytes(&id)
+                .uint(unread as u64)
+                .uint(mentions as u64)
+                .uint(last_seq as u64)
+                .uint(last_ts as u64)
+                .uint(last_read_seq as u64);
+        }
+        Ok(e.into_vec())
+    }
+}
 fn outbox_state(s: i64) -> ClientError {
     ClientError::new(E_CORE_STATE, format!("outbox row in state {s}"))
 }
@@ -132,7 +202,32 @@ fn own_message<'a>(
         body: &env.body,
         envelope: Some(bytes),
         franking_tag: tag,
+        mention: false,
     }
+}
+
+/// true when `body` contains "<@" + the 32 lower-case hex characters of `user_id` + ">", or "<@everyone>",
+/// or "<@here>" — the readable mention syntax of protocol/09 (`<@(everyone|here|[0-9a-f]{32})>`), matched
+/// literally (no regex, no case folding; upper-case hex does not match).
+///
+/// It refuses nothing: a member who types `<@everyone>` raises a count, which is the readable
+/// syntax's meaning (Q09, Q20).
+pub fn mentions_me(body: &str, user_id: &[u8; 16]) -> bool {
+    // A byte search: every needle is ASCII, so a byte match is a match of the same characters.
+    // (`str::contains` would add its two-way searcher to the browser build.)
+    let has = |n: &[u8]| body.as_bytes().windows(n.len()).any(|w| w == n);
+    has(&mention_needle(user_id)) || has(b"<@everyone>") || has(b"<@here>")
+}
+
+/// `mentions_me`'s needle for one user: "<@" + the 32 lower-case hex characters + ">".
+pub(super) fn mention_needle(user_id: &[u8; 16]) -> [u8; 35] {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut needle = *b"<@0123456789abcdef0123456789abcdef>";
+    for (i, b) in user_id.iter().enumerate() {
+        needle[2 + 2 * i] = HEX[usize::from(b >> 4)];
+        needle[3 + 2 * i] = HEX[usize::from(b & 0x0f)];
+    }
+    needle
 }
 
 impl ClientCore {
@@ -537,5 +632,32 @@ impl ClientCore {
                 .text(&body);
         }
         Ok(e.into_vec())
+    }
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::mentions_me;
+
+    const ME: [u8; 16] = [0xa1; 16];
+
+    #[test]
+    fn the_readable_mention_syntax_is_matched_literally() {
+        let me = "a1".repeat(16);
+        for (body, want) in [
+            (format!("hi <@{me}>"), true),
+            (format!("<@{me}>"), true),
+            ("<@everyone> standup".to_owned(), true),
+            ("x<@here>y".to_owned(), true),
+            (format!("hi <@{}>", "A1".repeat(16)), false),
+            (format!("hi <@{}>", "b2".repeat(16)), false),
+            (format!("hi <@{me}"), false),
+            (format!("hi @{me}"), false),
+            ("<@Everyone>".to_owned(), false),
+            ("<@everyone >".to_owned(), false),
+            (String::new(), false),
+        ] {
+            assert_eq!(mentions_me(&body, &ME), want, "{body:?}");
+        }
     }
 }

@@ -176,8 +176,26 @@ func (c *conn) tryResume(token []byte, generation, lastN, current uint64) (resum
 // The return type is auth.Session, the leaf type of deviation B9 — not a `ds.Session`, which
 // would make this package import internal/ds while internal/ds imports this one.
 func (g *Gateway) identify(ctx context.Context, token string) (auth.Session, error) {
-	return g.opts.Auth.Resolve(ctx, token)
+	session, err := g.opts.Auth.Resolve(ctx, token)
+	if err != nil {
+		return auth.Session{}, err
+	}
+	// Only an enrolled session opens a connection. A pending session reaches its own backup reads
+	// and device list and nothing else (protocol/02 § Device sessions item 4, L-HTTP-57; security
+	// review F4). A provisional session reaches only one pairing group's KeyPackage, Welcome and
+	// handshakes (item 4), and fan-out here is keyed by user and channel, never by pairing group:
+	// admitted, it would receive every `message.plain` and voice-state frame of the user's
+	// (branch review REGISTRATION-DEVICES-01). No provisional session carries a pairing group yet
+	// (deviation B27); if pairing needs the socket it must be admitted for that group alone. Both
+	// are refused like a token that does not resolve, and so is any scope added later.
+	if session.Scope != auth.ScopeEnrolled {
+		return auth.Session{}, errNotEnrolledSession
+	}
+	return session, nil
 }
+
+// errNotEnrolledSession is identify's refusal of a pending or provisional session.
+var errNotEnrolledSession = errors.New("gateway: only an enrolled session opens a gateway connection")
 
 // wsSink adapts a coder/websocket connection to the writer's sink. Binary frames only: dilla's
 // wire is CBOR, never text.

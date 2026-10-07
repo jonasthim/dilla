@@ -35,7 +35,7 @@ ed25519-dalek = { version = "2.2", default-features = false, features = ["std", 
 sha2          = "0.11"
 hmac          = "0.13"
 hkdf          = "0.13"
-aes-gcm       = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
+aes-gcm       = { version = "0.10.3", default-features = false, features = ["aes", "alloc", "zeroize"] }
 # serde codec for the OpenMLS StorageProvider blobs ONLY (deviation A1-5, gap-6 section 4).
 # Never used to decode a normative dilla format: those go through crate::cbor.
 ciborium   = { version = "0.2.2", default-features = false, features = ["std"] }

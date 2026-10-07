@@ -12,6 +12,22 @@ import (
 	id "github.com/jonasthim/dilla/internal/id"
 )
 
+const countLiveDevicesByUser = `-- name: CountLiveDevicesByUser :one
+SELECT COUNT(*) FROM devices WHERE user_id = $1 AND revoked_at IS NULL
+`
+
+type CountLiveDevicesByUserParams struct {
+	UserID id.ID
+}
+
+// dilla-web-2a (L-SQL-21, Q04): the per-user device cap counts unrevoked devices only.
+func (q *Queries) CountLiveDevicesByUser(ctx context.Context, arg CountLiveDevicesByUserParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countLiveDevicesByUser, arg.UserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createDevice = `-- name: CreateDevice :exec
 INSERT INTO devices (id, user_id, dsk_pub, tier, signer_tier, credential_blob, verified_at, revoked_at, quarantined_at, quarantine_reason, last_seen, created)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -100,6 +116,86 @@ func (q *Queries) GetDeviceList(ctx context.Context, arg GetDeviceListParams) (D
 	return i, err
 }
 
+const listDeviceCreationsSince = `-- name: ListDeviceCreationsSince :many
+SELECT created FROM devices
+WHERE user_id = $1 AND created >= $2
+ORDER BY created
+`
+
+type ListDeviceCreationsSinceParams struct {
+	UserID id.ID
+	Since  int64
+}
+
+// dilla-web-2a (L-SQL-21, Q04): the enrolment rate counts every enrolment, revoked devices
+// included, so enrol-revoke-enrol inside the hour still counts twice.
+func (q *Queries) ListDeviceCreationsSince(ctx context.Context, arg ListDeviceCreationsSinceParams) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listDeviceCreationsSince, arg.UserID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var created int64
+		if err := rows.Scan(&created); err != nil {
+			return nil, err
+		}
+		items = append(items, created)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceListsAfter = `-- name: ListDeviceListsAfter :many
+SELECT user_id, version, blob, ssk_signature, prev_hash, created FROM device_lists
+WHERE user_id = $1 AND version > $2
+ORDER BY version
+LIMIT $3::bigint
+`
+
+type ListDeviceListsAfterParams struct {
+	UserID  id.ID
+	After   int64
+	MaxRows int64
+}
+
+// dilla-web-2a (L-SQL-21, L-HTTP-56): the history a client walks from the version it holds.
+func (q *Queries) ListDeviceListsAfter(ctx context.Context, arg ListDeviceListsAfterParams) ([]DeviceLists, error) {
+	rows, err := q.db.QueryContext(ctx, listDeviceListsAfter, arg.UserID, arg.After, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeviceLists{}
+	for rows.Next() {
+		var i DeviceLists
+		if err := rows.Scan(
+			&i.UserID,
+			&i.Version,
+			&i.Blob,
+			&i.SskSignature,
+			&i.PrevHash,
+			&i.Created,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDevicesByUser = `-- name: ListDevicesByUser :many
 SELECT id, user_id, dsk_pub, tier, signer_tier, credential_blob, verified_at, revoked_at, quarantined_at, quarantine_reason, last_seen, created FROM devices WHERE user_id = $1 ORDER BY created
 `
@@ -142,6 +238,22 @@ func (q *Queries) ListDevicesByUser(ctx context.Context, arg ListDevicesByUserPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockUserForDeviceRegistration = `-- name: LockUserForDeviceRegistration :one
+SELECT id FROM users WHERE id = $1 FOR UPDATE
+`
+
+type LockUserForDeviceRegistrationParams struct {
+	ID id.ID
+}
+
+// The row lock serializes count and insert for one user until Tx commits.
+func (q *Queries) LockUserForDeviceRegistration(ctx context.Context, arg LockUserForDeviceRegistrationParams) (id.ID, error) {
+	row := q.db.QueryRowContext(ctx, lockUserForDeviceRegistration, arg.ID)
+	var id id.ID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const putDeviceList = `-- name: PutDeviceList :exec

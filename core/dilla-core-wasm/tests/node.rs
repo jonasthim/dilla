@@ -6,7 +6,9 @@
 
 use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
 use dilla_core::client::ClientError;
-use dilla_core_wasm::facade::{client_js_error, core_open, fixed_arg, purpose_arg};
+use dilla_core_wasm::facade::{
+    client_js_error, community_arg, core_open, fixed_arg, login_arg, purpose_arg,
+};
 use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
     BROWSER_ABI_VERSION, MediaReceiver, MediaSender, StoreOpenConfig, abi_version, core_version,
@@ -265,7 +267,7 @@ fn a_redacted_probe_message_never_carries_the_statement() {
 fn the_version_getters_agree_with_dilla_core_on_wasm() {
     assert_eq!(core_version(), dilla_core::CORE_VERSION);
     assert_eq!(abi_version(), BROWSER_ABI_VERSION);
-    assert_eq!(BROWSER_ABI_VERSION, 4);
+    assert_eq!(BROWSER_ABI_VERSION, 5);
 }
 
 /// The message a `JsError` carries across the boundary: what the media worker matches on.
@@ -319,6 +321,61 @@ fn a_purpose_other_than_0_or_1_is_core_input_before_narrowing() {
     );
     assert_eq!(purpose_arg(0), Ok(0));
     assert_eq!(purpose_arg(1), Ok(1));
+}
+
+/// L-WASM-20: a community is absent (a DM) or exactly 16 bytes, checked before the core is called.
+#[wasm_bindgen_test]
+fn a_community_argument_is_absent_or_exactly_16_bytes() {
+    assert_eq!(community_arg(None), Ok(None));
+    assert_eq!(community_arg(Some(&[0x22; 16])), Ok(Some([0x22u8; 16])));
+    let short = community_arg(Some(&[0x5a; 15])).unwrap_err();
+    assert_eq!(
+        short,
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "community_id: expected 16 bytes, got 15".to_owned()
+        }
+    );
+    assert_eq!(
+        message(client_js_error(&short)),
+        "E_CORE_INPUT: community_id: expected 16 bytes, got 15"
+    );
+    assert_eq!(
+        community_arg(Some(&[])).unwrap_err().detail,
+        "community_id: expected 16 bytes, got 0"
+    );
+    assert_eq!(
+        community_arg(Some(&[0x5a; 17])).unwrap_err().detail,
+        "community_id: expected 16 bytes, got 17"
+    );
+}
+
+/// L-WASM-20 / card 32: the enrolment login is 1..=256 bytes and is refused in the facade before the
+/// core is borrowed; the detail never echoes the bytes.
+#[wasm_bindgen_test]
+fn a_login_is_1_to_256_bytes_before_the_core_is_called() {
+    assert_eq!(login_arg(&[0x61; 1]), Ok(()));
+    assert_eq!(login_arg(&[0x61; 256]), Ok(()));
+    let long = login_arg(&[0x61; 257]).unwrap_err();
+    assert_eq!(
+        long,
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "login: expected 1..=256 bytes, got 257".to_owned()
+        }
+    );
+    assert!(
+        !long.detail.contains("aaaa"),
+        "the detail must not echo the login"
+    );
+    assert_eq!(
+        message(client_js_error(&long)),
+        "E_CORE_INPUT: login: expected 1..=256 bytes, got 257"
+    );
+    assert_eq!(
+        login_arg(&[]).unwrap_err().detail,
+        "login: expected 1..=256 bytes, got 0"
+    );
 }
 
 #[wasm_bindgen_test]

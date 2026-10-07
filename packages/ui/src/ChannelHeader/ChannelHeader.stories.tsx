@@ -7,3 +7,4 @@ type Story = StoryObj<typeof meta>;
 export const Plain: Story = {};
 export const WithTopic: Story = { args: { topic: 'evening plans, screenshots and the odd argument' } };
 export const Readable: Story = { args: { name: 'lfg', topic: 'looking for group', readable: true } };
+export const DirectMessage: Story = { args: { name: 'ada', kind: 'dm' } };

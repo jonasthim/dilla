@@ -6,9 +6,10 @@ import { connectCore, createCoreWorker } from '@dilla/client-core';
 import { App } from './App.tsx';
 import { CoreProvider } from './core/context.tsx';
 import type { UiError } from './core/errors.ts';
-import { followSystemTheme } from './theme.ts';
+import { readTheme } from './prefs.ts';
+import { applyPreference } from './theme.ts';
 
-followSystemTheme(window);
+applyPreference(window, await readTheme());
 const worker = createCoreWorker();
 const client = connectCore(worker);
 const element = document.getElementById('root');

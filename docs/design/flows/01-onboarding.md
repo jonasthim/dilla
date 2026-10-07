@@ -1,6 +1,6 @@
 # Flow 01 — first launch with an invite (web-1)
 
-The strings, the refusal table and the flow rules of this document are L-COPY-01 of the web-1 plan, quoted. A change is made there first.
+The strings, the refusal table and the flow rules of this document are L-COPY-01 of the web-1 plan, quoted. A change is made there first. Three strings are L-COPY-02 of the web-2a plan: the new `onboarding.connect.signIn` and the changed `onboarding.keys.loss` and `onboarding.browser.oneBrowser`. Signing in to an account that already exists is `03-sign-in.md`.
 
 The first-run flow of the web client: a person opens an invite link in a browser, chooses a name, writes
 down the recovery key, reads what this browser keeps, and ends up signed in. Wireframed before it is built
@@ -27,6 +27,7 @@ itself, and what a screen reader reads, stays as written.
 | `registering` | step 4 in the registering state |
 | `ready`, reached by a sign-up in this page | step 5 |
 | `ready` on a fresh load | not this flow: the shell |
+| `signin-login`, `signin-totp`, `signin-key`, `enrolling` | not this flow: `03-sign-in.md` |
 | any other phase | not this flow: the boot screen |
 
 The page is reached at `/welcome` or `/welcome?invite=<code>`. A code, or a link containing one, in
@@ -47,7 +48,7 @@ prefilled); otherwise to `/`.
 
 | n | name | heading (`<h1>`) | parts |
 |---|---|---|---|
-| 1 | connect | `onboarding.connect.title` | `OnboardingFrame`, `TextField` invite, `Button` Continue (`onboarding.next`) |
+| 1 | connect | `onboarding.connect.title` | `OnboardingFrame`, `TextField` invite, ghost `Button` Use an existing account (`onboarding.connect.signIn`, only when `instance.passwordSignup`; it sends `signInBegin`, `03-sign-in.md`), `Button` Continue (`onboarding.next`) |
 | 2 | identity | `onboarding.identity.title` | `TextField` username, display name, password (only when `instance.passwordSignup`), `Button` Back and Continue |
 | 3 | recovery key | `onboarding.keys.title` | two paragraphs, `RecoveryKey` (see `02-recovery-key.md`), `Button` Back and Continue |
 | 4 | this browser | `onboarding.browser.title` | four paragraphs, `Banner` on a refusal, `Button` Back and Create account |
@@ -81,6 +82,7 @@ label `Invite (optional)`):
 |                      | k7qm3zrdw0pahv5cj8zem4tbs6                       |                    |
 |                      +--------------------------------------------------+                    |
 |                      A code or a link, as you received it.                                   |
+|                      [ Use an existing account ]                          (ghost button)     |
 |                      --------------------------------------------------                      |
 |                                                            [ Continue ]                      |
 +----------------------------------------------------------------------------------------------+
@@ -126,11 +128,10 @@ Step 3, recovery key (the grid in detail: `02-recovery-key.md`):
 |                      Step 3 of 5                                                             |
 |                      This key is shown once and is kept nowhere. Write it down or print      |
 |                      it, and keep it away from this computer.                                |
-|                      Getting an account back with this key is not available in this         |
-|                      version. Until it is, your account lives only in this browser: if       |
-|                      this browser loses its data, the account and its history are gone,      |
-|                      and the host cannot bring them back. Keep the key for when recovery     |
-|                      arrives.                                                                |
+|                      This key is the only way to get your account back or to add another     |
+|                      browser. If every browser you use loses its data and you do not have    |
+|                      the key, the account and its history are gone, and the host cannot      |
+|                      bring them back.                                                        |
 |                      Recovery key                                                            |
 |                      +--------------------------------------------------+                    |
 |                      | 01 7K3M    02 QW9D    03 X2RT    04 0PNA         |                    |
@@ -160,9 +161,9 @@ Step 4, this browser:
 |                      dilla.thim.dev. The key never leaves this browser.                      |
 |                      Clearing this site’s data removes the key and the messages kept         |
 |                      here, and this browser stops being your device.                         |
-|                      This version cannot add a second browser or restore an account from     |
-|                      the recovery key yet. For now, your account works in this browser       |
-|                      only.                                                                   |
+|                      To use this account in another browser, sign in there with your         |
+|                      password and this recovery key. Messages sent before that browser       |
+|                      joins are not shown in it.                                              |
 |                      A private window forgets all of this when it closes.                    |
 |                      --------------------------------------------------                      |
 |                                          [ Back ]    [ Create account ]                      |
@@ -186,7 +187,9 @@ Step 5, done:
 ## Wireframes at 360 × 740
 
 The column takes the full width less 1.5rem on each side; nothing scrolls sideways (WCAG 1.4.10). The
-footer buttons wrap to a second line when they do not fit, forward button last.
+footer buttons wrap to a second line when they do not fit, forward button last. On step 1 the ghost
+button `Use an existing account` stands on its own line under the invite hint, above the footer, when
+the instance offers it.
 
 ```
 +--------------------------------------+   +--------------------------------------+
@@ -215,8 +218,8 @@ footer buttons wrap to a second line when they do not fit, forward button last.
 |  Step 3 of 5                         |   |  Step 4 of 5                         |
 |  This key is shown once and is kept  |   |  This browser now holds the key of   |
 |  nowhere. …                          |   |  this device, …                      |
-|  Getting an account back with this   |   |  Clearing this site’s data …         |
-|  key is not available in this …      |   |  This version cannot add a second …  |
+|  This key is the only way to get     |   |  Clearing this site’s data …         |
+|  your account back or to add …       |   |  To use this account in another …    |
 |  Recovery key                        |   |  A private window forgets all of     |
 |  +--------------------------------+  |   |  this when it closes.                |
 |  |  01 7K3M        02 QW9D        |  |   |  ------------------------------      |
@@ -239,7 +242,9 @@ footer buttons wrap to a second line when they do not fit, forward button last.
 ## States
 
 The closed frame (`instance.registrationMode` is 2, or a submit refused with `E_FORBIDDEN`): the heading
-and one paragraph; no step line, no field and no button. Focus moves to its heading.
+and one paragraph; no step line and no field. Its one button is `Use an existing account`, shown when
+`instance.passwordSignup` is true, because a closed instance still has accounts that want a second
+browser (`03-sign-in.md`). Focus moves to its heading.
 
 ```
 +----------------------------------------------------------------------------------------------+
@@ -247,6 +252,7 @@ and one paragraph; no step line, no field and no button. Focus moves to its head
 +----------------------------------------------------------------------------------------------+
 |                      dilla.thim.dev is not taking new accounts            <h1>, has focus    |
 |                      Ask the host of dilla.thim.dev when sign-ups open again.                |
+|                      [ Use an existing account ]                          (ghost button)     |
 +----------------------------------------------------------------------------------------------+
 ```
 
@@ -327,8 +333,9 @@ keeps the typed values; going forward again passes step 3 with the box still tic
 | registering starts | unchanged (the pressed button becomes `aria-disabled` and keeps focus) | `onboarding.browser.registering` (`role="status"`) |
 | the box of step 3 is ticked | the checkbox | nothing extra; `Continue` becomes enabled and loses the description `onboarding.keys.ackHint` |
 
-Tab order inside each step: the fields in visual order, then (step 3) the checkbox, then `Print`, then
-`Back`, then the forward button. There are no single-key shortcuts.
+Tab order inside each step: the fields in visual order, then (step 1, and the closed frame) `Use an
+existing account`, then (step 3) the checkbox, then `Print`, then `Back`, then the forward button. There
+are no single-key shortcuts.
 
 ## Error placement
 
@@ -365,6 +372,7 @@ Tab order inside each step: the fields in visual order, then (step 3) the checkb
 | `onboarding.connect.invite` | `Invite` | field label, step 1, mode 0 |
 | `onboarding.connect.inviteOptional` | `Invite (optional)` | field label, step 1, mode 1 |
 | `onboarding.connect.inviteHint` | `A code or a link, as you received it.` | hint, invite field |
+| `onboarding.connect.signIn` | `Use an existing account` | ghost button under the invite hint, step 1, and under the closed frame's paragraph, only when `instance.passwordSignup` (L-COPY-02) |
 | `onboarding.closed.title` | `{instance} is not taking new accounts` | step heading, closed frame |
 | `onboarding.closed.body` | `Ask the host of {instance} when sign-ups open again.` | paragraph, closed frame |
 | `onboarding.identity.title` | `Choose your name` | step heading, step 2 |
@@ -377,7 +385,7 @@ Tab order inside each step: the fields in visual order, then (step 3) the checkb
 | `onboarding.identity.passwordHint` | `At least 8 characters.` | hint, password field |
 | `onboarding.keys.title` | `Your recovery key` | step heading, step 3 |
 | `onboarding.keys.body` | `This key is shown once and is kept nowhere. Write it down or print it, and keep it away from this computer.` | first paragraph, step 3 |
-| `onboarding.keys.loss` | `Getting an account back with this key is not available in this version. Until it is, your account lives only in this browser: if this browser loses its data, the account and its history are gone, and the host cannot bring them back. Keep the key for when recovery arrives.` | second paragraph, step 3 |
+| `onboarding.keys.loss` | `This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.` | second paragraph, step 3 (L-COPY-02) |
 | `onboarding.keys.label` | `Recovery key` | grid label, step 3 |
 | `onboarding.keys.acknowledge` | `I have written down or printed my recovery key` | checkbox label, step 3 |
 | `onboarding.keys.ackHint` | `Tick the box to continue.` | hint under the blocked (`aria-disabled`) `Continue`, step 3; its description while blocked |
@@ -386,7 +394,7 @@ Tab order inside each step: the fields in visual order, then (step 3) the checkb
 | `onboarding.browser.title` | `What this browser keeps` | step heading, step 4 |
 | `onboarding.browser.device` | `This browser now holds the key of this device, in its storage for {instance}. The key never leaves this browser.` | first paragraph, step 4 |
 | `onboarding.browser.clear` | `Clearing this site’s data removes the key and the messages kept here, and this browser stops being your device.` | second paragraph, step 4 |
-| `onboarding.browser.oneBrowser` | `This version cannot add a second browser or restore an account from the recovery key yet. For now, your account works in this browser only.` | third paragraph, step 4 |
+| `onboarding.browser.oneBrowser` | `To use this account in another browser, sign in there with your password and this recovery key. Messages sent before that browser joins are not shown in it.` | third paragraph, step 4 (L-COPY-02) |
 | `onboarding.browser.private` | `A private window forgets all of this when it closes.` | fourth paragraph, step 4 |
 | `onboarding.browser.submit` | `Create account` | button, forward on step 4 |
 | `onboarding.browser.submitting` | `Creating account…` | button, forward on step 4 while registering |

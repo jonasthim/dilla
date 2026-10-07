@@ -34,8 +34,22 @@ describe('constants and the through bound', () => {
   it('fixes the sync constants', () => {
     expect(SYNC).toEqual({
       handshakePage: 512, messagePage: 256, commitRetryMax: 5, commitJitterMs: 400, membershipWaitMs: 2000, echoWaitMs: 5000,
-      registerRetryMax: 3, cursorDebounceMs: 30000,
+      registerRetryMax: 3, cursorDebounceMs: 30000, joinAllConcurrency: 1, joinAllRetryMs: 60000,
     });
+  });
+
+  it('setChannels is setExpected under its web-1 name, and neither starts anything before a ready', async () => {
+    const d = device(ds, clock, ME);
+    const w = ds.peerCreate(PEER, CHANNEL_2);
+    const eg = [{ groupId: w, communityId: COMMUNITY, channelId: CHANNEL_2, policyVersion: 1n }];
+    d.engine.setChannels(eg);
+    expect(d.engine.expected()).toEqual(eg);
+    d.engine.setExpected([]);
+    expect(d.engine.expected()).toEqual([]);
+    d.engine.setExpected(eg);
+    await settle();
+    expect(ds.calls).toEqual([]);
+    expect(d.joinAll).toEqual([]);
   });
 
   // [name, message page (256), handshake page (512), carry, through]
@@ -490,13 +504,28 @@ describe('commit duty (rule 4)', () => {
     const g = await openRegistered(ds, d);
     ds.propose(g, 'add', THIRD.device);
     await settle();
-    ds.evict(g, ME.device);
+    ds.afterNextProposalsRead(g, () => ds.evict(g, ME.device));
     ds.elect(g, ME.device, 1n);
     await settle();
     expect(coreCalls(d, g, COMMIT_CALLS).slice(-2)).toEqual(['commitBuild', 'commitAbort']);
     expect(d.membership).toEqual([{ group: toHex(g), status: 'resyncing' }]);
     expect(count('postResync')).toBe(1);
     expect(d.core.group(g)).toMatchObject({ state: 2, epoch: 1n });
+  });
+
+  it('a leaf removed before the election: getProposals answers 404 as dillad does, and the duty resyncs without building', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.propose(g, 'add', THIRD.device);
+    await settle();
+    ds.evict(g, ME.device);
+    ds.elect(g, ME.device, 1n);
+    await settle();
+    expect(count('getProposals')).toBe(1);
+    expect(count('postCommit')).toBe(0);
+    expect(coreCalls(d, g, ['commitBuild', 'commitConfirm', 'commitAbort'])).toEqual([]);
+    expect(d.membership).toEqual([{ group: toHex(g), status: 'resyncing' }]);
+    expect(count('postResync')).toBe(1);
   });
 });
 

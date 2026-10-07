@@ -722,6 +722,7 @@ impl Runner {
             Some(Backend::Stub(_)) => None,
             Some(Backend::Remote { base, .. }) => Some(base.clone()),
         };
+        let mut packages_published = false;
         if let Some(base) = remote_base {
             let codes = std::env::var(INVITE_ENV).map_err(|_| {
                 TestkitError::Scenario(format!(
@@ -760,8 +761,9 @@ impl Runner {
             // The user signs its one device into its device list, as a real client does right
             // after registering: invariant 4 refuses any Add whose DSK is in no list the user
             // signed, so a client without one could never be added to anything.
-            // `device_list=none` and `device_list=revoked` are invariant 4's probes: a user who
-            // signed no list, and one whose list revokes this device.
+            // `device_list=none`, `device_list=revoked` and `device_list=unlisted` are invariant 4's
+            // probes: a user who signed no list, one whose list revokes this device, and a user
+            // whose newest list omits this device.
             let added_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -770,17 +772,28 @@ impl Runner {
                 DeviceListMode::Signed => {
                     ds.put_device_list(&enrolled.user_id, &client.signed_device_list(added_at))?;
                 }
-                DeviceListMode::Revoked => ds.put_device_list(
-                    &enrolled.user_id,
-                    &client.signed_device_list_with(added_at, Some(added_at)),
-                )?,
+                DeviceListMode::Revoked => {
+                    // Publishing this list deletes the client's session. Upload its KeyPackages
+                    // while the session still exists, then use the dead session only for probes.
+                    if let Some(n) = key_packages {
+                        client.publish_key_packages(&mut ds, n)?;
+                        packages_published = true;
+                    }
+                    ds.put_device_list(
+                        &enrolled.user_id,
+                        &client.signed_device_list_with(added_at, Some(added_at)),
+                    )?;
+                }
                 DeviceListMode::None => {}
+                DeviceListMode::Unlisted => {
+                    ds.put_device_list(&enrolled.user_id, &client.signed_device_list_empty())?;
+                }
             }
             if let Some(Backend::Remote { clients, .. }) = self.backend.as_mut() {
                 clients.insert(name.to_owned(), ds);
             }
         }
-        let result = match key_packages {
+        let result = match key_packages.filter(|_| !packages_published) {
             Some(n) => self
                 .ds_for(&client)
                 .and_then(|ds| client.publish_key_packages(ds, n)),

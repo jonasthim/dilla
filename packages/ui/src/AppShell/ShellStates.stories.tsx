@@ -13,6 +13,7 @@ import { Dialog } from '../Dialog/Dialog.tsx';
 import { TextField } from '../TextField/TextField.tsx';
 import { Button } from '../Button/Button.tsx';
 import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
+import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
 // The shipped copy of @dilla/web, so the F16 screenshots show exactly what the app says.
 import { t, formatTime } from '../../../web/src/strings/index.ts';
 
@@ -39,11 +40,25 @@ const ROWS: MessageRowProps[] = [
     actions: [{ label: t('shell.message.retry'), onAction: noop }, { label: t('shell.message.discard'), onAction: noop }] },
 ];
 
+const BADGES: Record<string, { unread: number; mentions: number; muted?: boolean }> = {
+  random: { unread: 3, mentions: 0 }, lobby: { unread: 0, mentions: 1, muted: true },
+};
+const DMS = [
+  { id: 'bob', name: 'bob', kind: 'dm' as const, readable: false, unread: 2, mentions: 0 },
+  { id: 'eve', name: 'eve', kind: 'dm' as const, readable: false },
+];
+const rowLabel = (c: { name: string; unread: number; mentions: number; muted: boolean }) =>
+  c.muted ? t('shell.channels.rowLabelMuted', { name: c.name, mentions: c.mentions })
+    : c.unread === 0 && c.mentions === 0 ? c.name : t('shell.channels.rowLabel', { name: c.name, unread: c.unread, mentions: c.mentions });
+const itemLabel = (i: { name: string; unread: number; mentions: number }) =>
+  i.unread === 0 && i.mentions === 0 ? i.name : t('shell.rail.itemLabel', { name: i.name, unread: i.unread, mentions: i.mentions });
+
 function Screen(p: { active?: string | null; servers?: { id: string; name: string }[]; main: ReactNode; reason?: string | null;
-  banner?: ReactNode; status?: 'online' | 'connecting' | 'offline'; after?: ReactNode }) {
+  banner?: ReactNode; status?: 'online' | 'connecting' | 'offline'; after?: ReactNode; tab?: 'channels' | 'dms'; badges?: boolean; dm?: boolean }) {
   const servers = p.servers ?? SERVERS;
   const active = p.active === undefined ? 'general' : p.active;
-  const channel = CHANNELS.find(c => c.id === active) ?? null;
+  const tab = p.tab ?? 'channels';
+  const channel = p.dm ? { id: 'bob', name: 'bob', kind: 'text' as const, readable: false } : CHANNELS.find(c => c.id === active) ?? null;
   const status = p.status ?? 'online';
   const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'warn' : 'danger';
   // 800px less the preview decorator's 16px padding on each side, as the Shell/AppShell stories do, so
@@ -52,11 +67,25 @@ function Screen(p: { active?: string | null; servers?: { id: string; name: strin
     <div style={{ ['--d-shell-h' as string]: '768px' }}>
       <AppShell
         skipLabel={t('shell.skip')}
-        rail={<CommunityRail label={t('shell.rail.label')} items={servers} activeId={servers[0]?.id ?? null} onSelect={noop} joinLabel={t('shell.rail.join')} onJoin={noop} />}
-        sidebar={servers.length ? <ChannelList label={t('shell.channels.label')} title="Midgard" channels={CHANNELS} activeId={active} onSelect={noop} emptyLabel={t('shell.channels.empty')} /> : null}
-        header={channel ? <ChannelHeader name={channel.name} topic={channel.id === 'general' ? 'say hi' : undefined} readable={channel.readable} readableLabel={t('shell.readable')} /> : null}
+        rail={<CommunityRail label={t('shell.rail.label')} items={servers.map(s => (p.badges && s.id === 'b' ? { ...s, unread: 2, mentions: 1 } : s))}
+          activeId={servers[0]?.id ?? null} onSelect={noop} joinLabel={t('shell.rail.join')} onJoin={noop}
+          settingsLabel={t('shell.rail.settings')} onSettings={noop} itemLabel={itemLabel} />}
+        sidebar={servers.length ? (
+          <ChannelList title="Midgard"
+            label={t(tab === 'dms' ? 'shell.dms.label' : 'shell.channels.label')}
+            tabs={<SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={noop} tabs={[
+              { id: 'channels', label: t('shell.tabs.channels'), count: p.badges ? 3 : 0, mentions: p.badges ? 1 : 0 },
+              { id: 'dms', label: t('shell.tabs.dms'), count: p.badges ? 2 : 0 },
+            ]} />}
+            channels={tab === 'dms' ? DMS : CHANNELS.map(c => ({ ...c, ...(p.badges ? BADGES[c.id] : {}) }))}
+            activeId={tab === 'dms' ? (p.dm ? 'bob' : null) : active} onSelect={noop}
+            emptyLabel={t(tab === 'dms' ? 'shell.dms.empty' : 'shell.channels.empty')} rowLabel={rowLabel}
+            footer={tab === 'dms' ? <Button variant="ghost">{t('shell.dms.new')}</Button> : undefined} />
+        ) : null}
+        header={channel ? <ChannelHeader kind={p.dm ? 'dm' : 'channel'} name={channel.name} topic={channel.id === 'general' ? 'say hi' : undefined} readable={channel.readable} readableLabel={t('shell.readable')} /> : null}
         // The Composer is controlled (task 21); a story holds no text, so it passes an empty value.
-        composer={channel ? <Composer label={t('shell.composer.label', { channel: channel.name })} placeholder={t('shell.composer.placeholder', { channel: channel.name })}
+        composer={channel ? <Composer label={t(p.dm ? 'shell.dm.composer' : 'shell.composer.label', p.dm ? { name: 'bob' } : { channel: channel.name })}
+          placeholder={t(p.dm ? 'shell.dm.composer' : 'shell.composer.placeholder', p.dm ? { name: 'bob' } : { channel: channel.name })}
           maxLength={4000} value="" onChange={noop} disabled={Boolean(p.reason)} disabledReason={p.reason ?? undefined} onSend={noop} sendLabel={t('shell.composer.send')}
           counterLabel={n => (n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n }))} /> : null}
         statusBar={
@@ -64,6 +93,7 @@ function Screen(p: { active?: string | null; servers?: { id: string; name: strin
             <StatusChunk label={t('shell.status.node')}>dilla.test</StatusChunk>
             <StatusChunk label={t('shell.status.link')} tone={tone}>{t(`shell.status.${status}`)}</StatusChunk>
             <StatusChunk label={t('shell.status.gen')}>7</StatusChunk>
+            <StatusChunk label={t('shell.status.devices')}>2</StatusChunk>
           </StatusBar>
         }
         banner={p.banner}
@@ -107,5 +137,29 @@ export const JoinDialog: Story = {
         <TextField id="story-join-invite" label={t('join.invite')} value="https://dilla.test/i/ABCD-EFGH" onChange={noop}
           hint={t('join.inviteHint')} error={t('join.error.notCommunity')} />
       </form>
+    </Dialog>} />,
+};
+
+const dmLog = (
+  <MessageLog label={t('shell.dm.log', { name: 'bob' })} emptyLabel={t('shell.log.empty')}>
+    <MessageRow author="bob" time={time} body="are you around later?" state="ok" />
+    <MessageRow author="Ada L" time={time} body="after nine" own tag="web" state="ok" />
+  </MessageLog>
+);
+export const Badges: Story = { render: () => <Screen main={conversation} badges /> };
+export const DirectMessages: Story = { render: () => <Screen main={conversation} tab="dms" badges /> };
+export const DmConversation: Story = { render: () => <Screen main={dmLog} tab="dms" dm /> };
+export const DmPicker: Story = {
+  render: () => <Screen main={conversation} tab="dms" after={
+    <Dialog open title={t('shell.dms.newTitle')} onClose={noop} closeLabel={t('dialog.close')}>
+      <p>{t('shell.dms.newBody')}</p>
+      <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        {['bob', 'Helga', 'zed'].map(name => (
+          <li key={name} style={{ display: 'flex', justifyContent: 'space-between', gap: 'var(--row-gap)' }}>
+            <span id={`story-dm-${name}`}>{name}</span>
+            <Button size="sm" aria-describedby={`story-dm-${name}`}>{t('shell.dms.open')}</Button>
+          </li>
+        ))}
+      </ul>
     </Dialog>} />,
 };

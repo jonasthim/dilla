@@ -34,6 +34,13 @@ const FIELD_ORDER: readonly Field[] = ['invite', 'username', 'display', 'passwor
 
 const codePoints = (s: string): number => [...s].length;
 
+// L-TS-27, head ruling 26: after a list race the wipe reloads the page to /welcome?signin=race, and the
+// query is the only place the message survives that reload.
+const RACE_BANNER: BannerState = { tone: 'warn', key: 'signin.error.listRace', vars: {}, reload: false };
+// REGISTRATION-DEVICES-02: the sign-in's row was replaced after the enrolment was written; the wipe reloads to
+// /welcome?signin=evicted.
+const EVICTED_BANNER: BannerState = { tone: 'danger', key: 'signin.error.evicted', vars: {}, reload: false };
+
 /**
  * L-COPY-01's refusal table, in its order. It reads the code, the HTTP status and the wait, and
  * never the server's detail text (protocol/02: a client must not parse it).
@@ -83,16 +90,19 @@ function resultOf(value: unknown, invite: string): SignupResult {
 export function Onboarding(props: { onFinish(result: SignupResult): void }): React.JSX.Element {
   const client = useCore();
   const account = useSlice('account');
-  const [route] = useRoute();
+  const [route, navigate] = useRoute();
   const [step, setStep] = useState<Step>('connect');
   const [invite, setInvite] = useState(() => (route.name === 'welcome' ? route.invite ?? '' : ''));
   const [username, setUsername] = useState('');
   const [display, setDisplay] = useState('');
   const [password, setPassword] = useState('');
   const [errors, setErrors] = useState<Partial<Record<Field, StringKey>>>({});
-  const [banner, setBanner] = useState<BannerState | null>(null);
+  const [banner, setBanner] = useState<BannerState | null>(
+    () => (route.name === 'welcome' && route.signin === 'race' ? RACE_BANNER
+      : route.name === 'welcome' && route.signin === 'evicted' ? EVICTED_BANNER : null));
   const [acknowledged, setAcknowledged] = useState(false);
   const [beginning, setBeginning] = useState(false);
+  const [entering, setEntering] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [closed, setClosed] = useState(false);
@@ -154,12 +164,32 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
     return view;
   };
 
+  // The first navigation away from the connect step writes the route without the race query.
+  const dropRace = () => {
+    if (route.name === 'welcome' && route.signin !== null) navigate({ name: 'welcome', invite: route.invite, signin: null }, true);
+  };
   const connectNext = () => {
     setBanner(null);
     const code = extractInviteCode(invite);
     if (showErrors(instance.registrationMode === 0 && code === '' ? { invite: 'onboarding.error.inviteRequired' } : {})) return;
+    dropRace();
     goTo('identity');
   };
+  // Ruling 22: the entry to the sign-in ceremony, on the connect step and the closed frame.
+  const beginSignIn = () => {
+    if (entering) return;
+    setBanner(null);
+    dropRace();
+    setEntering(true);
+    client.call({ m: 'signInBegin' })
+      .catch(e => { setBanner({ tone: 'danger', key: 'signin.error.other', vars: { code: errorOf(e).code }, reload: false }); })
+      .finally(() => setEntering(false));
+  };
+  const signInEntry = instance.passwordSignup ? (
+    <Button variant="ghost" type="button" onClick={beginSignIn} {...(entering ? { 'aria-disabled': true } : {})}>
+      {t('onboarding.connect.signIn')}
+    </Button>
+  ) : null;
   const identityNext = () => {
     setBanner(null);
     const next: Partial<Record<Field, StringKey>> = {};
@@ -264,7 +294,9 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   } else if (shown === 'closed') {
     content = (
       <OnboardingFrame title={t('onboarding.closed.title', { instance: name })} stepLabel="" footer={null}>
+        {bannerEl}
         <p>{t('onboarding.closed.body', { instance: name })}</p>
+        {signInEntry}
       </OnboardingFrame>
     );
   } else if (shown === 'connect') {
@@ -274,6 +306,7 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
       <TextField id="onboarding-invite" label={t(required ? 'onboarding.connect.invite' : 'onboarding.connect.inviteOptional')}
         value={invite} onChange={change('invite', setInvite)} hint={t('onboarding.connect.inviteHint')} error={errorText('invite')}
         required={required} autoComplete="off" spellCheck={false} />
+      {signInEntry}
     </>);
   } else if (shown === 'identity') {
     content = form(t('onboarding.identity.title'), 2, footer('connect', t('onboarding.next')), <>

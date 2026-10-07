@@ -2,3 +2,5 @@
 .d-channel-list__title { margin: 0; padding: 0.875rem var(--row-pad-x) 0.75rem; font-family: var(--font-serif-italic); font-style: italic; font-weight: var(--weight-body); font-size: var(--text-lg); color: var(--fg); border-bottom: 1px solid var(--hairline); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .d-channel-list__list { list-style: none; margin: 0; padding: 0.5rem; flex: 1; min-height: 0; overflow-y: auto; }
 .d-channel-list__empty { margin: 0; padding: 1rem var(--row-pad-x); font-size: var(--text-sm); color: var(--fg-3); }
+.d-channel-list__panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.d-channel-list__footer { flex-shrink: 0; padding: 0.5rem var(--row-pad-x) 0.75rem; border-top: 1px solid var(--hairline); }

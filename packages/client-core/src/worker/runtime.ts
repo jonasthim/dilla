@@ -5,7 +5,7 @@ import { boot, opfsDirectoryExists, wasmCoreOpener } from '../account/boot';
 import { indexedDbKekStore } from '../account/kek';
 import type { CoreWasmModule } from '../core-port';
 import { toHex } from '../hex';
-import { Controller } from './controller';
+import { Controller, type ControllerParts } from './controller';
 
 type WasmModule = CoreWasmModule & { default(): Promise<unknown> };
 let wasm: Promise<WasmModule> | null = null;
@@ -26,7 +26,7 @@ function isNotFound(e: unknown): boolean {
   return e instanceof DOMException && e.name === 'NotFoundError';
 }
 
-export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { testHooks: boolean }): Controller {
+export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { testHooks: boolean; parts?: Partial<ControllerParts> }): Controller {
   const sleep = (ms: number, signal?: AbortSignal): Promise<void> => new Promise<void>((resolve, reject) => {
     const aborted = (): Error => (signal?.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted.', 'AbortError'));
     if (signal?.aborted === true) { reject(aborted()); return; }
@@ -70,6 +70,7 @@ export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { te
         if (!isNotFound(e)) throw e;
       }
     },
+    ...(options.parts === undefined ? {} : { parts: options.parts }),
   });
   scope.addEventListener('message', (e: MessageEvent<unknown>) => { controller.handle(e.data); });
   return controller;

@@ -12,6 +12,22 @@ import (
 	id "github.com/jonasthim/dilla/internal/id"
 )
 
+const backupRefersToBlob = `-- name: BackupRefersToBlob :one
+SELECT COUNT(*) FROM backups WHERE backups.blob_id = $1
+`
+
+type BackupRefersToBlobParams struct {
+	BlobID []byte
+}
+
+// COUNT, not EXISTS, for the reason GetBlobTombstone gives.
+func (q *Queries) BackupRefersToBlob(ctx context.Context, arg BackupRefersToBlobParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, backupRefersToBlob, arg.BlobID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const clearBlobUnreferenced = `-- name: ClearBlobUnreferenced :exec
 UPDATE blobs SET unref_since = NULL WHERE blobs.blob_id = $1
 `
@@ -88,6 +104,38 @@ func (q *Queries) DeleteBlobRef(ctx context.Context, arg DeleteBlobRefParams) er
 	return err
 }
 
+const getBackup = `-- name: GetBackup :one
+SELECT user_id, kind, device_id, chunk_seq, blob_id, manifest_sig, created
+FROM backups WHERE user_id = $1 AND kind = $2 AND device_id = $3 AND chunk_seq = $4
+`
+
+type GetBackupParams struct {
+	UserID   id.ID
+	Kind     int64
+	DeviceID id.ID
+	ChunkSeq int64
+}
+
+func (q *Queries) GetBackup(ctx context.Context, arg GetBackupParams) (Backups, error) {
+	row := q.db.QueryRowContext(ctx, getBackup,
+		arg.UserID,
+		arg.Kind,
+		arg.DeviceID,
+		arg.ChunkSeq,
+	)
+	var i Backups
+	err := row.Scan(
+		&i.UserID,
+		&i.Kind,
+		&i.DeviceID,
+		&i.ChunkSeq,
+		&i.BlobID,
+		&i.ManifestSig,
+		&i.Created,
+	)
+	return i, err
+}
+
 const getBlob = `-- name: GetBlob :one
 SELECT blob_id, size, storage_ref, created, unref_since FROM blobs WHERE blob_id = $1
 `
@@ -147,6 +195,36 @@ func (q *Queries) GetBlobTombstone(ctx context.Context, arg GetBlobTombstonePara
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const insertBackup = `-- name: InsertBackup :exec
+INSERT INTO backups (user_id, kind, device_id, chunk_seq, blob_id, manifest_sig, created)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type InsertBackupParams struct {
+	UserID      id.ID
+	Kind        int64
+	DeviceID    id.ID
+	ChunkSeq    int64
+	BlobID      []byte
+	ManifestSig []byte
+	Created     int64
+}
+
+// dilla-web-2a (L-SQL-21, F3, Q27): the root object is written once. No ON CONFLICT: a taken
+// (user_id, kind, device_id, chunk_seq) is a unique violation, which the adapters map to ErrConflict.
+func (q *Queries) InsertBackup(ctx context.Context, arg InsertBackupParams) error {
+	_, err := q.db.ExecContext(ctx, insertBackup,
+		arg.UserID,
+		arg.Kind,
+		arg.DeviceID,
+		arg.ChunkSeq,
+		arg.BlobID,
+		arg.ManifestSig,
+		arg.Created,
+	)
+	return err
 }
 
 const instanceBlobBytes = `-- name: InstanceBlobBytes :one
@@ -337,6 +415,7 @@ const listCollectableBlobs = `-- name: ListCollectableBlobs :many
 SELECT blobs.blob_id, blobs.size, blobs.storage_ref, blobs.created, blobs.unref_since FROM blobs
 WHERE blobs.unref_since IS NOT NULL AND blobs.unref_since < $1::bigint
   AND NOT EXISTS (SELECT 1 FROM blob_refs WHERE blob_refs.blob_id = blobs.blob_id)
+  AND NOT EXISTS (SELECT 1 FROM backups WHERE backups.blob_id = blobs.blob_id)
 ORDER BY blobs.unref_since
 LIMIT $2::bigint
 `
@@ -346,6 +425,7 @@ type ListCollectableBlobsParams struct {
 	MaxRows int64
 }
 
+// dilla-web-2a (L-SQL-21): a blob a backups row names is never collectable; backups have no blob_refs row.
 func (q *Queries) ListCollectableBlobs(ctx context.Context, arg ListCollectableBlobsParams) ([]Blobs, error) {
 	rows, err := q.db.QueryContext(ctx, listCollectableBlobs, arg.Before, arg.MaxRows)
 	if err != nil {
@@ -421,6 +501,21 @@ func (q *Queries) ListExpiredBlobRefs(ctx context.Context, arg ListExpiredBlobRe
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockBlob = `-- name: LockBlob :exec
+SELECT blob_id FROM blobs WHERE blob_id = $1 FOR UPDATE
+`
+
+type LockBlobParams struct {
+	BlobID []byte
+}
+
+// The per-blob lock the recording transactions take before their cross-table checks: the blobs
+// row FOR UPDATE until Tx commits (the caller inserted it first if it was absent).
+func (q *Queries) LockBlob(ctx context.Context, arg LockBlobParams) error {
+	_, err := q.db.ExecContext(ctx, lockBlob, arg.BlobID)
+	return err
 }
 
 const markBlobUnreferenced = `-- name: MarkBlobUnreferenced :exec
@@ -557,9 +652,12 @@ func (q *Queries) PutBlobTombstone(ctx context.Context, arg PutBlobTombstonePara
 const userBlobBytes = `-- name: UserBlobBytes :one
 SELECT CAST(COALESCE(SUM(b.size), 0) AS BIGINT) FROM blobs b
 WHERE b.blob_id IN (
-  SELECT DISTINCT r.blob_id FROM blob_refs r
+  SELECT r.blob_id FROM blob_refs r
   JOIN devices d ON d.id = r.uploader_device
   WHERE d.user_id = $1
+  UNION
+  SELECT k.blob_id FROM backups k
+  WHERE k.user_id = $1
 )
 `
 
@@ -568,8 +666,9 @@ type UserBlobBytesParams struct {
 }
 
 // The quota counts each distinct blob a user uploaded once, however many
-// channels they published it into. SUM over BIGINT is NUMERIC on Postgres; the
-// cast keeps it int64 like the SQLite twin.
+// channels they published it into, and the user's own backup objects with them (dilla-web-2a
+// boundary ruling 2): a replaced state object leaves the count with its row. SUM over BIGINT is
+// NUMERIC on Postgres; the cast keeps it int64 like the SQLite twin.
 func (q *Queries) UserBlobBytes(ctx context.Context, arg UserBlobBytesParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, userBlobBytes, arg.UserID)
 	var column_1 int64

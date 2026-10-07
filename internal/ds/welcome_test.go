@@ -12,12 +12,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
@@ -507,4 +509,104 @@ func credentialIdentity(t *testing.T, userID, deviceID id.ID) []byte {
 		t.Fatalf("encode a credential identity: %v", err)
 	}
 	return b
+}
+
+// Web-1 card 15 (Q25): the frame budget is judged on the ENCODED mls.welcome frame — the
+// four-element [op, n, group_id, payload] the gateway writes — not on the bare payload. A payload
+// 10 bytes under the budget still makes a frame over it (the frame adds up to 28 bytes: the array
+// header, the op, n at its widest and the 16-byte group id), so that joiner is left to the queue;
+// a payload 200 bytes under is framed. Attacker statement: only the Welcome's own size triggers
+// the skip, it spares the joiner a frame its read limit would close the connection on, and the
+// Welcome stays queued for GET /v1/welcomes either way.
+func TestTheWelcomeFrameBudgetIsJudgedOnTheEncodedFrame(t *testing.T) {
+	const budget = 4096
+	h := newDSHarnessWithFrameBudget(t, budget)
+	ctx := context.Background()
+	if got := h.gw.MaxFrameBytes(); got != budget {
+		t.Fatalf("the harness gateway's budget is %d, want %d", got, budget)
+	}
+	over, under := h.device(t), h.device(t)
+	if h.sessions == nil {
+		h.sessions = map[id.ID]auth.Session{}
+	}
+	for _, j := range []id.ID{over, under} {
+		h.sessions[j] = h.sessionOf(t, j)
+	}
+	h.online(over, under)
+
+	groupID := id.New()
+	const epoch = 3
+	tree := welcomeBlob(0xEE, 64)
+	treeHash := bytes.Repeat([]byte{0xAB}, 32)
+	frameOf := func(payload []byte) []byte {
+		t.Helper()
+		f, err := gateway.Encode(gateway.Frame{Op: gateway.OpMLSWelcome, GroupID: &groupID, Payload: payload, Replay: true}, math.MaxUint64)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		return f
+	}
+	// sized stores joiner's Welcome row with a blob whose payload — as the fan-out builds it from
+	// the row: [welcome_id, epoch, commit_seq 1, blob, tree, tree_hash] — is exactly target bytes,
+	// and proves the size against the row's real welcome_id once the row exists.
+	sized := func(joiner id.ID, tag byte, target int) []byte {
+		t.Helper()
+		var blob []byte
+		for n := 256; n < target && blob == nil; n++ {
+			p, err := gateway.WelcomePayload(1, epoch, 1, welcomeBlob(tag, n), tree, treeHash)
+			if err != nil {
+				t.Fatalf("WelcomePayload: %v", err)
+			}
+			if len(p) == target {
+				blob = welcomeBlob(tag, n)
+			}
+		}
+		if blob == nil {
+			t.Fatalf("no blob length gives a %d-byte payload", target)
+		}
+		h.putWelcomeRow(t, joiner, groupID, epoch, blob)
+		p, err := gateway.WelcomePayload(uint64(h.welcomeIDOf(t, joiner, groupID)), epoch, 1, blob, tree, treeHash)
+		if err != nil || len(p) != target {
+			t.Fatalf("the stored row's payload is %d bytes (err %v), want %d", len(p), err, target)
+		}
+		return blob
+	}
+	overBlob := sized(over, 0x4C, budget-10)
+	underBlob := sized(under, 0x4D, budget-200)
+
+	// The premise, so the test cannot pass by accident: the first payload fits and its frame does
+	// not; the second frame fits.
+	overPayload, err := gateway.WelcomePayload(uint64(h.welcomeIDOf(t, over, groupID)), epoch, 1, overBlob, tree, treeHash)
+	if err != nil {
+		t.Fatalf("WelcomePayload: %v", err)
+	}
+	if len(overPayload) > budget || len(frameOf(overPayload)) <= budget {
+		t.Fatalf("payload %d bytes, frame %d bytes: the test needs a payload within %d whose frame is over it",
+			len(overPayload), len(frameOf(overPayload)), budget)
+	}
+	underPayload, err := gateway.WelcomePayload(uint64(h.welcomeIDOf(t, under, groupID)), epoch, 1, underBlob, tree, treeHash)
+	if err != nil {
+		t.Fatalf("WelcomePayload: %v", err)
+	}
+	if len(frameOf(underPayload)) > budget {
+		t.Fatalf("the framed case's frame is %d bytes, over %d", len(frameOf(underPayload)), budget)
+	}
+
+	ds.FanOutWelcomesForTest(h.ds, ctx, groupID, epoch, tree, treeHash,
+		[]ds.WelcomeFor{{DeviceID: over, Blob: overBlob}, {DeviceID: under, Blob: underBlob}})
+
+	f := h.waitDeviceFrame(t, under, "mls.welcome")
+	var got []byte
+	if len(f.payload) != 6 {
+		t.Fatalf("the framed welcome has %d elements, want 6", len(f.payload))
+	}
+	if err := cborx.Unmarshal(f.payload[3], &got); err != nil || !bytes.Equal(got, underBlob) {
+		t.Fatalf("the framed welcome carries a %d-byte blob (err %v), want the 200-under joiner's", len(got), err)
+	}
+	// The mutation "compare len(payload)" sends this one: its payload is within the budget.
+	h.expectNoWelcomeFrame(t, over)
+	// Still queued for GET /v1/welcomes.
+	if h.welcomeIDOf(t, over, groupID) == 0 {
+		t.Fatal("the unframed Welcome left the queue")
+	}
 }

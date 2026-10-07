@@ -1,18 +1,19 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 )
 
-// maxSessionBody is generous for a five-element array whose largest member is a
-// 64-byte signature, and small enough that the unauthenticated establish route
-// cannot be used to make the instance allocate.
-const maxSessionBody = 4096
+// maxSessionBody bounds the five-element establish array, including registration.
+// Its embedded credential is separately capped at 2048 bytes.
+const maxSessionBody = 8192
 
 // classChallenge and classEstablish are the buckets the two unauthenticated
 // session routes meter themselves on. Neither is one of config's §5.3 knobs:
@@ -88,12 +89,13 @@ func (d Deps) SessionChallenge(w http.ResponseWriter, r *http.Request) {
 // SessionEstablish serves POST /v1/devices/{device_id}/sessions. The body is the
 // five-element array of protocol/02 § Device sessions item 2:
 //
-//	[nonce(bstr 32), purpose(uint), sig(bstr 64), credential(bstr|null), login(bstr|null)]
+//	[nonce(bstr 32), purpose(uint), sig(bstr 64), registration(array)|credential(bstr)|null, login(bstr|null)]
 //
 // and the answer is that section's seven-element array. `purpose` is bound into
 // the signature preimage, so a renew signature cannot be replayed as an
 // establish; `login`, when present, is the enrolment assertion, which
-// auth.Sessions spends and which yields the `pending` scope.
+// auth.Sessions spends and which yields the `pending` scope. Element 3 is a
+// registration only when login is present; otherwise it is ignored.
 //
 // It is metered on its own two keys BEFORE the body is decoded: protocol/02
 // § Device sessions puts `429 E_RATE_LIMITED per source address and per
@@ -126,12 +128,42 @@ func (d Deps) SessionEstablish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sig, _ := body[2].([]byte)
-	credential, _ := body[3].([]byte)
 	login, _ := body[4].([]byte)
+	var credential []byte
+	var registration *auth.DeviceRegistration
+	if len(login) > 0 {
+		array, ok := body[3].([]any)
+		if !ok {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "registration array required"))
+			return
+		}
+		raw, err := cborx.Marshal(array)
+		if err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "registration array is malformed"))
+			return
+		}
+		var device deviceRequest
+		if err := cborx.Unmarshal(raw, &device); err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "registration array is malformed"))
+			return
+		}
+		if err := device.validate(); err != nil {
+			server.WriteError(w, err)
+			return
+		}
+		if len(device.Credential) > 2048 {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "credential is at most 2048 bytes on establish"))
+			return
+		}
+		registration = &auth.DeviceRegistration{DeviceID: device.DeviceID, DSKPub: device.DSKPub,
+			Tier: device.Tier, SignerTier: device.SignerTier, Credential: device.Credential}
+	} else {
+		credential, _ = body[3].([]byte)
+	}
 
 	req := auth.EstablishRequest{
 		DeviceID: deviceID, Nonce: nonce, Purpose: auth.Purpose(purpose),
-		Sig: sig, Credential: credential, Login: login,
+		Sig: sig, Credential: credential, Login: login, Registration: registration,
 	}
 	var tok auth.Token
 	if auth.Purpose(purpose) == auth.PurposeRenew {
@@ -186,6 +218,27 @@ func (d Deps) SessionDelete(w http.ResponseWriter, r *http.Request) {
 	if device.UserID != sess.UserID {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "not found"))
 		return
+	}
+	// The same ten-minute grace as the key-less DELETE /v1/devices/{device_id} (fix-wave review
+	// NEW-1): without it a stolen enrolled session polling GET /v1/devices cut a recovering owner's
+	// pending session the moment its row appeared, at no login cost, and so kept the owner from
+	// publishing the list that revokes the thief. A listed row and the caller's own device are
+	// never refused.
+	if sess.DeviceID != device.ID && device.Created > d.Clock.Now().Unix()-keylessDeleteGrace {
+		if d.Sessions.DeviceLists == nil {
+			server.WriteError(w, server.Errorf(server.CodeInternal, "device-list lookup is not wired"))
+			return
+		}
+		entries, listErr := d.Sessions.DeviceLists.ListedDevices(r.Context(), sess.UserID)
+		if listErr != nil && !errors.Is(listErr, auth.ErrNoDeviceList) {
+			server.WriteError(w, auth.ListError(listErr))
+			return
+		}
+		if !auth.Listed(entries, device.ID, device.DSKPub) {
+			server.WriteError(w, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
+				"the device registered less than 10 minutes ago and is too new to remove its sessions; its own session may remove them, or it expires unlisted after 24 hours")))
+			return
+		}
 	}
 	if _, err := d.Sessions.DeleteDeviceSessions(r.Context(), deviceID); err != nil {
 		server.WriteError(w, d.storeError(r, err))

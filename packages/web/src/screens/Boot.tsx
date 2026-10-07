@@ -24,7 +24,7 @@ export function Boot(props: { fatal: UiError | null }): React.JSX.Element {
   const [confirming, setConfirming] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState<UiError | null>(null);
-  useEffect(() => { if (account?.phase !== 'store-lost') setResetting(false); }, [account?.phase]);
+  useEffect(() => { if (account?.phase !== 'store-lost' && account?.phase !== 'revoked') setResetting(false); }, [account?.phase]);
 
   const phase = bootPhase(account, props.fatal, resetError, resetting);
   const reset = () => {
@@ -36,6 +36,15 @@ export function Boot(props: { fatal: UiError | null }): React.JSX.Element {
       .catch(e => { setResetError(errorOf(e)); })
       .finally(() => setResetting(false));
   };
+  // A revoked browser can forget itself (task 14 ruling (d)): the worker wipes its store and ends in `cleared`, which
+  // the App answers with a reload; a refused wipe leaves `revoked` and is shown as an error, with Reload.
+  const forget = () => {
+    setConfirming(false);
+    setResetting(true);
+    void client.call({ m: 'forgetBrowser' })
+      .catch(e => { setResetError(errorOf(e)); })
+      .finally(() => setResetting(false));
+  };
   const splash = (() => {
     switch (phase) {
       case 'unsupported': return <Splash status={t('boot.unsupported.status')} detail={t('boot.unsupported.detail')} />;
@@ -43,7 +52,8 @@ export function Boot(props: { fatal: UiError | null }): React.JSX.Element {
       case 'store-lost': return <Splash status={t('boot.storeLost.status')} detail={t('boot.storeLost.detail')}
         action={{ label: t('boot.storeLost.action'), onAction: () => setConfirming(true) }} />;
       case 'resetting': return <Splash status={t('boot.resetting.status')} />;
-      case 'revoked': return <Splash status={t('boot.revoked.status')} detail={t('boot.revoked.detail')} />;
+      case 'revoked': return <Splash status={t('boot.revoked.status')} detail={t('boot.revoked.detail')}
+        action={{ label: t('boot.revoked.action'), onAction: () => setConfirming(true) }} />;
       case 'error': return <Splash status={t('boot.error.status')}
         detail={t('boot.error.detail', { code: (props.fatal ?? resetError ?? account?.error)?.code ?? 'E_UNKNOWN' })}
         action={{ label: t('boot.error.action'), onAction: () => browser.reload() }} />;
@@ -56,6 +66,11 @@ export function Boot(props: { fatal: UiError | null }): React.JSX.Element {
       closeLabel={t('dialog.close')} onClose={() => setConfirming(false)}
       footer={<Button variant="danger" onClick={reset}>{t('boot.storeLost.confirmAction')}</Button>}>
       <p>{t('boot.storeLost.confirmBody')}</p>
+    </Dialog>}
+    {phase === 'revoked' && <Dialog open={confirming} title={t('boot.revoked.confirmTitle')}
+      closeLabel={t('dialog.close')} onClose={() => setConfirming(false)}
+      footer={<Button variant="danger" onClick={forget}>{t('boot.revoked.confirmAction')}</Button>}>
+      <p>{t('boot.revoked.confirmBody')}</p>
     </Dialog>}
   </>;
 }

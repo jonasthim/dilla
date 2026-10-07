@@ -40,9 +40,11 @@ WHERE blobs.blob_id = sqlc.arg(blob_id)
 UPDATE blobs SET unref_since = NULL WHERE blobs.blob_id = $1;
 
 -- name: ListCollectableBlobs :many
+-- dilla-web-2a (L-SQL-21): a blob a backups row names is never collectable; backups have no blob_refs row.
 SELECT blobs.blob_id, blobs.size, blobs.storage_ref, blobs.created, blobs.unref_since FROM blobs
 WHERE blobs.unref_since IS NOT NULL AND blobs.unref_since < sqlc.arg(before)::bigint
   AND NOT EXISTS (SELECT 1 FROM blob_refs WHERE blob_refs.blob_id = blobs.blob_id)
+  AND NOT EXISTS (SELECT 1 FROM backups WHERE backups.blob_id = blobs.blob_id)
 ORDER BY blobs.unref_since
 LIMIT sqlc.arg(max_rows)::bigint;
 
@@ -70,13 +72,17 @@ SELECT COUNT(*) FROM blob_tombstones WHERE blob_id = $1;
 
 -- name: UserBlobBytes :one
 -- The quota counts each distinct blob a user uploaded once, however many
--- channels they published it into. SUM over BIGINT is NUMERIC on Postgres; the
--- cast keeps it int64 like the SQLite twin.
+-- channels they published it into, and the user's own backup objects with them (dilla-web-2a
+-- boundary ruling 2): a replaced state object leaves the count with its row. SUM over BIGINT is
+-- NUMERIC on Postgres; the cast keeps it int64 like the SQLite twin.
 SELECT CAST(COALESCE(SUM(b.size), 0) AS BIGINT) FROM blobs b
 WHERE b.blob_id IN (
-  SELECT DISTINCT r.blob_id FROM blob_refs r
+  SELECT r.blob_id FROM blob_refs r
   JOIN devices d ON d.id = r.uploader_device
   WHERE d.user_id = sqlc.arg(user_id)
+  UNION
+  SELECT k.blob_id FROM backups k
+  WHERE k.user_id = sqlc.arg(user_id)
 );
 
 -- name: UserReferencesBlob :one
@@ -142,3 +148,22 @@ ON CONFLICT (user_id, kind, device_id, chunk_seq) DO UPDATE SET
 SELECT user_id, kind, device_id, chunk_seq, blob_id, manifest_sig, created
 FROM backups WHERE user_id = $1 AND kind = $2
 ORDER BY device_id, chunk_seq;
+
+-- name: InsertBackup :exec
+-- dilla-web-2a (L-SQL-21, F3, Q27): the root object is written once. No ON CONFLICT: a taken
+-- (user_id, kind, device_id, chunk_seq) is a unique violation, which the adapters map to ErrConflict.
+INSERT INTO backups (user_id, kind, device_id, chunk_seq, blob_id, manifest_sig, created)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
+
+-- name: GetBackup :one
+SELECT user_id, kind, device_id, chunk_seq, blob_id, manifest_sig, created
+FROM backups WHERE user_id = $1 AND kind = $2 AND device_id = $3 AND chunk_seq = $4;
+
+-- name: BackupRefersToBlob :one
+-- COUNT, not EXISTS, for the reason GetBlobTombstone gives.
+SELECT COUNT(*) FROM backups WHERE backups.blob_id = sqlc.arg(blob_id);
+
+-- name: LockBlob :exec
+-- The per-blob lock the recording transactions take before their cross-table checks: the blobs
+-- row FOR UPDATE until Tx commits (the caller inserted it first if it was absent).
+SELECT blob_id FROM blobs WHERE blob_id = sqlc.arg(blob_id) FOR UPDATE;

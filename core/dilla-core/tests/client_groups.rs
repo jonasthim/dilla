@@ -8,7 +8,7 @@ mod client_support;
 
 use client_support::*;
 use dilla_core::cbor::{Encoder, decode_strict};
-use dilla_core::client::ClientCore;
+use dilla_core::client::{ClientCore, ClientError};
 use dilla_core::mls::DillaBinding;
 
 /// The tree body with its tree hash's first byte flipped.
@@ -32,7 +32,13 @@ fn a_created_group_registers_with_its_binding_and_lists_in_each_state() {
 
     let body = a
         .core
-        .group_create(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &instance.public())
+        .group_create(
+            &GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &instance.public(),
+        )
         .expect("group_create");
     let (group_id, binding) = decode_strict(&body, |d| {
         d.array(4)?;
@@ -78,7 +84,7 @@ fn a_created_group_registers_with_its_binding_and_lists_in_each_state() {
     assert_eq!(
         code(a.core.group_create(
             &OTHER_GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &instance.public()
@@ -88,7 +94,7 @@ fn a_created_group_registers_with_its_binding_and_lists_in_each_state() {
     assert_eq!(
         code(a.core.group_create(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &OTHER_CHANNEL,
             POLICY,
             &instance.public()
@@ -117,7 +123,13 @@ fn a_registration_that_lost_is_discarded_and_leaves_nothing() {
     let instance = Instance::generate();
     let mut a = ready_core(0xa1, "alice");
     a.core
-        .group_create(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &instance.public())
+        .group_create(
+            &GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &instance.public(),
+        )
         .expect("create");
     a.core.group_discard(&GROUP).expect("discard");
     assert!(groups(&a.core).is_empty());
@@ -125,7 +137,13 @@ fn a_registration_that_lost_is_discarded_and_leaves_nothing() {
 
     // The MLS group went with the row: the same group id can be created again.
     a.core
-        .group_create(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &instance.public())
+        .group_create(
+            &GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &instance.public(),
+        )
         .expect("the group id and the channel are free again");
     a.core.group_discard(&GROUP).expect("discard");
 
@@ -215,7 +233,7 @@ fn an_external_join_with_info_and_tree_that_disagree_is_refused_and_leaves_nothi
     let mut c = ready_core(0xc3, "carol");
     let join = |c: &mut Core, info: &[u8], tree: &[u8]| {
         c.core
-            .group_join_external(&GROUP, &COMMUNITY, &CHANNEL, POLICY, info, tree)
+            .group_join_external(&GROUP, Some(&COMMUNITY), &CHANNEL, POLICY, info, tree)
     };
     assert_eq!(
         code(join(&mut c, &relay.info_body(), &stale_tree)),
@@ -251,7 +269,7 @@ fn an_external_join_into_a_group_of_another_channel_is_refused_with_e_binding() 
         .core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &OTHER_CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -279,7 +297,7 @@ fn an_external_join_rejects_a_group_info_labelled_with_another_group_id() {
     assert_eq!(
         code(joiner.core.group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -307,7 +325,7 @@ fn a_mislabelled_external_resync_preserves_the_existing_group() {
     assert_eq!(
         code(joiner.core.group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &other_relay.info_body(),
@@ -336,7 +354,7 @@ fn a_resync_replaces_the_local_group_and_a_discarded_resync_returns_to_needs_res
     b.core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -349,10 +367,13 @@ fn a_resync_replaces_the_local_group_and_a_discarded_resync_returns_to_needs_res
         "E_CORE_STATE"
     );
     assert_eq!(
-        code(
-            b.core
-                .group_create(&OTHER_GROUP, &COMMUNITY, &CHANNEL, POLICY, &[0x01; 32])
-        ),
+        code(b.core.group_create(
+            &OTHER_GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &[0x01; 32]
+        )),
         "E_CORE_STATE"
     );
     b.core.group_discard(&GROUP).expect("discard");
@@ -846,7 +867,7 @@ fn send_prepare_checks_the_body_the_group_and_the_phase() {
     a.core
         .group_create(
             &OTHER_GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &OTHER_CHANNEL,
             POLICY,
             &instance.public(),
@@ -864,7 +885,13 @@ fn send_prepare_checks_the_body_the_group_and_the_phase() {
         "E_CORE_NO_IDENTITY"
     );
     assert_eq!(
-        code(fresh.group_create(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &instance.public())),
+        code(fresh.group_create(
+            &GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &instance.public()
+        )),
         "E_CORE_NO_IDENTITY"
     );
     assert_eq!(
@@ -1004,7 +1031,7 @@ fn group_apply_refuses_malformed_rows_and_groups_that_are_not_active() {
     a.core
         .group_create(
             &OTHER_GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &OTHER_CHANNEL,
             POLICY,
             &instance.public(),
@@ -1059,5 +1086,222 @@ fn a_reopened_core_reloads_its_groups_and_keeps_the_timeline() {
     assert_eq!(
         (last.seq, last.status, last.body.as_str()),
         (seq, 0, "after the reload")
+    );
+}
+
+#[test]
+fn a_dm_group_carries_a_null_community_from_creation_to_both_sides_reading() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(DM_GROUP);
+    let mut a = ready_core(0xa1, "alice");
+    let mut b = ready_core(0xb2, "bob");
+    let body = a
+        .core
+        .group_create(&DM_GROUP, None, &DM_CHANNEL, POLICY, &instance.public())
+        .expect("group_create");
+    let binding = decode_strict(&body, |d| {
+        d.array(4)?;
+        d.bytes_exact::<16>()?;
+        let binding = d.bytes()?.to_vec();
+        d.bytes()?;
+        d.bytes()?;
+        Ok(binding)
+    })
+    .expect("POST /v1/groups body");
+    assert_eq!(
+        DillaBinding::decode(&binding).expect("binding"),
+        dm_binding(DM_CHANNEL)
+    );
+    let created = relay
+        .register(&body)
+        .expect("a null-community binding registers");
+    let next_seq = decode_strict(&created, |d| {
+        d.array(2)?;
+        d.bytes_exact::<16>()?;
+        d.uint()
+    })
+    .expect("201 body");
+    a.core
+        .group_registered(&DM_GROUP, next_seq)
+        .expect("group_registered");
+    b.join_external_in(&mut relay, None, &DM_CHANNEL);
+    a.sync(&relay);
+    for core in [&a, &b] {
+        let row = core.group(&DM_GROUP).expect("row");
+        assert_eq!(
+            (row.kind, row.community_id, row.target_id, row.state),
+            (0, None, DM_CHANNEL, 2)
+        );
+    }
+    a.send(&mut relay, &DM_GROUP, "dm from alice", NOW + 1);
+    b.sync(&relay);
+    b.send(&mut relay, &DM_GROUP, "dm from bob", NOW + 2);
+    a.sync(&relay);
+    for core in [&a, &b] {
+        let bodies: Vec<String> = core
+            .timeline(&DM_GROUP)
+            .into_iter()
+            .map(|r| r.body)
+            .collect();
+        assert_eq!(bodies, vec!["dm from alice", "dm from bob"]);
+    }
+    // The NULL column survives a reload and still matches the stored group (take_group's check).
+    let mut b = b.reopen();
+    let (_, seq) = a.send(&mut relay, &DM_GROUP, "after the reload", NOW + 3);
+    assert_eq!(b.sync(&relay).new_seqs, vec![seq]);
+    // A row bound to no community is not a community channel's text group.
+    assert_eq!(
+        b.core
+            .group_join_external(
+                &DM_GROUP,
+                Some(&COMMUNITY),
+                &DM_CHANNEL,
+                POLICY,
+                &relay.info_body(),
+                &relay.tree_body()
+            )
+            .expect_err("rebound"),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "group is bound to another channel".into()
+        }
+    );
+}
+
+#[test]
+fn a_welcome_joins_a_dm_only_against_a_null_community_and_a_channel_only_against_its_own() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(DM_GROUP);
+    let mut a = ready_core(0xa1, "alice");
+    a.create_and_register_in(&mut relay, &instance, None, &DM_CHANNEL);
+    let mut c = ready_core(0xc3, "carol");
+    let kp = c.first_key_package();
+    instance.propose_add(&mut relay, &kp);
+    a.sync(&relay);
+    a.commit(&mut relay);
+    let welcomes = relay.welcomes_body(c.device);
+
+    // Welcome-first (head L-TS-22 rule 7, the engine's onUnexpectedWelcome): a Welcome for a DM the
+    // client does not expect yet is outcome 3 and stores nothing; applied again once the DM is
+    // expected, it joins (below, `as_dm`).
+    let not_named = expected_entries(&[(GROUP, Some(COMMUNITY), CHANNEL, POLICY)]);
+    assert_eq!(
+        decode_outcomes(
+            &c.core
+                .welcomes_apply(&welcomes, &not_named)
+                .expect("welcomes_apply")
+        ),
+        vec![WelcomeOutcome {
+            welcome_id: 1,
+            group_id: DM_GROUP,
+            outcome: 3,
+            reason: String::new()
+        }]
+    );
+    assert!(
+        groups(&c.core).is_empty(),
+        "an unexpected Welcome stores nothing"
+    );
+
+    let as_channel = expected_entries(&[(DM_GROUP, Some(COMMUNITY), DM_CHANNEL, POLICY)]);
+    assert_eq!(
+        decode_outcomes(
+            &c.core
+                .welcomes_apply(&welcomes, &as_channel)
+                .expect("welcomes_apply")
+        ),
+        vec![WelcomeOutcome {
+            welcome_id: 1,
+            group_id: DM_GROUP,
+            outcome: 2,
+            reason: "E_BINDING".into()
+        }]
+    );
+    assert!(
+        groups(&c.core).is_empty(),
+        "a refused Welcome leaves no row and no group"
+    );
+    let as_dm = expected_entries(&[(DM_GROUP, None, DM_CHANNEL, POLICY)]);
+    assert_eq!(
+        decode_outcomes(
+            &c.core
+                .welcomes_apply(&welcomes, &as_dm)
+                .expect("welcomes_apply")
+        )[0]
+        .outcome,
+        0,
+        "the held Welcome and the refusal both left the KeyPackage: the expected DM joins"
+    );
+    let row = c.group(&DM_GROUP).expect("row");
+    assert_eq!(
+        (row.state, row.community_id, row.target_id),
+        (2, None, DM_CHANNEL)
+    );
+    let (_, seq) = a.send(&mut relay, &DM_GROUP, "welcome to the dm", NOW + 1);
+    assert_eq!(c.sync(&relay).new_seqs, vec![seq]);
+
+    // The reverse: a community channel's Welcome to a device that expects a DM.
+    let mut channel_relay = Relay::new(GROUP);
+    let mut peer = RawPeer::new(0xe5, 0xe6);
+    peer.create(&mut channel_relay, &instance);
+    let mut d = ready_core(0xd4, "dave");
+    let d_kp = d.first_key_package();
+    peer.add(&mut channel_relay, &[d_kp.as_slice()]);
+    let refused = d
+        .core
+        .welcomes_apply(
+            &channel_relay.welcomes_body(d.device),
+            &expected_entries(&[(GROUP, None, CHANNEL, POLICY)]),
+        )
+        .expect("welcomes_apply");
+    let refused = decode_outcomes(&refused);
+    assert_eq!(
+        (refused[0].outcome, refused[0].reason.as_str()),
+        (2, "E_BINDING")
+    );
+    assert!(groups(&d.core).is_empty());
+    let mut bad = Encoder::new();
+    bad.array(1)
+        .array(4)
+        .bytes(&GROUP)
+        .bytes(&[0x22; 15])
+        .bytes(&CHANNEL)
+        .uint(POLICY);
+    assert_eq!(
+        code(
+            d.core
+                .welcomes_apply(&channel_relay.welcomes_body(d.device), &bad.into_vec())
+        ),
+        "E_CORE_INPUT",
+        "a 15-byte community is malformed, not a DM"
+    );
+}
+
+#[test]
+fn an_external_join_of_a_dm_with_a_community_is_refused_with_e_binding() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(DM_GROUP);
+    let mut a = ready_core(0xa1, "alice");
+    a.create_and_register_in(&mut relay, &instance, None, &DM_CHANNEL);
+    let mut b = ready_core(0xb2, "bob");
+    assert_eq!(
+        code(b.core.group_join_external(
+            &DM_GROUP,
+            Some(&COMMUNITY),
+            &DM_CHANNEL,
+            POLICY,
+            &relay.info_body(),
+            &relay.tree_body()
+        )),
+        "E_BINDING"
+    );
+    assert!(
+        groups(&b.core).is_empty(),
+        "a refused join leaves no row and no group"
+    );
+    b.join_external_in(&mut relay, None, &DM_CHANNEL);
+    assert_eq!(
+        b.group(&DM_GROUP).map(|g| (g.state, g.community_id)),
+        Some((2, None))
     );
 }

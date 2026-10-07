@@ -11,6 +11,6 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "vitest.config.ts", "harness/main.ts", "harness/vite.config.ts"],
+  "include": ["src", "vitest.config.ts", "harness/main.ts", "harness/spike.ts", "harness/vite.config.ts"],
   "exclude": ["src/worker", "node_modules"]
 }

@@ -41,10 +41,39 @@ describe('Boot', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Use that tab, or close it. This tab takes over as soon as the other one closes.');
   });
 
+  // Task 20 (pre-flight ruling, task 14 ruling (d)): the revoked splash offers to forget this browser, never the store reset,
+  // so the one button it shows is the forget action (web-1 asserted no button at all).
   it('tells a revoked browser how to start over and offers no reset', () => {
     show('revoked');
     expect(screen.getByRole('status')).toHaveTextContent('Your account no longer accepts this browser. Ask the host if you did not expect this. To start over here, clear this site’s data in the browser’s settings.');
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reset this browser' })).toBeNull();
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['Forget this browser']);
+  });
+
+  it('forgets a revoked browser only after a confirmation', async () => {
+    const user = userEvent.setup();
+    const { fake, view } = show('revoked');
+    fake.handler = c => (c.m === 'forgetBrowser' ? new Promise(() => {}) : Promise.resolve(null));
+    await user.click(screen.getByRole('button', { name: 'Forget this browser' }));
+    const dialog = screen.getByRole('dialog', { name: 'Forget this browser?' });
+    expect(dialog).toHaveTextContent('This deletes dilla’s data for this site from this browser. To use your account here again, sign in with your password and your recovery key.');
+    await expectNoAxeViolations(view.container);
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(fake.callsOf('forgetBrowser')).toHaveLength(0);
+    await user.click(screen.getByRole('button', { name: 'Forget this browser' }));
+    await user.click(screen.getByRole('button', { name: 'Forget' }));
+    expect(fake.callsOf('forgetBrowser')).toEqual([{ m: 'forgetBrowser' }]);
+    expect(screen.getByRole('status')).toHaveTextContent('Clearing this browser’s data');
+  });
+
+  it('shows a refused forget as an error', async () => {
+    const user = userEvent.setup();
+    const { fake } = show('revoked');
+    fake.handler = c => (c.m === 'forgetBrowser' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null));
+    await user.click(screen.getByRole('button', { name: 'Forget this browser' }));
+    await user.click(screen.getByRole('button', { name: 'Forget' }));
+    expect(await screen.findByText(/Error E_NETWORK\./)).toBeInTheDocument();
   });
 
   it('shows the error code of the account or of a fatal error', () => {

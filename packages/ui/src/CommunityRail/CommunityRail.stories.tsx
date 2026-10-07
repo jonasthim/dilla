@@ -12,3 +12,5 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 export const NoneActive: Story = { args: { activeId: null } };
 export const Empty: Story = { args: { items: [], activeId: null } };
+export const Badges: Story = { args: { items: [{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Night Owls', unread: 4 }, { id: 'c3', name: 'raid planning', unread: 120, mentions: 2 }] } };
+export const WithSettings: Story = { args: { settingsLabel: 'settings', onSettings: () => {} } };

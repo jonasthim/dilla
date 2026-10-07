@@ -291,6 +291,12 @@ func (c *Config) Validate() error {
 		add("auth.password.argon2_memory_kib (%d) exceeds hash_memory_budget_mib (%d MiB); the hashing semaphore would block every login until its context expired",
 			p.Argon2MemoryKiB, p.HashMemoryBudgetMiB)
 	}
+	if n := c.Auth.Session.MaxDevicesPerUser; n < 1 || n > 64 {
+		add("auth.session.max_devices_per_user is %d; the range is 1..64", n)
+	}
+	if n := c.Auth.Session.EnrolmentsPerHour; n < 1 || n > 60 {
+		add("auth.session.enrolments_per_hour is %d; the range is 1..60", n)
+	}
 	if c.Limits.Rate.Enabled {
 		for name, pair := range c.rateBuckets() {
 			if pair.perSecond <= 0 {

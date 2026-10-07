@@ -32,16 +32,22 @@ type Blobs struct {
 	cfg   config.Blobs
 	clk   clock.Clock
 	log   *slog.Logger
-	meter *blobMeter // nil when neither upload limit is set
+	meter *UploadMeter // nil when neither upload limit is set
 }
 
 // NewBlobs wires the routes over one blob store and the [blobs] configuration,
 // including the per-user upload meter uploads_per_minute and
-// upload_bytes_per_day configure (blobMeter).
+// upload_bytes_per_day configure (UploadMeter).
 func NewBlobs(repo store.Repository, bs *blob.Store, res *Resolver, cfg config.Blobs, clk clock.Clock, log *slog.Logger) *Blobs {
-	b := &Blobs{repo: repo, store: bs, res: res, cfg: cfg, clk: clk, log: log}
-	if cfg.UploadsPerMinute > 0 || cfg.UploadBytesPerDay > 0 {
-		b.meter = newBlobMeter(clk, cfg.UploadsPerMinute, cfg.UploadBytesPerDay)
+	return &Blobs{repo: repo, store: bs, res: res, cfg: cfg, clk: clk, log: log, meter: NewUploadMeter(clk, cfg)}
+}
+
+// WithUploadMeter makes the routes spend m, the meter the composition root also hands
+// PUT /v1/backups (Deps.UploadMeter), so the two routes draw on one per-user budget. A nil m keeps
+// the routes' own meter.
+func (b *Blobs) WithUploadMeter(m *UploadMeter) *Blobs {
+	if m != nil {
+		b.meter = m
 	}
 	return b
 }
@@ -224,6 +230,19 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
+		// The per-blob lock before the cross-table check below, the one the backup
+		// route takes too (store.LockBlob), so the two routes cannot both find
+		// the other table empty for the same bytes.
+		if err := tx.LockBlob(r.Context(), blobID); err != nil {
+			return err
+		}
+		// The file, after the row is claimed: a replaced state object's delete
+		// (Deps.unlinkReplaced) claims the same row before it unlinks, so either it
+		// saw this row and kept the file or the file is gone now and nothing is
+		// recorded (the client sends the bytes again).
+		if err := bytesPresent(b.store, blobID); err != nil {
+			return err
+		}
 		// The tombstone again, now inside the transaction that would write the
 		// reference: a purge that committed while the body was streaming must not
 		// be undone by it (fix wave I9).
@@ -233,6 +252,17 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 		}
 		if tomb {
 			return errTombstoned
+		}
+		// Attachments and backup objects never share bytes (branch review
+		// BACKUPS-RECOVERY-05): a channel reference to bytes a backup names would
+		// be one the admin purge has to leave the bytes of, and the uploader
+		// chooses every byte of an attachment's ciphertext.
+		backup, err := tx.BackupRefersToBlob(r.Context(), blobID)
+		if err != nil {
+			return err
+		}
+		if backup {
+			return errBackupBytes
 		}
 		// P2-D16, gap-47 §8.3: a reference created inside the grace window saves
 		// the blob from the sweeper.
@@ -260,12 +290,34 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, errTombstoned) {
 			// The purge's own unlink may have run before this upload wrote the
-			// file; purged bytes stay removed, so they go now, row or none.
-			if derr := b.store.Delete(blobID); derr != nil {
-				b.log.ErrorContext(r.Context(), "remove purged bytes an upload rewrote",
-					"blob_id", hex.EncodeToString(blobID), "err", derr)
+			// file; purged bytes stay removed, so they go now — unless a backups
+			// row still names them (fix-wave review NEW-5, as 3caee12 on the
+			// backup route): a purge of backup bytes keeps the file while the
+			// backup is served, and this refused attachment must not unlink it.
+			// After the tombstone no new backups row can name the bytes, so "not
+			// named" is stable and the unlink is safe.
+			named, nerr := b.repo.BackupRefersToBlob(r.Context(), blobID)
+			if nerr != nil {
+				b.log.ErrorContext(r.Context(), "check purged bytes against backups",
+					"blob_id", hex.EncodeToString(blobID), "err", nerr)
+			} else if !named {
+				if derr := b.store.Delete(blobID); derr != nil {
+					b.log.ErrorContext(r.Context(), "remove purged bytes an upload rewrote",
+						"blob_id", hex.EncodeToString(blobID), "err", derr)
+				}
 			}
-			server.WriteError(w, server.Errorf(server.CodePruned, "these bytes were removed by the server operator"))
+			server.WriteError(w, errPruned())
+			return
+		}
+		if errors.Is(err, errBackupBytes) {
+			// The bytes are a backup object's and stay as they are: nothing to orphan.
+			server.WriteError(w, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
+				"these bytes are a backup object; an attachment cannot share them")))
+			return
+		}
+		if errors.Is(err, errBytesGone) {
+			// Unlinked under the upload: no row may name a missing file, so nothing to orphan.
+			server.WriteError(w, errBytesGoneRetry())
 			return
 		}
 		if created {
@@ -315,14 +367,24 @@ func (b *Blobs) orphan(ctx context.Context, blobID []byte, n, now int64) {
 // and on GET alike: the purge removed every reference, and the answer says why
 // rather than a bare 404.
 func (b *Blobs) refuseTombstoned(ctx context.Context, blobID []byte) error {
-	tomb, err := b.repo.GetBlobTombstone(ctx, blobID)
+	return refuseTombstoned(ctx, b.repo, blobID)
+}
+
+// refuseTombstoned is the tombstone gate every route that stores bytes under their hash applies:
+// the blob routes and PUT /v1/backups alike.
+func refuseTombstoned(ctx context.Context, repo store.Repository, blobID []byte) error {
+	tomb, err := repo.GetBlobTombstone(ctx, blobID)
 	if err != nil {
 		return err
 	}
 	if tomb {
-		return server.Errorf(server.CodePruned, "these bytes were removed by the server operator")
+		return errPruned()
 	}
 	return nil
+}
+
+func errPruned() *server.Error {
+	return server.Errorf(server.CodePruned, "these bytes were removed by the server operator")
 }
 
 func errStorageFull() *server.Error {

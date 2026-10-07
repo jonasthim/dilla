@@ -48,6 +48,59 @@ describe('sending (rule 5)', () => {
     expect(d.core.outbox(g)).toEqual([]);
   });
 
+  it('re-frames the same message once after a rule epoch refusal following a peer commit', async () => {
+    ds.inject('postMessage', { before: () => { ds.peerCommit(g, PEER); } });
+    const msgId = d.engine.send(g, 'after peer joined');
+    await settle();
+    expect(posts()).toBe(2);
+    expect(sent()).toEqual(['after peer joined']);
+    expect(d.core.outbox(g)).toEqual([]);
+    expect(d.core.calls.filter((c) => c.m === 'sendPrepare')).toHaveLength(1);
+    expect(d.core.calls.filter((c) => c.m === 'sendEncrypt')).toHaveLength(2);
+    expect(d.core.bodies(g)).toEqual(['after peer joined']);
+    expect(toHex(msgId)).toHaveLength(32);
+  });
+
+  it('fails the same row after a second rule epoch refusal', async () => {
+    ds.inject('postMessage', { before: () => { ds.peerCommit(g, PEER); } });
+    ds.inject('postMessage', { fail: httpError(422, 'E_COMMIT_INVALID', null, ['epoch']) });
+    const msgId = d.engine.send(g, 'twice refused');
+    await settle();
+    expect(posts()).toBe(2);
+    expect(d.core.outbox(g)).toMatchObject([{ msgId, state: 2, error: 'E_COMMIT_INVALID', body: 'twice refused' }]);
+    expect(sent()).toEqual([]);
+  });
+
+  it('adopts a stored re-framed message when the second response is lost, without a third post', async () => {
+    ds.detach(ME.device);
+    ds.inject('postMessage', { before: () => { ds.peerCommit(g, PEER); } });
+    ds.inject('postMessage', { lose: true });
+    const msgId = d.engine.send(g, 'stored after re-frame');
+    await settle();
+    expect(posts()).toBe(2);
+    expect(sent()).toEqual(['stored after re-frame']);
+    expect(d.core.outbox(g)).toEqual([]);
+    expect(d.core.bodies(g)).toEqual(['stored after re-frame']);
+    expect(d.core.calls.filter((c) => c.m === 'sendPrepare')).toHaveLength(1);
+    expect(toHex(msgId)).toHaveLength(32);
+    await clock.advance(30_000);
+    expect(posts()).toBe(2);
+  });
+
+  it('commits a proposal learned after the peer commit before re-framing the queued message', async () => {
+    ds.detach(ME.device);
+    ds.inject('postMessage', { before: () => { ds.peerCommit(g, PEER); } });
+    ds.inject('getMessages', { before: () => { ds.propose(g, 'add', THIRD.device); } });
+    const msgId = d.engine.send(g, 'after proposal');
+    await settle();
+    expect(commits()).toBe(1);
+    expect(posts()).toBe(2);
+    expect(sent()).toEqual(['after proposal']);
+    expect(d.core.outbox(g)).toEqual([]);
+    expect(d.core.calls.filter((c) => c.m === 'sendPrepare')).toHaveLength(1);
+    expect(toHex(msgId)).toHaveLength(32);
+  });
+
   it('never resends after a lost response: the catch-up adopts the stored copy', async () => {
     ds.detach(ME.device);
     ds.inject('postMessage', { lose: true });

@@ -1,13 +1,16 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +19,7 @@ import (
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
@@ -103,6 +107,8 @@ type EstablishRequest struct {
 	// spent here — this endpoint is the only thing that accepts one
 	// (interfaces.md §5.1).
 	Login []byte
+	// Registration is read only with Login for a device without a row.
+	Registration *DeviceRegistration
 }
 
 // AssertionSpender is what Sessions needs from the enrolment-assertion store.
@@ -111,6 +117,44 @@ type EstablishRequest struct {
 // internal/auth: taking the concrete type here would be an import cycle.
 type AssertionSpender interface {
 	Spend(token string) (userID id.ID, needsSecondFactor bool, ok bool)
+}
+
+// DeviceLister reads the newest verified device list through the delivery service.
+type DeviceLister interface {
+	// ListedDevices answers the unrevoked entries of the user's newest verified list.
+	ListedDevices(ctx context.Context, userID id.ID) ([]ListedDevice, error)
+}
+
+// ListedDevice is one unrevoked entry of a user's newest verified device list: the
+// (device_id, dsk_pub) pair the user's SSK signed. A device row is listed only when both its id
+// and its key match one entry (security review F2): judged by the key alone, a row that copies a
+// listed key under a new id would pass for listed, never expire, never be evicted, refuse the
+// key-less DELETE and be unrevocable by the owner's client, which revokes list entries by id.
+type ListedDevice struct {
+	DeviceID id.ID
+	DSKPub   []byte
+}
+
+// Listed reports whether the newest verified list names exactly this device: its id and its
+// signing key in one unrevoked entry.
+func Listed(entries []ListedDevice, deviceID id.ID, pub []byte) bool {
+	for _, e := range entries {
+		if e.DeviceID == deviceID && bytes.Equal(e.DSKPub, pub) {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrNoDeviceList marks the no-list clause of protocol/02 device sessions.
+var ErrNoDeviceList = errors.New("auth: the user has published no device list")
+
+// DeviceRegistration is establish element 3 when login is present.
+type DeviceRegistration struct {
+	DeviceID         id.ID
+	DSKPub           []byte
+	Tier, SignerTier uint8
+	Credential       []byte
 }
 
 // Session is a resolved bearer token.
@@ -190,6 +234,8 @@ type Sessions struct {
 	// may be nil, in which case every request carrying a Login is refused
 	// rather than quietly downgraded to an enrolled session.
 	Assertions AssertionSpender
+	// DeviceLists is set by the composition root. Nil fails every ordinary establish closed.
+	DeviceLists DeviceLister
 
 	// OnRevoke is called inside RevokeDevice/RevokeUser so the gateway closes
 	// the device's connections in the same operation the rows are deleted.
@@ -302,6 +348,29 @@ func (s *Sessions) compactOrderLocked() {
 	s.head = 0
 }
 
+// ProveDeviceKey checks that the caller holds the private half of dskPub, the key a device row is
+// about to be registered under, by the establish route's own proof: a nonce from
+// POST /v1/devices/{device_id}/sessions/challenge for that device_id, consumed here, and an Ed25519
+// signature by dskPub over SessionPreimage(instance_id, device_id, nonce, purpose 0) (security
+// review F2). Without it POST /v1/devices took any dsk_pub, and a stolen enrolled session could
+// plant rows under a key it does not hold. A nonce is single use, so a proof spent here cannot be
+// replayed as an establish. It answers 403 E_FORBIDDEN: the caller's session is good, its claim
+// on the key is not.
+func (s *Sessions) ProveDeviceKey(deviceID id.ID, dskPub, nonce, sig []byte) error {
+	refused := server.Errorf(server.CodeForbidden, "possession of dsk_pub is not proven")
+	if len(dskPub) != ed25519.PublicKeySize || len(nonce) != nonceBytes || len(sig) != ed25519.SignatureSize {
+		return refused
+	}
+	if !s.takeNonce(nonce, deviceID) {
+		return refused
+	}
+	s.verifies.Add(1)
+	if !ed25519.Verify(ed25519.PublicKey(dskPub), SessionPreimage(s.instanceID, deviceID, nonce, PurposeSession), sig) {
+		return refused
+	}
+	return nil
+}
+
 func (s *Sessions) Establish(ctx context.Context, r EstablishRequest) (Token, error) {
 	return s.issue(ctx, r)
 }
@@ -341,6 +410,9 @@ func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error)
 		return Token{}, unauth
 	}
 	device, err := s.repo.GetDevice(ctx, r.DeviceID)
+	if errors.Is(err, store.ErrNotFound) && len(r.Login) > 0 {
+		return s.register(ctx, r)
+	}
 	if err != nil {
 		return Token{}, unauth
 	}
@@ -363,24 +435,23 @@ func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error)
 	if user.DisabledAt != nil || user.DeletedAt != nil {
 		return Token{}, server.Errorf(server.CodeForbidden, "account disabled")
 	}
-
-	scope := ScopeEnrolled
-	if r.Purpose == PurposeProvisional {
-		scope = ScopeProvisional
+	if len(r.Login) > 0 && s.DeviceLists != nil && device.Created <= s.clk.Now().Unix()-86400 {
+		entries, listErr := s.DeviceLists.ListedDevices(ctx, device.UserID)
+		if listErr != nil && !errors.Is(listErr, ErrNoDeviceList) {
+			return Token{}, ListError(listErr)
+		}
+		if listErr == nil {
+			if !Listed(entries, device.ID, device.DSKPub) {
+				if err := s.RevokeDevice(ctx, device.ID); err != nil {
+					return Token{}, err
+				}
+				return Token{}, unauth
+			}
+		}
 	}
-	// The pending path. An enrolment assertion is the only thing that turns a
-	// host login (password, TOTP, recovery code, passkey or OIDC) into a
-	// session, it reaches exactly this endpoint, and it is spent here.
-	// ScopePending is issued nowhere else.
-	if len(r.Login) > 0 {
-		if s.Assertions == nil {
-			return Token{}, unauth
-		}
-		assertedUser, needsSecondFactor, ok := s.Assertions.Spend(string(r.Login))
-		if !ok || needsSecondFactor || assertedUser != device.UserID {
-			return Token{}, unauth
-		}
-		scope = ScopePending
+	scope, err := s.scopeFor(ctx, r, device)
+	if err != nil {
+		return Token{}, err
 	}
 	var tok Token
 	if err := s.repo.Tx(ctx, func(tx store.Repository) error {
@@ -391,6 +462,268 @@ func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error)
 		return Token{}, err
 	}
 	return tok, nil
+}
+
+// ListError maps a verified-list failure to the session/API refusal.
+func ListError(err error) error {
+	var abi *mlswasi.ABIError
+	if errors.As(err, &abi) && abi.Code == "E_CREDENTIAL" {
+		return server.Errorf(server.CodeUnauthenticated, "")
+	}
+	return server.Unavailable(1000, "device list unavailable")
+}
+
+func (s *Sessions) scopeFor(ctx context.Context, r EstablishRequest, device store.DeviceRow) (Scope, error) {
+	unauth := server.Errorf(server.CodeUnauthenticated, "")
+	if len(r.Login) > 0 {
+		if s.Assertions == nil {
+			return 0, unauth
+		}
+		user, second, ok := s.Assertions.Spend(string(r.Login))
+		if !ok || second || user != device.UserID {
+			return 0, unauth
+		}
+		return ScopePending, nil
+	}
+	// Purpose 2 goes through the same list gate as purposes 0 and 1 (branch review
+	// REGISTRATION-DEVICES-01): it used to return provisional before the list or the 24-hour expiry
+	// was read, so a row a password holder registered minted provisional sessions for ever.
+	provisional := r.Purpose == PurposeProvisional
+	if s.DeviceLists == nil {
+		return 0, unauth
+	}
+	entries, err := s.DeviceLists.ListedDevices(ctx, device.UserID)
+	if errors.Is(err, ErrNoDeviceList) {
+		if provisional {
+			return ScopeProvisional, nil
+		}
+		return ScopeEnrolled, nil
+	}
+	if err != nil {
+		return 0, ListError(err)
+	}
+	listed := Listed(entries, device.ID, device.DSKPub)
+	if !listed && device.Created <= s.clk.Now().Unix()-86400 {
+		if err := s.RevokeDevice(ctx, device.ID); err != nil {
+			return 0, err
+		}
+		return 0, unauth
+	}
+	if provisional {
+		// Pairing is not built (deviation B27) and protocol/03 pairing is the native path. A browser
+		// row its user's list exists for and that was never verified is what assertion registration
+		// creates; nothing in it has a pairing to do, so it is refused purpose 2, listed or not.
+		// No path sets verified_at today, so this is every browser row of a listed user.
+		if device.Tier == tierBrowser && device.VerifiedAt == nil {
+			return 0, unauth
+		}
+		return ScopeProvisional, nil
+	}
+	if listed {
+		return ScopeEnrolled, nil
+	}
+	return ScopePending, nil
+}
+
+// register spends an assertion after shape and signature checks, then admits only a listed
+// account's browser device. Past the cap or the hourly rate it replaces the oldest unlisted row
+// (AdmitDevice) rather than refuse, so a password holder cannot lock out a recovering owner.
+func (s *Sessions) register(ctx context.Context, r EstablishRequest) (Token, error) {
+	unauth := server.Errorf(server.CodeUnauthenticated, "")
+	if s.Assertions == nil {
+		return Token{}, unauth
+	}
+	reg := r.Registration
+	if reg == nil {
+		return Token{}, server.Errorf(server.CodeInvalidRequest, "registration array required")
+	}
+	if reg.DeviceID != r.DeviceID {
+		return Token{}, server.Errorf(server.CodeInvalidRequest, "device_id does not match")
+	}
+	if reg.Tier != 1 || reg.SignerTier != 1 {
+		return Token{}, server.Errorf(server.CodeInvalidRequest, "assertion registration is for browser devices")
+	}
+	if len(reg.DSKPub) != 32 {
+		return Token{}, server.Errorf(server.CodeInvalidRequest, "dsk_pub is 32 bytes")
+	}
+	s.verifies.Add(1)
+	if !ed25519.Verify(reg.DSKPub, SessionPreimage(s.instanceID, r.DeviceID, r.Nonce, r.Purpose), r.Sig) {
+		return Token{}, unauth
+	}
+	userID, second, ok := s.Assertions.Spend(string(r.Login))
+	if !ok || second {
+		return Token{}, unauth
+	}
+	user, err := s.repo.GetUser(ctx, userID)
+	if err != nil {
+		return Token{}, unauth
+	}
+	if user.DisabledAt != nil || user.DeletedAt != nil {
+		return Token{}, server.Errorf(server.CodeForbidden, "account disabled")
+	}
+	if s.DeviceLists == nil {
+		return Token{}, unauth
+	}
+	entries, err := s.DeviceLists.ListedDevices(ctx, userID)
+	if errors.Is(err, ErrNoDeviceList) {
+		return Token{}, unauth
+	}
+	if err != nil {
+		return Token{}, ListError(err)
+	}
+	now := s.clk.Now().Unix()
+	var tok Token
+	var evicted id.ID
+	err = s.repo.Tx(ctx, func(tx store.Repository) error {
+		var err error
+		evicted, err = s.AdmitDevice(ctx, tx, userID, entries, false, reg.DSKPub, now)
+		if err != nil {
+			return err
+		}
+		if err := tx.CreateDevice(ctx, store.DeviceRow{ID: r.DeviceID, UserID: userID, DSKPub: reg.DSKPub,
+			Tier: 1, SignerTier: 1, CredentialBlob: reg.Credential, LastSeen: now, Created: now}); err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				return server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest, "device_id already exists"))
+			}
+			return err
+		}
+		tok, err = s.mint(ctx, tx, userID, r.DeviceID, 1, ScopePending)
+		return err
+	})
+	if err != nil {
+		return Token{}, err
+	}
+	if !evicted.IsZero() && s.OnRevoke != nil {
+		s.OnRevoke(evicted)
+	}
+	return tok, nil
+}
+
+// AdmitDevice applies the common device cap, expiry and hourly rate inside the
+// caller's transaction, for assertion registration. Neither the cap nor the rate refuses while an
+// unlisted live row exists: past either, the oldest unlisted live row is evicted. Only a cap of
+// listed rows refuses (403). The caller inserts its new row in that same
+// transaction and closes any evicted device's gateway connections after commit.
+func (s *Sessions) AdmitDevice(ctx context.Context, tx store.Repository, userID id.ID, entries []ListedDevice, noList bool, dskPub []byte, now int64) (id.ID, error) {
+	return s.admit(ctx, tx, userID, entries, noList, dskPub, now, true)
+}
+
+// AdmitEnrolledDevice is AdmitDevice for POST /v1/devices: the same expiry sweep, key rule, cap
+// and rate, but past the cap it refuses 403 "device cap reached" and past the rate 429 with the
+// wait until a creation leaves the hour, and it never evicts (branch review REGISTRATION-DEVICES-03).
+// Its caller is enrolled, pays no host login, and can free a slot in Settings → Devices; were it to
+// evict, a stolen enrolled session would replace a recovering owner's new row at will. Eviction is
+// left to assertion registration, where a refusal would be the lockout.
+func (s *Sessions) AdmitEnrolledDevice(ctx context.Context, tx store.Repository, userID id.ID, entries []ListedDevice, noList bool, dskPub []byte, now int64) error {
+	_, err := s.admit(ctx, tx, userID, entries, noList, dskPub, now, false)
+	return err
+}
+
+func (s *Sessions) admit(ctx context.Context, tx store.Repository, userID id.ID, entries []ListedDevice, noList bool, dskPub []byte, now int64, evict bool) (id.ID, error) {
+	if err := tx.LockUserForDeviceRegistration(ctx, userID); err != nil {
+		return id.ID{}, err
+	}
+	rows, err := tx.ListDevicesByUser(ctx, userID)
+	if err != nil {
+		return id.ID{}, err
+	}
+	listed := make([]id.ID, 0, len(rows))
+	for _, row := range rows {
+		if noList || Listed(entries, row.ID, row.DSKPub) {
+			listed = append(listed, row.ID)
+		}
+	}
+	cutoff := now - 86399
+	for _, row := range rows {
+		if row.RevokedAt == nil && row.Created < cutoff && !slices.Contains(listed, row.ID) {
+			if err := tx.RevokeDevice(ctx, row.ID, now); err != nil {
+				return id.ID{}, err
+			}
+			if _, err := tx.DeleteSessionsByDevice(ctx, row.ID); err != nil {
+				return id.ID{}, err
+			}
+		}
+	}
+	// One live row per signing key (security review F2): a second row under a key a live row of
+	// the user already holds would share that row's proof of possession and, judged by key, its
+	// listing. Rows the sweep above just revoked hold their key no longer.
+	for _, row := range rows {
+		expired := row.Created < cutoff && !slices.Contains(listed, row.ID)
+		if row.RevokedAt == nil && !expired && bytes.Equal(row.DSKPub, dskPub) {
+			return id.ID{}, server.WithStatus(http.StatusConflict,
+				server.Errorf(server.CodeInvalidRequest, "dsk_pub is already registered to a live device"))
+		}
+	}
+	live, err := tx.CountLiveDevicesByUser(ctx, userID)
+	if err != nil {
+		return id.ID{}, err
+	}
+	creations, err := tx.ListLiveDeviceCreationsSince(ctx, userID, listed, now-3599, cutoff)
+	if err != nil {
+		return id.ID{}, err
+	}
+	atCap := live >= int64(s.cfg.MaxDevicesPerUser)
+	if !atCap && len(creations) < s.cfg.EnrolmentsPerHour {
+		return id.ID{}, nil
+	}
+	if !evict {
+		if atCap {
+			return id.ID{}, server.Errorf(server.CodeForbidden, "device cap reached")
+		}
+		return id.ID{}, server.RateLimitedAfter(time.Duration(rateWait(creations, s.cfg.EnrolmentsPerHour, now)) * time.Second)
+	}
+	// The cap and the hourly rate decide WHICH row this registration replaces, never WHETHER it is
+	// admitted (security review F1): the oldest live unlisted row, whatever its age. At registration
+	// the instance cannot tell the owner from a holder of the password alone — the recovery key that
+	// tells them apart is used only after it — so a refusal that a password holder can keep
+	// saturated (three logins an hour against the rate, or young unlisted rows against the cap) would
+	// lock the owner's recovery out. The owner's own new row is exposed only for the seconds between
+	// its registration and the list PUT that names it, at one password login per eviction, and the
+	// per-address `login` and `establish` buckets bound that churn. The one refusal left is a cap of
+	// rows every one of which the user's signed list names.
+	var evicted id.ID
+	var oldest int64
+	for _, row := range rows {
+		if row.RevokedAt == nil && row.Created >= cutoff && !slices.Contains(listed, row.ID) &&
+			(evicted.IsZero() || row.Created < oldest || (row.Created == oldest && bytes.Compare(row.ID[:], evicted[:]) < 0)) {
+			evicted, oldest = row.ID, row.Created
+		}
+	}
+	if evicted.IsZero() {
+		if atCap {
+			return id.ID{}, server.Errorf(server.CodeForbidden, "device cap reached")
+		}
+		// Past the rate with every live row listed: nothing to replace, and an honest person
+		// enrolling a fourth listed device in an hour is not refused.
+		return id.ID{}, nil
+	}
+	if err := tx.RevokeDevice(ctx, evicted, now); err != nil {
+		return id.ID{}, err
+	}
+	if _, err := tx.DeleteSessionsByDevice(ctx, evicted); err != nil {
+		return id.ID{}, err
+	}
+	return evicted, nil
+}
+
+// rateWait is the seconds until enough of the hour's live creations leave the window that one more
+// is under rate: a creation at c counts while c >= now-3599, so it leaves at c+3600.
+func rateWait(creations []int64, rate int, now int64) int64 {
+	sorted := slices.Clone(creations)
+	slices.Sort(sorted)
+	i := len(sorted) - rate
+	switch {
+	case len(sorted) == 0:
+		return 3600
+	case i < 0:
+		i = 0
+	case i >= len(sorted):
+		i = len(sorted) - 1
+	}
+	if wait := sorted[i] + 3600 - now; wait > 0 {
+		return wait
+	}
+	return 1
 }
 
 // mint writes one session row through tx and returns the bearer token. It is
@@ -456,6 +789,24 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	// channel without someone deleting this line on purpose.
 	if subtle.ConstantTimeCompare(row.TokenHash, sum) != 1 {
 		return Session{}, server.Errorf(server.CodeUnauthenticated, "")
+	}
+	if Scope(row.Scope) == ScopePending && s.DeviceLists != nil {
+		device, err := s.repo.GetDevice(ctx, row.DeviceID)
+		if err != nil || device.RevokedAt != nil {
+			return Session{}, server.Errorf(server.CodeUnauthenticated, "")
+		}
+		if device.Created <= now.Unix()-86400 {
+			entries, err := s.DeviceLists.ListedDevices(ctx, row.UserID)
+			if err != nil && !errors.Is(err, ErrNoDeviceList) {
+				return Session{}, ListError(err)
+			}
+			if err == nil && !Listed(entries, device.ID, device.DSKPub) {
+				if err := s.RevokeDevice(ctx, device.ID); err != nil {
+					return Session{}, err
+				}
+				return Session{}, server.Errorf(server.CodeUnauthenticated, "")
+			}
+		}
 	}
 	// The idle window follows the DEVICE TIER, exactly as issue() picks it, and
 	// never the session scope: a browser device holds an ordinary `enrolled`

@@ -19,6 +19,7 @@ export function retrySend(s: SyncInternals, msgId: Id): void {
   s.deps.core.sendRetry(msgId);
   const g = owner(s, msgId);
   s.count425.delete(toHex(msgId));
+  if (g !== undefined) s.reframedOnce.delete(`${toHex(g)}:${toHex(msgId)}`);
   if (g === undefined) return;
   // A person's retry asks for the group's duties again, as a ready does: a membership refused earlier in
   // this ready is tried once more, and a commit-quiet group commits once more.
@@ -28,6 +29,7 @@ export function retrySend(s: SyncInternals, msgId: Id): void {
 export function discardSend(s: SyncInternals, msgId: Id): void {
   const g = owner(s, msgId);
   s.deps.core.sendDiscard(msgId);
+  if (g !== undefined) s.reframedOnce.delete(`${toHex(g)}:${toHex(msgId)}`);
   if (g !== undefined) s.deps.onOutboxChanged(g);
 }
 async function afterLostResponse(s: SyncInternals, g: Id, msgId: Id): Promise<void> {
@@ -65,6 +67,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
   const row: OutboxRow | undefined = rows.find((x) => x.state === 0);
   if (row === undefined) return;
   const msgId = row.msgId; const msgHex = toHex(msgId);
+  const reframeKey = `${hex}:${msgHex}`;
   let messageBody: Uint8Array;
   try { messageBody = s.deps.core.sendEncrypt(msgId).messageBody; }
   catch (e) {
@@ -79,7 +82,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       }
       return;
     }
-    if (e instanceof CoreError) { s.deps.core.sendFail(msgId, e.code); s.deps.onOutboxChanged(g); s.requestDrain(g); return; }
+    if (e instanceof CoreError) { s.deps.core.sendFail(msgId, e.code); s.reframedOnce.delete(reframeKey); s.deps.onOutboxChanged(g); s.requestDrain(g); return; }
     throw e;
   }
   try {
@@ -88,18 +91,34 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
     try { s.deps.core.sendConfirm(msgId, answer.raw); }
     catch (e) {
       if (!(e instanceof CoreError)) throw e;
+      if (!s.deps.core.outbox(g).some((x) => toHex(x.msgId) === msgHex && x.state !== 2)) s.reframedOnce.delete(reframeKey);
       s.deps.onOutboxChanged(g); s.count425.delete(msgHex); s.requestCatchUp(g); s.requestDrain(g); return;
     }
-    s.deps.onOutboxChanged(g); s.count425.delete(msgHex); s.requestDrain(g);
+    s.reframedOnce.delete(reframeKey); s.deps.onOutboxChanged(g); s.count425.delete(msgHex); s.requestDrain(g);
   } catch (e) {
     if (s.stopped()) return;
     const status = e instanceof DillaHttpError ? e.status : 0;
     const code = e instanceof DillaHttpError ? e.code : 'E_NETWORK';
+    if (status === 422 && code === 'E_COMMIT_INVALID' && e instanceof DillaHttpError && e.extra[0] === 'epoch' && !s.reframedOnce.has(reframeKey)) {
+      // The instance rejected this upload before storing it. Re-frame the same outbox row at the
+      // current epoch, once; this is separate from the lost-response path, where storage is unknown.
+      const reached = await s.catchUpNow(g, 'catch-up');
+      const current = s.deps.core.outbox(g).find((x) => toHex(x.msgId) === msgHex);
+      if (!reached || current?.state !== 1 || s.row(g)?.state !== 2) {
+        if (current?.state === 1) { s.deps.core.sendFail(msgId, code); s.reframedOnce.delete(reframeKey); }
+        s.deps.onOutboxChanged(g); s.requestDrain(g);
+        return;
+      }
+      s.deps.core.sendRequeue(msgId);
+      s.reframedOnce.add(reframeKey);
+      s.deps.onOutboxChanged(g); s.requestDrain(g);
+      return;
+    }
     if (status === 425) {
       s.deps.core.sendRequeue(msgId); s.deps.onOutboxChanged(g);
       const n = (s.count425.get(msgHex) ?? 0) + 1; s.count425.set(msgHex, n);
       if (n >= SYNC.commitRetryMax) {
-        s.deps.core.sendFail(msgId, 'E_COMMIT_REQUIRED'); s.deps.onOutboxChanged(g); s.requestDrain(g);
+        s.deps.core.sendFail(msgId, 'E_COMMIT_REQUIRED'); s.reframedOnce.delete(reframeKey); s.deps.onOutboxChanged(g); s.requestDrain(g);
       } else {
         const old = s.epochWait.get(hex); if (old !== undefined) s.cancelTimer(old);
         s.epochWait.set(hex, s.armTimer(SYNC.membershipWaitMs, () => {
@@ -115,7 +134,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       // 502/504 come from the operator's proxy (L-HTTP-10) and say nothing about whether dillad stored it.
       await afterLostResponse(s, g, msgId);
     } else {
-      s.deps.core.sendFail(msgId, code); s.deps.onOutboxChanged(g); s.requestDrain(g);
+      s.deps.core.sendFail(msgId, code); s.reframedOnce.delete(reframeKey); s.deps.onOutboxChanged(g); s.requestDrain(g);
     }
   }
 }

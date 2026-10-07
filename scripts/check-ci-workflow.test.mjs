@@ -34,11 +34,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: npm test -w packages/ui
-      - run: node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-1 form- ceremony- shell- conversation- screens-
+      - run: node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2a form- ceremony- shell- conversation- settings- screens- primitives-channelrow--
       - uses: actions/upload-artifact@v7
         with:
           name: ui-screens
-          path: target/ui-screens/web-1
+          path: target/ui-screens/web-2a
           if-no-files-found: error
   rust-native:
     runs-on: ubuntu-latest
@@ -164,7 +164,7 @@ jobs:
 
   browser-web:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 36
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/download-artifact@v8
@@ -910,7 +910,7 @@ for (const [job, needle] of [
   ['web-build', 'path: packages/web/dist/'],
   ['web-build', 'name: dilla-core-harness'],
   ['web-build', 'path: packages/client-core/harness-dist/'],
-  ['browser-web', 'timeout-minutes: 30'],
+  ['browser-web', 'timeout-minutes: 36'],
   ['browser-web', 'name: dilla-core-wasi'],
   ['browser-web', 'path: internal/mlswasi/testdata'],
   ['browser-web', 'name: dilla-testkit'],
@@ -932,9 +932,6 @@ for (const [job, needle] of [
   ['image', 'name: dilla-web-dist'],
   ['image', 'path: internal/web/dist'],
   ['image', 'content="placeholder"'],
-  ['ui', 'node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-1'],
-  ['ui', 'name: ui-screens'],
-  ['ui', 'path: target/ui-screens/web-1'],
   ['node', 'npm run test:manifest-writer'],
   ['rust-wasm-node', 'npm run typecheck -w @dilla/core-wasm'],
   ['rust-wasm-node', 'cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings'],
@@ -1007,4 +1004,48 @@ test('an image job that checks for the placeholder only after the build is repor
   // image is the last job of GOOD, so appending puts the guard after docker/build-push-action.
   const problems = checkWorkflow(fixture(GOOD.replace(PLACEHOLDER_GUARD_IMAGE, '') + PLACEHOLDER_GUARD_IMAGE));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('before it builds')), problems.join('\n'));
+});
+
+// web-2a task 23 (L-CI-10, L-CI-11): the screenshots of the web-2a stories and the re-derived browser budget.
+const UI_SHOTS_2A = 'node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2a form- ceremony- shell- conversation- settings- screens- primitives-channelrow--';
+
+for (const needle of [UI_SHOTS_2A, 'name: ui-screens', 'path: target/ui-screens/web-2a']) {
+  test(`a ui job that lost "${needle}" is reported (web-2a)`, () => {
+    const body = jobBody('ui');
+    assert.ok(body.includes(needle), 'fixture sanity: ' + needle);
+    const gutted = body.split('\n').filter((l) => !l.includes(needle)).join('\n');
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => gutted)));
+    assert.ok(problems.some((p) => p.includes('"ui"') && p.includes(needle)), problems.join('\n'));
+  });
+}
+
+test('a ui screenshot step that dropped the settings- prefix is reported (web-2a)', () => {
+  const body = jobBody('ui');
+  const narrowed = body.replace(' settings- ', ' ');
+  assert.notEqual(narrowed, body, 'fixture sanity: the settings- prefix');
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => narrowed)));
+  assert.ok(problems.some((p) => p.includes('"ui"') && p.includes(UI_SHOTS_2A)), problems.join('\n'));
+});
+
+test('a ui screenshot step that dropped the primitives-channelrow-- prefix is reported (web-2a)', () => {
+  const body = jobBody('ui');
+  const narrowed = body.replace(' primitives-channelrow--', '');
+  assert.notEqual(narrowed, body, 'fixture sanity: the primitives-channelrow-- prefix');
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => narrowed)));
+  assert.ok(problems.some((p) => p.includes('"ui"') && p.includes(UI_SHOTS_2A)), problems.join('\n'));
+});
+
+test('a ui job still capturing into the web-1 directory is reported (web-2a)', () => {
+  const body = jobBody('ui');
+  const old = body.replaceAll('target/ui-screens/web-2a', 'target/ui-screens/web-1');
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => old)));
+  assert.ok(problems.some((p) => p.includes('"ui"') && p.includes('path: target/ui-screens/web-2a')), problems.join('\n'));
+});
+
+test('a browser-web job back at the web-1 budget is reported (web-2a)', () => {
+  const body = jobBody('browser-web');
+  const old = body.replace('    timeout-minutes: 36\n', '    timeout-minutes: 30\n');
+  assert.notEqual(old, body, 'fixture sanity: the derived budget');
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => old)));
+  assert.ok(problems.some((p) => p.includes('"browser-web"') && p.includes('timeout-minutes: 36')), problems.join('\n'));
 });

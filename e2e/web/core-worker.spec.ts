@@ -1,10 +1,11 @@
 import type { Page } from '@playwright/test';
 import type { HarnessApi, HarnessResult } from '../../packages/client-core/harness/main';
 import type {
-  AccountState, ChannelSummary, Command, CommunitySummary, ConnectionState, MemberSummary, TimelineItem, TimelineState,
+  AccountState, BadgeState, ChannelSummary, Command, CommunitySummary, ConnectionState, DeviceSummary, MemberSummary, NoticesState,
+  TimelineItem, TimelineState,
 } from '../../packages/client-core/src/index';
 import { WebDriver, instanceInvite, testHostUrl, testkitEnv, type PeerReceived } from './support/driver';
-import { expect, test } from './support/persistent';
+import { expect, test } from './support/second-harness';
 
 const CI = process.env.CI === 'true';
 const WAIT = CI ? 90_000 : 30_000;
@@ -95,7 +96,7 @@ test('the core worker signs up, joins, reads and sends, survives a gateway resta
       await ok(page, { m: 'selectCommunity', communityId: s.community_id });
       expect(await slice<ChannelSummary[]>(page, `channels:${s.community_id}`)).toEqual([{
         id: s.channel_id, communityId: s.community_id, kind: 0, mode: 0, name: 'general', topic: '',
-        parentId: null, position: 0, group: 'none',
+        parentId: null, position: 0, group: expect.stringMatching(/^(none|joining|active)$/) as unknown as string,
       }]);
       const members = (await slice<MemberSummary[]>(page, `members:${s.community_id}`))!;
       expect(members).toHaveLength(2);
@@ -169,6 +170,129 @@ test('the core worker signs up, joins, reads and sends, survives a gateway resta
       await expect.poll(() => phaseOf(second), { timeout: WAIT, message: 'the second page reports other-tab' }).toBe('other-tab');
       expect(await phaseOf(page)).toBe('ready');
       await second.close();
+    });
+
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await peer.close();
+  }
+});
+
+test('a second browser joins the account by password and recovery key, badges and marks read through the worker, and forgets itself', async ({ page, secondBrowser }) => {
+  test.setTimeout(CI ? 900_000 : 300_000);
+  const pageErrors: string[] = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message));
+  const peer = await WebDriver.start(testHostUrl(), testkitEnv());
+  const peerGot: PeerReceived[] = [];
+  const peerReceives = async (body: string): Promise<PeerReceived> => {
+    await expect.poll(async () => {
+      peerGot.push(...(await peer.sync()).received);
+      return peerGot.some((r) => r.body === body);
+    }, { timeout: WAIT, message: `the peer receives ${JSON.stringify(body)}` }).toBe(true);
+    return peerGot.find((r) => r.body === body)!;
+  };
+  const password = 'harness password 2';
+  try {
+    const s = await peer.setup({ community: 'enrol community', channel: 'general' });
+    expect((await peer.register()).epoch).toBe(0);
+    const username = `enr${(peer.seed & 0xff_ffff).toString(16).padStart(6, '0')}`;
+    let recoveryKey: string[] = [];
+    let userId = '';
+    let deviceA = '';
+    let deviceB = '';
+
+    await test.step('browser A signs up with a password and opens the channel', async () => {
+      await openHarness(page);
+      await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('needs-signup');
+      await ok(page, { m: 'signupBegin' });
+      const keys = (await slice<AccountState>(page, 'account'))!;
+      expect(keys.instance!.passwordSignup).toBe(true);
+      recoveryKey = [...keys.recoveryKey!];
+      expect(recoveryKey).toHaveLength(13);
+      await ok(page, { m: 'signupSubmit', invite: instanceInvite(), username, display: 'Enrol A', password, recoveryKeyAcknowledged: true });
+      const ready = (await slice<AccountState>(page, 'account'))!;
+      expect(ready.phase).toBe('ready');
+      userId = ready.user!.id;
+      deviceA = ready.deviceId!;
+      expect(await ok(page, { m: 'joinCommunity', invite: s.invite_code })).toEqual({ communityId: s.community_id });
+      await ok(page, { m: 'selectCommunity', communityId: s.community_id });
+      await ok(page, { m: 'openChannel', channelId: s.channel_id });
+      await expect.poll(async () => (await slice<TimelineState>(page, `timeline:${s.channel_id}`))?.group, { timeout: WAIT }).toBe('active');
+    });
+
+    const { page: b } = await secondBrowser();
+    b.on('pageerror', (e) => pageErrors.push(e.message));
+
+    await test.step('browser B signs in with the password and the recovery key; a wrong key is refused first', async () => {
+      await openHarness(b);
+      await expect.poll(() => phaseOf(b), { timeout: WAIT }).toBe('needs-signup');
+      await ok(b, { m: 'signInBegin' });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-login', signIn: { username: null, needsTotp: false } });
+      // The key travels with the login (coordinator ruling on REGISTRATION-DEVICES-02's concern 3): a well-formed key
+      // of another account registers, then the root refuses it, and the registered enrolment waits at signin-key.
+      const wrong = [...recoveryKey];
+      const first = wrong[0]!;
+      wrong[0] = (first[0] === 'A' ? 'B' : 'A') + first.slice(1);
+      expect(await call(b, { m: 'signInLogin', username, password, recoveryKey: wrong.join(' ') })).toMatchObject({ ok: false, code: 'E_RECOVERY_KEY' });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-key', signIn: { username, needsTotp: false } });
+      await ok(b, { m: 'signInKey', recoveryKey: recoveryKey.join('-').toLowerCase() });
+      const ready = (await slice<AccountState>(b, 'account'))!;
+      expect(ready).toMatchObject({ phase: 'ready', user: { id: userId, username }, signIn: null, error: null });
+      expect(ready.deviceId).toMatch(HEX32);
+      expect(ready.deviceId).not.toBe(deviceA);
+      deviceB = ready.deviceId!;
+    });
+
+    await test.step('B holds the channel group without opening it; a peer message badges and notifies', async () => {
+      await expect.poll(async () => (await slice<ChannelSummary[]>(b, `channels:${s.community_id}`))?.find((c) => c.id === s.channel_id)?.group ?? null,
+        { timeout: WAIT, message: 'join-all joined the channel group in B' }).toBe('active');
+      await expect.poll(async () => (await peer.members()).devices, { timeout: WAIT }).toEqual(expect.arrayContaining([s.device_id, deviceA, deviceB]));
+      await peer.send('to both browsers');
+      await expect.poll(async () => (await slice<Record<string, BadgeState>>(b, 'badges'))?.[s.channel_id] ?? null, { timeout: WAIT })
+        .toEqual({ unread: 1, mentions: 0 });
+      // Pre-flight row 2.14(e): badges and notices are two messages, so notices are polled as badges are.
+      await expect.poll(async () => ((await slice<NoticesState>(b, 'notices'))?.items ?? []).filter((n) => n.body === 'to both browsers'),
+        { timeout: WAIT }).toEqual([expect.objectContaining({
+        channelId: s.channel_id, communityId: s.community_id, kind: 'message', senderUser: s.user_id,
+      })]);
+      await expect.poll(async () => (await slice<TimelineState>(page, `timeline:${s.channel_id}`))?.items.some((i) => i.body === 'to both browsers') ?? false,
+        { timeout: WAIT }).toBe(true);
+    });
+
+    await test.step('B marks the channel read and sends; A and the peer see B as the sender', async () => {
+      await ok(b, { m: 'openChannel', channelId: s.channel_id });
+      await ok(b, { m: 'markRead', channelId: s.channel_id });
+      expect((await slice<Record<string, BadgeState>>(b, 'badges'))?.[s.channel_id]).toEqual({ unread: 0, mentions: 0 });
+      await ok(b, { m: 'send', channelId: s.channel_id, text: 'from the second browser' });
+      expect(await peerReceives('from the second browser')).toMatchObject({ sender_user: userId, sender_device: deviceB, tier: 1 });
+      await expect.poll(async () => (await slice<TimelineState>(page, `timeline:${s.channel_id}`))?.items.find((i) => i.body === 'from the second browser') ?? null,
+        { timeout: WAIT }).toMatchObject({ senderUser: userId, senderDevice: deviceB, own: false, web: true });
+    });
+
+    await test.step('settings round-trip and refuse a foreign key', async () => {
+      const mute = `mute.channel.${s.channel_id}`;
+      await ok(b, { m: 'setSetting', key: 'notify.default', value: 'everything' });
+      await ok(b, { m: 'setSetting', key: mute, value: '1' });
+      expect(await slice<Record<string, string>>(b, 'settings')).toEqual({ 'notify.default': 'everything', [mute]: '1' });
+      await ok(b, { m: 'setSetting', key: 'notify.default', value: null });
+      expect(await slice<Record<string, string>>(b, 'settings')).toEqual({ [mute]: '1' });
+      expect(await call(b, { m: 'setSetting', key: 'theme', value: 'mesh' })).toMatchObject({ ok: false, code: 'E_SETTING_KEY' });
+    });
+
+    await test.step('A lists both devices; B forgets itself into cleared, reloads to needs-signup on a fresh worker, and stays listed', async () => {
+      const devices = async (): Promise<[string, boolean, boolean, number | null][]> => {
+        await ok(page, { m: 'refreshDevices' });
+        return ((await slice<DeviceSummary[]>(page, 'devices')) ?? []).map((d) => [d.id, d.listed, d.own, d.revokedAt]);
+      };
+      expect(await devices()).toEqual([[deviceA, true, true, null], [deviceB, true, false, null]]);
+      await ok(b, { m: 'forgetBrowser' });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'cleared', user: null, deviceId: null, error: null });
+      // The harness has no App to answer `cleared` with a reload (L-TS-27): the spec reloads B by hand.
+      await b.reload();
+      await expect(b.locator('#status')).toHaveText('ready', { timeout: WAIT });
+      await ok(b, { m: 'start' });
+      await expect.poll(() => phaseOf(b), { timeout: WAIT }).toBe('needs-signup');
+      expect(await devices()).toEqual([[deviceA, true, true, null], [deviceB, true, false, null]]);
     });
 
     expect(pageErrors).toEqual([]);

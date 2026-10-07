@@ -30,7 +30,7 @@ Every endpoint in this document requires a **device session**. A device session 
    `201 [nonce(bstr 32), expires(uint)]`. The nonce is 32 CSPRNG bytes, single use, 60-second TTL,
    held in memory, deleted on read. The answer is identical for an unknown `device_id`.
 2. `POST /v1/devices/{device_id}/sessions` — body
-   `[nonce(bstr 32), purpose(uint), sig(bstr 64), credential(bstr|null), login(bstr|null)]`, where
+   `[nonce(bstr 32), purpose(uint), sig(bstr 64), registration(array)|credential(bstr)|null, login(bstr|null)]`, where
 
    ```
    sig = Ed25519(DSK_priv,
@@ -43,20 +43,73 @@ Every endpoint in this document requires a **device session**. A device session 
 
    The instance answers
    `201 [token(tstr), scope(uint), user_id(bstr 16), device_id(bstr 16), expires(uint), idle_expires(uint), generation(uint)]`.
+   The establish body is at most 8192 bytes. `login`, when present, is an enrolment assertion
+   (`09` § Auth ceremonies) sent as the token's UTF-8 bytes in a bstr. Element 3 must then be
+   `[device_id(bstr 16), dsk_pub(bstr 32), tier(uint 0|1), signer_tier(uint 0|1), credential(bstr, 1 to 2048 bytes)]`;
+   without `login`, element 3 is ignored whatever its type. For a device with no row, the array's
+   `device_id` must match the path, both tiers must be `browser` (the `03` pairing ceremony is the
+   native path), and `sig` must verify under its `dsk_pub`. The assertion is spent after these
+   checks and before the list, cap and rate checks: a refusal after the spend needs a fresh login.
+   Its user must be active and have published a device list. The new unverified row stores the
+   opaque credential and receives a `pending` session. An unlisted row expires 24 hours after
+   creation, revoking its pending sessions. A registration is never refused while the user has an
+   unlisted live row: at 8 live devices, or past 3 live rows created in the last hour (a live first
+   device included; revoked and expired rows do not count), it revokes the oldest unlisted live
+   row, whatever its age, with its sessions and gateway connections, and is admitted. Only 8 live
+   devices that the newest list all names refuse, with `403 E_FORBIDDEN`. At registration the
+   instance cannot tell the owner from a holder of the password alone (the recovery key that tells
+   them apart is used after registration), so a per-user refusal a password holder could keep
+   saturated would lock the owner's recovery out; instead the owner's new row is exposed only
+   between its registration and the list `PUT` that names it, and each replacement costs a host
+   login, metered per source address by the auth ceremonies' `login` bucket, and an establish,
+   metered per source address and per `device_id`. `POST /v1/devices` applies the same cap, rate
+   and expiry but never evicts: past the cap it refuses `403 E_FORBIDDEN` and past the rate
+   `429 E_RATE_LIMITED`, because its enrolled caller pays no host login and can free a slot itself,
+   and an evicting route would let a stolen enrolled session replace the owner's new row at will.
+   For the same reason the key-less `DELETE /v1/devices/{device_id}` refuses (`409`) an unlisted
+   row younger than 10 minutes unless the caller's session is that device's own, and
+   `DELETE /v1/devices/{device_id}/sessions` refuses (`409`) another device's sessions of such a
+   row; both spend the device session's write bucket.
 3. The **token** is 32 bytes from the platform CSPRNG, base64url without padding, stored only as
    `SHA-256(token)`. It is sent as `Authorization: Bearer <token>` on HTTP and in the gateway's
    `IDENTIFY` frame. There is no cookie and therefore no CSRF surface on `/v1`.
-4. **Scope** is `0 enrolled`, `1 pending`, `2 provisional`. `enrolled` reaches every endpoint
-   subject to the ordinary ACL; `pending` reaches only the two own-backup reads of
-   `06-backup-archive.md`; `provisional` reaches only KeyPackage publication for one `pairing`
-   group and that group's Welcome and handshakes, and anything else is
-   `E_PROVISIONAL_OUTSIDE_PAIRING`.
+4. **Scope** is `0 enrolled`, `1 pending`, `2 provisional`. An establish with `login` is `pending`;
+   purpose 2 is `provisional`, after the same list is read: an unlisted row past its 24 hours is
+   revoked and answers `401 E_UNAUTHENTICATED` whatever the purpose, and a browser row that was
+   never verified, under a user with a list (what assertion registration creates), is refused
+   purpose 2 with `401`, since `03` pairing is the native path. Otherwise the newest list
+   verified against `users.ssk_pub` decides:
+   no list or an unrevoked entry naming the device's `device_id` and `dsk_pub` together gives
+   `enrolled`; any other device, one whose key a list entry names under another `device_id`
+   included, is unlisted and gets `pending`. Wherever the instance asks whether a device is listed
+   (the scope, the 24-hour expiry, the cap's replacement, the key-less `DELETE /v1/devices/{id}`
+   and invariant 4) it compares this pair. A list that fails verification, a stored list that
+   cannot be decoded included, gives `401 E_UNAUTHENTICATED` (only an absent list is "no list"); a verifier or
+   instance fault gives `503 E_UNAVAILABLE`, so a transient failure is retryable. Scope is fixed
+   at mint: a pending device becomes enrolled by establishing again after a list names it.
+   `enrolled` reaches every endpoint subject to ordinary ACL; `pending` reaches only its own two
+   backup reads (`06-backup-archive.md`), its own device-list GET and PUT, and the session routes
+   needing no session. Other routes answer `403 E_FORBIDDEN`, and the gateway's `IDENTIFY` with a
+   pending or provisional session's token, sent in the frame, as a bearer or through a ticket, is
+   refused like a token that does not resolve (`E_UNAUTHENTICATED`, close `4003`), as is a
+   `RESUME` whose session token is one (`invalid_session`). `provisional` reaches only
+   KeyPackage publication for one `pairing` group and that group's Welcome and handshakes;
+   outside them the answer is `E_PROVISIONAL_OUTSIDE_PAIRING`.
 5. **Lifetime** is a sliding 30 days for `native` devices and 7 days with a 12-hour idle window for
    `browser` devices, renewed by `purpose = 1`. At most **8** live sessions exist per device; the
    oldest is evicted.
-6. **Revocation.** Accepting a signed device list that revokes a device MUST delete that device's
-   session rows and close its gateway connections in the same transaction. Setting
-   `users.disabled_at` does the same for every device of that user. Every instance process that
+6. **Revocation.** The instance verifies every list published with
+   `PUT /v1/users/{user_id}/device-list` before storing it: `blob` is the six-element signed list of
+   `03-identity.md` § Device list, whose `version`, `prev_hash` and `sig_ssk` must equal the body's
+   `version`, `prev_hash` and `ssk_signature` (`400 E_INVALID_REQUEST`); its signature must verify
+   under `users.ssk_pub` and it must name the publishing user (`400 E_INVALID_REQUEST`); its
+   `version` must be the stored newest's plus one with `prev_hash = SHA-256` of the newest's blob,
+   or `1` with 32 zero bytes when none is stored (`409 E_INVALID_REQUEST`). Accepting a list that
+   revokes a device of the publishing user MUST mark the device revoked and delete its session rows
+   in the transaction that stores the list, then close its gateway connections and propose its
+   `Remove` in every group it holds a leaf in; the publishing device may revoke itself. Entries for
+   another user's devices are ignored. Setting `users.disabled_at` does the same for every device of
+   that user. Every instance process that
    serves the gateway also re-reads each ready connection's session row once per
    `gateway.heartbeat_interval`, and closes a connection whose session no longer resolves (deleted,
    pruned or past its expiry) with close `4004 session_revoked`, which is not resumable. A session
@@ -66,11 +119,20 @@ Every endpoint in this document requires a **device session**. A device session 
 7. The sole exception to the proof rule above is `POST /v1/accounts`, which creates the device and
    its first session in the same transaction: the device's key is the one being registered, so there
    is no prior key to prove possession of. Every later session for that device goes through the
-   challenge.
+   challenge. `POST /v1/devices` proves the key it registers the way item 2's registration does:
+   its body carries a nonce from item 1's challenge for the new `device_id` and `sig` over item 2's
+   preimage with purpose `0`, by the `dsk_pub` being registered (`403 E_FORBIDDEN` otherwise; the
+   nonce is spent either way). Both device creation routes refuse a `dsk_pub` that a live device of
+   the same user already holds (`409 E_INVALID_REQUEST`), so a stolen session can register no row
+   under a key it does not hold, and no row shares another's listing.
 
-Refusals: `401 E_UNAUTHENTICATED` for an absent, replayed or expired nonce, a bad signature, or an
-unknown device; `403 E_FORBIDDEN` for a disabled account; `429 E_RATE_LIMITED` per source address
-and per `device_id`.
+Refusals: `401 E_UNAUTHENTICATED` for an absent, replayed or expired nonce, a bad signature, an
+unknown device without a registration assertion, an unknown or spent assertion, a user with no
+list on registration, or a list that fails verification; `400 E_INVALID_REQUEST` for a malformed
+registration array or a tier other than `browser`; `403 E_FORBIDDEN` for a disabled account or a
+cap of entirely listed devices; `429 E_RATE_LIMITED` per source address and per `device_id` (the
+per-user enrolment rate replaces a row and never refuses); `503 E_UNAVAILABLE` for an instance
+list-verifier fault.
 
 ## API
 
@@ -188,7 +250,7 @@ does.
 | 0 | `hello` | S→C | `[wire_versions([uint]), e2ee_versions([uint]), media_versions([uint]), heartbeat_ms(uint), max_frame_bytes(uint), instance_id(bstr 16), generation(uint), backoff_ms(uint), backoff_jitter_ms(uint)]` — the last two are invariant 7's back-off window: a device that is not sent `mls.commit_needed` waits `backoff_ms + random(0..backoff_jitter_ms)` before volunteering a commit |
 | 1 | `identify` | C→S | `[session_token(tstr), wire_version(uint), e2ee_version(uint), media_version(uint), caps(uint)]` |
 | 2 | `resume` | C→S | `[session_token(tstr), resume_token(bstr 32), generation(uint), last_n(uint)]` |
-| 3 | `ready` | S→C | `[device_id(bstr 16), user_id(bstr 16), generation(uint), resume_token(bstr 32), wire_version(uint), e2ee_version(uint), media_version(uint), keypackages_remaining(uint), groups([[group_id(bstr 16), epoch(uint), last_seq(uint), proposals_outstanding(uint)]])]` |
+| 3 | `ready` | S→C | `[device_id(bstr 16), user_id(bstr 16), generation(uint), resume_token(bstr 32), wire_version(uint), e2ee_version(uint), media_version(uint), keypackages_remaining(uint), groups([[group_id(bstr 16), epoch(uint), last_seq(uint), proposals_outstanding(uint)]])]` — `epoch` and `last_seq` are the device's own acknowledged cursor for the group (`POST …/cursor`; `0, 0` before the first), not the group head |
 | 4 | `resumed` | S→C | `[replayed_from(uint), replayed_to(uint), resume_token(bstr 32)]` — the token rotates on every `resumed`, so the frame that announces a resume also issues the credential for the next one; a client that keeps the token from `ready` after resuming is refused |
 | 5 | `invalid_session` | S→C | `[resumable(uint), reason(tstr)]` |
 | 6 | `heartbeat` | C→S | `[last_n(uint), active(uint)]` |
@@ -384,8 +446,9 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    credential whose user is eligible under the channel's
    ACL (for a community group, the same permission invariant 1 asks of a registrant, resolved
    through `09` § Permissions; for a DM or group DM, being one of its participants; for any other
-   group, being in it already) and whose DSK is in the
-   newest signed device list the DS holds; the `PublicGroup` validates
+   group, being in it already) and whose device the
+   newest signed device list the DS holds names, by its `device_id` and DSK in one unrevoked
+   entry (§ Device sessions item 4); the `PublicGroup` validates
    it structurally; and the uploaded GroupInfo's epoch is `n + 1`, and its `group_id` and
    `tree_hash` are those of the group the commit merges to (`rule = "group_info"`), since that
    GroupInfo is what every device that resyncs or joins builds its external commit from until the

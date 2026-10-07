@@ -6,8 +6,8 @@
 //! wrapper returns `MlsError::NeedsReload` and the caller reloads.
 
 use super::{
-    DillaBinding, DillaProvider, GroupKind, StorageError, TxError, create_config, join_config,
-    past_epoch_sweep, proposal_credential_verdict, proposal_extensions_unchanged,
+    DillaBinding, DillaProvider, DillaStorage, GroupKind, StorageError, TxError, create_config,
+    join_config, past_epoch_sweep, proposal_credential_verdict, proposal_extensions_unchanged,
     validate_staged_commit,
 };
 use crate::envelope::Envelope;
@@ -279,9 +279,17 @@ impl DillaGroup {
     }
 
     pub fn load(provider: &DillaProvider, group_id: &GroupId) -> Result<Option<Self>, MlsError> {
-        let Some(group) =
-            MlsGroup::load(provider.storage(), group_id).map_err(MlsError::Storage)?
-        else {
+        Self::load_stored(provider.storage(), group_id)
+    }
+
+    /// `load` from the storage alone: loading is a read, so it needs no crypto provider. The app
+    /// migration (`client::migrate_app`) is handed only the one `DillaStorage` and must not build
+    /// a second one over the same connection.
+    pub(crate) fn load_stored(
+        storage: &DillaStorage,
+        group_id: &GroupId,
+    ) -> Result<Option<Self>, MlsError> {
+        let Some(group) = MlsGroup::load(storage, group_id).map_err(MlsError::Storage)? else {
             return Ok(None);
         };
         let binding = DillaBinding::from_group_context(group.public_group().group_context())

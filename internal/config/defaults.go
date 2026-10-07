@@ -77,6 +77,7 @@ func Default() *Config {
 		Session: Session{
 			NativeLifetime: "720h", BrowserLifetime: "168h", BrowserIdle: "12h",
 			MaxPerDevice: 8, ReauthWindow: "300s",
+			MaxDevicesPerUser: 8, EnrolmentsPerHour: 3,
 		},
 		Lockout: Lockout{
 			ObservationWindow: "15m", FreeAttempts: 4, FirstLockout: "30s",

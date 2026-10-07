@@ -126,7 +126,7 @@ fn group_joined_never_moves_next_seq_back() {
         .core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -470,7 +470,7 @@ fn register_on(core: &mut Core, relay: &mut Relay, channel: [u8; 16], instance: 
         .core
         .group_create(
             &relay.group_id,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &channel,
             POLICY,
             &instance.public(),
@@ -501,7 +501,7 @@ fn a_group_info_of_another_group_id_is_refused_before_it_is_joined() {
         .core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &OTHER_CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -525,7 +525,7 @@ fn an_external_join_never_rebinds_an_existing_row_to_another_channel() {
         .core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &OTHER_CHANNEL,
             POLICY,
             &forged.info_body(),
@@ -709,7 +709,7 @@ fn a_discarded_rejoin_of_a_gone_group_returns_it_to_gone_with_its_history() {
     b.core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -737,7 +737,7 @@ fn a_discarded_join_that_created_its_row_leaves_nothing() {
     c.core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -764,7 +764,14 @@ fn a_resync_from_a_group_info_older_than_the_local_group_is_refused() {
 
     let err = b
         .core
-        .group_join_external(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &old_info, &old_tree)
+        .group_join_external(
+            &GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &old_info,
+            &old_tree,
+        )
         .expect_err("a GroupInfo of epoch 1 under a group at epoch 3");
     assert_eq!(err.code, "E_CORE_INPUT");
     assert_eq!(b.group(&GROUP), Some(before));
@@ -788,7 +795,14 @@ fn a_rejoin_of_a_gone_group_from_an_older_group_info_is_refused() {
 
     let err = b
         .core
-        .group_join_external(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &old_info, &old_tree)
+        .group_join_external(
+            &GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &old_info,
+            &old_tree,
+        )
         .expect_err("a GroupInfo of epoch 1 after holding epoch 3");
     assert_eq!(err.code, "E_CORE_INPUT");
     assert_eq!(b.group(&GROUP), Some(before.clone()));
@@ -944,10 +958,14 @@ fn a_group_info_one_below_the_floor_is_refused_and_one_at_it_rejoins() {
     let before = b.group(&GROUP);
 
     assert_eq!(
-        code(
-            b.core
-                .group_join_external(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &info1, &tree1)
-        ),
+        code(b.core.group_join_external(
+            &GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &info1,
+            &tree1
+        )),
         "E_CORE_INPUT",
         "epoch 1 would land in 2, the floor"
     );
@@ -972,7 +990,7 @@ fn the_floor_survives_a_discarded_rejoin() {
     b.core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -982,10 +1000,14 @@ fn the_floor_survives_a_discarded_rejoin() {
     b.core.group_discard(&GROUP).expect("discard");
     assert_eq!(b.group(&GROUP).map(|g| g.state), Some(4));
     assert_eq!(
-        code(
-            b.core
-                .group_join_external(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &info1, &tree1)
-        ),
+        code(b.core.group_join_external(
+            &GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &info1,
+            &tree1
+        )),
         "E_CORE_INPUT"
     );
 }
@@ -1215,7 +1237,7 @@ fn the_floor_survives_a_discarded_resync() {
     b.core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),
@@ -1226,10 +1248,14 @@ fn the_floor_survives_a_discarded_resync() {
     assert_eq!(b.group(&GROUP).map(|g| (g.state, g.epoch)), Some((3, 0)));
     assert_eq!(max_epoch(&b), 3);
     assert_eq!(
-        code(
-            b.core
-                .group_join_external(&GROUP, &COMMUNITY, &CHANNEL, POLICY, &info1, &tree1)
-        ),
+        code(b.core.group_join_external(
+            &GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &info1,
+            &tree1
+        )),
         "E_CORE_INPUT"
     );
 }
@@ -1266,7 +1292,7 @@ fn the_floor_is_the_highest_epoch_ever_stored_at_every_step() {
     b.core
         .group_join_external(
             &GROUP,
-            &COMMUNITY,
+            Some(&COMMUNITY),
             &CHANNEL,
             POLICY,
             &relay.info_body(),

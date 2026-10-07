@@ -90,6 +90,73 @@ pub struct Enrolled {
     pub expires: u64,
 }
 
+/// What `POST /v1/devices/{device_id}/sessions` answers (L-HTTP-54), without the idle expiry and
+/// the generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Established {
+    pub token: String,
+    pub scope: u64,
+    pub user_id: [u8; 16],
+    pub device_id: DeviceId,
+    pub expires: u64,
+}
+/// The registration array an enrolment establish carries in element 3 (L-HTTP-54).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Registration {
+    pub device_id: DeviceId,
+    pub dsk_pub: [u8; 32],
+    pub tier: u8,
+    pub signer_tier: u8,
+    pub credential: Vec<u8>,
+}
+/// Element 3 of a session body: the device's credential, or its registration array.
+pub enum Element3<'a> {
+    Credential(&'a [u8]),
+    Registration(&'a Registration),
+}
+/// `POST /v1/auth/password/login` → `[assertion, needs_totp]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PasswordLogin {
+    pub assertion: String,
+    pub needs_totp: bool,
+}
+/// One served device-list row (L-HTTP-56): `[version, blob, ssk_signature, prev_hash]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServedDeviceList {
+    pub version: u64,
+    pub blob: Vec<u8>,
+    pub ssk_signature: Vec<u8>,
+    pub prev_hash: Vec<u8>,
+}
+/// One row of `GET /v1/backups` (L-HTTP-51).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackupItem {
+    pub kind: u64,
+    pub chunk_seq: u64,
+    pub size: u64,
+    pub created: u64,
+}
+/// One row of `GET /v1/dms`: `[channel_id, kind, members]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DmInfo {
+    pub channel_id: [u8; 16],
+    pub kind: u64,
+    pub members: Vec<[u8; 16]>,
+}
+/// What a driver reads of `GET /v1/channels/{id}`: the id, the kind and the text group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelInfo {
+    pub id: [u8; 16],
+    pub kind: u64,
+    pub text_group_id: Option<[u8; 16]>,
+}
+/// A session in the pending scope: no gateway socket, only the routes L-HTTP-57 admits.
+pub struct PendingSession {
+    base: String,
+    token: String,
+    agent: ureq::Agent,
+}
+
 /// The account half and the first device of `POST /v1/accounts`, as protocol/09 fixes them:
 /// `[code, username, display, umk_pub, ssk_pub, sig_umk_ssk, password|null, device]` with
 /// `device = [device_id, dsk_pub, tier, signer_tier, credential]`.
@@ -541,6 +608,211 @@ fn is_timeout(e: &tungstenite::Error) -> bool {
     ))
 }
 
+/// The body of `POST /v1/devices/{device_id}/sessions` (L-HTTP-54):
+/// `[nonce, purpose 0, sig, element 3, login]`. Element 3 is the credential bstr or the
+/// registration array; `login` is the enrolment assertion's UTF-8 bytes as a bstr, or null.
+fn session_body(
+    nonce: &[u8; 32],
+    sig: &[u8; 64],
+    element3: &Element3<'_>,
+    login: Option<&str>,
+) -> Vec<u8> {
+    encode(|e| {
+        e.array(5).bytes(nonce).uint(0).bytes(sig);
+        match element3 {
+            Element3::Credential(c) => {
+                e.bytes(c);
+            }
+            Element3::Registration(r) => {
+                e.array(5)
+                    .bytes(r.device_id.as_bytes())
+                    .bytes(&r.dsk_pub)
+                    .uint(u64::from(r.tier))
+                    .uint(u64::from(r.signer_tier))
+                    .bytes(&r.credential);
+            }
+        }
+        if let Some(login) = login {
+            e.bytes(login.as_bytes());
+        } else {
+            e.null();
+        }
+    })
+}
+
+fn decode_established(bytes: &[u8]) -> Result<Established, CborError> {
+    decode_strict(bytes, |d| {
+        d.array(7)?;
+        let token = d.text()?.to_owned();
+        let scope = d.uint()?;
+        let user_id = d.bytes_exact::<16>()?;
+        let device_id = device_id(d)?;
+        let expires = d.uint()?;
+        d.skip()?;
+        d.skip()?;
+        Ok(Established {
+            token,
+            scope,
+            user_id,
+            device_id,
+            expires,
+        })
+    })
+}
+
+fn decode_password_login(bytes: &[u8]) -> Result<PasswordLogin, CborError> {
+    decode_strict(bytes, |d| {
+        d.array(2)?;
+        let assertion = d.text()?.to_owned();
+        let needs_totp = match d.uint()? {
+            0 => false,
+            1 => true,
+            _ => return Err(CborError::IntegerOverflow),
+        };
+        Ok(PasswordLogin {
+            assertion,
+            needs_totp,
+        })
+    })
+}
+
+fn decode_served_list(d: &mut Decoder<'_>) -> Result<ServedDeviceList, CborError> {
+    d.array(4)?;
+    Ok(ServedDeviceList {
+        version: d.uint()?,
+        blob: bytes_or_null(d)?,
+        ssk_signature: bytes_or_null(d)?,
+        prev_hash: bytes_or_null(d)?,
+    })
+}
+
+fn decode_history(bytes: &[u8]) -> Result<Vec<ServedDeviceList>, CborError> {
+    decode_strict(bytes, |d| {
+        (0..array_or_null(d)?)
+            .map(|_| decode_served_list(d))
+            .collect()
+    })
+}
+
+fn decode_backups(bytes: &[u8]) -> Result<Vec<BackupItem>, CborError> {
+    decode_strict(bytes, |d| {
+        (0..array_or_null(d)?)
+            .map(|_| {
+                d.array(4)?;
+                Ok(BackupItem {
+                    kind: d.uint()?,
+                    chunk_seq: d.uint()?,
+                    size: d.uint()?,
+                    created: d.uint()?,
+                })
+            })
+            .collect()
+    })
+}
+
+fn decode_dms(bytes: &[u8]) -> Result<Vec<DmInfo>, CborError> {
+    decode_strict(bytes, |d| {
+        (0..array_or_null(d)?)
+            .map(|_| {
+                d.array(3)?;
+                let channel_id = d.bytes_exact::<16>()?;
+                let kind = d.uint()?;
+                let members = (0..array_or_null(d)?)
+                    .map(|_| d.bytes_exact::<16>())
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(DmInfo {
+                    channel_id,
+                    kind,
+                    members,
+                })
+            })
+            .collect()
+    })
+}
+
+fn decode_channel(bytes: &[u8]) -> Result<ChannelInfo, CborError> {
+    decode_strict(bytes, |d| {
+        d.array(12)?;
+        let id = d.bytes_exact::<16>()?;
+        d.skip()?;
+        let kind = d.uint()?;
+        for _ in 3..11 {
+            d.skip()?;
+        }
+        let text_group_id = d.opt_bytes_exact::<16>()?;
+        Ok(ChannelInfo {
+            id,
+            kind,
+            text_group_id,
+        })
+    })
+}
+
+fn device_list_put_body(list: &DeviceList) -> Vec<u8> {
+    encode(|e| {
+        e.array(4)
+            .uint(list.unsigned.version)
+            .bytes(&list.encode())
+            .bytes(&list.sig_ssk)
+            .bytes(&list.unsigned.prev_hash);
+    })
+}
+
+fn get_with(agent: &ureq::Agent, base: &str, token: &str, path: &str) -> Result<Vec<u8>, DsError> {
+    let (status, out) = call(agent, "GET", &format!("{base}{path}"), Some(token), None)?;
+    check_status(status, &out)?;
+    Ok(out)
+}
+
+fn get_device_list_with(
+    agent: &ureq::Agent,
+    base: &str,
+    token: &str,
+    user_id: &[u8; 16],
+) -> Result<ServedDeviceList, DsError> {
+    let path = format!("/v1/users/{}/device-list", hex::encode(user_id));
+    decode_strict(&get_with(agent, base, token, &path)?, decode_served_list).map_err(protocol)
+}
+
+fn list_backups_with(
+    agent: &ureq::Agent,
+    base: &str,
+    token: &str,
+) -> Result<Vec<BackupItem>, DsError> {
+    decode_backups(&get_with(agent, base, token, "/v1/backups")?).map_err(protocol)
+}
+
+fn put_device_list_with(
+    agent: &ureq::Agent,
+    base: &str,
+    token: &str,
+    user_id: &[u8; 16],
+    list: &DeviceList,
+) -> Result<(), DsError> {
+    let path = format!("{base}/v1/users/{}/device-list", hex::encode(user_id));
+    let body = device_list_put_body(list);
+    let (status, out) = call(
+        agent,
+        "PUT",
+        &path,
+        Some(token),
+        Some(("application/cbor", &body)),
+    )?;
+    check_status(status, &out)
+}
+
+impl PendingSession {
+    pub fn get_device_list(&self, user_id: &[u8; 16]) -> Result<ServedDeviceList, DsError> {
+        get_device_list_with(&self.agent, &self.base, &self.token, user_id)
+    }
+    pub fn put_device_list(&self, user_id: &[u8; 16], list: &DeviceList) -> Result<(), DsError> {
+        put_device_list_with(&self.agent, &self.base, &self.token, user_id, list)
+    }
+    pub fn list_backups(&self) -> Result<Vec<BackupItem>, DsError> {
+        list_backups_with(&self.agent, &self.base, &self.token)
+    }
+}
+
 /// A challenge-response device session: a nonce, an Ed25519 signature over the 81-byte preimage
 /// of `protocol/02`'s "Device sessions", then the session itself. Answers the bearer token and
 /// its hard expiry, in the instance's unix seconds.
@@ -550,6 +822,18 @@ fn establish(
     device: &Device,
     credential: &[u8],
 ) -> Result<(String, u64), DsError> {
+    establish_with(agent, base, device, &Element3::Credential(credential), None)
+        .map(|e| (e.token, e.expires))
+}
+
+/// `establish` with element 3 and the login chosen by the caller; answers the whole session.
+fn establish_with(
+    agent: &ureq::Agent,
+    base: &str,
+    device: &Device,
+    element3: &Element3<'_>,
+    login: Option<&str>,
+) -> Result<Established, DsError> {
     let device_hex = hex::encode(device.id().as_bytes());
     let challenge = post_cbor(
         agent,
@@ -575,14 +859,7 @@ fn establish(
     preimage.push(0); // purpose 0: session
     let sig = device.sign(&preimage);
 
-    let body = encode(|e| {
-        e.array(5)
-            .bytes(&nonce)
-            .uint(0)
-            .bytes(&sig)
-            .bytes(credential)
-            .null();
-    });
+    let body = session_body(&nonce, &sig, element3, login);
     let session = post_cbor(
         agent,
         &format!("{base}/v1/devices/{device_hex}/sessions"),
@@ -590,18 +867,7 @@ fn establish(
         &body,
     )?;
     // `[token, scope, user_id, device_id, expires, idle_expires, generation]` (protocol/09).
-    decode_strict(&session, |d: &mut Decoder<'_>| {
-        d.array(7)?;
-        let token = d.text()?.to_owned();
-        for _ in 1..4 {
-            d.skip()?;
-        }
-        let expires = d.uint()?;
-        d.skip()?;
-        d.skip()?;
-        Ok((token, expires))
-    })
-    .map_err(protocol)
+    decode_established(&session).map_err(protocol)
 }
 
 /// What `POST /v1/channels/{id}/calls` answers (protocol/09 § Voice, MD-10):
@@ -800,22 +1066,138 @@ impl HttpDs {
     /// `blob` is protocol/03's full six-element signed list — the form the instance hands to the
     /// guest's `device_list_entries` when invariant 4 checks an Add's DSK against it.
     pub fn put_device_list(&self, user_id: &[u8; 16], list: &DeviceList) -> Result<(), DsError> {
+        put_device_list_with(&self.agent, &self.base, &self.token, user_id, list)
+    }
+
+    /// `POST /v1/auth/password/login [username, password]` with no token: the enrolment assertion.
+    pub fn password_login(
+        base: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<PasswordLogin, DsError> {
+        let out = post_cbor(
+            &new_agent(),
+            &format!("{base}/v1/auth/password/login"),
+            None,
+            &encode(|e| {
+                e.array(2).text(username).text(password);
+            }),
+        )?;
+        decode_password_login(&out).map_err(protocol)
+    }
+
+    /// An enrolment establish (L-HTTP-54): the registration array and the assertion. The instance
+    /// must answer scope 1, a session that reaches only the routes of L-HTTP-57.
+    pub fn establish_with_login(
+        base: &str,
+        device: &Device,
+        registration: &Registration,
+        login: &str,
+    ) -> Result<(PendingSession, Established), DsError> {
+        let agent = new_agent();
+        let established = establish_with(
+            &agent,
+            base,
+            device,
+            &Element3::Registration(registration),
+            Some(login),
+        )?;
+        if established.scope != 1 {
+            return Err(DsError::Protocol(format!(
+                "the registration answered scope {}, want 1",
+                established.scope
+            )));
+        }
+        let pending = PendingSession {
+            base: base.trim_end_matches('/').to_owned(),
+            token: established.token.clone(),
+            agent,
+        };
+        Ok((pending, established))
+    }
+
+    /// web-1's establish body (credential, null login), answering the whole session with its scope.
+    pub fn establish_scoped(
+        base: &str,
+        device: &Device,
+        credential: &[u8],
+    ) -> Result<Established, DsError> {
+        establish_with(
+            &new_agent(),
+            base,
+            device,
+            &Element3::Credential(credential),
+            None,
+        )
+    }
+
+    /// `POST /v1/auth/password [null, password]`: a first password, set from a fresh session.
+    pub fn set_password(&self, password: &str) -> Result<(), DsError> {
+        self.post_status(
+            "/v1/auth/password",
+            &encode(|e| {
+                e.array(2).null().text(password);
+            }),
+        )
+    }
+
+    /// `GET /v1/users/{user_id}/device-list`: the newest row (L-HTTP-56).
+    pub fn get_device_list(&self, user_id: &[u8; 16]) -> Result<ServedDeviceList, DsError> {
+        get_device_list_with(&self.agent, &self.base, &self.token, user_id)
+    }
+
+    /// `GET /v1/users/{user_id}/device-list?after=N`: the rows above `after`, ascending.
+    pub fn get_device_list_history(
+        &self,
+        user_id: &[u8; 16],
+        after: u64,
+    ) -> Result<Vec<ServedDeviceList>, DsError> {
+        let path = format!(
+            "/v1/users/{}/device-list?after={after}",
+            hex::encode(user_id)
+        );
+        let out = get_with(&self.agent, &self.base, &self.token, &path)?;
+        decode_history(&out).map_err(protocol)
+    }
+
+    /// `GET /v1/backups` (L-HTTP-51).
+    pub fn list_backups(&self) -> Result<Vec<BackupItem>, DsError> {
+        list_backups_with(&self.agent, &self.base, &self.token)
+    }
+
+    /// `POST /v1/dms [recipients]`: the DM's channel id and whether this call created it (`201`).
+    pub fn post_dm(&self, recipients: &[[u8; 16]]) -> Result<([u8; 16], bool), DsError> {
         let body = encode(|e| {
-            e.array(4)
-                .uint(list.unsigned.version)
-                .bytes(&list.encode())
-                .bytes(&list.sig_ssk)
-                .bytes(&list.unsigned.prev_hash);
+            e.array(1).array(recipients.len());
+            for id in recipients {
+                e.bytes(id);
+            }
         });
-        let path = format!("/v1/users/{}/device-list", hex::encode(user_id));
         let (status, out) = call(
             &self.agent,
-            "PUT",
-            &self.url(&path),
+            "POST",
+            &self.url("/v1/dms"),
             Some(&self.token),
             Some(("application/cbor", &body)),
         )?;
-        check_status(status, &out)
+        check_status(status, &out)?;
+        let id = decode_strict(&out, |d| {
+            d.array(1)?;
+            d.bytes_exact::<16>()
+        })
+        .map_err(protocol)?;
+        Ok((id, status == 201))
+    }
+
+    /// `GET /v1/dms`: the caller's DMs.
+    pub fn list_dms(&self) -> Result<Vec<DmInfo>, DsError> {
+        decode_dms(&get_with(&self.agent, &self.base, &self.token, "/v1/dms")?).map_err(protocol)
+    }
+
+    /// `GET /v1/channels/{id}`: its id, kind and text group.
+    pub fn get_channel(&self, channel_id: &[u8; 16]) -> Result<ChannelInfo, DsError> {
+        let path = format!("/v1/channels/{}", hex::encode(channel_id));
+        decode_channel(&get_with(&self.agent, &self.base, &self.token, &path)?).map_err(protocol)
     }
 
     /// POST /v1/communities [name, policy bstr "{}", 0, 0].
@@ -2608,5 +2990,201 @@ mod tests {
 
         ds.set_online(false).unwrap();
         gateway.join().unwrap();
+    }
+
+    /// L-HTTP-54: with a login the establish body carries the registration array in element 3 and the
+    /// assertion's UTF-8 bytes as a bstr in element 4; without one it is web-1's body.
+    #[test]
+    fn an_enrolment_establish_carries_the_registration_array_and_the_login_as_bytes() {
+        let reg = Registration {
+            device_id: DeviceId::from_bytes([0x44; 16]),
+            dsk_pub: [0x55; 32],
+            tier: 1,
+            signer_tier: 1,
+            credential: vec![0x66; 10],
+        };
+        let body = session_body(
+            &[0x11; 32],
+            &[0x22; 64],
+            &Element3::Registration(&reg),
+            Some("asrt-1"),
+        );
+        let want = cbor(|e| {
+            e.array(5).bytes(&[0x11; 32]).uint(0).bytes(&[0x22; 64]);
+            e.array(5)
+                .bytes(&[0x44; 16])
+                .bytes(&[0x55; 32])
+                .uint(1)
+                .uint(1)
+                .bytes(&[0x66; 10]);
+            e.bytes(b"asrt-1");
+        });
+        assert_eq!(body, want);
+        let plain = session_body(
+            &[0x11; 32],
+            &[0x22; 64],
+            &Element3::Credential(&[0x77; 3]),
+            None,
+        );
+        assert_eq!(
+            plain,
+            cbor(|e| {
+                e.array(5)
+                    .bytes(&[0x11; 32])
+                    .uint(0)
+                    .bytes(&[0x22; 64])
+                    .bytes(&[0x77; 3])
+                    .null();
+            })
+        );
+    }
+
+    #[test]
+    fn the_web_2a_answers_decode_as_the_instance_writes_them() {
+        let est = cbor(|e| {
+            e.array(7)
+                .text("tok")
+                .uint(1)
+                .bytes(&[0x01; 16])
+                .bytes(&[0x02; 16])
+                .uint(100)
+                .uint(50)
+                .uint(3);
+        });
+        assert_eq!(
+            decode_established(&est).unwrap(),
+            Established {
+                token: "tok".into(),
+                scope: 1,
+                user_id: [0x01; 16],
+                device_id: DeviceId::from_bytes([0x02; 16]),
+                expires: 100
+            }
+        );
+        let login = cbor(|e| {
+            e.array(2).text("asrt").uint(1);
+        });
+        assert_eq!(
+            decode_password_login(&login).unwrap(),
+            PasswordLogin {
+                assertion: "asrt".into(),
+                needs_totp: true
+            }
+        );
+        let served = cbor(|e| {
+            e.array(4)
+                .uint(2)
+                .bytes(&[0x03; 5])
+                .bytes(&[0x04; 64])
+                .bytes(&[0x05; 32]);
+        });
+        let row = ServedDeviceList {
+            version: 2,
+            blob: vec![0x03; 5],
+            ssk_signature: vec![0x04; 64],
+            prev_hash: vec![0x05; 32],
+        };
+        assert_eq!(decode_strict(&served, decode_served_list).unwrap(), row);
+        let history = cbor(|e| {
+            e.array(2);
+            e.array(4)
+                .uint(2)
+                .bytes(&[0x03; 5])
+                .bytes(&[0x04; 64])
+                .bytes(&[0x05; 32]);
+            e.array(4)
+                .uint(3)
+                .bytes(&[0x06; 5])
+                .bytes(&[0x04; 64])
+                .bytes(&[0x07; 32]);
+        });
+        let got = decode_history(&history).unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0], row);
+        assert_eq!(
+            (got[1].version, got[1].prev_hash.clone()),
+            (3, vec![0x07; 32])
+        );
+        assert_eq!(
+            decode_history(&cbor(|e| {
+                e.array(0);
+            }))
+            .unwrap(),
+            Vec::new()
+        );
+        let backups = cbor(|e| {
+            e.array(1);
+            e.array(4).uint(0).uint(0).uint(103).uint(1_800_000_000);
+        });
+        assert_eq!(
+            decode_backups(&backups).unwrap(),
+            vec![BackupItem {
+                kind: 0,
+                chunk_seq: 0,
+                size: 103,
+                created: 1_800_000_000
+            }]
+        );
+        let dm = cbor(|e| {
+            e.array(12)
+                .bytes(&[0x06; 16])
+                .null()
+                .uint(3)
+                .uint(0)
+                .uint(0)
+                .null()
+                .text("")
+                .text("")
+                .uint(0)
+                .uint(0)
+                .uint(0)
+                .bytes(&[0x07; 16]);
+        });
+        assert_eq!(
+            decode_channel(&dm).unwrap(),
+            ChannelInfo {
+                id: [0x06; 16],
+                kind: 3,
+                text_group_id: Some([0x07; 16])
+            }
+        );
+        let fresh = cbor(|e| {
+            e.array(12)
+                .bytes(&[0x06; 16])
+                .null()
+                .uint(3)
+                .uint(0)
+                .uint(0)
+                .null()
+                .text("")
+                .text("")
+                .uint(0)
+                .uint(0)
+                .uint(0)
+                .null();
+        });
+        assert_eq!(decode_channel(&fresh).unwrap().text_group_id, None);
+        let dms = cbor(|e| {
+            e.array(2);
+            e.array(3).bytes(&[0x06; 16]).uint(3);
+            e.array(2).bytes(&[0x01; 16]).bytes(&[0x02; 16]);
+            e.array(3).bytes(&[0x08; 16]).uint(4).null();
+        });
+        assert_eq!(
+            decode_dms(&dms).unwrap(),
+            vec![
+                DmInfo {
+                    channel_id: [0x06; 16],
+                    kind: 3,
+                    members: vec![[0x01; 16], [0x02; 16]]
+                },
+                // A nil Go slice arrives as null and is an empty member list.
+                DmInfo {
+                    channel_id: [0x08; 16],
+                    kind: 4,
+                    members: Vec::new()
+                },
+            ]
+        );
     }
 }

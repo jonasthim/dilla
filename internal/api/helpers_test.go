@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
@@ -64,6 +66,11 @@ func newTestAPI(t *testing.T) (http.Handler, api.Deps) {
 // keeps the defaults.
 func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler, api.Deps) {
 	t.Helper()
+	return newTestAPIFull(t, tune, nil)
+}
+
+func newTestAPIFull(t *testing.T, tune func(*config.Config), wire func(*api.Deps)) (http.Handler, api.Deps) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "api.db")
 	write, err := sqlite.OpenWrite(path)
 	if err != nil {
@@ -82,6 +89,11 @@ func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler
 	}
 	repo := sqlite.New(write, read)
 	t.Cleanup(func() { repo.Close() })
+	bs, err := blob.Open(filepath.Join(t.TempDir(), "blobs"), "fs")
+	if err != nil {
+		t.Fatalf("blob.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = bs.Close() })
 
 	clk := clock.NewFake(time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC))
 	cfg := config.Default()
@@ -96,6 +108,9 @@ func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler
 	if err := repo.CreateInstance(context.Background(), instance); err != nil {
 		t.Fatalf("CreateInstance: %v", err)
 	}
+	sessions := auth.NewSessions(repo, clk, cfg.Auth.Session, instance.InstanceID, instance.Generation)
+	sessions.DeviceLists = &testLister{entries: map[id.ID][]auth.ListedDevice{}}
+
 	deps := api.Deps{
 		Repo:         repo,
 		Clock:        clk,
@@ -105,15 +120,25 @@ func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler
 		Domain:       cfg.Instance.Domain,
 		Config:       cfg,
 		Registration: cfg.Registration,
-		Sessions: auth.NewSessions(repo, clk, cfg.Auth.Session, instance.InstanceID,
-			instance.Generation),
-		Hasher:     testHasher{},
-		Throttle:   auth.NewThrottle(cfg.Limits.Rate, cfg.Auth.Lockout, clk),
-		Assertions: api.NewAssertions(clk, api.AssertionTTL),
+		Sessions:     sessions,
+		Hasher:       testHasher{},
+		Throttle:     auth.NewThrottle(cfg.Limits.Rate, cfg.Auth.Lockout, clk),
+		Assertions:   api.NewAssertions(clk, api.AssertionTTL),
+		Blobs:        bs,
+	}
+	deps.Sessions.Assertions = deps.Assertions
+	if wire != nil {
+		wire(&deps)
 	}
 	m := server.NewMux()
 	api.Register(m, deps)
 	return m, deps
+}
+
+// newTestAPIWired fills Deps fields before registration; handlers hold Deps by value.
+func newTestAPIWired(t *testing.T, wire func(*api.Deps)) (http.Handler, api.Deps) {
+	t.Helper()
+	return newTestAPIFull(t, nil, wire)
 }
 
 // seedInvite mints an ordinary invite with max_uses uses and no admin grant,
@@ -224,4 +249,43 @@ func postCBORAuth(h http.Handler, path string, body []byte, token string) *httpt
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// testLister is the device-list gate the api tests run behind: a user it has no entries for has
+// published no list (the no-list clause, so every seeded device establishes enrolled, exactly as
+// web-1's fixtures always did), and a test lists a user's (device_id, dsk_pub) pairs to drive the
+// listed and unlisted branches of protocol/02 § Device sessions item 4.
+type testLister struct {
+	mu      sync.Mutex
+	entries map[id.ID][]auth.ListedDevice
+}
+
+func (l *testLister) ListedDevices(_ context.Context, user id.ID) ([]auth.ListedDevice, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entries, ok := l.entries[user]
+	if !ok {
+		return nil, auth.ErrNoDeviceList
+	}
+	return entries, nil
+}
+
+// list makes rows the user's newest verified list: each row's id and key, one entry each.
+func (l *testLister) list(user id.ID, rows ...store.DeviceRow) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entries := make([]auth.ListedDevice, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, auth.ListedDevice{DeviceID: row.ID, DSKPub: row.DSKPub})
+	}
+	l.entries[user] = entries
+}
+
+func listerOf(t *testing.T, d api.Deps) *testLister {
+	t.Helper()
+	l, ok := d.Sessions.DeviceLists.(*testLister)
+	if !ok {
+		t.Fatalf("Sessions.DeviceLists is %T, want the harness's *testLister", d.Sessions.DeviceLists)
+	}
+	return l
 }

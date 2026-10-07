@@ -30,6 +30,20 @@ describe('ChannelHeader', () => {
     expect(container.querySelectorAll('a, button, input, textarea, select, [tabindex]')).toHaveLength(0);
   });
 
+  it('heads a direct message with @ in place of #, named by the name alone', () => {
+    const { container, rerender } = render(<ChannelHeader name="ada" kind="dm" />);
+    expect(screen.getByRole('heading', { level: 2, name: 'ada' })).toBeInTheDocument();
+    const brackets = () => [...container.querySelectorAll('.d-channel-header__bracket')];
+    expect(brackets().map(b => b.textContent)).toEqual(['[ @ ', ' ]']);
+    expect(brackets().map(b => b.getAttribute('aria-hidden'))).toEqual(['true', 'true']);
+    expect(container.querySelector('.d-channel-header__name')?.textContent).toBe('[ @ ada ]');
+    expect(container.textContent).not.toContain('#');
+    rerender(<ChannelHeader name="general" />);
+    expect(brackets().map(b => b.textContent)).toEqual(['[ # ', ' ]']);
+    rerender(<ChannelHeader name="general" kind="channel" />);
+    expect(container.querySelector('.d-channel-header__name')?.textContent).toBe('[ # general ]');
+  });
+
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><ChannelHeader name="lfg" topic="looking for group" readable /></div>);
     await expectNoAxeViolations(container);

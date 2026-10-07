@@ -10,6 +10,7 @@ pub(crate) const E_CORE_NOT_FOUND: &str = "E_CORE_NOT_FOUND";
 pub(crate) const E_CORE_MLS: &str = "E_CORE_MLS";
 pub(crate) const E_CORE_STORAGE: &str = "E_CORE_STORAGE";
 pub(crate) const E_CORE_RELOAD: &str = "E_CORE_RELOAD";
+pub(crate) const E_RECOVERY_KEY: &str = "E_RECOVERY_KEY";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientError {

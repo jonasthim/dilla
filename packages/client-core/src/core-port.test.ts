@@ -153,3 +153,140 @@ describe('wrapCore errors', () => {
     expect(CoreError.from('boom')).toMatchObject({ code: 'E_CORE_WASM', detail: 'boom' });
   });
 });
+
+const DSK = new Uint8Array(32).fill(0xd5);
+
+describe('wrapCore web-2a', () => {
+  it('reads phase 3 in identity', () => {
+    expect(stub({ identity: () => encode([3, INST, null, DEV, '', 0]) }).port.identity())
+      .toEqual({ phase: 3, instanceId: INST, userId: null, deviceId: DEV, username: '', listPublished: false });
+  });
+
+  it('passes a null community to group_create and group_join_external and into the expected groups', () => {
+    const body = new Uint8Array([3]);
+    const s = stub({ group_create: () => body, group_join_external: () => body, welcomes_apply: () => encode([]) });
+    expect(s.port.groupCreate(G, null, CHAN, 1n, new Uint8Array(32))).toBe(body);
+    expect(s.port.groupJoinExternal({ groupId: G, communityId: null, channelId: CHAN, policyVersion: 1n }, new Uint8Array([1]), new Uint8Array([2]))).toBe(body);
+    s.port.welcomesApply(new Uint8Array([9]), [{ groupId: G, communityId: null, channelId: CHAN, policyVersion: 1n }]);
+    expect(s.calls[0]?.args[1]).toBeNull();
+    expect(s.calls[1]?.args[1]).toBeNull();
+    expect(decode(s.calls[2]?.args[1] as Uint8Array)).toEqual([[G, null, CHAN, 1n]]);
+  });
+
+  it('reads one group row, and null for an unknown id', () => {
+    expect(stub({ group_row: () => encode(null) }).port.groupRow(G)).toBeNull();
+    const s = stub({ group_row: () => encode([G, 0, null, CHAN, 2, 4, 9, 0, 0]) });
+    expect(s.port.groupRow(G)).toEqual({ groupId: G, kind: 0, communityId: null, targetId: CHAN, state: 2, epoch: 4n, nextSeq: 9n, proposalsPending: 0, pendingCommit: false });
+    expect(s.calls).toEqual([{ method: 'group_row', args: [G] }]);
+  });
+
+  it('forwards markRead and reads activity', () => {
+    const s = stub({ mark_read: () => undefined, activity: () => encode([[G, 3, 1, 12, 1_800_000_012, 9], [MSG, 0, 0, 0, 0, 4]]) });
+    s.port.markRead(G, 12n, 1_800_000_100n);
+    expect(s.calls[0]).toEqual({ method: 'mark_read', args: [G, 12n, 1_800_000_100n] });
+    expect(s.port.activity()).toEqual([
+      { groupId: G, unread: 3, mentions: 1, lastSeq: 12n, lastTs: 1_800_000_012n, lastReadSeq: 9n },
+      { groupId: MSG, unread: 0, mentions: 0, lastSeq: 0n, lastTs: 0n, lastReadSeq: 4n },
+    ]);
+  });
+
+  it('folds settings into a record and forwards puts and deletes', () => {
+    const s = stub({
+      settings: () => encode([['mute.channel.aa', '1'], ['notify.default', 'everything']]),
+      setting_put: () => undefined, setting_delete: () => undefined,
+    });
+    expect(s.port.settings()).toEqual({ 'mute.channel.aa': '1', 'notify.default': 'everything' });
+    s.port.settingPut('notify.default', 'nothing');
+    s.port.settingDelete('mute.channel.aa');
+    expect(s.calls.slice(1)).toEqual([
+      { method: 'setting_put', args: ['notify.default', 'nothing'] },
+      { method: 'setting_delete', args: ['mute.channel.aa'] },
+    ]);
+  });
+
+  it('reads the three sealed objects and forwards stateSealedUploaded', () => {
+    const root = new Uint8Array(103).fill(1);
+    const state = new Uint8Array(40).fill(2);
+    expect(stub({ sealed_objects: () => encode([root, state, 1]) }).port.sealedObjects()).toEqual({ root, state, stateUploaded: true });
+    expect(stub({ sealed_objects: () => encode([null, null, 0]) }).port.sealedObjects()).toEqual({ root: null, state: null, stateUploaded: false });
+    const s = stub({ state_sealed_uploaded: () => undefined, state_sealed_current: () => true });
+    s.port.stateSealedUploaded();
+    expect(s.port.stateSealedCurrent()).toBe(true);
+    expect(s.calls).toEqual([{ method: 'state_sealed_uploaded', args: [] }, { method: 'state_sealed_current', args: [] }]);
+  });
+
+  it('walks the enrolment exports in the facade argument order', () => {
+    const body = new Uint8Array([0x85, 1]);
+    const s = stub({
+      enrol_begin: () => encode([DEV, DSK]), enrol_session_sign: () => body, enrol_registered: () => undefined,
+      enrol_complete: () => encode([new Uint8Array([4]), new Uint8Array([5]), null]), enrol_reset: () => undefined,
+    });
+    expect(s.port.enrolBegin(INST)).toEqual({ deviceId: DEV, dskPub: DSK });
+    const nonce = new Uint8Array(32).fill(9);
+    const login = new TextEncoder().encode('asrt-1');
+    expect(s.port.enrolSessionSign(nonce, login)).toBe(body);
+    s.port.enrolRegistered(USER);
+    const input = { recoveryKey: 'abcd-efgh', rootSealed: new Uint8Array([1]), stateSealed: new Uint8Array([2]), listBody: new Uint8Array([3]), username: 'ada', now: 1_800_000_000n };
+    expect(s.port.enrolComplete(input)).toEqual({ deviceListBody: new Uint8Array([4]), stateSealed: new Uint8Array([5]), interrupted: null });
+    s.port.enrolReset();
+    expect(s.calls).toEqual([
+      { method: 'enrol_begin', args: [INST] },
+      { method: 'enrol_session_sign', args: [nonce, login] },
+      { method: 'enrol_registered', args: [USER] },
+      { method: 'enrol_complete', args: ['abcd-efgh', input.rootSealed, input.stateSealed, input.listBody, 'ada', 1_800_000_000n] },
+      { method: 'enrol_reset', args: [] },
+    ]);
+  });
+
+  it('forwards the drop of an unpublished candidate (BACKUPS-RECOVERY-02)', () => {
+    const s = stub({ device_list_drop: () => undefined });
+    s.port.deviceListDrop();
+    expect(s.calls).toEqual([{ method: 'device_list_drop', args: [] }]);
+  });
+
+  it('forwards the recovery key form check and maps its refusal (REGISTRATION-DEVICES-02)', () => {
+    const s = stub({ recovery_key_check: () => undefined });
+    s.port.recoveryKeyCheck('abcd-efgh');
+    expect(s.calls).toEqual([{ method: 'recovery_key_check', args: ['abcd-efgh'] }]);
+    const refused = caught(() => stub({ recovery_key_check: () => { throw new Error('E_RECOVERY_KEY'); } }).port.recoveryKeyCheck('x'));
+    expect([refused.code, refused.detail]).toEqual(['E_RECOVERY_KEY', '']);
+  });
+
+  it('concatenates the device ids of a revocation and refuses a malformed list before the call', () => {
+    const s = stub({ device_list_revoke: () => encode([new Uint8Array([6]), new Uint8Array([7]), new Uint8Array([5])]) });
+    const a = new Uint8Array(16).fill(0x0a);
+    const b = new Uint8Array(16).fill(0x0b);
+    const input = { recoveryKey: 'K', rootSealed: new Uint8Array([1]), stateSealed: new Uint8Array([2]), listBody: new Uint8Array([3]), deviceIds: [a, b], now: 9n };
+    expect(s.port.deviceListRevoke(input)).toEqual({ deviceListBody: new Uint8Array([6]), stateSealed: new Uint8Array([7]), interrupted: new Uint8Array([5]) });
+    const ids = new Uint8Array(32);
+    ids.set(a, 0);
+    ids.set(b, 16);
+    expect(s.calls[0]).toEqual({ method: 'device_list_revoke', args: ['K', input.rootSealed, input.stateSealed, input.listBody, ids, 9n] });
+    expect(caught(() => s.port.deviceListRevoke({ ...input, deviceIds: [a, new Uint8Array(15)] })).code).toBe('E_CORE_INPUT');
+    expect(caught(() => s.port.deviceListRevoke({ ...input, deviceIds: [] })).code).toBe('E_CORE_INPUT');
+    expect(caught(() => s.port.deviceListRevoke({ ...input, deviceIds: Array.from({ length: 65 }, () => a) })).code).toBe('E_CORE_INPUT');
+    expect(s.calls).toHaveLength(1);
+  });
+
+  it('reads the own device list and the result of an update', () => {
+    const OTHER = new Uint8Array(16).fill(0x0c);
+    const s = stub({
+      own_device_list: () => encode([3, 0, [[DEV, DSK, 1, 1_800_000_000, null], [OTHER, DSK, 0, 1_799_000_000, 1_800_000_500]]]),
+      own_device_list_update: () => encode([3, 1]),
+    });
+    expect(s.port.ownDeviceList()).toEqual({ version: 3n, published: false, entries: [
+      { deviceId: DEV, dskPub: DSK, tier: 1, addedAt: 1_800_000_000n, revokedAt: null },
+      { deviceId: OTHER, dskPub: DSK, tier: 0, addedAt: 1_799_000_000n, revokedAt: 1_800_000_500n },
+    ] });
+    const history = encode([]);
+    expect(s.port.ownDeviceListUpdate(history)).toEqual({ version: 3n, listed: true });
+    expect(s.calls[1]).toEqual({ method: 'own_device_list_update', args: [history] });
+  });
+
+  it('maps a web-2a result of the wrong shape to E_CORE_DECODE', () => {
+    expect(caught(() => stub({ activity: () => encode([[G, 1, 0, 1, 1]]) }).port.activity()).code).toBe('E_CORE_DECODE');
+    expect(caught(() => stub({ sealed_objects: () => encode([null, null, 2]) }).port.sealedObjects()).code).toBe('E_CORE_DECODE');
+    expect(caught(() => stub({ own_device_list_update: () => encode([1]) }).port.ownDeviceListUpdate(new Uint8Array([0x80]))).code).toBe('E_CORE_DECODE');
+    expect(caught(() => stub({ identity: () => encode([4, null, null, null, '', 0]) }).port.identity()).code).toBe('E_CORE_DECODE');
+  });
+});

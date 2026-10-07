@@ -966,6 +966,15 @@ func adminBlob(verb string, args []string, stdout, stderr io.Writer) error {
 					if err != nil {
 						return fmt.Errorf("purge %s: %w: %w", *idFlag, err, exit.Software)
 					}
+					if res.BackupKept {
+						// A user's sealed backup object, not an attachment: the root is written once,
+						// so unlinking it would make that account's recovery impossible. Every channel
+						// reference is still gone and the id tombstoned (BACKUPS-RECOVERY-05; this was
+						// exit 65 before).
+						e.log.Info("blob references purged; a backup object keeps the bytes", "blob_id", *idFlag)
+						fmt.Fprintf(e.out, "removed every channel reference to blob %s and tombstoned its id; a backup object names these bytes, so the file is kept until that backup is replaced\n", *idFlag)
+						return nil
+					}
 					if res.UnlinkErr != nil {
 						fmt.Fprintf(e.errw, "dillad admin blob purge: the row and every reference are gone, but unlinking the file failed: %v\n"+
 							"  the tombstone refuses the bytes on every route; `dillad doctor` reports the file as an orphan\n", res.UnlinkErr)

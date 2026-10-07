@@ -322,6 +322,12 @@ type Session struct {
 	BrowserIdle     Duration `toml:"browser_idle"`
 	MaxPerDevice    int      `toml:"max_per_device"`
 	ReauthWindow    Duration `toml:"reauth_window"`
+	// MaxDevicesPerUser bounds a user's unrevoked devices; a registration at the bound replaces the
+	// oldest unlisted one and is refused only when every one is listed (L-HTTP-54, Q04, review F1).
+	MaxDevicesPerUser int `toml:"max_devices_per_user"`
+	// EnrolmentsPerHour bounds the live devices a user registers in any hour; past it a
+	// registration replaces the oldest unlisted device instead of being refused (review F1).
+	EnrolmentsPerHour int `toml:"enrolments_per_hour"`
 }
 
 type Lockout struct {

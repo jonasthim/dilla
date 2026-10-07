@@ -229,10 +229,8 @@ func (d *DS) checkRegisteredLeaf(ctx context.Context, v DeviceListVerifier, s Se
 	if err != nil {
 		return errInvalid("no verifiable signed device list for the registering user: " + err.Error())
 	}
-	for _, dsk := range entries {
-		if bytes.Equal(dsk, device.DSKPub) {
-			return nil
-		}
+	if auth.Listed(entries, device.ID, device.DSKPub) {
+		return nil
 	}
 	return errInvalid("the registering device's key is not in its user's newest signed device list")
 }

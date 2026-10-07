@@ -33,6 +33,8 @@ pub const CHANNEL: [u8; 16] = [0x33; 16];
 pub const OTHER_CHANNEL: [u8; 16] = [0x99; 16];
 pub const GROUP: [u8; 16] = [0x44; 16];
 pub const OTHER_GROUP: [u8; 16] = [0x45; 16];
+pub const DM_CHANNEL: [u8; 16] = [0x66; 16];
+pub const DM_GROUP: [u8; 16] = [0x46; 16];
 pub const POLICY: u64 = 1;
 pub const NOW: u64 = 1_790_000_000;
 pub const EPOCH_CHANGED: u64 = 1;
@@ -61,22 +63,86 @@ pub fn text_binding(channel: [u8; 16]) -> DillaBinding {
     }
 }
 
-#[allow(clippy::type_complexity)] // The fixture names each byte-array position at its call sites.
-pub fn expected_body(entries: &[([u8; 16], [u8; 16], [u8; 16], u64)]) -> Vec<u8> {
+/// The binding of a DM's text group: no community, the DM's channel id as the target.
+pub fn dm_binding(channel: [u8; 16]) -> DillaBinding {
+    DillaBinding {
+        community_id: None,
+        ..text_binding(channel)
+    }
+}
+
+/// `welcomes_apply`'s `expected` with a nullable community.
+#[allow(clippy::type_complexity)] // The fixture names each position at its call sites.
+pub fn expected_entries(entries: &[([u8; 16], Option<[u8; 16]>, [u8; 16], u64)]) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(entries.len());
     for (group, community, channel, policy) in entries {
         e.array(4)
             .bytes(group)
-            .bytes(community)
+            .opt_bytes(community.as_ref().map(|c| c.as_slice()))
             .bytes(channel)
             .uint(*policy);
     }
     e.into_vec()
 }
 
+#[allow(clippy::type_complexity)] // The fixture names each byte-array position at its call sites.
+pub fn expected_body(entries: &[([u8; 16], [u8; 16], [u8; 16], u64)]) -> Vec<u8> {
+    expected_entries(
+        &entries
+            .iter()
+            .map(|(g, c, ch, p)| (*g, Some(*c), *ch, *p))
+            .collect::<Vec<_>>(),
+    )
+}
+
 // ---------------------------------------------------------------------------------------------
 // What ClientCore returns, decoded.
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Activity {
+    pub group_id: [u8; 16],
+    pub unread: u64,
+    pub mentions: u64,
+    pub last_seq: u64,
+    pub last_ts: u64,
+    pub last_read_seq: u64,
+}
+
+pub fn activity(core: &ClientCore) -> Vec<Activity> {
+    let bytes = core.activity().expect("activity");
+    decode_strict(&bytes, |d| {
+        let n = d.array_len()?;
+        let mut rows = Vec::with_capacity(n);
+        for _ in 0..n {
+            d.array(6)?;
+            rows.push(Activity {
+                group_id: d.bytes_exact::<16>()?,
+                unread: d.uint()?,
+                mentions: d.uint()?,
+                last_seq: d.uint()?,
+                last_ts: d.uint()?,
+                last_read_seq: d.uint()?,
+            });
+        }
+        Ok(rows)
+    })
+    .expect("activity shape")
+}
+
+pub fn settings_of(core: &ClientCore) -> Vec<(String, String)> {
+    let bytes = core.settings().expect("settings");
+    decode_strict(&bytes, |d| {
+        let n = d.array_len()?;
+        let mut rows = Vec::with_capacity(n);
+        for _ in 0..n {
+            d.array(2)?;
+            rows.push((d.text()?.to_owned(), d.text()?.to_owned()));
+        }
+        Ok(rows)
+    })
+    .expect("settings shape")
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupRow {
@@ -91,28 +157,85 @@ pub struct GroupRow {
     pub pending_commit: u64,
 }
 
+fn listed_row(
+    d: &mut dilla_core::cbor::Decoder<'_>,
+) -> Result<GroupRow, dilla_core::cbor::CborError> {
+    d.array(9)?;
+    Ok(GroupRow {
+        group_id: d.bytes_exact::<16>()?,
+        kind: d.uint()?,
+        community_id: d.opt_bytes_exact::<16>()?,
+        target_id: d.bytes_exact::<16>()?,
+        state: d.uint()?,
+        epoch: d.uint()?,
+        next_seq: d.uint()?,
+        proposals_pending: d.uint()?,
+        pending_commit: d.uint()?,
+    })
+}
+
 pub fn groups(core: &ClientCore) -> Vec<GroupRow> {
     let bytes = core.groups().expect("groups");
     decode_strict(&bytes, |d| {
         let n = d.array_len()?;
         let mut out = Vec::with_capacity(n);
         for _ in 0..n {
-            d.array(9)?;
-            out.push(GroupRow {
-                group_id: d.bytes_exact::<16>()?,
-                kind: d.uint()?,
-                community_id: d.opt_bytes_exact::<16>()?,
-                target_id: d.bytes_exact::<16>()?,
-                state: d.uint()?,
-                epoch: d.uint()?,
-                next_seq: d.uint()?,
-                proposals_pending: d.uint()?,
-                pending_commit: d.uint()?,
-            });
+            out.push(listed_row(d)?);
         }
         Ok(out)
     })
     .expect("groups shape")
+}
+
+/// `ClientCore::group_row`, decoded: `None` for CBOR null.
+pub fn group_row_of(core: &ClientCore, group_id: &[u8; 16]) -> Option<GroupRow> {
+    let bytes = core.group_row(group_id).expect("group_row");
+    decode_strict(&bytes, |d| {
+        if d.try_null()? {
+            return Ok(None);
+        }
+        listed_row(d).map(Some)
+    })
+    .expect("group_row shape")
+}
+
+/// L-CORE-21's invariant: for every row in state 0–3 whose MLS group loads, epoch/pending_commit
+/// equal the loaded group's; for a state-4 row and for a state-3 row whose group was deleted, both
+/// are 0; and `group_row` answers the `groups()` entry. Loads through a second provider over the
+/// probe, between core calls only.
+pub fn assert_mls_columns(core: &ClientCore, probe: &ConnHandle, step: &str) {
+    let provider = DillaProvider::new(Arc::clone(probe));
+    for row in groups(core) {
+        let loaded =
+            DillaGroup::load(&provider, &GroupId::from_slice(&row.group_id)).expect("load");
+        let epoch = loaded.as_ref().map_or(0, DillaGroup::epoch);
+        let pending = u64::from(loaded.as_ref().is_some_and(DillaGroup::has_pending_commit));
+        assert_eq!(
+            (row.epoch, row.pending_commit),
+            (epoch, pending),
+            "after {step}: group {:02x} in state {}",
+            row.group_id[0],
+            row.state
+        );
+        if row.state == 4 {
+            assert_eq!(
+                (row.epoch, row.pending_commit),
+                (0, 0),
+                "after {step}: a gone row"
+            );
+        }
+        assert_eq!(
+            group_row_of(core, &row.group_id),
+            Some(row.clone()),
+            "after {step}: group_row is the groups() row"
+        );
+    }
+}
+
+impl Core {
+    pub fn check_columns(&self, step: &str) {
+        assert_mls_columns(&self.core, &self.probe, step);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -352,12 +475,22 @@ impl Core {
 
     /// group_create → POST /v1/groups → group_registered.
     pub fn create_and_register(&mut self, relay: &mut Relay, instance: &Instance) {
+        self.create_and_register_in(relay, instance, Some(&COMMUNITY), &CHANNEL);
+    }
+
+    pub fn create_and_register_in(
+        &mut self,
+        relay: &mut Relay,
+        instance: &Instance,
+        community: Option<&[u8; 16]>,
+        channel: &[u8; 16],
+    ) {
         let body = self
             .core
             .group_create(
                 &relay.group_id,
-                &COMMUNITY,
-                &CHANNEL,
+                community,
+                channel,
                 POLICY,
                 &instance.public(),
             )
@@ -376,12 +509,21 @@ impl Core {
 
     /// group_join_external → POST /v1/groups/{id}/resync → group_joined.
     pub fn join_external(&mut self, relay: &mut Relay) {
+        self.join_external_in(relay, Some(&COMMUNITY), &CHANNEL);
+    }
+
+    pub fn join_external_in(
+        &mut self,
+        relay: &mut Relay,
+        community: Option<&[u8; 16]>,
+        channel: &[u8; 16],
+    ) {
         let body = self
             .core
             .group_join_external(
                 &relay.group_id,
-                &COMMUNITY,
-                &CHANNEL,
+                community,
+                channel,
                 POLICY,
                 &relay.info_body(),
                 &relay.tree_body(),
@@ -1033,11 +1175,15 @@ impl RawPeer {
 
     /// Uploads one text message; answers its seq.
     pub fn send(&mut self, relay: &mut Relay, body: &str) -> u64 {
+        self.send_typed(relay, EnvelopeType::Message, body)
+    }
+
+    pub fn send_typed(&mut self, relay: &mut Relay, kind: EnvelopeType, body: &str) -> u64 {
         let group = self.group.as_mut().expect("created");
         let envelope = Envelope {
             v: 1,
             msg_id: MsgId::from_bytes([0x5a; 16]),
-            kind: EnvelopeType::Message,
+            kind,
             thread_id: None,
             reply_to: None,
             body: body.to_owned(),
@@ -1251,5 +1397,88 @@ impl RawPeer {
             Ok(seq)
         })
         .expect("200 body")
+    }
+}
+
+fn device_of(core: &ClientCore) -> [u8; 16] {
+    let identity = core.identity().expect("identity");
+    decode_strict(&identity, |d| {
+        d.array(6)?;
+        assert_eq!(d.uint()?, 2, "phase 2");
+        d.opt_bytes_exact::<16>()?;
+        d.opt_bytes_exact::<16>()?;
+        let device = d.opt_bytes_exact::<16>()?;
+        d.text()?;
+        d.uint()?;
+        Ok(device)
+    })
+    .expect("identity shape")
+    .expect("a device id in phase 2")
+}
+
+/// `ready_core` that also returns the recovery key `signup_begin` showed, its list v1 accepted
+/// (web-2a task 3).
+pub fn ready_core_with_key(user: u8, username: &str) -> (Core, String) {
+    let conn = memory();
+    let probe = Arc::clone(&conn);
+    let mut core = ClientCore::open(conn).expect("open");
+    let rk = core.signup_begin(&INSTANCE).expect("signup_begin");
+    core.signup_complete(&[user; 16], username, NOW)
+        .expect("signup_complete");
+    core.device_list_published().expect("device_list_published");
+    let device = device_of(&core);
+    (
+        Core {
+            core,
+            probe,
+            user: [user; 16],
+            device,
+        },
+        rk,
+    )
+}
+
+/// A second browser of `first`'s account, enrolled by recovery key from `first`'s sealed objects and
+/// its current list, then published (web-2a task 3): enrol_begin → enrol_session_sign →
+/// enrol_registered → enrol_complete → device_list_published.
+pub fn enrolled_core(first: &Core, recovery_key: &str, now: u64) -> Core {
+    let conn = memory();
+    let probe = Arc::clone(&conn);
+    let mut core = ClientCore::open(conn).expect("open");
+    core.enrol_begin(&INSTANCE).expect("enrol_begin");
+    core.enrol_session_sign(&[0x5e; 32], b"assertion")
+        .expect("enrol_session_sign");
+    core.enrol_registered(&first.user)
+        .expect("enrol_registered");
+    let sealed = first.core.sealed_objects().expect("sealed_objects");
+    let (root, state) = decode_strict(&sealed, |d| {
+        d.array(3)?;
+        let root = d.bytes()?.to_vec();
+        let state = d.bytes()?.to_vec();
+        d.uint()?;
+        Ok((root, state))
+    })
+    .expect("[root, state, state_uploaded]");
+    let identity = first.core.identity().expect("identity");
+    let username = decode_strict(&identity, |d| {
+        d.array(6)?;
+        for _ in 0..4 {
+            d.skip()?;
+        }
+        let name = d.text()?.to_owned();
+        d.uint()?;
+        Ok(name)
+    })
+    .expect("identity shape");
+    let list = first.core.device_list_body().expect("device_list_body");
+    core.enrol_complete(recovery_key, &root, &state, &list, &username, now)
+        .expect("enrol_complete");
+    core.device_list_published().expect("device_list_published");
+    let device = device_of(&core);
+    Core {
+        core,
+        probe,
+        user: first.user,
+        device,
     }
 }

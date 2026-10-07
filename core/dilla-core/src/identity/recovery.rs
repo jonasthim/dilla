@@ -63,13 +63,31 @@ pub fn recovery_key_from_base32(s: &str) -> Result<[u8; 32], ProtocolError> {
     if s.len() != 52 {
         return Err(ProtocolError::Credential);
     }
-    let bytes = crockford_decode(s)?;
+    let bytes = zeroize::Zeroizing::new(crockford_decode(s)?);
     let mut out = [0u8; 32];
     if bytes.len() != 32 {
         return Err(ProtocolError::Credential);
     }
     out.copy_from_slice(&bytes);
     Ok(out)
+}
+
+/// Drops ASCII space, tab, newline, carriage return, hyphen-minus, en dash and em dash;
+/// upper-cases ASCII a-z; maps I/L to 1 and O to 0; keeps every other character.
+pub fn recovery_key_normalise(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if matches!(ch, ' ' | '\t' | '\n' | '\r' | '-' | '\u{2013}' | '\u{2014}') {
+            continue;
+        }
+        let up = ch.to_ascii_uppercase();
+        out.push(match up {
+            'I' | 'L' => '1',
+            'O' => '0',
+            _ => up,
+        });
+    }
+    out
 }
 
 /// `HKDF-SHA256(salt = "", IKM = RK, info = "dilla header v1", L = 32)`
@@ -156,5 +174,50 @@ mod tests {
             unhex32("2888f1d18f96115fb632fd340d1e3bfbcb765e9883a12cc5afa0c76b2fbf72d2")
         );
         assert_ne!(k_header(&rk), k_backup(&rk));
+    }
+    /// L-CORE-28: the vectors packages/client-core/src/recovery-key.test.ts asserts byte for byte.
+    #[test]
+    fn recovery_key_normalise_reproduces_the_shared_vectors() {
+        assert_eq!(recovery_key_normalise("abcd-efgh"), "ABCDEFGH");
+        assert_eq!(recovery_key_normalise("AB CD\nEF"), "ABCDEF");
+        assert_eq!(recovery_key_normalise("il1o0"), "11100");
+        assert_eq!(recovery_key_normalise("A\u{2013}B\u{2014}C"), "ABC");
+        assert_eq!(recovery_key_normalise("ABCU"), "ABCU");
+        assert_eq!(recovery_key_normalise("a\tb\r\nc"), "ABC");
+        assert_eq!(recovery_key_normalise(""), "");
+        assert_eq!(
+            recovery_key_normalise("\u{e9}-\u{fc}_"),
+            "\u{e9}\u{fc}_",
+            "non-ASCII and other punctuation are kept for the parser to refuse"
+        );
+    }
+
+    #[test]
+    fn a_shown_key_survives_typing_and_paste() {
+        let rk = [0x0bu8; 32];
+        let shown = recovery_key_base32(&rk);
+        assert_eq!(
+            recovery_key_normalise(&shown),
+            shown,
+            "the shown form is a fixed point"
+        );
+        let groups: Vec<&str> = (0..13).map(|i| &shown[4 * i..4 * i + 4]).collect();
+        let typed = groups.join("-").to_lowercase();
+        assert_eq!(
+            recovery_key_from_base32(&recovery_key_normalise(&typed)),
+            Ok(rk)
+        );
+        let pasted = format!("  {}\r\n", groups.join(" "));
+        assert_eq!(
+            recovery_key_from_base32(&recovery_key_normalise(&pasted)),
+            Ok(rk)
+        );
+        let with_u = format!("U{}", &shown[1..]);
+        assert_eq!(recovery_key_normalise(&with_u), with_u);
+        assert_eq!(
+            recovery_key_from_base32(&recovery_key_normalise(&with_u)),
+            Err(ProtocolError::Credential),
+            "U survives normalisation and the strict parser refuses it"
+        );
     }
 }

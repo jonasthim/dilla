@@ -1,4 +1,5 @@
 import type { ThemeName } from '@dilla/design-tokens';
+import type { ThemePref } from './prefs.ts';
 
 export const THEME_QUERIES = { light: '(prefers-color-scheme: light)', contrast: '(prefers-contrast: more)' } as const;
 
@@ -24,4 +25,17 @@ export function followSystemTheme(win: Pick<Window, 'matchMedia' | 'document'>):
     light.removeEventListener('change', update);
     contrast.removeEventListener('change', update);
   };
+}
+
+let stopFollowing: (() => void) | null = null;
+
+/**
+ * Applies the person's theme preference (L-TS-26): 'system' follows the OS as followSystemTheme does, any other
+ * preference applies that theme and detaches the system listeners. A second 'system' replaces the first follow.
+ */
+export function applyPreference(win: Pick<Window, 'matchMedia' | 'document'>, pref: ThemePref): void {
+  stopFollowing?.();
+  stopFollowing = null;
+  if (pref === 'system') stopFollowing = followSystemTheme(win);
+  else applyTheme(win.document.documentElement, pref);
 }

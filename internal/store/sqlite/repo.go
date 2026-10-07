@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 	"strings"
 
 	"github.com/jonasthim/dilla/internal/id"
@@ -313,6 +315,78 @@ func (r *Repo) GetDeviceList(ctx context.Context, userID id.ID) (store.DeviceLis
 		PrevHash:     row.PrevHash,
 		Created:      row.Created,
 	}, nil
+}
+
+func (r *Repo) ListDeviceListsAfter(ctx context.Context, userID id.ID, after uint64, limit int32) ([]store.DeviceListRow, error) {
+	if limit <= 0 || after > math.MaxInt64 {
+		return []store.DeviceListRow{}, nil
+	}
+	rows, err := r.r.ListDeviceListsAfter(ctx, sqlitedb.ListDeviceListsAfterParams{UserID: userID, After: int64(after), MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.DeviceListRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.DeviceListRow{UserID: row.UserID, Version: uint64(row.Version), Blob: row.Blob, SSKSignature: row.SskSignature, PrevHash: row.PrevHash, Created: row.Created})
+	}
+	return out, nil
+}
+
+func (r *Repo) CountLiveDevicesByUser(ctx context.Context, userID id.ID) (int64, error) {
+	n, err := r.r.CountLiveDevicesByUser(ctx, sqlitedb.CountLiveDevicesByUserParams{UserID: userID})
+	return n, wrap(err)
+}
+
+func (r *Repo) ListDeviceCreationsSince(ctx context.Context, userID id.ID, since int64) ([]int64, error) {
+	rows, err := r.r.ListDeviceCreationsSince(ctx, sqlitedb.ListDeviceCreationsSinceParams{UserID: userID, Since: since})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return rows, nil
+}
+
+func (r *Repo) LockUserForDeviceRegistration(ctx context.Context, userID id.ID) error {
+	if !r.inTx {
+		return errors.New("store: device registration lock requires Tx")
+	}
+	_, err := r.w.LockUserForDeviceRegistration(ctx, sqlitedb.LockUserForDeviceRegistrationParams{ID: userID})
+	return wrap(err)
+}
+
+func (r *Repo) CountLiveUnlistedDevicesByUser(ctx context.Context, userID id.ID, listed []id.ID, unlistedCutoff int64) (int64, error) {
+	rows, err := r.liveUnlistedDevices(ctx, userID, listed, unlistedCutoff)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(rows)), nil
+}
+
+func (r *Repo) ListLiveDeviceCreationsSince(ctx context.Context, userID id.ID, listed []id.ID, since, unlistedCutoff int64) ([]int64, error) {
+	rows, err := r.ListDevicesByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		if row.RevokedAt == nil && row.Created >= since && (slices.Contains(listed, row.ID) || row.Created >= unlistedCutoff) {
+			out = append(out, row.Created)
+		}
+	}
+	return out, nil
+}
+
+func (r *Repo) liveUnlistedDevices(ctx context.Context, userID id.ID, listed []id.ID, unlistedCutoff int64) ([]store.DeviceRow, error) {
+	rows, err := r.ListDevicesByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.DeviceRow, 0, len(rows))
+	for _, row := range rows {
+		if row.RevokedAt == nil && row.Created >= unlistedCutoff && !slices.Contains(listed, row.ID) {
+			out = append(out, row)
+		}
+	}
+	return out, nil
 }
 
 func deviceRow(row sqlitedb.Devices) store.DeviceRow {
@@ -2775,6 +2849,33 @@ func (r *Repo) ListBackups(ctx context.Context, userID id.ID, kind int32) ([]sto
 		})
 	}
 	return out, nil
+}
+
+func (r *Repo) InsertBackup(ctx context.Context, b store.BackupRow) error {
+	return wrap(r.w.InsertBackup(ctx, sqlitedb.InsertBackupParams{UserID: b.UserID, Kind: int64(b.Kind), DeviceID: b.DeviceID, ChunkSeq: int64(b.ChunkSeq), BlobID: b.BlobID, ManifestSig: b.ManifestSig, Created: b.Created}))
+}
+
+func (r *Repo) GetBackup(ctx context.Context, userID id.ID, kind int32, deviceID id.ID, chunkSeq int64) (store.BackupRow, error) {
+	row, err := r.r.GetBackup(ctx, sqlitedb.GetBackupParams{UserID: userID, Kind: int64(kind), DeviceID: deviceID, ChunkSeq: chunkSeq})
+	if err != nil {
+		return store.BackupRow{}, wrap(err)
+	}
+	return store.BackupRow{UserID: row.UserID, Kind: uint64(row.Kind), DeviceID: row.DeviceID, ChunkSeq: uint64(row.ChunkSeq), BlobID: row.BlobID, ManifestSig: row.ManifestSig, Created: row.Created}, nil
+}
+
+func (r *Repo) LockBlob(ctx context.Context, blobID []byte) error {
+	if !r.inTx {
+		return errors.New("store: the blob lock requires Tx")
+	}
+	return wrap(r.w.LockBlob(ctx, sqlitedb.LockBlobParams{BlobID: blobID}))
+}
+
+func (r *Repo) BackupRefersToBlob(ctx context.Context, blobID []byte) (bool, error) {
+	n, err := r.r.BackupRefersToBlob(ctx, sqlitedb.BackupRefersToBlobParams{BlobID: blobID})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return n > 0, nil
 }
 
 // Voice sessions (Plan 2 task 16, P2-D22, 00011_voice.sql).

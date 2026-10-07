@@ -44,15 +44,19 @@ column below uses four scopes:
 | `GET /v1/accounts/me` | E | — | `[user_id, username, display, kind, flags, created]` |
 | `PATCH /v1/accounts/me` | E | `[display(tstr\|null), status_msg(tstr\|null)]` | `204` |
 | `DELETE /v1/accounts/me` | E (step-up) | `[]` | `204` — credential purge, Removes from every group, tombstone keeping `username` |
-| `POST /v1/devices` | E or P | `[device_id, dsk_pub, tier, signer_tier, credential]` | `[device_id]` |
+| `POST /v1/devices` | E | `[device_id, dsk_pub, tier, signer_tier, credential, nonce(bstr32), sig(bstr64)]` | `[device_id]`; `403 E_FORBIDDEN` when `sig` does not prove possession of `dsk_pub` (`02` § Device sessions item 7) and, `device cap reached`, at 8 live devices; `429 E_RATE_LIMITED` with `retry_after_ms` past 3 live rows created in the hour; it never evicts; `409 E_INVALID_REQUEST` when `device_id` exists or a live device of the user holds `dsk_pub` |
 | `GET /v1/devices` | E | — | `[[device_id, tier, signer_tier, verified_at, revoked_at, last_seen]]` |
-| `DELETE /v1/devices/{device_id}` | E | — | `204` — revokes, deletes sessions, closes sockets |
-| `PUT /v1/users/{user_id}/device-list` | E | `[version(uint), blob(bstr), ssk_signature(bstr64), prev_hash(bstr32)]` | `204` |
-| `GET /v1/users/{user_id}/device-list` | E | — | `[version, blob, ssk_signature, prev_hash]` |
+| `DELETE /v1/devices/{device_id}` | E | — | `204` for an unlisted row — revokes, deletes sessions, closes sockets; `409 E_INVALID_REQUEST` for a listed device (its `device_id` and `dsk_pub` in one unrevoked entry of the newest list), which is revoked by a signed device list, and for an unlisted row created less than 10 minutes ago unless the caller's session is that device's own; `404 E_NOT_FOUND` for another user's device |
+| `PUT /v1/users/{user_id}/device-list` | E or P (own list only for P) | `[version(uint), blob(bstr), ssk_signature(bstr64), prev_hash(bstr32)]` | `204`; `400 E_INVALID_REQUEST` when `blob`'s outer elements disagree with the body or the list does not verify; `409 E_INVALID_REQUEST` when `version` is not the newest plus one or `prev_hash` does not chain |
+| `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]` |
+| `GET /v1/users/{user_id}/device-list?after=N` | E or P (own list only for P) | — | `[[version, blob, ssk_signature, prev_hash]]` of the stored versions greater than `N`, ascending, at most 64; `[]` when none; a malformed `N` is `400` |
 
 `POST /v1/accounts` is the sole exception to the device-session proof rule: it creates the device
 and its first session in the same transaction, because the device's key is the one being
-registered and there is no prior key to prove possession of.
+registered and there is no prior key to prove possession of. `POST /v1/devices` is not an
+exception: `nonce` comes from `POST /v1/devices/{device_id}/sessions/challenge` for the new
+`device_id`, and `sig` is the establish signature over it (`02` § Device sessions item 2's
+preimage, purpose `0`) by the private half of the `dsk_pub` being registered.
 
 The `credential` of the `device` sub-array is opaque to the instance: it is stored as sent (1 to
 8192 bytes) and never parsed or read back. Because the instance mints `user_id` in this response,
@@ -61,6 +65,24 @@ a registering client cannot know it when it builds the credential: it sends the 
 `user_id` without signing anything again (`sig_ssk_dev` does not cover `user_id` and
 `sig_umk_ssk` covers `ssk_pub` only, `03` § Keys). Every leaf the device creates carries the
 rebuilt credential; the placeholder never appears in a group.
+
+A device created through a host login is registered by `POST /v1/devices/{device_id}/sessions`
+with a registration array and assertion (`02` § Device sessions item 2). The establish body is at
+most 8192 bytes and its credential at most 2048 bytes. Both that route and `POST /v1/devices`
+keep at most 8 live devices per user and at most 3 live rows created per user in any hour (a live
+first device counts; revoked and expired rows do not). For assertion registration neither limit
+refuses while the user has an unlisted live row: past either, the oldest unlisted live row is
+revoked, whatever its age, and the registration is admitted (`02` § Device sessions item 2); a cap
+of 8 listed devices refuses with `403 E_FORBIDDEN`, and it never answers `429` for the per-user
+rate. `POST /v1/devices` never evicts: past the cap it answers `403 E_FORBIDDEN` (`device cap
+reached`) and past the rate `429 E_RATE_LIMITED` with `retry_after_ms`, since its enrolled caller
+pays no host login and can free a slot itself, and an evicting route would let a stolen enrolled
+session replace a recovering owner's new row. An unlisted row and its pending sessions expire after
+24 hours. An owner with an enrolled session can also remove an unlisted row with
+`DELETE /v1/devices/{device_id}` once the row is 10 minutes old; a younger one only its own session
+removes (`409` otherwise), so a stolen enrolled session cannot cut a recovering owner's row before
+the list `PUT` that names it. The three `/v1/devices` routes spend the device session's read (`GET`)
+and write (`POST`, `DELETE`) buckets.
 
 Two rows above describe more than any released instance does. They are recorded here so a client
 plans against what an instance answers, not against what the table would otherwise promise:
@@ -76,17 +98,30 @@ plans against what an instance answers, not against what the table would otherwi
   authenticating immediately; the stored secrets survive until the credential deletes and the
   group-removal path land, and this paragraph goes when they do.
 
+`blob` is the full six-element signed list of `03` § Device list. The instance verifies it and acts
+on its revocations (`02` § Device sessions item 6).
+
 ## Sessions endpoints
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `POST /v1/devices/{device_id}/sessions/challenge` | — | `[]` | `201 [nonce(bstr32), expires(uint)]` |
-| `POST /v1/devices/{device_id}/sessions` | — | `[nonce, purpose, sig, credential\|null, login\|null]` | `201 [token, scope, user_id, device_id, expires, idle_expires, generation]` |
-| `DELETE /v1/devices/{device_id}/sessions` | E | — | `204` (all sessions of that device) |
+| `POST /v1/devices/{device_id}/sessions` | — | `[nonce, purpose, sig, registration\|credential\|null, login\|null]` | `201 [token, scope, user_id, device_id, expires, idle_expires, generation]` |
+| `DELETE /v1/devices/{device_id}/sessions` | E | — | `204` (all sessions of that device, sockets closed); `409 E_INVALID_REQUEST` for another device's unlisted row created less than 10 minutes ago; `404 E_NOT_FOUND` for another user's device; spends the device session's write bucket (`429 E_RATE_LIMITED`) |
 | `POST /v1/gateway/ticket` | E | `[]` | `201 [ticket(tstr), expires(uint)]` — single use, 30 s |
 
 The full session issuance and lifetime rules — scopes, lifetimes, revocation — are
 `02-delivery-service.md`'s `§ Device sessions`; this table only locates the routes.
+`DELETE /v1/devices/{device_id}/sessions` keeps the grace of the key-less
+`DELETE /v1/devices/{device_id}`: another device's sessions of an unlisted row younger than 10
+minutes are not removed (`409`), and the caller's own device always is. Without it a stolen enrolled
+session polling `GET /v1/devices` cut a recovering owner's pending session on sight, before the list
+`PUT` that names the new row. A listed device's sessions, and an unlisted row's after 10 minutes,
+are removed by any enrolled session of the user. A client whose own list is unpublished accepts a
+`pending` answer when it re-establishes after such a cut; a second `401` on the list `PUT` is the
+row's eviction, not a revocation.
+An assertion registration with a native `tier` or `signer_tier` is `400 E_INVALID_REQUEST`:
+assertion registration is for browser devices; `03`'s pairing ceremony is the native path.
 
 ## Invites
 
@@ -139,8 +174,9 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 | `GET /v1/auth/oidc/callback` | — | — | `302` back to the client with a one-time `assertion` |
 
 The `assertion` is a short-lived one-time **enrolment assertion**: it proves host login and is spent
-by `POST /v1/devices/{device_id}/sessions` on the `pending` path. It is never a session token and
-never reaches `/v1` beyond that one endpoint.
+by `POST /v1/devices/{device_id}/sessions`, sent as the token's UTF-8 bytes in a bstr (element 4).
+With a registration array in element 3 it registers the device; either way the minted session is
+`pending`. It is never a session token and never reaches `/v1` beyond that one endpoint.
 
 ## Communities and content
 
@@ -154,7 +190,7 @@ never reaches `/v1` beyond that one endpoint.
 | DMs | `POST /v1/dms` `[recipients([bstr16])]` → `[channel_id]`; `GET /v1/dms` |
 | readable | `POST /v1/channels/{id}/messages` `[envelope(bstr)]` → `[seq, franking_tag, recv_ts]`; `GET /v1/channels/{id}/messages?from=`; `PATCH`/`DELETE /v1/channels/{id}/messages/{seq}`; `GET /v1/channels/{id}/search?q=&limit=&before=`; `PUT /v1/channels/{id}/read-state` |
 | blobs | `PUT/GET/HEAD/DELETE /v1/channels/{cid}/blobs/{blob_id}` (raw octets, `201` new / `200` already present, `422 E_INVALID_REQUEST` on a hash mismatch, `507 E_STORAGE_FULL`), `DELETE /v1/admin/blobs/{blob_id}` |
-| backups | `PUT /v1/backups/{kind}/{chunk_seq}`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}`, `DELETE` the same |
+| backups | `PUT /v1/backups/{kind}/{chunk_seq}` `[object(bstr)]` → `[blob_id, size]`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}` → `[object, created]`, `DELETE` the same (`501` at wire 1); see § Backups |
 | reports | `POST /v1/reports` `[group_id, seq, envelope(bstr), k_f(bstr32)]`, `GET /v1/reports`, `PATCH /v1/reports/{id}` |
 | voice | `POST /v1/channels/{id}/calls` → `[call_id, group_id, livekit_url, token, ice_servers]`, `DELETE /v1/calls/{call_id}` |
 | admin | `GET /v1/admin/diagnostics`, `GET /v1/admin/audit`, `POST /v1/admin/users/{id}/disable` |
@@ -393,8 +429,10 @@ route is `E`.
   non-participant. A group DM's `channel_id` is random, because its membership changes.
 - A DM's `text` and `call` groups are registered by a participant (`02` invariant 1) with a
   binding whose `community_id` is null and whose `target_id` is the `channel_id`; the instance
-  proposes the `Add` of every other participant's devices (below), and a participant's own client
-  may add them itself (`02` invariant 4).
+  proposes the `Add` of every other participant's devices (below). A participant's client never
+  `Add`s anyone to a DM's `text` group (`01` "Client policy for proposals from members"): a device
+  enters it by the Welcome of the commit that carries the instance's `Add`, or by its own external
+  commit.
 - The member routes set a **group DM**'s participants; any participant may add or remove any
   other, and themself. A 1:1 DM's pair is fixed, and a community channel's membership follows its
   permissions: `PUT` and `DELETE` on either are `403 E_FORBIDDEN`. `GET` lists a community
@@ -515,13 +553,15 @@ are CBOR as everywhere else.
   are `410 E_PRUNED`, because content addressing would otherwise hand the removed name straight
   back.
 - **Quota.** `blobs.quota_bytes_per_user` bounds the ciphertext bytes of the distinct blobs a user
-  references, from any of their devices; a blob in several channels counts once. An upload that
+  references, from any of their devices, and of their backup objects (§ Backups); a blob in several
+  channels counts once. An upload that
   would pass it is `507 E_STORAGE_FULL`, and so is any upload once it is reached; an upload that
   announces a `Content-Length` taking the user past the quota is refused before its body is read.
   `blobs.store_max_bytes` bounds the whole instance the same way (every stored blob counts,
   including one no channel references any more), `507 E_STORAGE_FULL` before the body is read.
 - **Upload rate.** Each user may start `blobs.uploads_per_minute` uploads a minute and upload
-  `blobs.upload_bytes_per_day` bytes a day (both refill continuously); over either the answer is
+  `blobs.upload_bytes_per_day` bytes a day (both refill continuously), attachment `PUT`s and the
+  root backup `PUT` (§ Backups) drawing on the one budget; over either the answer is
   `429 E_RATE_LIMITED` with its `retry_after_ms`, before the body is read. Every byte the instance
   reads spends the day's budget, whether the upload is stored, refused or later deleted: deleting
   an attachment frees quota, never budget.
@@ -548,6 +588,62 @@ are CBOR as everywhere else.
   follows the deletion rule above. A community without `retention_days`, a DM and a group DM keep
   attachments indefinitely. Deleting a channel removes its references. Attachment retention never
   follows `02`'s 30-day delivery window, because an archive restore needs attachments far older.
+
+### Backups
+
+The two header objects of `06-backup-archive.md` ("Header"), for the session's own user: no route
+names a user. `{kind}` is `0` (the root object) or `1` (the state object) and `{chunk_seq}` is `0`,
+both as plain decimal path segments; any other value of either, kind `2` (archive chunks)
+included, is `404 E_NOT_FOUND`: this wire version serves no archive. The instance stores each
+object under `SHA-256(object)` in its blob store and cannot open it.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `PUT /v1/backups/{kind}/{chunk_seq}` | E | `[object(bstr)]` | `201 [blob_id(bstr 32), size(uint)]` when the user had no object of this kind, `200` with the same body when it was replaced or already held these bytes |
+| `GET /v1/backups` | E or P | — | `[[kind(uint), chunk_seq(uint), size(uint), created(uint)]]`, kind `0` first; `[]` when none |
+| `GET /v1/backups/{kind}/{chunk_seq}` | E or P | — | `[object(bstr), created(uint)]`; `404 E_NOT_FOUND` when none is stored |
+| `DELETE /v1/backups/{kind}/{chunk_seq}` | E | — | `501 E_INTERNAL`: not served at wire 1 |
+
+- **Shape.** `object` is a stored object of `06`, `[1, nonce(bstr 12), ciphertext(bstr)]` in
+  deterministic CBOR with at least 16 bytes of ciphertext; anything else is `400 E_INVALID_REQUEST`.
+  A root object is exactly 103 bytes (`400 E_INVALID_REQUEST` otherwise). The body is at most 256
+  bytes for kind `0` and 1,048,640 bytes for kind `1` (`413 E_TOO_LARGE`).
+- **The root object is written once.** The first `PUT` of kind `0` stores it; the same bytes again
+  answer `200` and change nothing; different bytes answer `409 E_INVALID_REQUEST` and the stored
+  object stays. A stolen enrolled session can upload a junk root before the owner's first upload;
+  the owner's first upload then gets `409`, fetches the stored root, compares it, and raises
+  `E_ROOT_MISMATCH` with an alert. The server's `409` detail reveals nothing about stored bytes.
+- **The state object is replaced.** Each `PUT` of kind `1` replaces it; the replaced bytes, when
+  nothing else names them, are deleted at once (their blob row in the replacing transaction, their
+  file right after it, after a re-check that no reference or backup object names them again),
+  never kept for `blobs.gc_grace`. One user's state replacements are serialised, so concurrent
+  `PUT`s from two devices leave the last committed object and no other. An upload of the same bytes
+  (a backup or an attachment `PUT`) racing that delete either records before it and keeps the
+  bytes, or finds them gone in its own transaction and answers `503 E_UNAVAILABLE` with a short
+  `retry_after_ms`, recording nothing; sent again, the bytes are stored anew.
+- **Storage.** Backup objects count against `blobs.store_max_bytes` (new bytes that would pass it
+  are `507 E_STORAGE_FULL` and nothing is stored) and toward the uploader's
+  `blobs.quota_bytes_per_user` together with their attachments, each distinct blob once (§ Blobs);
+  an upload that would take the user past it is `507 E_STORAGE_FULL` and the stored object stays.
+  A replaced state object leaves the count, and the quota check for a replacement is the delta over
+  the object it replaces: a replacement no larger than its predecessor never fails the quota, even
+  for a user already at or past it, so re-sealing the state object (which revoking another device
+  starts with) is never refused for storage. An object whose bytes an instance administrator removed (§ Admin) is `410 E_PRUNED` and nothing
+  is stored, as for a blob: content addressing would otherwise hand the removed name straight back.
+- **Pending.** The two reads admit a `pending` session (`02` § Device sessions item 4), so a
+  device entering the recovery key reads both objects before it holds a credential; `PUT` and
+  `DELETE` need an `enrolled` one (`403 E_FORBIDDEN`).
+- Every route spends the device session's `read` or `write` bucket (§ Rate limits). A `PUT` of the
+  root (kind `0`) also spends the user's blob upload budget exactly as an attachment upload does
+  (§ Blobs, "Upload rate"): one upload of `blobs.uploads_per_minute` and the bytes it reads of
+  `blobs.upload_bytes_per_day`, `429 E_RATE_LIMITED` with its `retry_after_ms` over either, before
+  the body is read. A `PUT` of the state object (kind `1`) does not touch that shared budget: on
+  it, a stolen session of the same user could keep it empty and so refuse the owner the state
+  `PUT` that revoking the thief's device starts with. It spends the device session's `write`
+  bucket and a per-device budget of 64 MiB a day (67,108,864 bytes, refilling continuously, every
+  byte read counted), `429 E_RATE_LIMITED` with its `retry_after_ms` past it, before the body is
+  read; another device of the same user keeps its own. With the replaced object deleted at once,
+  one device's state `PUT`s hold at most one state object on disk.
 
 ### Voice
 
@@ -926,7 +1022,19 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
   `GET` or `HEAD` of those bytes is `410 E_PRUNED`. Without the tombstone, content addressing would
   hand the purged name straight back to anyone still holding the ciphertext. Purging bytes the
   instance does not hold still records the tombstone, so the table is also the operator's
-  blocklist; a second purge of the same bytes is `204`. `reason` is 1..1024 bytes with no NUL and
+  blocklist; a second purge of the same bytes is `204`. For bytes a stored backup object names
+  (§ Backups) the purge also removes every channel reference, records the tombstone and writes its
+  audit row, and answers `204`, but keeps the blob and does not unlink the file: the root object
+  is written once, so removing its bytes would leave the account with no recovery, and the backup
+  reads do not consult tombstones. The tombstone refuses every new attachment or backup of those
+  bytes; when the state object that names them is replaced, the replacement unlinks them and the
+  tombstone stays (`dillad admin blob purge` does the same and says the file was kept). Backup
+  objects and attachments never share bytes: a backup `PUT` of bytes a channel references, and an
+  attachment `PUT` of bytes a backup object names, are `409 E_INVALID_REQUEST`, decided in the
+  transaction that would record them after it takes the per-blob lock both routes take (the blobs
+  row `FOR UPDATE` on Postgres; on SQLite the one writer serialises them), so of two concurrent
+  uploads of the same bytes, one of each kind, exactly one is recorded; the purge case arises only
+  from data stored before the rule. `reason` is 1..1024 bytes with no NUL and
   becomes the audit row's `detail` under the action `blob.purge`, whose `target` is the blob id in
   hex. A purge removes **bytes, not content**: every attachment is encrypted under its own random
   key, so the same file sent again by anyone has a different `blob_id`.
@@ -1028,8 +1136,9 @@ committer-election watchdog removes a device.
 Body caps: `max_ciphertext_bytes + 4096` on `POST /v1/groups/{id}/message`; 96 KiB on
 `POST /v1/channels/{id}/messages`, `PATCH /v1/channels/{id}/messages/{seq}` and `POST /v1/reports`
 (`protocol/04`'s own worst-case legal envelope is ≈ 74 KiB, so a smaller cap would refuse a maximal
-but valid envelope before the validator ever saw it); 64 KiB on every other CBOR route; `blobs.max_blob_bytes` on a
-blob `PUT`.
+but valid envelope before the validator ever saw it); `PUT /v1/backups/0/0` 256 bytes,
+`PUT /v1/backups/1/0` 1,048,640 bytes (1 MiB + 64); 64 KiB on every other CBOR route;
+`blobs.max_blob_bytes` on a blob `PUT`.
 
 ## Instance
 

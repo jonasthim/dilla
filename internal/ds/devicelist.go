@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
@@ -15,20 +16,27 @@ import (
 // core's (`core/dilla-core/src/identity/device_list.rs`), reached through the guest's
 // `device_list_entries` export (ABI v3), so the Go side never re-implements the format and cannot
 // disagree with the client that produced it.
+// Entries reads and verifies the stored newest list; Verify checks a candidate before
+// PUT /v1/users/{id}/device-list stores it.
 //
 // It is declared here, with its Plan-1 implementation, because ds.Options names the seam (the same
 // reason as ACL and Channels).
 type DeviceLists interface {
 	// Entries verifies the user's newest stored list against the user's ssk_pub and returns the
-	// dsk_pub of every entry that is not revoked. A missing list, or one that does not verify, is
-	// an error, and an error is a refusal.
+	// (device_id, dsk_pub) pair of every entry that is not revoked. A device is listed only when
+	// both its id and its key match one entry (auth.Listed; security review F2). A missing list, or
+	// one that does not verify, is an error, and an error is a refusal.
 	//
 	// v is the guest to verify in. Every caller on the commit and heal paths already holds a wasm
 	// instance — the group's own, inside withGroup — and passes it (a *mlswasi.PublicGroup
 	// satisfies DeviceListVerifier): acquiring a second instance there would wait on a pool the
 	// state cache may have filled, which is the deadlock state.go's accounting exists to rule out.
 	// nil means "acquire one", for a caller that holds none.
-	Entries(ctx context.Context, v DeviceListVerifier, userID id.ID) ([][]byte, error)
+	Entries(ctx context.Context, v DeviceListVerifier, userID id.ID) ([]auth.ListedDevice, error)
+	// Verify decodes a candidate list in the guest and verifies its ssk_signature against
+	// sskPub and that it names userID; it reads nothing from the store and returns every
+	// entry, revoked ones flagged.
+	Verify(ctx context.Context, blob, sskPub []byte, userID id.ID) ([]mlswasi.DeviceListEntry, error)
 }
 
 // DeviceListVerifier is the guest a device list is decoded and verified in: *mlswasi.Instance and
@@ -64,7 +72,19 @@ type coreDeviceLists struct {
 	wasm *mlswasi.Runtime
 }
 
-func (c *coreDeviceLists) Entries(ctx context.Context, v DeviceListVerifier, userID id.ID) ([][]byte, error) {
+func (c *coreDeviceLists) Verify(ctx context.Context, blob, sskPub []byte, userID id.ID) ([]mlswasi.DeviceListEntry, error) {
+	if c.wasm == nil {
+		return nil, ErrDeviceListUnavailable
+	}
+	inst, err := c.wasm.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer inst.Release()
+	return inst.DeviceListEntries(ctx, blob, sskPub, userID[:])
+}
+
+func (c *coreDeviceLists) Entries(ctx context.Context, v DeviceListVerifier, userID id.ID) ([]auth.ListedDevice, error) {
 	row, err := c.repo.GetDeviceList(ctx, userID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, ErrNoDeviceList
@@ -91,11 +111,15 @@ func (c *coreDeviceLists) Entries(ctx context.Context, v DeviceListVerifier, use
 	if err != nil {
 		return nil, err
 	}
-	keys := make([][]byte, 0, len(entries))
+	listed := make([]auth.ListedDevice, 0, len(entries))
 	for _, e := range entries {
-		if !e.Revoked {
-			keys = append(keys, e.DSKPub)
+		// An entry whose device_id is not 16 bytes names no device row and can match none.
+		if e.Revoked || len(e.DeviceID) != len(id.ID{}) {
+			continue
 		}
+		var dev id.ID
+		copy(dev[:], e.DeviceID)
+		listed = append(listed, auth.ListedDevice{DeviceID: dev, DSKPub: e.DSKPub})
 	}
-	return keys, nil
+	return listed, nil
 }

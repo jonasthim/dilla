@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"math"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/gateway"
@@ -170,12 +171,20 @@ func (d *DS) fanOutWelcomes(ctx context.Context, groupID id.ID, epoch uint64, tr
 			d.log().Error("encoding an mls.welcome failed", "group", groupID, "err", err)
 			continue
 		}
-		// The exact size, now that the payload exists: the two checks above are on its parts and
-		// this one is the frame the gateway would actually write.
-		if budget > 0 && uint64(len(payload)) > budget {
+		// The frame the gateway writes, not the payload: the four-element frame adds the op, n,
+		// the group id and the array header (at most 28 bytes with n at its widest), and a
+		// client's read limit is the advertised max_frame_bytes.
+		encoded, err := gateway.Encode(gateway.Frame{
+			Op: gateway.OpMLSWelcome, GroupID: &groupID, Payload: payload, Replay: true,
+		}, math.MaxUint64)
+		if err != nil {
+			d.log().Error("encoding an mls.welcome frame failed", "group", groupID, "device", wf.DeviceID, "err", err)
+			continue
+		}
+		if budget > 0 && uint64(len(encoded)) > budget {
 			d.log().Warn("an mls.welcome is larger than the gateway's frame budget; "+
 				"the joiner must collect it from GET /v1/welcomes",
-				"group", groupID, "device", wf.DeviceID, "bytes", len(payload), "budget", budget)
+				"group", groupID, "device", wf.DeviceID, "bytes", len(encoded), "budget", budget)
 			continue
 		}
 		d.opts.Gateway.DeliverDevice(wf.DeviceID, gateway.Frame{

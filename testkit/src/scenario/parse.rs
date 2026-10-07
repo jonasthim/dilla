@@ -7,9 +7,10 @@ pub enum Stmt {
     Instance {
         name: String,
     },
-    /// `client <name> [tier=…] [kind=…] [device_list=signed|none|revoked]`: against an instance the
+    /// `client <name> [tier=…] [kind=…] [device_list=signed|none|revoked|unlisted]`: against an instance the
     /// client signs itself into its user's device list (`signed`, the default), publishes no list
-    /// (`none`), or publishes one whose entry for it is revoked (`revoked`) — the last two are
+    /// (`none`), publishes one whose entry for it is revoked (`revoked`), or publishes a list that
+    /// names no device (`unlisted`): the device is omitted, not revoked. These probes are
     /// invariant 4's "DSK in the newest signed device list" probes.
     /// `key_packages=none` enrols the client without publishing a single KeyPackage (not even a
     /// last-resort one) until a `publish_key_packages` says so: a device the instance cannot add
@@ -230,6 +231,9 @@ pub enum DeviceListMode {
     None,
     /// A list whose entry for this device is revoked.
     Revoked,
+    /// A v1 list signed by the user's SSK whose `entries` is empty: the device is omitted, not revoked,
+    /// and its session is untouched.
+    Unlisted,
 }
 
 /// protocol/02's labels for the delivery-service frames a client receives, plus `error`.
@@ -390,10 +394,13 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                 None | Some("signed") => DeviceListMode::Signed,
                 Some("none") => DeviceListMode::None,
                 Some("revoked") => DeviceListMode::Revoked,
+                Some("unlisted") => DeviceListMode::Unlisted,
                 Some(other) => {
                     return Err(err(
                         line_no,
-                        format!("unknown device_list {other:?}; expected signed, none or revoked"),
+                        format!(
+                            "unknown device_list {other:?}; expected signed, none, revoked or unlisted"
+                        ),
                     ));
                 }
             };
@@ -1626,5 +1633,25 @@ expect_reject E_BINDING join bob chat
         ] {
             parse(src, file).unwrap_or_else(|e| panic!("{file}:{}: {}", e.line, e.message));
         }
+    }
+
+    /// Web-2a task 9: `device_list=unlisted` signs a list that omits the device, so the joiner clause
+    /// itself is reachable once task 8's revocation action ends a `revoked` device's session at publish.
+    #[test]
+    fn the_unlisted_device_list_mode_parses_and_the_refusal_names_it() {
+        assert_eq!(
+            one("client ulla device_list=unlisted").unwrap(),
+            Stmt::Client {
+                name: "ulla".into(),
+                tier: Tier::Native,
+                kind: Kind::User,
+                device_list: DeviceListMode::Unlisted,
+                key_packages: true,
+            }
+        );
+        refused(
+            "client x device_list=listed",
+            "expected signed, none, revoked or unlisted",
+        );
     }
 }

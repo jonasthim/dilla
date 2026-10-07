@@ -104,7 +104,7 @@ pub(crate) struct WelcomeItem {
 }
 pub(crate) struct ExpectedGroup {
     pub group_id: [u8; 16],
-    pub community_id: [u8; 16],
+    pub community_id: Option<[u8; 16]>,
     pub channel_id: [u8; 16],
     pub policy_version: u64,
 }
@@ -261,7 +261,7 @@ pub(crate) fn decode_expected(bytes: &[u8]) -> Result<Vec<ExpectedGroup>, Client
             d.array(4)?;
             v.push(ExpectedGroup {
                 group_id: d.bytes_exact()?,
-                community_id: d.bytes_exact()?,
+                community_id: d.opt_bytes_exact()?,
                 channel_id: d.bytes_exact()?,
                 policy_version: d.uint()?,
             });
@@ -384,6 +384,106 @@ pub(crate) fn device_list_put_body(list: &DeviceList) -> Vec<u8> {
     e.into_vec()
 }
 
+/// enrol_complete and device_list_revoke: `[device_list_put_body, state_sealed, interrupted|null]`,
+/// the third the PUT body of an interrupted publication to send first (BACKUPS-RECOVERY-02).
+pub(crate) fn signed_lists(put: &[u8], state: &[u8], interrupted: Option<&[u8]>) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(3).bytes(put).bytes(state);
+    match interrupted {
+        Some(body) => e.bytes(body),
+        None => e.null(),
+    };
+    e.into_vec()
+}
+
+pub(crate) fn bytes_pair(a: &[u8], b: &[u8]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(2).bytes(a).bytes(b);
+    e.into_vec()
+}
+
+pub(crate) fn enrol_session_body(
+    nonce: &[u8; 32],
+    sig: &[u8],
+    device_id: &[u8; 16],
+    dsk_pub: &[u8; 32],
+    placeholder: &[u8],
+    login: &[u8],
+) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(5)
+        .bytes(nonce)
+        .uint(0)
+        .bytes(sig)
+        .array(5)
+        .bytes(device_id)
+        .bytes(dsk_pub)
+        .uint(1)
+        .uint(1)
+        .bytes(placeholder)
+        .bytes(login);
+    e.into_vec()
+}
+
+pub(crate) fn list_status(version: u64, listed: bool) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(2).uint(version).uint(u64::from(listed));
+    e.into_vec()
+}
+
+pub(crate) fn own_device_list(
+    version: u64,
+    published: bool,
+    entries: &[crate::identity::DeviceEntry],
+) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(3)
+        .uint(version)
+        .uint(u64::from(published))
+        .array(entries.len());
+    for entry in entries {
+        e.array(5)
+            .bytes(entry.device_id.as_bytes())
+            .bytes(&entry.dsk_pub)
+            .uint(u64::from(entry.tier.as_u8()))
+            .uint(entry.added_at)
+            .opt_uint(entry.revoked_at);
+    }
+    e.into_vec()
+}
+
+pub(crate) struct ServedList {
+    pub version: u64,
+    pub blob: Vec<u8>,
+    pub ssk_signature: [u8; 64],
+    pub prev_hash: [u8; 32],
+}
+
+fn served_row(d: &mut crate::cbor::Decoder<'_>) -> Result<ServedList, crate::cbor::CborError> {
+    d.array(4)?;
+    Ok(ServedList {
+        version: d.uint()?,
+        blob: d.bytes()?.to_vec(),
+        ssk_signature: d.bytes_exact()?,
+        prev_hash: d.bytes_exact()?,
+    })
+}
+
+pub(crate) fn decode_device_list_body(bytes: &[u8]) -> Result<ServedList, crate::cbor::CborError> {
+    decode_strict(bytes, served_row)
+}
+
+pub(crate) fn decode_history_body(bytes: &[u8]) -> Result<Vec<ServedList>, crate::cbor::CborError> {
+    decode_strict(bytes, |d| {
+        let n = d.array_len()?;
+        let mut rows = reserve(n, bytes.len() - d.position());
+        for _ in 0..n {
+            rows.push(served_row(d)?);
+        }
+        Ok(rows)
+    })
+}
+
 pub(crate) fn session_body(nonce: &[u8; 32], purpose: u8, sig: &[u8]) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(5)
@@ -418,8 +518,15 @@ pub(crate) fn key_packages_body(packages: &[Vec<u8>], last: Option<&[u8]>) -> Ve
     e.into_vec()
 }
 
-pub(crate) fn sealed_objects(root: Option<&[u8]>, state: Option<&[u8]>) -> Vec<u8> {
+pub(crate) fn sealed_objects(
+    root: Option<&[u8]>,
+    state: Option<&[u8]>,
+    state_uploaded: bool,
+) -> Vec<u8> {
     let mut e = Encoder::new();
-    e.array(2).opt_bytes(root).opt_bytes(state);
+    e.array(3)
+        .opt_bytes(root)
+        .opt_bytes(state)
+        .uint(u64::from(state_uploaded));
     e.into_vec()
 }

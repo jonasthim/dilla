@@ -1,7 +1,10 @@
 export * from './cbor';
 export { fromHex, toHex } from './hex';
+export { normaliseRecoveryKey } from './recovery-key';
 export { connectCore, createCoreWorker, CoreCallError } from './bridge';
 export type { CoreClient } from './bridge';
 export type * from './state/types';
+export { SETTINGS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue } from './state/settings';
+export type { NotifyMode } from './state/settings';
 export type { Command, ToWorker, FromWorker, TestHook } from './worker/protocol';
 export { LOCK_PREFIX } from './worker/protocol';

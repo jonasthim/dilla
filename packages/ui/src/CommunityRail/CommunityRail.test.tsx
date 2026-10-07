@@ -9,6 +9,13 @@ const ITEMS = [
   { id: 'b2', name: 'Night Owls' },
   { id: 'c3', name: 'raid planning' },
 ] as const;
+const BADGED = [
+  { id: 'a1', name: 'Midgard Crew' },
+  { id: 'b2', name: 'Night Owls', unread: 4 },
+  { id: 'c3', name: 'raid planning', unread: 1, mentions: 2 },
+] as const;
+// L-COPY-02 shell.rail.itemLabel, filled in as en.ts's t() will.
+const itemLabel = (i: { name: string; unread: number; mentions: number }) => `${i.name}, unread ${i.unread}, mentions ${i.mentions}`;
 
 function props(over: Partial<CommunityRailProps> = {}): CommunityRailProps {
   return { label: 'servers', items: ITEMS, activeId: 'b2', onSelect: vi.fn(), joinLabel: 'join a server', onJoin: vi.fn(), ...over };
@@ -122,6 +129,53 @@ describe('CommunityRail', () => {
 
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><CommunityRail {...props()} /></div>);
+    await expectNoAxeViolations(container);
+  });
+
+  it('badges a server with its counts as data and a pill', () => {
+    render(wrapped(props({ items: BADGED })));
+    const owls = btn('Night Owls 4 unread');
+    expect([owls.getAttribute('data-unread'), owls.getAttribute('data-mentions')]).toEqual(['4', '0']);
+    expect(within(owls).getByText('NO')).toHaveAttribute('aria-hidden', 'true');
+    expect(btn('raid planning 2 mentions')).toHaveAttribute('data-mentions', '2');
+    expect(btn('Midgard Crew')).toHaveAttribute('data-unread', '0');
+  });
+
+  it('names a badged server by itemLabel and leaves a quiet one to its name', () => {
+    render(wrapped(props({ items: BADGED, itemLabel })));
+    expect(btn('Night Owls, unread 4, mentions 0')).toBeInTheDocument();
+    expect(btn('raid planning, unread 1, mentions 2')).toBeInTheDocument();
+    expect(btn('Midgard Crew')).not.toHaveAttribute('aria-label');
+  });
+
+  it('puts the settings button last, inside the one tab stop', async () => {
+    const user = userEvent.setup();
+    const p = props({ settingsLabel: 'settings', onSettings: vi.fn() });
+    render(wrapped(p));
+    await user.tab();
+    await user.tab();
+    expect(btn('Night Owls')).toHaveFocus();
+    await user.tab();
+    expect(btn('after')).toHaveFocus();
+    await user.tab({ shift: true });
+    await user.keyboard('{End}');
+    expect(btn('settings')).toHaveFocus();
+    await user.keyboard('{ArrowUp}');
+    expect(btn('join a server')).toHaveFocus();
+    await user.keyboard('{ArrowDown}{Enter}');
+    expect(p.onSettings).toHaveBeenCalledTimes(1);
+    const all = within(screen.getByRole('navigation', { name: 'servers' })).getAllByRole('button');
+    expect(all[all.length - 1]).toBe(btn('settings'));
+    expect(btn('settings').closest('ul')).toBe(btn('join a server').closest('ul'));
+  });
+
+  it('draws no settings button unless both its label and its handler are given', () => {
+    render(wrapped(props({ settingsLabel: 'settings' })));
+    expect(screen.queryByRole('button', { name: 'settings' })).toBeNull();
+  });
+
+  it('has no serious axe violations with badges and the settings button', async () => {
+    const { container } = render(<div className="d-root"><CommunityRail {...props({ items: BADGED, itemLabel, settingsLabel: 'settings', onSettings: () => {} })} /></div>);
     await expectNoAxeViolations(container);
   });
 });

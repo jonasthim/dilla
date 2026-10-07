@@ -21,15 +21,18 @@ import (
 func TestAnExternalCommitsLeafMustBeItsUploadersOwn(t *testing.T) {
 	cases := []struct {
 		name string
-		// probe runs after alice's group `chat` exists and carol, frank, dave, erin and mallory
+		// probe runs after alice's group `chat` exists and carol, frank, dave, erin, ulla and mallory
 		// are enrolled; it must end in the refusal the case is about.
 		probe string
+		// the stdout substring the refusal prints
+		want string
 	}{
 		{
 			// A device that holds no leaf uploads another device's external commit: the leaf
 			// would land in carol's name under frank's session.
 			name:  "a joiner's leaf names another device",
 			probe: "expect_reject E_COMMIT_INVALID rule=external_joiner external_join carol chat as=frank",
+			want:  "E_COMMIT_INVALID: external_joiner",
 		},
 		{
 			// The same on the resync path, which does NOT run the rest of the joiner clause: alice
@@ -37,11 +40,13 @@ func TestAnExternalCommitsLeafMustBeItsUploadersOwn(t *testing.T) {
 			// her session and a leaf in carol's name.
 			name:  "a resync's leaf names another device",
 			probe: "expect_reject E_COMMIT_INVALID rule=external_joiner resync carol chat as=alice",
+			want:  "E_COMMIT_INVALID: external_joiner",
 		},
 		{
 			// frank's credential names frank, but the leaf's signature key is not his DSK.
 			name:  "a joiner's leaf key is not its DSK",
 			probe: "expect_reject E_COMMIT_INVALID rule=external_joiner external_join frank chat leaf_key=fresh",
+			want:  "E_COMMIT_INVALID: external_joiner",
 		},
 		{
 			// Hardening C, point (c): the resync path skips the rest of the joiner clause, but not
@@ -50,22 +55,37 @@ func TestAnExternalCommitsLeafMustBeItsUploadersOwn(t *testing.T) {
 			name: "a resync's leaf key is not its DSK",
 			probe: "expect_reject E_COMMIT_INVALID rule=external_joiner resync alice chat leaf_key=fresh\n" +
 				"resync alice chat",
+			want: "E_COMMIT_INVALID: external_joiner",
 		},
 		{
 			// dave's user signed no device list at all.
 			name:  "a joiner's user signed no device list",
 			probe: "expect_reject E_COMMIT_INVALID rule=external_joiner external_join dave chat",
+			want:  "E_COMMIT_INVALID: external_joiner",
 		},
 		{
-			// erin's user signed a list, but its entry for erin's device is revoked.
-			name:  "a joiner's DSK is not in its user's newest list",
-			probe: "expect_reject E_COMMIT_INVALID rule=external_joiner external_join erin chat",
+			// erin's user signed a list whose entry for erin's device is revoked. Since web-2a task 8
+			// the instance acts on that list at publish: erin's device is revoked and its sessions are
+			// gone before it can upload anything (protocol/02 § Device sessions item 6), so the refusal
+			// is the session's, not the joiner clause's.
+			name:  "a joiner's own list revokes it",
+			probe: "expect_reject E_UNAUTHENTICATED external_join erin chat",
+			want:  "E_UNAUTHENTICATED",
+		},
+		{
+			// ulla's user signed a list that omits ulla's device: the device is authenticated
+			// and unrevoked, so the refusal is the joiner clause itself (task 8 made erin's
+			// probe end at the session).
+			name:  "a joiner's DSK is in no entry of its user's newest list",
+			probe: "expect_reject E_COMMIT_INVALID rule=external_joiner external_join ulla chat",
+			want:  "E_COMMIT_INVALID: external_joiner",
 		},
 		{
 			// mallory's device row is revoked while its session still resolves.
 			name: "a joiner's device is revoked",
 			probe: "mark_revoked mallory\n" +
 				"expect_reject E_COMMIT_INVALID rule=external_joiner external_join mallory chat",
+			want: "E_COMMIT_INVALID: external_joiner",
 		},
 	}
 	for _, c := range cases {
@@ -78,6 +98,7 @@ client carol
 client frank
 client dave device_list=none
 client erin device_list=revoked
+client ulla device_list=unlisted
 client mallory
 group chat kind=text target=e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5 community=none creator=alice
 `+c.probe+`
@@ -86,8 +107,8 @@ sync alice
 send alice chat the refusal left no leaf behind
 expect_decrypts carol chat the refusal left no leaf behind
 `)
-			if !strings.Contains(result.Stdout, "E_COMMIT_INVALID: external_joiner") {
-				t.Fatalf("no step reports the external_joiner refusal:\n%s", result.Stdout)
+			if !strings.Contains(result.Stdout, c.want) {
+				t.Fatalf("no step reports %q:\n%s", c.want, result.Stdout)
 			}
 		})
 	}

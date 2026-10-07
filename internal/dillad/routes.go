@@ -61,6 +61,7 @@ type planTwo struct {
 	delivery *ds.DS
 	gw       *gateway.Gateway
 	blobs    *blob.Store
+	uploads  *api.UploadMeter
 	keys     api.FrankingKeys
 	calls    api.CallsConfig
 	diagnose func(context.Context) ops.Report
@@ -108,7 +109,7 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	api.NewInvites(repo, clk, "https://"+urlHost(cfg.Instance.Domain), log).Register(m)
 	api.NewDMs(repo, p.delivery, clk, p.instance.InstanceID, maxGroupDM, log).Register(m)
 	api.NewReadable(repo, res, p.gw, p.keys, clk, log).Register(m)
-	api.NewBlobs(repo, p.blobs, res, cfg.Blobs, clk, log).Register(m)
+	api.NewBlobs(repo, p.blobs, res, cfg.Blobs, clk, log).WithUploadMeter(p.uploads).Register(m)
 	api.NewReports(repo, p.keys, clk, log).Register(m)
 	calls.Register(m)
 	stats.Register(m)

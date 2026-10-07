@@ -188,6 +188,14 @@ func (a *Admin) purgeBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := hex.EncodeToString(blobID)
+	if res.BackupKept {
+		// Every reference is gone and audited; the bytes are a user's backup object and stay
+		// (BACKUPS-RECOVERY-05: this was a 409 that left every reference in place).
+		a.metrics.BlobPurged()
+		a.log.InfoContext(r.Context(), "blob references purged; a backup object keeps the bytes", "blob_id", target)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if res.UnlinkErr != nil {
 		// The row and every reference are gone and the tombstone refuses the bytes
 		// on every route, so a file left behind is unreachable; dillad doctor

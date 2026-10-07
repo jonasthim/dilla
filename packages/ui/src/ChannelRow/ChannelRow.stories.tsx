@@ -11,3 +11,5 @@ export const ReadableByServer: Story = { args: { name: 'lfg', kind: 'text', read
 export const Voice: Story = { args: { name: 'longhouse', kind: 'voice' } };
 export const PrivateVoice: Story = { args: { name: 'sauna', kind: 'voice', private: true } };
 export const Muted: Story = { args: { name: 'random', kind: 'text', muted: true } };
+export const DirectMessage: Story = { args: { name: 'ada', kind: 'dm', unread: 2 } };
+export const MutedWithMention: Story = { args: { name: 'random', kind: 'text', unread: 7, mentions: 2, muted: true } };

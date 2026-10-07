@@ -12,6 +12,7 @@ export interface HttpRequest {
   auth?: boolean;
   accept?: string;
   ok?: readonly number[];
+  retry429?: boolean;
   signal?: AbortSignal;
 }
 export interface HttpResponse { status: number; body: Uint8Array; }
@@ -74,7 +75,7 @@ export class HttpClient {
         const renewed = await this.deps.reauthenticate();
         if (renewed && attempt < RETRY.maxAttempts) continue;
       }
-      if (error.status === 429 || error.status === 503) {
+      if ((error.status === 429 && r.retry429 !== false) || error.status === 503) {
         const wait = error.retryAfterMs ?? 1000;
         if (attempt < RETRY.maxAttempts && wait <= RETRY.maxWaitMs) {
           try { await this.deps.sleep(wait, r.signal); }

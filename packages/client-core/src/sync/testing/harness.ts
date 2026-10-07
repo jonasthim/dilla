@@ -4,6 +4,7 @@ import type { ReadyInfo } from '../../gateway/gateway';
 import { toHex } from '../../hex';
 import type { Instance } from '../../http/routes';
 import { SyncEngine } from '../engine';
+import type { JoinAllProgress } from '../joinall';
 import { CHANNEL, COMMUNITY, FakeGateway, ModelCore, PEER, idOf, settle, type ManualClock, type ModelDs, type Peer } from './model';
 
 export const INSTANCE: Instance = {
@@ -19,6 +20,8 @@ export interface Device {
   readonly changes: { group: string; result: ApplyResult }[];
   readonly outboxChanges: string[];
   readonly membership: { group: string; status: 'resyncing' | 'not-member' }[];
+  readonly joinAll: JoinAllProgress[];
+  readonly unexpected: string[];
 }
 
 /** An engine for me, started, with its gateway attached to ds's fan-out. random() always answers `random`. */
@@ -28,6 +31,8 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
   const changes: Device['changes'] = [];
   const outboxChanges: string[] = [];
   const membership: Device['membership'] = [];
+  const joinAll: JoinAllProgress[] = [];
+  const unexpected: string[] = [];
   ds.attach(me.device, (f) => {
     gateway.frame(f);
   });
@@ -50,9 +55,11 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
     onMembership: (groupId, status) => {
       membership.push({ group: toHex(groupId), status });
     },
+    onJoinAll: (p) => { joinAll.push({ ...p }); },
+    onUnexpectedWelcome: (g) => { unexpected.push(toHex(g)); },
   });
   engine.start();
-  return { me, core, gateway, engine, changes, outboxChanges, membership };
+  return { me, core, gateway, engine, changes, outboxChanges, membership, joinAll, unexpected };
 }
 
 export function readyInfo(me: Peer, groups: ReadyInfo['groups'] = []): ReadyInfo {

@@ -3,7 +3,7 @@ import { SliceStore } from './store';
 import type { AccountState, CommunitySummary, SliceName } from './types';
 
 function account(phase: AccountState['phase']): AccountState {
-  return { phase, instance: null, user: null, deviceId: null, recoveryKey: null, error: null };
+  return { phase, instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false };
 }
 
 function recording() {

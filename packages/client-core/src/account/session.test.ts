@@ -92,6 +92,20 @@ describe('Session', () => {
     expect(core.session()).toBeNull();
   });
 
+  it('accepts a pending scope in phase 2 only while the own list is unpublished (fix-wave review NEW-1)', async () => {
+    const server = new FakeServer();
+    const userId = server.register('ada', DEVICE);
+    const core = FakeCore.identified({ instanceId: INSTANCE, userId, deviceId: DEVICE, username: 'ada', listPublished: false });
+    const { session } = sessionFor(server, core);
+    server.scope = 1;
+    expect(await session.establish()).toBe(true);
+    expect(core.session()?.token).toBe('tok-1');
+    core.deviceListPublished();
+    core.sessionClear();
+    await expect(session.establish()).rejects.toThrow('E_SESSION_SCOPE');
+    expect(core.session()).toBeNull();
+  });
+
   it('ensure renews only within the margin', async () => {
     const { server, core, session } = setup();
     expect(await session.ensure()).toBe(true);
@@ -124,5 +138,47 @@ describe('Session', () => {
       ['POST', `/v1/devices/${DEV_HEX}/sessions`, null],
       ['PUT', listPath, 'tok-1'],
     ]);
+  });
+});
+
+describe('Session while enrolling (phase 3)', () => {
+  const OTHER = new Uint8Array(16).fill(0xa9);
+
+  /** DEVICE is registered for ada, whose newest list names only OTHER: the gate answers pending. */
+  function enrolling() {
+    const server = new FakeServer();
+    const userId = server.register('ada', DEVICE);
+    server.publishList(userId, [{ deviceId: OTHER, revokedAt: null }]);
+    const core = new FakeCore({ deviceId: DEVICE });
+    core.enrolBegin(INSTANCE);
+    const { session } = sessionFor(server, core);
+    return { server, core, session };
+  }
+
+  it('expects a pending scope while enrolling', async () => {
+    const { server, core, session } = enrolling();
+    expect(await session.establish()).toBe(true);
+    expect(server.tokenScope.get('tok-1')).toBe(1);
+    expect(core.session()).toEqual({ token: 'tok-1', expires: BigInt(NOW_S + SESSION_S), idleExpires: BigInt(NOW_S + IDLE_S) });
+  });
+
+  it('refuses an enrolled scope while enrolling', async () => {
+    const { server, core, session } = enrolling();
+    server.scope = 0;
+    await expect(session.establish()).rejects.toThrow('E_SESSION_SCOPE');
+    expect(core.session()).toBeNull();
+  });
+
+  it('a confirmed refusal while enrolling clears nothing', async () => {
+    const server = new FakeServer();
+    const core = new FakeCore({ deviceId: DEVICE });
+    core.enrolBegin(INSTANCE);
+    core.sessionStore({ token: 'pending', expires: BigInt(NOW_S + 60), idleExpires: BigInt(NOW_S + 60) });
+    const { session } = sessionFor(server, core);
+    expect(await session.establish()).toBe(false);
+    expect(server.count('POST', `/v1/devices/${DEV_HEX}/sessions`)).toBe(2);
+    expect(core.calls).not.toContain('sessionClear');
+    expect(core.session()?.token).toBe('pending');
+    expect(core.identity().phase).toBe(3);
   });
 });

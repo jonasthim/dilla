@@ -831,14 +831,7 @@ func (d *DS) checkReseededLeaves(ctx context.Context, v DeviceListVerifier, grou
 				"no verifiable signed device list for a reseeded leaf's user: "+err.Error())
 		}
 		for _, leaf := range byUser[userID] {
-			listed := false
-			for _, dsk := range entries {
-				if bytes.Equal(dsk, leaf.device.DSKPub) {
-					listed = true
-					break
-				}
-			}
-			if !listed {
+			if !auth.Listed(entries, leaf.device.ID, leaf.device.DSKPub) {
 				return errCommitInvalid("add_key_package",
 					"a reseeded leaf's device is not in its user's newest signed device list")
 			}

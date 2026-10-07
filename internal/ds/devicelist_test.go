@@ -116,8 +116,10 @@ func TestTheDeviceListVerifierReturnsTheUnrevokedKeysOfAVerifiedList(t *testing.
 	if err != nil {
 		t.Fatalf("Entries: %v", err)
 	}
-	if len(entries) != 1 || !bytes.Equal(entries[0], bytes.Repeat([]byte{0x11}, 32)) {
-		t.Fatalf("entries = %x, want only the unrevoked device's key", entries)
+	// The pair, not the key alone (security review F2): a row is listed only under both.
+	if len(entries) != 1 || entries[0].DeviceID != id.ID(bytes.Repeat([]byte{1}, 16)) ||
+		!bytes.Equal(entries[0].DSKPub, bytes.Repeat([]byte{0x11}, 32)) {
+		t.Fatalf("entries = %v, want only the unrevoked device's id and key", entries)
 	}
 }
 
@@ -447,4 +449,49 @@ func TestACommitWhoseGroupInfoDescribesAnotherTreeIsRefused(t *testing.T) {
 func hasRule(err error, rule string) bool {
 	var dsErr *ds.Error
 	return errors.As(err, &dsErr) && dsErr.Code == "E_COMMIT_INVALID" && dsErr.Rule == rule
+}
+
+// Verify checks a CANDIDATE list — one PUT /v1/users/{id}/device-list has not stored yet — in the
+// guest: it reads no stored list, reports every entry with its revoked flag, and refuses with
+// E_CREDENTIAL what does not decode or verify.
+func TestVerifyChecksACandidateListInTheGuest(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	lists := ds.DeviceListsForTest(h.ds)
+	user := id.New()
+	ssk := testSSK(0x5a)
+	sskPub := ssk.Public().(ed25519.PublicKey)
+	revoked := uint64(1_758_700_000)
+	blob := signedDeviceList(t, ssk, user, []listEntry{
+		{DeviceID: bytes.Repeat([]byte{1}, 16), DSKPub: bytes.Repeat([]byte{0x11}, 32), AddedAt: 1},
+		{DeviceID: bytes.Repeat([]byte{2}, 16), DSKPub: bytes.Repeat([]byte{0x22}, 32), Tier: 1, AddedAt: 2, RevokedAt: &revoked},
+	})
+
+	entries, err := lists.Verify(ctx, blob, sskPub, user)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if len(entries) != 2 || !bytes.Equal(entries[0].DeviceID, bytes.Repeat([]byte{1}, 16)) || entries[0].Revoked ||
+		!bytes.Equal(entries[1].DeviceID, bytes.Repeat([]byte{2}, 16)) || !entries[1].Revoked || entries[1].Tier != 1 {
+		t.Fatalf("entries = %+v, want the listed device and the revoked browser", entries)
+	}
+	if _, err := h.repo.GetDeviceList(ctx, user); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Verify stored or found a list: %v", err)
+	}
+	for name, call := range map[string]func() error{
+		"another key": func() error {
+			_, err := lists.Verify(ctx, blob, testSSK(0x77).Public().(ed25519.PublicKey), user)
+			return err
+		},
+		"another user": func() error { _, err := lists.Verify(ctx, blob, sskPub, id.New()); return err },
+		"not a list":   func() error { _, err := lists.Verify(ctx, []byte{0x80}, sskPub, user); return err },
+	} {
+		var abiErr *mlswasi.ABIError
+		if err := call(); !errors.As(err, &abiErr) || abiErr.Code != "E_CREDENTIAL" {
+			t.Errorf("%s: got %v, want an *mlswasi.ABIError E_CREDENTIAL", name, err)
+		}
+	}
+	if _, err := ds.NewDeviceLists(h.repo, nil).Verify(ctx, blob, sskPub, user); !errors.Is(err, ds.ErrDeviceListUnavailable) {
+		t.Fatalf("no runtime: %v, want ErrDeviceListUnavailable", err)
+	}
 }

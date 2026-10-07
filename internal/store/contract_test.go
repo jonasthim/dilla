@@ -41,6 +41,10 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Devices", reflect.TypeOf((*store.Devices)(nil)).Elem(), []string{
 			"CreateDevice", "GetDevice", "GetDeviceList", "ListDevicesByUser", "PutDeviceList",
 			"RevokeDevice", "TouchDevice",
+			// dilla-web-2a task 5 (L-SQL-21): the device-list history read (L-HTTP-56) and the
+			// per-user device cap and enrolment rate (L-HTTP-54, Q04).
+			"CountLiveDevicesByUser", "ListDeviceCreationsSince", "ListDeviceListsAfter",
+			"LockUserForDeviceRegistration", "CountLiveUnlistedDevicesByUser", "ListLiveDeviceCreationsSince",
 		}},
 		{"Sessions", reflect.TypeOf((*store.Sessions)(nil)).Elem(), []string{
 			"CountSessionsByDevice", "CreateSession", "DeleteOldestSessionForDevice",
@@ -225,6 +229,12 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		// because `backups` is 008_blobs.sql's table.
 		{"OpsBackups", reflect.TypeOf((*store.OpsBackups)(nil)).Elem(), []string{
 			"ListBackups", "PutBackup",
+			// dilla-web-2a task 5 (L-SQL-21): the write-once root object (F3, Q27), the single-row
+			// read of the backup routes and the reference check the state replacement marks by.
+			"BackupRefersToBlob", "GetBackup", "InsertBackup",
+			// Branch review BACKUPS-RECOVERY-05: the per-blob lock that keeps backup objects and
+			// attachments disjoint under concurrency.
+			"LockBlob",
 		}},
 	}
 

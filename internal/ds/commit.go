@@ -763,14 +763,7 @@ func (d *DS) checkAddedMember(ctx context.Context, v DeviceListVerifier, groupID
 		return errCommitInvalid("add_key_package",
 			"no verifiable signed device list for the added user: "+err.Error())
 	}
-	found := false
-	for _, dsk := range entries {
-		if bytes.Equal(dsk, device.DSKPub) {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !auth.Listed(entries, device.ID, device.DSKPub) {
 		return errCommitInvalid("add_key_package",
 			"the added device's DSK is not in the newest signed device list")
 	}
@@ -833,10 +826,8 @@ func (d *DS) checkExternalJoiner(ctx context.Context, v DeviceListVerifier, grou
 		return errCommitInvalid("external_joiner",
 			"no verifiable signed device list for the joining user: "+err.Error())
 	}
-	for _, dsk := range entries {
-		if bytes.Equal(dsk, device.DSKPub) {
-			return nil
-		}
+	if auth.Listed(entries, device.ID, device.DSKPub) {
+		return nil
 	}
 	return errCommitInvalid("external_joiner",
 		"the joining device's DSK is not in the newest signed device list")

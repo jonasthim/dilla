@@ -8,21 +8,25 @@ import type { Instance, Routes } from '../http/routes';
 import { openChannelFlow, resyncGroup, welcomeFrame, welcomeStep } from './channel';
 import { SyncError } from './errors';
 import { SerialQueues } from './group-queue';
+import { JoinAll } from './joinall';
 import type { SyncInternals } from './internals';
 import { discardSend, drainOne, retrySend, sendMessage } from './send';
 
 export type SyncRoutes = Pick<Routes, 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
-  | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome'>;
+  | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome' | 'getChannel'>;
 export type SyncGateway = Pick<Gateway, 'subscribe' | 'commitAck'>;
 export interface SyncDeps {
   core: CorePort; routes: SyncRoutes; gateway: SyncGateway; instance: Instance; deviceId: Id;
   now(): number; random(): number; setTimeout(fn: () => void, ms: number): number; clearTimeout(id: number): void;
   onGroupChanged(groupId: Id, result: ApplyResult): void; onOutboxChanged(groupId: Id): void;
   onMembership(groupId: Id, status: 'resyncing' | 'not-member'): void;
+  onJoinAll(progress: { done: number; total: number; failed: number }): void;
+  /** A Welcome for an unexpected group; the controller reloads DMs. */
+  onUnexpectedWelcome(groupId: Id): void;
 }
 export const SYNC = {
   handshakePage: 512, messagePage: 256, commitRetryMax: 5, commitJitterMs: 400,
-  membershipWaitMs: 2000, echoWaitMs: 5000, registerRetryMax: 3, cursorDebounceMs: 30000,
+  membershipWaitMs: 2000, echoWaitMs: 5000, registerRetryMax: 3, cursorDebounceMs: 30000, joinAllConcurrency: 1, joinAllRetryMs: 60000,
 } as const;
 export interface PageInfo { count: number; lastSeq: bigint | null; }
 export function throughOf(ms: PageInfo, hs: PageInfo, carry: bigint | null): bigint {
@@ -41,9 +45,12 @@ export class SyncEngine implements SyncInternals {
   readonly echoWait = new Map<string, { msgHex: string; timer: number }>();
   readonly epochWait = new Map<string, number>();
   readonly count425 = new Map<string, number>();
+  readonly reframedOnce = new Set<string>();
   readonly resyncTried = new Set<string>();
   readonly quiet = new Set<string>();
-  private channels: ExpectedGroup[] = [];
+  readonly unexpectedReported = new Set<string>();
+  private expectedList: ExpectedGroup[] = [];
+  private readonly joinAll = new JoinAll(this, (p) => { this.deps.onJoinAll(p); });
   private readonly opened = new Map<string, ExpectedGroup>();
   private ready: ReadyInfo | null = null;
   private readonly held = new Map<string, Frame[]>();
@@ -62,10 +69,11 @@ export class SyncEngine implements SyncInternals {
   }
   stop(): void {
     if (this.isStopped) return;
+    this.joinAll.stop();
     this.isStopped = true;
     this.unsubscribe?.(); this.unsubscribe = null;
     for (const id of this.timers) this.deps.clearTimeout(id);
-    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.echoWait.clear();
+    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.echoWait.clear(); this.reframedOnce.clear();
     this.queues.clear();
     for (const wake of this.waiters) wake();
     this.waiters.clear();
@@ -79,14 +87,25 @@ export class SyncEngine implements SyncInternals {
       this.armTimer(ms, wake);
     });
   }
-  setChannels(channels: ExpectedGroup[]): void { this.channels = [...channels]; }
+  /** CORE-ENGINE-01: a set that gained a group starts a pass (rule 7: the welcome step first); the same set again
+   *  neither starts one nor cancels an armed retry (rule 4: a refused join waits for the next ready or
+   *  joinAllRetryMs). Any change lets a kept unexpected Welcome be reported once more. */
+  setExpected(groups: ExpectedGroup[]): void {
+    const before = new Set(this.expectedList.map((g) => toHex(g.groupId)));
+    const after = new Set(groups.map((g) => toHex(g.groupId)));
+    const gained = [...after].some((id) => !before.has(id));
+    this.expectedList = [...groups];
+    if (gained || [...before].some((id) => !after.has(id))) this.unexpectedReported.clear();
+    if (gained && this.ready !== null && !this.isStopped) this.joinAll.request();
+  }
+  setChannels(channels: ExpectedGroup[]): void { this.setExpected(channels); }
   expected(): ExpectedGroup[] {
     const byId = new Map<string, ExpectedGroup>();
-    for (const g of [...this.channels, ...this.opened.values()]) byId.set(toHex(g.groupId), g);
+    for (const g of [...this.expectedList, ...this.opened.values()]) byId.set(toHex(g.groupId), g);
     return [...byId.values()];
   }
   addExpected(g: ExpectedGroup): void { this.opened.set(toHex(g.groupId), g); }
-  row(g: Id): GroupInfo | undefined { return this.deps.core.groups().find((x) => toHex(x.groupId) === toHex(g)); }
+  row(g: Id): GroupInfo | undefined { return this.deps.core.groupRow(g) ?? undefined; }
   snapshot(g: Id): ApplyResult | null {
     const r = this.row(g);
     return r === undefined ? null : {
@@ -114,6 +133,7 @@ export class SyncEngine implements SyncInternals {
             this.queues.coalesce(key(g.groupId), 'resync', async () => { await resyncGroup(this, g.groupId, false); });
           }
         }
+        if (!this.isStopped) this.joinAll.request();
       }).catch(() => undefined);
       return;
     }
@@ -235,6 +255,9 @@ export class SyncEngine implements SyncInternals {
     if (r.ownAdopted) {
       const rows = this.deps.core.outbox(g);
       for (const id of this.count425.keys()) if (!rows.some((x) => toHex(x.msgId) === id)) this.count425.delete(id);
+      for (const id of this.reframedOnce) {
+        if (id.startsWith(`${hex}:`) && !rows.some((x) => `${hex}:${toHex(x.msgId)}` === id && x.state !== 2)) this.reframedOnce.delete(id);
+      }
       this.deps.onOutboxChanged(g);
       const wait = this.echoWait.get(hex);
       if (wait !== undefined && !rows.some((x) => toHex(x.msgId) === wait.msgHex && x.state === 1)) {
@@ -316,7 +339,7 @@ export class SyncEngine implements SyncInternals {
     this.requestCatchUp(g); this.requestDrain(g);
   }
   async pollWelcomes(): Promise<void> { await this.queues.run('w', () => welcomeStep(this)).catch(() => undefined); }
-  openChannel(ch: { communityId: Id; channelId: Id; textGroupId: Id | null }): Promise<{ groupId: Id; state: 0 | 1 | 2 | 3 | 4 }> {
+  openChannel(ch: { communityId: Id | null; channelId: Id; textGroupId: Id | null }): Promise<{ groupId: Id; state: 0 | 1 | 2 | 3 | 4 }> {
     if (this.isStopped) return Promise.reject(new SyncError('E_SYNC_STOPPED'));
     return this.queues.run(`c:${toHex(ch.channelId)}`, () => openChannelFlow(this, ch));
   }

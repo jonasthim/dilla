@@ -40,11 +40,13 @@ WHERE blobs.blob_id = sqlc.arg(blob_id)
 UPDATE blobs SET unref_since = NULL WHERE blobs.blob_id = ?;
 
 -- name: ListCollectableBlobs :many
+-- dilla-web-2a (L-SQL-21): a blob a backups row names is never collectable; backups have no blob_refs row.
 -- The CAST keeps the parameter an int64: without it sqlc infers *int64 from the nullable
 -- unref_since, and a nil cutoff would compare against NULL and collect nothing (gap-47 section 19.4).
 SELECT blobs.blob_id, blobs.size, blobs.storage_ref, blobs.created, blobs.unref_since FROM blobs
 WHERE blobs.unref_since IS NOT NULL AND blobs.unref_since < CAST(sqlc.arg(before) AS INTEGER)
   AND NOT EXISTS (SELECT 1 FROM blob_refs WHERE blob_refs.blob_id = blobs.blob_id)
+  AND NOT EXISTS (SELECT 1 FROM backups WHERE backups.blob_id = blobs.blob_id)
 ORDER BY blobs.unref_since
 LIMIT sqlc.arg(max_rows);
 
@@ -72,12 +74,16 @@ SELECT COUNT(*) FROM blob_tombstones WHERE blob_id = ?;
 
 -- name: UserBlobBytes :one
 -- The quota counts each distinct blob a user uploaded once, however many
--- channels they published it into.
+-- channels they published it into, and the user's own backup objects with them (dilla-web-2a
+-- boundary ruling 2): a replaced state object leaves the count with its row.
 SELECT CAST(COALESCE(SUM(b.size), 0) AS INTEGER) FROM blobs b
 WHERE b.blob_id IN (
-  SELECT DISTINCT r.blob_id FROM blob_refs r
+  SELECT r.blob_id FROM blob_refs r
   JOIN devices d ON d.id = r.uploader_device
   WHERE d.user_id = sqlc.arg(user_id)
+  UNION
+  SELECT k.blob_id FROM backups k
+  WHERE k.user_id = sqlc.arg(user_id)
 );
 
 -- name: UserReferencesBlob :one
@@ -142,3 +148,22 @@ ON CONFLICT (user_id, kind, device_id, chunk_seq) DO UPDATE SET
 SELECT user_id, kind, device_id, chunk_seq, blob_id, manifest_sig, created
 FROM backups WHERE user_id = ? AND kind = ?
 ORDER BY device_id, chunk_seq;
+
+-- name: InsertBackup :exec
+-- dilla-web-2a (L-SQL-21, F3, Q27): the root object is written once. No ON CONFLICT: a taken
+-- (user_id, kind, device_id, chunk_seq) is a unique violation, which the adapters map to ErrConflict.
+INSERT INTO backups (user_id, kind, device_id, chunk_seq, blob_id, manifest_sig, created)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetBackup :one
+SELECT user_id, kind, device_id, chunk_seq, blob_id, manifest_sig, created
+FROM backups WHERE user_id = ? AND kind = ? AND device_id = ? AND chunk_seq = ?;
+
+-- name: BackupRefersToBlob :one
+-- COUNT, not EXISTS, for the reason GetBlobTombstone gives.
+SELECT COUNT(*) FROM backups WHERE backups.blob_id = sqlc.arg(blob_id);
+
+-- name: LockBlob :exec
+-- A write claim inside Tx. SQLite's one writer already serialises every write transaction, so this
+-- only makes the claim explicit and the two engines' call sites the same.
+UPDATE blobs SET blob_id = blob_id WHERE blob_id = sqlc.arg(blob_id);

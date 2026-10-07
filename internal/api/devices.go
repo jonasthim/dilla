@@ -1,30 +1,64 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"math"
 	"net/http"
+	"strconv"
 
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
+// createDeviceRequest is POST /v1/devices' body: the device array of POST /v1/accounts followed by
+// the proof of possession of dsk_pub, [device_id, dsk_pub, tier, signer_tier, credential,
+// nonce(32), sig(64)], where nonce comes from POST /v1/devices/{device_id}/sessions/challenge for
+// the new device_id and sig is the establish signature by the new DSK over it (purpose 0).
+type createDeviceRequest struct {
+	_          struct{} `cbor:",toarray"`
+	DeviceID   id.ID
+	DSKPub     []byte
+	Tier       uint8
+	SignerTier uint8
+	Credential []byte
+	Nonce      []byte
+	Sig        []byte
+}
+
 // CreateDevice is POST /v1/devices: [device_id, dsk_pub, tier, signer_tier,
-// credential] → [device_id]. The device is always the session's own user's; a
-// body cannot name another user, so there is nothing to authorise beyond the
-// session itself.
+// credential, nonce, sig] → [device_id]. The device is always the session's own
+// user's; a body cannot name another user. The caller proves it holds dsk_pub's
+// private half exactly as establish does (security review F2), and no other live
+// row of the user may hold the same key (409). Admission uses the same live-row
+// cap, expiry and live-row hourly rate as assertion registration, but past the cap
+// it answers 403 "device cap reached" and past the rate 429 with retry_after_ms, and
+// it never evicts (branch review REGISTRATION-DEVICES-03): its caller pays no host
+// login, so eviction here would let a stolen enrolled session replace a recovering
+// owner's new row at will.
 func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
-	var req deviceRequest
-	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+	var body createDeviceRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &body); err != nil {
 		server.WriteError(w, err)
 		return
 	}
+	req := deviceRequest{DeviceID: body.DeviceID, DSKPub: body.DSKPub, Tier: body.Tier,
+		SignerTier: body.SignerTier, Credential: body.Credential}
 	if err := req.validate(); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := d.Sessions.ProveDeviceKey(req.DeviceID, req.DSKPub, body.Nonce, body.Sig); err != nil {
 		server.WriteError(w, err)
 		return
 	}
@@ -33,7 +67,25 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 		ID: req.DeviceID, UserID: sess.UserID, DSKPub: req.DSKPub, Tier: req.Tier,
 		SignerTier: req.SignerTier, CredentialBlob: req.Credential, LastSeen: now, Created: now,
 	}
-	if err := d.Repo.CreateDevice(r.Context(), row); err != nil {
+	if d.Sessions.DeviceLists == nil {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	entries, listErr := d.Sessions.DeviceLists.ListedDevices(r.Context(), sess.UserID)
+	noList := errors.Is(listErr, auth.ErrNoDeviceList)
+	if noList {
+		entries = nil
+	} else if listErr != nil {
+		server.WriteError(w, auth.ListError(listErr))
+		return
+	}
+	err := d.Repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := d.Sessions.AdmitEnrolledDevice(r.Context(), tx, sess.UserID, entries, noList, req.DSKPub, now); err != nil {
+			return err
+		}
+		return tx.CreateDevice(r.Context(), row)
+	})
+	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			server.WriteError(w, server.WithStatus(http.StatusConflict,
 				server.Errorf(server.CodeInvalidRequest, "device_id already exists")))
@@ -44,6 +96,10 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	d.write(w, r, http.StatusOK, []any{row.ID})
 }
+
+// keylessDeleteGrace is how old, in seconds, an unlisted row must be before a session of another
+// device may remove it with the key-less DELETE (branch review REGISTRATION-DEVICES-03).
+const keylessDeleteGrace = 600
 
 // ListDevices is GET /v1/devices →
 // [[device_id, tier, signer_tier, verified_at|null, revoked_at|null, last_seen]].
@@ -95,6 +151,31 @@ func (d Deps) DeleteDevice(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "not found"))
 		return
 	}
+	if d.Sessions.DeviceLists == nil {
+		server.WriteError(w, server.Errorf(server.CodeInternal, "device-list lookup is not wired"))
+		return
+	}
+	entries, listErr := d.Sessions.DeviceLists.ListedDevices(r.Context(), sess.UserID)
+	if listErr != nil && !errors.Is(listErr, auth.ErrNoDeviceList) {
+		server.WriteError(w, auth.ListError(listErr))
+		return
+	}
+	// Listed means the (device_id, dsk_pub) pair (security review F2): a row that only copies a
+	// listed key is not the listed device, and the owner removes it here like any unlisted row.
+	if auth.Listed(entries, row.ID, row.DSKPub) {
+		server.WriteError(w, server.WithStatus(http.StatusConflict,
+			server.Errorf(server.CodeInvalidRequest, "a listed device is revoked by a signed device list")))
+		return
+	}
+	// A recovering owner's new row is unlisted until the list PUT that names it; without a grace a
+	// stolen enrolled session polling GET /v1/devices removed it the moment it appeared, at no login
+	// cost, and so kept the owner from publishing the list that revokes the thief. The owner's own
+	// young strays are replaced by registration and expire at 24 hours, so the grace locks no one out.
+	if sess.DeviceID != row.ID && row.Created > d.Clock.Now().Unix()-keylessDeleteGrace {
+		server.WriteError(w, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
+			"the device registered less than 10 minutes ago and is too new to remove; its own session may remove it, or it expires unlisted after 24 hours")))
+		return
+	}
 	if err := d.Sessions.RevokeDevice(r.Context(), deviceID); err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
@@ -112,10 +193,10 @@ type deviceListRequest struct {
 	PrevHash     []byte
 }
 
-// PutDeviceList publishes a signed device list. The instance stores the blob
-// and its signature and never interprets either: the list is signed by the
-// user's SSK and verified by the recipients, so a server that could not forge
-// one must not be trusted to validate one.
+// PutDeviceList publishes a signed device list. The instance verifies the outer elements against
+// the blob in Go, the signature and user in the guest, and the version and hash chain against the
+// stored newest. It revokes named devices and deletes their sessions in the storing transaction;
+// after commit it closes their sockets and asks the delivery service to remove their leaves.
 func (d Deps) PutDeviceList(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -141,38 +222,142 @@ func (d Deps) PutDeviceList(w http.ResponseWriter, r *http.Request) {
 			"ssk_signature is 64 bytes, prev_hash is 32 and blob is not empty"))
 		return
 	}
+	version, prevHash, sig, ok := listOuter(req.Blob)
+	if !ok || version != req.Version || !bytes.Equal(prevHash, req.PrevHash) || !bytes.Equal(sig, req.SSKSignature) {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "device list elements disagree"))
+		return
+	}
+	if d.DeviceLists == nil {
+		err := server.Errorf(server.CodeInternal, "device-list verifier is not wired")
+		d.logf(r, "api: device list", "err", err)
+		server.WriteError(w, err)
+		return
+	}
+	user, err := d.Repo.GetUser(r.Context(), userID)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	entries, err := d.DeviceLists.Verify(r.Context(), req.Blob, user.SSKPub, userID)
+	if err != nil {
+		var abiErr *mlswasi.ABIError
+		if errors.As(err, &abiErr) && abiErr.Code == "E_CREDENTIAL" {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "device list does not verify"))
+			return
+		}
+		d.logf(r, "api: device list verification", "err", err)
+		server.WriteError(w, server.Errorf(server.CodeInternal, ""))
+		return
+	}
+	ctx := r.Context()
 	row := store.DeviceListRow{
 		UserID: userID, Version: req.Version, Blob: req.Blob,
 		SSKSignature: req.SSKSignature, PrevHash: req.PrevHash, Created: d.Clock.Now().Unix(),
 	}
-	if err := d.Repo.PutDeviceList(r.Context(), row); err != nil {
+	versionConflict := func() error {
+		return server.WithStatus(http.StatusConflict,
+			server.Errorf(server.CodeInvalidRequest, "device-list version %d is not the next version", req.Version))
+	}
+	var revoked []id.ID
+	err = d.Repo.Tx(ctx, func(tx store.Repository) error {
+		newest, err := tx.GetDeviceList(ctx, userID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			if req.Version != 1 || !bytes.Equal(req.PrevHash, make([]byte, 32)) {
+				return versionConflict()
+			}
+		case err != nil:
+			return err
+		default:
+			sum := sha256.Sum256(newest.Blob)
+			if req.Version != newest.Version+1 || !bytes.Equal(req.PrevHash, sum[:]) {
+				return versionConflict()
+			}
+		}
+		if err := tx.PutDeviceList(ctx, row); err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				return versionConflict()
+			}
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.Revoked || len(entry.DeviceID) != 16 {
+				continue
+			}
+			var dev id.ID
+			copy(dev[:], entry.DeviceID)
+			device, err := tx.GetDevice(ctx, dev)
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if device.UserID != userID || device.RevokedAt != nil {
+				continue
+			}
+			if err := tx.RevokeDevice(ctx, dev, row.Created); err != nil {
+				return err
+			}
+			if _, err := tx.DeleteSessionsByDevice(ctx, dev); err != nil {
+				return err
+			}
+			revoked = append(revoked, dev)
+		}
+		return nil
+	})
+	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			// (user_id, version) is the primary key, so a repeat of a version
-			// is a client that did not read its own latest list first.
-			server.WriteError(w, server.WithStatus(http.StatusConflict,
-				server.Errorf(server.CodeInvalidRequest, "device-list version %d already published", req.Version)))
+			server.WriteError(w, versionConflict())
 			return
 		}
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
+	if d.Sessions != nil && d.Sessions.OnRevoke != nil {
+		for _, dev := range revoked {
+			d.Sessions.OnRevoke(dev)
+		}
+	}
 	d.noContent(w, r)
 	if d.AfterDeviceList != nil {
 		_ = http.NewResponseController(w).Flush()
-		d.AfterDeviceList(context.WithoutCancel(r.Context()), userID)
+		d.AfterDeviceList(context.WithoutCancel(r.Context()), userID, revoked)
 	}
 }
 
-// GetDeviceList answers the newest list of any user: every member of a group
-// needs to read every other member's list, so this route is not self-scoped.
+// GetDeviceList permits enrolled sessions to read any user and pending sessions only their own.
 func (d Deps) GetDeviceList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := session(r); !ok {
+	sess, ok := session(r)
+	if !ok {
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
 	userID, err := server.PathID(r, "user_id")
 	if err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	if sess.Scope == auth.ScopePending && sess.UserID != userID {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "a pending session reads only its own device list"))
+		return
+	}
+	if r.URL.Query().Has("after") {
+		after, err := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
+		if err != nil || after > math.MaxInt64 {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "after must be a decimal uint"))
+			return
+		}
+		rows, err := d.Repo.ListDeviceListsAfter(r.Context(), userID, after, deviceListHistoryPage)
+		if err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
+		out := make([]any, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, []any{row.Version, row.Blob, row.SSKSignature, row.PrevHash})
+		}
+		d.write(w, r, http.StatusOK, out)
 		return
 	}
 	row, err := d.Repo.GetDeviceList(r.Context(), userID)

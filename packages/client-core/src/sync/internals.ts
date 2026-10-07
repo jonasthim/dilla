@@ -24,6 +24,9 @@ export interface SyncInternals {
   echoWait: Map<string, { msgHex: string; timer: number }>;
   epochWait: Map<string, number>;
   count425: Map<string, number>;
+  reframedOnce: Set<string>;
   resyncTried: Set<string>;
   quiet: Set<string>;
+  /** Unexpected groups already reported to onUnexpectedWelcome; cleared when the expected set changes. */
+  unexpectedReported: Set<string>;
 }

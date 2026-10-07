@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
@@ -84,13 +85,35 @@ type Deps struct {
 	// and the two routes answer 501 rather than panicking.
 	OIDC *auth.OIDC
 
+	// DeviceLists verifies every published device list in the guest; nil refuses every publish
+	// with 500, fail closed.
+	DeviceLists DeviceListVerifier
+
 	// AfterDeviceList, when set, runs after an accepted PUT /v1/users/{id}/device-list, once the
 	// 204 is flushed, on a context the request's cancellation does not reach. The delivery service
 	// proposes an Add only for a device its user's newest signed list names (invariant 4), so a
 	// device that published its KeyPackages before the list that names it (protocol/03 § Pairing,
 	// steps 2 and 5) is brought into its user's DMs here. The composition root wires it to
-	// SyncUserDMs; a failure is the hook's to log.
-	AfterDeviceList func(ctx context.Context, userID id.ID)
+	// SyncUserDMs; a failure is the hook's to log. revoked is the devices this publish revoked
+	// (nil when none).
+	AfterDeviceList func(ctx context.Context, userID id.ID, revoked []id.ID)
+
+	// Blobs is the content-addressed store the backup routes (protocol/09 § Backups) write the
+	// sealed header objects to: the instance's one blob store, shared with Plan 2's attachment
+	// routes. Nil refuses PUT and the single-object GET with E_INTERNAL rather than half-writing.
+	Blobs *blob.Store
+
+	// UploadMeter is the per-user blob upload meter (blobs.uploads_per_minute and
+	// blobs.upload_bytes_per_day) PUT /v1/backups spends, the one the composition root also hands
+	// the attachment routes (Blobs.WithUploadMeter). Register builds one from Config when it is nil,
+	// so the route is never unmetered.
+	UploadMeter *UploadMeter
+
+	// StateMeter is the per-DEVICE daily byte budget PUT /v1/backups/1/0 spends (the state object;
+	// branch review BACKUPS-RECOVERY-01 as amended): StateBytesPerDevicePerDay, keyed by the
+	// session's device, so a thief exhausting its own budget or the user's upload meter cannot
+	// block the owner's device. Register builds it when it is nil.
+	StateMeter *UploadMeter
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -124,6 +147,12 @@ const maxCBORBody = 64 << 10
 // route that exists in the document and not in the binary is a missing line
 // here rather than a forgotten wiring in a composition root.
 func Register(m *server.Mux, d Deps) {
+	if d.UploadMeter == nil && d.Config != nil {
+		d.UploadMeter = NewUploadMeter(d.Clock, d.Config.Blobs)
+	}
+	if d.StateMeter == nil {
+		d.StateMeter = NewStateMeter(d.Clock, StateBytesPerDevicePerDay)
+	}
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
 
@@ -169,20 +198,33 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("PATCH /v1/accounts/me", d.enrolled(d.PatchMe))
 	m.Handle("DELETE /v1/accounts/me", d.enrolled(d.DeleteMe))
 
-	// Devices. POST /v1/devices also accepts a `pending` session: a device
-	// enrolled through a host login holds one until it is paired.
-	m.Handle("POST /v1/devices", d.scoped(d.CreateDevice, auth.ScopePending))
-	m.Handle("GET /v1/devices", d.enrolled(d.ListDevices))
-	m.Handle("DELETE /v1/devices/{device_id}", d.enrolled(d.DeleteDevice))
-	m.Handle("PUT /v1/users/{user_id}/device-list", d.enrolled(d.PutDeviceList))
-	m.Handle("GET /v1/users/{user_id}/device-list", d.enrolled(d.GetDeviceList))
+	// Devices. POST /v1/devices is enrolled only. The enrolling browser registers inside
+	// establish; while pending it reads and publishes only its own device list. The three
+	// /v1/devices routes spend the device session's read and write buckets like the device-list and
+	// backup routes (branch review REGISTRATION-DEVICES-03: unmetered, a stolen session polled GET
+	// for a recovering owner's new row).
+	m.Handle("POST /v1/devices", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.CreateDevice)))
+	m.Handle("GET /v1/devices", d.enrolled(dsMeter(d.Limiter, dsClassRead, d.ListDevices)))
+	m.Handle("DELETE /v1/devices/{device_id}", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.DeleteDevice)))
+	m.Handle("PUT /v1/users/{user_id}/device-list", d.scoped(dsMeter(d.Limiter, dsClassWrite, d.PutDeviceList), auth.ScopePending))
+	m.Handle("GET /v1/users/{user_id}/device-list", d.scoped(dsMeter(d.Limiter, dsClassRead, d.GetDeviceList), auth.ScopePending))
+
+	// Backups (protocol/09 § Backups; C14, F3, Q27). Mounted here and not through SessionRoute,
+	// because the two reads admit a pending session (protocol/02 § Device sessions item 4): a device
+	// entering the recovery key fetches the sealed objects before it holds a credential.
+	m.Handle("PUT /v1/backups/{kind}/{chunk_seq}", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PutBackup)))
+	m.Handle("GET /v1/backups", d.scoped(dsMeter(d.Limiter, dsClassRead, d.ListBackups), auth.ScopePending))
+	m.Handle("GET /v1/backups/{kind}/{chunk_seq}", d.scoped(dsMeter(d.Limiter, dsClassRead, d.GetBackup), auth.ScopePending))
+	m.Handle("DELETE /v1/backups/{kind}/{chunk_seq}", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.DeleteBackup)))
 
 	// Sessions. The challenge and establish routes carry NO session middleware:
 	// they are how a session is obtained, so requiring one would be circular.
 	// The challenge route meters itself on its own two keys inside the handler.
 	m.Handle("POST /v1/devices/{device_id}/sessions/challenge", http.HandlerFunc(d.SessionChallenge))
 	m.Handle("POST /v1/devices/{device_id}/sessions", http.HandlerFunc(d.SessionEstablish))
-	m.Handle("DELETE /v1/devices/{device_id}/sessions", d.enrolled(d.SessionDelete))
+	// The sessions DELETE is on the device write bucket like DELETE /v1/devices/{device_id}, and
+	// keeps the same ten-minute grace for another device's unlisted row (fix-wave review NEW-1).
+	m.Handle("DELETE /v1/devices/{device_id}/sessions", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.SessionDelete)))
 
 	// The gateway ticket. The route is mounted here and answers 501 until part
 	// 1b task 17 fills Deps.Tickets, so the document and the binary agree on

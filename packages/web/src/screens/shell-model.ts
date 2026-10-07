@@ -1,6 +1,8 @@
 // The shell's pure rules: which channels are listed and in what order, which one opens by default,
 // what web-1 cannot open, who wrote a row, why the composer is blocked and how a row's time reads.
-import type { ChannelGroupState, ChannelSummary, MemberSummary, TimelineItem } from '@dilla/client-core';
+import { isMuted } from '@dilla/client-core';
+import type { BadgeState, ChannelGroupState, ChannelSummary, DeviceSummary, MemberSummary, TimelineItem } from '@dilla/client-core';
+import { baseRoute, type Route } from '../router.ts';
 import { formatDay, formatTime, t, type StringKey } from '../strings/index.ts';
 
 const CATEGORY = 2;
@@ -83,4 +85,60 @@ export function messageTime(ts: number, nowMs: number): string {
   const now = new Date(nowMs);
   const today = at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
   return today ? formatTime(ts) : `${formatDay(ts)} ${formatTime(ts)}`;
+}
+
+/** What a channel or DM row shows: a muted row hides its unread count and keeps its mentions (ruling 15). */
+export interface RowBadge { unread: number; mentions: number; muted: boolean; }
+
+/** The row's shown counts from the badges slice (zero when absent) and its mute setting. */
+export function rowBadge(badges: Readonly<Record<string, BadgeState>> | undefined, settings: Readonly<Record<string, string>> | undefined,
+  channelId: string): RowBadge {
+  const b = badges?.[channelId];
+  const muted = settings !== undefined && isMuted(settings, channelId);
+  return { unread: muted ? 0 : b?.unread ?? 0, mentions: b?.mentions ?? 0, muted };
+}
+
+/** The field-wise sum of what rows show (a rail item's or a tab's counts). */
+export function sumBadges(rows: readonly RowBadge[]): { unread: number; mentions: number } {
+  let unread = 0;
+  let mentions = 0;
+  for (const r of rows) {
+    unread += r.unread;
+    mentions += r.mentions;
+  }
+  return { unread, mentions };
+}
+
+/** A row's accessible name (ruling 34): a muted row says so, a quiet row is its bare name, else its counts in words. */
+export function badgeLabel(row: { name: string; unread: number; mentions: number; muted: boolean }): string {
+  if (row.muted) return t('shell.channels.rowLabelMuted', { name: row.name, mentions: row.mentions });
+  if (row.unread === 0 && row.mentions === 0) return row.name;
+  return t('shell.channels.rowLabel', { name: row.name, unread: row.unread, mentions: row.mentions });
+}
+
+/** A rail item's accessible name: the bare name when it has nothing to report, else its counts in words. */
+export function railLabel(item: { name: string; unread: number; mentions: number }): string {
+  if (item.unread === 0 && item.mentions === 0) return item.name;
+  return t('shell.rail.itemLabel', { name: item.name, unread: item.unread, mentions: item.mentions });
+}
+
+/** The status bar's devices chunk: the account's devices not removed, unknown until the list is loaded (Q12). */
+export function devicesChunk(devices: readonly DeviceSummary[] | undefined): string {
+  if (devices === undefined) return t('shell.status.unknown');
+  return String(devices.filter(d => d.revokedAt === null).length);
+}
+
+/** The people a DM can be started with: the server's human members other than oneself, by the name they show. */
+export function dmCandidates(members: readonly MemberSummary[] | undefined, selfId: string | null): MemberSummary[] {
+  const shown = (m: MemberSummary) => m.display || m.username;
+  return (members ?? [])
+    .filter(m => m.kind === 0 && m.userId !== selfId)
+    .sort((a, b) => shown(a).localeCompare(shown(b), undefined, { sensitivity: 'base' }) || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
+}
+
+/** The channel or DM on screen for a route (the base route's), or null. */
+export function visibleChannel(route: Route): string | null {
+  const b = baseRoute(route);
+  if (b.name === 'channel' || b.name === 'dm') return b.channelId;
+  return null;
 }

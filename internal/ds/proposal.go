@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 
+	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -157,10 +158,8 @@ func (d *DS) checkListedDevice(ctx context.Context, v DeviceListVerifier, device
 		}
 		return errInvalid("no verifiable signed device list for the device's user: " + err.Error())
 	}
-	for _, dsk := range entries {
-		if bytes.Equal(dsk, dev.DSKPub) {
-			return nil
-		}
+	if auth.Listed(entries, dev.ID, dev.DSKPub) {
+		return nil
 	}
 	return errInvalid("the device's DSK is not in its user's newest signed device list")
 }

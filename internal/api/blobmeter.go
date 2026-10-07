@@ -6,11 +6,12 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 )
 
-// blobMeter is the per-user upload meter of [blobs] (fix wave C7): uploads_per_minute is a
+// UploadMeter is the per-user upload meter of [blobs] (fix wave C7): uploads_per_minute is a
 // request bucket and upload_bytes_per_day a byte bucket, both token buckets that refill
 // continuously and start full. A PUT reserves one request and the bytes it may write before a
 // byte of the body is read, and settles the byte reservation to what was actually read once the
@@ -20,7 +21,10 @@ import (
 //
 // The buckets live in memory: a restart refills them. Their number is bounded by the enrolled
 // users who uploaded since the process started.
-type blobMeter struct {
+//
+// One meter serves every route that stores uploaded bytes under their hash: the attachment PUT and
+// PUT /v1/backups (security review F3), so a user's budget is one budget whichever route spends it.
+type UploadMeter struct {
 	clk       clock.Clock
 	perMinute float64
 	perDay    float64
@@ -34,13 +38,34 @@ type uploadBuckets struct {
 	at              time.Time
 }
 
-func newBlobMeter(clk clock.Clock, perMinute int, perDay int64) *blobMeter {
-	return &blobMeter{clk: clk, perMinute: float64(perMinute), perDay: float64(perDay),
+// NewUploadMeter is the meter blobs.uploads_per_minute and blobs.upload_bytes_per_day configure,
+// or nil (which meters nothing) when both are off.
+func NewUploadMeter(clk clock.Clock, cfg config.Blobs) *UploadMeter {
+	if cfg.UploadsPerMinute <= 0 && cfg.UploadBytesPerDay <= 0 {
+		return nil
+	}
+	return newBlobMeter(clk, cfg.UploadsPerMinute, cfg.UploadBytesPerDay)
+}
+
+// StateBytesPerDevicePerDay is the daily byte budget of one device's state-object PUTs: 64 state
+// objects at the 1,048,640-byte body cap, far more than honest re-seals need, and a bound on the
+// bytes one device can make the instance read and write through the route.
+const StateBytesPerDevicePerDay = 64 << 20
+
+// NewStateMeter is the per-device state-object meter: a byte bucket of bytesPerDay that refills
+// continuously, keyed by device id, with no request bucket (the route's device write bucket meters
+// requests).
+func NewStateMeter(clk clock.Clock, bytesPerDay int64) *UploadMeter {
+	return newBlobMeter(clk, 0, bytesPerDay)
+}
+
+func newBlobMeter(clk clock.Clock, perMinute int, perDay int64) *UploadMeter {
+	return &UploadMeter{clk: clk, perMinute: float64(perMinute), perDay: float64(perDay),
 		users: map[id.ID]*uploadBuckets{}}
 }
 
 // refill brings u up to now and answers it.
-func (m *blobMeter) refill(user id.ID) *uploadBuckets {
+func (m *UploadMeter) refill(user id.ID) *uploadBuckets {
 	now := m.clk.Now()
 	u, ok := m.users[user]
 	if !ok {
@@ -59,7 +84,7 @@ func (m *blobMeter) refill(user id.ID) *uploadBuckets {
 
 // begin reserves one upload of at most reserve bytes for user, or answers 429 E_RATE_LIMITED with
 // the wait until it would fit. It answers the byte reservation settle must be given back.
-func (m *blobMeter) begin(user id.ID, reserve int64) (int64, error) {
+func (m *UploadMeter) begin(user id.ID, reserve int64) (int64, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -88,7 +113,7 @@ func (m *blobMeter) begin(user id.ID, reserve int64) (int64, error) {
 }
 
 // settle gives back what begin held beyond the bytes the upload actually read.
-func (m *blobMeter) settle(user id.ID, held, used int64) {
+func (m *UploadMeter) settle(user id.ID, held, used int64) {
 	if m == nil || m.perDay <= 0 {
 		return
 	}

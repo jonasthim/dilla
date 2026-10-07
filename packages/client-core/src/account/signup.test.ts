@@ -135,23 +135,31 @@ describe('Signup', () => {
 });
 
 describe('publishDeviceList', () => {
-  function identified(server: FakeServer, listPublished: boolean) {
+  /** listed === false: the instance already holds a v1 that names only OTHER, published after this device's session
+   *  was established (while the user had no list, the gate answered enrolled). */
+  async function identified(server: FakeServer, listPublished: boolean, listed = true) {
     const userId = server.register('ada', DEVICE);
     const core = FakeCore.identified({ instanceId: INSTANCE, userId, deviceId: DEVICE, username: 'ada', listPublished });
     const { routes, session } = sessionFor(server, core);
-    return { core, routes, session, userId };
+    if (!listed) {
+      await session.establish();
+      server.publishList(userId, [{ deviceId: OTHER, revokedAt: null }]);
+    }
+    return { core, routes, session, userId, listPath: `/v1/users/${toHex(userId)}/device-list` };
   }
+  /** The log with each request's query string (task 10's paths() prints the pathname only). */
+  const lines = (s: FakeServer): string[] => s.log.map((r) => `${r.method} ${r.path}${r.query}`);
 
   it('does nothing when the list is already published', async () => {
     const server = new FakeServer();
-    const { core, routes } = identified(server, true);
+    const { core, routes } = await identified(server, true);
     await publishDeviceList(core, routes);
     expect(server.log).toEqual([]);
   });
 
   it('treats a 409 as published when the server already holds version 1', async () => {
     const server = new FakeServer();
-    const { core, routes, session, userId } = identified(server, false);
+    const { core, routes, session, userId } = await identified(server, false);
     await session.establish();
     server.deviceLists.set(toHex(userId), { version: 1n, blob: new Uint8Array([1]) });
     await publishDeviceList(core, routes);
@@ -161,11 +169,48 @@ describe('publishDeviceList', () => {
 
   it('rethrows a 409 when the server holds no list', async () => {
     const server = new FakeServer();
-    const { core, routes, session, userId } = identified(server, false);
+    const { core, routes, session, userId } = await identified(server, false);
     await session.establish();
     server.once('PUT', `/v1/users/${toHex(userId)}/device-list`, { status: 409, body: ['E_INVALID_REQUEST', 'x', null] });
     const err = await httpError(publishDeviceList(core, routes));
     expect(err.status).toBe(409);
     expect(core.identity().listPublished).toBe(false);
+  });
+
+  it('a 409 because the instance holds this device own list (an answer lost) marks it published', async () => {
+    const server = new FakeServer();
+    const { core, routes, session, listPath } = await identified(server, false);
+    await session.establish();
+    server.log.splice(0);
+    server.once('PUT', listPath, 'lose');
+    await publishDeviceList(core, routes);
+    expect(server.paths()).toEqual([`PUT ${listPath}`, `PUT ${listPath}`, `GET ${listPath}`]);
+    expect(core.calls).toContain('deviceListPublished');
+    expect(core.identity().listPublished).toBe(true);
+  });
+
+  it('a 409 because a newer list names this device adopts that list and publishes nothing', async () => {
+    const server = new FakeServer();
+    const { core, routes, session, userId, listPath } = await identified(server, false);
+    await session.establish();
+    server.publishList(userId, [{ deviceId: DEVICE, revokedAt: null }]);
+    server.publishList(userId, [{ deviceId: DEVICE, revokedAt: null }, { deviceId: OTHER, revokedAt: null }]);
+    server.log.splice(0);
+    await publishDeviceList(core, routes);
+    expect(lines(server)).toEqual([`PUT ${listPath}`, `GET ${listPath}`, `GET ${listPath}?after=1`]);
+    expect(core.calls).not.toContain('deviceListPublished');
+    expect(core.identity().listPublished).toBe(true);
+    expect(core.ownDeviceList().version).toBe(2n);
+  });
+
+  it('a 409 because a newer list leaves this device out is E_DEVICE_UNLISTED (card 27)', async () => {
+    const server = new FakeServer();
+    const { core, routes, userId, listPath } = await identified(server, false, false);
+    // v1 (OTHER only) equals the stored version, which the core answers from its own entries; v2 is what leaves DEVICE out.
+    server.publishList(userId, [{ deviceId: OTHER, revokedAt: null }]);
+    server.log.splice(0);
+    await expect(publishDeviceList(core, routes)).rejects.toThrow('E_DEVICE_UNLISTED');
+    expect(lines(server)).toEqual([`PUT ${listPath}`, `GET ${listPath}`, `GET ${listPath}?after=1`]);
+    expect(core.calls).not.toContain('deviceListPublished');
   });
 });

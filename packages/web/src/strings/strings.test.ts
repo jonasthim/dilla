@@ -32,6 +32,45 @@ describe('the copy rules', () => {
     expect(en['boot.storeLost.detail']).not.toMatch(/recovery/i);
     expect(en['dialog.close']).toBe('Close');
   });
+  it('says what the recovery key does now, and promises no history on a second browser (L-COPY-02)', () => {
+    expect(en['onboarding.keys.loss']).toBe('This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.');
+    expect(en['onboarding.browser.oneBrowser']).toBe('To use this account in another browser, sign in there with your password and this recovery key. Messages sent before that browser joins are not shown in it.');
+    expect(en['signin.done.body']).toBe('This browser is now a device of {username} on {instance}. Messages sent before now are not shown here.');
+    expect(en['signin.step']).toBe('Step {n} of 4');
+    expect(en['signin.error.totpFailed']).toBe('That code did not work. Sign in again with a fresh code.');
+    expect(en['signin.error.required']).toBe('Fill in this field.');
+    expect(en['signin.error.evicted']).toBe('Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.');
+    expect(Object.keys(en).filter(k => k.startsWith('signin.'))).toHaveLength(34);
+  });
+  // Flow 03 as task 15 froze it (L-COPY-02): the count line has two forms, `devices.cap.one` and `devices.cap.other`, in
+  // place of the one `devices.cap`, so the settings rows are 62; the two buttons under the list are lower-case chrome.
+  it('names settings in lower case in the chrome and sentence case on its surfaces (Q14)', () => {
+    for (const k of ['settings.nav.devices', 'settings.nav.notifications', 'settings.nav.appearance', 'devices.revoke', 'devices.refresh',
+      'devices.signOut', 'devices.forget', 'notify.channel.default', 'notify.mute', 'appearance.theme.contrast',
+      'notify.permission.label', 'notify.permission.ask', 'notify.default.label', 'appearance.theme.label'] as const) expect(en[k], k).toMatch(/^[a-z#]/);
+    for (const k of ['settings.title', 'devices.title', 'devices.revokeTitle', 'devices.removeUnlistedTitle', 'devices.signOutTitle',
+      'devices.forgetTitle', 'devices.keyLabel', 'notify.title', 'appearance.title', 'notify.channels.title'] as const) expect(en[k], k).toMatch(/^[A-Z]/);
+    expect(en['notify.title.channel']).toBe('#{channel} · {server}');
+    expect(en['devices.cap.other']).toBe('{n} devices');
+    expect(en['devices.cap.one']).toBe('one device');
+    expect(en['settings.error.other']).toBe('That did not work ({code}). Try again.');
+    // BACKUPS-RECOVERY-04 adds devices.rootMismatch.
+    expect(en['devices.rootMismatch']).toBe('The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.');
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(63);
+    expect(Object.keys(en)).not.toContain('devices.error.other');
+    expect(Object.keys(en)).not.toContain('devices.cap');
+  });
+  it('keeps the shell chrome in lower case and names badges by count (L-COPY-02)', () => {
+    for (const k of ['shell.rail.settings', 'shell.tabs.label', 'shell.tabs.channels', 'shell.tabs.dms', 'shell.dms.label', 'shell.dms.empty',
+      'shell.dms.new', 'shell.dms.open', 'shell.status.devices', 'shell.dm.log', 'shell.dm.composer'] as const) expect(en[k], k).toMatch(/^[a-z]/);
+    expect(en['shell.channels.rowLabel']).toBe('{name}, unread {unread}, mentions {mentions}');
+    expect(en['shell.channels.rowLabelMuted']).toBe('{name}, muted, mentions {mentions}');
+    expect(en['shell.rail.itemLabel']).toBe('{name}, unread {unread}, mentions {mentions}');
+    expect(en['shell.dm.log']).toBe('messages with {name}');
+    // Pre-flight ruling (rows 1.10, loop note 15): `@` before the name, so the composer keeps the name's case (web-1's label rule).
+    expect(en['shell.dm.composer']).toBe('message @{name}');
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(70);
+  });
 });
 
 describe('dates', () => {

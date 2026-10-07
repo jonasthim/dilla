@@ -14,6 +14,8 @@ describe('AppShell', () => {
     await user.tab();
     expect(screen.getByRole('button', { name: 'Midgard Crew' })).toHaveFocus();
     await user.tab();
+    expect(screen.getByRole('tab', { name: 'channels' })).toHaveFocus();
+    await user.tab();
     expect(screen.getByRole('button', { name: 'general' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('log', { name: 'messages in #general' })).toHaveFocus();

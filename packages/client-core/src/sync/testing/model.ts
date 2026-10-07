@@ -20,12 +20,17 @@ import {
   type OutboxRow,
   type TimelineRow,
   type WelcomeOutcome,
+  type ActivityRow,
+  type OwnDeviceList,
+  type SealedObjects,
+  type SignedLists,
 } from '../../core-port';
 import type { Frame } from '../../gateway/frames';
 import type { GatewayEvent, ReadyInfo } from '../../gateway/gateway';
 import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
 import type { Routes } from '../../http/routes';
+import { fakeDskPub, fakeListBlob, fakeListNames, readFakeList } from '../../testing/fake-list';
 
 export interface Peer {
   device: Id;
@@ -64,8 +69,8 @@ function bySeq(a: { seq: bigint }, b: { seq: bigint }): number {
 }
 
 /** The DillaHttpError constructor of the L-HTTP-20…45 header (task 13); this is its only call site. */
-export function httpError(status: number, code: string, retryAfterMs: number | null = null): DillaHttpError {
-  return new DillaHttpError({ status, code, detail: '', retryAfterMs, extra: [] });
+export function httpError(status: number, code: string, retryAfterMs: number | null = null, extra: CborValue[] = []): DillaHttpError {
+  return new DillaHttpError({ status, code, detail: '', retryAfterMs, extra });
 }
 
 /** The CoreError constructor of L-TS-03 (task 15); this is its only call site. */
@@ -123,7 +128,7 @@ export const wire = {
   commitment: commitmentFor,
   info: (groupId: Id, epoch: bigint): Uint8Array => encode(['info', groupId, epoch]),
   tree: (groupId: Id, epoch: bigint): Uint8Array => encode(['tree', groupId, epoch]),
-  binding: (communityId: Id, channelId: Id): Uint8Array => encode(['binding', communityId, channelId]),
+  binding: (communityId: Id | null, channelId: Id): Uint8Array => encode(['binding', communityId, channelId]),
 };
 
 /**
@@ -236,6 +241,7 @@ interface MGroup {
   epoch: bigint;
   joinedEpoch: bigint;
   joinEpoch: bigint;
+  preJoinEpoch: bigint;
   nextSeq: bigint;
   ackedSeq: bigint;
   ackedEpoch: bigint;
@@ -280,6 +286,8 @@ export class ModelCore implements CorePort {
   private readonly gs = new Map<string, MGroup>();
   private readonly out = new Map<string, MOut>();
   private msgs = 0;
+  private readonly readState = new Map<string, { lastReadSeq: bigint; lastReadAt: bigint }>();
+  private readonly settingsMap = new Map<string, string>();
 
   constructor(readonly me: Peer) {}
 
@@ -314,6 +322,9 @@ export class ModelCore implements CorePort {
   deviceListPublished(): void {
     throw coreError('E_CORE_STATE', 'not modelled');
   }
+  deviceListDrop(): void {
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
   sessionSign(): Uint8Array {
     throw coreError('E_CORE_STATE', 'not modelled');
   }
@@ -329,6 +340,18 @@ export class ModelCore implements CorePort {
   keyPackages(): Uint8Array {
     throw coreError('E_CORE_STATE', 'not modelled');
   }
+  sealedObjects(): SealedObjects { throw coreError('E_CORE_STATE', 'not modelled'); }
+  stateSealedUploaded(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
+  stateSealedCurrent(): boolean { throw coreError('E_CORE_STATE', 'not modelled'); }
+  enrolBegin(): { deviceId: Id; dskPub: Uint8Array } { throw coreError('E_CORE_STATE', 'not modelled'); }
+  enrolSessionSign(): Uint8Array { throw coreError('E_CORE_STATE', 'not modelled'); }
+  enrolRegistered(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
+  recoveryKeyCheck(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
+  enrolComplete(): SignedLists { throw coreError('E_CORE_STATE', 'not modelled'); }
+  enrolReset(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
+  deviceListRevoke(): SignedLists { throw coreError('E_CORE_STATE', 'not modelled'); }
+  ownDeviceListUpdate(): { version: bigint; listed: boolean } { throw coreError('E_CORE_STATE', 'not modelled'); }
+  ownDeviceList(): OwnDeviceList { throw coreError('E_CORE_STATE', 'not modelled'); }
 
   // --- groups (L-CORE-07) ---
 
@@ -337,8 +360,49 @@ export class ModelCore implements CorePort {
       .sort((a, b) => (toHex(a.groupId) < toHex(b.groupId) ? -1 : 1))
       .map((g) => this.info(g));
   }
+  groupRow(groupId: Id): GroupInfo | null {
+    const g = this.gs.get(toHex(groupId));
+    return g === undefined ? null : this.info(g);
+  }
+  markRead(groupId: Id, seq: bigint, now: bigint): void {
+    const g = this.must(groupId);
+    if (g.state === 4) throw coreError('E_CORE_STATE', 'group state 4');
+    const key = toHex(groupId);
+    const previous = this.readState.get(key)?.lastReadSeq ?? 0n;
+    const clamped = seq < g.nextSeq ? seq : g.nextSeq - 1n;
+    this.readState.set(key, { lastReadSeq: clamped > previous ? clamped : previous, lastReadAt: now });
+  }
+  activity(): ActivityRow[] {
+    return [...this.gs.values()].filter((g) => g.state === 2 || g.state === 3)
+      .sort((a, b) => toHex(a.groupId).localeCompare(toHex(b.groupId)))
+      .map((g) => {
+        const lastReadSeq = this.readState.get(toHex(g.groupId))?.lastReadSeq ?? 0n;
+        const rows = [...g.rows.values()].filter((r) => r.status === 0 && r.type === 0 &&
+          // The core's `sender_user <> ?1` excludes a NULL sender, as SQL does (CORE-ENGINE-03).
+          r.senderUser !== null && !same(r.senderUser, this.me.user) && r.seq > lastReadSeq).sort(bySeq);
+        const last = rows[rows.length - 1];
+        return { groupId: g.groupId, unread: rows.length, mentions: rows.filter((r) => this.mentionsMe(r.body)).length,
+          lastSeq: last?.seq ?? 0n, lastTs: last?.recvTs ?? 0n, lastReadSeq };
+      });
+  }
+  private mentionsMe(body: string): boolean {
+    return body.includes(`<@${toHex(this.me.user)}>` ) || body.includes('<@everyone>') || body.includes('<@here>');
+  }
+  settings(): Record<string, string> {
+    return Object.fromEntries([...this.settingsMap].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+  }
+  settingPut(k: string, v: string): void {
+    const enc = new TextEncoder();
+    if (enc.encode(k).length < 1 || enc.encode(k).length > 128 || enc.encode(v).length > 1024) throw coreError('E_CORE_INPUT');
+    this.settingsMap.set(k, v);
+  }
+  settingDelete(k: string): void {
+    const length = new TextEncoder().encode(k).length;
+    if (length < 1 || length > 128) throw coreError('E_CORE_INPUT');
+    this.settingsMap.delete(k);
+  }
 
-  groupCreate(groupId: Id, communityId: Id, channelId: Id): Uint8Array {
+  groupCreate(groupId: Id, communityId: Id | null, channelId: Id): Uint8Array {
     this.log('groupCreate', groupId);
     for (const g of this.gs.values()) {
       if (same(g.targetId, channelId) && g.state !== 4) throw coreError('E_CORE_STATE', 'a group exists for the channel');
@@ -362,12 +426,15 @@ export class ModelCore implements CorePort {
     g.proposals.clear();
     g.pending = null;
     if (g.fromResync) {
+      // As the core writes it (groups.rs: state 3, epoch 0): the old group state was already replaced (CORE-ENGINE-03).
       g.state = 3;
+      g.epoch = 0n;
       g.fromResync = false;
     } else if (g.wasGone) {
       // A rejoin of a gone row that did not complete: back to gone with its timeline, outbox,
       // nextSeq and floor (history outranks the discard of a fresh join).
       g.state = 4;
+      g.epoch = 0n;
       g.wasGone = false;
     } else {
       this.gs.delete(toHex(groupId));
@@ -407,8 +474,10 @@ export class ModelCore implements CorePort {
       // The floor is not written here: the stale epoch was written when it was reached, and the
       // joined epoch is recorded only by groupJoined.
       g.maxEpoch = prev.maxEpoch;
+      g.preJoinEpoch = prev.epoch;
     }
     g.joinEpoch = epoch + 1n;
+    g.epoch = g.joinEpoch;
     this.gs.set(toHex(eg.groupId), g);
     return encode([wire.commit(epoch + 1n, this.me.device, [this.me.device], []), wire.info(eg.groupId, epoch + 1n)]);
   }
@@ -778,7 +847,7 @@ export class ModelCore implements CorePort {
 
   private fresh(groupId: Id, communityId: Id | null, targetId: Id, state: 0 | 1 | 2): MGroup {
     return {
-      groupId, communityId, targetId, state, epoch: 0n, joinedEpoch: 0n, joinEpoch: 0n, nextSeq: 1n, ackedSeq: 0n, ackedEpoch: 0n,
+      groupId, communityId, targetId, state, epoch: 0n, joinedEpoch: 0n, joinEpoch: 0n, preJoinEpoch: 0n, nextSeq: 1n, ackedSeq: 0n, ackedEpoch: 0n,
       proposals: new Map(), pending: null, fromResync: false, wasGone: false, maxEpoch: 0n, rows: new Map(),
     };
   }
@@ -940,8 +1009,9 @@ export class ModelCore implements CorePort {
   }
 
   /** The row is the text group of channelId in communityId (a join never rebinds a row). */
-  private boundTo(g: MGroup, communityId: Id, channelId: Id): boolean {
-    return g.communityId !== null && same(g.communityId, communityId) && same(g.targetId, channelId);
+  private boundTo(g: MGroup, communityId: Id | null, channelId: Id): boolean {
+    return (g.communityId === null ? communityId === null : communityId !== null && same(g.communityId, communityId)) &&
+      same(g.targetId, channelId);
   }
 
   /** Another non-gone group that holds channelId. */
@@ -965,7 +1035,8 @@ export class ModelCore implements CorePort {
 // ---------------------------------------------------------------------------------------------
 
 export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
-  | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome';
+  | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome'
+  | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory';
 export type ModelRoutes = Pick<Routes, RouteName>;
 /** fail: throw before acting; lose: act, then throw a network error; before/after: run fn around acting; gate: wait first. */
 export type Injection = { fail: Error } | { lose: true } | { before: () => void } | { after: () => void } | { gate: Promise<void> };
@@ -1075,12 +1146,20 @@ export class ModelDs {
   private readonly removed = new Set<string>();
   private readonly groups = new Map<string, DsGroup>();
   private readonly channels = new Map<string, { communityId: Id; channelId: Id }>();
+  private readonly owners = new Map<string, string>();
+  private readonly devices = new Map<string, Id>();
+  private readonly users = new Map<string, Id>();
+  private readonly keyPackageDevs = new Set<string>();
+  private readonly lists = new Map<string, { version: bigint; blob: Uint8Array; sig: Uint8Array; prev: Uint8Array }[]>();
+  private readonly revokedDevs = new Set<string>();
+  private readonly dms = new Map<string, { channelId: Id; users: Id[] }>();
   private readonly welcomes: DsWelcome[] = [];
   private readonly sinks = new Map<string, (f: Frame) => void>();
   private readonly parked = new Map<string, (f: Frame) => void>();
   private readonly drops = new Map<string, number>();
   private readonly injections = new Map<RouteName, Injection[]>();
   private readonly messageHooks = new Map<string, () => void>();
+  private readonly proposalHooks = new Map<string, () => void>();
   private counter = 0;
   private frameN = 0n;
   private welcomeIds = 0n;
@@ -1090,6 +1169,49 @@ export class ModelDs {
 
   addChannel(communityId: Id, channelId: Id): void {
     this.channels.set(toHex(channelId), { communityId, channelId });
+  }
+  own(user: Id, device: Id): void {
+    this.owners.set(toHex(device), toHex(user));
+    this.devices.set(toHex(device), device);
+    this.users.set(toHex(user), user);
+    this.keyPackageDevs.add(toHex(device));
+  }
+  publishList(user: Id, entries: readonly { device: Id; revokedAt?: bigint | null }[]): bigint {
+    const key = toHex(user);
+    const version = BigInt((this.lists.get(key)?.length ?? 0) + 1);
+    const blob = fakeListBlob(user, entries.map((entry) => ({ deviceId: entry.device, revokedAt: entry.revokedAt ?? null })), this.clockS);
+    this.storeList(key, version, blob, new Uint8Array(64), new Uint8Array(32));
+    return version;
+  }
+  addDm(channelId: Id, participants: readonly Peer[]): void {
+    participants.forEach((p) => this.own(p.user, p.device));
+    const users = [...new Map(participants.map((p) => [toHex(p.user), p.user])).values()]
+      .sort((a, b) => toHex(a).localeCompare(toHex(b)));
+    this.dms.set(toHex(channelId), { channelId, users });
+  }
+  private unlisted(device: string): boolean {
+    const owner = this.owners.get(device);
+    if (owner === undefined) return false;
+    const rows = this.lists.get(owner);
+    if (rows === undefined || rows.length === 0) return false;
+    const list = readFakeList(at(rows, rows.length - 1).blob);
+    const id = this.devices.get(device);
+    // Invariant 4 judges the (device_id, dsk_pub) pair; every ModelDs device holds its default key.
+    return list === null || id === undefined || !fakeListNames(list, id, fakeDskPub(id));
+  }
+  private storeList(user: string, version: bigint, blob: Uint8Array, sig: Uint8Array, prev: Uint8Array): void {
+    const rows = this.lists.get(user) ?? [];
+    rows.push({ version, blob, sig, prev });
+    this.lists.set(user, rows);
+    const list = readFakeList(blob);
+    if (list === null) return;
+    for (const entry of list.entries) {
+      const key = toHex(entry.deviceId);
+      if (entry.revokedAt !== null && this.owners.get(key) === user && !this.revokedDevs.has(key)) {
+        this.revokedDevs.add(key);
+        for (const g of this.groups.values()) if (g.members.has(key)) this.propose(g.id, 'remove', entry.deviceId);
+      }
+    }
   }
 
   attach(dev: Id, sink: (f: Frame) => void): void {
@@ -1133,6 +1255,11 @@ export class ModelDs {
    */
   afterNextMessagesRead(groupId: Id, fn: () => void): void {
     this.messageHooks.set(toHex(groupId), fn);
+  }
+
+  /** One-shot race: remove a leaf after its proposal read and before its commit upload. */
+  afterNextProposalsRead(groupId: Id, fn: () => void): void {
+    this.proposalHooks.set(toHex(groupId), fn);
   }
 
   resetCalls(): void {
@@ -1312,8 +1439,14 @@ export class ModelDs {
       getProposals: (id) =>
         this.call(d, 'getProposals', id, null, () => {
           const g = this.must(id);
-          if (this.removed.has(`${toHex(id)}/${d}`)) throw httpError(404, 'E_NOT_FOUND');
-          return encode(g.proposals.filter((p) => p.epoch === g.epoch).map((p) => [p.ref, 0, null, p.blob, p.void ? 1 : 0]));
+          if (!g.members.has(d)) throw httpError(404, 'E_NOT_FOUND');
+          const answer = encode(g.proposals.filter((p) => p.epoch === g.epoch).map((p) => [p.ref, 0, null, p.blob, p.void ? 1 : 0]));
+          const hook = this.proposalHooks.get(toHex(id));
+          if (hook !== undefined) {
+            this.proposalHooks.delete(toHex(id));
+            hook();
+          }
+          return answer;
         }),
       postCommit: (id, body) => this.call(d, 'postCommit', id, null, () => this.postCommit(d, id, body)),
       postMessage: (id, body) => this.call(d, 'postMessage', id, null, () => this.postMessage(dev, id, body)),
@@ -1329,11 +1462,57 @@ export class ModelDs {
           const i = this.welcomes.findIndex((w) => w.dev === d && w.id === welcomeId);
           if (i >= 0) this.welcomes.splice(i, 1);
         }),
+      getChannel: (id) => this.call(d, 'getChannel', id, null, () => {
+        const dm = this.dms.get(toHex(id));
+        if (dm !== undefined) {
+          if (!dm.users.some((user) => toHex(user) === this.owners.get(d))) throw httpError(404, 'E_NOT_FOUND');
+          return { id, kind: dm.users.length === 2 ? 3 : 4, mode: 0, visibility: 0, parentId: null,
+            name: '', topic: '', position: 0, seq: 0n, textGroupId: this.openGroupOf(id)?.id ?? null };
+        }
+        const channel = this.channels.get(toHex(id));
+        if (channel === undefined) throw httpError(404, 'E_NOT_FOUND');
+        return this.channelRows(channel.communityId).find((row) => same(row.id, id))!;
+      }),
+      postDm: (recipients) => this.call(d, 'postDm', null, null, () => {
+        const owner = this.owners.get(d);
+        if (owner === undefined) throw httpError(400, 'E_INVALID_REQUEST');
+        const users = [...new Set([owner, ...recipients.map(toHex)])].sort();
+        if (users.length < 2) throw httpError(400, 'E_INVALID_REQUEST');
+        for (const dm of this.dms.values()) if (dm.users.map(toHex).join('/') === users.join('/'))
+          return { channelId: dm.channelId, created: false };
+        if (users.some((user) => !this.users.has(user))) throw httpError(404, 'E_NOT_FOUND');
+        const channelId = idOf(0xd3, this.dms.size + 1);
+        this.dms.set(toHex(channelId), { channelId, users: users.map((user) => this.users.get(user)!) });
+        return { channelId, created: true };
+      }),
+      listDms: () => this.call(d, 'listDms', null, null, () => [...this.dms.values()]
+        .filter((dm) => dm.users.some((user) => toHex(user) === this.owners.get(d)))
+        .map((dm) => ({ channelId: dm.channelId, kind: dm.users.length === 2 ? 3 as const : 4 as const, members: dm.users }))),
+      putDeviceList: (userId, body) => this.call(d, 'putDeviceList', null, null, () => {
+        const user = toHex(userId);
+        if (this.owners.get(d) !== user) throw httpError(403, 'E_FORBIDDEN');
+        const a = arr(decode(body), 4);
+        const version = u64(at(a, 0));
+        if (version !== BigInt((this.lists.get(user)?.length ?? 0) + 1)) throw httpError(409, 'E_INVALID_REQUEST');
+        this.storeList(user, version, bin(at(a, 1)), bin(at(a, 2)), bin(at(a, 3)));
+      }),
+      getDeviceList: (userId) => this.call(d, 'getDeviceList', null, null, () => {
+        const rows = this.lists.get(toHex(userId));
+        const last = rows?.[rows.length - 1];
+        return last === undefined ? null : { version: last.version, blob: last.blob,
+          raw: encode([last.version, last.blob, last.sig, last.prev]) };
+      }),
+      getDeviceListHistory: (userId, after) => this.call(d, 'getDeviceListHistory', null, after, () => {
+        const rows = (this.lists.get(toHex(userId)) ?? []).filter((row) => row.version > after).slice(0, 64);
+        return { raw: encode(rows.map((row) => [row.version, row.blob, row.sig, row.prev])),
+          count: rows.length, lastVersion: rows.length ? at(rows, rows.length - 1).version : null };
+      }),
     };
   }
 
   private async call<T>(dev: string, route: RouteName, group: Id | null, from: bigint | null, run: () => T): Promise<T> {
     this.calls.push({ dev, route, group: group === null ? '' : toHex(group), from });
+    if (this.revokedDevs.has(dev)) throw httpError(401, 'E_UNAUTHENTICATED');
     const injection = this.injections.get(route)?.shift();
     await (injection !== undefined && 'gate' in injection ? injection.gate : Promise.resolve());
     if (injection !== undefined && 'fail' in injection) throw injection.fail;
@@ -1361,8 +1540,19 @@ export class ModelDs {
     const id = bin(at(v, 0), 16);
     const binding = arr(decode(bin(at(v, 1))), 3);
     const channelId = bin(at(binding, 2), 16);
+    if (this.unlisted(d)) throw httpError(400, 'E_INVALID_REQUEST');
     if (this.openGroupOf(channelId) !== undefined) throw httpError(409, 'E_GROUP_EXISTS');
     this.groups.set(toHex(id), this.newGroup(id, channelId, d));
+    const dm = this.dms.get(toHex(channelId));
+    if (dm !== undefined) {
+      const g = this.must(id);
+      for (const user of dm.users) {
+        for (const [device, owner] of this.owners) {
+          if (owner === toHex(user) && !g.members.has(device) && !this.revokedDevs.has(device) && this.keyPackageDevs.has(device))
+            this.propose(id, 'add', this.devices.get(device)!);
+        }
+      }
+    }
     return { nextSeq: 1n };
   }
 
@@ -1406,7 +1596,7 @@ export class ModelDs {
     const v = arr(decode(body), 2);
     const blob = bin(at(v, 1));
     if (blob.length > 131072) throw httpError(413, 'E_TOO_LARGE');
-    if (u64(at(v, 0)) !== g.epoch) throw httpError(422, 'E_COMMIT_INVALID');
+    if (u64(at(v, 0)) !== g.epoch) throw httpError(422, 'E_COMMIT_INVALID', null, ['epoch']);
     const e = this.appendMessage(g, dev, blob);
     return { raw: encode([e.seq, e.franking, e.recvTs]), seq: e.seq };
   }
@@ -1415,6 +1605,7 @@ export class ModelDs {
     const g = this.must(id);
     if (this.aclDeny.has(toHex(dev))) throw httpError(404, 'E_NOT_FOUND');
     if (this.denyJoin.has(toHex(dev))) throw httpError(403, 'E_FORBIDDEN');
+    if (this.unlisted(toHex(dev))) throw httpError(422, 'E_COMMIT_INVALID', null, ['external_joiner']);
     const v = arr(decode(body), 2);
     const commit = bin(at(v, 0));
     if (u64(at(arr(decode(commit), 5), 1)) !== g.epoch + 1n) throw httpError(409, 'E_COMMIT_CONFLICT');

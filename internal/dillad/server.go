@@ -151,6 +151,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Registration: o.Config.Registration, Config: o.Config,
 		Sessions: sessions, Hasher: hasher, Throttle: throttle, Passkeys: passkeys,
 		Assertions: api.NewAssertions(o.Clock, api.AssertionTTL),
+		// One upload meter for the attachment routes and PUT /v1/backups (security review F3).
+		UploadMeter: api.NewUploadMeter(o.Clock, o.Config.Blobs),
 	}
 	// GET /v1/instance publishes the external-sender public key, derived from the seed the
 	// delivery service signs with, so the two cannot disagree. An ed25519.PrivateKey is
@@ -195,6 +197,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 		ownsBlobs = true
 	}
+	deviceLists := ds.NewDeviceLists(o.Repo, wasm)
+	sessions.DeviceLists = deviceListGate{lists: deviceLists}
 
 	// The gateway, then the delivery service: ds holds *gateway.Gateway, and
 	// the gateway calls back into ds for ready's per-group digest and for
@@ -259,7 +263,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Channels: channels,
 		ACL:      acl,
 		// The device lists are verified in the guest (NV-B8, deviation B32).
-		DeviceLists: ds.NewDeviceLists(o.Repo, wasm),
+		DeviceLists: deviceLists,
 		// A fork-quarantined device is queued to be cut from every live call; the hook only enqueues,
 		// so the fork-report path never waits on the SFU (dilla-media task 10).
 		OnQuarantine: cutFromCalls,
@@ -306,9 +310,31 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// POST /v1/gateway/ticket mints from the gateway's own store; a second
 	// store would mint tickets the upgrade has never heard of.
 	deps.Tickets = gw.Tickets()
+	// The backup routes store the sealed header objects content-addressed in the same blob store as attachments (protocol/09 § Backups).
+	deps.Blobs = blobs
+	deps.DeviceLists = deviceLists
 	// A device is proposed into a DM only once its user's signed list names it (invariant 4), and
 	// pairing publishes the KeyPackages before the list: the list's publish is the second trigger.
-	deps.AfterDeviceList = func(ctx context.Context, userID id.ID) {
+	deps.AfterDeviceList = func(ctx context.Context, userID id.ID, revoked []id.ID) {
+		if len(revoked) > 0 {
+			o.Log.InfoContext(ctx, "removing revoked devices", "user", userID.String())
+			if err := api.RemoveRevokedDevices(ctx, o.Repo, delivery, revoked); err != nil {
+				joined := []error{err}
+				if many, ok := err.(interface{ Unwrap() []error }); ok {
+					joined = many.Unwrap()
+				}
+				for _, one := range joined {
+					var re *api.RevokedRemoveError
+					if errors.As(one, &re) {
+						o.Log.ErrorContext(ctx, "proposing a revoked device's Remove failed",
+							"user", userID.String(), "group", re.Group.String(), "device", re.Device.String(), "err", re.Err)
+					} else {
+						o.Log.ErrorContext(ctx, "reading a revoked device's groups failed",
+							"user", userID.String(), "err", one)
+					}
+				}
+			}
+		}
 		if err := api.SyncUserDMs(ctx, o.Repo, delivery, userID, o.Clock.Now().Unix()); err != nil {
 			o.Log.ErrorContext(ctx, "bringing a user's DMs in line after a device-list publish failed",
 				"user", userID, "err", err)
@@ -371,7 +397,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// paths when this process runs an SFU.
 	callRoutes = mountPlanTwo(mux, planTwo{
 		o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
-		blobs: blobs, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
+		blobs: blobs, uploads: deps.UploadMeter, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
 	})
 	if o.SFU != nil {
 		if err := mountRTC(mux, o.SFU, callRoutes, o.Config.Server.TrustedProxyCIDRs, limiter); err != nil {
@@ -656,4 +682,17 @@ func generationHeader(next http.Handler, generation uint64) http.Handler {
 		w.Header().Set("X-Dilla-Generation", value)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// deviceListGate is auth.DeviceLister over the delivery service's device lists: the session
+// gate of protocol/02 § Device sessions item 4 and invariant 4's DSK clause read the same newest
+// list through the same guest decoder, so they cannot disagree about which devices a user listed.
+type deviceListGate struct{ lists ds.DeviceLists }
+
+func (g deviceListGate) ListedDevices(ctx context.Context, userID id.ID) ([]auth.ListedDevice, error) {
+	entries, err := g.lists.Entries(ctx, nil, userID)
+	if errors.Is(err, ds.ErrNoDeviceList) {
+		return nil, auth.ErrNoDeviceList
+	}
+	return entries, err
 }
