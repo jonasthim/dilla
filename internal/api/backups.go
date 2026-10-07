@@ -166,13 +166,27 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	now := d.Clock.Now().Unix()
 	status := http.StatusCreated
-	var replaced []byte // the replaced state object's bytes, deleted from the table, to unlink
+	var replaced store.BlobRow // the replaced state object's row, deleted in the transaction, to unlink
 	err = d.Repo.Tx(ctx, func(tx store.Repository) error {
-		replaced = nil
+		replaced = store.BlobRow{}
+		if kind == 1 {
+			// One state replacement of a user at a time: the users row FOR UPDATE on Postgres, the
+			// write transaction on SQLite (the lock device registration takes). Without it two
+			// devices' concurrent PUTs both read the same predecessor under READ COMMITTED, and the
+			// object the first one stored was replaced by the second and never deleted.
+			if err := tx.LockUserForDeviceRegistration(ctx, sess.UserID); err != nil {
+				return err
+			}
+		}
 		if err := tx.PutBlob(ctx, store.BlobRow{
 			BlobID: blobID, Size: uint64(n), //nolint:gosec // G115: n is a byte count returned by blob.Store.Put, never negative
 			StorageRef: blob.StorageRef(d.Config.Blobs.Backend, blobID), Created: now,
 		}); err != nil {
+			return err
+		}
+		// The file is checked after the row is claimed: a replaced object's delete claims the same
+		// row before it unlinks, so either it saw this row and kept the file, or the file is gone now.
+		if err := bytesPresent(d.Blobs, blobID); err != nil {
 			return err
 		}
 		// The tombstone again, inside the transaction that records the object: a purge that
@@ -210,13 +224,14 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		prev, err := tx.GetBackup(ctx, sess.UserID, 1, id.ID{}, 0)
 		// noLarger: the replacement is no larger than the state object it replaces.
 		noLarger := false
+		var prevBlob store.BlobRow
 		if errors.Is(err, store.ErrNotFound) {
 			prev = store.BackupRow{}
 		} else if err != nil {
 			return err
 		} else {
 			status = http.StatusOK
-			prevBlob, err := tx.GetBlob(ctx, prev.BlobID)
+			prevBlob, err = tx.GetBlob(ctx, prev.BlobID)
 			if err != nil {
 				return err
 			}
@@ -253,7 +268,7 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 			if err := tx.DeleteBlob(ctx, prev.BlobID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return err
 			}
-			replaced = prev.BlobID
+			replaced = prevBlob
 		}
 		return nil
 	})
@@ -271,6 +286,12 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 			// The bytes are an attachment's, referenced and so kept; nothing to orphan.
 			server.WriteError(w, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
 				"these bytes are an attachment; a backup object cannot share them")))
+			return
+		}
+		if errors.Is(err, errBytesGone) {
+			// A replaced object's delete unlinked these bytes under this upload; no row may name a
+			// missing file, so nothing is recorded and the client sends them again.
+			server.WriteError(w, errBytesGoneRetry())
 			return
 		}
 		if created {
@@ -296,21 +317,67 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	if replaced != nil {
-		d.unlinkReplaced(ctx, replaced)
+	if replaced.BlobID != nil {
+		d.unlinkReplaced(ctx, replaced, now)
 	}
 	d.write(w, r, status, []any{blobID, uint64(n)}) //nolint:gosec // G115: n is a nonnegative byte count
 }
 
-// unlinkReplaced removes the file of a replaced state object whose row the committed transaction
-// deleted. A concurrent PUT of the same bytes may have recorded them again since; their row is
-// then back and the file stays.
-func (d Deps) unlinkReplaced(ctx context.Context, blobID []byte) {
-	ctx = context.WithoutCancel(ctx)
-	if _, err := d.Repo.GetBlob(ctx, blobID); !errors.Is(err, store.ErrNotFound) {
-		return
+// errBytesGone is a recording transaction finding the file it is about to name gone: a replaced
+// state object's delete unlinked the same bytes after this upload found them on disk.
+var errBytesGone = errors.New("api: the uploaded bytes were unlinked under the upload")
+
+// errBytesGoneRetry is errBytesGone's answer: 503 with a short retry, after which the upload writes
+// the bytes again.
+func errBytesGoneRetry() error {
+	return server.Unavailable(100, "the stored bytes were removed during the upload; send them again")
+}
+
+// bytesPresent is the recording transactions' check that the file the row names exists. It runs
+// after the transaction claimed the blobs row (PutBlob), which is what orders it against
+// unlinkReplaced: that claims the same row before it unlinks.
+func bytesPresent(bs *blob.Store, blobID []byte) error {
+	if _, err := bs.Stat(blobID); errors.Is(err, blob.ErrNotFound) {
+		return errBytesGone
+	} else if err != nil {
+		return err
 	}
-	if err := d.Blobs.Delete(blobID); err != nil && !errors.Is(err, blob.ErrNotFound) {
+	return nil
+}
+
+// unlinkReplaced unlinks the file of a replaced state object whose row the committed transaction
+// deleted, safely against an upload of the same bytes (same content address) racing it. In its own
+// transaction it claims the row again (PutBlob, an insert that is a no-op when the row exists: on
+// Postgres it waits on an uncommitted insert of the same id, on SQLite the write transaction
+// serialises it with every other recording transaction) and re-checks under that claim that no
+// backups row and no blob_refs row names the bytes. Only then does it delete the row and unlink the
+// file, before its commit. An upload that recorded first keeps its row and file; one that records
+// after finds the file gone in its own transaction (bytesPresent) and records nothing.
+func (d Deps) unlinkReplaced(ctx context.Context, row store.BlobRow, now int64) {
+	ctx = context.WithoutCancel(ctx)
+	err := d.Repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.PutBlob(ctx, store.BlobRow{BlobID: row.BlobID, Size: row.Size, StorageRef: row.StorageRef, Created: now}); err != nil {
+			return err
+		}
+		backup, err := tx.BackupRefersToBlob(ctx, row.BlobID)
+		if err != nil || backup {
+			return err
+		}
+		refs, err := tx.CountBlobRefs(ctx, row.BlobID)
+		if err != nil || refs > 0 {
+			return err
+		}
+		if err := tx.DeleteBlob(ctx, row.BlobID); err != nil {
+			return err
+		}
+		if err := d.Blobs.Delete(row.BlobID); err != nil && !errors.Is(err, blob.ErrNotFound) {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		// The replacing transaction already deleted the row; when this one fails (the unlink
+		// included) the file stays without a row, a stray file `dillad doctor` reports.
 		d.Log.ErrorContext(ctx, "unlink a replaced state object", "err", err)
 	}
 }

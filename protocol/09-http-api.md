@@ -607,7 +607,12 @@ object under `SHA-256(object)` in its blob store and cannot open it.
   `E_ROOT_MISMATCH` with an alert. The server's `409` detail reveals nothing about stored bytes.
 - **The state object is replaced.** Each `PUT` of kind `1` replaces it; the replaced bytes, when
   nothing else names them, are deleted at once (their blob row in the replacing transaction, their
-  file right after it), never kept for `blobs.gc_grace`.
+  file right after it, after a re-check that no reference or backup object names them again),
+  never kept for `blobs.gc_grace`. One user's state replacements are serialised, so concurrent
+  `PUT`s from two devices leave the last committed object and no other. An upload of the same bytes
+  (a backup or an attachment `PUT`) racing that delete either records before it and keeps the
+  bytes, or finds them gone in its own transaction and answers `503 E_UNAVAILABLE` with a short
+  `retry_after_ms`, recording nothing; sent again, the bytes are stored anew.
 - **Storage.** Backup objects count against `blobs.store_max_bytes` (new bytes that would pass it
   are `507 E_STORAGE_FULL` and nothing is stored) and toward the uploader's
   `blobs.quota_bytes_per_user` together with their attachments, each distinct blob once (§ Blobs);

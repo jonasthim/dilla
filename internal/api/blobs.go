@@ -230,6 +230,13 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
+		// The file, after the row is claimed: a replaced state object's delete
+		// (Deps.unlinkReplaced) claims the same row before it unlinks, so either it
+		// saw this row and kept the file or the file is gone now and nothing is
+		// recorded (the client sends the bytes again).
+		if err := bytesPresent(b.store, blobID); err != nil {
+			return err
+		}
 		// The tombstone again, now inside the transaction that would write the
 		// reference: a purge that committed while the body was streaming must not
 		// be undone by it (fix wave I9).
@@ -289,6 +296,11 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 			// The bytes are a backup object's and stay as they are: nothing to orphan.
 			server.WriteError(w, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
 				"these bytes are a backup object; an attachment cannot share them")))
+			return
+		}
+		if errors.Is(err, errBytesGone) {
+			// Unlinked under the upload: no row may name a missing file, so nothing to orphan.
+			server.WriteError(w, errBytesGoneRetry())
 			return
 		}
 		if created {

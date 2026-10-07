@@ -11,13 +11,20 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -97,6 +104,177 @@ func TestAnAttachmentOfBackupBytesIsRefused(t *testing.T) {
 	}
 	if status, body := putAttachment(e, ch, tok, object); status != http.StatusCreated {
 		t.Fatalf("an attachment of bytes no backup names any more = %d %x, want 201", status, body)
+	}
+}
+
+// The immediate delete of a replaced state object (BACKUPS-RECOVERY-01 as amended) is race-safe.
+// Each round, two devices of one user replace the state object concurrently while the owner uploads
+// the replaced object's bytes as an attachment. Whatever the interleaving: exactly one state row
+// stays, naming the last committed object, whose blobs row and file exist; the losing object leaves
+// no row and no file (no orphan); and the old bytes are either refused (409 while a backup still
+// names them, 503 when they vanished under the upload, which the client retries) with no reference
+// left, or accepted with a reference AND a blobs row AND a file holding exactly those bytes, never a
+// reference to a file the delete unlinked.
+func TestConcurrentStateReplacementsAndAnAttachmentOfTheOldBytes(t *testing.T) {
+	e, ch, tok := blobEnv(t)
+	mountBackupPut(e)
+	ctx := t.Context()
+	user := userOf(t, e, tok)
+	second := id.New()
+	if err := e.Repo.CreateDevice(ctx, newAPITestDevice(second, user, e.Clk.Now().Unix())); err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	tok2 := "second-" + second.String()
+	e.sess[tok2] = auth.Session{UserID: user, DeviceID: second, Scope: auth.ScopeEnrolled}
+
+	exists := func(object []byte) (row, file bool) {
+		sum := sha256.Sum256(object)
+		_, rerr := e.Repo.GetBlob(ctx, sum[:])
+		_, ferr := e.Blobs.Stat(sum[:])
+		return rerr == nil, ferr == nil
+	}
+	old := stateShaped(t, 0x01)
+	if status, body := putStateObject(e, tok, old); status != http.StatusCreated {
+		t.Fatalf("the first state PUT = %d %x", status, body)
+	}
+	for round := 0; round < 60; round++ {
+		e.Clk.Advance(time.Minute) // the attachment route's 20 uploads a minute
+		a := mustCBOR(t, []any{uint64(1), bytes.Repeat([]byte{byte(round), 0xa}, 6), bytes.Repeat([]byte{0xaa}, 64)})
+		b := mustCBOR(t, []any{uint64(1), bytes.Repeat([]byte{byte(round), 0xb}, 6), bytes.Repeat([]byte{0xbb}, 64)})
+		var wg sync.WaitGroup
+		var sa, sb, sx int
+		wg.Add(3)
+		go func() { defer wg.Done(); sa, _ = putStateObject(e, tok, a) }()
+		go func() { defer wg.Done(); sb, _ = putStateObject(e, tok2, b) }()
+		go func() { defer wg.Done(); sx, _ = putAttachment(e, ch, tok, old) }()
+		wg.Wait()
+		if sa != http.StatusOK || sb != http.StatusOK {
+			t.Fatalf("round %d: the state PUTs = %d and %d, want 200 each", round, sa, sb)
+		}
+		rows, err := e.Repo.ListBackups(ctx, user, 1)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("round %d: state rows = %+v, %v; want exactly one", round, rows, err)
+		}
+		live, lost := a, b
+		if sum := sha256.Sum256(b); bytes.Equal(rows[0].BlobID, sum[:]) {
+			live, lost = b, a
+		}
+		if row, file := exists(live); !row || !file {
+			t.Fatalf("round %d: the live state has row %v file %v, want both", round, row, file)
+		}
+		if row, file := exists(lost); row || file {
+			t.Fatalf("round %d: the replaced state has row %v file %v, want neither (an orphan)", round, row, file)
+		}
+		oldSum := sha256.Sum256(old)
+		refs, err := e.Repo.CountBlobRefs(ctx, oldSum[:])
+		if err != nil {
+			t.Fatalf("CountBlobRefs: %v", err)
+		}
+		switch sx {
+		case http.StatusCreated, http.StatusOK:
+			row, file := exists(old)
+			if refs != 1 || !row || !file {
+				t.Fatalf("round %d: an accepted attachment of the old bytes has %d refs, row %v, file %v; want 1, true, true",
+					round, refs, row, file)
+			}
+			rc, _, err := e.Blobs.Get(oldSum[:])
+			if err != nil {
+				t.Fatalf("round %d: read the accepted attachment: %v", round, err)
+			}
+			got, err := io.ReadAll(rc)
+			_ = rc.Close()
+			if err != nil || !bytes.Equal(got, old) {
+				t.Fatalf("round %d: the accepted attachment's file holds %x (err %v), want the uploaded bytes", round, got, err)
+			}
+			// The bytes are an attachment now; the next round races fresh ones.
+			old = live
+			continue
+		case http.StatusConflict, http.StatusServiceUnavailable:
+			if refs != 0 {
+				t.Fatalf("round %d: a refused attachment (%d) left %d references", round, sx, refs)
+			}
+			if row, file := exists(old); row || file {
+				t.Fatalf("round %d: after a refused attachment (%d) the replaced bytes have row %v file %v, want neither",
+					round, sx, row, file)
+			}
+		default:
+			t.Fatalf("round %d: the attachment PUT = %d, want 201/200, 409 or 503", round, sx)
+		}
+		old = live
+	}
+}
+
+// beforeFirstTx is the attachment route's repository with a hook run once, right before the route
+// opens its first transaction: after the uploaded bytes are on disk, before they are recorded.
+type beforeFirstTx struct {
+	store.Repository
+	mu   sync.Mutex
+	hook func()
+}
+
+func (b *beforeFirstTx) Tx(ctx context.Context, fn func(store.Repository) error) error {
+	b.mu.Lock()
+	hook := b.hook
+	b.hook = nil
+	b.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return b.Repository.Tx(ctx, fn)
+}
+
+// The deterministic interleaving of the race above: the owner uploads the state object's bytes as
+// an attachment just after the state is replaced, and the replacement's delete commits and unlinks
+// the file after the upload found the file present but before the upload records its reference.
+// Before the fix the upload recorded a reference (200) to a file that was gone. Now the recording
+// transaction finds the bytes gone and answers 503 with nothing recorded; the client retries and
+// writes the bytes again.
+func TestAnAttachmentWhoseBytesAreDeletedUnderItIsRefused(t *testing.T) {
+	e, cid, tok := channelEnv(t)
+	bs, err := blob.Open(t.TempDir(), "fs")
+	if err != nil {
+		t.Fatalf("blob.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = bs.Close() })
+	e.Blobs = bs
+	hooked := &beforeFirstTx{Repository: e.Repo}
+	log := slog.New(slog.DiscardHandler)
+	api.NewBlobs(hooked, bs, api.NewResolver(e.Repo), config.Default().Blobs, e.Clk, log).Register(e.Mux)
+	mountBackupPut(e)
+	ch, _, status := newChannel(t, e, cid, tok, uint64(api.ChannelText), uint64(api.ModeE2EE), uint64(api.VisPrivate), "files")
+	if status != http.StatusCreated {
+		t.Fatalf("create channel = %d", status)
+	}
+	ctx := t.Context()
+
+	old, next := stateShaped(t, 0x41), stateShaped(t, 0x42)
+	if status, body := putStateObject(e, tok, old); status != http.StatusCreated {
+		t.Fatalf("the first state PUT = %d %x", status, body)
+	}
+	// The attachment PUT of `old` first sees `old` named by the backup only if it records before
+	// the replacement; here the replacement runs, whole, between its file write and its record.
+	var replaced int
+	hooked.hook = func() { replaced, _ = putStateObject(e, tok, next) }
+	status, body := putAttachment(e, ch, tok, old)
+	if replaced != http.StatusOK {
+		t.Fatalf("the replacing state PUT inside the race = %d, want 200", replaced)
+	}
+	if status != http.StatusServiceUnavailable || e.ErrCode(body) != "E_UNAVAILABLE" {
+		t.Fatalf("an attachment whose bytes were deleted under it = %d %x, want 503 E_UNAVAILABLE", status, body)
+	}
+	sum := sha256.Sum256(old)
+	if n, err := e.Repo.CountBlobRefs(ctx, sum[:]); err != nil || n != 0 {
+		t.Fatalf("references = %d, %v; want none", n, err)
+	}
+	if _, err := e.Repo.GetBlob(ctx, sum[:]); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the deleted bytes' blobs row: %v, want ErrNotFound (no orphan row without a file)", err)
+	}
+	// The client's retry writes the bytes again and is accepted.
+	if status, body := putAttachment(e, ch, tok, old); status != http.StatusCreated {
+		t.Fatalf("the retried attachment = %d %x, want 201", status, body)
+	}
+	if _, err := e.Blobs.Stat(sum[:]); err != nil {
+		t.Fatalf("the retried attachment's file: %v", err)
 	}
 }
 
