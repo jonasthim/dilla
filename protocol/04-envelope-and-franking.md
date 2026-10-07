@@ -81,8 +81,12 @@ on the order in which rows reach it.
 - **Target.** The target of `X` in a group (in an end-to-end encrypted group; a server-readable
   channel names the `seq`, § Envelope) is the earliest (lowest `seq`) type-0 envelope with
   `msg_id = X` the receiver holds there, shown or deleted. A later type-0 envelope that repeats `X`
-  is shown as its own message and is never a target. A fold whose target is not held is kept, not
-  shown, and applied when the target arrives.
+  is shown as its own message and is never a target. A type-0 envelope whose `msg_id` a row the
+  receiver holds with a lower `seq` already names (the `reply_to` of a fold or of a reply) repeats
+  an original the receiver does not hold (deleted or undecryptable when fetched, or sent before it
+  joined) and is never a target either. A fold applies only to a target with a lower `seq` than its
+  own; a fold whose target is not held is kept, not shown, and applied when a target with a lower
+  `seq` is stored.
 - **Delete wins.** A type-2 envelope from the target's author (the same `user_id` in the MLS
   credential, from any of the author's devices), or the delivery service's deletion of the target
   (`02` message delete, gateway `message.deleted`), deletes the target: its body, attachments and

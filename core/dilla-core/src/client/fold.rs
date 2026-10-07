@@ -20,7 +20,12 @@ pub(super) struct Target {
     pub shown_body: String,
 }
 
-pub(super) const RESOLVE_SQL: &str = "SELECT seq, status, sender_user, COALESCE(edit_body, body) FROM app_messages INDEXED BY app_messages_by_msg WHERE group_id = ?1 AND msg_id = ?2 AND type = 0 AND status IN (0, 2) ORDER BY seq LIMIT 1";
+/// The target of `msg_id`: the earliest type-0 row with it, shown or deleted, unless a row of
+/// lower seq already names it (a fold, or a reply's `reply_to`): that type 0 is a repeat of an
+/// original this device does not hold (deleted before it was fetched, undecryptable, or sent
+/// before this device joined), and a repeat is never a target (protocol/04 § Semantics, Target).
+/// Every later candidate has the same lower-seq row before it, so only the earliest is checked.
+pub(super) const RESOLVE_SQL: &str = "SELECT m.seq, m.status, m.sender_user, COALESCE(m.edit_body, m.body) FROM (SELECT seq, status, sender_user, edit_body, body FROM app_messages INDEXED BY app_messages_by_msg WHERE group_id = ?1 AND msg_id = ?2 AND type = 0 AND status IN (0, 2) ORDER BY seq LIMIT 1) AS m WHERE NOT EXISTS (SELECT 1 FROM app_messages AS r INDEXED BY app_messages_by_pin WHERE r.group_id = ?1 AND r.reply_to = ?2 AND r.type IN (0, 1, 2, 3, 4, 5, 6) AND r.seq < m.seq)";
 
 pub(super) fn resolve(
     c: &rusqlite::Connection,
@@ -115,13 +120,16 @@ pub(super) fn scope_of(ty: Option<i64>, sender_user: Option<[u8; 16]>, body: &st
 
 pub(super) const UNHELD_DELETERS: &str = "SELECT DISTINCT sender_user FROM app_messages INDEXED BY app_messages_by_reply WHERE group_id = ?1 AND reply_to = ?2 AND type = 2 AND status = 0 AND sender_user IS NOT NULL";
 pub(super) const BLANK_EDITS_OF: &str = "UPDATE app_messages INDEXED BY app_messages_by_reply SET body = '', envelope = NULL WHERE group_id = ?1 AND reply_to = ?2 AND type = 1 AND status = 0 AND sender_user = ?3";
-pub(super) const AUTHOR_DELETED: &str = "SELECT 1 FROM app_messages INDEXED BY app_messages_by_reply WHERE group_id = ?1 AND reply_to = ?2 AND type = 2 AND sender_user = ?3 AND status = 0 LIMIT 1";
+// The statements that read or blank the fold rows of a held target carry its seq as their last
+// parameter: a fold counts only when it was sequenced after its target (`seq > target seq`). On a
+// target never held (`AUTHOR_DELETED` there) there is no bound (`i64::MIN`).
+pub(super) const AUTHOR_DELETED: &str = "SELECT 1 FROM app_messages INDEXED BY app_messages_by_reply WHERE group_id = ?1 AND reply_to = ?2 AND type = 2 AND sender_user = ?3 AND seq > ?4 AND status = 0 LIMIT 1";
 pub(super) const FIRST_UNHELD_DELETE: &str = "SELECT seq FROM app_messages INDEXED BY app_messages_by_reply WHERE group_id = ?1 AND reply_to = ?2 AND type = 2 AND sender_user = ?3 AND status = 0 ORDER BY seq LIMIT 1";
-pub(super) const BLANK_EDITS: &str = "UPDATE app_messages INDEXED BY app_messages_by_reply SET body = '', envelope = NULL WHERE group_id = ?1 AND reply_to = ?2 AND type = 1 AND sender_user = ?3";
-pub(super) const LATEST_EDIT: &str = "SELECT body, seq FROM app_messages INDEXED BY app_messages_by_reply WHERE group_id = ?1 AND reply_to = ?2 AND type = 1 AND sender_user = ?3 AND status = 0 ORDER BY seq DESC LIMIT 1";
-pub(super) const REACTIONS_FULL: &str = "INSERT INTO app_reactions (group_id, target, user_id, emoji, seq) SELECT ?1, ?2, u, b, s FROM (SELECT sender_user AS u, body AS b, type AS t, MAX(seq) AS s FROM app_messages INDEXED BY app_messages_by_reaction WHERE group_id = ?1 AND reply_to = ?2 AND status = 0 AND type IN (3, 4) AND sender_user IS NOT NULL GROUP BY sender_user, body) WHERE t = 3";
-pub(super) const REACTION_PAIR: &str = "SELECT type, seq FROM app_messages INDEXED BY app_messages_by_reaction WHERE group_id = ?1 AND reply_to = ?2 AND sender_user = ?3 AND body = ?4 AND status = 0 AND type IN (3, 4) ORDER BY seq DESC LIMIT 1";
-pub(super) const PIN_LATEST: &str = "SELECT seq, sender_user FROM app_messages INDEXED BY app_messages_by_pin WHERE group_id = ?1 AND reply_to = ?2 AND type = ?3 AND status = 0 ORDER BY seq DESC LIMIT 1";
+pub(super) const BLANK_EDITS: &str = "UPDATE app_messages INDEXED BY app_messages_by_reply SET body = '', envelope = NULL WHERE group_id = ?1 AND reply_to = ?2 AND type = 1 AND sender_user = ?3 AND seq > ?4";
+pub(super) const LATEST_EDIT: &str = "SELECT body, seq FROM app_messages INDEXED BY app_messages_by_reply WHERE group_id = ?1 AND reply_to = ?2 AND type = 1 AND sender_user = ?3 AND seq > ?4 AND status = 0 ORDER BY seq DESC LIMIT 1";
+pub(super) const REACTIONS_FULL: &str = "INSERT INTO app_reactions (group_id, target, user_id, emoji, seq) SELECT ?1, ?2, u, b, s FROM (SELECT sender_user AS u, body AS b, type AS t, MAX(seq) AS s FROM app_messages INDEXED BY app_messages_by_reaction WHERE group_id = ?1 AND reply_to = ?2 AND seq > ?3 AND status = 0 AND type IN (3, 4) AND sender_user IS NOT NULL GROUP BY sender_user, body) WHERE t = 3";
+pub(super) const REACTION_PAIR: &str = "SELECT type, seq FROM app_messages INDEXED BY app_messages_by_reaction WHERE group_id = ?1 AND reply_to = ?2 AND sender_user = ?3 AND body = ?4 AND seq > ?5 AND status = 0 AND type IN (3, 4) ORDER BY seq DESC LIMIT 1";
+pub(super) const PIN_LATEST: &str = "SELECT seq, sender_user FROM app_messages INDEXED BY app_messages_by_pin WHERE group_id = ?1 AND reply_to = ?2 AND type = ?3 AND seq > ?4 AND status = 0 ORDER BY seq DESC LIMIT 1";
 
 /// Recompute the portion covered by `scope`; inserted triggers touch bounded rows.
 pub(super) fn refold(
@@ -140,7 +148,7 @@ pub(super) fn refold(
                 let deleted = c
                     .query_row(
                         AUTHOR_DELETED,
-                        params![g, id, tr.sender_user.as_slice()],
+                        params![g, id, tr.sender_user.as_slice(), i64::MIN],
                         |_| Ok(()),
                     )
                     .optional()?
@@ -159,7 +167,9 @@ pub(super) fn refold(
                     c.execute(BLANK_EDITS_OF, params![g, id, user.as_slice()])?;
                 }
             }
-            (FoldScope::Full, _) | (FoldScope::Edit, None) => {
+            // A type 0 that is no target (a repeat) leaves every parked row as it is: its insert
+            // writes only its own row (S1).
+            (FoldScope::Full, None) | (FoldScope::Edit, None) => {
                 let users: Vec<[u8; 16]> = {
                     let mut q = c.prepare(UNHELD_DELETERS)?;
                     q.query_map(params![g, id], |r| r.get(0))?
@@ -173,12 +183,14 @@ pub(super) fn refold(
         }
         return Ok(());
     };
+    // A trigger sequenced before the target is no fold of it, and a type 0 other than the target
+    // is a repeat: neither changes the target.
     if let Some(tr) = trigger
-        && tr.ty == 0
-        && tr.seq != t.seq
+        && (tr.seq < t.seq || tr.ty == 0 && tr.seq != t.seq)
     {
         return Ok(());
     }
+    let bound = t.seq as i64;
     if let FoldScope::Delete { user } = scope {
         if t.sender_user != Some(*user) {
             return Ok(());
@@ -197,9 +209,13 @@ pub(super) fn refold(
         return Ok(());
     }
     let author_deleted = if let Some(user) = t.sender_user {
-        c.query_row(AUTHOR_DELETED, params![g, id, user.as_slice()], |_| Ok(()))
-            .optional()?
-            .is_some()
+        c.query_row(
+            AUTHOR_DELETED,
+            params![g, id, user.as_slice(), bound],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some()
     } else {
         false
     };
@@ -239,7 +255,7 @@ pub(super) fn refold(
         }
         c.execute("UPDATE app_messages SET status = 2, body = '', envelope = NULL, reason = '', edit_body = NULL, edit_seq = 0 WHERE group_id = ?1 AND seq = ?2", params![g, t.seq as i64])?;
         if let Some(user) = t.sender_user {
-            c.execute(BLANK_EDITS, params![g, id, user.as_slice()])?;
+            c.execute(BLANK_EDITS, params![g, id, user.as_slice(), bound])?;
         }
         c.execute(
             "DELETE FROM app_reactions WHERE group_id = ?1 AND target = ?2",
@@ -253,7 +269,7 @@ pub(super) fn refold(
     }
     if matches!(scope, FoldScope::Full | FoldScope::Edit) {
         let latest: Option<(String, i64)> = if let Some(user) = t.sender_user {
-            c.query_row(LATEST_EDIT, params![g, id, user.as_slice()], |r| {
+            c.query_row(LATEST_EDIT, params![g, id, user.as_slice(), bound], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .optional()?
@@ -269,13 +285,15 @@ pub(super) fn refold(
                 "DELETE FROM app_reactions WHERE group_id = ?1 AND target = ?2",
                 params![g, id],
             )?;
-            c.execute(REACTIONS_FULL, params![g, id])?;
+            c.execute(REACTIONS_FULL, params![g, id, bound])?;
         }
         FoldScope::Reaction { user, emoji } => {
             let pair: Option<(i64, i64)> = c
-                .query_row(REACTION_PAIR, params![g, id, user.as_slice(), emoji], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
+                .query_row(
+                    REACTION_PAIR,
+                    params![g, id, user.as_slice(), emoji, bound],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
                 .optional()?;
             if let Some((3, seq)) = pair {
                 c.execute("INSERT INTO app_reactions (group_id, target, user_id, emoji, seq) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (group_id, target, user_id, emoji) DO UPDATE SET seq = excluded.seq", params![g, id, user.as_slice(), emoji, seq])?;
@@ -287,12 +305,12 @@ pub(super) fn refold(
     }
     if matches!(scope, FoldScope::Full | FoldScope::Pin) {
         let pin: Option<(i64, Option<[u8; 16]>)> = c
-            .query_row(PIN_LATEST, params![g, id, 5], |r| {
+            .query_row(PIN_LATEST, params![g, id, 5, bound], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .optional()?;
         let unpin: Option<i64> = c
-            .query_row(PIN_LATEST, params![g, id, 6], |r| r.get(0))
+            .query_row(PIN_LATEST, params![g, id, 6, bound], |r| r.get(0))
             .optional()?;
         if let Some((seq, Some(user))) = pin
             && unpin.is_none_or(|s| seq > s)
@@ -347,7 +365,7 @@ mod tests {
             (
                 "AUTHOR_DELETED",
                 AUTHOR_DELETED,
-                "(group_id=? AND reply_to=? AND type=? AND sender_user=?)",
+                "(group_id=? AND reply_to=? AND type=? AND sender_user=? AND seq>?)",
             ),
             (
                 "FIRST_UNHELD_DELETE",
@@ -357,12 +375,12 @@ mod tests {
             (
                 "BLANK_EDITS",
                 BLANK_EDITS,
-                "(group_id=? AND reply_to=? AND type=?",
+                "(group_id=? AND reply_to=? AND type=? AND sender_user=? AND seq>?)",
             ),
             (
                 "LATEST_EDIT",
                 LATEST_EDIT,
-                "(group_id=? AND reply_to=? AND type=? AND sender_user=?)",
+                "(group_id=? AND reply_to=? AND type=? AND sender_user=? AND seq>?)",
             ),
             (
                 "REACTIONS_FULL",
@@ -372,12 +390,12 @@ mod tests {
             (
                 "REACTION_PAIR",
                 REACTION_PAIR,
-                "(group_id=? AND reply_to=? AND sender_user=? AND body=?",
+                "(group_id=? AND reply_to=? AND sender_user=? AND body=? AND seq>?)",
             ),
             (
                 "PIN_LATEST",
                 PIN_LATEST,
-                "(group_id=? AND reply_to=? AND type=?)",
+                "(group_id=? AND reply_to=? AND type=? AND seq>?)",
             ),
         ];
         for (name, sql, want) in cases {
@@ -411,6 +429,18 @@ mod tests {
             assert!(
                 !p.contains(forbidden),
                 "{name} scans the group primary key: {p}"
+            );
+            // The repeat rule: one bounded probe per type for a lower-seq row naming the id.
+            assert!(
+                p.contains(
+                    "SEARCH r USING COVERING INDEX app_messages_by_pin (group_id=? AND reply_to=? AND type=? AND seq<?)"
+                ),
+                "{name} does not bound the repeat check by seq: {p}"
+            );
+            // `SCAN m` in RESOLVE_SQL reads the one-row co-routine of the earliest candidate.
+            assert!(
+                p.lines().all(|l| !l.starts_with("SCAN") || l == "SCAN m"),
+                "{name} scans: {p}"
             );
         }
     }
@@ -456,5 +486,98 @@ mod tests {
         };
         refold(&c, &group, &target, &FoldScope::Full, Some(&replay), None).expect("replay");
         assert_eq!(c.total_changes(), changes);
+    }
+
+    /// Lead "fold spoofing" (2026-10-07): a member who repeats the msg id of an original this
+    /// receiver does not hold (DS-deleted before it was fetched, pruned, or sent before a join)
+    /// must not collect the reactions, the pin or the edits other users sent for the original. A
+    /// type 0 whose msg id a held row of lower seq already names is a repeat and never a target,
+    /// and a fold counts only for a target of lower seq.
+    #[test]
+    fn a_repeat_of_an_unheld_original_collects_no_earlier_fold() {
+        let c = rusqlite::Connection::open_in_memory().expect("open");
+        c.execute_batch(super::super::schema::APP_SCHEMA)
+            .expect("schema");
+        c.execute_batch(super::super::schema::APP_INDEXES_V3)
+            .expect("indexes");
+        let g = [1u8; 16];
+        let x = [2u8; 16];
+        let alice = [3u8; 16];
+        let carol = [4u8; 16];
+        let mallory = [9u8; 16];
+        let tag = [0u8; 32];
+        // seq 1: Alice's X, served to this receiver already deleted: no msg id, no sender.
+        c.execute("INSERT INTO app_messages (group_id,seq,epoch,recv_ts,status,sender_device,franking_tag) VALUES (?1,1,0,0,2,?2,?3)",
+            params![g.as_slice(), alice.as_slice(), tag.as_slice()]).expect("tombstone");
+        // seq 2..7: Carol reacts and pins, Alice reacts, Mallory edits, Alice edits and deletes;
+        // all name X, all parked.
+        for (seq, ty, who, body) in [
+            (2i64, 3i64, carol, "x"),
+            (3, 5, carol, ""),
+            (4, 3, alice, "x"),
+            (5, 1, mallory, "edited before"),
+            (6, 1, alice, "alice's edit"),
+            (7, 2, alice, ""),
+        ] {
+            c.execute("INSERT INTO app_messages (group_id,seq,epoch,recv_ts,status,sender_user,sender_device,msg_id,type,body,reply_to,franking_tag) VALUES (?1,?2,0,0,0,?3,?3,?4,?5,?6,?7,?8)",
+                params![g.as_slice(), seq, who.as_slice(), [seq as u8; 16].as_slice(), ty, body, x.as_slice(), tag.as_slice()]).expect("fold row");
+            let tr = FoldTrigger {
+                seq: seq as u64,
+                ty: ty as u8,
+                sender_user: who,
+                sender_device: who,
+            };
+            refold(
+                &c,
+                &g,
+                &x,
+                &scope_of(Some(ty), Some(who), body),
+                Some(&tr),
+                None,
+            )
+            .expect("parked fold");
+        }
+        // seq 8: Mallory repeats msg id X as a type 0. Its insert writes no row but its own (S1).
+        c.execute("INSERT INTO app_messages (group_id,seq,epoch,recv_ts,status,sender_user,sender_device,msg_id,type,body,franking_tag) VALUES (?1,8,0,0,0,?2,?2,?3,0,'new payment address',?4)",
+            params![g.as_slice(), mallory.as_slice(), x.as_slice(), tag.as_slice()]).expect("repeat");
+        let tr = FoldTrigger {
+            seq: 8,
+            ty: 0,
+            sender_user: mallory,
+            sender_device: mallory,
+        };
+        let changes = c.total_changes();
+        refold(&c, &g, &x, &FoldScope::Full, Some(&tr), None).expect("repeat refold");
+        assert_eq!(
+            c.total_changes(),
+            changes,
+            "the repeat's refold writes nothing"
+        );
+        refold(&c, &g, &x, &FoldScope::Full, None, None).expect("full refold");
+        let n = |sql: &str| -> i64 {
+            c.query_row(sql, params![g.as_slice(), x.as_slice()], |r| r.get(0))
+                .expect("count")
+        };
+        assert_eq!(
+            n("SELECT COUNT(*) FROM app_reactions WHERE group_id = ?1 AND target = ?2"),
+            0,
+            "the repeat collects no reaction sent before it"
+        );
+        assert_eq!(
+            n("SELECT COUNT(*) FROM app_pins WHERE group_id = ?1 AND target = ?2"),
+            0,
+            "the repeat collects no pin sent before it"
+        );
+        assert_eq!(
+            n(
+                "SELECT COUNT(*) FROM app_messages WHERE group_id = ?1 AND msg_id = ?2 AND edit_body IS NOT NULL"
+            ),
+            0,
+            "the repeat takes no edit sent before it"
+        );
+        assert!(
+            resolve(&c, &g, &x).expect("resolve").is_none(),
+            "a type 0 whose msg id a lower-seq row names is never a target"
+        );
     }
 }

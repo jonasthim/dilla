@@ -26,6 +26,8 @@ pub(super) const TIMELINE_SQL: &str = "SELECT m.seq,m.epoch,m.recv_ts,m.status,m
      m.sender_kind,m.sender_tier,m.msg_id,m.type,m.body,m.edit_body,m.edit_seq,m.reply_to,m.envelope,m.mention, \
      NOT EXISTS (SELECT 1 FROM app_messages e INDEXED BY app_messages_by_msg WHERE e.group_id=m.group_id AND e.msg_id=m.msg_id \
      AND e.type=0 AND e.status IN (0,2) AND e.seq<m.seq) \
+     AND NOT EXISTS (SELECT 1 FROM app_messages r INDEXED BY app_messages_by_pin WHERE r.group_id=m.group_id \
+     AND r.reply_to=m.msg_id AND r.type IN (0,1,2,3,4,5,6) AND r.seq<m.seq) \
      FROM app_messages m WHERE m.group_id=?1 AND (m.type IS NULL OR m.type=0) \
      AND (?2=0 OR m.seq<?2) ORDER BY m.seq DESC LIMIT ?3";
 

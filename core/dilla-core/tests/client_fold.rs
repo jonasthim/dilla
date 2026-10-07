@@ -698,9 +698,11 @@ fn the_excerpt_is_the_first_120_scalar_values_with_line_breaks_as_spaces() {
     );
 }
 
-/// L-CORE-33 step 1: a fold whose target is not held is kept, hidden, and applied on arrival.
+/// L-CORE-33 step 1: a fold whose target is not held is kept and hidden. A type 0 sequenced after
+/// it with the id it names is a repeat of an original this device never held, never its target
+/// (protocol/04 § Semantics, Target; lead "fold spoofing").
 #[test]
-fn a_fold_waits_for_its_target_and_applies_when_it_arrives() {
+fn a_fold_waits_hidden_and_a_later_type_0_with_its_id_is_no_target() {
     const LATE: [u8; 16] = [0x72; 16];
     let (_i, mut relay, mut me, mut peer) = fold_start();
     assert_eq!(
@@ -736,8 +738,9 @@ fn a_fold_waits_for_its_target_and_applies_when_it_arrives() {
     let row = row_at(&me, 4);
     assert_eq!(
         (row.body.as_str(), row.edited_seq, row.reactions.clone()),
-        ("edited before it arrived", 3, vec![chip("👍", 1, 0)])
+        ("late target", 0, vec![])
     );
+    assert_eq!(count(&me, "SELECT count(*) FROM app_reactions"), 0);
 }
 
 /// Card 20 of web-1 and (ruled: AI-4): a later type-0 row that repeats a msg id is its own
@@ -795,6 +798,64 @@ fn a_replayed_msg_id_is_its_own_message_and_never_a_target() {
             row_at(&me, 3).body
         ),
         (2, 0, "replay".to_owned())
+    );
+}
+
+/// Lead "fold spoofing": the original is deleted before this receiver fetched it, so it holds a
+/// tombstone without a msg id; a member who saw the original repeats its msg id. The repeat is
+/// shown as its own message and collects none of the reactions, pins or replies sent for the
+/// original (protocol/04 § Semantics, Target).
+#[test]
+fn a_repeat_of_a_deleted_unfetched_original_collects_none_of_its_folds() {
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    let mut mallory = join(&mut relay, &mut me, &mut [&mut peer], 0xd4, 0xd5);
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x71, Message, None, "original"),
+        3
+    );
+    assert_eq!(
+        post(&mut peer, &mut relay, 0xa1, ReactionAdd, Some(TARGET), "👍"),
+        4
+    );
+    assert_eq!(post(&mut peer, &mut relay, 0xa2, Pin, Some(TARGET), ""), 5);
+    assert_eq!(
+        post(&mut peer, &mut relay, 0xa3, Message, Some(TARGET), "agreed"),
+        6
+    );
+    relay.delete_message(3);
+    assert_eq!(
+        post(
+            &mut mallory,
+            &mut relay,
+            0x71,
+            Message,
+            None,
+            "new payment address"
+        ),
+        7
+    );
+    me.sync(&relay);
+    let repeat = row_at(&me, 7);
+    assert_eq!(
+        (repeat.body.as_str(), repeat.reactions.len(), repeat.pinned),
+        ("new payment address", 0, 0),
+        "the repeat collects no reaction or pin of the original"
+    );
+    assert!(pins(&me).is_empty(), "the original's pin lists nothing");
+    let reply = row_at(&me, 6).reply.expect("a reply");
+    assert_eq!(
+        (reply.target_seq, reply.excerpt.as_str()),
+        (None, ""),
+        "the earlier reply does not quote the repeat"
+    );
+    assert_eq!(
+        refusal(
+            me.core
+                .send_prepare(&GROUP, &request(3, Some(&TARGET), "👍", &[]), NOW)
+        )
+        .0,
+        "E_CORE_NOT_FOUND",
+        "the repeat is not a target to react to"
     );
 }
 
@@ -856,23 +917,26 @@ fn a_delivery_service_delete_refolds_what_the_row_touched() {
 fn a_served_deletion_of_an_own_row_stored_ahead_deletes_its_folds() {
     let (_i, mut relay, mut me, mut peer) = fold_start();
     let mine = me.prepare(&GROUP, "mine", NOW);
-    assert_eq!(
-        post(&mut peer, &mut relay, 0xa1, ReactionAdd, Some(mine), "👍"),
-        2
-    );
     let (_, body) = me.encrypt(&mine);
     let answer = relay.post_message(me.device, &body).expect("upload");
-    assert_eq!(seq_of_answer(&answer), 3);
+    assert_eq!(seq_of_answer(&answer), 2);
     me.core.send_confirm(&mine, &answer).expect("send_confirm");
-    relay.delete_message(3);
+    assert_eq!(
+        post(&mut peer, &mut relay, 0xa1, ReactionAdd, Some(mine), "👍"),
+        3
+    );
+    relay.delete_message(2);
     me.sync(&relay);
-    let row = row_at(&me, 3);
+    let row = row_at(&me, 2);
     assert_eq!((row.status, row.reactions.len()), (2, 0));
     assert_eq!(count(&me, "SELECT count(*) FROM app_reactions"), 0);
 }
 
+/// A fold sequenced before an own message (its id cannot be known before the delivery service
+/// sequences it) never applies to it, also when the confirm stores the message after the fold
+/// (protocol/04 § Semantics, Target; lead "fold spoofing").
 #[test]
-fn an_own_message_confirmed_after_a_fold_named_it_applies_the_fold() {
+fn an_own_message_confirmed_after_a_fold_named_it_is_no_target_of_it() {
     let (_i, mut relay, mut me, mut peer) = fold_start();
     let mine = me.prepare(&GROUP, "mine", NOW);
     assert_eq!(
@@ -886,10 +950,11 @@ fn an_own_message_confirmed_after_a_fold_named_it_applies_the_fold() {
     assert_eq!(seq_of_answer(&answer), 3);
     me.core.send_confirm(&mine, &answer).expect("send_confirm");
     assert_eq!(
-        chips(&me, 3),
-        vec![chip("👍", 1, 0)],
-        "the confirm folds the waiting reaction in its unit"
+        (row_at(&me, 3).body.as_str(), chips(&me, 3)),
+        ("mine", vec![]),
+        "the confirm shows the message without the earlier reaction"
     );
+    assert_eq!(count(&me, "SELECT count(*) FROM app_reactions"), 0);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1290,7 +1355,10 @@ fn parked_and_deleted_targets_touch_at_most_three_rows_per_insert() {
         for (which, target) in [TARGET, UNHELD].iter().enumerate() {
             for i in 0..200i64 {
                 for ty in [1i64, 2] {
-                    let seq = -1 - (which as i64 * 400 + i * 2 + ty - 1);
+                    // A fold of the held TARGET is sequenced after it (a lower seq would make
+                    // TARGET a repeat, no target); UNHELD's parked rows precede every live one.
+                    let k = i * 2 + ty - 1;
+                    let seq = if which == 0 { 1_000_000 + k } else { -1 - k };
                     c.execute("INSERT INTO app_messages (group_id,seq,epoch,recv_ts,status,sender_user,sender_device,type,reply_to,body,franking_tag) VALUES (?1,?2,0,0,0,?3,?4,?5,?6,?7,?8)",
                         params![GROUP.as_slice(), seq, READER_USER.as_slice(), mallory.device.as_slice(), ty, target.as_slice(), if ty == 1 { "ignored" } else { "" }, [0u8; 32].as_slice()]).expect("park a fold row");
                 }
