@@ -744,25 +744,113 @@ func TestTheDeviceListGateDecidesTheScope(t *testing.T) {
 	if got := scope(auth.PurposeSession); got != auth.ScopePending {
 		t.Fatalf("a list that names no unrevoked key: scope %d, want pending", got)
 	}
+	// Purpose 2 is gated too (branch review REGISTRATION-DEVICES-01, which changed this assertion:
+	// it read "pairing is not gated" and the list was never consulted). The list is read, and a
+	// young unlisted native row is still provisional; the 24-hour expiry and the refusal for
+	// assertion-registered browser rows are TestPurposeTwoExpiresAnUnlistedRowAfter24Hours and
+	// TestPurposeTwoIsRefusedForAnAssertionRegisteredBrowserRow.
+	lister.resetCalls()
 	if got := scope(auth.PurposeProvisional); got != auth.ScopeProvisional {
-		t.Fatalf("purpose 2: scope %d, want provisional (pairing is not gated)", got)
+		t.Fatalf("purpose 2 on a young unlisted native row: scope %d, want provisional", got)
+	}
+	if lister.callCount() == 0 {
+		t.Fatal("purpose 2 never read the device list: the gate does not apply to it")
 	}
 	lister.fail(errors.New("the device-list verifier is down"))
-	if e := refused(auth.PurposeSession); e.Code != server.CodeUnavailable || e.Status() != http.StatusServiceUnavailable {
-		t.Fatalf("a verifier fault: %s %d, want 503 E_UNAVAILABLE", e.Code, e.Status())
+	for _, p := range []auth.Purpose{auth.PurposeSession, auth.PurposeProvisional} {
+		if e := refused(p); e.Code != server.CodeUnavailable || e.Status() != http.StatusServiceUnavailable {
+			t.Fatalf("a verifier fault, purpose %d: %s %d, want 503 E_UNAVAILABLE", p, e.Code, e.Status())
+		}
 	}
 	lister.fail(&mlswasi.ABIError{Code: "E_CREDENTIAL"})
-	if e := refused(auth.PurposeSession); e.Code != server.CodeUnauthenticated || e.Status() != http.StatusUnauthorized {
-		t.Fatalf("a list that fails verification: %s %d, want 401 E_UNAUTHENTICATED", e.Code, e.Status())
+	for _, p := range []auth.Purpose{auth.PurposeSession, auth.PurposeProvisional} {
+		if e := refused(p); e.Code != server.CodeUnauthenticated || e.Status() != http.StatusUnauthorized {
+			t.Fatalf("a list that fails verification, purpose %d: %s %d, want 401 E_UNAUTHENTICATED", p, e.Code, e.Status())
+		}
 	}
 	s.DeviceLists = nil
-	for _, p := range []auth.Purpose{auth.PurposeSession, auth.PurposeRenew} {
+	// Changed by REGISTRATION-DEVICES-01 for purpose 2: with no lister it was provisional; the
+	// expiry cannot be judged without the list, so it fails closed like purposes 0 and 1.
+	for _, p := range []auth.Purpose{auth.PurposeSession, auth.PurposeRenew, auth.PurposeProvisional} {
 		if e := refused(p); e.Code != server.CodeUnauthenticated || e.Status() != http.StatusUnauthorized {
 			t.Fatalf("no lister wired, purpose %d: %s %d, want 401 E_UNAUTHENTICATED (fail closed)", p, e.Code, e.Status())
 		}
 	}
-	if got := scope(auth.PurposeProvisional); got != auth.ScopeProvisional {
-		t.Fatalf("purpose 2 with no lister: scope %d, want provisional", got)
+}
+
+// REGISTRATION-DEVICES-01 (b), protocol/02 § Device sessions item 2: an unlisted row expires 24
+// hours after creation whatever the purpose. Attacker statement: before this, purpose 2 returned
+// provisional before the list and the expiry were read, so a password holder's registered row
+// minted provisional sessions for ever. Now purpose 2 on a 24-hour-old unlisted row is 401, the row
+// is revoked with its sessions and its sockets are closed.
+func TestPurposeTwoExpiresAnUnlistedRowAfter24Hours(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	ctx := context.Background()
+	lister := listerOf(t, s)
+	user, device, priv := seedDevice(t, repo)
+	makeDeviceYoung(t, repo, device, clk.Now().Unix())
+	_, otherPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	lister.list(user, entry(id.New(), pubOf(otherPriv)))
+	young, err := establishOnce(t, s, device, priv, auth.PurposeProvisional)
+	if err != nil || young.Scope != auth.ScopeProvisional {
+		t.Fatalf("a young unlisted row, purpose 2: scope %d, err %v; want provisional", young.Scope, err)
+	}
+	closed := make([]id.ID, 0, 1)
+	s.OnRevoke = func(d id.ID) { closed = append(closed, d) }
+	clk.Advance(24 * time.Hour)
+	_, err = establishOnce(t, s, device, priv, auth.PurposeProvisional)
+	if e := refusal(t, err); e.Code != server.CodeUnauthenticated || e.Status() != http.StatusUnauthorized {
+		t.Fatalf("a 24-hour-old unlisted row, purpose 2: %s %d, want 401 E_UNAUTHENTICATED", e.Code, e.Status())
+	}
+	row, err := repo.GetDevice(ctx, device)
+	if err != nil || row.RevokedAt == nil {
+		t.Fatalf("the expired row = %+v, %v; want it revoked", row, err)
+	}
+	if len(closed) != 1 || closed[0] != device {
+		t.Fatalf("the expired row's sockets were not closed: %v", closed)
+	}
+	if _, err := s.Resolve(ctx, young.Token); err == nil {
+		t.Fatal("the expired row's provisional session still resolves")
+	}
+	if _, err := establishOnce(t, s, device, priv, auth.PurposeProvisional); err == nil {
+		t.Fatal("a revoked row established a provisional session")
+	}
+}
+
+// REGISTRATION-DEVICES-01 (b): pairing is not built (deviation B27), and protocol/03 pairing is the
+// native path, so a browser row registered by a host-login assertion (tier 1, never verified, its
+// user has a list) has no use for purpose 2 and is refused it, listed or not, without being revoked.
+// Attacker statement: the row a password holder registers gets pending at most, never provisional.
+func TestPurposeTwoIsRefusedForAnAssertionRegisteredBrowserRow(t *testing.T) {
+	s, repo, _ := newSessions(t)
+	ctx := context.Background()
+	assertions := newFakeAssertions()
+	s.Assertions = assertions
+	lister := listerOf(t, s)
+	user, owner, ownerPriv := seedDevice(t, repo)
+	lister.list(user, entry(owner, pubOf(ownerPriv)))
+	reg, regPriv := newRegistration(t)
+	if _, err := registerWith(t, s, reg, regPriv, assertions.issue(user)); err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	for _, listed := range []bool{false, true} {
+		if listed {
+			lister.list(user, entry(owner, pubOf(ownerPriv)), entry(reg.DeviceID, reg.DSKPub))
+		}
+		_, err := establishOnce(t, s, reg.DeviceID, regPriv, auth.PurposeProvisional)
+		if e := refusal(t, err); e.Code != server.CodeUnauthenticated || e.Status() != http.StatusUnauthorized {
+			t.Fatalf("an assertion-registered browser row (listed %v), purpose 2: %s %d, want 401", listed, e.Code, e.Status())
+		}
+		if row, err := repo.GetDevice(ctx, reg.DeviceID); err != nil || row.RevokedAt != nil {
+			t.Fatalf("the refused row = %+v, %v; want it live: a refusal of purpose 2 is not a revocation", row, err)
+		}
+	}
+	// The same row still gets what its list decides through purpose 0.
+	if tok, err := establishOnce(t, s, reg.DeviceID, regPriv, auth.PurposeSession); err != nil || tok.Scope != auth.ScopeEnrolled {
+		t.Fatalf("the listed registered row, purpose 0: scope %d, err %v; want enrolled", tok.Scope, err)
 	}
 }
 

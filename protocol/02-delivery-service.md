@@ -67,7 +67,11 @@ Every endpoint in this document requires a **device session**. A device session 
    `SHA-256(token)`. It is sent as `Authorization: Bearer <token>` on HTTP and in the gateway's
    `IDENTIFY` frame. There is no cookie and therefore no CSRF surface on `/v1`.
 4. **Scope** is `0 enrolled`, `1 pending`, `2 provisional`. An establish with `login` is `pending`;
-   purpose 2 is `provisional`. Otherwise the newest list verified against `users.ssk_pub` decides:
+   purpose 2 is `provisional`, after the same list is read: an unlisted row past its 24 hours is
+   revoked and answers `401 E_UNAUTHENTICATED` whatever the purpose, and a browser row that was
+   never verified, under a user with a list (what assertion registration creates), is refused
+   purpose 2 with `401`, since `03` pairing is the native path. Otherwise the newest list
+   verified against `users.ssk_pub` decides:
    no list or an unrevoked entry naming the device's `device_id` and `dsk_pub` together gives
    `enrolled`; any other device, one whose key a list entry names under another `device_id`
    included, is unlisted and gets `pending`. Wherever the instance asks whether a device is listed
@@ -79,8 +83,9 @@ Every endpoint in this document requires a **device session**. A device session 
    `enrolled` reaches every endpoint subject to ordinary ACL; `pending` reaches only its own two
    backup reads (`06-backup-archive.md`), its own device-list GET and PUT, and the session routes
    needing no session. Other routes answer `403 E_FORBIDDEN`, and the gateway's `IDENTIFY` with a
-   pending session's token, sent in the frame, as a bearer or through a ticket, is refused like a
-   token that does not resolve (`E_UNAUTHENTICATED`, close `4003`). `provisional` reaches only
+   pending or provisional session's token, sent in the frame, as a bearer or through a ticket, is
+   refused like a token that does not resolve (`E_UNAUTHENTICATED`, close `4003`), as is a
+   `RESUME` whose session token is one (`invalid_session`). `provisional` reaches only
    KeyPackage publication for one `pairing` group and that group's Welcome and handshakes;
    outside them the answer is `E_PROVISIONAL_OUTSIDE_PAIRING`.
 5. **Lifetime** is a sliding 30 days for `native` devices and 7 days with a 12-hour idle window for

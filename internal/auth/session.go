@@ -485,27 +485,42 @@ func (s *Sessions) scopeFor(ctx context.Context, r EstablishRequest, device stor
 		}
 		return ScopePending, nil
 	}
-	if r.Purpose == PurposeProvisional {
-		return ScopeProvisional, nil
-	}
+	// Purpose 2 goes through the same list gate as purposes 0 and 1 (branch review
+	// REGISTRATION-DEVICES-01): it used to return provisional before the list or the 24-hour expiry
+	// was read, so a row a password holder registered minted provisional sessions for ever.
+	provisional := r.Purpose == PurposeProvisional
 	if s.DeviceLists == nil {
 		return 0, unauth
 	}
 	entries, err := s.DeviceLists.ListedDevices(ctx, device.UserID)
 	if errors.Is(err, ErrNoDeviceList) {
+		if provisional {
+			return ScopeProvisional, nil
+		}
 		return ScopeEnrolled, nil
 	}
 	if err != nil {
 		return 0, ListError(err)
 	}
-	if Listed(entries, device.ID, device.DSKPub) {
-		return ScopeEnrolled, nil
-	}
-	if device.Created <= s.clk.Now().Unix()-86400 {
+	listed := Listed(entries, device.ID, device.DSKPub)
+	if !listed && device.Created <= s.clk.Now().Unix()-86400 {
 		if err := s.RevokeDevice(ctx, device.ID); err != nil {
 			return 0, err
 		}
 		return 0, unauth
+	}
+	if provisional {
+		// Pairing is not built (deviation B27) and protocol/03 pairing is the native path. A browser
+		// row its user's list exists for and that was never verified is what assertion registration
+		// creates; nothing in it has a pairing to do, so it is refused purpose 2, listed or not.
+		// No path sets verified_at today, so this is every browser row of a listed user.
+		if device.Tier == tierBrowser && device.VerifiedAt == nil {
+			return 0, unauth
+		}
+		return ScopeProvisional, nil
+	}
+	if listed {
+		return ScopeEnrolled, nil
 	}
 	return ScopePending, nil
 }
