@@ -11,7 +11,7 @@ use crate::ds::{
     RegisterGroup, ResyncRequest,
 };
 use crate::{Frame, TestkitError};
-use dilla_core::envelope::{Envelope, EnvelopeType};
+use dilla_core::envelope::{Attachment, Envelope, EnvelopeType};
 use dilla_core::identity::{
     CredentialIdentity, DeviceEntry, DeviceList, DeviceListUnsigned, Kind, SignerTier, SskSigner,
     Tier, UmkSigner,
@@ -72,6 +72,8 @@ pub struct TestClient {
     /// empties its queue on every merge, and so does `merged`.
     queued: BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>,
     next_msg: u64,
+    /// Deleted seqs seen since the last `take_deleted` call.
+    deleted: Vec<(Vec<u8>, u64)>,
 }
 
 impl TestClient {
@@ -194,6 +196,7 @@ impl TestClient {
             tails: BTreeMap::new(),
             queued: BTreeMap::new(),
             next_msg: 1,
+            deleted: Vec::new(),
         })
     }
 
@@ -676,8 +679,33 @@ impl TestClient {
         Ok(())
     }
 
-    /// Frames `body` as an application message of the group's current epoch.
-    fn seal(&mut self, group_id: &[u8], body: &str) -> Result<(u64, Vec<u8>, MsgId), TestkitError> {
+    pub fn send_envelope(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        kind: EnvelopeType,
+        reply_to: Option<MsgId>,
+        body: &str,
+        attachments: Vec<Attachment>,
+    ) -> Result<(u64, MsgId), TestkitError> {
+        let (epoch, message, msg_id) =
+            self.seal_envelope(group_id, kind, reply_to, body, attachments)?;
+        Ok((ds.post_message_from(group_id, epoch, message)?.seq, msg_id))
+    }
+
+    pub fn take_deleted(&mut self) -> Vec<(Vec<u8>, u64)> {
+        std::mem::take(&mut self.deleted)
+    }
+
+    /// Frames an envelope as an application message of the group's current epoch.
+    pub fn seal_envelope(
+        &mut self,
+        group_id: &[u8],
+        kind: EnvelopeType,
+        reply_to: Option<MsgId>,
+        body: &str,
+        attachments: Vec<Attachment>,
+    ) -> Result<(u64, Vec<u8>, MsgId), TestkitError> {
         let group = self
             .groups
             .get_mut(group_id)
@@ -685,22 +713,27 @@ impl TestClient {
         let mut msg_id = [0u8; 16];
         msg_id[..8].copy_from_slice(&self.next_msg.to_be_bytes());
         msg_id[8..].copy_from_slice(self.device_id.as_bytes()[..8].try_into().expect("8 bytes"));
-        self.next_msg += 1;
         let envelope = Envelope {
             v: 1,
             msg_id: MsgId::from_bytes(msg_id),
-            kind: EnvelopeType::Message,
+            kind,
             thread_id: None,
-            reply_to: None,
+            reply_to,
             body: body.to_owned(),
-            attachments: Vec::new(),
+            attachments,
             previews: Vec::new(),
             k_f: [0x06; 32],
         };
+        envelope.validate()?;
         // The commitment `C` travels in the message's `authenticated_data`, which is where the
         // delivery service reads it: the upload carries nothing else.
         let out = group.create_message(&self.provider, &self.signer, &envelope)?;
+        self.next_msg += 1;
         Ok((group.epoch(), serialize(&out)?, envelope.msg_id))
+    }
+
+    fn seal(&mut self, group_id: &[u8], body: &str) -> Result<(u64, Vec<u8>, MsgId), TestkitError> {
+        self.seal_envelope(group_id, EnvelopeType::Message, None, body, Vec::new())
     }
 
     /// Commits a `Remove` of `target`'s leaf. The leaf is found by parsing `GET /tree` and
@@ -877,8 +910,12 @@ impl TestClient {
                 Frame::MlsWelcome { .. }
                 | Frame::MlsEpochChanged { .. }
                 | Frame::CommitNeeded { .. }
-                | Frame::MessageDeleted { .. }
                 | Frame::GatewayError { .. } => {}
+                Frame::MessageDeleted { group_id, seq, .. } => {
+                    if self.groups.contains_key(&group_id) {
+                        self.deleted.push((group_id, seq));
+                    }
+                }
                 Frame::MlsHandshake { group_id, item } => {
                     let tail = self.tails.entry(group_id.clone()).or_default();
                     if tail.back().is_none_or(|last| last.seq < item.seq) {
@@ -928,6 +965,12 @@ impl TestClient {
                     }
                 }
                 Frame::MessageCt { group_id, item } => {
+                    if item.deleted {
+                        if self.groups.contains_key(&group_id) {
+                            self.deleted.push((group_id, item.seq));
+                        }
+                        continue;
+                    }
                     if let Some(group) = self.groups.get_mut(&group_id) {
                         let message = deserialize_protocol(&item.blob)?;
                         if let DillaProcessed::Application(app) =

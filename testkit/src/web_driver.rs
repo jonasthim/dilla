@@ -1,14 +1,18 @@
 //! `dilla-testkit web-driver`: the native peer of the browser tests (dilla-web-1, L-E2E-01; the
-//! enrolment, revocation, DM and per-channel verbs of dilla-web-2a, L-E2E-10).
+//! enrolment, revocation, DM and per-channel verbs of dilla-web-2a, L-E2E-10; and the typed
+//! envelopes, deletes and attachment verbs of dilla-web-2b, L-E2E-20).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use dilla_core::attachment;
+use dilla_core::envelope::{Attachment, EnvelopeType};
 use dilla_core::identity::DeviceList;
-use dilla_core::ids::{CommunityId, InstanceId};
+use dilla_core::ids::{CommunityId, InstanceId, MsgId};
 use dilla_core::mls::{DillaBinding, GroupKind};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::ds::remote::{HttpDs, instance_document};
 use crate::{DsError, Received, Runner, TestClient, TestkitError};
@@ -18,6 +22,18 @@ const BODY_MAX_BYTES: usize = 4000;
 
 fn scenario(msg: impl Into<String>) -> TestkitError {
     TestkitError::Scenario(msg.into())
+}
+
+fn seeded_plaintext(seed: u64, size: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(size);
+    for k in 0..size.div_ceil(32) {
+        let mut hash = Sha256::new();
+        hash.update(seed.to_be_bytes());
+        hash.update((k as u64).to_be_bytes());
+        out.extend_from_slice(&hash.finalize());
+    }
+    out.truncate(size);
+    out
 }
 
 struct Peer {
@@ -36,6 +52,12 @@ struct Second {
     ds: HttpDs,
 }
 
+struct Sent {
+    msg_id: MsgId,
+    channel: [u8; 16],
+    attachments: Vec<Attachment>,
+}
+
 pub struct WebDriver {
     runner: Runner,
     ds_url: String,
@@ -43,6 +65,11 @@ pub struct WebDriver {
     peer: Option<Peer>,
     group: Option<Vec<u8>>,
     pending: Vec<Received>,
+    held: BTreeMap<(Vec<u8>, u64), Received>,
+    deleted: BTreeSet<(Vec<u8>, u64)>,
+    pending_deleted: Vec<(Vec<u8>, u64)>,
+    sent: BTreeMap<(Vec<u8>, u64), Sent>,
+    attachments_made: u64,
     groups: BTreeMap<[u8; 16], Vec<u8>>,
     registered_all: bool,
     dms: BTreeMap<[u8; 16], Vec<u8>>,
@@ -58,6 +85,11 @@ impl WebDriver {
             peer: None,
             group: None,
             pending: Vec::new(),
+            held: BTreeMap::new(),
+            deleted: BTreeSet::new(),
+            pending_deleted: Vec::new(),
+            sent: BTreeMap::new(),
+            attachments_made: 0,
             groups: BTreeMap::new(),
             registered_all: false,
             dms: BTreeMap::new(),
@@ -123,6 +155,42 @@ impl WebDriver {
             .map_err(|_| scenario(format!("{key} is not 32 lowercase hex")))
     }
 
+    fn digest32(req: &Value, key: &str) -> Result<[u8; 32], TestkitError> {
+        let value = req
+            .get(key)
+            .ok_or_else(|| scenario(format!("the request carries no {key}")))?;
+        let s = value
+            .as_str()
+            .ok_or_else(|| scenario(format!("{key} is not 64 lowercase hex")))?;
+        if s.len() != 64
+            || !s
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(scenario(format!("{key} is not 64 lowercase hex")));
+        }
+        hex::decode(s)
+            .map_err(|_| scenario(format!("{key} is not 64 lowercase hex")))?
+            .try_into()
+            .map_err(|_| scenario(format!("{key} is not 64 lowercase hex")))
+    }
+
+    fn uint(req: &Value, key: &str) -> Option<Option<u64>> {
+        req.get(key).map(Value::as_u64)
+    }
+
+    fn hex_bytes(s: &str, max: usize) -> Option<Vec<u8>> {
+        if !s.len().is_multiple_of(2)
+            || s.len() / 2 > max
+            || !s
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return None;
+        }
+        hex::decode(s).ok()
+    }
+
     fn validate(op: &str, req: &Value) -> Result<(), TestkitError> {
         match op {
             "setup" => {
@@ -159,10 +227,131 @@ impl WebDriver {
                 Self::text(req, "invite_code")?;
             }
             "send" => {
-                let body = Self::text(req, "body")?;
-                if !(1..=BODY_MAX_BYTES).contains(&body.len()) {
-                    return Err(scenario("body must be 1..=4000 bytes"));
+                let kind = match Self::uint(req, "type") {
+                    None => 0,
+                    Some(Some(n)) if n <= 6 => n,
+                    _ => return Err(scenario("type must be 0..=6")),
+                };
+                if req.get("reply_to").is_some() {
+                    if !req["reply_to"].is_string() {
+                        return Err(scenario("reply_to is not 32 lowercase hex"));
+                    }
+                    Self::hex16(req, "reply_to")?;
+                } else if kind != 0 {
+                    return Err(scenario("reply_to is required"));
                 }
+                let body_value = req.get("body");
+                let body = body_value.and_then(Value::as_str).unwrap_or("");
+                match kind {
+                    0 | 1
+                        if body_value.is_some_and(|v| !v.is_string())
+                            || !(1..=BODY_MAX_BYTES).contains(&body.len()) =>
+                    {
+                        return Err(scenario("body must be 1..=4000 bytes"));
+                    }
+                    3 | 4
+                        if body_value.is_some_and(|v| !v.is_string())
+                            || !(1..=32).contains(&body.len()) =>
+                    {
+                        return Err(scenario("body must be 1..=32 bytes for a reaction"));
+                    }
+                    2 | 5 | 6 if body_value.is_some_and(|v| !v.is_string()) || !body.is_empty() => {
+                        return Err(scenario("body must be empty for types 2, 5 and 6"));
+                    }
+                    _ => {}
+                }
+                if req.get("channel_id").is_some() {
+                    Self::hex16(req, "channel_id")?;
+                }
+            }
+            "delete" => {
+                Self::hex16(req, "msg_id")?;
+                if !matches!(Self::uint(req, "seq"), Some(Some(n)) if n >= 1) {
+                    return Err(scenario(if req.get("seq").is_none() {
+                        "the request carries no seq"
+                    } else {
+                        "seq must be at least 1"
+                    }));
+                }
+                if req.get("channel_id").is_some() {
+                    Self::hex16(req, "channel_id")?;
+                }
+            }
+            "attach" => {
+                if req.get("channel_id").is_some() {
+                    Self::hex16(req, "channel_id")?;
+                }
+                let name = Self::text(req, "name")?;
+                if name.len() > 255 {
+                    return Err(scenario("name must be 0..=255 bytes"));
+                }
+                let mime = Self::text(req, "mime")?;
+                if !(1..=255).contains(&mime.len()) {
+                    return Err(scenario("mime must be 1..=255 bytes"));
+                }
+                if req
+                    .get("body")
+                    .is_some_and(|v| v.as_str().is_none_or(|s| s.len() > 4000))
+                {
+                    return Err(scenario("body must be 0..=4000 bytes"));
+                }
+                let bytes = req.get("bytes_hex");
+                let size = req.get("size");
+                let seed = req.get("seed");
+                if (bytes.is_some() == size.is_some()) || (size.is_some() != seed.is_some()) {
+                    return Err(scenario("attach takes bytes_hex or size with seed"));
+                }
+                if let Some(bytes) = bytes
+                    && bytes
+                        .as_str()
+                        .and_then(|s| Self::hex_bytes(s, 1_048_576))
+                        .is_none()
+                {
+                    return Err(scenario(
+                        "bytes_hex must be lowercase hex of at most 1048576 bytes",
+                    ));
+                }
+                if size.is_some() && !matches!(Self::uint(req, "size"), Some(Some(1..=26_214_400)))
+                {
+                    return Err(scenario("size must be 1..=26214400"));
+                }
+                if seed.is_some() && !matches!(Self::uint(req, "seed"), Some(Some(_))) {
+                    return Err(scenario("seed must be an unsigned integer"));
+                }
+                for key in ["w", "h"] {
+                    if matches!(Self::uint(req, key), Some(None)) {
+                        return Err(scenario(format!("{key} must be an unsigned integer")));
+                    }
+                }
+                if let Some(v) = req.get("thumb_hex")
+                    && v.as_str().and_then(|s| Self::hex_bytes(s, 8_176)).is_none()
+                {
+                    return Err(scenario(
+                        "thumb_hex must be lowercase hex of at most 8176 bytes",
+                    ));
+                }
+            }
+            "fetch_attachment" => {
+                if !matches!(Self::uint(req, "seq"), Some(Some(n)) if n >= 1) {
+                    return Err(scenario(if req.get("seq").is_none() {
+                        "the request carries no seq"
+                    } else {
+                        "seq must be at least 1"
+                    }));
+                }
+                if !matches!(Self::uint(req, "index"), Some(Some(_))) {
+                    return Err(scenario(if req.get("index").is_none() {
+                        "the request carries no index"
+                    } else {
+                        "index must be an unsigned integer"
+                    }));
+                }
+                if req.get("channel_id").is_some() {
+                    Self::hex16(req, "channel_id")?;
+                }
+            }
+            "blob_status" => {
+                Self::digest32(req, "blob_id")?;
                 if req.get("channel_id").is_some() {
                     Self::hex16(req, "channel_id")?;
                 }
@@ -199,7 +388,18 @@ impl WebDriver {
         if op != "setup" && self.peer.is_none() {
             return Err(scenario("setup first"));
         }
-        if matches!(op, "send" | "sync" | "members" | "update") && self.group.is_none() {
+        if matches!(
+            op,
+            "send"
+                | "sync"
+                | "members"
+                | "update"
+                | "delete"
+                | "attach"
+                | "fetch_attachment"
+                | "blob_status"
+        ) && self.group.is_none()
+        {
             return Err(scenario("no group yet: register or join first"));
         }
         if matches!(op, "register" | "join")
@@ -213,6 +413,10 @@ impl WebDriver {
             "register" => self.register(),
             "join" => self.join(req),
             "send" => self.send(req),
+            "delete" => self.delete(req),
+            "attach" => self.attach(req),
+            "fetch_attachment" => self.fetch_attachment(req),
+            "blob_status" => self.blob_status(req),
             "sync" => self.sync_group(self.group_of(req)?),
             "members" => self.members(self.group_of(req)?),
             "update" => self.update(),
@@ -321,6 +525,20 @@ impl WebDriver {
             .get(&channel)
             .cloned()
             .ok_or_else(|| scenario("channel_id is not a channel of this driver with a group"))
+    }
+
+    fn channel_and_group(&self, req: &Value) -> Result<([u8; 16], Vec<u8>), TestkitError> {
+        if req.get("channel_id").is_some() {
+            let channel = Self::hex16(req, "channel_id")?;
+            let group = self.group_of(req)?;
+            return Ok((channel, group));
+        }
+        let group = self.group();
+        self.groups
+            .iter()
+            .find(|(_, g)| *g == &group)
+            .map(|(c, _)| (*c, group))
+            .ok_or_else(|| scenario("no channel holds the driver's group"))
     }
 
     fn take_pending(&mut self, group: &[u8]) -> Vec<Received> {
@@ -625,22 +843,230 @@ impl WebDriver {
 
     fn send(&mut self, req: &Value) -> Result<Value, TestkitError> {
         let name = self.peer().name.clone();
-        let group = self.group_of(req)?;
-        let body = Self::text(req, "body")?;
-        let seq = self
-            .runner
-            .with_member(&name, |c, ds| c.send_seq(ds, &group, body))?;
-        Ok(json!({"seq": seq}))
+        let (channel, group) = self.channel_and_group(req)?;
+        let body = req.get("body").and_then(Value::as_str).unwrap_or("");
+        let kind = EnvelopeType::from_u64(req.get("type").and_then(Value::as_u64).unwrap_or(0))?;
+        let reply_to = req
+            .get("reply_to")
+            .map(|_| Self::hex16(req, "reply_to").map(MsgId::from_bytes))
+            .transpose()?;
+        let (seq, msg_id) = self.runner.with_member(&name, |c, ds| {
+            c.send_envelope(ds, &group, kind, reply_to, body, Vec::new())
+        })?;
+        self.sent.insert(
+            (group, seq),
+            Sent {
+                msg_id,
+                channel,
+                attachments: Vec::new(),
+            },
+        );
+        Ok(json!({"seq": seq, "msg_id": msg_id.to_hex()}))
     }
 
-    fn received_json(r: &Received) -> Value {
-        json!({"seq": r.seq, "body": r.envelope.body, "sender_user": r.sender_user.to_hex(),
-            "sender_device": r.sender.to_hex(), "tier": r.tier as u8})
+    fn attachment_material(seed: u64, counter: u64) -> ([u8; 32], [u8; 12]) {
+        let mut key_hash = Sha256::new();
+        key_hash.update(b"dilla-testkit attachment key");
+        key_hash.update(seed.to_be_bytes());
+        key_hash.update(counter.to_be_bytes());
+        let key: [u8; 32] = key_hash.finalize().into();
+        let mut nonce_hash = Sha256::new();
+        nonce_hash.update(b"dilla-testkit attachment nonce");
+        nonce_hash.update(seed.to_be_bytes());
+        nonce_hash.update(counter.to_be_bytes());
+        let hash: [u8; 32] = nonce_hash.finalize().into();
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&hash[..12]);
+        (key, nonce)
+    }
+
+    fn delete(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let msg_id = MsgId::from_bytes(Self::hex16(req, "msg_id")?);
+        let seq = req["seq"].as_u64().expect("validated seq");
+        let (_, group) = self.channel_and_group(req)?;
+        let sent = self
+            .sent
+            .get(&(group.clone(), seq))
+            .ok_or_else(|| scenario("seq is not a message this driver sent"))?;
+        if sent.msg_id != msg_id {
+            return Err(scenario("msg_id is not the message at seq"));
+        }
+        let channel = sent.channel;
+        let blob_ids: Vec<[u8; 32]> = sent.attachments.iter().map(|a| a.blob_id).collect();
+        let name = self.peer().name.clone();
+        let (deleted_seq, _) = self.runner.with_member(&name, |c, ds| {
+            c.send_envelope(
+                ds,
+                &group,
+                EnvelopeType::Delete,
+                Some(msg_id),
+                "",
+                Vec::new(),
+            )
+        })?;
+        self.runner.with_session(&name, |_, ds| {
+            ds.delete_message(&group, seq).map_err(Into::into)
+        })?;
+        for blob_id in blob_ids {
+            self.runner.with_session(&name, |_, ds| {
+                ds.delete_blob(&channel, &blob_id).map_err(Into::into)
+            })?;
+        }
+        Ok(json!({"seq": deleted_seq}))
+    }
+
+    fn attach(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let (channel, group) = self.channel_and_group(req)?;
+        let plaintext = if let Some(s) = req.get("bytes_hex") {
+            Self::hex_bytes(s.as_str().expect("validated hex"), 1_048_576).expect("validated hex")
+        } else {
+            seeded_plaintext(
+                req["seed"].as_u64().expect("validated seed"),
+                req["size"].as_u64().expect("validated size") as usize,
+            )
+        };
+        self.attachments_made += 1;
+        let (key, nonce) = Self::attachment_material(self.seed, self.attachments_made);
+        let stored = attachment::seal_blob(&key, &nonce, &plaintext);
+        let blob_id = attachment::blob_id(&stored);
+        let name = self.peer().name.clone();
+        self.runner.with_session(&name, |_, ds| {
+            ds.put_blob(&channel, &blob_id, &stored)?;
+            ds.confirm_blob(&channel, &blob_id)?;
+            Ok(())
+        })?;
+        let thumb = req
+            .get("thumb_hex")
+            .map(|s| {
+                let plain = Self::hex_bytes(s.as_str().expect("validated thumb"), 8_176)
+                    .expect("validated thumb");
+                attachment::seal_thumb(&key, &nonce, &plain)
+            })
+            .transpose()?;
+        let att = Attachment {
+            blob_id,
+            key,
+            nonce,
+            size: plaintext.len() as u64,
+            mime: Self::text(req, "mime")?.to_owned(),
+            w: req.get("w").and_then(Value::as_u64),
+            h: req.get("h").and_then(Value::as_u64),
+            thumb,
+            name: Self::text(req, "name")?.to_owned(),
+        };
+        let body = req.get("body").and_then(Value::as_str).unwrap_or("");
+        let (seq, msg_id) = self.runner.with_member(&name, |c, ds| {
+            c.send_envelope(
+                ds,
+                &group,
+                EnvelopeType::Message,
+                None,
+                body,
+                vec![att.clone()],
+            )
+        })?;
+        self.sent.insert(
+            (group, seq),
+            Sent {
+                msg_id,
+                channel,
+                attachments: vec![att],
+            },
+        );
+        Ok(
+            json!({"seq": seq, "msg_id": msg_id.to_hex(), "blob_id": hex::encode(blob_id),
+            "sha256": hex::encode(Sha256::digest(&plaintext))}),
+        )
+    }
+
+    fn fetch_attachment(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let (channel, group) = self.channel_and_group(req)?;
+        let seq = req["seq"].as_u64().expect("validated seq");
+        let index = req["index"].as_u64().expect("validated index") as usize;
+        let key = (group, seq);
+        let attachments = if let Some(sent) = self.sent.get(&key) {
+            &sent.attachments
+        } else if let Some(row) = self.held.get(&key) {
+            &row.envelope.attachments
+        } else {
+            return Err(scenario("seq is not a message this driver holds"));
+        };
+        if self.deleted.contains(&key) {
+            return Err(scenario("the message at seq was deleted"));
+        }
+        let att = attachments
+            .get(index)
+            .ok_or_else(|| scenario("index is past the attachments of the message at seq"))?;
+        let name = self.peer().name.clone();
+        let stored = self.runner.with_session(&name, |_, ds| {
+            ds.get_blob(&channel, &att.blob_id).map_err(Into::into)
+        })?;
+        let plain = attachment::open_blob(&att.key, &att.nonce, &att.blob_id, att.size, &stored)
+            .map_err(|e| scenario(e.code()))?;
+        let thumb_sha256 = att
+            .thumb
+            .as_ref()
+            .map(|bytes| {
+                attachment::open_thumb(&att.key, &att.nonce, bytes)
+                    .map(|plain| hex::encode(Sha256::digest(&plain)))
+                    .map_err(|e| scenario(e.code()))
+            })
+            .transpose()?;
+        Ok(
+            json!({"sha256": hex::encode(Sha256::digest(&plain)), "size": att.size,
+            "mime": att.mime, "name": att.name, "thumb_sha256": thumb_sha256}),
+        )
+    }
+
+    fn blob_status(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let (channel, _) = self.channel_and_group(req)?;
+        let id = Self::digest32(req, "blob_id")?;
+        let name = self.peer().name.clone();
+        let status = self.runner.with_session(&name, |_, ds| {
+            ds.blob_status(&channel, &id).map_err(Into::into)
+        })?;
+        Ok(json!({"status": status}))
+    }
+
+    fn received_json(r: &Received, deleted: bool) -> Value {
+        let attachments: Vec<Value> = if deleted {
+            Vec::new()
+        } else {
+            r.envelope
+                .attachments
+                .iter()
+                .enumerate()
+                .map(|(index, a)| {
+                    json!({
+                        "index": index, "blob_id": hex::encode(a.blob_id), "size": a.size,
+                        "mime": a.mime, "name": a.name, "thumb": a.thumb.is_some()
+                    })
+                })
+                .collect()
+        };
+        json!({"seq": r.seq, "body": if deleted { "" } else { &r.envelope.body },
+            "sender_user": r.sender_user.to_hex(), "sender_device": r.sender.to_hex(),
+            "tier": r.tier as u8, "msg_id": r.envelope.msg_id.to_hex(),
+            "type": r.envelope.kind.as_u8(), "reply_to": r.envelope.reply_to.map(|id| id.to_hex()),
+            "deleted": deleted, "attachments": attachments})
+    }
+
+    fn unheld_deleted_json(seq: u64) -> Value {
+        json!({"seq": seq, "body": "", "deleted": true, "msg_id": null, "type": null,
+            "reply_to": null, "sender_user": null, "sender_device": null, "tier": null,
+            "attachments": []})
+    }
+
+    fn hold(&mut self, got: &[Received]) {
+        for row in got {
+            self.held
+                .insert((row.group_id.clone(), row.seq), row.clone());
+        }
     }
 
     fn sync_group(&mut self, group: Vec<u8>) -> Result<Value, TestkitError> {
         let name = self.peer().name.clone();
-        let (mut got, epoch, members) = self.runner.with_member(&name, |c, ds| {
+        let (mut got, deleted, epoch, members) = self.runner.with_member(&name, |c, ds| {
             let mut got = c.sync(ds)?;
             for attempt in 1..=3 {
                 let outstanding = ds.proposals(&group)?.iter().any(|p| !p.void);
@@ -656,26 +1082,50 @@ impl WebDriver {
                 }
             }
             got.extend(c.sync(ds)?);
-            Ok((got, c.epoch_of(&group), c.member_count(&group)))
+            Ok((
+                got,
+                c.take_deleted(),
+                c.epoch_of(&group),
+                c.member_count(&group),
+            ))
         })?;
         let epoch = epoch.ok_or_else(|| scenario("the peer holds no state for its group"))?;
         let members = members.ok_or_else(|| scenario("the peer holds no state for its group"))?;
+        self.hold(&got);
         self.pending.append(&mut got);
-        let received: Vec<Value> = self
+        self.pending_deleted.extend(deleted);
+        let mut received: Vec<Value> = self
             .take_pending(&group)
             .iter()
-            .map(Self::received_json)
+            .map(|r| Self::received_json(r, false))
             .collect();
+        let mut other = Vec::new();
+        for (g, seq) in std::mem::take(&mut self.pending_deleted) {
+            if g != group {
+                other.push((g, seq));
+                continue;
+            }
+            if !self.deleted.insert((g.clone(), seq)) {
+                continue;
+            }
+            received.push(self.held.get(&(g, seq)).map_or_else(
+                || Self::unheld_deleted_json(seq),
+                |r| Self::received_json(r, true),
+            ));
+        }
+        self.pending_deleted = other;
         Ok(json!({"epoch": epoch, "members": members, "received": received}))
     }
 
     fn members(&mut self, group: Vec<u8>) -> Result<Value, TestkitError> {
         let name = self.peer().name.clone();
-        let (got, roster) = self.runner.with_member(&name, |c, ds| {
+        let (got, deleted, roster) = self.runner.with_member(&name, |c, ds| {
             let got = c.sync(ds)?;
-            Ok((got, c.roster(&group)))
+            Ok((got, c.take_deleted(), c.roster(&group)))
         })?;
+        self.hold(&got);
         self.pending.extend(got);
+        self.pending_deleted.extend(deleted);
         let roster = roster.ok_or_else(|| scenario("the peer holds no state for its group"))?;
         let devices: Vec<String> = roster.iter().map(|r| r.device_id.to_hex()).collect();
         Ok(json!({"devices": devices}))
@@ -684,12 +1134,14 @@ impl WebDriver {
     fn update(&mut self) -> Result<Value, TestkitError> {
         let name = self.peer().name.clone();
         let group = self.group();
-        let (got, epoch) = self.runner.with_member(&name, |c, ds| {
+        let (got, deleted, epoch) = self.runner.with_member(&name, |c, ds| {
             let got = c.sync(ds)?;
             c.commit(ds, &group)?;
-            Ok((got, c.epoch_of(&group)))
+            Ok((got, c.take_deleted(), c.epoch_of(&group)))
         })?;
+        self.hold(&got);
         self.pending.extend(got);
+        self.pending_deleted.extend(deleted);
         let epoch = epoch.ok_or_else(|| scenario("the peer holds no state for its group"))?;
         Ok(json!({"epoch": epoch}))
     }
@@ -698,10 +1150,11 @@ impl WebDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dilla_core::envelope::{Envelope, EnvelopeType};
+    use dilla_core::envelope::{Attachment, Envelope, EnvelopeType};
     use dilla_core::identity::Tier;
     use dilla_core::ids::{DeviceId, MsgId, UserId};
     use serde_json::json;
+    use sha2::{Digest, Sha256};
 
     fn driver(seed: u64) -> WebDriver {
         // Port 9 (discard): nothing below may reach the network.
@@ -997,5 +1450,300 @@ mod tests {
         assert_eq!(rest.len(), 1);
         assert!(d.pending.is_empty());
         assert!(d.take_pending(&[0xaa; 16]).is_empty());
+    }
+    #[test]
+    fn the_web_2b_ops_validate_their_fields_before_the_setup_check() {
+        let mut d = driver(1);
+        let msg = "ab".repeat(16);
+        let cases = [
+            (
+                json!({"id": 1, "op": "send", "body": "x", "type": 7}),
+                "scenario: type must be 0..=6",
+            ),
+            (
+                json!({"id": 2, "op": "send", "body": "x", "type": "1"}),
+                "scenario: type must be 0..=6",
+            ),
+            (
+                json!({"id": 3, "op": "send", "body": "edited", "type": 1}),
+                "scenario: reply_to is required",
+            ),
+            (
+                json!({"id": 4, "op": "send", "type": 2}),
+                "scenario: reply_to is required",
+            ),
+            (
+                json!({"id": 5, "op": "send", "body": "x", "type": 1, "reply_to": "AB".repeat(16)}),
+                "scenario: reply_to is not 32 lowercase hex",
+            ),
+            (
+                json!({"id": 5, "op": "send", "body": "x", "type": 1, "reply_to": null}),
+                "scenario: reply_to is not 32 lowercase hex",
+            ),
+            (
+                json!({"id": 6, "op": "send", "type": 3, "reply_to": msg, "body": ""}),
+                "scenario: body must be 1..=32 bytes for a reaction",
+            ),
+            (
+                json!({"id": 7, "op": "send", "type": 4, "reply_to": msg, "body": "x".repeat(33)}),
+                "scenario: body must be 1..=32 bytes for a reaction",
+            ),
+            (
+                json!({"id": 8, "op": "send", "type": 2, "reply_to": msg, "body": "gone"}),
+                "scenario: body must be empty for types 2, 5 and 6",
+            ),
+            (
+                json!({"id": 9, "op": "send", "type": 5, "reply_to": msg, "body": " "}),
+                "scenario: body must be empty for types 2, 5 and 6",
+            ),
+            (
+                json!({"id": 10, "op": "send", "type": 1, "reply_to": msg, "body": ""}),
+                "scenario: body must be 1..=4000 bytes",
+            ),
+            (
+                json!({"id": 10, "op": "send", "type": 0, "body": 1}),
+                "scenario: body must be 1..=4000 bytes",
+            ),
+            (
+                json!({"id": 10, "op": "send", "type": 2, "reply_to": msg, "body": 1}),
+                "scenario: body must be empty for types 2, 5 and 6",
+            ),
+            (
+                json!({"id": 11, "op": "delete", "seq": 3}),
+                "scenario: the request carries no msg_id",
+            ),
+            (
+                json!({"id": 12, "op": "delete", "msg_id": msg}),
+                "scenario: the request carries no seq",
+            ),
+            (
+                json!({"id": 13, "op": "delete", "msg_id": msg, "seq": 0}),
+                "scenario: seq must be at least 1",
+            ),
+            (
+                json!({"id": 14, "op": "delete", "msg_id": msg, "seq": "3"}),
+                "scenario: seq must be at least 1",
+            ),
+            (
+                json!({"id": 15, "op": "attach", "mime": "text/plain", "bytes_hex": "00"}),
+                "scenario: the request carries no name",
+            ),
+            (
+                json!({"id": 16, "op": "attach", "name": "n".repeat(256), "mime": "text/plain", "bytes_hex": "00"}),
+                "scenario: name must be 0..=255 bytes",
+            ),
+            (
+                json!({"id": 17, "op": "attach", "name": "a", "bytes_hex": "00"}),
+                "scenario: the request carries no mime",
+            ),
+            (
+                json!({"id": 18, "op": "attach", "name": "a", "mime": "", "bytes_hex": "00"}),
+                "scenario: mime must be 1..=255 bytes",
+            ),
+            (
+                json!({"id": 19, "op": "attach", "name": "a", "mime": "x", "body": "b".repeat(4001), "bytes_hex": "00"}),
+                "scenario: body must be 0..=4000 bytes",
+            ),
+            (
+                json!({"id": 20, "op": "attach", "name": "a", "mime": "x"}),
+                "scenario: attach takes bytes_hex or size with seed",
+            ),
+            (
+                json!({"id": 21, "op": "attach", "name": "a", "mime": "x", "bytes_hex": "00", "size": 1, "seed": 1}),
+                "scenario: attach takes bytes_hex or size with seed",
+            ),
+            (
+                json!({"id": 22, "op": "attach", "name": "a", "mime": "x", "size": 5}),
+                "scenario: attach takes bytes_hex or size with seed",
+            ),
+            (
+                json!({"id": 23, "op": "attach", "name": "a", "mime": "x", "bytes_hex": "0G"}),
+                "scenario: bytes_hex must be lowercase hex of at most 1048576 bytes",
+            ),
+            (
+                json!({"id": 24, "op": "attach", "name": "a", "mime": "x", "bytes_hex": "0"}),
+                "scenario: bytes_hex must be lowercase hex of at most 1048576 bytes",
+            ),
+            (
+                json!({"id": 25, "op": "attach", "name": "a", "mime": "x", "bytes_hex": "00".repeat(1_048_577)}),
+                "scenario: bytes_hex must be lowercase hex of at most 1048576 bytes",
+            ),
+            (
+                json!({"id": 26, "op": "attach", "name": "a", "mime": "x", "size": 0, "seed": 1}),
+                "scenario: size must be 1..=26214400",
+            ),
+            (
+                json!({"id": 27, "op": "attach", "name": "a", "mime": "x", "size": 26_214_401, "seed": 1}),
+                "scenario: size must be 1..=26214400",
+            ),
+            (
+                json!({"id": 28, "op": "attach", "name": "a", "mime": "x", "size": 1, "seed": -1}),
+                "scenario: seed must be an unsigned integer",
+            ),
+            (
+                json!({"id": 29, "op": "attach", "name": "a", "mime": "x", "bytes_hex": "00", "w": "1"}),
+                "scenario: w must be an unsigned integer",
+            ),
+            (
+                json!({"id": 30, "op": "attach", "name": "a", "mime": "x", "bytes_hex": "00", "h": -2}),
+                "scenario: h must be an unsigned integer",
+            ),
+            (
+                json!({"id": 31, "op": "attach", "name": "a", "mime": "x", "bytes_hex": "00", "thumb_hex": "00".repeat(8177)}),
+                "scenario: thumb_hex must be lowercase hex of at most 8176 bytes",
+            ),
+            (
+                json!({"id": 32, "op": "fetch_attachment", "index": 0}),
+                "scenario: the request carries no seq",
+            ),
+            (
+                json!({"id": 33, "op": "fetch_attachment", "seq": 4}),
+                "scenario: the request carries no index",
+            ),
+            (
+                json!({"id": 34, "op": "fetch_attachment", "seq": 4, "index": "0"}),
+                "scenario: index must be an unsigned integer",
+            ),
+            (
+                json!({"id": 35, "op": "blob_status"}),
+                "scenario: the request carries no blob_id",
+            ),
+            (
+                json!({"id": 36, "op": "blob_status", "blob_id": "ab".repeat(16)}),
+                "scenario: blob_id is not 64 lowercase hex",
+            ),
+            (
+                json!({"id": 37, "op": "blob_status", "blob_id": "AB".repeat(32)}),
+                "scenario: blob_id is not 64 lowercase hex",
+            ),
+            (
+                json!({"id": 37, "op": "blob_status", "blob_id": null}),
+                "scenario: blob_id is not 64 lowercase hex",
+            ),
+        ];
+        for (req, want) in cases {
+            assert_eq!(error_of(&d.handle(&req)), want, "{req}");
+        }
+        // Well-formed requests of every new or changed op reach the setup check.
+        for req in [
+            json!({"id": 40, "op": "send", "body": "plain"}),
+            json!({"id": 41, "op": "send", "type": 1, "reply_to": msg, "body": "edited"}),
+            json!({"id": 42, "op": "send", "type": 2, "reply_to": msg}),
+            json!({"id": 43, "op": "send", "type": 6, "reply_to": msg, "body": ""}),
+            json!({"id": 44, "op": "send", "type": 3, "reply_to": msg, "body": "👍"}),
+            json!({"id": 45, "op": "send", "type": 0, "reply_to": msg, "body": "a reply"}),
+            json!({"id": 46, "op": "delete", "msg_id": msg, "seq": 3}),
+            json!({"id": 47, "op": "attach", "name": "", "mime": "x", "bytes_hex": ""}),
+            json!({"id": 48, "op": "attach", "name": "a", "mime": "x", "size": 26_214_400, "seed": 7,
+                   "w": 2, "h": 2, "thumb_hex": "00".repeat(8176)}),
+            json!({"id": 49, "op": "fetch_attachment", "seq": 4, "index": 0}),
+            json!({"id": 50, "op": "blob_status", "blob_id": "ab".repeat(32), "channel_id": msg}),
+        ] {
+            assert_eq!(error_of(&d.handle(&req)), "scenario: setup first", "{req}");
+        }
+    }
+
+    #[test]
+    fn seeded_plaintext_is_sha256_of_seed_and_block_index() {
+        let block = |seed: u64, k: u64| {
+            let mut h = Sha256::new();
+            h.update(seed.to_be_bytes());
+            h.update(k.to_be_bytes());
+            h.finalize().to_vec()
+        };
+        let p = seeded_plaintext(7, 70_000);
+        assert_eq!(p.len(), 70_000);
+        assert_eq!(&p[..32], block(7, 0).as_slice());
+        assert_eq!(&p[32..64], block(7, 1).as_slice());
+        // 70 000 = 2 187 × 32 + 16: the last block is cut to 16 bytes.
+        assert_eq!(&p[69_984..], &block(7, 2_187)[..16]);
+        assert_eq!(seeded_plaintext(7, 5), block(7, 0)[..5].to_vec());
+        assert_ne!(seeded_plaintext(8, 32), p[..32].to_vec());
+    }
+
+    #[test]
+    fn attachment_key_material_is_fresh_per_attach_and_per_seed() {
+        let a = WebDriver::attachment_material(1, 1);
+        assert_eq!(
+            a,
+            WebDriver::attachment_material(1, 1),
+            "derived, so a rerun reproduces it"
+        );
+        let b = WebDriver::attachment_material(1, 2);
+        let c = WebDriver::attachment_material(2, 1);
+        assert_ne!(a.0, b.0);
+        assert_ne!(a.1, b.1);
+        assert_ne!(a.0, c.0);
+        assert_ne!(a.1, c.1);
+        assert_ne!(a.0[..12], a.1[..], "the nonce is not a prefix of the key");
+    }
+
+    #[test]
+    fn a_received_row_carries_its_type_reply_and_attachments_and_never_a_key() {
+        let mut react = held(0xaa, 5);
+        react.envelope.kind = EnvelopeType::ReactionAdd;
+        react.envelope.body = "👍".into();
+        react.envelope.reply_to = Some(MsgId::from_bytes([0x71; 16]));
+        let plain = WebDriver::received_json(&react, false);
+        assert_eq!(plain["seq"], json!(5));
+        assert_eq!(plain["body"], json!("👍"));
+        assert_eq!(plain["type"], json!(3));
+        assert_eq!(plain["msg_id"], json!("aa".repeat(16)));
+        assert_eq!(plain["reply_to"], json!("71".repeat(16)));
+        assert_eq!(plain["deleted"], json!(false));
+        assert_eq!(plain["attachments"], json!([]));
+        assert_eq!(plain["sender_user"], json!("0e".repeat(16)));
+        assert_eq!(plain["sender_device"], json!("0d".repeat(16)));
+        assert_eq!(plain["tier"], json!(0));
+
+        let mut file = held(0xbb, 6);
+        file.envelope.attachments = vec![Attachment {
+            blob_id: [0x43; 32],
+            key: [0x44; 32],
+            nonce: [0x45; 12],
+            size: 1234,
+            mime: "image/png".into(),
+            w: Some(640),
+            h: Some(480),
+            thumb: Some(vec![0x46; 40]),
+            name: "map.png".into(),
+        }];
+        let with = WebDriver::received_json(&file, false);
+        assert_eq!(with["reply_to"], json!(null));
+        assert_eq!(with["type"], json!(0));
+        assert_eq!(
+            with["attachments"],
+            json!([{"index": 0, "blob_id": "43".repeat(32), "size": 1234, "mime": "image/png", "name": "map.png", "thumb": true}])
+        );
+        let text = with.to_string();
+        assert!(
+            !text.contains(&"44".repeat(32)),
+            "the key never leaves the driver: {text}"
+        );
+        assert!(
+            !text.contains(&"45".repeat(12)),
+            "the nonce never leaves the driver: {text}"
+        );
+        assert!(
+            !text.contains(&"46".repeat(40)),
+            "the sealed thumbnail never leaves the driver: {text}"
+        );
+        assert_eq!(
+            with.as_object().unwrap().len(),
+            10,
+            "exactly the ten keys of L-E2E-20: {text}"
+        );
+
+        let gone = WebDriver::received_json(&file, true);
+        assert_eq!(gone["deleted"], json!(true));
+        assert_eq!(gone["body"], json!(""));
+        assert_eq!(gone["attachments"], json!([]));
+        assert_eq!(gone["msg_id"], json!("bb".repeat(16)));
+        assert_eq!(gone["seq"], json!(6));
+        assert_eq!(
+            WebDriver::unheld_deleted_json(9),
+            json!({"seq": 9, "body": "", "deleted": true, "msg_id": null, "type": null, "reply_to": null,
+                   "sender_user": null, "sender_device": null, "tier": null, "attachments": []})
+        );
     }
 }

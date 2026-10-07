@@ -12,7 +12,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +25,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -30,6 +36,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/testkit"
 )
 
@@ -564,5 +571,195 @@ func TestTheWebDriverPeerEnrolsRevokesAndOpensDMs(t *testing.T) {
 	again := alice.ok("open_dm", map[string]any{"user_id": sb["user_id"]})
 	if again["channel_id"] != od["channel_id"] || again["group_id"] != od["group_id"] || again["created"] != false {
 		t.Fatalf("a second open_dm answered %v; want the same DM and group, not created", again)
+	}
+}
+
+// waitAll syncs until every predicate has matched a received row and returns the first match of each, in order.
+// Rows a sync answers are consumed, so a test that waits for two rows waits for them together.
+func (d *webDriver) waitAll(what string, preds ...func(map[string]any) bool) []map[string]any {
+	d.t.Helper()
+	found := make([]map[string]any, len(preds))
+	deadline := time.Now().Add(driverWait)
+	for {
+		for _, item := range d.ok("sync", nil)["received"].([]any) {
+			m := item.(map[string]any)
+			for i, p := range preds {
+				if found[i] == nil && p(m) {
+					found[i] = m
+				}
+			}
+		}
+		done := true
+		for _, f := range found {
+			done = done && f != nil
+		}
+		if done {
+			return found
+		}
+		if time.Now().After(deadline) {
+			d.t.Fatalf("%s never received %s within %v (matched so far: %v)", d.name, what, driverWait, found)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// seededSHA256 is L-E2E-20's plaintext rule computed independently of the driver: byte i is
+// SHA-256(seed BE || (i/32) BE)[i mod 32]; answers the hex SHA-256 of the whole plaintext.
+func seededSHA256(seed uint64, size int) string {
+	plain := make([]byte, 0, size+sha256.Size)
+	for k := uint64(0); len(plain) < size; k++ {
+		var in [16]byte
+		binary.BigEndian.PutUint64(in[:8], seed)
+		binary.BigEndian.PutUint64(in[8:], k)
+		block := sha256.Sum256(in[:])
+		plain = append(plain, block[:]...)
+	}
+	sum := sha256.Sum256(plain[:size])
+	return hex.EncodeToString(sum[:])
+}
+
+// dilla-web-2b task 5: the native peer sends every envelope type, deletes end to end and attaches files against the
+// production wiring; bob is the receiving peer whose `sync` the browser tests read (lesson f).
+func TestTheWebDriverPeersFoldDeleteAndAttach(t *testing.T) {
+	dataDir := t.TempDir()
+	h := testkit.Start(t, testkit.Options{DataDir: dataDir, ProductionACL: true})
+	t.Cleanup(h.Stop)
+	ctx := context.Background()
+	repo := h.Repo()
+	alice := startWebDriver(t, h, h.BaseURL(), "alice", 0xa11ce5)
+	bob := startWebDriver(t, h, h.BaseURL(), "bob", 0xb0b5)
+
+	sa := alice.ok("setup", map[string]any{"community": "say more", "channel": "general"})
+	ra := alice.ok("register", nil)
+	sb := bob.ok("setup", map[string]any{"community": "bob's own", "channel": "elsewhere"})
+	bob.ok("join", map[string]any{"community_id": sa["community_id"], "channel_id": sa["channel_id"],
+		"group_id": ra["group_id"], "invite_code": sa["invite_code"]})
+	waitRoster(t, alice, false, sa["device_id"].(string), sb["device_id"].(string))
+	channel := mustID(t, sa["channel_id"])
+
+	// send: type 0 answers its msg_id; the receiver reads type 0, no reply and no attachments.
+	orig := alice.ok("send", map[string]any{"body": "the original"})
+	if !hex32.MatchString(fmt.Sprint(orig["msg_id"])) {
+		t.Fatalf("send answered msg_id %v, want 32 lowercase hex", orig["msg_id"])
+	}
+	got := bob.waitFor("the original")
+	if got["msg_id"] != orig["msg_id"] || got["type"] != float64(0) || got["reply_to"] != nil ||
+		got["deleted"] != false || len(got["attachments"].([]any)) != 0 {
+		t.Fatalf("bob received %v; want msg_id %v, type 0, no reply, not deleted, no attachments", got, orig["msg_id"])
+	}
+
+	// type 1 with reply_to: the edit reaches the other peer naming its target.
+	alice.ok("send", map[string]any{"type": 1, "reply_to": orig["msg_id"], "body": "the edit"})
+	edit := bob.waitFor("the edit")
+	if edit["type"] != float64(1) || edit["reply_to"] != orig["msg_id"] {
+		t.Fatalf("bob received the edit as %v; want type 1 with reply_to %v", edit, orig["msg_id"])
+	}
+	// The verb refuses an edit without its target before anything is framed.
+	if a := alice.call("send", map[string]any{"type": 1, "body": "no target"}); a["ok"] != false ||
+		a["error"] != "scenario: reply_to is required" {
+		t.Fatalf("an edit without reply_to answered %v", a)
+	}
+
+	// attach from bytes: PUT, confirm, then the envelope. The reference is confirmed on the instance.
+	small := []byte("hello attachment")
+	smallSum := sha256.Sum256(small)
+	at := alice.ok("attach", map[string]any{"name": "hello.txt", "mime": "text/plain", "body": "with a file",
+		"bytes_hex": hex.EncodeToString(small)})
+	if at["sha256"] != hex.EncodeToString(smallSum[:]) {
+		t.Fatalf("attach answered sha256 %v, want %x", at["sha256"], smallSum)
+	}
+	blob1, err := hex.DecodeString(fmt.Sprint(at["blob_id"]))
+	if err != nil || len(blob1) != 32 {
+		t.Fatalf("attach answered blob_id %v, want 64 lowercase hex", at["blob_id"])
+	}
+	ref, err := repo.GetBlobRef(ctx, blob1, channel)
+	if err != nil || !ref.Confirmed {
+		t.Fatalf("the reference of the first attachment = %+v, %v; want it confirmed before the message was sent", ref, err)
+	}
+	row := bob.waitFor("with a file")
+	wantAtt := []any{map[string]any{"index": float64(0), "blob_id": at["blob_id"], "size": float64(len(small)),
+		"mime": "text/plain", "name": "hello.txt", "thumb": false}}
+	if row["msg_id"] != at["msg_id"] || !reflect.DeepEqual(row["attachments"], wantAtt) {
+		t.Fatalf("bob received %v; want msg_id %v and attachments %v", row, at["msg_id"], wantAtt)
+	}
+	fa := bob.ok("fetch_attachment", map[string]any{"seq": row["seq"], "index": 0})
+	if fa["sha256"] != at["sha256"] || fa["size"] != float64(len(small)) || fa["mime"] != "text/plain" ||
+		fa["name"] != "hello.txt" || fa["thumb_sha256"] != nil {
+		t.Fatalf("bob's fetch_attachment answered %v; want the sender's sha256 %v, size %d, no thumbnail",
+			fa, at["sha256"], len(small))
+	}
+
+	// attach by size and seed with a thumbnail and no body: the receiver reproduces the plaintext and the thumbnail.
+	stub := append([]byte("RIFF\x12\x00\x00\x00WEBP"), make([]byte, 14)...)
+	stubSum := sha256.Sum256(stub)
+	big := alice.ok("attach", map[string]any{"name": "map.png", "mime": "image/png", "size": 70000, "seed": 7,
+		"w": 640, "h": 480, "thumb_hex": hex.EncodeToString(stub)})
+	if want := seededSHA256(7, 70000); big["sha256"] != want {
+		t.Fatalf("attach{size 70000, seed 7} answered sha256 %v; the plaintext rule gives %s", big["sha256"], want)
+	}
+	bigRow := bob.waitAll("the seeded attachment", func(m map[string]any) bool { return m["seq"] == big["seq"] })[0]
+	atts, _ := bigRow["attachments"].([]any)
+	if bigRow["body"] != "" || len(atts) != 1 || atts[0].(map[string]any)["thumb"] != true ||
+		atts[0].(map[string]any)["size"] != float64(70000) {
+		t.Fatalf("bob received %v; want an attachment-only message with one 70000-byte attachment and a thumbnail", bigRow)
+	}
+	fb := bob.ok("fetch_attachment", map[string]any{"seq": big["seq"], "index": 0})
+	if fb["sha256"] != big["sha256"] || fb["thumb_sha256"] != hex.EncodeToString(stubSum[:]) {
+		t.Fatalf("bob's fetch_attachment of the seeded file answered %v; want sha256 %v and thumb_sha256 %x",
+			fb, big["sha256"], stubSum)
+	}
+	// TESTS-01: a 25 MiB file goes through the peer's download (ureq's default body limit is 10 MiB).
+	huge := alice.ok("attach", map[string]any{"name": "huge.bin", "mime": "application/octet-stream", "size": 26214400, "seed": 9})
+	if want := seededSHA256(9, 26214400); huge["sha256"] != want {
+		t.Fatalf("attach{size 26214400, seed 9} answered sha256 %v; the plaintext rule gives %s", huge["sha256"], want)
+	}
+	bob.waitAll("the 25 MiB attachment", func(m map[string]any) bool { return m["seq"] == huge["seq"] })
+	fh := bob.ok("fetch_attachment", map[string]any{"seq": huge["seq"], "index": 0})
+	if fh["sha256"] != huge["sha256"] || fh["size"] != float64(26214400) {
+		t.Fatalf("bob's fetch_attachment of the 25 MiB file answered %v; want sha256 %v and size 26214400", fh, huge["sha256"])
+	}
+	if st := bob.ok("blob_status", map[string]any{"blob_id": huge["blob_id"]}); st["status"] != float64(200) {
+		t.Fatalf("blob_status of the 25 MiB attachment = %v, want 200", st)
+	}
+
+	// delete: type 2, the delivery service's tombstone (op 21) and the reference deletes.
+	del := alice.ok("delete", map[string]any{"msg_id": at["msg_id"], "seq": at["seq"]})
+	seen := bob.waitAll("the delete and its tombstone",
+		func(m map[string]any) bool { return m["seq"] == del["seq"] },
+		func(m map[string]any) bool { return m["seq"] == at["seq"] && m["deleted"] == true })
+	if seen[0]["type"] != float64(2) || seen[0]["reply_to"] != at["msg_id"] || seen[0]["body"] != "" {
+		t.Fatalf("bob received the delete as %v; want type 2 naming %v with an empty body", seen[0], at["msg_id"])
+	}
+	if seen[1]["body"] != "" || seen[1]["msg_id"] != at["msg_id"] || len(seen[1]["attachments"].([]any)) != 0 {
+		t.Fatalf("bob's deleted row is %v; want body \"\", msg_id %v and no attachments", seen[1], at["msg_id"])
+	}
+	if st := bob.ok("blob_status", map[string]any{"blob_id": at["blob_id"]}); st["status"] != float64(404) {
+		t.Fatalf("blob_status of the deleted message's attachment = %v, want 404", st)
+	}
+	if _, err := repo.GetBlobRef(ctx, blob1, channel); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the reference of the deleted message's attachment: %v, want store.ErrNotFound", err)
+	}
+	if st := bob.ok("blob_status", map[string]any{"blob_id": big["blob_id"]}); st["status"] != float64(200) {
+		t.Fatalf("blob_status of the kept attachment = %v, want 200", st)
+	}
+	if a := bob.call("fetch_attachment", map[string]any{"seq": at["seq"], "index": 0}); a["ok"] != false ||
+		a["error"] != "scenario: the message at seq was deleted" {
+		t.Fatalf("fetch_attachment of a deleted message answered %v", a)
+	}
+
+	// Bytes replaced on disk under their name: the receiver refuses them by hash before any AEAD.
+	name := fmt.Sprint(big["blob_id"])
+	path := filepath.Join(dataDir, "blobs", "att", name[0:2], name[2:4], name)
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the stored blob: %v", err)
+	}
+	stored[0] ^= 0xff
+	if err := os.WriteFile(path, stored, 0o600); err != nil {
+		t.Fatalf("rewrite the stored blob: %v", err)
+	}
+	if a := bob.call("fetch_attachment", map[string]any{"seq": big["seq"], "index": 0}); a["ok"] != false ||
+		a["error"] != "scenario: E_BLOB_HASH" {
+		t.Fatalf("fetch_attachment of rewritten bytes answered %v, want the error scenario: E_BLOB_HASH", a)
 	}
 }

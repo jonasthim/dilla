@@ -266,6 +266,13 @@ fn call(
             }
             r.call()
         }
+        ("POST", None) => {
+            let mut r = agent.post(url);
+            if let Some(b) = &bearer {
+                r = r.header("Authorization", b);
+            }
+            r.send_empty()
+        }
         ("POST", Some((content_type, bytes))) => {
             let mut r = agent.post(url).content_type(content_type);
             if let Some(b) = &bearer {
@@ -289,6 +296,40 @@ fn call(
     .map_err(transport)?;
     let status = response.status().as_u16();
     let out = response.into_body().read_to_vec().map_err(transport)?;
+    Ok((status, out))
+}
+
+/// A body-less request with an explicit response limit for attachment downloads.
+fn call_limited(
+    agent: &ureq::Agent,
+    method: &str,
+    url: &str,
+    token: Option<&str>,
+    limit: u64,
+) -> Result<(u16, Vec<u8>), DsError> {
+    let bearer = token.map(|t| format!("Bearer {t}"));
+    let response = match method {
+        "GET" => {
+            let mut r = agent.get(url);
+            if let Some(b) = &bearer {
+                r = r.header("Authorization", b);
+            }
+            r.call()
+        }
+        _ => {
+            return Err(DsError::Protocol(format!(
+                "no {method} request shape in the testkit client"
+            )));
+        }
+    }
+    .map_err(transport)?;
+    let status = response.status().as_u16();
+    let out = response
+        .into_body()
+        .into_with_config()
+        .limit(limit)
+        .read_to_vec()
+        .map_err(transport)?;
     Ok((status, out))
 }
 
@@ -558,6 +599,7 @@ fn decode_frame(bytes: &[u8]) -> Result<(u64, Inbound), DsError> {
                     commitment: [0u8; 32],
                     franking_tag: d.bytes_exact::<32>()?,
                     recv_ts: d.uint()?,
+                    deleted: false,
                 };
                 Inbound::Frame(Frame::MessageCt {
                     group_id: group_id()?,
@@ -1198,6 +1240,110 @@ impl HttpDs {
     pub fn get_channel(&self, channel_id: &[u8; 16]) -> Result<ChannelInfo, DsError> {
         let path = format!("/v1/channels/{}", hex::encode(channel_id));
         decode_channel(&get_with(&self.agent, &self.base, &self.token, &path)?).map_err(protocol)
+    }
+
+    fn blob_path(channel_id: &[u8; 16], blob_id: &[u8; 32]) -> String {
+        format!(
+            "/v1/channels/{}/blobs/{}",
+            hex::encode(channel_id),
+            hex::encode(blob_id)
+        )
+    }
+
+    pub fn delete_message(&self, group_id: &[u8], seq: u64) -> Result<(), DsError> {
+        let group: &GroupId = group_id;
+        let path = Self::group_path(group, &format!("/messages/{seq}"));
+        let (status, out) = call(
+            &self.agent,
+            "DELETE",
+            &self.url(&path),
+            Some(&self.token),
+            None,
+        )?;
+        check_status(status, &out)
+    }
+
+    pub fn put_blob(
+        &self,
+        channel_id: &[u8; 16],
+        blob_id: &[u8; 32],
+        stored: &[u8],
+    ) -> Result<bool, DsError> {
+        let path = Self::blob_path(channel_id, blob_id);
+        let (status, out) = call(
+            &self.agent,
+            "PUT",
+            &self.url(&path),
+            Some(&self.token),
+            Some(("application/octet-stream", stored)),
+        )?;
+        check_status(status, &out)?;
+        let (answered, size) = decode_strict(&out, |d| {
+            d.array(2)?;
+            Ok((d.bytes_exact::<32>()?, d.uint()?))
+        })
+        .map_err(protocol)?;
+        if answered != *blob_id || size != stored.len() as u64 {
+            return Err(DsError::Protocol(format!(
+                "PUT {path}: the instance answered another blob"
+            )));
+        }
+        Ok(status == 201)
+    }
+
+    pub fn confirm_blob(&self, channel_id: &[u8; 16], blob_id: &[u8; 32]) -> Result<(), DsError> {
+        let path = format!("{}/confirm", Self::blob_path(channel_id, blob_id));
+        let (status, out) = call(
+            &self.agent,
+            "POST",
+            &self.url(&path),
+            Some(&self.token),
+            None,
+        )?;
+        check_status(status, &out)
+    }
+
+    pub fn get_blob(&self, channel_id: &[u8; 16], blob_id: &[u8; 32]) -> Result<Vec<u8>, DsError> {
+        let path = Self::blob_path(channel_id, blob_id);
+        let (status, out) = call_limited(
+            &self.agent,
+            "GET",
+            &self.url(&path),
+            Some(&self.token),
+            104_857_600,
+        )?;
+        check_status(status, &out)?;
+        Ok(out)
+    }
+
+    pub fn delete_blob(&self, channel_id: &[u8; 16], blob_id: &[u8; 32]) -> Result<(), DsError> {
+        let path = Self::blob_path(channel_id, blob_id);
+        let (status, out) = call(
+            &self.agent,
+            "DELETE",
+            &self.url(&path),
+            Some(&self.token),
+            None,
+        )?;
+        check_status(status, &out)
+    }
+
+    pub fn blob_status(&self, channel_id: &[u8; 16], blob_id: &[u8; 32]) -> Result<u16, DsError> {
+        let path = Self::blob_path(channel_id, blob_id);
+        let (status, out) = call_limited(
+            &self.agent,
+            "GET",
+            &self.url(&path),
+            Some(&self.token),
+            104_857_600,
+        )?;
+        if status == 200 || status == 404 {
+            return Ok(status);
+        }
+        check_status(status, &out)?;
+        Err(DsError::Protocol(format!(
+            "GET {path}: unexpected status {status}"
+        )))
     }
 
     /// POST /v1/communities [name, policy bstr "{}", 0, 0].
@@ -1921,8 +2067,7 @@ impl DeliveryService for HttpDs {
 
     /// Row 12, paged until a short page:
     /// `[[seq, epoch, uploader_device, blob|null, commitment|null, franking_tag, recv_ts, deleted]]`.
-    /// A deleted message comes back with an empty blob and an all-zero commitment: `MessageItem`
-    /// has no `deleted` flag, and the stub never deletes.
+    /// A deleted message comes back with an empty blob and `deleted: true`.
     fn messages(&mut self, g: &GroupId, from: u64) -> Result<Vec<MessageItem>, DsError> {
         let mut out: Vec<MessageItem> = Vec::new();
         let mut next = from;
@@ -1940,7 +2085,7 @@ impl DeliveryService for HttpDs {
                     let commitment = d.opt_bytes_exact::<32>()?.unwrap_or([0u8; 32]);
                     let franking_tag = d.bytes_exact::<32>()?;
                     let recv_ts = d.uint()?;
-                    let _deleted = d.uint()?;
+                    let deleted = d.uint()? == 1;
                     items.push(MessageItem {
                         seq,
                         epoch,
@@ -1949,6 +2094,7 @@ impl DeliveryService for HttpDs {
                         commitment,
                         franking_tag,
                         recv_ts,
+                        deleted,
                     });
                 }
                 Ok(items)
@@ -2747,6 +2893,7 @@ mod tests {
                 commitment: [0; 32],
                 franking_tag: [0; 32],
                 recv_ts: 0,
+                deleted: false,
             },
         });
         ds.welcomes().unwrap();
