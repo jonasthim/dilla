@@ -130,7 +130,11 @@ export async function ensureBackups(core: CorePort, routes: Routes): Promise<voi
     } else {
       try { await routes.putBackup(0, sealed.root); }
       catch (err) {
-        if (!(err instanceof DillaHttpError) || err.status !== 409) throw err;
+        // 409: a root is stored. 410 E_PRUNED: an operator purged these bytes, which tombstones them while the
+        // root stays served (protocol/09 Admin); either way the stored root is the one to compare.
+        const stored409 = err instanceof DillaHttpError && err.status === 409;
+        const pruned = err instanceof DillaHttpError && err.status === 410 && err.code === 'E_PRUNED';
+        if (!stored409 && !pruned) throw err;
         const stored = await routes.getBackup(0);
         if (stored === null || !same(stored.object, sealed.root)) throw new Error('E_ROOT_MISMATCH');
       }

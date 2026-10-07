@@ -465,6 +465,45 @@ describe('ensureBackups', () => {
     expect(marked).toHaveBeenCalledTimes(1);
   });
 
+  // An operator's purge of the root's bytes tombstones them while the root stays served (protocol/09 Admin): the
+  // identical re-PUT answers 410 E_PRUNED, which is a stored root to compare, like the 409.
+  it('accepts equal root bytes after a 410 E_PRUNED on the root re-PUT and uploads state', async () => {
+    const e = enrolled();
+    const marked = sealed(e.core, ROOT, STATE);
+    e.server.putBackupObject(e.userId, 0, ROOT);
+    await e.session.establish();
+    e.server.log.splice(0);
+    e.server.once('GET', '/v1/backups', { status: 200, body: [] });
+    e.server.once('PUT', '/v1/backups/0/0', { status: 410, body: ['E_PRUNED', 'the object was removed', null] });
+    await ensureBackups(e.core, e.routes);
+    expect(e.server.paths()).toEqual(['GET /v1/backups', 'PUT /v1/backups/0/0', 'GET /v1/backups/0/0', 'PUT /v1/backups/1/0']);
+    expect(marked).toHaveBeenCalledTimes(1);
+    expect((await e.routes.getBackup(1))?.object).toEqual(STATE);
+  });
+
+  it('detects a different stored root after a 410 E_PRUNED on the root re-PUT', async () => {
+    const e = enrolled();
+    const marked = sealed(e.core, ROOT, STATE);
+    e.server.putBackupObject(e.userId, 0, encode([1, new Uint8Array(12).fill(9), new Uint8Array(86).fill(8)]));
+    await e.session.establish();
+    e.server.log.splice(0);
+    e.server.once('GET', '/v1/backups', { status: 200, body: [] });
+    e.server.once('PUT', '/v1/backups/0/0', { status: 410, body: ['E_PRUNED', '', null] });
+    await expect(ensureBackups(e.core, e.routes)).rejects.toThrow('E_ROOT_MISMATCH');
+    expect(e.server.paths()).toEqual(['GET /v1/backups', 'PUT /v1/backups/0/0', 'GET /v1/backups/0/0']);
+    expect(marked).not.toHaveBeenCalled();
+  });
+
+  it('a 410 on the root PUT that is not E_PRUNED propagates', async () => {
+    const e = enrolled();
+    const marked = sealed(e.core, ROOT, STATE);
+    await e.session.establish();
+    e.server.once('PUT', '/v1/backups/0/0', { status: 410, body: ['E_GONE', '', null] });
+    const err = await httpError(ensureBackups(e.core, e.routes));
+    expect([err.status, err.code]).toEqual([410, 'E_GONE']);
+    expect(marked).not.toHaveBeenCalled();
+  });
+
   it('re-uploads a state absent from the listing despite the uploaded hint', async () => {
     const e = enrolled();
     e.server.putBackupObject(e.userId, 0, ROOT);
