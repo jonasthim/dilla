@@ -69,8 +69,31 @@ describe('the copy rules', () => {
     expect(en['shell.dm.log']).toBe('messages with {name}');
     // Pre-flight ruling (rows 1.10, loop note 15): `@` before the name, so the composer keeps the name's case (web-1's label rule).
     expect(en['shell.dm.composer']).toBe('message @{name}');
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(70);
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(172);
   });
+  it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
+    expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);
+    for (const k of ['shell.message.toolbar', 'shell.message.react', 'shell.message.edited', 'shell.message.replyJump', 'shell.message.saving',
+      'shell.emoji.label', 'shell.edit.label', 'shell.edit.hint', 'shell.composer.attach', 'shell.composer.mentions', 'shell.pins.open',
+      'shell.pins.by', 'shell.tray.label', 'shell.tray.ready', 'shell.attachment.open', 'shell.attachment.unnamed'] as const) {
+      expect(en[k], k).toMatch(/^[a-z]/);
+    }
+    for (const k of ['shell.delete.title', 'shell.delete.body', 'shell.delete.confirm', 'shell.delete.cancel', 'shell.pins.title', 'shell.pins.titleDm',
+      'shell.pins.empty', 'shell.pins.close', 'shell.drop.title', 'shell.drop.body', 'shell.tray.tooMany', 'shell.tray.notReady',
+      'shell.lightbox.close', 'shell.lightbox.save', 'shell.lightbox.previous', 'shell.lightbox.next', 'shell.message.replyNotLoaded', 'shell.tray.failedHint', 'shell.message.attachmentGone'] as const) {
+      expect(en[k], k).toMatch(/^[A-Z]/);
+    }
+    expect(en['shell.message.reaction']).toBe('{name}, {count}');
+    expect(en['shell.delete.body']).toBe('It is removed for everyone in this conversation, with its reactions and files. Copies someone already saved stay with them. This cannot be undone.');
+    expect(en['shell.message.replyMissing']).toBe('the original message cannot be shown here');
+    expect(en['shell.tray.failedHint']).toBe('Remove it and attach it again.');
+    expect(en['shell.message.attachmentGone']).toBe('A file of this message is no longer on the server. Discard it and attach the file again.');
+    expect(Object.keys(en)).not.toContain('shell.composer.mentionHere');
+    expect(en['shell.drop.body']).toBe('Up to 4 files, 25 MB each.');
+    expect(en['shell.tray.tooLarge']).toBe('{name} is over 25 MB and cannot be sent from a browser.');
+    expect(en['shell.pins.by']).toBe('pinned by {name}');
+  });
+
 });
 
 describe('dates', () => {

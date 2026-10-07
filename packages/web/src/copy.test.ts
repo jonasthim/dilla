@@ -136,7 +136,7 @@ describe('no code switches on a server detail', () => {
 });
 
 const FLOWS = join(SRC, '..', '..', '..', 'docs', 'design', 'flows');
-const FLOW_FILES = ['01-onboarding.md', '02-recovery-key.md', '03-sign-in.md'] as const;
+const FLOW_FILES = ['01-onboarding.md', '02-recovery-key.md', '03-sign-in.md', '04-conversation.md'] as const;
 const COPY_HEADER = /^\|\s*key\s*\|\s*text\s*\|/;
 const COPY_ROW = /^\|\s*`([^`]+)`\s*\|\s*`([^`]*)`\s*\|/;
 

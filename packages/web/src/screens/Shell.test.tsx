@@ -589,7 +589,7 @@ describe('keyboard', () => {
     expect(composer()).toHaveFocus();
     expect(composer()).toHaveAttribute('aria-disabled', 'true');
   });
-  it('tabs through skip link, rail, sidebar tabs, channels, log and composer in that order', async () => {
+  it('tabs through skip link, rail, sidebar tabs, channels, the pins button, the active row and the composer in that order', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' })] })));
     await user.tab();
@@ -601,7 +601,13 @@ describe('keyboard', () => {
     await user.tab();
     expect(screen.getByRole('tabpanel', { name: 'channels' })).toContainElement(document.activeElement as HTMLElement);
     await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('log'));
+    const header = document.querySelector<HTMLElement>('.d-channel-header');
+    if (header === null) throw new Error('no header');
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'pinned' }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('article'));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'attach files' }));
     await user.tab();
     expect(composer()).toHaveFocus();
   });

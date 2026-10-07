@@ -8,6 +8,7 @@ import { effectiveNotifyMode, isMuted } from '@dilla/client-core';
 import type { CoreClient, Notice } from '@dilla/client-core';
 import type { PermissionState } from './notify-permission.ts';
 import { t } from './strings/index.ts';
+import { mergeMembers, nameBook, plainBody } from './screens/shell-model.ts';
 
 export interface NotificationHandle { onclick: ((ev: Event) => unknown) | null; close(): void; }
 export interface NotificationCtor { readonly permission: NotificationPermission; new (title: string, options: NotificationOptions): NotificationHandle; }
@@ -75,8 +76,11 @@ export function startNotifier(deps: NotifierDeps): () => void {
       server: communityId === null ? null : client.get('communities')?.find(c => c.id === communityId)?.name ?? null,
     });
     try {
-      // No icon: the CSP keeps img-src 'self' (Global Constraints).
-      const note = new Ctor(title, { body: item.body, tag: `dilla:${item.channelId}`, silent: false });
+      // the Global Constraints forbid a notification icon.
+      const members = communityId !== null ? client.get(`members:${communityId}`) ?? []
+        : mergeMembers((client.get('communities') ?? []).map(c => client.get(`members:${c.id}`)));
+      const body = plainBody(item.body, nameBook(client.get('account')?.user ?? null, members));
+      const note = new Ctor(title, { body, tag: `dilla:${item.channelId}`, silent: false });
       note.onclick = () => {
         deps.focus();
         deps.open(item);
