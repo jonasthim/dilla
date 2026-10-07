@@ -1,8 +1,9 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance. It describes the web client
-as it is on 2026-10-07 ("web-2a"): signing up, using the account in a second browser, devices, channels,
-direct messages, badges and notifications, and what the client cannot do yet. Every quoted line is the text the screen shows;
+as it is on 2026-10-07 ("web-2b"): signing up, using the account in a second browser, devices, channels,
+direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
+images and files), and what the client cannot do yet. Every quoted line is the text the screen shows;
 `{instance}` stands for the instance's address and `{username}` for yours.
 
 If you run the instance yourself, start with the [operator guide](../deploy/README.md).
@@ -323,18 +324,137 @@ are "direct messages and mentions", "every message" and "nothing". "Per channel"
 
 ![Notification permission before opt-in](screenshots/settings-notifications.png)
 
-## 9. Known limits (2026-10-07)
+## 9. Saying more
+
+A message can be edited, deleted, answered, reacted to and pinned, it can mention people, and it can carry images
+and files. This works the same in channels and in direct messages.
+
+### The message toolbar
+
+![Mira's view of #general: Björn's reply to Ada with its reply line and its toolbar react, reply and pin, and
+and, further up, Mira's packing list with the reactions thumbs up 2 and fire 1](screenshots/conversation-actions.png)
+
+Point at a message, or move to it with the keyboard, and its toolbar appears ("actions for this message"):
+**react**, **reply** and **pin** (**unpin** on a pinned message), and on your own messages also **edit** and
+**delete**. A change shows once it has gone through; until then the message says "saving…", and a change that
+could not be made says "not saved" with **retry** and **discard**.
+
+### Edit
+
+![Mira's packing list open for editing, with "escape to cancel · enter to save" under it](screenshots/conversation-edit.png)
+
+**edit** opens the message in place ("edit your message"); Arrow Up in an empty message field does the same for
+your last message. Enter saves, Shift+Enter starts a new line, Escape cancels ("escape to cancel · enter to save").
+An edited message shows "edited". Only the latest version is shown; there is no history of earlier ones. An edit
+never notifies anyone, even when it adds a mention. You can edit your messages from any of your browsers, and
+nobody else can edit them.
+
+### Delete for everyone
+
+**delete** asks first: "Delete this message?" "It is removed for everyone in this conversation, with its reactions
+and files. Copies someone already saved stay with them. This cannot be undone." **Delete** removes the message
+from every device in the conversation, also from devices that come online later, and the instance deletes its copy
+of the message and the message's files. Where the message was, the conversation shows "message deleted". A delete
+cannot reach a copy that someone saved or a screenshot someone took. Only the author can delete a message; there is
+no moderator delete in this version. If the browser you deleted from leaves the conversation before it has asked
+the instance to delete its copy, the instance keeps that copy until the browser rejoins or the instance's
+retention removes it.
+
+### Replies
+
+**reply** puts "replying to {name}" and the start of that message above the message field; **cancel reply** or
+Escape takes it away. The reply is shown with a line that names the original's author and its first words.
+Selecting that line ("go to the original message") scrolls to the original and highlights it for a moment (with
+reduced motion, an outline instead of the animation). When the original is further back than what is loaded:
+"The original message is further back. Load earlier messages to reach it." When this browser never had it or
+cannot read it: "the original message cannot be shown here". When it was deleted: "the original message was
+deleted".
+
+### Reactions
+
+**react**, or **add a reaction** under a message that already has reactions, opens "pick a reaction": 32 emoji in
+a grid. The arrow keys move, Enter picks, Escape closes. Each reaction shows its emoji and how many people chose
+it; yours is highlighted, and selecting it again takes yours back. Each person counts once per emoji, whichever of
+their browsers they use.
+
+### Pins
+
+![The dialog "Pinned in #general" with Mira's packing list, "pinned by Ada", and the buttons go to message and
+unpin](screenshots/conversation-pins.png)
+
+**pin** pins a message for everyone in the conversation, and it shows "pinned". **pinned** in the channel header
+opens "Pinned in #{channel}" ("Pinned with {name}" in a direct message): each pinned message with its author, its
+time, its first words and "pinned by {name}", with **go to message** and **unpin**. With nothing pinned it says
+"Nothing is pinned here yet." In this version anyone in the conversation can pin and unpin any message; the list
+says who pinned each one.
+
+### Mentions
+
+![The message field with "@ad" typed and the list "people to mention" offering Ada](screenshots/conversation-mention.png)
+
+Type `@` and the first letters of someone's username or display name: the list ("people to mention") offers up to
+eight members who match and, in a channel, "everyone in this channel". Arrow Up and Arrow Down move, Enter or Tab
+picks, Escape closes the list. Typing a member's whole `@username` works too. The message carries the person, not
+the text you typed, so it always shows their current name. A message that mentions you is marked, counts in the
+mention badge and notifies you as your notification settings say (section 8). `@everyone` mentions everyone in the
+channel; typing `@here` does the same (the client does not know who is online, so it offers no separate entry);
+direct messages offer neither. A mention of a role shows as "@role" and counts as a mention of you once this browser has loaded the
+server's member list.
+
+### Images and files
+
+![Björn's message with the image card of saturday-map.png and the file card of loot-list.txt, and under it the
+list "files to send" with packing-list.txt and bridge-sketch.png, both ready](screenshots/conversation-attachments.png)
+
+**attach files** next to the message field, dropping files on the conversation ("Drop to attach", "Up to 4 files,
+25 MB each.") or pasting them into the message field adds them to "files to send". Each file goes through
+"reading", "preparing", "uploading" and "ready", or shows "failed ({code})"; **remove {name}** takes it off the
+list. A message carries at most four files ("A message carries at most 4 files."), each at most 25 MB
+(26,214,400 bytes) in a browser ("{name} is over 25 MB and cannot be sent from a browser."). The message goes when
+every file is ready ("Wait until every file is ready, or remove it."), with or without text. Files are uploaded
+as soon as you add them and become part of the conversation only when the message is sent; a file that is never
+sent is removed by the instance after a while (after 24 hours, unless the instance is set otherwise). If a file
+you attached is no longer on the server when the message is sent (an upload left for more than a day), the
+message says so and offers only discard; attach the file again.
+
+PNG, JPEG, WebP and GIF images show as a small preview made by the sender's browser ("open {name}"). Every other
+file, audio, video and SVG included, shows as a card with its name, its size and **save**.
+
+![saturday-map.png open full size, with Save and Close](screenshots/conversation-lightbox.png)
+
+Opening an image shows it full size: **previous image** and **next image** (Arrow Left and Arrow Right) move
+between the images of the same message, **Save** saves it, **Close** or Escape closes it. A received file over
+25 MB shows "too large to open in a browser"; one that could not be opened shows "could not open ({code})". The
+browser downloads a file each time you open or save it and keeps no copy of opened files; the small previews come
+with the message. When a message with files is deleted, its files are deleted from the instance too.
+
+### Keys in the conversation
+
+| Key | What it does |
+|---|---|
+| Arrow Up, Arrow Down | In the messages: move to the previous or next message; the toolbar of that message appears |
+| Home, End | In the messages: the first or last loaded message |
+| Tab | From a message: its toolbar, its reply line, its files and its reactions, in that order |
+| Arrow Left, Arrow Right | In a toolbar or in the reactions: the previous or next button. In a full-size image: the previous or next image |
+| Escape | In a toolbar, the reactions or a file: back to the message. On a message: to the message field. In the message field: closes the mention list, or else cancels the reply |
+| Arrow Up | In an empty message field: edits your last message |
+| Enter, Shift+Enter, Escape | While editing: save, new line, cancel |
+
+## 10. Known limits (2026-10-07)
 
 - No native phone or desktop app. A second browser needs the recovery key and the password (and the code,
-  for an account with a second factor). Pins are local to one browser; a new browser does not get messages
-  from before it joined. Devices have no names, and the password cannot be changed from the web client.
+  for an account with a second factor). A new browser does not get messages from before it joined. Devices have
+  no names, and the password cannot be changed from the web client.
 - No server, channel or invite can be created from the web client, and there are no roles, permissions or
   profile screens. A server invite has to come from someone who can make one through
   the instance's API, or from the host (`dillad admin invite create`).
 - Text channels and DMs only. No voice, camera or screen share (the server and the media layer support
   encrypted calls; the web client has no call screens yet).
-- Plain text only. No edits, deletes, reactions, replies, threads, mentions, attachments, link previews,
-  markdown or emoji picker.
+- No threads, link previews, markdown, custom emoji or emoji in the message text; reactions use a fixed set of 32.
+  Only the latest version of an edited message is shown. A browser sends and opens files of at most 25 MB, and
+  plays no audio or video (such files are saved). Received link previews are not shown.
+- Who may pin, unpin or mention everyone is not checked yet: anyone in a conversation can. The pins list names who
+  pinned each message. Only the author can delete a message.
 - No search, typing or presence. Notifications require an open tab and browser permission.
 - Messages from before this browser joined a channel are not shown.
 - No safety numbers and no device verification. The name on a message is the device that encrypted it, as
@@ -348,8 +468,9 @@ are "direct messages and mentions", "every message" and "nothing". "Per channel"
 ## Re-shooting these screenshots
 
 The screenshots are real: `e2e/scripts/shoot-docs.mjs` starts a `dilla-testhost` that serves the built
-client, creates the server "Midgard Crew", signs ada, björn and mira up in three Chromium profiles, signs
-mira into a fourth (recovery key, then username and password), and photographs the flows. Every name and
+client, creates the server "Midgard Crew", signs ada, björn and mira up in three Chromium profiles, lets them
+reply, react, edit, pin, mention and share images and files in #general, signs mira into a fourth (recovery
+key, then username and password), and photographs the flows. Every name and
 message is made up, and the accounts are deleted with the test host. The account has no second factor, so
 step 3 of the sign-in has no screenshot, and the two warnings of sections 6 and 7 that need a second
 sign-in at the same moment or foreign recovery data are quoted, not shown. To re-shoot them (not part of CI):
@@ -362,3 +483,6 @@ GO=/path/to/go npm run docs:shots -w @dilla/e2e
 It needs `internal/mlswasi/testdata/dilla_core_wasi.wasm` and Playwright's Chromium, uses
 127.0.0.1:8471 and 8472 (`node e2e/scripts/shoot-docs.mjs --port P --control C` picks others) and writes
 `docs/user/screenshots/*.png`.
+
+Chromium keeps sockets in its profile directories, so the script needs a short temporary directory: when
+`TMPDIR` is a long path, run it with `TMPDIR=/tmp`.

@@ -14,6 +14,8 @@
 //      only part not done through the client; the owner never posts and holds no MLS state;
 //   3. signs ada, björn and mira up through the real onboarding in three Chromium profiles (Mesh theme,
 //      1280×800), lets them talk in #general, and shoots mira's screens;
+//   3b. replies, reacts, edits, pins, mentions and shares images and files in #general between the three
+//      of them and shoots mira's view of each (the images are drawn by canvas in the page at run time);
 //   4. signs mira in from a fourth browser (recovery key, then username and password, then done), then
 //      shoots Devices in both browsers, notifications, badges, a DM and a DM's badge;
 //   5. removes mira from the server through the owner's session and shoots the "no longer a member" state;
@@ -58,6 +60,16 @@ const CONVERSATION = [
   ['ada', 'the map from saturday is in #loot, the one with the coffee stain'],
   ['bjorn', 'see you at the bridge'],
 ];
+// web-2b: what the three say more with, in #general, after the conversation above.
+const REPLY = 'ok, 20:00 works, I’ll bring the shields';
+const EDITED = 'I’m in too. Packing list:\nrope\ntorches\nsnacks for Björn\nthe good shields';
+const MENTION_REST = 'bring the map from #loot, the one with the stain';
+const ATTACH_TEXT = 'the map from saturday, coffee stain included';
+const MIRA_FILES_TEXT = 'packing list as a file, and the bridge as I remember it';
+const MAP = { name: 'saturday-map.png', width: 640, height: 400 };
+const BRIDGE = { name: 'bridge-sketch.png', width: 480, height: 320 };
+const LOOT_LIST = { name: 'loot-list.txt', mimeType: 'text/plain', text: 'rope\ntorches\nshields\nsnacks for Björn\n' };
+const PACKING_LIST = { name: 'packing-list.txt', mimeType: 'text/plain', text: 'rope x2\ntorches x6\nthe good shields\n' };
 
 // ---------------------------------------------------------------------------------------------------
 // Arguments.
@@ -315,6 +327,85 @@ async function confirmed(page, channel, text) {
   }
 }
 
+const byId = (page, msgId) => page.locator(`.d-message-row[data-msg-id="${msgId}"]`);
+
+async function idOf(page, channel, text) {
+  const target = row(page, channel, text).and(page.locator('[data-state="ok"]'));
+  await target.waitFor({ timeout: WAIT });
+  const id = await target.getAttribute('data-msg-id');
+  if (!id || !/^[0-9a-f]{32}$/.test(id)) throw new Error(`no msg id on ${JSON.stringify(text)}`);
+  return id;
+}
+
+async function toolbarAction(page, msgId, key) {
+  await byId(page, msgId).focus();
+  await byId(page, msgId).hover();
+  await byId(page, msgId).getByRole('toolbar', { name: t('shell.message.toolbar'), exact: true })
+    .getByRole('button', { name: t(key), exact: true }).click();
+}
+
+async function pickEmoji(page, nameKey) {
+  const dialog = page.getByRole('dialog', { name: t('shell.emoji.label'), exact: true });
+  await dialog.getByRole('button', { name: t(nameKey), exact: true }).click();
+  await dialog.waitFor({ state: 'hidden', timeout: WAIT });
+}
+
+async function drawPng(page, spec) {
+  const bytes = await page.evaluate(async ({ kind, width, height }) => {
+    const canvas = new OffscreenCanvas(width, height);
+    const c = canvas.getContext('2d');
+    if (kind === 'map') {
+      c.fillStyle = '#e8dcc0'; c.fillRect(0, 0, width, height);
+      c.strokeStyle = '#4a7fa8'; c.lineWidth = 18;
+      c.beginPath(); c.moveTo(0, 260); c.bezierCurveTo(160, 180, 320, 340, 640, 220); c.stroke();
+      c.fillStyle = '#6b4f2a'; c.fillRect(296, 222, 48, 64);
+      c.strokeStyle = 'rgba(111, 78, 55, 0.55)'; c.lineWidth = 8;
+      c.beginPath(); c.arc(150, 110, 46, 0, 2 * Math.PI); c.stroke();
+      c.strokeStyle = '#a8323a'; c.lineWidth = 10;
+      c.beginPath(); c.moveTo(470, 90); c.lineTo(510, 130); c.moveTo(510, 90); c.lineTo(470, 130); c.stroke();
+    } else if (kind === 'bridge') {
+      c.fillStyle = '#f4f1ea'; c.fillRect(0, 0, width, height);
+      c.strokeStyle = '#3b3b3b'; c.lineWidth = 6;
+      c.beginPath(); c.arc(240, 320, 180, Math.PI, 2 * Math.PI); c.stroke();
+      c.beginPath(); c.moveTo(40, 150); c.lineTo(440, 150); c.stroke();
+      for (const x of [80, 160, 240, 320, 400]) {
+        c.beginPath(); c.moveTo(x, 150); c.lineTo(x, 200); c.stroke();
+      }
+    } else throw new Error(`unknown drawing ${kind}`);
+    const blob = await canvas.convertToBlob({ type: 'image/png' });
+    return Array.from(new Uint8Array(await blob.arrayBuffer()));
+  }, spec);
+  return Buffer.from(bytes);
+}
+
+async function attach(page, file) {
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser', { timeout: WAIT }),
+    page.getByRole('button', { name: t('shell.composer.attach'), exact: true }).click(),
+  ]);
+  await chooser.setFiles(file);
+}
+
+async function trayReady(page, n) {
+  const list = page.getByRole('list', { name: t('shell.tray.label'), exact: true });
+  await list.locator('li[data-phase="ready"]').nth(n - 1).waitFor({ timeout: WAIT });
+  if (await list.locator('li[data-phase="failed"]').count()) {
+    throw new Error('a tray entry failed: ' + await list.innerText());
+  }
+}
+
+async function focusRow(page, channel, msgId) {
+  const active = page.getByRole('log', { name: t('shell.log.label', { channel }), exact: true })
+    .locator('article.d-message-row[tabindex="0"]');
+  await active.focus();
+  await active.press('End');
+  for (let i = 0; i < 30; i++) {
+    if (await byId(page, msgId).evaluate((el) => el === document.activeElement)) return;
+    await page.keyboard.press('ArrowUp');
+  }
+  throw new Error('could not move to ' + msgId);
+}
+
 async function main(argv) {
   const o = parseArgs(argv);
   const publicUrl = `http://127.0.0.1:${o.port}`;
@@ -392,6 +483,123 @@ async function main(argv) {
     await settle(mira, { keepFocus: true });
     await shoot('shell-phone');
     await mira.setViewportSize(DESKTOP);
+
+    // Saying more in #general: the same message ids are used across all three browsers.
+    const raidId = await idOf(pages.bjorn, 'general', 'raid tonight');
+    const packId = await idOf(mira, 'general', 'Packing list');
+
+    await toolbarAction(pages.bjorn, raidId, 'shell.message.reply');
+    await pages.bjorn.getByRole('button', { name: t('shell.composer.replyCancel'), exact: true })
+      .waitFor({ timeout: WAIT });
+    await send(pages.bjorn, 'general', REPLY);
+    const replyId = await idOf(pages.bjorn, 'general', 'I’ll bring the shields');
+    await confirmed(mira, 'general', REPLY);
+    await byId(mira, replyId).locator('.d-message-row__reply')
+      .getByRole('button', { name: 'raid tonight' }).waitFor({ timeout: WAIT });
+
+    await toolbarAction(pages.ada, packId, 'shell.message.react');
+    await pickEmoji(pages.ada, 'shell.emoji.01');
+    await byId(pages.ada, packId).locator('button[data-emoji="👍"][aria-pressed="true"]')
+      .waitFor({ timeout: WAIT });
+    await byId(pages.bjorn, packId).focus();
+    await byId(pages.bjorn, packId).hover();
+    await byId(pages.bjorn, packId).locator('button[data-emoji="👍"]').click();
+    await byId(pages.bjorn, packId).locator('button[data-emoji="👍"][aria-pressed="true"]')
+      .waitFor({ timeout: WAIT });
+    await toolbarAction(pages.bjorn, packId, 'shell.message.react');
+    await pickEmoji(pages.bjorn, 'shell.emoji.10');
+    await byId(pages.bjorn, packId).locator('button[data-emoji="🔥"][aria-pressed="true"]')
+      .waitFor({ timeout: WAIT });
+    for (const [key, count] of [['shell.emoji.01', 2], ['shell.emoji.10', 1]]) {
+      await byId(mira, packId).getByRole('button', {
+        name: t('shell.message.reaction', { name: t(key), count }), exact: true,
+      }).waitFor({ timeout: WAIT });
+    }
+
+    await focusRow(mira, 'general', replyId);
+    await byId(mira, replyId).getByRole('toolbar', { name: t('shell.message.toolbar'), exact: true })
+      .waitFor({ timeout: WAIT });
+    await settle(mira, { keepFocus: true });
+    await shoot('conversation-actions');
+    await mira.keyboard.press('Escape');
+
+    await composer(mira, 'general').fill('');
+    await composer(mira, 'general').focus();
+    await composer(mira, 'general').press('ArrowUp');
+    const editor = mira.getByRole('textbox', { name: t('shell.edit.label'), exact: true });
+    await editor.and(mira.locator(':focus')).waitFor({ timeout: WAIT });
+    await editor.fill(EDITED);
+    await settle(mira, { keepFocus: true });
+    await shoot('conversation-edit');
+    await editor.press('Enter');
+    await byId(mira, packId).and(mira.locator('[data-edited="true"][data-state="ok"]'))
+      .waitFor({ timeout: WAIT });
+    await byId(mira, packId).getByText('the good shields', { exact: false }).waitFor({ timeout: WAIT });
+    await byId(pages.ada, packId).and(pages.ada.locator('[data-edited="true"]'))
+      .waitFor({ timeout: WAIT });
+
+    await toolbarAction(pages.ada, packId, 'shell.message.pin');
+    await byId(mira, packId).and(mira.locator('[data-pinned="true"]')).waitFor({ timeout: WAIT });
+    await mira.getByRole('button', { name: t('shell.pins.open'), exact: true }).click();
+    const pins = mira.getByRole('dialog', { name: t('shell.pins.title', { channel: 'general' }), exact: true });
+    await pins.getByText(t('shell.pins.by', { name: PEOPLE.ada.display }), { exact: true })
+      .waitFor({ timeout: WAIT });
+    await settle(mira, { keepFocus: true });
+    await shoot('conversation-pins');
+    await mira.keyboard.press('Escape');
+    await pins.waitFor({ state: 'hidden', timeout: WAIT });
+
+    const mentionBox = composer(mira, 'general');
+    await mentionBox.fill('');
+    await mentionBox.pressSequentially('@ad');
+    const mentions = mira.getByRole('listbox', { name: t('shell.composer.mentions'), exact: true });
+    await mentions.getByRole('option').filter({ hasText: PEOPLE.ada.display }).waitFor({ timeout: WAIT });
+    await settle(mira, { keepFocus: true });
+    await shoot('conversation-mention');
+    await mentionBox.press('Enter');
+    await mentions.waitFor({ state: 'hidden', timeout: WAIT });
+    const mentionValue = await mentionBox.inputValue();
+    if (mentionValue !== '@ada ') throw new Error('the mention was not inserted: ' + JSON.stringify(mentionValue));
+    await mentionBox.pressSequentially(MENTION_REST);
+    await mentionBox.press('Enter');
+    await confirmed(mira, 'general', MENTION_REST);
+    await row(pages.ada, 'general', MENTION_REST).and(pages.ada.locator('[data-mention="true"]'))
+      .waitFor({ timeout: WAIT });
+
+    const mapPng = await drawPng(pages.bjorn, { kind: 'map', ...MAP });
+    await attach(pages.bjorn, { name: MAP.name, mimeType: 'image/png', buffer: mapPng });
+    await attach(pages.bjorn, { name: LOOT_LIST.name, mimeType: LOOT_LIST.mimeType,
+      buffer: Buffer.from(LOOT_LIST.text, 'utf8') });
+    await trayReady(pages.bjorn, 2);
+    await send(pages.bjorn, 'general', ATTACH_TEXT);
+    await confirmed(mira, 'general', ATTACH_TEXT);
+    await mira.locator(`img[alt="${MAP.name}"][data-thumb="ready"]`).waitFor({ timeout: WAIT });
+    await mira.getByRole('button', { name: t('shell.attachment.save', { name: LOOT_LIST.name }), exact: true })
+      .waitFor({ timeout: WAIT });
+
+    await attach(mira, { name: PACKING_LIST.name, mimeType: PACKING_LIST.mimeType,
+      buffer: Buffer.from(PACKING_LIST.text, 'utf8') });
+    await attach(mira, { name: BRIDGE.name, mimeType: 'image/png',
+      buffer: await drawPng(mira, { kind: 'bridge', ...BRIDGE }) });
+    await trayReady(mira, 2);
+    await composer(mira, 'general').focus();
+    await settle(mira, { keepFocus: true });
+    await shoot('conversation-attachments');
+    await send(mira, 'general', MIRA_FILES_TEXT);
+    await mira.locator(`img[alt="${BRIDGE.name}"][data-thumb="ready"]`).waitFor({ timeout: WAIT });
+
+    await mira.getByRole('button', { name: t('shell.attachment.open', { name: MAP.name }), exact: true }).click();
+    const lightbox = mira.locator('dialog[open]').filter({ has: mira.locator(`img[alt="${MAP.name}"]`) });
+    await lightbox.waitFor({ timeout: WAIT });
+    await mira.waitForFunction((alt) => {
+      const i = document.querySelector(`dialog[open] img[alt="${alt}"]`);
+      return i instanceof HTMLImageElement && i.complete && i.naturalWidth > 0;
+    }, MAP.name, { timeout: WAIT });
+    await settle(mira, { keepFocus: true });
+    await shoot('conversation-lightbox');
+    await mira.keyboard.press('Escape');
+    await lightbox.waitFor({ state: 'hidden', timeout: WAIT });
+    await composer(mira, 'general').fill('');
 
     // Sign-in ceremony in a clean fourth browser, in the shipped order: recovery key, then username and
     // password, then (no second factor on this account) done. The key is held only in this short-lived process.
