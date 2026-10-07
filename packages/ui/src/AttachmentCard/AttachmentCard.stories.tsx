@@ -20,8 +20,14 @@ function Drawn(props: AttachmentCardProps) {
   return <AttachmentCard {...props} thumbUrl={thumbUrl} />;
 }
 
+function SmallDrawn(props: AttachmentCardProps) {
+  const thumbUrl = useDrawnImage(16, 16);
+  return <AttachmentCard {...props} thumbUrl={thumbUrl} />;
+}
+
 export const ImageLoading: Story = { args: { state: 'loading', stateText: 'opening…' } };
 export const ImageReady: Story = { args: { w: 320, h: 240 }, render: args => <Drawn {...args} /> };
+export const SmallImage: Story = { args: { w: 16, h: 16 }, render: args => <SmallDrawn {...args} /> };
 export const ImageFailed: Story = { args: { state: 'failed', stateText: 'could not open (E_BLOB_OPEN)' } };
 export const ImageTooLarge: Story = {
   args: { name: 'harbour-panorama.png', size: '31.5 MB', w: 8000, h: 2000, state: 'too-large', stateText: 'too large to open in a browser' },
