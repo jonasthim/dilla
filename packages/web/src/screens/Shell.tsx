@@ -263,10 +263,12 @@ export function Shell(): React.JSX.Element {
   const logKey = targetId === null ? null : `${targetId}:${timeline === undefined ? 'loading' : 'ready'}`;
   const logFocused = useRef(false);
   const conversationFocused = useRef(false);
+  const composerFocused = useRef(false);
   useEffect(() => {
     const onFocusIn = (e: FocusEvent) => {
       logFocused.current = e.target instanceof Element && e.target.closest('[role="log"]') !== null;
       conversationFocused.current = e.target instanceof Element && e.target.closest('.dw-conversation') !== null;
+      composerFocused.current = e.target instanceof HTMLTextAreaElement && e.target.closest('.d-composer') !== null;
     };
     window.addEventListener('focusin', onFocusIn);
     return () => window.removeEventListener('focusin', onFocusIn);
@@ -276,6 +278,9 @@ export function Shell(): React.JSX.Element {
   }, [logKey]);
   useLayoutEffect(() => {
     if (targetId !== null && conversationFocused.current && focusLost()) focusLog();
+  }, [targetId]);
+  useLayoutEffect(() => {
+    if (targetId !== null && composerFocused.current && focusLost()) focusComposer();
   }, [targetId]);
 
   // A11Y-DESIGN-05: the two "try again" buttons are replaced in the render their click causes, so focus is placed

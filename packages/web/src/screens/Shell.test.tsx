@@ -260,6 +260,41 @@ describe('timeline', () => {
     expect(screen.getByRole('log', { name: 'messages in #random' })).toHaveFocus();
     expect(fake.callsOf('react')).toEqual([]);
   });
+  it('hands focus on when Alt+Arrow switches channels from the composer', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    act(() => fake.set(`timeline:${RAND}`, timeline({ channelId: RAND })));
+    const before = composer();
+    await user.click(before);
+    expect(before).toHaveFocus();
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}');
+    expect(path()).toBe(`/c/${A}/${RAND}`);
+    expect(before.isConnected).toBe(false);
+    expect(document.activeElement).not.toBe(document.body);
+    expect([screen.getByRole('log', { name: 'messages in #random' }), composer('random')])
+      .toContain(document.activeElement);
+  });
+  it('remounts the composer after dismissing a mention query and switching channels', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    act(() => fake.set(`timeline:${RAND}`, timeline({ channelId: RAND })));
+    const before = composer();
+    await user.type(composer(), '@');
+    const first = within(screen.getByRole('listbox', { name: 'people to mention' })).getAllByRole('option')[0];
+    await user.keyboard('{ArrowDown}');
+    expect(first).toHaveAttribute('aria-selected', 'false');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox', { name: 'people to mention' })).toBeNull();
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}');
+    expect(path()).toBe(`/c/${A}/${RAND}`);
+    const after = composer('random');
+    expect(after).not.toBe(before);
+    expect(before.isConnected).toBe(false);
+    await user.click(after);
+    await user.type(composer('random'), '@');
+    expect(within(screen.getByRole('listbox', { name: 'people to mention' })).getAllByRole('option')[0])
+      .toHaveAttribute('aria-selected', 'true');
+  });
   it('mounts a new log when the first slice arrives, and keeps focus in it', () => {
     const { fake } = setup(`/c/${A}/${GEN}`);
     const loading = screen.getByRole('log', { name: 'messages in #general' });
