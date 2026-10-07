@@ -1735,7 +1735,8 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: false, error: { code: 'E_INTERNAL', detail: '', status: 500, retryAfterMs: null } });
     const after = w.calls.slice(from);
     // BACKUPS-RECOVERY-02: the self-revoking candidate is dropped, so no later ready publishes it silently.
-    expect(after.slice(after.indexOf('putDeviceList'))).toEqual(['putDeviceList', 'core.deviceListDrop', 'sync.start', 'gateway.start']);
+    // Changed by fix-wave review NEW-2: the instance's state object from before the sign-out is put back.
+    expect(after.slice(after.indexOf('putDeviceList'))).toEqual(['putDeviceList', 'core.deviceListDrop', 'putBackup(1)', 'sync.start', 'gateway.start']);
     expect(w.sync.builds).toBe(2);
     expect(w.sync.setExpected).toHaveBeenLastCalledWith([{ groupId: GROUP, communityId: COMMUNITY, channelId: CHANNEL, policyVersion: 1n }]);
     expect(w.core.pause).not.toHaveBeenCalled();
@@ -1757,6 +1758,39 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     expect(w.routes.putDeviceList).not.toHaveBeenCalled();
     expect(w.gateway.stops).toBe(0);
     expect(w.account()?.phase).toBe('ready');
+  });
+
+  /** Fix-wave review NEW-2: the instance keeps one state object. A sign-out whose state PUT landed and whose list PUT
+   *  failed left the self-revoking state there, the served list's successor, so this browser's next revocation read it
+   *  back as an interrupted publication and revoked itself. The failed sign-out puts the previous object back. */
+  it('a revoke of another device after a failed sign-out revokes the target and keeps this browser listed', async () => {
+    const w = world();
+    await toReady(w);
+    w.state.ownList = LISTED_BOTH;
+    let stored: Uint8Array = STATE_OBJECT;
+    w.routes.getBackup.mockImplementation((kind: 0 | 1) => {
+      w.calls.push(`getBackup(${kind})`); return Promise.resolve({ object: kind === 0 ? ROOT : stored, created: 1n });
+    });
+    w.routes.putBackup.mockImplementation((kind: 0 | 1, object: Uint8Array) => {
+      w.calls.push(`putBackup(${kind})`); stored = object; return Promise.resolve({ blobId: new Uint8Array(32), size: object.length, created: false });
+    });
+    const SELF_REVOKING = new Uint8Array([0x5e]);
+    w.core.deviceListRevoke.mockImplementationOnce(() => {
+      w.calls.push('core.deviceListRevoke'); return { deviceListBody: new Uint8Array([7]), stateSealed: SELF_REVOKING, interrupted: null };
+    });
+    w.routes.putDeviceList.mockImplementationOnce(() => { w.calls.push('putDeviceList'); return Promise.reject(refusal(500, 'E_INTERNAL')); });
+    w.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_INTERNAL' } });
+    expect(w.routes.putBackup.mock.calls.map((c) => c[1])).toEqual([SELF_REVOKING, STATE_OBJECT]);
+    expect(stored).toEqual(STATE_OBJECT);
+    expect(w.core.deviceListDrop).toHaveBeenCalledTimes(1);
+
+    w.call(3, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: null }));
+    expect(w.core.deviceListRevoke).toHaveBeenLastCalledWith(expect.objectContaining({ stateSealed: STATE_OBJECT, deviceIds: [OTHER_DEVICE] }));
+    expect(w.account()?.phase).toBe('ready');
+    expect(phasesOf(w)).not.toContain('revoked');
   });
 
   it('an interrupted publication the core signed on is published first: on a revocation, then the list, then the state', async () => {

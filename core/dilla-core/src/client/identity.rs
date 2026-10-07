@@ -581,6 +581,49 @@ fn state_list(version: u64) -> Vec<u8> {
     e.into_vec()
 }
 
+/// Fix-wave review NEW-2: keeps the sealed state a revocation's candidate is about to replace, unless
+/// an earlier unpublished candidate already kept it (the oldest is the one the accepted list goes with).
+fn stash_prior_state(c: &rusqlite::Connection, uploaded: bool) -> Result<(), StorageError> {
+    if schema::meta_get(c, schema::STATE_PRIOR)?.is_some() {
+        return Ok(());
+    }
+    let mut e = Encoder::new();
+    e.array(3)
+        .opt_bytes(schema::meta_get(c, schema::STATE_SEALED)?.as_deref())
+        .opt_bytes(schema::meta_get(c, schema::STATE_LIST)?.as_deref())
+        .uint(u64::from(uploaded));
+    schema::meta_put(c, schema::STATE_PRIOR, &e.into_vec())
+}
+
+/// A dropped candidate takes its sealed state with it: the kept one is restored, with its upload
+/// mark, so no later ready uploads a state object whose list the instance never accepted (a failed
+/// sign-out's would revoke this device at the next recovery or revocation). Without a kept state
+/// nothing changes. Returns the restored upload mark.
+fn restore_prior_state(u: &UnitScope<'_>) -> Result<Option<bool>, ClientError> {
+    let Some(raw) = u.with_conn(|c| schema::meta_get(c, schema::STATE_PRIOR))? else {
+        return Ok(None);
+    };
+    let (state, list, uploaded) = decode_strict(&raw, |d| {
+        d.array(3)?;
+        Ok((
+            d.opt_bytes()?.map(<[u8]>::to_vec),
+            d.opt_bytes()?.map(<[u8]>::to_vec),
+            d.uint()? == 1,
+        ))
+    })
+    .map_err(|_| malformed(schema::STATE_PRIOR))?;
+    u.with_conn(|c| {
+        for (k, v) in [(schema::STATE_SEALED, state), (schema::STATE_LIST, list)] {
+            match v.as_deref() {
+                Some(v) => schema::meta_put(c, k, v)?,
+                None => schema::meta_del(c, k)?,
+            }
+        }
+        schema::meta_del(c, schema::STATE_PRIOR)
+    })?;
+    Ok(Some(uploaded))
+}
+
 fn signed_next(
     ssk_priv: &[u8; 32],
     ssk_pub: &[u8; 32],
@@ -843,14 +886,19 @@ impl ClientCore {
                 .map_err(|_| malformed(schema::IDENTITY))?
                 .blob;
             rec.list_published = true;
-            u.with_conn(|c| schema::meta_put(c, schema::IDENTITY, &rec.encode()))?;
+            u.with_conn(|c| {
+                schema::meta_del(c, schema::STATE_PRIOR)?;
+                schema::meta_put(c, schema::IDENTITY, &rec.encode())
+            })?;
             Ok(())
         })
     }
     /// BACKUPS-RECOVERY-02: drops an unpublished candidate (a failed sign-out's self-revocation, a
     /// revocation whose list PUT failed). The candidate becomes the accepted list's own PUT body,
     /// still unpublished: the next publication sends it, and the instance's 409 for a list it already
-    /// holds settles it; an interrupted publication the core adopted is then published.
+    /// holds settles it; an interrupted publication the core adopted is then published. The
+    /// candidate's sealed state goes with it (fix-wave review NEW-2): the state from before the
+    /// revocation is restored with its upload mark.
     pub fn device_list_drop(&mut self) -> Result<(), ClientError> {
         self.write(|_, u| {
             let (identity, signup, enrol) = u.with_conn(load_phase)?;
@@ -859,6 +907,9 @@ impl ClientCore {
                 DeviceList::decode(&rec.device_list).map_err(|_| malformed(schema::IDENTITY))?;
             rec.device_list_body = wire::device_list_put_body(&accepted);
             rec.list_published = false;
+            if let Some(uploaded) = restore_prior_state(u)? {
+                rec.state_uploaded = uploaded;
+            }
             u.with_conn(|c| schema::meta_put(c, schema::IDENTITY, &rec.encode()))?;
             Ok(())
         })
@@ -1268,11 +1319,13 @@ impl ClientCore {
             let state = reseal_state(ctx.provider, &recovered.k_backup, &next, &recovered.pins)?;
             let put = wire::device_list_put_body(&next);
             let first = interrupted_body(&recovered);
+            let uploaded = rec.state_uploaded;
             rec.device_list_body = put.clone();
             rec.list_published = false;
             rec.device_list = recovered.list.encode();
             rec.state_uploaded = false;
             u.with_conn(|c| {
+                stash_prior_state(c, uploaded)?;
                 schema::meta_put(c, schema::STATE_SEALED, &state)?;
                 schema::meta_put(c, schema::STATE_LIST, &state_list(next.unsigned.version))?;
                 schema::meta_put(c, schema::IDENTITY, &rec.encode())
@@ -1318,6 +1371,13 @@ impl ClientCore {
                     if candidate.version <= newest.unsigned.version {
                         rec.device_list_body = wire::device_list_put_body(&newest);
                         rec.list_published = true;
+                        // A candidate the instance holds (a lost answer) keeps its sealed state;
+                        // one the chain overtook is dropped with it (fix-wave review NEW-2).
+                        if candidate.blob == newest.encode() {
+                            u.with_conn(|c| schema::meta_del(c, schema::STATE_PRIOR))?;
+                        } else if let Some(uploaded) = restore_prior_state(u)? {
+                            rec.state_uploaded = uploaded;
+                        }
                     }
                 }
                 rec.device_list = newest.encode();

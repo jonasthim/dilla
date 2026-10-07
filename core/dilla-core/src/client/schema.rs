@@ -17,6 +17,10 @@ pub(crate) const STATE_SEALED: &str = "state_sealed";
 /// The version of the device list inside `state_sealed`, as a CBOR uint, written with it
 /// (BACKUPS-RECOVERY-03): the browser cannot open its own state object to read it back.
 pub(crate) const STATE_LIST: &str = "state_list";
+/// The sealed state as it stood before a revocation's candidate replaced it (fix-wave review
+/// NEW-2): `[state_sealed bstr|null, state_list bstr|null, state_uploaded uint]`, the two meta
+/// values as stored. A dropped candidate restores it; a published one deletes it.
+pub(crate) const STATE_PRIOR: &str = "state_prior";
 
 /// App schema v2 column meanings (L-SQL-10, L-SQL-20):
 ///

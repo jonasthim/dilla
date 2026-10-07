@@ -41,6 +41,8 @@ export class FakeCore implements CorePort {
   private sealed: SealedObjects = { root: null, state: null, stateUploaded: false };
   /** The list version inside the own sealed state object, as the core's `state_list` record keeps it. */
   private stateList: bigint | null = null;
+  /** The sealed state a revocation's candidate replaced (the core's `state_prior`, fix-wave review NEW-2). */
+  private prior: { sealed: SealedObjects; stateList: bigint | null } | null = null;
   private readonly settingsMap = new Map<string, string>();
   private record: SessionRecord | null = null;
   private paused = false;
@@ -181,6 +183,7 @@ export class FakeCore implements CorePort {
     this.listBody = null;
     this.accepted = null;
     this.sealed = { root: null, state: null, stateUploaded: false };
+    this.prior = null;
   }
   deviceListBody(): Uint8Array {
     this.enter('deviceListBody'); this.requireIdentity();
@@ -188,14 +191,23 @@ export class FakeCore implements CorePort {
     return this.listBody;
   }
   deviceListPublished(): void { this.enter('deviceListPublished'); this.requireIdentity(); this.info.listPublished = true;
+    this.prior = null;
     if (this.listBody !== null) this.accepted = this.readBody(this.listBody); }
-  /** The candidate becomes the accepted list's own body, unpublished (the core's device_list_drop). */
+  /** The candidate becomes the accepted list's own body, unpublished (the core's device_list_drop); its sealed state
+   *  goes with it and the one from before the revocation is restored (fix-wave review NEW-2). */
   deviceListDrop(): void {
     this.enter('deviceListDrop'); this.requireIdentity();
     if (this.accepted === null) throw new CoreError('E_CORE_STATE');
     this.listBody = this.accepted.body;
     this.candidateVersion = this.accepted.version;
     this.info.listPublished = false;
+    this.restorePrior();
+  }
+  private restorePrior(): void {
+    if (this.prior === null) return;
+    this.sealed = { ...this.sealed, state: this.prior.sealed.state, stateUploaded: this.prior.sealed.stateUploaded };
+    this.stateList = this.prior.stateList;
+    this.prior = null;
   }
   sessionSign(nonce: Uint8Array, purpose: 0 | 1): Uint8Array {
     this.enter('sessionSign');
@@ -297,6 +309,9 @@ export class FakeCore implements CorePort {
       this.accepted = row;
     }
     if (!this.info.listPublished && this.candidateVersion <= this.accepted.version) {
+      // A candidate the instance holds keeps its state; one the chain overtook is dropped with it (NEW-2).
+      if (this.listBody !== null && same(this.readBody(this.listBody).blob, this.accepted.blob)) this.prior = null;
+      else this.restorePrior();
       this.listBody = this.accepted.body;
       this.info.listPublished = true;
     }
@@ -321,6 +336,7 @@ export class FakeCore implements CorePort {
       revokedAt: input.deviceIds.some((id) => same(id, entry.deviceId)) ? input.now : entry.revokedAt,
     })), input.now, row.version + 1n);
     this.info.listPublished = false;
+    this.prior ??= { sealed: { ...this.sealed }, stateList: this.stateList };
     this.sealed = { root: this.sealed.root, state: REMADE_STATE, stateUploaded: false };
     this.stateList = this.candidateVersion;
     return { deviceListBody: this.listBody, stateSealed: REMADE_STATE, interrupted };

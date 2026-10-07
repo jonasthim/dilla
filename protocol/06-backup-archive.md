@@ -71,7 +71,11 @@ exactly the served list's successor, chaining from it (`prev_hash`) and verifyin
 `v + 2` on it. A state object whose list is further on, or does not chain, or does not verify, is
 refused as an older served list (the rollback floor). A browser that is told to forget itself
 publishes an unpublished list it signed before it erases its store, and a browser whose sign-out
-failed drops its unpublished self-revoking list.
+failed drops its unpublished self-revoking list together with the state object it sealed for it:
+it keeps the state object it held before, never uploads the dropped one, and when the dropped one
+already reached the instance it puts back the object the instance held before, so its own next
+revocation does not find its sign-out as an interrupted publication. A candidate overtaken by a
+list another device published is dropped with its state object in the same way.
 
 A stolen enrolled session can upload a well-formed junk root before the owner's first upload.
 The owner's first upload then gets `409`; the client fetches and compares the stored root and

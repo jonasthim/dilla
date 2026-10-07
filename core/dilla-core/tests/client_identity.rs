@@ -3171,6 +3171,170 @@ fn device_list_drop_returns_the_candidate_to_the_accepted_list() {
     assert_eq!(err(b.device_list_drop()).code, "E_CORE_NO_IDENTITY");
 }
 
+/// Fix-wave review NEW-2: the dropped sign-out takes its self-revoking state object with it. The
+/// state from before the sign-out comes back with its upload mark, so no later ready uploads a
+/// state whose list revokes this device; a revocation of another device afterwards revokes that
+/// device and keeps this one listed, and its publication deletes the kept state.
+#[test]
+fn a_failed_sign_out_drops_its_state_and_a_later_revocation_keeps_this_device_listed() {
+    let (mut a, ac, rk_text, reg, put_v1) = signed_up();
+    a.state_sealed_uploaded()
+        .expect("the signup's state is uploaded");
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let own = m.v1.unsigned.entries[0].clone();
+    // X is listed at v2, which A published with its own state.
+    let x = browser([0x0d; 16], [0x0e; 32], NOW + 10, None);
+    let v2 = signed(&m.ssk, USER, 2, m.v1.hash(), vec![own.clone(), x.clone()]);
+    let state_v2 = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&v2.encode(), &pins()),
+    );
+    a.own_device_list_update(&history(&[&v2]))
+        .expect("A adopts v2");
+    let before = sealed_of(&a);
+    let current = a.state_sealed_current().expect("current");
+
+    // The sign-out: its state object and its v3 that revokes A; the list PUT fails.
+    let (put_out, state_out) = list_and_state(
+        &a.device_list_revoke(
+            &m.rk_text,
+            &m.root,
+            &state_v2,
+            &put_body(&v2),
+            own.device_id.as_bytes(),
+            LATER,
+        )
+        .expect("sign out"),
+    );
+    assert_eq!(sealed_of(&a).1, Some(state_out.clone()));
+    a.device_list_drop().expect("drop the sign-out");
+    assert_eq!(a.device_list_body().expect("candidate"), put_body(&v2));
+    assert_eq!(
+        sealed_of(&a),
+        before,
+        "the state, and its upload mark, from before the sign-out"
+    );
+    assert_eq!(a.state_sealed_current().expect("current"), current);
+    assert!(
+        meta(&ac, "state_prior").is_none(),
+        "nothing is kept after the drop"
+    );
+    let v3_out = DeviceList::decode(&put_parts(&put_out).1).expect("v3");
+    assert_eq!(v3_out.unsigned.entries[0].revoked_at, Some(LATER));
+
+    // The instance kept v2 and its state (the sign-out's state PUT was refused): revoking X signs v3
+    // on v2 with X revoked and A listed, and no interrupted publication.
+    let (put_v3, state_v3) = list_and_state(
+        &a.device_list_revoke(
+            &m.rk_text,
+            &m.root,
+            &state_v2,
+            &put_body(&v2),
+            &[0x0d; 16],
+            LATER + 5,
+        )
+        .expect("revoke X"),
+    );
+    let v3 = DeviceList::decode(&put_parts(&put_v3).1).expect("v3");
+    v3.accept(Some(&v2), &m.reg.ssk_pub)
+        .expect("v3 chains from v2");
+    assert_eq!(v3.unsigned.entries[0].revoked_at, None, "A stays listed");
+    assert_eq!(
+        v3.unsigned.entries[1].revoked_at,
+        Some(LATER + 5),
+        "X is revoked"
+    );
+    assert!(
+        meta(&ac, "state_prior").is_some(),
+        "kept while v3 is unpublished"
+    );
+    a.device_list_published().expect("v3 published");
+    assert!(
+        meta(&ac, "state_prior").is_none(),
+        "a published candidate keeps nothing"
+    );
+    assert_eq!(sealed_of(&a).1, Some(state_v3), "v3's state stays");
+}
+
+/// A candidate the chain overtook goes with its state (fix-wave review NEW-2), while a candidate the
+/// instance holds (a lost answer) keeps its own.
+#[test]
+fn an_overtaken_candidate_drops_its_state_and_a_published_one_keeps_it() {
+    let (mut a, ac, rk_text, reg, put_v1) = signed_up();
+    a.state_sealed_uploaded().expect("uploaded");
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let own = m.v1.unsigned.entries[0].clone();
+    let x = browser([0x0d; 16], [0x0e; 32], NOW + 10, None);
+    let y = browser([0x0f; 16], [0x10; 32], NOW + 11, None);
+    let v2 = signed(
+        &m.ssk,
+        USER,
+        2,
+        m.v1.hash(),
+        vec![own.clone(), x.clone(), y.clone()],
+    );
+    let state_v2 = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&v2.encode(), &pins()),
+    );
+    a.own_device_list_update(&history(&[&v2]))
+        .expect("A adopts v2");
+    let before = sealed_of(&a);
+    // A revokes X; another device publishes v3 revoking Y first: A's candidate is overtaken.
+    let (put_x, _) = list_and_state(
+        &a.device_list_revoke(
+            &m.rk_text,
+            &m.root,
+            &state_v2,
+            &put_body(&v2),
+            &[0x0d; 16],
+            LATER,
+        )
+        .expect("revoke X"),
+    );
+    let mut other = v2.unsigned.entries.clone();
+    other[2].revoked_at = Some(LATER);
+    let v3 = signed(&m.ssk, USER, 3, v2.hash(), other);
+    a.own_device_list_update(&history(&[&v3]))
+        .expect("A adopts the other v3");
+    assert_eq!(
+        sealed_of(&a),
+        before,
+        "the overtaken candidate's state is dropped"
+    );
+    assert!(meta(&ac, "state_prior").is_none());
+
+    // A lost answer: A revokes X on v3, the instance stored it, and the history shows it.
+    let state_v3 = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&v3.encode(), &pins()),
+    );
+    let (put_v4, state_v4) = list_and_state(
+        &a.device_list_revoke(
+            &m.rk_text,
+            &m.root,
+            &state_v3,
+            &put_body(&v3),
+            &[0x0d; 16],
+            LATER + 1,
+        )
+        .expect("revoke X on v3"),
+    );
+    assert_ne!(put_v4, put_x);
+    let v4 = DeviceList::decode(&put_parts(&put_v4).1).expect("v4");
+    a.own_device_list_update(&history(&[&v4]))
+        .expect("A finds its own v4");
+    assert_eq!(
+        sealed_of(&a),
+        (before.0, Some(state_v4), 0),
+        "v4's state stays, to be uploaded"
+    );
+    assert!(meta(&ac, "state_prior").is_none());
+}
+
 /// F2: an entry with this device id refuses the enrolment whether it is live, revoked or under
 /// another key, so the id is never listed twice (lookup would find the stale entry first).
 #[test]

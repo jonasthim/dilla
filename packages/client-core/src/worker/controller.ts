@@ -1232,7 +1232,7 @@ export class Controller {
    *  revoking list and the re-sealed state object. The caller writes them, in its own order (BACKUPS-RECOVERY-01).
    *  An older served list is refreshed and the reads retried once (pre-flight ruling (c)); a second is the list
    *  conflict. */
-  private async revoke(ids: Id[], recoveryKey: string): Promise<SignedLists> {
+  private async revoke(ids: Id[], recoveryKey: string): Promise<SignedLists & { served: Uint8Array | null }> {
     const core = this.requireCore();
     const me = this.requireMe();
     for (let attempt = 0; ; attempt += 1) {
@@ -1266,7 +1266,8 @@ export class Controller {
         try { await this.parts.refreshOwnDeviceList(core, this.routes, me.userId); } catch { /* the reads below decide */ }
         continue;
       }
-      return signed;
+      // The state object the instance held before this revocation: a failed sign-out puts it back.
+      return { ...signed, served: state?.object ?? null };
     }
   }
 
@@ -1349,7 +1350,15 @@ export class Controller {
       await this.routes.putDeviceList(me.userId, signed.deviceListBody);
     } catch (e) {
       if (isStatus(e, 409)) { this.resume(); return this.listRace(); }
+      // Fix-wave review NEW-2: the drop restores this device's state from before the sign-out, and the instance's
+      // copy is put back too. Its self-revoking state object is the served list's successor, so the next recovery or
+      // revocation (this browser's own included) would publish it as an interrupted publication.
       core.deviceListDrop();
+      const previous = signed.served ?? core.sealedObjects().state;
+      if (previous !== null) {
+        try { await this.routes.putBackup(1, previous); }
+        catch { /* the repair at the next ready re-uploads this browser's state when it carries the newest list */ }
+      }
       this.resume();
       throw e;
     }

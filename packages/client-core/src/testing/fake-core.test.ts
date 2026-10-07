@@ -307,6 +307,25 @@ describe('FakeCore own list, revocation and settings', () => {
     expect(core.deviceListRevoke({ ...input, listBody: v2, stateSealed: FAKE_STATE_SEALED }).interrupted).toBeNull();
   });
 
+  // Fix-wave review NEW-2, as the core does: a dropped candidate takes its sealed state with it; the state from before
+  // the revocation comes back with its upload mark, and a published candidate keeps its own.
+  it('a dropped sign-out restores the sealed state from before it; a published revocation keeps its own', () => {
+    const core = FakeCore.identified({ instanceId: INSTANCE, userId: USER_A, deviceId: DEV_A, username: 'ada', stateUploaded: true,
+      listEntries: [{ deviceId: DEV_A, revokedAt: null }, { deviceId: DEV_B, revokedAt: null }] });
+    const before = core.sealedObjects();
+    const input = { recoveryKey: FAKE_RECOVERY_KEY, rootSealed: FAKE_ROOT_SEALED, stateSealed: FAKE_STATE_SEALED,
+      listBody: core.deviceListBody(), deviceIds: [DEV_A], now: 1_800_000_400n };
+    core.deviceListRevoke(input);
+    expect(core.sealedObjects()).not.toEqual(before);
+    core.deviceListDrop();
+    expect(core.sealedObjects()).toEqual(before);
+    expect(core.stateSealedCurrent()).toBe(true);
+    const out = core.deviceListRevoke({ ...input, deviceIds: [DEV_B] });
+    core.deviceListPublished();
+    core.deviceListDrop();
+    expect(core.sealedObjects()).toMatchObject({ state: out.stateSealed, stateUploaded: false });
+  });
+
   it('keeps settings in every phase within the byte bounds', () => {
     const core = new FakeCore();
     expect(core.settings()).toEqual({});
