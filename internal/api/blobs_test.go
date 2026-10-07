@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/blob"
@@ -526,5 +527,101 @@ func TestTheUploaderDeletesAPendingReference(t *testing.T) {
 	}
 	if n, err := e.Repo.CountBlobRefs(t.Context(), sum[:]); err != nil || n != 0 {
 		t.Fatalf("references = %d (%v), want 0", n, err)
+	}
+}
+
+// sweepPast advances the clock by d and runs one sweep with the default windows.
+func sweepPast(t *testing.T, e *env, d time.Duration) {
+	t.Helper()
+	e.Clk.Advance(d)
+	sw := blob.NewSweeper(e.Repo, e.Blobs, e.Clk, 24*time.Hour, 24*time.Hour, time.Hour, slog.New(slog.DiscardHandler))
+	if _, err := sw.SweepOnce(t.Context()); err != nil {
+		t.Fatalf("SweepOnce: %v", err)
+	}
+}
+
+// L-HTTP-82's attacker statement (security review lead "reference squatting"): a channel holds one
+// reference per blob and it has one owner, so another user's PUT of the same ciphertext must not
+// answer 200 over that owner's row — that user would hold no reference of their own, could neither
+// confirm nor delete it, and would lose the attachment when the owner's pending row expired. It is
+// 409 E_NOT_UPLOADER and the row is untouched; the uploader's own re-PUT stays idempotent; and the
+// refused user's re-encrypted upload survives the sweep whatever the squatter does.
+func TestAPutOverAnotherUsersReferenceIs409(t *testing.T) {
+	e, ch, _ := blobEnv(t)
+	_, squat := e.NewUser("squatter")
+	joinChannel(t, e, ch, squat)
+	_, victim := e.NewUser("victim")
+	joinChannel(t, e, ch, victim)
+	held := []byte("ciphertext the squatter already holds")
+	x := sha256.Sum256(held)
+	if status, body := e.DoRaw(http.MethodPut, blobURL(ch, x[:]), squat, "application/octet-stream", held); status != http.StatusCreated {
+		t.Fatalf("squatter PUT = %d (%s)", status, body)
+	}
+	before, err := e.Repo.GetBlobRef(t.Context(), x[:], ch)
+	if err != nil {
+		t.Fatalf("GetBlobRef: %v", err)
+	}
+	e.Clk.Advance(23 * time.Hour)
+	status, body := e.DoRaw(http.MethodPut, blobURL(ch, x[:]), victim, "application/octet-stream", held)
+	if status != http.StatusConflict || e.ErrCode(body) != "E_NOT_UPLOADER" {
+		t.Fatalf("a PUT over another user's reference = %d %s, want 409 E_NOT_UPLOADER", status, e.ErrCode(body))
+	}
+	if after, err := e.Repo.GetBlobRef(t.Context(), x[:], ch); err != nil || after.UploaderDevice != before.UploaderDevice ||
+		after.Created != before.Created || after.Confirmed {
+		t.Fatalf("the refused PUT changed the reference: %+v -> %+v, %v", before, after, err)
+	}
+	if status, body := e.DoRaw(http.MethodPut, blobURL(ch, x[:]), squat, "application/octet-stream", held); status != http.StatusOK {
+		t.Fatalf("the uploader's own re-PUT = %d (%s), want 200", status, body)
+	}
+	// The reference is the user's, not the device's: their other device's re-PUT is 200 too.
+	squatter := userOf(t, e, squat)
+	phone := seedDevices(t, e, squatter, 1)[0]
+	phoneTok := "phone-" + squatter.String()
+	e.sess[phoneTok] = sessionFor(squatter, phone)
+	if status, body := e.DoRaw(http.MethodPut, blobURL(ch, x[:]), phoneTok, "application/octet-stream", held); status != http.StatusOK {
+		t.Fatalf("the uploader's re-PUT from another device = %d (%s), want 200", status, body)
+	}
+	// protocol/09's forward rule: the refused user re-encrypts under a fresh key and uploads new bytes.
+	fresh := []byte("the same attachment under a fresh key")
+	y := sha256.Sum256(fresh)
+	if status, body := e.DoRaw(http.MethodPut, blobURL(ch, y[:]), victim, "application/octet-stream", fresh); status != http.StatusCreated {
+		t.Fatalf("victim PUT of fresh bytes = %d (%s)", status, body)
+	}
+	if status, body := e.Do(http.MethodPost, blobURL(ch, y[:])+"/confirm", victim, nil); status != http.StatusNoContent {
+		t.Fatalf("victim confirm = %d %s", status, e.ErrCode(body))
+	}
+	if status, body := e.DoRaw(http.MethodPut, blobURL(ch, y[:]), squat, "application/octet-stream", fresh); status != http.StatusConflict {
+		t.Fatalf("squatter PUT over the victim's confirmed reference = %d (%s), want 409", status, body)
+	}
+	if status, body := e.Do(http.MethodDelete, blobURL(ch, y[:]), squat, nil); status != http.StatusForbidden || e.ErrCode(body) != "E_NOT_UPLOADER" {
+		t.Fatalf("squatter DELETE of the victim's reference = %d %s, want 403 E_NOT_UPLOADER", status, e.ErrCode(body))
+	}
+	sweepPast(t, e, 48*time.Hour)
+	r := e.Request(t, http.MethodGet, blobURL(ch, y[:]), victim, nil, nil)
+	got, _ := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusOK || !bytes.Equal(got, fresh) {
+		t.Fatalf("the victim's confirmed upload after the sweep = %d; nobody else's action may make it expire", r.StatusCode)
+	}
+}
+
+// The same ciphertext in ANOTHER channel is that channel's own reference: a second user's PUT there
+// is the usual 200 and gives them a row they confirm.
+func TestAnotherUsersPutIntoAnotherChannelIsTheirOwnReference(t *testing.T) {
+	e, ch, tok := blobEnv(t)
+	other := secondChannel(t, e, ch, tok)
+	_, peer := e.NewUser("peer")
+	joinChannel(t, e, ch, peer)
+	joinChannel(t, e, other, peer)
+	payload := []byte("published in two channels by two users")
+	sum := sha256.Sum256(payload)
+	if status, _ := e.DoRaw(http.MethodPut, blobURL(ch, sum[:]), tok, "application/octet-stream", payload); status != http.StatusCreated {
+		t.Fatal("first PUT was not 201")
+	}
+	if status, body := e.DoRaw(http.MethodPut, blobURL(other, sum[:]), peer, "application/octet-stream", payload); status != http.StatusOK {
+		t.Fatalf("a second user's PUT into another channel = %d (%s), want 200", status, body)
+	}
+	if status, body := e.Do(http.MethodPost, blobURL(other, sum[:])+"/confirm", peer, nil); status != http.StatusNoContent {
+		t.Fatalf("their confirm = %d %s, want 204", status, e.ErrCode(body))
 	}
 }

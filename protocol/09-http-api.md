@@ -540,7 +540,7 @@ are CBOR as everywhere else.
 
 | Method and path | Request | Response | Permission |
 |---|---|---|---|
-| `PUT /v1/channels/{id}/blobs/{blob_id}` | the ciphertext | `201 [blob_id(bstr 32), size(uint)]` when the bytes are new, `200` with the same body when they were already stored | `attach_files` |
+| `PUT /v1/channels/{id}/blobs/{blob_id}` | the ciphertext | `201 [blob_id(bstr 32), size(uint)]` when the bytes are new, `200` with the same body when they were already stored | `attach_files` (`409 E_NOT_UPLOADER` when the channel's reference to the blob is another user's) |
 | `GET /v1/channels/{id}/blobs/{blob_id}` | — | `200` the ciphertext, or `206` for a `Range` request | `read_history` |
 | `HEAD /v1/channels/{id}/blobs/{blob_id}` | — | `200` with the `GET` headers and no body | `read_history` |
 | `DELETE /v1/channels/{id}/blobs/{blob_id}` | — | `204` | `view_channel`, and the uploading user only (`403 E_NOT_UPLOADER` for anyone else) |
@@ -550,13 +550,17 @@ are CBOR as everywhere else.
   equals `{blob_id}`; otherwise the answer is `422 E_INVALID_REQUEST` and nothing is stored. The
   body is hashed even when the blob is already stored: the upload is the proof that the caller
   holds the bytes, so knowing a `blob_id` is never enough to publish it into another channel, and
-  a forward re-uploads. A `PUT` into a channel that already holds a reference to the blob adds
-  nothing. A body over `blobs.max_blob_bytes` is `413 E_TOO_LARGE`; a `Content-Type` other than
+  a forward re-uploads. A body over `blobs.max_blob_bytes` is `413 E_TOO_LARGE`; a `Content-Type` other than
   `application/octet-stream` is `415 E_INVALID_REQUEST`; bytes an instance administrator removed
   are `410 E_PRUNED`, because content addressing would otherwise hand the removed name straight
   back. The reference a `PUT` creates is **pending**: it is read and deleted like any other, and
-  its uploader confirms it before sending the message that names it; a `PUT` into a channel that
-  already holds a reference to the blob leaves that reference as it is, pending or confirmed. A
+  its uploader confirms it before sending the message that names it. A channel holds one reference
+  to a blob and it belongs to the user whose device made it: a `PUT` by that user into a channel
+  that already holds their reference adds nothing and leaves it as it is, pending or confirmed
+  (`200`); a `PUT` into a channel whose reference another user made is `409 E_NOT_UPLOADER` and
+  leaves that reference as it is, so nobody else's upload can take over, or make expire, a
+  reference a user confirmed or still has to. A forwarded attachment is therefore re-encrypted
+  under a fresh key and re-uploaded as new bytes, never re-`PUT` as the same ciphertext. A
   client that uploads bytes for any reason — a forward, a restore, a readable-channel client, a
   test peer — confirms its reference; an unconfirmed reference expires after `blobs.pending_ttl`.
 - **Quota.** `blobs.quota_bytes_per_user` bounds the ciphertext bytes of the distinct blobs a user
@@ -589,7 +593,7 @@ are CBOR as everywhere else.
   because moderator deletion needs a signed moderation event this version does not have. Deleting
   a reference that is already gone is `204`, so a retry is harmless. When the last reference to a
   blob anywhere goes, the instance marks the blob unreferenced, and unlinks the file once
-  `blobs.gc_grace` (default 24 h) has passed with no reference created in between; a forward that
+  `blobs.gc_grace` (default 24 h) has passed with no reference created in between; a `PUT` that
   re-uploads the bytes inside that window keeps them.
   A client deletes the references of a message it discards before sending it and of a message it
   deletes for everyone (`04` § Semantics).
