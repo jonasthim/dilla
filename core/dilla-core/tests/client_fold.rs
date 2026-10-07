@@ -137,6 +137,12 @@ fn build_fold_row(
         "peer-delete" => post(peer, relay, own, Delete, Some(*target), ""),
         "peer-pin" => post(peer, relay, own, Pin, Some(*target), ""),
         "peer-react-unheld" => post(peer, relay, own, ReactionAdd, Some(UNHELD), "👍"),
+        "own-react" => {
+            me.sync(relay);
+            let msg_id = me.prepare_request(&GROUP, &request(3, Some(&TARGET), "👍", &[]), NOW);
+            let (_, body) = me.encrypt(&msg_id);
+            seq_of_answer(&relay.post_message(me.device, &body).expect("upload"))
+        }
         other => panic!("unknown row kind {other}"),
     }
 }
@@ -147,11 +153,7 @@ fn the_fold_parity_fixture_holds() {
         serde_json::from_str(include_str!("fixtures/fold_parity.json")).expect("fixture JSON");
     assert_eq!(fixture["v"].as_u64(), Some(1));
     let cases = fixture["cases"].as_array().expect("cases");
-    assert_eq!(
-        cases.len(),
-        6,
-        "cases 1-6 of L-CORE-39 (task 3 appends the seventh)"
-    );
+    assert_eq!(cases.len(), 7, "the seven cases of L-CORE-39");
     for case in cases {
         let name = case["name"].as_str().expect("name");
         let (_instance, mut relay, mut me, mut peer) = fold_start();
@@ -1347,4 +1349,622 @@ fn parked_and_deleted_targets_touch_at_most_three_rows_per_insert() {
         "unheld target changed {} rows",
         after - before
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// web-2b task 3: sending every type (L-CORE-36), the outbox row (L-CORE-37), attachment reads and
+// purges (L-CORE-38), and the purge record of L-CORE-33 step 2.
+
+fn refusal(r: Result<Vec<u8>, ClientError>) -> (&'static str, String) {
+    let e = r.expect_err("expected a refusal");
+    (e.code, e.detail)
+}
+
+/// Alice on two devices (`a`, then `a2` enrolled by recovery key) and Bob in GROUP: `a` creates,
+/// Bob and then `a2` join by external commit, `a` and Bob apply both joins.
+fn alice_twice_and_bob() -> (Relay, Core, Core, Core) {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let (mut a, rk) = ready_core_with_key(0xa1, "alice");
+    let mut a2 = enrolled_core(&a, &rk, NOW);
+    let mut b = ready_core(0xb2, "bob");
+    a.create_and_register(&mut relay, &instance);
+    b.join_external(&mut relay);
+    a2.join_external(&mut relay);
+    a.sync(&relay);
+    b.sync(&relay);
+    (relay, a, a2, b)
+}
+
+#[test]
+fn every_type_sent_by_one_core_is_folded_by_the_other() {
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (m, s) = a.send_request(&mut relay, &GROUP, &request(0, None, "hello", &[]), NOW);
+    b.sync(&relay);
+
+    b.send_request(
+        &mut relay,
+        &GROUP,
+        &request(3, Some(&m), "👍", &[]),
+        NOW + 1,
+    );
+    a.sync(&relay);
+    assert_eq!(a.row_at(&GROUP, s).reactions, vec![("👍".to_owned(), 1, 0)]);
+
+    let (_, edit_seq) = a.send_request(
+        &mut relay,
+        &GROUP,
+        &request(1, Some(&m), "hello, edited", &[]),
+        NOW + 2,
+    );
+    b.sync(&relay);
+    let row = b.row_at(&GROUP, s);
+    assert_eq!(
+        (row.body.as_str(), row.edited_seq),
+        ("hello, edited", edit_seq)
+    );
+    assert_eq!(row.reactions, vec![("👍".to_owned(), 1, 1)]);
+
+    let (_, pin_seq) = b.send_request(&mut relay, &GROUP, &request(5, Some(&m), "", &[]), NOW + 3);
+    a.sync(&relay);
+    assert_eq!(
+        a.row_at(&GROUP, s).pinned,
+        1,
+        "a pin from any member is accepted (Q20)"
+    );
+    let pins = decode_pins(&a.core.pins(&GROUP).expect("pins"));
+    assert_eq!(pins.len(), 1);
+    assert_eq!(
+        (
+            pins[0].target_seq,
+            pins[0].msg_id,
+            pins[0].pinned_seq,
+            pins[0].by_user,
+            pins[0].author,
+            pins[0].target_ts
+        ),
+        (
+            s,
+            m,
+            pin_seq,
+            b.user,
+            Some(a.user),
+            a.row_at(&GROUP, s).recv_ts
+        )
+    );
+
+    a.send_request(&mut relay, &GROUP, &request(6, Some(&m), "", &[]), NOW + 4);
+    b.sync(&relay);
+    assert_eq!(b.row_at(&GROUP, s).pinned, 0);
+    assert!(decode_pins(&b.core.pins(&GROUP).expect("pins")).is_empty());
+
+    b.send_request(
+        &mut relay,
+        &GROUP,
+        &request(4, Some(&m), "👍", &[]),
+        NOW + 5,
+    );
+    a.sync(&relay);
+    assert!(a.row_at(&GROUP, s).reactions.is_empty());
+
+    a.send_request(&mut relay, &GROUP, &request(2, Some(&m), "", &[]), NOW + 6);
+    b.sync(&relay);
+    let row = b.row_at(&GROUP, s);
+    assert_eq!((row.status, row.body.as_str(), row.edited_seq), (2, "", 0));
+
+    for core in [&a, &b] {
+        let seqs: Vec<u64> = core.timeline(&GROUP).iter().map(|r| r.seq).collect();
+        assert_eq!(seqs, vec![s], "fold rows are stored but never displayed");
+    }
+}
+
+/// Attacker (lesson e): none. `send_prepare` is reached only by this device's own caller with its
+/// own request; nothing another member sends passes through it, so these refusals stop the honest
+/// sender from building an envelope the receivers' fold would ignore, and write nothing.
+#[test]
+fn send_prepare_refuses_each_rule_and_writes_nothing() {
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (mine, _) = a.send_request(&mut relay, &GROUP, &request(0, None, "mine", &[]), NOW);
+    let (theirs, _) = b.send_request(&mut relay, &GROUP, &request(0, None, "theirs", &[]), NOW);
+    a.sync(&relay);
+    let unknown = [0xee; 16];
+    let mut long_name = attachment(0x31);
+    long_name.name = "n".repeat(256);
+    let five: Vec<Attachment> = (1..=5).map(attachment).collect();
+    let cases: Vec<(Vec<u8>, &str, &str)> = vec![
+        (vec![0x80], "E_CORE_INPUT", "request is malformed"),
+        (
+            vec![0x83, 0x00, 0xf6, 0x60],
+            "E_CORE_INPUT",
+            "request is malformed",
+        ),
+        (
+            request(7, Some(&mine), "x", &[]),
+            "E_CORE_INPUT",
+            "type is out of range",
+        ),
+        (
+            request(1, Some(&mine), "x", &[attachment(0x31)]),
+            "E_CORE_INPUT",
+            "only a message carries attachments",
+        ),
+        (
+            request(0, None, " \n\t ", &[]),
+            "E_CORE_INPUT",
+            "body is empty",
+        ),
+        (
+            request(0, Some(&unknown), "a reply", &[]),
+            "E_CORE_NOT_FOUND",
+            "target is not held",
+        ),
+        (
+            request(3, None, "👍", &[]),
+            "E_CORE_INPUT",
+            "reply_to is required",
+        ),
+        (
+            request(3, Some(&unknown), "👍", &[]),
+            "E_CORE_NOT_FOUND",
+            "target is not held",
+        ),
+        (
+            request(1, Some(&theirs), "not mine", &[]),
+            "E_CORE_INPUT",
+            "only the author may edit or delete",
+        ),
+        (
+            request(2, Some(&theirs), "", &[]),
+            "E_CORE_INPUT",
+            "only the author may edit or delete",
+        ),
+        (
+            request(1, Some(&mine), "  ", &[]),
+            "E_CORE_INPUT",
+            "body is empty",
+        ),
+        (
+            request(3, Some(&theirs), "", &[]),
+            "E_CORE_INPUT",
+            "emoji must be 1..=32 bytes",
+        ),
+        (
+            request(4, Some(&theirs), &"a".repeat(33), &[]),
+            "E_CORE_INPUT",
+            "emoji must be 1..=32 bytes",
+        ),
+        (
+            request(2, Some(&mine), "x", &[]),
+            "E_CORE_INPUT",
+            "body must be empty",
+        ),
+        (
+            request(5, Some(&theirs), "x", &[]),
+            "E_CORE_INPUT",
+            "body must be empty",
+        ),
+        (
+            request(6, Some(&theirs), "x", &[]),
+            "E_CORE_INPUT",
+            "body must be empty",
+        ),
+        (
+            request(1, Some(&mine), &"a".repeat(4001), &[]),
+            "E_ENVELOPE_LIMIT",
+            "",
+        ),
+        (request(0, None, "five", &five), "E_ENVELOPE_LIMIT", ""),
+        (request(0, None, "", &[long_name]), "E_ENVELOPE_LIMIT", ""),
+    ];
+    for (req, code, detail) in &cases {
+        assert_eq!(
+            refusal(a.core.send_prepare(&GROUP, req, NOW + 1)),
+            (*code, (*detail).to_owned()),
+            "case {detail:?} / {code}"
+        );
+    }
+    assert!(
+        a.outbox(&GROUP).is_empty(),
+        "a refused request wrote an outbox row"
+    );
+
+    a.send_request(
+        &mut relay,
+        &GROUP,
+        &request(2, Some(&mine), "", &[]),
+        NOW + 2,
+    );
+    for (ty, body) in [(1u64, "again"), (3, "👍"), (5, "")] {
+        assert_eq!(
+            refusal(
+                a.core
+                    .send_prepare(&GROUP, &request(ty, Some(&mine), body, &[]), NOW + 3)
+            ),
+            ("E_CORE_STATE", "the target is deleted".to_owned()),
+            "type {ty} on a deleted target"
+        );
+    }
+    assert!(a.outbox(&GROUP).is_empty());
+}
+
+#[test]
+fn only_the_author_may_edit_or_delete() {
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (theirs, s) = b.send_request(&mut relay, &GROUP, &request(0, None, "theirs", &[]), NOW);
+    a.sync(&relay);
+    for (ty, body) in [(1u64, "rewritten"), (2, "")] {
+        assert_eq!(
+            refusal(
+                a.core
+                    .send_prepare(&GROUP, &request(ty, Some(&theirs), body, &[]), NOW + 1)
+            ),
+            (
+                "E_CORE_INPUT",
+                "only the author may edit or delete".to_owned()
+            )
+        );
+    }
+    assert!(a.outbox(&GROUP).is_empty());
+    b.send_request(
+        &mut relay,
+        &GROUP,
+        &request(1, Some(&theirs), "rewritten", &[]),
+        NOW + 2,
+    );
+    a.sync(&relay);
+    assert_eq!(a.row_at(&GROUP, s).body, "rewritten");
+}
+
+#[test]
+fn an_attachment_only_message_is_sent_and_its_descriptors_read_back() {
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let files = [attachment(0x31), attachment(0x32)];
+    let msg = a.prepare_request(&GROUP, &request(0, None, "", &files), NOW);
+    let out = a.outbox(&GROUP);
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        (
+            out[0].msg_id,
+            out[0].ty,
+            out[0].reply_to,
+            out[0].body.as_str()
+        ),
+        (msg, 0, None, "")
+    );
+    assert_eq!(
+        out[0].attachments,
+        vec![
+            (
+                [0x31; 32],
+                1049,
+                "image/png".to_owned(),
+                "file-31.png".to_owned()
+            ),
+            (
+                [0x32; 32],
+                1050,
+                "image/png".to_owned(),
+                "file-32.png".to_owned()
+            ),
+        ]
+    );
+    let (_, body) = a.encrypt(&msg);
+    let answer = relay.post_message(a.device, &body).expect("upload");
+    let (_, s) = decode_confirm(&a.core.send_confirm(&msg, &answer).expect("send_confirm"));
+    b.sync(&relay);
+
+    let row = b.row_at(&GROUP, s);
+    assert_eq!(row.body, "");
+    assert_eq!(
+        row.attachments,
+        vec![
+            AttachmentSummary {
+                index: 0,
+                size: 1049,
+                mime: "image/png".into(),
+                w: Some(640),
+                h: Some(480),
+                has_thumb: 1,
+                name: "file-31.png".into()
+            },
+            AttachmentSummary {
+                index: 1,
+                size: 1050,
+                mime: "image/png".into(),
+                w: Some(640),
+                h: Some(480),
+                has_thumb: 1,
+                name: "file-32.png".into()
+            },
+        ]
+    );
+    let none = ("E_CORE_NOT_FOUND", "no such attachment".to_owned());
+    for (core, who) in [(&a, "sender"), (&b, "receiver")] {
+        for (i, want) in files.iter().enumerate() {
+            let got = decode_attachment(
+                &core
+                    .core
+                    .attachment_get(&GROUP, s, i as u32)
+                    .expect("attachment_get"),
+            );
+            assert!(
+                got == *want,
+                "{who}: attachment {i} reads back with its key, nonce and thumb"
+            );
+        }
+        assert_eq!(
+            refusal(core.core.attachment_get(&GROUP, s, 2)),
+            none,
+            "{who}: index past the list"
+        );
+        assert_eq!(
+            refusal(core.core.attachment_get(&GROUP, s + 100, 0)),
+            none,
+            "{who}: no row"
+        );
+        assert_eq!(
+            refusal(core.core.attachment_get(&OTHER_GROUP, s, 0)),
+            none,
+            "{who}: unknown group"
+        );
+    }
+    assert_eq!(
+        refusal(b.core.attachment_get(&GROUP, u64::MAX, 0)),
+        ("E_CORE_INPUT", "seq out of range".to_owned())
+    );
+
+    let (_, edit) = a.send_request(
+        &mut relay,
+        &GROUP,
+        &request(1, Some(&msg), "now with words", &[]),
+        NOW + 1,
+    );
+    b.sync(&relay);
+    assert_eq!(
+        refusal(b.core.attachment_get(&GROUP, edit, 0)),
+        none,
+        "a type-1 row carries no attachment"
+    );
+
+    a.send_request(
+        &mut relay,
+        &GROUP,
+        &request(2, Some(&msg), "", &[]),
+        NOW + 2,
+    );
+    b.sync(&relay);
+    assert_eq!(
+        refusal(b.core.attachment_get(&GROUP, s, 0)),
+        none,
+        "a deleted message keeps no attachment"
+    );
+}
+
+#[test]
+fn the_outbox_row_carries_the_type_the_target_and_attachment_summaries() {
+    let (_instance, mut relay, mut a, _b) = alice_and_bob();
+    let (m, _) = a.send_request(&mut relay, &GROUP, &request(0, None, "target", &[]), NOW);
+    let react = a.prepare_request(&GROUP, &request(3, Some(&m), "👍", &[]), NOW + 1);
+    let reply = a.prepare_request(
+        &GROUP,
+        &request(0, Some(&m), "with a file", &[attachment(0x51)]),
+        NOW + 2,
+    );
+    assert_eq!(
+        a.outbox(&GROUP),
+        vec![
+            OutboxRow {
+                msg_id: react,
+                state: 0,
+                error: String::new(),
+                created: NOW + 1,
+                body: "👍".into(),
+                ty: 3,
+                reply_to: Some(m),
+                attachments: vec![]
+            },
+            OutboxRow {
+                msg_id: reply,
+                state: 0,
+                error: String::new(),
+                created: NOW + 2,
+                body: "with a file".into(),
+                ty: 0,
+                reply_to: Some(m),
+                attachments: vec![([0x51; 32], 1081, "image/png".into(), "file-51.png".into())]
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_delete_records_one_purge_on_the_sending_device() {
+    let (mut relay, mut a, _a2, mut b) = alice_twice_and_bob();
+    let (m, s) = a.send_request(
+        &mut relay,
+        &GROUP,
+        &request(0, None, "two files", &[attachment(0x41), attachment(0x42)]),
+        NOW,
+    );
+    b.sync(&relay);
+    a.send_request(&mut relay, &GROUP, &request(2, Some(&m), "", &[]), NOW + 1);
+    let want = vec![PurgeRow {
+        group_id: GROUP,
+        seq: s,
+        channel_id: CHANNEL,
+        blob_ids: vec![[0x41; 32], [0x42; 32]],
+    }];
+    assert_eq!(a.purges(), want);
+    assert_eq!(a.row_at(&GROUP, s).status, 2);
+
+    a.sync(&relay);
+    assert_eq!(
+        a.purges(),
+        want,
+        "the echo of the delete records nothing twice"
+    );
+    relay.delete_message(s);
+    a.core.message_deleted(&GROUP, s).expect("message_deleted");
+    assert_eq!(
+        a.purges(),
+        want,
+        "the delivery service's tombstone records nothing"
+    );
+
+    b.sync(&relay);
+    assert!(b.purges().is_empty(), "a receiving device holds no purge");
+    assert_eq!(b.row_at(&GROUP, s).status, 2);
+
+    a.core.purge_done(&GROUP, s).expect("purge_done");
+    assert!(a.purges().is_empty());
+    a.core
+        .purge_done(&GROUP, s)
+        .expect("a second purge_done is no error");
+    a.core
+        .purge_done(&OTHER_GROUP, 9)
+        .expect("an unknown purge is no error");
+    a.core
+        .message_deleted(&GROUP, s)
+        .expect("message_deleted again");
+    assert!(a.purges().is_empty(), "a done purge never comes back");
+}
+
+/// TESTS-10: the purge condition's `T.status = 0` clause. A second delete of a message the first
+/// delete already removed records nothing, so a done purge never comes back.
+#[test]
+fn a_second_delete_of_the_same_message_records_no_second_purge() {
+    let (mut relay, mut a, _a2, _b) = alice_twice_and_bob();
+    let (m, s) = a.send_request(
+        &mut relay,
+        &GROUP,
+        &request(0, None, "once", &[attachment(0x41)]),
+        NOW,
+    );
+    let first = a.prepare_request(&GROUP, &request(2, Some(&m), "", &[]), NOW + 1);
+    let second = a.prepare_request(&GROUP, &request(2, Some(&m), "", &[]), NOW + 2);
+    a.encrypt_and_confirm(&mut relay, &GROUP, &first);
+    assert_eq!(a.purges().len(), 1);
+    a.core.purge_done(&GROUP, s).expect("purge_done");
+    a.encrypt_and_confirm(&mut relay, &GROUP, &second);
+    assert!(
+        a.purges().is_empty(),
+        "the second delete meets a deleted target and records nothing"
+    );
+}
+
+/// FACTS-SECURITY-06 and lesson e: an own target whose stored envelope this build's decoder
+/// refuses (an eight-element attachment, a shape web-2a's core accepted) is still deleted, and its
+/// purge is recorded from the structural walk instead of failing the unit.
+#[test]
+fn a_delete_of_an_undecodable_own_target_still_records_its_purge() {
+    let (mut relay, mut a, _a2, _b) = alice_twice_and_bob();
+    let (m, s) = a.send_request(&mut relay, &GROUP, &request(0, None, "legacy", &[]), NOW);
+    let legacy = legacy_eight_element_envelope(&m, "legacy");
+    a.probe
+        .lock()
+        .expect("lock")
+        .execute(
+            "UPDATE app_messages SET envelope = ?1 WHERE seq = ?2",
+            rusqlite::params![legacy, s as i64],
+        )
+        .expect("seed the legacy envelope");
+    a.send_request(&mut relay, &GROUP, &request(2, Some(&m), "", &[]), NOW + 1);
+    assert_eq!(a.row_at(&GROUP, s).status, 2);
+    assert_eq!(
+        a.purges(),
+        vec![PurgeRow {
+            group_id: GROUP,
+            seq: s,
+            channel_id: CHANNEL,
+            blob_ids: vec![[0x41; 32]]
+        }]
+    );
+}
+
+#[test]
+fn a_delete_received_from_the_own_users_other_device_records_no_purge() {
+    let (mut relay, mut a, mut a2, mut b) = alice_twice_and_bob();
+    let (m, s) = a.send_request(
+        &mut relay,
+        &GROUP,
+        &request(0, None, "from the laptop", &[attachment(0x43)]),
+        NOW,
+    );
+    a2.sync(&relay);
+    b.sync(&relay);
+    a.send_request(&mut relay, &GROUP, &request(2, Some(&m), "", &[]), NOW + 1);
+    a2.sync(&relay);
+    assert_eq!(
+        a2.row_at(&GROUP, s).status,
+        2,
+        "the other device honours its own user's delete"
+    );
+    assert!(
+        a2.purges().is_empty(),
+        "only the device that sent the delete holds the duty"
+    );
+    assert_eq!(a.purges().len(), 1);
+
+    let (m2, s2) = a.send_request(
+        &mut relay,
+        &GROUP,
+        &request(0, None, "second", &[]),
+        NOW + 2,
+    );
+    a2.sync(&relay);
+    a2.send_request(&mut relay, &GROUP, &request(2, Some(&m2), "", &[]), NOW + 3);
+    a.sync(&relay);
+    assert_eq!(a.row_at(&GROUP, s2).status, 2);
+    assert_eq!(a.purges().len(), 1, "the laptop keeps only its own purge");
+    assert_eq!(
+        a2.purges(),
+        vec![PurgeRow {
+            group_id: GROUP,
+            seq: s2,
+            channel_id: CHANNEL,
+            blob_ids: vec![]
+        }]
+    );
+    b.sync(&relay);
+    assert!(b.purges().is_empty());
+}
+
+#[test]
+fn a_delete_whose_echo_arrives_first_records_the_purge_on_adoption() {
+    let (_instance, mut relay, mut a, _b) = alice_and_bob();
+    let (m, s) = a.send_request(
+        &mut relay,
+        &GROUP,
+        &request(0, None, "short-lived", &[]),
+        NOW,
+    );
+    let (del, _) = a.post_request(&mut relay, &GROUP, &request(2, Some(&m), "", &[]), NOW + 1);
+    let applied = a.sync(&relay);
+    assert_eq!(applied.flags & OWN_ADOPTED, OWN_ADOPTED);
+    assert!(a.outbox(&GROUP).iter().all(|r| r.msg_id != del));
+    assert_eq!(
+        a.purges(),
+        vec![PurgeRow {
+            group_id: GROUP,
+            seq: s,
+            channel_id: CHANNEL,
+            blob_ids: vec![]
+        }]
+    );
+    assert_eq!(a.row_at(&GROUP, s).status, 2);
+}
+
+#[test]
+fn the_new_calls_need_an_identity() {
+    let mut fresh = ClientCore::open(memory()).expect("open");
+    assert_eq!(
+        code(fresh.send_prepare(&GROUP, &request(0, None, "x", &[]), NOW)),
+        "E_CORE_NO_IDENTITY"
+    );
+    assert_eq!(
+        code(fresh.attachment_get(&GROUP, 1, 0)),
+        "E_CORE_NO_IDENTITY"
+    );
+    assert_eq!(code(fresh.purges()), "E_CORE_NO_IDENTITY");
+    assert_eq!(code(fresh.purge_done(&GROUP, 1)), "E_CORE_NO_IDENTITY");
 }

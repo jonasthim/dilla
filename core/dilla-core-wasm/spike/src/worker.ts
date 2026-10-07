@@ -342,6 +342,14 @@ function msgIdOf(prepared: Uint8Array): Uint8Array {
   return prepared.slice(2);
 }
 
+/** send_prepare's ABI-6 request for a plain message: [0, null, body, []] (L-CORE-36), bodies under 256 UTF-8 bytes. */
+function textRequest(body: string): Uint8Array {
+  const text = new TextEncoder().encode(body);
+  if (text.length > 255) throw new Error('E_SPIKE_SHAPE: body too long for textRequest');
+  const head = text.length < 24 ? [0x60 + text.length] : [0x78, text.length];
+  return Uint8Array.from([0x84, 0x00, 0xf6, ...head, ...text, 0x80]);
+}
+
 /** core_open with the same contention schedule as openWithRetry: a reload's predecessor may still hold the handles. */
 async function openCore(instance: string): Promise<{ handle: CoreHandle; attempts: number }> {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -387,10 +395,10 @@ async function runCore(op: string, instance: string): Promise<Record<string, unk
       const c = need();
       const create = c.group_create(CORE_GROUP_ID, CORE_COMMUNITY_ID, CORE_CHANNEL_ID, 1n, CORE_EXTERNAL_SENDER_PUB);
       c.group_registered(CORE_GROUP_ID, 1n);
-      const first = msgIdOf(c.send_prepare(CORE_GROUP_ID, 'hello from the facade', CORE_NOW));
+      const first = msgIdOf(c.send_prepare(CORE_GROUP_ID, textRequest('hello from the facade'), CORE_NOW));
       c.send_encrypt(first);
       const confirm = c.send_confirm(first, CORE_CONFIRM);
-      const second = msgIdOf(c.send_prepare(CORE_GROUP_ID, 'still queued', CORE_NOW));
+      const second = msgIdOf(c.send_prepare(CORE_GROUP_ID, textRequest('still queued'), CORE_NOW));
       const encrypted = c.send_encrypt(second);
       return {
         createHead: toHex(create.subarray(0, 18)),
@@ -422,7 +430,7 @@ async function runCore(op: string, instance: string): Promise<Record<string, unk
     case 'resend-queued': {
       const c = need();
       const outbox = c.outbox(CORE_GROUP_ID);
-      if (outbox.length < 19 || outbox[0] !== 0x81 || outbox[1] !== 0x85 || outbox[2] !== 0x50) {
+      if (outbox.length < 19 || outbox[0] !== 0x81 || outbox[1] !== 0x88 || outbox[2] !== 0x50) {
         throw new Error(`E_SPIKE_SHAPE: outbox answered ${toHex(outbox)}`);
       }
       const msgId = outbox.slice(3, 19);

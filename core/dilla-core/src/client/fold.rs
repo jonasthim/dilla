@@ -1,10 +1,11 @@
 //! The fold of envelope types 1..6 onto their targets (protocol/04 § Semantics; L-CORE-33).
 //! Derived rows are recomputed in the caller's storage unit; nothing here refuses.
 
+use super::wire;
+use crate::cbor::{CborError, decode_strict};
 use crate::mls::StorageError;
 use rusqlite::{OptionalExtension, params};
 
-#[allow(dead_code)] // Task 3's purge record reads these fields.
 pub(super) struct FoldTrigger {
     pub seq: u64,
     pub ty: u8,
@@ -40,6 +41,36 @@ pub(super) fn resolve(
     )
     .optional()
     .map_err(Into::into)
+}
+
+/// The blob ids of a stored envelope's attachments, by structural walk (L-CORE-33 step 2,
+/// FACTS-SECURITY-06): never `Envelope::decode`, never an error.
+fn stored_blob_ids(envelope: &[u8]) -> Vec<[u8; 32]> {
+    decode_strict(envelope, |d| {
+        d.array(9)?;
+        for _ in 0..6 {
+            d.skip()?;
+        }
+        let n = d.array_len()?;
+        let mut ids = Vec::new();
+        for _ in 0..n {
+            let m = d.array_len()?;
+            if m == 0 {
+                return Err(CborError::WrongArrayLen {
+                    expected: 1,
+                    actual: 0,
+                });
+            }
+            ids.push(d.bytes_exact::<32>()?);
+            for _ in 1..m {
+                d.skip()?;
+            }
+        }
+        d.skip()?;
+        d.skip()?;
+        Ok(ids)
+    })
+    .unwrap_or_default()
 }
 
 pub(super) fn target_of(
@@ -99,7 +130,7 @@ pub(super) fn refold(
     target: &[u8; 16],
     scope: &FoldScope,
     trigger: Option<&FoldTrigger>,
-    _own: Option<&super::Own>,
+    own: Option<&super::Own>,
 ) -> Result<(), StorageError> {
     let g = group_id.as_slice();
     let id = target.as_slice();
@@ -173,6 +204,39 @@ pub(super) fn refold(
         false
     };
     if t.status == 2 || author_deleted {
+        // The purge record (L-CORE-33 step 2, task 3). Attacker: nothing is refused here. The record
+        // is written only for this device's own type-2 envelope of its own user's status-0 message,
+        // so no other member, and no other device of the same user, can make an honest device hold
+        // a purge it did not send; a forged type 2 from another member stops at the author rule
+        // above. The blob ids come from a structural walk that never fails, so a stored envelope
+        // this build's decoder refuses can never make the own delete unconfirmable or stall
+        // `group_apply` (FACTS-SECURITY-06).
+        if let (Some(trigger), Some(own)) = (trigger, own)
+            && trigger.ty == 2
+            && trigger.sender_device == own.device_id
+            && trigger.sender_user == own.user_id
+            && t.sender_user == Some(own.user_id)
+            && t.status == 0
+        {
+            let channel_id: Vec<u8> = c
+                .query_row(
+                    "SELECT target_id FROM app_groups WHERE group_id = ?1",
+                    [g],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| StorageError::Sqlite("app_groups row missing".into()))?;
+            let envelope: Option<Vec<u8>> = c.query_row(
+                "SELECT envelope FROM app_messages WHERE group_id = ?1 AND seq = ?2",
+                params![g, t.seq as i64],
+                |r| r.get(0),
+            )?;
+            let ids = envelope.as_deref().map(stored_blob_ids).unwrap_or_default();
+            c.execute(
+                "INSERT OR IGNORE INTO app_purges (group_id, seq, channel_id, blob_ids) VALUES (?1, ?2, ?3, ?4)",
+                params![g, t.seq as i64, channel_id, wire::encode_blob_ids(&ids)],
+            )?;
+        }
         c.execute("UPDATE app_messages SET status = 2, body = '', envelope = NULL, reason = '', edit_body = NULL, edit_seq = 0 WHERE group_id = ?1 AND seq = ?2", params![g, t.seq as i64])?;
         if let Some(user) = t.sender_user {
             c.execute(BLANK_EDITS, params![g, id, user.as_slice()])?;

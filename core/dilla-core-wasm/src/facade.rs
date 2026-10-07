@@ -61,6 +61,21 @@ pub fn login_arg(bytes: &[u8]) -> Result<(), ClientError> {
 }
 
 #[doc(hidden)]
+pub fn role_ids_arg(bytes: &[u8]) -> Result<(), ClientError> {
+    if bytes.len().is_multiple_of(16) && bytes.len() <= 1024 {
+        Ok(())
+    } else {
+        Err(ClientError {
+            code: "E_CORE_INPUT",
+            detail: format!(
+                "role_ids: expected 0..=64 ids of 16 bytes, got {} bytes",
+                bytes.len()
+            ),
+        })
+    }
+}
+
+#[doc(hidden)]
 pub fn client_js_error(e: &ClientError) -> JsError {
     JsError::new(&e.to_string())
 }
@@ -440,15 +455,15 @@ impl CoreHandle {
         self.with_core(|c| c.message_deleted(&group_id, seq))
             .map(Vec::into_boxed_slice)
     }
-    /// Calls ClientCore::send_prepare; CBOR [msg_id].
+    /// Calls ClientCore::send_prepare with the L-CORE-36 request bytes, unparsed; CBOR [msg_id].
     pub fn send_prepare(
         &self,
         group_id: &[u8],
-        body: &str,
+        request: &[u8],
         now: u64,
     ) -> Result<Box<[u8]>, JsError> {
         let group_id = js_fixed_arg::<16>("group_id", group_id)?;
-        self.with_core(|c| c.send_prepare(&group_id, body, now))
+        self.with_core(|c| c.send_prepare(&group_id, request, now))
             .map(Vec::into_boxed_slice)
     }
     /// Calls ClientCore::send_encrypt; CBOR [group_id, message_body].
@@ -483,7 +498,7 @@ impl CoreHandle {
         let msg_id = js_fixed_arg::<16>("msg_id", msg_id)?;
         self.with_core(|c| c.send_discard(&msg_id))
     }
-    /// Calls ClientCore::outbox; CBOR [[msg_id, state, error, created, body]].
+    /// Calls ClientCore::outbox; CBOR [[msg_id, state, error, created, body, type, reply_to, [[blob_id, size, mime, name]]]].
     pub fn outbox(&self, group_id: &[u8]) -> Result<Box<[u8]>, JsError> {
         let group_id = js_fixed_arg::<16>("group_id", group_id)?;
         self.with_core(|c| c.outbox(&group_id))
@@ -499,6 +514,38 @@ impl CoreHandle {
         let group_id = js_fixed_arg::<16>("group_id", group_id)?;
         self.with_core(|c| c.timeline(&group_id, before_seq, limit))
             .map(Vec::into_boxed_slice)
+    }
+    /// Calls ClientCore::pins; CBOR [[target_seq, msg_id, pinned_seq, by_user, author, excerpt, target_ts]].
+    pub fn pins(&self, group_id: &[u8]) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.pins(&group_id))
+            .map(Vec::into_boxed_slice)
+    }
+    /// Calls ClientCore::attachment_get; CBOR [blob_id, key, nonce, size, mime, w, h, thumb, name].
+    pub fn attachment_get(
+        &self,
+        group_id: &[u8],
+        seq: u64,
+        index: u32,
+    ) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.attachment_get(&group_id, seq, index))
+            .map(Vec::into_boxed_slice)
+    }
+    /// Calls ClientCore::purges; CBOR [[group_id, seq, channel_id, [blob_id]]].
+    pub fn purges(&self) -> Result<Box<[u8]>, JsError> {
+        self.with_core(|c| c.purges()).map(Vec::into_boxed_slice)
+    }
+    /// Calls ClientCore::purge_done; removes one purge row.
+    pub fn purge_done(&self, group_id: &[u8], seq: u64) -> Result<(), JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.purge_done(&group_id, seq))
+    }
+    /// Calls ClientCore::own_roles_set; role_ids is 0..=64 concatenated 16-byte ids.
+    pub fn own_roles_set(&self, community_id: &[u8], role_ids: &[u8]) -> Result<(), JsError> {
+        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
+        role_ids_arg(role_ids).map_err(owned_js_error)?;
+        self.with_core(|c| c.own_roles_set(&community_id, role_ids))
     }
     /// Calls ClientCore::group_row; CBOR null or [group_id, kind, community_id, target_id, state, epoch, next_seq, proposals_pending, pending_commit].
     pub fn group_row(&self, group_id: &[u8]) -> Result<Box<[u8]>, JsError> {

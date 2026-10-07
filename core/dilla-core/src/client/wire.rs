@@ -3,7 +3,9 @@
 use super::ClientError;
 use super::error::{E_CORE_INPUT, E_CORE_MLS};
 use crate::cbor::{Encoder, decode_strict};
+use crate::envelope::Attachment;
 use crate::identity::DeviceList;
+use crate::mls::StorageError;
 use openmls::prelude::{MlsMessageIn, ProtocolMessage};
 use tls_codec::Deserialize as _;
 
@@ -112,6 +114,81 @@ pub(crate) struct SendResponse {
     pub seq: u64,
     pub franking_tag: [u8; 32],
     pub recv_ts: u64,
+}
+
+pub(crate) struct SendRequest {
+    pub ty: u64,
+    pub reply_to: Option<[u8; 16]>,
+    pub body: String,
+    pub attachments: Vec<Attachment>,
+}
+
+pub(crate) fn decode_send_request(bytes: &[u8]) -> Result<SendRequest, ClientError> {
+    decode_strict(bytes, |d| {
+        d.array(4)?;
+        let ty = d.uint()?;
+        let reply_to = d.opt_bytes_exact::<16>()?;
+        let body = d.text()?.to_owned();
+        let n = d.array_len()?;
+        let mut attachments = reserve(n, bytes.len() - d.position());
+        for _ in 0..n {
+            d.array(9)?;
+            attachments.push(Attachment {
+                blob_id: d.bytes_exact::<32>()?,
+                key: d.bytes_exact::<32>()?,
+                nonce: d.bytes_exact::<12>()?,
+                size: d.uint()?,
+                mime: d.text()?.to_owned(),
+                w: d.opt_uint()?,
+                h: d.opt_uint()?,
+                thumb: d.opt_bytes()?.map(<[u8]>::to_vec),
+                name: d.text()?.to_owned(),
+            });
+        }
+        Ok(SendRequest {
+            ty,
+            reply_to,
+            body,
+            attachments,
+        })
+    })
+    .map_err(|_| ClientError::new(E_CORE_INPUT, "request is malformed"))
+}
+
+pub(crate) fn encode_attachment(a: &Attachment) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(9)
+        .bytes(&a.blob_id)
+        .bytes(&a.key)
+        .bytes(&a.nonce)
+        .uint(a.size)
+        .text(&a.mime)
+        .opt_uint(a.w)
+        .opt_uint(a.h)
+        .opt_bytes(a.thumb.as_deref())
+        .text(&a.name);
+    e.into_vec()
+}
+
+pub(crate) fn encode_blob_ids(ids: &[[u8; 32]]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(ids.len());
+    for id in ids {
+        e.bytes(id);
+    }
+    e.into_vec()
+}
+
+pub(crate) fn decode_blob_ids(bytes: &[u8]) -> Result<Vec<[u8; 32]>, StorageError> {
+    decode_strict(bytes, |d| {
+        let n = d.array_len()?;
+        let mut ids = reserve(n, bytes.len() - d.position());
+        for _ in 0..n {
+            ids.push(d.bytes_exact::<32>()?);
+        }
+        Ok(ids)
+    })
+    .map_err(|_| StorageError::Codec("app_purges blob_ids do not decode".into()))
 }
 
 pub(crate) struct ReplyView {

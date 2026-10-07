@@ -18,6 +18,10 @@ import {
   type Id,
   type IdentityInfo,
   type OutboxRow,
+  type AttachmentDescriptor,
+  type PinRow,
+  type PurgeRow,
+  type SendRequest,
   type TimelineRow,
   type WelcomeOutcome,
   type ActivityRow,
@@ -31,6 +35,11 @@ import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
 import type { Routes } from '../../http/routes';
 import { fakeDskPub, fakeListBlob, fakeListNames, readFakeList } from '../../testing/fake-list';
+
+/** The plain message request web-2a sent with a bare body (L-TS-30). */
+export function textRequest(body: string): SendRequest {
+  return { type: 0, replyTo: null, body, attachments: [] };
+}
 
 export interface Peer {
   device: Id;
@@ -689,8 +698,11 @@ export class ModelCore implements CorePort {
 
   // --- sending and reading (L-CORE-09) ---
 
-  sendPrepare(groupId: Id, body: string, now: bigint): Id {
+  sendPrepare(groupId: Id, request: SendRequest, now: bigint): Id {
     this.log('sendPrepare', groupId);
+    if (request.type !== 0 || request.replyTo !== null || request.attachments.length > 0)
+      throw new Error('not modelled before web-2b task 6');
+    const body = request.body;
     const g = this.must(groupId);
     if (g.state !== 2) throw coreError('E_CORE_STATE', `state ${String(g.state)}`);
     if (body.trim() === '') throw coreError('E_CORE_INPUT', 'empty body');
@@ -788,8 +800,16 @@ export class ModelCore implements CorePort {
     return [...this.out.values()]
       .filter((o) => same(o.groupId, groupId))
       .sort((a, b) => (a.created !== b.created ? (a.created < b.created ? -1 : 1) : toHex(a.msgId) < toHex(b.msgId) ? -1 : 1))
-      .map((o) => ({ msgId: o.msgId, state: o.state, error: o.error, created: o.created, body: o.body }));
+      .map((o) => ({ msgId: o.msgId, state: o.state, error: o.error, created: o.created, body: o.body, type: 0, replyTo: null, attachments: [] }));
   }
+
+  /* eslint-disable @typescript-eslint/no-unused-vars -- the typed parameters keep L-TS-30's signatures until task 6 models them */
+  pins(_groupId: Id): PinRow[] { throw new Error('not modelled before web-2b task 6'); }
+  attachmentGet(_groupId: Id, _seq: bigint, _index: number): AttachmentDescriptor { throw new Error('not modelled before web-2b task 6'); }
+  purges(): PurgeRow[] { throw new Error('not modelled before web-2b task 6'); }
+  purgeDone(_groupId: Id, _seq: bigint): void { throw new Error('not modelled before web-2b task 6'); }
+  ownRolesSet(_communityId: Id, _roleIds: Id[]): void { throw new Error('not modelled before web-2b task 6'); }
+  /* eslint-enable @typescript-eslint/no-unused-vars */
 
   timeline(groupId: Id, beforeSeq: bigint, limit: number): TimelineRow[] {
     const rows = [...this.must(groupId).rows.values()]

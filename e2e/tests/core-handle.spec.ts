@@ -73,7 +73,7 @@ test.beforeEach(() => {
 
 test('the facade keeps one identity, group and outbox across pause, resume and a reload', async ({ page }) => {
   await openCorePage(page, instance('core-life'));
-  expect(await ok(page, 'open')).toMatchObject({ abi: 5, phase: 0 });
+  expect(await ok(page, 'open')).toMatchObject({ abi: 6, phase: 0 });
 
   const signup = await ok(page, 'signup');
   expect(signup.recoveryKey).toMatch(/^[0-9A-HJKMNP-TV-Z]{52}$/); // 52 Crockford base32, ungrouped
@@ -100,8 +100,8 @@ test('the facade keeps one identity, group and outbox across pause, resume and a
   expect(String(before.timeline)).toMatch(
     new RegExp(`^819201001a68e778000060${'50' + rep('66', 16)}50${device}000150[0-9a-f]{32}0075${HELLO_HEX}00f680008000$`),
   );
-  // [[msg_id, state 1 (in flight), "", created 1760000000, "still queued"]]
-  expect(String(before.outbox)).toMatch(new RegExp(`^818550[0-9a-f]{32}01601a68e778006c${QUEUED_HEX}$`));
+  // [[msg_id, state 1 (in flight), "", created 1760000000, "still queued", type 0, reply_to null, attachments []]]
+  expect(String(before.outbox)).toMatch(new RegExp(`^818850[0-9a-f]{32}01601a68e778006c${QUEUED_HEX}00f680$`));
   expect(String(before.deviceList)).toMatch(/^8401/);
   expect(String(before.sealed)).toMatch(/^835867/); // three elements; root object: exactly 103 bytes
   // [nonce 0x22…, purpose 0, sig (64 bytes), null, null]: 104 bytes
@@ -116,7 +116,7 @@ test('the facade keeps one identity, group and outbox across pause, resume and a
 
   await page.reload();
   await waitForCore(page);
-  expect(await ok(page, 'open')).toMatchObject({ abi: 5, phase: 2 });
+  expect(await ok(page, 'open')).toMatchObject({ abi: 6, phase: 2 });
   // Byte-identical after a new worker reopened the store: the app tables, the MLS state and, through
   // the deterministic Ed25519 session signature, the DSK in OpenMLS's signature-key table (C6).
   expect(await ok(page, 'snapshot')).toEqual(before);
@@ -126,7 +126,7 @@ test('the facade keeps one identity, group and outbox across pause, resume and a
 
 test('the facade reports the core error codes and names a wrong-length argument', async ({ page }) => {
   await openCorePage(page, instance('core-errors'));
-  expect(await ok(page, 'open')).toMatchObject({ abi: 5, phase: 0 });
+  expect(await ok(page, 'open')).toMatchObject({ abi: 6, phase: 0 });
   expect(await ok(page, 'errors')).toEqual({
     keyPackagesBeforeIdentity: 'E_CORE_NO_IDENTITY',
     sessionBeforeIdentity: 'E_CORE_NO_IDENTITY',
@@ -154,6 +154,12 @@ test('the spike wasm links the facade and stays inside the size budget', () => {
     'corehandle_group_apply',
     'corehandle_message_deleted',
     'corehandle_timeline',
+    'corehandle_send_prepare',
+    'corehandle_pins',
+    'corehandle_attachment_get',
+    'corehandle_purges',
+    'corehandle_purge_done',
+    'corehandle_own_roles_set',
   ]) {
     expect(names).toContain(name);
   }

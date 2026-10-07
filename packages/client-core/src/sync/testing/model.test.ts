@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { arr, bin, decode, encode, type CborInput } from '../../cbor';
 import type { ExpectedGroup, Id } from '../../core-port';
-import { CHANNEL, CHANNEL_2, COMMUNITY, ME, ModelCore, ModelDs, PEER, THIRD, at, idOf, wire } from './model';
+import { CHANNEL, CHANNEL_2, COMMUNITY, ME, ModelCore, ModelDs, PEER, THIRD, at, idOf, wire, textRequest } from './model';
 
 import { toHex } from '../../hex';
 import type { Frame } from '../../gateway/frames';
@@ -76,9 +76,9 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('sendPrepare counts the body limit in UTF-8 bytes, as the core does', () => {
     const core = new ModelCore(ME);
     registered(core);
-    expect(thrown(() => core.sendPrepare(G, '€'.repeat(1334), 1n))).toMatchObject({ code: 'E_ENVELOPE_LIMIT' }); // 4002 bytes
+    expect(thrown(() => core.sendPrepare(G, textRequest('€'.repeat(1334)), 1n))).toMatchObject({ code: 'E_ENVELOPE_LIMIT' }); // 4002 bytes
     expect(core.outbox(G)).toEqual([]);
-    const id = core.sendPrepare(G, '€'.repeat(1333), 1n); // 3999 bytes
+    const id = core.sendPrepare(G, textRequest('€'.repeat(1333)), 1n); // 3999 bytes
     expect(core.outbox(G).map((r) => r.msgId)).toEqual([id]);
   });
 
@@ -87,7 +87,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
     registered(core);
     core.groupApply(G, encode([[1n, 0n, 0n, null, wire.prop(idOf(0x5e, 1), 'add', THIRD.device)]]), encode([]), 1n);
     expect(core.group(G)?.proposalsPending).toBe(1);
-    const id = core.sendPrepare(G, 'held', 1n);
+    const id = core.sendPrepare(G, textRequest('held'), 1n);
     expect(thrown(() => core.sendEncrypt(id))).toMatchObject({ code: 'E_CORE_STATE', detail: 'proposals are pending' });
     expect(core.outbox(G).map((r) => r.state)).toEqual([0]);
   });
@@ -97,7 +97,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
     registered(core);
     core.commitBuild(G, encode([]));
     expect(core.group(G)).toMatchObject({ pendingCommit: true, proposalsPending: 0 });
-    const id = core.sendPrepare(G, 'held', 1n);
+    const id = core.sendPrepare(G, textRequest('held'), 1n);
     expect(thrown(() => core.sendEncrypt(id))).toMatchObject({ code: 'E_CORE_STATE', detail: 'a commit is pending' });
     expect(core.outbox(G).map((r) => r.state)).toEqual([0]);
   });
@@ -164,7 +164,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('groupApply skips a live row served at a stored seq: not listed, not processed, nextSeq moves past it', () => {
     const core = new ModelCore(ME);
     registered(core);
-    const m = core.sendPrepare(G, 'mine', 1n);
+    const m = core.sendPrepare(G, textRequest('mine'), 1n);
     core.sendEncrypt(m);
     expect(core.sendConfirm(m, encode([3n, new Uint8Array(32), 1_700_000_003n]))).toEqual({ groupId: G, seq: 3n }); // ahead of nextSeq
     const r = core.groupApply(G, encode([]), encode([peerMsg(2n, 'two'), peerMsg(3n, 'served twice')]), 3n);
@@ -175,10 +175,10 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('adopts a failed row and a queued row whose commitment the echo carries', () => {
     const core = new ModelCore(ME);
     registered(core);
-    const failed = core.sendPrepare(G, 'failed', 1n);
+    const failed = core.sendPrepare(G, textRequest('failed'), 1n);
     const failedBlob = blobOf(core.sendEncrypt(failed)); // stored by the server; its answer was lost
     core.sendFail(failed, 'E_NETWORK');
-    const queued = core.sendPrepare(G, 'queued', 2n);
+    const queued = core.sendPrepare(G, textRequest('queued'), 2n);
     const queuedBlob = blobOf(core.sendEncrypt(queued)); // stored too; requeued after the echo wait
     core.sendRequeue(queued);
     const r = core.groupApply(G, encode([]), encode([ModelDs.row.ownEcho(1n, 0n, failedBlob), ModelDs.row.ownEcho(2n, 0n, queuedBlob)]), 2n);
@@ -190,7 +190,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('adopts nothing on a commitment mismatch (E_OWN_UNKNOWN, the row in flight stays), then adopts by the blob alone', () => {
     const core = new ModelCore(ME);
     registered(core);
-    const m = core.sendPrepare(G, 'in flight', 1n);
+    const m = core.sendPrepare(G, textRequest('in flight'), 1n);
     const blob = blobOf(core.sendEncrypt(m));
     const unplaced = wire.app(ME, idOf(0x6d, 99), 'an upload this device cannot place');
     const r = core.groupApply(G, encode([]), encode([
@@ -209,14 +209,14 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('a deleted upload of an outbox row is stored as its own deleted marker and adopts it; without a commitment the outbox stays', () => {
     const core = new ModelCore(ME);
     registered(core);
-    const m = core.sendPrepare(G, 'gone soon', 1n);
+    const m = core.sendPrepare(G, textRequest('gone soon'), 1n);
     core.sendEncrypt(m);
     const r = core.groupApply(G, encode([]), encode([[1n, 0n, ME.device, null, wire.commitment(m), new Uint8Array(32), 1_700_000_001n, 1]]), 1n);
     expect(r).toMatchObject({ newSeqs: [1n], ownAdopted: true });
     expect(core.timeline(G, 0n, 200)).toMatchObject([{ seq: 1n, status: 2, body: '', senderUser: ME.user, senderDevice: ME.device, msgId: m }]);
     expect(core.outbox(G)).toEqual([]);
     expect(core.sendConfirm(m, encode([1n, new Uint8Array(32), 1_700_000_001n]))).toEqual({ groupId: G, seq: 1n }); // read back
-    const m2 = core.sendPrepare(G, 'unplaced', 2n);
+    const m2 = core.sendPrepare(G, textRequest('unplaced'), 2n);
     core.sendEncrypt(m2);
     core.groupApply(G, encode([]), encode([[2n, 0n, ME.device, null, null, new Uint8Array(32), 1_700_000_002n, 1]]), 2n);
     expect(at(core.timeline(G, 0n, 200), 1)).toMatchObject({ seq: 2n, status: 2, senderUser: null, msgId: null });
@@ -231,7 +231,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
     const core = new ModelCore(ME);
     registered(core);
     core.groupApply(G, encode([]), peerRow(1n, 'theirs'), 1n);
-    const m = core.sendPrepare(G, 'mine', 1n);
+    const m = core.sendPrepare(G, textRequest('mine'), 1n);
     core.sendEncrypt(m);
     expect(thrown(() => core.sendConfirm(m, encode([1n, new Uint8Array(32), 1_700_000_001n])))).toMatchObject({
       code: 'E_CORE_STATE', detail: 'message seq exists',
@@ -239,7 +239,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
     expect(core.outbox(G)).toMatchObject([{ msgId: m, state: 2, error: 'E_CORE_STATE', body: 'mine' }]);
     expect(core.bodies(G)).toEqual(['theirs']);
     expect(thrown(() => core.sendFail(m, 'E_NETWORK'))).toMatchObject({ code: 'E_CORE_STATE' });
-    expect(core.sendEncrypt(core.sendPrepare(G, 'next', 2n)).groupId).toEqual(G);
+    expect(core.sendEncrypt(core.sendPrepare(G, textRequest('next'), 2n)).groupId).toEqual(G);
   });
 
   it('groupJoined and welcomesApply never lower nextSeq', () => {
@@ -361,7 +361,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('sendConfirm keeps the epoch framed by sendEncrypt after the group advances', () => {
     const core = new ModelCore(ME);
     registered(core);
-    const msg = core.sendPrepare(G, 'framed first', 1n);
+    const msg = core.sendPrepare(G, textRequest('framed first'), 1n);
     core.sendEncrypt(msg);
     core.groupApply(G, encode([commitRow(1n, 0n)]), encode([]), 1n);
     expect(core.group(G)?.epoch).toBe(1n);
@@ -455,7 +455,7 @@ describe('ModelCore web-2a: rows, DMs, read markers, activity, settings', () => 
     registered(core, G2, CHANNEL_2);
     core.groupCreate(G3, COMMUNITY, CHANNEL_3);
     const me = toHex(ME.user);
-    const own = core.sendPrepare(G, 'mine <@everyone>', 1n);
+    const own = core.sendPrepare(G, textRequest('mine <@everyone>'), 1n);
     core.sendEncrypt(own);
     core.sendConfirm(own, encode([1n, new Uint8Array(32), 1_700_000_001n]));
     core.groupApply(G, encode([]), encode([
@@ -624,4 +624,25 @@ describe('ModelDs web-2a: DMs, leafless reads and the device-list gate', () => {
     ]);
   });
 
+});
+
+describe('ModelCore before web-2b task 6', () => {
+  it('sends a plain message as before, lists it with the eight-field outbox row, and refuses what it does not model', () => {
+    const core = new ModelCore(ME);
+    registered(core);
+    const id = core.sendPrepare(G, textRequest('plain'), 5n);
+    expect(core.outbox(G)).toEqual([{ msgId: id, state: 0, error: '', created: 5n, body: 'plain', type: 0, replyTo: null, attachments: [] }]);
+    const file = { blobId: new Uint8Array(32), key: new Uint8Array(32), nonce: new Uint8Array(12), size: 1, mime: 'text/plain', w: null, h: null, thumb: null, name: 'a.txt' };
+    for (const request of [
+      { type: 3 as const, replyTo: id, body: '👍', attachments: [] },
+      { type: 0 as const, replyTo: id, body: 'a reply', attachments: [] },
+      { type: 0 as const, replyTo: null, body: 'a file', attachments: [file] },
+    ]) {
+      expect(thrown(() => core.sendPrepare(G, request, 6n))).toMatchObject({ message: 'not modelled before web-2b task 6' });
+    }
+    expect(core.outbox(G)).toHaveLength(1);
+    for (const fn of [() => core.pins(G), () => core.attachmentGet(G, 1n, 0), () => core.purges(), () => core.purgeDone(G, 1n), () => core.ownRolesSet(COMMUNITY, [])]) {
+      expect(thrown(fn)).toMatchObject({ message: 'not modelled before web-2b task 6' });
+    }
+  });
 });

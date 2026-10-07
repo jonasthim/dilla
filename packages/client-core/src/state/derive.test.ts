@@ -19,7 +19,8 @@ function row(seq: number, over: Partial<TimelineRow> = {}): TimelineRow {
 }
 
 function outbox(m: number, state: 0 | 1 | 2, over: Partial<OutboxRow> = {}): OutboxRow {
-  return { msgId: id(m), state, error: '', created: 1_700_000_100n, body: `draft ${m}`, ...over };
+  return { msgId: id(m), state, error: '', created: 1_700_000_100n, body: `draft ${m}`,
+    type: 0, replyTo: null, attachments: [], ...over };
 }
 
 function timeline(rows: TimelineRow[], out: OutboxRow[] = [], limit = 100) {

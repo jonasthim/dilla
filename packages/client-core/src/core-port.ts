@@ -32,7 +32,13 @@ export interface SealedObjects { root: Uint8Array | null; state: Uint8Array | nu
  *  body of an interrupted publication the core found in the state object and signed on, to send first
  *  (BACKUPS-RECOVERY-02), else null. */
 export interface SignedLists { deviceListBody: Uint8Array; stateSealed: Uint8Array; interrupted: Uint8Array | null; }
-export interface OutboxRow { msgId: Id; state: 0 | 1 | 2; error: string; created: bigint; body: string; }
+export interface AttachmentDescriptor { blobId: Uint8Array; key: Uint8Array; nonce: Uint8Array; size: number; mime: string;
+  w: number | null; h: number | null; thumb: Uint8Array | null; name: string; }
+export interface SendRequest { type: 0 | 1 | 2 | 3 | 4 | 5 | 6; replyTo: Id | null; body: string; attachments: AttachmentDescriptor[]; }
+export interface OutboxRow { msgId: Id; state: 0 | 1 | 2; error: string; created: bigint; body: string; type: 0 | 1 | 2 | 3 | 4 | 5 | 6; replyTo: Id | null;
+  attachments: { blobId: Uint8Array; size: number; mime: string; name: string }[]; }
+export interface PinRow { targetSeq: bigint; msgId: Id; pinnedSeq: bigint; byUser: Id; author: Id | null; excerpt: string; targetTs: bigint; }
+export interface PurgeRow { groupId: Id; seq: bigint; channelId: Id; blobIds: Uint8Array[]; }
 export interface ReplyInfo { replyTo: Id; targetSeq: bigint | null; targetUser: Id | null; excerpt: string; state: 0 | 1 | 2; }
 export interface ReactionInfo { emoji: string; count: number; mine: boolean; }
 export interface AttachmentInfo { index: number; size: number; mime: string; w: number | null; h: number | null; hasThumb: boolean; name: string; }
@@ -63,7 +69,7 @@ export interface CorePort {
   commitConfirm(groupId: Id): ApplyResult; commitAbort(groupId: Id): void;
   cursorBody(groupId: Id): Uint8Array | null; cursorAcked(groupId: Id, lastSeq: bigint, lastEpoch: bigint): void;
   messageDeleted(groupId: Id, seq: bigint): ApplyResult;
-  sendPrepare(groupId: Id, body: string, now: bigint): Id;
+  sendPrepare(groupId: Id, request: SendRequest, now: bigint): Id;
   sendEncrypt(msgId: Id): { groupId: Id; messageBody: Uint8Array };
   sendConfirm(msgId: Id, response: Uint8Array): { groupId: Id; seq: bigint };
   sendRequeue(msgId: Id): void; sendFail(msgId: Id, error: string): void; sendRetry(msgId: Id): void; sendDiscard(msgId: Id): void;
@@ -72,6 +78,11 @@ export interface CorePort {
   groupRow(groupId: Id): GroupInfo | null;
   markRead(groupId: Id, seq: bigint, now: bigint): void;
   activity(): ActivityRow[];
+  pins(groupId: Id): PinRow[];
+  attachmentGet(groupId: Id, seq: bigint, index: number): AttachmentDescriptor;
+  purges(): PurgeRow[];
+  purgeDone(groupId: Id, seq: bigint): void;
+  ownRolesSet(communityId: Id, roleIds: Id[]): void;
   settings(): Record<string, string>; settingPut(k: string, v: string): void; settingDelete(k: string): void;
   sealedObjects(): SealedObjects; stateSealedUploaded(): void;
   /** BACKUPS-RECOVERY-03: whether this device's own sealed state object carries the list it accepted as the newest. */
@@ -116,7 +127,7 @@ export interface CoreHandle {
       cursor_body(group_id: Uint8Array): Uint8Array;
       cursor_acked(group_id: Uint8Array, last_seq: bigint, last_epoch: bigint): void;
       message_deleted(group_id: Uint8Array, seq: bigint): Uint8Array;
-      send_prepare(group_id: Uint8Array, body: string, now: bigint): Uint8Array;
+      send_prepare(group_id: Uint8Array, request: Uint8Array, now: bigint): Uint8Array;
       send_encrypt(msg_id: Uint8Array): Uint8Array;
       send_confirm(msg_id: Uint8Array, response: Uint8Array): Uint8Array;
       send_requeue(msg_id: Uint8Array): void; send_fail(msg_id: Uint8Array, error: string): void;
@@ -138,6 +149,11 @@ export interface CoreHandle {
       own_device_list(): Uint8Array;
       state_sealed_uploaded(): void;
       state_sealed_current(): boolean;
+      pins(group_id: Uint8Array): Uint8Array;
+      attachment_get(group_id: Uint8Array, seq: bigint, index: number): Uint8Array;
+      purges(): Uint8Array;
+      purge_done(group_id: Uint8Array, seq: bigint): void;
+      own_roles_set(community_id: Uint8Array, role_ids: Uint8Array): void;
     }
     export interface StoreOpenConfigLike { directory: string; db_name: string; kek_hex: string; }
     export interface CoreWasmModule {
@@ -191,8 +207,26 @@ function readWelcome(v: CborValue): WelcomeOutcome {
   return { welcomeId: u64(field(a, 0)), groupId: bin(field(a, 1), 16), outcome: oneOf(field(a, 2), [0, 1, 2, 3]), reason: str(field(a, 3)) };
 }
 function readOutbox(v: CborValue): OutboxRow {
-  const a = arr(v, 5);
-  return { msgId: bin(field(a, 0), 16), state: oneOf(field(a, 1), [0, 1, 2]), error: str(field(a, 2)), created: u64(field(a, 3)), body: str(field(a, 4)) };
+  const a = arr(v, 8);
+  return { msgId: bin(field(a, 0), 16), state: oneOf(field(a, 1), [0, 1, 2]), error: str(field(a, 2)), created: u64(field(a, 3)), body: str(field(a, 4)),
+    type: oneOf(field(a, 5), [0, 1, 2, 3, 4, 5, 6]), replyTo: opt(field(a, 6), (x) => bin(x, 16)),
+    attachments: arr(field(a, 7)).map((x) => { const b = arr(x, 4); return { blobId: bin(field(b, 0), 32), size: u53(field(b, 1)),
+      mime: str(field(b, 2)), name: str(field(b, 3)) }; }) };
+}
+function readPin(v: CborValue): PinRow {
+  const a = arr(v, 7);
+  return { targetSeq: u64(field(a, 0)), msgId: bin(field(a, 1), 16), pinnedSeq: u64(field(a, 2)), byUser: bin(field(a, 3), 16),
+    author: opt(field(a, 4), (x) => bin(x, 16)), excerpt: str(field(a, 5)), targetTs: u64(field(a, 6)) };
+}
+function readDescriptor(v: CborValue): AttachmentDescriptor {
+  const a = arr(v, 9);
+  return { blobId: bin(field(a, 0), 32), key: bin(field(a, 1), 32), nonce: bin(field(a, 2), 12), size: u53(field(a, 3)),
+    mime: str(field(a, 4)), w: opt(field(a, 5), u53), h: opt(field(a, 6), u53), thumb: opt(field(a, 7), bin), name: str(field(a, 8)) };
+}
+function readPurge(v: CborValue): PurgeRow {
+  const a = arr(v, 4);
+  return { groupId: bin(field(a, 0), 16), seq: u64(field(a, 1)), channelId: bin(field(a, 2), 16),
+    blobIds: arr(field(a, 3)).map((x) => bin(x, 32)) };
 }
 function readTimeline(v: CborValue): TimelineRow {
   const a = arr(v, 18);
@@ -278,7 +312,9 @@ export function wrapCore(handle: CoreHandle): CorePort {
     }),
     cursorAcked: (groupId, lastSeq, lastEpoch) => call(() => handle.cursor_acked(groupId, lastSeq, lastEpoch)),
     messageDeleted: (groupId, seq) => call(() => decoded('messageDeleted', handle.message_deleted(groupId, seq), readApply)),
-    sendPrepare: (groupId, body, now) => call(() => decoded('sendPrepare', handle.send_prepare(groupId, body, now), (v) => bin(field(arr(v, 1), 0), 16))),
+    sendPrepare: (groupId, request, now) => call(() => decoded('sendPrepare', handle.send_prepare(groupId,
+      encode([request.type, request.replyTo, request.body, request.attachments.map((a) => [a.blobId, a.key, a.nonce, a.size, a.mime, a.w, a.h, a.thumb, a.name])]),
+      now), (v) => bin(field(arr(v, 1), 0), 16))),
     sendEncrypt: (msgId) => call(() => decoded('sendEncrypt', handle.send_encrypt(msgId), (v) => {
       const a = arr(v, 2); return { groupId: bin(field(a, 0), 16), messageBody: bin(field(a, 1)) };
     })),
@@ -294,6 +330,17 @@ export function wrapCore(handle: CoreHandle): CorePort {
     groupRow: (groupId) => call(() => decoded('groupRow', handle.group_row(groupId), (v) => v === null ? null : readGroup(v))),
     markRead: (groupId, seq, now) => call(() => handle.mark_read(groupId, seq, now)),
     activity: () => call(() => decoded('activity', handle.activity(), (v) => arr(v).map(readActivity))),
+    pins: (groupId) => call(() => decoded('pins', handle.pins(groupId), (v) => arr(v).map(readPin))),
+    attachmentGet: (groupId, seq, index) => call(() => decoded('attachmentGet', handle.attachment_get(groupId, seq, index), readDescriptor)),
+    purges: () => call(() => decoded('purges', handle.purges(), (v) => arr(v).map(readPurge))),
+    purgeDone: (groupId, seq) => call(() => handle.purge_done(groupId, seq)),
+    ownRolesSet: (communityId, roleIds) => call(() => {
+      if (roleIds.length > 64 || roleIds.some((id) => id.length !== 16))
+        throw new CoreError('E_CORE_INPUT', 'role_ids must be 0..=64 ids of 16 bytes');
+      const joined = new Uint8Array(roleIds.length * 16);
+      roleIds.forEach((id, index) => joined.set(id, index * 16));
+      handle.own_roles_set(communityId, joined);
+    }),
     settings: () => call(() => decoded('settings', handle.settings(), (v) => Object.fromEntries(arr(v).map((row) => {
       const a = arr(row, 2); return [str(field(a, 0)), str(field(a, 1))];
     })))),

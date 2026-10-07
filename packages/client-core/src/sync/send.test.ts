@@ -3,7 +3,7 @@ import type { Id } from '../core-port';
 import { toHex } from '../hex';
 import { SYNC } from './engine';
 import { catchSync, coreCalls, device, openRegistered, type Device } from './testing/harness';
-import { CHANNEL, COMMUNITY, ME, ManualClock, ModelDs, PEER, THIRD, deferred, httpError, settle } from './testing/model';
+import { CHANNEL, COMMUNITY, ME, ManualClock, ModelDs, PEER, THIRD, deferred, httpError, settle, textRequest } from './testing/model';
 
 let ds: ModelDs;
 let clock: ManualClock;
@@ -197,7 +197,7 @@ describe('sending (rule 5)', () => {
 
   it('settles a row left in flight by an earlier page through a catch-up, not a resend', async () => {
     ds.detach(ME.device);
-    const earlier = d.core.sendPrepare(g, 'earlier', 1n);
+    const earlier = d.core.sendPrepare(g, textRequest('earlier'), 1n);
     const enc = d.core.sendEncrypt(earlier);
     await ds.routesFor(ME.device).postMessage(enc.groupId, enc.messageBody); // its response died with the page
     d.engine.send(g, 'next');

@@ -44,7 +44,7 @@ interface ExpectedCoreHandle {
   cursor_body(group_id: Uint8Array): Uint8Array;
   cursor_acked(group_id: Uint8Array, last_seq: bigint, last_epoch: bigint): void;
   message_deleted(group_id: Uint8Array, seq: bigint): Uint8Array;
-  send_prepare(group_id: Uint8Array, body: string, now: bigint): Uint8Array;
+  send_prepare(group_id: Uint8Array, request: Uint8Array, now: bigint): Uint8Array;
   send_encrypt(msg_id: Uint8Array): Uint8Array;
   send_confirm(msg_id: Uint8Array, response: Uint8Array): Uint8Array;
   send_requeue(msg_id: Uint8Array): void;
@@ -70,6 +70,11 @@ interface ExpectedCoreHandle {
   own_device_list(): Uint8Array;
   state_sealed_uploaded(): void;
   state_sealed_current(): boolean;
+  pins(group_id: Uint8Array): Uint8Array;
+  attachment_get(group_id: Uint8Array, seq: bigint, index: number): Uint8Array;
+  purges(): Uint8Array;
+  purge_done(group_id: Uint8Array, seq: bigint): void;
+  own_roles_set(community_id: Uint8Array, role_ids: Uint8Array): void;
 }
 
 type H = Wasm.CoreHandle;
@@ -144,3 +149,9 @@ expectTrue<Equals<H['own_device_list_update'], E['own_device_list_update']>>();
 expectTrue<Equals<H['own_device_list'], E['own_device_list']>>();
 expectTrue<Equals<H['state_sealed_uploaded'], E['state_sealed_uploaded']>>();
 expectTrue<Equals<H['state_sealed_current'], E['state_sealed_current']>>();
+
+expectTrue<Equals<H['pins'], E['pins']>>();
+expectTrue<Equals<H['attachment_get'], E['attachment_get']>>();
+expectTrue<Equals<H['purges'], E['purges']>>();
+expectTrue<Equals<H['purge_done'], E['purge_done']>>();
+expectTrue<Equals<H['own_roles_set'], E['own_roles_set']>>();

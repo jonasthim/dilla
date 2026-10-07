@@ -146,7 +146,46 @@ fn not_found() -> ClientError {
     ClientError::new(E_CORE_NOT_FOUND, "")
 }
 
+fn no_attachment() -> ClientError {
+    ClientError::new(E_CORE_NOT_FOUND, "no such attachment")
+}
+
 impl ClientCore {
+    /// `read` behind one non-generic instance: each reader of web-2b adds its closure body and not
+    /// another copy of the storage unit (wasm size, the task 3 budget).
+    #[inline(never)]
+    fn read_dyn(
+        &self,
+        f: &mut dyn FnMut(&rusqlite::Connection) -> Result<(), StorageError>,
+    ) -> Result<(), ClientError> {
+        self.read(f)
+    }
+
+    /// `write` for a statement-only unit behind one non-generic instance (wasm size).
+    #[inline(never)]
+    fn write_dyn(
+        &mut self,
+        f: &mut dyn FnMut(&rusqlite::Connection) -> Result<(), StorageError>,
+    ) -> Result<(), ClientError> {
+        self.write(|_, u| u.with_conn(f).map_err(Into::into))
+    }
+
+    /// `read_dyn` for a closure that produces a value.
+    fn read_one<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Connection) -> Result<T, StorageError>,
+    ) -> Result<T, ClientError> {
+        let mut f = Some(f);
+        let mut out = None;
+        self.read_dyn(&mut |c| {
+            if let Some(f) = f.take() {
+                out = Some(f(c)?);
+            }
+            Ok(())
+        })?;
+        out.ok_or_else(|| ClientError::new(E_CORE_STORAGE, "the read produced no value"))
+    }
+
     /// Advance this device's read marker, clamped to the group's current head.
     pub fn mark_read(&mut self, id: &[u8; 16], seq: u64, now: u64) -> Result<(), ClientError> {
         self.own()?;
@@ -284,23 +323,72 @@ pub(super) fn mention_needle(user_id: &[u8; 16]) -> [u8; 35] {
 }
 
 impl ClientCore {
+    /// `request` = [type uint 0..=6, reply_to b16|null, body tstr,
+    ///              attachments [[blob_id b32, key b32, nonce b12, size uint, mime tstr, w uint|null, h uint|null, thumb bstr|null, name tstr]]]
+    /// (the L-CORE-30 attachment element, in order). Returns [msg_id b16] as before. Phase 2; the group must be in state 2.
+    /// Every refusal writes nothing (L-CORE-36).
     pub fn send_prepare(
         &mut self,
         id: &[u8; 16],
-        body: &str,
+        request: &[u8],
         now: u64,
     ) -> Result<Vec<u8>, ClientError> {
-        self.own()?;
+        let own = self.own()?;
         let now = checked("now", now)?;
-        if body.trim().is_empty() {
-            return Err(ClientError::new(E_CORE_INPUT, "body is empty"));
+        let t = wire::decode_send_request(request)?;
+        if t.ty > 6 {
+            return Err(ClientError::new(E_CORE_INPUT, "type is out of range"));
         }
-        let row = self.read(|c| group_row(c, id))?.ok_or_else(not_found)?;
+        if t.ty != 0 && !t.attachments.is_empty() {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "only a message carries attachments",
+            ));
+        }
+        // One read: the group row, then the target (the ledger's resolution, `fold::resolve`).
+        let (row, target) = self.read_one(|c| {
+            let row = group_row(c, id)?;
+            let target = match (&row, t.reply_to) {
+                (Some(_), Some(reply_to)) => fold::resolve(c, id, &reply_to)?,
+                _ => None,
+            };
+            Ok((row, target))
+        })?;
+        let row = row.ok_or_else(not_found)?;
         if row.state != STATE_ACTIVE {
             return Err(ClientError::new(
                 E_CORE_STATE,
                 format!("group state {}", row.state),
             ));
+        }
+        let input = |detail: &'static str| Err(ClientError::new(E_CORE_INPUT, detail));
+        let unheld = || ClientError::new(E_CORE_NOT_FOUND, "target is not held");
+        if t.ty == 0 {
+            if t.body.trim().is_empty() && t.attachments.is_empty() {
+                return input("body is empty");
+            }
+            if t.reply_to.is_some() && target.is_none() {
+                return Err(unheld());
+            }
+        } else {
+            if t.reply_to.is_none() {
+                return input("reply_to is required");
+            }
+            let target = target.ok_or_else(unheld)?;
+            if target.status != STATUS_OK {
+                return Err(ClientError::new(E_CORE_STATE, "the target is deleted"));
+            }
+            if t.ty <= 2 && target.sender_user != Some(own.user_id) {
+                return input("only the author may edit or delete");
+            }
+            match t.ty {
+                1 if t.body.trim().is_empty() => return input("body is empty"),
+                3 | 4 if t.body.is_empty() || t.body.len() > 32 => {
+                    return input("emoji must be 1..=32 bytes");
+                }
+                2 | 5 | 6 if !t.body.is_empty() => return input("body must be empty"),
+                _ => {}
+            }
         }
         let msg_id = self
             .provider
@@ -315,11 +403,11 @@ impl ClientCore {
         let env = Envelope {
             v: 1,
             msg_id: MsgId::from_bytes(msg_id),
-            kind: EnvelopeType::Message,
+            kind: EnvelopeType::from_u64(t.ty)?,
             thread_id: None,
-            reply_to: None,
-            body: body.into(),
-            attachments: vec![],
+            reply_to: t.reply_to.map(MsgId::from_bytes),
+            body: t.body,
+            attachments: t.attachments,
             previews: vec![],
             k_f,
         };
@@ -594,32 +682,121 @@ impl ClientCore {
         self.outbox_transition(id, &[OUTBOX_QUEUED, OUTBOX_FAILED], None)
     }
 
+    /// [[msg_id b16, state uint, error tstr, created uint, body tstr, type uint, reply_to b16|null,
+    /// attachments [[blob_id b32, size uint, mime tstr, name tstr]]]] (L-CORE-37): no key, nonce or
+    /// thumbnail leaves the outbox.
     pub fn outbox(&self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
-        self.read(|c| group_row(c, id))?.ok_or_else(not_found)?;
         type ListedOutbox = ([u8; 16], i64, String, i64, Vec<u8>);
-        let rows: Vec<ListedOutbox> = self.read(|c| {
-            let mut s = c.prepare(
-                "SELECT msg_id,state,error,created,envelope FROM app_outbox \
-                 WHERE group_id=?1 ORDER BY created,msg_id",
-            )?;
-            let it = s.query_map([id.as_slice()], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-            })?;
-            it.collect::<Result<_, _>>().map_err(Into::into)
-        })?;
+        let rows: Vec<ListedOutbox> = self
+            .read_one(|c| {
+                if group_row(c, id)?.is_none() {
+                    return Ok(None);
+                }
+                let mut s = c.prepare(
+                    "SELECT msg_id,state,error,created,envelope FROM app_outbox \
+                     WHERE group_id=?1 ORDER BY created,msg_id",
+                )?;
+                let it = s.query_map([id.as_slice()], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                })?;
+                it.collect::<Result<_, _>>().map(Some).map_err(Into::into)
+            })?
+            .ok_or_else(not_found)?;
         let mut e = Encoder::new();
         e.array(rows.len());
         for (msg, state, error, created, env) in rows {
             let env = Envelope::decode(&env)
                 .map_err(|_| ClientError::new(E_CORE_STORAGE, "outbox envelope does not decode"))?;
-            e.array(5)
+            e.array(8)
                 .bytes(&msg)
                 .uint(state as u64)
                 .text(&error)
                 .uint(created as u64)
-                .text(&env.body);
+                .text(&env.body)
+                .uint(u64::from(env.kind.as_u8()))
+                .opt_bytes(env.reply_to.as_ref().map(|m| &m.0[..]))
+                .array(env.attachments.len());
+            for a in &env.attachments {
+                e.array(4)
+                    .bytes(&a.blob_id)
+                    .uint(a.size)
+                    .text(&a.mime)
+                    .text(&a.name);
+            }
         }
         Ok(e.into_vec())
+    }
+    /// Phase 2. The attachment element (L-CORE-30, nine elements, key and nonce included) at
+    /// `index` of the envelope of the status-0 type-0 row at (group_id, seq). E_CORE_NOT_FOUND
+    /// "no such attachment" for any other row or an index past the list (L-CORE-38).
+    pub fn attachment_get(
+        &self,
+        group_id: &[u8; 16],
+        seq: u64,
+        index: u32,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.own()?;
+        let seq = checked("seq", seq)?;
+        let bytes: Option<Option<Vec<u8>>> = self.read_one(|c| {
+            c.query_row(
+                "SELECT envelope FROM app_messages \
+                 WHERE group_id = ?1 AND seq = ?2 AND status = 0 AND type = 0",
+                params![group_id.as_slice(), seq],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+        })?;
+        let env = Envelope::decode(&bytes.flatten().ok_or_else(no_attachment)?).map_err(|_| {
+            ClientError::new(E_CORE_STORAGE, "app_messages envelope does not decode")
+        })?;
+        let a = env
+            .attachments
+            .get(index as usize)
+            .ok_or_else(no_attachment)?;
+        Ok(wire::encode_attachment(a))
+    }
+
+    /// Phase 2. [[group_id b16, seq uint, channel_id b16, blob_ids [b32]]] ordered by group_id,
+    /// seq (L-CORE-38).
+    pub fn purges(&self) -> Result<Vec<u8>, ClientError> {
+        self.own()?;
+        type RawPurge = (Vec<u8>, i64, Vec<u8>, Vec<u8>);
+        let rows: Vec<RawPurge> = self.read_one(|c| {
+            let mut s = c.prepare(
+                "SELECT group_id, seq, channel_id, blob_ids FROM app_purges ORDER BY group_id, seq",
+            )?;
+            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect::<Result<_, _>>()
+                .map_err(Into::into)
+        })?;
+        let mut e = Encoder::new();
+        e.array(rows.len());
+        for (group_id, seq, channel_id, blob_ids) in rows {
+            let ids = wire::decode_blob_ids(&blob_ids)?;
+            e.array(4)
+                .bytes(&group_id)
+                .uint(seq as u64)
+                .bytes(&channel_id)
+                .array(ids.len());
+            for id in ids {
+                e.bytes(&id);
+            }
+        }
+        Ok(e.into_vec())
+    }
+
+    /// Phase 2. Deletes the app_purges row in one unit; no error when it is absent (L-CORE-38).
+    pub fn purge_done(&mut self, group_id: &[u8; 16], seq: u64) -> Result<(), ClientError> {
+        self.own()?;
+        let seq = checked("seq", seq)?;
+        self.write_dyn(&mut |c| {
+            c.execute(
+                "DELETE FROM app_purges WHERE group_id = ?1 AND seq = ?2",
+                params![group_id.as_slice(), seq],
+            )?;
+            Ok(())
+        })
     }
     pub fn timeline(
         &self,
@@ -709,35 +886,39 @@ impl ClientCore {
 
     pub fn pins(&self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
         self.own()?;
-        self.read(|c| group_row(c, id))?.ok_or_else(not_found)?;
-        let rows = self.read(|c| {
-            let mut q = c.prepare(
+        let rows = self
+            .read_one(|c| {
+                if group_row(c, id)?.is_none() {
+                    return Ok(None);
+                }
+                let mut q = c.prepare(
                 "SELECT target, seq, by_user FROM app_pins WHERE group_id = ?1 ORDER BY seq DESC",
             )?;
-            let pins: Vec<([u8; 16], i64, [u8; 16])> = q
-                .query_map([id.as_slice()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-                .collect::<Result<_, _>>()?;
-            let mut views = Vec::new();
-            for (msg_id, seq, by_user) in pins {
-                if let Some(t) = fold::resolve(c, id, &msg_id)? {
-                    let ts: i64 = c.query_row(
-                        "SELECT recv_ts FROM app_messages WHERE group_id = ?1 AND seq = ?2",
-                        params![id.as_slice(), t.seq as i64],
-                        |r| r.get(0),
-                    )?;
-                    views.push(wire::PinView {
-                        target_seq: t.seq,
-                        msg_id,
-                        pinned_seq: seq as u64,
-                        by_user,
-                        author: t.sender_user,
-                        excerpt: fold::excerpt(&t.shown_body),
-                        target_ts: ts as u64,
-                    });
+                let pins: Vec<([u8; 16], i64, [u8; 16])> = q
+                    .query_map([id.as_slice()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<Result<_, _>>()?;
+                let mut views = Vec::new();
+                for (msg_id, seq, by_user) in pins {
+                    if let Some(t) = fold::resolve(c, id, &msg_id)? {
+                        let ts: i64 = c.query_row(
+                            "SELECT recv_ts FROM app_messages WHERE group_id = ?1 AND seq = ?2",
+                            params![id.as_slice(), t.seq as i64],
+                            |r| r.get(0),
+                        )?;
+                        views.push(wire::PinView {
+                            target_seq: t.seq,
+                            msg_id,
+                            pinned_seq: seq as u64,
+                            by_user,
+                            author: t.sender_user,
+                            excerpt: fold::excerpt(&t.shown_body),
+                            target_ts: ts as u64,
+                        });
+                    }
                 }
-            }
-            Ok(views)
-        })?;
+                Ok(Some(views))
+            })?
+            .ok_or_else(not_found)?;
         Ok(wire::encode_pins(&rows))
     }
 
@@ -753,20 +934,17 @@ impl ClientCore {
                 "role_ids must be 0..=64 ids of 16 bytes",
             ));
         }
-        self.write(|_, u| {
-            u.with_conn(|c| {
+        self.write_dyn(&mut |c| {
+            c.execute(
+                "DELETE FROM app_roles WHERE community_id = ?1",
+                [community_id.as_slice()],
+            )?;
+            for id in role_ids.as_chunks::<16>().0 {
                 c.execute(
-                    "DELETE FROM app_roles WHERE community_id = ?1",
-                    [community_id.as_slice()],
+                    "INSERT OR IGNORE INTO app_roles (community_id, role_id) VALUES (?1, ?2)",
+                    params![community_id.as_slice(), id],
                 )?;
-                for id in role_ids.as_chunks::<16>().0 {
-                    c.execute(
-                        "INSERT OR IGNORE INTO app_roles (community_id, role_id) VALUES (?1, ?2)",
-                        params![community_id.as_slice(), id],
-                    )?;
-                }
-                Ok(())
-            })?;
+            }
             Ok(())
         })
     }

@@ -32,7 +32,7 @@ use rusqlite::OptionalExtension;
 use std::sync::{Arc, Mutex};
 
 mod client_support;
-use client_support::{Instance, Relay, enrolled_core, ready_core_with_key};
+use client_support::{Instance, Relay, enrolled_core, ready_core_with_key, request};
 
 const INSTANCE: [u8; 16] = [0x11; 16];
 const USER: [u8; 16] = [0x42; 16];
@@ -1567,7 +1567,7 @@ fn an_enrol_record_is_phase_3_stores_sessions_and_refuses_the_identity_calls() {
         err(core.device_list_body()).code,
         err(core.device_list_published()).code,
         err(core.key_packages(1, false)).code,
-        err(core.send_prepare(&GROUP, "x", NOW)).code,
+        err(core.send_prepare(&GROUP, &request(0, None, "x", &[]), NOW)).code,
     ] {
         assert_eq!(code, "E_CORE_NO_IDENTITY");
     }

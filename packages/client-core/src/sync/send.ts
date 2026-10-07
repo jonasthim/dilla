@@ -12,7 +12,7 @@ function owner(s: SyncInternals, msgId: Id): Id | undefined {
 }
 export function sendMessage(s: SyncInternals, g: Id, text: string): Id {
   if (s.stopped()) throw new SyncError('E_SYNC_STOPPED');
-  const id = s.deps.core.sendPrepare(g, text, BigInt(Math.floor(s.deps.now() / 1000)));
+  const id = s.deps.core.sendPrepare(g, { type: 0, replyTo: null, body: text, attachments: [] }, BigInt(Math.floor(s.deps.now() / 1000)));
   s.deps.onOutboxChanged(g); s.requestDrain(g); return id;
 }
 export function retrySend(s: SyncInternals, msgId: Id): void {

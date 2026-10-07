@@ -7,7 +7,7 @@
 use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
 use dilla_core::client::ClientError;
 use dilla_core_wasm::facade::{
-    client_js_error, community_arg, core_open, fixed_arg, login_arg, purpose_arg,
+    client_js_error, community_arg, core_open, fixed_arg, login_arg, purpose_arg, role_ids_arg,
 };
 use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
@@ -273,7 +273,7 @@ fn a_redacted_probe_message_never_carries_the_statement() {
 fn the_version_getters_agree_with_dilla_core_on_wasm() {
     assert_eq!(core_version(), dilla_core::CORE_VERSION);
     assert_eq!(abi_version(), BROWSER_ABI_VERSION);
-    assert_eq!(BROWSER_ABI_VERSION, 5);
+    assert_eq!(BROWSER_ABI_VERSION, 6);
 }
 
 /// The message a `JsError` carries across the boundary: what the media worker matches on.
@@ -605,4 +605,33 @@ fn the_wasm_bindgen_surface_round_trips_every_envelope_vector_with_its_name() {
     }
     let first = envelope_decode_json(&unhex(cases[0]["cbor"].as_str().unwrap())).unwrap();
     assert!(first.contains("\"name\":\"wolf-capes.jpg\""), "{first}");
+}
+
+/// L-WASM-30: own_roles_set's role ids are 0..=64 ids of 16 bytes, refused in the facade before the
+/// core is borrowed; the detail names the length and never the bytes.
+#[wasm_bindgen_test]
+fn role_ids_are_zero_to_sixty_four_ids_of_sixteen_bytes() {
+    assert_eq!(role_ids_arg(&[]), Ok(()));
+    assert_eq!(role_ids_arg(&[0x5a; 16]), Ok(()));
+    assert_eq!(role_ids_arg(&[0x5a; 1024]), Ok(()));
+    let odd = role_ids_arg(&[0x5a; 17]).unwrap_err();
+    assert_eq!(
+        odd,
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "role_ids: expected 0..=64 ids of 16 bytes, got 17 bytes".to_owned()
+        }
+    );
+    assert!(
+        !odd.detail.contains("5a"),
+        "the detail must not echo the ids"
+    );
+    assert_eq!(
+        message(client_js_error(&odd)),
+        "E_CORE_INPUT: role_ids: expected 0..=64 ids of 16 bytes, got 17 bytes"
+    );
+    assert_eq!(
+        role_ids_arg(&[0x5a; 1040]).unwrap_err().detail,
+        "role_ids: expected 0..=64 ids of 16 bytes, got 1040 bytes"
+    );
 }

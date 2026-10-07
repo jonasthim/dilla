@@ -363,7 +363,10 @@ fn a_resync_replaces_the_local_group_and_a_discarded_resync_returns_to_needs_res
         .expect("resync body");
     assert_eq!(b.group(&GROUP).map(|g| g.state), Some(1));
     assert_eq!(
-        code(b.core.send_prepare(&GROUP, "while joining", NOW + 2)),
+        code(
+            b.core
+                .send_prepare(&GROUP, &request(0, None, "while joining", &[]), NOW + 2)
+        ),
         "E_CORE_STATE"
     );
     assert_eq!(
@@ -771,14 +774,20 @@ fn one_message_per_group_is_in_flight_and_the_outbox_walks_its_states() {
                 state: 0,
                 error: String::new(),
                 created: NOW + 1,
-                body: "first".into()
+                body: "first".into(),
+                ty: 0,
+                reply_to: None,
+                attachments: vec![]
             },
             OutboxRow {
                 msg_id: second,
                 state: 0,
                 error: String::new(),
                 created: NOW + 2,
-                body: "second".into()
+                body: "second".into(),
+                ty: 0,
+                reply_to: None,
+                attachments: vec![]
             },
         ]
     );
@@ -842,17 +851,29 @@ fn send_prepare_checks_the_body_the_group_and_the_phase() {
     let mut a = ready_core(0xa1, "alice");
     a.create_and_register(&mut relay, &instance);
 
-    assert_eq!(code(a.core.send_prepare(&GROUP, "", NOW)), "E_CORE_INPUT");
     assert_eq!(
-        code(a.core.send_prepare(&GROUP, " \n\t ", NOW)),
+        code(a.core.send_prepare(&GROUP, &request(0, None, "", &[]), NOW)),
         "E_CORE_INPUT"
     );
     assert_eq!(
-        code(a.core.send_prepare(&GROUP, &"a".repeat(4001), NOW)),
+        code(
+            a.core
+                .send_prepare(&GROUP, &request(0, None, " \n\t ", &[]), NOW)
+        ),
+        "E_CORE_INPUT"
+    );
+    assert_eq!(
+        code(
+            a.core
+                .send_prepare(&GROUP, &request(0, None, &"a".repeat(4001), &[]), NOW)
+        ),
         "E_ENVELOPE_LIMIT"
     );
     assert_eq!(
-        code(a.core.send_prepare(&GROUP, &"€".repeat(1334), NOW)),
+        code(
+            a.core
+                .send_prepare(&GROUP, &request(0, None, &"€".repeat(1334), &[]), NOW)
+        ),
         "E_ENVELOPE_LIMIT",
         "the bound is 4000 UTF-8 bytes, not characters"
     );
@@ -861,7 +882,10 @@ fn send_prepare_checks_the_body_the_group_and_the_phase() {
     assert_eq!(a.outbox(&GROUP).len(), 2);
 
     assert_eq!(
-        code(a.core.send_prepare(&OTHER_GROUP, "hi", NOW)),
+        code(
+            a.core
+                .send_prepare(&OTHER_GROUP, &request(0, None, "hi", &[]), NOW)
+        ),
         "E_CORE_NOT_FOUND"
     );
     a.core
@@ -874,14 +898,17 @@ fn send_prepare_checks_the_body_the_group_and_the_phase() {
         )
         .expect("create");
     assert_eq!(
-        code(a.core.send_prepare(&OTHER_GROUP, "hi", NOW)),
+        code(
+            a.core
+                .send_prepare(&OTHER_GROUP, &request(0, None, "hi", &[]), NOW)
+        ),
         "E_CORE_STATE"
     );
 
     let mut fresh = ClientCore::open(memory()).expect("open");
     assert_eq!(fresh.groups().expect("groups"), vec![0x80]);
     assert_eq!(
-        code(fresh.send_prepare(&GROUP, "hi", NOW)),
+        code(fresh.send_prepare(&GROUP, &request(0, None, "hi", &[]), NOW)),
         "E_CORE_NO_IDENTITY"
     );
     assert_eq!(

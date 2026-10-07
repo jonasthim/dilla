@@ -98,7 +98,7 @@ describe('FakeCore group half', () => {
     const core = member();
     const apply = caught(() => core.groupApply(GROUP, new Uint8Array([0x80]), new Uint8Array([0x80]), 1n));
     expect([apply.code, apply.detail]).toEqual(['E_CORE_STATE', 'not modelled']);
-    const send = caught(() => core.sendPrepare(GROUP, 'hi', 1n));
+    const send = caught(() => core.sendPrepare(GROUP, { type: 0, replyTo: null, body: 'hi', attachments: [] }, 1n));
     expect([send.code, send.detail]).toEqual(['E_CORE_STATE', 'not modelled']);
     const others: [string, () => unknown][] = [
       ['groups', () => core.groups()],
@@ -126,6 +126,11 @@ describe('FakeCore group half', () => {
       ['sendDiscard', () => core.sendDiscard(GROUP)],
       ['outbox', () => core.outbox(GROUP)],
       ['timeline', () => core.timeline(GROUP, 0n, 10)],
+      ['pins', () => core.pins(GROUP)],
+      ['attachmentGet', () => core.attachmentGet(GROUP, 1n, 0)],
+      ['purges', () => core.purges()],
+      ['purgeDone', () => core.purgeDone(GROUP, 1n)],
+      ['ownRolesSet', () => core.ownRolesSet(COMMUNITY, [])],
     ];
     for (const [, fn] of others) expect(caught(fn)).toMatchObject({ code: 'E_CORE_STATE', detail: 'not modelled' });
     expect(core.calls).toEqual(['groupApply', 'sendPrepare', ...others.map(([name]) => name)]);
