@@ -157,8 +157,7 @@ describe('App sign-in', () => {
     const move = (over: Partial<ReturnType<typeof account>>) => fake.set('account', { ...fake.get('account')!, ...over });
     fake.handler = c => {
       if (c.m === 'signInBegin') move({ phase: 'signin-login', signIn: { username: null, needsTotp: false } });
-      if (c.m === 'signInLogin') move({ phase: 'signin-key', signIn: { username: 'ada', needsTotp: false } });
-      if (c.m === 'signInKey') move({ phase: 'ready', user: { id: 'bb'.repeat(16), username: 'ada' }, signIn: null });
+      if (c.m === 'signInLogin' || c.m === 'signInKey') move({ phase: 'ready', user: { id: 'bb'.repeat(16), username: 'ada' }, signIn: null });
       if (c.m === 'signInCancel') move({ phase: 'needs-signup', signIn: null });
       return Promise.resolve(c.m === 'signInLogin' ? { needsTotp: false } : null);
     };
@@ -174,13 +173,15 @@ describe('App sign-in', () => {
     const fake = new FakeClient();
     startAt(fake);
     await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
+    // The recovery key first, then the login, which enrols this browser (coordinator ruling on concern 3).
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Your recovery key');
+    await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
+    await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Sign in to dilla.test');
     await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
     await user.type(screen.getByLabelText('Password'), 'correct horse');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
-    await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
-    await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
-    await user.click(screen.getByRole('button', { name: 'Add this browser' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('You’re in');
     window.history.replaceState(null, '', '/welcome');
     const depth = window.history.length;

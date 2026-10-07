@@ -172,7 +172,9 @@ function invalid(command: Record<string, unknown>): string | null {
     if (typeof command.password !== 'string' || command.password === '') return 'password is empty';
   }
   if (m === 'signInTotp' && (typeof command.code !== 'string' || !TOTP.test(command.code))) return 'code is not six digits';
-  if ((m === 'signInKey' || m === 'signOutRevoke') && blank(command.recoveryKey)) return 'the recovery key is empty';
+  if ((m === 'signInKey' || m === 'signInLogin' || m === 'signInTotp' || m === 'signOutRevoke') && blank(command.recoveryKey)) {
+    return 'the recovery key is empty';
+  }
   if (m === 'revokeDevice' && command.recoveryKey !== null && typeof command.recoveryKey !== 'string') {
     return 'the recovery key is not a string or null';
   }
@@ -329,8 +331,8 @@ export class Controller {
       case 'retrySend': return this.retrySend(command.msgId);
       case 'discardSend': return this.discardSend(command.msgId);
       case 'signInBegin': return this.signInBegin();
-      case 'signInLogin': return this.step(() => this.signInLogin(command.username, command.password));
-      case 'signInTotp': return this.step(() => this.signInTotp(command.code));
+      case 'signInLogin': return this.step(() => this.signInLogin(command.username, command.password, command.recoveryKey));
+      case 'signInTotp': return this.step(() => this.signInTotp(command.code, command.recoveryKey));
       case 'signInKey': return this.step(() => this.signInKey(command.recoveryKey));
       case 'signInCancel': return this.signInCancel();
       case 'refreshDevices': return this.refreshDevices();
@@ -769,10 +771,25 @@ export class Controller {
     return Promise.resolve(null);
   }
 
-  /** The password is passed to Enrol.login and held in no field (L-TS-21). */
-  private async signInLogin(rawUsername: string, password: string): Promise<{ needsTotp: boolean }> {
+  /** The key's form, in the core, before anything that needs it; a refusal returns to `phase` with the error. */
+  private checkKey(recoveryKey: string, phase: BootPhase): void {
+    try {
+      this.requireCore().recoveryKeyCheck(recoveryKey);
+    } catch (e) {
+      this.setAccount({ phase, error: errorOf(e) });
+      throw e;
+    }
+  }
+
+  /** The password is passed to Enrol.login and held in no field (L-TS-21). The page held the recovery key from the
+   *  first step and sends it here: its form is checked before the login is sent (a mistyped key costs no login), and
+   *  with no second factor owed the enrolment runs at once, so the assertion is spent seconds after it was minted
+   *  (REGISTRATION-DEVICES-02, coordinator ruling on its concern 3). With a second factor the worker keeps no key:
+   *  the page sends it again with the code. */
+  private async signInLogin(rawUsername: string, password: string, recoveryKey: string): Promise<{ needsTotp: boolean }> {
     const enrol = this.requireEnrol();
     const username = rawUsername.trim();
+    this.checkKey(recoveryKey, 'signin-login');
     let needsTotp: boolean;
     try {
       ({ needsTotp } = await enrol.login(username, password));
@@ -784,23 +801,23 @@ export class Controller {
       this.setAccount({ phase: 'signin-totp', signIn: { username, needsTotp: true }, error: null });
       return { needsTotp: true };
     }
-    // REGISTRATION-DEVICES-02: nothing is registered before the key is in hand; the assertion waits in Enrol.
-    this.setAccount({ phase: 'signin-key', signIn: { username, needsTotp: false }, error: null });
+    this.setAccount({ signIn: { username, needsTotp: false }, error: null });
+    await this.enrolWithKey(recoveryKey);
     return { needsTotp: false };
   }
 
   /** A refused code spends the assertion (head ruling 39): the person logs in again, the username kept. */
-  private async signInTotp(code: string): Promise<null> {
+  private async signInTotp(code: string, recoveryKey: string): Promise<null> {
     const enrol = this.requireEnrol();
     const username = this.accountState.signIn?.username ?? null;
+    this.checkKey(recoveryKey, 'signin-totp');
     try {
       await enrol.totp(code);
     } catch (e) {
       this.setAccount({ phase: 'signin-login', signIn: { username, needsTotp: false }, error: errorOf(e) });
       throw e;
     }
-    // REGISTRATION-DEVICES-02: the registration waits for the key (signInKey).
-    this.setAccount({ phase: 'signin-key', error: null });
+    await this.enrolWithKey(recoveryKey);
     return null;
   }
 
@@ -843,19 +860,19 @@ export class Controller {
     return new Error('E_SIGNIN_EVICTED');
   }
 
-  /** Requirement 8 as REGISTRATION-DEVICES-02 amends it: the key's form first (nothing is registered for a
-   *  mistyped key), then the registration, the fetch, the enrolment and the list PUT back to back, so the new row
-   *  is unlisted for a few round trips, not for the time a person takes to find the key. The recovery key is
+  /** Requirement 8 as REGISTRATION-DEVICES-02 amends it, for an enrolment already registered (a wrong key, a reload
+   *  mid-ceremony): the key's form, then the fetch, the enrolment and the list PUT back to back. The recovery key is
    *  passed to the core and to Enrol.complete and held in no field, slice, ret or error. */
   private async signInKey(recoveryKey: string): Promise<null> {
+    this.checkKey(recoveryKey, 'signin-key');
+    await this.enrolWithKey(recoveryKey);
+    return null;
+  }
+
+  /** The registration (when the enrolment holds none yet), the fetch, the enrolment and the list PUT, back to back. */
+  private async enrolWithKey(recoveryKey: string): Promise<void> {
     const enrol = this.requireEnrol();
     const core = this.requireCore();
-    try {
-      core.recoveryKeyCheck(recoveryKey);
-    } catch (e) {
-      this.setAccount({ phase: 'signin-key', error: errorOf(e) });
-      throw e;
-    }
     this.setAccount({ phase: 'enrolling', error: null });
     // Phase 0, or an enrolment whose registration was refused (its record and device id are kept and reused).
     const before = core.identity();
@@ -903,7 +920,6 @@ export class Controller {
       if (!this.revoked()) this.setAccount({ phase: 'error', error: errorOf(e) });
       throw e;
     }
-    return null;
   }
 
   /** Requirement 9; Enrol.reset also drops a held assertion, so it runs in every sign-in phase (it resets

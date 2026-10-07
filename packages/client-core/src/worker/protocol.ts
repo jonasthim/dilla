@@ -16,9 +16,11 @@ export type Command =
   | { m: 'retrySend'; msgId: string }
   | { m: 'discardSend'; msgId: string }
   | { m: 'signInBegin' }                                         // needs-signup → signin-login
-  | { m: 'signInLogin'; username: string; password: string }     // signin-login → signin-totp | signin-key
-  | { m: 'signInTotp'; code: string }                            // signin-totp → signin-key
-  | { m: 'signInKey'; recoveryKey: string }                      // signin-key → ready
+  // The key is entered first and travels with the command that registers (coordinator ruling on concern 3): the login
+  // is sent only once the key is held, and its assertion is spent seconds later.
+  | { m: 'signInLogin'; username: string; password: string; recoveryKey: string }   // signin-login → signin-totp | ready
+  | { m: 'signInTotp'; code: string; recoveryKey: string }      // signin-totp → ready
+  | { m: 'signInKey'; recoveryKey: string }                      // signin-key (a registered enrolment) → ready
   | { m: 'signInCancel' }                                        // signin-* → needs-signup
   | { m: 'refreshDevices' }                                      // ready: GET /v1/devices + own list → slice devices
   | { m: 'revokeDevice'; deviceId: string; recoveryKey: string | null } // ready: another device; the key is required for a listed device, ignored (null) for an unlisted live row

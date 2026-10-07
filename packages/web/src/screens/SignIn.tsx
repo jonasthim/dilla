@@ -58,7 +58,11 @@ function signInRefusal(e: UiError, command: SignInCommand, instance: string): Re
 }
 
 /** The four-step sign-in ceremony of L-COPY-02. Rendered by App for the phases signin-login, signin-totp,
- *  signin-key and enrolling, and kept mounted after the phase turns ready until its done step calls onFinish. */
+ *  signin-key and enrolling, and kept mounted after the phase turns ready until its done step calls onFinish.
+ *  The recovery key comes first (coordinator ruling on REGISTRATION-DEVICES-02's concern 3): the page holds it while
+ *  the person logs in and sends it with the login (and with the code), so the instance sees the login only once the
+ *  key is in hand and the registration follows it within seconds. Phase signin-key is a registered enrolment that
+ *  still needs the key (a wrong key, a reload mid-enrolment): its step sends signInKey. */
 export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const client = useCore();
   const account = useSlice('account');
@@ -67,6 +71,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [key, setKey] = useState('');
+  // The key step passed its count and the key waits in page memory for the login; never stored.
+  const [keyHeld, setKeyHeld] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<Field, StringKey>>>({});
   const [banner, setBanner] = useState<BannerState | null>(null);
   // The no-backup view's banner after a refusal of this mount; null otherwise.
@@ -85,8 +91,9 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const shown: Shown = phase === 'ready' ? 'done'
     : noBackupKey !== null ? 'noBackup'
       : phase === 'signin-totp' ? 'totp'
-        : phase === 'signin-key' || enrolling ? 'key'
-          : 'login';
+        : phase === 'signin-key' ? 'key'
+          : enrolling ? (busy === 'login' ? 'login' : busy === 'totp' ? 'totp' : 'key')
+            : keyHeld ? 'login' : 'key';
 
   // A cancel and a fresh ceremony start clean.
   useEffect(() => { if (phase !== 'signin-key') setNoBackup(null); }, [phase]);
@@ -124,6 +131,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     const view = signInRefusal(e, command, name);
     if (view.noBackup && view.banner) setNoBackup(view.banner.key);
     if (view.field && view.fieldKey) {
+      // A key refused by its form or by the account goes back to the key step, its text kept.
+      if (view.field === 'key') setKeyHeld(false);
       setErrors({ [view.field]: view.fieldKey });
       requestFocus(view.field);
     }
@@ -133,7 +142,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     }
     setBanner(view.noBackup ? null : view.banner ?? null);
   };
-  const run = (command: SignInCommand, call: Promise<unknown>, done: () => void) => {
+  const run = (command: SignInCommand, call: Promise<unknown>, done: (value: unknown) => void) => {
     void call
       .then(done, (e: unknown) => { apply(errorOf(e), command); })
       .finally(() => setBusy(null));
@@ -145,19 +154,28 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     if (password === '') next.password = 'signin.error.required';
     if (showErrors(next)) return;
     setBusy('login');
-    run('login', client.call({ m: 'signInLogin', username: username.trim().toLowerCase(), password }), () => setPassword(''));
+    run('login', client.call({ m: 'signInLogin', username: username.trim().toLowerCase(), password, recoveryKey: key }), (value) => {
+      setPassword('');
+      // With a second factor owed, the key goes again with the code; otherwise the browser is enrolled.
+      if (!(typeof value === 'object' && value !== null && (value as { needsTotp?: unknown }).needsTotp === true)) setKey('');
+    });
   };
   const submitTotp = () => {
     // A11Y-DESIGN-06: an authenticator may copy the code grouped ("123 456"); the spaces are not part of it.
     const trimmed = code.replace(/\s/g, '');
     if (showErrors(trimmed === '' ? { code: 'signin.error.required' } : {})) return;
     setBusy('totp');
-    run('totp', client.call({ m: 'signInTotp', code: trimmed }), () => {});
+    run('totp', client.call({ m: 'signInTotp', code: trimmed, recoveryKey: key }), () => setKey(''));
   };
   const submitKey = () => {
     // The page counts only; Rust normalises and judges the raw text (L-CORE-26 step 1).
     if (normaliseRecoveryKey(key).length !== KEY_LENGTH) {
       showErrors({ key: 'signin.error.keyLength' });
+      return;
+    }
+    // Before the login the key only waits here; the login sends it. A registered enrolment sends it at once.
+    if (phase === 'signin-login') {
+      setKeyHeld(true);
       return;
     }
     setBusy('key');
@@ -177,6 +195,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   };
   const cancel = () => {
     if (blocked) return;
+    setKeyHeld(false);
+    setKey('');
     client.call({ m: 'signInCancel' }).catch((e: unknown) => { apply(errorOf(e), 'login'); });
   };
 
@@ -212,18 +232,19 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     );
   } else if (shown === 'noBackup' && noBackupKey !== null) {
     content = (
-      <OnboardingFrame title={t('signin.key.title')} stepLabel={stepLabel(3)} footer={cancelButton('signin.cancel')}>
+      <OnboardingFrame title={t('signin.key.title')} stepLabel={stepLabel(1)} footer={cancelButton('signin.cancel')}>
         <Banner tone="danger">{t(noBackupKey, { instance: name })}</Banner>
       </OnboardingFrame>
     );
   } else if (shown === 'totp') {
-    content = form(t('signin.totp.title'), 2, <>
+    content = form(t('signin.totp.title'), 3, <>
       {cancelButton('signin.cancel')}
       <Button variant="accent" type="submit" {...blockedProps}>{t(busy === 'totp' ? 'signin.login.working' : 'signin.login.submit')}</Button>
     </>, <>
       <p>{t('signin.totp.body')}</p>
       <TextField id={FIELD_ID.code} label={t('signin.totp.code')} value={code} onChange={change('code', setCode)}
         error={errorText('code')} required inputMode="numeric" autoComplete="one-time-code" spellCheck={false} />
+      <p role="status">{enrolling ? t('signin.key.working') : null}</p>
     </>);
   } else if (shown === 'key') {
     const n = normaliseRecoveryKey(key).length;
@@ -231,10 +252,13 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     const working = busy === 'key' || enrolling;
     // The text cannot change under a running enrolment.
     const onKey = change('key', setKey);
-    content = form(t('signin.key.title'), 3, <>
-      {cancelButton('signin.cancel')}
+    // Step 1 before the login: its forward button continues to the login, and its way out is a new account. On a
+    // registered enrolment the button adds this browser at once and the way out is Cancel.
+    const first = phase === 'signin-login';
+    content = form(t('signin.key.title'), 1, <>
+      {cancelButton(first ? 'signin.login.createInstead' : 'signin.cancel')}
       <Button variant="accent" type="submit" {...(short || blocked ? { 'aria-disabled': true } : {})}
-        aria-describedby={short ? LENGTH_ID : undefined}>{t('signin.key.submit')}</Button>
+        aria-describedby={short ? LENGTH_ID : undefined}>{t(first ? 'signin.login.submit' : 'signin.key.submit')}</Button>
     </>, <>
       <p>{t('signin.key.body')}</p>
       <RecoveryKeyField id={FIELD_ID.key} label={t('signin.key.label')} value={key}
@@ -244,8 +268,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       <p role="status">{working ? t('signin.key.working') : null}</p>
     </>);
   } else {
-    content = form(t('signin.login.title', { instance: name }), 1, <>
-      {cancelButton('signin.login.createInstead')}
+    content = form(t('signin.login.title', { instance: name }), 2, <>
+      {cancelButton('signin.cancel')}
       <Button variant="accent" type="submit" {...blockedProps}>{t(busy === 'login' ? 'signin.login.working' : 'signin.login.submit')}</Button>
     </>, <>
       <p>{t('signin.login.body', { instance: name })}</p>
@@ -254,6 +278,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
         required autoComplete="username" spellCheck={false} maxLength={32} />
       <TextField id={FIELD_ID.password} type="password" label={t('signin.login.password')} value={password}
         onChange={change('password', setPassword)} error={errorText('password')} required autoComplete="current-password" />
+      <p role="status">{enrolling ? t('signin.key.working') : null}</p>
     </>);
   }
   return <div ref={rootRef}>{content}</div>;

@@ -228,13 +228,13 @@ test('a second browser joins the account by password and recovery key, badges an
       await expect.poll(() => phaseOf(b), { timeout: WAIT }).toBe('needs-signup');
       await ok(b, { m: 'signInBegin' });
       expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-login', signIn: { username: null, needsTotp: false } });
-      expect(await ok(b, { m: 'signInLogin', username, password })).toEqual({ needsTotp: false });
-      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-key', signIn: { username, needsTotp: false }, error: null });
+      // The key travels with the login (coordinator ruling on REGISTRATION-DEVICES-02's concern 3): a well-formed key
+      // of another account registers, then the root refuses it, and the registered enrolment waits at signin-key.
       const wrong = [...recoveryKey];
       const first = wrong[0]!;
       wrong[0] = (first[0] === 'A' ? 'B' : 'A') + first.slice(1);
-      expect(await call(b, { m: 'signInKey', recoveryKey: wrong.join(' ') })).toMatchObject({ ok: false, code: 'E_RECOVERY_KEY' });
-      expect(await phaseOf(b)).toBe('signin-key');
+      expect(await call(b, { m: 'signInLogin', username, password, recoveryKey: wrong.join(' ') })).toMatchObject({ ok: false, code: 'E_RECOVERY_KEY' });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-key', signIn: { username, needsTotp: false } });
       await ok(b, { m: 'signInKey', recoveryKey: recoveryKey.join('-').toLowerCase() });
       const ready = (await slice<AccountState>(b, 'account'))!;
       expect(ready).toMatchObject({ phase: 'ready', user: { id: userId, username }, signIn: null, error: null });

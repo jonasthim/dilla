@@ -92,31 +92,31 @@ test('a wrong recovery key is refused in place, and the right one typed in lower
   await expectAccessible(b, 'onboarding: the sign-in entry');
   await entry.click();
 
-  await expectHeading(b, SIGNIN.loginTitle, { instance: instanceName });
-  await expect(b.getByText(copy(SIGNIN.step, { n: 1 }), { exact: true })).toBeVisible();
-  await expectAccessible(b, 'sign-in: login');
-  await b.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
-  await b.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
-  await b.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
-
-  // No second factor on this account: step 1 goes to step 3, and the step keeps its number.
+  // The recovery key comes first, step 1; the page holds it until the login (coordinator ruling, concern 3).
   await expectHeading(b, SIGNIN.keyTitle);
-  await expect(b.getByText(copy(SIGNIN.step, { n: 3 }), { exact: true })).toBeVisible();
-
+  await expect(b.getByText(copy(SIGNIN.step, { n: 1 }), { exact: true })).toBeVisible();
+  const forward = b.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true });
   const field = keyField(b);
   const full = account.recoveryKey.join('');
   await field.fill(full.slice(0, 51));
   await expect(b.getByText(copy(SIGNIN.keyHint, { n: 51 }), { exact: true })).toBeVisible();
-  await expect(keySubmit(b)).toHaveAttribute('aria-disabled', 'true');
-  await expect(keySubmit(b)).toHaveAccessibleDescription(copy(SIGNIN.keyLength));
+  await expect(forward).toHaveAttribute('aria-disabled', 'true');
+  await expect(forward).toHaveAccessibleDescription(copy(SIGNIN.keyLength));
   await expectAccessible(b, 'sign-in: key, too short');
 
-  // Well formed, 52 characters of the alphabet, and not this account's key.
+  // Well formed, 52 characters of the alphabet, and not this account's key: only the account's root can tell.
   const wrong = wrongKey(account);
   await field.fill(wrong);
   await expect(b.getByText(copy(SIGNIN.keyHint, { n: 52 }), { exact: true })).toBeVisible();
-  await expect(keySubmit(b)).not.toHaveAttribute('aria-disabled', 'true');
-  await keySubmit(b).click();
+  await expect(forward).not.toHaveAttribute('aria-disabled', 'true');
+  await forward.click();
+
+  await expectHeading(b, SIGNIN.loginTitle, { instance: instanceName });
+  await expect(b.getByText(copy(SIGNIN.step, { n: 2 }), { exact: true })).toBeVisible();
+  await expectAccessible(b, 'sign-in: login');
+  await b.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
+  await b.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
+  await forward.click();
   await expect(b.getByRole('alert').filter({ hasText: copy(SIGNIN.wrongKey) })).toBeVisible({ timeout: WAIT });
   await expect(field).toBeFocused();
   await expect(field).toHaveValue(wrong);
