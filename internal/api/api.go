@@ -108,6 +108,12 @@ type Deps struct {
 	// the attachment routes (Blobs.WithUploadMeter). Register builds one from Config when it is nil,
 	// so the route is never unmetered.
 	UploadMeter *UploadMeter
+
+	// StateMeter is the per-DEVICE daily byte budget PUT /v1/backups/1/0 spends (the state object;
+	// branch review BACKUPS-RECOVERY-01 as amended): StateBytesPerDevicePerDay, keyed by the
+	// session's device, so a thief exhausting its own budget or the user's upload meter cannot
+	// block the owner's device. Register builds it when it is nil.
+	StateMeter *UploadMeter
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -143,6 +149,9 @@ const maxCBORBody = 64 << 10
 func Register(m *server.Mux, d Deps) {
 	if d.UploadMeter == nil && d.Config != nil {
 		d.UploadMeter = NewUploadMeter(d.Clock, d.Config.Blobs)
+	}
+	if d.StateMeter == nil {
+		d.StateMeter = NewStateMeter(d.Clock, StateBytesPerDevicePerDay)
 	}
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)

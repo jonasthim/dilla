@@ -47,6 +47,18 @@ func NewUploadMeter(clk clock.Clock, cfg config.Blobs) *UploadMeter {
 	return newBlobMeter(clk, cfg.UploadsPerMinute, cfg.UploadBytesPerDay)
 }
 
+// StateBytesPerDevicePerDay is the daily byte budget of one device's state-object PUTs: 64 state
+// objects at the 1,048,640-byte body cap, far more than honest re-seals need, and a bound on the
+// bytes one device can make the instance read and write through the route.
+const StateBytesPerDevicePerDay = 64 << 20
+
+// NewStateMeter is the per-device state-object meter: a byte bucket of bytesPerDay that refills
+// continuously, keyed by device id, with no request bucket (the route's device write bucket meters
+// requests).
+func NewStateMeter(clk clock.Clock, bytesPerDay int64) *UploadMeter {
+	return newBlobMeter(clk, 0, bytesPerDay)
+}
+
 func newBlobMeter(clk clock.Clock, perMinute int, perDay int64) *UploadMeter {
 	return &UploadMeter{clk: clk, perMinute: float64(perMinute), perDay: float64(perDay),
 		users: map[id.ID]*uploadBuckets{}}

@@ -605,8 +605,9 @@ object under `SHA-256(object)` in its blob store and cannot open it.
   object stays. A stolen enrolled session can upload a junk root before the owner's first upload;
   the owner's first upload then gets `409`, fetches the stored root, compares it, and raises
   `E_ROOT_MISMATCH` with an alert. The server's `409` detail reveals nothing about stored bytes.
-- **The state object is replaced.** Each `PUT` of kind `1` replaces it; the replaced bytes are
-  unlinked once `blobs.gc_grace` has passed, unless they are stored again first.
+- **The state object is replaced.** Each `PUT` of kind `1` replaces it; the replaced bytes, when
+  nothing else names them, are deleted at once (their blob row in the replacing transaction, their
+  file right after it), never kept for `blobs.gc_grace`.
 - **Storage.** Backup objects count against `blobs.store_max_bytes` (new bytes that would pass it
   are `507 E_STORAGE_FULL` and nothing is stored) and toward the uploader's
   `blobs.quota_bytes_per_user` together with their attachments, each distinct blob once (§ Blobs);
@@ -623,11 +624,13 @@ object under `SHA-256(object)` in its blob store and cannot open it.
   root (kind `0`) also spends the user's blob upload budget exactly as an attachment upload does
   (§ Blobs, "Upload rate"): one upload of `blobs.uploads_per_minute` and the bytes it reads of
   `blobs.upload_bytes_per_day`, `429 E_RATE_LIMITED` with its `retry_after_ms` over either, before
-  the body is read. A `PUT` of the state object (kind `1`) spends only the device session's
-  `write` bucket: on the user's shared budget, a stolen session of the same user could keep it
-  empty and so refuse the owner the state `PUT` that revoking the thief's device starts with. A
-  replaced state object stays on disk for `blobs.gc_grace`, so the state `PUT`s of one device are
-  bounded by its `write` bucket and the 1,048,640-byte body cap.
+  the body is read. A `PUT` of the state object (kind `1`) does not touch that shared budget: on
+  it, a stolen session of the same user could keep it empty and so refuse the owner the state
+  `PUT` that revoking the thief's device starts with. It spends the device session's `write`
+  bucket and a per-device budget of 64 MiB a day (67,108,864 bytes, refilling continuously, every
+  byte read counted), `429 E_RATE_LIMITED` with its `retry_after_ms` past it, before the body is
+  read; another device of the same user keeps its own. With the replaced object deleted at once,
+  one device's state `PUT`s hold at most one state object on disk.
 
 ### Voice
 

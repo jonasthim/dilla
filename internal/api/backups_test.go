@@ -190,14 +190,16 @@ func TestTheRootObjectIsWrittenOnce(t *testing.T) {
 	wantStored(t, "another user's first root", putObject(t, h, "0", other.enrolled, c), http.StatusCreated, c)
 }
 
-// L-HTTP-50 kind 1 and architect ruling 2: the state object is replaced by every PUT; the bytes
-// it replaced are marked unreferenced; bytes stored again leave the grace window.
+// L-HTTP-50 kind 1 and architect ruling 2: the state object is replaced by every PUT. Changed by
+// BACKUPS-RECOVERY-01 as amended (it asserted the replaced bytes were marked unreferenced and kept
+// for blobs.gc_grace): the bytes it replaced are deleted at once, row and file, when nothing else
+// names them, so replacements cannot pile up on disk; bytes stored again are simply stored anew.
 // Attacker (L-HTTP-50, ruling 28): kind 1 is replaceable by any enrolled session of the user, a
 // stolen one included. It cannot brick recovery: the recovering device treats a state object it
 // cannot open as pins = [] and rewrites it with its own re-seal (L-CORE-26 step 3, task 3), so the
 // worst a stolen session does is lose pins — none exist on browsers in web-2a. It cannot replace
 // the root (409) and gains nothing from reading either object (AEAD under K_header and K_backup).
-func TestTheStateObjectIsReplacedAndTheOldBytesMarked(t *testing.T) {
+func TestTheStateObjectIsReplacedAndTheOldBytesDeleted(t *testing.T) {
 	h, d := newBackupAPI(t, nil)
 	s := backupSessions(t, d)
 	ctx := t.Context()
@@ -210,28 +212,36 @@ func TestTheStateObjectIsReplacedAndTheOldBytesMarked(t *testing.T) {
 		t.Fatalf("s1 after a repeat = %+v, %v; want it not marked", row, err)
 	}
 
-	clk.Advance(time.Minute)
-	markedAt := clk.Now().Unix()
-	wantStored(t, "PUT of a second state", putObject(t, h, "1", s.enrolled, s2), http.StatusOK, s2)
-	if row, err := d.Repo.GetBlob(ctx, objectID(s1)); err != nil || row.UnrefSince == nil || *row.UnrefSince != markedAt {
-		t.Fatalf("the replaced state's blobs row = %+v, %v; want it marked unreferenced at %d", row, err, markedAt)
+	gone := func(what string, object []byte) {
+		t.Helper()
+		if _, err := d.Repo.GetBlob(ctx, objectID(object)); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("%s: blobs row err %v, want ErrNotFound", what, err)
+		}
+		if _, err := d.Blobs.Stat(objectID(object)); !errors.Is(err, blob.ErrNotFound) {
+			t.Fatalf("%s: file err %v, want blob.ErrNotFound", what, err)
+		}
 	}
+	clk.Advance(time.Minute)
+	replacedAt := clk.Now().Unix()
+	wantStored(t, "PUT of a second state", putObject(t, h, "1", s.enrolled, s2), http.StatusOK, s2)
+	gone("the replaced state", s1)
 	if row, err := d.Repo.GetBlob(ctx, objectID(s2)); err != nil || row.UnrefSince != nil {
 		t.Fatalf("the new state's blobs row = %+v, %v; want it not marked", row, err)
 	}
 	rec := backupReq(t, h, http.MethodGet, "/v1/backups/1/0", s.enrolled, nil)
-	if out := cborArray(t, rec); rec.Code != http.StatusOK || !reflect.DeepEqual(out, []any{s2, uint64(markedAt)}) {
-		t.Fatalf("GET state = %d %v, want the second state stored at %d", rec.Code, out, markedAt)
+	if out := cborArray(t, rec); rec.Code != http.StatusOK || !reflect.DeepEqual(out, []any{s2, uint64(replacedAt)}) {
+		t.Fatalf("GET state = %d %v, want the second state stored at %d", rec.Code, out, replacedAt)
 	}
 
 	clk.Advance(time.Hour)
 	wantStored(t, "PUT of the first state once more", putObject(t, h, "1", s.enrolled, s1), http.StatusOK, s1)
 	if row, err := d.Repo.GetBlob(ctx, objectID(s1)); err != nil || row.UnrefSince != nil {
-		t.Fatalf("s1 stored again = %+v, %v; want the mark cleared", row, err)
+		t.Fatalf("s1 stored again = %+v, %v; want it stored and not marked", row, err)
 	}
-	if row, err := d.Repo.GetBlob(ctx, objectID(s2)); err != nil || row.UnrefSince == nil || *row.UnrefSince != clk.Now().Unix() {
-		t.Fatalf("s2 replaced = %+v, %v; want it marked now", row, err)
+	if _, err := d.Blobs.Stat(objectID(s1)); err != nil {
+		t.Fatalf("s1 stored again: file %v", err)
 	}
+	gone("s2 replaced", s2)
 	if rows, err := d.Repo.ListBackups(ctx, s.user.ID, 1); err != nil || len(rows) != 1 || !bytes.Equal(rows[0].BlobID, objectID(s1)) {
 		t.Fatalf("state rows = %+v, %v; want one row naming s1", rows, err)
 	}

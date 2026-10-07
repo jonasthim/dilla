@@ -90,19 +90,22 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 	// object (kind 1) does not: it spends only the device session's write bucket the route mounts
 	// (branch review BACKUPS-RECOVERY-01). On the user's shared meter a stolen session of the same
 	// user kept the bucket empty at its own device rate, and the owner's state PUT, which revoking
-	// another device starts with, answered 429 for as long as the thief kept at it.
-	meter := kind == 0
-	var held int64
-	if meter {
-		reserve := limit
-		if r.ContentLength >= 0 && r.ContentLength < reserve {
-			reserve = r.ContentLength
-		}
-		held, err = d.UploadMeter.begin(sess.UserID, reserve)
-		if err != nil {
-			server.WriteError(w, err)
-			return
-		}
+	// another device starts with, answered 429 for as long as the thief kept at it. Instead it
+	// spends the device's own daily byte budget (StateMeter, keyed by the session's device), which
+	// with the immediate deletion of the replaced object below bounds what one device can make the
+	// instance read and write through the route.
+	meter, meterKey := d.UploadMeter, sess.UserID
+	if kind == 1 {
+		meter, meterKey = d.StateMeter, sess.DeviceID
+	}
+	reserve := limit
+	if r.ContentLength >= 0 && r.ContentLength < reserve {
+		reserve = r.ContentLength
+	}
+	held, err := meter.begin(meterKey, reserve)
+	if err != nil {
+		server.WriteError(w, err)
+		return
 	}
 	counted := &countingReader{r: r.Body}
 	r.Body = struct {
@@ -111,9 +114,7 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 	}{counted, r.Body}
 	var raw cbor.RawMessage
 	err = server.DecodeBody(w, r, limit, &raw)
-	if meter {
-		d.UploadMeter.settle(sess.UserID, held, counted.n)
-	}
+	meter.settle(meterKey, held, counted.n)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -158,7 +159,9 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	now := d.Clock.Now().Unix()
 	status := http.StatusCreated
+	var replaced []byte // the replaced state object's bytes, deleted from the table, to unlink
 	err = d.Repo.Tx(ctx, func(tx store.Repository) error {
+		replaced = nil
 		if err := tx.PutBlob(ctx, store.BlobRow{
 			BlobID: blobID, Size: uint64(n), //nolint:gosec // G115: n is a byte count returned by blob.Store.Put, never negative
 			StorageRef: blob.StorageRef(d.Config.Blobs.Backend, blobID), Created: now,
@@ -216,12 +219,24 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		}
 		if prev.BlobID != nil && !bytes.Equal(prev.BlobID, blobID) {
 			refers, err := tx.BackupRefersToBlob(ctx, prev.BlobID)
+			if err != nil || refers {
+				return err
+			}
+			refs, err := tx.CountBlobRefs(ctx, prev.BlobID)
 			if err != nil {
 				return err
 			}
-			if !refers {
+			if refs > 0 {
 				return tx.MarkBlobUnreferenced(ctx, prev.BlobID, now)
 			}
+			// Nothing else names the replaced bytes: their row goes in this transaction and their
+			// file right after the commit, never through blobs.gc_grace (branch review
+			// BACKUPS-RECOVERY-01 as amended). Kept for the grace, every distinct replacement at
+			// the device's write rate stayed on disk a day, uncounted by any quota.
+			if err := tx.DeleteBlob(ctx, prev.BlobID); err != nil && !errors.Is(err, store.ErrNotFound) {
+				return err
+			}
+			replaced = prev.BlobID
 		}
 		return nil
 	})
@@ -258,7 +273,23 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
+	if replaced != nil {
+		d.unlinkReplaced(ctx, replaced)
+	}
 	d.write(w, r, status, []any{blobID, uint64(n)}) //nolint:gosec // G115: n is a nonnegative byte count
+}
+
+// unlinkReplaced removes the file of a replaced state object whose row the committed transaction
+// deleted. A concurrent PUT of the same bytes may have recorded them again since; their row is
+// then back and the file stays.
+func (d Deps) unlinkReplaced(ctx context.Context, blobID []byte) {
+	ctx = context.WithoutCancel(ctx)
+	if _, err := d.Repo.GetBlob(ctx, blobID); !errors.Is(err, store.ErrNotFound) {
+		return
+	}
+	if err := d.Blobs.Delete(blobID); err != nil && !errors.Is(err, blob.ErrNotFound) {
+		d.Log.ErrorContext(ctx, "unlink a replaced state object", "err", err)
+	}
 }
 
 // withinQuota is the blob route's exact quota check, run inside the transaction that records the

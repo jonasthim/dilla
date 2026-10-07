@@ -3,8 +3,8 @@ package api_test
 // backup_meter_test.go pins the security review's F3 for the root object and the branch review's
 // BACKUPS-RECOVERY-01 for the state object. PUT /v1/backups/0/0 (the root, written once) spends the
 // blob upload meter (blobs.uploads_per_minute and blobs.upload_bytes_per_day) exactly as a blob PUT
-// does. PUT /v1/backups/1/0 (the state object) does not: it spends only the device session's own
-// write bucket. Before the branch review it also drew on the user's shared upload meter, so a stolen
+// does. PUT /v1/backups/1/0 (the state object) does not: it spends the device session's own write
+// bucket and the device's own daily byte budget (StateMeter). Before the branch review it also drew on the user's shared upload meter, so a stolen
 // session of the same user, uploading tiny objects at its own device rate, kept the shared bucket
 // empty and the owner's state PUT, which revoking another device starts with, answered 429 for as
 // long as the thief kept at it.
@@ -12,12 +12,14 @@ package api_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/blob"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
@@ -121,4 +123,68 @@ func TestAThiefExhaustingTheUploadMeterDoesNotBlockTheOwnersStatePut(t *testing.
 	junk := sealedObject(t, 16, 0x54)
 	wantStored(t, "the thief's state PUT", putObject(t, h, "1", thief.enrolled, junk), http.StatusOK, junk)
 	wantStored(t, "the owner's state PUT after the thief's", putObject(t, h, "1", owner, again), http.StatusOK, again)
+}
+
+// BACKUPS-RECOVERY-01 as amended (the disk half). Attacker statement: off the shared upload meter
+// and with a delta quota, each distinct state PUT used to leave its predecessor on disk for
+// blobs.gc_grace, so one enrolled session at its 2/s write bucket stored about 7 GiB an hour that
+// no quota counted (security review F3 again). A replacement now deletes the bytes it replaced at
+// once: a thousand replacements leave exactly one state blob, in the blob table and on disk.
+func TestAThousandStateReplacementsLeaveOneStateBlob(t *testing.T) {
+	h, d := newBackupAPI(t, func(c *config.Config) { c.Limits.Rate.WriteBurst = 2000 })
+	s := backupSessions(t, d)
+	ctx := t.Context()
+	objects := make([][]byte, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		nonce := make([]byte, 12)
+		nonce[0], nonce[1] = byte(i), byte(i>>8)
+		object := mustCBOR(t, []any{uint64(1), nonce, make([]byte, 32)})
+		if rec := putObject(t, h, "1", s.enrolled, object); rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+			t.Fatalf("state PUT %d = %d %x", i+1, rec.Code, rec.Body.Bytes())
+		}
+		objects = append(objects, object)
+	}
+	last := objects[len(objects)-1]
+	for i, object := range objects[:len(objects)-1] {
+		if _, err := d.Repo.GetBlob(ctx, objectID(object)); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("replaced state %d: blobs row err %v, want ErrNotFound", i, err)
+		}
+		if _, err := d.Blobs.Stat(objectID(object)); !errors.Is(err, blob.ErrNotFound) {
+			t.Fatalf("replaced state %d: file err %v, want blob.ErrNotFound", i, err)
+		}
+	}
+	if n, err := d.Repo.InstanceBlobBytes(ctx); err != nil || n != int64(len(last)) {
+		t.Fatalf("instance blob bytes = %d, %v; want %d, the one live state object", n, err, len(last))
+	}
+	if _, err := d.Blobs.Stat(objectID(last)); err != nil {
+		t.Fatalf("the live state's file: %v", err)
+	}
+}
+
+// BACKUPS-RECOVERY-01 as amended (the budget half): a state PUT also spends a per-DEVICE daily
+// byte budget (StateBytesPerDevicePerDay; narrowed here to 1000 bytes). A device past it gets 429;
+// another device of the same user still PUTs, so a thief spending its own budget cannot block the
+// owner. The budget refills over the day.
+func TestADevicePastItsDailyStateBudgetIsRefusedWhileAnotherDeviceIsNot(t *testing.T) {
+	h, d := newTestAPIFull(t, func(c *config.Config) {
+		c.Limits.Rate.ReadBurst, c.Limits.Rate.WriteBurst = 1000, 1000
+	}, func(d *api.Deps) { d.StateMeter = api.NewStateMeter(d.Clock, 1000) })
+	thief := backupSessions(t, d)
+	owner := secondEnrolledSession(t, d, thief.user.ID)
+	for i := 0; i < 3; i++ { // 317-byte objects in 322-byte bodies: three fit in 1000 bytes
+		object := sealedObject(t, 300, byte(0x60+i))
+		if rec := putObject(t, h, "1", thief.enrolled, object); rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+			t.Fatalf("thief state PUT %d = %d %x", i+1, rec.Code, rec.Body.Bytes())
+		}
+	}
+	over := sealedObject(t, 300, 0x6f)
+	wantRefusal(t, "a state PUT past the device's daily budget", putObject(t, h, "1", thief.enrolled, over),
+		http.StatusTooManyRequests, "E_RATE_LIMITED")
+	if _, err := d.Repo.GetBlob(t.Context(), objectID(over)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the refused PUT stored its bytes: %v", err)
+	}
+	mine := sealedObject(t, 300, 0x70)
+	wantStored(t, "another device's state PUT", putObject(t, h, "1", owner, mine), http.StatusOK, mine)
+	d.Clock.(*clock.Fake).Advance(24 * time.Hour)
+	wantStored(t, "the thief's state PUT a day later", putObject(t, h, "1", thief.enrolled, over), http.StatusOK, over)
 }
