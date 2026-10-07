@@ -24,6 +24,7 @@ import (
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -203,21 +204,23 @@ func TestPostDevicesAppliesTheCapAndRate(t *testing.T) {
 		created = append(created, out[0])
 		deps.Clock.(*clock.Fake).Advance(time.Second)
 	}
-	// F1: past the hourly rate the fourth replaces the oldest unlisted row instead of answering 429.
-	if rec := create(); rec.Code != http.StatusOK {
-		t.Fatalf("POST /v1/devices past the rate = %d %x, want 200", rec.Code, rec.Body.Bytes())
+	// Changed by REGISTRATION-DEVICES-03 (it was F1's replacement of the oldest unlisted row, 200):
+	// the enrolled route never evicts. Past the hourly rate the fourth is 429 and every row stays.
+	if rec := create(); rec.Code != http.StatusTooManyRequests || refusalCode(t, rec) != "E_RATE_LIMITED" {
+		t.Fatalf("POST /v1/devices past the rate = %d %x, want 429 E_RATE_LIMITED", rec.Code, rec.Body.Bytes())
 	}
-	for i, wantLive := range []bool{false, true, true} {
+	for i := range created {
 		row, err := deps.Repo.GetDevice(t.Context(), created[i])
-		if err != nil || (row.RevokedAt == nil) != wantLive {
-			t.Fatalf("row %d after the fourth = %+v, err %v; want live %t", i, row, err, wantLive)
+		if err != nil || row.RevokedAt != nil {
+			t.Fatalf("row %d after the refused fourth = %+v, err %v; want live", i, row, err)
 		}
 	}
 }
 
-// The enrolled route uses the same deterministic oldest-unlisted eviction as
-// assertion registration; a newer pending row retains its place.
-func TestPostDevicesEvictsOldestUnlistedAtCap(t *testing.T) {
+// Changed by REGISTRATION-DEVICES-03 (it asserted that the enrolled route evicts the oldest
+// unlisted row at the cap, as assertion registration does): at the cap POST /v1/devices answers
+// 403 "device cap reached" and both unlisted rows stay; the caller frees a slot itself.
+func TestPostDevicesRefusesAtCapInsteadOfEvicting(t *testing.T) {
 	h, deps := newTestAPI(t)
 	user, first, token := seedAPISession(t, deps)
 	listed := []store.DeviceRow{first}
@@ -247,15 +250,11 @@ func TestPostDevicesEvictsOldestUnlistedAtCap(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, rec := postFreshDevice(t, h, deps, token)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST at cap = %d %x, want 200", rec.Code, rec.Body.Bytes())
-	}
-	for i, wantRevoked := range []bool{true, false} {
-		row, err := deps.Repo.GetDevice(t.Context(), unlisted[i])
-		if err != nil || (row.RevokedAt != nil) != wantRevoked {
-			t.Fatalf("unlisted row %d = %+v, err %v; want revoked %t", i, row, err, wantRevoked)
-		}
+	fresh, rec := postFreshDevice(t, h, deps, token)
+	wantListRefusal(t, rec, http.StatusForbidden, "E_FORBIDDEN", "device cap reached")
+	noAPIDeviceRow(t, deps, fresh.ID)
+	for i := range unlisted {
+		wantAPIDeviceLive(t, deps, "an unlisted row at the cap", unlisted[i], true)
 	}
 }
 
@@ -296,6 +295,121 @@ func TestPostDevicesDoesNotExpireANoListAccount(t *testing.T) {
 	if err != nil || row.RevokedAt != nil || row.UserID != user.ID {
 		t.Fatalf("first device after POST = %+v, err %v; want live", row, err)
 	}
+}
+
+// Branch review REGISTRATION-DEVICES-03. Attacker statement: the attacker holds an enrolled session
+// of the user (a stolen browser token, or a stolen device) and polls GET /v1/devices; the owner,
+// with no other enrolled device, starts recovery on a new browser, whose row O is unlisted until
+// the list PUT that would revoke the attacker. Before the fix one key-less DELETE of O, or three
+// POST /v1/devices past the hourly rate (each evicting the oldest unlisted row), cut the owner's
+// pending session at no login cost, on every attempt. Now the DELETE of an unlisted row younger than
+// ten minutes is 409 unless it is the caller's own row, and POST /v1/devices refuses past the rate
+// (429) or the cap (403) instead of evicting; eviction is left to assertion registration, which
+// costs a host login.
+func TestAnEnrolledSessionCannotRemoveOrEvictARecoveringOwnersNewRow(t *testing.T) {
+	h, deps := newTestAPI(t)
+	clk := deps.Clock.(*clock.Fake)
+	user, thief, thiefToken := seedAPISession(t, deps)
+	listerOf(t, deps).list(user.ID, thief)
+	owner, ownerToken := pendingSession(t, h, deps, user.ID)
+	clk.Advance(time.Minute)
+
+	path := "/v1/devices/" + owner.String()
+	wantListRefusal(t, cborCall(t, h, http.MethodDelete, path, thiefToken, nil), http.StatusConflict, "E_INVALID_REQUEST",
+		"the device registered less than 10 minutes ago and is too new to remove; its own session may remove it, or it expires unlisted after 24 hours")
+	wantAPIDeviceLive(t, deps, "the owner's 1-minute-old row after a DELETE by another device", owner, true)
+
+	// The thief's device and the owner's row are two live creations of the hour; one more is
+	// admitted, and every POST after it is past the rate and refused with the wait until the oldest
+	// creation leaves the window.
+	if _, rec := postFreshDevice(t, h, deps, thiefToken); rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/devices under the rate = %d %x, want 200", rec.Code, rec.Body.Bytes())
+	}
+	for i := 0; i < 3; i++ {
+		row, rec := postFreshDevice(t, h, deps, thiefToken)
+		if rec.Code != http.StatusTooManyRequests || refusalCode(t, rec) != "E_RATE_LIMITED" {
+			t.Fatalf("POST /v1/devices past the rate = %d %x, want 429 E_RATE_LIMITED", rec.Code, rec.Body.Bytes())
+		}
+		var body []any
+		if err := cborx.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body) < 3 {
+			t.Fatalf("429 body %x (err %v), want [code, detail, retry_after_ms]", rec.Body.Bytes(), err)
+		}
+		// The oldest live creation (the thief's device) leaves the hour at its creation + 3600 s.
+		want := uint64(thief.Created+3600-clk.Now().Unix()) * 1000
+		if ms, ok := body[2].(uint64); !ok || ms != want {
+			t.Fatalf("retry_after_ms = %v, want %d (when the oldest creation leaves the hour)", body[2], want)
+		}
+		noAPIDeviceRow(t, deps, row.ID)
+	}
+	wantAPIDeviceLive(t, deps, "the owner's row after POSTs past the rate", owner, true)
+	if rec := cborCall(t, h, http.MethodGet, "/v1/users/"+user.ID.String()+"/device-list", ownerToken, nil); rec.Code == http.StatusUnauthorized {
+		t.Fatal("the owner's pending session was cut")
+	}
+
+	// The grace is ten minutes: after it the owner (or anyone enrolled) clears a stray row.
+	clk.Advance(9 * time.Minute)
+	if rec := cborCall(t, h, http.MethodDelete, path, thiefToken, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE of a 10-minute-old unlisted row = %d %x, want 204", rec.Code, rec.Body.Bytes())
+	}
+	wantAPIDeviceLive(t, deps, "the 10-minute-old row after DELETE", owner, false)
+}
+
+// The grace does not stop a device removing its own new row: a no-list account's young device
+// (unlisted, enrolled) deletes itself, while another device of the account may not.
+func TestADeviceMayRemoveItsOwnNewRow(t *testing.T) {
+	h, deps := newTestAPI(t)
+	user, first, firstToken := seedAPISession(t, deps)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := store.DeviceRow{ID: id.New(), UserID: user.ID, DSKPub: pub, CredentialBlob: []byte{1},
+		Created: deps.Clock.Now().Unix(), LastSeen: deps.Clock.Now().Unix()}
+	if err := deps.Repo.CreateDevice(t.Context(), second); err != nil {
+		t.Fatal(err)
+	}
+	nonce, _, err := deps.Sessions.Challenge(t.Context(), second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := deps.Sessions.Establish(t.Context(), auth.EstablishRequest{DeviceID: second.ID, Nonce: nonce,
+		Purpose: auth.PurposeSession, Sig: ed25519.Sign(priv, auth.SessionPreimage(deps.Sessions.InstanceID(), second.ID, nonce, auth.PurposeSession))})
+	if err != nil || tok.Scope != auth.ScopeEnrolled {
+		t.Fatalf("establish the second device: %v (scope %d)", err, tok.Scope)
+	}
+	if rec := cborCall(t, h, http.MethodDelete, "/v1/devices/"+second.ID.String(), firstToken, nil); rec.Code != http.StatusConflict {
+		t.Fatalf("another device's DELETE of a new row = %d %x, want 409", rec.Code, rec.Body.Bytes())
+	}
+	if rec := cborCall(t, h, http.MethodDelete, "/v1/devices/"+second.ID.String(), tok.Token, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("a device's DELETE of its own new row = %d %x, want 204", rec.Code, rec.Body.Bytes())
+	}
+	wantAPIDeviceLive(t, deps, "the self-removed row", second.ID, false)
+	wantAPIDeviceLive(t, deps, "the other device", first.ID, true)
+}
+
+// REGISTRATION-DEVICES-03 (c): the three /v1/devices routes spend the device session's buckets,
+// GET the read bucket and POST and DELETE the write bucket, as the other web-2a routes do.
+func TestTheDeviceRoutesSpendTheDeviceBuckets(t *testing.T) {
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) {
+		c.Limits.Rate.WriteBurst, c.Limits.Rate.ReadBurst = 1, 1
+	})
+	_, first, token := seedAPISession(t, deps)
+	if rec := cborCall(t, h, http.MethodGet, "/v1/devices", token, nil); rec.Code != http.StatusOK {
+		t.Fatalf("the first GET = %d, want 200", rec.Code)
+	}
+	if rec := cborCall(t, h, http.MethodGet, "/v1/devices", token, nil); rec.Code != http.StatusTooManyRequests || refusalCode(t, rec) != "E_RATE_LIMITED" {
+		t.Fatalf("a second GET = %d %q, want 429 E_RATE_LIMITED", rec.Code, refusalCode(t, rec))
+	}
+	if _, rec := postFreshDevice(t, h, deps, token); rec.Code != http.StatusOK {
+		t.Fatalf("the first POST = %d %x, want 200", rec.Code, rec.Body.Bytes())
+	}
+	if _, rec := postFreshDevice(t, h, deps, token); rec.Code != http.StatusTooManyRequests || refusalCode(t, rec) != "E_RATE_LIMITED" {
+		t.Fatalf("a second POST = %d %q, want 429 E_RATE_LIMITED", rec.Code, refusalCode(t, rec))
+	}
+	if rec := cborCall(t, h, http.MethodDelete, "/v1/devices/"+first.ID.String(), token, nil); rec.Code != http.StatusTooManyRequests || refusalCode(t, rec) != "E_RATE_LIMITED" {
+		t.Fatalf("a DELETE past the write burst = %d %q, want 429 E_RATE_LIMITED", rec.Code, refusalCode(t, rec))
+	}
+	wantAPIDeviceLive(t, deps, "the device a metered DELETE named", first.ID, true)
 }
 
 // signedListPut is version `version` of user's list chained to prevBlob (nil: 32 zero bytes),

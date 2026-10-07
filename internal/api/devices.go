@@ -36,8 +36,11 @@ type createDeviceRequest struct {
 // user's; a body cannot name another user. The caller proves it holds dsk_pub's
 // private half exactly as establish does (security review F2), and no other live
 // row of the user may hold the same key (409). Admission uses the same live-row
-// cap, expiry, oldest-unlisted replacement and live-row hourly rate as assertion
-// registration.
+// cap, expiry and live-row hourly rate as assertion registration, but past the cap
+// it answers 403 "device cap reached" and past the rate 429 with retry_after_ms, and
+// it never evicts (branch review REGISTRATION-DEVICES-03): its caller pays no host
+// login, so eviction here would let a stolen enrolled session replace a recovering
+// owner's new row at will.
 func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -76,11 +79,8 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, auth.ListError(listErr))
 		return
 	}
-	var evicted id.ID
 	err := d.Repo.Tx(r.Context(), func(tx store.Repository) error {
-		var err error
-		evicted, err = d.Sessions.AdmitDevice(r.Context(), tx, sess.UserID, entries, noList, req.DSKPub, now)
-		if err != nil {
+		if err := d.Sessions.AdmitEnrolledDevice(r.Context(), tx, sess.UserID, entries, noList, req.DSKPub, now); err != nil {
 			return err
 		}
 		return tx.CreateDevice(r.Context(), row)
@@ -94,11 +94,12 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	if !evicted.IsZero() && d.Sessions.OnRevoke != nil {
-		d.Sessions.OnRevoke(evicted)
-	}
 	d.write(w, r, http.StatusOK, []any{row.ID})
 }
+
+// keylessDeleteGrace is how old, in seconds, an unlisted row must be before a session of another
+// device may remove it with the key-less DELETE (branch review REGISTRATION-DEVICES-03).
+const keylessDeleteGrace = 600
 
 // ListDevices is GET /v1/devices →
 // [[device_id, tier, signer_tier, verified_at|null, revoked_at|null, last_seen]].
@@ -164,6 +165,15 @@ func (d Deps) DeleteDevice(w http.ResponseWriter, r *http.Request) {
 	if auth.Listed(entries, row.ID, row.DSKPub) {
 		server.WriteError(w, server.WithStatus(http.StatusConflict,
 			server.Errorf(server.CodeInvalidRequest, "a listed device is revoked by a signed device list")))
+		return
+	}
+	// A recovering owner's new row is unlisted until the list PUT that names it; without a grace a
+	// stolen enrolled session polling GET /v1/devices removed it the moment it appeared, at no login
+	// cost, and so kept the owner from publishing the list that revokes the thief. The owner's own
+	// young strays are replaced by registration and expire at 24 hours, so the grace locks no one out.
+	if sess.DeviceID != row.ID && row.Created > d.Clock.Now().Unix()-keylessDeleteGrace {
+		server.WriteError(w, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
+			"the device registered less than 10 minutes ago and is too new to remove; its own session may remove it, or it expires unlisted after 24 hours")))
 		return
 	}
 	if err := d.Sessions.RevokeDevice(r.Context(), deviceID); err != nil {

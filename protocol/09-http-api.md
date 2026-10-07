@@ -44,9 +44,9 @@ column below uses four scopes:
 | `GET /v1/accounts/me` | E | — | `[user_id, username, display, kind, flags, created]` |
 | `PATCH /v1/accounts/me` | E | `[display(tstr\|null), status_msg(tstr\|null)]` | `204` |
 | `DELETE /v1/accounts/me` | E (step-up) | `[]` | `204` — credential purge, Removes from every group, tombstone keeping `username` |
-| `POST /v1/devices` | E | `[device_id, dsk_pub, tier, signer_tier, credential, nonce(bstr32), sig(bstr64)]` | `[device_id]`; `403 E_FORBIDDEN` when `sig` does not prove possession of `dsk_pub` (`02` § Device sessions item 7); `409 E_INVALID_REQUEST` when `device_id` exists or a live device of the user holds `dsk_pub` |
+| `POST /v1/devices` | E | `[device_id, dsk_pub, tier, signer_tier, credential, nonce(bstr32), sig(bstr64)]` | `[device_id]`; `403 E_FORBIDDEN` when `sig` does not prove possession of `dsk_pub` (`02` § Device sessions item 7) and, `device cap reached`, at 8 live devices; `429 E_RATE_LIMITED` with `retry_after_ms` past 3 live rows created in the hour; it never evicts; `409 E_INVALID_REQUEST` when `device_id` exists or a live device of the user holds `dsk_pub` |
 | `GET /v1/devices` | E | — | `[[device_id, tier, signer_tier, verified_at, revoked_at, last_seen]]` |
-| `DELETE /v1/devices/{device_id}` | E | — | `204` for an unlisted row — revokes, deletes sessions, closes sockets; `409 E_INVALID_REQUEST` for a listed device (its `device_id` and `dsk_pub` in one unrevoked entry of the newest list), which is revoked by a signed device list; `404 E_NOT_FOUND` for another user's device |
+| `DELETE /v1/devices/{device_id}` | E | — | `204` for an unlisted row — revokes, deletes sessions, closes sockets; `409 E_INVALID_REQUEST` for a listed device (its `device_id` and `dsk_pub` in one unrevoked entry of the newest list), which is revoked by a signed device list, and for an unlisted row created less than 10 minutes ago unless the caller's session is that device's own; `404 E_NOT_FOUND` for another user's device |
 | `PUT /v1/users/{user_id}/device-list` | E or P (own list only for P) | `[version(uint), blob(bstr), ssk_signature(bstr64), prev_hash(bstr32)]` | `204`; `400 E_INVALID_REQUEST` when `blob`'s outer elements disagree with the body or the list does not verify; `409 E_INVALID_REQUEST` when `version` is not the newest plus one or `prev_hash` does not chain |
 | `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]` |
 | `GET /v1/users/{user_id}/device-list?after=N` | E or P (own list only for P) | — | `[[version, blob, ssk_signature, prev_hash]]` of the stored versions greater than `N`, ascending, at most 64; `[]` when none; a malformed `N` is `400` |
@@ -70,12 +70,19 @@ A device created through a host login is registered by `POST /v1/devices/{device
 with a registration array and assertion (`02` § Device sessions item 2). The establish body is at
 most 8192 bytes and its credential at most 2048 bytes. Both that route and `POST /v1/devices`
 keep at most 8 live devices per user and at most 3 live rows created per user in any hour (a live
-first device counts; revoked and expired rows do not), and neither limit refuses while the user
-has an unlisted live row: past either, the oldest unlisted live row is revoked, whatever its age,
-and the registration is admitted (`02` § Device sessions item 2). A cap of 8 listed devices
-refuses with `403 E_FORBIDDEN`; neither route answers `429` for the per-user rate. An unlisted row
-and its pending sessions expire after 24 hours. An owner with an enrolled session can also remove
-an unlisted row with `DELETE /v1/devices/{device_id}`.
+first device counts; revoked and expired rows do not). For assertion registration neither limit
+refuses while the user has an unlisted live row: past either, the oldest unlisted live row is
+revoked, whatever its age, and the registration is admitted (`02` § Device sessions item 2); a cap
+of 8 listed devices refuses with `403 E_FORBIDDEN`, and it never answers `429` for the per-user
+rate. `POST /v1/devices` never evicts: past the cap it answers `403 E_FORBIDDEN` (`device cap
+reached`) and past the rate `429 E_RATE_LIMITED` with `retry_after_ms`, since its enrolled caller
+pays no host login and can free a slot itself, and an evicting route would let a stolen enrolled
+session replace a recovering owner's new row. An unlisted row and its pending sessions expire after
+24 hours. An owner with an enrolled session can also remove an unlisted row with
+`DELETE /v1/devices/{device_id}` once the row is 10 minutes old; a younger one only its own session
+removes (`409` otherwise), so a stolen enrolled session cannot cut a recovering owner's row before
+the list `PUT` that names it. The three `/v1/devices` routes spend the device session's read (`GET`)
+and write (`POST`, `DELETE`) buckets.
 
 Two rows above describe more than any released instance does. They are recorded here so a client
 plans against what an instance answers, not against what the table would otherwise promise:

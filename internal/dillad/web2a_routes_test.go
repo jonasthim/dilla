@@ -309,7 +309,9 @@ func TestTheWebTwoARoutesAreMeteredPerDevice(t *testing.T) {
 			t.Fatalf("read %d of a burst of %d was refused", i+1, rate.ReadBurst)
 		}
 	}
-	for _, p := range []string{own, own + "?after=0", "/v1/backups", "/v1/backups/1/0"} {
+	// GET /v1/devices included (REGISTRATION-DEVICES-03: it was unmetered, so a stolen session
+	// polled it for the recovering owner's new row).
+	for _, p := range []string{own, own + "?after=0", "/v1/backups", "/v1/backups/1/0", "/v1/devices"} {
 		if rec := call(t, h, http.MethodGet, p, tok0, nil); rec.Code != http.StatusTooManyRequests || errorCode(rec) != "E_RATE_LIMITED" {
 			t.Errorf("GET %s past the read burst = %d %q, want 429 E_RATE_LIMITED", p, rec.Code, errorCode(rec))
 		}
@@ -326,6 +328,13 @@ func TestTheWebTwoARoutesAreMeteredPerDevice(t *testing.T) {
 		if rec := call(t, h, http.MethodPut, r.path, tok0, r.body); rec.Code != http.StatusTooManyRequests || errorCode(rec) != "E_RATE_LIMITED" {
 			t.Errorf("PUT %s past the write burst = %d %q, want 429 E_RATE_LIMITED", r.path, rec.Code, errorCode(rec))
 		}
+	}
+	// POST and DELETE /v1/devices spend the same write bucket (REGISTRATION-DEVICES-03).
+	if rec := call(t, h, http.MethodPost, "/v1/devices", tok0, []any{}); rec.Code != http.StatusTooManyRequests || errorCode(rec) != "E_RATE_LIMITED" {
+		t.Errorf("POST /v1/devices past the write burst = %d %q, want 429 E_RATE_LIMITED", rec.Code, errorCode(rec))
+	}
+	if rec := call(t, h, http.MethodDelete, "/v1/devices/"+d0.ID.String(), tok0, nil); rec.Code != http.StatusTooManyRequests || errorCode(rec) != "E_RATE_LIMITED" {
+		t.Errorf("DELETE /v1/devices/{id} past the write burst = %d %q, want 429 E_RATE_LIMITED", rec.Code, errorCode(rec))
 	}
 	_ = srv
 }

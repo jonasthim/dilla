@@ -13,8 +13,10 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
@@ -76,7 +78,10 @@ func TestPostDevicesRequiresProofOfPossession(t *testing.T) {
 
 // A row that copies a listed key under another id — what a stolen session could plant before the
 // fix, still in a database written then — is not the listed device: the owner removes it with the
-// key-less DELETE, a registration at the cap evicts it, and it expires after 24 hours.
+// key-less DELETE once it is ten minutes old, an assertion registration at the cap evicts it, and it
+// expires after 24 hours. REGISTRATION-DEVICES-03 changed two steps: the deleted copy is planted ten
+// minutes ago (a younger one is too new for another device to remove), and the eviction and the
+// expiry sweep are driven by assertion registration, since POST /v1/devices no longer evicts.
 func TestARowCopyingAListedKeyIsUnlisted(t *testing.T) {
 	h, deps := newTestAPI(t)
 	ctx := t.Context()
@@ -105,25 +110,26 @@ func TestARowCopyingAListedKeyIsUnlisted(t *testing.T) {
 	}
 	listerOf(t, deps).list(user.ID, listed...)
 
-	deletable := plant(now)
+	deletable := plant(now - 600)
 	if rec := cborCall(t, h, http.MethodDelete, "/v1/devices/"+deletable.String(), token, nil); rec.Code != http.StatusNoContent {
 		t.Fatalf("key-less DELETE of a row copying a listed key = %d %x, want 204", rec.Code, rec.Body.Bytes())
 	}
 	wantAPIDeviceLive(t, deps, "the deleted copy", deletable, false)
 	wantAPIDeviceLive(t, deps, "the listed device whose key was copied", first.ID, true)
 
-	// Seven listed rows and one copy: the cap. A registration replaces the copy.
+	// Seven listed rows and one copy: the cap. The enrolled route refuses; a registration replaces
+	// the copy.
 	evictable := plant(now)
-	if _, rec := postFreshDevice(t, h, deps, token); rec.Code != http.StatusOK {
-		t.Fatalf("POST /v1/devices at a cap holding a copy = %d %x, want 200", rec.Code, rec.Body.Bytes())
+	if _, rec := postFreshDevice(t, h, deps, token); rec.Code != http.StatusForbidden {
+		t.Fatalf("POST /v1/devices at a cap holding a copy = %d %x, want 403", rec.Code, rec.Body.Bytes())
 	}
+	wantAPIDeviceLive(t, deps, "the copy after a refused POST", evictable, true)
+	pendingSession(t, h, deps, user.ID)
 	wantAPIDeviceLive(t, deps, "the evicted copy", evictable, false)
 
 	// A copy older than 24 hours is swept as an expired unlisted row.
 	expired := plant(now - 86400)
-	if _, rec := postFreshDevice(t, h, deps, token); rec.Code != http.StatusOK {
-		t.Fatalf("POST /v1/devices with an expired copy = %d %x, want 200", rec.Code, rec.Body.Bytes())
-	}
+	pendingSession(t, h, deps, user.ID)
 	wantAPIDeviceLive(t, deps, "the expired copy", expired, false)
 	for _, row := range listed {
 		wantAPIDeviceLive(t, deps, "a listed device", row.ID, true)
@@ -131,7 +137,9 @@ func TestARowCopyingAListedKeyIsUnlisted(t *testing.T) {
 }
 
 // A planted row under a fresh key (the most a stolen enrolled session can now plant) is unlisted:
-// the owner deletes it key-lessly and a registration at the cap evicts it.
+// the owner deletes it key-lessly once it is ten minutes old and an assertion registration at the
+// cap evicts it. REGISTRATION-DEVICES-03 changed both steps: the DELETE waits out the ten-minute
+// grace, and POST /v1/devices at the cap is refused (403) rather than evicting.
 func TestAPlantedRowWithAFreshKeyIsEvictableAndDeletable(t *testing.T) {
 	h, deps := newTestAPI(t)
 	ctx := t.Context()
@@ -154,6 +162,7 @@ func TestAPlantedRowWithAFreshKeyIsEvictableAndDeletable(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("plant = %d %x", rec.Code, rec.Body.Bytes())
 	}
+	deps.Clock.(*clock.Fake).Advance(10 * time.Minute)
 	if rec := cborCall(t, h, http.MethodDelete, "/v1/devices/"+planted.ID.String(), token, nil); rec.Code != http.StatusNoContent {
 		t.Fatalf("key-less DELETE of a planted row = %d %x, want 204", rec.Code, rec.Body.Bytes())
 	}
@@ -163,9 +172,11 @@ func TestAPlantedRowWithAFreshKeyIsEvictableAndDeletable(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("plant at seven listed = %d %x", rec.Code, rec.Body.Bytes())
 	}
-	if _, rec := postFreshDevice(t, h, deps, token); rec.Code != http.StatusOK {
-		t.Fatalf("POST /v1/devices at the cap = %d %x, want 200", rec.Code, rec.Body.Bytes())
+	if _, rec := postFreshDevice(t, h, deps, token); rec.Code != http.StatusForbidden {
+		t.Fatalf("POST /v1/devices at the cap = %d %x, want 403", rec.Code, rec.Body.Bytes())
 	}
+	wantAPIDeviceLive(t, deps, "the planted row after a refused POST", planted.ID, true)
+	pendingSession(t, h, deps, user.ID)
 	wantAPIDeviceLive(t, deps, "the evicted planted row", planted.ID, false)
 }
 

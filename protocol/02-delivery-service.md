@@ -62,7 +62,12 @@ Every endpoint in this document requires a **device session**. A device session 
    saturated would lock the owner's recovery out; instead the owner's new row is exposed only
    between its registration and the list `PUT` that names it, and each replacement costs a host
    login, metered per source address by the auth ceremonies' `login` bucket, and an establish,
-   metered per source address and per `device_id`. `POST /v1/devices` applies the same rule.
+   metered per source address and per `device_id`. `POST /v1/devices` applies the same cap, rate
+   and expiry but never evicts: past the cap it refuses `403 E_FORBIDDEN` and past the rate
+   `429 E_RATE_LIMITED`, because its enrolled caller pays no host login and can free a slot itself,
+   and an evicting route would let a stolen enrolled session replace the owner's new row at will.
+   For the same reason the key-less `DELETE /v1/devices/{device_id}` refuses (`409`) an unlisted
+   row younger than 10 minutes unless the caller's session is that device's own.
 3. The **token** is 32 bytes from the platform CSPRNG, base64url without padding, stored only as
    `SHA-256(token)`. It is sent as `Authorization: Bearer <token>` on HTTP and in the gateway's
    `IDENTIFY` frame. There is no cookie and therefore no CSRF surface on `/v1`.

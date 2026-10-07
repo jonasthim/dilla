@@ -600,11 +600,26 @@ func (s *Sessions) register(ctx context.Context, r EstablishRequest) (Token, err
 }
 
 // AdmitDevice applies the common device cap, expiry and hourly rate inside the
-// caller's transaction. Neither the cap nor the rate refuses while an unlisted live
-// row exists: past either, the oldest unlisted live row is evicted. Only a cap of
+// caller's transaction, for assertion registration. Neither the cap nor the rate refuses while an
+// unlisted live row exists: past either, the oldest unlisted live row is evicted. Only a cap of
 // listed rows refuses (403). The caller inserts its new row in that same
 // transaction and closes any evicted device's gateway connections after commit.
 func (s *Sessions) AdmitDevice(ctx context.Context, tx store.Repository, userID id.ID, entries []ListedDevice, noList bool, dskPub []byte, now int64) (id.ID, error) {
+	return s.admit(ctx, tx, userID, entries, noList, dskPub, now, true)
+}
+
+// AdmitEnrolledDevice is AdmitDevice for POST /v1/devices: the same expiry sweep, key rule, cap
+// and rate, but past the cap it refuses 403 "device cap reached" and past the rate 429 with the
+// wait until a creation leaves the hour, and it never evicts (branch review REGISTRATION-DEVICES-03).
+// Its caller is enrolled, pays no host login, and can free a slot in Settings → Devices; were it to
+// evict, a stolen enrolled session would replace a recovering owner's new row at will. Eviction is
+// left to assertion registration, where a refusal would be the lockout.
+func (s *Sessions) AdmitEnrolledDevice(ctx context.Context, tx store.Repository, userID id.ID, entries []ListedDevice, noList bool, dskPub []byte, now int64) error {
+	_, err := s.admit(ctx, tx, userID, entries, noList, dskPub, now, false)
+	return err
+}
+
+func (s *Sessions) admit(ctx context.Context, tx store.Repository, userID id.ID, entries []ListedDevice, noList bool, dskPub []byte, now int64, evict bool) (id.ID, error) {
 	if err := tx.LockUserForDeviceRegistration(ctx, userID); err != nil {
 		return id.ID{}, err
 	}
@@ -651,6 +666,12 @@ func (s *Sessions) AdmitDevice(ctx context.Context, tx store.Repository, userID 
 	if !atCap && len(creations) < s.cfg.EnrolmentsPerHour {
 		return id.ID{}, nil
 	}
+	if !evict {
+		if atCap {
+			return id.ID{}, server.Errorf(server.CodeForbidden, "device cap reached")
+		}
+		return id.ID{}, server.RateLimitedAfter(time.Duration(rateWait(creations, s.cfg.EnrolmentsPerHour, now)) * time.Second)
+	}
 	// The cap and the hourly rate decide WHICH row this registration replaces, never WHETHER it is
 	// admitted (security review F1): the oldest live unlisted row, whatever its age. At registration
 	// the instance cannot tell the owner from a holder of the password alone — the recovery key that
@@ -683,6 +704,26 @@ func (s *Sessions) AdmitDevice(ctx context.Context, tx store.Repository, userID 
 		return id.ID{}, err
 	}
 	return evicted, nil
+}
+
+// rateWait is the seconds until enough of the hour's live creations leave the window that one more
+// is under rate: a creation at c counts while c >= now-3599, so it leaves at c+3600.
+func rateWait(creations []int64, rate int, now int64) int64 {
+	sorted := slices.Clone(creations)
+	slices.Sort(sorted)
+	i := len(sorted) - rate
+	switch {
+	case len(sorted) == 0:
+		return 3600
+	case i < 0:
+		i = 0
+	case i >= len(sorted):
+		i = len(sorted) - 1
+	}
+	if wait := sorted[i] + 3600 - now; wait > 0 {
+		return wait
+	}
+	return 1
 }
 
 // mint writes one session row through tx and returns the bearer token. It is
