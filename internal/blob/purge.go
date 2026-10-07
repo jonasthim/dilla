@@ -72,6 +72,14 @@ func Purge(ctx context.Context, repo store.Repository, bs *Store, req PurgeReque
 	target := hex.EncodeToString(req.BlobID)
 	var backup bool
 	if err := repo.Tx(ctx, func(tx store.Repository) error {
+		// The per-blob lock the two recording transactions take before their cross-table checks
+		// (fix-wave review NEW-4): on Postgres a backup PUT of the same bytes otherwise commits its
+		// backups row between this answer and the unlink below. A purge of bytes with no committed
+		// blobs row locks nothing (the lock is the row); a backup PUT whose row is still uncommitted
+		// then rests on its own in-transaction tombstone check.
+		if err := tx.LockBlob(ctx, req.BlobID); err != nil {
+			return err
+		}
 		// Inside the transaction that removes the references, so the answer is the one the
 		// commit acts on.
 		var err error

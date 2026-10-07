@@ -290,10 +290,21 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, errTombstoned) {
 			// The purge's own unlink may have run before this upload wrote the
-			// file; purged bytes stay removed, so they go now, row or none.
-			if derr := b.store.Delete(blobID); derr != nil {
-				b.log.ErrorContext(r.Context(), "remove purged bytes an upload rewrote",
-					"blob_id", hex.EncodeToString(blobID), "err", derr)
+			// file; purged bytes stay removed, so they go now — unless a backups
+			// row still names them (fix-wave review NEW-5, as 3caee12 on the
+			// backup route): a purge of backup bytes keeps the file while the
+			// backup is served, and this refused attachment must not unlink it.
+			// After the tombstone no new backups row can name the bytes, so "not
+			// named" is stable and the unlink is safe.
+			named, nerr := b.repo.BackupRefersToBlob(r.Context(), blobID)
+			if nerr != nil {
+				b.log.ErrorContext(r.Context(), "check purged bytes against backups",
+					"blob_id", hex.EncodeToString(blobID), "err", nerr)
+			} else if !named {
+				if derr := b.store.Delete(blobID); derr != nil {
+					b.log.ErrorContext(r.Context(), "remove purged bytes an upload rewrote",
+						"blob_id", hex.EncodeToString(blobID), "err", derr)
+				}
 			}
 			server.WriteError(w, errPruned())
 			return
