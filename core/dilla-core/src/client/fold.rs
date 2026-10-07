@@ -19,16 +19,27 @@ pub(super) struct Target {
     pub shown_body: String,
 }
 
+pub(super) const RESOLVE_SQL: &str = "SELECT seq, status, sender_user, COALESCE(edit_body, body) FROM app_messages INDEXED BY app_messages_by_msg WHERE group_id = ?1 AND msg_id = ?2 AND type = 0 AND status IN (0, 2) ORDER BY seq LIMIT 1";
+
 pub(super) fn resolve(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],
     msg_id: &[u8; 16],
 ) -> Result<Option<Target>, StorageError> {
     c.query_row(
-        "SELECT seq, status, sender_user, COALESCE(edit_body, body) FROM app_messages WHERE group_id = ?1 AND msg_id = ?2 AND type = 0 AND status IN (0, 2) ORDER BY seq LIMIT 1",
+        RESOLVE_SQL,
         params![group_id.as_slice(), msg_id.as_slice()],
-        |r| Ok(Target { seq: r.get::<_, i64>(0)? as u64, status: r.get(1)?, sender_user: r.get(2)?, shown_body: r.get(3)? }),
-    ).optional().map_err(Into::into)
+        |r| {
+            Ok(Target {
+                seq: r.get::<_, i64>(0)? as u64,
+                status: r.get(1)?,
+                sender_user: r.get(2)?,
+                shown_body: r.get(3)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 pub(super) fn target_of(
@@ -313,6 +324,30 @@ mod tests {
                 "{name} uses no fold index: {p}"
             );
             assert!(p.contains(want), "{name} is not bounded by {want}: {p}");
+        }
+        for (name, sql, search, forbidden) in [
+            (
+                "RESOLVE_SQL",
+                RESOLVE_SQL,
+                "SEARCH app_messages USING INDEX app_messages_by_msg (group_id=? AND msg_id=?",
+                "SEARCH app_messages USING PRIMARY KEY (group_id=?)",
+            ),
+            (
+                "TIMELINE_SQL",
+                super::super::messages::TIMELINE_SQL,
+                "SEARCH e USING INDEX app_messages_by_msg (group_id=? AND msg_id=?",
+                "SEARCH e USING PRIMARY KEY (group_id=?)",
+            ),
+        ] {
+            let p = plan(&c, sql);
+            assert!(
+                p.contains(search),
+                "{name} does not search by message id: {p}"
+            );
+            assert!(
+                !p.contains(forbidden),
+                "{name} scans the group primary key: {p}"
+            );
         }
     }
 

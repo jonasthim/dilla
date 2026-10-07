@@ -22,6 +22,13 @@ pub(crate) const REASON_PRUNED: &str = "E_PRUNED";
 pub(crate) const REASON_OWN_UNKNOWN: &str = "E_OWN_UNKNOWN";
 pub(crate) const REASON_SENDER_MISMATCH: &str = "E_SENDER_MISMATCH";
 
+pub(super) const TIMELINE_SQL: &str = "SELECT m.seq,m.epoch,m.recv_ts,m.status,m.reason,m.sender_user,m.sender_device, \
+     m.sender_kind,m.sender_tier,m.msg_id,m.type,m.body,m.edit_body,m.edit_seq,m.reply_to,m.envelope,m.mention, \
+     NOT EXISTS (SELECT 1 FROM app_messages e INDEXED BY app_messages_by_msg WHERE e.group_id=m.group_id AND e.msg_id=m.msg_id \
+     AND e.type=0 AND e.status IN (0,2) AND e.seq<m.seq) \
+     FROM app_messages m WHERE m.group_id=?1 AND (m.type IS NULL OR m.type=0) \
+     AND (?2=0 OR m.seq<?2) ORDER BY m.seq DESC LIMIT ?3";
+
 pub(super) struct StoredMessage<'a> {
     pub group_id: &'a [u8; 16],
     pub seq: u64,
@@ -652,14 +659,7 @@ impl ClientCore {
             is_target: bool,
         }
         let rows = self.read(|c| {
-            let mut s = c.prepare(
-                "SELECT m.seq,m.epoch,m.recv_ts,m.status,m.reason,m.sender_user,m.sender_device, \
-                 m.sender_kind,m.sender_tier,m.msg_id,m.type,m.body,m.edit_body,m.edit_seq,m.reply_to,m.envelope,m.mention, \
-                 NOT EXISTS (SELECT 1 FROM app_messages e WHERE e.group_id=m.group_id AND e.msg_id=m.msg_id \
-                 AND e.type=0 AND e.status IN (0,2) AND e.seq<m.seq) \
-                 FROM app_messages m WHERE m.group_id=?1 AND (m.type IS NULL OR m.type=0) \
-                 AND (?2=0 OR m.seq<?2) ORDER BY m.seq DESC LIMIT ?3",
-            )?;
+            let mut s = c.prepare(TIMELINE_SQL)?;
             let it = s.query_map(params![id.as_slice(), before, i64::from(limit)], |r| {
                 Ok(Raw { seq: r.get(0)?, epoch: r.get(1)?, recv_ts: r.get(2)?, status: r.get(3)?,
                     reason: r.get(4)?, sender_user: r.get(5)?, sender_device: r.get(6)?,
