@@ -189,7 +189,7 @@ With a registration array in element 3 it registers the device; either way the m
 | invites | `POST /v1/communities/{id}/invites`, `GET /v1/communities/{id}/invites`, `DELETE /v1/invites/{id}` |
 | DMs | `POST /v1/dms` `[recipients([bstr16])]` → `[channel_id]`; `GET /v1/dms` |
 | readable | `POST /v1/channels/{id}/messages` `[envelope(bstr)]` → `[seq, franking_tag, recv_ts]`; `GET /v1/channels/{id}/messages?from=`; `PATCH`/`DELETE /v1/channels/{id}/messages/{seq}`; `GET /v1/channels/{id}/search?q=&limit=&before=`; `PUT /v1/channels/{id}/read-state` |
-| blobs | `PUT/GET/HEAD/DELETE /v1/channels/{cid}/blobs/{blob_id}`, `POST /v1/channels/{id}/blobs/{blob_id}/confirm` (raw octets, `201` new / `200` already present, `422 E_INVALID_REQUEST` on a hash mismatch, `507 E_STORAGE_FULL`), `DELETE /v1/admin/blobs/{blob_id}` |
+| blobs | `PUT/GET/HEAD/DELETE /v1/channels/{cid}/blobs/{blob_id}` (raw octets, `201` new / `200` already present, `422 E_INVALID_REQUEST` on a hash mismatch, `507 E_STORAGE_FULL`), `DELETE /v1/admin/blobs/{blob_id}`, `POST /v1/channels/{cid}/blobs/{blob_id}/confirm` |
 | backups | `PUT /v1/backups/{kind}/{chunk_seq}` `[object(bstr)]` → `[blob_id, size]`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}` → `[object, created]`, `DELETE` the same (`501` at wire 1); see § Backups |
 | reports | `POST /v1/reports` `[group_id, seq, envelope(bstr), k_f(bstr32)]`, `GET /v1/reports`, `PATCH /v1/reports/{id}` |
 | voice | `POST /v1/channels/{id}/calls` → `[call_id, group_id, livekit_url, token, ice_servers]`, `DELETE /v1/calls/{call_id}` |
