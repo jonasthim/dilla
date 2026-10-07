@@ -21,7 +21,7 @@ const ENCODER = new TextEncoder();
 /**
  * The inline editor that replaces a row's body: a named textarea described by its hint, focused on mount with the
  * caret at the end. Enter saves, Shift+Enter breaks the line, and neither acts while an IME composes or on a held
- * key's repeats; Escape cancels and bubbles, so the row takes focus. A blank text or one over the budget (`measure`,
+ * key's repeats; Escape cancels and bubbles outside composition, so the row takes focus. A blank text or one over the budget (`measure`,
  * UTF-8 bytes by default) is not saved, and save stays focusable with `aria-disabled`. The counter appears near the
  * budget as the composer's does.
  */
@@ -52,13 +52,13 @@ export function MessageEditor({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape') {
       e.preventDefault();
       onCancel();
       return;
     }
     if (e.key !== 'Enter' || e.shiftKey) return;
-    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     e.preventDefault();
     if (e.repeat) return;
     save();

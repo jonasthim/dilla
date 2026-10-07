@@ -57,6 +57,15 @@ describe('MessageEditor', () => {
     expect(onCancel).toHaveBeenCalledTimes(2);
   });
 
+  it('does not cancel on Escape while an IME is composing', () => {
+    const { box, onCancel } = setup();
+    fireEvent.keyDown(box, { key: 'Escape', isComposing: true });
+    fireEvent.keyDown(box, { key: 'Escape', keyCode: 229 });
+    expect(onCancel).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses an empty text and a text over the budget, measured by the given measure', () => {
     const { box, onSave } = setup('   ');
     fireEvent.keyDown(box, { key: 'Enter' });
