@@ -1296,6 +1296,33 @@ fn parked_and_deleted_targets_touch_at_most_three_rows_per_insert() {
         }
     }
     let before = me.probe.lock().expect("lock").total_changes();
+    let edit_seq = post(
+        &mut mallory,
+        &mut relay,
+        0xb3,
+        Edit,
+        Some(TARGET),
+        "late edit",
+    );
+    me.sync(&relay);
+    let c = me.probe.lock().expect("lock");
+    let (body, envelope): (String, Option<Vec<u8>>) = c
+        .query_row(
+            "SELECT body, envelope FROM app_messages WHERE group_id = ?1 AND seq = ?2",
+            params![GROUP.as_slice(), edit_seq as i64],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("stored late edit");
+    assert_eq!(body, "", "late edit of a deleted target is blanked");
+    assert!(envelope.is_none(), "late edit envelope is blanked");
+    let after = c.total_changes();
+    drop(c);
+    assert!(
+        after - before <= 4,
+        "deleted target edit changed {} rows",
+        after - before
+    );
+    let before = after;
     post(
         &mut mallory,
         &mut relay,
