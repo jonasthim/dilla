@@ -82,6 +82,29 @@ const config: TestRunnerConfig = {
         await page.emulateMedia({ media: 'screen' });
       }
     }
+    // A11Y-DESIGN-01: at 320 × 256 the stacked settings frame scrolls as one column, so its last control can be reached.
+    if (context.id === 'settings-settingsframe--zoomed-in') {
+      const r = await page.evaluate(() => {
+        const frame = document.querySelector('.d-settings-frame');
+        const panel = document.querySelector('.d-settings-frame__panel');
+        const body = document.querySelector('.d-settings-frame__body');
+        const side = document.querySelector('.d-settings-frame__side');
+        const last = Array.from(document.querySelectorAll('.d-settings-frame__body button')).at(-1);
+        if (!frame || !panel || !body || !side || !last) return null;
+        const size = frame.getBoundingClientRect();
+        panel.scrollTop = panel.scrollHeight;
+        const p = panel.getBoundingClientRect();
+        const b = last.getBoundingClientRect();
+        return {
+          width: Math.round(size.width), height: Math.round(size.height), panelScrolls: panel.scrollHeight > panel.clientHeight,
+          bodyScrolls: body.scrollHeight > body.clientHeight + 1, sideScrolls: side.scrollHeight > side.clientHeight + 1,
+          lastInView: b.top >= p.top - 1 && b.bottom <= p.bottom + 1,
+        };
+      });
+      if (!r || r.width !== 320 || r.height !== 256 || !r.panelScrolls || r.bodyScrolls || r.sideScrolls || !r.lastInView) {
+        throw new Error(`${context.title} / ${context.name}: the stacked frame does not scroll as one column (${JSON.stringify(r)})`);
+      }
+    }
     if (context.id.startsWith('ceremony-onboardingframe--')) {
       await page.emulateMedia({ media: 'print' });
       try {

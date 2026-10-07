@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, it, expect, vi } from 'vitest';
+import { beforeAll, describe, it, expect, vi } from 'vitest';
 import { SettingsFrame, type SettingsFrameProps } from './SettingsFrame.tsx';
 import { SettingsNav } from '../SettingsNav/SettingsNav.tsx';
 import { Dialog } from '../Dialog/Dialog.tsx';
@@ -111,5 +111,34 @@ describe('SettingsFrame', () => {
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><SettingsFrame {...props()} /></div>);
     await expectNoAxeViolations(container);
+  });
+});
+
+// A11Y-DESIGN-01: at 320 × 256 (400 % zoom) the stacked frame left the section a strip two lines high. Stacked, the
+// whole panel scrolls as one column. jsdom computes no layout or container query, so this reads the rules themselves;
+// the Settings/SettingsFrame ZoomedIn story measures the result in a browser (.storybook/test-runner.ts).
+describe('SettingsFrame stacked (A11Y-DESIGN-01)', () => {
+  // The test config reads no CSS (css: false), and this package has no Node types: the file is read through a dynamic
+  // import of node:fs, from the package directory the runner starts in.
+  let stacked = '';
+  beforeAll(async () => {
+    const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string, encoding: 'utf8'): string };
+    const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
+    const base = fs.readFileSync(`${cwd}/src/styles/base.css`, 'utf8');
+    stacked = /@container d-settings \(max-width: 44\.99rem\) \{([\s\S]*?)\n\}/.exec(base)?.[1] ?? '';
+  });
+  const rule = (selector: string): string => new RegExp(`\\.d-settings-frame \\.${selector} \\{([^}]*)\\}`).exec(stacked)?.[1] ?? '';
+
+  it('scrolls the panel as one column: two auto rows and its own vertical scroll', () => {
+    expect(stacked).not.toBe('');
+    expect(rule('d-settings-frame__panel')).toMatch(/grid-template-rows: auto auto;/);
+    expect(rule('d-settings-frame__panel')).toMatch(/overflow-y: auto;/);
+  });
+
+  it('lets the navigation and the section grow with their content instead of scrolling each', () => {
+    expect(rule('d-settings-frame__side')).toMatch(/overflow: visible;/);
+    expect(rule('d-settings-frame__side')).toMatch(/min-height: auto;/);
+    expect(rule('d-settings-frame__body')).toMatch(/overflow: visible;/);
+    expect(rule('d-settings-frame__pane')).toMatch(/min-height: auto;/);
   });
 });

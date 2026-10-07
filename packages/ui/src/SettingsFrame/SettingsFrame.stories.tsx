@@ -89,3 +89,8 @@ export const Notifications: Story = { render: () => <Frame section="notification
 export const Narrow: Story = {
   render: () => <div style={{ ['--d-settings-w' as string]: '22.5rem', ['--d-settings-h' as string]: '46.25rem' }}><Frame section="devices" /></div>,
 };
+// A11Y-DESIGN-01: 320 × 256, the viewport of 1280 × 1024 at 400 % zoom (WCAG 1.4.10). The stacked panel scrolls as one
+// column; .storybook/test-runner.ts scrolls it and checks that the last control comes into view.
+export const ZoomedIn: Story = {
+  render: () => <div style={{ ['--d-settings-w' as string]: '20rem', ['--d-settings-h' as string]: '16rem' }}><Frame section="devices" /></div>,
+};

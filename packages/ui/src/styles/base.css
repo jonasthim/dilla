@@ -42,6 +42,10 @@
   .d-settings-frame.d-settings-frame { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
 }
 @container d-settings (max-width: 44.99rem) {
-  .d-settings-frame .d-settings-frame__panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-  .d-settings-frame .d-settings-frame__side { border-right: 0; border-bottom: 1px solid var(--hairline-2); }
+  /* A11Y-DESIGN-01: stacked, the whole panel scrolls as one column (at 320 × 256, 400 % zoom, a fixed navigation left
+     the section a two-line strip); the navigation and the section grow with their content. */
+  .d-settings-frame .d-settings-frame__panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; overflow-y: auto; }
+  .d-settings-frame .d-settings-frame__side { border-right: 0; border-bottom: 1px solid var(--hairline-2); overflow: visible; min-height: auto; }
+  .d-settings-frame .d-settings-frame__pane { min-height: auto; }
+  .d-settings-frame .d-settings-frame__body { overflow: visible; }
 }
