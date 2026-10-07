@@ -370,3 +370,16 @@ describe('focus handoffs (F4)', () => {
     expect(composer()).toHaveFocus();
   });
 });
+
+describe('received reactions', () => {
+  it('shows sanitized chip text and name while toggling the original reaction', async () => {
+    const emoji = '\u202egpj.exe1';
+    const { fake, user } = renderConversation({ items: [peerRow(P1, '1', 'x', { reactions: [{ emoji, count: 1, mine: false }] })] });
+    const chip = within(rowOf(P1)).getByRole('button', { name: 'gpj.exe1, 1' });
+    expect(chip).toHaveTextContent('gpj.exe1');
+    expect(chip.textContent).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u);
+    expect(chip.getAttribute('aria-label')).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u);
+    await user.click(chip);
+    expect(fake.callsOf('react')).toEqual([{ m: 'react', channelId: GEN, msgId: P1, emoji, on: true }]);
+  });
+});
