@@ -9,7 +9,7 @@ const HEX32 = /^[0-9a-f]{32}$/;
 const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
 // L-HTTP-10, exactly, with HOST = 127.0.0.1:8453.
 const CSP =
-  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; " +
+  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; " +
   "connect-src 'self' ws://127.0.0.1:8453 wss://127.0.0.1:8453; worker-src 'self'; media-src 'none'; " +
   "object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 // The invite landing's own policy (internal/api/invites.go:107), set on every answer of GET /i/{code}.
