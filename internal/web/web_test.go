@@ -265,7 +265,7 @@ const permissions = "camera=(), microphone=(), display-capture=(), geolocation=(
 
 // cspExampleOrg is L-HTTP-10's policy, written out, for a request whose Host is example.org.
 const cspExampleOrg = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; " +
-	"img-src 'self'; font-src 'self'; connect-src 'self' ws://example.org wss://example.org; " +
+	"img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://example.org wss://example.org; " +
 	"worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; " +
 	"frame-ancestors 'none'"
 
@@ -323,7 +323,7 @@ func TestEveryServedFileCarriesItsTypeCacheAndSecurityHeaders(t *testing.T) {
 func TestTheCSPNamesTheWebSocketOriginOnlyForAWellFormedHost(t *testing.T) {
 	h, _ := newSite(t)
 	const head = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; " +
-		"img-src 'self'; font-src 'self'; connect-src 'self'"
+		"img-src 'self' blob:; font-src 'self'; connect-src 'self'"
 	const tail = "; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; " +
 		"form-action 'none'; frame-ancestors 'none'"
 	for _, c := range []struct{ host, sources string }{

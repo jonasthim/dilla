@@ -218,6 +218,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"ListBlobRefsOfDeletedChannels",
 			// Plan 2 task 12: the backup walks every blob row in blob_id order.
 			"ListBlobs",
+			// dilla-web-2b task 4 (L-SQL-31): pending references, their confirm and the pending sweep.
+			"ConfirmBlobRef", "ListPendingBlobRefs", "PutPendingBlobRef",
 		}},
 		{"Ops", reflect.TypeOf((*store.Ops)(nil)).Elem(), []string{
 			"Audit", "GetReport", "ListAudit", "PutReport", "SchemaVersion",

@@ -7,7 +7,7 @@ import {
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
 
-const CSP = `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' ws://${HOST} wss://${HOST}; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+const CSP = `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://${HOST} wss://${HOST}; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 const COMMON = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',

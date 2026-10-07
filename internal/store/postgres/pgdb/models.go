@@ -44,6 +44,7 @@ type BlobRefs struct {
 	UploaderDevice id.ID
 	Mime           string
 	Created        int64
+	Confirmed      int64
 }
 
 type BlobTombstones struct {

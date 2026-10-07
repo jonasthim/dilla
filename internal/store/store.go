@@ -546,7 +546,7 @@ type ReadableSearchHit struct {
 // last reference has been gone for the grace window, and blob_refs' ON DELETE
 // RESTRICT makes DeleteBlob fail while any reference stands.
 //
-// PutBlob, PutBlobRef and PutBlobTombstone are idempotent: the id is the hash of
+// PutBlob, PutBlobRef, PutPendingBlobRef and PutBlobTombstone are idempotent: the id is the hash of
 // the bytes, so a second insert names the same object and keeps the first row.
 // DeleteBlobRef of an absent reference is not an error; DeleteBlob of an absent
 // row is ErrNotFound. MarkBlobUnreferenced sets unref_since only when no
@@ -555,10 +555,14 @@ type Blobs interface {
 	PutBlob(ctx context.Context, b BlobRow) error
 	GetBlob(ctx context.Context, blobID []byte) (BlobRow, error)
 	PutBlobRef(ctx context.Context, blobID []byte, channelID, uploaderDevice id.ID, mime string, created int64) error
+	// PutPendingBlobRef leaves an existing reference unchanged, pending or confirmed (L-SQL-31).
+	PutPendingBlobRef(ctx context.Context, blobID []byte, channelID, uploaderDevice id.ID, mime string, created int64) error
 	// GetBlobRef is P2-D17: the GET's "404, never 403" rule reads the reference
 	// in the requested channel, and task 11's uploader-only DELETE reads its
 	// uploader. ErrNotFound when the channel holds no reference.
 	GetBlobRef(ctx context.Context, blobID []byte, channelID id.ID) (BlobRefRow, error)
+	// ConfirmBlobRef is idempotent and returns ErrNotFound when the reference is absent (L-SQL-31).
+	ConfirmBlobRef(ctx context.Context, blobID []byte, channelID id.ID) error
 	DeleteBlobRef(ctx context.Context, blobID []byte, channelID id.ID) error
 	CountBlobRefs(ctx context.Context, blobID []byte) (int64, error)
 	MarkBlobUnreferenced(ctx context.Context, blobID []byte, at int64) error
@@ -599,6 +603,8 @@ type Blobs interface {
 	// ListBlobRefsOfDeletedChannels is the references held by tombstoned
 	// channels, oldest first, at most limit.
 	ListBlobRefsOfDeletedChannels(ctx context.Context, limit int32) ([]BlobRefRow, error)
+	// ListPendingBlobRefs returns unconfirmed references strictly older than before, oldest first.
+	ListPendingBlobRefs(ctx context.Context, before int64, limit int32) ([]BlobRefRow, error)
 }
 
 type Ops interface {

@@ -28,7 +28,7 @@ func builtDist() string {
 	return filepath.FromSlash("../../packages/web/dist")
 }
 
-const wantCSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; " +
+const wantCSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; " +
 	"font-src 'self'; connect-src 'self' ws://127.0.0.1:8463 wss://127.0.0.1:8463; worker-src 'self'; " +
 	"media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 

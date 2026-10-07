@@ -245,7 +245,7 @@ func TestTheSweeperNeverCollectsABackupObject(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = bs.Close() })
 			clk := clock.NewFake(time.Unix(1_790_000_000, 0).UTC())
-			sweeper := blob.NewSweeper(repo, bs, clk, 24*time.Hour, time.Hour, slog.New(slog.DiscardHandler))
+			sweeper := blob.NewSweeper(repo, bs, clk, 24*time.Hour, 24*time.Hour, time.Hour, slog.New(slog.DiscardHandler))
 			user := seedUser(ctx, t, repo).ID
 			var none id.ID
 

@@ -226,7 +226,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		log.Info("removed interrupted uploads", "count", n)
 	}
 	sweeper := blob.NewSweeper(repo, blobStore, clock.System(), cfg.Blobs.GCGrace.Value(),
-		cfg.Blobs.GCInterval.Value(), log).WithMetrics(metrics)
+		cfg.Blobs.PendingTTL.Value(), cfg.Blobs.GCInterval.Value(), log).WithMetrics(metrics)
 
 	// The in-process SFU when livekit.enabled (Plan 2 task 16). It starts before the composition
 	// root, which builds the call routes over its token mint and proxies /rtc to it, and it stops

@@ -70,6 +70,7 @@ func (b *Blobs) Register(mux *server.Mux) {
 	// http.ServeContent writes no body for a HEAD and keeps the headers.
 	mux.HandleFunc("GET /v1/channels/{id}/blobs/{blob_id}", b.get)
 	mux.HandleFunc("DELETE /v1/channels/{id}/blobs/{blob_id}", b.delete)
+	mux.HandleFunc("POST /v1/channels/{id}/blobs/{blob_id}/confirm", b.confirm)
 }
 
 // octetStream is the one media type a blob travels as, both ways: the server
@@ -124,7 +125,8 @@ func (b *Blobs) channel(r *http.Request, want Bits) (auth.Session, store.Channel
 
 // put is PUT /v1/channels/{id}/blobs/{blob_id}: raw ciphertext in, and
 // `201 [blob_id, size]` when the bytes were new or `200 [blob_id, size]` when
-// they were already stored. Either way the caller's channel gains a reference.
+// they were already stored. Either way the caller's channel gains a reference, pending until its
+// uploader confirms it (POST …/confirm) unless the channel already held one.
 func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 	// SetReadDeadline must be the FIRST statement: "Setting the read deadline
 	// after it has been exceeded will not extend it" (go doc
@@ -269,7 +271,7 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 		if err := tx.ClearBlobUnreferenced(r.Context(), blobID); err != nil {
 			return err
 		}
-		if err := tx.PutBlobRef(r.Context(), blobID, ch.ID, s.DeviceID, "", now); err != nil {
+		if err := tx.PutPendingBlobRef(r.Context(), blobID, ch.ID, s.DeviceID, "", now); err != nil {
 			return err
 		}
 		if quota <= 0 {
@@ -442,6 +444,53 @@ func (b *Blobs) get(w http.ResponseWriter, r *http.Request) {
 	// Last-Modified, which is meaningless after a restore. This one call answers
 	// 206, 416, If-Range and 304.
 	http.ServeContent(w, r, "", time.Time{}, f)
+}
+
+// confirm is POST /v1/channels/{id}/blobs/{blob_id}/confirm (L-HTTP-82): the uploading user says
+// the reference is in use, so the pending sweep (blobs.pending_ttl) leaves it alone. No body is read.
+func (b *Blobs) confirm(w http.ResponseWriter, r *http.Request) {
+	s, ch, blobID, err := b.channel(r, PermViewChannel)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := b.refuseTombstoned(r.Context(), blobID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ref, err := b.repo.GetBlobRef(r.Context(), blobID, ch.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		server.WriteError(w, server.Errorf(server.CodeNotFound, "no such object"))
+		return
+	}
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	dev, err := b.repo.GetDevice(r.Context(), ref.UploaderDevice)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		server.WriteError(w, err)
+		return
+	}
+	if err != nil || dev.UserID != s.UserID {
+		server.WriteError(w, server.Errorf(server.CodeNotUploader, "only the uploading user may confirm this object"))
+		return
+	}
+	err = b.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.LockBlob(r.Context(), blobID); err != nil {
+			return err
+		}
+		return tx.ConfirmBlobRef(r.Context(), blobID, ch.ID)
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		server.WriteError(w, server.Errorf(server.CodeNotFound, "no such object"))
+		return
+	}
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // delete is DELETE /v1/channels/{id}/blobs/{blob_id}: it removes this channel's

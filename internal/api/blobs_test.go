@@ -422,3 +422,109 @@ func TestAPurgedBlobCannotBeUploadedAgain(t *testing.T) {
 		t.Fatal("a refused upload wrote a row")
 	}
 }
+
+// L-HTTP-81: a PUT writes a pending reference, which GET already serves; a second PUT into the same
+// channel leaves the reference as it was.
+func TestAPutWritesAPendingReferenceThatIsServed(t *testing.T) {
+	e, ch, tok := blobEnv(t)
+	payload := []byte("pending until sent")
+	sum := sha256.Sum256(payload)
+	if status, body := e.DoRaw(http.MethodPut, blobURL(ch, sum[:]), tok, "application/octet-stream", payload); status != http.StatusCreated {
+		t.Fatalf("PUT = %d (%s)", status, body)
+	}
+	ref, err := e.Repo.GetBlobRef(t.Context(), sum[:], ch)
+	if err != nil || ref.Confirmed {
+		t.Fatalf("after PUT: %+v, %v; want a pending reference", ref, err)
+	}
+	get := e.Request(t, http.MethodGet, blobURL(ch, sum[:]), tok, nil, nil)
+	defer get.Body.Close()
+	got, _ := io.ReadAll(get.Body)
+	if get.StatusCode != http.StatusOK || !bytes.Equal(got, payload) {
+		t.Fatalf("GET of a pending reference = %d, %d bytes", get.StatusCode, len(got))
+	}
+}
+
+// L-HTTP-82: the uploading user confirms, from any device and twice; another user who views the
+// channel, a non-viewer and a channel without the reference are refused, and none of them changes
+// the row. A PUT after the confirm leaves it confirmed.
+func TestTheUploaderConfirmsAPendingReference(t *testing.T) {
+	e, ch, tok := blobEnv(t)
+	other := secondChannel(t, e, ch, tok)
+	payload := []byte("a sent attachment")
+	sum := sha256.Sum256(payload)
+	if status, _ := e.DoRaw(http.MethodPut, blobURL(ch, sum[:]), tok, "application/octet-stream", payload); status != http.StatusCreated {
+		t.Fatal("PUT failed")
+	}
+	confirm := blobURL(ch, sum[:]) + "/confirm"
+
+	_, otherTok := e.NewUser("other")
+	joinChannel(t, e, ch, otherTok)
+	if status, body := e.Do(http.MethodPost, confirm, otherTok, nil); status != http.StatusForbidden || e.ErrCode(body) != "E_NOT_UPLOADER" {
+		t.Fatalf("confirm by another user = %d %s, want 403 E_NOT_UPLOADER", status, e.ErrCode(body))
+	}
+	_, stranger := e.NewUser("stranger")
+	if status, body := e.Do(http.MethodPost, confirm, stranger, nil); status != http.StatusNotFound || e.ErrCode(body) != "E_NOT_FOUND" {
+		t.Fatalf("confirm by a non-viewer = %d %s, want 404 E_NOT_FOUND", status, e.ErrCode(body))
+	}
+	if status, body := e.Do(http.MethodPost, blobURL(other, sum[:])+"/confirm", tok, nil); status != http.StatusNotFound || e.ErrCode(body) != "E_NOT_FOUND" {
+		t.Fatalf("confirm in a channel without the reference = %d %s, want 404 E_NOT_FOUND", status, e.ErrCode(body))
+	}
+	if ref, err := e.Repo.GetBlobRef(t.Context(), sum[:], ch); err != nil || ref.Confirmed {
+		t.Fatalf("a refused confirm changed the reference: %+v, %v", ref, err)
+	}
+
+	user := userOf(t, e, tok)
+	phone := seedDevices(t, e, user, 1)[0]
+	phoneTok := "phone-" + user.String()
+	e.sess[phoneTok] = sessionFor(user, phone)
+	for _, by := range []string{phoneTok, tok} {
+		status, body := e.Do(http.MethodPost, confirm, by, nil)
+		if status != http.StatusNoContent || len(body) != 0 {
+			t.Fatalf("confirm by the uploading user = %d with %d body bytes, want 204 and none", status, len(body))
+		}
+	}
+	if ref, err := e.Repo.GetBlobRef(t.Context(), sum[:], ch); err != nil || !ref.Confirmed {
+		t.Fatalf("after the confirm: %+v, %v; want confirmed", ref, err)
+	}
+	if status, _ := e.DoRaw(http.MethodPut, blobURL(ch, sum[:]), tok, "application/octet-stream", payload); status != http.StatusOK {
+		t.Fatal("a second PUT was not 200")
+	}
+	if ref, err := e.Repo.GetBlobRef(t.Context(), sum[:], ch); err != nil || !ref.Confirmed {
+		t.Fatalf("a PUT after the confirm made the reference pending again: %+v, %v", ref, err)
+	}
+}
+
+// Bytes an instance administrator purged are 410 on confirm as on GET, and the row is untouched.
+func TestAConfirmOfPurgedBytesIs410(t *testing.T) {
+	e, ch, tok := blobEnv(t)
+	payload := []byte("taken down while pending")
+	sum := sha256.Sum256(payload)
+	if status, _ := e.DoRaw(http.MethodPut, blobURL(ch, sum[:]), tok, "application/octet-stream", payload); status != http.StatusCreated {
+		t.Fatal("PUT failed")
+	}
+	if err := e.Repo.PutBlobTombstone(t.Context(), sum[:], "takedown", userOf(t, e, tok), e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("PutBlobTombstone: %v", err)
+	}
+	if status, body := e.Do(http.MethodPost, blobURL(ch, sum[:])+"/confirm", tok, nil); status != http.StatusGone || e.ErrCode(body) != "E_PRUNED" {
+		t.Fatalf("confirm of purged bytes = %d %s, want 410 E_PRUNED", status, e.ErrCode(body))
+	}
+	if ref, err := e.Repo.GetBlobRef(t.Context(), sum[:], ch); err != nil || ref.Confirmed {
+		t.Fatalf("a refused confirm changed the reference: %+v, %v", ref, err)
+	}
+}
+
+// The uploader may delete a pending reference as a confirmed one (L-HTTP-81).
+func TestTheUploaderDeletesAPendingReference(t *testing.T) {
+	e, ch, tok := blobEnv(t)
+	payload := []byte("discarded before sending")
+	sum := sha256.Sum256(payload)
+	if status, _ := e.DoRaw(http.MethodPut, blobURL(ch, sum[:]), tok, "application/octet-stream", payload); status != http.StatusCreated {
+		t.Fatal("PUT failed")
+	}
+	if status, _ := e.Do(http.MethodDelete, blobURL(ch, sum[:]), tok, nil); status != http.StatusNoContent {
+		t.Fatalf("DELETE of a pending reference = %d, want 204", status)
+	}
+	if n, err := e.Repo.CountBlobRefs(t.Context(), sum[:]); err != nil || n != 0 {
+		t.Fatalf("references = %d (%v), want 0", n, err)
+	}
+}

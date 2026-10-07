@@ -149,9 +149,10 @@ func TestTheCatchUpCarriesTheRowShapeAndTheTombstone(t *testing.T) {
 	}
 }
 
-// R29 over the wire: only the uploading USER may delete, so an enrolled session of another account
-// is 403 E_NOT_UPLOADER — not 404, because the message's existence is not what is being hidden.
-func TestADeleteByAnotherUserIsFourZeroThreeNotUploader(t *testing.T) {
+// L-HTTP-80 over the wire: a session whose device is not a member of the group is 404 E_NOT_FOUND —
+// what every member-only group route answers, so group existence is not probeable — before the
+// uploader rule is read.
+func TestADeleteByANonMemberIsFourZeroFourNotFound(t *testing.T) {
 	h := newGroupsAPI(t)
 	h.mustCreate(t)
 	member := h.memberToken(t)
@@ -160,11 +161,11 @@ func TestADeleteByAnotherUserIsFourZeroThreeNotUploader(t *testing.T) {
 	// h.session is an enrolled session of a DIFFERENT user, and not a leaf of the group.
 	res := h.do(t, http.MethodDelete,
 		"/v1/groups/"+h.groupID.String()+"/messages/1", h.session, nil)
-	if res.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403: %s", res.Code, res.Body.String())
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", res.Code, res.Body.String())
 	}
-	if got := errorCode(t, res); got != string(server.CodeNotUploader) {
-		t.Fatalf("code = %s, want %s", got, server.CodeNotUploader)
+	if got := errorCode(t, res); got != string(server.CodeNotFound) {
+		t.Fatalf("code = %s, want %s", got, server.CodeNotFound)
 	}
 }
 

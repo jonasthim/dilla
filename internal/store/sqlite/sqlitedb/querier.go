@@ -22,6 +22,7 @@ type Querier interface {
 	ClearEpochUnknown(ctx context.Context, arg ClearEpochUnknownParams) error
 	ClearLoginFailures(ctx context.Context, arg ClearLoginFailuresParams) error
 	CloseGroup(ctx context.Context, arg CloseGroupParams) error
+	ConfirmBlobRef(ctx context.Context, arg ConfirmBlobRefParams) (int64, error)
 	ConsumeRecoveryCode(ctx context.Context, arg ConsumeRecoveryCodeParams) (int64, error)
 	ConsumeTOTPCounter(ctx context.Context, arg ConsumeTOTPCounterParams) (int64, error)
 	CountBlobRefs(ctx context.Context, arg CountBlobRefsParams) (int64, error)
@@ -194,6 +195,9 @@ type Querier interface {
 	ListMembersOfCommunity(ctx context.Context, arg ListMembersOfCommunityParams) ([]Members, error)
 	ListOpenGroups(ctx context.Context, arg ListOpenGroupsParams) ([]MlsGroups, error)
 	ListOverwrites(ctx context.Context, arg ListOverwritesParams) ([]ChannelOverwrites, error)
+	// dilla-web-2b (L-SQL-31): references their uploader never confirmed, created strictly before the
+	// cutoff, oldest first; the sweeper drops them after blobs.pending_ttl.
+	ListPendingBlobRefs(ctx context.Context, arg ListPendingBlobRefsParams) ([]BlobRefs, error)
 	ListPendingJoinGroups(ctx context.Context, arg ListPendingJoinGroupsParams) ([]id.ID, error)
 	ListPendingJoins(ctx context.Context, arg ListPendingJoinsParams) ([]id.ID, error)
 	// Who message.plain reaches: the channel's materialised members (task 7's channel_members, which
@@ -294,6 +298,9 @@ type Querier interface {
 	// Channel overwrites (Plan 2 task 3, 00006_overwrites.sql).
 	PutOverwrite(ctx context.Context, arg PutOverwriteParams) error
 	PutPasswordCredential(ctx context.Context, arg PutPasswordCredentialParams) error
+	// dilla-web-2b (L-SQL-31): a PUT's reference, pending until its uploader confirms it. A repeat
+	// keeps the first row, pending or confirmed.
+	PutPendingBlobRef(ctx context.Context, arg PutPendingBlobRefParams) error
 	PutProposal(ctx context.Context, arg PutProposalParams) error
 	// Monotone: a stale tab that reports an older position must not un-read the channel.
 	PutReadState(ctx context.Context, arg PutReadStateParams) error

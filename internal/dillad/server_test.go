@@ -771,7 +771,7 @@ func webTree(t *testing.T, files map[string]string) fstest.MapFS {
 }
 
 func wantCSP(host string) string {
-	return "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; " +
+	return "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; " +
 		"font-src 'self'; connect-src 'self' ws://" + host + " wss://" + host + "; worker-src 'self'; " +
 		"media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 }
