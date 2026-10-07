@@ -502,27 +502,20 @@ func (b *Blobs) confirm(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	ref, err := b.repo.GetBlobRef(r.Context(), blobID, ch.ID)
-	if errors.Is(err, store.ErrNotFound) {
-		server.WriteError(w, server.Errorf(server.CodeNotFound, "no such object"))
-		return
-	}
-	if err != nil {
-		server.WriteError(w, err)
-		return
-	}
-	dev, err := b.repo.GetDevice(r.Context(), ref.UploaderDevice)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		server.WriteError(w, err)
-		return
-	}
-	if err != nil || dev.UserID != s.UserID {
-		server.WriteError(w, server.Errorf(server.CodeNotUploader, "only the uploading user may confirm this object"))
-		return
-	}
 	err = b.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.LockBlob(r.Context(), blobID); err != nil {
 			return err
+		}
+		ref, err := tx.GetBlobRef(r.Context(), blobID, ch.ID)
+		if err != nil {
+			return err
+		}
+		dev, err := tx.GetDevice(r.Context(), ref.UploaderDevice)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		if err != nil || dev.UserID != s.UserID {
+			return server.Errorf(server.CodeNotUploader, "only the uploading user may confirm this object")
 		}
 		return tx.ConfirmBlobRef(r.Context(), blobID, ch.ID)
 	})
@@ -548,36 +541,32 @@ func (b *Blobs) delete(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	ref, err := b.repo.GetBlobRef(r.Context(), blobID, ch.ID)
-	if errors.Is(err, store.ErrNotFound) {
-		// Idempotent: deleting something that is already gone is a success.
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if err != nil {
-		server.WriteError(w, err)
-		return
-	}
 	// R29 and R34: at v1 only the uploading user may delete, from any of their
 	// devices. There is NO moderator fallback — a channel's manage-messages holder
 	// is refused here like anyone else. Moderator deletion of an attachment needs a
 	// signed moderation event, which is follow-up card 2; letting PermManageMessages
 	// drop another user's reference would ship exactly the capability R29 defers,
 	// with no signed event and no audit row.
-	dev, err := b.repo.GetDevice(r.Context(), ref.UploaderDevice)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		server.WriteError(w, err)
-		return
-	}
-	// A reference whose device row is gone has no provable uploader, so nobody
-	// may delete it through this route; the admin purge still can.
-	if err != nil || dev.UserID != s.UserID {
-		server.WriteError(w, server.Errorf(server.CodeNotUploader,
-			"only the uploading user may delete this object"))
-		return
-	}
 	now := b.clk.Now().Unix()
 	if err := b.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.LockBlob(r.Context(), blobID); err != nil {
+			return err
+		}
+		ref, err := tx.GetBlobRef(r.Context(), blobID, ch.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		} // An absent reference is already deleted.
+		if err != nil {
+			return err
+		}
+		dev, err := tx.GetDevice(r.Context(), ref.UploaderDevice)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		// A reference whose device row is gone has no provable uploader; only the admin purge can remove it.
+		if err != nil || dev.UserID != s.UserID {
+			return server.Errorf(server.CodeNotUploader, "only the uploading user may delete this object")
+		}
 		if err := tx.DeleteBlobRef(r.Context(), blobID, ch.ID); err != nil {
 			return err
 		}

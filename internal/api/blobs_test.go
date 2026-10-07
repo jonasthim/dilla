@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -18,6 +19,70 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
+
+// Runs one committed replacement after a handler's early lookup but before its mutation transaction.
+type replacingBlobRepo struct {
+	store.Repository
+	beforeTx func() error
+}
+
+func (r *replacingBlobRepo) Tx(ctx context.Context, fn func(store.Repository) error) error {
+	if r.beforeTx != nil {
+		hook := r.beforeTx
+		r.beforeTx = nil
+		if err := hook(); err != nil {
+			return err
+		}
+	}
+	return r.Repository.Tx(ctx, fn)
+}
+
+func TestBlobMutationChecksCurrentUploaderAfterReferenceReplacement(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			e, community, owner := channelEnv(t)
+			bs, err := blob.Open(t.TempDir(), "fs")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = bs.Close() })
+			repo := &replacingBlobRepo{Repository: e.Repo}
+			api.NewBlobs(repo, bs, api.NewResolver(repo), config.Default().Blobs, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
+			ch, _, status := newChannel(t, e, community, owner, uint64(api.ChannelText), uint64(api.ModeE2EE), uint64(api.VisPrivate), "files")
+			if status != http.StatusCreated {
+				t.Fatalf("channel = %d", status)
+			}
+			_, replacement := e.NewUser("replacement")
+			joinChannel(t, e, ch, replacement)
+			payload := []byte("shared encrypted bytes")
+			sum := sha256.Sum256(payload)
+			url := blobURL(ch, sum[:])
+			if status, body := e.DoRaw(http.MethodPut, url, owner, "application/octet-stream", payload); status != http.StatusCreated {
+				t.Fatalf("initial PUT = %d %s", status, body)
+			}
+			newDevice := e.sess[replacement].DeviceID
+			repo.beforeTx = func() error {
+				return e.Repo.Tx(t.Context(), func(tx store.Repository) error {
+					if err := tx.DeleteBlobRef(t.Context(), sum[:], ch); err != nil {
+						return err
+					}
+					return tx.PutPendingBlobRef(t.Context(), sum[:], ch, newDevice, "", e.Clk.Now().Unix())
+				})
+			}
+			if method == http.MethodPost {
+				url += "/confirm"
+			}
+			status, body := e.Do(method, url, owner, nil)
+			if status != http.StatusForbidden || e.ErrCode(body) != "E_NOT_UPLOADER" {
+				t.Fatalf("%s after replacement = %d %s, want 403 E_NOT_UPLOADER", method, status, body)
+			}
+			ref, err := e.Repo.GetBlobRef(t.Context(), sum[:], ch)
+			if err != nil || ref.UploaderDevice != newDevice || ref.Confirmed {
+				t.Fatalf("replacement reference = %+v, %v; want pending and owned by replacement", ref, err)
+			}
+		})
+	}
+}
 
 // blobEnv mounts the blob routes over a real blob directory with the default
 // limits, and returns an end-to-end encrypted text channel the owner created.
