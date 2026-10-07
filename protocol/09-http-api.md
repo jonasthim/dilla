@@ -552,8 +552,8 @@ are CBOR as everywhere else.
   `blobs.store_max_bytes` bounds the whole instance the same way (every stored blob counts,
   including one no channel references any more), `507 E_STORAGE_FULL` before the body is read.
 - **Upload rate.** Each user may start `blobs.uploads_per_minute` uploads a minute and upload
-  `blobs.upload_bytes_per_day` bytes a day (both refill continuously), attachment `PUT`s and backup
-  `PUT`s (§ Backups) drawing on the one budget; over either the answer is
+  `blobs.upload_bytes_per_day` bytes a day (both refill continuously), attachment `PUT`s and the
+  root backup `PUT` (§ Backups) drawing on the one budget; over either the answer is
   `429 E_RATE_LIMITED` with its `retry_after_ms`, before the body is read. Every byte the instance
   reads spends the day's budget, whether the upload is stored, refused or later deleted: deleting
   an attachment frees quota, never budget.
@@ -611,18 +611,23 @@ object under `SHA-256(object)` in its blob store and cannot open it.
   are `507 E_STORAGE_FULL` and nothing is stored) and toward the uploader's
   `blobs.quota_bytes_per_user` together with their attachments, each distinct blob once (§ Blobs);
   an upload that would take the user past it is `507 E_STORAGE_FULL` and the stored object stays.
-  A replaced state object leaves the count, so replacing it with one of the same size never passes
-  the quota. An object whose bytes an instance administrator removed (§ Admin) is `410 E_PRUNED` and nothing
+  A replaced state object leaves the count, and the quota check for a replacement is the delta over
+  the object it replaces: a replacement no larger than its predecessor never fails the quota, even
+  for a user already at or past it, so re-sealing the state object (which revoking another device
+  starts with) is never refused for storage. An object whose bytes an instance administrator removed (§ Admin) is `410 E_PRUNED` and nothing
   is stored, as for a blob: content addressing would otherwise hand the removed name straight back.
 - **Pending.** The two reads admit a `pending` session (`02` § Device sessions item 4), so a
   device entering the recovery key reads both objects before it holds a credential; `PUT` and
   `DELETE` need an `enrolled` one (`403 E_FORBIDDEN`).
-- Every route spends the device session's `read` or `write` bucket (§ Rate limits). A `PUT` also
-  spends the user's blob upload budget exactly as an attachment upload does (§ Blobs, "Upload
-  rate"): one upload of `blobs.uploads_per_minute` and the bytes it reads of
+- Every route spends the device session's `read` or `write` bucket (§ Rate limits). A `PUT` of the
+  root (kind `0`) also spends the user's blob upload budget exactly as an attachment upload does
+  (§ Blobs, "Upload rate"): one upload of `blobs.uploads_per_minute` and the bytes it reads of
   `blobs.upload_bytes_per_day`, `429 E_RATE_LIMITED` with its `retry_after_ms` over either, before
-  the body is read. A replaced state object stays on disk for `blobs.gc_grace`, so without this
-  budget one session could fill the instance's storage with replaced objects.
+  the body is read. A `PUT` of the state object (kind `1`) spends only the device session's
+  `write` bucket: on the user's shared budget, a stolen session of the same user could keep it
+  empty and so refuse the owner the state `PUT` that revoking the thief's device starts with. A
+  replaced state object stays on disk for `blobs.gc_grace`, so the state `PUT`s of one device are
+  bounded by its `write` bucket and the 1,048,640-byte body cap.
 
 ### Voice
 

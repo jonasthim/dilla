@@ -486,6 +486,39 @@ func TestBackupsCountTowardTheUploadersQuota(t *testing.T) {
 	}
 }
 
+// BACKUPS-RECOVERY-01, the quota half: the quota check for a state replacement is the delta over
+// the object it replaces, so a replacement no larger than its predecessor never fails it, even for
+// a user already at or past the quota (an operator lowered it, or attachments filled it). Before the
+// fix the whole user count was checked after the upsert, so such a user could not re-seal the state
+// object at all — and revoking another device starts with that PUT. A larger replacement is still
+// held to the quota.
+func TestAStateReplacementNoLargerThanItsPredecessorNeverFailsTheQuota(t *testing.T) {
+	h, d := newBackupAPI(t, func(c *config.Config) {
+		c.Blobs.QuotaBytesPerUser = 240
+	})
+	s := backupSessions(t, d)
+	root := rootObject(t, 0xd1)
+	wantStored(t, "the root", putObject(t, h, "0", s.enrolled, root), http.StatusCreated, root)
+	s1 := sealedObject(t, 120, 0xd2) // 137 bytes: 103 + 137 = 240, exactly the quota
+	wantStored(t, "a state at the quota", putObject(t, h, "1", s.enrolled, s1), http.StatusCreated, s1)
+
+	d.Config.Blobs.QuotaBytesPerUser = 200 // the user is now 40 bytes past it
+	s2 := sealedObject(t, 120, 0xd3)       // the same size
+	wantStored(t, "an equal-size replacement past the quota", putObject(t, h, "1", s.enrolled, s2), http.StatusOK, s2)
+	s3 := sealedObject(t, 100, 0xd4) // smaller
+	wantStored(t, "a smaller replacement past the quota", putObject(t, h, "1", s.enrolled, s3), http.StatusOK, s3)
+	s4 := sealedObject(t, 101, 0xd5) // one byte larger than its predecessor, and 103 + 118 > 200
+	wantRefusal(t, "a larger replacement past the quota", putObject(t, h, "1", s.enrolled, s4), http.StatusInsufficientStorage, "E_STORAGE_FULL")
+	rec := backupReq(t, h, http.MethodGet, "/v1/backups/1/0", s.enrolled, nil)
+	if out := cborArray(t, rec); rec.Code != http.StatusOK || len(out) != 2 || !bytes.Equal(out[0].([]byte), s3) {
+		t.Fatalf("the state after a refused larger replacement = %d %v, want s3 unchanged", rec.Code, out)
+	}
+
+	// A larger replacement that fits is admitted as before.
+	d.Config.Blobs.QuotaBytesPerUser = 240
+	wantStored(t, "a larger replacement under the quota", putObject(t, h, "1", s.enrolled, s4), http.StatusOK, s4)
+}
+
 // wantNothingStored asserts that a refused PUT left no row, no blobs row and no file for object.
 func wantNothingStored(t *testing.T, d api.Deps, user store.UserRow, kind int32, object []byte) {
 	t.Helper()

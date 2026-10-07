@@ -84,19 +84,25 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the backup store is not wired"))
 		return
 	}
-	// The blob upload meter, before a byte of the body is read, exactly as the attachment PUT
-	// spends it (security review F3): without it the state object, replaced on every PUT and each
-	// replaced one kept for blobs.gc_grace, was a disk-exhaustion path bounded only by the device
-	// write bucket. The reservation is the body cap or the announced length, and every byte read
-	// spends the day's budget whatever happens to the object.
-	reserve := limit
-	if r.ContentLength >= 0 && r.ContentLength < reserve {
-		reserve = r.ContentLength
-	}
-	held, err := d.UploadMeter.begin(sess.UserID, reserve)
-	if err != nil {
-		server.WriteError(w, err)
-		return
+	// The root (kind 0) spends the blob upload meter before a byte of the body is read, exactly as
+	// the attachment PUT does (security review F3); the reservation is the body cap or the announced
+	// length, and every byte read spends the day's budget whatever happens to the object. The state
+	// object (kind 1) does not: it spends only the device session's write bucket the route mounts
+	// (branch review BACKUPS-RECOVERY-01). On the user's shared meter a stolen session of the same
+	// user kept the bucket empty at its own device rate, and the owner's state PUT, which revoking
+	// another device starts with, answered 429 for as long as the thief kept at it.
+	meter := kind == 0
+	var held int64
+	if meter {
+		reserve := limit
+		if r.ContentLength >= 0 && r.ContentLength < reserve {
+			reserve = r.ContentLength
+		}
+		held, err = d.UploadMeter.begin(sess.UserID, reserve)
+		if err != nil {
+			server.WriteError(w, err)
+			return
+		}
 	}
 	counted := &countingReader{r: r.Body}
 	r.Body = struct {
@@ -105,7 +111,9 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 	}{counted, r.Body}
 	var raw cbor.RawMessage
 	err = server.DecodeBody(w, r, limit, &raw)
-	d.UploadMeter.settle(sess.UserID, held, counted.n)
+	if meter {
+		d.UploadMeter.settle(sess.UserID, held, counted.n)
+	}
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -180,19 +188,31 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 			return d.withinQuota(ctx, tx, sess.UserID)
 		}
 		prev, err := tx.GetBackup(ctx, sess.UserID, 1, id.ID{}, 0)
+		// noLarger: the replacement is no larger than the state object it replaces.
+		noLarger := false
 		if errors.Is(err, store.ErrNotFound) {
 			prev = store.BackupRow{}
 		} else if err != nil {
 			return err
 		} else {
 			status = http.StatusOK
+			prevBlob, err := tx.GetBlob(ctx, prev.BlobID)
+			if err != nil {
+				return err
+			}
+			noLarger = uint64(n) <= prevBlob.Size //nolint:gosec // G115: n is a nonnegative byte count
 		}
 		if err := tx.PutBackup(ctx, row); err != nil {
 			return err
 		}
-		// After the upsert, so the replaced object has left the count and a replacement nets out.
-		if err := d.withinQuota(ctx, tx, sess.UserID); err != nil {
-			return err
+		// The quota check for a replacement is the delta over the object it replaces (branch review
+		// BACKUPS-RECOVERY-01): one no larger never fails it, even for a user already at or past the
+		// quota, so re-sealing the state object can never be refused for storage. A larger one is
+		// checked after the upsert, so the replaced object has left the count.
+		if !noLarger {
+			if err := d.withinQuota(ctx, tx, sess.UserID); err != nil {
+				return err
+			}
 		}
 		if prev.BlobID != nil && !bytes.Equal(prev.BlobID, blobID) {
 			refers, err := tx.BackupRefersToBlob(ctx, prev.BlobID)
