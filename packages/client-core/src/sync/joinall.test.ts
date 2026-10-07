@@ -5,7 +5,7 @@
   import { judgeWelcomes } from './channel';
   import { SYNC } from './engine';
   import { joinOrder } from './joinall';
-  import { device, readyInfo, type Device } from './testing/harness';
+  import { coreCalls, device, readyInfo, type Device } from './testing/harness';
   import { COMMUNITY, ME, ManualClock, ModelDs, PEER, at, deferred, idOf, settle, wire, type RouteName } from './testing/model';
 
   let ds: ModelDs;
@@ -145,6 +145,34 @@
       expect(count('postResync', broken.groupId)).toBe(1); // the sweep's resync, refused; join-all does not try again
       expect(count('getGroupInfo', held.groupId)).toBe(0);
       expect(at(d.joinAll, d.joinAll.length - 1)).toEqual({ done: 2, total: 2, failed: 0 });
+    });
+
+    // TESTS-VACUITY-01: a removed device (state 4: protocol/01 inactivity, a quarantine's release) still sees the
+    // channel, so join-all rejoins it; the mutation that drops `|| state === 4` counts it done and joins nothing.
+    it('rejoins an expected group whose row is in state 4 by one external join, counts it done and keeps its timeline', async () => {
+      const d = device(ds, clock, ME);
+      const [eg] = channels(1);
+      if (eg === undefined) throw new Error('no channel');
+      await d.engine.openChannel({ communityId: COMMUNITY, channelId: eg.channelId, textGroupId: eg.groupId });
+      ds.peerSend(eg.groupId, PEER, 'before the removal');
+      await settle();
+      ds.propose(eg.groupId, 'remove', ME.device);
+      ds.peerCommit(eg.groupId, PEER);
+      await settle();
+      expect(d.core.group(eg.groupId)?.state).toBe(4);
+      expect(d.core.bodies(eg.groupId)).toEqual(['before the removal']);
+      ds.resetCalls();
+      d.core.resetLog();
+      d.engine.setExpected([eg]);
+      d.gateway.ready(readyInfo(ME));
+      await until(() => d.core.group(eg.groupId)?.state === 2);
+      await settle();
+      expect(coreCalls(d, eg.groupId, ['groupDiscard', 'groupJoinExternal', 'groupJoined'])).toEqual(['groupJoinExternal', 'groupJoined']);
+      expect(count('postResync', eg.groupId)).toBe(1);
+      expect(at(d.joinAll, 0)).toEqual({ done: 0, total: 1, failed: 0 });
+      expect(at(d.joinAll, d.joinAll.length - 1)).toEqual({ done: 1, total: 1, failed: 0 });
+      expect(d.core.group(eg.groupId)).toMatchObject({ state: 2, communityId: COMMUNITY, targetId: eg.channelId });
+      expect(d.core.bodies(eg.groupId)).toEqual(['before the removal']);
     });
 
     it('a refused join is counted and tried again on the next ready', async () => {
