@@ -23,25 +23,27 @@ async function takeTimes(b: TokenBuckets, bucket: Bucket, n: number): Promise<vo
 }
 
 describe('TokenBuckets', () => {
-  it('is 80 % of the server buckets', () => {
-    expect(PACING).toEqual({
-      read: { perSecond: 8, burst: 48 }, write: { perSecond: 1.6, burst: 16 },
-      message: { perSecond: 0.8, burst: 16 }, commit: { perSecond: 1.6, burst: 32 },
-      proposal: { perSecond: 0.4, burst: 8 },
-    });
+it('is 80 % of the server buckets, the upload bucket 80 % of the per-user 20 a minute', () => {
+  expect(PACING).toEqual({
+    read: { perSecond: 8, burst: 48 }, write: { perSecond: 1.6, burst: 16 },
+    message: { perSecond: 0.8, burst: 16 }, commit: { perSecond: 1.6, burst: 32 },
+    proposal: { perSecond: 0.4, burst: 8 }, upload: { perSecond: 16 / 60, burst: 16 },
   });
+});
 
-  it('lets a full burst through, then waits for one token', async () => {
-    const waits: Record<Exclude<Bucket, 'none'>, number> = { read: 125, write: 625, message: 1250, commit: 625, proposal: 2500 };
-    for (const bucket of ['read', 'write', 'message', 'commit', 'proposal'] as const) {
-      const clock = manualClock();
-      const b = new TokenBuckets(clock.deps);
-      await takeTimes(b, bucket, PACING[bucket].burst);
-      expect(clock.sleeps, bucket).toEqual([]);
-      await b.take(bucket);
-      expect(clock.sleeps, bucket).toEqual([waits[bucket]]);
-    }
-  });
+it('lets a full burst through, then waits for one token', async () => {
+  const waits: Record<Exclude<Bucket, 'none'>, number> = {
+    read: 125, write: 625, message: 1250, commit: 625, proposal: 2500, upload: 3750,
+  };
+  for (const bucket of ['read', 'write', 'message', 'commit', 'proposal', 'upload'] as const) {
+    const clock = manualClock();
+    const b = new TokenBuckets(clock.deps);
+    await takeTimes(b, bucket, PACING[bucket].burst);
+    expect(clock.sleeps, bucket).toEqual([]);
+    await b.take(bucket);
+    expect(clock.sleeps, bucket).toEqual([waits[bucket]]);
+  }
+});
 
   it('refills with elapsed time and never beyond the burst', async () => {
     const clock = manualClock();

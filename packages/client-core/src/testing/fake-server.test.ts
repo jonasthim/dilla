@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { decode, encode, type CborValue } from '../cbor';
-import { toHex } from '../hex';
+import { arr, decode, encode, type CborValue } from '../cbor';
+import { fromHex, toHex } from '../hex';
+import { CHANNEL, COMMUNITY, ME, ModelDs, PEER } from '../sync/testing/model';
 import { DillaHttpError } from '../http/errors';
 import type { Routes } from '../http/routes';
 import { fakeDskPub, fakeListBlob, type FakeListEntry } from './fake-list';
@@ -542,5 +543,167 @@ describe('FakeServer answers the web-2a account routes as dillad does', () => {
     expect((await refusalOf(c.routes.deleteSessions(DEV_B))).status).toBe(404);
     await c.routes.deleteSessions(DEV_A);
     expect((await refusalOf(c.routes.listDevices())).status).toBe(401);
+  });
+});
+
+const CH = new Uint8Array(16).fill(0xc5);
+const CH_2 = new Uint8Array(16).fill(0xc6);
+const BYTES = new Uint8Array([9, 8, 7, 6, 5]);
+const sha = (b: Uint8Array): Uint8Array => new Uint8Array(createHash('sha256').update(b).digest());
+const BLOB = sha(BYTES);
+const blobPath = (ch: Uint8Array, blob: Uint8Array, tail = ''): string => `/v1/channels/${toHex(ch)}/blobs/${toHex(blob)}${tail}`;
+const refKey = (ch: Uint8Array, blob: Uint8Array): string => `${toHex(ch)}:${toHex(blob)}`;
+
+/** A registered user with an enrolled session on `device` (no device list: scope 0). */
+async function signedIn(server: FakeServer, name: string, device: Uint8Array) {
+  const user = server.register(name, device);
+  const c = client(server);
+  const s = await c.routes.postSession(device, establishBody(device, null));
+  c.use(s.token);
+  return { c, user, token: s.token };
+}
+
+/** One octet-stream request straight to the model, outside HttpClient (which would wait out a 429). */
+async function octet(server: FakeServer, method: string, path: string, token: string, body?: Uint8Array): Promise<{ status: number; body: CborValue }> {
+  const response = await server.fetch(`http://127.0.0.1:8453${path}`, { method,
+    headers: { 'Content-Type': 'application/octet-stream', Authorization: `Bearer ${token}` }, body: body as BodyInit | undefined });
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return { status: response.status, body: bytes.length === 0 ? null : decode(bytes) };
+}
+
+describe('FakeServer answers the blob routes as dillad does after web-2b task 4 (L-TS-31, lesson f)', () => {
+  it('stores new bytes under a pending reference, answers 201 then 200, and serves them in that channel only', async () => {
+    const server = new FakeServer();
+    const { c, user } = await signedIn(server, 'ada', DEV_A);
+    expect(await c.routes.putBlob(CH, BLOB, BYTES)).toEqual({ created: true, size: 5 });
+    expect(server.blobs.get(toHex(BLOB))).toEqual(BYTES);
+    expect(server.blobRefs.get(refKey(CH, BLOB))).toEqual({ uploaderUser: toHex(user), confirmed: false, created: NOW_S });
+    expect(server.attachmentBytes.has(toHex(BLOB))).toBe(true);
+    expect(server.log.find((r) => r.method === 'PUT')?.contentType).toBe('application/octet-stream');
+    expect(await c.routes.putBlob(CH, BLOB, BYTES)).toEqual({ created: false, size: 5 });
+    expect(await c.routes.getBlob(CH, BLOB)).toEqual(BYTES);
+    expect(await c.routes.getBlob(CH_2, BLOB)).toBeNull();
+  });
+
+  it('refuses a body that is not octet-stream (415), one that does not hash to its name (422) and one over the cap (413), storing nothing', async () => {
+    const server = new FakeServer();
+    const { c, token } = await signedIn(server, 'ada', DEV_A);
+    expect(await raw(server, 'PUT', blobPath(CH, BLOB), token, BYTES))
+      .toEqual({ status: 415, body: ['E_INVALID_REQUEST', 'Content-Type must be application/octet-stream', null] });
+    expect(await refusalOf(c.routes.putBlob(CH, new Uint8Array(32).fill(1), BYTES))).toMatchObject({ status: 422, code: 'E_INVALID_REQUEST' });
+    server.maxBlobBytes = 4;
+    expect(await refusalOf(c.routes.putBlob(CH, BLOB, BYTES))).toMatchObject({ status: 413, code: 'E_TOO_LARGE', detail: 'at most 4 bytes' });
+    expect([server.blobs.size, server.blobRefs.size]).toEqual([0, 0]);
+  });
+
+  // Attacker statement (L-HTTP-82): only the uploading user can confirm or delete a reference, so nobody else's action
+  // can make an honest upload expire or vanish.
+  it('lets only the uploading user confirm (204, twice) and answers 403 to another user and 404 without a reference', async () => {
+    const server = new FakeServer();
+    const ada = await signedIn(server, 'ada', DEV_A);
+    const bob = await signedIn(server, 'bob', DEV_B);
+    await ada.c.routes.putBlob(CH, BLOB, BYTES);
+    expect(await refusalOf(bob.c.routes.confirmBlob(CH, BLOB))).toMatchObject({ status: 403, code: 'E_NOT_UPLOADER' });
+    expect(server.blobRefs.get(refKey(CH, BLOB))?.confirmed).toBe(false);
+    await ada.c.routes.confirmBlob(CH, BLOB);
+    await ada.c.routes.confirmBlob(CH, BLOB);
+    expect(server.blobRefs.get(refKey(CH, BLOB))?.confirmed).toBe(true);
+    expect(await refusalOf(ada.c.routes.confirmBlob(CH_2, BLOB))).toMatchObject({ status: 404, code: 'E_NOT_FOUND' });
+  });
+
+  it('deletes a reference for its uploading user only, and an absent reference is already gone (204)', async () => {
+    const server = new FakeServer();
+    const ada = await signedIn(server, 'ada', DEV_A);
+    const bob = await signedIn(server, 'bob', DEV_B);
+    await ada.c.routes.putBlob(CH, BLOB, BYTES);
+    expect(await refusalOf(bob.c.routes.deleteBlob(CH, BLOB))).toMatchObject({ status: 403, code: 'E_NOT_UPLOADER' });
+    await ada.c.routes.deleteBlob(CH, BLOB);
+    expect(server.blobRefs.has(refKey(CH, BLOB))).toBe(false);
+    expect((await octet(server, 'DELETE', blobPath(CH, BLOB), ada.token)).status).toBe(204);
+    expect(await ada.c.routes.getBlob(CH, BLOB)).toBeNull();
+  });
+
+  it('answers 404 on every blob route to a user who may not view the channel', async () => {
+    const server = new FakeServer();
+    const ada = await signedIn(server, 'ada', DEV_A);
+    const bob = await signedIn(server, 'bob', DEV_B);
+    server.channelViewers.set(toHex(CH), new Set([toHex(ada.user)]));
+    await ada.c.routes.putBlob(CH, BLOB, BYTES);
+    for (const [method, tail] of [['PUT', ''], ['GET', ''], ['DELETE', ''], ['POST', '/confirm']] as const) {
+      const answer = await octet(server, method, blobPath(CH, BLOB, tail), bob.token, method === 'PUT' ? BYTES : undefined);
+      expect(answer, `${method}${tail}`).toEqual({ status: 404, body: ['E_NOT_FOUND', 'no such object', null] });
+    }
+    expect(server.blobRefs.get(refKey(CH, BLOB))?.uploaderUser).toBe(toHex(ada.user));
+  });
+
+  it('answers 410 E_PRUNED for purged bytes on PUT, GET and confirm', async () => {
+    const server = new FakeServer();
+    const ada = await signedIn(server, 'ada', DEV_A);
+    await ada.c.routes.putBlob(CH, BLOB, BYTES);
+    server.prunedBytes.add(toHex(BLOB));
+    expect(await refusalOf(ada.c.routes.putBlob(CH, BLOB, BYTES))).toMatchObject({ status: 410, code: 'E_PRUNED' });
+    expect(await refusalOf(ada.c.routes.getBlob(CH, BLOB))).toMatchObject({ status: 410, code: 'E_PRUNED' });
+    expect(await refusalOf(ada.c.routes.confirmBlob(CH, BLOB))).toMatchObject({ status: 410, code: 'E_PRUNED' });
+  });
+
+  it('meters blob uploads on the per-user budget it shares with backups', async () => {
+    const server = new FakeServer();
+    const ada = await signedIn(server, 'ada', DEV_A);
+    server.uploadsPerMinute = 2;
+    expect((await octet(server, 'PUT', blobPath(CH, BLOB), ada.token, BYTES)).status).toBe(201);
+    expect((await octet(server, 'PUT', blobPath(CH_2, BLOB), ada.token, BYTES)).status).toBe(200);
+    const third = await octet(server, 'PUT', blobPath(CH, BLOB), ada.token, BYTES);
+    expect(third.status).toBe(429);
+    expect(arr(third.body)[0]).toBe('E_RATE_LIMITED');
+  });
+
+  it('answers the next blob request once with an injected refusal', async () => {
+    const server = new FakeServer();
+    const ada = await signedIn(server, 'ada', DEV_A);
+    server.failNextBlob(507, 'E_STORAGE_FULL');
+    expect(await octet(server, 'PUT', blobPath(CH, BLOB), ada.token, BYTES)).toEqual({ status: 507, body: ['E_STORAGE_FULL', '', null] });
+    expect(server.blobs.size).toBe(0);
+    server.failNextBlob(429, 'E_RATE_LIMITED', 1500);
+    expect(await octet(server, 'GET', blobPath(CH, BLOB), ada.token)).toEqual({ status: 429, body: ['E_RATE_LIMITED', '', 1500n] });
+    expect((await octet(server, 'PUT', blobPath(CH, BLOB), ada.token, BYTES)).status).toBe(201);
+  });
+
+  it('sweeps unconfirmed references older than the ttl and keeps confirmed and younger ones and the bytes', async () => {
+    const server = new FakeServer();
+    const ada = await signedIn(server, 'ada', DEV_A);
+    const other = new Uint8Array([1]);
+    const third = new Uint8Array([2]);
+    await ada.c.routes.putBlob(CH, BLOB, BYTES);
+    await ada.c.routes.putBlob(CH, sha(other), other);
+    await ada.c.routes.confirmBlob(CH, sha(other));
+    server.nowS += 100;
+    await ada.c.routes.putBlob(CH, sha(third), third);
+    expect(server.sweepPending(NOW_S + 86_400, 0)).toBe(0);
+    expect(server.sweepPending(NOW_S + 86_401, 86_400)).toBe(1);
+    expect([...server.blobRefs.keys()].sort()).toEqual([refKey(CH, sha(other)), refKey(CH, sha(third))].sort());
+    expect(server.blobs.has(toHex(BLOB))).toBe(true);
+  });
+});
+
+describe('FakeServer answers the message delete through its delivery-service model (L-HTTP-80, lesson f)', () => {
+  it('answers 404 without a model, then 204, 403 and 404 as ModelDs.deleteAs decides', async () => {
+    const server = new FakeServer();
+    const me = await signedIn(server, 'me', ME.device);
+    expect(await raw(server, 'DELETE', `/v1/groups/${'9a'.repeat(16)}/messages/3`, me.token))
+      .toEqual({ status: 404, body: ['E_NOT_FOUND', 'no such object', null] });
+    const ds = new ModelDs();
+    ds.own(ME.user, ME.device);
+    ds.own(PEER.user, PEER.device);
+    ds.addChannel(COMMUNITY, CHANNEL);
+    const g = ds.peerCreate(PEER, CHANNEL);
+    ds.join(g, ME.device);
+    const mine = ds.peerSend(g, ME, 'mine');
+    const theirs = ds.peerSend(g, PEER, 'theirs');
+    server.groupDelete = (groupHex, deviceHex, seq) => ds.deleteAs(fromHex(groupHex), fromHex(deviceHex), seq);
+    expect(await raw(server, 'DELETE', `/v1/groups/${toHex(g)}/messages/${String(theirs)}`, me.token))
+      .toEqual({ status: 403, body: ['E_NOT_UPLOADER', 'only the uploading user may delete this message', null] });
+    expect((await raw(server, 'DELETE', `/v1/groups/${toHex(g)}/messages/${String(mine)}`, me.token)).status).toBe(204);
+    expect(ds.view(g).messages.map((m) => m.seq)).toEqual([theirs]);
+    expect((await raw(server, 'DELETE', `/v1/groups/${toHex(g)}/messages/99`, me.token)).status).toBe(404);
   });
 });

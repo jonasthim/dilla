@@ -373,7 +373,7 @@ function world(opts: {
     listChannels: vi.fn((_id: Uint8Array) => { calls.push('listChannels'); return Promise.resolve([{
       id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP,
     }]); }),
-    listMembers: vi.fn((_id: Uint8Array) => { calls.push('listMembers'); return Promise.resolve([{ userId: USER, username: 'web', display: 'Web', kind: 0 as const, nick: '' }]); }),
+    listMembers: vi.fn((_id: Uint8Array) => { calls.push('listMembers'); return Promise.resolve([{ userId: USER, username: 'web', display: 'Web', kind: 0 as const, nick: '', roleIds: [] }]); }),
     postTicket: vi.fn(() => Promise.resolve({ ticket: 'ticket', expires: 0n })),
     getAccountMe: vi.fn(() => Promise.resolve({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n })),
     listDms: vi.fn(() => { calls.push('listDms'); return Promise.resolve(state.dms); }),

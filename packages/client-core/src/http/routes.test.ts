@@ -30,6 +30,11 @@ const TREE = fill(24, 0x0f);
 const HASH = fill(32, 0x10);
 const REF = fill(32, 0x11);
 const WIN = fill(48, 0x12);
+const STORED = fill(5, 0x1a);
+
+function octetReply(status: number, body: Uint8Array): Response {
+  return new Response(body.slice(), { status, headers: { 'Content-Type': 'application/octet-stream', 'X-Dilla-Generation': '7' } });
+}
 
 const DEVICE_2 = fill(16, 0x19);
 const PEER_USER = fill(16, 0x18);
@@ -175,8 +180,8 @@ const CASES: Case[] = [
       [BOT, 1_700_000_100, 'helper', [ROLE], 'bot1', 'Bot One', 1],
     ]),
     expected: [
-      { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '' },
-      { userId: BOT, username: 'bot1', display: 'Bot One', kind: 1, nick: 'helper' },
+      { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [] },
+      { userId: BOT, username: 'bot1', display: 'Bot One', kind: 1, nick: 'helper', roleIds: [ROLE] },
     ],
   },
   {
@@ -365,6 +370,51 @@ const CASES: Case[] = [
     method: 'DELETE', path: `/v1/devices/${hex(DEVICE_2)}`, bucket: 'write', idempotent: false, auth: true, sent: null,
     reply: () => noContent(), expected: undefined,
   },
+{
+  name: 'deleteGroupMessage', call: (r) => r.deleteGroupMessage(GROUP, 12n),
+  method: 'DELETE', path: `/v1/groups/${hex(GROUP)}/messages/12`, bucket: 'write', idempotent: true, auth: true, sent: null,
+  reply: () => noContent(), expected: 'deleted',
+},
+{
+  name: 'deleteGroupMessage answers gone for a 404', call: (r) => r.deleteGroupMessage(GROUP, 12n),
+  method: 'DELETE', path: `/v1/groups/${hex(GROUP)}/messages/12`, bucket: 'write', idempotent: true, auth: true, sent: null,
+  reply: () => refusal(404, 'E_NOT_FOUND', 'no such object'), expected: 'gone',
+},
+{
+  name: 'putBlob of new bytes', call: (r) => r.putBlob(CHANNEL, BLOB_ID, STORED),
+  method: 'PUT', path: `/v1/channels/${hex(CHANNEL)}/blobs/${hex(BLOB_ID)}`, bucket: 'upload', idempotent: true, auth: true,
+  sent: STORED, reply: () => cborReply(201, [BLOB_ID, 5]), expected: { created: true, size: 5 },
+},
+{
+  name: 'putBlob of bytes the instance already holds', call: (r) => r.putBlob(CHANNEL, BLOB_ID, STORED),
+  method: 'PUT', path: `/v1/channels/${hex(CHANNEL)}/blobs/${hex(BLOB_ID)}`, bucket: 'upload', idempotent: true, auth: true,
+  sent: STORED, reply: () => cborReply(200, [BLOB_ID, 5]), expected: { created: false, size: 5 },
+},
+{
+  name: 'confirmBlob sends no body', call: (r) => r.confirmBlob(CHANNEL, BLOB_ID),
+  method: 'POST', path: `/v1/channels/${hex(CHANNEL)}/blobs/${hex(BLOB_ID)}/confirm`, bucket: 'write', idempotent: true,
+  auth: true, sent: null, reply: () => noContent(), expected: undefined,
+},
+{
+  name: 'getBlob returns the stored bytes as served', call: (r) => r.getBlob(CHANNEL, BLOB_ID),
+  method: 'GET', path: `/v1/channels/${hex(CHANNEL)}/blobs/${hex(BLOB_ID)}`, bucket: 'read', idempotent: true, auth: true,
+  sent: null, reply: () => octetReply(200, STORED), expected: STORED,
+},
+{
+  name: 'getBlob answers null for a 404', call: (r) => r.getBlob(CHANNEL, BLOB_ID),
+  method: 'GET', path: `/v1/channels/${hex(CHANNEL)}/blobs/${hex(BLOB_ID)}`, bucket: 'read', idempotent: true, auth: true,
+  sent: null, reply: () => refusal(404, 'E_NOT_FOUND', 'no such object'), expected: null,
+},
+{
+  name: 'deleteBlob', call: (r) => r.deleteBlob(CHANNEL, BLOB_ID),
+  method: 'DELETE', path: `/v1/channels/${hex(CHANNEL)}/blobs/${hex(BLOB_ID)}`, bucket: 'write', idempotent: true, auth: true,
+  sent: null, reply: () => noContent(), expected: undefined,
+},
+{
+  name: 'deleteBlob counts a 404 as done', call: (r) => r.deleteBlob(CHANNEL, BLOB_ID),
+  method: 'DELETE', path: `/v1/channels/${hex(CHANNEL)}/blobs/${hex(BLOB_ID)}`, bucket: 'write', idempotent: true, auth: true,
+  sent: null, reply: () => refusal(404, 'E_NOT_FOUND', 'no such object'), expected: undefined,
+},
 ];
 
 describe('Routes: one request per call, decoded as the server answers it', () => {
@@ -431,6 +481,16 @@ const REFUSALS: RefusalCase[] = [
   { name: 'listDms 403', call: (r) => r.listDms(), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
   { name: 'getChannel 404', call: (r) => r.getChannel(CHANNEL), reply: () => refusal(404, 'E_NOT_FOUND'), status: 404, code: 'E_NOT_FOUND' },
   { name: 'deleteDevice 404', call: (r) => r.deleteDevice(DEVICE_2), reply: () => refusal(404, 'E_NOT_FOUND', 'not found'), status: 404, code: 'E_NOT_FOUND' },
+{ name: 'deleteGroupMessage 403 another user\'s upload', call: (r) => r.deleteGroupMessage(GROUP, 12n), reply: () => refusal(403, 'E_NOT_UPLOADER', 'only the uploading user may delete this message'), status: 403, code: 'E_NOT_UPLOADER' },
+{ name: 'putBlob 413', call: (r) => r.putBlob(CHANNEL, BLOB_ID, STORED), reply: () => refusal(413, 'E_TOO_LARGE', 'at most 104857600 bytes'), status: 413, code: 'E_TOO_LARGE' },
+{ name: 'putBlob 422 hash mismatch', call: (r) => r.putBlob(CHANNEL, BLOB_ID, STORED), reply: () => refusal(422, 'E_INVALID_REQUEST', 'the body does not hash to the requested blob_id'), status: 422, code: 'E_INVALID_REQUEST' },
+{ name: 'putBlob 507 quota', call: (r) => r.putBlob(CHANNEL, BLOB_ID, STORED), reply: () => refusal(507, 'E_STORAGE_FULL', 'your attachment quota is exhausted'), status: 507, code: 'E_STORAGE_FULL' },
+{ name: 'putBlob 410 purged', call: (r) => r.putBlob(CHANNEL, BLOB_ID, STORED), reply: () => refusal(410, 'E_PRUNED', 'these bytes were removed by the server operator'), status: 410, code: 'E_PRUNED' },
+{ name: 'confirmBlob 403', call: (r) => r.confirmBlob(CHANNEL, BLOB_ID), reply: () => refusal(403, 'E_NOT_UPLOADER'), status: 403, code: 'E_NOT_UPLOADER' },
+{ name: 'confirmBlob 404', call: (r) => r.confirmBlob(CHANNEL, BLOB_ID), reply: () => refusal(404, 'E_NOT_FOUND', 'no such object'), status: 404, code: 'E_NOT_FOUND' },
+{ name: 'confirmBlob 410', call: (r) => r.confirmBlob(CHANNEL, BLOB_ID), reply: () => refusal(410, 'E_PRUNED'), status: 410, code: 'E_PRUNED' },
+{ name: 'getBlob 410', call: (r) => r.getBlob(CHANNEL, BLOB_ID), reply: () => refusal(410, 'E_PRUNED'), status: 410, code: 'E_PRUNED' },
+{ name: 'deleteBlob 403', call: (r) => r.deleteBlob(CHANNEL, BLOB_ID), reply: () => refusal(403, 'E_NOT_UPLOADER', 'only the uploading user may delete this object'), status: 403, code: 'E_NOT_UPLOADER' },
 ];
 
 describe('Routes: a refusal propagates unchanged and is sent once', () => {
@@ -596,7 +656,7 @@ describe('Routes: member paging', () => {
       `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members?after=${hex(member(200))}`,
     ]);
     expect(members).toHaveLength(203);
-    expect(members[0]).toEqual({ userId: member(1), username: 'u1', display: 'U 1', kind: 0, nick: '' });
+    expect(members[0]).toEqual({ userId: member(1), username: 'u1', display: 'U 1', kind: 0, nick: '', roleIds: [] });
     expect(members[202].userId).toEqual(member(203));
   });
 
@@ -613,5 +673,59 @@ describe('Routes: member paging', () => {
     t.replies.push(cborReply(200, page), cborReply(200, page));
     await expect(routes.listMembers(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
     expect(t.seen).toHaveLength(2);
+  });
+});
+
+describe('Routes: web-2b deletes and blobs', () => {
+  it('putBlob labels its body octet-stream and hands it to fetch uncopied', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(201, [BLOB_ID, 5]));
+    await routes.putBlob(CHANNEL, BLOB_ID, STORED);
+    expect(t.seen[0].headers.get('content-type')).toBe('application/octet-stream');
+    expect(t.seen[0].init.body).toBe(STORED);
+  });
+
+  it('confirmBlob sends neither a body nor a content type', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent());
+    await routes.confirmBlob(CHANNEL, BLOB_ID);
+    expect(t.seen[0].body).toBeNull();
+    expect(t.seen[0].headers.get('content-type')).toBeNull();
+  });
+
+  it('waits out a 429 on an upload and sends the bytes once more', async () => {
+    const { t, routes } = setup();
+    t.replies.push(refusal(429, 'E_RATE_LIMITED', '', 1000), cborReply(201, [BLOB_ID, 5]));
+    expect(await routes.putBlob(CHANNEL, BLOB_ID, STORED)).toEqual({ created: true, size: 5 });
+    expect(t.sleeps).toEqual([1000]);
+    expect(t.seen).toHaveLength(2);
+  });
+
+  it('getBlob bounds the body by maxBytes and is unbounded without it (FACTS-SECURITY-13)', async () => {
+    const { t, routes } = setup();
+    t.replies.push(octetReply(200, STORED));
+    await expect(routes.getBlob(CHANNEL, BLOB_ID, STORED.length - 1)).rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE', status: 200 });
+    t.replies.push(octetReply(200, STORED));
+    expect(await routes.getBlob(CHANNEL, BLOB_ID, STORED.length)).toEqual(STORED);
+    t.replies.push(octetReply(200, STORED));
+    expect(await routes.getBlob(CHANNEL, BLOB_ID)).toEqual(STORED);
+    expect(t.seen).toHaveLength(3);
+  });
+
+  it('refuses bad ids before sending', async () => {
+    const { t, routes } = setup();
+    await expect(routes.deleteGroupMessage(fill(15, 1), 1n)).rejects.toThrow('E_ROUTE_INPUT: groupId must be 16 bytes');
+    await expect(routes.deleteGroupMessage(GROUP, -1n)).rejects.toThrow('E_ROUTE_INPUT: seq must not be negative');
+    await expect(routes.putBlob(CHANNEL, fill(31, 1), STORED)).rejects.toThrow('E_ROUTE_INPUT: blobId must be 32 bytes');
+    await expect(routes.getBlob(fill(15, 1), BLOB_ID)).rejects.toThrow('E_ROUTE_INPUT: channelId must be 16 bytes');
+    await expect(routes.confirmBlob(CHANNEL, fill(33, 1))).rejects.toThrow('E_ROUTE_INPUT: blobId must be 32 bytes');
+    await expect(routes.deleteBlob(CHANNEL, fill(16, 1))).rejects.toThrow('E_ROUTE_INPUT: blobId must be 32 bytes');
+    expect(t.seen).toHaveLength(0);
+  });
+
+  it('listMembers reads a null role list as empty', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(200, [[USER, 1_700_000_000, '', null, 'jonas', 'Jonas', 0]]));
+    expect(await routes.listMembers(COMMUNITY)).toEqual([{ userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [] }]);
   });
 });

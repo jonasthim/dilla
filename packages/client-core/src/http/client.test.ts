@@ -317,3 +317,63 @@ describe('pacing', () => {
     expect(t.sleeps).toEqual([]);
   });
 });
+
+describe('octet-stream bodies (L-HTTP-91)', () => {
+  it('labels an octet-stream body as such and hands fetch the very same bytes', async () => {
+    const t = fakeTransport();
+    t.replies.push(cborReply(201, [new Uint8Array(32).fill(0x17), 3]));
+    const stored = new Uint8Array([1, 2, 3]);
+    await new HttpClient(t.deps).request({ method: 'PUT', path: '/v1/blob', body: stored, bucket: 'upload', idempotent: true,
+      contentType: 'application/octet-stream' });
+    expect(t.seen[0].headers.get('content-type')).toBe('application/octet-stream');
+    expect(t.seen[0].init.body).toBe(stored);
+  });
+
+  it('still sends a copy of a CBOR body, labelled application/cbor, when no content type is named', async () => {
+    const t = fakeTransport();
+    t.replies.push(noContent());
+    const body = encode(['x']);
+    await new HttpClient(t.deps).request({ method: 'POST', path: '/v1/thing', body, bucket: 'write', idempotent: false });
+    expect(t.seen[0].headers.get('content-type')).toBe('application/cbor');
+    expect(t.seen[0].init.body).not.toBe(body);
+    expect(t.seen[0].body).toEqual(body);
+  });
+
+  it('sends the same bytes again when an idempotent upload is retried after a network failure', async () => {
+    const t = fakeTransport();
+    t.replies.push(new TypeError('fetch failed'), cborReply(200, [new Uint8Array(32), 3]));
+    const stored = new Uint8Array([4, 5, 6]);
+    const res = await new HttpClient(t.deps).request({ method: 'PUT', path: '/v1/blob', body: stored, bucket: 'upload',
+      idempotent: true, contentType: 'application/octet-stream' });
+    expect(res.status).toBe(200);
+    expect(t.seen).toHaveLength(2);
+    expect(t.seen[1].init.body).toBe(stored);
+    expect(t.seen[1].body).toEqual(new Uint8Array([4, 5, 6]));
+  });
+});
+
+describe('bounded bodies (FACTS-SECURITY-13)', () => {
+  it('refuses a body over maxBodyBytes by its Content-Length, once, without retrying', async () => {
+    const t = fakeTransport();
+    t.replies.push(new Response(new Uint8Array(33), { status: 200, headers: { 'Content-Length': '33' } }));
+    await expect(new HttpClient(t.deps).request({ method: 'GET', path: '/v1/blob', bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: 32 }))
+      .rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE', status: 200 });
+    expect(t.seen).toHaveLength(1);
+  });
+
+  it('refuses a streamed body that passes maxBodyBytes', async () => {
+    const t = fakeTransport();
+    const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(20)); c.enqueue(new Uint8Array(13)); c.close(); } });
+    t.replies.push(new Response(stream, { status: 200 }));
+    await expect(new HttpClient(t.deps).request({ method: 'GET', path: '/v1/blob', bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: 32 }))
+      .rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE' });
+    expect(t.seen).toHaveLength(1);
+  });
+
+  it('answers a body of exactly maxBodyBytes', async () => {
+    const t = fakeTransport();
+    t.replies.push(new Response(new Uint8Array(32).fill(7), { status: 200 }));
+    const r = await new HttpClient(t.deps).request({ method: 'GET', path: '/v1/blob', bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: 32 });
+    expect(r.body).toEqual(new Uint8Array(32).fill(7));
+  });
+});

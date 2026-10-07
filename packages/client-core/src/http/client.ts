@@ -7,6 +7,8 @@ export interface HttpRequest {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   path: string;
   body?: Uint8Array;
+  contentType?: 'application/cbor' | 'application/octet-stream';
+  maxBodyBytes?: number;
   bucket: Bucket;
   idempotent: boolean;
   auth?: boolean;
@@ -49,9 +51,11 @@ export class HttpClient {
       const headers = new Headers();
       const token = r.auth !== false ? this.deps.token() : null;
       if (token !== null) headers.set('Authorization', `Bearer ${token}`);
-      if (r.body !== undefined) headers.set('Content-Type', 'application/cbor');
+      if (r.body !== undefined) headers.set('Content-Type', r.contentType ?? 'application/cbor');
       if (r.accept !== undefined) headers.set('Accept', r.accept);
-      const init: RequestInit = { method: r.method, headers, body: r.body?.slice(),
+      // Routes supplies ArrayBuffer-backed octets; a 25 MiB upload must not be copied here.
+      const body = r.contentType === 'application/octet-stream' ? (r.body as Uint8Array<ArrayBuffer>) : r.body?.slice();
+      const init: RequestInit = { method: r.method, headers, body,
         signal: r.signal, credentials: 'omit', cache: 'no-store', redirect: 'error' };
       let error: DillaHttpError;
       try {
@@ -61,9 +65,9 @@ export class HttpClient {
           const number = BigInt(generation);
           if (number <= (1n << 64n) - 1n) this.deps.onGeneration(number);
         }
-        const body = new Uint8Array(await response.arrayBuffer());
-        if ((r.ok ?? [200, 201, 204]).includes(response.status)) return { status: response.status, body };
-        error = decodeErrorBody(response.status, body, response.headers.get('Retry-After'));
+        const responseBody = await readBody(response, r.maxBodyBytes);
+        if ((r.ok ?? [200, 201, 204]).includes(response.status)) return { status: response.status, body: responseBody };
+        error = decodeErrorBody(response.status, responseBody, response.headers.get('Retry-After'));
       } catch (e) {
         if (r.signal?.aborted) throw abort();
         if (e instanceof DillaHttpError) throw e;
@@ -94,4 +98,32 @@ export class HttpClient {
     }
     throw new Error('unreachable');
   }
+}
+
+async function readBody(response: Response, maxBodyBytes?: number): Promise<Uint8Array> {
+  if (maxBodyBytes === undefined || response.status < 200 || response.status > 299) {
+    return new Uint8Array(await response.arrayBuffer());
+  }
+  const tooLarge = (): DillaHttpError => new DillaHttpError({ status: response.status, code: 'E_BODY_TOO_LARGE',
+    detail: 'the response body is larger than ' + maxBodyBytes + ' bytes', retryAfterMs: null, extra: [] });
+  const length = response.headers.get('Content-Length');
+  if (length !== null && /^\d+$/.test(length) && Number(length) > maxBodyBytes) {
+    await response.body?.cancel();
+    throw tooLarge();
+  }
+  if (response.body === null) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBodyBytes) { await reader.cancel(); throw tooLarge(); }
+    chunks.push(value);
+  }
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+  return result;
 }
