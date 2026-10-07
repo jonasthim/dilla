@@ -61,7 +61,9 @@ export class FakeServer {
   readonly revoked = new Map<string, number>();
   readonly createdAt = new Map<string, number>();
   readonly tiers = new Map<string, 0 | 1>();
-  readonly tokenScope = new Map<string, 0 | 1>();
+  /** token → protocol/02 item 4's scope: 0 enrolled, 1 pending, 2 provisional (the fake mints only 0 and 1; a test
+   *  plants a provisional token directly). */
+  readonly tokenScope = new Map<string, 0 | 1 | 2>();
   /** device hex → the hex of the dsk_pub its row holds; a row planted without one holds fakeDskPub(device). */
   readonly keys = new Map<string, string>();
   /** Challenge nonces not yet spent by POST /v1/devices: nonce hex → the device id it was issued for, its expiry. */
@@ -71,6 +73,15 @@ export class FakeServer {
   nowS = NOW_S;
   maxDevices = 8;
   enrolmentsPerHour = 3;
+  /** Hex SHA-256 of bytes an attachment references (blob_refs): a backup PUT of them is 409, since backup objects
+   *  and attachments never share bytes (branch review BACKUPS-RECOVERY-05). */
+  readonly attachmentBytes = new Set<string>();
+  /** Hex SHA-256 of bytes an operator purged: tombstoned, so a PUT of them is 410 E_PRUNED, while a backup row that
+   *  names them is still served (protocol/09 Admin). */
+  readonly prunedBytes = new Set<string>();
+  /** Hex SHA-256 of bytes a replaced state object's delete unlinks under the next upload of them: that PUT answers
+   *  503 E_UNAVAILABLE (retry_after_ms 100) and records nothing, and the retry stores the bytes anew. One shot. */
+  readonly bytesDeletedUnderNextUpload = new Set<string>();
   /** blobs.uploads_per_minute and blobs.upload_bytes_per_day, the defaults of internal/config/defaults.go. */
   uploadsPerMinute = 20;
   uploadBytesPerDay = 5_368_709_120;
@@ -119,9 +130,9 @@ export class FakeServer {
     return userId;
   }
 
-  /** What the gateway's identify answers for a session token or a ticket (protocol/02 item 4, security review F4):
-   *  `ready` for an enrolled session; a pending, unknown, revoked or spent one is an E_UNAUTHENTICATED error frame
-   *  and close 4003. A ticket is single use and lives 30 s. */
+  /** What the gateway's identify answers for a session token or a ticket (protocol/02 item 4, security review F4,
+   *  branch review REGISTRATION-DEVICES-01): `ready` only for an enrolled session; a pending, provisional, unknown,
+   *  revoked or spent one is an E_UNAUTHENTICATED error frame and close 4003. A ticket is single use and lives 30 s. */
   identify(credential: string): { op: 'ready' } | { op: 'error'; code: 'E_UNAUTHENTICATED'; close: 4003 } {
     const refused = { op: 'error', code: 'E_UNAUTHENTICATED', close: 4003 } as const;
     let token = credential;
@@ -148,11 +159,14 @@ export class FakeServer {
     return list !== null && fakeListNames(list, fromHex(device), fromHex(this.keyOf(device)));
   }
 
-  /** auth.Sessions.AdmitDevice: the 24-hour sweep, one live row per key (409), then the cap and the hourly rate,
-   *  which decide which row the registration replaces (the oldest live unlisted one, whatever its age, ties by id),
-   *  never whether it is admitted; only a cap of listed rows refuses (403). Nothing is written on a refusal (the
-   *  real one runs in the registration's transaction). */
-  private admit(user: string, keyHex: string): Response | { apply(): void } {
+  /** auth.Sessions.AdmitDevice (`evict`, assertion registration): the 24-hour sweep, one live row per key (409), then
+   *  the cap and the hourly rate, which decide which row the registration replaces (the oldest live unlisted one,
+   *  whatever its age, ties by id), never whether it is admitted; only a cap of listed rows refuses (403).
+   *  AdmitEnrolledDevice (not `evict`, POST /v1/devices, branch review REGISTRATION-DEVICES-03): the same sweep, key
+   *  rule, cap and rate, but past the cap 403 "device cap reached" and past the rate 429 with the wait until enough
+   *  creations leave the hour; it never evicts. Nothing is written on a refusal (the real one runs in the
+   *  registration's transaction). */
+  private admit(user: string, keyHex: string, evict: boolean): Response | { apply(): void } {
     const rows = [...this.devices].filter(([, owner]) => owner === user).map(([id]) => id);
     const cutoff = this.nowS - 86_399;
     const created = (id: string): number => this.createdAt.get(id) ?? this.nowS;
@@ -161,10 +175,13 @@ export class FakeServer {
     const live = rows.filter((id) => !this.revoked.has(id) && !swept.includes(id));
     if (live.some((id) => this.keyOf(id) === keyHex))
       return refuse(409, 'E_INVALID_REQUEST', 'dsk_pub is already registered to a live device');
-    const creations = live.filter((id) => created(id) >= this.nowS - 3599).length;
+    const creations = live.map(created).filter((at) => at >= this.nowS - 3599);
     const atCap = live.length >= this.maxDevices;
     let evicted: string | undefined;
-    if (atCap || creations >= this.enrolmentsPerHour) {
+    if (!evict && atCap) return refuse(403, 'E_FORBIDDEN', 'device cap reached');
+    if (!evict && creations.length >= this.enrolmentsPerHour)
+      return refuse(429, 'E_RATE_LIMITED', 'rate limited', this.rateWait(creations) * 1000);
+    if (atCap || creations.length >= this.enrolmentsPerHour) {
       evicted = live.filter((id) => !listed.has(id))
         .sort((a, b) => created(a) - created(b) || (a < b ? -1 : a > b ? 1 : 0))[0];
       if (evicted === undefined && atCap) return refuse(403, 'E_FORBIDDEN', 'device cap reached');
@@ -179,7 +196,17 @@ export class FakeServer {
     };
   }
 
-  readonly fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  /** auth.rateWait: the seconds until enough of the hour's live creations leave the window that one more is under
+   *  the rate; a creation at c counts while c >= now-3599, so it leaves at c+3600. */
+  private rateWait(creations: readonly number[]): number {
+    const sorted = [...creations].sort((a, b) => a - b);
+    if (sorted.length === 0) return 3600;
+    const i = Math.min(Math.max(sorted.length - this.enrolmentsPerHour, 0), sorted.length - 1);
+    const wait = sorted[i]! + 3600 - this.nowS;
+    return wait > 0 ? wait : 1;
+  }
+
+  readonly fetch =async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init);
     const header = request.headers.get('Authorization');
     const entry: LoggedRequest = {
@@ -273,6 +300,11 @@ export class FakeServer {
       // Listed is the pair: a row that only copies a listed key, or a listed id under another key, is removed here.
       if (this.deviceLists.has(user) && this.listed(user, target))
         return refuse(409, 'E_INVALID_REQUEST', 'a listed device is revoked by a signed device list');
+      // The grace (branch review REGISTRATION-DEVICES-03): an unlisted row younger than 10 minutes is removed only
+      // by its own session, so a stolen enrolled session cannot remove a recovering owner's new row on sight.
+      if (target !== device && (this.createdAt.get(target) ?? this.nowS) > this.nowS - 600)
+        return refuse(409, 'E_INVALID_REQUEST', 'the device registered less than 10 minutes ago and is too new to remove; ' +
+          'its own session may remove it, or it expires unlisted after 24 hours');
       this.revoked.set(target, this.nowS);
       this.dropTokens(target);
       return reply(204);
@@ -355,7 +387,7 @@ export class FakeServer {
         user = account[0];
         if (!this.deviceLists.has(user)) return refuse(401, 'E_UNAUTHENTICATED');
         const key = toHex(bin(arr(b[3] ?? null, 5)[1] ?? null, 32));
-        const admitted = this.admit(user, key);
+        const admitted = this.admit(user, key, true);
         if (admitted instanceof Response) return admitted;
         admitted.apply();
         this.devices.set(deviceHex, user);
@@ -384,8 +416,8 @@ export class FakeServer {
 
   /** POST /v1/devices (enrolled): [device_id, dsk_pub, tier, signer_tier, credential, nonce b32, sig b64] → 200
    *  [device_id]. The nonce is a challenge for the new device_id, spent here; sig is the purpose-0 proof by dsk_pub
-   *  (403 "possession of dsk_pub is not proven"); then the registration's admission (409 for a held key, the cap's
-   *  403, the replacement); a device_id that exists is 409. */
+   *  (403 "possession of dsk_pub is not proven"); then the enrolled admission (409 for a held key, the cap's 403, the
+   *  rate's 429, never an eviction); a device_id that exists is 409. */
   private createDevice(user: string, body: Uint8Array): Response {
     let device: Uint8Array, key: Uint8Array, tier: bigint, nonce: CborValue, sig: CborValue;
     try {
@@ -407,7 +439,7 @@ export class FakeServer {
     this.nonces.delete(toHex(nonce));
     if (issued === undefined || issued.device !== deviceHex || this.nowS > issued.expires ||
         !same(sig, fakeDeviceProof(key, device, nonce))) return notProven;
-    const admitted = this.admit(user, toHex(key));
+    const admitted = this.admit(user, toHex(key), false);
     if (admitted instanceof Response) return admitted;
     if (this.devices.has(deviceHex)) return refuse(409, 'E_INVALID_REQUEST', 'device_id already exists');
     admitted.apply();
@@ -503,6 +535,14 @@ export class FakeServer {
       if (header[0] !== 1n || bin(header[1] ?? null, 12).length !== 12 || !(header[2] instanceof Uint8Array) ||
           (kind === 0 && object.length !== 103)) throw new Error('shape');
     } catch { return refuse(400, 'E_INVALID_REQUEST', 'object is not a stored header object'); }
+    // The server's order: the tombstone gate, then inside the recording transaction the file check, the
+    // attachment overlap and the root's conflict.
+    const blobHex = createHash('sha256').update(object).digest('hex');
+    if (this.prunedBytes.has(blobHex)) return refuse(410, 'E_PRUNED', 'these bytes were removed by the server operator');
+    if (this.bytesDeletedUnderNextUpload.delete(blobHex))
+      return refuse(503, 'E_UNAVAILABLE', 'the stored bytes were removed during the upload; send them again', 100);
+    if (this.attachmentBytes.has(blobHex))
+      return refuse(409, 'E_INVALID_REQUEST', 'these bytes are an attachment; a backup object cannot share them');
     if (kind === 0 && existing !== undefined && !same(existing.object, object))
       return refuse(409, 'E_INVALID_REQUEST', 'root object already stored');
     const created = existing === undefined;

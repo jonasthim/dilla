@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { decode, encode, type CborValue } from '../cbor';
 import { toHex } from '../hex';
@@ -232,6 +233,7 @@ describe('FakeServer answers the web-2a account routes as dillad does', () => {
       { deviceId: DEV_B, revokedAt: null, dskPub: new Uint8Array(32).fill(0x5a) }]));
     expect((await c.routes.postSession(DEV_B, establishBody(DEV_B, null))).scope).toBe(1);
     await expect(c.routes.deleteDevice(DEV_A)).rejects.toMatchObject({ status: 409, code: 'E_INVALID_REQUEST' });
+    server.nowS = NOW_S + 600;   // past the key-less DELETE's 10-minute grace for another device's row
     await c.routes.deleteDevice(DEV_B);
     expect(server.revoked.has(toHex(DEV_B))).toBe(true);
     // The pair, listed: enrolled.
@@ -351,9 +353,10 @@ describe('FakeServer answers the web-2a account routes as dillad does', () => {
     anon.use(pending.token);
     expect(server.tokenScope.get(pending.token)).toBe(1);
     expect(await anon.routes.listBackups()).toEqual([]);
+    server.nowS = NOW_S + 600;   // past the key-less DELETE's 10-minute grace for another device's row
     await c.routes.deleteDevice(DEV_B);
     expect((await refusalOf(anon.routes.listBackups())).status).toBe(401);
-    expect((await c.routes.listDevices()).map((d) => [d.id, d.revokedAt])).toEqual([[DEV_A, null], [DEV_B, BigInt(NOW_S)]]);
+    expect((await c.routes.listDevices()).map((d) => [d.id, d.revokedAt])).toEqual([[DEV_A, null], [DEV_B, BigInt(NOW_S + 600)]]);
     expect((await c.routes.getDeviceList(user))?.version).toBe(1n);
     const other = server.register('bea', new Uint8Array(16).fill(0xbe));
     expect(toHex(other)).toHaveLength(32);
@@ -420,6 +423,115 @@ describe('FakeServer answers the web-2a account routes as dillad does', () => {
     expect(await c.routes.getBackup(1)).toEqual({ object: state2, created: BigInt(NOW_S) });
     expect((await refusalOf(c.routes.putBackup(1, new Uint8Array([1, 2])))).status).toBe(400);
     expect((await refusalOf(c.routes.putBackup(0, encode([1, new Uint8Array(12), new Uint8Array(10)])))).status).toBe(400);
+  });
+
+  // Fix wave S (branch review REGISTRATION-DEVICES-03): the enrolled route pays no host login, so it never evicts.
+  it('POST /v1/devices refuses 403 at the cap and 429 past the rate, evicting nothing and writing nothing', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const token = server.log.at(-1)?.auth ?? null;
+    const post = async (d: Uint8Array) =>
+      raw(server, 'POST', '/v1/devices', token, devicePostBody(d, fakeDskPub(d), (await c.routes.postChallenge(d)).nonce));
+    const dev = (n: number) => new Uint8Array(16).fill(0x50 + n);
+    // An unlisted row the assertion path would replace.
+    await c.routes.postSessionPending(DEV_B, establishBody(DEV_B, (await c.routes.passwordLogin('ada', 'pw')).assertion));
+    // Past the rate (DEV_A and DEV_B at NOW_S, rate 2): 429 with the wait until NOW_S's creations leave the hour.
+    server.enrolmentsPerHour = 2;
+    server.nowS = NOW_S + 100;
+    expect(await post(dev(1))).toEqual({ status: 429, body: ['E_RATE_LIMITED', 'rate limited', 3_500_000n] });
+    expect([server.devices.has(toHex(dev(1))), server.revoked.size]).toEqual([false, 0]);
+    // At the cap (two live rows, one of them unlisted): 403, and DEV_B stays live.
+    server.enrolmentsPerHour = 60;
+    server.maxDevices = 2;
+    expect(await post(dev(2))).toEqual({ status: 403, body: ['E_FORBIDDEN', 'device cap reached', null] });
+    expect([server.devices.has(toHex(dev(2))), server.revoked.size]).toEqual([false, 0]);
+    // Under both: admitted.
+    server.maxDevices = 8;
+    expect(await post(dev(3))).toEqual({ status: 200, body: [dev(3)] });
+  });
+
+  it('the key-less DELETE refuses 409 an unlisted row younger than 10 minutes unless the caller is that row', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const b = client(server);
+    const pending = await b.routes.postSessionPending(DEV_B, establishBody(DEV_B, (await c.routes.passwordLogin('ada', 'pw')).assertion));
+    b.use(pending.token);
+    const young = await refusalOf(c.routes.deleteDevice(DEV_B));
+    expect([young.status, young.code, young.detail]).toEqual([409, 'E_INVALID_REQUEST',
+      'the device registered less than 10 minutes ago and is too new to remove; its own session may remove it, or it expires unlisted after 24 hours']);
+    server.nowS = NOW_S + 599;
+    expect((await refusalOf(c.routes.deleteDevice(DEV_B))).status).toBe(409);
+    expect(server.revoked.has(toHex(DEV_B))).toBe(false);
+    // At 10 minutes another device's session removes it.
+    server.nowS = NOW_S + 600;
+    await c.routes.deleteDevice(DEV_B);
+    expect(server.revoked.get(toHex(DEV_B))).toBe(NOW_S + 600);
+  });
+
+  it('the key-less DELETE lets a young unlisted row remove itself (a user with no list: every row enrolled)', async () => {
+    const server = new FakeServer();
+    const user = server.register('lee', DEV_A);
+    server.devices.set(toHex(DEV_B), toHex(user));
+    server.createdAt.set(toHex(DEV_B), NOW_S);
+    const a = client(server);
+    a.use((await a.routes.postSession(DEV_A, establishBody(DEV_A, null))).token);
+    const b = client(server);
+    b.use((await b.routes.postSession(DEV_B, establishBody(DEV_B, null))).token);
+    expect((await refusalOf(a.routes.deleteDevice(DEV_B))).status).toBe(409);
+    await b.routes.deleteDevice(DEV_B);
+    expect(server.revoked.get(toHex(DEV_B))).toBe(NOW_S);
+  });
+
+  it('identify refuses a provisional session like a pending one', async () => {
+    const server = new FakeServer();
+    await ada(server);
+    server.tokens.set('tok-provisional', toHex(DEV_A));
+    server.tokenScope.set('tok-provisional', 2);
+    expect(server.identify('tok-provisional')).toEqual({ op: 'error', code: 'E_UNAUTHENTICATED', close: 4003 });
+  });
+
+  it('a backup PUT of purged bytes is 410 E_PRUNED while the stored object is still served', async () => {
+    const server = new FakeServer();
+    const { c, user } = await ada(server);
+    const root = encode([1, new Uint8Array(12).fill(1), new Uint8Array(86).fill(2)]);
+    server.putBackupObject(user, 0, root);
+    server.prunedBytes.add(createHash('sha256').update(root).digest('hex'));
+    const pruned = await refusalOf(c.routes.putBackup(0, root));
+    expect([pruned.status, pruned.code, pruned.detail]).toEqual([410, 'E_PRUNED', 'these bytes were removed by the server operator']);
+    expect((await c.routes.getBackup(0))?.object).toEqual(root);
+  });
+
+  it('a backup PUT whose bytes are deleted under it is 503 E_UNAVAILABLE once, and the retry stores them', async () => {
+    const server = new FakeServer();
+    const { user } = await ada(server);
+    const token = server.log.at(-1)?.auth ?? null;
+    const state = encode([1, new Uint8Array(12).fill(5), new Uint8Array(40)]);
+    server.bytesDeletedUnderNextUpload.add(createHash('sha256').update(state).digest('hex'));
+    expect(await raw(server, 'PUT', '/v1/backups/1/0', token, encode([state]))).toEqual({ status: 503,
+      body: ['E_UNAVAILABLE', 'the stored bytes were removed during the upload; send them again', 100n] });
+    expect(server.backups.has(`${toHex(user)}/1`)).toBe(false);
+    expect((await raw(server, 'PUT', '/v1/backups/1/0', token, encode([state]))).status).toBe(201);
+    expect(server.backups.get(`${toHex(user)}/1`)?.object).toEqual(state);
+  });
+
+  it('HttpClient retries the 503 of bytes deleted under an upload', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const state = encode([1, new Uint8Array(12).fill(5), new Uint8Array(40)]);
+    server.bytesDeletedUnderNextUpload.add(createHash('sha256').update(state).digest('hex'));
+    expect((await c.routes.putBackup(1, state)).created).toBe(true);
+    expect(server.count('PUT', '/v1/backups/1/0')).toBe(2);
+  });
+
+  it('a backup PUT of bytes an attachment references is 409, and nothing is stored', async () => {
+    const server = new FakeServer();
+    const { c, user } = await ada(server);
+    const state = encode([1, new Uint8Array(12).fill(5), new Uint8Array(40)]);
+    server.attachmentBytes.add(createHash('sha256').update(state).digest('hex'));
+    const overlap = await refusalOf(c.routes.putBackup(1, state));
+    expect([overlap.status, overlap.code, overlap.detail])
+      .toEqual([409, 'E_INVALID_REQUEST', 'these bytes are an attachment; a backup object cannot share them']);
+    expect(server.backups.has(`${toHex(user)}/1`)).toBe(false);
   });
 
   it('deleteSessions drops every token of an own device and answers 404 for a device of another user', async () => {
