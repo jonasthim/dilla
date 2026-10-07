@@ -117,4 +117,23 @@ describe('MessageLog', () => {
     const { container } = render(<div className="d-root">{log(['a', 'b'], { earlier: { label: 'load earlier', onLoad: () => {} } })}</div>);
     await expectNoAxeViolations(container);
   });
+
+  it('forwards keys to onKeyDown and gives up its own tab stop while a row holds one', () => {
+    const onKeyDown = vi.fn();
+    const { rerender } = render(<MessageLog label="messages in #general" emptyLabel="No messages yet." onKeyDown={onKeyDown}>
+      <article className="d-message-row" tabIndex={-1}>one</article>
+    </MessageLog>);
+    const log = screen.getByRole('log', { name: 'messages in #general' });
+    expect(log).toHaveAttribute('aria-relevant', 'additions');
+    expect(log).toHaveAttribute('tabindex', '0');
+    rerender(<MessageLog label="messages in #general" emptyLabel="No messages yet." onKeyDown={onKeyDown}>
+      <article className="d-message-row" tabIndex={-1}>one</article>
+      <article className="d-message-row" tabIndex={0}>two</article>
+    </MessageLog>);
+    expect(log).toHaveAttribute('tabindex', '-1');
+    fireEvent.keyDown(screen.getByText('two'), { key: 'ArrowUp' });
+    expect(onKeyDown.mock.calls.map((c) => (c[0] as KeyboardEvent).key)).toEqual(['ArrowUp']);
+    rerender(<MessageLog label="messages in #general" emptyLabel="No messages yet." onKeyDown={onKeyDown}>{[]}</MessageLog>);
+    expect(log).toHaveAttribute('tabindex', '0');
+  });
 });

@@ -1,4 +1,4 @@
-import { Children, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { Children, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
 import './MessageLog.css';
 
@@ -8,6 +8,7 @@ export interface MessageLogProps {
   earlier?: { label: string; onLoad(): void };
   emptyLabel: string;
   busy?: boolean;
+  onKeyDown?(e: KeyboardEvent): void;
 }
 
 /** How far from the end, in CSS px, the reader may be and still count as reading the end. */
@@ -18,8 +19,12 @@ export const PIN_SLACK_PX = 24;
  * region. It stays pinned to the end while the reader is there, keeps the
  * reader's place when rows arrive or earlier rows are put in front, and never
  * moves focus. `busy` is held by the caller while history is loading.
+ *
+ * The keyboard map (web-2b): while a row inside holds `tabindex="0"` (the roving active row) that row is the
+ * log's one tab stop and the log itself leaves the tab order (tabIndex -1, still focusable by script); with no
+ * such row the log stays a reachable scroll region. Keys reach the caller through `onKeyDown`.
  */
-export function MessageLog({ label, children, earlier, emptyLabel, busy }: MessageLogProps) {
+export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDown }: MessageLogProps) {
   // Scrolling must not re-render: all of the pinning state lives in refs.
   const logRef = useRef<HTMLDivElement>(null);
   const rowsRef = useRef<HTMLDivElement>(null);
@@ -46,10 +51,13 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy }: Messa
     }
     prevHeight.current = el.scrollHeight;
     prevFirst.current = first;
+    // One tab stop: a row that holds the stop takes it from the log.
+    el.tabIndex = rowsRef.current?.querySelector('[tabindex="0"]') ? -1 : 0;
   });
 
   return (
-    <div ref={logRef} className="d-message-log" role="log" aria-live="polite" aria-label={label} aria-busy={busy ? true : undefined} tabIndex={0} onScroll={onScroll}>
+    <div ref={logRef} className="d-message-log" role="log" aria-live="polite" aria-relevant="additions" aria-label={label}
+      aria-busy={busy ? true : undefined} tabIndex={0} onScroll={onScroll} onKeyDown={onKeyDown}>
       {earlier ? <Button className="d-message-log__earlier" variant="ghost" onClick={earlier.onLoad}>{earlier.label}</Button> : null}
       {Children.count(children) === 0 ? <p className="d-message-log__empty">{emptyLabel}</p> : null}
       <div ref={rowsRef} className="d-message-log__rows">{children}</div>

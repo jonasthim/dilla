@@ -12,3 +12,8 @@
 /* Over the budget: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
 .d-composer__counter[data-over="true"] { color: var(--danger); }
 .d-composer__counter[data-over="true"]::before { content: "✕ " / ""; }@media (prefers-reduced-motion: reduce) { .d-composer__box { transition: none; } }
+/* web-2b (L-UI-53): the slot above the box (reply chip, tray, mention list) and the attach button inside it. */
+.d-composer__top { display: grid; gap: 0.25rem; }
+.d-composer__attach { flex-shrink: 0; display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem; margin-left: -0.375rem; padding: 0; font: inherit; font-size: var(--text-lg); line-height: 1; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer; transition: color var(--duration-fast), background var(--duration-fast); }
+.d-composer__attach:hover { color: var(--fg); background: var(--surface-hi); }
+@media (prefers-reduced-motion: reduce) { .d-composer__attach { transition: none; } }

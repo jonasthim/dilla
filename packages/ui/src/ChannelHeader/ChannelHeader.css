@@ -4,3 +4,5 @@
 .d-channel-header__bracket { color: var(--fg-3); font-weight: var(--weight-body); }
 .d-channel-header__readable { font-size: var(--text-xs); color: var(--fg-3); }
 .d-channel-header__topic { margin: 0; min-width: 0; padding-left: 0.75rem; border-left: 1px solid var(--hairline-2); font-size: var(--text-sm); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* web-2b (L-UI-54): the caller's actions (the pins button), pushed to the end of the header. */
+.d-channel-header__actions { margin-left: auto; display: flex; gap: 0.5rem; flex-shrink: 0; }

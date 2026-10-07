@@ -1,11 +1,18 @@
-import { useId, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
+import {
+  useId, useState, type ChangeEvent, type ClipboardEvent, type FormEvent, type KeyboardEvent, type ReactNode, type Ref,
+  type SyntheticEvent,
+} from 'react';
 import { Button } from '../Button/Button.tsx';
 import './Composer.css';
+
+/** The keys the composer hands to an attached list (the mention list) before its own rules. */
+type ComboKey = 'ArrowUp' | 'ArrowDown' | 'Enter' | 'Tab' | 'Escape';
+const COMBO_KEYS: readonly string[] = ['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'];
 
 export interface ComposerProps {
   label: string;
   placeholder: string;
-  /** The budget in UTF-8 bytes, the unit of the core's body limit (L-CORE-09). */
+  /** The budget in UTF-8 bytes, the unit of the core's body limit (L-CORE-09), unless `measure` says otherwise. */
   maxLength: number;
   value: string;
   onChange(value: string): void;
@@ -14,6 +21,25 @@ export interface ComposerProps {
   onSend(text: string): void;
   sendLabel: string;
   counterLabel(remaining: number): string;
+  /** The attach button (`+`) before the textarea, shown when both are given. */
+  attachLabel?: string;
+  onAttach?(): void;
+  /** Rendered above the box: the reply chip, the tray, the mention list. */
+  top?: ReactNode;
+  /** The used part of the budget; UTF-8 bytes when absent. */
+  measure?(v: string): number;
+  /**
+   * An attached list (the mention list). While `expanded` the textarea points at it (`aria-controls`,
+   * `aria-activedescendant`, `aria-autocomplete="list"`) and keeps its textbox role (pre-flight ruling F10); `onKey`
+   * is offered the five keys whenever `combobox` is given, and a `true` answer consumes the key.
+   */
+  combobox?: { expanded: boolean; controls: string; activeDescendant: string | null; onKey(key: ComboKey): boolean };
+  onCaret?(caret: number): void;
+  onArrowUpEmpty?(): void;
+  onPasteFiles?(files: File[]): void;
+  textareaRef?: Ref<HTMLTextAreaElement>;
+  /** Send a blank text (an attachment-only message): the owner passes it while the tray holds an entry. */
+  canSendEmpty?: boolean;
 }
 
 const ENCODER = new TextEncoder();
@@ -40,11 +66,12 @@ function labelParts(label: string): { lead: string; target: string | null } {
  */
 export function Composer({
   label, placeholder, maxLength, value, onChange, disabled, disabledReason, onSend, sendLabel, counterLabel,
+  attachLabel, onAttach, top, measure, combobox, onCaret, onArrowUpEmpty, onPasteFiles, textareaRef, canSendEmpty,
 }: ComposerProps) {
   const inputId = useId();
   const reasonId = useId();
   const counterId = useId();
-  const used = ENCODER.encode(value).length;
+  const used = measure ? measure(value) : ENCODER.encode(value).length;
   const remaining = maxLength - used;
   const overBudget = remaining < 0;
   const showCounter = remaining <= Math.floor(maxLength / 10);
@@ -63,13 +90,30 @@ export function Composer({
 
   const submit = () => {
     if (disabled) return;
-    if (value.trim() === '') return;
+    // A blank text is sent only when the owner says it may be (an attachment-only message).
+    if (value.trim() === '' && canSendEmpty !== true) return;
     // Over the budget the text stays in the field; the counter already says by how much.
     if (overBudget) return;
     onSend(value);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+    // (a) The attached list sees its keys first, open or closed; a consumed key does nothing else.
+    if (combobox !== undefined && COMBO_KEYS.includes(e.key) && !e.altKey && !e.ctrlKey && !e.metaKey && !composing) {
+      if (combobox.onKey(e.key as ComboKey)) {
+        e.preventDefault();
+        return;
+      }
+    }
+    // (b) ArrowUp in an empty composer with no open list asks to edit the newest own message.
+    if (e.key === 'ArrowUp' && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && value === '' && onArrowUpEmpty
+      && combobox?.expanded !== true) {
+      e.preventDefault();
+      onArrowUpEmpty();
+      return;
+    }
+    // (c) web-1's Enter rules.
     if (e.key !== 'Enter') return;
     if (e.shiftKey) return; // the browser inserts the line break
     if (e.nativeEvent.isComposing || e.keyCode === 229) return; // the IME owns this Enter
@@ -81,7 +125,28 @@ export function Composer({
 
   const onInput = (e: ChangeEvent<HTMLTextAreaElement>) => {
     if (!disabled) onChange(e.currentTarget.value);
+    onCaret?.(e.currentTarget.selectionStart);
   };
+
+  const reportCaret = (e: SyntheticEvent<HTMLTextAreaElement>) => {
+    onCaret?.(e.currentTarget.selectionStart);
+  };
+
+  // Pasted files go to the owner (the tray); a paste of text is the browser's.
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = e.clipboardData.files;
+    if (files.length > 0 && onPasteFiles) {
+      e.preventDefault();
+      onPasteFiles(Array.from(files));
+    }
+  };
+
+  // While the list is open the textarea points at it and keeps its textbox role (F10; no role=combobox).
+  const listAttributes = combobox?.expanded === true ? {
+    'aria-autocomplete': 'list' as const,
+    'aria-controls': combobox.controls,
+    ...(combobox.activeDescendant === null ? {} : { 'aria-activedescendant': combobox.activeDescendant }),
+  } : {};
 
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -90,13 +155,19 @@ export function Composer({
 
   return (
     <form className="d-composer" data-disabled={disabled ? 'true' : undefined} noValidate onSubmit={onSubmit}>
+      {top !== undefined ? <div className="d-composer__top">{top}</div> : null}
       <label className="d-composer__label d-label" htmlFor={inputId}>
         {lead}{target === null ? null : <span className="d-composer__target">{target}</span>}
       </label>
       <div className="d-composer__box">
-        <textarea id={inputId} className="d-composer__input" rows={1} value={value} placeholder={placeholder}
-          readOnly={disabled} aria-disabled={disabled ? true : undefined} aria-describedby={describedBy}
-          onChange={onInput} onKeyDown={onKeyDown} />
+        {attachLabel !== undefined && onAttach ? (
+          <button type="button" className="d-composer__attach" aria-label={attachLabel} onClick={() => onAttach()}>
+            <span aria-hidden="true">+</span>
+          </button>
+        ) : null}
+        <textarea ref={textareaRef} id={inputId} className="d-composer__input" rows={1} value={value} placeholder={placeholder}
+          readOnly={disabled} aria-disabled={disabled ? true : undefined} aria-describedby={describedBy} {...listAttributes}
+          onChange={onInput} onKeyDown={onKeyDown} onSelect={reportCaret} onKeyUp={reportCaret} onPaste={onPaste} />
         <Button type="submit" variant="accent" disabled={disabled === true}
           aria-disabled={sendRefused ? true : undefined} aria-describedby={sendRefused ? counterId : undefined}>{sendLabel}</Button>
       </div>
