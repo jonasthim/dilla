@@ -5,7 +5,7 @@ import {
   CLASS, HEX32, TEST_TIMEOUT, WAIT, attachInput, channelRow, composerBox, copy, deleteDialog, drawImage, editorBox,
   expectAccessible, expectComposerReady, flashSeen, instanceInvite, joinCommunity, lightbox, logRegion, mentionList,
   messageRow, openChannel, pinsDialog, reactionChip, rowAction, rowById, rowToolbar, sendText, sha256Hex, shownName,
-  signUp, tag, trayEntries, watchFlash, type Peer,
+  signIn, signUp, tag, trayEntries, watchFlash, type Peer,
 } from './support/app';
 import { test } from './support/second';
 
@@ -36,6 +36,18 @@ test('edit, reply, react, pin and delete between the browser and the peer', asyn
   const user = mine.sender_user;
   const own = rowById(page, channel, mine.msg_id);
   await expect(own).toHaveAttribute('data-seq', String(mine.seq));
+
+  for (const width of [360, 320]) { // 320 CSS px also represents a 1280 px window at 400% zoom.
+    await page.setViewportSize({ width, height: 740 });
+    await own.focus();
+    await expect(rowToolbar(own)).toBeVisible();
+    const narrowActionsFit = await rowToolbar(own).evaluate((bar) => [...bar.querySelectorAll('button')].every((button) => {
+      const rect = button.getBoundingClientRect();
+      return rect.left >= 0 && rect.right <= document.documentElement.clientWidth;
+    }));
+    expect(narrowActionsFit).toBe(true);
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
 
   // Edit in place from the empty composer.
   await composerBox(page, channel).focus();
@@ -390,10 +402,45 @@ test('B sees what A makes', async ({ page, peer, second, instanceName }) => {
   await expect(box).toBeVisible({ timeout: WAIT });
   const full = box.getByRole('img', { name: 'drawn.png', exact: true });
   await expect.poll(() => full.evaluate((el: HTMLImageElement) => (el.complete ? el.naturalWidth : 0)), { timeout: WAIT }).toBe(320);
+  const [imageDownload] = await Promise.all([
+    b.waitForEvent('download', { timeout: WAIT }),
+    box.getByRole('button', { name: copy('shell.lightbox.save'), exact: true }).click(),
+  ]);
+  expect(sha256Hex(readFileSync(await imageDownload.path()))).toBe(drawn.sha256);
   await b.keyboard.press('Escape');
   await expect(box).toHaveCount(0);
   const save = rowB.getByRole('button', { name: copy('shell.attachment.save', { name: 'notes.bin' }), exact: true });
   const [download] = await Promise.all([b.waitForEvent('download', { timeout: WAIT }), save.click()]);
   expect(sha256Hex(readFileSync(await download.path()))).toBe(sha256Hex(notes));
   expect(drawn.sha256).toMatch(/^[0-9a-f]{64}$/);
+});
+
+test('a second browser of the same account edits and deletes the first browser’s message', async ({ page, peer, second, instanceName }) => {
+  const { account, channel } = await enter(page, peer, instanceName);
+  const b = (await second.open()).page;
+  await signIn(b, account, instanceName);
+  await openChannel(b, peer.communityName, channel);
+  await peer.waitForDevices(3);
+
+  const original = `from first browser ${tag()}`;
+  await sendText(page, channel, original);
+  const sent = await peer.waitFor(original);
+  const onA = rowById(page, channel, sent.msg_id);
+  const onB = rowById(b, channel, sent.msg_id);
+  await expect(onB).toContainText(original, { timeout: WAIT });
+  await rowAction(onB, 'edit');
+  const edited = `edited on second ${tag()}`;
+  await editorBox(b).fill(edited);
+  await editorBox(b).press('Enter');
+  await expect(onA).toContainText(edited, { timeout: WAIT });
+  await expect(onA).toHaveAttribute('data-edited', 'true');
+  const editRow = await peer.waitForRow((m) => m.type === 1 && m.reply_to === sent.msg_id && m.body === edited, 'second browser edit');
+  expect(editRow.sender_user).toBe(sent.sender_user);
+
+  await rowAction(onB, 'delete');
+  await deleteDialog(b).getByRole('button', { name: copy('shell.delete.confirm'), exact: true }).click();
+  await expect(onA).toHaveAttribute('data-state', 'deleted', { timeout: WAIT });
+  await expect(onA).not.toContainText(edited);
+  const deleteRow = await peer.waitForRow((m) => m.type === 2 && m.reply_to === sent.msg_id, 'second browser delete');
+  expect(deleteRow.sender_user).toBe(sent.sender_user);
 });
