@@ -241,7 +241,7 @@ When the focused control goes away, focus never falls to the page:
 - `cancel reply` → the composer's textarea;
 - `unpin` in the pins dialog: the dialog stays open and focus moves to the next item's `unpin`, else to `Close`;
 - dismissing the `shell.message.replyNotLoaded` banner → the log's active row;
-- `discard` on the `shell.message.attachmentGone` line (the message leaves the log) → the row web-1 hands focus on to (`handOnFromRow`);
+- `discard` on the `shell.message.attachmentGone` line (the message leaves the log) → the row web-1 hands focus on to (`handOnFromRow(1)`);
 - focus leaving the emoji grid (Tab out, or a click elsewhere) closes it without moving focus.
 
 ## Announcements
