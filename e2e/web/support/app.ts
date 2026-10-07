@@ -2,14 +2,14 @@
 // (the copy keys of en.ts, landmarks, the L-UI root classes, data-state), the CSP/console guard every test
 // carries (every page and the core worker), the onboarding and shell drivers, and the probes of the
 // device-key record and the instance clock. Every wait waits for a state, never for a duration (lesson c).
-import { randomInt } from 'node:crypto';
+import { createHash, randomInt } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, type BrowserContext, type Locator, type Page, type Worker } from '@playwright/test';
 import { test as persistentTest } from './persistent';
-import { WebDriver, type PeerDm, type PeerEnrolled, type PeerSetup } from './driver';
-export type { PeerDm, PeerEnrolled, PeerOpenedDm, PeerSetup } from './driver';
+import { WebDriver, type PeerAttachRequest, type PeerAttached, type PeerDm, type PeerEnrolled, type PeerFetched, type PeerReceived, type PeerSendOptions, type PeerSetup } from './driver';
+export type { PeerAttachment, PeerAttachRequest, PeerAttached, PeerDm, PeerEnrolled, PeerFetched, PeerOpenedDm, PeerReceived, PeerSendOptions, PeerSetup } from './driver';
 import { runAxe } from './axe';
 import { arr, decode } from '../../../packages/client-core/src/cbor/index';
 import { en } from '../../../packages/web/src/strings/en';
@@ -82,6 +82,9 @@ export const CLASS = {
   composer: '.d-composer',
   deviceRow: '.d-device-row',
   channelRow: '.d-chrow',
+  lightbox: 'dialog.d-lightbox',
+  mention: '.d-mention',
+  replyChip: '.d-reply-chip',
 } as const;
 
 export function copy(key: string, vars?: Record<string, string | number>): string {
@@ -96,12 +99,15 @@ export function copy(key: string, vars?: Record<string, string | number>): strin
 
 export interface PeerSetupOptions { password?: string; channels?: number; }
 export const PEER_PASSWORD = 'peer-password-1234';
-export interface PeerMessage { seq: number; body: string; sender_user: string; sender_device: string; tier: number; }
-interface SyncAnswer { epoch: number; members: number; received: PeerMessage[]; }
+export type PeerMessage = PeerReceived & { sender_user: string; sender_device: string; tier: number; msg_id: string; type: number };
+export function isPeerMessage(m: PeerReceived): m is PeerMessage {
+  return m.msg_id !== null && m.type !== null && m.sender_user !== null && m.sender_device !== null && m.tier !== null;
+}
+interface SyncAnswer { epoch: number; members: number; received: PeerReceived[]; }
 
 export class Peer {
   /** Every message the peer decrypted, across all syncs of this test. */
-  readonly inbox: PeerMessage[] = [];
+  readonly inbox: PeerReceived[] = [];
   /** The one text channel setup creates; the specs name it when they address the log and the composer. */
   readonly channelName = 'general';
   channelNames: string[] = ['general'];
@@ -134,7 +140,33 @@ export class Peer {
   }
 
   register(): Promise<{ group_id: string; epoch: number }> { return this.driver.register(); }
-  send(body: string, channelId?: string): Promise<{ seq: number }> { return this.driver.send(body, channelId); }
+  send(body: string, channelId?: string, opts?: PeerSendOptions): Promise<{ seq: number; msg_id: string }> { return this.driver.send(body, channelId, opts); }
+  edit(msgId: string, body: string, channelId?: string): Promise<{ seq: number; msg_id: string }> {
+    return this.driver.send(body, channelId, { type: 1, replyTo: msgId });
+  }
+  react(msgId: string, emoji: string, on: boolean, channelId?: string): Promise<{ seq: number; msg_id: string }> {
+    return this.driver.send(emoji, channelId, { type: on ? 3 : 4, replyTo: msgId });
+  }
+  deleteMessage(msgId: string, seq: number, channelId?: string): Promise<{ seq: number }> {
+    return this.driver.deleteMessage({ msgId, seq, ...(channelId === undefined ? {} : { channelId }) });
+  }
+  attach(a: PeerAttachRequest): Promise<PeerAttached> { return this.driver.attach(a); }
+  fetchAttachment(seq: number, index: number, channelId?: string): Promise<PeerFetched> {
+    return this.driver.fetchAttachment({ seq, index, ...(channelId === undefined ? {} : { channelId }) });
+  }
+  async blobStatus(blobId: string, channelId?: string): Promise<number> {
+    return (await this.driver.blobStatus({ blobId, ...(channelId === undefined ? {} : { channelId }) })).status;
+  }
+  async waitForRow(match: (m: PeerMessage) => boolean, what: string, channelId?: string): Promise<PeerMessage> {
+    let found: PeerMessage | undefined;
+    await expect.poll(async () => {
+      await this.sync(channelId);
+      found = [...this.inbox].reverse().filter(isPeerMessage).find(match);
+      return found !== undefined;
+    }, { timeout: WAIT, intervals: [250, 500, 1000, 2000], message: `the peer never saw ${what}` }).toBe(true);
+    if (found === undefined) throw new Error(`the peer never saw ${what}`);
+    return found;
+  }
   /** L-E2E-01 `update`: drains and applies, then commits a self Update and answers the new epoch. */
   update(): Promise<{ epoch: number }> { return this.driver.update(); }
   /** L-E2E-10 `enrol` through the driver's wrapper (driver.ts, this task). */
@@ -156,9 +188,9 @@ export class Peer {
   async waitFor(body: string): Promise<PeerMessage> {
     await expect.poll(async () => {
       await this.sync();
-      return this.inbox.some((m) => m.body === body);
+      return this.inbox.some((m) => isPeerMessage(m) && m.body === body);
     }, { timeout: WAIT, intervals: [250, 500, 1000, 2000] }).toBe(true);
-    const found = this.inbox.find((m) => m.body === body);
+    const found = this.inbox.filter(isPeerMessage).find((m) => m.body === body);
     if (!found) throw new Error(`the peer never decrypted ${JSON.stringify(body)}`);
     return found;
   }
@@ -174,7 +206,7 @@ export class Peer {
     return devices;
   }
 
-  readonly dmInbox: PeerMessage[] = [];
+  readonly dmInbox: PeerReceived[] = [];
   async dms(): Promise<PeerDm[]> { return (await this.driver.dms()).dms; }
   async waitForDm(channelId: string): Promise<PeerDm> {
     let found: PeerDm | undefined;
@@ -189,7 +221,7 @@ export class Peer {
     return { channelId: o.channel_id, groupId: o.group_id, epoch: o.epoch, created: o.created };
   }
   sendDm(channelId: string, body: string): Promise<{ seq: number }> { return this.driver.sendDm(channelId, body); }
-  async syncDm(channelId: string): Promise<PeerMessage[]> {
+  async syncDm(channelId: string): Promise<PeerReceived[]> {
     const answer = await this.driver.syncDm(channelId);
     this.dmInbox.push(...answer.received);
     return answer.received;
@@ -207,9 +239,9 @@ export class Peer {
   async waitForDmMessage(channelId: string, body: string): Promise<PeerMessage> {
     await expect.poll(async () => {
       await this.syncDm(channelId);
-      return this.dmInbox.some((m) => m.body === body);
+      return this.dmInbox.some((m) => isPeerMessage(m) && m.body === body);
     }, { timeout: WAIT, intervals: [250, 500, 1000, 2000] }).toBe(true);
-    const found = this.dmInbox.find((m) => m.body === body);
+    const found = this.dmInbox.filter(isPeerMessage).find((m) => m.body === body);
     if (!found) throw new Error(`the peer never decrypted ${JSON.stringify(body)} in its DM`);
     return found;
   }
@@ -382,10 +414,10 @@ export async function readRecoveryKey(page: Page): Promise<string[]> {
 }
 
 /** The whole onboarding with the pointer; returns what the person would have written down. */
-export async function signUp(page: Page, invite: string, instanceName: string): Promise<Account> {
+export async function signUp(page: Page, invite: string, instanceName: string, display = 'web tester'): Promise<Account> {
   const account: Account = {
     username: `w${randomInt(0, 0xffff_ffff).toString(16).padStart(8, '0')}`,
-    display: 'web tester',
+    display,
     password: 'e2e-password-1234',
     recoveryKey: [],
   };
@@ -672,4 +704,80 @@ export async function setNotifyDefault(page: Page, mode: NotifyDefault): Promise
   await radio.click();
   await expect(radio).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
   await closeSettings(page);
+}
+
+// web-2b conversation page contract.
+export function rowById(page: Page, channel: string, msgId: string): Locator {
+  return logRegion(page, channel).locator(`${CLASS.messageRow}[data-msg-id="${msgId}"]`);
+}
+export function rowToolbar(row: Locator): Locator {
+  return row.getByRole('toolbar', { name: copy('shell.message.toolbar'), exact: true });
+}
+export async function rowAction(row: Locator, action: 'react' | 'reply' | 'edit' | 'pin' | 'unpin' | 'delete'): Promise<void> {
+  await row.focus();
+  await rowToolbar(row).getByRole('button', { name: copy(`shell.message.${action}`), exact: true }).click();
+}
+export function reactionChip(row: Locator, emojiName: string, count: number): Locator {
+  return row.getByRole('button', { name: copy('shell.message.reaction', { name: emojiName, count }), exact: true });
+}
+export function editorBox(page: Page): Locator { return page.getByRole('textbox', { name: copy('shell.edit.label'), exact: true }); }
+export function mentionList(page: Page): Locator { return page.getByRole('listbox', { name: copy('shell.composer.mentions'), exact: true }); }
+export function trayEntries(page: Page): Locator {
+  return page.getByRole('list', { name: copy('shell.tray.label'), exact: true }).getByRole('listitem');
+}
+export function attachInput(page: Page): Locator { return page.locator('input.dw-attach-input'); }
+export function lightbox(page: Page): Locator { return page.locator(CLASS.lightbox); }
+export function pinsDialog(page: Page, channel: string): Locator {
+  return page.getByRole('dialog', { name: copy('shell.pins.title', { channel }), exact: true });
+}
+export function deleteDialog(page: Page): Locator { return page.getByRole('dialog', { name: copy('shell.delete.title'), exact: true }); }
+export function sha256Hex(bytes: Uint8Array): string { return createHash('sha256').update(bytes).digest('hex'); }
+
+export interface DrawnImage { bytes: Buffer; sha256: string; type: string }
+export async function drawImage(page: Page, o: { width: number; height: number; type: 'image/png' | 'image/webp'; quality?: number; seed: number }): Promise<DrawnImage> {
+  const r = await page.evaluate(async ({ width, height, type, quality, seed }) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const g = canvas.getContext('2d');
+    if (g === null) throw new Error('no 2d context');
+    for (let y = 0; y < height; y += 20) {
+      for (let x = 0; x < width; x += 20) {
+        g.fillStyle = `hsl(${(x * 7 + y * 3 + seed * 41) % 360} 60% 50%)`;
+        g.fillRect(x, y, 20, 20);
+      }
+    }
+    const blob = await new Promise<Blob | null>((done) => canvas.toBlob(done, type, quality));
+    if (blob === null) throw new Error('canvas.toBlob returned null');
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return { b64: btoa(bin), sha256: Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join(''), type: blob.type };
+  }, o);
+  if (r.type !== o.type) throw new Error(`the browser encoded ${r.type}, not ${o.type}`);
+  return { bytes: Buffer.from(r.b64, 'base64'), sha256: r.sha256, type: r.type };
+}
+
+type FlashWindow = Window & { __dillaFlash?: { seen: boolean; stop(): void } };
+export async function watchFlash(page: Page, msgId: string): Promise<void> {
+  await page.evaluate((id) => {
+    const w = window as unknown as FlashWindow;
+    w.__dillaFlash?.stop();
+    const state = { seen: false, stop: () => undefined as void };
+    const observer = new MutationObserver(() => {
+      if (document.querySelector(`.d-message-row[data-msg-id="${id}"][data-flash="true"]`) !== null) state.seen = true;
+    });
+    state.stop = () => observer.disconnect();
+    observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['data-flash'] });
+    w.__dillaFlash = state;
+  }, msgId);
+}
+export async function flashSeen(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const w = window as unknown as FlashWindow;
+    const seen = w.__dillaFlash?.seen ?? false;
+    if (seen) w.__dillaFlash?.stop();
+    return seen;
+  });
 }

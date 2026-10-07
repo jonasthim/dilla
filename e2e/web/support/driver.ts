@@ -19,7 +19,16 @@ export function testHostUrl(): string {
 export function testkitBinary(): string { return process.env.DILLA_TESTKIT ?? join(REPO_ROOT, 'target', 'release', 'dilla-testkit'); }
 
 export interface PeerSetup { username: string; display: string; user_id: string; device_id: string; community_id: string; channel_id: string; channel_ids: string[]; invite_code: string }
-export interface PeerReceived { seq: number; body: string; sender_user: string; sender_device: string; tier: number }
+export interface PeerAttachment { index: number; blob_id: string; size: number; mime: string; name: string; thumb: boolean }
+/** A sync row; a row deleted before the peer held it has null identity fields. */
+export interface PeerReceived {
+  seq: number; body: string; sender_user: string | null; sender_device: string | null; tier: number | null;
+  msg_id: string | null; type: number | null; reply_to: string | null; deleted: boolean; attachments: PeerAttachment[];
+}
+export interface PeerSendOptions { type?: number; replyTo?: string }
+export interface PeerAttachRequest { channelId?: string; name: string; mime: string; body?: string; bytesHex?: string; size?: number; seed?: number; w?: number; h?: number; thumbHex?: string }
+export interface PeerAttached { seq: number; msg_id: string; blob_id: string; sha256: string }
+export interface PeerFetched { sha256: string; size: number; mime: string; name: string; thumb_sha256: string | null }
 export interface PeerSync { epoch: number; members: number; received: PeerReceived[] }
 export interface PeerDm { channel_id: string; group_id: string; epoch: number; }
 export interface PeerOpenedDm { channel_id: string; group_id: string; epoch: number; created: boolean; }
@@ -64,7 +73,14 @@ export class WebDriver {
   async setup(a: { community: string; channel: string; password?: string; channels?: number }): Promise<PeerSetup> { return this.strip(await this.request<PeerSetup & { id: number; ok: boolean }>('setup', a)); }
   async register(): Promise<{ group_id: string; epoch: number }> { return this.strip(await this.request<{ group_id: string; epoch: number; id: number; ok: boolean }>('register', {})); }
   async join(a: { community_id: string; channel_id: string; group_id: string; invite_code: string }): Promise<{ group_id: string; epoch: number }> { return this.strip(await this.request<{ group_id: string; epoch: number; id: number; ok: boolean }>('join', a)); }
-  async send(body: string, channelId?: string): Promise<{ seq: number }> { return this.strip(await this.request<{ seq: number; id: number; ok: boolean }>('send', channelId === undefined ? { body } : { body, channel_id: channelId })); }
+  async send(body: string, channelId?: string, opts: PeerSendOptions = {}): Promise<{ seq: number; msg_id: string }> {
+    return this.strip(await this.request<{ seq: number; msg_id: string; id: number; ok: boolean }>('send', {
+      body,
+      ...(channelId === undefined ? {} : { channel_id: channelId }),
+      ...(opts.type === undefined ? {} : { type: opts.type }),
+      ...(opts.replyTo === undefined ? {} : { reply_to: opts.replyTo }),
+    }));
+  }
   async sync(channelId?: string): Promise<PeerSync> { return this.strip(await this.request<PeerSync & { id: number; ok: boolean }>('sync', channelId === undefined ? {} : { channel_id: channelId })); }
   async members(channelId?: string): Promise<{ devices: string[] }> { return this.strip(await this.request<{ devices: string[]; id: number; ok: boolean }>('members', channelId === undefined ? {} : { channel_id: channelId })); }
   async update(): Promise<{ epoch: number }> { return this.strip(await this.request<{ epoch: number; id: number; ok: boolean }>('update', {})); }
@@ -76,6 +92,33 @@ export class WebDriver {
   async dms(): Promise<{ dms: PeerDm[] }> { return this.strip(await this.request<{ dms: PeerDm[]; id: number; ok: boolean }>('dms', {})); }
   async sendDm(channelId: string, body: string): Promise<{ seq: number }> { return this.strip(await this.request<{ seq: number; id: number; ok: boolean }>('send_dm', { channel_id: channelId, body })); }
   async syncDm(channelId: string): Promise<PeerSync> { return this.strip(await this.request<PeerSync & { id: number; ok: boolean }>('sync_dm', { channel_id: channelId })); }
+  async deleteMessage(a: { msgId: string; seq: number; channelId?: string }): Promise<{ seq: number }> {
+    return this.strip(await this.request<{ seq: number; id: number; ok: boolean }>('delete', {
+      msg_id: a.msgId, seq: a.seq, ...(a.channelId === undefined ? {} : { channel_id: a.channelId }),
+    }));
+  }
+  async attach(a: PeerAttachRequest): Promise<PeerAttached> {
+    const wire: Record<string, unknown> = { name: a.name, mime: a.mime };
+    if (a.channelId !== undefined) wire.channel_id = a.channelId;
+    if (a.body !== undefined) wire.body = a.body;
+    if (a.bytesHex !== undefined) wire.bytes_hex = a.bytesHex;
+    if (a.size !== undefined) wire.size = a.size;
+    if (a.seed !== undefined) wire.seed = a.seed;
+    if (a.w !== undefined) wire.w = a.w;
+    if (a.h !== undefined) wire.h = a.h;
+    if (a.thumbHex !== undefined) wire.thumb_hex = a.thumbHex;
+    return this.strip(await this.request<PeerAttached & { id: number; ok: boolean }>('attach', wire));
+  }
+  async fetchAttachment(a: { seq: number; index: number; channelId?: string }): Promise<PeerFetched> {
+    return this.strip(await this.request<PeerFetched & { id: number; ok: boolean }>('fetch_attachment', {
+      seq: a.seq, index: a.index, ...(a.channelId === undefined ? {} : { channel_id: a.channelId }),
+    }));
+  }
+  async blobStatus(a: { blobId: string; channelId?: string }): Promise<{ status: number }> {
+    return this.strip(await this.request<{ status: number; id: number; ok: boolean }>('blob_status', {
+      blob_id: a.blobId, ...(a.channelId === undefined ? {} : { channel_id: a.channelId }),
+    }));
+  }
   async close(): Promise<void> {
     this.child.stdin.end();
     await new Promise<void>((done) => {
