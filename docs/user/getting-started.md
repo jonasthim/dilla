@@ -331,7 +331,7 @@ and files. This works the same in channels and in direct messages.
 
 ### The message toolbar
 
-![Mira's view of #general: Björn's reply to Ada with its reply line and its toolbar react, reply and pin, and
+![Mira's view of #general: Björn's reply to Ada with its reply line and its toolbar react, reply and pin,
 and, further up, Mira's packing list with the reactions thumbs up 2 and fire 1](screenshots/conversation-actions.png)
 
 Point at a message, or move to it with the keyboard, and its toolbar appears ("actions for this message"):
