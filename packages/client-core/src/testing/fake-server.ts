@@ -202,7 +202,7 @@ export class FakeServer {
     const sorted = [...creations].sort((a, b) => a - b);
     if (sorted.length === 0) return 3600;
     const i = Math.min(Math.max(sorted.length - this.enrolmentsPerHour, 0), sorted.length - 1);
-    const wait = sorted[i]! + 3600 - this.nowS;
+    const wait = sorted[i] + 3600 - this.nowS;
     return wait > 0 ? wait : 1;
   }
 
