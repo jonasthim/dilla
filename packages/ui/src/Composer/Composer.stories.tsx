@@ -48,7 +48,7 @@ export const WithTray: Story = {
       { id: 't1', name: 'notes.txt', size: '2 KB', step: 'ready', failed: false, phase: 'ready', removeLabel: 'remove notes.txt', onRemove: () => {} },
     ]} /> },
 };
-// The list open while typing `@mi`: the textarea stays a textbox and points at the list (pre-flight ruling F10).
+// The list open while typing `@mi`: the textarea is a combobox and points at the list.
 export const WithMentionList: Story = {
   args: { ...ATTACH, value: '@mi',
     combobox: { expanded: true, controls: 'mentions', activeDescendant: 'mention-mira', onKey: () => false },
