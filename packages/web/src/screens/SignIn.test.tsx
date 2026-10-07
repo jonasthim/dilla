@@ -287,31 +287,40 @@ describe('refusals', () => {
     expect(document.activeElement).toBe(password());
   });
 
-  const AFTER_CODE: [string, Parameters<typeof refusal>[0], string][] = [
+  // REGISTRATION-DEVICES-02: the registration runs inside signInKey, after the key is in hand; its refusals return
+  // the phase to signin-login and show on step 1.
+  const AFTER_KEY: [string, Parameters<typeof refusal>[0], string][] = [
     ['the device cap', { code: 'E_FORBIDDEN', status: 403 }, 'This account already has as many devices as dilla.test allows. Remove one in Settings on another device first.'],
     ['the registration meter', { code: 'E_RATE_LIMITED', status: 429, retryAfterMs: 600 }, 'Too many sign-in attempts. Try again in 1 s.'],
+    ['a replaced row', { code: 'E_SIGNIN_EVICTED' }, 'Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.'],
   ];
-  it.each(AFTER_CODE)('a registration refused after the code shows %s on step 1', async (_, init, text) => {
-    const { user } = setup('signin-totp', (c, f) => {
-      if (c.m !== 'signInTotp') return Promise.resolve(null);
-      move(f, { phase: 'signin-login', signIn: { username: 'ada', needsTotp: true } });
+  it.each(AFTER_KEY)('a registration refused after the key shows %s on step 1', async (_, init, text) => {
+    const { user, view } = setup('signin-key', (c, f) => {
+      if (c.m !== 'signInKey') return Promise.resolve(null);
+      move(f, { phase: 'enrolling' });
+      move(f, { phase: 'signin-login', signIn: { username: 'ada', needsTotp: false } });
       return Promise.reject(refusal(init));
-    }, { signIn: { username: 'ada', needsTotp: true } });
-    await user.type(field('Code'), '123456{Enter}');
+    }, { signIn: { username: 'ada', needsTotp: false } });
+    await pasteKey(user);
+    await user.click(button('Add this browser'));
     expect(h1()).toHaveTextContent('Sign in to dilla.test');
+    expect(document.activeElement).toBe(h1());
     expect(screen.getByRole('alert')).toHaveTextContent(text);
     expect(field('Username')).toHaveValue('ada');
+    await expectNoAxeViolations(view.container);
   });
 
-  it('an account with nothing to recover offers only Cancel', async () => {
-    const { user, fake, view } = setup('signin-login', (c, f) => {
-      if (c.m !== 'signInLogin') return Promise.resolve(null);
+  it('an account with nothing to recover, found by the key step, offers only Cancel', async () => {
+    const { user, fake, view } = setup('signin-key', (c, f) => {
+      if (c.m !== 'signInKey') return Promise.resolve(null);
+      move(f, { phase: 'enrolling' });
       move(f, { phase: 'signin-key', error: { code: 'E_NO_BACKUP', detail: '', status: 0, retryAfterMs: null } });
       return Promise.reject(refusal({ code: 'E_NO_BACKUP' }));
     });
-    await login(user);
+    await pasteKey(user);
+    await user.click(button('Add this browser'));
     expect(h1()).toHaveTextContent('Your recovery key');
-    expect(screen.getByRole('alert')).toHaveTextContent('This account has no recovery data on dilla.test. It was created before recovery existed, and its browser has not been online since. Open it there first.');
+    expect(screen.getByRole('alert')).toHaveTextContent('This account has no backup to recover from on dilla.test.');
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['Cancel']);
     await expectNoAxeViolations(view.container);

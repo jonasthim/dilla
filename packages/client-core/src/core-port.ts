@@ -67,6 +67,8 @@ export interface CorePort {
   enrolBegin(instanceId: Id): { deviceId: Id; dskPub: Uint8Array };
   enrolSessionSign(nonce: Uint8Array, login: Uint8Array): Uint8Array;
   enrolRegistered(userId: Id): void;
+  /** REGISTRATION-DEVICES-02: the typed key's form (the core's normaliser and strict parse); E_RECOVERY_KEY otherwise. */
+  recoveryKeyCheck(recoveryKey: string): void;
   enrolComplete(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; username: string; now: bigint }): { deviceListBody: Uint8Array; stateSealed: Uint8Array };
   enrolReset(): void;
   deviceListRevoke(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; deviceIds: Id[]; now: bigint }): { deviceListBody: Uint8Array; stateSealed: Uint8Array };
@@ -116,6 +118,7 @@ export interface CoreHandle {
       enrol_begin(instance_id: Uint8Array): Uint8Array;
       enrol_session_sign(nonce: Uint8Array, login: Uint8Array): Uint8Array;
       enrol_registered(user_id: Uint8Array): void;
+      recovery_key_check(recovery_key: string): void;
       enrol_complete(recovery_key: string, root_sealed: Uint8Array, state_sealed: Uint8Array, list_body: Uint8Array, username: string, now: bigint): Uint8Array;
       enrol_reset(): void;
       device_list_revoke(recovery_key: string, root_sealed: Uint8Array, state_sealed: Uint8Array, list_body: Uint8Array, device_ids: Uint8Array, now: bigint): Uint8Array;
@@ -272,6 +275,7 @@ export function wrapCore(handle: CoreHandle): CorePort {
     })),
     enrolSessionSign: (nonce, login) => call(() => handle.enrol_session_sign(nonce, login)),
     enrolRegistered: (userId) => call(() => handle.enrol_registered(userId)),
+    recoveryKeyCheck: (recoveryKey) => call(() => handle.recovery_key_check(recoveryKey)),
     enrolComplete: (input) => call(() => decoded('enrolComplete', handle.enrol_complete(input.recoveryKey, input.rootSealed,
       input.stateSealed, input.listBody, input.username, input.now), readPair)),
     enrolReset: () => call(() => handle.enrol_reset()),

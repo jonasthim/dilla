@@ -52,7 +52,8 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   useEffect(() => {
     if (phase !== 'cleared' || reloaded.current) return;
     reloaded.current = true;
-    (reload ?? defaultReload)(errorCode === 'E_LIST_RACE' ? '/welcome?signin=race' : '/');
+    (reload ?? defaultReload)(errorCode === 'E_LIST_RACE' ? '/welcome?signin=race'
+      : errorCode === 'E_SIGNIN_EVICTED' ? '/welcome?signin=evicted' : '/');
   }, [phase, errorCode, reload]);
   const [route, navigate] = useRoute();
   // The route as of the last commit, for the notifier's callbacks: the channel on screen, and whether Settings is open.

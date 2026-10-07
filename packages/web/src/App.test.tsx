@@ -224,6 +224,18 @@ describe('App cleared', () => {
     render(<StrictMode><CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider></StrictMode>);
     expect(reload.mock.calls).toEqual([['/welcome?signin=race']]);
   });
+  // REGISTRATION-DEVICES-02: the row was replaced after the enrolment was written; the wipe reloads with the notice.
+  it('reloads to the eviction message after an evicted sign-in, never through the revoked splash', () => {
+    const fake = new FakeClient();
+    const reload = vi.fn();
+    fake.set('account', account({ phase: 'enrolling', user: null, deviceId: null, signIn: { username: 'ada', needsTotp: false } }));
+    render(<CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider>);
+    act(() => fake.set('account', account({
+      phase: 'cleared', user: null, deviceId: null, signIn: null, error: { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null },
+    })));
+    expect(screen.queryByText('This browser was signed out')).toBeNull();
+    expect(reload.mock.calls).toEqual([['/welcome?signin=evicted']]);
+  });
   it('reloads to / after a sign-out or a forget', () => {
     const fake = new FakeClient();
     const reload = vi.fn();

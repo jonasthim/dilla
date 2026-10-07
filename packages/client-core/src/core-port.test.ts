@@ -237,6 +237,14 @@ describe('wrapCore web-2a', () => {
     ]);
   });
 
+  it('forwards the recovery key form check and maps its refusal (REGISTRATION-DEVICES-02)', () => {
+    const s = stub({ recovery_key_check: () => undefined });
+    s.port.recoveryKeyCheck('abcd-efgh');
+    expect(s.calls).toEqual([{ method: 'recovery_key_check', args: ['abcd-efgh'] }]);
+    const refused = caught(() => stub({ recovery_key_check: () => { throw new Error('E_RECOVERY_KEY'); } }).port.recoveryKeyCheck('x'));
+    expect([refused.code, refused.detail]).toEqual(['E_RECOVERY_KEY', '']);
+  });
+
   it('concatenates the device ids of a revocation and refuses a malformed list before the call', () => {
     const s = stub({ device_list_revoke: () => encode([new Uint8Array([6]), new Uint8Array([7])]) });
     const a = new Uint8Array(16).fill(0x0a);

@@ -341,6 +341,7 @@ export class ModelCore implements CorePort {
   enrolBegin(): { deviceId: Id; dskPub: Uint8Array } { throw coreError('E_CORE_STATE', 'not modelled'); }
   enrolSessionSign(): Uint8Array { throw coreError('E_CORE_STATE', 'not modelled'); }
   enrolRegistered(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
+  recoveryKeyCheck(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
   enrolComplete(): { deviceListBody: Uint8Array; stateSealed: Uint8Array } { throw coreError('E_CORE_STATE', 'not modelled'); }
   enrolReset(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
   deviceListRevoke(): { deviceListBody: Uint8Array; stateSealed: Uint8Array } { throw coreError('E_CORE_STATE', 'not modelled'); }

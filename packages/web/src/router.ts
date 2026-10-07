@@ -2,7 +2,8 @@ import { useMemo, useSyncExternalStore } from 'react';
 import { errorOf, type UiError } from './core/errors.ts';
 
 export type SettingsSection = 'devices' | 'notifications' | 'appearance';
-export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null; signin: 'race' | null }
+export type SignInNotice = 'race' | 'evicted';
+export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null; signin: SignInNotice | null }
   | { name: 'channel'; communityId: string; channelId: string | null }
   | { name: 'dm'; channelId: string }
   | { name: 'settings'; section: SettingsSection; from: string | null };
@@ -29,7 +30,8 @@ export function parseRoute(pathname: string, search: string, state: unknown = nu
   if (pathname === '/') return { name: 'root' };
   if (pathname === '/welcome') {
     const params = new URLSearchParams(search);
-    return { name: 'welcome', invite: params.get('invite') || null, signin: params.get('signin') === 'race' ? 'race' : null };
+    const signin = params.get('signin');
+    return { name: 'welcome', invite: params.get('invite') || null, signin: signin === 'race' || signin === 'evicted' ? signin : null };
   }
   const match = /^\/c\/([0-9a-f]{32})(?:\/([0-9a-f]{32}))?$/.exec(pathname);
   if (match) return { name: 'channel', communityId: match[1], channelId: match[2] ?? null };
@@ -47,7 +49,7 @@ export function routePath(route: Route): string {
     case 'welcome': {
       const parts: string[] = [];
       if (route.invite) parts.push(`invite=${encodeURIComponent(route.invite)}`);
-      if (route.signin === 'race') parts.push('signin=race');
+      if (route.signin !== null) parts.push(`signin=${route.signin}`);
       return parts.length > 0 ? `/welcome?${parts.join('&')}` : '/welcome';
     }
     case 'channel': return `/c/${route.communityId}${route.channelId ? `/${route.channelId}` : ''}`;

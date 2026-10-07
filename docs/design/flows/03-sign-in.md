@@ -32,7 +32,7 @@ characters of the device id: devices have no names in this version.
 | `enrolling` | step 3 in its working state |
 | `ready`, reached by `signInKey` in this page | step 4, done |
 | `ready` on a fresh load | not this flow: the shell |
-| `cleared` | the boot splash, then a reload: to `/welcome?signin=race` after `E_LIST_RACE` (onboarding step 1 with the warn banner `signin.error.listRace`), else to `/` |
+| `cleared` | the boot splash, then a reload: to `/welcome?signin=race` after `E_LIST_RACE` (onboarding step 1 with the warn banner `signin.error.listRace`), to `/welcome?signin=evicted` after `E_SIGNIN_EVICTED` (onboarding step 1 with the danger banner `signin.error.evicted`), else to `/` |
 | any other phase | not this flow: the boot screen |
 
 `instance.passwordSignup` is `authMethods.includes(0)` (`packages/client-core/src/worker/controller.ts:260`),
@@ -43,17 +43,22 @@ accounts that want a second browser.
 
 Worker commands. `Use an existing account` sends `signInBegin` (phase `signin-login`). Step 1's
 `Continue` sends `signInLogin` with the username and the password; the worker logs in and, when no
-second factor is owed, registers this browser as a pending device of the account and fetches what it
-needs for step 3, then the phase is `signin-key`; when a second factor is owed the phase is
+second factor is owed, the phase is `signin-key`; when a second factor is owed the phase is
 `signin-totp`. Step 2's `Continue` sends `signInTotp` with the code, ending in `signin-key` the same
-way. Step 3's `Add this browser` sends `signInKey` with the recovery key as typed (the worker and the
-core normalise it); the phase is `enrolling` while it runs and `ready` when this browser is a listed
-device. `Create a new account instead` on step 1 and `Cancel` on steps 2 and 3 send `signInCancel` and
-the page shows onboarding step 1. The step shown follows `account.phase`, never the command the page
-sent: a refusal of the login, of the second factor or of the registration leaves the phase at
-`signin-login` or returns it there, so the page shows step 1 with its banner or field error and the
-person signs in again; a failed fetch of the recovery data stops at step 3. The password, the code and
-the key leave the page once each, inside their one command, and are never stored by the page.
+way. Nothing is registered at the instance before the key is in hand (REGISTRATION-DEVICES-02): the
+login is held by the worker while the person finds the key. Step 3's `Add this browser` sends
+`signInKey` with the recovery key as typed; the worker has the core check its form first (the core's
+normaliser and its strict 52-character parse), and a key of the wrong form is refused before anything is
+sent. Then, back to back, the worker registers this browser as a pending device of the account, fetches
+the recovery data, lets the core open it with the key and sign the next device list, and publishes that
+list, so the new device is outside the list for a few round trips only. The phase is `enrolling` while
+`signInKey` runs and `ready` when this browser is a listed device. `Create a new account instead` on
+step 1 and `Cancel` on steps 2 and 3 send `signInCancel` and the page shows onboarding step 1. The step
+shown follows `account.phase`, never the command the page sent: a refusal of the login, of the second
+factor or of the registration leaves the phase at `signin-login` or returns it there, so the page shows
+step 1 with its banner or field error and the person signs in again; a failed fetch of the recovery data
+stops at step 3. The password, the code and the key leave the page once each, inside their one command,
+and are never stored by the page.
 
 ## Steps
 
@@ -336,8 +341,9 @@ field, so the person can correct one character:
 |                      ✕ This is not the recovery key of this account. Check every character.  |
 ```
 
-No recovery data (`E_NO_BACKUP` from the fetch after the login): step 3 shows the danger banner
-`signin.error.noBackup` and neither the field nor `Add this browser`; `Cancel` is the only way on:
+No recovery data (`E_NO_BACKUP` on a reload into step 3, whose fetch finds no recovery data): step 3
+shows the danger banner `signin.error.noBackup` and neither the field nor `Add this browser`; `Cancel`
+is the only way on:
 
 ```
 |                      Your recovery key                                    <h1>, has focus    |
@@ -351,9 +357,10 @@ No recovery data (`E_NO_BACKUP` from the fetch after the login): step 3 shows th
 |                                                            [ Cancel ]                        |
 ```
 
-No usable backup state (`E_NO_BACKUP` from `signInKey`: the account's recovery data is there, but the
-part that carries its device state is missing or cannot be read): the same view, with the danger banner
-`signin.error.noBackupState` in place of `signin.error.noBackup`:
+No usable backup state (`E_NO_BACKUP` from `signInKey`: the fetch found no recovery data, or the
+account's recovery data is there but the part that carries its device state is missing or cannot be
+read): the same view, with the danger banner `signin.error.noBackupState` in place of
+`signin.error.noBackup`:
 
 ```
 |                      +------------------------------------------------------------------+    |
@@ -364,14 +371,13 @@ part that carries its device state is missing or cannot be read): the same view,
 |                                                            [ Cancel ]                        |
 ```
 
-Device cap (`E_FORBIDDEN` 403 from the registration inside `signInLogin` or `signInTotp`): the instance
-refuses a new browser only when every device it counts for the account is in the account's device list (a
-device that signed in but never joined the list is replaced instead). The worker returns the phase to
-`signin-login`, so the refusal is shown on step 1, with the username kept; `Continue` signs in again once a
+Device cap (`E_FORBIDDEN` 403 from the registration inside `signInKey`): the instance refuses a new
+browser only when every device it counts for the account is in the account's device list (a device that
+signed in but never joined the list is replaced instead). The worker returns the phase to `signin-login`,
+so the refusal is shown on step 1, with the username kept; `Continue` and the key sign in again once a
 device was removed. The banner is the first child of step 1's body, under the step line; the buttons are
-enabled again. From step 1 focus stays on the pressed button and the banner announces itself
-(`role="alert"`); from step 2 the step changes and focus moves to step 1's heading. The device-cap banner
-(danger), on step 1:
+enabled again. The step changes, so focus moves to step 1's heading and the banner announces itself
+(`role="alert"`). The device-cap banner (danger), on step 1:
 
 ```
 |                      Sign in to dilla.thim.dev                                               |
@@ -383,8 +389,9 @@ enabled again. From step 1 focus stays on the pressed button and the banner anno
 |                      Use the username and password of your account on dilla.thim.dev.        |
 ```
 
-Too many attempts (`E_RATE_LIMITED` 429 from `signInLogin` or `signInTotp`): the instance limits logins
-from one network, and registration attempts from one network or one device, and answers with a wait. The
+Too many attempts (`E_RATE_LIMITED` 429 from `signInLogin`, `signInTotp` or the registration inside
+`signInKey`): the instance limits logins from one network, and registration attempts from one network or
+one device, and answers with a wait. The
 page cannot tell these limits apart and does not need to: every one is a short wait, shown by one warn
 banner, `signin.error.tooMany`, on step 1 (the worker leaves or returns the phase at `signin-login`), with
 the username kept and the same focus rules as the device cap:
@@ -402,6 +409,24 @@ Network failure and other refusals: a `Banner` is the first child of the body of
 names after the refusal, under the step line; the buttons are enabled again. When the step does not
 change, focus stays where it was and the banner announces itself (`role="alert"`); when a refusal of step 2
 returns the phase to `signin-login`, focus moves to step 1's heading.
+
+Someone else is signing in (`E_SIGNIN_EVICTED`, from `signInKey`): another sign-in to the account, with
+its password, replaced this browser's row at the instance before the new device list named it (a 401 on
+the fetch, on the list `PUT` or on the session after it). Before the core wrote the enrolment, the worker
+drops it and returns the phase to `signin-login`: step 1 shows the danger banner `signin.error.evicted`,
+its heading focused. After the core wrote it, the worker clears this browser's data as for `E_LIST_RACE`
+and the page reloads to `/welcome?signin=evicted`, where onboarding step 1 shows the same banner. Either
+way the page never shows the revoked splash for it:
+
+```
+|                      Sign in to dilla.thim.dev                            <h1>, has focus    |
+|                      Step 1 of 4                                                             |
+|                      +------------------------------------------------------------------+    |
+|                      | ✕ Someone else is signing in to this account. Change your        |    |
+|                      |   password from a device you still have, or ask the operator.    |    |
+|                      +------------------------------------------------------------------+    |
+|                      Use the username and password of your account on dilla.thim.dev.        |
+```
 
 The devices changed while signing in (`E_LIST_RACE`, from `signInKey`): another device published a new
 device list between the login and the key. The worker clears this browser's data and the phase becomes
@@ -434,26 +459,27 @@ Closed instance (`instance.registrationMode` 2, `instance.passwordSignup` true):
 
 Refusals of the sign-in commands, switched on `code` and `status` only (never on `detail`), each
 clearing the working state. The step shown is the one `account.phase` names after the refusal: step 1
-after a refused login, second factor or registration (`signInLogin`, `signInTotp`), step 3 after a refused
-fetch of the recovery data or a refused `signInKey`:
+after a refused login, second factor or registration (`signInLogin`, `signInTotp`, the registration
+inside `signInKey`), step 3 after a refused fetch of the recovery data or a refused enrolment:
 
 | `code` | `status` | from | goes to | shown |
 |---|---|---|---|---|
 | `E_UNAUTHENTICATED` | 401 | `signInLogin` | step 1, password emptied, focus on the password field | field error `signin.error.loginFailed` |
 | `E_UNAUTHENTICATED` | 401 | `signInTotp` | step 1 (phase `signin-login`), username kept, password empty, focus on the password field | warn banner `signin.error.totpFailed` |
 | `E_NO_ASSERTION` | 0 | `signInTotp` | step 1 (phase `signin-login`), username kept, password empty, focus on the password field | warn banner `signin.error.totpFailed` |
-| `E_FORBIDDEN` | 403 | `signInLogin`, `signInTotp` (the registration) | step 1 (phase `signin-login`), username kept | danger banner `signin.error.deviceCap` |
-| `E_RATE_LIMITED` | 429 | `signInLogin`, `signInTotp` (the login, the second-factor route or the registration) | step 1 (phase `signin-login`), username kept | warn banner `signin.error.tooMany` with `seconds = Math.ceil(retryAfterMs / 1000)`; `onboarding.error.rateLimitedNoWait` (flow 01) when `retryAfterMs` is `null` |
-| `E_NO_BACKUP` | 0 | `signInLogin`, `signInTotp` (the fetch) | step 3 without the field | danger banner `signin.error.noBackup`; `Cancel` only |
-| `E_NO_BACKUP` | 0 | `signInKey` (the backup state) | step 3 without the field | danger banner `signin.error.noBackupState`; `Cancel` only |
-| `E_RECOVERY_KEY` | 0 | `signInKey` | step 3, value kept, focus on the field | field error `signin.error.wrongKey` |
+| `E_FORBIDDEN` | 403 | `signInKey` (the registration) | step 1 (phase `signin-login`), username kept | danger banner `signin.error.deviceCap` |
+| `E_RATE_LIMITED` | 429 | `signInLogin`, `signInTotp`, `signInKey` (the login, the second-factor route or the registration) | step 1 (phase `signin-login`), username kept | warn banner `signin.error.tooMany` with `seconds = Math.ceil(retryAfterMs / 1000)`; `onboarding.error.rateLimitedNoWait` (flow 01) when `retryAfterMs` is `null` |
+| `E_NO_BACKUP` | 0 | the reload into step 3 (the fetch) | step 3 without the field | danger banner `signin.error.noBackup`; `Cancel` only |
+| `E_NO_BACKUP` | 0 | `signInKey` (the fetch or the backup state) | step 3 without the field | danger banner `signin.error.noBackupState`; `Cancel` only |
+| `E_RECOVERY_KEY` | 0 | `signInKey` (the key's form, before anything is registered, or the root object) | step 3, value kept, focus on the field | field error `signin.error.wrongKey` |
+| `E_SIGNIN_EVICTED` | 0 | `signInKey` (a 401 on the fetch, the list `PUT` or the session after it) | step 1 (phase `signin-login`), or after a written enrolment phase `cleared` and the reload to `/welcome?signin=evicted`, onboarding step 1 | danger banner `signin.error.evicted` |
 | `E_LIST_RACE` | 0 | `signInKey` | phase `cleared`: the boot splash, then the reload to `/welcome?signin=race`, onboarding step 1 | warn banner `signin.error.listRace` on the connect step |
 | `E_NETWORK`, or any code with `status` ≥ 500 | — | any | the step `account.phase` names | danger banner `signin.error.network` |
 | anything else | below 500 | any | the step `account.phase` names | danger banner `signin.error.other` with `{code}` |
 
-A `401` from the registration inside `signInLogin` (an account that never published a device list, or a
-fault of the instance) reads as a wrong password, and inside `signInTotp` as a refused code; web-2a
-accepts this for a case that a working instance and a web-2a account do not reach.
+A `401` from the registration inside `signInKey` (a login older than the instance's five-minute
+assertion, an account that never published a device list, or a fault of the instance) returns the phase to
+`signin-login` and shows `signin.error.other` with its code on step 1; the person signs in again.
 
 ## Focus and announcements
 
@@ -465,6 +491,7 @@ accepts this for a case that a working instance and a web-2a account do not reac
 | a banner on the step that is shown | unchanged | the banner (`role="alert"`) |
 | a banner on a step the refusal returns to (any other refusal of step 2: the device cap, too many attempts, the network) | step 1's `<h1>` | the heading, then the banner |
 | the reload after `E_LIST_RACE` | onboarding step 1's `<h1>` | the heading, then the banner `signin.error.listRace` |
+| `E_SIGNIN_EVICTED` (step 3 → step 1, or the reload) | step 1's `<h1>`, or onboarding step 1's `<h1>` after the reload | the heading, then the banner `signin.error.evicted` |
 | a command starts | unchanged (the pressed button becomes `aria-disabled` and keeps focus) | step 3: `signin.key.working` (`role="status"`); steps 1–2: the button's new label is not announced |
 | the key count changes | unchanged | nothing: the count `signin.key.hint` is the field's description, read when the field takes focus; it is not a live region, so typing is not interrupted |
 | the count reaches 52 | unchanged | `Add this browser` loses the description `signin.error.keyLength` |
@@ -487,12 +514,13 @@ and judged by the instance, which answers the same way for every wrong pair.
 
 ## Reload and interruption
 
-- Reload on step 1 or 2: the worker still holds no device record (`signInLogin` registers only after the
-  login and the second factor succeed); the page opens at onboarding step 1. The assertion, if one was
-  issued, is forgotten and expires at the instance.
-- Reload on step 3, or while `Add this browser` runs before the instance accepted the new device list:
-  the store holds the enrolment record with the account's user id; the worker fetches the recovery data
-  again and the page opens at step 3 with an empty field (L-TS-23: boot in phase 3 with a user id).
+- Reload on step 1, 2 or 3 before `Add this browser` was pressed: the worker still holds no device
+  record (`signInKey` registers only once the key is in hand); the page opens at onboarding step 1. The
+  assertion, if one was issued, is forgotten and expires at the instance.
+- Reload while `Add this browser` runs before the instance accepted the new device list, or after a
+  wrong key: the store holds the enrolment record with the account's user id; the worker fetches the
+  recovery data again and the page opens at step 3 with an empty field (L-TS-23: boot in phase 3 with a
+  user id). The next `Add this browser` does not register again.
 - Reload while registering, before the instance named the account's user: the worker clears the
   enrolment record and the page opens at onboarding step 1.
 - Reload after the instance accepted the new device list: this browser is a device of the account and
@@ -712,11 +740,12 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `signin.error.loginFailed` | `That username and password did not work.` | field error, password, step 1 |
 | `signin.error.totpFailed` | `That code did not work. Sign in again with a fresh code.` | warn banner, step 1, after a refused second factor |
 | `signin.error.required` | `Fill in this field.` | field error under an empty `Username`, `Password` or `Code` on submit, steps 1 and 2 |
-| `signin.error.noBackup` | `This account has no recovery data on {instance}. It was created before recovery existed, and its browser has not been online since. Open it there first.` | danger banner, step 3, without the field, after `E_NO_BACKUP` from the fetch |
+| `signin.error.noBackup` | `This account has no recovery data on {instance}. It was created before recovery existed, and its browser has not been online since. Open it there first.` | danger banner, step 3, without the field, after `E_NO_BACKUP` from the fetch of a reload into step 3 |
 | `signin.error.noBackupState` | `This account has no backup to recover from on {instance}. Sign in from a device that still holds it, or start over.` | danger banner, step 3, without the field, after `E_NO_BACKUP` from `signInKey` |
 | `signin.error.wrongKey` | `This is not the recovery key of this account. Check every character.` | field error, recovery key, step 3 |
 | `signin.error.keyLength` | `A recovery key has 52 characters.` | description of the blocked forward button while the count is not 52, and the field's error on such a submit, step 3 and the two key dialogs |
 | `signin.error.deviceCap` | `This account already has as many devices as {instance} allows. Remove one in Settings on another device first.` | danger banner, step 1, after `E_FORBIDDEN` from the registration |
+| `signin.error.evicted` | `Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.` | danger banner, step 1 or onboarding step 1 after the reload to `/welcome?signin=evicted`, after `E_SIGNIN_EVICTED` from `signInKey` |
 | `signin.error.tooMany` | `Too many sign-in attempts. Try again in {seconds} s.` | warn banner, step 1, after `E_RATE_LIMITED` from the login, the second-factor route or the registration |
 | `signin.error.listRace` | `The account’s devices changed while you were signing in. Sign in again.` | warn banner, onboarding step 1 (the connect step) after the reload to `/welcome?signin=race` that follows `E_LIST_RACE` |
 | `signin.error.network` | `The connection dropped. Check it and try again.` | danger banner, any step |

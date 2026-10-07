@@ -16,6 +16,7 @@ describe('parseRoute', () => {
     ['/welcome', '?invite=a%20b', null, { name: 'welcome', invite: 'a b', signin: null }],
     ['/welcome', '?signin=race', null, { name: 'welcome', invite: null, signin: 'race' }],
     ['/welcome', '?invite=ABCD-EFGH&signin=race', null, { name: 'welcome', invite: 'ABCD-EFGH', signin: 'race' }],
+    ['/welcome', '?signin=evicted', null, { name: 'welcome', invite: null, signin: 'evicted' }],
     ['/welcome', '?signin=other', null, { name: 'welcome', invite: null, signin: null }],
     [`/c/${C}`, '', null, { name: 'channel', communityId: C, channelId: null }],
     [`/c/${C}/${CH}`, '?x=1', null, { name: 'channel', communityId: C, channelId: CH }],
@@ -55,6 +56,7 @@ describe('routePath', () => {
     expect(routePath({ name: 'welcome', invite: 'a b&c', signin: null })).toBe('/welcome?invite=a%20b%26c');
     expect(routePath({ name: 'welcome', invite: 'a b&c', signin: 'race' })).toBe('/welcome?invite=a%20b%26c&signin=race');
     expect(routePath({ name: 'welcome', invite: null, signin: 'race' })).toBe('/welcome?signin=race');
+    expect(routePath({ name: 'welcome', invite: null, signin: 'evicted' })).toBe('/welcome?signin=evicted');
     expect(routePath({ name: 'channel', communityId: C, channelId: null })).toBe(`/c/${C}`);
     expect(routePath({ name: 'channel', communityId: C, channelId: CH })).toBe(`/c/${C}/${CH}`);
     expect(routePath({ name: 'dm', channelId: DM })).toBe(`/dm/${DM}`);

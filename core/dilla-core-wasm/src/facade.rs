@@ -537,6 +537,11 @@ impl CoreHandle {
         self.with_core(|c| c.enrol_session_sign(&nonce, &login))
             .map(Vec::into_boxed_slice)
     }
+    /// Calls dilla_core::client::recovery_key_check: the typed key's form, before a registration.
+    pub fn recovery_key_check(&self, recovery_key: String) -> Result<(), JsError> {
+        let recovery_key = Zeroizing::new(recovery_key);
+        dilla_core::client::recovery_key_check(recovery_key.as_str()).map_err(owned_js_error)
+    }
     /// Calls ClientCore::enrol_registered.
     pub fn enrol_registered(&self, user_id: &[u8]) -> Result<(), JsError> {
         let user_id = js_fixed_arg::<16>("user_id", user_id)?;

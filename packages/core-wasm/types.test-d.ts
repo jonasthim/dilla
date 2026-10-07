@@ -61,6 +61,7 @@ interface ExpectedCoreHandle {
   enrol_begin(instance_id: Uint8Array): Uint8Array;
   enrol_session_sign(nonce: Uint8Array, login: Uint8Array): Uint8Array;
   enrol_registered(user_id: Uint8Array): void;
+  recovery_key_check(recovery_key: string): void;
   enrol_complete(recovery_key: string, root_sealed: Uint8Array, state_sealed: Uint8Array, list_body: Uint8Array, username: string, now: bigint): Uint8Array;
   enrol_reset(): void;
   device_list_revoke(recovery_key: string, root_sealed: Uint8Array, state_sealed: Uint8Array, list_body: Uint8Array, device_ids: Uint8Array, now: bigint): Uint8Array;
@@ -132,6 +133,7 @@ expectTrue<Equals<H['setting_delete'], E['setting_delete']>>();
 expectTrue<Equals<H['enrol_begin'], E['enrol_begin']>>();
 expectTrue<Equals<H['enrol_session_sign'], E['enrol_session_sign']>>();
 expectTrue<Equals<H['enrol_registered'], E['enrol_registered']>>();
+expectTrue<Equals<H['recovery_key_check'], E['recovery_key_check']>>();
 expectTrue<Equals<H['enrol_complete'], E['enrol_complete']>>();
 expectTrue<Equals<H['enrol_reset'], E['enrol_reset']>>();
 expectTrue<Equals<H['device_list_revoke'], E['device_list_revoke']>>();

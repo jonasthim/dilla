@@ -37,6 +37,9 @@ const codePoints = (s: string): number => [...s].length;
 // L-TS-27, head ruling 26: after a list race the wipe reloads the page to /welcome?signin=race, and the
 // query is the only place the message survives that reload.
 const RACE_BANNER: BannerState = { tone: 'warn', key: 'signin.error.listRace', vars: {}, reload: false };
+// REGISTRATION-DEVICES-02: the sign-in's row was replaced after the enrolment was written; the wipe reloads to
+// /welcome?signin=evicted.
+const EVICTED_BANNER: BannerState = { tone: 'danger', key: 'signin.error.evicted', vars: {}, reload: false };
 
 /**
  * L-COPY-01's refusal table, in its order. It reads the code, the HTTP status and the wait, and
@@ -95,7 +98,8 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   const [password, setPassword] = useState('');
   const [errors, setErrors] = useState<Partial<Record<Field, StringKey>>>({});
   const [banner, setBanner] = useState<BannerState | null>(
-    () => (route.name === 'welcome' && route.signin === 'race' ? RACE_BANNER : null));
+    () => (route.name === 'welcome' && route.signin === 'race' ? RACE_BANNER
+      : route.name === 'welcome' && route.signin === 'evicted' ? EVICTED_BANNER : null));
   const [acknowledged, setAcknowledged] = useState(false);
   const [beginning, setBeginning] = useState(false);
   const [entering, setEntering] = useState(false);
@@ -162,7 +166,7 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
 
   // The first navigation away from the connect step writes the route without the race query.
   const dropRace = () => {
-    if (route.name === 'welcome' && route.signin === 'race') navigate({ name: 'welcome', invite: route.invite, signin: null }, true);
+    if (route.name === 'welcome' && route.signin !== null) navigate({ name: 'welcome', invite: route.invite, signin: null }, true);
   };
   const connectNext = () => {
     setBanner(null);

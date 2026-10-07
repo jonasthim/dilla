@@ -40,9 +40,12 @@ function signInRefusal(e: UiError, command: SignInCommand, instance: string): Re
   if (e.code === 'E_UNAUTHENTICATED' && command === 'login') {
     return { field: 'password', fieldKey: 'signin.error.loginFailed', focus: 'password' };
   }
-  if (e.code === 'E_FORBIDDEN' && command !== 'key') {
+  // REGISTRATION-DEVICES-02: the registration runs inside signInKey, after the key's form passed; its 403 is the cap.
+  if (e.code === 'E_FORBIDDEN') {
     return { banner: { tone: 'danger', key: 'signin.error.deviceCap', vars: { instance } } };
   }
+  // The row this browser registered was replaced before its list PUT; the worker dropped the enrolment (step 1).
+  if (e.code === 'E_SIGNIN_EVICTED') return { banner: { tone: 'danger', key: 'signin.error.evicted', vars: {} } };
   if (e.code === 'E_RATE_LIMITED') {
     return {
       banner: e.retryAfterMs !== null

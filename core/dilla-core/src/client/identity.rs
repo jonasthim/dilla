@@ -389,6 +389,22 @@ fn open_sealed(key: &[u8; 32], aad: &[u8], stored: &[u8]) -> Result<Zeroizing<Ve
         .map_err(|_| Unsealed::Refused)
 }
 
+/// The recovery key as a person typed it: normalised, then the strict 52-character Crockford parse
+/// (whose last character carries four zero bits). Any failure is E_RECOVERY_KEY with no detail.
+fn recovery_key_parse(recovery_key: &str) -> Result<Zeroizing<[u8; 32]>, ClientError> {
+    let normalised = Zeroizing::new(recovery_key_normalise(recovery_key));
+    recovery_key_from_base32(&normalised)
+        .map(Zeroizing::new)
+        .map_err(|_| ClientError::new(E_RECOVERY_KEY, ""))
+}
+
+/// REGISTRATION-DEVICES-02: the sign-in ceremony checks the typed key's form before it registers a
+/// device row, so a mistyped key costs no registration. Only the form is checked; whether the key
+/// opens the account's root object is known only after the root is fetched.
+pub fn recovery_key_check(recovery_key: &str) -> Result<(), ClientError> {
+    recovery_key_parse(recovery_key).map(drop)
+}
+
 struct Recovered {
     umk_priv: Zeroizing<[u8; 32]>,
     ssk_priv: Zeroizing<[u8; 32]>,
@@ -408,10 +424,7 @@ fn recover(
     user_id: &[u8; 16],
     expect: Option<(&[u8; 32], &[u8; 32])>,
 ) -> Result<Recovered, ClientError> {
-    let normalised = Zeroizing::new(recovery_key_normalise(recovery_key));
-    let rk = Zeroizing::new(
-        recovery_key_from_base32(&normalised).map_err(|_| ClientError::new(E_RECOVERY_KEY, ""))?,
-    );
+    let rk = recovery_key_parse(recovery_key)?;
     let k_header = Zeroizing::new(k_header(&rk));
     let plain = open_sealed(&k_header, AAD_ROOT, root_sealed).map_err(|e| match e {
         Unsealed::Malformed => ClientError::new(E_CORE_INPUT, "root_sealed is malformed"),

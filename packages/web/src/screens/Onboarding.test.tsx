@@ -556,3 +556,16 @@ describe('after a list race', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });
+
+describe('after an evicted sign-in (REGISTRATION-DEVICES-02)', () => {
+  const EVICTED = 'Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.';
+  it('says someone else is signing in on the connect step, and drops the query when it moves on', async () => {
+    const { user, view } = setup({ instance: { ...INSTANCE, passwordSignup: true } }, '/welcome?signin=evicted');
+    expect(h1()).toHaveTextContent('Join dilla.test');
+    expect(screen.getByRole('alert')).toHaveTextContent(EVICTED);
+    await expectNoAxeViolations(view.container);
+    await user.click(button('Use an existing account'));
+    expect(window.location.pathname + window.location.search).toBe('/welcome');
+    expect(screen.queryByText(EVICTED)).toBeNull();
+  });
+});

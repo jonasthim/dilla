@@ -105,6 +105,7 @@ export const en = {
   'signin.error.deviceCap': 'This account already has as many devices as {instance} allows. Remove one in Settings on another device first.',
   'signin.error.tooMany': 'Too many sign-in attempts. Try again in {seconds} s.',
   'signin.error.listRace': 'The account’s devices changed while you were signing in. Sign in again.',
+  'signin.error.evicted': 'Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.',
   'signin.error.network': 'The connection dropped. Check it and try again.',
   'signin.error.other': 'Signing in did not work ({code}). Try again.',
   'shell.skip': 'skip to messages',

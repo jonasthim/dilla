@@ -12,7 +12,9 @@ use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use dilla_core::ProtocolError;
 use dilla_core::cbor::{Encoder, decode_strict};
-use dilla_core::client::{ClientCore, ClientError, HANDSHAKE_TAIL, migrate_app, session_preimage};
+use dilla_core::client::{
+    ClientCore, ClientError, HANDSHAKE_TAIL, migrate_app, recovery_key_check, session_preimage,
+};
 use dilla_core::identity::{
     CredentialIdentity, DeviceEntry, DeviceList, DeviceListUnsigned, Kind, SignerTier, SskSigner,
     Tier, UmkSigner, k_backup, k_header, recovery_key_base32, recovery_key_from_base32,
@@ -2483,6 +2485,34 @@ fn a_wrong_or_malformed_recovery_key_is_e_recovery_key_and_writes_nothing() {
     b.core
         .enrol_complete(&m.rk_text, &m.root, &m.state, &m.put_v1, "alice", LATER)
         .expect("the right key still enrols after the refusals");
+}
+
+/// REGISTRATION-DEVICES-02: the form check the sign-in runs before it registers is enrol_complete's
+/// step 1: the shown and the typed forms pass; a short key, a character outside the alphabet, a
+/// last character with payload in its four zero bits, and nothing at all are E_RECOVERY_KEY.
+#[test]
+fn recovery_key_check_is_the_form_check_of_enrol_complete() {
+    let rk_text = recovery_key_base32(&[0x0b; 32]);
+    recovery_key_check(&rk_text).expect("the shown form");
+    recovery_key_check(&as_typed(&rk_text)).expect("the typed form");
+    let refused = ClientError {
+        code: "E_RECOVERY_KEY",
+        detail: String::new(),
+    };
+    let mut last = rk_text.clone();
+    last.replace_range(51.., "Z");
+    for key in [
+        &rk_text[..51],
+        &format!("U{}", &rk_text[1..]),
+        last.as_str(),
+        "not a recovery key",
+        "",
+    ] {
+        assert_eq!(err(recovery_key_check(key)), refused, "key {key:?}");
+    }
+    // A well-formed key of another account passes the form check; only the root object tells.
+    let m = material();
+    recovery_key_check(&m.rk_text).expect("a key of the right form");
 }
 
 #[test]

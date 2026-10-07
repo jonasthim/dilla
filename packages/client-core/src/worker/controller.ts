@@ -80,6 +80,7 @@ class Refusal extends Error {
 
 const ACCOUNT_CODES = new Set([
   'E_KEK_EXISTS', 'E_KEK_UNWRAP', 'E_SESSION_SCOPE', 'E_NO_BACKUP', 'E_LIST_RACE', 'E_DEVICE_UNLISTED', 'E_NO_ASSERTION',
+  'E_SIGNIN_EVICTED',
 ]);
 
 /** The one mapping from a thrown value to what crosses to the page (L-TS-08 WorkerError, ruling 33). */
@@ -253,20 +254,24 @@ export class Controller {
     this.routes = this.parts.routes(http);
   }
 
-  /** Requirement 12: a pending scope in phase 2 is a revocation; a wipe in progress mints nothing (head ruling 27). */
+  /** Requirement 12: a pending scope in phase 2 is a revocation; a wipe in progress mints nothing (head ruling 27).
+   *  While signInKey runs (phase `enrolling`) a refused session is the sign-in's own error: the core may already be in
+   *  phase 2 there, and a row replaced before its list PUT is E_SIGNIN_EVICTED, not the revoked splash
+   *  (REGISTRATION-DEVICES-02). */
   private async reauthenticate(): Promise<boolean> {
     if (this.wiping || this.storeCleared) return false;
     const session = this.session;
     if (session === null) return false;
+    const enrolling = this.phase === 'enrolling';
     let ok: boolean;
     try {
       ok = await session.establish();
     } catch (e) {
-      if (isCode(e, 'E_SESSION_SCOPE') && this.core?.identity().phase === 2) { this.enterRevoked(); return false; }
+      if (isCode(e, 'E_SESSION_SCOPE') && this.core?.identity().phase === 2 && !enrolling) { this.enterRevoked(); return false; }
       throw e;
     }
     // In phase 3 a refused session is the sign-in step's own error, not a revocation.
-    if (!ok && this.core?.identity().phase !== 3) this.enterRevoked();
+    if (!ok && this.core?.identity().phase !== 3 && !enrolling) this.enterRevoked();
     return ok;
   }
 
@@ -766,8 +771,8 @@ export class Controller {
       this.setAccount({ phase: 'signin-totp', signIn: { username, needsTotp: true }, error: null });
       return { needsTotp: true };
     }
-    this.setAccount({ signIn: { username, needsTotp: false }, error: null });
-    await this.registerAndFetch();
+    // REGISTRATION-DEVICES-02: nothing is registered before the key is in hand; the assertion waits in Enrol.
+    this.setAccount({ phase: 'signin-key', signIn: { username, needsTotp: false }, error: null });
     return { needsTotp: false };
   }
 
@@ -781,33 +786,27 @@ export class Controller {
       this.setAccount({ phase: 'signin-login', signIn: { username, needsTotp: false }, error: errorOf(e) });
       throw e;
     }
-    await this.registerAndFetch();
+    // REGISTRATION-DEVICES-02: the registration waits for the key (signInKey).
+    this.setAccount({ phase: 'signin-key', error: null });
     return null;
   }
 
-  /** Requirement 7: a refused registration keeps the phase-3 enrol record (its device id is reused) and returns
-   *  to the login step; a failed fetch stops at the key step with the error. */
-  private async registerAndFetch(): Promise<void> {
+  /** Requirement 7 as REGISTRATION-DEVICES-02 amends it: the registration runs inside signInKey, after the key's
+   *  form passed. A refused registration keeps the phase-3 enrol record (its device id is reused) and returns to
+   *  the login step. */
+  private async register(): Promise<Id> {
     const enrol = this.requireEnrol();
-    let userId: Id;
     try {
-      ({ userId } = await enrol.register(this.requireInstance().instanceId));
+      return (await enrol.register(this.requireInstance().instanceId)).userId;
     } catch (e) {
       const username = this.accountState.signIn?.username ?? null;
       this.setAccount({ phase: 'signin-login', signIn: { username, needsTotp: false }, error: errorOf(e) });
       throw e;
     }
-    try {
-      this.fetched = await enrol.fetch(userId);
-    } catch (e) {
-      this.fetched = null;
-      this.setAccount({ phase: 'signin-key', error: errorOf(e) });
-      throw e;
-    }
-    this.setAccount({ phase: 'signin-key', error: null });
   }
 
-  /** enrol.fetch at the key step; a failure stays at the key step with the error. */
+  /** enrol.fetch inside signInKey; a failure stays at the key step with the error. A 401 is a registered row the
+   *  instance revoked (replaced by another registration): the enrolment is dropped and step 1 says so. */
   private async fetchForKey(): Promise<EnrolFetched> {
     const userId = this.requireCore().identity().userId;
     try {
@@ -816,17 +815,39 @@ export class Controller {
       return this.fetched;
     } catch (e) {
       this.fetched = null;
+      if (isStatus(e, 401) && this.requireCore().identity().phase === 3) throw this.evicted();
       this.setAccount({ phase: 'signin-key', error: errorOf(e) });
       throw e;
     }
   }
 
-  /** Requirement 8. The recovery key is passed to Enrol.complete and held in no field, slice, ret or error. */
+  /** REGISTRATION-DEVICES-02 before the core wrote the enrolment: drop it and return to step 1 with the reason. */
+  private evicted(): Error {
+    this.requireEnrol().reset();
+    const username = this.accountState.signIn?.username ?? null;
+    this.setAccount({ phase: 'signin-login', signIn: { username, needsTotp: false },
+      error: { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null } });
+    return new Error('E_SIGNIN_EVICTED');
+  }
+
+  /** Requirement 8 as REGISTRATION-DEVICES-02 amends it: the key's form first (nothing is registered for a
+   *  mistyped key), then the registration, the fetch, the enrolment and the list PUT back to back, so the new row
+   *  is unlisted for a few round trips, not for the time a person takes to find the key. The recovery key is
+   *  passed to the core and to Enrol.complete and held in no field, slice, ret or error. */
   private async signInKey(recoveryKey: string): Promise<null> {
     const enrol = this.requireEnrol();
     const core = this.requireCore();
-    let fetched = this.fetched ?? await this.fetchForKey();
+    try {
+      core.recoveryKeyCheck(recoveryKey);
+    } catch (e) {
+      this.setAccount({ phase: 'signin-key', error: errorOf(e) });
+      throw e;
+    }
     this.setAccount({ phase: 'enrolling', error: null });
+    // Phase 0, or an enrolment whose registration was refused (its record and device id are kept and reused).
+    const before = core.identity();
+    if (before.phase === 0 || (before.phase === 3 && before.userId === null)) await this.register();
+    let fetched = this.fetched ?? await this.fetchForKey();
     const username = this.accountState.signIn?.username ?? '';
     let retried = false;
     for (;;) {
@@ -846,10 +867,12 @@ export class Controller {
           // Pre-flight ruling (e): a state object missing or unreadable past list version 1 is a missing backup.
           else if (coreInput(e, STATE_UNUSABLE)) { this.fetched = null; e = new Error('E_NO_BACKUP'); }
         }
-        if (isCode(e, 'E_LIST_RACE')) {
+        if (isCode(e, 'E_LIST_RACE') || isCode(e, 'E_SIGNIN_EVICTED')) {
           // The core is in phase 2 with an unlisted identity (or the instance keeps serving a conflicting
-          // list): nothing returns it to phase 0 in this worker (head ruling 26).
-          await this.wipe({ code: 'E_LIST_RACE', detail: '', status: 0, retryAfterMs: null });
+          // list, or revoked the row before its list PUT): nothing returns it to phase 0 in this worker (head
+          // ruling 26).
+          if (isCode(e, 'E_SIGNIN_EVICTED') && core.identity().phase === 3) throw this.evicted();
+          await this.wipe({ code: (e as Error).message, detail: '', status: 0, retryAfterMs: null });
           throw e;
         }
         if (core.identity().phase === 3) {

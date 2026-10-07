@@ -203,6 +203,12 @@ export class FakeCore implements CorePort {
     if (this.info.userId !== null && !same(this.info.userId, userId)) throw new CoreError('E_CORE_STATE', 'user already recorded');
     this.info.userId = userId;
   }
+  /** The core's form check: 52 characters of the Crockford alphabet once folded (the four zero bits of the last
+   *  character are not modelled: FAKE_RECOVERY_KEY ends in K). */
+  recoveryKeyCheck(recoveryKey: string): void {
+    this.enter('recoveryKeyCheck');
+    if (!/^[0-9A-HJKMNP-TV-Z]{52}$/.test(fold(recoveryKey))) throw new CoreError('E_RECOVERY_KEY');
+  }
   enrolComplete(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; username: string; now: bigint }): { deviceListBody: Uint8Array; stateSealed: Uint8Array } {
     this.enter('enrolComplete');
     if (this.info.phase !== 3 || this.info.deviceId === null) throw new CoreError('E_CORE_STATE', 'no enrolment is pending');

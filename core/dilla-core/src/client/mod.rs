@@ -12,7 +12,7 @@ mod sync;
 mod wire;
 
 pub use error::ClientError;
-pub use identity::session_preimage;
+pub use identity::{recovery_key_check, session_preimage};
 pub use messages::mentions_me;
 pub use schema::{HANDSHAKE_TAIL, migrate_app};
 

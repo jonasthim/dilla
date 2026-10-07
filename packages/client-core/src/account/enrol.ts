@@ -73,12 +73,15 @@ export class Enrol {
     try { await publishDeviceList(core, routes); }
     catch (err) {
       if (err instanceof Error && err.message === 'E_DEVICE_UNLISTED') throw new Error('E_LIST_RACE');
+      // REGISTRATION-DEVICES-02: a 401 here (the session did not re-establish either) is a row the instance
+      // revoked after the registration: replaced by another registration of the account.
+      if (err instanceof DillaHttpError && err.status === 401) throw new Error('E_SIGNIN_EVICTED');
       throw err;
     }
     // WORKER-WEB-01: the pending token from register is not kept past the list that names this browser, so a
     // reload or a failed establish after this point finds no session and ensure() establishes an enrolled one.
     core.sessionClear();
-    if (!(await session.establish())) throw new Error('E_SESSION_SCOPE');
+    if (!(await session.establish())) throw new Error('E_SIGNIN_EVICTED');
     await routes.putBackup(1, stateSealed);
     core.stateSealedUploaded();
   }

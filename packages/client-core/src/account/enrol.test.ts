@@ -268,6 +268,28 @@ describe('Enrol', () => {
     expect(a.server.tokenScope.get('tok-2')).toBe(0);
   });
 
+  // REGISTRATION-DEVICES-02: a password holder's registrations replaced this browser's unlisted row before its
+  // list PUT (or between the PUT and the establish); the caller tells the person, it is not a revocation.
+  it('a row evicted before the list PUT is E_SIGNIN_EVICTED', async () => {
+    const a = account();
+    const fetched = await upToKey(a);
+    a.server.revoked.set(B_HEX, NOW_S);
+    await expect(a.enrol.complete(FAKE_RECOVERY_KEY, fetched, 'ada')).rejects.toThrow('E_SIGNIN_EVICTED');
+    expect(a.server.paths()).toContain(`PUT ${a.listPath}`);
+    expect(a.server.deviceLists.get(a.U)?.version).toBe(1n);
+  });
+
+  it('a row evicted between the list PUT and the establish is E_SIGNIN_EVICTED', async () => {
+    const a = account();
+    const fetched = await upToKey(a);
+    const refused = { status: 401, body: ['E_UNAUTHENTICATED', '', null] };
+    a.server.once('POST', `/v1/devices/${B_HEX}/sessions`, refused);
+    a.server.once('POST', `/v1/devices/${B_HEX}/sessions`, refused);
+    await expect(a.enrol.complete(FAKE_RECOVERY_KEY, fetched, 'ada')).rejects.toThrow('E_SIGNIN_EVICTED');
+    expect(a.server.deviceLists.get(a.U)?.version).toBe(2n);
+    expect(a.server.paths()).not.toContain('PUT /v1/backups/1/0');
+  });
+
   it('a wrong recovery key changes nothing, and the right one works after it', async () => {
     const a = account();
     const fetched = await upToKey(a);
