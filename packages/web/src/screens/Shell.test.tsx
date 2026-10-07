@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, DeviceSummary, DmSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
-import { account, ME } from '../test/fixtures.ts';
+import { account, ME, timelineItem } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { formatTime } from '../strings/index.ts';
 import { joinErrorState } from '../router.ts';
@@ -34,12 +34,12 @@ const CHANNELS: ChannelSummary[] = [
   ch(READ, 'lobby', { parentId: CAT, position: 1, mode: 1, group: 'unsupported' }),
 ];
 const MEMBERS: MemberSummary[] = [
-  { userId: ME.id, username: 'ada', display: 'Ada L', kind: 0 },
-  { userId: PEER, username: 'bob', display: '', kind: 0 },
-  { userId: BOT, username: 'helper', display: 'Helper', kind: 1 },
+  { userId: ME.id, username: 'ada', display: 'Ada L', kind: 0, roleIds: [] },
+  { userId: PEER, username: 'bob', display: '', kind: 0, roleIds: [] },
+  { userId: BOT, username: 'helper', display: 'Helper', kind: 1, roleIds: [] },
 ];
 function item(over: Partial<TimelineItem> & { key: string }): TimelineItem {
-  return { state: 'ok', reason: '', senderUser: PEER, senderDevice: PEER_DEV, own: false, web: false, bot: false, ts: NOW, body: '', msgId: null, ...over };
+  return timelineItem({ senderUser: PEER, senderDevice: PEER_DEV, ts: NOW, ...over });
 }
 function timeline(over: Partial<TimelineState> = {}): TimelineState {
   return { channelId: GEN, group: 'active', items: [], hasEarlier: false, ...over };

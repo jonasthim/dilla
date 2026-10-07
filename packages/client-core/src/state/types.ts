@@ -24,8 +24,13 @@ export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; 
 export interface CommunitySummary { id: string; name: string; }
 export type ChannelGroupState = 'none' | 'joining' | 'active' | 'resync' | 'not-member' | 'unsupported';
 export interface ChannelSummary { id: string; communityId: string; kind: 0 | 1 | 2; mode: 0 | 1; name: string; topic: string; parentId: string | null; position: number; group: ChannelGroupState; }
-export interface MemberSummary { userId: string; username: string; display: string; kind: 0 | 1; }
+export interface MemberSummary { userId: string; username: string; display: string; kind: 0 | 1; roleIds: string[]; }   // roleIds: hex of member-row element 3, in order
 export type TimelineItemState = 'ok' | 'pending' | 'failed' | 'cannot-read' | 'deleted';
+export interface ReplyRef { msgId: string; state: 'ok' | 'missing' | 'deleted'; senderUser: string | null; excerpt: string; seq: string | null; }
+export interface ReactionSummary { emoji: string; count: number; mine: boolean; }
+export interface AttachmentSummary { index: number; size: number; mime: string; name: string; w: number | null; h: number | null;
+  thumb: boolean; kind: 'image' | 'file'; tooLarge: boolean; }
+export interface PendingAction { msgId: string; type: 1 | 2 | 3 | 4 | 5 | 6; state: 'pending' | 'failed'; reason: string; }   // msgId: the fold row's OWN outbox msg id (retrySend/discardSend take it); the target is the item it hangs on
 export interface TimelineItem {
   key: string;                                  // 'o<msg id hex>' for an outbox row and for a stored row of this device whose msgId is
                                                 // known (so a sent message keeps its key when it is confirmed and is not re-announced);
@@ -37,7 +42,18 @@ export interface TimelineItem {
   ts: number;                                   // unix seconds
   body: string;
   msgId: string | null;
+  seq: string | null;                           // the stored seq as decimal; null for an outbox item
+  edited: boolean;                              // the core folded an edit onto it (edited_seq > 0)
+  reply: ReplyRef | null;                       // the message it answers, as the core resolved it (an outbox item: from the stored rows)
+  reactions: ReactionSummary[];                 // the core's per-user counts, in the core's order
+  pinned: boolean;
+  attachments: AttachmentSummary[];             // what the envelope names; never a key, a nonce or a blob id
+  mention: boolean;                             // the core's flag, set once at apply (L-CORE-35)
+  actions: PendingAction[];                     // pending or failed folds of the own outbox aimed at this message
 }
+export interface PinnedItem { msgId: string; seq: string; senderUser: string | null; excerpt: string; pinnedBy: string; pinnedSeq: string; ts: number; }   // ts: the target's recv_ts, unix seconds
+export interface TrayItem { id: string; name: string; size: number; mime: string; image: boolean;
+  phase: 'reading' | 'preparing' | 'uploading' | 'ready' | 'failed'; reason: string; }
 export interface TimelineState { channelId: string; group: ChannelGroupState; items: TimelineItem[]; hasEarlier: boolean; }
 export interface DmSummary { id: string; kind: 3 | 4; members: string[]; name: string; group: ChannelGroupState; }
 export interface DeviceSummary { id: string; tier: 0 | 1; signerTier: 0 | 1; lastSeen: number; revokedAt: number | null; listed: boolean; own: boolean; }
@@ -45,8 +61,9 @@ export interface BadgeState { unread: number; mentions: number; }
 export interface Notice { id: number; channelId: string; communityId: string | null; kind: 'message' | 'mention' | 'dm'; senderUser: string | null; senderName: string; body: string; ts: number; }
 export interface NoticesState { nextId: number; items: Notice[]; }      // items ≤ 32, oldest first; ids increase for the worker's life
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`
-  | 'dms' | 'devices' | 'badges' | 'notices' | 'settings';
+  | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | `pins:${string}` | `tray:${string}`;
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
+  [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
   dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>; }
 export const TIMELINE_PAGE = 100;

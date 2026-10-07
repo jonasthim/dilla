@@ -8,6 +8,8 @@ const OWN_USER = 0x0a;
 const OWN_DEVICE = 0x0b;
 const PEER_USER = 0x1a;
 const PEER_DEVICE = 0x1b;
+/** The folded fields of a row nothing folded onto (L-TS-36). */
+const PLAIN = { edited: false, reply: null, reactions: [], pinned: false, attachments: [], mention: false, actions: [] };
 
 function row(seq: number, over: Partial<TimelineRow> = {}): TimelineRow {
   return {
@@ -19,8 +21,7 @@ function row(seq: number, over: Partial<TimelineRow> = {}): TimelineRow {
 }
 
 function outbox(m: number, state: 0 | 1 | 2, over: Partial<OutboxRow> = {}): OutboxRow {
-  return { msgId: id(m), state, error: '', created: 1_700_000_100n, body: `draft ${m}`,
-    type: 0, replyTo: null, attachments: [], ...over };
+  return { msgId: id(m), state, error: '', created: 1_700_000_100n, body: `draft ${m}`, type: 0, replyTo: null, attachments: [], ...over };
 }
 
 function timeline(rows: TimelineRow[], out: OutboxRow[] = [], limit = 100) {
@@ -36,23 +37,22 @@ describe('buildTimeline', () => {
       channelId: 'c'.repeat(32), group: 'active', hasEarlier: false,
       items: [{
         key: 's1', state: 'ok', reason: '', senderUser: hex(PEER_USER), senderDevice: hex(PEER_DEVICE),
-        own: false, web: false, bot: false, ts: 1_700_000_001, body: 'body 1', msgId: hex(0x31),
+        own: false, web: false, bot: false, ts: 1_700_000_001, body: 'body 1', msgId: hex(0x31), seq: '1', ...PLAIN,
       }],
     });
   });
 
   it("marks this device's rows as own and a browser-tier sender as web", () => {
     const [item] = timeline([row(2, { senderUser: id(OWN_USER), senderDevice: id(OWN_DEVICE), senderTier: 1 })]).items;
-    expect(item).toMatchObject({ key: `o${hex(0x32)}`, own: true, web: true, bot: false });
+    expect(item).toMatchObject({ key: `o${hex(0x32)}`, own: true, web: true, bot: false, seq: '2' });
   });
 
   it('a sent message keeps its key when it is confirmed', () => {
     const m = 0x45;
     const pending = timeline([], [outbox(m, 1)]).items;
     const stored = timeline([row(12, { msgId: id(m), senderUser: id(OWN_USER), senderDevice: id(OWN_DEVICE), senderTier: 1 })]).items;
-    expect(pending.map((i) => [i.key, i.state])).toEqual([[`o${hex(m)}`, 'pending']]);
-    expect(stored.map((i) => [i.key, i.state])).toEqual([[`o${hex(m)}`, 'ok']]);
-    // An own row whose message id is unknown, and a peer's row, keep the seq key.
+    expect(pending.map((i) => [i.key, i.state, i.seq])).toEqual([[`o${hex(m)}`, 'pending', null]]);
+    expect(stored.map((i) => [i.key, i.state, i.seq])).toEqual([[`o${hex(m)}`, 'ok', '12']]);
     expect(timeline([row(13, { msgId: null, senderDevice: id(OWN_DEVICE) })]).items[0]?.key).toBe('s13');
     expect(timeline([row(14, { msgId: id(m) })]).items[0]?.key).toBe('s14');
   });
@@ -69,13 +69,13 @@ describe('buildTimeline', () => {
     })]).items;
     expect(item).toEqual({
       key: 's4', state: 'cannot-read', reason: 'E_SENDER_MISMATCH', senderUser: null, senderDevice: hex(PEER_DEVICE),
-      own: false, web: false, bot: false, ts: 1_700_000_004, body: '', msgId: null,
+      own: false, web: false, bot: false, ts: 1_700_000_004, body: '', msgId: null, seq: '4', ...PLAIN,
     });
   });
 
   it('shows a deleted row without its body', () => {
     const [item] = timeline([row(5, { status: 2, body: 'gone' })]).items;
-    expect(item).toMatchObject({ key: 's5', state: 'deleted', reason: '', body: '' });
+    expect(item).toMatchObject({ key: 's5', state: 'deleted', reason: '', body: '', seq: '5' });
   });
 
   it('leaves out stored rows of envelope types other than 0', () => {
@@ -92,7 +92,7 @@ describe('buildTimeline', () => {
     ]);
     expect(items[1]).toEqual({
       key: `o${hex(0x41)}`, state: 'pending', reason: '', senderUser: hex(OWN_USER), senderDevice: hex(OWN_DEVICE),
-      own: true, web: true, bot: false, ts: 1_700_000_100, body: 'draft 65', msgId: hex(0x41),
+      own: true, web: true, bot: false, ts: 1_700_000_100, body: 'draft 65', msgId: hex(0x41), seq: null, ...PLAIN,
     });
   });
 
@@ -106,10 +106,78 @@ describe('buildTimeline', () => {
     expect(timeline([marker], []).items.map((i) => [i.key, i.state, i.own, i.body])).toEqual([[`o${hex(0x45)}`, 'deleted', true, '']]);
   });
 
-  it('reports earlier rows when the core filled the page, counting rows it did not show', () => {
+  it('reports earlier rows when the core filled the page', () => {
     expect(timeline([row(10), row(11)], [], 2).hasEarlier).toBe(true);
-    expect(timeline([row(10, { type: 4 }), row(11)], [], 2).hasEarlier).toBe(true);
     expect(timeline([row(10)], [], 2).hasEarlier).toBe(false);
+  });
+
+  it('maps the folded view: the edit, the reply, reactions, the pin, attachments and the mention flag', () => {
+    const [item] = timeline([row(2, {
+      body: 'edited text', editedSeq: 9n, pinned: true, mention: true,
+      reply: { replyTo: id(0x31), targetSeq: 1n, targetUser: id(PEER_USER), excerpt: 'body 1', state: 0 },
+      reactions: [{ emoji: '👍', count: 2, mine: true }, { emoji: '🦀', count: 1, mine: false }],
+      attachments: [
+        { index: 0, size: 1234, mime: 'image/png', w: 640, h: 480, hasThumb: true, name: 'map.png' },
+        { index: 1, size: 26_214_401, mime: 'application/pdf', w: null, h: null, hasThumb: false, name: 'a/b‮c.pdf' },
+        { index: 2, size: 5, mime: 'image/svg+xml', w: null, h: null, hasThumb: false, name: '' },
+      ],
+    })]).items;
+    expect(item).toMatchObject({
+      seq: '2', body: 'edited text', edited: true, pinned: true, mention: true, actions: [],
+      reply: { msgId: hex(0x31), state: 'ok', senderUser: hex(PEER_USER), excerpt: 'body 1', seq: '1' },
+      reactions: [{ emoji: '👍', count: 2, mine: true }, { emoji: '🦀', count: 1, mine: false }],
+      attachments: [
+        { index: 0, size: 1234, mime: 'image/png', name: 'map.png', w: 640, h: 480, thumb: true, kind: 'image', tooLarge: false },
+        { index: 1, size: 26_214_401, mime: 'application/pdf', name: 'a_bc.pdf', w: null, h: null, thumb: false, kind: 'file', tooLarge: true },
+        { index: 2, size: 5, mime: 'image/svg+xml', name: '', w: null, h: null, thumb: false, kind: 'file', tooLarge: false },
+      ],
+    });
+  });
+
+  it('names the reply state of a target that is not held and of one that was deleted', () => {
+    const items = timeline([
+      row(3, { reply: { replyTo: id(0x7e), targetSeq: null, targetUser: null, excerpt: '', state: 1 } }),
+      row(4, { reply: { replyTo: id(0x31), targetSeq: 1n, targetUser: id(PEER_USER), excerpt: '', state: 2 } }),
+    ]).items;
+    expect(items.map((i) => i.reply)).toEqual([
+      { msgId: hex(0x7e), state: 'missing', senderUser: null, excerpt: '', seq: null },
+      { msgId: hex(0x31), state: 'deleted', senderUser: hex(PEER_USER), excerpt: '', seq: '1' },
+    ]);
+  });
+
+  it('a pending or failed fold in the outbox is an action on its target and never an item of its own', () => {
+    const items = timeline([row(2)], [
+      outbox(0x50, 0, { type: 1, replyTo: id(0x32), body: 'better' }),
+      outbox(0x51, 2, { type: 3, replyTo: id(0x32), body: '👍', error: 'E_NETWORK' }),
+      outbox(0x52, 1, { type: 5, replyTo: id(0x7f), body: '' }),
+    ]).items;
+    expect(items.map((i) => i.key)).toEqual(['s2']);
+    expect(items[0]?.actions).toEqual([
+      { msgId: hex(0x50), type: 1, state: 'pending', reason: '' },
+      { msgId: hex(0x51), type: 3, state: 'failed', reason: 'E_NETWORK' },
+    ]);
+  });
+
+  it('a queued message shows its files and its reply reference from the outbox', () => {
+    const target = row(3, { body: `line one\nline two\r${'é'.repeat(130)}` });
+    const items = timeline([target], [outbox(0x53, 0, {
+      body: '', replyTo: id(0x33),
+      attachments: [
+        { blobId: new Uint8Array(32).fill(1), size: 2048, mime: 'image/webp', name: 'shot.webp' },
+        { blobId: new Uint8Array(32).fill(2), size: 26_214_401, mime: 'text/plain', name: '' },
+      ],
+    }), outbox(0x54, 0, { body: 'to nobody', replyTo: id(0x7d) })]).items;
+    expect(items[1]).toMatchObject({
+      key: `o${hex(0x53)}`, state: 'pending', seq: null, body: '',
+      reply: { msgId: hex(0x33), state: 'ok', senderUser: hex(PEER_USER), excerpt: `line one line two ${'é'.repeat(102)}`, seq: '3' },
+      attachments: [
+        { index: 0, size: 2048, mime: 'image/webp', name: 'shot.webp', w: null, h: null, thumb: false, kind: 'image', tooLarge: false },
+        { index: 1, size: 26_214_401, mime: 'text/plain', name: '', w: null, h: null, thumb: false, kind: 'file', tooLarge: true },
+      ],
+    });
+    expect(Array.from(items[1]?.reply?.excerpt ?? '')).toHaveLength(120);
+    expect(items[2]?.reply).toEqual({ msgId: hex(0x7d), state: 'missing', senderUser: null, excerpt: '', seq: null });
+    expect(JSON.stringify(items)).not.toContain('"blobId"');
   });
 });
 

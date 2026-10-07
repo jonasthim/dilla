@@ -1,9 +1,9 @@
 /** Test support for src/sync: one engine wired to ModelCore, ModelDs and FakeGateway. */
-import type { ApplyResult, Id } from '../../core-port';
+import type { ApplyResult, Id, OutboxRow } from '../../core-port';
 import type { ReadyInfo } from '../../gateway/gateway';
 import { toHex } from '../../hex';
 import type { Instance } from '../../http/routes';
-import { SyncEngine } from '../engine';
+import { SyncEngine, type SyncDeps } from '../engine';
 import type { JoinAllProgress } from '../joinall';
 import { CHANNEL, COMMUNITY, FakeGateway, ModelCore, PEER, idOf, settle, type ManualClock, type ModelDs, type Peer } from './model';
 
@@ -22,6 +22,12 @@ export interface Device {
   readonly membership: { group: string; status: 'resyncing' | 'not-member' }[];
   readonly joinAll: JoinAllProgress[];
   readonly unexpected: string[];
+  /** The msg id hex of every row beforeSend was called for, in call order. */
+  readonly beforeSends: string[];
+  /** Every onDiscarded report: the group hex, the msg id hex and the blob id hexes of the row. */
+  readonly discarded: { group: string; msgId: string; blobIds: string[] }[];
+  /** What beforeSend answers after recording; a test replaces it. Resolves by default. */
+  readonly hooks: { beforeSend: SyncDeps['beforeSend'] };
 }
 
 /** An engine for me, started, with its gateway attached to ds's fan-out. random() always answers `random`. */
@@ -33,6 +39,9 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
   const membership: Device['membership'] = [];
   const joinAll: JoinAllProgress[] = [];
   const unexpected: string[] = [];
+  const beforeSends: string[] = [];
+  const discarded: Device['discarded'] = [];
+  const hooks: Device['hooks'] = { beforeSend: () => Promise.resolve() };
   ds.attach(me.device, (f) => {
     gateway.frame(f);
   });
@@ -46,20 +55,18 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
     random: () => random,
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
-    onGroupChanged: (groupId, result) => {
-      changes.push({ group: toHex(groupId), result });
-    },
-    onOutboxChanged: (groupId) => {
-      outboxChanges.push(toHex(groupId));
-    },
-    onMembership: (groupId, status) => {
-      membership.push({ group: toHex(groupId), status });
-    },
+    onGroupChanged: (groupId, result) => { changes.push({ group: toHex(groupId), result }); },
+    onOutboxChanged: (groupId) => { outboxChanges.push(toHex(groupId)); },
+    onMembership: (groupId, status) => { membership.push({ group: toHex(groupId), status }); },
     onJoinAll: (p) => { joinAll.push({ ...p }); },
     onUnexpectedWelcome: (g) => { unexpected.push(toHex(g)); },
+    beforeSend: (groupId: Id, row: OutboxRow) => { beforeSends.push(toHex(row.msgId)); return hooks.beforeSend(groupId, row); },
+    onDiscarded: (groupId: Id, row: OutboxRow) => {
+      discarded.push({ group: toHex(groupId), msgId: toHex(row.msgId), blobIds: row.attachments.map((a) => toHex(a.blobId)) });
+    },
   });
   engine.start();
-  return { me, core, gateway, engine, changes, outboxChanges, membership, joinAll, unexpected };
+  return { me, core, gateway, engine, changes, outboxChanges, membership, joinAll, unexpected, beforeSends, discarded, hooks };
 }
 
 export function readyInfo(me: Peer, groups: ReadyInfo['groups'] = []): ReadyInfo {

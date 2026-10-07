@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { Id } from '../core-port';
+import { CoreError, type AttachmentDescriptor, type Id } from '../core-port';
 import { toHex } from '../hex';
 import { SYNC } from './engine';
-import { catchSync, coreCalls, device, openRegistered, type Device } from './testing/harness';
+import { catchSync, coreCalls, device, openRegistered, readyInfo, type Device } from './testing/harness';
 import { CHANNEL, COMMUNITY, ME, ManualClock, ModelDs, PEER, THIRD, deferred, httpError, settle, textRequest } from './testing/model';
 
 let ds: ModelDs;
@@ -329,5 +329,142 @@ describe('sending (rule 5)', () => {
     expect(sent()).toEqual(['first']);
     expect(d.outboxChanges.filter((x) => x === toHex(g)).length).toBeGreaterThanOrEqual(6);
     expect(catchSync(() => d.engine.retry(b))).toMatchObject({ code: 'E_CORE_NOT_FOUND' });
+  });
+});
+
+/** A descriptor as the tray hands it over (L-TS-30); the model checks shape, not cryptography. */
+function desc(n: number): AttachmentDescriptor {
+  return {
+    blobId: new Uint8Array(32).fill(n), key: new Uint8Array(32).fill(0x44), nonce: new Uint8Array(12).fill(0x45),
+    size: 10 + n, mime: 'text/plain', w: null, h: null, thumb: null, name: `f${String(n)}.txt`,
+  };
+}
+const withFiles = (body: string, ...n: number[]) => ({ type: 0 as const, replyTo: null, body, attachments: n.map(desc) });
+
+describe('sending with attachments and folds (L-TS-34)', () => {
+  it('confirms the attachments of a row before its upload, once per attempt', async () => {
+    const order: string[] = [];
+    d.hooks.beforeSend = () => { order.push('confirm'); return Promise.resolve(); };
+    ds.inject('postMessage', { before: () => { order.push('message'); } });
+    const msgId = d.engine.sendRequest(g, withFiles('two files', 1, 2));
+    await settle();
+    expect(order).toEqual(['confirm', 'message']);
+    expect(d.beforeSends).toEqual([toHex(msgId)]);
+    expect(posts()).toBe(1);
+    expect(d.core.outbox(g)).toEqual([]);
+  });
+
+  it('confirms again when the same row is re-framed after an epoch refusal', async () => {
+    ds.inject('postMessage', { before: () => { ds.peerCommit(g, PEER); } });
+    const msgId = d.engine.sendRequest(g, withFiles('', 3));
+    await settle();
+    expect(posts()).toBe(2);
+    expect(d.beforeSends).toEqual([toHex(msgId), toHex(msgId)]);
+    expect(d.core.outbox(g)).toEqual([]);
+  });
+
+  it('a confirm answered 404 fails the row with E_ATTACHMENT_MISSING and uploads nothing', async () => {
+    d.hooks.beforeSend = () => Promise.reject(httpError(404, 'E_NOT_FOUND'));
+    const msgId = d.engine.sendRequest(g, withFiles('gone file', 4));
+    await settle();
+    expect(posts()).toBe(0);
+    expect(d.core.calls.filter((c) => c.m === 'sendEncrypt')).toHaveLength(0);
+    expect(d.core.outbox(g)).toMatchObject([{ msgId, state: 2, error: 'E_ATTACHMENT_MISSING', body: 'gone file' }]);
+  });
+
+  it('another refusal fails the row with its own code; a thrown non-HTTP error with E_INTERNAL', async () => {
+    d.hooks.beforeSend = () => Promise.reject(httpError(403, 'E_NOT_UPLOADER'));
+    const a = d.engine.sendRequest(g, withFiles('not mine', 5));
+    await settle();
+    expect(d.core.outbox(g)).toMatchObject([{ msgId: a, state: 2, error: 'E_NOT_UPLOADER' }]);
+    d.hooks.beforeSend = () => Promise.reject(new CoreError('E_CORE_STATE', 'unknown group'));
+    const b = d.engine.sendRequest(g, withFiles('no group', 6));
+    await settle();
+    expect(d.core.outbox(g).find((r) => toHex(r.msgId) === toHex(b))).toMatchObject({ state: 2, error: 'E_CORE_STATE' });
+    d.hooks.beforeSend = () => Promise.reject(new Error('boom'));
+    const c = d.engine.sendRequest(g, withFiles('odd', 7));
+    await settle();
+    expect(d.core.outbox(g).find((r) => toHex(r.msgId) === toHex(c))).toMatchObject({ state: 2, error: 'E_INTERNAL' });
+    expect(posts()).toBe(0);
+  });
+
+  it('a row without attachments never calls beforeSend', async () => {
+    d.engine.send(g, 'plain');
+    await settle();
+    expect(d.beforeSends).toEqual([]);
+    expect(sent()).toEqual(['plain']);
+  });
+
+  it('a row discarded while its confirm runs is not uploaded, and its references are reported', async () => {
+    const gate = deferred();
+    d.hooks.beforeSend = () => gate.promise;
+    const msgId = d.engine.sendRequest(g, withFiles('changed my mind', 8, 9));
+    await settle();
+    expect(d.beforeSends).toEqual([toHex(msgId)]);
+    d.engine.discard(msgId);
+    gate.resolve();
+    await settle();
+    expect(posts()).toBe(0);
+    expect(d.core.outbox(g)).toEqual([]);
+    expect(d.discarded).toEqual([{ group: toHex(g), msgId: toHex(msgId), blobIds: [toHex(desc(8).blobId), toHex(desc(9).blobId)] }]);
+  });
+
+  it('discarding a failed row reports it once; an unknown msg id reports nothing', async () => {
+    d.hooks.beforeSend = () => Promise.reject(httpError(404, 'E_NOT_FOUND'));
+    const msgId = d.engine.sendRequest(g, withFiles('', 10));
+    await settle();
+    d.engine.discard(msgId);
+    d.engine.discard(new Uint8Array(16).fill(0xee));
+    expect(d.discarded).toEqual([{ group: toHex(g), msgId: toHex(msgId), blobIds: [toHex(desc(10).blobId)] }]);
+    expect(d.core.outbox(g)).toEqual([]);
+  });
+
+  it('sendRequest sends a fold with its type and reply_to, and the folded view shows it', async () => {
+    const target = d.engine.send(g, 'first words');
+    await settle();
+    const edit = d.engine.sendRequest(g, { type: 1, replyTo: target, body: 'better words', attachments: [] });
+    expect(d.core.outbox(g)).toMatchObject([{ msgId: edit, type: 1, replyTo: target, body: 'better words', attachments: [] }]);
+    await settle();
+    expect(posts()).toBe(2);
+    expect(d.core.outbox(g)).toEqual([]);
+    const rows = d.core.timeline(g, 0n, 100);
+    expect(rows.map((r) => [toHex(r.msgId as Id), r.body, r.editedSeq > 0n])).toEqual([[toHex(target), 'better words', true]]);
+  });
+
+  it('throws the core refusal of a fold synchronously and queues nothing', () => {
+    expect(catchSync(() => d.engine.sendRequest(g, { type: 1, replyTo: null, body: 'x', attachments: [] })))
+      .toMatchObject({ code: 'E_CORE_INPUT', detail: 'reply_to is required' });
+    expect(d.core.outbox(g)).toEqual([]);
+  });
+
+  // Pre-flight ruling F5: a confirm that cannot reach the instance (status 0, 429, 5xx) is not a refusal of the file;
+  // the row stays queued, as a text row does across network loss, and the next ready drains it (no timer of its own).
+  const transient: [number, string][] = [
+    [0, 'E_NETWORK'],
+    [429, 'E_RATE_LIMITED'],
+    [503, 'E_UNAVAILABLE'],
+  ];
+  it.each(transient)('a confirm failing with %i %s keeps the row queued; the next ready uploads it once (F5)', async (status, code) => {
+    d.hooks.beforeSend = () => Promise.reject(httpError(status, code));
+    const msgId = d.engine.sendRequest(g, withFiles('offline', 11));
+    await settle();
+    expect(posts()).toBe(0);
+    expect(d.core.outbox(g)).toMatchObject([{ msgId, state: 0, error: '' }]);
+    await clock.advance(60_000);
+    expect(d.beforeSends).toEqual([toHex(msgId)]);
+    d.hooks.beforeSend = () => Promise.resolve();
+    d.gateway.ready(readyInfo(ME));
+    await settle();
+    expect(d.beforeSends).toEqual([toHex(msgId), toHex(msgId)]);
+    expect(posts()).toBe(1);
+    expect(d.core.outbox(g)).toEqual([]);
+  });
+
+  it('a confirm answered 410 (the bytes were purged) fails the row with its code (F5)', async () => {
+    d.hooks.beforeSend = () => Promise.reject(httpError(410, 'E_PRUNED'));
+    const msgId = d.engine.sendRequest(g, withFiles('purged', 12));
+    await settle();
+    expect(posts()).toBe(0);
+    expect(d.core.outbox(g)).toMatchObject([{ msgId, state: 2, error: 'E_PRUNED' }]);
   });
 });

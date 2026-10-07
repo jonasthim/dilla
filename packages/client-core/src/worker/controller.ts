@@ -7,23 +7,28 @@ import { Enrol, ensureBackups, refreshOwnDeviceList, repairBackupState, type Enr
 import { refillKeyPackages } from '../account/keypackages';
 import { Session } from '../account/session';
 import { Signup, publishDeviceList } from '../account/signup';
+import { AttachmentError, MAX_ATTACHMENTS } from '../attachments/crypto';
+import { fetchAttachment, thumbnailBlob } from '../attachments/download';
+import { safeName } from '../attachments/name';
+import type { ThumbDeps } from '../attachments/thumb';
+import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
 import {
-  CoreError, type ActivityRow, type ApplyResult, type CorePort, type ExpectedGroup, type GroupInfo, type Id, type SignedLists,
-  type TimelineRow,
+  CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
+  type OutboxRow, type SendRequest, type SignedLists, type TimelineRow,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import { Routes, type ChannelRow, type Instance, type Limits, type MemberRow } from '../http/routes';
-import { NOTICE_READ_MAX, appendNotices, buildBadges, mentionsMe, noticeOf, type NoticeDraft } from '../state/badges';
+import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { isSettingKey, isSettingValue } from '../state/settings';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
-  type DeviceSummary, type DmSummary, type NoticesState, type TimelineItem, type WorkerError,
+  type DeviceSummary, type DmSummary, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem, type WorkerError,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { SyncError } from '../sync/errors';
@@ -42,6 +47,7 @@ export interface ControllerDeps {
   post(message: FromWorker): void;
   testHooks: boolean;
   parts?: Partial<ControllerParts>;                // unit tests and the core-worker harness only; src/worker/entry.ts passes none
+  thumbs?: ThumbDeps | null;                       // unit tests only; absent: probed from the worker global (L-TS-35)
 }
 
 /** The composition seams. REAL_PARTS builds the real classes; a unit test replaces any of them with a double
@@ -92,6 +98,8 @@ function errorOf(e: unknown): WorkerError {
   if (e instanceof CoreError || e instanceof SyncError) return { code: e.code, detail: e.detail, status: 0, retryAfterMs: null };
   if (e instanceof CborError) return { code: e.code, detail: e.message, status: 0, retryAfterMs: null };
   if (e instanceof Error && ACCOUNT_CODES.has(e.message)) return { code: e.message, detail: '', status: 0, retryAfterMs: null };
+  // The tray's and the download's refusals cross by code alone: their detail may name a file (L-TS-35).
+  if (e instanceof AttachmentError) return { code: e.code, detail: '', status: 0, retryAfterMs: null };
   if (e instanceof Refusal) return { code: e.code, detail: e.detail, status: 0, retryAfterMs: null };
   return { code: 'E_INTERNAL', detail: e instanceof Error ? e.message : String(e), status: 0, retryAfterMs: null };
 }
@@ -122,13 +130,21 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
   'signInBegin', 'signInLogin', 'signInTotp', 'signInKey', 'signInCancel', 'refreshDevices', 'revokeDevice', 'signOutRevoke',
   'forgetBrowser', 'markRead', 'setSetting', 'openDm',
+  'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
+const SEQ = /^[1-9][0-9]{0,19}$/;
+const TRAY_ID_MAX = 64;
+const EMOJI_MAX_BYTES = 32;
+const UTF8 = new TextEncoder();
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'msgId' | 'deviceId' | 'userId')[]>> = {
   selectCommunity: ['communityId'], openChannel: ['channelId'], closeChannel: ['channelId'], loadEarlier: ['channelId'],
   send: ['channelId'], retrySend: ['msgId'], discardSend: ['msgId'],
   revokeDevice: ['deviceId'], markRead: ['channelId'], openDm: ['userId'],
+  editMessage: ['channelId', 'msgId'], deleteMessage: ['channelId', 'msgId'], react: ['channelId', 'msgId'], pin: ['channelId', 'msgId'],
+  loadPins: ['channelId'], closePins: ['channelId'], attachFiles: ['channelId'], discardAttachment: ['channelId'],
+  openAttachment: ['channelId'],
 };
 /** The commands each phase accepts besides start, which every phase accepts (requirement 1). */
 const ACCEPTS: Record<BootPhase, readonly Method[]> = {
@@ -144,6 +160,7 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
   'ready': [
     'joinCommunity', 'selectCommunity', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
     'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
+    'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
   ],
 };
 
@@ -159,7 +176,35 @@ function invalid(command: Record<string, unknown>): string | null {
     if (typeof value !== 'string' || !ID.test(value)) return `${field} is not 32 lowercase hex`;
   }
   if (m === 'joinCommunity' && blank(command.invite)) return 'invite is empty';
-  if (m === 'send' && blank(command.text)) return 'the message is empty';
+  if (m === 'send') {
+    const { replyTo, attachments } = command;
+    if (replyTo !== undefined && replyTo !== null && (typeof replyTo !== 'string' || !ID.test(replyTo))) return 'replyTo is not 32 lowercase hex';
+    if (attachments !== undefined && !(Array.isArray(attachments) && attachments.length <= MAX_ATTACHMENTS
+      && attachments.every((t) => typeof t === 'string' && t.length >= 1 && t.length <= TRAY_ID_MAX))) {
+      return `attachments is not a list of at most ${String(MAX_ATTACHMENTS)} tray ids`;
+    }
+    // DEV-W2-60: a message of attachments alone is allowed.
+    if (blank(command.text) && !(Array.isArray(attachments) && attachments.length > 0)) return 'the message is empty';
+  }
+  if (m === 'editMessage' && blank(command.text)) return 'the message is empty';
+  if (m === 'react') {
+    const { emoji } = command;
+    if (typeof emoji !== 'string' || emoji === '' || UTF8.encode(emoji).length > EMOJI_MAX_BYTES) return 'emoji must be 1..=32 bytes';
+  }
+  if ((m === 'react' || m === 'pin') && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'attachFiles') {
+    const { files } = command;
+    if (!Array.isArray(files) || files.length === 0 || !files.every((f) => typeof File !== 'undefined' && f instanceof File)) {
+      return 'files is not a non-empty list of files';
+    }
+  }
+  if (m === 'discardAttachment' && (typeof command.trayId !== 'string' || command.trayId === '')) return 'trayId is empty';
+  if (m === 'openAttachment') {
+    if (typeof command.seq !== 'string' || !SEQ.test(command.seq)) return 'seq is not a decimal sequence number';
+    const { index } = command;
+    if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0) return 'index is not a non-negative integer';
+    if (typeof command.thumb !== 'boolean') return 'thumb is not a boolean';
+  }
   if (m === 'signupSubmit') {
     for (const field of ['invite', 'username', 'display'] as const) {
       if (typeof command[field] !== 'string') return `${field} is not a string`;
@@ -239,6 +284,14 @@ export class Controller {
   private readonly lookedUp = new Set<string>();
   private readonly open = new Map<string, OpenChannel>();
   private readonly opening = new Map<string, { run: Promise<null>; entry: OpenChannel | null }>();
+  /** One attachment tray per channel hex (L-TS-35); its descriptors live in worker memory only. */
+  private readonly trays = new Map<string, Tray>();
+  /** Channels whose pins view is open: touchGroup keeps their pins slice fresh until closePins or closeChannel. */
+  private readonly pinsOpen = new Set<string>();
+  /** community hex → the own role hexes last applied to the core, used only to skip a redundant ownRolesSet. */
+  private readonly roles = new Map<string, string[]>();
+  private purging: Promise<void> | null = null;
+  private purgeAgain = false;
 
   constructor(private readonly deps: ControllerDeps) {
     this.parts = { ...REAL_PARTS, ...deps.parts };
@@ -327,7 +380,7 @@ export class Controller {
       case 'openChannel': return this.openChannel(command.channelId);
       case 'closeChannel': return this.closeChannel(command.channelId);
       case 'loadEarlier': return this.loadEarlier(command.channelId);
-      case 'send': return this.send(command.channelId, command.text);
+      case 'send': return this.send(command);
       case 'retrySend': return this.retrySend(command.msgId);
       case 'discardSend': return this.discardSend(command.msgId);
       case 'signInBegin': return this.signInBegin();
@@ -342,6 +395,15 @@ export class Controller {
       case 'markRead': return this.markRead(command.channelId);
       case 'setSetting': return this.setSetting(command.key, command.value);
       case 'openDm': return this.openDm(command.userId);
+      case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
+      case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
+      case 'react': return this.react(command.channelId, command.msgId, command.emoji, command.on);
+      case 'pin': return this.pin(command.channelId, command.msgId, command.on);
+      case 'loadPins': return this.loadPins(command.channelId);
+      case 'closePins': return this.closePins(command.channelId);
+      case 'attachFiles': return this.attachFiles(command.channelId, command.files);
+      case 'discardAttachment': return this.discardAttachment(command.channelId, command.trayId);
+      case 'openAttachment': return this.openAttachment(command.channelId, command.seq, command.index, command.thumb);
     }
   }
 
@@ -462,6 +524,7 @@ export class Controller {
 
   private async resetOnce(): Promise<null> {
     const instance = this.requireInstance();
+    this.dropTrays();
     await this.deps.resetDevice(instance);
     await this.bootStore(instance);
     return null;
@@ -565,6 +628,8 @@ export class Controller {
       recoveryKey: null, error: null, signIn: null,
     });
     this.publishDms();
+    // The gateway's first ready can arrive before the phase is ready, when a purge run returns at once.
+    this.runPurges();
   }
 
   /** The engine with the controller's report handlers; enterReady and resume() build it (requirement 23). */
@@ -580,11 +645,14 @@ export class Controller {
       setTimeout: (fn, ms) => this.deps.setTimeout(fn, ms),
       clearTimeout: (handle) => { this.deps.clearTimeout(handle); },
       onGroupChanged: (g, result) => { this.onGroupChanged(g, result); },
-      onOutboxChanged: (g) => { this.safely(() => { this.touchGroup(g); }); },
+      // Ruling 8: the core records a delete's purge when the type-2 row is confirmed, which the engine reports here.
+      onOutboxChanged: (g) => { this.safely(() => { this.touchGroup(g); }); this.runPurges(); },
       onMembership: (g, status) => { this.onMembership(g, status); },
       onJoinAll: () => {},
       // Head ruling 37: a Welcome for a group this device does not expect is a DM another participant opened.
       onUnexpectedWelcome: () => { void this.reloadDms().catch(() => {}); },
+      beforeSend: (g, row) => this.beforeSend(g, row),
+      onDiscarded: (g, row) => { this.onDiscarded(g, row); },
     });
     this.sync = sync;
     sync.start();
@@ -665,6 +733,7 @@ export class Controller {
         .then((own) => (own.listed ? this.repairBackupState(core) : this.enterRevoked()), () => undefined);
     }
     void this.refreshAfterReady();
+    this.runPurges();
   }
 
   /** Every ready refreshes the community list, every listed community and the DMs; a failure waits for the next ready. */
@@ -999,8 +1068,23 @@ export class Controller {
   }
 
   private publishMembers(communityId: string, rows: readonly MemberRow[]): void {
-    this.slices.set(`members:${communityId}`,
-      rows.map((m) => ({ userId: toHex(m.userId), username: m.username, display: m.display, kind: m.kind })));
+    this.slices.set(`members:${communityId}`, rows.map((m) => ({
+      userId: toHex(m.userId), username: m.username, display: m.display, kind: m.kind, roleIds: m.roleIds.map(toHex),
+    })));
+    // Ruling 12: the core's mention rule reads the own roles of the community (L-CORE-35); a change reaches it once.
+    const core = this.core;
+    const me = this.me;
+    if (core === null || me === null) return;
+    const ownUser = toHex(me.userId);
+    const own = rows.find((m) => toHex(m.userId) === ownUser);
+    if (own === undefined) return;
+    const hexes = own.roleIds.map(toHex);
+    const applied = this.roles.get(communityId);
+    if (applied !== undefined && applied.length === hexes.length && applied.every((h, i) => h === hexes[i])) return;
+    try {
+      core.ownRolesSet(fromHex(communityId), own.roleIds);
+      this.roles.set(communityId, hexes);
+    } catch { /* the next member list tries again */ }
   }
 
   private publishChannels(communityId: string): void {
@@ -1161,7 +1245,9 @@ export class Controller {
     for (const row of rows) {
       if (!this.noticeable(row, fresh, ownUser, floor)) continue;
       const senderName = this.nameOf(toHex(row.senderUser as Id));
-      drafts.push(noticeOf({ row, channelId, communityId, dm, mention: after > before && mentionsMe(row.body, ownUser), senderName }));
+      // FACTS-SECURITY-07: the core's flag, set once at apply on the row's original body; never the shown body, which may
+      // hold another member's edit folded in the same apply (ruling 4, ruling 34).
+      drafts.push(noticeOf({ row, channelId, communityId, dm, mention: after > before && row.mention, senderName }));
     }
     this.noticesState = appendNotices(this.noticesState, drafts);
     this.slices.set('notices', this.noticesState);
@@ -1424,6 +1510,7 @@ export class Controller {
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
+    this.dropTrays(); this.pinsOpen.clear(); this.roles.clear(); this.purgeAgain = false;
     this.noticesState = { nextId: this.noticesState.nextId, items: [] };
     this.slices.set('communities', []);
     for (const communityId of communities) {
@@ -1520,6 +1607,7 @@ export class Controller {
   }
 
   private closeChannel(channelId: string): Promise<null> {
+    this.pinsOpen.delete(channelId);
     this.open.delete(channelId);
     return Promise.resolve(null);
   }
@@ -1596,6 +1684,8 @@ export class Controller {
     if (result.state === 2) { this.resyncing.delete(hex); this.notMember.delete(hex); }
     this.safely(() => { this.touchGroup(groupId); });
     this.safely(() => { this.reportActivity(groupId, result); });
+    // Pre-flight ruling F6: an apply can adopt the own type-2 row (a catch-up) and so record a purge.
+    this.runPurges();
   }
 
   private onMembership(groupId: Id, status: 'resyncing' | 'not-member'): void {
@@ -1632,20 +1722,51 @@ export class Controller {
     for (const communityId of communities) this.publishChannels(communityId);
     if (dms) this.publishDms();
     for (const channelId of timelines) this.refreshTimeline(channelId);
+    for (const channelId of this.pinsOpen) if (bound(channelId, this.target(channelId)?.textGroupId ?? null)) this.publishPins(channelId);
   }
 
   // ---- sending ----
 
-  private send(channelId: string, text: string): Promise<{ msgId: string }> {
+  /** The group a command of an open channel sends into: open, and its group active, else E_NOT_READY. */
+  private activeGroup(channelId: string): Id {
     const entry = this.open.get(channelId);
-    if (entry === undefined) return Promise.reject(new Refusal('E_NOT_READY', 'the channel is not open'));
+    if (entry === undefined) throw new Refusal('E_NOT_READY', 'the channel is not open');
     const groups = this.requireCore().groups();
     const state = this.groupState(channelId, groups);
     const groupId = this.timelineGroup(channelId, groups);
-    if (state !== 'active' || groupId === null) return Promise.reject(new Refusal('E_NOT_READY', `the channel's group is ${state}`));
+    if (state !== 'active' || groupId === null) throw new Refusal('E_NOT_READY', `the channel's group is ${state}`);
+    return groupId;
+  }
+
+  /** Requirement 9: the page has already encoded its mentions; the descriptors never enter a slice. */
+  private send(c: Extract<Command, { m: 'send' }>): Promise<{ msgId: string }> {
+    const groupId = this.activeGroup(c.channelId);
+    const ids = c.attachments ?? [];
+    let descriptors: AttachmentDescriptor[] = [];
+    if (ids.length > 0) {
+      const tray = this.trays.get(c.channelId);
+      if (tray === undefined) throw new Refusal('E_TRAY_NOT_READY', '');
+      try { descriptors = tray.take(ids); }
+      catch (e) {
+        if (e instanceof Error && e.message === 'E_TRAY_NOT_READY') throw new Refusal('E_TRAY_NOT_READY', '');
+        throw e;
+      }
+      // take reported through onChange already; the store drops the equal value (ruled: worker-ui 8).
+      this.publishTray(c.channelId, tray.entries());
+    }
+    const request: SendRequest = {
+      type: 0, replyTo: c.replyTo === undefined || c.replyTo === null ? null : fromHex(c.replyTo), body: c.text, attachments: descriptors,
+    };
+    let msgId: Id;
     // The core enforces the 4000-byte limit (E_ENVELOPE_LIMIT); the controller does not measure the text.
-    const msgId = this.requireSync().send(groupId, text);
-    this.refreshTimeline(channelId);
+    try { msgId = this.requireSync().sendRequest(groupId, request); }
+    catch (e) {
+      // The taken references were never sent; each is deleted now, or expires after pending_ttl (L-HTTP-83).
+      const channel = fromHex(c.channelId);
+      for (const d of descriptors) void this.routes.deleteBlob(channel, d.blobId).catch(() => undefined);
+      throw e;
+    }
+    this.refreshTimeline(c.channelId);
     return Promise.resolve({ msgId: toHex(msgId) });
   }
 
@@ -1663,6 +1784,177 @@ export class Controller {
   private discardSend(msgId: string): Promise<null> {
     if (this.inOutbox(msgId)) this.requireSync().discard(fromHex(msgId));
     return Promise.resolve(null);
+  }
+
+  // ---- say more: folds, purges, pins and files (L-TS-35) ----
+
+  /** Requirement 10: an edit, delete, reaction or pin is queued as its fold type aimed at the message; the page's state
+   *  changes only when the core folds it (a pending fold shows as a PendingAction). The core's refusals cross as they are. */
+  private fold(channelId: string, msgId: string, type: 1 | 2 | 3 | 4 | 5 | 6, body: string): Promise<null> {
+    const groupId = this.activeGroup(channelId);
+    this.requireSync().sendRequest(groupId, { type, replyTo: fromHex(msgId), body, attachments: [] });
+    this.refreshTimeline(channelId);
+    return Promise.resolve(null);
+  }
+
+  private editMessage(channelId: string, msgId: string, text: string): Promise<null> { return this.fold(channelId, msgId, 1, text); }
+
+  /** The purge is not started here: the core records it when the type-2 row is confirmed (L-CORE-33, ruling 8). */
+  private deleteMessage(channelId: string, msgId: string): Promise<null> { return this.fold(channelId, msgId, 2, ''); }
+
+  /** Ruling 28: the worker does not de-duplicate reactions; the core folds them per user. */
+  private react(channelId: string, msgId: string, emoji: string, on: boolean): Promise<null> {
+    return this.fold(channelId, msgId, on ? 3 : 4, emoji);
+  }
+
+  private pin(channelId: string, msgId: string, on: boolean): Promise<null> { return this.fold(channelId, msgId, on ? 5 : 6, ''); }
+
+  /** A text group targets its channel or DM (web-2a). */
+  private channelOfGroup(g: Id): Id {
+    const row = this.requireCore().groupRow(g);
+    if (row === null) throw new CoreError('E_CORE_STATE', 'unknown group');
+    return row.targetId;
+  }
+
+  /** Requirement 11: each reference of the row is confirmed, in order, before every upload attempt; the first refusal
+   *  propagates to the engine. Only the uploading user can confirm (L-HTTP-82), so a refusal answers this user's own
+   *  upload: a 404 means the reference expired or this user deleted it, and the person attaches again. */
+  private async beforeSend(g: Id, row: OutboxRow): Promise<void> {
+    const channel = this.channelOfGroup(g);
+    for (const a of row.attachments) await this.routes.confirmBlob(channel, a.blobId);
+  }
+
+  /** A discarded row's references are deleted, not awaited; a failure is left to the pending_ttl sweep (L-HTTP-83). */
+  private onDiscarded(g: Id, row: OutboxRow): void {
+    let channel: Id;
+    try { channel = this.channelOfGroup(g); } catch { return; }
+    for (const a of row.attachments) void this.routes.deleteBlob(channel, a.blobId).catch(() => undefined);
+  }
+
+  /** Requirement 12, single flight: a call during a run makes the run go once more after it ends. */
+  private runPurges(): void {
+    if (this.purging !== null) { this.purgeAgain = true; return; }
+    const run = (async () => {
+      try {
+        do { this.purgeAgain = false; await this.purgeOnce(); } while (this.purgeAgain);
+      } finally {
+        this.purging = null;
+      }
+    })();
+    this.purging = run;
+    void run.catch(() => undefined);
+  }
+
+  /** Read through a call: a wipe or a revocation can land in any await of a purge run. */
+  private purgeable(core: CorePort): boolean {
+    return this.core === core && this.me !== null && this.sync !== null && this.phase === 'ready' && !this.wiping && !this.storeCleared;
+  }
+
+  /** Carries out this device's own record of its own deletes, in order. A row of a group this device is not an active
+   *  member of is kept: the delivery service's 404 to a non-member is its membership refusal, not completion (L-HTTP-80,
+   *  FACTS-SECURITY-08), so the row runs once the group is back in state 2. Any other failure keeps the row for the next
+   *  trigger and the run moves on. Residual (ruling 8): a device that never rejoins keeps its row until retention. */
+  private async purgeOnce(): Promise<void> {
+    const core = this.core;
+    if (core === null || !this.purgeable(core)) return;
+    let rows: ReturnType<CorePort['purges']>;
+    try { rows = core.purges(); } catch { return; }
+    for (const row of rows) {
+      if (!this.purgeable(core)) return;
+      try {
+        const group = core.groupRow(row.groupId);
+        if (group === null || group.state !== 2) continue;
+        await this.routes.deleteGroupMessage(row.groupId, row.seq);          // 'deleted' and 'gone' are both done
+        for (const blobId of row.blobIds) {
+          try { await this.routes.deleteBlob(row.channelId, blobId); }
+          catch (e) {
+            // 403: the reference is not this user's (another uploader's file); nothing of ours is left to delete.
+            if (!(e instanceof DillaHttpError && e.status === 403)) throw e;
+          }
+        }
+        if (!this.purgeable(core)) return;
+        core.purgeDone(row.groupId, row.seq);
+      } catch { /* this row waits for the next trigger */ }
+    }
+  }
+
+  /** Requirement 14. */
+  private loadPins(channelId: string): Promise<null> {
+    if (this.target(channelId) === undefined) throw new Refusal('E_BAD_INPUT', 'unknown channel');
+    this.pinsOpen.add(channelId);
+    this.publishPins(channelId);
+    return Promise.resolve(null);
+  }
+
+  /** The pins slice keeps its last value. */
+  private closePins(channelId: string): Promise<null> {
+    this.pinsOpen.delete(channelId);
+    return Promise.resolve(null);
+  }
+
+  private publishPins(channelId: string): void {
+    const core = this.core;
+    if (core === null) return;
+    const g = this.timelineGroup(channelId, core.groups());
+    const items: PinnedItem[] = g === null ? [] : core.pins(g).map((p) => ({
+      msgId: toHex(p.msgId), seq: p.targetSeq.toString(), senderUser: p.author === null ? null : toHex(p.author), excerpt: p.excerpt,
+      pinnedBy: toHex(p.byUser), pinnedSeq: p.pinnedSeq.toString(), ts: Number(p.targetTs),
+    }));
+    this.slices.set(`pins:${channelId}`, items);
+  }
+
+  /** The thumbnail seam: a unit test passes its own; else the worker global, when it can draw off screen. */
+  private thumbDeps(): ThumbDeps | null {
+    if (this.deps.thumbs !== undefined) return this.deps.thumbs;
+    const scope = globalThis as { createImageBitmap?: unknown; OffscreenCanvas?: unknown };
+    if (typeof scope.createImageBitmap !== 'function' || typeof scope.OffscreenCanvas !== 'function') return null;
+    return { createImageBitmap: (b) => createImageBitmap(b), offscreen: (w, h) => new OffscreenCanvas(w, h) };
+  }
+
+  /** The slice entry names the file and its phase only: never the descriptor (Global Constraints "Never written"). */
+  private publishTray(channelId: string, entries: readonly TrayEntry[]): void {
+    const item = (e: TrayEntry): TrayItem => ({ id: e.id, name: e.name, size: e.size, mime: e.mime, image: e.image, phase: e.phase, reason: e.reason });
+    this.slices.set(`tray:${channelId}`, entries.map(item));
+  }
+
+  private trayFor(channelId: string): Tray {
+    const held = this.trays.get(channelId);
+    if (held !== undefined) return held;
+    const tray: Tray = new Tray({
+      channelId: fromHex(channelId), routes: this.routes, thumb: this.thumbDeps(),
+      random: (n) => crypto.getRandomValues(new Uint8Array(n)),
+      // A tray dropped by a wipe or a reset publishes nothing more.
+      onChange: (entries) => { if (this.trays.get(channelId) === tray) this.publishTray(channelId, entries); },
+    });
+    this.trays.set(channelId, tray);
+    return tray;
+  }
+
+  /** Requirement 15: wipe and resetOnce drop every tray without a request; the pending references expire (L-HTTP-83). */
+  private dropTrays(): void {
+    for (const channelId of this.trays.keys()) this.slices.set(`tray:${channelId}`, []);
+    this.trays.clear();
+  }
+
+  private async attachFiles(channelId: string, files: readonly File[]): Promise<{ trayIds: string[] }> {
+    if (this.target(channelId) === undefined) throw new Refusal('E_BAD_INPUT', 'unknown channel');
+    return { trayIds: await this.trayFor(channelId).add(files) };
+  }
+
+  private async discardAttachment(channelId: string, trayId: string): Promise<null> {
+    await this.trays.get(channelId)?.discard(trayId);
+    return null;
+  }
+
+  /** Requirement 16: the decrypted Blob crosses in the ret (structured clone); the worker keeps no copy and mints no URL. */
+  private async openAttachment(channelId: string, seq: string, index: number, thumb: boolean): Promise<{ blob: Blob; name: string; mime: string }> {
+    const core = this.requireCore();
+    const g = this.timelineGroup(channelId, core.groups());
+    if (g === null) throw new Refusal('E_NOT_READY', 'the channel has no group');
+    const d = core.attachmentGet(g, BigInt(seq), index);
+    if (thumb && d.thumb === null) throw new AttachmentError('E_ATTACHMENT_MISSING', 'no thumbnail');
+    const blob = thumb ? await thumbnailBlob(d) : await fetchAttachment(this.routes, fromHex(channelId), d);
+    return { blob, name: safeName(d.name, ''), mime: d.mime };
   }
 
   // ---- invariants ----

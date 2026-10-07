@@ -1,8 +1,8 @@
 import type { Page } from '@playwright/test';
-import type { HarnessApi, HarnessResult } from '../../packages/client-core/harness/main';
+import type { HarnessApi, HarnessFile, HarnessOpen, HarnessResult } from '../../packages/client-core/harness/main';
 import type {
   AccountState, BadgeState, ChannelSummary, Command, CommunitySummary, ConnectionState, DeviceSummary, MemberSummary, NoticesState,
-  TimelineItem, TimelineState,
+  PinnedItem, TimelineItem, TimelineState, TrayItem,
 } from '../../packages/client-core/src/index';
 import { WebDriver, instanceInvite, testHostUrl, testkitEnv, type PeerReceived } from './support/driver';
 import { expect, test } from './support/second-harness';
@@ -101,8 +101,8 @@ test('the core worker signs up, joins, reads and sends, survives a gateway resta
       const members = (await slice<MemberSummary[]>(page, `members:${s.community_id}`))!;
       expect(members).toHaveLength(2);
       expect(members).toEqual(expect.arrayContaining([
-        { userId: s.user_id, username: s.username, display: s.display, kind: 0 },
-        { userId, username, display: 'Web Harness', kind: 0 },
+        { userId: s.user_id, username: s.username, display: s.display, kind: 0, roleIds: [] },
+        { userId, username, display: 'Web Harness', kind: 0, roleIds: [] },
       ]));
     });
 
@@ -293,6 +293,176 @@ test('a second browser joins the account by password and recovery key, badges an
       await ok(b, { m: 'start' });
       await expect.poll(() => phaseOf(b), { timeout: WAIT }).toBe('needs-signup');
       expect(await devices()).toEqual([[deviceA, true, true, null], [deviceB, true, false, null]]);
+    });
+
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await peer.close();
+  }
+});
+
+/** A sync row of the native peer as L-E2E-20 (task 5) answers it; task 10 owns the typed driver wrappers. A row deleted
+ *  before the peer ever held it answers msg_id, type, reply_to, sender_user, sender_device and tier as null (INTERFACES-11);
+ *  every matcher below compares these fields with === and never calls a method on them. */
+interface PeerRow extends Omit<PeerReceived, 'sender_user' | 'sender_device' | 'tier'> {
+  sender_user: string | null; sender_device: string | null; tier: number | null;
+  msg_id: string | null; type: number | null; reply_to: string | null; deleted: boolean;
+  attachments: { index: number; blob_id: string; size: number; mime: string; name: string; thumb: boolean }[];
+}
+
+test('two devices of one account fold edits, reactions, replies, pins and deletes, and files go through the worker', async ({ page, secondBrowser }) => {
+  test.setTimeout(CI ? 900_000 : 300_000);
+  const pageErrors: string[] = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message));
+  const peer = await WebDriver.start(testHostUrl(), testkitEnv());
+  const peerRows: PeerRow[] = [];
+  const peerSees = async (pick: (r: PeerRow) => boolean, what: string): Promise<PeerRow> => {
+    await expect.poll(async () => {
+      peerRows.push(...(await peer.request<{ received: PeerRow[] }>('sync', {})).received);
+      return peerRows.some(pick);
+    }, { timeout: WAIT, message: `the peer sees ${what}` }).toBe(true);
+    return [...peerRows].reverse().find(pick)!;
+  };
+  const password = 'harness password 3';
+  try {
+    const s = await peer.setup({ community: 'fold community', channel: 'general' });
+    expect((await peer.register()).epoch).toBe(0);
+    const username = `fld${(peer.seed & 0xff_ffff).toString(16).padStart(6, '0')}`;
+    const ch = s.channel_id;
+    const itemsOf = async (p: Page): Promise<TimelineItem[]> => (await slice<TimelineState>(p, `timeline:${ch}`))?.items ?? [];
+    const itemOf = async (p: Page, msgId: string): Promise<TimelineItem | null> => (await itemsOf(p)).find((i) => i.msgId === msgId) ?? null;
+    let userId = '';
+    let recoveryKey = '';
+
+    await test.step('A signs up with a password and opens the channel', async () => {
+      await openHarness(page);
+      await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('needs-signup');
+      await ok(page, { m: 'signupBegin' });
+      recoveryKey = (await slice<AccountState>(page, 'account'))!.recoveryKey!.join(' ');
+      await ok(page, { m: 'signupSubmit', invite: instanceInvite(), username, display: 'Fold A', password, recoveryKeyAcknowledged: true });
+      userId = (await slice<AccountState>(page, 'account'))!.user!.id;
+      expect(await ok(page, { m: 'joinCommunity', invite: s.invite_code })).toEqual({ communityId: s.community_id });
+      await ok(page, { m: 'selectCommunity', communityId: s.community_id });
+      await ok(page, { m: 'openChannel', channelId: ch });
+      await expect.poll(async () => (await slice<TimelineState>(page, `timeline:${ch}`))?.group, { timeout: WAIT }).toBe('active');
+    });
+
+    const { page: b } = await secondBrowser();
+    b.on('pageerror', (e) => pageErrors.push(e.message));
+
+    await test.step('B signs in to the same account and opens the channel', async () => {
+      await openHarness(b);
+      await expect.poll(() => phaseOf(b), { timeout: WAIT }).toBe('needs-signup');
+      await ok(b, { m: 'signInBegin' });
+      await ok(b, { m: 'signInLogin', username, password, recoveryKey });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'ready', user: { id: userId } });
+      await ok(b, { m: 'selectCommunity', communityId: s.community_id });
+      await ok(b, { m: 'openChannel', channelId: ch });
+      await expect.poll(async () => (await slice<TimelineState>(b, `timeline:${ch}`))?.group, { timeout: WAIT }).toBe('active');
+    });
+
+    let first = '';
+    await test.step("A sends; B edits it (the same user); both show the edit and the peer receives a type-1 row", async () => {
+      first = ((await ok(page, { m: 'send', channelId: ch, text: 'first words' })) as { msgId: string }).msgId;
+      await expect.poll(async () => (await itemOf(b, first))?.body ?? null, { timeout: WAIT }).toBe('first words');
+      await ok(b, { m: 'editMessage', channelId: ch, msgId: first, text: 'better words' });
+      for (const p of [page, b]) {
+        await expect.poll(async () => { const i = await itemOf(p, first); return i === null ? null : [i.body, i.edited]; }, { timeout: WAIT })
+          .toEqual(['better words', true]);
+      }
+      expect(await peerSees((r) => r.type === 1 && r.reply_to === first, 'the edit')).toMatchObject({ body: 'better words', sender_user: userId });
+    });
+
+    await test.step("A and B both react 👍: one chip of count 1 (per user); the peer's 👍 makes it 2", async () => {
+      await ok(page, { m: 'react', channelId: ch, msgId: first, emoji: '👍', on: true });
+      await ok(b, { m: 'react', channelId: ch, msgId: first, emoji: '👍', on: true });
+      // Both reactions are stored before the peer's: the peer's row comes after them in seq order, so a count of 2 (not 3)
+      // in each browser is the per-user rule; a per-device fold passes through 2 on its way to 3, so the count is asserted
+      // once, after the positive control below (TESTS-06), never polled for.
+      await expect.poll(async () => {
+        peerRows.push(...(await peer.request<{ received: PeerRow[] }>('sync', {})).received);
+        return new Set(peerRows.filter((r) => r.type === 3 && r.reply_to === first).map((r) => r.sender_device)).size;
+      }, { timeout: WAIT, message: 'the peer holds the reactions of both devices' }).toBe(2);
+      await peer.request('send', { body: '👍', type: 3, reply_to: first });
+      // The positive control (lesson c): a later message of the same group; once both browsers show it, every earlier
+      // seq — both devices' reactions and the peer's — is folded, so the count below is the final one, not an intermediate.
+      await peer.request('send', { body: 'after the reactions' });
+      for (const p of [page, b]) {
+        await expect.poll(async () => (await itemsOf(p)).some((i) => i.body === 'after the reactions'), { timeout: WAIT }).toBe(true);
+        expect((await itemOf(p, first))?.reactions).toEqual([{ emoji: '👍', count: 2, mine: true }]);
+      }
+    });
+
+    let peerMsg = '';
+    let peerSeq = '';
+    await test.step("B replies to the peer's message; A shows the reply reference", async () => {
+      await peer.send('peer says hi');
+      await expect.poll(async () => (await itemsOf(b)).find((i) => i.body === 'peer says hi')?.msgId ?? null, { timeout: WAIT }).not.toBeNull();
+      const held = (await itemsOf(b)).find((i) => i.body === 'peer says hi')!;
+      peerMsg = held.msgId!;
+      peerSeq = held.seq!;
+      const answer = ((await ok(b, { m: 'send', channelId: ch, text: 'answer', replyTo: peerMsg })) as { msgId: string }).msgId;
+      await expect.poll(async () => (await itemOf(page, answer))?.reply ?? null, { timeout: WAIT })
+        .toEqual({ msgId: peerMsg, state: 'ok', senderUser: s.user_id, excerpt: 'peer says hi', seq: peerSeq });
+      expect(await peerSees((r) => r.msg_id === answer, 'the reply')).toMatchObject({ type: 0, reply_to: peerMsg, body: 'answer' });
+    });
+
+    await test.step("A pins the peer's message; the pins slice and B's item show it", async () => {
+      await expect.poll(async () => (await itemOf(page, peerMsg))?.seq ?? null, { timeout: WAIT }).toBe(peerSeq);
+      const peerTs = (await itemOf(page, peerMsg))!.ts;   // A's own item of the target: PinnedItem.ts is A's core's recv_ts of it
+      await ok(page, { m: 'pin', channelId: ch, msgId: peerMsg, on: true });
+      await ok(page, { m: 'loadPins', channelId: ch });
+      await expect.poll(async () => await slice<PinnedItem[]>(page, `pins:${ch}`), { timeout: WAIT }).toEqual([{
+        msgId: peerMsg, seq: peerSeq, senderUser: s.user_id, excerpt: 'peer says hi', pinnedBy: userId,
+        pinnedSeq: expect.stringMatching(/^[1-9][0-9]*$/) as unknown as string, ts: peerTs,
+      }]);
+      await expect.poll(async () => (await itemOf(b, peerMsg))?.pinned ?? null, { timeout: WAIT }).toBe(true);
+      await ok(page, { m: 'closePins', channelId: ch });
+    });
+
+    let fileMsg = '';
+    let drawn: HarnessFile = { id: '', sha256: '', size: 0 };
+    await test.step('A attaches a PNG drawn by canvas; the worker seals it and makes the thumbnail; B opens both', async () => {
+      drawn = await page.evaluate((spec) => (window as unknown as HarnessWindow).dilla.makeFile(spec), { name: 'drawn.png', type: 'image/png', png: { w: 320, h: 240 } });
+      const attached = await page.evaluate(([c, ids]) => (window as unknown as HarnessWindow).dilla.attach(c, ids), [ch, [drawn.id]] as const);
+      expect(attached).toMatchObject({ ok: true });
+      const trayId = ((attached as { ok: true; value: { trayIds: string[] } }).value.trayIds)[0]!;
+      await expect.poll(async () => await slice<TrayItem[]>(page, `tray:${ch}`), { timeout: WAIT }).toEqual([
+        { id: trayId, name: 'drawn.png', size: drawn.size, mime: 'image/png', image: true, phase: 'ready', reason: '' },
+      ]);
+      fileMsg = ((await ok(page, { m: 'send', channelId: ch, text: '', attachments: [trayId] })) as { msgId: string }).msgId;
+      await expect.poll(async () => await slice<TrayItem[]>(page, `tray:${ch}`), { timeout: WAIT }).toEqual([]);
+      await expect.poll(async () => { const i = await itemOf(b, fileMsg); return i === null ? null : [i.state, i.body, i.attachments]; }, { timeout: WAIT })
+        .toEqual(['ok', '', [{ index: 0, size: drawn.size, mime: 'image/png', name: 'drawn.png', w: 320, h: 240, thumb: true, kind: 'image', tooLarge: false }]]);
+      const seq = (await itemOf(b, fileMsg))!.seq!;
+      const full: HarnessOpen = await b.evaluate((c) => (window as unknown as HarnessWindow).dilla.open(c),
+        { m: 'openAttachment', channelId: ch, seq, index: 0, thumb: false } as const);
+      expect(full).toMatchObject({ ok: true, sha256: drawn.sha256, size: drawn.size, type: 'image/png', name: 'drawn.png', mime: 'image/png' });
+      const small: HarnessOpen = await b.evaluate((c) => (window as unknown as HarnessWindow).dilla.open(c),
+        { m: 'openAttachment', channelId: ch, seq, index: 0, thumb: true } as const);
+      expect(small.ok).toBe(true);
+      if (!small.ok) return;
+      const webp = small.head.slice(0, 4).join(',') === '82,73,70,70' && small.head.slice(8, 12).join(',') === '87,69,66,80';
+      const jpeg = small.head.slice(0, 3).join(',') === '255,216,255';
+      expect(webp || jpeg, `thumbnail head ${small.head.join(',')}`).toBe(true);
+      expect(small.type).toBe(webp ? 'image/webp' : 'image/jpeg');
+      expect(small.size).toBeLessThanOrEqual(8176);
+    });
+
+    await test.step('A deletes the file message: both show it deleted, the peer sees the delete, and the purge removes the file', async () => {
+      const carried = await peerSees((r) => r.msg_id === fileMsg, 'the file message');
+      expect(carried.attachments).toEqual([{ index: 0, blob_id: expect.stringMatching(/^[0-9a-f]{64}$/) as unknown as string,
+        size: drawn.size, mime: 'image/png', name: 'drawn.png', thumb: true }]);
+      const blobId = carried.attachments[0]!.blob_id;
+      expect(await peer.request<{ status: number }>('blob_status', { blob_id: blobId })).toMatchObject({ status: 200 });
+      await ok(page, { m: 'deleteMessage', channelId: ch, msgId: fileMsg });
+      for (const p of [page, b]) {
+        await expect.poll(async () => (await itemOf(p, fileMsg))?.state ?? null, { timeout: WAIT }).toBe('deleted');
+      }
+      expect(await peerSees((r) => r.type === 2 && r.reply_to === fileMsg, 'the type-2 row')).toMatchObject({ sender_user: userId });
+      await peerSees((r) => r.msg_id === fileMsg && r.deleted, 'the tombstone');
+      await expect.poll(async () => (await peer.request<{ status: number }>('blob_status', { blob_id: blobId })).status,
+        { timeout: WAIT, message: 'the purge deleted the reference' }).toBe(404);
     });
 
     expect(pageErrors).toEqual([]);

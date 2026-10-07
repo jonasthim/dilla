@@ -58,8 +58,8 @@ describe('isUnsupported and unsupportedBody', () => {
 
 describe('authorName', () => {
   const members: MemberSummary[] = [
-    { userId: id('a'), username: 'ada', display: 'Ada L', kind: 0 },
-    { userId: id('b'), username: 'bob', display: '', kind: 0 },
+    { userId: id('a'), username: 'ada', display: 'Ada L', kind: 0, roleIds: [] },
+    { userId: id('b'), username: 'bob', display: '', kind: 0, roleIds: [] },
   ];
   it('prefers the display name, then the username, then the id', () => {
     expect(authorName({ senderUser: id('a'), senderDevice: id('1') }, members, null)).toBe('Ada L');
@@ -123,7 +123,7 @@ describe('devicesChunk', () => {
 });
 
 describe('dmCandidates', () => {
-  const m = (userId: string, username: string, display: string, kind: 0 | 1 = 0): MemberSummary => ({ userId, username, display, kind });
+  const m = (userId: string, username: string, display: string, kind: 0 | 1 = 0): MemberSummary => ({ userId, username, display, kind, roleIds: [] });
   it('offers people other than oneself, by the name they show', () => {
     const members = [m(id('a'), 'ada', 'Ada L'), m(id('b'), 'zed', ''), m(id('c'), 'helper', 'Helper', 1), m(id('d'), 'bob', 'Bob')];
     expect(dmCandidates(members, id('a')).map(x => x.username)).toEqual(['bob', 'zed']);

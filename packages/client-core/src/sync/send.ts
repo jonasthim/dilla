@@ -1,4 +1,4 @@
-import { CoreError, type Id, type OutboxRow } from '../core-port';
+import { CoreError, type Id, type OutboxRow, type SendRequest } from '../core-port';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import { resyncGroup } from './channel';
@@ -10,10 +10,14 @@ function owner(s: SyncInternals, msgId: Id): Id | undefined {
   const id = toHex(msgId);
   return s.deps.core.groups().find((g) => s.deps.core.outbox(g.groupId).some((x) => toHex(x.msgId) === id))?.groupId;
 }
-export function sendMessage(s: SyncInternals, g: Id, text: string): Id {
+/** Queues any envelope type (L-TS-34): the core's refusal propagates synchronously and nothing else runs. */
+export function sendRequest(s: SyncInternals, g: Id, request: SendRequest): Id {
   if (s.stopped()) throw new SyncError('E_SYNC_STOPPED');
-  const id = s.deps.core.sendPrepare(g, { type: 0, replyTo: null, body: text, attachments: [] }, BigInt(Math.floor(s.deps.now() / 1000)));
+  const id = s.deps.core.sendPrepare(g, request, BigInt(Math.floor(s.deps.now() / 1000)));
   s.deps.onOutboxChanged(g); s.requestDrain(g); return id;
+}
+export function sendMessage(s: SyncInternals, g: Id, text: string): Id {
+  return sendRequest(s, g, { type: 0, replyTo: null, body: text, attachments: [] });
 }
 export function retrySend(s: SyncInternals, msgId: Id): void {
   s.deps.core.sendRetry(msgId);
@@ -28,9 +32,14 @@ export function retrySend(s: SyncInternals, msgId: Id): void {
 }
 export function discardSend(s: SyncInternals, msgId: Id): void {
   const g = owner(s, msgId);
+  // A message id no outbox holds calls nothing (web-1 pre-flight ruling 1(iv)); the core would refuse it E_CORE_NOT_FOUND.
+  if (g === undefined) return;
+  const row = s.deps.core.outbox(g).find((x) => toHex(x.msgId) === toHex(msgId));
   s.deps.core.sendDiscard(msgId);
-  if (g !== undefined) s.reframedOnce.delete(`${toHex(g)}:${toHex(msgId)}`);
-  if (g !== undefined) s.deps.onOutboxChanged(g);
+  // The row's attachment references are the controller's to delete (L-TS-34).
+  if (row !== undefined) s.deps.onDiscarded(g, row);
+  s.reframedOnce.delete(`${toHex(g)}:${toHex(msgId)}`);
+  s.deps.onOutboxChanged(g);
 }
 async function afterLostResponse(s: SyncInternals, g: Id, msgId: Id): Promise<void> {
   await s.catchUpNow(g, 'catch-up');
@@ -68,6 +77,24 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
   if (row === undefined) return;
   const msgId = row.msgId; const msgHex = toHex(msgId);
   const reframeKey = `${hex}:${msgHex}`;
+  if (row.attachments.length > 0) {
+    // Ruling 7 (Q17): every attempt confirms the row's references before its upload, so a sent attachment is never pending.
+    try { await s.deps.beforeSend(g, row); }
+    catch (e) {
+      if (s.stopped()) return;
+      // Pre-flight ruling F5: a confirm that did not reach a verdict (no answer, 401, 429, 5xx) leaves the row queued, as a
+      // text row stays queued across network loss; the next ready drains it again (no timer of its own).
+      if (e instanceof DillaHttpError && (e.status === 0 || e.status === 401 || e.status === 429 || e.status >= 500)) return;
+      // A discard or a retry that ran meanwhile owns the row now.
+      if (!s.deps.core.outbox(g).some((x) => toHex(x.msgId) === msgHex && x.state === 0)) { s.requestDrain(g); return; }
+      const code = e instanceof DillaHttpError ? (e.status === 404 ? 'E_ATTACHMENT_MISSING' : e.code)
+        : e instanceof CoreError ? e.code : 'E_INTERNAL';
+      s.deps.core.sendFail(msgId, code); s.reframedOnce.delete(reframeKey); s.deps.onOutboxChanged(g); s.requestDrain(g);
+      return;
+    }
+    if (s.stopped()) return;
+    if (!s.deps.core.outbox(g).some((x) => toHex(x.msgId) === msgHex && x.state === 0)) { s.requestDrain(g); return; }
+  }
   let messageBody: Uint8Array;
   try { messageBody = s.deps.core.sendEncrypt(msgId).messageBody; }
   catch (e) {
