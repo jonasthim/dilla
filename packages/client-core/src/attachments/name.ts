@@ -1,6 +1,6 @@
 // A display name for a downloaded file, without path and bidi control characters.
 export function safeName(name: string, fallback: string): string {
-  const clean = name.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, '')
+  const clean = name.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e-\u200f\u202a-\u202e\u2066-\u206f]/gu, '')
     .replace(/[/\\]/g, '_').trim();
   const encoder = new TextEncoder();
   let out = '';
