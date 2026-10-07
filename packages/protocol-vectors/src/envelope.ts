@@ -7,7 +7,7 @@ export const EnvelopeType = { Message: 0, Edit: 1, Delete: 2, ReactionAdd: 3, Re
 export type EnvelopeType = (typeof EnvelopeType)[keyof typeof EnvelopeType];
 const ENVELOPE_TYPES = new Set<number>(Object.values(EnvelopeType));
 
-export type Attachment = { blobId: Uint8Array; key: Uint8Array; nonce: Uint8Array; size: number; mime: string; w: number | null; h: number | null; thumb: Uint8Array | null };
+export type Attachment = { blobId: Uint8Array; key: Uint8Array; nonce: Uint8Array; size: number; mime: string; w: number | null; h: number | null; thumb: Uint8Array | null; name: string };
 export type Preview = { url: string; title: string; description: string; image: Uint8Array | null };
 export type Envelope = {
   v: 1; msgId: Uint8Array; type: EnvelopeType; threadId: Uint8Array | null; replyTo: Uint8Array | null;
@@ -28,6 +28,7 @@ const MAX_PREVIEWS = 2;
 const MAX_PREVIEW_IMAGE = 16384;
 const MAX_THUMB = 8192;
 const MAX_MIME = 255;
+const MAX_NAME = 255; // attachment name, UTF-8 bytes
 const MAX_URL = 2048;
 const MAX_TITLE = 256;
 const MAX_DESCRIPTION = 1024;
@@ -41,7 +42,7 @@ function toArray(e: Envelope, kf: Uint8Array): CborValue {
   return [
     e.v, e.msgId, e.type, e.threadId, e.replyTo, e.body,
     e.attachments.map(a => { assertLen(a.blobId, 32, 'blob_id'); assertLen(a.key, 32, 'key'); assertLen(a.nonce, 12, 'nonce');
-      return [a.blobId, a.key, a.nonce, a.size, a.mime, a.w, a.h, a.thumb]; }),
+      return [a.blobId, a.key, a.nonce, a.size, a.mime, a.w, a.h, a.thumb, a.name]; }),
     e.previews.map(p => [p.url, p.title, p.description, p.image]),
     kf,
   ];
@@ -69,22 +70,30 @@ export function decodeEnvelope(bytes: Uint8Array): Envelope {
   assertLimit(attachments.length <= MAX_ATTACHMENTS, 'more than 4 attachments');
   assertLimit(previews.length <= MAX_PREVIEWS, 'more than 2 previews');
 
+  const decodedAttachments = attachments.map(x => {
+    if (!Array.isArray(x) || x.length !== 9) throw new Error('envelope: shape: an attachment is not a 9-element array');
+    const [blobId, key, nonce, size, mime, w, h, thumb, name] = x as [Uint8Array, Uint8Array, Uint8Array, number, string, number | null, number | null, Uint8Array | null, string];
+    assertLimit(utf8(mime).length <= MAX_MIME, 'mime over 255 bytes');
+    if (thumb) assertLimit(thumb.length <= MAX_THUMB, 'thumb over 8192 bytes');
+    assertLimit(utf8(name).length <= MAX_NAME, 'attachment name over 255 bytes');
+    return { blobId, key, nonce, size, mime, w, h, thumb, name };
+  });
+  const decodedPreviews = previews.map(x => {
+    const [url, title, description, image] = x as [string, string, string, Uint8Array | null];
+    assertLimit(utf8(url).length <= MAX_URL, 'preview url over 2048 bytes');
+    assertLimit(utf8(title).length <= MAX_TITLE, 'preview title over 256 bytes');
+    assertLimit(utf8(description).length <= MAX_DESCRIPTION, 'preview description over 1024 bytes');
+    if (image) assertLimit(image.length <= MAX_PREVIEW_IMAGE, 'preview image over 16384 bytes');
+    return { url, title, description, image };
+  });
+  if (type !== EnvelopeType.Message) {
+    if (replyTo === null) throw new Error(`envelope: shape: type ${type} names its target in reply_to`);
+    if (decodedAttachments.length > 0 || decodedPreviews.length > 0) throw new Error(`envelope: shape: type ${type} carries no attachments or previews`);
+  }
   return {
     v: 1, msgId, type: type as EnvelopeType, threadId, replyTo, body,
-    attachments: attachments.map(x => {
-      const [blobId, key, nonce, size, mime, w, h, thumb] = x as [Uint8Array, Uint8Array, Uint8Array, number, string, number | null, number | null, Uint8Array | null];
-      assertLimit(utf8(mime).length <= MAX_MIME, 'mime over 255 bytes');
-      if (thumb) assertLimit(thumb.length <= MAX_THUMB, 'thumb over 8192 bytes');
-      return { blobId, key, nonce, size, mime, w, h, thumb };
-    }),
-    previews: previews.map(x => {
-      const [url, title, description, image] = x as [string, string, string, Uint8Array | null];
-      assertLimit(utf8(url).length <= MAX_URL, 'preview url over 2048 bytes');
-      assertLimit(utf8(title).length <= MAX_TITLE, 'preview title over 256 bytes');
-      assertLimit(utf8(description).length <= MAX_DESCRIPTION, 'preview description over 1024 bytes');
-      if (image) assertLimit(image.length <= MAX_PREVIEW_IMAGE, 'preview image over 16384 bytes');
-      return { url, title, description, image };
-    }),
+    attachments: decodedAttachments,
+    previews: decodedPreviews,
     kf,
   };
 }

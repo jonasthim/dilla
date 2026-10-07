@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { arr, bin, decode, encode, type CborInput } from '../../cbor';
 import { wrapCore, type ApplyResult, type CoreHandle } from '../../core-port';
 import { fromHex } from '../../hex';
-import { CHANNEL, COMMUNITY, ME, ModelCore, ModelDs, PEER, at, idOf } from './model';
+import { CHANNEL, COMMUNITY, ME, ModelCore, textRequest, ModelDs, PEER, at, idOf } from './model';
 
 interface ParityRow {
   stream: 'h' | 'm';
@@ -77,7 +77,7 @@ function rowsOf(core: ModelCore, c: ParityCase): { handshakes: CborInput[]; mess
         into.push(ModelDs.row.badCommit(seq, epoch));
         break;
       case 'own-echo': {
-        const sent = core.sendEncrypt(core.sendPrepare(G, 'parity echo', 1n));
+        const sent = core.sendEncrypt(core.sendPrepare(G, textRequest('parity echo'), 1n));
         into.push(ModelDs.row.ownEcho(seq, epoch, bin(at(arr(decode(sent.messageBody), 2), 1))));
         break;
       }

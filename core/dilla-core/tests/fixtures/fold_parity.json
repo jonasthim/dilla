@@ -1,0 +1,14 @@
+{"v":1,"cases":[
+{"name":"an edit by the author replaces the body","rows":[{"seq":2,"what":"peer-target"},{"seq":3,"what":"peer-edit"}],"through":3,"view":[[2,0,"edited by the peer",3,[],0]],"hidden":[3]},
+{"name":"an edit by another user is ignored","rows":[{"seq":2,"what":"own-target"},{"seq":3,"what":"peer-edit"}],"through":3,"view":[[2,0,"my target",0,[],0]],"hidden":[3]},
+{"name":"a reaction is kept per user and removed by its sender","rows":[{"seq":2,"what":"peer-target"},{"seq":3,"what":"peer-react"},{"seq":4,"what":"peer-unreact"},{"seq":5,"what":"peer-react"}],"through":5,"view":[[2,0,"the target",0,[["👍",1,0]],0]],"hidden":[3,4,5]},
+{"name":"a delete by the author removes the target and what folded onto it","rows":[{"seq":2,"what":"peer-target"},{"seq":3,"what":"peer-react"},{"seq":4,"what":"peer-edit"},{"seq":5,"what":"peer-delete"}],"through":5,"view":[[2,2,"",0,[],0]],"hidden":[3,4,5]},
+{"name":"a pin is accepted from any member","rows":[{"seq":2,"what":"own-target"},{"seq":3,"what":"peer-pin"}],"through":3,"view":[[2,0,"my target",0,[],1]],"hidden":[3]},
+{"name":"a fold whose target is not held changes nothing","rows":[{"seq":2,"what":"peer-target"},{"seq":3,"what":"peer-react-unheld"}],"through":3,"view":[[2,0,"the target",0,[],0]],"hidden":[3]}
+,
+{ "name": "an own reaction folds when its upload is adopted",
+  "rows": [ { "seq": 2, "what": "peer-target" }, { "seq": 3, "what": "own-react" }, { "seq": 4, "what": "peer-react" } ],
+  "through": 4,
+  "view": [ [2, 0, "the target", 0, [["👍", 2, 1]], 0] ],
+  "hidden": [3, 4] }
+]}

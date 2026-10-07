@@ -18,8 +18,18 @@ INSERT INTO blob_refs (blob_id, channel_id, uploader_device, mime, created)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (blob_id, channel_id) DO NOTHING;
 
+-- name: PutPendingBlobRef :exec
+-- dilla-web-2b (L-SQL-31): a PUT's reference, pending until its uploader confirms it. A repeat
+-- keeps the first row, pending or confirmed.
+INSERT INTO blob_refs (blob_id, channel_id, uploader_device, mime, created, confirmed)
+VALUES ($1, $2, $3, $4, $5, 0)
+ON CONFLICT (blob_id, channel_id) DO NOTHING;
+
+-- name: ConfirmBlobRef :execrows
+UPDATE blob_refs SET confirmed = 1 WHERE blob_id = $1 AND channel_id = $2;
+
 -- name: GetBlobRef :one
-SELECT blob_id, channel_id, uploader_device, mime, created
+SELECT blob_id, channel_id, uploader_device, mime, created, confirmed
 FROM blob_refs WHERE blob_id = $1 AND channel_id = $2;
 
 -- name: DeleteBlobRef :exec
@@ -117,7 +127,7 @@ ORDER BY communities.id;
 -- name: ListExpiredBlobRefs :many
 -- A community's references created strictly before the retention cutoff, oldest first.
 SELECT blob_refs.blob_id, blob_refs.channel_id, blob_refs.uploader_device, blob_refs.mime,
-       blob_refs.created
+       blob_refs.created, blob_refs.confirmed
 FROM blob_refs
 JOIN channels ON channels.id = blob_refs.channel_id
 JOIN communities ON communities.id = channels.community_id
@@ -130,10 +140,20 @@ LIMIT sqlc.arg(max_rows)::bigint;
 -- Channels are tombstoned, never removed, so the ON DELETE CASCADE on blob_refs never fires:
 -- the sweeper drops a deleted channel's references itself.
 SELECT blob_refs.blob_id, blob_refs.channel_id, blob_refs.uploader_device, blob_refs.mime,
-       blob_refs.created
+       blob_refs.created, blob_refs.confirmed
 FROM blob_refs
 JOIN channels ON channels.id = blob_refs.channel_id
 WHERE channels.deleted_at IS NOT NULL
+ORDER BY blob_refs.created, blob_refs.channel_id, blob_refs.blob_id
+LIMIT sqlc.arg(max_rows)::bigint;
+
+-- name: ListPendingBlobRefs :many
+-- dilla-web-2b (L-SQL-31): references their uploader never confirmed, created strictly before the
+-- cutoff, oldest first; the sweeper drops them after blobs.pending_ttl.
+SELECT blob_refs.blob_id, blob_refs.channel_id, blob_refs.uploader_device, blob_refs.mime,
+       blob_refs.created, blob_refs.confirmed
+FROM blob_refs
+WHERE blob_refs.confirmed = 0 AND blob_refs.created < sqlc.arg(before)::bigint
 ORDER BY blob_refs.created, blob_refs.channel_id, blob_refs.blob_id
 LIMIT sqlc.arg(max_rows)::bigint;
 

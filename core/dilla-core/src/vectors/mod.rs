@@ -1,6 +1,7 @@
 //! The cross-target conformance runner.
 //!
-//! The four vector files are embedded with `include_str!` rather than read from disk: `std::fs`
+//! The six vector files are embedded at compile time (`include_bytes!`, minified by
+//! `vector_json!`) rather than read from disk: `std::fs`
 //! always errors on `wasm32-unknown-unknown`, so this is the only shape that compiles for native,
 //! wasm32-unknown-unknown and wasm32-wasip1 alike. The same functions back the wasi
 //! `vectors_check` export and the Node test, which is what stops the three builds diverging.
@@ -9,6 +10,7 @@ mod report;
 
 pub use report::{CaseReport, SuiteReport, VectorReport};
 
+use crate::attachment::{blob_id, open_blob, open_thumb, seal_blob, seal_thumb};
 use crate::cbor::decode_strict;
 use crate::envelope::{
     Attachment, Envelope, EnvelopeType, FrankingTagInput, Preview, franking_tag,
@@ -25,11 +27,71 @@ use crate::sframe::{
 };
 use serde_json::Value;
 
-pub const ENVELOPE_JSON: &str = include_str!("../../../../protocol/vectors/envelope.json");
-pub const FRANKING_JSON: &str = include_str!("../../../../protocol/vectors/franking.json");
-pub const SFRAME_JSON: &str = include_str!("../../../../protocol/vectors/sframe.json");
-pub const IDENTITY_JSON: &str = include_str!("../../../../protocol/vectors/identity.json");
-pub const FRAMES_JSON: &str = include_str!("../../../../protocol/vectors/frames.json");
+/// Embeds a vector file without the whitespace JSON ignores between tokens, so the browser build
+/// carries the vectors and not the generator's indentation (web-2b task 1: about 20 KB of the
+/// wasm, against a 16 KB budget for the task). The work happens at compile time: the file's own
+/// bytes never reach the binary, and the text parses to the same `Value` as the file, which stays
+/// the record (`protocol/vectors` is written only by the generator).
+macro_rules! vector_json {
+    ($path:literal) => {{
+        const SOURCE: &[u8] = include_bytes!($path);
+        const LEN: usize = json_min_len(SOURCE);
+        const MIN: [u8; LEN] = json_min::<LEN>(SOURCE);
+        match core::str::from_utf8(&MIN) {
+            Ok(text) => text,
+            Err(_) => panic!(concat!($path, " is not UTF-8")),
+        }
+    }};
+}
+
+/// One byte of a JSON text: whether the minified text keeps it, then the in-string and escape
+/// states after it. Inside a string every byte is kept; outside, only space, tab, CR and LF (the
+/// four whitespace bytes of RFC 8259 § 2) are dropped.
+const fn json_step(c: u8, in_str: bool, esc: bool) -> (bool, bool, bool) {
+    if in_str {
+        (true, c != b'"' || esc, !esc && c == b'\\')
+    } else {
+        (!matches!(c, b' ' | b'\t' | b'\r' | b'\n'), c == b'"', false)
+    }
+}
+
+/// The length of `src` once [`json_min`] has dropped its insignificant whitespace.
+const fn json_min_len(src: &[u8]) -> usize {
+    let (mut i, mut n, mut in_str, mut esc) = (0, 0, false, false);
+    while i < src.len() {
+        let (keep, s, e) = json_step(src[i], in_str, esc);
+        (in_str, esc) = (s, e);
+        if keep {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
+/// `src` without the whitespace outside its strings; `N` is [`json_min_len`] of `src`.
+const fn json_min<const N: usize>(src: &[u8]) -> [u8; N] {
+    let mut out = [0u8; N];
+    let (mut i, mut n, mut in_str, mut esc) = (0, 0, false, false);
+    while i < src.len() {
+        let (keep, s, e) = json_step(src[i], in_str, esc);
+        (in_str, esc) = (s, e);
+        if keep {
+            out[n] = src[i];
+            n += 1;
+        }
+        i += 1;
+    }
+    assert!(n == N, "json_min: N is not json_min_len(src)");
+    out
+}
+
+pub const ENVELOPE_JSON: &str = vector_json!("../../../../protocol/vectors/envelope.json");
+pub const FRANKING_JSON: &str = vector_json!("../../../../protocol/vectors/franking.json");
+pub const SFRAME_JSON: &str = vector_json!("../../../../protocol/vectors/sframe.json");
+pub const IDENTITY_JSON: &str = vector_json!("../../../../protocol/vectors/identity.json");
+pub const FRAMES_JSON: &str = vector_json!("../../../../protocol/vectors/frames.json");
+pub const ATTACHMENT_JSON: &str = vector_json!("../../../../protocol/vectors/attachment.json");
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
@@ -122,6 +184,7 @@ fn envelope_from_json(j: &Value) -> Envelope {
                         w: a["w"].as_u64(),
                         h: a["h"].as_u64(),
                         thumb: a["thumb"].as_str().map(unhex),
+                        name: a["name"].as_str().unwrap_or("").to_owned(),
                     })
                     .collect()
             })
@@ -756,6 +819,7 @@ pub fn run_rejects() -> SuiteReport {
 
     let mut short_body = env.clone();
     short_body.kind = EnvelopeType::ReactionAdd;
+    short_body.reply_to = Some(MsgId::from_bytes([0x02; 16]));
     short_body.body = "a".repeat(crate::envelope::MAX_BODY_SHORT + 1);
     cases.push(CaseReport::compare(
         "reaction body over 32 bytes",
@@ -784,6 +848,29 @@ pub fn run_rejects() -> SuiteReport {
             "decode",
             expect_str(&case["error"]),
             actual,
+        ));
+    }
+
+    let attachment: Value = serde_json::from_str(ATTACHMENT_JSON).unwrap_or(Value::Null);
+    for case in attachment["rejects"].as_array().unwrap_or(&Vec::new()) {
+        let name = case["name"].as_str().unwrap_or("?");
+        let key = unhex_n::<32>(case["key"].as_str().unwrap_or(""));
+        let nonce = unhex_n::<12>(case["nonce"].as_str().unwrap_or(""));
+        let data = unhex(case["data"].as_str().unwrap_or(""));
+        let outcome = if case["kind"] == "thumb" {
+            open_thumb(&key, &nonce, &data)
+        } else {
+            let id = unhex_n::<32>(case["blob_id"].as_str().unwrap_or(""));
+            open_blob(&key, &nonce, &id, int(&case["size"]), &data)
+        };
+        cases.push(CaseReport::compare(
+            format!("attachment reject: {name}"),
+            "open",
+            expect_str(&case["error"]),
+            match outcome {
+                Ok(_) => "accepted",
+                Err(e) => e.code(),
+            },
         ));
     }
 
@@ -890,6 +977,116 @@ pub fn run_all() -> VectorReport {
         run_sframe(),
         run_identity(),
         run_frames(),
+        run_attachment(),
         run_rejects(),
     ])
+}
+
+/// The hex of a sealed or opened value, or the code that refused it: the actual of an attachment
+/// field.
+fn hex_or_code(r: Result<Vec<u8>, crate::error::ProtocolError>) -> String {
+    r.map_or_else(|e| e.code().to_owned(), |x| hex(&x))
+}
+
+/// protocol/04 § Attachments: `attachment.json`'s cases, sealed and opened with
+/// `crate::attachment` (fields `stored`, `blob_id`, `open`, and `thumb`, `thumb_open` where
+/// `thumb_plaintext` is not null). Its rejects run in [`run_rejects`].
+pub fn run_attachment() -> SuiteReport {
+    let mut cases = Vec::new();
+    let doc: Value = serde_json::from_str(ATTACHMENT_JSON).unwrap_or(Value::Null);
+    for case in doc["cases"].as_array().unwrap_or(&Vec::new()) {
+        let text = |field: &str| case[field].as_str().unwrap_or("");
+        let name = case["name"].as_str().unwrap_or("?");
+        let key = unhex_n::<32>(text("key"));
+        let nonce = unhex_n::<12>(text("nonce"));
+        let stored = unhex(text("stored"));
+        let mut push = |field: &'static str, expected: &str, actual: String| {
+            cases.push(CaseReport::compare(name, field, expected, actual));
+        };
+        push(
+            "stored",
+            expect_str(&case["stored"]),
+            hex(&seal_blob(&key, &nonce, &unhex(text("plaintext")))),
+        );
+        push(
+            "blob_id",
+            expect_str(&case["blob_id"]),
+            hex(&blob_id(&stored)),
+        );
+        let id = unhex_n::<32>(text("blob_id"));
+        push(
+            "open",
+            expect_str(&case["plaintext"]),
+            hex_or_code(open_blob(&key, &nonce, &id, int(&case["size"]), &stored)),
+        );
+        if let Some(tp) = case["thumb_plaintext"].as_str() {
+            push(
+                "thumb",
+                expect_str(&case["thumb"]),
+                hex_or_code(seal_thumb(&key, &nonce, &unhex(tp))),
+            );
+            push(
+                "thumb_open",
+                tp,
+                hex_or_code(open_thumb(&key, &nonce, &unhex(text("thumb")))),
+            );
+        }
+    }
+    SuiteReport {
+        name: "attachment",
+        cases,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_min_drops_whitespace_between_tokens_and_keeps_strings_whole() {
+        const SRC: &[u8] =
+            b"{\n  \"a b\" : \"x \\\" y\\\\\",\r\n\t\"c\": [1, 2, \" \\\\\\\" \"]\n}\n";
+        const LEN: usize = json_min_len(SRC);
+        let min = json_min::<LEN>(SRC);
+        assert_eq!(
+            core::str::from_utf8(&min),
+            Ok(r#"{"a b":"x \" y\\","c":[1,2," \\\" "]}"#)
+        );
+    }
+
+    #[test]
+    fn every_embedded_vector_file_parses_to_the_file_on_disk() {
+        for (embedded, file) in [
+            (
+                ENVELOPE_JSON,
+                include_str!("../../../../protocol/vectors/envelope.json"),
+            ),
+            (
+                FRANKING_JSON,
+                include_str!("../../../../protocol/vectors/franking.json"),
+            ),
+            (
+                SFRAME_JSON,
+                include_str!("../../../../protocol/vectors/sframe.json"),
+            ),
+            (
+                IDENTITY_JSON,
+                include_str!("../../../../protocol/vectors/identity.json"),
+            ),
+            (
+                FRAMES_JSON,
+                include_str!("../../../../protocol/vectors/frames.json"),
+            ),
+            (
+                ATTACHMENT_JSON,
+                include_str!("../../../../protocol/vectors/attachment.json"),
+            ),
+        ] {
+            let want: Value = serde_json::from_str(file).expect("the file parses");
+            let got: Value = serde_json::from_str(embedded).expect("the embedded text parses");
+            assert_eq!(got, want);
+            assert!(embedded.len() < file.len(), "the indentation is gone");
+            assert!(!embedded.contains("\n  "), "no indented line is left");
+        }
+    }
 }

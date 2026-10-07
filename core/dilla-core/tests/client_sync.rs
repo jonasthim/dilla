@@ -408,7 +408,13 @@ fn a_commit_that_cannot_be_processed_stops_the_group_in_needs_resync() {
         .expect("tail");
     assert_eq!(kept, 2, "both rows are kept for a heal or a fork report");
     assert_eq!(code(a.try_sync(&relay)), "E_CORE_STATE");
-    assert_eq!(code(a.core.send_prepare(&GROUP, "x", NOW)), "E_CORE_STATE");
+    assert_eq!(
+        code(
+            a.core
+                .send_prepare(&GROUP, &request(0, None, "x", &[]), NOW)
+        ),
+        "E_CORE_STATE"
+    );
 
     // An external join brings the group back.
     a.join_external(&mut relay);
@@ -450,7 +456,13 @@ fn a_commit_that_removes_this_device_marks_the_group_gone_and_keeps_its_history(
     assert_eq!(bodies, vec!["before the removal"]);
 
     assert_eq!(code(b.try_sync(&relay)), "E_CORE_STATE");
-    assert_eq!(code(b.core.send_prepare(&GROUP, "x", NOW)), "E_CORE_STATE");
+    assert_eq!(
+        code(
+            b.core
+                .send_prepare(&GROUP, &request(0, None, "x", &[]), NOW)
+        ),
+        "E_CORE_STATE"
+    );
     assert_eq!(code(b.core.cursor_body(&GROUP)), "E_CORE_STATE");
     assert_eq!(code(b.core.commit_build(&GROUP, &[0x80])), "E_CORE_STATE");
     assert_eq!(

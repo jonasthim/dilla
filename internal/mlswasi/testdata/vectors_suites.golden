@@ -1,6 +1,23 @@
+attachment	a 1000-byte file with a thumbnail	blob_id
+attachment	a 1000-byte file with a thumbnail	open
+attachment	a 1000-byte file with a thumbnail	stored
+attachment	a 1000-byte file with a thumbnail	thumb
+attachment	a 1000-byte file with a thumbnail	thumb_open
+attachment	a 300-byte file	blob_id
+attachment	a 300-byte file	open
+attachment	a 300-byte file	stored
+attachment	empty file	blob_id
+attachment	empty file	open
+attachment	empty file	stored
+attachment	one byte	blob_id
+attachment	one byte	open
+attachment	one byte	stored
 envelope	delete tombstone	cbor
 envelope	delete tombstone	commitment
 envelope	delete tombstone	length
+envelope	image message with a thumbnail and a name	cbor
+envelope	image message with a thumbnail and a name	commitment
+envelope	image message with a thumbnail and a name	length
 envelope	message with a sender-generated link preview	cbor
 envelope	message with a sender-generated link preview	commitment
 envelope	message with a sender-generated link preview	length
@@ -47,8 +64,18 @@ identity	recovery_key	k_backup
 identity	recovery_key	k_header
 identity	safety_number	digits
 identity	sas	digits
+rejects	attachment reject: blob_id does not match	open
+rejects	attachment reject: sealed under the thumbnail AAD	open
+rejects	attachment reject: size disagrees	open
+rejects	attachment reject: tag bit flipped	open
+rejects	attachment reject: thumbnail sealed under the file's own nonce	open
+rejects	attachment reject: truncated below the tag	open
 rejects	authenticated_data not 32 bytes	verify_commitment
 rejects	envelope body over 4000 bytes	validate
+rejects	envelope reject: a reaction carrying an attachment	decode
+rejects	envelope reject: an attachment name one byte over 255	decode
+rejects	envelope reject: an attachment of eight elements	decode
+rejects	envelope reject: an edit with no reply_to	decode
 rejects	envelope reject: delete tombstone with a non-empty body	decode
 rejects	envelope reject: five attachments	decode
 rejects	envelope reject: mime one byte over 255	decode

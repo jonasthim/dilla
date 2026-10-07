@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { arr, bin, decode, encode, type CborInput } from '../../cbor';
-import type { ExpectedGroup, Id } from '../../core-port';
-import { CHANNEL, CHANNEL_2, COMMUNITY, ME, ModelCore, ModelDs, PEER, THIRD, at, idOf, wire } from './model';
+import type { AttachmentDescriptor, ExpectedGroup, Id, SendRequest, TimelineRow } from '../../core-port';
+import { CHANNEL, CHANNEL_2, COMMUNITY, FOLD_TARGET, FOLD_UNHELD, ME, ModelCore, ModelDs, PEER, THIRD, at, idOf, wire, textRequest, type Peer } from './model';
 
 import { toHex } from '../../hex';
 import type { Frame } from '../../gateway/frames';
@@ -76,9 +76,9 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('sendPrepare counts the body limit in UTF-8 bytes, as the core does', () => {
     const core = new ModelCore(ME);
     registered(core);
-    expect(thrown(() => core.sendPrepare(G, '€'.repeat(1334), 1n))).toMatchObject({ code: 'E_ENVELOPE_LIMIT' }); // 4002 bytes
+    expect(thrown(() => core.sendPrepare(G, textRequest('€'.repeat(1334)), 1n))).toMatchObject({ code: 'E_ENVELOPE_LIMIT' }); // 4002 bytes
     expect(core.outbox(G)).toEqual([]);
-    const id = core.sendPrepare(G, '€'.repeat(1333), 1n); // 3999 bytes
+    const id = core.sendPrepare(G, textRequest('€'.repeat(1333)), 1n); // 3999 bytes
     expect(core.outbox(G).map((r) => r.msgId)).toEqual([id]);
   });
 
@@ -87,7 +87,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
     registered(core);
     core.groupApply(G, encode([[1n, 0n, 0n, null, wire.prop(idOf(0x5e, 1), 'add', THIRD.device)]]), encode([]), 1n);
     expect(core.group(G)?.proposalsPending).toBe(1);
-    const id = core.sendPrepare(G, 'held', 1n);
+    const id = core.sendPrepare(G, textRequest('held'), 1n);
     expect(thrown(() => core.sendEncrypt(id))).toMatchObject({ code: 'E_CORE_STATE', detail: 'proposals are pending' });
     expect(core.outbox(G).map((r) => r.state)).toEqual([0]);
   });
@@ -97,7 +97,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
     registered(core);
     core.commitBuild(G, encode([]));
     expect(core.group(G)).toMatchObject({ pendingCommit: true, proposalsPending: 0 });
-    const id = core.sendPrepare(G, 'held', 1n);
+    const id = core.sendPrepare(G, textRequest('held'), 1n);
     expect(thrown(() => core.sendEncrypt(id))).toMatchObject({ code: 'E_CORE_STATE', detail: 'a commit is pending' });
     expect(core.outbox(G).map((r) => r.state)).toEqual([0]);
   });
@@ -164,7 +164,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('groupApply skips a live row served at a stored seq: not listed, not processed, nextSeq moves past it', () => {
     const core = new ModelCore(ME);
     registered(core);
-    const m = core.sendPrepare(G, 'mine', 1n);
+    const m = core.sendPrepare(G, textRequest('mine'), 1n);
     core.sendEncrypt(m);
     expect(core.sendConfirm(m, encode([3n, new Uint8Array(32), 1_700_000_003n]))).toEqual({ groupId: G, seq: 3n }); // ahead of nextSeq
     const r = core.groupApply(G, encode([]), encode([peerMsg(2n, 'two'), peerMsg(3n, 'served twice')]), 3n);
@@ -175,10 +175,10 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('adopts a failed row and a queued row whose commitment the echo carries', () => {
     const core = new ModelCore(ME);
     registered(core);
-    const failed = core.sendPrepare(G, 'failed', 1n);
+    const failed = core.sendPrepare(G, textRequest('failed'), 1n);
     const failedBlob = blobOf(core.sendEncrypt(failed)); // stored by the server; its answer was lost
     core.sendFail(failed, 'E_NETWORK');
-    const queued = core.sendPrepare(G, 'queued', 2n);
+    const queued = core.sendPrepare(G, textRequest('queued'), 2n);
     const queuedBlob = blobOf(core.sendEncrypt(queued)); // stored too; requeued after the echo wait
     core.sendRequeue(queued);
     const r = core.groupApply(G, encode([]), encode([ModelDs.row.ownEcho(1n, 0n, failedBlob), ModelDs.row.ownEcho(2n, 0n, queuedBlob)]), 2n);
@@ -190,7 +190,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('adopts nothing on a commitment mismatch (E_OWN_UNKNOWN, the row in flight stays), then adopts by the blob alone', () => {
     const core = new ModelCore(ME);
     registered(core);
-    const m = core.sendPrepare(G, 'in flight', 1n);
+    const m = core.sendPrepare(G, textRequest('in flight'), 1n);
     const blob = blobOf(core.sendEncrypt(m));
     const unplaced = wire.app(ME, idOf(0x6d, 99), 'an upload this device cannot place');
     const r = core.groupApply(G, encode([]), encode([
@@ -209,14 +209,14 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('a deleted upload of an outbox row is stored as its own deleted marker and adopts it; without a commitment the outbox stays', () => {
     const core = new ModelCore(ME);
     registered(core);
-    const m = core.sendPrepare(G, 'gone soon', 1n);
+    const m = core.sendPrepare(G, textRequest('gone soon'), 1n);
     core.sendEncrypt(m);
     const r = core.groupApply(G, encode([]), encode([[1n, 0n, ME.device, null, wire.commitment(m), new Uint8Array(32), 1_700_000_001n, 1]]), 1n);
     expect(r).toMatchObject({ newSeqs: [1n], ownAdopted: true });
     expect(core.timeline(G, 0n, 200)).toMatchObject([{ seq: 1n, status: 2, body: '', senderUser: ME.user, senderDevice: ME.device, msgId: m }]);
     expect(core.outbox(G)).toEqual([]);
     expect(core.sendConfirm(m, encode([1n, new Uint8Array(32), 1_700_000_001n]))).toEqual({ groupId: G, seq: 1n }); // read back
-    const m2 = core.sendPrepare(G, 'unplaced', 2n);
+    const m2 = core.sendPrepare(G, textRequest('unplaced'), 2n);
     core.sendEncrypt(m2);
     core.groupApply(G, encode([]), encode([[2n, 0n, ME.device, null, null, new Uint8Array(32), 1_700_000_002n, 1]]), 2n);
     expect(at(core.timeline(G, 0n, 200), 1)).toMatchObject({ seq: 2n, status: 2, senderUser: null, msgId: null });
@@ -231,7 +231,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
     const core = new ModelCore(ME);
     registered(core);
     core.groupApply(G, encode([]), peerRow(1n, 'theirs'), 1n);
-    const m = core.sendPrepare(G, 'mine', 1n);
+    const m = core.sendPrepare(G, textRequest('mine'), 1n);
     core.sendEncrypt(m);
     expect(thrown(() => core.sendConfirm(m, encode([1n, new Uint8Array(32), 1_700_000_001n])))).toMatchObject({
       code: 'E_CORE_STATE', detail: 'message seq exists',
@@ -239,7 +239,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
     expect(core.outbox(G)).toMatchObject([{ msgId: m, state: 2, error: 'E_CORE_STATE', body: 'mine' }]);
     expect(core.bodies(G)).toEqual(['theirs']);
     expect(thrown(() => core.sendFail(m, 'E_NETWORK'))).toMatchObject({ code: 'E_CORE_STATE' });
-    expect(core.sendEncrypt(core.sendPrepare(G, 'next', 2n)).groupId).toEqual(G);
+    expect(core.sendEncrypt(core.sendPrepare(G, textRequest('next'), 2n)).groupId).toEqual(G);
   });
 
   it('groupJoined and welcomesApply never lower nextSeq', () => {
@@ -361,7 +361,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
   it('sendConfirm keeps the epoch framed by sendEncrypt after the group advances', () => {
     const core = new ModelCore(ME);
     registered(core);
-    const msg = core.sendPrepare(G, 'framed first', 1n);
+    const msg = core.sendPrepare(G, textRequest('framed first'), 1n);
     core.sendEncrypt(msg);
     core.groupApply(G, encode([commitRow(1n, 0n)]), encode([]), 1n);
     expect(core.group(G)?.epoch).toBe(1n);
@@ -455,7 +455,7 @@ describe('ModelCore web-2a: rows, DMs, read markers, activity, settings', () => 
     registered(core, G2, CHANNEL_2);
     core.groupCreate(G3, COMMUNITY, CHANNEL_3);
     const me = toHex(ME.user);
-    const own = core.sendPrepare(G, 'mine <@everyone>', 1n);
+    const own = core.sendPrepare(G, textRequest('mine <@everyone>'), 1n);
     core.sendEncrypt(own);
     core.sendConfirm(own, encode([1n, new Uint8Array(32), 1_700_000_001n]));
     core.groupApply(G, encode([]), encode([
@@ -613,5 +613,385 @@ describe('ModelDs web-2a: DMs, leafless reads and the device-list gate', () => {
     const p = arr(decode(bin(at(arr(at(props, 0), 5), 3))), 4);
     expect([at(p, 2), bin(at(p, 3), 16)]).toEqual(['remove', NEW]);
     await expect(ds.routesFor(NEW).getMessages(g, 1n, 10)).rejects.toMatchObject({ status: 401, code: 'E_UNAUTHENTICATED' });
+  });
+  it('answers the web-2b timeline row: fold fields at their defaults and the mention flag (L-CORE-34)', () => {
+    const core = new ModelCore(ME);
+    registered(core);
+    core.groupApply(G, encode([]), encode([peerMsg(1n, 'plain'), peerMsg(2n, `hi <@${toHex(ME.user)}>`)]), 2n);
+    expect(core.timeline(G, 0n, 200).map((x) => [x.seq, x.editedSeq, x.reply, x.reactions, x.pinned, x.attachments, x.mention])).toEqual([
+      [1n, 0n, null, [], false, [], false],
+      [2n, 0n, null, [], false, [], true],
+    ]);
+  });
+
+});
+
+describe('ModelCore sends a plain message as web-2a did', () => {
+  it('lists it with the eight-field outbox row', () => {
+    const core = new ModelCore(ME);
+    registered(core);
+    const id = core.sendPrepare(G, textRequest('plain'), 5n);
+    expect(core.outbox(G)).toEqual([{ msgId: id, state: 0, error: '', created: 5n, body: 'plain', type: 0, replyTo: null, attachments: [] }]);
+  });
+});
+
+const MY_OTHER: Peer = { device: idOf(0xd0, 8), user: ME.user };
+const PEER_OTHER: Peer = { device: idOf(0xd0, 9), user: PEER.user };
+const THIRD_OTHER: Peer = { device: idOf(0xd0, 10), user: THIRD.user };
+const T = FOLD_TARGET;
+const T2 = new Uint8Array(16).fill(0x72);
+const ROLE = idOf(0x40, 1);
+const FILE: AttachmentDescriptor = {
+  blobId: new Uint8Array(32).fill(0x43), key: new Uint8Array(32).fill(0x44), nonce: new Uint8Array(12).fill(0x45), size: 1234,
+  mime: 'image/png', w: 640, h: 480, thumb: new Uint8Array(40).fill(0x46), name: 'map.png',
+};
+const fold = (seq: bigint): Id => idOf(0x7f, Number(seq));
+
+function app(seq: bigint, from: Peer, msgId: Id, body: string, opts: { type?: number; replyTo?: Id | null; attachments?: AttachmentDescriptor[] } = {}): CborInput[] {
+  return ModelDs.row.app(seq, 0n, from, msgId, body, opts);
+}
+function apply(core: ModelCore, ...rows: CborInput[][]): void {
+  const through = rows.reduce((m, r) => ((r[0] as bigint) > m ? (r[0] as bigint) : m), 0n);
+  core.groupApply(G, encode([]), encode(rows), through);
+}
+function request(type: SendRequest['type'], replyTo: Id | null, body = '', attachments: AttachmentDescriptor[] = []): SendRequest {
+  return { type, replyTo, body, attachments };
+}
+/** Prepares and frames an own row and applies its echo at `seq`, as the delivery service serves it. */
+function own(core: ModelCore, seq: bigint, r: SendRequest): Id {
+  const msgId = core.sendPrepare(G, r, seq);
+  apply(core, ModelDs.row.ownEcho(seq, 0n, blobOf(core.sendEncrypt(msgId))));
+  return msgId;
+}
+function shown(core: ModelCore, seq: bigint): TimelineRow {
+  const r = core.timeline(G, 0n, 200).find((x) => x.seq === seq);
+  if (r === undefined) throw new Error(`no displayable row at seq ${String(seq)}`);
+  return r;
+}
+function fresh(): ModelCore {
+  const core = new ModelCore(ME);
+  registered(core);
+  return core;
+}
+
+describe('ModelCore folds envelope types 1–6 as the core does (L-CORE-33, L-CORE-34)', () => {
+  it('stores and lists fold rows but shows only displayable rows', () => {
+    const core = fresh();
+    const r = core.groupApply(G, encode([]), encode([app(1n, PEER, T, 'the target'), app(2n, PEER, fold(2n), '👍', { type: 3, replyTo: T })]), 2n);
+    expect(r.newSeqs).toEqual([1n, 2n]);
+    expect(core.timeline(G, 0n, 200).map((x) => x.seq)).toEqual([1n]);
+    expect(shown(core, 1n).reactions).toEqual([{ emoji: '👍', count: 1, mine: false }]);
+  });
+
+  it('applies an edit from the author\'s other device', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 'v1'), app(2n, PEER_OTHER, fold(2n), 'v2', { type: 1, replyTo: T }));
+    expect(shown(core, 1n)).toMatchObject({ status: 0, body: 'v2', editedSeq: 2n });
+  });
+
+  it('applies the author\'s highest-seq edit, and no edit sequenced before its target (lead-fold-spoofing)', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, fold(1n), 'early', { type: 1, replyTo: T }), app(2n, PEER, fold(2n), 'later', { type: 1, replyTo: T }),
+      app(3n, THIRD, fold(3n), 'not the author', { type: 1, replyTo: T }));
+    expect(core.timeline(G, 0n, 200)).toEqual([]);
+    apply(core, app(4n, PEER, T, 'original'));
+    // The security ruling of 2026-10-07 binds over the plan's { body: 'later', editedSeq: 2n }: a fold counts only when
+    // its seq is above its target's, so the edits at seq 1 and 2 never apply to the target at seq 4.
+    expect(shown(core, 4n)).toMatchObject({ body: 'original', editedSeq: 0n });
+    apply(core, app(5n, PEER, T2, 'second'), app(6n, PEER, fold(6n), 'early', { type: 1, replyTo: T2 }),
+      app(7n, PEER, fold(7n), 'later', { type: 1, replyTo: T2 }), app(8n, THIRD, fold(8n), 'not the author', { type: 1, replyTo: T2 }));
+    expect(shown(core, 5n)).toMatchObject({ body: 'later', editedSeq: 7n });
+  });
+
+  it('ignores a delete by another user', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 'kept'), app(2n, THIRD, fold(2n), '', { type: 2, replyTo: T }));
+    expect(shown(core, 1n)).toMatchObject({ status: 0, body: 'kept' });
+  });
+
+  it('lets a delete by the author remove the target with its edits, reactions and pin, and records no purge for a peer', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 'gone soon'), app(2n, THIRD, fold(2n), '👍', { type: 3, replyTo: T }),
+      app(3n, THIRD, fold(3n), '', { type: 5, replyTo: T }), app(4n, PEER, fold(4n), 'edited', { type: 1, replyTo: T }),
+      app(5n, PEER_OTHER, fold(5n), '', { type: 2, replyTo: T }));
+    expect(shown(core, 1n)).toMatchObject({ status: 2, body: '', editedSeq: 0n, reactions: [], pinned: false, attachments: [], reply: null });
+    expect(core.pins(G)).toEqual([]);
+    expect(core.purges()).toEqual([]);
+  });
+
+  it('keeps reactions per user: two devices of one user make one chip', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 't'), app(2n, THIRD, fold(2n), '👍', { type: 3, replyTo: T }), app(3n, THIRD_OTHER, fold(3n), '👍', { type: 3, replyTo: T }));
+    expect(shown(core, 1n).reactions).toEqual([{ emoji: '👍', count: 1, mine: false }]);
+  });
+
+  it('lets only a reaction\'s own user remove it', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 't'), app(2n, THIRD, fold(2n), '👍', { type: 3, replyTo: T }), app(3n, PEER, fold(3n), '👍', { type: 4, replyTo: T }));
+    expect(shown(core, 1n).reactions).toEqual([{ emoji: '👍', count: 1, mine: false }]);
+    apply(core, app(4n, THIRD_OTHER, fold(4n), '👍', { type: 4, replyTo: T }));
+    expect(shown(core, 1n).reactions).toEqual([]);
+  });
+
+  it('orders chips by first appearance and marks the own reaction', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 't'), app(2n, PEER, fold(2n), '🔥', { type: 3, replyTo: T }),
+      app(3n, THIRD, fold(3n), '👍', { type: 3, replyTo: T }), app(4n, THIRD, fold(4n), '🔥', { type: 3, replyTo: T }));
+    own(core, 5n, request(3, T, '👍'));
+    expect(shown(core, 1n).reactions).toEqual([{ emoji: '🔥', count: 2, mine: false }, { emoji: '👍', count: 2, mine: true }]);
+  });
+
+  it('answers a reply held, not held and deleted', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 'line one\nline two'), app(2n, THIRD, fold(2n), 'a reply', { replyTo: T }),
+      app(3n, THIRD, fold(3n), 'to nothing here', { replyTo: FOLD_UNHELD }), app(4n, PEER, T2, 'second'),
+      app(5n, THIRD, fold(5n), 'to the second', { replyTo: T2 }), app(6n, PEER, fold(6n), '', { type: 2, replyTo: T2 }));
+    expect(shown(core, 2n).reply).toEqual({ replyTo: T, targetSeq: 1n, targetUser: PEER.user, excerpt: 'line one line two', state: 0 });
+    expect(shown(core, 3n).reply).toEqual({ replyTo: FOLD_UNHELD, targetSeq: null, targetUser: null, excerpt: '', state: 1 });
+    expect(shown(core, 5n).reply).toEqual({ replyTo: T2, targetSeq: 4n, targetUser: PEER.user, excerpt: '', state: 2 });
+    expect(shown(core, 1n).reply).toBeNull();
+  });
+
+  it('cuts the excerpt at 120 scalar values of the shown body, with line breaks as spaces', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, '😀'.repeat(130)), app(2n, THIRD, fold(2n), 'r', { replyTo: T }), app(3n, PEER, T2, 'old'),
+      app(4n, PEER, fold(4n), 'new\r\nbody', { type: 1, replyTo: T2 }), app(5n, THIRD, fold(5n), 'r2', { replyTo: T2 }));
+    expect(shown(core, 2n).reply?.excerpt).toBe('😀'.repeat(120));
+    expect(shown(core, 5n).reply?.excerpt).toBe('new  body');
+  });
+
+  it('accepts a pin from any member; the latest pin or unpin decides; pins list newest first', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 'first'), app(2n, THIRD, T2, 'second'), app(3n, THIRD, fold(3n), '', { type: 5, replyTo: T }),
+      app(4n, PEER, fold(4n), '', { type: 5, replyTo: T2 }));
+    expect(core.pins(G)).toEqual([
+      { targetSeq: 2n, msgId: T2, pinnedSeq: 4n, byUser: PEER.user, author: THIRD.user, excerpt: 'second', targetTs: shown(core, 2n).recvTs },
+      { targetSeq: 1n, msgId: T, pinnedSeq: 3n, byUser: THIRD.user, author: PEER.user, excerpt: 'first', targetTs: shown(core, 1n).recvTs },
+    ]);
+    expect([shown(core, 1n).pinned, shown(core, 2n).pinned]).toEqual([true, true]);
+    apply(core, app(5n, PEER, fold(5n), '', { type: 6, replyTo: T }));
+    expect(core.pins(G).map((p) => p.targetSeq)).toEqual([2n]);
+    expect(shown(core, 1n).pinned).toBe(false);
+    expect(thrown(() => core.pins(idOf(0x9b, 99)))).toMatchObject({ code: 'E_CORE_NOT_FOUND' });
+  });
+
+  it('shows a row that repeats a msg id but never makes it a target, nor gives it the target\'s folds', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 'original'), app(2n, THIRD, T, 'a replay of the id'), app(3n, PEER, fold(3n), 'edited', { type: 1, replyTo: T }),
+      app(4n, THIRD, fold(4n), '👍', { type: 3, replyTo: T }), app(5n, THIRD, fold(5n), '', { type: 5, replyTo: T }));
+    expect(shown(core, 1n)).toMatchObject({ body: 'edited', editedSeq: 3n, reactions: [{ emoji: '👍', count: 1, mine: false }], pinned: true });
+    expect(shown(core, 2n)).toMatchObject({ body: 'a replay of the id', editedSeq: 0n, reactions: [], pinned: false });
+  });
+
+  it('shows at most twenty reactions, the most counted first (FACTS-SECURITY-02)', () => {
+    const core = fresh();
+    const rows: CborInput[][] = [app(1n, PEER, T, 't')];
+    for (let i = 0; i < 25; i++) rows.push(app(BigInt(2 + i), PEER, fold(BigInt(2 + i)), `r${String(i).padStart(2, '0')}`, { type: 3, replyTo: T }));
+    rows.push(app(27n, THIRD, fold(27n), 'r24', { type: 3, replyTo: T }));
+    apply(core, ...rows);
+    const want = Array.from({ length: 19 }, (_, i) => ({ emoji: `r${String(i).padStart(2, '0')}`, count: 1, mine: false }));
+    want.push({ emoji: 'r24', count: 2, mine: false });
+    expect(shown(core, 1n).reactions).toEqual(want);
+  });
+
+  it('drops the author\'s edits when the author deletes a target this device never held (FACTS-SECURITY-03)', () => {
+    const core = fresh();
+    apply(core, ModelDs.row.deleted(1n, 0n), app(2n, PEER, fold(2n), 'secret words', { type: 1, replyTo: T }),
+      app(3n, THIRD, fold(3n), 'third words', { type: 1, replyTo: T }), app(4n, PEER, fold(4n), '', { type: 2, replyTo: T }));
+    expect(core.storedRow(G, 2n)).toEqual({ type: 1, status: 0, body: '', hasEnvelope: false });
+    expect(core.storedRow(G, 3n)).toEqual({ type: 1, status: 0, body: 'third words', hasEnvelope: true });
+  });
+
+  it('drops a reaction whose row the delivery service deleted by seq', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 't'), app(2n, THIRD, fold(2n), '👍', { type: 3, replyTo: T }));
+    core.messageDeleted(G, 2n);
+    expect(shown(core, 1n).reactions).toEqual([]);
+  });
+
+  it('blanks a target the delivery service deleted by seq and drops what folded onto it', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 't'), app(2n, THIRD, fold(2n), '👍', { type: 3, replyTo: T }), app(3n, THIRD, fold(3n), '', { type: 5, replyTo: T }));
+    core.messageDeleted(G, 1n);
+    expect(shown(core, 1n)).toMatchObject({ status: 2, body: '', reactions: [], pinned: false });
+    expect(core.pins(G)).toEqual([]);
+  });
+
+  it('flags role mentions for roles known when the row arrives, never backfilled, and refuses a bad role list', () => {
+    const core = fresh();
+    const role = toHex(ROLE);
+    core.ownRolesSet(COMMUNITY, [ROLE]);
+    apply(core, app(1n, PEER, idOf(0x7e, 1), `<@${role}> look`));
+    core.ownRolesSet(COMMUNITY, []);
+    apply(core, app(2n, PEER, idOf(0x7e, 2), `<@${role}> again`));
+    expect([shown(core, 1n).mention, shown(core, 2n).mention]).toEqual([true, false]);
+    expect(at(core.activity(), 0).mentions).toBe(1);
+    const tooMany = Array.from({ length: 65 }, (_, i) => idOf(0x40, i));
+    expect(thrown(() => core.ownRolesSet(COMMUNITY, tooMany))).toMatchObject({ code: 'E_CORE_INPUT', detail: 'role_ids must be 0..=64 ids of 16 bytes' });
+    expect(thrown(() => core.ownRolesSet(COMMUNITY, [new Uint8Array(15)]))).toMatchObject({ code: 'E_CORE_INPUT', detail: 'role_ids must be 0..=64 ids of 16 bytes' });
+  });
+
+  it('never raises a mention through an edit', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 'hello'), app(2n, PEER, fold(2n), `<@${toHex(ME.user)}> hello`, { type: 1, replyTo: T }));
+    expect(shown(core, 1n)).toMatchObject({ body: `<@${toHex(ME.user)}> hello`, mention: false });
+    expect(at(core.activity(), 0).mentions).toBe(0);
+  });
+
+  it('reads a fold row without a target or with files as a row it cannot read (E_ENVELOPE_SHAPE)', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 't'), app(2n, PEER, fold(2n), 'x', { type: 1 }), app(3n, PEER, fold(3n), '👍', { type: 3, replyTo: T, attachments: [FILE] }));
+    expect(core.unreadable(G)).toEqual([{ seq: 2n, reason: 'E_ENVELOPE_SHAPE' }, { seq: 3n, reason: 'E_ENVELOPE_SHAPE' }]);
+    expect(shown(core, 1n)).toMatchObject({ body: 't', reactions: [] });
+  });
+});
+
+describe('ModelCore sends every type as the core does (L-CORE-36…38)', () => {
+  it('refuses every send_prepare rule with its code and detail and writes nothing', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 'theirs'), app(2n, PEER, T2, 'deleted'), app(3n, PEER, fold(3n), '', { type: 2, replyTo: T2 }));
+    const mine = own(core, 4n, request(0, null, 'mine'));
+    const cases: [SendRequest, string, string][] = [
+      [request(0, null, 'x', [{ ...FILE, key: new Uint8Array(31) }]), 'E_CORE_INPUT', 'request is malformed'],
+      [request(7 as unknown as SendRequest['type'], null, 'x'), 'E_CORE_INPUT', 'type is out of range'],
+      [request(1, mine, 'x', [FILE]), 'E_CORE_INPUT', 'only a message carries attachments'],
+      [request(0, null, '  \n'), 'E_CORE_INPUT', 'body is empty'],
+      [request(0, FOLD_UNHELD, 'x'), 'E_CORE_NOT_FOUND', 'target is not held'],
+      [request(3, null, '👍'), 'E_CORE_INPUT', 'reply_to is required'],
+      [request(3, FOLD_UNHELD, '👍'), 'E_CORE_NOT_FOUND', 'target is not held'],
+      [request(3, T2, '👍'), 'E_CORE_STATE', 'the target is deleted'],
+      [request(1, T, 'mine now'), 'E_CORE_INPUT', 'only the author may edit or delete'],
+      [request(2, T), 'E_CORE_INPUT', 'only the author may edit or delete'],
+      [request(1, mine, ' '), 'E_CORE_INPUT', 'body is empty'],
+      [request(3, T, ''), 'E_CORE_INPUT', 'emoji must be 1..=32 bytes'],
+      [request(4, T, 'x'.repeat(33)), 'E_CORE_INPUT', 'emoji must be 1..=32 bytes'],
+      [request(5, T, 'x'), 'E_CORE_INPUT', 'body must be empty'],
+      [request(6, T, 'x'), 'E_CORE_INPUT', 'body must be empty'],
+      [request(2, mine, 'x'), 'E_CORE_INPUT', 'body must be empty'],
+      [request(0, null, 'x', [FILE, FILE, FILE, FILE, FILE]), 'E_ENVELOPE_LIMIT', ''],
+      [request(0, null, 'x', [{ ...FILE, name: 'n'.repeat(256) }]), 'E_ENVELOPE_LIMIT', ''],
+      [request(0, null, 'x', [{ ...FILE, mime: 'm'.repeat(256) }]), 'E_ENVELOPE_LIMIT', ''],
+      [request(0, null, '€'.repeat(1334)), 'E_ENVELOPE_LIMIT', ''],
+    ];
+    for (const [r, code, detail] of cases) {
+      expect(thrown(() => core.sendPrepare(G, r, 9n)), `${String(r.type)} ${code} ${detail}`).toMatchObject({ code, detail });
+      expect(core.outbox(G)).toEqual([]);
+    }
+    for (const r of [request(0, null, '', [FILE]), request(3, T, '👍'), request(5, T), request(1, mine, 'better'), request(2, mine), request(0, T, 'a reply')]) {
+      core.sendPrepare(G, r, 9n);
+    }
+    expect(core.outbox(G).map((o) => o.type)).toEqual([0, 3, 5, 1, 2, 0]);
+    // ADJ-01 (lesson f): the type check precedes the group check, as in the core (L-CORE-36 as amended, A8).
+    const unknownGroup = new ModelCore(ME);
+    expect(thrown(() => unknownGroup.sendPrepare(G, request(9 as unknown as SendRequest['type'], null, 'x'), 9n)))
+      .toMatchObject({ code: 'E_CORE_INPUT', detail: 'type is out of range' });
+    const notJoined = new ModelCore(ME);
+    notJoined.groupCreate(G, COMMUNITY, CHANNEL);
+    expect(thrown(() => notJoined.sendPrepare(G, request(9 as unknown as SendRequest['type'], null, 'x'), 9n)))
+      .toMatchObject({ code: 'E_CORE_INPUT', detail: 'type is out of range' });
+    expect(notJoined.outbox(G)).toEqual([]);
+    expect(thrown(() => notJoined.sendPrepare(G, request(0, null, 'x'), 9n))).toMatchObject({ code: 'E_CORE_STATE' });
+  });
+
+  it('keeps type, reply and attachment summaries in the outbox, never a key', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 'theirs'));
+    const id = core.sendPrepare(G, request(0, T, 'with a file', [FILE]), 5n);
+    expect(core.outbox(G)).toEqual([{ msgId: id, state: 0, error: '', created: 5n, body: 'with a file', type: 0, replyTo: T,
+      attachments: [{ blobId: FILE.blobId, size: 1234, mime: 'image/png', name: 'map.png' }] }]);
+    expect(Object.keys(at(at(core.outbox(G), 0).attachments, 0))).toEqual(['blobId', 'size', 'mime', 'name']);
+  });
+
+  it('answers the full descriptor of a held message and refuses anything else', () => {
+    const core = fresh();
+    apply(core, app(1n, PEER, T, 't'), app(2n, PEER, fold(2n), '👍', { type: 3, replyTo: T }));
+    own(core, 3n, request(0, null, '', [FILE]));
+    expect(core.attachmentGet(G, 3n, 0)).toEqual(FILE);
+    expect(shown(core, 3n).attachments).toEqual([{ index: 0, size: 1234, mime: 'image/png', w: 640, h: 480, hasThumb: true, name: 'map.png' }]);
+    for (const [seq, index] of [[3n, 1], [2n, 0], [1n, 0], [99n, 0]] as const) {
+      expect(thrown(() => core.attachmentGet(G, seq, index))).toMatchObject({ code: 'E_CORE_NOT_FOUND', detail: 'no such attachment' });
+    }
+  });
+
+  it('records one purge for the sending device\'s own delete, adopted from its echo, and purgeDone clears it', () => {
+    const core = fresh();
+    const target = own(core, 1n, request(0, null, 'with a file', [FILE]));
+    expect(core.purges()).toEqual([]);
+    own(core, 2n, request(2, target));
+    expect(shown(core, 1n)).toMatchObject({ status: 2, body: '', attachments: [] });
+    expect(core.purges()).toEqual([{ groupId: G, seq: 1n, channelId: CHANNEL, blobIds: [FILE.blobId] }]);
+    core.messageDeleted(G, 1n);
+    expect(core.purges()).toHaveLength(1);
+    core.purgeDone(G, 1n);
+    expect(core.purges()).toEqual([]);
+    core.purgeDone(G, 1n);
+    expect(core.purges()).toEqual([]);
+  });
+
+  it('records the purge when the delete is confirmed by the upload answer', () => {
+    const core = fresh();
+    const target = own(core, 1n, request(0, null, 'x', [FILE]));
+    const del = core.sendPrepare(G, request(2, target), 2n);
+    core.sendEncrypt(del);
+    core.sendConfirm(del, encode([2n, new Uint8Array(32), 1_700_000_002n]));
+    expect(core.purges()).toEqual([{ groupId: G, seq: 1n, channelId: CHANNEL, blobIds: [FILE.blobId] }]);
+  });
+
+  it('records no purge for a delete from the own user\'s other device', () => {
+    const core = fresh();
+    const target = own(core, 1n, request(0, null, 'mine', [FILE]));
+    apply(core, app(2n, MY_OTHER, fold(2n), '', { type: 2, replyTo: target }));
+    expect(shown(core, 1n).status).toBe(2);
+    expect(core.purges()).toEqual([]);
+  });
+});
+
+describe('ModelDs answers the message delete as the delivery service does (L-HTTP-80)', () => {
+  function world() {
+    const ds = new ModelDs();
+    for (const p of [ME, MY_OTHER, PEER, THIRD]) ds.own(p.user, p.device);
+    ds.addChannel(COMMUNITY, CHANNEL);
+    const g = ds.peerCreate(PEER, CHANNEL);
+    ds.join(g, ME.device);
+    ds.join(g, MY_OTHER.device);
+    const frames: Frame[] = [];
+    ds.attach(PEER.device, (f) => { frames.push(f); });
+    const mine = ds.peerSend(g, ME, 'mine');
+    const theirs = ds.peerSend(g, PEER, 'theirs');
+    return { ds, g, frames, mine, theirs };
+  }
+
+  it('deletes for any member device of the uploading user, tombstones the row and fans out op 21', async () => {
+    const { ds, g, frames, mine, theirs } = world();
+    expect(await ds.routesFor(MY_OTHER.device).deleteGroupMessage(g, mine)).toBe('deleted');
+    expect(ds.view(g).messages.map((m) => m.seq)).toEqual([theirs]);
+    const op21 = frames.filter((f) => f.op === 21);
+    expect(op21).toHaveLength(1);
+    expect(at(at(op21, 0).payload, 0)).toBe(mine);
+    const page = arr(decode((await ds.routesFor(PEER.device).getMessages(g, mine, 10)).raw));
+    expect(at(arr(at(page, 0), 8), 7)).toBe(1n);
+    // A second delete of the tombstoned row is 204 and fans out again, as dillad's no-op tombstone update does.
+    expect(await ds.routesFor(ME.device).deleteGroupMessage(g, mine)).toBe('deleted');
+    expect(frames.filter((f) => f.op === 21)).toHaveLength(2);
+  });
+
+  it('refuses another user\'s upload 403 E_NOT_UPLOADER and answers an unknown seq as gone', async () => {
+    const { ds, g, theirs } = world();
+    await expect(ds.routesFor(ME.device).deleteGroupMessage(g, theirs)).rejects.toMatchObject({ status: 403, code: 'E_NOT_UPLOADER' });
+    expect(ds.view(g).messages.map((m) => m.seq)).toContain(theirs);
+    expect(await ds.routesFor(ME.device).deleteGroupMessage(g, 99n)).toBe('gone');
+  });
+
+  // Attacker statement (L-HTTP-80): this 404 hits only a device that is no longer in the group; the uploader's other
+  // member devices can still delete, and no honest delete comes from a removed device.
+  it('answers a device that is not a member 404 (gone), even when its own user uploaded the message', async () => {
+    const { ds, g, frames, mine } = world();
+    ds.evict(g, MY_OTHER.device);
+    expect(await ds.routesFor(MY_OTHER.device).deleteGroupMessage(g, mine)).toBe('gone');
+    expect(await ds.routesFor(THIRD.device).deleteGroupMessage(g, mine)).toBe('gone');
+    expect(ds.view(g).messages.map((m) => m.seq)).toContain(mine);
+    expect(frames.filter((f) => f.op === 21)).toEqual([]);
+    expect(ds.deleteAs(g, MY_OTHER.device, mine)).toBe(404);
+    expect(ds.deleteAs(idOf(0x9a, 77), ME.device, mine)).toBe(404);
   });
 });

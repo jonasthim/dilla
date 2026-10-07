@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { ChannelGroupState, ChannelSummary, TimelineItem, TimelineItemState } from '@dilla/client-core';
+import type { ChannelGroupState, ChannelSummary } from '@dilla/client-core';
 import {
-  AppShell, Banner, Button, ChannelHeader, ChannelList, CommunityRail, Composer, Dialog, EmptyState, MessageLog, MessageRow, SidebarTabs,
+  AppShell, Banner, Button, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, SidebarTabs,
   StatusBar, StatusChunk,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
@@ -11,31 +11,13 @@ import { useDocumentVisible } from '../core/use-visible.ts';
 import { baseRoute, readJoinError, useRoute } from '../router.ts';
 import { t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
+import { Conversation, focusComposer, focusLog, useConversationUi } from './conversation/Conversation.tsx';
+import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
+import { PinsButton } from './conversation/Pins.tsx';
 import {
-  authorName, badgeLabel, composerBlock, defaultChannel, devicesChunk, dmCandidates, isUnsupported, messageTime, orderChannels, railLabel,
-  rowBadge, stepChannel, sumBadges, unsupportedBody,
+  badgeLabel, composerBlock, defaultChannel, devicesChunk, dmCandidates, isUnsupported, mentionCandidates, mentionMembers, mergeMembers,
+  nameBook, orderChannels, railLabel, rowBadge, stepChannel, sumBadges, unsupportedBody,
 } from './shell-model.ts';
-
-/** The core's body limit in UTF-8 bytes (L-CORE-09, ruling 39). */
-const MESSAGE_BYTES = 4000;
-
-const STATE_LABEL: Record<TimelineItemState, StringKey | null> = {
-  ok: null,
-  pending: 'shell.message.pending',
-  failed: 'shell.message.failed',
-  'cannot-read': 'shell.message.cannotRead',
-  deleted: 'shell.message.deleted',
-};
-
-/** The composer textarea, blocked or not: a blocked one stays focusable so its reason is heard (L-UI-13). */
-function focusComposer(): void {
-  document.querySelector<HTMLTextAreaElement>('.d-composer textarea')?.focus();
-}
-
-/** The message log, a keyboard-reachable region (tabIndex 0). */
-function focusLog(): void {
-  document.querySelector<HTMLElement>('[role="log"]')?.focus();
-}
 
 /**
  * Focuses the rail's settings button (task 17 names it by `aria-label`), where focus returns when Settings closes;
@@ -68,16 +50,6 @@ function focusEmptyAction(pane: 'content' | 'sidebar'): boolean {
  * action hands focus to the same action of the next failed row, else to the log (A11Y-DESIGN-05). Nothing moves
  * when focus is not in the row (a pointer that does not focus buttons).
  */
-function handOnFromRow(action: number): void {
-  const row = document.activeElement?.closest('.d-message-row') ?? null;
-  if (row === null) return;
-  const rows = Array.from(document.querySelectorAll('[role="log"] .d-message-row[data-state="failed"]'));
-  const next = rows.slice(rows.indexOf(row) + 1).find(r => r.querySelector('.d-message-row__actions') !== null);
-  const target = next?.querySelectorAll<HTMLElement>('.d-message-row__actions button')[action];
-  if (target !== undefined) target.focus();
-  else focusLog();
-}
-
 /** A channel row's or DM row's props: what ChannelList draws, with the badge of requirement 6. */
 type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm'; readable: boolean; unread: number; mentions: number; muted: boolean };
 
@@ -117,6 +89,8 @@ export function Shell(): React.JSX.Element {
   const channels = useSlice(`channels:${communityId ?? ''}`);
   const members = useSlice(`members:${communityId ?? ''}`);
   const railSlices = useSlices((communities ?? []).map(c => `channels:${c.id}` as const));
+  const memberLists = useSlices((communities ?? []).map(c => `members:${c.id}` as const));
+  const allMembers = useMemo(() => mergeMembers(memberLists), [memberLists]);
 
   const [joinOpen, setJoinOpen] = useState(false);
   const [joinInvite, setJoinInvite] = useState<string | null>(null);
@@ -144,6 +118,13 @@ export function Shell(): React.JSX.Element {
   // The channel or DM on screen, open or not: the composer, the draft and loadEarlier follow it.
   const targetId = channel?.id ?? dm?.id ?? null;
   const timeline = useSlice(`timeline:${openId ?? ''}`);
+  const self = account?.user ?? null;
+  const conversationMembers = channel !== null ? members ?? [] : dm !== null ? allMembers.filter(m => dm.members.includes(m.userId)) : [];
+  const book = useMemo(() => nameBook(self, channel !== null ? members ?? [] : allMembers), [self, channel, members, allMembers]);
+  const encodeWith = mentionMembers(conversationMembers);
+  const candidates = mentionCandidates(conversationMembers, self?.id ?? null);
+  const broadcast = channel !== null;
+  const [ui, dispatch] = useConversationUi(targetId);
   const group: ChannelGroupState = channel !== null
     ? unsupported ? 'unsupported' : timeline?.group ?? channel.group
     : dm !== null ? timeline?.group ?? dm.group : 'none';
@@ -197,10 +178,10 @@ export function Shell(): React.JSX.Element {
   }, [overlay, dmId, dms, dm, navigate]);
 
   // (3) Once per server change, the worker loads its channels and members.
-  const known = community !== null;
+  const listed = community !== null;
   useEffect(() => {
-    if (known && communityId !== null) selectCommunity(communityId);
-  }, [communityId, known, selectCommunity]);
+    if (listed && communityId !== null) selectCommunity(communityId);
+  }, [communityId, listed, selectCommunity]);
 
   // (4) With the channels loaded, a channel route names a listed channel.
   useEffect(() => {
@@ -261,15 +242,10 @@ export function Shell(): React.JSX.Element {
     if (startTab !== null) setTab(startTab);
   }
 
-  // Alt+ArrowUp/Down select the previous/next listed channel from anywhere on a channel route; Escape in the log
-  // returns to the composer. Neither acts under Settings, the join dialog or the DM picker (pre-flight row 1.21).
+  // Alt+ArrowUp/Down select the previous/next listed channel from anywhere on a channel route.
   const channelRoute = base.name === 'channel';
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (e.target instanceof Element && e.target.closest('[role="log"]') !== null) focusComposer();
-        return;
-      }
       if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
       if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) return;
       if (overlay || joinOpen || pickerOpen || !channelRoute || communityId === null) return;
@@ -286,9 +262,13 @@ export function Shell(): React.JSX.Element {
   // holds and a polite log announces only rows added later. A log that held focus hands it on to its successor.
   const logKey = targetId === null ? null : `${targetId}:${timeline === undefined ? 'loading' : 'ready'}`;
   const logFocused = useRef(false);
+  const conversationFocused = useRef(false);
+  const composerFocused = useRef(false);
   useEffect(() => {
     const onFocusIn = (e: FocusEvent) => {
-      logFocused.current = e.target instanceof Element && e.target.getAttribute('role') === 'log';
+      logFocused.current = e.target instanceof Element && e.target.closest('[role="log"]') !== null;
+      conversationFocused.current = e.target instanceof Element && e.target.closest('.dw-conversation') !== null;
+      composerFocused.current = e.target instanceof HTMLTextAreaElement && e.target.closest('.d-composer') !== null;
     };
     window.addEventListener('focusin', onFocusIn);
     return () => window.removeEventListener('focusin', onFocusIn);
@@ -296,6 +276,12 @@ export function Shell(): React.JSX.Element {
   useLayoutEffect(() => {
     if (logKey !== null && logFocused.current && focusLost()) focusLog();
   }, [logKey]);
+  useLayoutEffect(() => {
+    if (targetId !== null && conversationFocused.current && focusLost()) focusLog();
+  }, [targetId]);
+  useLayoutEffect(() => {
+    if (targetId !== null && composerFocused.current && focusLost()) focusComposer();
+  }, [targetId]);
 
   // A11Y-DESIGN-05: the two "try again" buttons are replaced in the render their click causes, so focus is placed
   // after it: the main pane's goes to the log, the sidebar's to the channel list's roving stop once its rows are
@@ -394,15 +380,18 @@ export function Shell(): React.JSX.Element {
   // The channels whose send is in flight: a second Enter or a click on send meanwhile posts nothing (WEB-APP-01).
   const sending = useRef(new Set<string>());
   // The text stays until the send resolves; a refused send keeps it (pre-flight ruling (d)).
-  const send = (text: string) => {
+  const send = (m: OutgoingMessage) => {
     if (targetId === null) return;
     const id = targetId;
     if (sending.current.has(id)) return;
     sending.current.add(id);
     const run = async () => {
       try {
-        await client.call({ m: 'send', channelId: id, text });
-        setDraft(d => (d.channelId === id && d.text === text ? { channelId: id, text: '' } : d));
+        await client.call({ m: 'send', channelId: id, text: m.text,
+          ...(m.replyTo !== null ? { replyTo: m.replyTo } : {}),
+          ...(m.attachments.length > 0 ? { attachments: [...m.attachments] } : {}) });
+        setDraft(d => (d.channelId === id && d.text === m.raw ? { channelId: id, text: '' } : d));
+        if (m.replyTo !== null) dispatch({ type: 'replySent', msgId: m.replyTo });
       } catch (e) {
         report(e);
       } finally {
@@ -412,32 +401,10 @@ export function Shell(): React.JSX.Element {
     void run();
   };
 
-  const self = account?.user ?? null;
-  const now = Date.now();
-  const row = (item: TimelineItem) => {
-    // Only a row that was read has a body to show; an unreadable or deleted row never shows one.
-    const shown = item.state === 'ok' || item.state === 'pending' || item.state === 'failed';
-    const label = STATE_LABEL[item.state];
-    const msgId = item.msgId;
-    return (
-      <MessageRow key={item.key} author={authorName(item, members, self)} time={messageTime(item.ts, now)}
-        body={shown ? item.body : ''} own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
-        stateLabel={label === null ? undefined : t(label)}
-        detail={item.state === 'failed' || item.state === 'cannot-read' ? item.reason : undefined}
-        actions={item.state === 'failed' && msgId !== null ? [
-          { label: t('shell.message.retry'), onAction: () => { handOnFromRow(0); client.call({ m: 'retrySend', msgId }).catch(report); } },
-          { label: t('shell.message.discard'), onAction: () => { handOnFromRow(1); client.call({ m: 'discardSend', msgId }).catch(report); } },
-        ] : undefined} />
-    );
-  };
-  const log = (label: string) => (
-    <MessageLog key={logKey} label={label}
-      emptyLabel={timeline === undefined ? t('shell.log.loading') : t('shell.log.empty')}
-      earlier={timeline?.hasEarlier ? { label: t('shell.log.earlier'), onLoad: loadEarlier } : undefined}
-      busy={timeline === undefined || loadingEarlier === targetId}>
-      {timeline?.items.map(row) ?? null}
-    </MessageLog>
-  );
+  const log = (label: string) => targetId === null || logKey === null ? null : <Conversation key={targetId} channelId={targetId}
+    logKey={logKey} label={label} timeline={timeline} book={book} encodeWith={encodeWith} broadcast={broadcast}
+    pinsTitle={channel !== null ? t('shell.pins.title', { channel: channel.name }) : t('shell.pins.titleDm', { name: dm?.name ?? '' })}
+    ui={ui} dispatch={dispatch} loadingEarlier={loadingEarlier === targetId} onLoadEarlier={loadEarlier} onError={report} />;
   const openFailed = (id: string, error: UiError) => (
     <EmptyState title={t('shell.openFailed.title')} body={t('shell.openFailed.body', { code: error.code })}
       action={{ label: t('shell.openFailed.action'), onAction: () => { refocus.current = 'log'; openChannel(id); } }} />
@@ -512,17 +479,18 @@ export function Shell(): React.JSX.Element {
   const composerPlaceholder = channel !== null ? t('shell.composer.placeholder', { channel: channel.name })
     : dm !== null ? t('shell.dm.composer', { name: dm.name }) : null;
   const composer = targetId === null || composerLabel === null || composerPlaceholder === null ? null : (
-    <Composer label={composerLabel} placeholder={composerPlaceholder}
-      maxLength={MESSAGE_BYTES} value={draft.channelId === targetId ? draft.text : ''}
-      onChange={text => setDraft({ channelId: targetId, text })}
-      disabled={reasonKey !== null} disabledReason={reasonKey === null ? undefined : t(reasonKey)}
-      onSend={send} sendLabel={t('shell.composer.send')} counterLabel={n => (n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n }))} />
+    <ComposerArea key={targetId} channelId={targetId} label={composerLabel} placeholder={composerPlaceholder}
+      blocked={reasonKey === null ? null : t(reasonKey)} broadcast={broadcast} encodeWith={encodeWith} candidates={candidates}
+      items={timeline?.items ?? []} book={book} draft={draft.channelId === targetId ? draft.text : ''}
+      onDraft={text => setDraft({ channelId: targetId, text })} ui={ui} dispatch={dispatch} onSend={send} onError={report} />
   );
 
   const header = channel !== null
     ? <ChannelHeader name={channel.name} topic={channel.topic === '' ? undefined : channel.topic}
-      readable={channel.mode === 1} readableLabel={t('shell.readable')} />
-    : dm !== null ? <ChannelHeader kind="dm" name={dm.name} /> : null;
+      readable={channel.mode === 1} readableLabel={t('shell.readable')}
+      actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} />
+    : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
+      actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} /> : null;
 
   const status = connection?.status ?? 'connecting';
   const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'warn' : 'danger';

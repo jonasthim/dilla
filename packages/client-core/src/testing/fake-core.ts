@@ -2,7 +2,7 @@
 import { arr, bin, decode, encode, u64 } from '../cbor';
 import { CoreError, type CorePort, type Id, type IdentityInfo, type SessionRecord, type GroupInfo, type ExpectedGroup,
   type WelcomeOutcome, type ApplyResult, type OutboxRow, type TimelineRow, type ActivityRow, type OwnDeviceList,
-  type SealedObjects, type SignedLists } from '../core-port';
+  type SealedObjects, type SignedLists, type AttachmentDescriptor, type PinRow, type PurgeRow, type SendRequest } from '../core-port';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from './fake-list';
 
 export const FAKE_RECOVERY_KEY = '0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJK';
@@ -376,7 +376,7 @@ export class FakeCore implements CorePort {
   cursorBody(groupId: Id): Uint8Array | null { return this.notModelled('cursorBody', groupId); }
   cursorAcked(groupId: Id, lastSeq: bigint, lastEpoch: bigint): void { return this.notModelled('cursorAcked', groupId, lastSeq, lastEpoch); }
   messageDeleted(groupId: Id, seq: bigint): ApplyResult { return this.notModelled('messageDeleted', groupId, seq); }
-  sendPrepare(groupId: Id, body: string, now: bigint): Id { return this.notModelled('sendPrepare', groupId, body, now); }
+  sendPrepare(groupId: Id, request: SendRequest, now: bigint): Id { return this.notModelled('sendPrepare', groupId, request, now); }
   sendEncrypt(msgId: Id): { groupId: Id; messageBody: Uint8Array } { return this.notModelled('sendEncrypt', msgId); }
   sendConfirm(msgId: Id, response: Uint8Array): { groupId: Id; seq: bigint } { return this.notModelled('sendConfirm', msgId, response); }
   sendRequeue(msgId: Id): void { return this.notModelled('sendRequeue', msgId); }
@@ -388,4 +388,9 @@ export class FakeCore implements CorePort {
   groupRow(groupId: Id): GroupInfo | null { return this.notModelled('groupRow', groupId); }
   markRead(groupId: Id, seq: bigint, now: bigint): void { return this.notModelled('markRead', groupId, seq, now); }
   activity(): ActivityRow[] { return this.notModelled('activity'); }
+  pins(groupId: Id): PinRow[] { return this.notModelled('pins', groupId); }
+  attachmentGet(groupId: Id, seq: bigint, index: number): AttachmentDescriptor { return this.notModelled('attachmentGet', groupId, seq, index); }
+  purges(): PurgeRow[] { return this.notModelled('purges'); }
+  purgeDone(groupId: Id, seq: bigint): void { return this.notModelled('purgeDone', groupId, seq); }
+  ownRolesSet(communityId: Id, roleIds: Id[]): void { return this.notModelled('ownRolesSet', communityId, roleIds); }
 }

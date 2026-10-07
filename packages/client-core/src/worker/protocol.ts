@@ -12,7 +12,7 @@ export type Command =
   | { m: 'openChannel'; channelId: string }
   | { m: 'closeChannel'; channelId: string }
   | { m: 'loadEarlier'; channelId: string }
-  | { m: 'send'; channelId: string; text: string }
+  | { m: 'send'; channelId: string; text: string; replyTo?: string | null; attachments?: readonly string[] }   // → { msgId }
   | { m: 'retrySend'; msgId: string }
   | { m: 'discardSend'; msgId: string }
   | { m: 'signInBegin' }                                         // needs-signup → signin-login
@@ -28,7 +28,16 @@ export type Command =
   | { m: 'forgetBrowser' }                                       // ready (and revoked, pre-flight ruling d): sessions deleted, store wiped → cleared
   | { m: 'markRead'; channelId: string }                         // ready
   | { m: 'setSetting'; key: string; value: string | null }       // ready; null deletes; key must match L-TS-25, value its allowed set
-  | { m: 'openDm'; userId: string };                             // ready → { channelId }
+  | { m: 'openDm'; userId: string }                              // ready → { channelId }
+  | { m: 'editMessage'; channelId: string; msgId: string; text: string }                  // ready → null (type 1)
+  | { m: 'deleteMessage'; channelId: string; msgId: string }                              // ready → null (type 2)
+  | { m: 'react'; channelId: string; msgId: string; emoji: string; on: boolean }          // ready → null (type 3, or 4 when off)
+  | { m: 'pin'; channelId: string; msgId: string; on: boolean }                           // ready → null (type 5, or 6 when off)
+  | { m: 'loadPins'; channelId: string }                                                  // ready → null; slice pins:<channel>
+  | { m: 'closePins'; channelId: string }                                                 // ready → null
+  | { m: 'attachFiles'; channelId: string; files: readonly File[] }                       // ready → { trayIds }; slice tray:<channel>
+  | { m: 'discardAttachment'; channelId: string; trayId: string }                         // ready → null
+  | { m: 'openAttachment'; channelId: string; seq: string; index: number; thumb: boolean }; // ready → { blob, name, mime }
 export type ToWorker = { t: 'call'; id: number; command: Command };
 export type FromWorker =
   | { t: 'ret'; id: number; ok: true; value: unknown }

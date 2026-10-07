@@ -41,6 +41,23 @@ func (q *Queries) ClearBlobUnreferenced(ctx context.Context, arg ClearBlobUnrefe
 	return err
 }
 
+const confirmBlobRef = `-- name: ConfirmBlobRef :execrows
+UPDATE blob_refs SET confirmed = 1 WHERE blob_id = ? AND channel_id = ?
+`
+
+type ConfirmBlobRefParams struct {
+	BlobID    []byte
+	ChannelID id.ID
+}
+
+func (q *Queries) ConfirmBlobRef(ctx context.Context, arg ConfirmBlobRefParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, confirmBlobRef, arg.BlobID, arg.ChannelID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const countBlobRefs = `-- name: CountBlobRefs :one
 SELECT COUNT(*) FROM blob_refs WHERE blob_id = ?
 `
@@ -158,7 +175,7 @@ func (q *Queries) GetBlob(ctx context.Context, arg GetBlobParams) (Blobs, error)
 }
 
 const getBlobRef = `-- name: GetBlobRef :one
-SELECT blob_id, channel_id, uploader_device, mime, created
+SELECT blob_id, channel_id, uploader_device, mime, created, confirmed
 FROM blob_refs WHERE blob_id = ? AND channel_id = ?
 `
 
@@ -176,6 +193,7 @@ func (q *Queries) GetBlobRef(ctx context.Context, arg GetBlobRefParams) (BlobRef
 		&i.UploaderDevice,
 		&i.Mime,
 		&i.Created,
+		&i.Confirmed,
 	)
 	return i, err
 }
@@ -284,7 +302,7 @@ func (q *Queries) ListBackups(ctx context.Context, arg ListBackupsParams) ([]Bac
 
 const listBlobRefsOfDeletedChannels = `-- name: ListBlobRefsOfDeletedChannels :many
 SELECT blob_refs.blob_id, blob_refs.channel_id, blob_refs.uploader_device, blob_refs.mime,
-       blob_refs.created
+       blob_refs.created, blob_refs.confirmed
 FROM blob_refs
 JOIN channels ON channels.id = blob_refs.channel_id
 WHERE channels.deleted_at IS NOT NULL
@@ -313,6 +331,7 @@ func (q *Queries) ListBlobRefsOfDeletedChannels(ctx context.Context, arg ListBlo
 			&i.UploaderDevice,
 			&i.Mime,
 			&i.Created,
+			&i.Confirmed,
 		); err != nil {
 			return nil, err
 		}
@@ -458,7 +477,7 @@ func (q *Queries) ListCollectableBlobs(ctx context.Context, arg ListCollectableB
 
 const listExpiredBlobRefs = `-- name: ListExpiredBlobRefs :many
 SELECT blob_refs.blob_id, blob_refs.channel_id, blob_refs.uploader_device, blob_refs.mime,
-       blob_refs.created
+       blob_refs.created, blob_refs.confirmed
 FROM blob_refs
 JOIN channels ON channels.id = blob_refs.channel_id
 JOIN communities ON communities.id = channels.community_id
@@ -490,6 +509,53 @@ func (q *Queries) ListExpiredBlobRefs(ctx context.Context, arg ListExpiredBlobRe
 			&i.UploaderDevice,
 			&i.Mime,
 			&i.Created,
+			&i.Confirmed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingBlobRefs = `-- name: ListPendingBlobRefs :many
+SELECT blob_refs.blob_id, blob_refs.channel_id, blob_refs.uploader_device, blob_refs.mime,
+       blob_refs.created, blob_refs.confirmed
+FROM blob_refs
+WHERE blob_refs.confirmed = 0 AND blob_refs.created < CAST(?1 AS INTEGER)
+ORDER BY blob_refs.created, blob_refs.channel_id, blob_refs.blob_id
+LIMIT ?2
+`
+
+type ListPendingBlobRefsParams struct {
+	Before  int64
+	MaxRows int64
+}
+
+// dilla-web-2b (L-SQL-31): references their uploader never confirmed, created strictly before the
+// cutoff, oldest first; the sweeper drops them after blobs.pending_ttl.
+func (q *Queries) ListPendingBlobRefs(ctx context.Context, arg ListPendingBlobRefsParams) ([]BlobRefs, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingBlobRefs, arg.Before, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BlobRefs{}
+	for rows.Next() {
+		var i BlobRefs
+		if err := rows.Scan(
+			&i.BlobID,
+			&i.ChannelID,
+			&i.UploaderDevice,
+			&i.Mime,
+			&i.Created,
+			&i.Confirmed,
 		); err != nil {
 			return nil, err
 		}
@@ -645,6 +711,33 @@ func (q *Queries) PutBlobTombstone(ctx context.Context, arg PutBlobTombstonePara
 		arg.BlobID,
 		arg.Reason,
 		arg.ByUser,
+		arg.Created,
+	)
+	return err
+}
+
+const putPendingBlobRef = `-- name: PutPendingBlobRef :exec
+INSERT INTO blob_refs (blob_id, channel_id, uploader_device, mime, created, confirmed)
+VALUES (?, ?, ?, ?, ?, 0)
+ON CONFLICT (blob_id, channel_id) DO NOTHING
+`
+
+type PutPendingBlobRefParams struct {
+	BlobID         []byte
+	ChannelID      id.ID
+	UploaderDevice id.ID
+	Mime           string
+	Created        int64
+}
+
+// dilla-web-2b (L-SQL-31): a PUT's reference, pending until its uploader confirms it. A repeat
+// keeps the first row, pending or confirmed.
+func (q *Queries) PutPendingBlobRef(ctx context.Context, arg PutPendingBlobRefParams) error {
+	_, err := q.db.ExecContext(ctx, putPendingBlobRef,
+		arg.BlobID,
+		arg.ChannelID,
+		arg.UploaderDevice,
+		arg.Mime,
 		arg.Created,
 	)
 	return err

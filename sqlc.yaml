@@ -136,6 +136,8 @@ sql:
           - { column: "channel_overwrites.target_kind",    go_type: { type: "int64" } }
           # 008_blobs.sql (Plan 2 task 10).
           - { column: "backups.kind",                      go_type: { type: "int64" } }
+          # 012_blob_refs_pending.sql (dilla-web-2b task 4).
+          - { column: "blob_refs.confirmed",               go_type: { type: "int64" } }
           - { column: "invites.community_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "invites.created_by",

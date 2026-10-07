@@ -2660,6 +2660,24 @@ func (r *Repo) PutBlobRef(ctx context.Context, blobID []byte, channelID, uploade
 	}))
 }
 
+func (r *Repo) PutPendingBlobRef(ctx context.Context, blobID []byte, channelID, uploaderDevice id.ID, mime string, created int64) error {
+	return wrap(r.w.PutPendingBlobRef(ctx, pgdb.PutPendingBlobRefParams{
+		BlobID: blobID, ChannelID: channelID, UploaderDevice: uploaderDevice,
+		Mime: mime, Created: created,
+	}))
+}
+
+func (r *Repo) ConfirmBlobRef(ctx context.Context, blobID []byte, channelID id.ID) error {
+	n, err := r.w.ConfirmBlobRef(ctx, pgdb.ConfirmBlobRefParams{BlobID: blobID, ChannelID: channelID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func (r *Repo) GetBlobRef(ctx context.Context, blobID []byte, channelID id.ID) (store.BlobRefRow, error) {
 	row, err := r.r.GetBlobRef(ctx, pgdb.GetBlobRefParams{BlobID: blobID, ChannelID: channelID})
 	if err != nil {
@@ -2671,6 +2689,7 @@ func (r *Repo) GetBlobRef(ctx context.Context, blobID []byte, channelID id.ID) (
 		UploaderDevice: row.UploaderDevice,
 		Mime:           row.Mime,
 		Created:        row.Created,
+		Confirmed:      row.Confirmed == 1,
 	}, nil
 }
 
@@ -2804,6 +2823,14 @@ func (r *Repo) ListBlobRefsOfDeletedChannels(ctx context.Context, limit int32) (
 	return blobRefRows(rows), nil
 }
 
+func (r *Repo) ListPendingBlobRefs(ctx context.Context, before int64, limit int32) ([]store.BlobRefRow, error) {
+	rows, err := r.r.ListPendingBlobRefs(ctx, pgdb.ListPendingBlobRefsParams{Before: before, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return blobRefRows(rows), nil
+}
+
 func blobRefRows(rows []pgdb.BlobRefs) []store.BlobRefRow {
 	out := make([]store.BlobRefRow, 0, len(rows))
 	for _, row := range rows {
@@ -2813,6 +2840,7 @@ func blobRefRows(rows []pgdb.BlobRefs) []store.BlobRefRow {
 			UploaderDevice: row.UploaderDevice,
 			Mime:           row.Mime,
 			Created:        row.Created,
+			Confirmed:      row.Confirmed == 1,
 		})
 	}
 	return out

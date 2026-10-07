@@ -42,6 +42,7 @@ type gcHarness struct {
 
 const (
 	gcGrace    = 24 * time.Hour
+	gcPending  = 24 * time.Hour
 	gcInterval = time.Hour
 )
 
@@ -75,7 +76,7 @@ func newGCHarness(t *testing.T) *gcHarness {
 	m := obs.NewMetrics(reg, reg)
 	h := &gcHarness{
 		t: t, Repo: repo, Store: bs, Clock: clk, Metrics: m, reg: reg,
-		Sweeper: blob.NewSweeper(repo, bs, clk, gcGrace, gcInterval, slog.New(slog.DiscardHandler)).WithMetrics(m),
+		Sweeper: blob.NewSweeper(repo, bs, clk, gcGrace, gcPending, gcInterval, slog.New(slog.DiscardHandler)).WithMetrics(m),
 		owner:   id.New(), device: id.New(),
 	}
 	now := clk.Now().Unix()
@@ -182,6 +183,48 @@ func (h *gcHarness) Upload(sum, payload []byte, ch id.ID) {
 	}); err != nil {
 		h.t.Fatalf("record upload: %v", err)
 	}
+}
+
+// UploadPending does what PUT /v1/channels/{id}/blobs/{blob_id} does since L-HTTP-81: Upload with
+// the reference written pending.
+func (h *gcHarness) UploadPending(sum, payload []byte, ch id.ID) {
+	h.t.Helper()
+	ctx := h.t.Context()
+	n, _, err := h.Store.Put(ctx, sum, bytes.NewReader(payload), 1<<20)
+	if err != nil {
+		h.t.Fatalf("Put: %v", err)
+	}
+	now := h.Clock.Now().Unix()
+	if err := h.Repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.PutBlob(ctx, store.BlobRow{
+			BlobID: sum, Size: uint64(n), StorageRef: blob.StorageRef("fs", sum), Created: now,
+		}); err != nil {
+			return err
+		}
+		if err := tx.ClearBlobUnreferenced(ctx, sum); err != nil {
+			return err
+		}
+		return tx.PutPendingBlobRef(ctx, sum, ch, h.device, "", now)
+	}); err != nil {
+		h.t.Fatalf("record pending upload: %v", err)
+	}
+}
+
+// confirmAfterListing confirms every pending reference it lists before handing the list back: a
+// confirm that lands between the sweep's listing and its drop.
+type confirmAfterListing struct{ store.Repository }
+
+func (r confirmAfterListing) ListPendingBlobRefs(ctx context.Context, before int64, limit int32) ([]store.BlobRefRow, error) {
+	rows, err := r.Repository.ListPendingBlobRefs(ctx, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if err := r.ConfirmBlobRef(ctx, row.BlobID, row.ChannelID); err != nil {
+			return nil, err
+		}
+	}
+	return rows, nil
 }
 
 // DeleteRef does what the uploader's DELETE does: drop this channel's
@@ -466,5 +509,153 @@ func TestASweepDuringABackupCollectsNothing(t *testing.T) {
 	}
 	if n, err := h.Sweeper.SweepOnce(t.Context()); err != nil || n != 1 {
 		t.Fatalf("SweepOnce after the backup = (%d, %v), want (1, nil)", n, err)
+	}
+}
+
+// L-HTTP-83: an upload its uploader never confirmed is dropped after pending_ttl like an expired
+// reference: the blob is marked unreferenced now and the grace window then collects it.
+func TestAnUploadNeverConfirmedIsSweptAfterPendingTTL(t *testing.T) {
+	h := newGCHarness(t)
+	payload := []byte("attached, never sent")
+	sum := sha256.Sum256(payload)
+	ch := h.NewChannel()
+	h.UploadPending(sum[:], payload, ch)
+
+	h.Clock.Advance(23 * time.Hour)
+	if n, err := h.Sweeper.SweepOnce(t.Context()); err != nil || n != 0 {
+		t.Fatalf("SweepOnce inside pending_ttl = (%d, %v)", n, err)
+	}
+	if n, _ := h.Repo.CountBlobRefs(t.Context(), sum[:]); n != 1 {
+		t.Fatalf("a pending reference younger than pending_ttl was dropped (%d left)", n)
+	}
+
+	h.Clock.Advance(2 * time.Hour)
+	if n, err := h.Sweeper.SweepOnce(t.Context()); err != nil || n != 0 {
+		t.Fatalf("SweepOnce past pending_ttl = (%d, %v); the blob still owes its grace window", n, err)
+	}
+	if n, _ := h.Repo.CountBlobRefs(t.Context(), sum[:]); n != 0 {
+		t.Fatalf("the unconfirmed reference survived pending_ttl (%d left)", n)
+	}
+	row, err := h.Repo.GetBlob(t.Context(), sum[:])
+	if err != nil || row.UnrefSince == nil || *row.UnrefSince != h.Clock.Now().Unix() {
+		t.Fatalf("the swept blob was not marked unreferenced now: %+v, %v", row, err)
+	}
+	if got := h.metric("dilla_blob_refs_expired_total", "reason", "pending"); got != 1 {
+		t.Fatalf("dilla_blob_refs_expired_total{reason=pending} = %v, want 1", got)
+	}
+
+	h.Clock.Advance(25 * time.Hour)
+	if n, err := h.Sweeper.SweepOnce(t.Context()); err != nil || n != 1 {
+		t.Fatalf("SweepOnce after the grace window = (%d, %v), want (1, nil)", n, err)
+	}
+	if _, err := h.Store.Stat(sum[:]); err == nil {
+		t.Fatal("the never-confirmed file survived")
+	}
+}
+
+// L-HTTP-83's companion: a confirmed reference, and one PutBlobRef wrote, outlive pending_ttl; an
+// unconfirmed one younger than it is kept until it is older.
+func TestAConfirmedReferenceOutlivesPendingTTL(t *testing.T) {
+	h := newGCHarness(t)
+	ch := h.NewChannel()
+	confirmed := []byte("confirmed before sending")
+	confirmedSum := sha256.Sum256(confirmed)
+	plain := []byte("stored before pending existed")
+	plainSum := sha256.Sum256(plain)
+	h.UploadPending(confirmedSum[:], confirmed, ch)
+	if err := h.Repo.ConfirmBlobRef(t.Context(), confirmedSum[:], ch); err != nil {
+		t.Fatalf("ConfirmBlobRef: %v", err)
+	}
+	h.Upload(plainSum[:], plain, ch)
+
+	h.Clock.Advance(12 * time.Hour)
+	young := []byte("attached later")
+	youngSum := sha256.Sum256(young)
+	h.UploadPending(youngSum[:], young, ch)
+
+	h.Clock.Advance(13 * time.Hour)
+	if _, err := h.Sweeper.SweepOnce(t.Context()); err != nil {
+		t.Fatalf("SweepOnce: %v", err)
+	}
+	for name, sum := range map[string][]byte{"confirmed": confirmedSum[:], "plain": plainSum[:], "young": youngSum[:]} {
+		if n, _ := h.Repo.CountBlobRefs(t.Context(), sum); n != 1 {
+			t.Fatalf("the %s reference was dropped at 25 h (%d left)", name, n)
+		}
+	}
+	if got := h.metric("dilla_blob_refs_expired_total", "reason", "pending"); got != 0 {
+		t.Fatalf("dilla_blob_refs_expired_total{reason=pending} = %v, want 0", got)
+	}
+
+	h.Clock.Advance(12 * time.Hour)
+	if _, err := h.Sweeper.SweepOnce(t.Context()); err != nil {
+		t.Fatalf("SweepOnce: %v", err)
+	}
+	if n, _ := h.Repo.CountBlobRefs(t.Context(), youngSum[:]); n != 0 {
+		t.Fatalf("the young unconfirmed reference survived its own pending_ttl (%d left)", n)
+	}
+	for name, sum := range map[string][]byte{"confirmed": confirmedSum[:], "plain": plainSum[:]} {
+		if n, _ := h.Repo.CountBlobRefs(t.Context(), sum); n != 1 {
+			t.Fatalf("the %s reference was dropped at 37 h (%d left)", name, n)
+		}
+	}
+}
+
+// A pending reference dropped while another channel references the same bytes leaves the blob
+// referenced (MarkBlobUnreferenced's NOT EXISTS).
+func TestAPendingReferenceThatSharesItsBytesLeavesTheBlobReferenced(t *testing.T) {
+	h := newGCHarness(t)
+	payload := []byte("forwarded, then attached again")
+	sum := sha256.Sum256(payload)
+	chA, chB := h.NewChannel(), h.NewChannel()
+	h.Upload(sum[:], payload, chA)
+	h.UploadPending(sum[:], payload, chB)
+	h.Clock.Advance(25 * time.Hour)
+	if _, err := h.Sweeper.SweepOnce(t.Context()); err != nil {
+		t.Fatalf("SweepOnce: %v", err)
+	}
+	if n, _ := h.Repo.CountBlobRefs(t.Context(), sum[:]); n != 1 {
+		t.Fatalf("references = %d, want chA's", n)
+	}
+	if row, err := h.Repo.GetBlob(t.Context(), sum[:]); err != nil || row.UnrefSince != nil {
+		t.Fatalf("a still-referenced blob was marked unreferenced: %+v, %v", row, err)
+	}
+}
+
+// pending_ttl = 0 turns the sweep off; a negative value is treated as 0.
+func TestAPendingTTLOfZeroSweepsNothing(t *testing.T) {
+	h := newGCHarness(t)
+	payload := []byte("kept while the sweep is off")
+	sum := sha256.Sum256(payload)
+	h.UploadPending(sum[:], payload, h.NewChannel())
+	h.Clock.Advance(100 * 24 * time.Hour)
+	for _, ttl := range []time.Duration{0, -time.Hour} {
+		off := blob.NewSweeper(h.Repo, h.Store, h.Clock, gcGrace, ttl, gcInterval, slog.New(slog.DiscardHandler))
+		if _, err := off.SweepOnce(t.Context()); err != nil {
+			t.Fatalf("SweepOnce with pending_ttl %v: %v", ttl, err)
+		}
+		if n, _ := h.Repo.CountBlobRefs(t.Context(), sum[:]); n != 1 {
+			t.Fatalf("pending_ttl %v dropped a reference (%d left)", ttl, n)
+		}
+	}
+}
+
+// L-HTTP-83's race: a confirm that lands between the listing and the drop keeps the reference.
+func TestAReferenceConfirmedAfterTheListingIsKept(t *testing.T) {
+	h := newGCHarness(t)
+	payload := []byte("confirmed while the sweep ran")
+	sum := sha256.Sum256(payload)
+	ch := h.NewChannel()
+	h.UploadPending(sum[:], payload, ch)
+	h.Clock.Advance(25 * time.Hour)
+	racing := blob.NewSweeper(confirmAfterListing{h.Repo}, h.Store, h.Clock, gcGrace, gcPending, gcInterval,
+		slog.New(slog.DiscardHandler)).WithMetrics(h.Metrics)
+	if _, err := racing.SweepOnce(t.Context()); err != nil {
+		t.Fatalf("SweepOnce: %v", err)
+	}
+	if n, _ := h.Repo.CountBlobRefs(t.Context(), sum[:]); n != 1 {
+		t.Fatalf("a reference confirmed after the listing was dropped (%d left)", n)
+	}
+	if got := h.metric("dilla_blob_refs_expired_total", "reason", "pending"); got != 0 {
+		t.Fatalf("dilla_blob_refs_expired_total{reason=pending} = %v, want 0", got)
 	}
 }

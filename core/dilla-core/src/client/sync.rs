@@ -3,16 +3,19 @@
 use super::error::{
     E_CORE_INPUT, E_CORE_MLS, E_CORE_NOT_FOUND, E_CORE_RELOAD, E_CORE_STATE, E_CORE_STORAGE,
 };
+use super::fold;
 use super::groups::{
     STATE_ACTIVE, STATE_GONE, STATE_NEEDS_RESYNC, checked, group_row, set_mls, set_pending,
 };
 use super::messages::{
     REASON_OWN_UNKNOWN, REASON_PRUNED, REASON_SENDER_MISMATCH, STATUS_CANNOT_DECRYPT,
-    STATUS_DELETED, STATUS_OK, StoredMessage, insert_message, mentions_me,
+    STATUS_DELETED, STATUS_OK, StoredMessage, insert_message, mentions_me_with_roles,
+    refold_insert,
 };
 use super::{ClientCore, ClientError, Own, wire};
 use crate::cbor::Encoder;
 use crate::envelope::Envelope;
+use crate::ids::MsgId;
 use crate::mls::{DillaGroup, DillaProcessed, StorageError};
 use openmls::prelude::{GroupId, MlsMessageOut};
 use rusqlite::{OptionalExtension, params};
@@ -45,6 +48,7 @@ fn empty_message<'a>(
         sender_tier: None,
         msg_id: None,
         ty: None,
+        reply_to: None,
         body: "",
         envelope: None,
         franking_tag: &row.franking_tag,
@@ -73,6 +77,7 @@ fn own_message<'a>(
         sender_tier: Some(own.tier),
         msg_id: Some(env.msg_id.as_bytes()),
         ty: Some(env.kind.as_u8()),
+        reply_to: env.reply_to.as_ref().map(MsgId::as_bytes),
         body: &env.body,
         envelope: Some(bytes),
         franking_tag: &row.franking_tag,
@@ -96,6 +101,37 @@ fn message_stored(c: &rusqlite::Connection, id: &[u8; 16], seq: u64) -> Result<b
     )
     .optional()?
     .is_some())
+}
+
+type StoredKind = (
+    Option<i64>,
+    Option<[u8; 16]>,
+    Option<[u8; 16]>,
+    Option<[u8; 16]>,
+    String,
+);
+fn stored_kind(
+    c: &rusqlite::Connection,
+    id: &[u8; 16],
+    seq: u64,
+) -> Result<Option<StoredKind>, StorageError> {
+    c.query_row("SELECT type, msg_id, reply_to, sender_user, body FROM app_messages WHERE group_id = ?1 AND seq = ?2",
+        params![id.as_slice(), seq as i64],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        .optional().map_err(Into::into)
+}
+
+fn refold_deleted(
+    c: &rusqlite::Connection,
+    id: &[u8; 16],
+    stored: Option<StoredKind>,
+) -> Result<(), StorageError> {
+    if let Some((ty, msg_id, reply_to, _, _)) = stored
+        && let Some(target) = fold::target_of(ty, msg_id, reply_to)
+    {
+        fold::refold(c, id, &target, &fold::FoldScope::Full, None, None)?;
+    }
+    Ok(())
 }
 /// An outbox row: its `msg_id`, the stored envelope bytes and the envelope they decode to.
 type OutboxEntry = ([u8; 16], Vec<u8>, Envelope);
@@ -136,12 +172,14 @@ fn apply_message(
     group: &DillaGroup,
 ) -> Result<(bool, bool), StorageError> {
     if row.deleted {
+        let stored = stored_kind(c, id, row.seq)?;
         let changed = c.execute(
             "UPDATE app_messages SET status=2,body='',envelope=NULL,reason='' \
              WHERE group_id=?1 AND seq=?2",
             params![id.as_slice(), row.seq as i64],
         )?;
         if changed > 0 {
+            refold_deleted(c, id, stored)?;
             return Ok((true, false));
         }
         // The deleted upload of an unresolved outbox row (its commitment survives the deletion): the
@@ -159,9 +197,28 @@ fn apply_message(
                 sender_tier: Some(own.tier),
                 msg_id: Some(env.msg_id.as_bytes()),
                 ty: Some(env.kind.as_u8()),
+                reply_to: env.reply_to.as_ref().map(MsgId::as_bytes),
                 ..empty_message(id, row, STATUS_DELETED, "")
             };
             insert_message(c, &marker)?;
+            if let Some(target) = fold::target_of(
+                Some(i64::from(env.kind.as_u8())),
+                Some(*env.msg_id.as_bytes()),
+                env.reply_to.as_ref().map(|r| *r.as_bytes()),
+            ) {
+                fold::refold(
+                    c,
+                    id,
+                    &target,
+                    &fold::scope_of(
+                        Some(i64::from(env.kind.as_u8())),
+                        Some(own.user_id),
+                        &env.body,
+                    ),
+                    None,
+                    None,
+                )?;
+            }
             c.execute(
                 "DELETE FROM app_outbox WHERE msg_id=?1",
                 [msg_id.as_slice()],
@@ -199,6 +256,15 @@ fn apply_message(
             insert_message(
                 c,
                 &own_message(id, row, own, &env, &bytes, group.own_leaf_index().u32()),
+            )?;
+            refold_insert(
+                c,
+                id,
+                row.seq,
+                &env,
+                &own.user_id,
+                &own.device_id,
+                Some(own),
             )?;
             c.execute(
                 "DELETE FROM app_outbox WHERE msg_id=?1",
@@ -395,7 +461,9 @@ impl ClientCore {
             return Err(ClientError::new(E_CORE_STATE, "state 4"));
         }
         let (changed, proposals): (usize, i64) = self.write(|_, u| Ok(u.with_conn(|c| {
+            let stored = stored_kind(c, id, seq)?;
             let changed = c.execute("UPDATE app_messages SET status=2,body='',envelope=NULL,reason='' WHERE group_id=?1 AND seq=?2 AND status<>2", params![id.as_slice(), seq_i])?;
+            if changed == 1 { refold_deleted(c, id, stored)?; }
             let proposals = c.query_row("SELECT COUNT(*) FROM app_proposals WHERE group_id=?1", [id.as_slice()], |r| r.get(0))?;
             Ok((changed, proposals))
         })?))?;
@@ -596,6 +664,10 @@ impl ClientCore {
                                     .transpose()?;
                                 u.with_conn(|c| {
                                     if let Some(r) = application.as_ref() {
+                                        let roles: Vec<[u8; 16]> = {
+                                            let mut q = c.prepare("SELECT r.role_id FROM app_roles r JOIN app_groups g ON g.community_id = r.community_id WHERE g.group_id = ?1 ORDER BY r.role_id")?;
+                                            q.query_map([id.as_slice()], |row| row.get(0))?.collect::<Result<_, _>>()?
+                                        };
                                         let msg = StoredMessage {
                                             group_id: id,
                                             seq: m.seq,
@@ -610,14 +682,16 @@ impl ClientCore {
                                             sender_tier: Some(r.sender.tier.as_u8()),
                                             msg_id: Some(r.envelope.msg_id.as_bytes()),
                                             ty: Some(r.envelope.kind.as_u8()),
+                                            reply_to: r.envelope.reply_to.as_ref().map(MsgId::as_bytes),
                                             body: &r.envelope.body,
                                             envelope: bytes.as_deref(),
                                             franking_tag: &m.franking_tag,
                                             mention: r.envelope.kind.as_u8() == 0
-                                                && mentions_me(&r.envelope.body, &own.user_id)
-                                                && r.sender.user_id.as_bytes() != &own.user_id,
+                                                && r.sender.user_id.as_bytes() != &own.user_id
+                                                && mentions_me_with_roles(&r.envelope.body, &own.user_id, &roles),
                                         };
                                         insert_message(c, &msg)?;
+                                        refold_insert(c, id, m.seq, &r.envelope, r.sender.user_id.as_bytes(), r.sender.device_id.as_bytes(), Some(&own))?;
                                     } else {
                                         insert_message(c, &empty_message(id, m, status, reason))?;
                                     }

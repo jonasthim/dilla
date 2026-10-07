@@ -1,0 +1,5 @@
+.d-reply-chip { display: flex; align-items: center; gap: 0.75rem; min-width: 0; padding: 0.125rem 0.25rem 0.125rem 0.75rem; font-size: var(--text-sm); background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
+.d-reply-chip__label { flex-shrink: 0; color: var(--fg-2); white-space: nowrap; }
+.d-reply-chip__excerpt { flex: 1; min-width: 0; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-reply-chip__cancel { flex-shrink: 0; display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; padding: 0; font: inherit; font-size: var(--text-base); line-height: 1; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; }
+.d-reply-chip__cancel:hover { color: var(--fg); background: var(--surface-hi); }

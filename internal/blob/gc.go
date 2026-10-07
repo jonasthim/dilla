@@ -37,33 +37,39 @@ const maxRetentionDays = 36500
 // and with a 24 h window that race needs a 24 h stall inside one pass.
 //
 // Each pass first drops the references that have expired — those of a deleted
-// channel, and those older than their community's archival retention (R28,
-// the policy's retention_days; absent or 0 keeps them indefinitely) — which
+// channel, those their uploader never confirmed within blobs.pending_ttl, and those older than
+// their community's archival retention (R28, the policy's retention_days; absent or 0 keeps them
+// indefinitely) — which
 // marks their blobs unreferenced, and then collects the blobs whose grace
 // window has passed. A reference therefore expires into the same grace window a
 // deletion does.
 type Sweeper struct {
-	repo     store.Repository
-	store    *Store
-	clk      clock.Clock
-	grace    time.Duration
-	interval time.Duration
-	log      *slog.Logger
-	metrics  *obs.Metrics
+	repo       store.Repository
+	store      *Store
+	clk        clock.Clock
+	grace      time.Duration
+	pendingTTL time.Duration
+	interval   time.Duration
+	log        *slog.Logger
+	metrics    *obs.Metrics
 }
 
 // NewSweeper builds a sweeper over one repository and blob store. A negative
 // grace is treated as zero, and an interval that is not positive as one hour,
 // so a misconfigured duration can neither collect a blob before it is marked
-// nor spin the loop.
-func NewSweeper(repo store.Repository, s *Store, clk clock.Clock, grace, interval time.Duration, log *slog.Logger) *Sweeper {
+// nor spin the loop. pendingTTL is blobs.pending_ttl: an upload whose reference its uploader
+// never confirmed is dropped once it is older; 0 or less sweeps none.
+func NewSweeper(repo store.Repository, s *Store, clk clock.Clock, grace, pendingTTL, interval time.Duration, log *slog.Logger) *Sweeper {
 	if grace < 0 {
 		grace = 0
 	}
 	if interval <= 0 {
 		interval = time.Hour
 	}
-	return &Sweeper{repo: repo, store: s, clk: clk, grace: grace, interval: interval, log: log}
+	if pendingTTL < 0 {
+		pendingTTL = 0
+	}
+	return &Sweeper{repo: repo, store: s, clk: clk, grace: grace, pendingTTL: pendingTTL, interval: interval, log: log}
 }
 
 // WithMetrics records every pass in m (dilla_blob_gc_*,
@@ -200,10 +206,62 @@ func (s *Sweeper) expireReferences(ctx context.Context, now int64) error {
 			break
 		}
 	}
-	if n := len(gone) + expired; n > 0 {
-		s.log.Info("blob references expired", "channel_deleted", len(gone), "retention", expired)
+	var pending int
+	if s.pendingTTL > 0 {
+		refs, err := s.repo.ListPendingBlobRefs(ctx, now-int64(s.pendingTTL/time.Second), sweepBatch)
+		if err != nil {
+			return err
+		}
+		for _, ref := range refs {
+			dropped, err := s.dropPendingReference(ctx, ref, now)
+			if err != nil {
+				return err
+			}
+			if dropped {
+				pending++
+			}
+		}
+	}
+	if n := len(gone) + expired + pending; n > 0 {
+		s.log.Info("blob references expired", "channel_deleted", len(gone), "retention", expired, "pending", pending)
 	}
 	return nil
+}
+
+// dropPendingReference re-reads under the blob lock to keep a confirm that landed after listing:
+// the confirm route takes the same lock (L-HTTP-82).
+func (s *Sweeper) dropPendingReference(ctx context.Context, ref store.BlobRefRow, now int64) (bool, error) {
+	var dropped bool
+	err := s.repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockBlob(ctx, ref.BlobID); err != nil {
+			return err
+		}
+		current, err := tx.GetBlobRef(ctx, ref.BlobID, ref.ChannelID)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.Confirmed {
+			return nil
+		}
+		if err := tx.DeleteBlobRef(ctx, ref.BlobID, ref.ChannelID); err != nil {
+			return err
+		}
+		if err := tx.MarkBlobUnreferenced(ctx, ref.BlobID, now); err != nil {
+			return err
+		}
+		dropped = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if dropped {
+		s.metrics.BlobRefExpired("pending")
+	}
+	return dropped, nil
 }
 
 func (s *Sweeper) dropReference(ctx context.Context, ref store.BlobRefRow, now int64, reason string) error {

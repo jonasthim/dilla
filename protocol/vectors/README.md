@@ -5,7 +5,8 @@ committed files differ from the generator output.
 
 | file | document | what an implementation must reproduce |
 |---|---|---|
-| `envelope.json` | `04-envelope-and-franking.md` | `cbor`, `length`, `commitment` per case |
+| `envelope.json` | `04-envelope-and-franking.md` | `cbor`, `length`, `commitment` per case, and refusal of every entry of `rejects` with the named `E_ENVELOPE_*` code |
+| `attachment.json` | `04-envelope-and-franking.md` | `stored`, `blob_id` and the opened plaintext per case, the sealed `thumb` and its opening where `thumb_plaintext` is not null, and refusal of every entry of `rejects` with the named `E_BLOB_*` code |
 | `franking.json` | `04-envelope-and-franking.md` | `tag` per case from `instance_franking_key` |
 | `sframe.json` | `05-media-frames.md` | `kid`, `key`, `salt`, `ctr`, `nonce`, `header` per case; `header` and `decode` per `rfc9605_c1` entry; `key`, `salt`, `nonce`, `frame` and `open` of `rfc9605_c3`; `prefix_len`, `frame` and `open` per `media_frames` entry; `out` and `roundtrip` per `escapes` entry; refusal of every entry of `rejects` with the named `E_SFRAME_*` code |
 | `identity.json` | `03-identity.md` | `safety_number.digits`, `sas.digits`, `recovery_key.base32`, `k_header`, `k_backup`, `credential_identity.cbor`, and both Ed25519 signatures |

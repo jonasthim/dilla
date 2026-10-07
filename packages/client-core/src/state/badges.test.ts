@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ActivityRow, TimelineRow } from '../core-port';
 import { toHex } from '../hex';
-import { NOTICES_MAX, NOTICE_BODY_MAX, appendNotices, buildBadges, mentionsMe, noticeOf, type NoticeDraft } from './badges';
+import { NOTICES_MAX, NOTICE_BODY_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from './badges';
 
 const G1 = new Uint8Array(16).fill(1);
 const G2 = new Uint8Array(16).fill(2);
@@ -9,27 +9,14 @@ const G3 = new Uint8Array(16).fill(3);
 const CH = 'c1'.repeat(16);
 const CH2 = 'c2'.repeat(16);
 const COMMUNITY = 'c0'.repeat(16);
-const USER_HEX = '0a'.repeat(16);
 const act = (g: Uint8Array, unread: number, mentions: number): ActivityRow =>
   ({ groupId: g, unread, mentions, lastSeq: BigInt(unread), lastTs: 1_700_000_000n, lastReadSeq: 0n });
 const row = (seq: number, body: string): TimelineRow => ({
   seq: BigInt(seq), epoch: 1n, recvTs: 1_700_000_000n + BigInt(seq), status: 0, reason: '', senderUser: new Uint8Array(16).fill(0x5a),
   senderDevice: new Uint8Array(16).fill(0x5b), senderKind: 0, senderTier: 0, msgId: new Uint8Array(16).fill(seq), type: 0, body,
+  editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [], mention: false,
 });
 const draft = (n: number): NoticeDraft => ({ channelId: CH, communityId: COMMUNITY, kind: 'message', senderUser: null, senderName: 'p', body: `m${n}`, ts: n });
-
-describe('mentionsMe (the L-CORE-24 literal rule)', () => {
-  it('matches the readable syntax and nothing else', () => {
-    expect(mentionsMe(`hi <@${USER_HEX}>`, USER_HEX)).toBe(true);
-    expect(mentionsMe('<@everyone> lunch', USER_HEX)).toBe(true);
-    expect(mentionsMe('ping <@here>', USER_HEX)).toBe(true);
-    expect(mentionsMe(`<@${USER_HEX.toUpperCase()}>`, USER_HEX)).toBe(false);
-    expect(mentionsMe(`<@${USER_HEX}`, USER_HEX)).toBe(false);
-    expect(mentionsMe(`@${USER_HEX}`, USER_HEX)).toBe(false);
-    expect(mentionsMe('<@Everyone>', USER_HEX)).toBe(false);
-    expect(mentionsMe(`<@${'0b'.repeat(16)}>`, USER_HEX)).toBe(false);
-  });
-});
 
 describe('buildBadges', () => {
   it('keys counts by channel and drops a group bound to no known channel', () => {

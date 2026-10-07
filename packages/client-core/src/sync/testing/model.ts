@@ -8,7 +8,7 @@
  * is a CBOR array that names its sender, which is enough to test ordering, adoption, commits and
  * joins. Words of the copy lint (scripts/check-ui-copy.mjs) appear nowhere in this file.
  */
-import { arr, bin, decode, encode, str, u64, type CborInput, type CborValue } from '../../cbor';
+import { arr, bin, decode, encode, str, u53, u64, type CborInput, type CborValue } from '../../cbor';
 import {
   CoreError,
   type ApplyResult,
@@ -18,6 +18,10 @@ import {
   type Id,
   type IdentityInfo,
   type OutboxRow,
+  type AttachmentDescriptor,
+  type PinRow,
+  type PurgeRow,
+  type SendRequest,
   type TimelineRow,
   type WelcomeOutcome,
   type ActivityRow,
@@ -30,7 +34,13 @@ import type { GatewayEvent, ReadyInfo } from '../../gateway/gateway';
 import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
 import type { Routes } from '../../http/routes';
+import { mentionsMe } from '../../state/mentions';
 import { fakeDskPub, fakeListBlob, fakeListNames, readFakeList } from '../../testing/fake-list';
+
+/** The plain message request web-2a sent with a bare body (L-TS-30). */
+export function textRequest(body: string): SendRequest {
+  return { type: 0, replyTo: null, body, attachments: [] };
+}
 
 export interface Peer {
   device: Id;
@@ -115,9 +125,25 @@ function commitmentFor(msgId: Id): Uint8Array {
   return c;
 }
 
+/** The envelope fields of an application message beyond its body (L-TS-31). */
+export interface WireOptions {
+  type?: number;
+  replyTo?: Id | null;
+  attachments?: AttachmentDescriptor[];
+}
+
+/** The msg id of the parity fixture's peer target (L-CORE-39). */
+export const FOLD_TARGET: Uint8Array = new Uint8Array(16).fill(0x71);
+/** A msg id no stored row carries: the target of a fold that is never held. */
+export const FOLD_UNHELD: Uint8Array = new Uint8Array(16).fill(0xee);
+
 /** The stand-in wire shared by ModelCore and ModelDs. */
 export const wire = {
-  app: (from: Peer, msgId: Id, body: string): Uint8Array => encode(['app', from.user, from.device, msgId, body]),
+  /** The 8-element stand-in of an envelope: ['app', user, device, msgId, body, type, replyTo, attachments]. */
+  app: (from: Peer, msgId: Id, body: string, opts: WireOptions = {}): Uint8Array => encode([
+    'app', from.user, from.device, msgId, body, opts.type ?? 0, opts.replyTo ?? null,
+    (opts.attachments ?? []).map((a) => [a.blobId, a.key, a.nonce, a.size, a.mime, a.w, a.h, a.thumb, a.name]),
+  ]),
   commit: (newEpoch: bigint, committer: Id, adds: readonly Id[], removes: readonly Id[]): Uint8Array =>
     encode(['commit', newEpoch, committer, adds, removes]),
   prop: (ref: Id, op: 'add' | 'remove', device: Id): Uint8Array => encode(['prop', ref, op, device]),
@@ -137,7 +163,7 @@ export const wire = {
  */
 export function commitmentOf(blob: Uint8Array): Uint8Array | null {
   try {
-    const v = arr(decode(blob), 5);
+    const v = arr(decode(blob), 8);
     if (str(at(v, 0)) !== 'app') return null;
     return commitmentFor(bin(at(v, 3), 16));
   } catch {
@@ -252,7 +278,32 @@ interface MGroup {
   wasGone: boolean;
   /** app_groups.max_epoch: the highest epoch held; only ever raised. */
   maxEpoch: bigint;
-  rows: Map<bigint, TimelineRow>;
+  rows: Map<bigint, MRow>;
+  /** app_reactions as the model holds it: target hex → (user hex + U+0000 + emoji) → the present reaction. */
+  reactions: Map<string, Map<string, { user: Id; emoji: string; seq: bigint }>>;
+  /** app_pins: target hex → the pin. */
+  pins: Map<string, { target: Id; seq: bigint; byUser: Id }>;
+}
+
+/**
+ * A stored app_messages row (fold rows included): web-1's twelve fields and the v3 columns. `hasEnvelope` stands in
+ * for the core's `envelope` column: true for a readable stored row, false once it is NULL (FACTS-SECURITY-03).
+ */
+interface MRow extends Omit<TimelineRow, 'editedSeq' | 'reply' | 'reactions' | 'pinned' | 'attachments' | 'mention'> {
+  replyTo: Id | null;
+  editBody: string | null;
+  editSeq: bigint;
+  mention: boolean;
+  attachments: AttachmentDescriptor[];
+  hasEnvelope: boolean;
+}
+
+/** The row that started a refold (L-CORE-33): the seq, type and authenticated sender of the inserted row. */
+interface FoldTrigger {
+  seq: bigint;
+  ty: number;
+  senderUser: Id;
+  senderDevice: Id;
 }
 
 interface MOut {
@@ -263,7 +314,46 @@ interface MOut {
   state: 0 | 1 | 2;
   error: string;
   epoch: bigint | null;
+  type: SendRequest['type'];
+  replyTo: Id | null;
+  attachments: AttachmentDescriptor[];
 }
+
+/** The 8-element stand-in of an envelope, decoded; null for a malformed one (a field of the wrong kind or length). */
+function readApp(blob: Uint8Array): { user: Id; device: Id; msgId: Id; body: string; type: number; replyTo: Id | null;
+  attachments: AttachmentDescriptor[]; } | null {
+  try {
+    const v = arr(decode(blob), 8);
+    if (str(at(v, 0)) !== 'app') return null;
+    const type = u64(at(v, 5));
+    if (type > 6n) return null;
+    const dim = (x: CborValue): number | null => (x === null ? null : u53(x));
+    const attachments = arr(at(v, 7)).map((x): AttachmentDescriptor => {
+      const a = arr(x, 9);
+      return { blobId: bin(at(a, 0), 32), key: bin(at(a, 1), 32), nonce: bin(at(a, 2), 12), size: u53(at(a, 3)), mime: str(at(a, 4)),
+        w: dim(at(a, 5)), h: dim(at(a, 6)), thumb: at(a, 7) === null ? null : bin(at(a, 7)), name: str(at(a, 8)) };
+    });
+    return { user: bin(at(v, 1), 16), device: bin(at(v, 2), 16), msgId: bin(at(v, 3), 16), body: str(at(v, 4)), type: Number(type),
+      replyTo: at(v, 6) === null ? null : bin(at(v, 6), 16), attachments };
+  } catch {
+    return null;
+  }
+}
+
+/** The first 120 Unicode scalar values of a shown body, line breaks as spaces (fold::excerpt). */
+function excerpt(body: string): string {
+  return Array.from(body).slice(0, 120).join('').replace(/[\n\r]/g, ' ');
+}
+
+/** Byte order of the UTF-8 encodings (SQLite's BLOB/TEXT order for the emoji column). */
+function utf8Order(a: string, b: string): number {
+  const x = new TextEncoder().encode(a);
+  const y = new TextEncoder().encode(b);
+  for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i] - y[i];
+  return x.length - y.length;
+}
+
+const utf8Length = (s: string): number => new TextEncoder().encode(s).length;
 
 export interface CoreCall {
   m: string;
@@ -288,6 +378,10 @@ export class ModelCore implements CorePort {
   private msgs = 0;
   private readonly readState = new Map<string, { lastReadSeq: bigint; lastReadAt: bigint }>();
   private readonly settingsMap = new Map<string, string>();
+  /** app_purges: `${group hex}/${seq}` → the purge row (L-CORE-38). */
+  private readonly purgeRows = new Map<string, PurgeRow>();
+  /** app_roles: community hex → the own role ids (L-CORE-35). */
+  private readonly roles = new Map<string, Id[]>();
 
   constructor(readonly me: Peer) {}
 
@@ -381,12 +475,10 @@ export class ModelCore implements CorePort {
           // The core's `sender_user <> ?1` excludes a NULL sender, as SQL does (CORE-ENGINE-03).
           r.senderUser !== null && !same(r.senderUser, this.me.user) && r.seq > lastReadSeq).sort(bySeq);
         const last = rows[rows.length - 1];
-        return { groupId: g.groupId, unread: rows.length, mentions: rows.filter((r) => this.mentionsMe(r.body)).length,
+        // The stored flag, fixed when the row arrived (L-CORE-35), never the body as it reads now.
+        return { groupId: g.groupId, unread: rows.length, mentions: rows.filter((r) => r.mention).length,
           lastSeq: last?.seq ?? 0n, lastTs: last?.recvTs ?? 0n, lastReadSeq };
       });
-  }
-  private mentionsMe(body: string): boolean {
-    return body.includes(`<@${toHex(this.me.user)}>` ) || body.includes('<@everyone>') || body.includes('<@here>');
   }
   settings(): Record<string, string> {
     return Object.fromEntries([...this.settingsMap].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
@@ -464,8 +556,10 @@ export class ModelCore implements CorePort {
     }
     const g = this.fresh(eg.groupId, eg.communityId, eg.channelId, 1);
     if (prev !== undefined) {
-      // The row is updated, never recreated: its timeline, outbox, cursor and floor stay.
+      // The row is updated, never recreated: its timeline, folds, outbox, cursor and floor stay.
       g.rows = prev.rows;
+      g.reactions = prev.reactions;
+      g.pins = prev.pins;
       g.nextSeq = prev.nextSeq;
       g.ackedSeq = prev.ackedSeq;
       g.ackedEpoch = prev.ackedEpoch;
@@ -562,6 +656,8 @@ export class ModelCore implements CorePort {
       g.nextSeq = commitSeq + 1n;
       if (prev !== undefined) {
         g.rows = prev.rows;
+        g.reactions = prev.reactions;
+        g.pins = prev.pins;
         g.ackedSeq = prev.ackedSeq;
         g.ackedEpoch = prev.ackedEpoch;
         g.maxEpoch = prev.maxEpoch;
@@ -681,22 +777,53 @@ export class ModelCore implements CorePort {
     if (g.state === 4) throw coreError('E_CORE_STATE', 'state 4');
     const row = g.rows.get(seq);
     if (row === undefined || row.status === 2) return this.result(g, [], false, false);
-    g.rows.set(seq, { ...row, status: 2, reason: '', body: '' });
+    g.rows.set(seq, this.deletedRow(row));
+    this.refoldDeleted(g, row);
     return this.result(g, [seq], false, false);
   }
 
   // --- sending and reading (L-CORE-09) ---
 
-  sendPrepare(groupId: Id, body: string, now: bigint): Id {
+  sendPrepare(groupId: Id, request: SendRequest, now: bigint): Id {
     this.log('sendPrepare', groupId);
+    // L-CORE-36 in the core's order (messages.rs send_prepare, wire::decode_send_request, Envelope::validate); every
+    // refusal writes nothing.
+    const { type, replyTo, body, attachments } = request;
+    const count = (n: unknown): boolean => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+    const bytes = (b: unknown, length?: number): boolean => b instanceof Uint8Array && (length === undefined || b.length === length);
+    const wellFormed = typeof body === 'string' && Array.isArray(attachments) && (replyTo === null || bytes(replyTo, 16)) &&
+      attachments.every((a) => bytes(a.blobId, 32) && bytes(a.key, 32) && bytes(a.nonce, 12) && count(a.size) &&
+        typeof a.mime === 'string' && typeof a.name === 'string' && (a.w === null || count(a.w)) && (a.h === null || count(a.h)) &&
+        (a.thumb === null || bytes(a.thumb)));
+    if (!wellFormed) throw coreError('E_CORE_INPUT', 'request is malformed');
+    if (!Number.isInteger(type) || type < 0 || type > 6) throw coreError('E_CORE_INPUT', 'type is out of range');
+    if (type !== 0 && attachments.length > 0) throw coreError('E_CORE_INPUT', 'only a message carries attachments');
     const g = this.must(groupId);
-    if (g.state !== 2) throw coreError('E_CORE_STATE', `state ${String(g.state)}`);
-    if (body.trim() === '') throw coreError('E_CORE_INPUT', 'empty body');
-    // The limit is UTF-8 bytes, not characters (MAX_BODY_LONG, envelope/mod.rs:15-16, 362).
-    if (new TextEncoder().encode(body).length > 4000) throw coreError('E_ENVELOPE_LIMIT');
+    if (g.state !== 2) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
+    const target = replyTo === null ? null : this.resolve(g, replyTo);
+    if (type === 0) {
+      if (body.trim() === '' && attachments.length === 0) throw coreError('E_CORE_INPUT', 'body is empty');
+      if (replyTo !== null && target === null) throw coreError('E_CORE_NOT_FOUND', 'target is not held');
+    } else {
+      if (replyTo === null) throw coreError('E_CORE_INPUT', 'reply_to is required');
+      if (target === null) throw coreError('E_CORE_NOT_FOUND', 'target is not held');
+      if (target.status !== 0) throw coreError('E_CORE_STATE', 'the target is deleted');
+      if (type <= 2 && (target.senderUser === null || !same(target.senderUser, this.me.user))) {
+        throw coreError('E_CORE_INPUT', 'only the author may edit or delete');
+      }
+      if (type === 1 && body.trim() === '') throw coreError('E_CORE_INPUT', 'body is empty');
+      if ((type === 3 || type === 4) && (body === '' || utf8Length(body) > 32)) throw coreError('E_CORE_INPUT', 'emoji must be 1..=32 bytes');
+      if ((type === 2 || type === 5 || type === 6) && body !== '') throw coreError('E_CORE_INPUT', 'body must be empty');
+    }
+    // Envelope::validate: the limits are UTF-8 bytes, not characters (envelope/mod.rs:17-31, 375-409).
+    if (((type === 0 || type === 1) && utf8Length(body) > 4000) || attachments.length > 4 ||
+      attachments.some((a) => utf8Length(a.mime) > 255 || (a.thumb !== null && a.thumb.length > 8192) || utf8Length(a.name) > 255)) {
+      throw coreError('E_ENVELOPE_LIMIT');
+    }
     this.msgs += 1;
     const msgId = idOf(0x6d, this.msgs);
-    this.out.set(toHex(msgId), { msgId, groupId, body, created: now, state: 0, error: '', epoch: null });
+    this.out.set(toHex(msgId), { msgId, groupId, body, created: now, state: 0, error: '', epoch: null, type, replyTo,
+      attachments: attachments.map((a) => ({ ...a })) });
     return msgId;
   }
 
@@ -715,7 +842,8 @@ export class ModelCore implements CorePort {
     if (g.pending !== null) throw coreError('E_CORE_STATE', 'a commit is pending');
     o.state = 1;
     o.epoch = g.epoch;
-    return { groupId: o.groupId, messageBody: encode([g.epoch, wire.app(this.me, o.msgId, o.body)]) };
+    const framed = wire.app(this.me, o.msgId, o.body, { type: o.type, replyTo: o.replyTo, attachments: o.attachments });
+    return { groupId: o.groupId, messageBody: encode([g.epoch, framed]) };
   }
 
   sendConfirm(msgId: Id, response: Uint8Array): { groupId: Id; seq: bigint } {
@@ -741,6 +869,7 @@ export class ModelCore implements CorePort {
         throw coreError('E_CORE_STATE', 'message seq exists');
       }
       g.rows.set(seq, this.ownRow(seq, o.epoch ?? g.epoch, recvTs, o));
+      this.refoldInsert(g, seq, o.type, o.msgId, o.replyTo, this.me.user, this.me.device);
       this.out.delete(toHex(msgId));
       return { groupId: o.groupId, seq };
     }
@@ -786,12 +915,92 @@ export class ModelCore implements CorePort {
     return [...this.out.values()]
       .filter((o) => same(o.groupId, groupId))
       .sort((a, b) => (a.created !== b.created ? (a.created < b.created ? -1 : 1) : toHex(a.msgId) < toHex(b.msgId) ? -1 : 1))
-      .map((o) => ({ msgId: o.msgId, state: o.state, error: o.error, created: o.created, body: o.body }));
+      // L-CORE-37: the attachment summary only; no key, nonce or thumbnail leaves the outbox.
+      .map((o) => ({ msgId: o.msgId, state: o.state, error: o.error, created: o.created, body: o.body, type: o.type, replyTo: o.replyTo,
+        attachments: o.attachments.map((a) => ({ blobId: a.blobId, size: a.size, mime: a.mime, name: a.name })) }));
   }
 
+  /** L-CORE-37 `pins`: every pin whose target resolves, newest pin first. */
+  pins(groupId: Id): PinRow[] {
+    const g = this.must(groupId);
+    const out: PinRow[] = [];
+    for (const p of [...g.pins.values()].sort((a, b) => (a.seq > b.seq ? -1 : a.seq < b.seq ? 1 : 0))) {
+      const t = this.resolve(g, p.target);
+      if (t === null) continue;
+      out.push({ targetSeq: t.seq, msgId: p.target, pinnedSeq: p.seq, byUser: p.byUser, author: t.senderUser,
+        excerpt: excerpt(t.editBody ?? t.body), targetTs: t.recvTs });
+    }
+    return out;
+  }
+
+  /** L-CORE-38 `attachment_get`: the full descriptor of a held status-0 type-0 row's attachment. */
+  attachmentGet(groupId: Id, seq: bigint, index: number): AttachmentDescriptor {
+    const row = this.gs.get(toHex(groupId))?.rows.get(seq);
+    const a = row !== undefined && row.status === 0 && row.type === 0 && row.hasEnvelope ? row.attachments[index] : undefined;
+    if (a === undefined) throw coreError('E_CORE_NOT_FOUND', 'no such attachment');
+    return { ...a };
+  }
+
+  /** L-CORE-38 `purges`: every recorded purge, ordered by group then seq. */
+  purges(): PurgeRow[] {
+    return [...this.purgeRows.values()]
+      .sort((a, b) => (toHex(a.groupId) !== toHex(b.groupId) ? (toHex(a.groupId) < toHex(b.groupId) ? -1 : 1) : bySeq(a, b)))
+      .map((p) => ({ ...p, blobIds: [...p.blobIds] }));
+  }
+
+  /** L-CORE-38 `purge_done`: removes one purge row, absent or not. */
+  purgeDone(groupId: Id, seq: bigint): void {
+    this.log('purgeDone', groupId);
+    this.purgeRows.delete(`${toHex(groupId)}/${String(seq)}`);
+  }
+
+  /** L-CORE-35 `own_roles_set`: replaces the community's own role ids. */
+  ownRolesSet(communityId: Id, roleIds: Id[]): void {
+    if (roleIds.length > 64 || roleIds.some((r) => !(r instanceof Uint8Array) || r.length !== 16)) {
+      throw coreError('E_CORE_INPUT', 'role_ids must be 0..=64 ids of 16 bytes');
+    }
+    // INSERT OR IGNORE: a repeated id is held once.
+    this.roles.set(toHex(communityId), [...new Map(roleIds.map((r) => [toHex(r), r.slice()])).values()]);
+  }
+
+  /** L-CORE-34: displayable rows (type null or 0) with the fold applied. */
   timeline(groupId: Id, beforeSeq: bigint, limit: number): TimelineRow[] {
-    const rows = [...this.must(groupId).rows.values()].filter((r) => beforeSeq === 0n || r.seq < beforeSeq).sort(bySeq);
-    return rows.slice(Math.max(0, rows.length - limit));
+    const g = this.must(groupId);
+    const rows = [...g.rows.values()]
+      .filter((r) => (r.type === null || r.type === 0) && (beforeSeq === 0n || r.seq < beforeSeq)).sort(bySeq);
+    return rows.slice(Math.max(0, rows.length - limit)).map((r): TimelineRow => {
+      const ok = r.status === 0;
+      let reply: TimelineRow['reply'] = null;
+      if (ok && r.replyTo !== null) {
+        const t = this.resolve(g, r.replyTo);
+        reply = t === null
+          ? { replyTo: r.replyTo, targetSeq: null, targetUser: null, excerpt: '', state: 1 }
+          : { replyTo: r.replyTo, targetSeq: t.seq, targetUser: t.senderUser, excerpt: t.status === 0 ? excerpt(t.editBody ?? t.body) : '',
+            state: t.status === 0 ? 0 : 2 };
+      }
+      // Reactions and the pin belong to a target only: a row that repeats a msg id never shows them.
+      const target = ok && r.type === 0 && r.msgId !== null && this.resolve(g, r.msgId)?.seq === r.seq;
+      return {
+        seq: r.seq, epoch: r.epoch, recvTs: r.recvTs, status: r.status, reason: r.reason, senderUser: r.senderUser,
+        senderDevice: r.senderDevice, senderKind: r.senderKind, senderTier: r.senderTier, msgId: r.msgId, type: r.type,
+        body: ok ? r.editBody ?? r.body : '', editedSeq: r.editSeq, reply,
+        reactions: target && r.msgId !== null ? this.chips(g, r.msgId) : [],
+        pinned: target && r.msgId !== null && g.pins.has(toHex(r.msgId)),
+        attachments: ok && r.type === 0
+          ? r.attachments.map((a, index) => ({ index, size: a.size, mime: a.mime, w: a.w, h: a.h, hasThumb: a.thumb !== null, name: a.name }))
+          : [],
+        mention: r.mention,
+      };
+    });
+  }
+
+  /**
+   * A model-only probe of a stored row, fold rows included (FACTS-SECURITY-03): its stored body (never the folded
+   * edit) and whether the envelope column still holds bytes. Logs no call; it is not a CorePort member.
+   */
+  storedRow(groupId: Id, seq: bigint): { type: number | null; status: 0 | 1 | 2; body: string; hasEnvelope: boolean } | null {
+    const r = this.gs.get(toHex(groupId))?.rows.get(seq);
+    return r === undefined ? null : { type: r.type, status: r.status, body: r.body, hasEnvelope: r.hasEnvelope };
   }
 
   // --- test accessors ---
@@ -849,6 +1058,7 @@ export class ModelCore implements CorePort {
     return {
       groupId, communityId, targetId, state, epoch: 0n, joinedEpoch: 0n, joinEpoch: 0n, preJoinEpoch: 0n, nextSeq: 1n, ackedSeq: 0n, ackedEpoch: 0n,
       proposals: new Map(), pending: null, fromResync: false, wasGone: false, maxEpoch: 0n, rows: new Map(),
+      reactions: new Map(), pins: new Map(),
     };
   }
 
@@ -927,24 +1137,29 @@ export class ModelCore implements CorePort {
     const served = at(a, 4) === null ? null : bin(at(a, 4), 32);
     const recvTs = u64(at(a, 6));
     const deleted = u64(at(a, 7)) === 1n;
-    const bare = (status: 1 | 2, reason: string): TimelineRow => ({
+    const bare = (status: 1 | 2, reason: string): MRow => ({
       seq, epoch, recvTs, status, reason, senderUser: null, senderDevice: uploader, senderKind: null, senderTier: null,
-      msgId: null, type: null, body: '',
+      msgId: null, type: null, body: '', replyTo: null, editBody: null, editSeq: 0n, mention: false, attachments: [], hasEnvelope: false,
     });
     const stored = g.rows.get(seq);
     // A live row at a stored seq is skipped before anything else: not listed, nothing processed.
     if (!deleted && stored !== undefined) return { inserted: false, adopted: false };
     if (deleted) {
       if (stored !== undefined) {
-        g.rows.set(seq, { ...stored, status: 2, reason: '', body: '' });
+        g.rows.set(seq, this.deletedRow(stored));
+        this.refoldDeleted(g, stored);
         return { inserted: true, adopted: false };
       }
-      // The deleted upload of an unresolved outbox row: the server stored it, so the row is done.
+      // The deleted upload of an unresolved outbox row: the server stored it, so the row is done. The marker keeps
+      // the outbox row's type and reply_to, and refolds what it named (sync.rs apply_message).
       const o = same(uploader, this.me.device) && served !== null ? this.unresolvedWith(g, served) : undefined;
       if (o !== undefined) {
-        g.rows.set(seq, {
-          ...bare(2, ''), senderUser: this.me.user, senderDevice: this.me.device, senderKind: 0, senderTier: 1, msgId: o.msgId, type: 0,
-        });
+        const marker: MRow = {
+          ...bare(2, ''), senderUser: this.me.user, senderDevice: this.me.device, senderKind: 0, senderTier: 1, msgId: o.msgId, type: o.type,
+          replyTo: o.replyTo,
+        };
+        g.rows.set(seq, marker);
+        this.refoldDeleted(g, marker);
         this.out.delete(toHex(o.msgId));
         return { inserted: true, adopted: true };
       }
@@ -963,41 +1178,183 @@ export class ModelCore implements CorePort {
       const o = c === null ? undefined : this.unresolvedWith(g, c);
       if (o !== undefined) {
         g.rows.set(seq, this.ownRow(seq, epoch, recvTs, o));
+        this.refoldInsert(g, seq, o.type, o.msgId, o.replyTo, this.me.user, this.me.device);
         this.out.delete(toHex(o.msgId));
         return { inserted: true, adopted: true };
       }
       g.rows.set(seq, bare(1, 'E_OWN_UNKNOWN'));
       return { inserted: true, adopted: false };
     }
-    let v: CborValue[];
-    try {
-      v = arr(decode(bin(blob)), 5);
-      if (str(at(v, 0)) !== 'app') throw new Error('not an application message');
-    } catch {
+    // A malformed stand-in is a row that cannot be read, as a ciphertext the group refuses.
+    const v = readApp(bin(blob));
+    if (v === null || epoch > g.epoch || epoch < g.joinedEpoch) {
       g.rows.set(seq, bare(1, 'E_CORE_MLS'));
       return { inserted: true, adopted: false };
     }
-    if (epoch > g.epoch || epoch < g.joinedEpoch) {
-      g.rows.set(seq, bare(1, 'E_CORE_MLS'));
+    // Envelope::decode fails inside process_message, before the sender check: the protocol code is stored
+    // (client/error.rs:49, sync.rs:653-658; ruled: peer-client 10).
+    if (v.type !== 0 && (v.replyTo === null || v.attachments.length > 0)) {
+      g.rows.set(seq, bare(1, 'E_ENVELOPE_SHAPE'));
       return { inserted: true, adopted: false };
     }
-    const device = bin(at(v, 2), 16);
-    if (!same(device, uploader)) {
+    if (!same(v.device, uploader)) {
       g.rows.set(seq, bare(1, 'E_SENDER_MISMATCH'));
       return { inserted: true, adopted: false };
     }
     g.rows.set(seq, {
-      seq, epoch, recvTs, status: 0, reason: '', senderUser: bin(at(v, 1), 16), senderDevice: device, senderKind: 0, senderTier: 0,
-      msgId: bin(at(v, 3), 16), type: 0, body: str(at(v, 4)),
+      seq, epoch, recvTs, status: 0, reason: '', senderUser: v.user, senderDevice: v.device, senderKind: 0, senderTier: 0,
+      msgId: v.msgId, type: v.type, body: v.body, replyTo: v.replyTo, editBody: null, editSeq: 0n,
+      // L-CORE-35: only a type-0 row of another user, against the roles known now; never recomputed later.
+      mention: v.type === 0 && !same(v.user, this.me.user) && mentionsMe(v.body, toHex(this.me.user), this.roleHexes(g)),
+      attachments: v.type === 0 ? v.attachments : [], hasEnvelope: true,
     });
+    this.refoldInsert(g, seq, v.type, v.msgId, v.replyTo, v.user, v.device);
     return { inserted: true, adopted: false };
   }
 
-  private ownRow(seq: bigint, epoch: bigint, recvTs: bigint, o: MOut): TimelineRow {
+  private ownRow(seq: bigint, epoch: bigint, recvTs: bigint, o: MOut): MRow {
     return {
       seq, epoch, recvTs, status: 0, reason: '', senderUser: this.me.user, senderDevice: this.me.device, senderKind: 0, senderTier: 1,
-      msgId: o.msgId, type: 0, body: o.body,
+      msgId: o.msgId, type: o.type, body: o.body, replyTo: o.replyTo, editBody: null, editSeq: 0n, mention: false,
+      attachments: o.attachments.map((x) => ({ ...x })), hasEnvelope: true,
     };
+  }
+
+  /** The row after the delivery service deleted it: status 2, nothing readable, its envelope dropped. */
+  private deletedRow(row: MRow): MRow {
+    return { ...row, status: 2, reason: '', body: '', attachments: [], hasEnvelope: false };
+  }
+
+  private roleHexes(g: MGroup): string[] {
+    return g.communityId === null ? [] : (this.roles.get(toHex(g.communityId)) ?? []).map(toHex);
+  }
+
+  /** refold_insert: a status-0 insert refolds its target (type 0: its own msg id; 1..=6: reply_to) with itself as trigger. */
+  private refoldInsert(g: MGroup, seq: bigint, ty: number, msgId: Id, replyTo: Id | null, senderUser: Id, senderDevice: Id): void {
+    const target = ty === 0 ? msgId : replyTo;
+    if (target !== null) this.refold(g, target, { seq, ty, senderUser, senderDevice });
+  }
+
+  /** refold_deleted: a row that became status 2 refolds what it named (type 0: its msg id; 1..=6: reply_to), no trigger. */
+  private refoldDeleted(g: MGroup, row: MRow): void {
+    const target = row.type === 0 ? row.msgId : row.type !== null ? row.replyTo : null;
+    if (target !== null) this.refold(g, target, null);
+  }
+
+  /**
+   * fold::resolve: the lowest-seq type-0 row with status 0 or 2 carrying `msgId`. lead-fold-spoofing (2026-10-07): a
+   * type-0 row whose msg id a stored row of lower seq already names (a fold's or a reply's reply_to) is a repeat and
+   * never a target; honest clients name only a msg id they received, so an honest target precedes every row naming it.
+   */
+  private resolve(g: MGroup, msgId: Id): MRow | null {
+    let t: MRow | null = null;
+    for (const r of g.rows.values()) {
+      if (r.type === 0 && (r.status === 0 || r.status === 2) && r.msgId !== null && same(r.msgId, msgId) && (t === null || r.seq < t.seq)) t = r;
+    }
+    if (t === null) return null;
+    const seq = t.seq;
+    for (const r of g.rows.values()) if (r.seq < seq && r.replyTo !== null && same(r.replyTo, msgId)) return null;
+    return t;
+  }
+
+  /** The status-0 fold rows of `type` that name `target`, sequenced after the target when one is given (lead-fold-spoofing). */
+  private foldsOf(g: MGroup, target: Id, types: readonly number[], after: bigint): MRow[] {
+    return [...g.rows.values()].filter((r) => r.status === 0 && r.type !== null && types.includes(r.type) && r.replyTo !== null &&
+      same(r.replyTo, target) && r.seq > after).sort(bySeq);
+  }
+
+  /** Blanks a stored row's body and drops its envelope (the core's `body = '', envelope = NULL`). */
+  private blank(g: MGroup, r: MRow): void {
+    g.rows.set(r.seq, { ...r, body: '', hasEnvelope: false });
+  }
+
+  /**
+   * fold::refold (L-CORE-33 as amended by S1/S11 and lead-fold-spoofing): recomputes the target's derived state from
+   * the stored rows. Nothing here refuses; a rule breach is ignored.
+   */
+  private refold(g: MGroup, target: Id, trigger: FoldTrigger | null): void {
+    const key = toHex(target);
+    const t = this.resolve(g, target);
+    if (t === null) {
+      // Step 1, not held: a user's own delete blanks only that user's edits (every call but a type-3..6 insert).
+      if (trigger !== null && trigger.ty >= 3) return;
+      const deleters = new Map<string, Id>();
+      for (const r of this.foldsOf(g, target, [2], -1n)) if (r.senderUser !== null) deleters.set(toHex(r.senderUser), r.senderUser);
+      for (const user of deleters.values()) {
+        for (const r of this.foldsOf(g, target, [1], -1n)) if (r.senderUser !== null && same(r.senderUser, user)) this.blank(g, r);
+      }
+      return;
+    }
+    // A fold counts only when sequenced after its target (lead-fold-spoofing); a repeat of a held type 0 refolds nothing.
+    if (trigger !== null && trigger.seq < t.seq) return;
+    if (trigger !== null && trigger.ty === 0 && trigger.seq !== t.seq) return;
+    const author = t.senderUser;
+    // S1(1): a delete by anyone but the author changes nothing; nor does one of a target already deleted.
+    if (trigger !== null && trigger.ty === 2 && (author === null || !same(trigger.senderUser, author) || t.status === 2)) return;
+    // S1(3): a fold arriving for a deleted target: an edit is blanked; nothing else is touched.
+    if (t.status === 2 && trigger !== null && trigger.ty !== 0) {
+      if (trigger.ty === 1) {
+        const r = g.rows.get(trigger.seq);
+        if (r !== undefined) this.blank(g, r);
+      }
+      return;
+    }
+    // Step 2: deleted by the delivery service, or by its author after it.
+    const authorDeleted = author !== null && this.foldsOf(g, target, [2], t.seq).some((r) => r.senderUser !== null && same(r.senderUser, author));
+    if (t.status === 2 || authorDeleted) {
+      // The purge (task 3): only this device's own delete of its own user's readable message.
+      if (trigger !== null && trigger.ty === 2 && same(trigger.senderDevice, this.me.device) && same(trigger.senderUser, this.me.user) &&
+        author !== null && same(author, this.me.user) && t.status === 0) {
+        const purgeKey = `${toHex(g.groupId)}/${String(t.seq)}`;
+        if (!this.purgeRows.has(purgeKey)) {
+          this.purgeRows.set(purgeKey, { groupId: g.groupId, seq: t.seq, channelId: g.targetId, blobIds: t.attachments.map((x) => x.blobId) });
+        }
+      }
+      g.rows.set(t.seq, { ...t, status: 2, body: '', reason: '', editBody: null, editSeq: 0n, attachments: [], hasEnvelope: false });
+      // S11: the author's edits (any status) are blanked; another user's ignored edits keep their stored words.
+      if (author !== null) {
+        for (const r of [...g.rows.values()]) {
+          if (r.type === 1 && r.replyTo !== null && same(r.replyTo, target) && r.senderUser !== null && same(r.senderUser, author)) this.blank(g, r);
+        }
+      }
+      g.reactions.delete(key);
+      g.pins.delete(key);
+      return;
+    }
+    // Step 3: the author's highest-seq edit; the mention flag is untouched.
+    const edits = author === null ? [] : this.foldsOf(g, target, [1], t.seq).filter((r) => r.senderUser !== null && same(r.senderUser, author));
+    const edit = edits[edits.length - 1];
+    g.rows.set(t.seq, { ...t, editBody: edit?.body ?? null, editSeq: edit?.seq ?? 0n });
+    // Step 4: per (user, emoji) the highest-seq add or remove decides.
+    const latest = new Map<string, MRow>();
+    for (const r of this.foldsOf(g, target, [3, 4], t.seq)) if (r.senderUser !== null) latest.set(`${toHex(r.senderUser)}\u0000${r.body}`, r);
+    const present = new Map<string, { user: Id; emoji: string; seq: bigint }>();
+    for (const [k, r] of latest) if (r.type === 3 && r.senderUser !== null) present.set(k, { user: r.senderUser, emoji: r.body, seq: r.seq });
+    if (present.size > 0) g.reactions.set(key, present);
+    else g.reactions.delete(key);
+    // Step 5: the highest-seq pin or unpin decides.
+    const pin = this.foldsOf(g, target, [5, 6], t.seq).pop();
+    if (pin !== undefined && pin.type === 5 && pin.senderUser !== null) g.pins.set(key, { target: target.slice(), seq: pin.seq, byUser: pin.senderUser });
+    else g.pins.delete(key);
+  }
+
+  /** The reaction chips of a target (messages.rs timeline): the 20 most counted, shown by first seq then emoji bytes. */
+  private chips(g: MGroup, target: Id): TimelineRow['reactions'] {
+    const by = new Map<string, { emoji: string; users: number; mine: boolean; first: bigint }>();
+    for (const r of g.reactions.get(toHex(target))?.values() ?? []) {
+      const c = by.get(r.emoji) ?? { emoji: r.emoji, users: 0, mine: false, first: r.seq };
+      c.users += 1;
+      c.mine ||= same(r.user, this.me.user);
+      if (r.seq < c.first) c.first = r.seq;
+      by.set(r.emoji, c);
+    }
+    const order = (a: { first: bigint; emoji: string }, b: { first: bigint; emoji: string }): number =>
+      a.first !== b.first ? (a.first < b.first ? -1 : 1) : utf8Order(a.emoji, b.emoji);
+    return [...by.values()]
+      .sort((a, b) => (a.users !== b.users ? b.users - a.users : order(a, b)))
+      .slice(0, 20)
+      .sort(order)
+      .map((c) => ({ emoji: c.emoji, count: c.users, mine: c.mine }));
   }
 
   /** The matching outbox row of L-CORE-08: the group's first row (created, msgId), in any state, whose commitment is c. */
@@ -1036,7 +1393,7 @@ export class ModelCore implements CorePort {
 
 export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome'
-  | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory';
+  | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage';
 export type ModelRoutes = Pick<Routes, RouteName>;
 /** fail: throw before acting; lose: act, then throw a network error; before/after: run fn around acting; gate: wait first. */
 export type Injection = { fail: Error } | { lose: true } | { before: () => void } | { after: () => void } | { gate: Promise<void> };
@@ -1129,6 +1486,24 @@ export class ModelDs {
     deleted: (seq: bigint, epoch: bigint): CborInput[] => [seq, epoch, PEER.device, null, null, new Uint8Array(32), 1_700_000_000n + seq, 1],
     /** add-proposal: an Add of THIRD by the instance's external sender (kind 0, sender null). */
     addProposal: (seq: bigint, epoch: bigint): CborInput[] => [seq, epoch, 0, null, wire.prop(idOf(0x5e, Number(seq)), 'add', THIRD.device)],
+    /** Any application row of `from` (commitment and franking 32 zero bytes, recv_ts 1_700_000_000 + seq, deleted 0). */
+    app: (seq: bigint, epoch: bigint, from: Peer, msgId: Id, body: string, opts: WireOptions = {}): CborInput[] => [
+      seq, epoch, from.device, wire.app(from, msgId, body, opts), new Uint8Array(32), new Uint8Array(32), 1_700_000_000n + seq, 0,
+    ],
+    /** The fold parity rows (L-CORE-39): PEER's target FOLD_TARGET, and PEER's folds with msg id idOf(0x7f, seq). */
+    peerTarget: (seq: bigint, epoch: bigint): CborInput[] => ModelDs.row.app(seq, epoch, PEER, FOLD_TARGET, 'the target'),
+    peerEdit: (seq: bigint, epoch: bigint, target: Id): CborInput[] =>
+      ModelDs.row.app(seq, epoch, PEER, idOf(0x7f, Number(seq)), 'edited by the peer', { type: 1, replyTo: target }),
+    peerReact: (seq: bigint, epoch: bigint, target: Id): CborInput[] =>
+      ModelDs.row.app(seq, epoch, PEER, idOf(0x7f, Number(seq)), '👍', { type: 3, replyTo: target }),
+    peerUnreact: (seq: bigint, epoch: bigint, target: Id): CborInput[] =>
+      ModelDs.row.app(seq, epoch, PEER, idOf(0x7f, Number(seq)), '👍', { type: 4, replyTo: target }),
+    peerDelete: (seq: bigint, epoch: bigint, target: Id): CborInput[] =>
+      ModelDs.row.app(seq, epoch, PEER, idOf(0x7f, Number(seq)), '', { type: 2, replyTo: target }),
+    peerPin: (seq: bigint, epoch: bigint, target: Id): CborInput[] =>
+      ModelDs.row.app(seq, epoch, PEER, idOf(0x7f, Number(seq)), '', { type: 5, replyTo: target }),
+    peerReactUnheld: (seq: bigint, epoch: bigint): CborInput[] =>
+      ModelDs.row.app(seq, epoch, PEER, idOf(0x7f, Number(seq)), '👍', { type: 3, replyTo: FOLD_UNHELD }),
   };
 
   readonly calls: DsCall[] = [];
@@ -1283,7 +1658,7 @@ export class ModelDs {
     for (const e of g.log) {
       if (e.hs === null) {
         if (e.blob === null || e.uploader === null) continue;
-        messages.push({ seq: e.seq, epoch: e.epoch, uploader: toHex(e.uploader), body: str(at(arr(decode(e.blob), 5), 4)) });
+        messages.push({ seq: e.seq, epoch: e.epoch, uploader: toHex(e.uploader), body: str(at(arr(decode(e.blob), 8), 4)) });
       } else if (e.hs.kind !== 0) {
         let committer = '';
         try {
@@ -1395,6 +1770,27 @@ export class ModelDs {
     for (const m of [...g.members]) this.emit(m, 21, g.id, [seq, deletedAt]);
   }
 
+  /**
+   * DELETE /v1/groups/{id}/messages/{seq} as `deviceId` (L-HTTP-80): 404 for an unknown group, a device that is not a
+   * member (checked first) or no message at seq; 403 when the uploader's user is not the caller's; else the blob goes,
+   * the row is tombstoned and op 21 fans out to every member, also for a row already deleted (dillad's no-op update,
+   * internal/ds/message.go:179-193). Attacker statement: the 404 hits only a device no longer in the group.
+   */
+  deleteAs(groupId: Id, deviceId: Id, seq: bigint): 204 | 403 | 404 {
+    const g = this.groups.get(toHex(groupId));
+    if (!g || !g.members.has(toHex(deviceId))) return 404;
+    const row = g.log.find((x) => x.seq === seq && x.hs === null);
+    if (!row || !row.uploader) return 404;
+    const uploader = toHex(row.uploader);
+    const caller = toHex(deviceId);
+    if ((this.owners.get(uploader) ?? uploader) !== (this.owners.get(caller) ?? caller)) return 403;
+    row.blob = null;
+    row.deleted = true;
+    const deletedAt = this.tick();
+    for (const member of g.members) this.emit(member, 21, g.id, [seq, deletedAt]);
+    return 204;
+  }
+
   /** Sends mls.commit_needed to dev. */
   elect(groupId: Id, dev: Id, round: bigint): void {
     const g = this.must(groupId);
@@ -1450,6 +1846,11 @@ export class ModelDs {
         }),
       postCommit: (id, body) => this.call(d, 'postCommit', id, null, () => this.postCommit(d, id, body)),
       postMessage: (id, body) => this.call(d, 'postMessage', id, null, () => this.postMessage(dev, id, body)),
+      deleteGroupMessage: (id, seq) => this.call(d, 'deleteGroupMessage', id, null, () => {
+        const status = this.deleteAs(id, dev, seq);
+        if (status === 403) throw httpError(403, 'E_NOT_UPLOADER');
+        return status === 204 ? 'deleted' : 'gone';
+      }),
       postCursor: (id, body) =>
         this.call(d, 'postCursor', id, null, () => {
           const v = arr(decode(body), 2);

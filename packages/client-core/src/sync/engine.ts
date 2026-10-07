@@ -1,5 +1,5 @@
 import { arr, bin, decode, encode, u64 } from '../cbor';
-import { CoreError, type ApplyResult, type CorePort, type ExpectedGroup, type GroupInfo, type Id } from '../core-port';
+import { CoreError, type ApplyResult, type CorePort, type ExpectedGroup, type GroupInfo, type Id, type OutboxRow, type SendRequest } from '../core-port';
 import { Op, type Frame } from '../gateway/frames';
 import type { Gateway, GatewayEvent, ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
@@ -10,7 +10,7 @@ import { SyncError } from './errors';
 import { SerialQueues } from './group-queue';
 import { JoinAll } from './joinall';
 import type { SyncInternals } from './internals';
-import { discardSend, drainOne, retrySend, sendMessage } from './send';
+import { discardSend, drainOne, retrySend, sendMessage, sendRequest } from './send';
 
 export type SyncRoutes = Pick<Routes, 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome' | 'getChannel'>;
@@ -23,6 +23,12 @@ export interface SyncDeps {
   onJoinAll(progress: { done: number; total: number; failed: number }): void;
   /** A Welcome for an unexpected group; the controller reloads DMs. */
   onUnexpectedWelcome(groupId: Id): void;
+  /** Called by drainOne before sendEncrypt for an outbox row with attachments, every attempt. Rejecting with a DillaHttpError
+   *  404 fails the row with 'E_ATTACHMENT_MISSING'; any other rejection fails it with its code (the person may retry).
+   *  (Pre-flight ruling F5: a DillaHttpError of status 0, 429 or 5xx is transient and leaves the row queued for the next ready.) */
+  beforeSend(groupId: Id, row: OutboxRow): Promise<void>;
+  /** Called by discardSend after sendDiscard with the row as the outbox held it. */
+  onDiscarded(groupId: Id, row: OutboxRow): void;
 }
 export const SYNC = {
   handshakePage: 512, messagePage: 256, commitRetryMax: 5, commitJitterMs: 400,
@@ -343,6 +349,7 @@ export class SyncEngine implements SyncInternals {
     if (this.isStopped) return Promise.reject(new SyncError('E_SYNC_STOPPED'));
     return this.queues.run(`c:${toHex(ch.channelId)}`, () => openChannelFlow(this, ch));
   }
+  sendRequest(g: Id, request: SendRequest): Id { return sendRequest(this, g, request); }
   send(g: Id, text: string): Id { return sendMessage(this, g, text); }
   retry(msgId: Id): void { retrySend(this, msgId); }
   discard(msgId: Id): void { discardSend(this, msgId); }

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ChannelSummary, Notice } from '@dilla/client-core';
 import { FakeClient } from './test/fake-client.ts';
+import { account, ME } from './test/fixtures.ts';
 import { noticeTitle, shouldNotify, startNotifier, type NotifyContext } from './notify.ts';
 
 const A = 'a1'.repeat(16);
@@ -136,5 +137,23 @@ describe('startNotifier', () => {
     const again = startNotifier({ client: h.fake, Notification: Broken, visible: () => true, onScreen: () => null, focus: h.focus, open: h.open });
     expect(() => h.fake.set('notices', { nextId: 2, items: [notice({ id: 1, kind: 'mention' })] })).not.toThrow();
     again();
+  });
+  it('shows a mention as the name it stands for, never the raw token (web-2a card 48)', () => {
+    const h = harness();
+    h.fake.set('account', account());
+    // roleIds on MemberSummary (L-TS-36, published by task 7; ruled: web-e2e 6).
+    h.fake.set(`members:${A}`, [
+      { userId: ME.id, username: 'ada', display: 'Ada L', kind: 0, roleIds: [] },
+      { userId: '28'.repeat(16), username: 'bob', display: '', kind: 0, roleIds: [] },
+    ]);
+    h.fake.set('notices', { nextId: 0, items: [] });
+    const stop = h.start();
+    h.fake.set('notices', { nextId: 2, items: [
+      notice({ id: 0, kind: 'mention', body: `<@${ME.id}> look, <@${'28'.repeat(16)}> and <@everyone>` }),
+      dmNotice({ id: 1, body: `ping <@${ME.id}> <@${'ee'.repeat(16)}>` }),
+    ] });
+    expect(Note.made.map(n => n.options.body)).toEqual(['@Ada L look, @bob and @everyone', 'ping @Ada L @eeeeeeee']);
+    expect(Note.made.some(n => String(n.options.body).includes('<@'))).toBe(false);
+    stop();
   });
 });

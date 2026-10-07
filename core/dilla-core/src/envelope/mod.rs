@@ -18,7 +18,7 @@ pub const MAX_BODY_LONG: usize = 4_000;
 /// `body` limit in UTF-8 bytes for types 3 and 4 (the emoji).
 pub const MAX_BODY_SHORT: usize = 32;
 /// interfaces.md §2.8 (R6, R32): the tightened envelope limits. The worst case
-/// is 4 × (32+32+12+8+255+8192) + 2 × (2048+256+1024+16384) + 4000 ≈ 74 KiB plus
+/// is 4 × (32+32+12+8+255+255+8192) + 2 × (2048+256+1024+16384) + 4000 ≈ 74 KiB plus
 /// CBOR heads, which fits the 128 KiB ciphertext cap of protocol/02 with padding
 /// to 256-byte buckets.
 pub const MAX_ATTACHMENTS: usize = 4;
@@ -26,6 +26,9 @@ pub const MAX_PREVIEWS: usize = 2;
 pub const MAX_THUMB: usize = 8_192;
 pub const MAX_PREVIEW_IMAGE: usize = 16_384;
 pub const MAX_MIME: usize = 255;
+/// Element 8 of an attachment: the file's name as the sender chose it, UTF-8, at most MAX_NAME bytes
+/// ("" when the sender gives none). A receiver sanitises it for display and saving; it refuses only length.
+pub const MAX_NAME: usize = 255;
 pub const MAX_URL: usize = 2_048;
 pub const MAX_TITLE: usize = 256;
 pub const MAX_DESCRIPTION: usize = 1_024;
@@ -77,10 +80,11 @@ impl EnvelopeType {
     }
 }
 
-/// `blob_id` is the SHA-256 of the **ciphertext**; a receiver that fetches the blob must verify it
-/// (`E_BLOB_HASH`). `thumb` uses the same key with the nonce's last byte XORed with 0x01.
+/// `blob_id` is the SHA-256 of the **stored bytes** (ciphertext ‖ tag); a receiver
+/// verifies it (`E_BLOB_HASH`). `thumb` is the sealed thumbnail from
+/// `crate::attachment::seal_thumb`, not decrypted media.
 ///
-/// `key` and `nonce` are the AES-GCM material of the blob and `thumb` is decrypted media, so this
+/// `key` and `nonce` are the AES-GCM material of the blob and `thumb` is sealed media, so this
 /// does not derive `Debug` (see the hand-written impl below).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Attachment {
@@ -93,6 +97,7 @@ pub struct Attachment {
     pub w: Option<u64>,
     pub h: Option<u64>,
     pub thumb: Option<Vec<u8>>,
+    pub name: String,
 }
 
 /// Sender-generated. A receiver MUST NOT fetch the remote resource.
@@ -155,6 +160,7 @@ impl core::fmt::Debug for Attachment {
                 "thumb",
                 &format_args!("{}", debug_opt_bytes(self.thumb.as_ref())),
             )
+            .field("name", &format_args!("<{} bytes>", self.name.len()))
             .finish()
     }
 }
@@ -208,7 +214,7 @@ impl Envelope {
             .text(&self.body);
         e.array(self.attachments.len());
         for a in &self.attachments {
-            e.array(8)
+            e.array(9)
                 .bytes(&a.blob_id)
                 .bytes(&a.key)
                 .bytes(&a.nonce)
@@ -216,7 +222,8 @@ impl Envelope {
                 .text(&a.mime)
                 .opt_uint(a.w)
                 .opt_uint(a.h)
-                .opt_bytes(a.thumb.as_deref());
+                .opt_bytes(a.thumb.as_deref())
+                .text(&a.name);
         }
         e.array(self.previews.len());
         for p in &self.previews {
@@ -269,7 +276,7 @@ impl Envelope {
         }
         let mut attachments = Vec::with_capacity(n);
         for _ in 0..n {
-            d.array(8)?;
+            d.array(9)?;
             let blob_id = d.bytes_exact::<32>()?;
             let key = d.bytes_exact::<32>()?;
             let nonce = d.bytes_exact::<12>()?;
@@ -289,6 +296,10 @@ impl Envelope {
                 }
                 Some(t)
             };
+            let name = d.text()?.to_owned();
+            if name.len() > MAX_NAME {
+                return Err(LIMIT);
+            }
             attachments.push(Attachment {
                 blob_id,
                 key,
@@ -298,6 +309,7 @@ impl Envelope {
                 w,
                 h,
                 thumb,
+                name,
             });
         }
 
@@ -354,7 +366,12 @@ impl Envelope {
     }
 
     /// The reference decoder's order, reproduced exactly: element count, then `v`, then `type`,
-    /// then the two fixed lengths, then every limit.
+    /// then the two fixed lengths, then every limit, then the attachment names, then the type 1..6
+    /// rule (L-CORE-30).
+    ///
+    /// Attacker statement (lesson e): the type 1..6 refusals reject only an envelope its own sender
+    /// built wrongly; an honest client never sends a fold without a target or a fold carrying
+    /// files, and no other member can make an honest member's envelope fail them.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         if self.v != 1 {
             return Err(ProtocolError::EnvelopeShape);
@@ -386,6 +403,16 @@ impl Envelope {
             {
                 return Err(ProtocolError::EnvelopeLimit);
             }
+        }
+        if self.attachments.iter().any(|a| a.name.len() > MAX_NAME) {
+            return Err(ProtocolError::EnvelopeLimit);
+        }
+        if self.kind != EnvelopeType::Message
+            && (self.reply_to.is_none()
+                || !self.attachments.is_empty()
+                || !self.previews.is_empty())
+        {
+            return Err(ProtocolError::EnvelopeShape);
         }
         Ok(())
     }
@@ -510,6 +537,7 @@ mod tests {
                     w: a["w"].as_u64(),
                     h: a["h"].as_u64(),
                     thumb: opt_bytes(&a["thumb"]),
+                    name: a["name"].as_str().expect("name").to_owned(),
                 })
                 .collect(),
             previews: j["previews"]
@@ -533,8 +561,8 @@ mod tests {
         let cases = doc["cases"].as_array().expect("cases");
         assert_eq!(
             cases.len(),
-            4,
-            "envelope.json is expected to carry four cases"
+            5,
+            "envelope.json is expected to carry five cases"
         );
         for case in cases {
             let name = case["name"].as_str().expect("name");
@@ -632,6 +660,7 @@ mod tests {
 
         let mut reaction = base();
         reaction.kind = EnvelopeType::ReactionAdd;
+        reaction.reply_to = Some(MsgId::from_bytes([0x02; 16]));
         reaction.body = "a".repeat(MAX_BODY_SHORT);
         assert_eq!(reaction.validate(), Ok(()));
         reaction.body = "a".repeat(MAX_BODY_SHORT + 1);
@@ -646,6 +675,7 @@ mod tests {
             w: None,
             h: None,
             thumb: None,
+            name: String::new(),
         };
         let mut many = base();
         many.attachments = vec![attachment.clone(); MAX_ATTACHMENTS];
@@ -706,6 +736,7 @@ mod tests {
             w: None,
             h: None,
             thumb: None,
+            name: "map.png".to_owned(),
         }
     }
 
@@ -718,9 +749,9 @@ mod tests {
         }
     }
 
-    /// The `Some(bytes)` arm of `thumb` and `image` is not exercised by any vector: all four cases
-    /// in `envelope.json` carry `thumb: null` and `image: null`, so a decoder that silently threw
-    /// the bytes away would still pass the vector suite.
+    /// `envelope.json` case 5 now exercises the `Some(bytes)` arm of `thumb`; a preview `image` is
+    /// still never set by any vector, so a decoder that silently threw those bytes away would still
+    /// pass the vector suite. This round trip covers both.
     #[test]
     fn round_trip_preserves_a_non_null_thumb_and_preview_image() {
         let mut env = base();
@@ -890,32 +921,24 @@ mod tests {
         assert!(env.validate().is_err());
     }
 
-    /// interfaces.md §2.8: envelope.json's rejects array grows to nine cases and
-    /// every one is refused with E_ENVELOPE_LIMIT. Nine, not eight: §2.8 lists
-    /// both a count case per collection (5 attachments, 3 previews) and one case
-    /// per scalar bound, beside the pre-existing tombstone case.
+    /// envelope.json's rejects: interfaces.md §2.8's nine limit cases (with the tombstone) and
+    /// web-2b task 1's four (L-CORE-30), each refused with the code the file names.
     #[test]
-    fn vector_rejects_cover_every_new_limit() {
+    fn every_vector_reject_is_refused_with_its_own_code() {
         let doc: serde_json::Value = serde_json::from_str(ENVELOPE_JSON).expect("envelope.json");
         let rejects = doc["rejects"].as_array().expect("rejects array");
-        assert_eq!(
-            rejects.len(),
-            9,
-            "one reject per tightened limit plus the type-2 body case"
-        );
+        assert_eq!(rejects.len(), 13);
+        let mut by_code = std::collections::BTreeMap::<String, usize>::new();
         for case in rejects {
-            let bytes = unhex(case["cbor"].as_str().expect("cbor"));
-            let err = Envelope::decode(&bytes).expect_err("must be refused");
-            assert_eq!(
-                case["error"].as_str().expect("error"),
-                "E_ENVELOPE_LIMIT",
-                "every reject is a limit case"
-            );
-            assert!(
-                format!("{err:?}").contains("Limit"),
-                "refused as a limit: {err:?}"
-            );
+            let name = case["name"].as_str().expect("name");
+            let want = case["error"].as_str().expect("error");
+            let err =
+                Envelope::decode(&unhex(case["cbor"].as_str().expect("cbor"))).expect_err(name);
+            assert_eq!(err.code(), want, "{name}");
+            *by_code.entry(want.to_owned()).or_default() += 1;
         }
+        assert_eq!(by_code.get("E_ENVELOPE_LIMIT"), Some(&10));
+        assert_eq!(by_code.get("E_ENVELOPE_SHAPE"), Some(&3));
     }
 
     /// A derived `Debug` prints `k_f`, the attachment key and nonce, the thumbnail, the preview
@@ -927,6 +950,7 @@ mod tests {
         env.body = "the quick brown fox".to_owned();
         let mut a = sample_attachment();
         a.thumb = Some(vec![0x66; 8]);
+        a.name = "secret-plan.pdf".to_owned();
         env.attachments = vec![a];
         let mut p = sample_preview();
         p.image = Some(vec![0x77; 8]);
@@ -951,6 +975,11 @@ mod tests {
         assert!(a.contains("nonce: <redacted>"), "{a}");
         assert!(a.contains("thumb: Some(<8 bytes>)"), "{a}");
         assert!(a.contains("mime: \"image/jpeg\""), "{a}");
+        assert!(a.contains("name: <15 bytes>"), "{a}");
+        assert!(
+            !s.contains("secret-plan") && !a.contains("secret-plan"),
+            "the file name leaked: {s}"
+        );
 
         let p = format!("{:?}", env.previews[0]);
         assert!(p.contains("image: Some(<8 bytes>)"), "{p}");
@@ -980,6 +1009,140 @@ mod tests {
         assert_eq!(
             env.verify_commitment(&wrong),
             Err(ProtocolError::FrankMismatch)
+        );
+    }
+
+    /// L-CORE-30: types 1..6 name their target and carry no files. Attacker statement: only the
+    /// envelope's own sender can build one that fails; no member can make an honest envelope fail.
+    #[test]
+    fn types_one_to_six_require_reply_to_and_carry_no_attachments_or_previews() {
+        for kind in [
+            EnvelopeType::Edit,
+            EnvelopeType::Delete,
+            EnvelopeType::ReactionAdd,
+            EnvelopeType::ReactionRemove,
+            EnvelopeType::Pin,
+            EnvelopeType::Unpin,
+        ] {
+            let mut env = base();
+            env.kind = kind;
+            env.body = match kind {
+                EnvelopeType::Edit => "fixed".to_owned(),
+                EnvelopeType::ReactionAdd | EnvelopeType::ReactionRemove => "👍".to_owned(),
+                _ => String::new(),
+            };
+            assert_eq!(
+                env.validate(),
+                Err(ProtocolError::EnvelopeShape),
+                "{kind:?} without reply_to"
+            );
+            env.reply_to = Some(MsgId::from_bytes([0x02; 16]));
+            assert_eq!(env.validate(), Ok(()), "{kind:?} with reply_to");
+            let bytes = env.encode().expect("encodes");
+            assert_eq!(
+                Envelope::decode(&bytes),
+                Ok(env.clone()),
+                "{kind:?} round trip"
+            );
+            let mut with_file = env.clone();
+            with_file.attachments = vec![sample_attachment()];
+            assert_eq!(
+                with_file.validate(),
+                Err(ProtocolError::EnvelopeShape),
+                "{kind:?} with a file"
+            );
+            let mut with_preview = env.clone();
+            with_preview.previews = vec![sample_preview()];
+            assert_eq!(
+                with_preview.validate(),
+                Err(ProtocolError::EnvelopeShape),
+                "{kind:?} with a preview"
+            );
+        }
+        let mut message = base();
+        message.attachments = vec![sample_attachment()];
+        assert_eq!(
+            message.validate(),
+            Ok(()),
+            "a message stands alone and carries files"
+        );
+        let mut tomb = base();
+        tomb.kind = EnvelopeType::Delete;
+        tomb.body = "x".to_owned();
+        assert_eq!(
+            tomb.validate(),
+            Err(ProtocolError::EnvelopeLimit),
+            "the body limit is checked first"
+        );
+    }
+
+    #[test]
+    fn an_attachment_name_is_at_most_255_bytes() {
+        assert_eq!(MAX_NAME, 255);
+        let mut env = base();
+        let mut a = sample_attachment();
+        a.name = "n".repeat(MAX_NAME);
+        env.attachments = vec![a.clone()];
+        let bytes = env.encode().expect("at the bound");
+        assert_eq!(
+            Envelope::decode(&bytes).expect("decodes").attachments[0].name,
+            "n".repeat(MAX_NAME)
+        );
+        a.name = "n".repeat(MAX_NAME + 1);
+        env.attachments = vec![a];
+        assert_eq!(env.validate(), Err(ProtocolError::EnvelopeLimit));
+        let mut e = Encoder::with_capacity(512);
+        e.array(9)
+            .uint(1)
+            .bytes(&[0x01; 16])
+            .uint(0)
+            .null()
+            .null()
+            .text("");
+        e.array(1);
+        e.array(9)
+            .bytes(&[0x03; 32])
+            .bytes(&[0x44; 32])
+            .bytes(&[0x55; 12])
+            .uint(1)
+            .text("image/png")
+            .null()
+            .null()
+            .null()
+            .text(&"n".repeat(MAX_NAME + 1));
+        e.array(0);
+        e.bytes(&[0x06; 32]);
+        assert_eq!(
+            Envelope::decode(&e.into_vec()),
+            Err(ProtocolError::EnvelopeLimit)
+        );
+    }
+
+    #[test]
+    fn an_attachment_of_eight_elements_is_refused() {
+        let mut e = Encoder::with_capacity(256);
+        e.array(9)
+            .uint(1)
+            .bytes(&[0x01; 16])
+            .uint(0)
+            .null()
+            .null()
+            .text("");
+        e.array(1);
+        e.array(8)
+            .bytes(&[0x03; 32])
+            .bytes(&[0x44; 32])
+            .bytes(&[0x55; 12])
+            .uint(1)
+            .text("image/png")
+            .null()
+            .null()
+            .null();
+        e.array(0);
+        e.bytes(&[0x06; 32]);
+        assert_eq!(
+            Envelope::decode(&e.into_vec()),
+            Err(ProtocolError::EnvelopeShape)
         );
     }
 }

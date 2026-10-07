@@ -101,6 +101,10 @@ Client policy for proposals from the external sender:
 | GroupContextExtensions | accept only if the sole change is to `external_senders` and the new instance key is signed by the old one (`03-identity.md`, "Instance key rotation") | reject |
 | ReInit, PreSharedKey, Update, any other | reject | reject |
 
+A client that holds no role snapshot (the browser client of this version) accepts the instance's
+`Add` on the `03-identity.md` checks alone; the instance's own eligibility check (`02` invariant 4)
+is then the only gate.
+
 Client policy for proposals from members:
 
 - `Update`: accept only if its leaf node carries a credential byte-identical to the one the

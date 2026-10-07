@@ -48,4 +48,11 @@ describe('ChannelHeader', () => {
     const { container } = render(<div className="d-root"><ChannelHeader name="lfg" topic="looking for group" readable /></div>);
     await expectNoAxeViolations(container);
   });
+
+  it('renders its actions after the topic', () => {
+    const { container } = render(<ChannelHeader name="general" topic="say hi" actions={<button type="button">pinned</button>} />);
+    const actions = container.querySelector('.d-channel-header__actions')!;
+    expect(actions).toContainElement(screen.getByRole('button', { name: 'pinned' }));
+    expect(container.querySelector('.d-channel-header__topic')!.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });

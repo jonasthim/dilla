@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, DeviceSummary, DmSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
-import { account, ME } from '../test/fixtures.ts';
+import { account, ME, timelineItem } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { formatTime } from '../strings/index.ts';
 import { joinErrorState } from '../router.ts';
@@ -34,12 +34,12 @@ const CHANNELS: ChannelSummary[] = [
   ch(READ, 'lobby', { parentId: CAT, position: 1, mode: 1, group: 'unsupported' }),
 ];
 const MEMBERS: MemberSummary[] = [
-  { userId: ME.id, username: 'ada', display: 'Ada L', kind: 0 },
-  { userId: PEER, username: 'bob', display: '', kind: 0 },
-  { userId: BOT, username: 'helper', display: 'Helper', kind: 1 },
+  { userId: ME.id, username: 'ada', display: 'Ada L', kind: 0, roleIds: [] },
+  { userId: PEER, username: 'bob', display: '', kind: 0, roleIds: [] },
+  { userId: BOT, username: 'helper', display: 'Helper', kind: 1, roleIds: [] },
 ];
 function item(over: Partial<TimelineItem> & { key: string }): TimelineItem {
-  return { state: 'ok', reason: '', senderUser: PEER, senderDevice: PEER_DEV, own: false, web: false, bot: false, ts: NOW, body: '', msgId: null, ...over };
+  return timelineItem({ senderUser: PEER, senderDevice: PEER_DEV, ts: NOW, ...over });
 }
 function timeline(over: Partial<TimelineState> = {}): TimelineState {
   return { channelId: GEN, group: 'active', items: [], hasEarlier: false, ...over };
@@ -226,6 +226,74 @@ describe('timeline', () => {
     expect(before.isConnected).toBe(false);
     expect(within(after).getByText('in random')).toBeInTheDocument();
     expect(after).not.toHaveAttribute('aria-busy');
+  });
+  it('starts at the newest row after switching timelines with overlapping row keys', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
+      item({ key: 's1', msgId: '11'.repeat(16), seq: '1', body: 'general first' }),
+      item({ key: 's2', msgId: '12'.repeat(16), seq: '2', body: 'general last' }),
+    ] })));
+    act(() => fake.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [
+      item({ key: 's1', msgId: '21'.repeat(16), seq: '1', body: 'random first' }),
+      item({ key: 's3', msgId: '23'.repeat(16), seq: '3', body: 'random last' }),
+    ] })));
+    act(() => screen.getByText('general first').closest<HTMLElement>('.d-message-row')?.focus());
+    expect(screen.getByText('general first').closest('.d-message-row')).toHaveAttribute('data-active', 'true');
+    await user.click(within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: /^random/ }));
+    expect(screen.getByText('random last').closest('.d-message-row')).toHaveAttribute('data-active', 'true');
+    expect(screen.getByText('random first').closest('.d-message-row')).not.toHaveAttribute('data-active', 'true');
+  });
+  it('closes a row emoji picker before switching to a timeline with the same row key', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
+      item({ key: 's1', msgId: '11'.repeat(16), seq: '1', body: 'general row' }),
+    ] })));
+    act(() => fake.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [
+      item({ key: 's1', msgId: '21'.repeat(16), seq: '1', body: 'random row' }),
+    ] })));
+    const row = screen.getByText('general row').closest<HTMLElement>('.d-message-row')!;
+    await user.click(within(row).getByRole('button', { name: 'react' }));
+    expect(screen.getByRole('dialog', { name: 'pick a reaction' })).toBeInTheDocument();
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}');
+    expect(path()).toBe(`/c/${A}/${RAND}`);
+    expect(screen.queryByRole('dialog', { name: 'pick a reaction' })).toBeNull();
+    expect(screen.getByRole('log', { name: 'messages in #random' })).toHaveFocus();
+    expect(fake.callsOf('react')).toEqual([]);
+  });
+  it('hands focus on when Alt+Arrow switches channels from the composer', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    act(() => fake.set(`timeline:${RAND}`, timeline({ channelId: RAND })));
+    const before = composer();
+    await user.click(before);
+    expect(before).toHaveFocus();
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}');
+    expect(path()).toBe(`/c/${A}/${RAND}`);
+    expect(before.isConnected).toBe(false);
+    expect(document.activeElement).not.toBe(document.body);
+    expect([screen.getByRole('log', { name: 'messages in #random' }), composer('random')])
+      .toContain(document.activeElement);
+  });
+  it('remounts the composer after dismissing a mention query and switching channels', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    act(() => fake.set(`timeline:${RAND}`, timeline({ channelId: RAND })));
+    const before = composer();
+    await user.type(composer(), '@');
+    const first = within(screen.getByRole('listbox', { name: 'people to mention' })).getAllByRole('option')[0];
+    await user.keyboard('{ArrowDown}');
+    expect(first).toHaveAttribute('aria-selected', 'false');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox', { name: 'people to mention' })).toBeNull();
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}');
+    expect(path()).toBe(`/c/${A}/${RAND}`);
+    const after = composer('random');
+    expect(after).not.toBe(before);
+    expect(before.isConnected).toBe(false);
+    await user.click(after);
+    await user.type(composer('random'), '@');
+    expect(within(screen.getByRole('listbox', { name: 'people to mention' })).getAllByRole('option')[0])
+      .toHaveAttribute('aria-selected', 'true');
   });
   it('mounts a new log when the first slice arrives, and keeps focus in it', () => {
     const { fake } = setup(`/c/${A}/${GEN}`);
@@ -589,7 +657,7 @@ describe('keyboard', () => {
     expect(composer()).toHaveFocus();
     expect(composer()).toHaveAttribute('aria-disabled', 'true');
   });
-  it('tabs through skip link, rail, sidebar tabs, channels, log and composer in that order', async () => {
+  it('tabs through skip link, rail, sidebar tabs, channels, the pins button, the active row and the composer in that order', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' })] })));
     await user.tab();
@@ -601,7 +669,13 @@ describe('keyboard', () => {
     await user.tab();
     expect(screen.getByRole('tabpanel', { name: 'channels' })).toContainElement(document.activeElement as HTMLElement);
     await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('log'));
+    const header = document.querySelector<HTMLElement>('.d-channel-header');
+    if (header === null) throw new Error('no header');
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'pinned' }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('article'));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'attach files' }));
     await user.tab();
     expect(composer()).toHaveFocus();
   });

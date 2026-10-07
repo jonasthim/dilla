@@ -121,7 +121,7 @@ func NewMetrics(r prometheus.Registerer, g prometheus.Gatherer) *Metrics {
 	m.BlobGCBytes = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "dilla_blob_gc_bytes_total", Help: "Ciphertext bytes the sweeper reclaimed."})
 	m.BlobRefsExpired = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "dilla_blob_refs_expired_total", Help: "Blob references the sweeper dropped, by reason (retention, channel_deleted)."},
+		prometheus.CounterOpts{Name: "dilla_blob_refs_expired_total", Help: "Blob references the sweeper dropped, by reason (retention, channel_deleted, pending)."},
 		[]string{"reason"})
 	m.BlobPurges = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "dilla_blob_purges_total", Help: "Blobs an instance admin purged."})
@@ -244,7 +244,7 @@ func (m *Metrics) BlobCollected(size uint64) {
 }
 
 // BlobRefExpired records one reference the sweeper dropped; reason is
-// "retention" or "channel_deleted".
+// "retention", "channel_deleted" or "pending".
 func (m *Metrics) BlobRefExpired(reason string) {
 	if m == nil {
 		return

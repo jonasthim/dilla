@@ -7,7 +7,7 @@
 use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
 use dilla_core::client::ClientError;
 use dilla_core_wasm::facade::{
-    client_js_error, community_arg, core_open, fixed_arg, login_arg, purpose_arg,
+    client_js_error, community_arg, core_open, fixed_arg, login_arg, purpose_arg, role_ids_arg,
 };
 use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
@@ -44,8 +44,14 @@ const VECTOR_ENVELOPE_COMMITMENT: &str =
 /// against a report produced by the same
 /// wasm build proves only internal consistency: a build that silently lost an entire suite would
 /// pass. Plan B task 4 holds the equivalent golden for the wasip1 leg.
-const EXPECTED_SUITES: [&str; 6] = [
-    "envelope", "franking", "sframe", "identity", "frames", "rejects",
+const EXPECTED_SUITES: [&str; 7] = [
+    "envelope",
+    "franking",
+    "sframe",
+    "identity",
+    "frames",
+    "attachment",
+    "rejects",
 ];
 
 #[wasm_bindgen_test]
@@ -66,7 +72,7 @@ fn every_case_of_every_suite_holds_on_wasm() {
     let names: Vec<&str> = report.suites.iter().map(|s| s.name).collect();
     assert_eq!(
         names, EXPECTED_SUITES,
-        "the wasm build must run all six suites, in order"
+        "the wasm build must run all seven suites, in order"
     );
 
     // Every CaseReport is one (case, field) check, so the two counters and the case rows must agree.
@@ -267,7 +273,7 @@ fn a_redacted_probe_message_never_carries_the_statement() {
 fn the_version_getters_agree_with_dilla_core_on_wasm() {
     assert_eq!(core_version(), dilla_core::CORE_VERSION);
     assert_eq!(abi_version(), BROWSER_ABI_VERSION);
-    assert_eq!(BROWSER_ABI_VERSION, 5);
+    assert_eq!(BROWSER_ABI_VERSION, 6);
 }
 
 /// The message a `JsError` carries across the boundary: what the media worker matches on.
@@ -576,5 +582,56 @@ fn media_errors_are_bare_codes() {
                 .unwrap_err()
         ),
         "E_BAD_OPTIONS"
+    );
+}
+
+const ENVELOPE_JSON: &str = include_str!("../../../protocol/vectors/envelope.json");
+
+/// web-2b task 1 (L-CORE-30): the JSON surface carries the attachment's ninth element, `name`.
+#[wasm_bindgen_test]
+fn the_wasm_bindgen_surface_round_trips_every_envelope_vector_with_its_name() {
+    let doc: serde_json::Value = serde_json::from_str(ENVELOPE_JSON).unwrap();
+    let cases = doc["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 5);
+    for case in cases {
+        let cbor = case["cbor"].as_str().unwrap();
+        let json = envelope_decode_json(&unhex(cbor)).unwrap();
+        assert_eq!(
+            hex(&envelope_encode(&json).unwrap()),
+            cbor,
+            "{}",
+            case["name"]
+        );
+    }
+    let first = envelope_decode_json(&unhex(cases[0]["cbor"].as_str().unwrap())).unwrap();
+    assert!(first.contains("\"name\":\"wolf-capes.jpg\""), "{first}");
+}
+
+/// L-WASM-30: own_roles_set's role ids are 0..=64 ids of 16 bytes, refused in the facade before the
+/// core is borrowed; the detail names the length and never the bytes.
+#[wasm_bindgen_test]
+fn role_ids_are_zero_to_sixty_four_ids_of_sixteen_bytes() {
+    assert_eq!(role_ids_arg(&[]), Ok(()));
+    assert_eq!(role_ids_arg(&[0x5a; 16]), Ok(()));
+    assert_eq!(role_ids_arg(&[0x5a; 1024]), Ok(()));
+    let odd = role_ids_arg(&[0x5a; 17]).unwrap_err();
+    assert_eq!(
+        odd,
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "role_ids: expected 0..=64 ids of 16 bytes, got 17 bytes".to_owned()
+        }
+    );
+    assert!(
+        !odd.detail.contains("5a"),
+        "the detail must not echo the ids"
+    );
+    assert_eq!(
+        message(client_js_error(&odd)),
+        "E_CORE_INPUT: role_ids: expected 0..=64 ids of 16 bytes, got 17 bytes"
+    );
+    assert_eq!(
+        role_ids_arg(&[0x5a; 1040]).unwrap_err().detail,
+        "role_ids: expected 0..=64 ids of 16 bytes, got 1040 bytes"
     );
 }

@@ -159,7 +159,7 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `POST /v1/groups/{id}/heal` | E | `[group_info(bstr), tail([[seq,epoch,kind,sender,blob]]), ratchet_tree(bstr\|null)]` | `[epoch, next_seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN` |
 | `GET /v1/welcomes?after=&limit=` | E or V | — | `[[welcome_id, group_id, epoch, commit_seq, blob, ratchet_tree, tree_hash]]` | — |
 | `DELETE /v1/welcomes/{welcome_id}` | E or V | — | `204` | `E_NOT_FOUND` |
-| `DELETE /v1/groups/{id}/messages/{seq}` | E | — | `204` | `E_NOT_UPLOADER`, `E_NOT_FOUND` |
+| `DELETE /v1/groups/{id}/messages/{seq}` | E | — | `204` | `E_NOT_FOUND`, `E_NOT_UPLOADER` |
 | `POST /v1/groups/{id}/cursor` | E | `[last_seq, last_epoch]` | `204` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/proposals` | E | — | `[[ref, kind, target_leaf\|null, blob, void(uint)]]` | `E_NOT_FOUND` |
 
@@ -167,6 +167,8 @@ Two rules the table encodes: a Welcome is **fetched without being consumed** —
 marks it delivered, because `StagedWelcome::new_from_welcome` consumes the key material even when
 the client then fails — and the Welcome response carries the ratchet tree **as of the welcoming
 epoch**, because dilla Welcomes carry no tree and the live tree has moved on.
+
+`DELETE /v1/groups/{id}/messages/{seq}` is member-only: a caller whose device is not a current member of the group is `404 E_NOT_FOUND`, the answer every member-only group route gives, so the route tells no device outside the group whether it exists. A member that is not the uploading user is then `403 E_NOT_UPLOADER`; any member device of the uploading user may delete. A `seq` the group holds no message at is `404 E_NOT_FOUND`. An accepted delete keeps the row's `seq`, `epoch`, `uploader_device`, `commitment`, `franking_tag` and `recv_ts`, drops its ciphertext and answers `204`. An accepted delete fans `message.deleted [seq, deleted_at]` (op 21) to every member device of the group, the deleting device included, with replay.
 
 The `group_id`, `epoch` and `tree_hash` served with a Welcome (on `GET /v1/welcomes` and in the
 `mls.welcome` frame) are the instance's own: the group the commit was uploaded to, the epoch the

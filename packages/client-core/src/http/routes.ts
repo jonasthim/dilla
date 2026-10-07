@@ -2,6 +2,7 @@
 import { CborError, arr, bin, decode, encode, opt, str, u53, u64, type CborValue } from '../cbor';
 import { toHex } from '../hex';
 import { HttpClient, type Bucket, type HttpRequest } from './client';
+import { DillaHttpError } from './errors';
 
 export const MEMBERS_PAGE = 200;
 export const HANDSHAKES_MAX = 512;
@@ -28,7 +29,7 @@ export interface Ticket { ticket: string; expires: bigint; }
 export interface CommunityRow { id: Uint8Array; name: string; owner: Uint8Array; policyVersion: bigint; }
 export interface ChannelRow { id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null;
   name: string; topic: string; position: number; seq: bigint; textGroupId: Uint8Array | null; }
-export interface MemberRow { userId: Uint8Array; username: string; display: string; kind: 0 | 1; nick: string; }
+export interface MemberRow { userId: Uint8Array; username: string; display: string; kind: 0 | 1; nick: string; roleIds: Uint8Array[]; }
 export interface SeqEpoch { seq: bigint; epoch: bigint; }
 export interface RowsPage { raw: Uint8Array; count: number; lastSeq: bigint | null; }
 export interface WelcomesPage { raw: Uint8Array; count: number; lastId: bigint | null; }
@@ -40,6 +41,13 @@ export interface Limits { maxCiphertextBytes: number; keypackagesPerDevice: numb
 function id(name: string, v: Uint8Array): string {
   if (v.length !== 16) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 16 bytes');
   return toHex(v);
+}
+function digest(name: string, v: Uint8Array): string {
+  if (v.length !== 32) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 32 bytes');
+  return toHex(v);
+}
+function blobPath(channelId: Uint8Array, blobId: Uint8Array): string {
+  return `/v1/channels/${id('channelId', channelId)}/blobs/${digest('blobId', blobId)}`;
 }
 function count(name: string, v: bigint): string {
   if (v < 0n) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must not be negative');
@@ -74,14 +82,15 @@ function compareBytes(a: Uint8Array, b: Uint8Array): number {
 }
 function memberRow(value: CborValue): MemberRow {
   const row = atLeast(value, 7);
-  return { userId: bin(row[0], 16), nick: str(row[2]), username: str(row[4]), display: str(row[5]), kind: oneOf(row[6], [0, 1]) };
+  return { userId: bin(row[0], 16), nick: str(row[2]), roleIds: row[3] === null ? [] : arr(row[3]).map((v) => bin(v, 16)),
+    username: str(row[4]), display: str(row[5]), kind: oneOf(row[6], [0, 1]) };
 }
 
 export class Routes {
   constructor(private readonly http: HttpClient) {}
 
   private async body(method: HttpRequest['method'], path: string, bucket: Bucket, idempotent: boolean,
-    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429'> = {}): Promise<Uint8Array> {
+    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429' | 'contentType'> = {}): Promise<Uint8Array> {
     return (await this.http.request({ method, path, bucket, idempotent, ...options })).body;
   }
 
@@ -283,5 +292,36 @@ export class Routes {
   }
   async deleteDevice(deviceId: Uint8Array): Promise<void> {
     await this.body('DELETE', `/v1/devices/${id('deviceId', deviceId)}`, 'write', false, { ok: [204] });
+  }
+  async deleteGroupMessage(groupId: Uint8Array, seq: bigint): Promise<'deleted' | 'gone'> {
+    const response = await this.http.request({ method: 'DELETE', path: `/v1/groups/${id('groupId', groupId)}/messages/${count('seq', seq)}`,
+      bucket: 'write', idempotent: true, ok: [204, 404] });
+    if (response.status === 204) return 'deleted';
+    // The DS also says 404 when this device lost membership. A member-only read distinguishes that refusal from
+    // an absent message, so a purge is not marked done after a removal that raced the DELETE.
+    try {
+      await this.getMessages(groupId, 0n, 1);
+    } catch (error) {
+      // The DS checks membership before its retention floor, so E_PRUNED also proves membership.
+      if (!(error instanceof DillaHttpError && error.status === 410 && error.code === 'E_PRUNED')) throw error;
+    }
+    return 'gone';
+  }
+  async putBlob(channelId: Uint8Array, blobId: Uint8Array, stored: Uint8Array): Promise<{ created: boolean; size: number }> {
+    const response = await this.http.request({ method: 'PUT', path: blobPath(channelId, blobId), body: stored,
+      contentType: 'application/octet-stream', bucket: 'upload', idempotent: true, ok: [200, 201] });
+    const a = atLeast(decode(response.body), 2);
+    return { created: response.status === 201, size: u53(a[1]) };
+  }
+  async confirmBlob(channelId: Uint8Array, blobId: Uint8Array): Promise<void> {
+    await this.body('POST', blobPath(channelId, blobId) + '/confirm', 'write', true, { ok: [204] });
+  }
+  async getBlob(channelId: Uint8Array, blobId: Uint8Array, maxBytes?: number): Promise<Uint8Array | null> {
+    const response = await this.http.request({ method: 'GET', path: blobPath(channelId, blobId),
+      bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: maxBytes });
+    return response.status === 404 ? null : response.body;
+  }
+  async deleteBlob(channelId: Uint8Array, blobId: Uint8Array): Promise<void> {
+    await this.body('DELETE', blobPath(channelId, blobId), 'write', true, { ok: [204, 404] });
   }
 }

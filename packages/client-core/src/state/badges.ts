@@ -9,11 +9,6 @@ export const NOTICE_BODY_MAX = 200;      // code points
 export const NOTICE_READ_MAX = 8;        // rows read per change
 export type NoticeDraft = Omit<Notice, 'id'>;
 
-/** The L-CORE-24 literal rule: the readable mention syntax for this user, @everyone or @here. */
-export function mentionsMe(body: string, userHex: string): boolean {
-  return body.includes(`<@${userHex}>`) || body.includes('<@everyone>') || body.includes('<@here>');
-}
-
 /** Sums the activity rows of every group bound to a known channel; a group bound to none contributes nothing. */
 export function buildBadges(activity: readonly ActivityRow[], channelOf: ReadonlyMap<string, string>): Record<string, BadgeState> {
   const badges: Record<string, BadgeState> = {};

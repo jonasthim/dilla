@@ -1,6 +1,9 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Composer } from './Composer.tsx';
+import { ReplyChip } from '../ReplyChip/ReplyChip.tsx';
+import { AttachmentTray } from '../AttachmentTray/AttachmentTray.tsx';
+import { MentionList } from '../MentionList/MentionList.tsx';
 
 // The Composer is controlled (L-UI-13): each story passes the text as `value`. 69 bytes per line, so 53
 // lines (less the last space) leave 344 of the 4000-byte budget and 59 lines are 70 bytes over it.
@@ -31,3 +34,26 @@ export const Focused: Story = {
   args: { label: 'message #Harbour-Crew', placeholder: 'message #Harbour-Crew' },
   decorators: [Story => <FocusField><Story /></FocusField>],
 };
+
+// ---- web-2b (L-UI-53): every string is L-COPY-03's, quoted (en.ts gains them in task 9). ----
+const ATTACH = { attachLabel: 'attach files', onAttach: () => {} };
+export const WithReplyChip: Story = {
+  args: { ...ATTACH, value: 'see you there',
+    top: <ReplyChip label="replying to björn" excerpt="after nine, still on the boat" cancelLabel="cancel reply" onCancel={() => {}} /> },
+};
+export const WithTray: Story = {
+  args: { ...ATTACH, canSendEmpty: true,
+    top: <AttachmentTray label="files to send" items={[
+      { id: 't0', name: 'drawn.png', size: '48 KB', step: 'uploading', failed: false, phase: 'uploading', removeLabel: 'remove drawn.png', onRemove: () => {} },
+      { id: 't1', name: 'notes.txt', size: '2 KB', step: 'ready', failed: false, phase: 'ready', removeLabel: 'remove notes.txt', onRemove: () => {} },
+    ]} /> },
+};
+// The list open while typing `@mi`: the textarea stays a textbox and points at the list (pre-flight ruling F10).
+export const WithMentionList: Story = {
+  args: { ...ATTACH, value: '@mi',
+    combobox: { expanded: true, controls: 'mentions', activeDescendant: 'mention-mira', onKey: () => false },
+    top: <MentionList id="mentions" label="people to mention" activeId="mention-mira" onPick={() => {}} options={[
+      { id: 'mention-mira', primary: 'mira', secondary: '@mira' }, { id: 'mention-mike', primary: 'Mike Dahl', secondary: '@mike' },
+    ]} /> },
+};
+export const WithAttach: Story = { args: { ...ATTACH } };

@@ -301,6 +301,8 @@ pub struct MessageItem {
     pub commitment: [u8; 32],
     pub franking_tag: [u8; 32],
     pub recv_ts: u64,
+    /// Row 12's element 7: the delivery service tombstoned this message. Op 19 and the stub never set it.
+    pub deleted: bool,
 }
 #[derive(Clone, Debug)]
 pub enum Frame {
@@ -835,6 +837,7 @@ impl DsStub {
             commitment,
             franking_tag: tag,
             recv_ts,
+            deleted: false,
         };
         g.messages.push(item.clone());
         self.fanout(

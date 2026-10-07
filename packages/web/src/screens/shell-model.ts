@@ -1,7 +1,8 @@
 // The shell's pure rules: which channels are listed and in what order, which one opens by default,
 // what web-1 cannot open, who wrote a row, why the composer is blocked and how a row's time reads.
-import { isMuted } from '@dilla/client-core';
-import type { BadgeState, ChannelGroupState, ChannelSummary, DeviceSummary, MemberSummary, TimelineItem } from '@dilla/client-core';
+import { isMuted, splitMentions } from '@dilla/client-core';
+import type { BadgeState, ChannelGroupState, ChannelSummary, DeviceSummary, MemberSummary, MentionMember, TimelineItem } from '@dilla/client-core';
+import type { BodyPart } from '@dilla/ui';
 import { baseRoute, type Route } from '../router.ts';
 import { formatDay, formatTime, t, type StringKey } from '../strings/index.ts';
 
@@ -141,4 +142,91 @@ export function visibleChannel(route: Route): string | null {
   const b = baseRoute(route);
   if (b.name === 'channel' || b.name === 'dm') return b.channelId;
   return null;
+}
+
+export interface NameBook {
+  self: { id: string; username: string } | null;
+  members: readonly MemberSummary[];
+  roles: ReadonlySet<string>;
+  ownRoles: ReadonlySet<string>;
+}
+
+export function nameBook(self: NameBook['self'], members: readonly MemberSummary[]): NameBook {
+  return {
+    self, members,
+    roles: new Set(members.flatMap(m => m.roleIds)),
+    ownRoles: new Set(members.find(m => m.userId === self?.id)?.roleIds ?? []),
+  };
+}
+
+export function mergeMembers(lists: readonly (readonly MemberSummary[] | undefined)[]): MemberSummary[] {
+  const seen = new Set<string>();
+  const result: MemberSummary[] = [];
+  for (const list of lists) for (const member of list ?? []) {
+    if (seen.has(member.userId)) continue;
+    seen.add(member.userId);
+    result.push(member);
+  }
+  return result;
+}
+
+export function bodyParts(body: string, book: NameBook): BodyPart[] {
+  return splitMentions(body).map(part => {
+    if (part.kind === 'text') return part;
+    const id = part.target;
+    if (id === 'everyone' || id === 'here') return { kind: 'mention', label: `@${id}`, me: true, broadcast: true };
+    const member = book.members.find(m => m.userId === id);
+    if (member !== undefined) return { kind: 'mention', label: `@${member.display || member.username}`, me: id === book.self?.id, broadcast: false };
+    if (id === book.self?.id) return { kind: 'mention', label: `@${book.self.username}`, me: true, broadcast: false };
+    if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: book.ownRoles.has(id), broadcast: false };
+    return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false };
+  });
+}
+
+export function plainBody(body: string, book: NameBook): string {
+  return bodyParts(body, book).map(part => part.kind === 'text' ? part.text : part.label).join('');
+}
+
+export function editableText(body: string, book: NameBook): string {
+  return splitMentions(body).map(part => {
+    if (part.kind === 'text') return part.text;
+    if (part.target === 'everyone' || part.target === 'here') return `@${part.target}`;
+    const member = book.members.find(m => m.userId === part.target && m.username !== '');
+    if (member !== undefined) return `@${member.username}`;
+    if (book.self?.id === part.target) return `@${book.self.username}`;
+    return `<@${part.target}>`;
+  }).join('');
+}
+
+export function excerpt(value: string, max = 120): string {
+  return Array.from(value.replace(/[\r\n]/g, ' ')).slice(0, max).join('');
+}
+
+export function mentionCandidates(members: readonly MemberSummary[], selfId: string | null): MemberSummary[] {
+  return members.filter(m => m.userId !== selfId);
+}
+
+export function mentionMembers(members: readonly MemberSummary[]): MentionMember[] {
+  return members.filter(m => m.username !== '').map(({ userId, username }) => ({ userId, username }));
+}
+
+export interface MentionOption { id: string; primary: string; secondary: string; insert: string }
+export function mentionOptions(query: string, candidates: readonly MemberSummary[], broadcast: boolean): MentionOption[] {
+  const q = query.toLowerCase();
+  const by = (key: 'username' | 'display') => (a: MemberSummary, b: MemberSummary) =>
+    a[key].localeCompare(b[key], undefined, { sensitivity: 'base' });
+  const username = candidates.filter(m => m.username.toLowerCase().startsWith(q)).sort(by('username'));
+  const display = candidates.filter(m => !m.username.toLowerCase().startsWith(q) && m.display.toLowerCase().startsWith(q)).sort(by('display'));
+  const result = [...username, ...display].slice(0, 8).map(m => ({
+    id: `m-${m.userId}`, primary: m.display || m.username, secondary: `@${m.username}`, insert: `@${m.username} `,
+  }));
+  if (broadcast && 'everyone'.startsWith(q)) result.push({ id: 'b-everyone', primary: '@everyone', secondary: t('shell.composer.mentionEveryone'), insert: '@everyone ' });
+  return result;
+}
+
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return t('shell.attachment.bytes', { n: bytes });
+  const mb = bytes >= 1_048_576;
+  const value = bytes / (mb ? 1_048_576 : 1024);
+  return t(mb ? 'shell.attachment.mb' : 'shell.attachment.kb', { n: value < 10 ? value.toFixed(1) : Math.round(value) });
 }

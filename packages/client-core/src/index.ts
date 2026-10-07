@@ -8,3 +8,8 @@ export { SETTINGS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue } 
 export type { NotifyMode } from './state/settings';
 export type { Command, ToWorker, FromWorker, TestHook } from './worker/protocol';
 export { LOCK_PREFIX } from './worker/protocol';
+export { splitMentions, encodeMentions, mentionQuery, mentionsMe } from './state/mentions';
+export type { MentionTarget, MentionPart, MentionMember } from './state/mentions';
+export { BROWSER_ATTACHMENT_CAP, MAX_ATTACHMENTS } from './attachments/crypto';
+export { RENDERABLE_IMAGE } from './attachments/thumb';
+export { safeName } from './attachments/name';

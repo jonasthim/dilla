@@ -4,9 +4,11 @@ import { Enrol } from '../account/enrol';
 import { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
+import { sealBlob, sealThumb, BROWSER_ATTACHMENT_CAP } from '../attachments/crypto';
 import {
-  CoreError, type ActivityRow, type ApplyResult, type CorePort, type GroupInfo, type IdentityInfo, type OwnDeviceList, type SealedObjects,
-  type SessionRecord, type SignedLists, type TimelineRow,
+  CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type IdentityInfo,
+  type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord,
+  type SignedLists, type TimelineRow,
 } from '../core-port';
 import { CLIENT_CLOSE, type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
@@ -14,7 +16,7 @@ import { DillaHttpError } from '../http/errors';
 import type { Instance, Routes } from '../http/routes';
 import type {
   AccountState, BadgeState, ChannelSummary, CommunitySummary, ConnectionState, DeviceSummary, DmSummary, MemberSummary, NoticesState,
-  TimelineState,
+  PinnedItem, TimelineState, TrayItem,
 } from '../state/types';
 import type { SyncDeps, SyncEngine } from '../sync/engine';
 import { SyncError } from '../sync/errors';
@@ -274,7 +276,7 @@ function strangerRow(seq: number): TimelineRow {
   return {
     seq: BigInt(seq), epoch: 1n, recvTs: 1_700_000_000n, status: 0, reason: '', senderUser: STRANGER,
     senderDevice: new Uint8Array(16).fill(0x5b), senderKind: 0, senderTier: 0, msgId: new Uint8Array(16).fill(0x30 + seq),
-    type: 0, body: `from a stranger ${seq}`,
+    type: 0, body: `from a stranger ${seq}`, editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [], mention: false,
   };
 }
 
@@ -321,6 +323,8 @@ function world(opts: {
     resets: 0, joined: (opts.phase ?? 2) === 2,
     dms: [] as { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[] }[],
     session: null as SessionRecord | null, listPublished: null as boolean | null,
+    outbox: [] as OutboxRow[], pins: [] as PinRow[], purges: [] as PurgeRow[], roleIds: [] as Uint8Array[],
+    descriptors: new Map<string, AttachmentDescriptor>(), blobs: new Map<string, Uint8Array>(),
   };
   /* eslint-disable @typescript-eslint/no-unused-vars -- the typed parameters give the doubles their call signatures */
   const core = {
@@ -334,7 +338,7 @@ function world(opts: {
     groups: (): GroupInfo[] => state.groups,
     groupRow: (g: Uint8Array): GroupInfo | null => state.groups.find((x) => toHex(x.groupId) === toHex(g)) ?? null,
     timeline: (): TimelineRow[] => state.rows,
-    outbox: () => [],
+    outbox: (): OutboxRow[] => state.outbox,
     activity: (): ActivityRow[] => state.activity,
     markRead: vi.fn((_g: Uint8Array, _seq: bigint, _now: bigint): void => { calls.push('core.markRead'); }),
     settings: (): Record<string, string> => ({ ...state.settings }),
@@ -359,6 +363,17 @@ function world(opts: {
     sessionClear: vi.fn((): void => { calls.push('core.sessionClear'); state.session = null; }),
     sessionSign: (_nonce: Uint8Array, _purpose: 0 | 1): Uint8Array => new Uint8Array([0x5e]),
     recoveryKeyCheck: vi.fn((_key: string): void => { calls.push('core.recoveryKeyCheck'); }),
+    pins: vi.fn((_g: Uint8Array): PinRow[] => state.pins),
+    purges: vi.fn((): PurgeRow[] => state.purges),
+    purgeDone: vi.fn((_g: Uint8Array, seq: bigint): void => {
+      calls.push(`core.purgeDone(${String(seq)})`); state.purges = state.purges.filter((p) => p.seq !== seq);
+    }),
+    ownRolesSet: vi.fn((_c: Uint8Array, _ids: Uint8Array[]): void => {}),
+    attachmentGet: vi.fn((_g: Uint8Array, seq: bigint, index: number): AttachmentDescriptor => {
+      const d = state.descriptors.get(`${String(seq)}:${String(index)}`);
+      if (d === undefined) throw new CoreError('E_CORE_NOT_FOUND', 'no such attachment');
+      return d;
+    }),
     pause: vi.fn((): void => { calls.push('core.pause'); }),
     close: (): void => {},
   };
@@ -373,7 +388,20 @@ function world(opts: {
     listChannels: vi.fn((_id: Uint8Array) => { calls.push('listChannels'); return Promise.resolve([{
       id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP,
     }]); }),
-    listMembers: vi.fn((_id: Uint8Array) => { calls.push('listMembers'); return Promise.resolve([{ userId: USER, username: 'web', display: 'Web', kind: 0 as const, nick: '' }]); }),
+    listMembers: vi.fn((_id: Uint8Array) => {
+      calls.push('listMembers');
+      return Promise.resolve([{ userId: USER, username: 'web', display: 'Web', kind: 0 as const, nick: '', roleIds: state.roleIds }]);
+    }),
+    putBlob: vi.fn((_c: Uint8Array, blobId: Uint8Array, stored: Uint8Array) => {
+      calls.push(`putBlob(${toHex(blobId).slice(0, 8)})`); state.blobs.set(toHex(blobId), stored);
+      return Promise.resolve({ created: true, size: stored.length });
+    }),
+    confirmBlob: vi.fn((_c: Uint8Array, blobId: Uint8Array) => { calls.push(`confirmBlob(${toHex(blobId).slice(0, 8)})`); return Promise.resolve(); }),
+    getBlob: vi.fn((_c: Uint8Array, blobId: Uint8Array): Promise<Uint8Array | null> => Promise.resolve(state.blobs.get(toHex(blobId)) ?? null)),
+    deleteBlob: vi.fn((_c: Uint8Array, blobId: Uint8Array) => { calls.push(`deleteBlob(${toHex(blobId).slice(0, 8)})`); return Promise.resolve(); }),
+    deleteGroupMessage: vi.fn((_g: Uint8Array, seq: bigint): Promise<'deleted' | 'gone'> => {
+      calls.push(`deleteGroupMessage(${String(seq)})`); return Promise.resolve('deleted');
+    }),
     postTicket: vi.fn(() => Promise.resolve({ ticket: 'ticket', expires: 0n })),
     getAccountMe: vi.fn(() => Promise.resolve({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n })),
     listDms: vi.fn(() => { calls.push('listDms'); return Promise.resolve(state.dms); }),
@@ -440,6 +468,7 @@ function world(opts: {
     builds: 0,                                   // parts.sync calls: 1 at ready, +1 for each resume() after a refused wipe call
     start: vi.fn(() => { calls.push('sync.start'); }), stop: vi.fn(() => { calls.push('sync.stop'); }),
     setChannels: vi.fn(), setExpected: vi.fn((_groups: unknown) => {}), send: vi.fn(), retry: vi.fn(), discard: vi.fn(),
+    sendRequest: vi.fn((_g: Uint8Array, _r: SendRequest): Uint8Array => new Uint8Array(16).fill(0x77)),
     openChannel: vi.fn((_c: unknown) => Promise.resolve({ groupId: GROUP, state: 2 as const })),
   };
   /* eslint-enable @typescript-eslint/no-unused-vars */
@@ -823,7 +852,7 @@ describe('Controller command edge cases', () => {
     w.call(5, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
-    expect(w.sync.send).not.toHaveBeenCalled();
+    expect(w.sync.sendRequest).not.toHaveBeenCalled();
   });
 
   it('(i)+(ii) an open, a close and a reopen while the join is in flight leave the channel open', async () => {
@@ -850,11 +879,11 @@ describe('Controller command edge cases', () => {
     w.state.rows = [strangerRow(1), strangerRow(2)];
     w.sync.deps!.onGroupChanged(GROUP, applied(2));
     expect(w.timeline()?.items.map((i) => i.body)).toEqual(['from a stranger 1', 'from a stranger 2']);
-    w.sync.send.mockReturnValueOnce(new Uint8Array(16).fill(0x77));
+    w.sync.sendRequest.mockReturnValueOnce(new Uint8Array(16).fill(0x77));
     w.call(6, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
     expect(w.ret(6)).toEqual({ t: 'ret', id: 6, ok: true, value: { msgId: '77'.repeat(16) } });
-    expect(w.sync.send).toHaveBeenCalledWith(GROUP, 'hello');
+    expect(w.sync.sendRequest).toHaveBeenCalledWith(GROUP, { type: 0, replyTo: null, body: 'hello', attachments: [] });
   });
 
   it('(i)+(ii) a reopen while the join is in flight leaves the channel closed when the join fails', async () => {
@@ -878,7 +907,7 @@ describe('Controller command edge cases', () => {
     w.call(6, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
     expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the channel is not open' } });
-    expect(w.sync.send).not.toHaveBeenCalled();
+    expect(w.sync.sendRequest).not.toHaveBeenCalled();
   });
 
   it('(iii) loadEarlier and closeChannel of a channel that is not open resolve null and publish nothing', async () => {
@@ -1523,7 +1552,7 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
       id: 1, channelId: toHex(CHANNEL), communityId: toHex(COMMUNITY), kind: 'message', senderUser: toHex(STRANGER),
       senderName: '5a5a5a5a', body: 'from a stranger 1', ts: 1_700_000_000,
     }] });
-    const mention: TimelineRow = { ...strangerRow(2), body: `<@${toHex(USER)}> look` };
+    const mention: TimelineRow = { ...strangerRow(2), body: `<@${toHex(USER)}> look`, mention: true };
     const own: TimelineRow = { ...strangerRow(3), senderUser: USER, senderDevice: DEVICE, body: 'mine' };
     w.state.rows = [strangerRow(1), mention, own];
     w.state.activity = [act(GROUP, 2, 1)];
@@ -2413,5 +2442,468 @@ describe('Controller other-tab grace', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(w.account()?.phase).toBe('needs-signup');
     expect(phases(w).slice(phases(w).indexOf('other-tab'))).toEqual(['other-tab', 'loading', 'needs-signup']);
+  });
+});
+
+// ---- web-2b: say more (L-TS-34, L-TS-35, L-TS-36) ----
+
+const MSG = new Uint8Array(16).fill(0x31);
+const MSG_HEX = toHex(MSG);
+const ROLE = new Uint8Array(16).fill(0x7a);
+const CH_HEX = toHex(CHANNEL);
+/** The 26-byte WebP header stub of attachment.json case 3 (L-CORE-31). */
+const WEBP_STUB = Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0x12, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, ...new Array<number>(14).fill(0)]);
+type Ok = Extract<FromWorker, { t: 'ret'; ok: true }>;
+type Refused = Extract<FromWorker, { t: 'ret'; ok: false }>;
+
+function file(name: string, type: string, size: number): File {
+  return new File([new Uint8Array(size).map((_, i) => (i * 7) & 0xff)], name, { type });
+}
+const trayOf = (w: World): TrayItem[] | undefined => w.last<TrayItem[]>(`tray:${CH_HEX}`);
+const pinsOf = (w: World): PinnedItem[] | undefined => w.last<PinnedItem[]>(`pins:${CH_HEX}`);
+const okValue = <T>(w: World, id: number): T => (w.ret(id) as Ok).value as T;
+const purge = (seq: bigint, blobs: Uint8Array[]): PurgeRow => ({ groupId: GROUP, seq, channelId: CHANNEL, blobIds: blobs });
+const B1 = new Uint8Array(32).fill(0xb1);
+const B2 = new Uint8Array(32).fill(0xb2);
+
+async function attachReady(w: World, id: number, files: File[]): Promise<string[]> {
+  w.call(id, { m: 'attachFiles', channelId: CH_HEX, files });
+  await vi.waitFor(() => expect(w.ret(id)).toBeDefined());
+  expect(w.ret(id)).toMatchObject({ ok: true });
+  await vi.waitFor(() => expect(trayOf(w)?.map((t) => t.phase)).toEqual(files.map(() => 'ready')));
+  return okValue<{ trayIds: string[] }>(w, id).trayIds;
+}
+
+/** Every Uint8Array or ArrayBuffer anywhere inside a value. */
+function bytesIn(value: unknown, found: Uint8Array[] = []): Uint8Array[] {
+  if (value instanceof Uint8Array) { found.push(value); return found; }
+  if (value instanceof ArrayBuffer) { found.push(new Uint8Array(value)); return found; }
+  if (typeof value === 'object' && value !== null) for (const inner of Object.values(value)) bytesIn(inner, found);
+  return found;
+}
+
+describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
+  it('refuses malformed say-more commands before anything runs', async () => {
+    const h = harness();
+    h.call(1, { m: 'editMessage', channelId: CH_HEX, msgId: 'XYZ', text: 'x' });
+    h.call(2, { m: 'editMessage', channelId: CH_HEX, msgId: MSG_HEX, text: '  ' });
+    h.call(3, { m: 'react', channelId: CH_HEX, msgId: MSG_HEX, emoji: '', on: true });
+    h.call(4, { m: 'react', channelId: CH_HEX, msgId: MSG_HEX, emoji: 'x'.repeat(33), on: true });
+    h.call(5, { m: 'pin', channelId: CH_HEX, msgId: MSG_HEX, on: 'yes' });
+    h.call(6, { m: 'attachFiles', channelId: CH_HEX, files: [] });
+    h.call(7, { m: 'attachFiles', channelId: CH_HEX, files: ['not a file'] });
+    h.call(8, { m: 'openAttachment', channelId: CH_HEX, seq: '01', index: 0, thumb: false });
+    h.call(9, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: -1, thumb: false });
+    h.call(10, { m: 'send', channelId: CH_HEX, text: 'x', replyTo: 'nope' });
+    h.call(11, { m: 'send', channelId: CH_HEX, text: 'x', attachments: ['a', 'b', 'c', 'd', 'e'] });
+    h.call(12, { m: 'discardAttachment', channelId: CH_HEX, trayId: '' });
+    h.call(13, { m: 'react', channelId: CH_HEX, msgId: MSG_HEX, emoji: '👍', on: 1 });
+    h.call(14, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: 0, thumb: 'no' });
+    await vi.waitFor(() => expect(h.ret(14)).toBeDefined());
+    const details = Array.from({ length: 14 }, (_, i) => (h.ret(i + 1) as Refused).error);
+    expect(details.map((e) => e.code)).toEqual(new Array<string>(14).fill('E_BAD_INPUT'));
+    expect(details.map((e) => e.detail)).toEqual([
+      'msgId is not 32 lowercase hex', 'the message is empty', 'emoji must be 1..=32 bytes', 'emoji must be 1..=32 bytes',
+      'on is not a boolean', 'files is not a non-empty list of files', 'files is not a non-empty list of files',
+      'seq is not a decimal sequence number', 'index is not a non-negative integer', 'replyTo is not 32 lowercase hex',
+      'attachments is not a list of at most 4 tray ids', 'trayId is empty', 'on is not a boolean', 'thumb is not a boolean',
+    ]);
+    expect(h.paths).toEqual([]);
+  });
+
+  it('attachFiles uploads into the channel tray and publishes the tray without descriptors', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    const ids = await attachReady(w, 4, [file('notes.txt', 'text/plain', 5), file('data.bin', 'application/octet-stream', 70)]);
+    expect(ids).toHaveLength(2);
+    expect(trayOf(w)).toEqual([
+      { id: ids[0], name: 'notes.txt', size: 5, mime: 'text/plain', image: false, phase: 'ready', reason: '' },
+      { id: ids[1], name: 'data.bin', size: 70, mime: 'application/octet-stream', image: false, phase: 'ready', reason: '' },
+    ]);
+    expect(w.routes.putBlob).toHaveBeenCalledTimes(2);
+    expect(w.routes.putBlob.mock.calls.map((c) => toHex(c[0]))).toEqual([CH_HEX, CH_HEX]);
+    // The stored bytes are the file sealed: 16 bytes longer than the plaintext (L-CORE-31).
+    expect(w.routes.putBlob.mock.calls.map((c) => c[2].length)).toEqual([5 + 16, 70 + 16]);
+  });
+
+  it('send takes the ready descriptors, sends one type-0 request, and no slice ever carries a key, a nonce or a blob id', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    const ids = await attachReady(w, 4, [file('a.txt', 'text/plain', 3), file('b.txt', 'text/plain', 4)]);
+    w.call(5, { m: 'send', channelId: CH_HEX, text: 'two files', attachments: ids });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: { msgId: '77'.repeat(16) } });
+    expect(w.sync.sendRequest).toHaveBeenCalledTimes(1);
+    const [group, request] = w.sync.sendRequest.mock.calls[0];
+    expect(toHex(group)).toBe(toHex(GROUP));
+    expect(request).toMatchObject({ type: 0, replyTo: null, body: 'two files' });
+    expect(request.attachments.map((a) => [a.name, a.size, a.mime])).toEqual([['a.txt', 3, 'text/plain'], ['b.txt', 4, 'text/plain']]);
+    expect(request.attachments.map((a) => toHex(a.blobId))).toEqual(w.routes.putBlob.mock.calls.map((c) => toHex(c[1])));
+    await vi.waitFor(() => expect(trayOf(w)).toEqual([]));
+    // The queued row as the core would list it, so the timeline slice is built with its files too.
+    w.state.outbox = [{ msgId: new Uint8Array(16).fill(0x77), state: 0, error: '', created: NOW_S, body: 'two files', type: 0, replyTo: null,
+      attachments: request.attachments.map((a) => ({ blobId: a.blobId, size: a.size, mime: a.mime, name: a.name })) }];
+    w.sync.deps!.onOutboxChanged(GROUP);
+    expect(w.timeline()?.items.at(-1)?.attachments.map((a) => a.name)).toEqual(['a.txt', 'b.txt']);
+    const slices = w.posted.filter((m) => m.t === 'slice').map((m) => m.value);
+    expect(bytesIn(slices)).toEqual([]);
+    const text = JSON.stringify(slices);
+    for (const a of request.attachments) {
+      for (const secret of [a.key, a.nonce, a.blobId]) {
+        expect(text).not.toContain(toHex(secret));
+        expect(text).not.toContain(Array.from(secret).join(','));
+      }
+    }
+  });
+
+  it('an attachment-only message is accepted; a blank text with no attachments is refused', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    const ids = await attachReady(w, 4, [file('only.txt', 'text/plain', 2)]);
+    w.call(5, { m: 'send', channelId: CH_HEX, text: '', attachments: ids });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect(w.ret(5)).toMatchObject({ ok: true });
+    expect(w.sync.sendRequest.mock.calls[0][1]).toMatchObject({ type: 0, body: '' });
+    w.call(6, { m: 'send', channelId: CH_HEX, text: ' ', attachments: [] });
+    await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the message is empty' } });
+  });
+
+  it('a tray id that is not ready refuses the send and sends nothing', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    const gate = deferred<{ created: boolean; size: number }>();
+    w.routes.putBlob.mockImplementationOnce(() => gate.promise);
+    w.call(4, { m: 'attachFiles', channelId: CH_HEX, files: [file('slow.txt', 'text/plain', 3)] });
+    await vi.waitFor(() => expect(trayOf(w)?.[0]?.phase).toBe('uploading'));
+    const id = trayOf(w)![0].id;
+    w.call(5, { m: 'send', channelId: CH_HEX, text: 'too soon', attachments: [id] });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: false, error: { code: 'E_TRAY_NOT_READY', detail: '', status: 0, retryAfterMs: null } });
+    expect(w.sync.sendRequest).not.toHaveBeenCalled();
+    gate.resolve({ created: true, size: 19 });
+    await vi.waitFor(() => expect(trayOf(w)?.[0]?.phase).toBe('ready'));
+  });
+
+  it('attachFiles refuses five files and an oversize file by code, before any upload', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.call(4, { m: 'attachFiles', channelId: CH_HEX, files: [1, 2, 3, 4, 5].map((n) => file(`${String(n)}.txt`, 'text/plain', 1)) });
+    w.call(5, { m: 'attachFiles', channelId: CH_HEX, files: [file('big.bin', 'application/octet-stream', BROWSER_ATTACHMENT_CAP + 1)] });
+    w.call(6, { m: 'attachFiles', channelId: 'e'.repeat(32), files: [file('x.txt', 'text/plain', 1)] });
+    await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect((w.ret(4) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_COUNT', status: 0 });
+    expect((w.ret(5) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_TOO_LARGE', status: 0 });
+    expect((w.ret(6) as Refused).error).toEqual({ code: 'E_BAD_INPUT', detail: 'unknown channel', status: 0, retryAfterMs: null });
+    expect(w.routes.putBlob).not.toHaveBeenCalled();
+  });
+
+  it('discardAttachment deletes an uploaded reference and drops the entry', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    const [id] = await attachReady(w, 4, [file('oops.txt', 'text/plain', 4)]);
+    w.call(5, { m: 'discardAttachment', channelId: CH_HEX, trayId: id });
+    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
+    expect(w.routes.deleteBlob).toHaveBeenCalledTimes(1);
+    expect(toHex(w.routes.deleteBlob.mock.calls[0][1])).toBe(toHex(w.routes.putBlob.mock.calls[0][1]));
+    expect(trayOf(w)).toEqual([]);
+  });
+
+  it('beforeSend confirms each attachment of the row in order; onDiscarded deletes each and swallows failures', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    const row: OutboxRow = { msgId: MSG, state: 0, error: '', created: NOW_S, body: '', type: 0, replyTo: null,
+      attachments: [{ blobId: B1, size: 1, mime: 'text/plain', name: 'a' }, { blobId: B2, size: 2, mime: 'text/plain', name: 'b' }] };
+    await w.sync.deps!.beforeSend(GROUP, row);
+    expect(w.routes.confirmBlob.mock.calls.map((c) => [toHex(c[0]), toHex(c[1])])).toEqual([[CH_HEX, toHex(B1)], [CH_HEX, toHex(B2)]]);
+    w.routes.confirmBlob.mockImplementationOnce(() => Promise.reject(refusal(404, 'E_NOT_FOUND')));
+    await expect(w.sync.deps!.beforeSend(GROUP, row)).rejects.toMatchObject({ status: 404, code: 'E_NOT_FOUND' });
+    w.routes.deleteBlob.mockImplementationOnce(() => Promise.reject(refusal(0, 'E_NETWORK')));
+    w.sync.deps!.onDiscarded(GROUP, row);
+    await vi.waitFor(() => expect(w.routes.deleteBlob).toHaveBeenCalledTimes(2));
+    expect(w.routes.deleteBlob.mock.calls.map((c) => toHex(c[1]))).toEqual([toHex(B1), toHex(B2)]);
+    await expect(w.sync.deps!.beforeSend(new Uint8Array(16).fill(0x99), row)).rejects.toMatchObject({ code: 'E_CORE_STATE', detail: 'unknown group' });
+  });
+
+  it('editMessage, deleteMessage, react and pin send the fold types aimed at the message', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.call(4, { m: 'editMessage', channelId: CH_HEX, msgId: MSG_HEX, text: 'better words' });
+    w.call(5, { m: 'deleteMessage', channelId: CH_HEX, msgId: MSG_HEX });
+    w.call(6, { m: 'react', channelId: CH_HEX, msgId: MSG_HEX, emoji: '👍', on: true });
+    w.call(7, { m: 'react', channelId: CH_HEX, msgId: MSG_HEX, emoji: '👍', on: false });
+    w.call(8, { m: 'pin', channelId: CH_HEX, msgId: MSG_HEX, on: true });
+    w.call(9, { m: 'pin', channelId: CH_HEX, msgId: MSG_HEX, on: false });
+    await vi.waitFor(() => expect(w.ret(9)).toBeDefined());
+    for (const id of [4, 5, 6, 7, 8, 9]) expect(w.ret(id)).toEqual({ t: 'ret', id, ok: true, value: null });
+    expect(w.sync.sendRequest.mock.calls.map(([g, r]) => [toHex(g), r.type, toHex(r.replyTo!), r.body, r.attachments])).toEqual([
+      [toHex(GROUP), 1, MSG_HEX, 'better words', []],
+      [toHex(GROUP), 2, MSG_HEX, '', []],
+      [toHex(GROUP), 3, MSG_HEX, '👍', []],
+      [toHex(GROUP), 4, MSG_HEX, '👍', []],
+      [toHex(GROUP), 5, MSG_HEX, '', []],
+      [toHex(GROUP), 6, MSG_HEX, '', []],
+    ]);
+    expect(w.routes.deleteGroupMessage).not.toHaveBeenCalled();
+  });
+
+  it("a core refusal of a fold crosses with its code and detail; a reply's msg id reaches the core", async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.sync.sendRequest.mockImplementationOnce(() => { throw new CoreError('E_CORE_INPUT', 'only the author may edit or delete'); });
+    w.call(4, { m: 'editMessage', channelId: CH_HEX, msgId: MSG_HEX, text: 'not mine' });
+    await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+    expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false,
+      error: { code: 'E_CORE_INPUT', detail: 'only the author may edit or delete', status: 0, retryAfterMs: null } });
+    w.call(5, { m: 'send', channelId: CH_HEX, text: 'answer', replyTo: MSG_HEX });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect(w.sync.sendRequest.mock.calls.at(-1)![1]).toEqual({ type: 0, replyTo: MSG, body: 'answer', attachments: [] });
+  });
+
+  it('a recorded purge runs after the outbox changed: the message, then each reference, then done', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.call(4, { m: 'deleteMessage', channelId: CH_HEX, msgId: MSG_HEX });
+    await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+    await settle();
+    expect(w.routes.deleteGroupMessage).not.toHaveBeenCalled();
+    // The core records the purge when the type-2 row's confirm folds it (L-CORE-33); the engine then reports the outbox.
+    w.state.purges = [purge(5n, [B1, B2])];
+    w.sync.deps!.onOutboxChanged(GROUP);
+    await vi.waitFor(() => expect(w.core.purgeDone).toHaveBeenCalledTimes(1));
+    expect(w.calls.filter((c) => /^(deleteGroupMessage|deleteBlob|core\.purgeDone)/.test(c))).toEqual([
+      'deleteGroupMessage(5)', `deleteBlob(${toHex(B1).slice(0, 8)})`, `deleteBlob(${toHex(B2).slice(0, 8)})`, 'core.purgeDone(5)',
+    ]);
+    expect(w.routes.deleteGroupMessage.mock.calls.map((c) => [toHex(c[0]), c[1]])).toEqual([[toHex(GROUP), 5n]]);
+    expect(w.routes.deleteBlob.mock.calls.map((c) => toHex(c[0]))).toEqual([CH_HEX, CH_HEX]);
+  });
+
+  it('a failed purge waits for the next trigger; a 403 on a reference and a gone message count as done', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.purges = [purge(6n, [B1, B2])];
+    w.routes.deleteGroupMessage.mockImplementationOnce(() => Promise.reject(refusal(0, 'E_NETWORK')));
+    w.sync.deps!.onOutboxChanged(GROUP);
+    await vi.waitFor(() => expect(w.routes.deleteGroupMessage).toHaveBeenCalledTimes(1));
+    await settle();
+    expect(w.core.purgeDone).not.toHaveBeenCalled();
+    expect(w.state.purges).toHaveLength(1);
+    w.routes.deleteGroupMessage.mockImplementationOnce(() => Promise.resolve('gone'));
+    w.routes.deleteBlob.mockImplementationOnce(() => Promise.reject(refusal(403, 'E_NOT_UPLOADER')));
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.core.purgeDone).toHaveBeenCalledTimes(1));
+    expect(w.routes.deleteGroupMessage).toHaveBeenCalledTimes(2);
+    expect(w.routes.deleteBlob).toHaveBeenCalledTimes(2);
+    expect(w.state.purges).toEqual([]);
+  });
+
+  it('a purge that fails on a reference with a server error stays for the next trigger', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.purges = [purge(7n, [B1])];
+    w.routes.deleteBlob.mockImplementationOnce(() => Promise.reject(refusal(503, 'E_UNAVAILABLE', 1000)));
+    w.sync.deps!.onOutboxChanged(GROUP);
+    await vi.waitFor(() => expect(w.routes.deleteBlob).toHaveBeenCalledTimes(1));
+    await settle();
+    expect(w.core.purgeDone).not.toHaveBeenCalled();
+    w.sync.deps!.onOutboxChanged(GROUP);
+    await vi.waitFor(() => expect(w.core.purgeDone).toHaveBeenCalledTimes(1));
+  });
+
+  it('purges run one at a time: triggers during a run make it go once more', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.purges = [purge(8n, [])];
+    const gate = deferred<'deleted' | 'gone'>();
+    w.routes.deleteGroupMessage.mockImplementationOnce(() => gate.promise);
+    w.sync.deps!.onOutboxChanged(GROUP);
+    w.sync.deps!.onOutboxChanged(GROUP);
+    w.sync.deps!.onOutboxChanged(GROUP);
+    await settle();
+    expect(w.routes.deleteGroupMessage).toHaveBeenCalledTimes(1);
+    gate.resolve('deleted');
+    await vi.waitFor(() => expect(w.core.purgeDone).toHaveBeenCalledTimes(1));
+    await settle();
+    expect(w.routes.deleteGroupMessage).toHaveBeenCalledTimes(1);
+    expect(w.core.purges.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('stops a purge after an in-flight message delete when this device is revoked', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.purges = [purge(10n, [B1, B2])];
+    const gate = deferred<'deleted' | 'gone'>();
+    w.routes.deleteGroupMessage.mockImplementationOnce(() => gate.promise);
+    w.sync.deps!.onOutboxChanged(GROUP);
+    await vi.waitFor(() => expect(w.routes.deleteGroupMessage).toHaveBeenCalledTimes(1));
+    w.session.establish.mockResolvedValueOnce(false);
+    w.gateway.emit({ type: 'revoked' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('revoked'));
+    gate.resolve('deleted');
+    await settle();
+    expect(w.routes.deleteBlob).not.toHaveBeenCalled();
+    expect(w.core.purgeDone).not.toHaveBeenCalled();
+    expect(w.state.purges).toHaveLength(1);
+  });
+
+  it('stops a purge after an in-flight blob delete when this device is revoked', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.purges = [purge(11n, [B1, B2])];
+    const gate = deferred<void>();
+    w.routes.deleteBlob.mockImplementationOnce(() => gate.promise);
+    w.sync.deps!.onOutboxChanged(GROUP);
+    await vi.waitFor(() => expect(w.routes.deleteBlob).toHaveBeenCalledTimes(1));
+    w.session.establish.mockResolvedValueOnce(false);
+    w.gateway.emit({ type: 'revoked' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('revoked'));
+    gate.resolve();
+    await settle();
+    expect(w.routes.deleteBlob).toHaveBeenCalledTimes(1);
+    expect(w.core.purgeDone).not.toHaveBeenCalled();
+    expect(w.state.purges).toHaveLength(1);
+  });
+
+  it('loadPins publishes the pins and keeps them fresh until closePins', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.pins = [{ targetSeq: 4n, msgId: MSG, pinnedSeq: 9n, byUser: USER, author: STRANGER, excerpt: 'pin me', targetTs: 1700000005n }];
+    w.call(4, { m: 'loadPins', channelId: CH_HEX });
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    expect(pinsOf(w)).toEqual([{ msgId: MSG_HEX, seq: '4', senderUser: toHex(STRANGER), excerpt: 'pin me', pinnedBy: toHex(USER), pinnedSeq: '9', ts: 1700000005 }]);
+    w.state.pins = [];
+    w.sync.deps!.onGroupChanged(GROUP, applied(2));
+    expect(pinsOf(w)).toEqual([]);
+    w.call(5, { m: 'closePins', channelId: CH_HEX });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    w.state.pins = [{ targetSeq: 4n, msgId: MSG, pinnedSeq: 10n, byUser: USER, author: null, excerpt: 'again', targetTs: 1700000005n }];
+    w.sync.deps!.onGroupChanged(GROUP, applied(2));
+    expect(pinsOf(w)).toEqual([]);
+    w.call(6, { m: 'loadPins', channelId: 'e'.repeat(32) });
+    await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
+    expect((w.ret(6) as Refused).error).toMatchObject({ code: 'E_BAD_INPUT', detail: 'unknown channel' });
+  });
+
+  it('openAttachment returns the decrypted file and its thumbnail as Blobs; a tampered file crosses E_BLOB_HASH', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    const key = new Uint8Array(32).fill(0x55);
+    const nonce = new Uint8Array(12).fill(0x56);
+    const plain = new Uint8Array(1000).map((_, i) => i % 251);
+    const { stored, blobId } = await sealBlob(key, nonce, plain);
+    const thumb = await sealThumb(key, nonce, WEBP_STUB);
+    w.state.descriptors.set('7:0', { blobId, key, nonce, size: 1000, mime: 'image/png', w: 640, h: 480, thumb, name: 'map\u0000.png' });
+    w.state.descriptors.set('7:1', { blobId, key, nonce, size: 1000, mime: 'application/pdf', w: null, h: null, thumb: null, name: 'r/s.pdf' });
+    w.state.blobs.set(toHex(blobId), stored);
+    w.call(4, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: 0, thumb: false });
+    w.call(5, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: 0, thumb: true });
+    w.call(6, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: 1, thumb: false });
+    w.call(7, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: 1, thumb: true });
+    w.call(8, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: 2, thumb: false });
+    await vi.waitFor(() => { for (const id of [4, 5, 6, 7, 8]) expect(w.ret(id)).toBeDefined(); });
+    const full = okValue<{ blob: Blob; name: string; mime: string }>(w, 4);
+    expect([full.name, full.mime, full.blob.type]).toEqual(['map.png', 'image/png', 'image/png']);
+    expect(new Uint8Array(await full.blob.arrayBuffer())).toEqual(plain);
+    const small = okValue<{ blob: Blob; name: string; mime: string }>(w, 5);
+    expect(small.blob.type).toBe('image/webp');
+    expect(new Uint8Array(await small.blob.arrayBuffer())).toEqual(WEBP_STUB);
+    const doc = okValue<{ blob: Blob; name: string; mime: string }>(w, 6);
+    expect([doc.name, doc.mime, doc.blob.type]).toEqual(['r_s.pdf', 'application/pdf', 'application/octet-stream']);
+    expect((w.ret(7) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_MISSING' });
+    expect((w.ret(8) as Refused).error).toMatchObject({ code: 'E_CORE_NOT_FOUND', detail: 'no such attachment' });
+    expect(w.routes.getBlob).toHaveBeenCalledTimes(2);
+    const tampered = stored.slice(); tampered[0] = (tampered[0] ?? 0) ^ 1;
+    w.state.blobs.set(toHex(blobId), tampered);
+    w.call(9, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: 0, thumb: false });
+    await vi.waitFor(() => expect(w.ret(9)).toBeDefined());
+    expect((w.ret(9) as Refused).error).toEqual({ code: 'E_BLOB_HASH', detail: '', status: 0, retryAfterMs: null });
+  });
+
+  it("roles: the own member row's roles reach the core once per change, and a role mention raises a mention notice", async () => {
+    const w = world();
+    w.state.roleIds = [ROLE];
+    await toReady(w);
+    await vi.waitFor(() => expect(w.core.ownRolesSet).toHaveBeenCalled());
+    expect(w.core.ownRolesSet.mock.calls.map((c) => [toHex(c[0]), c[1].map(toHex)])).toEqual([[toHex(COMMUNITY), [toHex(ROLE)]]]);
+    w.call(2, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
+    expect(w.core.ownRolesSet).toHaveBeenCalledTimes(1);
+    w.state.groups = [textGroup(2)];
+    w.state.rows = [{ ...strangerRow(1), body: `<@${toHex(ROLE)}> standup`, mention: true }];
+    w.state.activity = [act(GROUP, 1, 1)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([1n]));
+    expect(w.notices()?.items.map((n) => [n.kind, n.body])).toEqual([['mention', `<@${toHex(ROLE)}> standup`]]);
+    w.state.roleIds = [];
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.core.ownRolesSet).toHaveBeenCalledTimes(2));
+    expect(w.core.ownRolesSet.mock.calls[1][1]).toEqual([]);
+  });
+
+  it('publishes each member\'s role ids as hex on the members slice (INTERFACES-05)', async () => {
+    const w = world();
+    w.state.roleIds = [ROLE];
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)).toBeDefined());
+    const own = w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)!.find((m) => m.roleIds.length > 0);
+    expect(own?.roleIds).toEqual([toHex(ROLE)]);
+  });
+
+  it('a notice is a mention only by the core\'s flag, never by a body an edit changed (FACTS-SECURITY-07)', async () => {
+    const w = world();
+    w.state.roleIds = [ROLE];
+    await toReady(w);
+    await vi.waitFor(() => expect(w.core.ownRolesSet).toHaveBeenCalled());
+    w.state.groups = [textGroup(2)];
+    w.state.rows = [{ ...strangerRow(1), body: `<@${toHex(ROLE)}> standup`, editedSeq: 2n, mention: false }];
+    w.state.activity = [act(GROUP, 1, 1)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([1n, 2n]));
+    expect(w.notices()?.items.map((n) => n.kind)).toEqual(['message']);
+  });
+
+  it('a purge of a group this device is not a member of waits, and runs once the group is back (FACTS-SECURITY-08)', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.groups = [textGroup(4)];
+    w.state.purges = [purge(7n, [B1])];
+    w.sync.deps!.onOutboxChanged(GROUP);
+    await settle();
+    expect(w.routes.deleteGroupMessage).not.toHaveBeenCalled();
+    expect(w.state.purges).toHaveLength(1);
+    w.state.groups = [textGroup(2)];
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.core.purgeDone).toHaveBeenCalledTimes(1));
+  });
+
+  // Pre-flight ruling F6: a purge the core records while it adopts the own type-2 row in a catch-up (an apply, with no
+  // outbox report of its own) runs after that group change, not only at the next outbox change or ready.
+  it('a purge recorded by an apply runs after the group change (F6)', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.purges = [purge(9n, [B1])];
+    w.sync.deps!.onGroupChanged(GROUP, applied(2));
+    await vi.waitFor(() => expect(w.core.purgeDone).toHaveBeenCalledTimes(1));
+    expect(w.calls.filter((c) => /^(deleteGroupMessage|deleteBlob|core\.purgeDone)/.test(c))).toEqual([
+      'deleteGroupMessage(9)', `deleteBlob(${toHex(B1).slice(0, 8)})`, 'core.purgeDone(9)',
+    ]);
   });
 });

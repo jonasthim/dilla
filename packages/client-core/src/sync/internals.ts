@@ -3,6 +3,8 @@ import type { SyncDeps } from './engine';
 import type { SerialQueues } from './group-queue';
 
 export interface SyncInternals {
+  /** The engine's dependencies, including the two web-2b hooks send.ts calls: beforeSend (drainOne, before every upload
+   *  of a row with attachments) and onDiscarded (discardSend, with the row as the outbox held it). */
   readonly deps: SyncDeps;
   readonly queues: SerialQueues;
   stopped(): boolean;

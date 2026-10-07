@@ -14,6 +14,7 @@ mod client_support;
 use client_support::*;
 use dilla_core::cbor::{Encoder, decode_strict};
 use dilla_core::client::{ClientCore, ClientError, mentions_me, migrate_app};
+use dilla_core::envelope::EnvelopeType;
 use dilla_core::mls::{ConnHandle, DillaStorage};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -360,22 +361,36 @@ fn write_the_v1_fixture() {
     assert_eq!(len, 11, "an eleven-element v1 record");
 }
 
-/// A private copy of the committed fixture under the temp directory, opened as a file.
-fn fixture_copy(name: &str) -> (PathBuf, ConnHandle) {
+/// A private copy of the committed fixture `src` under the temp directory, opened as a file.
+fn copy_of(src: &str, name: &str) -> (PathBuf, ConnHandle) {
     let path = std::env::temp_dir().join(format!(
         "dilla-client-migrate-{}-{name}.db",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
-    std::fs::copy(FIXTURE, &path).expect("copy the v1 fixture");
+    std::fs::copy(src, &path).expect("copy the fixture");
     let conn: ConnHandle = Arc::new(Mutex::new(
         rusqlite::Connection::open(&path).expect("open the copy"),
     ));
     (path, conn)
 }
 
+fn fixture_copy(name: &str) -> (PathBuf, ConnHandle) {
+    copy_of(FIXTURE, name)
+}
+
+fn app_indexes(c: &rusqlite::Connection) -> Vec<String> {
+    let mut stmt = c
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'app%' ORDER BY name")
+        .expect("prepare");
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .expect("query")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("names")
+}
+
 #[test]
-fn a_v1_store_opens_as_v2_with_every_column_backfilled() {
+fn a_v1_store_opens_as_v3_with_every_column_backfilled() {
     let (path, conn) = fixture_copy("open");
     {
         let c = conn.lock().expect("lock");
@@ -389,7 +404,7 @@ fn a_v1_store_opens_as_v2_with_every_column_backfilled() {
     let core = ClientCore::open(Arc::clone(&conn)).expect("open the v1 fixture");
     {
         let c = conn.lock().expect("lock");
-        assert_eq!(meta_of(&c, "schema"), Some(vec![0x02]));
+        assert_eq!(meta_of(&c, "schema"), Some(vec![0x03]));
         // A migrated store and a fresh one have the same columns, in the same order.
         let fresh = memory();
         drop(ClientCore::open(Arc::clone(&fresh)).expect("a fresh store"));
@@ -398,15 +413,25 @@ fn a_v1_store_opens_as_v2_with_every_column_backfilled() {
         for t in app_tables(&fresh) {
             assert_eq!(column_info(&c, &t), column_info(&fresh, &t), "{t}");
         }
+        assert_eq!(app_indexes(&c), app_indexes(&fresh));
         let group_columns = columns(&c, "app_groups");
         assert_eq!(
             &group_columns[group_columns.len() - 2..],
             ["epoch", "pending_commit"]
         );
+        let message_columns = columns(&c, "app_messages");
         assert_eq!(
-            columns(&c, "app_messages").last().map(String::as_str),
-            Some("mention")
+            &message_columns[message_columns.len() - 4..],
+            ["mention", "reply_to", "edit_body", "edit_seq"]
         );
+        let replies: i64 = c
+            .query_row(
+                "SELECT count(*) FROM app_messages WHERE reply_to IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(replies, 0, "no v1 message replies to anything");
         assert_eq!(
             columns(&c, "app_read_state"),
             ["group_id", "last_read_seq", "last_read_at"]
@@ -532,7 +557,7 @@ fn a_v1_store_opens_as_v2_with_every_column_backfilled() {
         vec![(0, "still queued")]
     );
 
-    // The backfill runs once: a v2 store is opened without one.
+    // The backfill runs once: a v3 store is opened without one.
     drop(core);
     conn.lock()
         .expect("lock")
@@ -541,11 +566,11 @@ fn a_v1_store_opens_as_v2_with_every_column_backfilled() {
             [GROUP.as_slice()],
         )
         .expect("tamper");
-    let core = ClientCore::open(Arc::clone(&conn)).expect("reopen at v2");
+    let core = ClientCore::open(Arc::clone(&conn)).expect("reopen at v3");
     assert_eq!(
         groups(&core)[0].epoch,
         99,
-        "a v2 store is not backfilled again"
+        "a v3 store is not backfilled again"
     );
     drop(core);
     drop(conn);
@@ -670,7 +695,7 @@ fn migrate_app_reports_the_schema_it_found() {
     );
     assert_eq!(
         meta_of(&conn.lock().expect("lock"), "schema"),
-        Some(vec![0x02])
+        Some(vec![0x03])
     );
     assert_eq!(
         conn.lock()
@@ -697,10 +722,10 @@ fn migrate_app_reports_the_schema_it_found() {
         2
     );
     assert_eq!(
-        migrate_app(&DillaStorage::new(Arc::clone(&conn))).expect("v2"),
-        2
+        migrate_app(&DillaStorage::new(Arc::clone(&conn))).expect("v3"),
+        3
     );
-    assert_eq!(migrate_app(&DillaStorage::new(memory())).expect("fresh"), 2);
+    assert_eq!(migrate_app(&DillaStorage::new(memory())).expect("fresh"), 3);
     drop(conn);
     std::fs::remove_file(&path).expect("cleanup");
 }
@@ -893,7 +918,7 @@ fn a_v1_pending_signup_migrates_and_completes_to_a_v2_identity() {
     let mut core = ClientCore::open(Arc::clone(&conn)).expect("open the v1 pending fixture");
     {
         let c = conn.lock().expect("lock");
-        assert_eq!(meta_of(&c, "schema"), Some(vec![0x02]));
+        assert_eq!(meta_of(&c, "schema"), Some(vec![0x03]));
         assert_eq!(
             meta_of(&c, "signup"),
             Some(signup),
@@ -927,6 +952,591 @@ fn a_v1_pending_signup_migrates_and_completes_to_a_v2_identity() {
     })
     .expect("the identity record decodes");
     assert_eq!((len, version), (13, 2));
+    drop(core);
+    drop(conn);
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+const V2_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/app_v2.db");
+
+/// web-2a's `APP_SCHEMA` (L-SQL-20), verbatim (`src/client/schema.rs:67-128` at `89ea4e0`).
+const APP_SCHEMA_V2: &str = "
+CREATE TABLE IF NOT EXISTS app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS app_groups (
+  group_id     BLOB    PRIMARY KEY CHECK (length(group_id) = 16),
+  kind         INTEGER NOT NULL,
+  community_id BLOB    CHECK (community_id IS NULL OR length(community_id) = 16),
+  target_id    BLOB    NOT NULL CHECK (length(target_id) = 16),
+  state        INTEGER NOT NULL,
+  next_seq     INTEGER NOT NULL DEFAULT 1,
+  acked_seq    INTEGER NOT NULL DEFAULT 0,
+  acked_epoch  INTEGER NOT NULL DEFAULT 0,
+  resync       INTEGER NOT NULL DEFAULT 0 CHECK (resync IN (0, 1)),
+  was_gone     INTEGER NOT NULL DEFAULT 0 CHECK (was_gone IN (0, 1)),
+  max_epoch    INTEGER NOT NULL DEFAULT 0,
+  epoch          INTEGER NOT NULL DEFAULT 0,
+  pending_commit INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
+CREATE UNIQUE INDEX IF NOT EXISTS app_groups_by_target ON app_groups (target_id, kind) WHERE state <> 4;
+CREATE TABLE IF NOT EXISTS app_handshake_tail (
+  group_id BLOB NOT NULL, seq INTEGER NOT NULL, epoch INTEGER NOT NULL, kind INTEGER NOT NULL,
+  sender INTEGER, blob BLOB NOT NULL, PRIMARY KEY (group_id, seq)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS app_proposals (
+  group_id BLOB NOT NULL, ref BLOB NOT NULL, epoch INTEGER NOT NULL, PRIMARY KEY (group_id, ref)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS app_messages (
+  group_id      BLOB    NOT NULL,
+  seq           INTEGER NOT NULL,
+  epoch         INTEGER NOT NULL,
+  recv_ts       INTEGER NOT NULL,
+  status        INTEGER NOT NULL,
+  reason        TEXT    NOT NULL DEFAULT '',
+  sender_user   BLOB,
+  sender_device BLOB    NOT NULL,
+  sender_leaf   INTEGER,
+  sender_kind   INTEGER,
+  sender_tier   INTEGER,
+  msg_id        BLOB,
+  type          INTEGER,
+  body          TEXT    NOT NULL DEFAULT '',
+  envelope      BLOB,
+  franking_tag  BLOB    NOT NULL,
+  mention       INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (group_id, seq)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS app_messages_by_msg ON app_messages (group_id, msg_id);
+CREATE TABLE IF NOT EXISTS app_outbox (
+  msg_id   BLOB    PRIMARY KEY CHECK (length(msg_id) = 16),
+  group_id BLOB    NOT NULL,
+  envelope BLOB    NOT NULL,
+  created  INTEGER NOT NULL,
+  state    INTEGER NOT NULL,
+  error    TEXT    NOT NULL DEFAULT '',
+  epoch    INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS app_outbox_by_group ON app_outbox (group_id, created, msg_id);
+CREATE TABLE IF NOT EXISTS app_read_state (
+  group_id      BLOB    PRIMARY KEY CHECK (length(group_id) = 16),
+  last_read_seq INTEGER NOT NULL DEFAULT 0,
+  last_read_at  INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS app_settings (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID;
+INSERT OR IGNORE INTO app_meta (k, v) VALUES ('schema', x'02');
+";
+
+/// The v2 columns of every app table but `app_meta`, in declaration order.
+const V2_COLUMNS: [(&str, &str); 7] = [
+    (
+        "app_groups",
+        "group_id,kind,community_id,target_id,state,next_seq,acked_seq,acked_epoch,resync,was_gone,max_epoch,epoch,pending_commit",
+    ),
+    ("app_handshake_tail", "group_id,seq,epoch,kind,sender,blob"),
+    ("app_proposals", "group_id,ref,epoch"),
+    (
+        "app_messages",
+        "group_id,seq,epoch,recv_ts,status,reason,sender_user,sender_device,sender_leaf,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag,mention",
+    ),
+    (
+        "app_outbox",
+        "msg_id,group_id,envelope,created,state,error,epoch",
+    ),
+    ("app_read_state", "group_id,last_read_seq,last_read_at"),
+    ("app_settings", "k,v"),
+];
+
+/// The msg ids the v2 fixture's peer messages carry.
+const X1: [u8; 16] = [0xc1; 16];
+const X2: [u8; 16] = [0xc5; 16];
+const UNHELD: [u8; 16] = [0xee; 16];
+
+/// Alice (0xa1) created GROUP; a peer P (user 0xe5, device 0xe6) joined at seq 1 and a reader R
+/// (user 0xd4, device 0xd5) at seq 2. Seq 3 is Alice's "alice says hi" (msg id A, random); then
+/// 4 P's X1 "peer target"; 5 P's edit of X1 "peer target, edited"; 6 P's edit of A "hijacked"
+/// (not the author); 7 P 👍 on A; 8 R 👍 on A; 9 R 🎉 on A; 10 R removes 🎉 from A; 11 P's X2
+/// "to be deleted"; 12 R 👍 on X2; 13 P deletes X2 (the author); 14 R pins X1; 15 P 👍 on a msg
+/// id nobody holds; 16 P's "replying to alice" with reply_to A. Alice alone in OTHER_GROUP with
+/// "alone here". Fifteen messages; Alice's store is copied as a v2 store.
+#[test]
+#[ignore = "writes tests/fixtures/app_v2.db; run once with --ignored and commit the file"]
+fn write_the_v2_fixture() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut a = ready_core(0xa1, "alice");
+    a.create_and_register(&mut relay, &instance);
+    let mut p = RawPeer::new(0xe5, 0xe6);
+    assert_eq!(p.join_external(&mut relay), 1);
+    let mut r = RawPeer::new(0xd4, 0xd5);
+    assert_eq!(r.join_external(&mut relay), 2);
+    p.apply_commit(&relay, 2);
+    a.sync(&relay);
+    let (a_msg, a_seq) = a.send(&mut relay, &GROUP, "alice says hi", NOW + 1);
+    assert_eq!(a_seq, 3);
+    use EnvelopeType::{Delete, Edit, Message, Pin, ReactionAdd, ReactionRemove};
+    let to_be_deleted = fold_envelope(X2, Message, None, "to be deleted");
+    let sent = [
+        p.send_envelope(&mut relay, &fold_envelope(X1, Message, None, "peer target")),
+        p.send_envelope(
+            &mut relay,
+            &fold_envelope([0xc2; 16], Edit, Some(X1), "peer target, edited"),
+        ),
+        p.send_envelope(
+            &mut relay,
+            &fold_envelope([0xc3; 16], Edit, Some(a_msg), "hijacked"),
+        ),
+        p.send_envelope(
+            &mut relay,
+            &fold_envelope([0xc4; 16], ReactionAdd, Some(a_msg), "👍"),
+        ),
+        r.send_envelope(
+            &mut relay,
+            &fold_envelope([0xd1; 16], ReactionAdd, Some(a_msg), "👍"),
+        ),
+        r.send_envelope(
+            &mut relay,
+            &fold_envelope([0xd2; 16], ReactionAdd, Some(a_msg), "🎉"),
+        ),
+        r.send_envelope(
+            &mut relay,
+            &fold_envelope([0xd3; 16], ReactionRemove, Some(a_msg), "🎉"),
+        ),
+        p.send_envelope(&mut relay, &to_be_deleted),
+        r.send_envelope(
+            &mut relay,
+            &fold_envelope([0xd4; 16], ReactionAdd, Some(X2), "👍"),
+        ),
+        p.send_envelope(&mut relay, &fold_envelope([0xc6; 16], Delete, Some(X2), "")),
+        r.send_envelope(&mut relay, &fold_envelope([0xd5; 16], Pin, Some(X1), "")),
+        p.send_envelope(
+            &mut relay,
+            &fold_envelope([0xc7; 16], ReactionAdd, Some(UNHELD), "👍"),
+        ),
+        p.send_envelope(
+            &mut relay,
+            &fold_envelope([0xc8; 16], Message, Some(a_msg), "replying to alice"),
+        ),
+    ];
+    assert_eq!(sent, [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    a.sync(&relay);
+
+    let mut other = Relay::new(OTHER_GROUP);
+    let body = a
+        .core
+        .group_create(
+            &OTHER_GROUP,
+            Some(&COMMUNITY),
+            &OTHER_CHANNEL,
+            POLICY,
+            &instance.public(),
+        )
+        .expect("group_create");
+    let created = other.register(&body).expect("register");
+    let next_seq = decode_strict(&created, |d| {
+        d.array(2)?;
+        d.bytes_exact::<16>()?;
+        d.uint()
+    })
+    .expect("201 body");
+    a.core
+        .group_registered(&OTHER_GROUP, next_seq)
+        .expect("group_registered");
+    a.send(&mut other, &OTHER_GROUP, "alone here", NOW + 7);
+
+    let path = Path::new(V2_FIXTURE);
+    let _ = std::fs::remove_file(path);
+    {
+        let file = rusqlite::Connection::open(path).expect("create the fixture");
+        file.execute_batch(APP_SCHEMA_V2)
+            .expect("the v2 app schema");
+        DillaStorage::new(Arc::new(Mutex::new(file)))
+            .migrate()
+            .expect("the openmls schema");
+    }
+    {
+        let c = a.probe.lock().expect("lock");
+        c.execute("ATTACH DATABASE ?1 AS v2", [V2_FIXTURE])
+            .expect("attach");
+        let tables: Vec<String> = {
+            let mut stmt = c
+                .prepare(
+                    "SELECT name FROM main.sqlite_master WHERE type = 'table' \
+                     AND (name LIKE 'openmls_%' OR name = 'storage_meta') ORDER BY name",
+                )
+                .expect("prepare");
+            stmt.query_map([], |r| r.get(0))
+                .expect("query")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("names")
+        };
+        for t in &tables {
+            c.execute(
+                &format!("INSERT OR REPLACE INTO v2.\"{t}\" SELECT * FROM main.\"{t}\""),
+                [],
+            )
+            .expect("copy an openmls table");
+        }
+        for (t, cols) in V2_COLUMNS {
+            c.execute(
+                &format!("INSERT INTO v2.{t} ({cols}) SELECT {cols} FROM main.{t}"),
+                [],
+            )
+            .expect("copy an app table");
+        }
+        c.execute(
+            "INSERT INTO v2.app_meta (k, v) SELECT k, v FROM main.app_meta WHERE k <> 'schema'",
+            [],
+        )
+        .expect("copy app_meta");
+        // What web-2a's core stored for P's message X2, whatever this build folded: web-2a folded
+        // nothing, so the deleted target is still a shown row (a no-op on a v2 build).
+        c.execute(
+            "UPDATE v2.app_messages SET status = 0, reason = '', body = ?3, envelope = ?4 \
+             WHERE group_id = ?1 AND seq = ?2",
+            rusqlite::params![
+                GROUP.as_slice(),
+                11i64,
+                "to be deleted",
+                to_be_deleted.encode().expect("encodes")
+            ],
+        )
+        .expect("the v2 row of X2");
+        c.execute("DETACH DATABASE v2", []).expect("detach");
+    }
+    let file = rusqlite::Connection::open(path).expect("reopen the fixture");
+    file.execute_batch("VACUUM").expect("vacuum");
+    for (t, cols) in V2_COLUMNS {
+        assert_eq!(
+            columns(&file, t),
+            cols.split(',').collect::<Vec<_>>(),
+            "{t}"
+        );
+    }
+    assert_eq!(
+        app_tables(&file),
+        [
+            "app_groups",
+            "app_handshake_tail",
+            "app_messages",
+            "app_meta",
+            "app_outbox",
+            "app_proposals",
+            "app_read_state",
+            "app_settings"
+        ]
+    );
+    assert_eq!(meta_of(&file, "schema"), Some(vec![0x02]));
+    let total: i64 = file
+        .query_row("SELECT count(*) FROM app_messages", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(total, 15, "fifteen messages");
+    let x2: (i64, String) = file
+        .query_row(
+            "SELECT status, body FROM app_messages WHERE group_id = ?1 AND seq = 11",
+            [GROUP.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("X2");
+    assert_eq!(x2, (0, "to be deleted".to_owned()));
+    let folds: i64 = file
+        .query_row(
+            "SELECT count(*) FROM app_messages WHERE type BETWEEN 1 AND 6",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(folds, 10, "ten rows of types 1-6");
+}
+
+#[test]
+fn a_v2_store_opens_as_v3_with_its_folds_applied() {
+    let (path, conn) = copy_of(V2_FIXTURE, "v2-open");
+    let a_msg: [u8; 16] = {
+        let c = conn.lock().expect("lock");
+        assert_eq!(
+            meta_of(&c, "schema"),
+            Some(vec![0x02]),
+            "the committed fixture is v2"
+        );
+        assert!(!columns(&c, "app_messages").iter().any(|n| n == "reply_to"));
+        c.query_row(
+            "SELECT msg_id FROM app_messages WHERE group_id = ?1 AND seq = 3",
+            [GROUP.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("alice's message")
+    };
+    let core = ClientCore::open(Arc::clone(&conn)).expect("open the v2 fixture");
+    {
+        let c = conn.lock().expect("lock");
+        assert_eq!(meta_of(&c, "schema"), Some(vec![0x03]));
+        let fresh = memory();
+        drop(ClientCore::open(Arc::clone(&fresh)).expect("a fresh store"));
+        let fresh = fresh.lock().expect("lock");
+        assert_eq!(app_tables(&c), app_tables(&fresh));
+        assert_eq!(app_indexes(&c), app_indexes(&fresh));
+        for t in app_tables(&fresh) {
+            assert_eq!(column_info(&c, &t), column_info(&fresh, &t), "{t}");
+        }
+        let mut stmt = c
+            .prepare("SELECT seq, reply_to FROM app_messages WHERE group_id = ?1 ORDER BY seq")
+            .expect("prepare");
+        let replies: Vec<(i64, Option<Vec<u8>>)> = stmt
+            .query_map([GROUP.as_slice()], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        let to = |m: [u8; 16]| Some(m.to_vec());
+        assert_eq!(
+            replies,
+            vec![
+                (3, None),
+                (4, None),
+                (5, to(X1)),
+                (6, to(a_msg)),
+                (7, to(a_msg)),
+                (8, to(a_msg)),
+                (9, to(a_msg)),
+                (10, to(a_msg)),
+                (11, None),
+                (12, to(X2)),
+                (13, to(X2)),
+                (14, to(X1)),
+                (15, to(UNHELD)),
+                (16, to(a_msg)),
+            ]
+        );
+        let mut stmt = c
+            .prepare("SELECT target, user_id, emoji, seq FROM app_reactions ORDER BY seq")
+            .expect("prepare");
+        let reactions: Vec<(Vec<u8>, Vec<u8>, String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert_eq!(
+            reactions,
+            vec![
+                (a_msg.to_vec(), vec![0xe5; 16], "👍".to_owned(), 7),
+                (a_msg.to_vec(), vec![0xd4; 16], "👍".to_owned(), 8),
+            ],
+            "R's 🎉 was removed, X2's 👍 went with X2, the unheld target's 👍 waits"
+        );
+        let pins: (Vec<u8>, i64, Vec<u8>) = c
+            .query_row("SELECT target, seq, by_user FROM app_pins", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .expect("one pin");
+        assert_eq!(pins, (X1.to_vec(), 14, vec![0xd4; 16]));
+        let x2: (i64, String, Option<Vec<u8>>) = c
+            .query_row(
+                "SELECT status, body, envelope FROM app_messages WHERE group_id = ?1 AND seq = 11",
+                [GROUP.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("X2");
+        assert_eq!(
+            x2,
+            (2, String::new(), None),
+            "the author's delete folded at migration"
+        );
+        let hijack: (i64, String) = c
+            .query_row(
+                "SELECT status, body FROM app_messages WHERE group_id = ?1 AND seq = 6",
+                [GROUP.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("the ignored edit");
+        assert_eq!(hijack, (0, "hijacked".to_owned()));
+        let (total, purges, roles): (i64, i64, i64) = c
+            .query_row(
+                "SELECT (SELECT count(*) FROM app_messages), (SELECT count(*) FROM app_purges), (SELECT count(*) FROM app_roles)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("counts");
+        assert_eq!((total, purges, roles), (15, 0, 0));
+    }
+    let rows = decode_timeline(&core.timeline(&GROUP, 0, 200).expect("timeline"));
+    assert_eq!(
+        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        vec![3, 4, 11, 16],
+        "fold rows are hidden"
+    );
+    let by = |seq: u64| rows.iter().find(|r| r.seq == seq).expect("row").clone();
+    assert_eq!(
+        (by(3).body, by(3).edited_seq, by(3).reactions, by(3).pinned),
+        (
+            "alice says hi".to_owned(),
+            0,
+            vec![("👍".to_owned(), 2, 0)],
+            0
+        )
+    );
+    assert_eq!(
+        (by(4).body, by(4).edited_seq, by(4).pinned),
+        ("peer target, edited".to_owned(), 5, 1)
+    );
+    assert_eq!((by(11).status, by(11).body), (2, String::new()));
+    assert_eq!(
+        by(16).reply,
+        Some(Reply {
+            reply_to: a_msg,
+            target_seq: Some(3),
+            target_user: Some([0xa1; 16]),
+            excerpt: "alice says hi".into(),
+            state: 0
+        })
+    );
+    let x1_ts = by(4).recv_ts;
+    assert_eq!(
+        decode_pins(&core.pins(&GROUP).expect("pins")),
+        vec![PinRow {
+            target_seq: 4,
+            msg_id: X1,
+            pinned_seq: 14,
+            by_user: [0xd4; 16],
+            author: Some([0xe5; 16]),
+            excerpt: "peer target, edited".into(),
+            target_ts: x1_ts,
+        }]
+    );
+    let other: Vec<String> =
+        decode_timeline(&core.timeline(&OTHER_GROUP, 0, 200).expect("timeline"))
+            .into_iter()
+            .map(|r| r.body)
+            .collect();
+    assert_eq!(other, vec!["alone here".to_owned()]);
+    drop(core);
+    drop(conn);
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+/// Lesson g and (ruled: AI-2): bytes that are not a nine-element envelope array were not written
+/// by a core; the migration refuses them and rolls back, so the store stays exactly v2.
+#[test]
+fn a_v2_store_whose_v3_backfill_fails_stays_v2() {
+    let (path, conn) = copy_of(V2_FIXTURE, "v2-rollback");
+    let changed = conn
+        .lock()
+        .expect("lock")
+        .execute(
+            "UPDATE app_messages SET envelope = x'00' WHERE group_id = ?1 AND seq = 7",
+            [GROUP.as_slice()],
+        )
+        .expect("corrupt one envelope");
+    assert_eq!(changed, 1);
+    let before = {
+        let c = conn.lock().expect("lock");
+        (
+            column_info(&c, "app_messages"),
+            app_tables(&c),
+            app_indexes(&c),
+        )
+    };
+    let err = match ClientCore::open(Arc::clone(&conn)) {
+        Ok(_) => panic!("a store holding a non-envelope must not open"),
+        Err(e) => e,
+    };
+    assert_eq!(
+        err,
+        ClientError {
+            code: "E_CORE_STORAGE",
+            detail: "app_messages envelope does not decode".into()
+        }
+    );
+    assert!(matches!(
+        migrate_app(&DillaStorage::new(Arc::clone(&conn))),
+        Err(dilla_core::mls::StorageError::Codec(_))
+    ));
+    let c = conn.lock().expect("lock");
+    assert_eq!(meta_of(&c, "schema"), Some(vec![0x02]), "still v2");
+    assert_eq!(
+        (
+            column_info(&c, "app_messages"),
+            app_tables(&c),
+            app_indexes(&c)
+        ),
+        before
+    );
+    drop(c);
+    drop(conn);
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+/// (ruled: AI-2) and lesson e: an envelope web-2a's core accepted and this build refuses (a
+/// reaction with no target, an attachment of eight elements) — which any member could have sent —
+/// must not keep the store from opening.
+/// Any member could have sent a web-2a browser these shapes; were the migration to
+/// decode them, one message would keep that person's store from ever opening (lesson e). Mutations (f) and (g) of Step 11.
+#[test]
+fn a_v2_row_this_build_refuses_still_migrates() {
+    fn legacy(kind: u64, reply_to: Option<&[u8; 16]>, eight_element_attachment: bool) -> Vec<u8> {
+        let mut e = Encoder::new();
+        e.array(9)
+            .uint(1)
+            .bytes(&[0x9a; 16])
+            .uint(kind)
+            .null()
+            .opt_bytes(reply_to.map(|r| r.as_slice()))
+            .text(if kind == 0 { "legacy" } else { "👍" });
+        if eight_element_attachment {
+            e.array(1);
+            e.array(8)
+                .bytes(&[0x03; 32])
+                .bytes(&[0x04; 32])
+                .bytes(&[0x05; 12])
+                .uint(10)
+                .text("image/png")
+                .null()
+                .null()
+                .null();
+        } else {
+            e.array(0);
+        }
+        e.array(0);
+        e.bytes(&[0x06; 32]);
+        e.into_vec()
+    }
+    let (path, conn) = copy_of(V2_FIXTURE, "v2-legacy");
+    let a_msg: [u8; 16] = {
+        let c = conn.lock().expect("lock");
+        let a_msg: [u8; 16] = c
+            .query_row(
+                "SELECT msg_id FROM app_messages WHERE group_id = ?1 AND seq = 3",
+                [GROUP.as_slice()],
+                |r| r.get(0),
+            )
+            .expect("alice's message");
+        c.execute(
+            "UPDATE app_messages SET envelope = ?2 WHERE group_id = ?1 AND seq = 7",
+            rusqlite::params![GROUP.as_slice(), legacy(3, None, false)],
+        )
+        .expect("a reaction with no target");
+        c.execute(
+            "UPDATE app_messages SET envelope = ?2 WHERE group_id = ?1 AND seq = 16",
+            rusqlite::params![GROUP.as_slice(), legacy(0, Some(&a_msg), true)],
+        )
+        .expect("an eight-element attachment");
+        a_msg
+    };
+    let core = ClientCore::open(Arc::clone(&conn)).expect("open");
+    let rows = decode_timeline(&core.timeline(&GROUP, 0, 200).expect("timeline"));
+    let by = |seq: u64| rows.iter().find(|r| r.seq == seq).expect("row").clone();
+    assert_eq!(
+        by(3).reactions,
+        vec![("👍".to_owned(), 1, 0)],
+        "P's reaction has no target now; R's stays"
+    );
+    assert_eq!(
+        by(16).attachments,
+        Vec::new(),
+        "a stored envelope this build refuses shows no files"
+    );
+    assert_eq!(
+        by(16).reply.map(|r| r.reply_to),
+        Some(a_msg),
+        "its reply_to was still read"
+    );
     drop(core);
     drop(conn);
     std::fs::remove_file(&path).expect("cleanup");

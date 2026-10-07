@@ -105,7 +105,13 @@ func envelope0(t *testing.T, body string) []byte {
 
 func envelopeOf(t *testing.T, typ uint64, body string) []byte {
 	t.Helper()
-	b, err := cborx.Marshal([]any{uint64(1), id.New(), typ, nil, nil, body, []any{}, []any{}, bytes.Repeat([]byte{0x06}, 32)})
+	// protocol/04 (web-2b task 1): a type 1..6 envelope names its target. PATCH takes the target
+	// from the path, so any reference does; seq 1's is used.
+	var replyTo any
+	if typ != 0 {
+		replyTo = seqRef(1)
+	}
+	b, err := cborx.Marshal([]any{uint64(1), id.New(), typ, nil, replyTo, body, []any{}, []any{}, bytes.Repeat([]byte{0x06}, 32)})
 	if err != nil {
 		t.Fatalf("cborx.Marshal: %v", err)
 	}
@@ -184,7 +190,7 @@ func TestAMaximalEnvelopeIsAccepted(t *testing.T) {
 	e := f.e
 	ch := readableChannel(t, e, f.cid, f.ownerTok)
 	att := []any{bytes.Repeat([]byte{3}, 32), bytes.Repeat([]byte{4}, 32), bytes.Repeat([]byte{5}, 12),
-		uint64(1 << 40), strings.Repeat("m", 255), uint64(1 << 20), uint64(1 << 20), bytes.Repeat([]byte{7}, 8192)}
+		uint64(1 << 40), strings.Repeat("m", 255), uint64(1 << 20), uint64(1 << 20), bytes.Repeat([]byte{7}, 8192), strings.Repeat("n", 255)}
 	prev := []any{strings.Repeat("u", 2048), strings.Repeat("t", 256), strings.Repeat("d", 1024), bytes.Repeat([]byte{8}, 16384)}
 	env, err := cborx.Marshal([]any{uint64(1), id.New(), uint64(0), id.New(), id.New(), strings.Repeat("b", 4000),
 		[]any{att, att, att, att}, []any{prev, prev}, bytes.Repeat([]byte{6}, 32)})
@@ -276,9 +282,11 @@ func TestTheReadableRoutesAreGated(t *testing.T) {
 		}
 	}
 	// An edit or a delete on POST is the P2-D15 alias and must name its target's
-	// seq in reply_to (task 9); without one it is malformed.
+	// seq in reply_to (task 9); without one it is malformed. envelopeOf names a target for every
+	// type 1..6 since web-2b task 1, so the envelope without one is spelled out here.
 	for _, typ := range []uint64{1, 2} {
-		status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", f.ownerTok, []any{envelopeOf(t, typ, "")})
+		noTarget := mustMarshal(t, []any{uint64(1), id.New(), typ, nil, nil, "", []any{}, []any{}, bytes.Repeat([]byte{0x06}, 32)})
+		status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", f.ownerTok, []any{noTarget})
 		if status != http.StatusBadRequest || e.ErrCode(body) != "E_ENVELOPE_SHAPE" {
 			t.Fatalf("a type-%d envelope on POST with no reply_to = %d %s, want 400 E_ENVELOPE_SHAPE", typ, status, e.ErrCode(body))
 		}

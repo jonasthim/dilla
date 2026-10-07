@@ -22,7 +22,7 @@ pub(crate) const STATE_LIST: &str = "state_list";
 /// values as stored. A dropped candidate restores it; a published one deletes it.
 pub(crate) const STATE_PRIOR: &str = "state_prior";
 
-/// App schema v2 column meanings (L-SQL-10, L-SQL-20):
+/// App schema v3 column meanings (L-SQL-10, L-SQL-20, L-SQL-30):
 ///
 /// - `app_groups.state`: 0 registering, 1 joining, 2 active, 3 needs_resync, 4 gone.
 /// - `app_groups.next_seq`: every delivery-service seq below it is applied or skipped.
@@ -55,15 +55,21 @@ pub(crate) const STATE_PRIOR: &str = "state_prior";
 /// - `app_messages.envelope`: the envelope CBOR (with k_f) of an ok row; NULL otherwise.
 /// - `app_messages.mention`: 1 on a status-0 type-0 row from another user (by `sender_user`,
 ///   ruling 29: the own user's other devices are excluded too) whose body `mentions_me`, else 0.
+/// - `app_messages.reply_to`: the envelope's `reply_to` of a status-0 row, retained by a
+///   status-2 row that kept its identity; NULL otherwise.
+/// - `app_messages.edit_body` and `edit_seq`: the latest author's edit applied to a type-0 row;
+///   NULL and 0 when there is none (L-CORE-33 step 3).
+/// - `app_reactions` and `app_pins`: derived per target by `fold::refold`.
+/// - `app_purges`: the task-3 purge records.
+/// - `app_roles`: this device's own role ids per community, replaced by `own_roles_set`.
 /// - `app_outbox.state`: 0 queued, 1 in_flight, 2 failed.
 /// - `app_outbox.epoch`: the epoch send_encrypt framed the message in; read by send_confirm.
 /// - `app_read_state`: the device-local read marker of a group, never lowered.
 /// - `app_settings`: device-local settings.
 ///
-/// The three v2 columns carry no CHECK (Rust writes only 0 and 1 to `pending_commit` and
-/// `mention`), so a fresh v2 store and one migrated from v1 have the same columns. `APP_SCHEMA`
-/// runs on a v1 store before `MIGRATE_V1_TO_V2`, so it creates no index that names a v2 column.
-const APP_SCHEMA: &str = "
+/// `APP_SCHEMA` runs on v1 and v2 stores before their migrations, so indexes naming migrated
+/// columns are created by `APP_INDEXES_V3` afterwards.
+pub(super) const APP_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS app_groups (
   group_id     BLOB    PRIMARY KEY CHECK (length(group_id) = 16),
@@ -106,6 +112,9 @@ CREATE TABLE IF NOT EXISTS app_messages (
   envelope      BLOB,
   franking_tag  BLOB    NOT NULL,
   mention       INTEGER NOT NULL DEFAULT 0,
+  reply_to      BLOB,
+  edit_body     TEXT,
+  edit_seq      INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (group_id, seq)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS app_messages_by_msg ON app_messages (group_id, msg_id);
@@ -125,7 +134,33 @@ CREATE TABLE IF NOT EXISTS app_read_state (
   last_read_at  INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS app_settings (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID;
-INSERT OR IGNORE INTO app_meta (k, v) VALUES ('schema', x'02');
+CREATE TABLE IF NOT EXISTS app_reactions (
+  group_id BLOB NOT NULL, target BLOB NOT NULL CHECK (length(target) = 16),
+  user_id  BLOB NOT NULL CHECK (length(user_id) = 16), emoji TEXT NOT NULL, seq INTEGER NOT NULL,
+  PRIMARY KEY (group_id, target, user_id, emoji)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS app_pins (
+  group_id BLOB NOT NULL, target BLOB NOT NULL CHECK (length(target) = 16), seq INTEGER NOT NULL,
+  by_user BLOB NOT NULL CHECK (length(by_user) = 16), PRIMARY KEY (group_id, target)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS app_purges (
+  group_id BLOB NOT NULL, seq INTEGER NOT NULL, channel_id BLOB NOT NULL CHECK (length(channel_id) = 16),
+  blob_ids BLOB NOT NULL, PRIMARY KEY (group_id, seq)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS app_roles (
+  community_id BLOB NOT NULL CHECK (length(community_id) = 16), role_id BLOB NOT NULL CHECK (length(role_id) = 16),
+  PRIMARY KEY (community_id, role_id)) WITHOUT ROWID;
+INSERT OR IGNORE INTO app_meta (k, v) VALUES ('schema', x'03');
+";
+
+const MIGRATE_V2_TO_V3: &str = "
+ALTER TABLE app_messages ADD COLUMN reply_to  BLOB;
+ALTER TABLE app_messages ADD COLUMN edit_body TEXT;
+ALTER TABLE app_messages ADD COLUMN edit_seq  INTEGER NOT NULL DEFAULT 0;
+UPDATE app_meta SET v = x'03' WHERE k = 'schema';
+";
+
+pub(super) const APP_INDEXES_V3: &str = "
+CREATE INDEX IF NOT EXISTS app_messages_by_reply ON app_messages (group_id, reply_to, type, sender_user, seq);
+CREATE INDEX IF NOT EXISTS app_messages_by_pin ON app_messages (group_id, reply_to, type, seq);
+CREATE INDEX IF NOT EXISTS app_messages_by_reaction ON app_messages (group_id, reply_to, sender_user, body, seq);
 ";
 
 /// L-SQL-20, run on a v1 store only, after `APP_SCHEMA`; the backfill follows in the same unit.
@@ -142,8 +177,8 @@ CREATE TABLE IF NOT EXISTS app_settings (k TEXT PRIMARY KEY, v TEXT NOT NULL) WI
 UPDATE app_meta SET v = x'02' WHERE k = 'schema';
 ";
 
-/// Runs `APP_SCHEMA`, reads app_meta `schema`, and when it is 1 runs `MIGRATE_V1_TO_V2`. Returns
-/// the value it found (before migrating). The caller's unit runs the backfill after a 1.
+/// Runs `APP_SCHEMA`, then v1-to-v2, v2-to-v3 and v3 indexes as needed. Returns the version it
+/// found before migrating; the caller's unit runs the appropriate backfills.
 pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError> {
     c.execute_batch(APP_SCHEMA)?;
     let bytes = meta_get(c, SCHEMA)?
@@ -153,15 +188,20 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     if found == 1 {
         c.execute_batch(MIGRATE_V1_TO_V2)?;
     }
+    if found == 1 || found == 2 {
+        c.execute_batch(MIGRATE_V2_TO_V3)?;
+    }
+    if found <= 3 {
+        c.execute_batch(APP_INDEXES_V3)?;
+    }
     Ok(found)
 }
 
-/// Runs APP_SCHEMA, reads app_meta `schema`, and when it is 1 runs MIGRATE_V1_TO_V2 and the
-/// backfill in the same unit. Returns the value it found: 1 (migrated now), 2 (current; a fresh
-/// store reads 2), or a value above 2, returned unchanged and not migrated.
+/// Runs the schema migrations and their backfills in one unit. Returns the value it found: 1 or
+/// 2 (migrated now), 3 (current; a fresh store reads 3), or a value above 3, unchanged.
 ///
 /// The backfill runs here as in `ClientCore::open` (pre-flight ruling (a)): a v1 store must never
-/// end at schema 2 with a v1 identity record, which `open` would then refuse for ever. It loads
+/// end at schema 3 with a v1 identity record, which `open` would then refuse for ever. It loads
 /// the stored groups through `storage` itself. `open` does not call this (units do not nest).
 pub fn migrate_app(storage: &DillaStorage) -> Result<u64, StorageError> {
     storage
@@ -169,6 +209,9 @@ pub fn migrate_app(storage: &DillaStorage) -> Result<u64, StorageError> {
             let found = u.with_conn(migrate_conn)?;
             if found == 1 {
                 super::backfill(storage, u)?;
+            }
+            if found == 1 || found == 2 {
+                super::backfill_v3(u)?;
             }
             Ok(found)
         })

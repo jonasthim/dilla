@@ -57,6 +57,7 @@ func TestEveryTightenedLimitIsEnforced(t *testing.T) {
 			Size: 1, Mime: mime, Thumb: make([]byte, thumb),
 		}
 	}
+	named := func(n int) api.Attachment { a := att("image/png", 0); a.Name = big(n); return a }
 	prev := func(url, title, desc string, img int) api.Preview {
 		return api.Preview{URL: url, Title: title, Description: desc, Image: make([]byte, img)}
 	}
@@ -68,6 +69,8 @@ func TestEveryTightenedLimitIsEnforced(t *testing.T) {
 		b    []byte
 		code string
 	}{
+		{"name 255 is allowed", env9(0, "hi", []api.Attachment{named(255)}, nil), ""},
+		{"name 256 is refused", env9(0, "hi", []api.Attachment{named(256)}, nil), "E_ENVELOPE_LIMIT"},
 		{"mime 255 is allowed", env9(0, "hi", []api.Attachment{att(big(255), 0)}, nil), ""},
 		{"mime 256 is refused", env9(0, "hi", []api.Attachment{att(big(256), 0)}, nil), "E_ENVELOPE_LIMIT"},
 		{"thumb 8192 is allowed", env9(0, "hi", []api.Attachment{ok}, nil), ""},
@@ -83,7 +86,7 @@ func TestEveryTightenedLimitIsEnforced(t *testing.T) {
 		{"preview image 16385 is refused", env9(0, "hi", nil, []api.Preview{prev("u", "t", "d", 16385)}), "E_ENVELOPE_LIMIT"},
 		{"body 4000 for type 0 is allowed", env9(0, big(4000), nil, nil), ""},
 		{"body 4001 for type 0 is refused", env9(0, big(4001), nil, nil), "E_ENVELOPE_LIMIT"},
-		{"body 32 for a reaction is allowed", env9(3, big(32), nil, nil), ""},
+		{"body 32 for a reaction is allowed", envRef(3, big(32), 1), ""},
 		{"body 33 for a reaction is refused", env9(3, big(33), nil, nil), "E_ENVELOPE_LIMIT"},
 		{"a delete with a body is refused", env9(2, "x", nil, nil), "E_ENVELOPE_LIMIT"},
 		{"a pin with a body is refused", env9(5, "x", nil, nil), "E_ENVELOPE_LIMIT"},
@@ -133,7 +136,7 @@ func TestEnvelopeShapeIsRejected(t *testing.T) {
 func TestEnvelopeFieldShapesAreStrict(t *testing.T) {
 	kf := make([]byte, 32)
 	okAtt := func() []any {
-		return []any{make([]byte, 32), make([]byte, 32), make([]byte, 12), uint64(1), "image/png", nil, nil, nil}
+		return []any{make([]byte, 32), make([]byte, 32), make([]byte, 12), uint64(1), "image/png", nil, nil, nil, ""}
 	}
 	arrayOf := func(n int) []any {
 		out := make([]any, n)
@@ -161,6 +164,7 @@ func TestEnvelopeFieldShapesAreStrict(t *testing.T) {
 		"a blob_id spelled as an array": withAtt(func(a []any) { a[0] = arrayOf(32) }),
 		"a 31-byte blob_id":             withAtt(func(a []any) { a[0] = make([]byte, 31) }),
 		"an 11-byte nonce":              withAtt(func(a []any) { a[2] = make([]byte, 11) }),
+		"a bstr name":                   withAtt(func(a []any) { a[8] = []byte("x") }),
 		"a bstr mime":                   withAtt(func(a []any) { a[4] = []byte("image/png") }),
 		"a text w":                      withAtt(func(a []any) { a[5] = "1" }),
 		"a thumb spelled as an array":   withAtt(func(a []any) { a[7] = arrayOf(4) }),
@@ -169,8 +173,8 @@ func TestEnvelopeFieldShapesAreStrict(t *testing.T) {
 		"a bstr preview title": mustMarshalEnv(t, []any{uint64(1), id.New(), uint64(0), nil, nil, "x",
 			[]any{}, []any{[]any{"u", []byte("t"), "d", nil}}, kf}),
 	}
-	cases["a seven-element attachment"] = mustMarshalEnv(t, []any{uint64(1), id.New(), uint64(0), nil, nil, "x",
-		[]any{okAtt()[:7]}, []any{}, kf})
+	cases["an eight-element attachment"] = mustMarshalEnv(t, []any{uint64(1), id.New(), uint64(0), nil, nil, "x",
+		[]any{okAtt()[:8]}, []any{}, kf})
 	for name, b := range cases {
 		t.Run(name, func(t *testing.T) {
 			if _, err := api.ParseEnvelope(b); codeOf(err) != "E_ENVELOPE_SHAPE" {
@@ -219,10 +223,10 @@ func TestTheRejectVectorsAreRefused(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
-	// protocol/04 § Vectors: the delete tombstone Plan 1 shipped plus the eight
-	// interfaces.md §2.8 added — nine cases.
-	if len(doc.Rejects) != 9 {
-		t.Fatalf("rejects = %d, want 9 (protocol/04 § Vectors)", len(doc.Rejects))
+	// protocol/04 § Vectors: the delete tombstone Plan 1 shipped, the eight
+	// interfaces.md §2.8 added and web-2b's four — thirteen cases.
+	if len(doc.Rejects) != 13 {
+		t.Fatalf("rejects = %d, want 13 (protocol/04 § Vectors)", len(doc.Rejects))
 	}
 	e, cid, ownerTok := readableEnv(t)
 	ch := readableChannel(t, e, cid, ownerTok)
@@ -259,7 +263,7 @@ func TestEditFromAnotherUserIsRefused(t *testing.T) {
 	joinCommunity(t, e, cid, otherTok)
 	status, body := e.Do(http.MethodPatch,
 		fmt.Sprintf("/v1/channels/%s/messages/%d", ch, seq), otherTok,
-		[]any{env9(1, "edited", nil, nil)})
+		[]any{envRef(1, "edited", seq)})
 	if status != http.StatusForbidden {
 		t.Fatalf("edit by another user = %d", status)
 	}
@@ -269,7 +273,7 @@ func TestEditFromAnotherUserIsRefused(t *testing.T) {
 	// The author's own edit succeeds and stamps edited.
 	if status, _ := e.Do(http.MethodPatch,
 		fmt.Sprintf("/v1/channels/%s/messages/%d", ch, seq), ownerTok,
-		[]any{env9(1, "edited", nil, nil)}); status != http.StatusNoContent {
+		[]any{envRef(1, "edited", seq)}); status != http.StatusNoContent {
 		t.Fatal("the author could not edit")
 	}
 }
@@ -282,7 +286,7 @@ func TestPinRequiresThePermission(t *testing.T) {
 	joinCommunity(t, e, cid, memberTok)
 	_ = member
 
-	pin := env9(5, "", nil, nil)
+	pin := envRef(5, "", seq)
 	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", memberTok, []any{pin})
 	if status != http.StatusForbidden {
 		t.Fatalf("pin without the permission = %d", status)
@@ -290,7 +294,6 @@ func TestPinRequiresThePermission(t *testing.T) {
 	if code := e.ErrCode(body); code != "E_FORBIDDEN" {
 		t.Fatalf("code = %s", code)
 	}
-	_ = seq
 	if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", ownerTok, []any{pin}); status != http.StatusOK {
 		t.Fatal("the owner could not pin")
 	}
@@ -349,7 +352,7 @@ func TestAnEditRecomputesTheFrankingTag(t *testing.T) {
 	before, _ := e.Repo.ListReadableMessages(t.Context(), ch, seq, 1)
 
 	e.Clk.Advance(90 * time.Second)
-	edit := env9(1, "second words", nil, nil)
+	edit := envWith(1, "second words", seqRef(seq), nil, nil)
 	if status, body := e.Do(http.MethodPatch, fmt.Sprintf("/v1/channels/%s/messages/%d", ch, seq), f.ownerTok,
 		[]any{edit}); status != http.StatusNoContent {
 		t.Fatalf("PATCH = %d (%x)", status, body)
@@ -461,5 +464,58 @@ func TestReactionsArePostedAndNotIndexed(t *testing.T) {
 	rows, _ := e.Repo.ListReadableMessages(t.Context(), ch, rseq, 1)
 	if len(rows) != 1 || rows[0].Body != "" || rows[0].MentionCount != 0 {
 		t.Fatalf("reaction row = %+v", rows)
+	}
+}
+
+// envWith is env9 with reply_to set.
+func envWith(typ uint8, body string, replyTo id.ID, atts []api.Attachment, prevs []api.Preview) []byte {
+	b, err := cborx.Marshal([]any{
+		uint64(1), id.New(), uint64(typ), nil, replyTo, body, attsToAny(atts), prevsToAny(prevs), make([]byte, 32),
+	})
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// L-CORE-30 (web-2b task 1): a type 1..6 envelope names its target and carries no files, as
+// protocol/04 requires of every receiver. Attacker statement: only the envelope's own sender can
+// build one that fails, so the refusal is never something one member can do to another.
+func TestFoldTypesNameATargetAndCarryNoFiles(t *testing.T) {
+	att := api.Attachment{BlobID: make([]byte, 32), Key: make([]byte, 32), Nonce: make([]byte, 12), Size: 1, Mime: "image/png", Name: "map.png"}
+	prev := api.Preview{URL: "https://x", Title: "t", Description: "d"}
+	bodies := map[uint8]string{1: "fixed", 2: "", 3: "👍", 4: "👍", 5: "", 6: ""}
+	for typ := uint8(1); typ <= 6; typ++ {
+		body := bodies[typ]
+		cases := []struct {
+			name string
+			b    []byte
+			code string
+		}{
+			{"no reply_to", env9(typ, body, nil, nil), "E_ENVELOPE_SHAPE"},
+			{"with a target", envWith(typ, body, seqRef(1), nil, nil), ""},
+			{"with an attachment", envWith(typ, body, seqRef(1), []api.Attachment{att}, nil), "E_ENVELOPE_SHAPE"},
+			{"with a preview", envWith(typ, body, seqRef(1), nil, []api.Preview{prev}), "E_ENVELOPE_SHAPE"},
+		}
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("type %d %s", typ, tc.name), func(t *testing.T) {
+				_, err := api.ParseEnvelope(tc.b)
+				if tc.code == "" {
+					if err != nil {
+						t.Fatalf("ParseEnvelope: %v", err)
+					}
+					return
+				}
+				if got := codeOf(err); got != tc.code {
+					t.Fatalf("code = %s (%v), want %s", got, err, tc.code)
+				}
+			})
+		}
+	}
+	if _, err := api.ParseEnvelope(env9(0, "hi", []api.Attachment{att}, nil)); err != nil {
+		t.Fatalf("a type-0 message with a file: %v", err)
+	}
+	if _, err := api.ParseEnvelope(env9(2, "x", nil, nil)); codeOf(err) != "E_ENVELOPE_LIMIT" {
+		t.Fatalf("a type-2 envelope with a body = %v, want E_ENVELOPE_LIMIT (the body limit is checked first)", err)
 	}
 }

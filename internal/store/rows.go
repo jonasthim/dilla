@@ -491,6 +491,8 @@ type BlobRefRow struct {
 	UploaderDevice id.ID
 	Mime           string
 	Created        int64
+	// Confirmed is false while the uploader has not confirmed the reference (L-SQL-31).
+	Confirmed bool
 }
 
 // BlobRetentionRow is one community's stored policy document, as the blob

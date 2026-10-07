@@ -1,0 +1,12 @@
+.d-attachment-tray { display: grid; gap: 0.25rem; margin: 0; padding: 0; list-style: none; }
+.d-attachment-tray__item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 0.5rem; padding: 0.125rem 0.25rem 0.125rem 0.75rem; font-size: var(--text-sm); background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
+.d-attachment-tray__name { grid-row: 1; grid-column: 1; min-width: 0; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-attachment-tray__size { grid-row: 1; grid-column: 2; font-size: var(--text-xs); color: var(--fg-3); white-space: nowrap; }
+.d-attachment-tray__phase { grid-row: 1; grid-column: 3; font-size: var(--text-xs); color: var(--fg-2); white-space: nowrap; }
+.d-attachment-tray__remove { grid-row: 1; grid-column: 4; display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; padding: 0; font: inherit; font-size: var(--text-base); line-height: 1; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; }
+.d-attachment-tray__remove:hover { color: var(--fg); background: var(--surface-hi); }
+/* The hint has its own line under the entry. */
+.d-attachment-tray__hint { grid-row: 2; grid-column: 1 / -1; margin: 0; font-size: var(--text-xs); color: var(--fg-2); }
+/* A failed entry: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
+.d-attachment-tray__item[data-failed="true"] .d-attachment-tray__phase { color: var(--danger); }
+.d-attachment-tray__item[data-failed="true"] .d-attachment-tray__phase::before { content: "✕ " / ""; }

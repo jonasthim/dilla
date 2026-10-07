@@ -1,0 +1,6 @@
+.d-mention-list { margin: 0; padding: 0.25rem 0; list-style: none; max-height: 14rem; overflow-y: auto; background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-md); box-shadow: var(--shadow-2); }
+.d-mention-list [role="option"] { display: flex; align-items: center; gap: 0.75rem; min-height: 1.75rem; padding: 0 0.75rem; cursor: pointer; }
+.d-mention-list [role="option"]:hover { background: var(--surface-2); }
+.d-mention-list [role="option"][aria-selected="true"] { background: var(--surface-hi); box-shadow: inset 2px 0 0 var(--accent); }
+.d-mention-list__primary { color: var(--fg); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-mention-list__secondary { color: var(--fg-3); font-size: var(--text-xs); white-space: nowrap; }

@@ -1,0 +1,19 @@
+.d-attachment-card { display: grid; gap: 0.25rem; min-width: 0; max-width: 100%; }
+/* The image's box: its own proportions, at most 20rem (320 px) wide, never wider than the row. */
+.d-attachment-card__open, .d-attachment-card__frame { display: block; width: min(100%, var(--d-card-w)); aspect-ratio: var(--d-card-ratio); padding: 0; background: transparent; border: 0; border-radius: var(--r-md); }
+.d-attachment-card__open { display: flex; align-items: center; justify-content: center; width: min(100%, max(1.5rem, var(--d-card-w))); min-width: 1.5rem; min-height: 1.5rem; aspect-ratio: auto; cursor: pointer; font: inherit; color: inherit; }
+.d-attachment-card__thumb { display: block; width: min(100%, var(--d-card-w)); height: auto; aspect-ratio: var(--d-card-ratio); object-fit: cover; border-radius: var(--r-md); }
+.d-attachment-card__box { display: block; width: 100%; height: 100%; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
+.d-attachment-card__open .d-attachment-card__box { width: min(100%, var(--d-card-w)); height: auto; aspect-ratio: var(--d-card-ratio); }
+.d-attachment-card__open:hover .d-attachment-card__box { background: var(--surface-hi); }
+.d-attachment-card__meta { margin: 0; display: flex; gap: 0.5rem; min-width: 0; font-size: var(--text-sm); }
+.d-attachment-card__file { display: flex; align-items: center; gap: 0.5rem; min-width: 0; max-width: 28rem; padding: 0.25rem 0.25rem 0.25rem 0.75rem; font-size: var(--text-sm); background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
+.d-attachment-card__glyph { color: var(--fg-3); }
+.d-attachment-card__name { min-width: 0; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-attachment-card__size { flex-shrink: 0; font-size: var(--text-xs); color: var(--fg-3); white-space: nowrap; }
+.d-attachment-card__file .d-attachment-card__size { margin-right: auto; }
+.d-attachment-card__save { flex-shrink: 0; }
+.d-attachment-card__state { margin: 0; font-size: var(--text-xs); color: var(--fg-3); }
+/* A failed open: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
+.d-attachment-card[data-state="failed"] .d-attachment-card__state { color: var(--danger); }
+.d-attachment-card[data-state="failed"] .d-attachment-card__state::before { content: "✕ " / ""; }

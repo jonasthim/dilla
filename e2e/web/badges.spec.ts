@@ -170,7 +170,7 @@ test('desktop notifications follow the default and the channel on screen', async
   const [id1, id2, id3] = setup.channel_ids;
   const title = (channel: string) => copy('notify.title.channel', { channel, server: peer.communityName });
   const onChannel = (id: string) => new RegExp(`/c/${setup.community_id}/${id}$`);
-  await signUp(page, instanceInvite(), instanceName);
+  const account = await signUp(page, instanceInvite(), instanceName);
   await joinCommunity(page, peer, setup);
   await openChannel(page, peer.communityName, one);
   await peer.waitForDevices(2, id1);
@@ -194,9 +194,11 @@ test('desktop notifications follow the default and the channel on screen', async
   await peer.send(plain, id2);
   await expect(channelRow(page, two)).toHaveAttribute('data-unread', '1', { timeout: WAIT });
   const mention = `<@${user}> look ${tag()}`;
+  const mentionShown = mention.replace(`<@${user}>`, `@${account.display}`);
+  expect(mentionShown).not.toContain('<@');
   await peer.send(mention, id3);
   await expect.poll(() => tagsShown(page), { timeout: WAIT }).toContain(`dilla:${id3}`);
-  expect(await notificationsShown(page)).toEqual([{ title: title(three), body: mention, tag: `dilla:${id3}`, closed: false }]);
+  expect(await notificationsShown(page)).toEqual([{ title: title(three), body: mentionShown, tag: `dilla:${id3}`, closed: false }]);
 
   // (b) Everything: the channel on screen stays quiet, another one notifies, and the click opens it.
   await setNotifyDefault(page, 'everything');
@@ -208,7 +210,7 @@ test('desktop notifications follow the default and the channel on screen', async
   await peer.send(second, id2);
   await expect.poll(() => tagsShown(page), { timeout: WAIT }).toContain(`dilla:${id2}`);
   expect(await notificationsShown(page)).toEqual([
-    { title: title(three), body: mention, tag: `dilla:${id3}`, closed: false },
+    { title: title(three), body: mentionShown, tag: `dilla:${id3}`, closed: false },
     { title: title(two), body: second, tag: `dilla:${id2}`, closed: false },
   ]);
   await clickNotification(page, 1);
@@ -226,7 +228,7 @@ test('desktop notifications follow the default and the channel on screen', async
   await peer.send(control, id1);
   await expect.poll(() => tagsShown(page), { timeout: WAIT }).toContain(`dilla:${id1}`);
   expect((await notificationsShown(page)).map((n) => [n.tag, n.body])).toEqual([
-    [`dilla:${id3}`, mention],
+    [`dilla:${id3}`, mentionShown],
     [`dilla:${id2}`, second],
     [`dilla:${id1}`, control],
   ]);

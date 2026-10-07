@@ -11,3 +11,42 @@
 .d-message-row__note { margin: 0; font-size: var(--text-sm); font-style: italic; color: var(--fg-3); }
 .d-message-row__detail { justify-self: start; font: inherit; font-size: var(--text-xs); color: var(--fg-3); padding: 0 0.25rem; border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
 .d-message-row__actions { display: flex; gap: 0.5rem; margin-top: 0.25rem; }
+
+/* web-2b (L-UI-40): the row is an <article>, the log's roving stop, with its toolbar, reply line, cards, reactions and pending action. */
+.d-message-row { position: relative; }
+/* The ring sits inside the row, so the log's edge never clips it. */
+.d-message-row:focus-visible { outline-offset: -2px; }
+.d-message-row__edited, .d-message-row__pinned { font-size: var(--text-xs); color: var(--fg-3); }
+/* The toolbar floats top-right while the row is hovered or holds focus, and on the active row while focus is inside the
+   log: never while the person types in the composer, so it never covers the row above (ruling 39). */
+.d-message-row__toolbar { position: absolute; top: -0.875rem; inset-inline-end: var(--row-pad-x); display: none; background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-md); box-shadow: var(--shadow-2); }
+.d-message-row:hover .d-message-row__toolbar,
+.d-message-row:focus-within .d-message-row__toolbar,
+.d-message-log:focus-within .d-message-row[data-active="true"] .d-message-row__toolbar { display: block; }
+/* In the narrow shell the toolbar sits in flow under the head (flow 04, 360 × 740). */
+@container d-shell (max-width: 47.99rem) {
+  .d-message-row .d-message-row__toolbar { position: static; justify-self: start; max-width: 100%; min-width: 0; margin-block-start: 0.25rem; box-shadow: none; }
+  .d-message-row .d-message-toolbar { flex-wrap: wrap; }
+}
+.d-message-row__reply { display: flex; align-items: center; gap: 0.375rem; min-width: 0; font-size: var(--text-sm); color: var(--fg-2); }
+.d-message-row__reply-jump { display: inline-flex; align-items: center; gap: 0.375rem; min-width: 0; max-width: 100%; min-height: 1.5rem; padding: 0 0.25rem; margin: 0 -0.25rem; font: inherit; color: inherit; text-align: start; background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; }
+.d-message-row__reply-jump:hover { color: var(--fg); background: var(--surface-hi); }
+.d-message-row__reply-author { font-weight: var(--weight-display); white-space: nowrap; }
+.d-message-row__reply-excerpt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.d-message-row__reply-state { font-style: italic; color: var(--fg-3); }
+.d-message-row__attachments { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.d-message-row__pending { margin: 0; font-size: var(--text-xs); color: var(--fg-3); display: flex; gap: 0.5rem; align-items: center; }
+/* A failed action: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
+.d-message-row__pending[data-tone="failed"] { color: var(--danger); }
+.d-message-row__pending[data-tone="failed"] .d-message-row__pending-label::before { content: "✕ " / ""; }
+/* Mention pills: mine in the mention colour, a broadcast outlined (bold when it reaches me), anyone else quiet. */
+.d-mention { padding: 0 0.25rem; border-radius: var(--r-sm); background: var(--surface-hi); color: var(--fg); }
+.d-mention[data-me="true"]:not([data-broadcast]) { background: var(--mention); color: var(--mention-ink); }
+.d-mention[data-broadcast="true"] { background: transparent; box-shadow: inset 0 0 0 1px var(--mention); }
+.d-mention[data-broadcast="true"][data-me="true"] { font-weight: var(--weight-display); }
+.d-message-row[data-mention="true"] { box-shadow: inset 2px 0 0 var(--mention); }
+.d-message-row[data-flash="true"] { animation: d-row-flash var(--duration-flash) ease-out; }
+@keyframes d-row-flash { from { background: var(--accent-soft); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .d-message-row[data-flash="true"] { animation: none; outline: 2px solid var(--accent); outline-offset: -2px; }
+}

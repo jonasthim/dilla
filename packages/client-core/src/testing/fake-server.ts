@@ -25,7 +25,7 @@ export function fakeDeviceProof(dskPub: Uint8Array, deviceId: Uint8Array, nonce:
   return new Uint8Array(createHash('sha512').update('fake.proof').update(dskPub).update(deviceId).update(nonce).update(new Uint8Array([0])).digest());
 }
 
-export interface LoggedRequest { method: string; path: string; query: string; auth: string | null; body: Uint8Array }
+export interface LoggedRequest { method: string; path: string; query: string; auth: string | null; body: Uint8Array; contentType: string | null }
 export type Reply = { status: number; body?: CborInput } | 'network' | 'lose';
 interface Account { userId: Uint8Array; username: string; display: string }
 
@@ -76,6 +76,12 @@ export class FakeServer {
   /** Hex SHA-256 of bytes an attachment references (blob_refs): a backup PUT of them is 409, since backup objects
    *  and attachments never share bytes (branch review BACKUPS-RECOVERY-05). */
   readonly attachmentBytes = new Set<string>();
+  readonly blobs = new Map<string, Uint8Array>();
+  readonly blobRefs = new Map<string, { uploaderUser: string; confirmed: boolean; created: number }>();
+  readonly channelViewers = new Map<string, Set<string>>();
+  maxBlobBytes = 104_857_600;
+  groupDelete: ((groupHex: string, deviceHex: string, seq: bigint) => 204 | 403 | 404) | null = null;
+  private nextBlobFailure: { status: number; code: string; retryAfterMs: number | null } | null = null;
   /** Hex SHA-256 of bytes an operator purged: tombstoned, so a PUT of them is 410 E_PRUNED, while a backup row that
    *  names them is still served (protocol/09 Admin). */
   readonly prunedBytes = new Set<string>();
@@ -95,6 +101,17 @@ export class FakeServer {
   /** The next request with this method and path gets `answer` instead of the model's. */
   once(method: string, path: string, answer: Reply): void {
     this.overrides.push({ method, path, reply: answer });
+  }
+  failNextBlob(status: number, code: string, retryAfterMs?: number): void {
+    this.nextBlobFailure = { status, code, retryAfterMs: retryAfterMs ?? null };
+  }
+  sweepPending(nowS: number, ttlS: number): number {
+    if (ttlS <= 0) return 0;
+    let dropped = 0;
+    for (const [key, ref] of this.blobRefs) if (!ref.confirmed && ref.created < nowS - ttlS) {
+      this.blobRefs.delete(key); dropped++;
+    }
+    return dropped;
   }
 
   count(method: string, path: string): number {
@@ -214,6 +231,7 @@ export class FakeServer {
       path: new URL(request.url).pathname,
       query: new URL(request.url).search,
       auth: header !== null && header.startsWith('Bearer ') ? header.slice(7) : null,
+      contentType: request.headers.get('Content-Type'),
       body: new Uint8Array(await request.arrayBuffer()),
     };
     this.log.push(entry);
@@ -275,6 +293,17 @@ export class FakeServer {
     }
     if (this.tokenScope.get(r.auth!) === 1 && line !== 'GET /v1/backups' &&
         !/^GET \/v1\/backups\/[01]\/0$/.test(line)) return refuse(403, 'E_FORBIDDEN');
+    const messageDelete = /^DELETE \/v1\/groups\/([0-9a-f]{32})\/messages\/([0-9]{1,20})$/.exec(line);
+    if (messageDelete) {
+      const result = this.groupDelete?.(messageDelete[1], device, BigInt(messageDelete[2])) ?? 404;
+      if (result === 204) return reply(204);
+      if (result === 403) return refuse(403, 'E_NOT_UPLOADER', 'only the uploading user may delete this message');
+      return refuse(404, 'E_NOT_FOUND', 'no such object');
+    }
+    const blob = /^(PUT|GET|DELETE) \/v1\/channels\/([0-9a-f]{32})\/blobs\/([0-9a-f]{64})$/.exec(line);
+    if (blob) return this.blob(user, blob[1], blob[2], blob[3], r);
+    const confirm = /^POST \/v1\/channels\/([0-9a-f]{32})\/blobs\/([0-9a-f]{64})\/confirm$/.exec(line);
+    if (confirm) return this.blob(user, 'POST', confirm[1], confirm[2], r);
     if (line === 'GET /v1/backups') return reply(200, ([0, 1] as const).flatMap((kind) => {
       const item = this.backups.get(`${user}/${kind}`);
       return item === undefined ? [] : [[kind, 0, item.object.length, item.created]];
@@ -332,6 +361,47 @@ export class FakeServer {
       return reply(200, [a.userId, a.username, a.display, 0, 0, this.nowS]);
     }
     return new Response('404 page not found\n', { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+  }
+
+  private blob(user: string, method: string, channel: string, blobId: string, r: LoggedRequest): Response {
+    const failure = this.nextBlobFailure;
+    this.nextBlobFailure = null;
+    if (failure) return refuse(failure.status, failure.code, '', failure.retryAfterMs);
+    const viewers = this.channelViewers.get(channel);
+    if (viewers && !viewers.has(user)) return refuse(404, 'E_NOT_FOUND', 'no such object');
+    const key = `${channel}:${blobId}`;
+    const ref = this.blobRefs.get(key);
+    if (method === 'PUT') {
+      if (r.contentType?.split(';', 1)[0].trim().toLowerCase() !== 'application/octet-stream')
+        return refuse(415, 'E_INVALID_REQUEST', 'Content-Type must be application/octet-stream');
+      if (this.prunedBytes.has(blobId)) return refuse(410, 'E_PRUNED');
+      const metered = this.meter(user, Math.min(r.body.length, this.maxBlobBytes));
+      if (metered) return metered;
+      if (r.body.length > this.maxBlobBytes) return refuse(413, 'E_TOO_LARGE', `at most ${this.maxBlobBytes} bytes`);
+      if (createHash('sha256').update(r.body).digest('hex') !== blobId)
+        return refuse(422, 'E_INVALID_REQUEST', 'the body does not hash to the requested blob_id');
+      const created = !this.blobs.has(blobId);
+      if (created) this.blobs.set(blobId, r.body.slice());
+      this.attachmentBytes.add(blobId);
+      if (!ref) this.blobRefs.set(key, { uploaderUser: user, confirmed: false, created: this.nowS });
+      return reply(created ? 201 : 200, [fromHex(blobId), r.body.length]);
+    }
+    if (method === 'DELETE') {
+      if (!ref) return reply(204);
+      if (ref.uploaderUser !== user) return refuse(403, 'E_NOT_UPLOADER', 'only the uploading user may delete this object');
+      this.blobRefs.delete(key);
+      return reply(204);
+    }
+    if (this.prunedBytes.has(blobId)) return refuse(410, 'E_PRUNED');
+    if (!ref) return refuse(404, 'E_NOT_FOUND', 'no such object');
+    if (method === 'POST') {
+      if (ref.uploaderUser !== user) return refuse(403, 'E_NOT_UPLOADER');
+      ref.confirmed = true;
+      return reply(204);
+    }
+    const bytes = this.blobs.get(blobId);
+    if (!bytes) return refuse(404, 'E_NOT_FOUND', 'no such object');
+    return new Response(bytes.slice(), { status: 200, headers: { 'Content-Type': 'application/octet-stream', 'X-Dilla-Generation': '1' } });
   }
 
   private createAccount(body: Uint8Array): Response {

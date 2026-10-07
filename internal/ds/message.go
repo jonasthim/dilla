@@ -161,12 +161,17 @@ func (d *DS) Messages(ctx context.Context, groupID id.ID, session Session, from 
 
 // DeleteMessage tombstones one message. At v1 only the uploading user may delete, from any of
 // their devices; moderator deletion of E2EE messages needs a signed moderation event and is a
-// later card (R29).
+// later card (R29). A caller whose device is not a current member of the group is E_NOT_FOUND
+// before anything else is read (L-HTTP-80, requireMember's reasoning), so the route says nothing
+// about a group to a device outside it.
 func (d *DS) DeleteMessage(ctx context.Context, s Session, groupID id.ID, seq uint64) error {
 	// A seq no group can have reached is no message. Left alone it wraps negative in the store
 	// adapters, which is a lookup that happens to miss today and a wrong row the day it does not.
 	if seq > math.MaxInt64 {
 		return errNotFound("message")
+	}
+	if err := d.requireMember(ctx, groupID, s); err != nil {
+		return err
 	}
 	row, err := d.opts.Store.GetAppMessage(ctx, groupID, seq)
 	if errors.Is(err, store.ErrNotFound) {

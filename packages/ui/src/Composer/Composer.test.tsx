@@ -269,4 +269,124 @@ describe('Composer', () => {
     const { container } = render(<div className="d-root"><Composer {...base} /><Composer {...base} label="message #loot" disabled disabledReason="joining this channel" /></div>);
     await expectNoAxeViolations(container);
   });
+
+  // ---- web-2b (L-UI-53) ----
+  it('offers attach before the textarea and renders the top slot above the box', async () => {
+    const onAttach = vi.fn();
+    const { textarea } = setup({ attachLabel: 'attach files', onAttach, top: <p>replying to björn</p> });
+    const attach = screen.getByRole('button', { name: 'attach files' });
+    expect(attach.textContent).toBe('+');
+    expect(attach.compareDocumentPosition(textarea) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const form = textarea.closest('form')!;
+    expect(form.querySelector('.d-composer__top')?.textContent).toBe('replying to björn');
+    expect(form.querySelector('.d-composer__top')!.compareDocumentPosition(form.querySelector('.d-composer__box')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(attach);
+    expect(onAttach).toHaveBeenCalledTimes(1);
+  });
+
+  it('has no attach button without its label and handler', () => {
+    setup();
+    expect(screen.queryByRole('button', { name: 'attach files' })).toBeNull();
+  });
+
+  // Pre-flight ruling F10 (controller, 2026-10-07): the textarea keeps its textbox role (no role=combobox); while the
+  // list is open it carries aria-autocomplete, aria-controls and aria-activedescendant, and nothing else of the pattern.
+  it('stays a textbox that points at its list only while the list is open; the keys it consumes never send', async () => {
+    const onKey = vi.fn((key: string) => key !== 'Tab');
+    const { textarea, props } = setup({ combobox: { expanded: true, controls: 'mentions', activeDescendant: 'mention-mira', onKey } }, { initial: '@mi' });
+    const box = screen.getByRole('textbox', { name: 'message #general' });
+    expect(box).toBe(textarea);
+    expect(box).not.toHaveAttribute('role');
+    expect(box).not.toHaveAttribute('aria-expanded');
+    expect(box).toHaveAttribute('aria-autocomplete', 'list');
+    expect(box).toHaveAttribute('aria-controls', 'mentions');
+    expect(box).toHaveAttribute('aria-activedescendant', 'mention-mira');
+    for (const key of ['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Tab']) fireEvent.keyDown(box, { key });
+    expect(onKey.mock.calls.map((c) => c[0])).toEqual(['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Tab']);
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+
+  it('sends on Enter when the combobox does not consume it', () => {
+    const { textarea, props } = setup({ combobox: { expanded: false, controls: 'mentions', activeDescendant: null, onKey: () => false } }, { initial: 'hello' });
+    expect(screen.getByRole('textbox', { name: 'message #general' })).toBe(textarea);
+    expect(textarea).not.toHaveAttribute('role');
+    expect(textarea).not.toHaveAttribute('aria-expanded');
+    expect(textarea).not.toHaveAttribute('aria-autocomplete');
+    expect(textarea).not.toHaveAttribute('aria-controls');
+    expect(textarea).not.toHaveAttribute('aria-activedescendant');
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(props.onSend).toHaveBeenCalledWith('hello');
+  });
+
+  it('hands Escape to the page while the list is closed and sends nothing', () => {
+    const onKey = vi.fn((key: string) => key === 'Escape');
+    const { textarea, props } = setup({ combobox: { expanded: false, controls: 'mentions', activeDescendant: null, onKey } }, { initial: 'hello' });
+    fireEvent.keyDown(textarea, { key: 'Escape' });
+    expect(onKey).toHaveBeenCalledWith('Escape');
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+
+  it('ArrowUp in an empty composer with no open list asks to edit the last own message', () => {
+    const onArrowUpEmpty = vi.fn();
+    const { textarea } = setup({ onArrowUpEmpty });
+    fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+    fireEvent.keyDown(textarea, { key: 'ArrowUp', shiftKey: true });
+    expect(onArrowUpEmpty).toHaveBeenCalledTimes(1);
+  });
+
+  it('ArrowUp does not edit when the composer holds text', () => {
+    const onArrowUpEmpty = vi.fn();
+    const { textarea } = setup({ onArrowUpEmpty }, { initial: 'draft' });
+    fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+    expect(onArrowUpEmpty).not.toHaveBeenCalled();
+  });
+
+  it('ArrowUp does not edit while the mention list is open', () => {
+    const onArrowUpEmpty = vi.fn();
+    const { textarea } = setup({ onArrowUpEmpty, combobox: { expanded: true, controls: 'mentions', activeDescendant: null, onKey: () => false } });
+    fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+    expect(onArrowUpEmpty).not.toHaveBeenCalled();
+  });
+
+  it('measures the budget with the given measure', () => {
+    setup({ maxLength: 10, measure: (v) => v.length * 4 }, { initial: 'abc' });
+    expect(counterText('-2 left')).toHaveAttribute('data-over', 'true');
+  });
+
+  it('hands pasted files over and leaves a text paste alone', () => {
+    const onPasteFiles = vi.fn();
+    const { textarea } = setup({ onPasteFiles });
+    const png = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' });
+    const filesPaste = fireEvent.paste(textarea, { clipboardData: { files: [png], getData: () => '' } });
+    expect(filesPaste).toBe(false);
+    expect(onPasteFiles).toHaveBeenCalledWith([png]);
+    const textPaste = fireEvent.paste(textarea, { clipboardData: { files: [], getData: () => 'words' } });
+    expect(textPaste).toBe(true);
+    expect(onPasteFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends an empty text when it may (an attachment-only message)', () => {
+    const { textarea, props } = setup({ canSendEmpty: true });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(props.onSend).toHaveBeenCalledWith('');
+  });
+
+  it('reports the caret after a change and attaches textareaRef', async () => {
+    const onCaret = vi.fn();
+    const ref = { current: null as HTMLTextAreaElement | null };
+    const { textarea } = setup({ onCaret, textareaRef: ref });
+    expect(ref.current).toBe(textarea);
+    await userEvent.type(textarea, '@m');
+    expect(onCaret).toHaveBeenLastCalledWith(2);
+  });
+
+  it('has no serious axe violations with its mention list open', async () => {
+    const { container } = render(<div className="d-root">
+      <Composer label="message #general" placeholder="message #general" maxLength={4000} value="@mi" onChange={() => {}} onSend={() => {}}
+        sendLabel="send" counterLabel={(n) => `${n} left`} attachLabel="attach files" onAttach={() => {}}
+        combobox={{ expanded: true, controls: 'mentions', activeDescendant: 'mention-mira', onKey: () => false }}
+        top={<ul role="listbox" id="mentions" aria-label="people to mention"><li role="option" id="mention-mira" aria-selected="true">mira</li></ul>} />
+    </div>);
+    await expectNoAxeViolations(container);
+  });
 });

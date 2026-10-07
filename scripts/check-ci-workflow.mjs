@@ -105,8 +105,8 @@ const REQUIRED_STEPS = {
   // itself, so it cannot silently rot.
   // Task 26: exercise the manifest writer beside the other script gates.
   node: ['npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer'],
-  // Task 26/F16 (web-1), task 23 (web-2a): capture the seven story groups in all three themes.
-  ui: ['node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2a form- ceremony- shell- conversation- settings- screens- primitives-channelrow--', 'name: ui-screens', 'path: target/ui-screens/web-2a'],
+  // Task 26/F16 (web-1), task 23 (web-2a), task 11 (web-2b): capture the seven story groups and three web-2b-only prefixes in all three themes.
+  ui: ['node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2b form- ceremony- shell- conversation- settings- screens- primitives-channelrow-- conversation-messagetoolbar-- conversation-attachmentcard-- screens-conversation--', 'name: ui-screens', 'path: target/ui-screens/web-2b'],
   vectors: [
     'npm run vectors',
     'git diff --exit-code -- protocol/vectors',
@@ -156,7 +156,7 @@ const REQUIRED_STEPS = {
   ],
   // Task 26/C18: three engines and the native peer against the downloaded web and core builds.
   'browser-web': [
-    'timeout-minutes: 36',
+    'timeout-minutes: 41',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
     'name: dilla-testkit',

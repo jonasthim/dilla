@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -138,29 +140,75 @@ func TestAnUploadRecordsTheFrankingKeyItWasTaggedUnder(t *testing.T) {
 	}
 }
 
-// R29: only the uploading user's devices may delete, and a tombstone keeps everything but the
-// ciphertext.
-func TestDeleteIsUploaderOnlyAndKeepsTheTombstoneFields(t *testing.T) {
+// addMemberLeaf gives userID a new device with a current leaf in g, as a merged Add leaves it in
+// SQL (the leaf index after the highest one), writes the device's account rows, and returns the
+// device's session.
+func (h *dsHarness) addMemberLeaf(t *testing.T, g *dsMessageGroup, userID id.ID) auth.Session {
+	t.Helper()
+	ctx := context.Background()
+	device := id.New()
+	h.account(t, userID, device)
+	members, err := h.repo.ListMembers(ctx, g.id)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	var next uint32
+	for _, m := range members {
+		if m.LeafIndex >= next {
+			next = m.LeafIndex + 1
+		}
+	}
+	members = append(members, store.MemberRow{
+		GroupID: g.id, LeafIndex: next, UserID: userID, DeviceID: device,
+		SignatureKey: bytes.Repeat([]byte{0x5c}, 32), AddedEpoch: g.epoch,
+	})
+	if err := h.repo.Tx(ctx, func(tx store.Repository) error {
+		return tx.ReplaceMembers(ctx, g.id, g.epoch, members)
+	}); err != nil {
+		t.Fatalf("ReplaceMembers: %v", err)
+	}
+	return auth.Session{UserID: userID, DeviceID: device, Scope: auth.ScopeEnrolled}
+}
+
+// R29 and L-HTTP-80: only a current member may delete — anyone else is E_NOT_FOUND, the answer of
+// every member-only group route — then only the uploading user, from any of their member devices;
+// a tombstone keeps everything but the ciphertext.
+func TestDeleteIsMemberOnlyThenUploaderOnlyAndKeepsTheTombstoneFields(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
-	out, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	ctx := context.Background()
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
+	var dsErr *ds.Error
 
 	stranger := h.sessionOfAnotherUser(t, g)
-	err = h.ds.DeleteMessage(context.Background(), stranger, g.id, out.Seq)
-	var dsErr *ds.Error
-	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_UPLOADER" {
-		t.Fatalf("delete by another user: got %v, want E_NOT_UPLOADER", err)
+	err = h.ds.DeleteMessage(ctx, stranger, g.id, out.Seq)
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" || dsErr.Status != 404 {
+		t.Fatalf("delete by a device outside the group: got %v, want 404 E_NOT_FOUND", err)
+	}
+	outsideSibling := h.otherDeviceOfSameUser(t, g)
+	err = h.ds.DeleteMessage(ctx, outsideSibling, g.id, out.Seq)
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+		t.Fatalf("delete by the uploader's device outside the group: got %v, want E_NOT_FOUND", err)
+	}
+	if err := h.ds.DeleteMessage(ctx, g.session, id.New(), out.Seq); !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+		t.Fatalf("delete in an unknown group: got %v, want E_NOT_FOUND", err)
 	}
 
-	sibling := h.otherDeviceOfSameUser(t, g)
-	if err := h.ds.DeleteMessage(context.Background(), sibling, g.id, out.Seq); err != nil {
-		t.Fatalf("any device of the uploading user may delete: %v", err)
+	otherMember := h.addMemberLeaf(t, g, id.New())
+	err = h.ds.DeleteMessage(ctx, otherMember, g.id, out.Seq)
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_UPLOADER" || dsErr.Status != 403 {
+		t.Fatalf("delete by a member who is another user: got %v, want 403 E_NOT_UPLOADER", err)
 	}
 
-	rows, err := h.ds.Messages(context.Background(), g.id, g.session, 0, 10)
+	sibling := h.addMemberLeaf(t, g, g.session.UserID)
+	if err := h.ds.DeleteMessage(ctx, sibling, g.id, out.Seq); err != nil {
+		t.Fatalf("any member device of the uploading user may delete: %v", err)
+	}
+
+	rows, err := h.ds.Messages(ctx, g.id, g.session, 0, 10)
 	if err != nil {
 		t.Fatalf("Messages: %v", err)
 	}
@@ -176,6 +224,31 @@ func TestDeleteIsUploaderOnlyAndKeepsTheTombstoneFields(t *testing.T) {
 	}
 	if row.Seq != out.Seq || row.Epoch == 0 || len(row.FrankingTag) != 32 || len(row.CommitmentC) != 32 {
 		t.Error("a tombstone keeps seq, epoch, uploader_device, commitment_c, franking_tag and recv_ts")
+	}
+}
+
+// L-HTTP-80's attacker statement from the honest side: a device removed from the group cannot
+// delete even its own message, and the message stays as it was.
+func TestARemovedDeviceCannotDeleteItsOwnMessage(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	ctx := context.Background()
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	h.removeLeafOfDevice(t, g, g.device)
+	err = h.ds.DeleteMessage(ctx, g.session, g.id, out.Seq)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" || dsErr.Status != 404 {
+		t.Fatalf("a removed device's delete: got %v, want 404 E_NOT_FOUND", err)
+	}
+	row, err := h.repo.GetAppMessage(ctx, g.id, out.Seq)
+	if err != nil {
+		t.Fatalf("GetAppMessage: %v", err)
+	}
+	if row.Blob == nil || row.DeletedAt != nil {
+		t.Fatal("a refused delete tombstoned the message")
 	}
 }
 

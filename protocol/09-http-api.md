@@ -189,7 +189,7 @@ With a registration array in element 3 it registers the device; either way the m
 | invites | `POST /v1/communities/{id}/invites`, `GET /v1/communities/{id}/invites`, `DELETE /v1/invites/{id}` |
 | DMs | `POST /v1/dms` `[recipients([bstr16])]` → `[channel_id]`; `GET /v1/dms` |
 | readable | `POST /v1/channels/{id}/messages` `[envelope(bstr)]` → `[seq, franking_tag, recv_ts]`; `GET /v1/channels/{id}/messages?from=`; `PATCH`/`DELETE /v1/channels/{id}/messages/{seq}`; `GET /v1/channels/{id}/search?q=&limit=&before=`; `PUT /v1/channels/{id}/read-state` |
-| blobs | `PUT/GET/HEAD/DELETE /v1/channels/{cid}/blobs/{blob_id}` (raw octets, `201` new / `200` already present, `422 E_INVALID_REQUEST` on a hash mismatch, `507 E_STORAGE_FULL`), `DELETE /v1/admin/blobs/{blob_id}` |
+| blobs | `PUT/GET/HEAD/DELETE /v1/channels/{cid}/blobs/{blob_id}` (raw octets, `201` new / `200` already present, `422 E_INVALID_REQUEST` on a hash mismatch, `507 E_STORAGE_FULL`), `DELETE /v1/admin/blobs/{blob_id}`, `POST /v1/channels/{cid}/blobs/{blob_id}/confirm` |
 | backups | `PUT /v1/backups/{kind}/{chunk_seq}` `[object(bstr)]` → `[blob_id, size]`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}` → `[object, created]`, `DELETE` the same (`501` at wire 1); see § Backups |
 | reports | `POST /v1/reports` `[group_id, seq, envelope(bstr), k_f(bstr32)]`, `GET /v1/reports`, `PATCH /v1/reports/{id}` |
 | voice | `POST /v1/channels/{id}/calls` → `[call_id, group_id, livekit_url, token, ice_servers]`, `DELETE /v1/calls/{call_id}` |
@@ -471,13 +471,15 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
   receiver in `04`'s sense and refuses exactly what a client refuses, storing nothing partial: an
   envelope that is not a nine-element deterministic CBOR array, or any element of the wrong major
   type or length — `msg_id` and a non-null `thread_id` or `reply_to` 16 bytes, `k_f` 32, an
-  attachment's `blob_id` 32, `key` 32 and `nonce` 12, an attachment an eight-element and a preview a
-  four-element array — is `400 E_ENVELOPE_SHAPE`; a `type` above 6 is `400 E_ENVELOPE_TYPE`; and any
-  bound of `04`'s § Envelope limits (`body` per type, 4 attachments, 2 previews, `mime`, `thumb`,
-  `url`, `title`, `description`, preview `image`) is `400 E_ENVELOPE_LIMIT`. The body cap is 96 KiB
-  (§ Rate limits). Only a message's (type 0) or an edit's (type 1) `body` is search content, and only
-  there does the instance count mentions: the number of distinct `<@…>` targets (a 32-hex-digit user
-  or role id, `everyone` or `here`), stored with the message for moderation.
+  attachment's `blob_id` 32, `key` 32 and `nonce` 12, an attachment a nine-element and a preview a
+  four-element array — and an envelope of type 1 to 6 whose `reply_to` is null or that carries an
+  attachment or a preview (`04` § Envelope) is `400 E_ENVELOPE_SHAPE`; a `type` above 6 is
+  `400 E_ENVELOPE_TYPE`; and any bound of `04`'s § Envelope limits (`body` per type, 4 attachments,
+  2 previews, `mime`, `name`, `thumb`, `url`, `title`, `description`, preview `image`) is
+  `400 E_ENVELOPE_LIMIT`. The envelope of a `PATCH` is refused by the same rules. The body cap is
+  96 KiB (§ Rate limits). Only a message's (type 0) or an edit's (type 1) `body` is search content,
+  and only there does the instance count mentions: the number of distinct `<@…>` targets (a
+  32-hex-digit user or role id, `everyone` or `here`), stored with the message for moderation.
 - **Message references.** On a server-readable channel an envelope's `reply_to` and `thread_id`
   carry the target's channel `seq` as a big-endian uint64 in the low eight bytes, with the high
   eight bytes zero; in an end-to-end encrypted group they carry the target's `msg_id` unchanged,
@@ -485,9 +487,9 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
 - **Envelope types.** A reaction (3, 4) needs `add_reactions` and a pin or unpin (5, 6) needs
   `pin_messages`; both are appended like a message, and clients fold them. An edit (1) or a delete
   (2) on `POST` is the alias of `PATCH` or `DELETE` on the `seq` its `reply_to` names: it is applied
-  in place, not appended, and answers `204` with no body. Without a `reply_to`, or with one whose
-  high eight bytes are not zero, it is `400 E_ENVELOPE_SHAPE`. An alias delete, being a `POST`,
-  also needs `send_messages`.
+  in place, not appended, and answers `204` with no body. A `reply_to` whose high eight bytes are
+  not zero is `400 E_ENVELOPE_SHAPE`; a missing one is refused for every type 1 to 6 under Posting.
+  An alias delete, being a `POST`, also needs `send_messages`.
 - **Editing** is the author's alone (`403 E_FORBIDDEN` for anyone else) and takes a type 0 or 1
   envelope (`400 E_ENVELOPE_TYPE` otherwise). The instance re-franks the new envelope: `T` is
   recomputed over its `C`, the editing device and the edit's time, which the message records as
@@ -538,20 +540,29 @@ are CBOR as everywhere else.
 
 | Method and path | Request | Response | Permission |
 |---|---|---|---|
-| `PUT /v1/channels/{id}/blobs/{blob_id}` | the ciphertext | `201 [blob_id(bstr 32), size(uint)]` when the bytes are new, `200` with the same body when they were already stored | `attach_files` |
+| `PUT /v1/channels/{id}/blobs/{blob_id}` | the ciphertext | `201 [blob_id(bstr 32), size(uint)]` when the bytes are new, `200` with the same body when they were already stored | `attach_files` (`409 E_NOT_UPLOADER` when the channel's reference to the blob is another user's) |
 | `GET /v1/channels/{id}/blobs/{blob_id}` | — | `200` the ciphertext, or `206` for a `Range` request | `read_history` |
 | `HEAD /v1/channels/{id}/blobs/{blob_id}` | — | `200` with the `GET` headers and no body | `read_history` |
 | `DELETE /v1/channels/{id}/blobs/{blob_id}` | — | `204` | `view_channel`, and the uploading user only (`403 E_NOT_UPLOADER` for anyone else) |
+| `POST /v1/channels/{id}/blobs/{blob_id}/confirm` | — (no body) | `204` | `view_channel`, and the uploading user only (`403 E_NOT_UPLOADER` for anyone else) |
 
 - **Uploading.** The instance hashes the body while it writes it and keeps it only when the digest
   equals `{blob_id}`; otherwise the answer is `422 E_INVALID_REQUEST` and nothing is stored. The
   body is hashed even when the blob is already stored: the upload is the proof that the caller
   holds the bytes, so knowing a `blob_id` is never enough to publish it into another channel, and
-  a forward re-uploads. A `PUT` into a channel that already holds a reference to the blob adds
-  nothing. A body over `blobs.max_blob_bytes` is `413 E_TOO_LARGE`; a `Content-Type` other than
+  a forward re-uploads. A body over `blobs.max_blob_bytes` is `413 E_TOO_LARGE`; a `Content-Type` other than
   `application/octet-stream` is `415 E_INVALID_REQUEST`; bytes an instance administrator removed
   are `410 E_PRUNED`, because content addressing would otherwise hand the removed name straight
-  back.
+  back. The reference a `PUT` creates is **pending**: it is read and deleted like any other, and
+  its uploader confirms it before sending the message that names it. A channel holds one reference
+  to a blob and it belongs to the user whose device made it: a `PUT` by that user into a channel
+  that already holds their reference adds nothing and leaves it as it is, pending or confirmed
+  (`200`); a `PUT` into a channel whose reference another user made is `409 E_NOT_UPLOADER` and
+  leaves that reference as it is, so nobody else's upload can take over, or make expire, a
+  reference a user confirmed or still has to. A forwarded attachment is therefore re-encrypted
+  under a fresh key and re-uploaded as new bytes, never re-`PUT` as the same ciphertext. A
+  client that uploads bytes for any reason — a forward, a restore, a readable-channel client, a
+  test peer — confirms its reference; an unconfirmed reference expires after `blobs.pending_ttl`.
 - **Quota.** `blobs.quota_bytes_per_user` bounds the ciphertext bytes of the distinct blobs a user
   references, from any of their devices, and of their backup objects (§ Backups); a blob in several
   channels counts once. An upload that
@@ -575,14 +586,17 @@ are CBOR as everywhere else.
   `Last-Modified`. `Range`, `If-Range`, `If-Match` and `If-None-Match` follow RFC 9110; an
   unsatisfiable range is `416` with a plain-text body, without the `ETag` and `Cache-Control`.
   A blob an instance administrator purged is `410 E_PRUNED` on `GET` and `HEAD` too.
+- **Confirming.** `POST /v1/channels/{id}/blobs/{blob_id}/confirm` reads no body and answers `204`; confirming a confirmed reference is `204` again. No reference in this channel is `404 E_NOT_FOUND`; a reference another user's device made is `403 E_NOT_UPLOADER`; bytes an instance administrator purged are `410 E_PRUNED`. A pending reference older than `blobs.pending_ttl` (default 24 h; `0` turns this off) is removed by the instance as retention removes one, and the blob then follows the deletion rule below; references stored before this rule existed count as confirmed. The instance still never learns which message names a blob.
 - **Deleting.** `DELETE` removes this channel's **reference**, never the bytes. Only the user
   whose device made the reference may delete it, from any of their devices; anyone else —
   including a holder of `manage_messages` and the community owner — is `403 E_NOT_UPLOADER`,
   because moderator deletion needs a signed moderation event this version does not have. Deleting
   a reference that is already gone is `204`, so a retry is harmless. When the last reference to a
   blob anywhere goes, the instance marks the blob unreferenced, and unlinks the file once
-  `blobs.gc_grace` (default 24 h) has passed with no reference created in between; a forward that
+  `blobs.gc_grace` (default 24 h) has passed with no reference created in between; a `PUT` that
   re-uploads the bytes inside that window keeps them.
+  A client deletes the references of a message it discards before sending it and of a message it
+  deletes for everyone (`04` § Semantics).
 - **Retention.** An attachment's retention is its community's archival retention: a reference
   older than the community policy's `retention_days` (§ Communities) is removed, and the blob then
   follows the deletion rule above. A community without `retention_days`, a DM and a group DM keep
@@ -1248,13 +1262,14 @@ Every `200` and every `304` of every file, whatever its extension, carries the s
     Referrer-Policy: no-referrer
     X-Frame-Options: DENY
     Permissions-Policy: camera=(), microphone=(), display-capture=(), geolocation=()
-    Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' ws://HOST wss://HOST; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+    Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://HOST wss://HOST; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
 
 The policy is on every file, not only on HTML, because a dedicated worker loaded from a URL takes
 its policy from its own script response, not from the document that started it, and the client's
-worker holds its keys and does its network calls. web-1 grants no camera, microphone, screen
-capture, `blob:` image or media source; the changes that need them widen these two headers with
-their own row in `07`. `HOST` is the request's `Host` header when it is a host name or IPv4 address
+worker holds its keys and does its network calls. The client renders the images it decrypted from
+`blob:` URLs it mints in the page, which is what `img-src blob:` admits; no camera, microphone,
+screen capture or media source is granted, and later changes widen these headers with their own
+row in `07`. `HOST` is the request's `Host` header when it is a host name or IPv4 address
 of at most 253 characters, or a bracketed IPv6 literal, either with an optional port; for any other
 `Host` the two `ws` sources are left out. The client's own `404` and `405` answers carry only
 `X-Content-Type-Options: nosniff` from Go's `http.Error`; they carry no CSP, ETag, Cache-Control or
