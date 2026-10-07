@@ -1,6 +1,6 @@
 # Flow 03 — signing in on another browser, and removing a device (web-2a)
 
-The strings, the refusal table and the flow rules of this document are L-COPY-02 of the web-2a plan, quoted. A change is made there first.
+The strings, the refusal table and the flow rules of this document began as L-COPY-02 of the web-2a plan, quoted. Since the web-2a whole-branch review (2026-10-07) this document's Copy table is the record of these strings and rules, held equal to `en.ts` by `copy.test`; L-COPY-02 carries a record note that points here. A change is made here and in `en.ts` together.
 
 How a person who already has an account adds a second browser to it, and how a device leaves the
 account again. Wireframed before it is built (F16). Built by web-2a task 16 (`RecoveryKeyField`,
