@@ -48,6 +48,8 @@ pub enum ProtocolError {
     FrankMismatch,
     #[error("E_BLOB_HASH")]
     BlobHash,
+    #[error("E_BLOB_OPEN")]
+    BlobOpen,
     // protocol/07-versioning.md
     #[error("E_VERSION")]
     Version,
@@ -75,6 +77,7 @@ impl ProtocolError {
             Self::EnvelopeLimit => "E_ENVELOPE_LIMIT",
             Self::FrankMismatch => "E_FRANK_MISMATCH",
             Self::BlobHash => "E_BLOB_HASH",
+            Self::BlobOpen => "E_BLOB_OPEN",
             Self::Version => "E_VERSION",
         }
     }
@@ -100,6 +103,7 @@ impl ProtocolError {
             "E_ENVELOPE_LIMIT" => Self::EnvelopeLimit,
             "E_FRANK_MISMATCH" => Self::FrankMismatch,
             "E_BLOB_HASH" => Self::BlobHash,
+            "E_BLOB_OPEN" => Self::BlobOpen,
             "E_VERSION" => Self::Version,
             _ => return None,
         })
@@ -134,8 +138,8 @@ pub enum CoreError {
 mod tests {
     use super::*;
 
-    /// The 20 stable strings of protocol/01, /03, /04 and /07 (facts-repo.md section 1.11).
-    const ALL: [(ProtocolError, &str); 20] = [
+    /// The 21 stable strings of protocol/01, /03, /04 and /07 (facts-repo.md section 1.11).
+    const ALL: [(ProtocolError, &str); 21] = [
         (ProtocolError::Binding, "E_BINDING"),
         (
             ProtocolError::ExternalSenderForbidden,
@@ -167,6 +171,7 @@ mod tests {
         (ProtocolError::EnvelopeLimit, "E_ENVELOPE_LIMIT"),
         (ProtocolError::FrankMismatch, "E_FRANK_MISMATCH"),
         (ProtocolError::BlobHash, "E_BLOB_HASH"),
+        (ProtocolError::BlobOpen, "E_BLOB_OPEN"),
         (ProtocolError::Version, "E_VERSION"),
     ];
 

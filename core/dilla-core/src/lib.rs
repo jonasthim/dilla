@@ -4,6 +4,7 @@
 //! (`dilla-core-wasm`, `dilla-core-wasi`) hold the target-specific glue.
 #![forbid(unsafe_code)]
 
+pub mod attachment;
 pub mod cbor;
 // The client uses the SQLite half of `mls`, unavailable on wasm32-wasip1.
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]

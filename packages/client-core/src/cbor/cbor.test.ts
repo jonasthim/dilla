@@ -85,7 +85,7 @@ describe('protocol/vectors/frames.json', () => {
 
 describe('protocol/vectors/envelope.json', () => {
   it('round-trips every case at its stated length', () => {
-    expect(envelopes.cases).toHaveLength(4);
+    expect(envelopes.cases).toHaveLength(5);
     for (const c of envelopes.cases) {
       expect(fromHex(c.cbor).length, c.name).toBe(c.length);
       expect(roundTrip(c.cbor), c.name).toBe(c.cbor);
@@ -93,7 +93,7 @@ describe('protocol/vectors/envelope.json', () => {
   });
 
   it('round-trips every reject, which the envelope layer refuses and the codec does not', () => {
-    expect(envelopes.rejects).toHaveLength(9);
+    expect(envelopes.rejects).toHaveLength(13);
     for (const r of envelopes.rejects) expect(roundTrip(r.cbor), r.name).toBe(r.cbor);
   });
 });

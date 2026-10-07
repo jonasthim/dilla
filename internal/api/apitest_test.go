@@ -344,12 +344,12 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
-// attsToAny spells attachments as protocol/04's 8-element arrays, an empty list
+// attsToAny spells attachments as protocol/04's 9-element arrays, an empty list
 // as an empty array (never null).
 func attsToAny(atts []api.Attachment) []any {
 	out := make([]any, 0, len(atts))
 	for _, a := range atts {
-		out = append(out, []any{a.BlobID, a.Key, a.Nonce, a.Size, a.Mime, a.W, a.H, a.Thumb})
+		out = append(out, []any{a.BlobID, a.Key, a.Nonce, a.Size, a.Mime, a.W, a.H, a.Thumb, a.Name})
 	}
 	return out
 }

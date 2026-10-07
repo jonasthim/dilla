@@ -7,17 +7,20 @@ import { kid, deriveFrameKeys, counter, nonce, encodeSframeHeader, SUITE, encryp
 import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity, sskMessage, dskMessage, sessionPreimage } from './identity.ts';
 import { keyFromSeed, sign } from './ed25519.ts';
 import { frameVectors } from './frames.ts';
+import { encode } from './cbor.ts';
+import { attachmentVectors } from './attachment.ts';
 
 export const VECTORS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'protocol', 'vectors');
 const fill = (n: number, b: number) => new Uint8Array(n).fill(b);
 const j = (o: unknown) => JSON.stringify(o, (_, v) => v instanceof Uint8Array ? hex(v) : v, 2) + '\n';
 
 export async function envelopeVectors() {
+  const att = await attachmentVectors();
   const cases: Array<{ name: string; envelope: Envelope }> = [
     { name: 'text message with a reply and one attachment', envelope: {
       v: 1, msgId: fill(16, 0x01), type: EnvelopeType.Message, threadId: null, replyTo: fill(16, 0x02),
       body: 'On my way. Grab the wolf capes from the chest by the portal.',
-      attachments: [{ blobId: fill(32, 0x03), key: fill(32, 0x04), nonce: fill(12, 0x05), size: 2100000, mime: 'image/jpeg', w: 1600, h: 900, thumb: null }],
+      attachments: [{ blobId: fill(32, 0x03), key: fill(32, 0x04), nonce: fill(12, 0x05), size: 2100000, mime: 'image/jpeg', w: 1600, h: 900, thumb: null, name: 'wolf-capes.jpg' }],
       previews: [], kf: fill(32, 0x06) } },
     { name: 'reaction add in a thread', envelope: {
       v: 1, msgId: fill(16, 0x11), type: EnvelopeType.ReactionAdd, threadId: fill(16, 0x12), replyTo: fill(16, 0x13),
@@ -30,6 +33,11 @@ export async function envelopeVectors() {
       body: 'https://valheim.fandom.com/wiki/Silver', attachments: [],
       previews: [{ url: 'https://valheim.fandom.com/wiki/Silver', title: 'Silver', description: 'Silver is a metal found in the Mountains.', image: null }],
       kf: fill(32, 0x36) } },
+    { name: 'image message with a thumbnail and a name', envelope: {
+      v: 1, msgId: fill(16, 0x41), type: EnvelopeType.Message, threadId: null, replyTo: null,
+      body: '', attachments: [{ blobId: fill(32, 0x43), key: fill(32, 0x44), nonce: fill(12, 0x45), size: 1234,
+        mime: 'image/png', w: 640, h: 480, thumb: att.cases[2]!.thumb, name: 'map.png' }],
+      previews: [], kf: fill(32, 0x46) } },
   ];
   const out = [];
   for (const c of cases) {
@@ -43,7 +51,8 @@ export async function envelopeVectors() {
   //
   // interfaces.md §2.8: nine cases, not one — a count case per collection (5 attachments, 3
   // previews) plus one case per tightened scalar bound, beside the pre-existing tombstone case.
-  const sampleAttachment = (): Attachment => ({ blobId: fill(32, 0x03), key: fill(32, 0x04), nonce: fill(12, 0x05), size: 2100000, mime: 'image/jpeg', w: 1600, h: 900, thumb: null });
+  // web-2b task 1: four more — three shapes and the name limit (L-CORE-30).
+  const sampleAttachment = (): Attachment => ({ blobId: fill(32, 0x03), key: fill(32, 0x04), nonce: fill(12, 0x05), size: 2100000, mime: 'image/jpeg', w: 1600, h: 900, thumb: null, name: 'wolf-capes.jpg' });
   const samplePreview = (): Preview => ({ url: 'https://example.invalid/', title: 't', description: 'd', image: null });
   const rejectBase = { v: 1 as const, msgId: fill(16, 0x21), type: EnvelopeType.Message, threadId: null, replyTo: null, kf: fill(32, 0x26) };
   const withAttachment = (patch: Partial<Attachment>): Envelope => ({
@@ -52,7 +61,7 @@ export async function envelopeVectors() {
   const withPreview = (patch: Partial<Preview>): Envelope => ({
     ...rejectBase, body: '', attachments: [], previews: [{ ...samplePreview(), ...patch }],
   });
-  const rejectCase = (name: string, envelope: Envelope) => ({ name, error: 'E_ENVELOPE_LIMIT', cbor: hex(encodeEnvelope(envelope)) });
+  const rejectCase = (name: string, envelope: Envelope, error = 'E_ENVELOPE_LIMIT') => ({ name, error, cbor: hex(encodeEnvelope(envelope)) });
   const rejects = [
     rejectCase('delete tombstone with a non-empty body', { ...rejectBase, type: EnvelopeType.Delete, replyTo: fill(16, 0x01), body: 'deleted because', attachments: [], previews: [] }),
     rejectCase('mime one byte over 255', withAttachment({ mime: 'a'.repeat(256) })),
@@ -63,6 +72,10 @@ export async function envelopeVectors() {
     rejectCase('preview title one byte over 256', withPreview({ title: 't'.repeat(257) })),
     rejectCase('preview description one byte over 1024', withPreview({ description: 'd'.repeat(1025) })),
     rejectCase('preview image one byte over 16384', withPreview({ image: new Uint8Array(16385) })),
+    rejectCase('an edit with no reply_to', { ...rejectBase, type: EnvelopeType.Edit, body: 'fixed', attachments: [], previews: [] }, 'E_ENVELOPE_SHAPE'),
+    rejectCase('a reaction carrying an attachment', { ...rejectBase, type: EnvelopeType.ReactionAdd, replyTo: fill(16, 0x01), body: '👍', attachments: [sampleAttachment()], previews: [] }, 'E_ENVELOPE_SHAPE'),
+    rejectCase('an attachment name one byte over 255', withAttachment({ name: 'n'.repeat(256) })),
+    { name: 'an attachment of eight elements', error: 'E_ENVELOPE_SHAPE', cbor: hex(encode([1, fill(16, 0x21), 0, null, null, '', [[fill(32, 0x03), fill(32, 0x04), fill(12, 0x05), 2100000, 'image/jpeg', 1600, 900, null]], [], fill(32, 0x26)])) },
   ];
   return { version: 1, description: 'dilla envelope encodings (04-envelope-and-franking.md). cbor = deterministic CBOR of the 9-element array; commitment = HMAC-SHA256(k_f, "dilla frank v1" || CBOR with k_f blanked). rejects = well-formed CBOR that a conforming decoder must still refuse with the named error code.', cases: out, rejects };
 }
@@ -406,6 +419,7 @@ export async function main() {
   writeFileSync(join(VECTORS_DIR, 'sframe.json'), j(await sframeVectors()));
   writeFileSync(join(VECTORS_DIR, 'identity.json'), j(await identityVectors()));
   writeFileSync(join(VECTORS_DIR, 'frames.json'), j(frameVectors()));
+  writeFileSync(join(VECTORS_DIR, 'attachment.json'), j(await attachmentVectors()));
   console.log(`vectors written to ${VECTORS_DIR}`);
 }
 

@@ -62,18 +62,22 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // runs (30 decrypt steps) to sframe, and fourteen H.264 prefix refusals and six sender refusals to
 // rejects: sframe 125 -> 173, rejects 71 -> 91, total 245 -> 313.
 // A3 adds three receiver checks and one sender refusal: 176 / 92 / 317.
+// web-2b task 1 adds envelope.json's fifth case (envelope 12 -> 15), the seventh suite,
+// attachment.json's 14 fields, and ten rejects (four envelope, six attachment: 92 -> 102), total
+// 317 -> 344.
 var wantSuiteCases = map[string]int{
-	"envelope": 12,
-	"franking": 4,
-	"sframe":   176,
-	"identity": 8,
-	"frames":   25,
-	"rejects":  92,
+	"envelope":   15,
+	"franking":   4,
+	"sframe":     176,
+	"identity":   8,
+	"frames":     25,
+	"attachment": 14,
+	"rejects":    102,
 }
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 317
+const wantTotalCases = 344
 
 // The four case names run_identity emits, one per sub-object of identity.json.
 var wantIdentityCases = []string{"credential_identity", "recovery_key", "safety_number", "sas"}
@@ -142,7 +146,7 @@ func TestSuiteCaseCountsMatchTheNativeAndNodeRuns(t *testing.T) {
 		if !ok {
 			t.Errorf("vectors_check reported no suite named %q; interfaces.md 2.9 names the "+
 				"suites envelope, franking, sframe, identity and rejects, Plan B task 17 adds "+
-				"frames, and the Rust SuiteReport.name values must be exactly those strings "+
+				"frames, web-2b task 1 adds attachment, and the Rust SuiteReport.name values must be exactly those strings "+
 				"(NV2)", suite)
 			continue
 		}
@@ -152,8 +156,8 @@ func TestSuiteCaseCountsMatchTheNativeAndNodeRuns(t *testing.T) {
 				suite, got, want)
 		}
 	}
-	if len(report.Suites) != 6 {
-		t.Errorf("vectors_check reported %d suites, want 6", len(report.Suites))
+	if len(report.Suites) != 7 {
+		t.Errorf("vectors_check reported %d suites, want 7", len(report.Suites))
 	}
 	if total != wantTotalCases {
 		t.Errorf("vectors_check reported %d cases in total, want %d", total, wantTotalCases)

@@ -173,6 +173,7 @@ fn envelope_from_json(source: &str) -> Result<Envelope, JsError> {
             w: a.get("w").and_then(Value::as_u64),
             h: a.get("h").and_then(Value::as_u64),
             thumb: opt_hex(a, "thumb")?,
+            name: str_field(a, "name")?.to_owned(),
         });
     }
 
@@ -218,7 +219,7 @@ fn envelope_to_json(e: &Envelope) -> String {
         "attachments": e.attachments.iter().map(|a| json!({
             "blobId": hex(&a.blob_id), "key": hex(&a.key), "nonce": hex(&a.nonce),
             "size": a.size, "mime": a.mime, "w": a.w, "h": a.h,
-            "thumb": a.thumb.as_ref().map(|t| hex(t)),
+            "thumb": a.thumb.as_ref().map(|t| hex(t)), "name": a.name,
         })).collect::<Vec<_>>(),
         "previews": e.previews.iter().map(|p| json!({
             "url": p.url, "title": p.title, "description": p.description,

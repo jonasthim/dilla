@@ -29,13 +29,14 @@ const (
 	maxAttachments     = 4
 	maxPreviews        = 2
 	maxMimeBytes       = 255
+	maxNameBytes       = 255
 	maxThumbBytes      = 8192
 	maxPreviewURL      = 2048
 	maxPreviewTitle    = 256
 	maxPreviewDesc     = 1024
 	maxPreviewImage    = 16384
 	frankingKeyBytes   = 32
-	attachmentElements = 8
+	attachmentElements = 9
 	previewElements    = 4
 	blobIDBytes        = 32
 	attachmentKeyBytes = 32
@@ -45,8 +46,8 @@ const (
 // cborNull is the one-byte CBOR null (major 7, simple value 22).
 const cborNull = 0xf6
 
-// Attachment is protocol/04's 8-element fixed-position array, in element order:
-// blob_id, key, nonce, size, mime, w, h, thumb. W, H and Thumb are nil for a
+// Attachment is protocol/04's 9-element fixed-position array, in element order:
+// blob_id, key, nonce, size, mime, w, h, thumb, name. W, H and Thumb are nil for a
 // CBOR null.
 //
 // The `cbor:",toarray"` marker keeps the type encodable as protocol/04's array
@@ -63,6 +64,7 @@ type Attachment struct {
 	Mime   string
 	W, H   *uint64
 	Thumb  []byte
+	Name   string
 }
 
 // Preview is protocol/04's 4-element array: url, title, description, image.
@@ -93,8 +95,9 @@ type Envelope struct {
 // internal/server (P2-D30); all three are 400.
 //
 //	400 E_ENVELOPE_SHAPE  the envelope is not a 9-element deterministic CBOR array,
-//	                      or a field has the wrong type or length
-//	400 E_ENVELOPE_TYPE   the type byte names no envelope type this version knows
+//	                      or a field has the wrong type or length,
+//	                      or a type 1..6 envelope has no reply_to or carries files
+//	400 E_ENVELOPE_TYPE  the type byte names no envelope type this version knows
 //	400 E_ENVELOPE_LIMIT  a field or list exceeds a protocol/04 § Limits bound
 func envErr(code server.Code, format string, a ...any) error {
 	return server.Errorf(code, format, a...)
@@ -165,6 +168,15 @@ func ParseEnvelope(b []byte) (Envelope, error) {
 	if e.KF, err = decodeBytes(raw[8]); err != nil || len(e.KF) != frankingKeyBytes {
 		return Envelope{}, shapeErr("k_f must be %d bytes", frankingKeyBytes)
 	}
+	if e.Type != EnvMessage {
+		// protocol/04 § Envelope (web-2b task 1): a fold names its target and carries no files.
+		if e.ReplyTo == nil {
+			return Envelope{}, shapeErr("type %d names its target in reply_to", e.Type)
+		}
+		if len(e.Attachments) > 0 || len(e.Previews) > 0 {
+			return Envelope{}, shapeErr("type %d carries no attachments or previews", e.Type)
+		}
+	}
 	if e.Type == EnvMessage || e.Type == EnvEdit {
 		// Only a message's or an edit's body is rendered, so only there is a
 		// <@…> a mention; a reaction's "emoji" pings no one.
@@ -192,6 +204,8 @@ func decodeAttachments(raw cbor.RawMessage) ([]Attachment, error) {
 		switch {
 		case len(a.Mime) > maxMimeBytes:
 			return nil, limitErr("attachment %d: mime is %d bytes, at most %d", i, len(a.Mime), maxMimeBytes)
+		case len(a.Name) > maxNameBytes:
+			return nil, limitErr("attachment %d: name is %d bytes, at most %d", i, len(a.Name), maxNameBytes)
 		case len(a.Thumb) > maxThumbBytes:
 			return nil, limitErr("attachment %d: thumb is %d bytes, at most %d", i, len(a.Thumb), maxThumbBytes)
 		}
@@ -237,6 +251,9 @@ func decodeAttachment(raw cbor.RawMessage) (Attachment, error) {
 	}
 	if a.Thumb, err = decodeNullableBytes(f[7]); err != nil {
 		return Attachment{}, fieldErr("thumb must be a byte string or null")
+	}
+	if a.Name, err = decodeText(f[8]); err != nil {
+		return Attachment{}, fieldErr("name must be a text string")
 	}
 	return a, nil
 }

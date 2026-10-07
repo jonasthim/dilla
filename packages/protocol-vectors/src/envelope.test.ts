@@ -10,7 +10,7 @@ const id = (n: number) => new Uint8Array(16).fill(n);
 const sample: Envelope = {
   v: 1, msgId: id(1), type: EnvelopeType.Message, threadId: null, replyTo: id(2),
   body: 'On my way. Grab the wolf capes from the chest by the portal.',
-  attachments: [{ blobId: new Uint8Array(32).fill(3), key: new Uint8Array(32).fill(4), nonce: new Uint8Array(12).fill(5), size: 2100000, mime: 'image/jpeg', w: 1600, h: 900, thumb: null }],
+  attachments: [{ blobId: new Uint8Array(32).fill(3), key: new Uint8Array(32).fill(4), nonce: new Uint8Array(12).fill(5), size: 2100000, mime: 'image/jpeg', w: 1600, h: 900, thumb: null, name: 'wolf-capes.jpg' }],
   previews: [],
   kf: new Uint8Array(32).fill(6),
 };
@@ -29,6 +29,9 @@ describe('envelope', () => {
     expect(hex(arr[1] as Uint8Array)).toBe(hex(id(1)));
     expect(arr[2]).toBe(0);
     expect(arr[3]).toBeNull();
+    const atts = arr[6] as unknown[][];
+    expect(atts[0]).toHaveLength(9);
+    expect(atts[0]?.[8]).toBe('wolf-capes.jpg');
   });
   it('round-trips', () => {
     expect(decodeEnvelope(encodeEnvelope(sample))).toEqual(sample);
@@ -116,6 +119,26 @@ describe('envelope', () => {
     expect(t1.length).toBe(32);
     expect(hex(t1)).not.toBe(hex(t2));
   });
+  it('refuses a type 1-6 envelope without reply_to or with files (L-CORE-30)', () => {
+    const bodies: Record<number, string> = { 1: 'fixed', 2: '', 3: '👍', 4: '👍', 5: '', 6: '' };
+    for (const type of [1, 2, 3, 4, 5, 6] as const) {
+      const fold: Envelope = { ...sample, type, body: bodies[type] ?? '', attachments: [], previews: [] };
+      expect(decodeEnvelope(encodeEnvelope(fold)).type).toBe(type);
+      expect(() => decodeEnvelope(encodeEnvelope({ ...fold, replyTo: null }))).toThrowError(/envelope: shape/);
+      expect(() => decodeEnvelope(encodeEnvelope({ ...fold, attachments: sample.attachments }))).toThrowError(/envelope: shape/);
+      expect(() => decodeEnvelope(encodeEnvelope({ ...fold, previews: [{ url: 'https://x', title: 't', description: 'd', image: null }] }))).toThrowError(/envelope: shape/);
+    }
+    expect(decodeEnvelope(encodeEnvelope({ ...sample, replyTo: null })).replyTo).toBeNull();
+  });
+  it('refuses an attachment name over 255 bytes and keeps one at 255', () => {
+    const at = (name: string): Envelope => ({ ...sample, attachments: [{ ...sample.attachments[0]!, name }] });
+    expect(decodeEnvelope(encodeEnvelope(at('n'.repeat(255)))).attachments[0]?.name).toBe('n'.repeat(255));
+    expect(() => decodeEnvelope(encodeEnvelope(at('n'.repeat(256))))).toThrowError(/limit exceeded/);
+  });
+  it('refuses an attachment of eight elements', () => {
+    const raw = [1, id(1), 0, null, null, '', [[new Uint8Array(32), new Uint8Array(32), new Uint8Array(12), 1, 'image/png', null, null, null]], [], new Uint8Array(32)];
+    expect(() => decodeEnvelope(encodeRaw(raw))).toThrowError(/envelope: shape/);
+  });
 });
 
 /**
@@ -136,10 +159,11 @@ describe('envelope rejects (protocol/vectors/envelope.json)', () => {
   // silently passing on an unchecked `toThrow()`.
   const MESSAGE_FRAGMENT: Record<string, string> = {
     E_ENVELOPE_LIMIT: 'limit exceeded',
+    E_ENVELOPE_SHAPE: 'envelope: shape',
   };
 
-  it('has at least one reject case to drive', () => {
-    expect(file.rejects.length).toBeGreaterThan(0);
+  it('drives the thirteen reject cases', () => {
+    expect(file.rejects).toHaveLength(13);
   });
 
   for (const c of file.rejects) {

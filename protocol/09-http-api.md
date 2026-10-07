@@ -471,13 +471,15 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
   receiver in `04`'s sense and refuses exactly what a client refuses, storing nothing partial: an
   envelope that is not a nine-element deterministic CBOR array, or any element of the wrong major
   type or length — `msg_id` and a non-null `thread_id` or `reply_to` 16 bytes, `k_f` 32, an
-  attachment's `blob_id` 32, `key` 32 and `nonce` 12, an attachment an eight-element and a preview a
-  four-element array — is `400 E_ENVELOPE_SHAPE`; a `type` above 6 is `400 E_ENVELOPE_TYPE`; and any
-  bound of `04`'s § Envelope limits (`body` per type, 4 attachments, 2 previews, `mime`, `thumb`,
-  `url`, `title`, `description`, preview `image`) is `400 E_ENVELOPE_LIMIT`. The body cap is 96 KiB
-  (§ Rate limits). Only a message's (type 0) or an edit's (type 1) `body` is search content, and only
-  there does the instance count mentions: the number of distinct `<@…>` targets (a 32-hex-digit user
-  or role id, `everyone` or `here`), stored with the message for moderation.
+  attachment's `blob_id` 32, `key` 32 and `nonce` 12, an attachment a nine-element and a preview a
+  four-element array — and an envelope of type 1 to 6 whose `reply_to` is null or that carries an
+  attachment or a preview (`04` § Envelope) is `400 E_ENVELOPE_SHAPE`; a `type` above 6 is
+  `400 E_ENVELOPE_TYPE`; and any bound of `04`'s § Envelope limits (`body` per type, 4 attachments,
+  2 previews, `mime`, `name`, `thumb`, `url`, `title`, `description`, preview `image`) is
+  `400 E_ENVELOPE_LIMIT`. The envelope of a `PATCH` is refused by the same rules. The body cap is
+  96 KiB (§ Rate limits). Only a message's (type 0) or an edit's (type 1) `body` is search content,
+  and only there does the instance count mentions: the number of distinct `<@…>` targets (a
+  32-hex-digit user or role id, `everyone` or `here`), stored with the message for moderation.
 - **Message references.** On a server-readable channel an envelope's `reply_to` and `thread_id`
   carry the target's channel `seq` as a big-endian uint64 in the low eight bytes, with the high
   eight bytes zero; in an end-to-end encrypted group they carry the target's `msg_id` unchanged,
@@ -485,9 +487,9 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
 - **Envelope types.** A reaction (3, 4) needs `add_reactions` and a pin or unpin (5, 6) needs
   `pin_messages`; both are appended like a message, and clients fold them. An edit (1) or a delete
   (2) on `POST` is the alias of `PATCH` or `DELETE` on the `seq` its `reply_to` names: it is applied
-  in place, not appended, and answers `204` with no body. Without a `reply_to`, or with one whose
-  high eight bytes are not zero, it is `400 E_ENVELOPE_SHAPE`. An alias delete, being a `POST`,
-  also needs `send_messages`.
+  in place, not appended, and answers `204` with no body. A `reply_to` whose high eight bytes are
+  not zero is `400 E_ENVELOPE_SHAPE`; a missing one is refused for every type 1 to 6 under Posting.
+  An alias delete, being a `POST`, also needs `send_messages`.
 - **Editing** is the author's alone (`403 E_FORBIDDEN` for anyone else) and takes a type 0 or 1
   envelope (`400 E_ENVELOPE_TYPE` otherwise). The instance re-franks the new envelope: `T` is
   recomputed over its `C`, the editing device and the edit's time, which the message records as

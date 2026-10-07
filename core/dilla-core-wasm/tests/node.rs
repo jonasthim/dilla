@@ -44,8 +44,14 @@ const VECTOR_ENVELOPE_COMMITMENT: &str =
 /// against a report produced by the same
 /// wasm build proves only internal consistency: a build that silently lost an entire suite would
 /// pass. Plan B task 4 holds the equivalent golden for the wasip1 leg.
-const EXPECTED_SUITES: [&str; 6] = [
-    "envelope", "franking", "sframe", "identity", "frames", "rejects",
+const EXPECTED_SUITES: [&str; 7] = [
+    "envelope",
+    "franking",
+    "sframe",
+    "identity",
+    "frames",
+    "attachment",
+    "rejects",
 ];
 
 #[wasm_bindgen_test]
@@ -66,7 +72,7 @@ fn every_case_of_every_suite_holds_on_wasm() {
     let names: Vec<&str> = report.suites.iter().map(|s| s.name).collect();
     assert_eq!(
         names, EXPECTED_SUITES,
-        "the wasm build must run all six suites, in order"
+        "the wasm build must run all seven suites, in order"
     );
 
     // Every CaseReport is one (case, field) check, so the two counters and the case rows must agree.
@@ -577,4 +583,26 @@ fn media_errors_are_bare_codes() {
         ),
         "E_BAD_OPTIONS"
     );
+}
+
+const ENVELOPE_JSON: &str = include_str!("../../../protocol/vectors/envelope.json");
+
+/// web-2b task 1 (L-CORE-30): the JSON surface carries the attachment's ninth element, `name`.
+#[wasm_bindgen_test]
+fn the_wasm_bindgen_surface_round_trips_every_envelope_vector_with_its_name() {
+    let doc: serde_json::Value = serde_json::from_str(ENVELOPE_JSON).unwrap();
+    let cases = doc["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 5);
+    for case in cases {
+        let cbor = case["cbor"].as_str().unwrap();
+        let json = envelope_decode_json(&unhex(cbor)).unwrap();
+        assert_eq!(
+            hex(&envelope_encode(&json).unwrap()),
+            cbor,
+            "{}",
+            case["name"]
+        );
+    }
+    let first = envelope_decode_json(&unhex(cases[0]["cbor"].as_str().unwrap())).unwrap();
+    assert!(first.contains("\"name\":\"wolf-capes.jpg\""), "{first}");
 }

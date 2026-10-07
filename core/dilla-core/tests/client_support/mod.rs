@@ -1185,7 +1185,8 @@ impl RawPeer {
             msg_id: MsgId::from_bytes([0x5a; 16]),
             kind,
             thread_id: None,
-            reply_to: None,
+            // protocol/04 (web-2b task 1): types 1..6 name a target; 0x5b is held by no test.
+            reply_to: (kind != EnvelopeType::Message).then_some(MsgId::from_bytes([0x5b; 16])),
             body: body.to_owned(),
             attachments: Vec::new(),
             previews: Vec::new(),
