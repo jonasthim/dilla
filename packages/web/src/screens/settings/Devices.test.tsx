@@ -193,6 +193,18 @@ describe('removing a device', () => {
   });
 });
 
+// BACKUPS-RECOVERY-04: the same alert where the recovery key is used.
+describe('a recovery root this account did not seal', () => {
+  const TEXT = 'The recovery data stored for this account on dilla.test is not this account’s. The recovery key will not work until the operator resets it.';
+  it('heads the section with a danger banner while the account slice reports it', async () => {
+    const { fake, view } = setup();
+    expect(screen.queryByText(TEXT)).toBeNull();
+    act(() => fake.set('account', account({ rootMismatch: true })));
+    expect(screen.getByRole('alert')).toHaveTextContent(TEXT);
+    await expectNoAxeViolations(view.container);
+  });
+});
+
 describe('this browser', () => {
   it('signs out and removes itself with the key, and leaves the reload to the App', async () => {
     const { fake, user, view } = setup();

@@ -16,7 +16,7 @@ class FakeWorker {
 }
 
 function account(phase: AccountState['phase']): AccountState {
-  return { phase, instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null };
+  return { phase, instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false };
 }
 
 function connected() {

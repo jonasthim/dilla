@@ -223,6 +223,7 @@ export const en = {
   'devices.confirmForget': 'Forget',
   'devices.working': 'Working…',
   'devices.error.wrongKey': 'This is not the recovery key of this account.',
+  'devices.rootMismatch': 'The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.',
   'settings.error.other': 'That did not work ({code}). Try again.',
   'notify.title': 'Notifications',
   'notify.body': 'Desktop notifications show while a dilla tab is open. Nothing is shown when every tab is closed.',

@@ -41,6 +41,7 @@ export function orderDevices(devices: readonly DeviceSummary[]): DeviceSummary[]
 export function Devices(): React.JSX.Element {
   const client = useCore();
   const devices = useSlice('devices');
+  const account = useSlice('account');
   const [target, setTarget] = useState<Target>(null);
   const [loadError, setLoadError] = useState<UiError | null>(null);
   const [plainBusy, setPlainBusy] = useState(false);
@@ -103,6 +104,9 @@ export function Devices(): React.JSX.Element {
   return (
     <section className="dw-settings-section" aria-labelledby={TITLE_ID}>
       <h2 id={TITLE_ID} ref={headingRef} tabIndex={-1} className="dw-settings-heading">{t('devices.title')}</h2>
+      {account?.rootMismatch === true ? (
+        <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? '' })}</Banner>
+      ) : null}
       {loadError === null ? null : <Banner tone="danger">{t('settings.error.other', { code: loadError.code })}</Banner>}
       <p>{t('devices.body')}</p>
       <ul className="dw-device-list">

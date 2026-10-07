@@ -204,7 +204,7 @@ export class Controller {
   private graceTimer: number | null = null;
   private phase: BootPhase = 'loading';
   private accountState: AccountState = {
-    phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null,
+    phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false,
   };
   private connectionState: ConnectionState = { status: 'offline', generation: null };
   private core: CorePort | null = null;
@@ -231,9 +231,6 @@ export class Controller {
   private noticeFloor: bigint | null = null;
   /** The instance clock when the last gateway ticket was minted (the connection that reports the next ready). */
   private ticketTime: bigint | null = null;
-  /** ensureBackups found a root this device did not seal on the instance (pre-flight row 1.5). How it reaches the
-   *  page (a flag on a slice) awaits the controller's ruling: no L-TS-24 slice can carry it yet. Dropped by the wipe. */
-  private rootMismatch = false;
   private readonly refusedChannels = new Set<string>();
   private readonly notMember = new Set<string>();
   private readonly resyncing = new Set<string>();
@@ -372,7 +369,7 @@ export class Controller {
   }
 
   private async startOnce(): Promise<null> {
-    this.setAccount({ phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null });
+    this.setAccount({ phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false });
     this.setConnection({ status: 'offline', generation: null });
     let instance: Instance;
     try {
@@ -593,14 +590,19 @@ export class Controller {
 
   /** Requirements 11(e) and 13: a rejection is swallowed (the next ready retries, L-TS-21), except that a root
    *  mismatch (task 11 ruling (b), pre-flight row 1.5: the instance holds a root this device did not seal, so every
-   *  later recovery on it fails as a wrong key) is recorded in rootMismatch; a later success clears the record. */
+   *  later recovery on it fails as a wrong key) is published on the account slice, where the page shows its alert
+   *  (BACKUPS-RECOVERY-04, protocol/06 and 09 "raises E_ROOT_MISMATCH with an alert"); a later success clears it. */
   private async ensureBackups(core: CorePort): Promise<void> {
+    let mismatch: boolean;
     try {
       await this.parts.ensureBackups(core, this.routes);
-      this.rootMismatch = false;
+      mismatch = false;
     } catch (e) {
-      if (isCode(e, 'E_ROOT_MISMATCH')) this.rootMismatch = true;
+      if (!isCode(e, 'E_ROOT_MISMATCH')) return;
+      mismatch = true;
     }
+    if (this.storeCleared || this.accountState.rootMismatch === mismatch) return;
+    this.setAccount({ rootMismatch: mismatch });
   }
 
   /** BACKUPS-RECOVERY-03: swallowed like ensureBackups; the next ready tries again. */
@@ -1395,7 +1397,6 @@ export class Controller {
     const timelines = [...this.open.keys()];
     this.core = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
-    this.rootMismatch = false;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
     this.noticesState = { nextId: this.noticesState.nextId, items: [] };
@@ -1412,7 +1413,7 @@ export class Controller {
     this.slices.set('notices', this.noticesState);
     this.setConnection({ status: 'offline', generation: null });
     this.storeCleared = true;
-    this.setAccount({ phase: 'cleared', user: null, deviceId: null, recoveryKey: null, signIn: null, error });
+    this.setAccount({ phase: 'cleared', user: null, deviceId: null, recoveryKey: null, signIn: null, error, rootMismatch: false });
   }
 
   // ---- channels and timelines ----

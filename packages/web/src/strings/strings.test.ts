@@ -54,7 +54,9 @@ describe('the copy rules', () => {
     expect(en['devices.cap.other']).toBe('{n} devices');
     expect(en['devices.cap.one']).toBe('one device');
     expect(en['settings.error.other']).toBe('That did not work ({code}). Try again.');
-    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(62);
+    // BACKUPS-RECOVERY-04 adds devices.rootMismatch.
+    expect(en['devices.rootMismatch']).toBe('The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.');
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(63);
     expect(Object.keys(en)).not.toContain('devices.error.other');
     expect(Object.keys(en)).not.toContain('devices.cap');
   });

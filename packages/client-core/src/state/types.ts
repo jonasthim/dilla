@@ -10,6 +10,9 @@ export interface AccountState {
   recoveryKey: string[] | null;                 // 13 groups of 4; only while phase is 'signup-keys' or 'registering'
   error: WorkerError | null;                    // the last signup, sign-in or boot error
   signIn: { username: string | null; needsTotp: boolean } | null;   // set during signin-*; null otherwise
+  /** BACKUPS-RECOVERY-04: the instance holds a root object this account did not seal (E_ROOT_MISMATCH at ready), so
+   *  the recovery key cannot open it until the operator resets it; cleared by a later matching check and by a wipe. */
+  rootMismatch: boolean;
 }
 /** The one error shape that crosses the worker boundary (ret errors and AccountState.error). For a
  *  DillaHttpError, code and detail are the server's error-array elements 0 and 1 passed through

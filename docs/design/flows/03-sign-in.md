@@ -586,6 +586,12 @@ At 360 the frame fills the viewport and the navigation stacks above the section:
 +--------------------------------------+
 ```
 
+A recovery root this account did not seal (BACKUPS-RECOVERY-04): when the worker finds that the instance
+holds a root object other than the one this account sealed (`E_ROOT_MISMATCH`, `account.rootMismatch`), the
+danger banner `devices.rootMismatch` stands first in the Devices section, under its heading, and in the
+shell's banner area above the conversation, with no dismiss button, for as long as the slice reports it:
+the recovery key cannot open that object, so removing a device or adding a browser with the key would fail.
+
 Rows. Each device is a `DeviceRow`: the name (first eight hexadecimal characters of the device id), the
 tier tag (`devices.tier.web` for a browser, `devices.tier.native` for an app), the tag
 `devices.thisBrowser` on this browser's row, a state (`devices.unlisted` when the device is not in the
@@ -786,4 +792,5 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `devices.confirmForget` | `Forget` | danger button, forget dialog |
 | `devices.working` | `Working…` | the confirm button of a dialog while its command runs |
 | `devices.error.wrongKey` | `This is not the recovery key of this account.` | field error, recovery key, the two key dialogs |
+| `devices.rootMismatch` | `The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.` | danger banner, first in Settings → Devices and in the shell's banner area, while `account.rootMismatch` |
 | `settings.error.other` | `That did not work ({code}). Try again.` | danger banner, first in a Settings → Devices dialog's body; the one string for every refused Settings write |

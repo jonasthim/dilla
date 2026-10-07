@@ -510,6 +510,21 @@ describe('servers and the join dialog', () => {
   });
 });
 
+// BACKUPS-RECOVERY-04: E_ROOT_MISMATCH is an alert, not a log line: it stands in the shell while the worker reports it.
+describe('a recovery root this account did not seal', () => {
+  const TEXT = 'The recovery data stored for this account on dilla.test is not this account’s. The recovery key will not work until the operator resets it.';
+  it('shows a persistent danger banner while the account slice reports it, and none otherwise', async () => {
+    const { fake, view } = setup(`/c/${A}/${GEN}`, { before: f => f.set('account', account({ rootMismatch: true })) });
+    const alert = screen.getByText(TEXT).closest('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert).toHaveAttribute('data-tone', 'danger');
+    expect(within(alert as HTMLElement).queryByRole('button')).toBeNull();
+    await expectNoAxeViolations(view.container);
+    act(() => fake.set('account', account({ rootMismatch: false })));
+    expect(screen.queryByText(TEXT)).toBeNull();
+  });
+});
+
 describe('connection', () => {
   it('shows the offline banner and the status bar facts', () => {
     const { fake } = setup(`/c/${A}/${GEN}`);

@@ -2103,9 +2103,8 @@ describe('Controller pre-flight rulings (task 14)', () => {
 // ---- Task-14 fix round 1: a root mismatch is not dropped; an unusable served state object cannot block a revocation. ----
 
 describe('Controller task-14 fix round 1', () => {
-  /** The worker's record of a root mismatch (pre-flight row 1.5). How it reaches the page awaits the controller's
-   *  ruling (a ledger change: no L-TS-24 slice can carry it), so the test reads the record itself. */
-  const rootMismatch = (w: World): unknown => (w.controller as unknown as { rootMismatch: unknown }).rootMismatch;
+  /** BACKUPS-RECOVERY-04: a root mismatch reaches the page on the account slice. */
+  const rootMismatch = (w: World): unknown => w.account()?.rootMismatch;
   const STATE_MISSING = 'the backup state is missing';
   const STATE_UNREADABLE = 'the backup state could not be read';
   const listedBoth = (w: World): void => {

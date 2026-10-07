@@ -513,8 +513,13 @@ export function Shell(): React.JSX.Element {
   const status = connection?.status ?? 'connecting';
   const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'warn' : 'danger';
   const offline = connection?.status === 'offline';
-  const banner = offline || commandError !== null ? (
+  // BACKUPS-RECOVERY-04: persistent, with no dismiss: it stands while the worker reports the mismatch.
+  const rootMismatch = account?.rootMismatch === true;
+  const banner = offline || commandError !== null || rootMismatch ? (
     <>
+      {rootMismatch ? (
+        <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
+      ) : null}
       {offline ? (
         <Banner tone="warn">{t(connection.reason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
       ) : null}
