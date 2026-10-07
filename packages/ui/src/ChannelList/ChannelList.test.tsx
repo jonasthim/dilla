@@ -136,6 +136,17 @@ describe('ChannelList', () => {
     expect(empty.compareDocumentPosition(again) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  // WORKER-WEB-02, A11Y-DESIGN-02: a server that did not load, or no server at all, is said inside the tab panel, so the
+  // tabs stay and the other tab can still be chosen.
+  it('puts content in place of the rows inside the tab panel, keeping the tabs', () => {
+    render(<ChannelList {...props({ tabs, content: <section aria-label="Midgard"><p>did not load</p></section> })} />);
+    expect(screen.getByRole('tablist', { name: 'sidebar' })).toBeInTheDocument();
+    const panel = screen.getByRole('tabpanel', { name: 'channels' });
+    expect(within(panel).getByRole('region', { name: 'Midgard' })).toHaveTextContent('did not load');
+    expect(within(panel).queryByRole('list')).toBeNull();
+    expect(screen.queryByText('No channels yet')).toBeNull();
+  });
+
   it('has no tab panel without tabs and no footer without one', () => {
     const { container } = render(<ChannelList {...props()} />);
     expect(screen.queryByRole('tabpanel')).toBeNull();

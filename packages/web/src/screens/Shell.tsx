@@ -250,12 +250,15 @@ export function Shell(): React.JSX.Element {
 
   // The sidebar tab: DMs on a DM route, channels otherwise; it follows the route between the two, and a tab click
   // changes it without navigating. State adjusted during render, React's pattern for derived state.
+  // WORKER-WEB-02: with no server listed, the shell opens on the DMs tab (DMs belong to no server).
+  const noServer = communities !== undefined && communities.length === 0;
   const routeTab: SidebarTab | null = base.name === 'dm' ? 'dms' : base.name === 'channel' ? 'channels' : null;
-  const [tab, setTab] = useState<SidebarTab>(routeTab ?? 'channels');
-  const [tabFor, setTabFor] = useState<SidebarTab | null>(routeTab);
-  if (tabFor !== routeTab) {
-    setTabFor(routeTab);
-    if (routeTab !== null) setTab(routeTab);
+  const startTab: SidebarTab | null = routeTab ?? (noServer ? 'dms' : null);
+  const [tab, setTab] = useState<SidebarTab>(startTab ?? 'channels');
+  const [tabFor, setTabFor] = useState<SidebarTab | null>(startTab);
+  if (tabFor !== startTab) {
+    setTabFor(startTab);
+    if (startTab !== null) setTab(startTab);
   }
 
   // Alt+ArrowUp/Down select the previous/next listed channel from anywhere on a channel route; Escape in the log
@@ -469,26 +472,37 @@ export function Shell(): React.JSX.Element {
     return { id: c.id, name: c.name, unread: counts.unread, mentions: counts.mentions };
   });
 
+  // The sidebar with its tabs stands whenever a server is shown, DMs exist or a DM route is open (WORKER-WEB-02). On the
+  // channels tab, a server that did not load and the absence of any server are said inside the tab panel, so the
+  // DMs tab stays reachable (A11Y-DESIGN-02).
   let sidebar: ReactNode = null;
-  if (community !== null && selectError !== null && tab === 'channels') {
-    const id = community.id;
-    sidebar = <EmptyState title={community.name} body={t('shell.sidebar.loadError', { code: selectError.code })}
-      action={{ label: t('shell.sidebar.retry'), onAction: () => { refocus.current = 'channels'; selectCommunity(id); } }} />;
-  } else if (community !== null) {
+  const hasDms = (dms?.length ?? 0) > 0 || dmId !== null;
+  if (community !== null || hasDms) {
     const onDms = tab === 'dms';
-    const serverId = community.id;
+    const serverId = community?.id ?? null;
+    let content: ReactNode;
+    if (!onDms && community !== null && selectError !== null) {
+      const id = community.id;
+      content = <EmptyState title={community.name} body={t('shell.sidebar.loadError', { code: selectError.code })}
+        action={{ label: t('shell.sidebar.retry'), onAction: () => { refocus.current = 'channels'; selectCommunity(id); } }} />;
+    } else if (!onDms && community === null) {
+      content = <EmptyState title={t('shell.noServer.title')} body={t('shell.noServer.body')}
+        action={{ label: t('shell.noServer.action'), onAction: () => setJoinOpen(true) }} />;
+    }
     sidebar = (
-      <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')} title={community.name}
+      <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
+        title={community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
         tabs={<SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={id => setTab(id === 'dms' ? 'dms' : 'channels')} tabs={[
           { id: 'channels', label: t('shell.tabs.channels'), count: channelCounts.unread, mentions: channelCounts.mentions },
           { id: 'dms', label: t('shell.tabs.dms'), count: dmCounts.unread, mentions: dmCounts.mentions },
         ]} />}
         channels={onDms ? dmRows : channelRows}
         activeId={onDms ? dmId : channelId}
-        onSelect={id => navigate(onDms ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id })}
+        onSelect={id => navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id })}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
-        footer={onDms ? <Button variant="ghost" onClick={() => setPickerOpen(true)}>{t('shell.dms.new')}</Button> : undefined} />
+        content={content}
+        footer={onDms && community !== null ? <Button variant="ghost" onClick={() => setPickerOpen(true)}>{t('shell.dms.new')}</Button> : undefined} />
     );
   }
 

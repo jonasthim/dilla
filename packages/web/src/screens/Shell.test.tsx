@@ -643,6 +643,37 @@ describe('direct messages', () => {
     await user.click(within(list).getByRole('button', { name: 'bob' }));
     expect(path()).toBe(`/dm/${DM}`);
   });
+  // WORKER-WEB-02: DMs belong to no server, so they stay reachable when no server is listed.
+  it('with no server, the sidebar opens on the DMs and the channels tab says there is no server', async () => {
+    const { user, view } = setup('/', { communities: [], before: withDms });
+    const sidebar = screen.getByRole('navigation', { name: 'direct messages' });
+    expect(within(sidebar).getByRole('heading', { level: 1, name: 'dilla.test' })).toBeInTheDocument();
+    expect(within(sidebar).getByRole('tab', { name: 'direct messages' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(sidebar).getByRole('button', { name: 'bob' })).toBeInTheDocument();
+    await expectNoAxeViolations(view.container);
+    await user.click(within(sidebar).getByRole('tab', { name: 'channels' }));
+    const panel = screen.getByRole('tabpanel', { name: 'channels' });
+    expect(within(panel).getByRole('heading', { name: 'You are not in a server yet' })).toBeInTheDocument();
+    await user.click(within(panel).getByRole('button', { name: 'Join a server' }));
+    expect(screen.getByRole('dialog', { name: 'Join a server' })).toBeInTheDocument();
+  });
+  it('with no server, a DM route keeps the sidebar and the other DMs', () => {
+    setup(`/dm/${DM}`, { communities: [], before: withDms });
+    expect(screen.getByRole('tab', { name: 'direct messages' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(screen.getByRole('navigation', { name: 'direct messages' })).getByRole('button', { name: 'bob' }))
+      .toHaveAttribute('aria-current', 'page');
+  });
+  // A11Y-DESIGN-02: a server that did not load is said inside the channels tab panel; the DMs tab stays a tab.
+  it('a server that did not load keeps the tabs, and the DMs tab still lists the DMs', async () => {
+    const { fake, user } = setupWith(c => (c.m === 'selectCommunity' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null)));
+    act(() => fake.set('dms', DMS));
+    const panel = await screen.findByRole('tabpanel', { name: 'channels' });
+    await waitFor(() => expect(within(panel).getByRole('region', { name: 'Midgard' })).toHaveTextContent('This server did not load (E_NETWORK).'));
+    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    expect(within(screen.getByRole('tabpanel', { name: 'direct messages' })).getByRole('button', { name: 'bob' })).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: 'channels' }));
+    expect(screen.getByRole('button', { name: 'try again' })).toBeInTheDocument();
+  });
   it('says when there are none', async () => {
     const { user } = setup(`/c/${A}/${GEN}`, { before: f => f.set('dms', []) });
     await user.click(screen.getByRole('tab', { name: 'direct messages' }));

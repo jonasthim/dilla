@@ -13,6 +13,9 @@ export interface ChannelListProps {
   rowLabel?(c: { name: string; unread: number; mentions: number; muted: boolean }): string;
   tabs?: ReactNode;
   footer?: ReactNode;
+  /** Shown in place of the rows (and the empty label), inside the tab panel when there are tabs: a server that did
+   *  not load, or no server at all, while the tabs stay (WORKER-WEB-02, A11Y-DESIGN-02). */
+  content?: ReactNode;
 }
 
 /**
@@ -22,12 +25,13 @@ export interface ChannelListProps {
  * report (an unread count, mentions, or muted) is named by `rowLabel` when one
  * is given; a quiet row keeps its bare name. With `tabs`, the tabs sit between
  * the heading and a tab panel named like the list; an optional footer ends the
- * list, outside the roving group.
+ * list, outside the roving group. `content`, when given, stands in place of the
+ * rows inside the panel.
  */
-export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer }: ChannelListProps) {
+export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content }: ChannelListProps) {
   const activeIndex = channels.findIndex(c => c.id === activeId);
   const roving = useRovingFocus(activeIndex);
-  const body = channels.length === 0 ? (
+  const body = content !== undefined ? content : channels.length === 0 ? (
     <p className="d-channel-list__empty">{emptyLabel}</p>
   ) : (
     <ul role="list" className="d-channel-list__list" ref={roving.ref} onKeyDown={roving.onKeyDown} onFocus={roving.onFocus}>
