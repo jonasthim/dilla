@@ -1,5 +1,5 @@
 // The open conversation: folded rows, navigation, reactions, pins and overlays.
-import { useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { encodeMentions, type MentionMember, type TimelineItem, type TimelineState } from '@dilla/client-core';
 import { Banner, Button, Dialog, DropOverlay, EmojiGrid, MessageLog } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
@@ -83,6 +83,9 @@ export function Conversation(p: ConversationProps): React.JSX.Element {
     if (returnFocus) opener?.focus();
   };
   const jump = (msgId: string) => p.dispatch({ type: 'jump', msgId });
+  // Focusing a reply button on pointer down activates its row. In a narrow log the toolbar then enters the layout
+  // and moves the button before pointer up, so no click reaches it. The jump itself supplies the focus target.
+  const keepJumpPointerStable = (e: PointerEvent<HTMLButtonElement>) => e.preventDefault();
 
   useEffect(() => {
     if (deleteFor !== null || deleted.current === null) return;
@@ -202,7 +205,7 @@ export function Conversation(p: ConversationProps): React.JSX.Element {
         active={item.key === active} flash={item.key === flashKey} editing={p.ui.editing?.msgId === item.msgId ? p.ui.editing.value : null}
         editMeasure={v => new TextEncoder().encode(encodeMentions(v, p.encodeWith, p.broadcast)).length}
         rowRef={el => { if (el) rowEls.current.set(item.key, el); else rowEls.current.delete(item.key); }}
-        onEvent={onRowEvent} onEditChange={value => p.dispatch({ type: 'editChange', value })}
+        onEvent={onRowEvent} onJumpPointerDown={keepJumpPointerStable} onEditChange={value => p.dispatch({ type: 'editChange', value })}
         onEditSave={value => {
           if (value.trim() === '') return;
           const start = editableText(item.body, p.book);

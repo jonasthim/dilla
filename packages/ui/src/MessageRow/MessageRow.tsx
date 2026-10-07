@@ -1,4 +1,4 @@
-import { useId, type KeyboardEvent, type ReactNode, type Ref } from 'react';
+import { useId, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { Tag } from '../Tag/Tag.tsx';
 import { Button } from '../Button/Button.tsx';
@@ -22,6 +22,7 @@ export interface MessageRowProps {
   pinnedLabel?: string;
   reply?: {
     label: string; author: string; excerpt: string; state: 'ok' | 'missing' | 'deleted'; stateText?: string; jumpLabel: string; onJump?(): void;
+    onJumpPointerDown?(e: PointerEvent<HTMLButtonElement>): void;
   };
   attachments?: ReactNode;
   reactions?: ReactNode;
@@ -59,7 +60,7 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
     // Named by its visible text (WCAG 2.5.3), described by the label and the jump hint: no aria-label.
     line = (
       <button type="button" className="d-message-row__reply-jump" tabIndex={tabIndex} aria-describedby={`${labelId} ${jumpId}`}
-        onClick={() => reply.onJump?.()}>
+        onPointerDown={reply.onJumpPointerDown} onClick={() => reply.onJump?.()}>
         {glyph}{author}{' '}{reply.state === 'ok' ? excerpt : stateText}
       </button>
     );

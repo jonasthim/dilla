@@ -1,5 +1,5 @@
 // One folded timeline item, with its controls and focus hand-off.
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, type PointerEvent } from 'react';
 import type { TimelineItem, TimelineItemState } from '@dilla/client-core';
 import { MessageEditor, MessageRow, MessageToolbar, ReactionBar } from '@dilla/ui';
 import { reactionName } from '../../emoji.ts';
@@ -30,6 +30,7 @@ export type RowEvent =
 
 export interface MessageItemProps { item: TimelineItem; channelId: string; book: NameBook; now: number; active: boolean; flash: boolean;
   editing: string | null; editMeasure(v: string): number; rowRef(el: HTMLElement | null): void;
+  onJumpPointerDown(e: PointerEvent<HTMLButtonElement>): void;
   onEvent(item: TimelineItem, ev: RowEvent): void; onEditChange(v: string): void; onEditSave(v: string): void; onEditCancel(): void;
   onOpenImage(index: number, opener: HTMLElement): void; onError(e: unknown): void }
 
@@ -75,6 +76,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     stateText: reply.state === 'ok' ? undefined : t(reply.state === 'missing' ? 'shell.message.replyMissing' : 'shell.message.replyDeleted'),
     jumpLabel: t('shell.message.replyJump'),
     onJump: reply.state === 'missing' ? undefined : () => emit({ kind: 'jump', msgId: reply.msgId }),
+    onJumpPointerDown: (e: PointerEvent<HTMLButtonElement>) => p.onJumpPointerDown(e),
   };
   return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={messageTime(item.ts, p.now)} body={shown ? bodyParts(item.body, p.book) : ''}
     own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}

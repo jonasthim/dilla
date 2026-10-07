@@ -225,6 +225,17 @@ describe('the reply line and the jump (brief:186)', () => {
     delete (Element.prototype as unknown as Record<string, unknown>).scrollIntoView;
     delete (window as unknown as Record<string, unknown>).matchMedia;
   });
+  it('keeps a pointer press on the reply jump from activating and moving the log before release', () => {
+    renderConversation({ items: [peerRow(P1, '1', 'the original'), ownRow(O1, '2', 'my answer', { reply: reply() })] });
+    const jump = replyButton(rowOf(O1));
+    composer().focus();
+    const down = new Event('pointerdown', { bubbles: true, cancelable: true });
+    jump.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+    expect(composer()).toHaveFocus();
+    fireEvent.click(jump);
+    expect(rowOf(P1)).toHaveFocus();
+  });
   it('jumps to a loaded original, focuses it and flashes it for 1.4 s', () => {
     vi.useFakeTimers();
     renderConversation({ items: [peerRow(P1, '1', 'the original'), ownRow(O1, '2', 'my answer', { reply: reply() })] });
