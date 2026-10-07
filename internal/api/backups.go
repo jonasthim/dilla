@@ -28,6 +28,13 @@ const (
 
 var errRootStored = errors.New("api: a different root object is stored")
 
+// errAttachmentBytes and errBackupBytes keep backup objects and attachments disjoint (branch review
+// BACKUPS-RECOVERY-05): each refuses, with 409, bytes the other kind already names.
+var (
+	errAttachmentBytes = errors.New("api: an attachment references these bytes")
+	errBackupBytes     = errors.New("api: a backup object names these bytes")
+)
+
 func backupPath(r *http.Request) (kind int32, limit int64, err error) {
 	if r.PathValue("chunk_seq") != "0" {
 		return 0, 0, server.Errorf(server.CodeNotFound, "no such backup")
@@ -177,6 +184,16 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		if tomb {
 			return errTombstoned
 		}
+		// Backup objects and attachments never share bytes (branch review BACKUPS-RECOVERY-05): a
+		// sender chooses every byte of an attachment's ciphertext, so one shaped as a state object and
+		// also stored as a backup made the admin purge refuse it and its channel references survive.
+		refs, err := tx.CountBlobRefs(ctx, blobID)
+		if err != nil {
+			return err
+		}
+		if refs > 0 {
+			return errAttachmentBytes
+		}
 		if err := tx.ClearBlobUnreferenced(ctx, blobID); err != nil {
 			return err
 		}
@@ -248,6 +265,12 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 				d.logf(r, "api: remove purged bytes a backup rewrote", "err", derr)
 			}
 			server.WriteError(w, errPruned())
+			return
+		}
+		if errors.Is(err, errAttachmentBytes) {
+			// The bytes are an attachment's, referenced and so kept; nothing to orphan.
+			server.WriteError(w, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
+				"these bytes are an attachment; a backup object cannot share them")))
 			return
 		}
 		if created {

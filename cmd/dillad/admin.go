@@ -963,13 +963,16 @@ func adminBlob(verb string, args []string, stdout, stderr io.Writer) error {
 					// The CLI is the operator, not a users row: By is the zero id, so the audit row
 					// names no actor, exactly as every other verb's does.
 					res, err := blob.Purge(ctx, e.repo, bs, blob.PurgeRequest{BlobID: blobID, Reason: *reason, At: e.now()})
-					if errors.Is(err, blob.ErrBackupObject) {
-						// A user's sealed backup object, not an attachment: the root is written once,
-						// so a tombstone would make that account's recovery impossible.
-						return fmt.Errorf("purge %s: a backup object names these bytes; purging them would make the user's backup unrecoverable: %w", *idFlag, exit.Data)
-					}
 					if err != nil {
 						return fmt.Errorf("purge %s: %w: %w", *idFlag, err, exit.Software)
+					}
+					if res.BackupKept {
+						// A user's sealed backup object, not an attachment: the root is written once,
+						// so a tombstone would make that account's recovery impossible. Every channel
+						// reference is still gone (BACKUPS-RECOVERY-05; this was exit 65 before).
+						e.log.Info("blob references purged; a backup object keeps the bytes", "blob_id", *idFlag)
+						fmt.Fprintf(e.out, "removed every channel reference to blob %s; a backup object names these bytes, so they are kept and not tombstoned\n", *idFlag)
+						return nil
 					}
 					if res.UnlinkErr != nil {
 						fmt.Fprintf(e.errw, "dillad admin blob purge: the row and every reference are gone, but unlinking the file failed: %v\n"+

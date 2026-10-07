@@ -240,6 +240,17 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 		if tomb {
 			return errTombstoned
 		}
+		// Attachments and backup objects never share bytes (branch review
+		// BACKUPS-RECOVERY-05): a channel reference to bytes a backup names would
+		// be one the admin purge has to leave the bytes of, and the uploader
+		// chooses every byte of an attachment's ciphertext.
+		backup, err := tx.BackupRefersToBlob(r.Context(), blobID)
+		if err != nil {
+			return err
+		}
+		if backup {
+			return errBackupBytes
+		}
 		// P2-D16, gap-47 §8.3: a reference created inside the grace window saves
 		// the blob from the sweeper.
 		if err := tx.ClearBlobUnreferenced(r.Context(), blobID); err != nil {
@@ -272,6 +283,12 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 					"blob_id", hex.EncodeToString(blobID), "err", derr)
 			}
 			server.WriteError(w, errPruned())
+			return
+		}
+		if errors.Is(err, errBackupBytes) {
+			// The bytes are a backup object's and stay as they are: nothing to orphan.
+			server.WriteError(w, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
+				"these bytes are a backup object; an attachment cannot share them")))
 			return
 		}
 		if created {

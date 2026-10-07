@@ -33,19 +33,20 @@ type PurgeRequest struct {
 	At     int64
 }
 
-// ErrBackupObject refuses a purge of bytes a backups row names (security review F10). A backup
-// object is a user's sealed key material, not an attachment: the root object is written once, so
-// tombstoning its bytes would make the user's root unreadable and its re-upload 410, and the
-// account's recovery would be gone for good. Nothing is written: no tombstone, no audit row.
-var ErrBackupObject = errors.New("blob: a backup object names these bytes")
-
-// PurgeResult reports the half of a purge that can fail after the commit.
+// PurgeResult reports what a purge did beyond removing the references.
 type PurgeResult struct {
 	// UnlinkErr is the error from unlinking the file. The row and every
 	// reference are already gone and the tombstone refuses the bytes on every
 	// route, so a file left behind is unreachable; `dillad doctor` reports it
 	// as an orphan. It is nil when the file was removed or was never there.
 	UnlinkErr error
+	// BackupKept reports that a backups row names the bytes (security review F10, branch review
+	// BACKUPS-RECOVERY-05). A backup object is a user's sealed key material: the root object is
+	// written once, so tombstoning its bytes would make the user's root unreadable and its
+	// re-upload 410, and the account's recovery would be gone for good. The purge then still
+	// deleted every channel reference and wrote its audit row, but wrote no tombstone, kept the
+	// blobs row and did not unlink the file.
+	BackupKept bool
 }
 
 // Purge is the one implementation behind DELETE /v1/admin/blobs/{blob_id} and
@@ -70,32 +71,38 @@ func Purge(ctx context.Context, repo store.Repository, bs *Store, req PurgeReque
 		actor = &by
 	}
 	target := hex.EncodeToString(req.BlobID)
+	var backup bool
 	if err := repo.Tx(ctx, func(tx store.Repository) error {
-		// Inside the transaction that would write the tombstone, so the answer is the one the
+		// Inside the transaction that removes the references, so the answer is the one the
 		// commit acts on.
-		backup, err := tx.BackupRefersToBlob(ctx, req.BlobID)
+		var err error
+		backup, err = tx.BackupRefersToBlob(ctx, req.BlobID)
 		if err != nil {
 			return err
 		}
-		if backup {
-			return ErrBackupObject
-		}
-		if err := tx.PutBlobTombstone(ctx, req.BlobID, req.Reason, req.By, req.At); err != nil {
-			return err
-		}
-		// DeleteAllBlobRefs returns (int64, error) - P2-D18 - so the count is
-		// discarded explicitly.
+		// Every reference goes whatever else names the bytes ("Purge removes every reference to the
+		// blob in every channel"); before BACKUPS-RECOVERY-05 bytes a backup named refused the
+		// whole purge, so an attachment shaped as a backup object stayed downloadable.
+		// DeleteAllBlobRefs returns (int64, error) - P2-D18 - so the count is discarded explicitly.
 		if _, err := tx.DeleteAllBlobRefs(ctx, req.BlobID); err != nil {
 			return err
 		}
-		if err := tx.DeleteBlob(ctx, req.BlobID); err != nil && !errors.Is(err, store.ErrNotFound) {
-			return err
+		if !backup {
+			if err := tx.PutBlobTombstone(ctx, req.BlobID, req.Reason, req.By, req.At); err != nil {
+				return err
+			}
+			if err := tx.DeleteBlob(ctx, req.BlobID); err != nil && !errors.Is(err, store.ErrNotFound) {
+				return err
+			}
 		}
 		return tx.Audit(ctx, store.AuditRow{
 			Actor: actor, Action: "blob.purge", Target: target, Detail: req.Reason, At: req.At,
 		})
 	}); err != nil {
 		return PurgeResult{}, err
+	}
+	if backup {
+		return PurgeResult{BackupKept: true}, nil
 	}
 	return PurgeResult{UnlinkErr: bs.Delete(req.BlobID)}, nil
 }

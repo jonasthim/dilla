@@ -1009,12 +1009,16 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
   `GET` or `HEAD` of those bytes is `410 E_PRUNED`. Without the tombstone, content addressing would
   hand the purged name straight back to anyone still holding the ciphertext. Purging bytes the
   instance does not hold still records the tombstone, so the table is also the operator's
-  blocklist; a second purge of the same bytes is `204`. Bytes a stored backup object names
-  (§ Backups) are refused with `409 E_INVALID_REQUEST` and nothing is written, no tombstone and no
-  audit row: the root object is written once, so a tombstone on its bytes would leave the account
-  with a root it can neither read nor store again, and no recovery (`dillad admin blob purge`
-  refuses them too, exit 65). A replaced state object's bytes are no longer named and can be
-  purged. `reason` is 1..1024 bytes with no NUL and
+  blocklist; a second purge of the same bytes is `204`. For bytes a stored backup object names
+  (§ Backups) the purge still removes every channel reference and writes its audit row, and
+  answers `204`, but records no tombstone, keeps the blob and does not unlink the file: the root
+  object is written once, so a tombstone on its bytes would leave the account with a root it can
+  neither read nor store again, and no recovery (`dillad admin blob purge` does the same and says
+  the bytes were kept). Backup objects and attachments never share bytes: a backup `PUT` of bytes
+  a channel references, and an attachment `PUT` of bytes a backup object names, are
+  `409 E_INVALID_REQUEST`, decided in the transaction that would record them, so this case arises
+  only from data stored before the rule. A replaced state object's bytes are no longer named and
+  can be purged. `reason` is 1..1024 bytes with no NUL and
   becomes the audit row's `detail` under the action `blob.purge`, whose `target` is the blob id in
   hex. A purge removes **bytes, not content**: every attachment is encrypted under its own random
   key, so the same file sent again by anyone has a different `blob_id`.
