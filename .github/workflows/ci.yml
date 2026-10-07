@@ -52,15 +52,18 @@ jobs:
           npx concurrently -k -s first -n SB,TEST \
             "npx http-server packages/ui/storybook-static --port 6006 --silent" \
             "npx wait-on tcp:127.0.0.1:6006 && npm run test:storybook -w packages/ui -- --url http://127.0.0.1:6006"
-      # F16 (web-1, web-2a): every story of the components and of the composed onboarding, sign-in, settings and
-      # shell screens (titles Form/, Ceremony/, Shell/, Conversation/, Settings/, Screens/, Primitives/ChannelRow)
-      # in mesh, light and high-contrast, for the founder's review: three PNGs per story. The script fails when a prefix matches no story.
-      - name: Screenshots of the web-1 and web-2a components and screens in the three themes
-        run: node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2a form- ceremony- shell- conversation- settings- screens- primitives-channelrow--
+      # F16 (web-1, web-2a, web-2b): every story of the components and of the composed onboarding, sign-in, settings,
+      # shell and conversation screens (titles Form/, Ceremony/, Shell/, Conversation/, Settings/, Screens/,
+      # Primitives/ChannelRow; web-2b's toolbar, reactions, editor, reply chip, mention list, pins, tray, cards,
+      # lightbox and Screens/Conversation among them) in mesh, light and high-contrast, for the founder's review:
+      # three PNGs per story. The script fails when a prefix matches no story; the last three prefixes match only
+      # web-2b stories (Conversation/MessageToolbar, Conversation/AttachmentCard, Screens/Conversation).
+      - name: Screenshots of the web-1, web-2a and web-2b components and screens in the three themes
+        run: node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2b form- ceremony- shell- conversation- settings- screens- primitives-channelrow-- conversation-messagetoolbar-- conversation-attachmentcard-- screens-conversation--
       - uses: actions/upload-artifact@v7
         with:
           name: ui-screens
-          path: target/ui-screens/web-2a
+          path: target/ui-screens/web-2b
           if-no-files-found: error
   rust-wasm-node:
     runs-on: ubuntu-latest
@@ -285,11 +288,11 @@ jobs:
     runs-on: ubuntu-latest
     # C18: the core-worker suite and the web suite against the test host serving the build same-origin,
     # with the native testkit peer. The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget (ruling 41, L-CI-11): max(30, ceil(5 x (0.3 + 1.9 + 3.0)) + 10) = 36,
-    # from task 22's local wall times: 0.3 min core-worker suite and 1.9 min Chromium+Firefox web suite,
-    # including enrolment and badges, plus the 3.0 min WebKit allowance of web-1 (signup and reload only).
+    # Budget (ruling 41, L-CI-21): max(30, ceil(5 x (0.5 + 2.6 + 3.0)) + 10) = 41,
+    # from web-2b task 10's local wall times: 0.5 min core-worker suite and 2.6 min Chromium+Firefox web suite,
+    # conversation included, plus the 3.0 min WebKit allowance of web-1 (signup and reload only).
     # Measured 2026-10-07. The 10 min covers npm and all installs.
-    timeout-minutes: 36
+    timeout-minutes: 41
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/checkout@v7
