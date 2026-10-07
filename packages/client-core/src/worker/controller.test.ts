@@ -2742,6 +2742,44 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     expect(w.core.purges.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('stops a purge after an in-flight message delete when this device is revoked', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.purges = [purge(10n, [B1, B2])];
+    const gate = deferred<'deleted' | 'gone'>();
+    w.routes.deleteGroupMessage.mockImplementationOnce(() => gate.promise);
+    w.sync.deps!.onOutboxChanged(GROUP);
+    await vi.waitFor(() => expect(w.routes.deleteGroupMessage).toHaveBeenCalledTimes(1));
+    w.session.establish.mockResolvedValueOnce(false);
+    w.gateway.emit({ type: 'revoked' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('revoked'));
+    gate.resolve('deleted');
+    await settle();
+    expect(w.routes.deleteBlob).not.toHaveBeenCalled();
+    expect(w.core.purgeDone).not.toHaveBeenCalled();
+    expect(w.state.purges).toHaveLength(1);
+  });
+
+  it('stops a purge after an in-flight blob delete when this device is revoked', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.purges = [purge(11n, [B1, B2])];
+    const gate = deferred<void>();
+    w.routes.deleteBlob.mockImplementationOnce(() => gate.promise);
+    w.sync.deps!.onOutboxChanged(GROUP);
+    await vi.waitFor(() => expect(w.routes.deleteBlob).toHaveBeenCalledTimes(1));
+    w.session.establish.mockResolvedValueOnce(false);
+    w.gateway.emit({ type: 'revoked' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('revoked'));
+    gate.resolve();
+    await settle();
+    expect(w.routes.deleteBlob).toHaveBeenCalledTimes(1);
+    expect(w.core.purgeDone).not.toHaveBeenCalled();
+    expect(w.state.purges).toHaveLength(1);
+  });
+
   it('loadPins publishes the pins and keeps them fresh until closePins', async () => {
     const w = world();
     await toReady(w);

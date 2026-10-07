@@ -353,6 +353,29 @@ describe('octet-stream bodies (L-HTTP-91)', () => {
 });
 
 describe('bounded bodies (FACTS-SECURITY-13)', () => {
+  it('stops reading an oversized 404 error body at the error cap', async () => {
+    const t = fakeTransport();
+    let pulls = 0;
+    const stream = new ReadableStream<Uint8Array>({ pull(controller) {
+      pulls++;
+      controller.enqueue(new Uint8Array(16 * 1024));
+      if (pulls === 8) controller.close();
+    } }, { highWaterMark: 0 });
+    t.replies.push(new Response(stream, { status: 404 }));
+    await expect(new HttpClient(t.deps).request({ ...GET_READ, ok: [200, 404], maxBodyBytes: 32 }))
+      .rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE', status: 404 });
+    expect(pulls).toBe(5);
+    expect(t.seen).toHaveLength(1);
+  });
+
+  it('does not retry an oversized 500 error body on an idempotent request', async () => {
+    const t = fakeTransport();
+    t.replies.push(new Response(new Uint8Array(64 * 1024 + 1), { status: 500 }));
+    await expect(new HttpClient(t.deps).request(GET_READ))
+      .rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE', status: 500 });
+    expect(t.seen).toHaveLength(1);
+    expect(t.sleeps).toEqual([]);
+  });
   it('refuses a body over maxBodyBytes by its Content-Length, once, without retrying', async () => {
     const t = fakeTransport();
     t.replies.push(new Response(new Uint8Array(33), { status: 200, headers: { 'Content-Length': '33' } }));

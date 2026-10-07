@@ -79,6 +79,7 @@ interface Case {
   accept?: string;
   sent: Uint8Array | null;
   reply(): Response;
+  afterReply?: () => Response;
   expected: unknown;
 }
 
@@ -378,7 +379,7 @@ const CASES: Case[] = [
 {
   name: 'deleteGroupMessage answers gone for a 404', call: (r) => r.deleteGroupMessage(GROUP, 12n),
   method: 'DELETE', path: `/v1/groups/${hex(GROUP)}/messages/12`, bucket: 'write', idempotent: true, auth: true, sent: null,
-  reply: () => refusal(404, 'E_NOT_FOUND', 'no such object'), expected: 'gone',
+  reply: () => refusal(404, 'E_NOT_FOUND', 'no such object'), afterReply: () => cborReply(200, []), expected: 'gone',
 },
 {
   name: 'putBlob of new bytes', call: (r) => r.putBlob(CHANNEL, BLOB_ID, STORED),
@@ -422,8 +423,9 @@ describe('Routes: one request per call, decoded as the server answers it', () =>
     it(c.name, async () => {
       const { t, http, routes } = setup();
       t.replies.push(c.reply());
+      if (c.afterReply) t.replies.push(c.afterReply());
       expect(await c.call(routes)).toEqual(c.expected);
-      expect(t.seen).toHaveLength(1);
+      expect(t.seen).toHaveLength(c.afterReply ? 2 : 1);
       const s = t.seen[0];
       expect(s.method).toBe(c.method);
       expect(s.url).toBe(`https://dilla.test${c.path}`);
@@ -518,6 +520,24 @@ describe('Routes: a refusal propagates unchanged and is sent once', () => {
     t.replies.push(refusal(401, 'E_UNAUTHENTICATED'));
     await routes.postSession(DEVICE, BODY).then(() => 'resolved', (e: unknown) => e);
     expect(t.reauthCalls).toBe(0);
+  });
+});
+
+describe('deleteGroupMessage membership check', () => {
+  it('accepts E_PRUNED from the member-only read as proof of membership', async () => {
+    const { t, routes } = setup();
+    t.replies.push(refusal(404, 'E_NOT_FOUND'), refusal(410, 'E_PRUNED'));
+    await expect(routes.deleteGroupMessage(GROUP, 12n)).resolves.toBe('gone');
+    expect(t.seen).toHaveLength(2);
+  });
+  it('retains a 404 when the current member-only message read also returns 404', async () => {
+    const { t, routes } = setup();
+    t.replies.push(refusal(404, 'E_NOT_FOUND'), refusal(404, 'E_NOT_FOUND'));
+    await expect(routes.deleteGroupMessage(GROUP, 12n)).rejects.toMatchObject({ status: 404, code: 'E_NOT_FOUND' });
+    expect(t.seen.map((s) => [s.method, s.url])).toEqual([
+      ['DELETE', `https://dilla.test/v1/groups/${hex(GROUP)}/messages/12`],
+      ['GET', `https://dilla.test/v1/groups/${hex(GROUP)}/messages?from=0&limit=1`],
+    ]);
   });
 });
 

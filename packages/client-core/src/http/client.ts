@@ -29,6 +29,7 @@ export interface HttpDeps {
   onGeneration(generation: bigint): void;
 }
 export const RETRY = { maxAttempts: 5, baseMs: 500, capMs: 8000, jitterMs: 250, maxWaitMs: 60000 } as const;
+const ERROR_BODY_CAP = 64 * 1024;
 const abort = (): DOMException => new DOMException('The operation was aborted.', 'AbortError');
 
 export class HttpClient {
@@ -101,13 +102,15 @@ export class HttpClient {
 }
 
 async function readBody(response: Response, maxBodyBytes?: number): Promise<Uint8Array> {
-  if (maxBodyBytes === undefined || response.status < 200 || response.status > 299) {
+  const bound = response.status >= 200 && response.status <= 299
+    ? maxBodyBytes : Math.max(ERROR_BODY_CAP, maxBodyBytes ?? 0);
+  if (bound === undefined) {
     return new Uint8Array(await response.arrayBuffer());
   }
   const tooLarge = (): DillaHttpError => new DillaHttpError({ status: response.status, code: 'E_BODY_TOO_LARGE',
-    detail: 'the response body is larger than ' + maxBodyBytes + ' bytes', retryAfterMs: null, extra: [] });
+    detail: 'the response body is larger than ' + bound + ' bytes', retryAfterMs: null, extra: [] });
   const length = response.headers.get('Content-Length');
-  if (length !== null && /^\d+$/.test(length) && Number(length) > maxBodyBytes) {
+  if (length !== null && /^\d+$/.test(length) && Number(length) > bound) {
     await response.body?.cancel();
     throw tooLarge();
   }
@@ -119,7 +122,7 @@ async function readBody(response: Response, maxBodyBytes?: number): Promise<Uint
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > maxBodyBytes) { await reader.cancel(); throw tooLarge(); }
+    if (total > bound) { await reader.cancel(); throw tooLarge(); }
     chunks.push(value);
   }
   const result = new Uint8Array(total);

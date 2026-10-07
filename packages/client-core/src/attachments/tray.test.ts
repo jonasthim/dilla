@@ -143,4 +143,13 @@ describe('Tray (L-TS-32, ruling 7)', () => {
     expect(h.tray.entries().map((e) => e.id)).toEqual([bad]);
     expect(() => h.tray.take(['99'])).toThrow('E_TRAY_NOT_READY');
   });
+
+  it('refuses a duplicate tray id without consuming another ready file', async () => {
+    const h = harness();
+    const [a, b] = await h.tray.add([text('one'), text('two')]);
+    expect(() => h.tray.take([a, a])).toThrow('E_TRAY_NOT_READY');
+    expect(h.tray.entries().map((entry) => entry.id)).toEqual([a, b]);
+    expect(h.tray.take([b]).map((d) => toHex(d.blobId))).toEqual([h.puts[1].blobId]);
+    expect(h.tray.entries().map((entry) => entry.id)).toEqual([a]);
+  });
 });

@@ -1865,12 +1865,14 @@ export class Controller {
         const group = core.groupRow(row.groupId);
         if (group === null || group.state !== 2) continue;
         await this.routes.deleteGroupMessage(row.groupId, row.seq);          // 'deleted' and 'gone' are both done
+        if (!this.purgeable(core)) return;
         for (const blobId of row.blobIds) {
           try { await this.routes.deleteBlob(row.channelId, blobId); }
           catch (e) {
             // 403: the reference is not this user's (another uploader's file); nothing of ours is left to delete.
             if (!(e instanceof DillaHttpError && e.status === 403)) throw e;
           }
+          if (!this.purgeable(core)) return;
         }
         if (!this.purgeable(core)) return;
         core.purgeDone(row.groupId, row.seq);

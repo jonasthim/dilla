@@ -2,6 +2,7 @@
 import { CborError, arr, bin, decode, encode, opt, str, u53, u64, type CborValue } from '../cbor';
 import { toHex } from '../hex';
 import { HttpClient, type Bucket, type HttpRequest } from './client';
+import { DillaHttpError } from './errors';
 
 export const MEMBERS_PAGE = 200;
 export const HANDSHAKES_MAX = 512;
@@ -295,7 +296,16 @@ export class Routes {
   async deleteGroupMessage(groupId: Uint8Array, seq: bigint): Promise<'deleted' | 'gone'> {
     const response = await this.http.request({ method: 'DELETE', path: `/v1/groups/${id('groupId', groupId)}/messages/${count('seq', seq)}`,
       bucket: 'write', idempotent: true, ok: [204, 404] });
-    return response.status === 204 ? 'deleted' : 'gone';
+    if (response.status === 204) return 'deleted';
+    // The DS also says 404 when this device lost membership. A member-only read distinguishes that refusal from
+    // an absent message, so a purge is not marked done after a removal that raced the DELETE.
+    try {
+      await this.getMessages(groupId, 0n, 1);
+    } catch (error) {
+      // The DS checks membership before its retention floor, so E_PRUNED also proves membership.
+      if (!(error instanceof DillaHttpError && error.status === 410 && error.code === 'E_PRUNED')) throw error;
+    }
+    return 'gone';
   }
   async putBlob(channelId: Uint8Array, blobId: Uint8Array, stored: Uint8Array): Promise<{ created: boolean; size: number }> {
     const response = await this.http.request({ method: 'PUT', path: blobPath(channelId, blobId), body: stored,

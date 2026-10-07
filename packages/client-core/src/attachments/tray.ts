@@ -86,6 +86,7 @@ export class Tray {
     if (entry.uploaded && entry.blobId) await this.cleanup(entry.blobId);
   }
   take(ids: readonly string[]): AttachmentDescriptor[] {
+    if (new Set(ids).size !== ids.length) throw new Error('E_TRAY_NOT_READY');
     const entries = ids.map((id) => this.list.find((e) => e.id === id));
     if (entries.some((e) => !e || e.phase !== 'ready' || !e.descriptor)) throw new Error('E_TRAY_NOT_READY');
     const descriptors = entries.map((e) => e!.descriptor!);
