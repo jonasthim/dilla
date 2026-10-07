@@ -75,6 +75,9 @@ export class Enrol {
       if (err instanceof Error && err.message === 'E_DEVICE_UNLISTED') throw new Error('E_LIST_RACE');
       throw err;
     }
+    // WORKER-WEB-01: the pending token from register is not kept past the list that names this browser, so a
+    // reload or a failed establish after this point finds no session and ensure() establishes an enrolled one.
+    core.sessionClear();
     if (!(await session.establish())) throw new Error('E_SESSION_SCOPE');
     await routes.putBackup(1, stateSealed);
     core.stateSealedUploaded();

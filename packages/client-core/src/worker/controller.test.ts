@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BootOutcome } from '../account/boot';
-import type { Enrol } from '../account/enrol';
-import type { Session } from '../account/session';
+import { Enrol } from '../account/enrol';
+import { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
 import {
   CoreError, type ActivityRow, type ApplyResult, type CorePort, type GroupInfo, type IdentityInfo, type OwnDeviceList, type SealedObjects,
-  type TimelineRow,
+  type SessionRecord, type TimelineRow,
 } from '../core-port';
 import { CLIENT_CLOSE, type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
@@ -18,7 +18,7 @@ import type {
 } from '../state/types';
 import type { SyncDeps, SyncEngine } from '../sync/engine';
 import { SyncError } from '../sync/errors';
-import { Controller, type ControllerDeps } from './controller';
+import { Controller, type ControllerDeps, type ControllerParts } from './controller';
 import type { LockLike, LockManagerLike } from './leader';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
@@ -306,7 +306,11 @@ const FETCHED = { root: ROOT, state: STATE_OBJECT, listBody: LIST_RAW };
 const NOW_S = 1_700_000_000n;
 
 // `now` is an addition to the brief's double (pre-flight ruling (a)): a test of the notice floor moves the clock.
-function world(opts: { phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: boolean; fetch?: typeof fetch; now?: () => number } = {}) {
+// `realAccount` (WORKER-WEB-01) composes the real Session and Enrol over these doubles, so the session record the
+// core keeps decides what ensure() does.
+function world(opts: {
+  phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: boolean; realAccount?: boolean; fetch?: typeof fetch; now?: () => number;
+} = {}) {
   // An account that is already registered (phase 2) is already a member of the community, so that a
   // selectCommunity of it passes pre-flight ruling 1(v); a signup or sign-in world starts outside it.
   const calls: string[] = [];
@@ -316,13 +320,14 @@ function world(opts: { phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: 
     ownList: { version: 1n, published: true, entries: [{ deviceId: DEVICE, dskPub: new Uint8Array(32), tier: 1, addedAt: 1n, revokedAt: null }] } as OwnDeviceList,
     resets: 0, joined: (opts.phase ?? 2) === 2,
     dms: [] as { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[] }[],
+    session: null as SessionRecord | null, listPublished: null as boolean | null,
   };
   /* eslint-disable @typescript-eslint/no-unused-vars -- the typed parameters give the doubles their call signatures */
   const core = {
     identity: (): IdentityInfo => ({
       phase: state.phase, instanceId: INSTANCE_ID,
       userId: state.phase === 2 ? USER : state.phase === 3 ? state.enrolUser : null,
-      deviceId: DEVICE, username: state.phase === 2 ? state.username : '', listPublished: state.phase === 2,
+      deviceId: DEVICE, username: state.phase === 2 ? state.username : '', listPublished: state.listPublished ?? state.phase === 2,
     }),
     signupBegin: (): string => { state.phase = 1; return 'ABCD'.repeat(13); },
     signupReset: (): void => { state.phase = 0; state.resets += 1; },
@@ -340,7 +345,16 @@ function world(opts: { phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: 
     stateSealedUploaded: vi.fn((): void => { calls.push('core.stateSealedUploaded'); }),
     // An addition to the brief's double (task-14 fix round 1): the state object this device sealed, as the core keeps it.
     sealedObjects: vi.fn((): SealedObjects => ({ root: ROOT, state: LOCAL_STATE, stateUploaded: true })),
-    deviceListPublished: vi.fn((): void => { calls.push('core.deviceListPublished'); }),
+    deviceListPublished: vi.fn((): void => { calls.push('core.deviceListPublished'); state.listPublished = true; }),
+    deviceListBody: (): Uint8Array => new Uint8Array([7]),
+    enrolComplete: vi.fn((_input: unknown) => {
+      calls.push('core.enrolComplete'); state.phase = 2; state.listPublished = false;
+      return { deviceListBody: new Uint8Array([7]), stateSealed: new Uint8Array([8]) };
+    }),
+    session: (): SessionRecord | null => state.session,
+    sessionStore: vi.fn((s: SessionRecord): void => { state.session = s; }),
+    sessionClear: vi.fn((): void => { calls.push('core.sessionClear'); state.session = null; }),
+    sessionSign: (_nonce: Uint8Array, _purpose: 0 | 1): Uint8Array => new Uint8Array([0x5e]),
     pause: vi.fn((): void => { calls.push('core.pause'); }),
     close: (): void => {},
   };
@@ -379,6 +393,14 @@ function world(opts: { phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: 
     putBackup: vi.fn((kind: 0 | 1, _object: Uint8Array) => { calls.push(`putBackup(${kind})`); return Promise.resolve({ blobId: new Uint8Array(32), size: 3, created: false }); }),
     getDeviceList: vi.fn((_user: Uint8Array) => { calls.push('getDeviceList'); return Promise.resolve({ version: 1n, blob: new Uint8Array([9]), raw: LIST_RAW }); }),
     putDeviceList: vi.fn((_user: Uint8Array, _body: Uint8Array) => { calls.push('putDeviceList'); return Promise.resolve(); }),
+    postChallenge: vi.fn((_device: Uint8Array) => Promise.resolve({ nonce: new Uint8Array(32), expires: NOW_S + 60n })),
+    postSession: vi.fn((_device: Uint8Array, _body: Uint8Array) => {
+      calls.push('postSession');
+      return Promise.resolve({
+        token: 'enrolled', scope: 0, userId: USER, deviceId: DEVICE, expires: NOW_S + 604_800n,
+        idleExpires: NOW_S + 43_200n, generation: 7n,
+      });
+    }),
   };
   const session = {
     token: (): string => 'session-token',
@@ -417,28 +439,29 @@ function world(opts: { phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: 
   };
   /* eslint-enable @typescript-eslint/no-unused-vars */
   const wiped: string[] = [];
+  const parts: Partial<ControllerParts> = {
+    ...(opts.realRoutes === true ? {} : { routes: () => routes as unknown as Routes }),
+    session: opts.realAccount === true ? (d) => new Session(d) : () => session as unknown as Session,
+    signup: () => signup as unknown as Signup,
+    enrol: opts.realAccount === true ? (d) => new Enrol(d) : () => enrol as unknown as Enrol,
+    gateway: (deps) => { gatewayDeps.value = deps; return gateway as unknown as Gateway; },
+    sync: (deps) => { sync.deps = deps; sync.builds += 1; return sync as unknown as SyncEngine; },
+    publishDeviceList: account.publishDeviceList,
+    ensureBackups: account.ensureBackups,
+    refreshOwnDeviceList: account.refreshOwnDeviceList,
+  };
   const h = harness({
     boot: (instance) => Promise.resolve({ kind: 'opened', core: core as unknown as CorePort, instance }),
     resetDevice: (instance) => { calls.push('resetDevice'); wiped.push(toHex(instance.instanceId)); return Promise.resolve(); },
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
     ...(opts.now ? { now: opts.now } : {}),
-    parts: {
-      ...(opts.realRoutes === true ? {} : { routes: () => routes as unknown as Routes }),
-      session: () => session as unknown as Session,
-      signup: () => signup as unknown as Signup,
-      enrol: () => enrol as unknown as Enrol,
-      gateway: (deps) => { gatewayDeps.value = deps; return gateway as unknown as Gateway; },
-      sync: (deps) => { sync.deps = deps; sync.builds += 1; return sync as unknown as SyncEngine; },
-      publishDeviceList: account.publishDeviceList,
-      ensureBackups: account.ensureBackups,
-      refreshOwnDeviceList: account.refreshOwnDeviceList,
-    },
+    parts,
   });
   // The brief's literal put `account` (the three account-part doubles) after `...h`, which shadowed h.account()
   // (the account slice) that the same tests call; one callable object serves both spellings.
   const accountView = Object.assign((): AccountState | undefined => h.account(), account);
   return {
-    ...h, state, calls, core, routes, session, signup, enrol, account: accountView, gateway, gatewayDeps, sync, wiped,
+    ...h, state, calls, core, routes, session, signup, enrol, account: accountView, gateway, gatewayDeps, sync, wiped, parts,
     channels: () => h.last<ChannelSummary[]>(`channels:${toHex(COMMUNITY)}`),
     timeline: () => h.last<TimelineState>(`timeline:${toHex(CHANNEL)}`),
     badges: () => h.last<Record<string, BadgeState>>('badges'),
@@ -1940,6 +1963,49 @@ describe('Controller task-14 fix round 1', () => {
     expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: false, error: { code: 'E_RECOVERY_KEY', detail: '', status: 0, retryAfterMs: null } });
     expect(w.core.deviceListRevoke).toHaveBeenCalledTimes(1);
     expect(w.core.sealedObjects).not.toHaveBeenCalled();
+  });
+});
+
+// ---- WORKER-WEB-01: an enrolment interrupted after the list publish must not keep the pending session. ----
+
+describe('Controller enrolment interrupted after the list publish (WORKER-WEB-01)', () => {
+  const PENDING: SessionRecord = { token: 'pending', expires: NOW_S + 604_800n, idleExpires: NOW_S + 43_200n };
+  const order = (w: World): string[] =>
+    w.calls.filter((c) => ['putDeviceList', 'core.sessionClear', 'postSession', 'gateway.start'].includes(c));
+
+  it('an establish that fails after the publish: the same tab establishes an enrolled session before the gateway starts', async () => {
+    const w = world({ phase: 3, enrolUser: true, realAccount: true });
+    w.state.session = PENDING;
+    w.routes.postSession.mockImplementationOnce(() => { w.calls.push('postSession'); return Promise.reject(refusal(0, 'E_NETWORK')); });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('signin-key'));
+    w.call(2, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+    expect(w.account()?.phase).toBe('ready');
+    expect(order(w)).toEqual(['putDeviceList', 'core.sessionClear', 'postSession', 'postSession', 'gateway.start']);
+    expect(w.state.session?.token).toBe('enrolled');
+  });
+
+  it('a reload before the establish answered: the next boot establishes an enrolled session before the gateway starts', async () => {
+    const w = world({ phase: 3, enrolUser: true, realAccount: true });
+    w.state.session = PENDING;
+    // The tab goes away while the establish after the publish is in flight: it never answers.
+    w.routes.postSession.mockImplementationOnce(() => { w.calls.push('postSession'); return new Promise(() => {}); });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('signin-key'));
+    w.call(2, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.calls).toContain('postSession'));
+    expect(w.state).toMatchObject({ phase: 2, listPublished: true });
+    w.calls.length = 0;
+    // The reload: a new worker over the same store.
+    const again = harness({
+      boot: (instance) => Promise.resolve({ kind: 'opened', core: w.core as unknown as CorePort, instance }),
+      parts: w.parts,
+    });
+    again.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(again.account()?.phase).toBe('ready'));
+    expect(order(w)).toEqual(['postSession', 'gateway.start']);
+    expect(w.state.session?.token).toBe('enrolled');
   });
 });
 

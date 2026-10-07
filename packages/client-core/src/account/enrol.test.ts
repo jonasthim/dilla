@@ -251,6 +251,23 @@ describe('Enrol', () => {
     expect((await a.routes.getBackup(1))?.object).toEqual(a.core.sealedObjects().state);
   });
 
+  // WORKER-WEB-01: the pending session must not outlive the list that names this browser, or a failed or
+  // interrupted establish leaves a pending token that ensure() keeps for hours.
+  it('drops the pending session once the list is published: a failed establish leaves no session, and ensure establishes an enrolled one', async () => {
+    const a = account();
+    const fetched = await upToKey(a);
+    expect(a.core.session()?.token).toBe('tok-1');
+    a.server.once('POST', `/v1/devices/${B_HEX}/sessions`, 'network');
+    await expect(a.enrol.complete(FAKE_RECOVERY_KEY, fetched, 'ada')).rejects.toMatchObject({ code: 'E_NETWORK' });
+    expect(a.core.identity()).toMatchObject({ phase: 2, listPublished: true });
+    expect(a.core.session()).toBeNull();
+    const steps = ['deviceListPublished', 'sessionClear', 'sessionSign'];
+    expect(a.core.calls.filter((c) => steps.includes(c))).toEqual(['deviceListPublished', 'sessionClear', 'sessionSign']);
+    expect(await a.session.ensure()).toBe(true);
+    expect(a.core.session()?.token).toBe('tok-2');
+    expect(a.server.tokenScope.get('tok-2')).toBe(0);
+  });
+
   it('a wrong recovery key changes nothing, and the right one works after it', async () => {
     const a = account();
     const fetched = await upToKey(a);
