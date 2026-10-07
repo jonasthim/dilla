@@ -148,7 +148,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     run('login', client.call({ m: 'signInLogin', username: username.trim().toLowerCase(), password }), () => setPassword(''));
   };
   const submitTotp = () => {
-    const trimmed = code.trim();
+    // A11Y-DESIGN-06: an authenticator may copy the code grouped ("123 456"); the spaces are not part of it.
+    const trimmed = code.replace(/\s/g, '');
     if (showErrors(trimmed === '' ? { code: 'signin.error.required' } : {})) return;
     setBusy('totp');
     run('totp', client.call({ m: 'signInTotp', code: trimmed }), () => {});
@@ -222,7 +223,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     </>, <>
       <p>{t('signin.totp.body')}</p>
       <TextField id={FIELD_ID.code} label={t('signin.totp.code')} value={code} onChange={change('code', setCode)}
-        error={errorText('code')} required inputMode="numeric" autoComplete="one-time-code" spellCheck={false} maxLength={6} />
+        error={errorText('code')} required inputMode="numeric" autoComplete="one-time-code" spellCheck={false} />
     </>);
   } else if (shown === 'key') {
     const n = normaliseRecoveryKey(key).length;
@@ -239,7 +240,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       <RecoveryKeyField id={FIELD_ID.key} label={t('signin.key.label')} value={key}
         onChange={value => { if (!blocked) onKey(value); }} hint={t('signin.key.hint', { n })} error={errorText('key')} />
       {short ? <p id={LENGTH_ID}>{t('signin.error.keyLength')}</p> : null}
-      {working ? <p role="status">{t('signin.key.working')}</p> : null}
+      {/* A11Y-DESIGN-04: the live region is there before its text, so the text is announced when it arrives. */}
+      <p role="status">{working ? t('signin.key.working') : null}</p>
     </>);
   } else {
     content = form(t('signin.login.title', { instance: name }), 1, <>

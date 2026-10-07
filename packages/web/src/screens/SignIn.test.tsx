@@ -132,6 +132,20 @@ describe('the ceremony', () => {
     expect(fake.callsOf('signInLogin')).toEqual([]);
   });
 
+  it('takes a pasted code its authenticator grouped, without the space (A11Y-DESIGN-06)', async () => {
+    const { fake, user } = setup('signin-totp', worker({ totp: true }), { signIn: { username: 'ada', needsTotp: true } });
+    await user.click(field('Code'));
+    await user.paste('123 456');
+    expect(field('Code')).toHaveValue('123 456');
+    await user.keyboard('{Enter}');
+    expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456' }]);
+  });
+
+  it('keeps the status region in place on step 3, empty until the step works (A11Y-DESIGN-04)', () => {
+    setup('signin-key');
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+  });
+
   it('an empty code shows the required text and sends nothing', async () => {
     const { fake, user } = setup('signin-totp', worker({ totp: true }), { signIn: { username: 'ada', needsTotp: true } });
     await user.click(button('Continue'));

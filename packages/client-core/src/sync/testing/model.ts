@@ -378,7 +378,8 @@ export class ModelCore implements CorePort {
       .map((g) => {
         const lastReadSeq = this.readState.get(toHex(g.groupId))?.lastReadSeq ?? 0n;
         const rows = [...g.rows.values()].filter((r) => r.status === 0 && r.type === 0 &&
-          (r.senderUser === null || !same(r.senderUser, this.me.user)) && r.seq > lastReadSeq).sort(bySeq);
+          // The core's `sender_user <> ?1` excludes a NULL sender, as SQL does (CORE-ENGINE-03).
+          r.senderUser !== null && !same(r.senderUser, this.me.user) && r.seq > lastReadSeq).sort(bySeq);
         const last = rows[rows.length - 1];
         return { groupId: g.groupId, unread: rows.length, mentions: rows.filter((r) => this.mentionsMe(r.body)).length,
           lastSeq: last?.seq ?? 0n, lastTs: last?.recvTs ?? 0n, lastReadSeq };
@@ -425,8 +426,9 @@ export class ModelCore implements CorePort {
     g.proposals.clear();
     g.pending = null;
     if (g.fromResync) {
+      // As the core writes it (groups.rs: state 3, epoch 0): the old group state was already replaced (CORE-ENGINE-03).
       g.state = 3;
-      g.epoch = g.preJoinEpoch;
+      g.epoch = 0n;
       g.fromResync = false;
     } else if (g.wasGone) {
       // A rejoin of a gone row that did not complete: back to gone with its timeline, outbox,
