@@ -1,6 +1,7 @@
 //! Prepared sends, delivery confirmation, outbox and timeline reads.
 
 use super::error::{E_CORE_INPUT, E_CORE_MLS, E_CORE_NOT_FOUND, E_CORE_STATE, E_CORE_STORAGE};
+use super::fold::{self, FoldTrigger};
 use super::groups::{STATE_ACTIVE, STATE_GONE, checked, group_row};
 use super::{ClientCore, ClientError, Own, wire};
 use crate::cbor::Encoder;
@@ -35,6 +36,7 @@ pub(super) struct StoredMessage<'a> {
     pub sender_tier: Option<u8>,
     pub msg_id: Option<&'a [u8; 16]>,
     pub ty: Option<u8>,
+    pub reply_to: Option<&'a [u8; 16]>,
     pub body: &'a str,
     pub envelope: Option<&'a [u8]>,
     pub franking_tag: &'a [u8; 32],
@@ -47,8 +49,8 @@ pub(super) fn insert_message(
     c.execute(
         "INSERT INTO app_messages \
          (group_id,seq,epoch,recv_ts,status,reason,sender_user,sender_device, \
-          sender_leaf,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag,mention) \
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+          sender_leaf,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag,mention,reply_to) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
         params![
             m.group_id.as_slice(),
             m.seq as i64,
@@ -67,8 +69,42 @@ pub(super) fn insert_message(
             m.envelope,
             m.franking_tag.as_slice(),
             i64::from(m.mention),
+            m.reply_to.map(|v| v.as_slice()),
         ],
     )?;
+    Ok(())
+}
+
+pub(super) fn refold_insert(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    seq: u64,
+    env: &Envelope,
+    sender_user: &[u8; 16],
+    sender_device: &[u8; 16],
+    own: Option<&Own>,
+) -> Result<(), StorageError> {
+    let ty = env.kind.as_u8();
+    let target = fold::target_of(
+        Some(i64::from(ty)),
+        Some(*env.msg_id.as_bytes()),
+        env.reply_to.as_ref().map(|m| *m.as_bytes()),
+    );
+    if let Some(target) = target {
+        fold::refold(
+            c,
+            group_id,
+            &target,
+            &fold::scope_of(Some(i64::from(ty)), Some(*sender_user), &env.body),
+            Some(&FoldTrigger {
+                seq,
+                ty,
+                sender_user: *sender_user,
+                sender_device: *sender_device,
+            }),
+            own,
+        )?;
+    }
     Ok(())
 }
 #[allow(dead_code)] // The creation time is part of the persisted row for later sync operations.
@@ -199,6 +235,7 @@ fn own_message<'a>(
         sender_tier: Some(own.tier),
         msg_id: Some(env.msg_id.as_bytes()),
         ty: Some(env.kind.as_u8()),
+        reply_to: env.reply_to.as_ref().map(MsgId::as_bytes),
         body: &env.body,
         envelope: Some(bytes),
         franking_tag: tag,
@@ -217,6 +254,15 @@ pub fn mentions_me(body: &str, user_id: &[u8; 16]) -> bool {
     // (`str::contains` would add its two-way searcher to the browser build.)
     let has = |n: &[u8]| body.as_bytes().windows(n.len()).any(|w| w == n);
     has(&mention_needle(user_id)) || has(b"<@everyone>") || has(b"<@here>")
+}
+
+/// Matches the own user's and known role mentions using the literal lower-case token syntax.
+pub fn mentions_me_with_roles(body: &str, user_id: &[u8; 16], roles: &[[u8; 16]]) -> bool {
+    mentions_me(body, user_id)
+        || roles.iter().any(|role| {
+            let needle = mention_needle(role);
+            body.as_bytes().windows(needle.len()).any(|w| w == needle)
+        })
 }
 
 /// `mentions_me`'s needle for one user: "<@" + the 32 lower-case hex characters + ">".
@@ -452,6 +498,15 @@ impl ClientCore {
                             leaf,
                         ),
                     )?;
+                    refold_insert(
+                        c,
+                        &id,
+                        response.seq,
+                        &env,
+                        &own.user_id,
+                        &own.device_id,
+                        Some(&own),
+                    )?;
                     c.execute(
                         "DELETE FROM app_outbox WHERE msg_id=?1",
                         [msg_id.as_slice()],
@@ -565,6 +620,7 @@ impl ClientCore {
         before_seq: u64,
         limit: u32,
     ) -> Result<Vec<u8>, ClientError> {
+        let own = self.own()?;
         if !(1..=200).contains(&limit) {
             return Err(ClientError::new(E_CORE_INPUT, "limit out of range"));
         }
@@ -575,63 +631,144 @@ impl ClientCore {
             before_seq as i64
         };
         self.read(|c| group_row(c, id))?.ok_or_else(not_found)?;
-        type Row = (
-            i64,
-            i64,
-            i64,
-            i64,
-            String,
-            Option<Vec<u8>>,
-            Vec<u8>,
-            Option<i64>,
-            Option<i64>,
-            Option<Vec<u8>>,
-            Option<i64>,
-            String,
-        );
-        let mut rows: Vec<Row> = self.read(|c| {
+        struct Raw {
+            seq: i64,
+            epoch: i64,
+            recv_ts: i64,
+            status: i64,
+            reason: String,
+            sender_user: Option<Vec<u8>>,
+            sender_device: Vec<u8>,
+            sender_kind: Option<i64>,
+            sender_tier: Option<i64>,
+            msg_id: Option<[u8; 16]>,
+            ty: Option<i64>,
+            body: String,
+            edit_body: Option<String>,
+            edit_seq: i64,
+            reply_to: Option<[u8; 16]>,
+            envelope: Option<Vec<u8>>,
+            mention: i64,
+            is_target: bool,
+        }
+        let rows = self.read(|c| {
             let mut s = c.prepare(
-                "SELECT seq,epoch,recv_ts,status,reason,sender_user,sender_device, \
-                 sender_kind,sender_tier,msg_id,type,body FROM app_messages \
-                 WHERE group_id=?1 AND (?2=0 OR seq<?2) ORDER BY seq DESC LIMIT ?3",
+                "SELECT m.seq,m.epoch,m.recv_ts,m.status,m.reason,m.sender_user,m.sender_device, \
+                 m.sender_kind,m.sender_tier,m.msg_id,m.type,m.body,m.edit_body,m.edit_seq,m.reply_to,m.envelope,m.mention, \
+                 NOT EXISTS (SELECT 1 FROM app_messages e WHERE e.group_id=m.group_id AND e.msg_id=m.msg_id \
+                 AND e.type=0 AND e.status IN (0,2) AND e.seq<m.seq) \
+                 FROM app_messages m WHERE m.group_id=?1 AND (m.type IS NULL OR m.type=0) \
+                 AND (?2=0 OR m.seq<?2) ORDER BY m.seq DESC LIMIT ?3",
             )?;
             let it = s.query_map(params![id.as_slice(), before, i64::from(limit)], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                    r.get(8)?,
-                    r.get(9)?,
-                    r.get(10)?,
-                    r.get(11)?,
-                ))
+                Ok(Raw { seq: r.get(0)?, epoch: r.get(1)?, recv_ts: r.get(2)?, status: r.get(3)?,
+                    reason: r.get(4)?, sender_user: r.get(5)?, sender_device: r.get(6)?,
+                    sender_kind: r.get(7)?, sender_tier: r.get(8)?, msg_id: r.get(9)?, ty: r.get(10)?,
+                    body: r.get(11)?, edit_body: r.get(12)?, edit_seq: r.get(13)?, reply_to: r.get(14)?,
+                    envelope: r.get(15)?, mention: r.get(16)?, is_target: r.get::<_, i64>(17)? != 0 })
             })?;
-            it.collect::<Result<_, _>>().map_err(Into::into)
+            let mut raw: Vec<Raw> = it.collect::<Result<_, _>>()?;
+            raw.reverse();
+            let mut views = Vec::with_capacity(raw.len());
+            for r in raw {
+                let body = if r.status == STATUS_OK { r.edit_body.unwrap_or(r.body) } else { String::new() };
+                let reply = if r.status == STATUS_OK {
+                    r.reply_to.map(|reply_to| {
+                        let target = fold::resolve(c, id, &reply_to)?;
+                        Ok::<_, StorageError>(wire::ReplyView {
+                            reply_to, target_seq: target.as_ref().map(|t| t.seq), target_user: target.as_ref().and_then(|t| t.sender_user),
+                            excerpt: target.as_ref().filter(|t| t.status == STATUS_OK).map_or_else(String::new, |t| fold::excerpt(&t.shown_body)),
+                            state: target.as_ref().map_or(1, |t| if t.status == STATUS_OK { 0 } else { 2 }),
+                        })
+                    }).transpose()?
+                } else { None };
+                let mut reactions = Vec::new();
+                let mut pinned = false;
+                if r.status == STATUS_OK && r.ty == Some(0) && r.is_target && let Some(msg) = r.msg_id {
+                    let mut q = c.prepare("SELECT emoji, n, mine FROM (SELECT emoji, COUNT(*) AS n, MAX(user_id = ?3) AS mine, MIN(seq) AS first FROM app_reactions WHERE group_id = ?1 AND target = ?2 GROUP BY emoji ORDER BY n DESC, first, emoji LIMIT 20) ORDER BY first, emoji")?;
+                    reactions = q.query_map(params![id.as_slice(), msg.as_slice(), own.user_id.as_slice()], |x| Ok((x.get(0)?, x.get::<_, i64>(1)? as u64, x.get::<_, i64>(2)? != 0)))?.collect::<Result<_, _>>()?;
+                    pinned = c.query_row("SELECT 1 FROM app_pins WHERE group_id = ?1 AND target = ?2", params![id.as_slice(), msg.as_slice()], |_| Ok(())).optional()?.is_some();
+                }
+                let attachments = if r.status == STATUS_OK && r.ty == Some(0) {
+                    r.envelope.as_deref().and_then(|bytes| Envelope::decode(bytes).ok()).map_or_else(Vec::new, |env| env.attachments.into_iter().map(|a| wire::AttachmentView {
+                        size: a.size, mime: a.mime, w: a.w, h: a.h, has_thumb: a.thumb.is_some(), name: a.name,
+                    }).collect())
+                } else { Vec::new() };
+                views.push(wire::TimelineView {
+                    seq: r.seq as u64, epoch: r.epoch as u64, recv_ts: r.recv_ts as u64, status: r.status as u64,
+                    reason: r.reason, sender_user: r.sender_user, sender_device: r.sender_device,
+                    sender_kind: r.sender_kind.map(|v| v as u64), sender_tier: r.sender_tier.map(|v| v as u64),
+                    msg_id: r.msg_id.map(|m| m.to_vec()), ty: r.ty.map(|v| v as u64), body,
+                    edited_seq: r.edit_seq as u64, reply, reactions, pinned, attachments, mention: r.mention != 0,
+                });
+            }
+            Ok(views)
         })?;
-        rows.reverse();
-        let mut e = Encoder::new();
-        e.array(rows.len());
-        for (seq, epoch, recv, status, reason, user, device, kind, tier, msg, ty, body) in rows {
-            e.array(12)
-                .uint(seq as u64)
-                .uint(epoch as u64)
-                .uint(recv as u64)
-                .uint(status as u64)
-                .text(&reason)
-                .opt_bytes(user.as_deref())
-                .bytes(&device)
-                .opt_uint(kind.map(|v| v as u64))
-                .opt_uint(tier.map(|v| v as u64))
-                .opt_bytes(msg.as_deref())
-                .opt_uint(ty.map(|v| v as u64))
-                .text(&body);
+        Ok(wire::encode_timeline(&rows))
+    }
+
+    pub fn pins(&self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
+        self.own()?;
+        self.read(|c| group_row(c, id))?.ok_or_else(not_found)?;
+        let rows = self.read(|c| {
+            let mut q = c.prepare(
+                "SELECT target, seq, by_user FROM app_pins WHERE group_id = ?1 ORDER BY seq DESC",
+            )?;
+            let pins: Vec<([u8; 16], i64, [u8; 16])> = q
+                .query_map([id.as_slice()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<_, _>>()?;
+            let mut views = Vec::new();
+            for (msg_id, seq, by_user) in pins {
+                if let Some(t) = fold::resolve(c, id, &msg_id)? {
+                    let ts: i64 = c.query_row(
+                        "SELECT recv_ts FROM app_messages WHERE group_id = ?1 AND seq = ?2",
+                        params![id.as_slice(), t.seq as i64],
+                        |r| r.get(0),
+                    )?;
+                    views.push(wire::PinView {
+                        target_seq: t.seq,
+                        msg_id,
+                        pinned_seq: seq as u64,
+                        by_user,
+                        author: t.sender_user,
+                        excerpt: fold::excerpt(&t.shown_body),
+                        target_ts: ts as u64,
+                    });
+                }
+            }
+            Ok(views)
+        })?;
+        Ok(wire::encode_pins(&rows))
+    }
+
+    pub fn own_roles_set(
+        &mut self,
+        community_id: &[u8; 16],
+        role_ids: &[u8],
+    ) -> Result<(), ClientError> {
+        self.own()?;
+        if !role_ids.len().is_multiple_of(16) || role_ids.len() > 1024 {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "role_ids must be 0..=64 ids of 16 bytes",
+            ));
         }
-        Ok(e.into_vec())
+        self.write(|_, u| {
+            u.with_conn(|c| {
+                c.execute(
+                    "DELETE FROM app_roles WHERE community_id = ?1",
+                    [community_id.as_slice()],
+                )?;
+                for id in role_ids.as_chunks::<16>().0 {
+                    c.execute(
+                        "INSERT OR IGNORE INTO app_roles (community_id, role_id) VALUES (?1, ?2)",
+                        params![community_id.as_slice(), id],
+                    )?;
+                }
+                Ok(())
+            })?;
+            Ok(())
+        })
     }
 }
 

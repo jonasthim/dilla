@@ -15,6 +15,7 @@ const act = (g: Uint8Array, unread: number, mentions: number): ActivityRow =>
 const row = (seq: number, body: string): TimelineRow => ({
   seq: BigInt(seq), epoch: 1n, recvTs: 1_700_000_000n + BigInt(seq), status: 0, reason: '', senderUser: new Uint8Array(16).fill(0x5a),
   senderDevice: new Uint8Array(16).fill(0x5b), senderKind: 0, senderTier: 0, msgId: new Uint8Array(16).fill(seq), type: 0, body,
+  editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [], mention: false,
 });
 const draft = (n: number): NoticeDraft => ({ channelId: CH, communityId: COMMUNITY, kind: 'message', senderUser: null, senderName: 'p', body: `m${n}`, ts: n });
 

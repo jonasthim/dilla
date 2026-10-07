@@ -14,7 +14,8 @@ use dilla_core::envelope::{Envelope, EnvelopeType};
 use dilla_core::identity::{CredentialIdentity, Kind, SignerTier, SskSigner, Tier, UmkSigner};
 use dilla_core::ids::{CommunityId, DeviceId, InstanceId, MsgId, UserId};
 use dilla_core::mls::{
-    CIPHERSUITE, ConnHandle, DillaBinding, DillaGroup, DillaProvider, GroupKind, external_senders,
+    CIPHERSUITE, ConnHandle, DillaBinding, DillaGroup, DillaProcessed, DillaProvider, GroupKind,
+    external_senders,
 };
 use dilla_core::public_group::{
     DillaPublicGroup, PublicProcessed, external_propose_add, external_propose_remove,
@@ -272,6 +273,27 @@ pub fn decode_applied(bytes: &[u8]) -> Applied {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reply {
+    pub reply_to: [u8; 16],
+    pub target_seq: Option<u64>,
+    pub target_user: Option<[u8; 16]>,
+    pub excerpt: String,
+    pub state: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachmentSummary {
+    pub index: u64,
+    pub size: u64,
+    pub mime: String,
+    pub w: Option<u64>,
+    pub h: Option<u64>,
+    pub has_thumb: u64,
+    pub name: String,
+}
+
+/// The 18-element row of L-CORE-34 (web-2b task 2).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimelineRow {
     pub seq: u64,
     pub epoch: u64,
@@ -285,6 +307,12 @@ pub struct TimelineRow {
     pub msg_id: Option<[u8; 16]>,
     pub ty: Option<u64>,
     pub body: String,
+    pub edited_seq: u64,
+    pub reply: Option<Reply>,
+    pub reactions: Vec<(String, u64, u64)>,
+    pub pinned: u64,
+    pub attachments: Vec<AttachmentSummary>,
+    pub mention: u64,
 }
 
 pub fn decode_timeline(bytes: &[u8]) -> Vec<TimelineRow> {
@@ -292,25 +320,133 @@ pub fn decode_timeline(bytes: &[u8]) -> Vec<TimelineRow> {
         let n = d.array_len()?;
         let mut rows = Vec::with_capacity(n);
         for _ in 0..n {
-            d.array(12)?;
+            d.array(18)?;
+            let seq = d.uint()?;
+            let epoch = d.uint()?;
+            let recv_ts = d.uint()?;
+            let status = d.uint()?;
+            let reason = d.text()?.to_owned();
+            let sender_user = d.opt_bytes_exact::<16>()?;
+            let sender_device = d.bytes_exact::<16>()?;
+            let sender_kind = d.opt_uint()?;
+            let sender_tier = d.opt_uint()?;
+            let msg_id = d.opt_bytes_exact::<16>()?;
+            let ty = d.opt_uint()?;
+            let body = d.text()?.to_owned();
+            let edited_seq = d.uint()?;
+            let reply = if d.try_null()? {
+                None
+            } else {
+                d.array(5)?;
+                let reply_to = d.bytes_exact::<16>()?;
+                let target_seq = d.opt_uint()?;
+                let target_user = d.opt_bytes_exact::<16>()?;
+                let excerpt = d.text()?.to_owned();
+                let state = d.uint()?;
+                Some(Reply {
+                    reply_to,
+                    target_seq,
+                    target_user,
+                    excerpt,
+                    state,
+                })
+            };
+            let k = d.array_len()?;
+            let mut reactions = Vec::with_capacity(k);
+            for _ in 0..k {
+                d.array(3)?;
+                let emoji = d.text()?.to_owned();
+                let count = d.uint()?;
+                let mine = d.uint()?;
+                reactions.push((emoji, count, mine));
+            }
+            let pinned = d.uint()?;
+            let k = d.array_len()?;
+            let mut attachments = Vec::with_capacity(k);
+            for _ in 0..k {
+                d.array(7)?;
+                let index = d.uint()?;
+                let size = d.uint()?;
+                let mime = d.text()?.to_owned();
+                let w = d.opt_uint()?;
+                let h = d.opt_uint()?;
+                let has_thumb = d.uint()?;
+                let name = d.text()?.to_owned();
+                attachments.push(AttachmentSummary {
+                    index,
+                    size,
+                    mime,
+                    w,
+                    h,
+                    has_thumb,
+                    name,
+                });
+            }
+            let mention = d.uint()?;
             rows.push(TimelineRow {
-                seq: d.uint()?,
-                epoch: d.uint()?,
-                recv_ts: d.uint()?,
-                status: d.uint()?,
-                reason: d.text()?.to_owned(),
-                sender_user: d.opt_bytes_exact::<16>()?,
-                sender_device: d.bytes_exact::<16>()?,
-                sender_kind: d.opt_uint()?,
-                sender_tier: d.opt_uint()?,
-                msg_id: d.opt_bytes_exact::<16>()?,
-                ty: d.opt_uint()?,
-                body: d.text()?.to_owned(),
+                seq,
+                epoch,
+                recv_ts,
+                status,
+                reason,
+                sender_user,
+                sender_device,
+                sender_kind,
+                sender_tier,
+                msg_id,
+                ty,
+                body,
+                edited_seq,
+                reply,
+                reactions,
+                pinned,
+                attachments,
+                mention,
             });
         }
         Ok(rows)
     })
     .expect("timeline shape")
+}
+
+/// These are the test decoders of L-CORE-35; task 3 reads them unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinRow {
+    pub target_seq: u64,
+    pub msg_id: [u8; 16],
+    pub pinned_seq: u64,
+    pub by_user: [u8; 16],
+    pub author: Option<[u8; 16]>,
+    pub excerpt: String,
+    pub target_ts: u64,
+}
+
+pub fn decode_pins(bytes: &[u8]) -> Vec<PinRow> {
+    decode_strict(bytes, |d| {
+        let n = d.array_len()?;
+        let mut rows = Vec::with_capacity(n);
+        for _ in 0..n {
+            d.array(7)?;
+            let target_seq = d.uint()?;
+            let msg_id = d.bytes_exact::<16>()?;
+            let pinned_seq = d.uint()?;
+            let by_user = d.bytes_exact::<16>()?;
+            let author = d.opt_bytes_exact::<16>()?;
+            let excerpt = d.text()?.to_owned();
+            let target_ts = d.uint()?;
+            rows.push(PinRow {
+                target_seq,
+                msg_id,
+                pinned_seq,
+                by_user,
+                author,
+                excerpt,
+                target_ts,
+            });
+        }
+        Ok(rows)
+    })
+    .expect("pins shape")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -384,6 +520,26 @@ pub fn seq_of_answer(answer: &[u8]) -> u64 {
         Ok(seq)
     })
     .expect("POST message 200 body")
+}
+
+/// A type-`kind` envelope as the fold tests send it (web-2b task 2).
+pub fn fold_envelope(
+    msg_id: [u8; 16],
+    kind: EnvelopeType,
+    reply_to: Option<[u8; 16]>,
+    body: &str,
+) -> Envelope {
+    Envelope {
+        v: 1,
+        msg_id: MsgId::from_bytes(msg_id),
+        kind,
+        thread_id: None,
+        reply_to: reply_to.map(MsgId::from_bytes),
+        body: body.to_owned(),
+        attachments: Vec::new(),
+        previews: Vec::new(),
+        k_f: [0x06; 32],
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1179,21 +1335,15 @@ impl RawPeer {
     }
 
     pub fn send_typed(&mut self, relay: &mut Relay, kind: EnvelopeType, body: &str) -> u64 {
+        let reply_to = (kind != EnvelopeType::Message).then_some([0x5b; 16]);
+        self.send_envelope(relay, &fold_envelope([0x5a; 16], kind, reply_to, body))
+    }
+
+    /// Uploads `envelope` as one application message; answers its seq.
+    pub fn send_envelope(&mut self, relay: &mut Relay, envelope: &Envelope) -> u64 {
         let group = self.group.as_mut().expect("created");
-        let envelope = Envelope {
-            v: 1,
-            msg_id: MsgId::from_bytes([0x5a; 16]),
-            kind,
-            thread_id: None,
-            // protocol/04 (web-2b task 1): types 1..6 name a target; 0x5b is held by no test.
-            reply_to: (kind != EnvelopeType::Message).then_some(MsgId::from_bytes([0x5b; 16])),
-            body: body.to_owned(),
-            attachments: Vec::new(),
-            previews: Vec::new(),
-            k_f: [0x06; 32],
-        };
         let blob = group
-            .create_message(&self.provider, &self.signer, &envelope)
+            .create_message(&self.provider, &self.signer, envelope)
             .expect("create_message")
             .tls_serialize_detached()
             .expect("serialize");
@@ -1203,6 +1353,26 @@ impl RawPeer {
             .post_message(self.device, &e.into_vec())
             .expect("upload");
         seq_of_answer(&answer)
+    }
+
+    /// Processes and merges another member's commit, the relay's handshake row at `seq`.
+    pub fn apply_commit(&mut self, relay: &Relay, seq: u64) {
+        let row = relay
+            .handshakes
+            .iter()
+            .find(|h| h.seq == seq)
+            .expect("a handshake row at that seq");
+        let message = protocol_in(&row.blob).expect("a protocol message");
+        let group = self.group.as_mut().expect("joined");
+        match group
+            .process_message(&self.provider, message)
+            .expect("process the commit")
+        {
+            DillaProcessed::StagedCommit(staged) => group
+                .merge_staged_commit(&self.provider, *staged)
+                .expect("merge"),
+            other => panic!("expected a commit at seq {seq}, got {other:?}"),
+        }
     }
 }
 

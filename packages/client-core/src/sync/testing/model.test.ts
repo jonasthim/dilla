@@ -614,4 +614,14 @@ describe('ModelDs web-2a: DMs, leafless reads and the device-list gate', () => {
     expect([at(p, 2), bin(at(p, 3), 16)]).toEqual(['remove', NEW]);
     await expect(ds.routesFor(NEW).getMessages(g, 1n, 10)).rejects.toMatchObject({ status: 401, code: 'E_UNAUTHENTICATED' });
   });
+  it('answers the web-2b timeline row: fold fields at their defaults and the mention flag (L-CORE-34)', () => {
+    const core = new ModelCore(ME);
+    registered(core);
+    core.groupApply(G, encode([]), encode([peerMsg(1n, 'plain'), peerMsg(2n, `hi <@${toHex(ME.user)}>`)]), 2n);
+    expect(core.timeline(G, 0n, 200).map((x) => [x.seq, x.editedSeq, x.reply, x.reactions, x.pinned, x.attachments, x.mention])).toEqual([
+      [1n, 0n, null, [], false, [], false],
+      [2n, 0n, null, [], false, [], true],
+    ]);
+  });
+
 });

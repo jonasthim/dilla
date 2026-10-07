@@ -33,7 +33,11 @@ export interface SealedObjects { root: Uint8Array | null; state: Uint8Array | nu
  *  (BACKUPS-RECOVERY-02), else null. */
 export interface SignedLists { deviceListBody: Uint8Array; stateSealed: Uint8Array; interrupted: Uint8Array | null; }
 export interface OutboxRow { msgId: Id; state: 0 | 1 | 2; error: string; created: bigint; body: string; }
-export interface TimelineRow { seq: bigint; epoch: bigint; recvTs: bigint; status: 0 | 1 | 2; reason: string; senderUser: Id | null; senderDevice: Id; senderKind: number | null; senderTier: number | null; msgId: Id | null; type: number | null; body: string; }
+export interface ReplyInfo { replyTo: Id; targetSeq: bigint | null; targetUser: Id | null; excerpt: string; state: 0 | 1 | 2; }
+export interface ReactionInfo { emoji: string; count: number; mine: boolean; }
+export interface AttachmentInfo { index: number; size: number; mime: string; w: number | null; h: number | null; hasThumb: boolean; name: string; }
+export interface TimelineRow { seq: bigint; epoch: bigint; recvTs: bigint; status: 0 | 1 | 2; reason: string; senderUser: Id | null; senderDevice: Id; senderKind: number | null; senderTier: number | null; msgId: Id | null; type: number | null; body: string;
+  editedSeq: bigint; reply: ReplyInfo | null; reactions: ReactionInfo[]; pinned: boolean; attachments: AttachmentInfo[]; mention: boolean; }
 export interface CorePort {
   pause(): void; resume(): Promise<void>; close(): void;
   identity(): IdentityInfo;
@@ -191,11 +195,28 @@ function readOutbox(v: CborValue): OutboxRow {
   return { msgId: bin(field(a, 0), 16), state: oneOf(field(a, 1), [0, 1, 2]), error: str(field(a, 2)), created: u64(field(a, 3)), body: str(field(a, 4)) };
 }
 function readTimeline(v: CborValue): TimelineRow {
-  const a = arr(v, 12);
+  const a = arr(v, 18);
   return { seq: u64(field(a, 0)), epoch: u64(field(a, 1)), recvTs: u64(field(a, 2)), status: oneOf(field(a, 3), [0, 1, 2]),
     reason: str(field(a, 4)), senderUser: opt(field(a, 5), (x) => bin(x, 16)), senderDevice: bin(field(a, 6), 16),
     senderKind: opt(field(a, 7), u53), senderTier: opt(field(a, 8), u53), msgId: opt(field(a, 9), (x) => bin(x, 16)),
-    type: opt(field(a, 10), u53), body: str(field(a, 11)) };
+    type: opt(field(a, 10), u53), body: str(field(a, 11)), editedSeq: u64(field(a, 12)),
+    reply: opt(field(a, 13), readReply), reactions: arr(field(a, 14)).map(readReaction),
+    pinned: oneOf(field(a, 15), [0, 1]) === 1, attachments: arr(field(a, 16)).map(readAttachmentInfo),
+    mention: oneOf(field(a, 17), [0, 1]) === 1 };
+}
+function readReply(v: CborValue): ReplyInfo {
+  const a = arr(v, 5);
+  return { replyTo: bin(field(a, 0), 16), targetSeq: opt(field(a, 1), u64), targetUser: opt(field(a, 2), (x) => bin(x, 16)),
+    excerpt: str(field(a, 3)), state: oneOf(field(a, 4), [0, 1, 2]) };
+}
+function readReaction(v: CborValue): ReactionInfo {
+  const a = arr(v, 3);
+  return { emoji: str(field(a, 0)), count: u53(field(a, 1)), mine: oneOf(field(a, 2), [0, 1]) === 1 };
+}
+function readAttachmentInfo(v: CborValue): AttachmentInfo {
+  const a = arr(v, 7);
+  return { index: u53(field(a, 0)), size: u53(field(a, 1)), mime: str(field(a, 2)), w: opt(field(a, 3), u53),
+    h: opt(field(a, 4), u53), hasThumb: oneOf(field(a, 5), [0, 1]) === 1, name: str(field(a, 6)) };
 }
 function readActivity(v: CborValue): ActivityRow {
   const a = arr(v, 6);

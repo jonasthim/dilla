@@ -252,8 +252,10 @@ interface MGroup {
   wasGone: boolean;
   /** app_groups.max_epoch: the highest epoch held; only ever raised. */
   maxEpoch: bigint;
-  rows: Map<bigint, TimelineRow>;
+  rows: Map<bigint, StoredRow>;
 }
+
+type StoredRow = Omit<TimelineRow, 'editedSeq' | 'reply' | 'reactions' | 'pinned' | 'attachments' | 'mention'>;
 
 interface MOut {
   msgId: Id;
@@ -790,8 +792,12 @@ export class ModelCore implements CorePort {
   }
 
   timeline(groupId: Id, beforeSeq: bigint, limit: number): TimelineRow[] {
-    const rows = [...this.must(groupId).rows.values()].filter((r) => beforeSeq === 0n || r.seq < beforeSeq).sort(bySeq);
-    return rows.slice(Math.max(0, rows.length - limit));
+    const rows = [...this.must(groupId).rows.values()]
+      .filter((r) => (r.type === null || r.type === 0) && (beforeSeq === 0n || r.seq < beforeSeq)).sort(bySeq);
+    return rows.slice(Math.max(0, rows.length - limit)).map((r) => ({
+      ...r, editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [],
+      mention: r.status === 0 && r.type === 0 && r.senderUser !== null && !same(r.senderUser, this.me.user) && this.mentionsMe(r.body),
+    }));
   }
 
   // --- test accessors ---
@@ -927,7 +933,7 @@ export class ModelCore implements CorePort {
     const served = at(a, 4) === null ? null : bin(at(a, 4), 32);
     const recvTs = u64(at(a, 6));
     const deleted = u64(at(a, 7)) === 1n;
-    const bare = (status: 1 | 2, reason: string): TimelineRow => ({
+    const bare = (status: 1 | 2, reason: string): StoredRow => ({
       seq, epoch, recvTs, status, reason, senderUser: null, senderDevice: uploader, senderKind: null, senderTier: null,
       msgId: null, type: null, body: '',
     });
@@ -993,7 +999,7 @@ export class ModelCore implements CorePort {
     return { inserted: true, adopted: false };
   }
 
-  private ownRow(seq: bigint, epoch: bigint, recvTs: bigint, o: MOut): TimelineRow {
+  private ownRow(seq: bigint, epoch: bigint, recvTs: bigint, o: MOut): StoredRow {
     return {
       seq, epoch, recvTs, status: 0, reason: '', senderUser: this.me.user, senderDevice: this.me.device, senderKind: 0, senderTier: 1,
       msgId: o.msgId, type: 0, body: o.body,

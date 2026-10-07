@@ -114,6 +114,115 @@ pub(crate) struct SendResponse {
     pub recv_ts: u64,
 }
 
+pub(crate) struct ReplyView {
+    pub reply_to: [u8; 16],
+    pub target_seq: Option<u64>,
+    pub target_user: Option<[u8; 16]>,
+    pub excerpt: String,
+    pub state: u8,
+}
+pub(crate) struct AttachmentView {
+    pub size: u64,
+    pub mime: String,
+    pub w: Option<u64>,
+    pub h: Option<u64>,
+    pub has_thumb: bool,
+    pub name: String,
+}
+pub(crate) struct TimelineView {
+    pub seq: u64,
+    pub epoch: u64,
+    pub recv_ts: u64,
+    pub status: u64,
+    pub reason: String,
+    pub sender_user: Option<Vec<u8>>,
+    pub sender_device: Vec<u8>,
+    pub sender_kind: Option<u64>,
+    pub sender_tier: Option<u64>,
+    pub msg_id: Option<Vec<u8>>,
+    pub ty: Option<u64>,
+    pub body: String,
+    pub edited_seq: u64,
+    pub reply: Option<ReplyView>,
+    pub reactions: Vec<(String, u64, bool)>,
+    pub pinned: bool,
+    pub attachments: Vec<AttachmentView>,
+    pub mention: bool,
+}
+pub(crate) struct PinView {
+    pub target_seq: u64,
+    pub msg_id: [u8; 16],
+    pub pinned_seq: u64,
+    pub by_user: [u8; 16],
+    pub author: Option<[u8; 16]>,
+    pub excerpt: String,
+    pub target_ts: u64,
+}
+
+pub(crate) fn encode_timeline(rows: &[TimelineView]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(rows.len());
+    for r in rows {
+        e.array(18)
+            .uint(r.seq)
+            .uint(r.epoch)
+            .uint(r.recv_ts)
+            .uint(r.status)
+            .text(&r.reason)
+            .opt_bytes(r.sender_user.as_deref())
+            .bytes(&r.sender_device)
+            .opt_uint(r.sender_kind)
+            .opt_uint(r.sender_tier)
+            .opt_bytes(r.msg_id.as_deref())
+            .opt_uint(r.ty)
+            .text(&r.body)
+            .uint(r.edited_seq);
+        if let Some(reply) = &r.reply {
+            e.array(5)
+                .bytes(&reply.reply_to)
+                .opt_uint(reply.target_seq)
+                .opt_bytes(reply.target_user.as_ref().map(|u| u.as_slice()))
+                .text(&reply.excerpt)
+                .uint(u64::from(reply.state));
+        } else {
+            e.null();
+        }
+        e.array(r.reactions.len());
+        for (emoji, count, mine) in &r.reactions {
+            e.array(3).text(emoji).uint(*count).uint(u64::from(*mine));
+        }
+        e.uint(u64::from(r.pinned)).array(r.attachments.len());
+        for (i, a) in r.attachments.iter().enumerate() {
+            e.array(7)
+                .uint(i as u64)
+                .uint(a.size)
+                .text(&a.mime)
+                .opt_uint(a.w)
+                .opt_uint(a.h)
+                .uint(u64::from(a.has_thumb))
+                .text(&a.name);
+        }
+        e.uint(u64::from(r.mention));
+    }
+    e.into_vec()
+}
+
+pub(crate) fn encode_pins(rows: &[PinView]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(rows.len());
+    for r in rows {
+        e.array(7)
+            .uint(r.target_seq)
+            .bytes(&r.msg_id)
+            .uint(r.pinned_seq)
+            .bytes(&r.by_user)
+            .opt_bytes(r.author.as_ref().map(|u| u.as_slice()))
+            .text(&r.excerpt)
+            .uint(r.target_ts);
+    }
+    e.into_vec()
+}
+
 fn shape(arg: &str, error: impl core::fmt::Display) -> ClientError {
     ClientError::new(E_CORE_INPUT, format!("{arg}: {error}"))
 }

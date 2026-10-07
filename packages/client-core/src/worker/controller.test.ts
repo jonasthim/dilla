@@ -274,7 +274,7 @@ function strangerRow(seq: number): TimelineRow {
   return {
     seq: BigInt(seq), epoch: 1n, recvTs: 1_700_000_000n, status: 0, reason: '', senderUser: STRANGER,
     senderDevice: new Uint8Array(16).fill(0x5b), senderKind: 0, senderTier: 0, msgId: new Uint8Array(16).fill(0x30 + seq),
-    type: 0, body: `from a stranger ${seq}`,
+    type: 0, body: `from a stranger ${seq}`, editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [], mention: false,
   };
 }
 

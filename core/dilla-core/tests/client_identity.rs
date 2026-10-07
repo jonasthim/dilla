@@ -605,16 +605,16 @@ fn client_errors_render_and_convert_as_the_code_table_says() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// app schema v2 (L-SQL-20) and ClientCore::open (L-CORE-05)
+// app schema v3 (L-SQL-30) and ClientCore::open (L-CORE-05)
 
 #[test]
-fn open_creates_app_schema_v2_and_reopens_idempotently() {
+fn open_creates_app_schema_v3_and_reopens_idempotently() {
     let c = conn();
     drop(ClientCore::open(c.clone()).expect("first open"));
     drop(ClientCore::open(c.clone()).expect("second open over the same database"));
     assert_eq!(
         migrate_app(&DillaStorage::new(c.clone())).expect("migrate_app is idempotent on its own"),
-        2
+        3
     );
     let guard = c.lock().expect("lock");
     let names: Vec<String> = guard
@@ -635,11 +635,18 @@ fn open_creates_app_schema_v2_and_reopens_idempotently() {
             "app_handshake_tail",
             "app_messages",
             "app_messages_by_msg",
+            "app_messages_by_pin",
+            "app_messages_by_reaction",
+            "app_messages_by_reply",
             "app_meta",
             "app_outbox",
             "app_outbox_by_group",
+            "app_pins",
             "app_proposals",
+            "app_purges",
+            "app_reactions",
             "app_read_state",
+            "app_roles",
             "app_settings",
         ]
     );
@@ -648,7 +655,7 @@ fn open_creates_app_schema_v2_and_reopens_idempotently() {
             r.get(0)
         })
         .expect("schema row");
-    assert_eq!(schema, [0x02]);
+    assert_eq!(schema, [0x03]);
     let resync: i64 = guard
         .query_row(
             "SELECT count(*) FROM pragma_table_info('app_groups') WHERE name = 'resync'",
@@ -669,6 +676,9 @@ fn open_creates_app_schema_v2_and_reopens_idempotently() {
         ("app_groups", "epoch"),
         ("app_groups", "pending_commit"),
         ("app_messages", "mention"),
+        ("app_messages", "reply_to"),
+        ("app_messages", "edit_body"),
+        ("app_messages", "edit_seq"),
     ] {
         let n: i64 = guard
             .query_row(
@@ -677,7 +687,7 @@ fn open_creates_app_schema_v2_and_reopens_idempotently() {
                 |r| r.get(0),
             )
             .expect("pragma_table_info");
-        assert_eq!(n, 1, "{table}.{column} exists at schema 2");
+        assert_eq!(n, 1, "{table}.{column} exists at schema 3");
     }
     let secure: i64 = guard
         .query_row("PRAGMA secure_delete", [], |r| r.get(0))
@@ -770,7 +780,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         .expect("lock")
         .execute_batch(
             "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
-             INSERT INTO app_meta (k, v) VALUES ('schema', x'03');",
+             INSERT INTO app_meta (k, v) VALUES ('schema', x'04');",
         )
         .expect("seed");
     let e = match ClientCore::open(c) {
@@ -781,7 +791,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         e,
         ClientError {
             code: "E_CORE_STATE",
-            detail: "app schema 3 is newer than this build".into()
+            detail: "app schema 4 is newer than this build".into()
         }
     );
 }

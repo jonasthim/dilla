@@ -3,6 +3,7 @@
 //! change runs inside exactly one `DillaStorage::unit`.
 
 mod error;
+mod fold;
 mod groups;
 mod identity;
 mod messages;
@@ -13,7 +14,7 @@ mod wire;
 
 pub use error::ClientError;
 pub use identity::{recovery_key_check, session_preimage};
-pub use messages::mentions_me;
+pub use messages::{mentions_me, mentions_me_with_roles};
 pub use schema::{HANDSHAKE_TAIL, migrate_app};
 
 use crate::identity::CredentialIdentity;
@@ -195,10 +196,13 @@ impl ClientCore {
                 if found == 1 {
                     backfill(provider.storage(), u).map_err(schema_error)?;
                 }
+                if found == 1 || found == 2 {
+                    backfill_v3(u).map_err(schema_error)?;
+                }
                 Ok(found)
             })
             .map_err(ClientError::from)?;
-        if version > 2 {
+        if version > 3 {
             return Err(ClientError::new(
                 E_CORE_STATE,
                 format!("app schema {version} is newer than this build"),
@@ -311,4 +315,44 @@ fn backfill(storage: &DillaStorage, u: &UnitScope<'_>) -> Result<(), StorageErro
         }
     }
     Ok(())
+}
+
+/// Migrates stored envelope references and derived rows in the same unit as the v3 DDL.
+fn backfill_v3(u: &UnitScope<'_>) -> Result<(), StorageError> {
+    u.with_conn(|c| {
+        let envelopes: Vec<([u8; 16], i64, Vec<u8>)> = {
+            let mut stmt = c.prepare("SELECT group_id, seq, envelope FROM app_messages WHERE status = 0 AND envelope IS NOT NULL")?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<_, _>>()?
+        };
+        for (group, seq, envelope) in envelopes {
+            if let Some(reply) = stored_reply_to(&envelope)? {
+                c.execute("UPDATE app_messages SET reply_to = ?3 WHERE group_id = ?1 AND seq = ?2",
+                    rusqlite::params![group.as_slice(), seq, reply.as_slice()])?;
+            }
+        }
+        let targets: Vec<([u8; 16], [u8; 16])> = {
+            let mut stmt = c.prepare("SELECT DISTINCT group_id, reply_to FROM app_messages WHERE status = 0 AND type BETWEEN 1 AND 6 AND reply_to IS NOT NULL ORDER BY group_id, reply_to")?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?
+        };
+        for (group, target) in targets {
+            fold::refold(c, &group, &target, &fold::FoldScope::Full, None, None)?;
+        }
+        Ok(())
+    })
+}
+
+fn stored_reply_to(envelope: &[u8]) -> Result<Option<[u8; 16]>, StorageError> {
+    crate::cbor::decode_strict(envelope, |d| {
+        d.array(9)?;
+        for _ in 0..4 {
+            d.skip()?;
+        }
+        let reply = d.opt_bytes_exact::<16>()?;
+        for _ in 0..4 {
+            d.skip()?;
+        }
+        Ok(reply)
+    })
+    .map_err(|_| StorageError::Codec("app_messages envelope does not decode".into()))
 }

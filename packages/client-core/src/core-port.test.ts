@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decode, encode } from './cbor';
+import { decode, encode, type CborInput } from './cbor';
 import { CoreError, wrapCore, type CoreHandle } from './core-port';
 import { fromHex } from './hex';
 
@@ -10,6 +10,7 @@ const INST = new Uint8Array(16).fill(0xab);
 const USER = new Uint8Array(16).fill(0xa2);
 const DEV = new Uint8Array(16).fill(0xa1);
 const MSG = new Uint8Array(16).fill(0x11);
+const MSG2 = new Uint8Array(16).fill(0x12);
 
 type Impl = Partial<Record<keyof CoreHandle, (...args: never[]) => unknown>>;
 
@@ -104,18 +105,42 @@ describe('wrapCore decoding', () => {
       send_confirm: () => encode([G, 42]),
       outbox: () => encode([[MSG, 2, 'E_TOO_LARGE', 1_700_000_000, 'hi']]),
       timeline: () => encode([
-        [5, 7, 1_700_000_000, 0, '', USER, DEV, 0, 1, MSG, 0, 'hi'],
-        [6, 7, 1_700_000_001, 1, 'E_PRUNED', null, DEV, null, null, null, null, ''],
+        [5, 7, 1_700_000_000, 0, '', USER, DEV, 0, 1, MSG, 0, 'hi', 0, null, [], 0, [], 0],
+        [6, 7, 1_700_000_001, 1, 'E_PRUNED', null, DEV, null, null, null, null, '', 0, null, [], 0, [], 0],
+        [9, 7, 1_700_000_004, 0, '', USER, DEV, 0, 1, MSG2, 0, 'edited', 8, [MSG, 5, USER, 'hi', 0], [['👍', 2, 1], ['🎉', 1, 0]], 1,
+          [[0, 1234, 'image/png', 640, 480, 1, 'map.png'], [1, 70000, 'application/pdf', null, null, 0, '']], 1],
       ]),
     });
     expect(port.sendPrepare(G, 'hi', 1n)).toEqual(MSG);
     expect(port.sendEncrypt(MSG)).toEqual({ groupId: G, messageBody: new Uint8Array([5, 6]) });
     expect(port.sendConfirm(MSG, new Uint8Array([1]))).toEqual({ groupId: G, seq: 42n });
     expect(port.outbox(G)).toEqual([{ msgId: MSG, state: 2, error: 'E_TOO_LARGE', created: 1_700_000_000n, body: 'hi' }]);
+    const plain = { editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [], mention: false };
     expect(port.timeline(G, 0n, 100)).toEqual([
-      { seq: 5n, epoch: 7n, recvTs: 1_700_000_000n, status: 0, reason: '', senderUser: USER, senderDevice: DEV, senderKind: 0, senderTier: 1, msgId: MSG, type: 0, body: 'hi' },
-      { seq: 6n, epoch: 7n, recvTs: 1_700_000_001n, status: 1, reason: 'E_PRUNED', senderUser: null, senderDevice: DEV, senderKind: null, senderTier: null, msgId: null, type: null, body: '' },
+      { seq: 5n, epoch: 7n, recvTs: 1_700_000_000n, status: 0, reason: '', senderUser: USER, senderDevice: DEV, senderKind: 0, senderTier: 1, msgId: MSG, type: 0, body: 'hi', ...plain },
+      { seq: 6n, epoch: 7n, recvTs: 1_700_000_001n, status: 1, reason: 'E_PRUNED', senderUser: null, senderDevice: DEV, senderKind: null, senderTier: null, msgId: null, type: null, body: '', ...plain },
+      { seq: 9n, epoch: 7n, recvTs: 1_700_000_004n, status: 0, reason: '', senderUser: USER, senderDevice: DEV, senderKind: 0, senderTier: 1, msgId: MSG2, type: 0, body: 'edited',
+        editedSeq: 8n, reply: { replyTo: MSG, targetSeq: 5n, targetUser: USER, excerpt: 'hi', state: 0 },
+        reactions: [{ emoji: '👍', count: 2, mine: true }, { emoji: '🎉', count: 1, mine: false }], pinned: true,
+        attachments: [{ index: 0, size: 1234, mime: 'image/png', w: 640, h: 480, hasThumb: true, name: 'map.png' },
+          { index: 1, size: 70000, mime: 'application/pdf', w: null, h: null, hasThumb: false, name: '' }],
+        mention: true },
     ]);
+  });
+
+  it('refuses a timeline row of the web-2a shape or with out-of-range values (L-CORE-34)', () => {
+    const twelve: CborInput[] = [5, 7, 1_700_000_000, 0, '', USER, DEV, 0, 1, MSG, 0, 'hi'];
+    const decodeOne = (row: CborInput[]) => caught(() => stub({ timeline: () => encode([row]) }).port.timeline(G, 0n, 100)).code;
+    expect(decodeOne(twelve)).toBe('E_CORE_DECODE');
+    const row = (at: number, v: CborInput): CborInput[] => { const r: CborInput[] = [...twelve, 0, null, [], 0, [], 0]; r[at] = v; return r; };
+    expect(decodeOne(row(15, 2))).toBe('E_CORE_DECODE');
+    expect(decodeOne(row(17, 2))).toBe('E_CORE_DECODE');
+    expect(decodeOne(row(13, [MSG, null, null, '', 3]))).toBe('E_CORE_DECODE');
+    expect(decodeOne(row(13, [MSG, null, null, '']))).toBe('E_CORE_DECODE');
+    expect(decodeOne(row(14, [['👍', 1]]))).toBe('E_CORE_DECODE');
+    expect(decodeOne(row(16, [[0, 1, 'x', null, null, 2, '']]))).toBe('E_CORE_DECODE');
+    expect(stub({ timeline: () => encode([row(13, [MSG, null, null, '', 1])]) }).port.timeline(G, 0n, 100)[0]?.reply)
+      .toEqual({ replyTo: MSG, targetSeq: null, targetUser: null, excerpt: '', state: 1 });
   });
 
   it('returns request bodies and cursor bodies unchanged, and null for a CBOR null cursor', () => {
