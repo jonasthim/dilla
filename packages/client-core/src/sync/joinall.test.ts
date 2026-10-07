@@ -274,6 +274,58 @@
       expect(at(d.joinAll, d.joinAll.length - 1)).toEqual({ done: 1, total: 1, failed: 0 });
     });
 
+    // CORE-ENGINE-01: the controller answers an unexpected Welcome by reloading the DMs, which sets the same
+    // expected list again; that must not cancel the armed retry and start the refused join back to back.
+    it('a kept unexpected Welcome and a refused join cost one join per joinAllRetryMs, and the Welcome is reported once', async () => {
+      const d = device(ds, clock, ME);
+      const eg = channels(1);
+      const unknown = ds.peerCreate(PEER, idOf(0xd3, 9));
+      ds.detach(ME.device);
+      ds.peerCommit(unknown, PEER, [ME.device]); // a Welcome for a group ME does not expect: kept at the instance
+      ds.reattach(ME.device);
+      ds.denyJoin.add(toHex(ME.device));
+      const reported: string[] = [];
+      d.engine.deps.onUnexpectedWelcome = (g) => {
+        reported.push(toHex(g));
+        if (reported.length > 20) { d.engine.stop(); return; } // a guard for the red run: the loop never ends by itself
+        queueMicrotask(() => { d.engine.setExpected([...eg]); });
+      };
+      d.engine.setExpected(eg);
+      d.gateway.ready(readyInfo(ME));
+      for (let i = 0; i < 20; i++) await settle();
+      expect(count('postResync')).toBe(1);
+      expect(reported).toEqual([toHex(unknown)]);
+      await clock.advance(SYNC.joinAllRetryMs - 1);
+      expect(count('postResync')).toBe(1);
+      await clock.advance(1);
+      for (let i = 0; i < 20; i++) await settle();
+      expect(count('postResync')).toBe(2);
+      expect(reported).toEqual([toHex(unknown)]);
+      expect(ds.welcomesFor(ME.device)).toHaveLength(1);
+      // A changed expected set reports the kept Welcome again (the controller may have learned its DM).
+      d.engine.setExpected([...eg, { groupId: idOf(0x91, 5), communityId: null, channelId: idOf(0xd3, 5), policyVersion: 1n }]);
+      for (let i = 0; i < 20; i++) await settle();
+      expect(reported).toEqual([toHex(unknown), toHex(unknown)]);
+    });
+
+    it('setExpected with the same set neither starts a pass nor cancels the armed retry', async () => {
+      const d = device(ds, clock, ME);
+      const eg = channels(1);
+      ds.denyJoin.add(toHex(ME.device));
+      d.engine.setExpected(eg);
+      d.gateway.ready(readyInfo(ME));
+      await settle();
+      await settle();
+      expect(count('postResync')).toBe(1);
+      expect(clock.pending).toBe(1); // the retry
+      d.engine.setExpected([...eg].reverse());
+      await settle();
+      expect(count('postResync')).toBe(1);
+      expect(clock.pending).toBe(1);
+      await clock.advance(SYNC.joinAllRetryMs);
+      expect(count('postResync')).toBe(2);
+    });
+
     it('judgeWelcomes reports each unexpected group once per pass and deletes none of them', async () => {
       const d = device(ds, clock, ME);
       const g = idOf(0x91, 7);

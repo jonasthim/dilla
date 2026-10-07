@@ -11,11 +11,11 @@ const groupKey = (g: Id): string => `g:${toHex(g)}`;
 const same = (a: Id, b: Id): boolean => toHex(a) === toHex(b);
 
 export async function judgeWelcomes(s: SyncInternals, outcomes: WelcomeOutcome[]): Promise<void> {
-  const reported = new Set<string>();
   for (const o of outcomes) {
     if (o.outcome === 3) {
+      // Once per group until the expected set changes (CORE-ENGINE-01): a kept Welcome is served on every poll.
       const hex = toHex(o.groupId);
-      if (!reported.has(hex)) { reported.add(hex); s.deps.onUnexpectedWelcome(o.groupId); }
+      if (!s.unexpectedReported.has(hex)) { s.unexpectedReported.add(hex); s.deps.onUnexpectedWelcome(o.groupId); }
       continue;
     }
     if (o.outcome === 1 && s.row(o.groupId)?.state !== 2) continue;

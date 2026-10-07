@@ -27,4 +27,6 @@ export interface SyncInternals {
   reframedOnce: Set<string>;
   resyncTried: Set<string>;
   quiet: Set<string>;
+  /** Unexpected groups already reported to onUnexpectedWelcome; cleared when the expected set changes. */
+  unexpectedReported: Set<string>;
 }

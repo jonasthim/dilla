@@ -48,6 +48,7 @@ export class SyncEngine implements SyncInternals {
   readonly reframedOnce = new Set<string>();
   readonly resyncTried = new Set<string>();
   readonly quiet = new Set<string>();
+  readonly unexpectedReported = new Set<string>();
   private expectedList: ExpectedGroup[] = [];
   private readonly joinAll = new JoinAll(this, (p) => { this.deps.onJoinAll(p); });
   private readonly opened = new Map<string, ExpectedGroup>();
@@ -86,9 +87,16 @@ export class SyncEngine implements SyncInternals {
       this.armTimer(ms, wake);
     });
   }
+  /** CORE-ENGINE-01: a set that gained a group starts a pass (rule 7: the welcome step first); the same set again
+   *  neither starts one nor cancels an armed retry (rule 4: a refused join waits for the next ready or
+   *  joinAllRetryMs). Any change lets a kept unexpected Welcome be reported once more. */
   setExpected(groups: ExpectedGroup[]): void {
+    const before = new Set(this.expectedList.map((g) => toHex(g.groupId)));
+    const after = new Set(groups.map((g) => toHex(g.groupId)));
+    const gained = [...after].some((id) => !before.has(id));
     this.expectedList = [...groups];
-    if (this.ready !== null && !this.isStopped) this.joinAll.request();
+    if (gained || [...before].some((id) => !after.has(id))) this.unexpectedReported.clear();
+    if (gained && this.ready !== null && !this.isStopped) this.joinAll.request();
   }
   setChannels(channels: ExpectedGroup[]): void { this.setExpected(channels); }
   expected(): ExpectedGroup[] {
