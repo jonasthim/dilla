@@ -1199,10 +1199,11 @@ export class Controller {
     return null;
   }
 
-  /** The shared part of a revocation (requirement 24): read the root, the state object and the list, sign the
-   *  revoking list, write the re-sealed state object (before the list: architect ruling 17). An older served list
-   *  is refreshed and the reads retried once (pre-flight ruling (c)); a second is the list conflict. */
-  private async revoke(ids: Id[], recoveryKey: string): Promise<Uint8Array> {
+  /** The shared part of a revocation (requirement 24): read the root, the state object and the list, and sign the
+   *  revoking list and the re-sealed state object. The caller writes them, in its own order (BACKUPS-RECOVERY-01).
+   *  An older served list is refreshed and the reads retried once (pre-flight ruling (c)); a second is the list
+   *  conflict. */
+  private async revoke(ids: Id[], recoveryKey: string): Promise<{ deviceListBody: Uint8Array; stateSealed: Uint8Array }> {
     const core = this.requireCore();
     const me = this.requireMe();
     for (let attempt = 0; ; attempt += 1) {
@@ -1236,8 +1237,7 @@ export class Controller {
         try { await this.parts.refreshOwnDeviceList(core, this.routes, me.userId); } catch { /* the reads below decide */ }
         continue;
       }
-      await this.routes.putBackup(1, signed.stateSealed);
-      return signed.deviceListBody;
+      return signed;
     }
   }
 
@@ -1264,26 +1264,35 @@ export class Controller {
       return null;
     }
     if (recoveryKey === null || recoveryKey.trim() === '') throw new Refusal('E_BAD_INPUT', 'the recovery key is empty');
-    const body = await this.revoke([fromHex(deviceId)], recoveryKey);
-    core.stateSealedUploaded();
+    const signed = await this.revoke([fromHex(deviceId)], recoveryKey);
+    // BACKUPS-RECOVERY-01: the revoking list first. The state object's PUT shares the user's upload meter and quota
+    // with every session of the account, the stolen one included, so it must not be able to hold the list back.
     try {
-      await this.routes.putDeviceList(me.userId, body);
+      await this.routes.putDeviceList(me.userId, signed.deviceListBody);
     } catch (e) {
       if (isStatus(e, 409)) return this.listRace();
       throw e;
     }
     core.deviceListPublished();
+    // A refused state object stays unmarked (state_uploaded 0): ensureBackups uploads it at the next ready, and
+    // until then the instance holds a state behind the list, which the rollback floor accepts.
+    try {
+      await this.routes.putBackup(1, signed.stateSealed);
+      core.stateSealedUploaded();
+    } catch { /* the next ready uploads it */ }
     await this.refreshDevices();
     return null;
   }
 
   private async signOutRevoke(recoveryKey: string): Promise<null> {
     const me = this.requireMe();
-    const body = await this.revoke([me.deviceId], recoveryKey);
-    // The self-revoking PUT is the last request: the socket and the engine stop before it (head ruling 27).
+    const signed = await this.revoke([me.deviceId], recoveryKey);
+    // Architect ruling 17: the state object before the list, so the self-revoking PUT is the last request this
+    // device makes; the socket and the engine stop before it (head ruling 27).
+    await this.routes.putBackup(1, signed.stateSealed);
     this.quiesce();
     try {
-      await this.routes.putDeviceList(me.userId, body);
+      await this.routes.putDeviceList(me.userId, signed.deviceListBody);
     } catch (e) {
       this.resume();
       if (isStatus(e, 409)) return this.listRace();

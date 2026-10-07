@@ -1678,16 +1678,50 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     const from = w.calls.length;
     w.call(3, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: null }));
+    // BACKUPS-RECOVERY-01: the revoking list goes first, so the shared upload meter or quota cannot hold it back.
     expect(w.calls.slice(from)).toEqual([
       'refreshOwnDeviceList',
-      'getBackup(0)', 'getBackup(1)', 'getDeviceList', 'core.deviceListRevoke', 'putBackup(1)', 'core.stateSealedUploaded',
-      'putDeviceList', 'core.deviceListPublished', 'refreshOwnDeviceList', 'listDevices',
+      'getBackup(0)', 'getBackup(1)', 'getDeviceList', 'core.deviceListRevoke',
+      'putDeviceList', 'core.deviceListPublished', 'putBackup(1)', 'core.stateSealedUploaded', 'refreshOwnDeviceList', 'listDevices',
     ]);
     expect(w.core.deviceListRevoke).toHaveBeenCalledWith(expect.objectContaining({ deviceIds: [OTHER_DEVICE] }));
     expect(w.routes.deleteDevice).not.toHaveBeenCalled();
     expect(w.core.pause).not.toHaveBeenCalled();
     expect(w.gateway.stops).toBe(0);
     expect(w.account()?.phase).toBe('ready');
+  });
+
+  it('a state object refused after the revoking list (a 429 on the shared meter, a 507 at the quota) still revokes; the next ready uploads it', async () => {
+    const w = world();
+    await toReady(w);
+    w.state.ownList = LISTED_BOTH;
+    for (const refused of [refusal(429, 'E_RATE_LIMITED', 3_000), refusal(507, 'E_STORAGE_FULL')]) {
+      w.routes.putBackup.mockImplementationOnce(() => { w.calls.push('putBackup(1)'); return Promise.reject(refused); });
+      w.core.stateSealedUploaded.mockClear();
+      const id = w.posted.length + 10;
+      const from = w.calls.length;
+      w.call(id, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(id)).toEqual({ t: 'ret', id, ok: true, value: null }));
+      expect(w.calls.slice(from)).toEqual([
+        'refreshOwnDeviceList', 'getBackup(0)', 'getBackup(1)', 'getDeviceList', 'core.deviceListRevoke',
+        'putDeviceList', 'core.deviceListPublished', 'putBackup(1)', 'refreshOwnDeviceList', 'listDevices',
+      ]);
+      // Left unmarked: ensureBackups at the next ready uploads it (the floor accepts a state behind the list).
+      expect(w.core.stateSealedUploaded).not.toHaveBeenCalled();
+    }
+    expect(w.account()?.phase).toBe('ready');
+  });
+
+  it('a revoking list refused before the state object: nothing is uploaded', async () => {
+    const w = world();
+    await toReady(w);
+    w.state.ownList = LISTED_BOTH;
+    w.routes.putDeviceList.mockImplementationOnce(() => { w.calls.push('putDeviceList'); return Promise.reject(refusal(0, 'E_NETWORK')); });
+    w.call(2, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_NETWORK' } });
+    expect(w.routes.putBackup).not.toHaveBeenCalled();
+    expect(w.core.deviceListPublished).not.toHaveBeenCalled();
   });
 
   it('a listed device needs the key', async () => {
@@ -2004,7 +2038,8 @@ describe('Controller task-14 fix round 1', () => {
       await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
       expect(w.calls.slice(from)).toEqual([
         'refreshOwnDeviceList', 'getBackup(0)', 'getBackup(1)', 'getDeviceList', 'core.deviceListRevoke', 'core.deviceListRevoke',
-        'putBackup(1)', 'core.stateSealedUploaded', 'putDeviceList', 'core.deviceListPublished', 'refreshOwnDeviceList', 'listDevices',
+        // BACKUPS-RECOVERY-01: the list first, then the re-sealed state object.
+        'putDeviceList', 'core.deviceListPublished', 'putBackup(1)', 'core.stateSealedUploaded', 'refreshOwnDeviceList', 'listDevices',
       ]);
       expect(w.core.deviceListRevoke).toHaveBeenNthCalledWith(1, expect.objectContaining({ stateSealed: STATE_OBJECT, deviceIds: [OTHER_DEVICE] }));
       expect(w.core.deviceListRevoke).toHaveBeenNthCalledWith(2, {
