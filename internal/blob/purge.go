@@ -41,11 +41,10 @@ type PurgeResult struct {
 	// as an orphan. It is nil when the file was removed or was never there.
 	UnlinkErr error
 	// BackupKept reports that a backups row names the bytes (security review F10, branch review
-	// BACKUPS-RECOVERY-05). A backup object is a user's sealed key material: the root object is
-	// written once, so tombstoning its bytes would make the user's root unreadable and its
-	// re-upload 410, and the account's recovery would be gone for good. The purge then still
-	// deleted every channel reference and wrote its audit row, but wrote no tombstone, kept the
-	// blobs row and did not unlink the file.
+	// BACKUPS-RECOVERY-05). A backup object is a user's sealed key material and the root object is
+	// written once, so deleting its bytes would end the account's recovery for good. The purge then
+	// still deleted every channel reference and wrote its tombstone and audit row, but kept the
+	// blobs row and did not unlink the file; a state object's replacement unlinks them later.
 	BackupKept bool
 }
 
@@ -87,10 +86,13 @@ func Purge(ctx context.Context, repo store.Repository, bs *Store, req PurgeReque
 		if _, err := tx.DeleteAllBlobRefs(ctx, req.BlobID); err != nil {
 			return err
 		}
+		// The tombstone always: it refuses every new attachment or backup of these bytes, so the
+		// takedown still holds once a backup that names them is replaced (the replacement then
+		// unlinks them and the tombstone stays). A backup object's own reads do not consult it.
+		if err := tx.PutBlobTombstone(ctx, req.BlobID, req.Reason, req.By, req.At); err != nil {
+			return err
+		}
 		if !backup {
-			if err := tx.PutBlobTombstone(ctx, req.BlobID, req.Reason, req.By, req.At); err != nil {
-				return err
-			}
 			if err := tx.DeleteBlob(ctx, req.BlobID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return err
 			}

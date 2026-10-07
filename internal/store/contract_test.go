@@ -232,6 +232,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// dilla-web-2a task 5 (L-SQL-21): the write-once root object (F3, Q27), the single-row
 			// read of the backup routes and the reference check the state replacement marks by.
 			"BackupRefersToBlob", "GetBackup", "InsertBackup",
+			// Branch review BACKUPS-RECOVERY-05: the per-blob lock that keeps backup objects and
+			// attachments disjoint under concurrency.
+			"LockBlob",
 		}},
 	}
 

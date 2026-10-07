@@ -207,6 +207,9 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
 	ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error)
+	// A write claim inside Tx. SQLite's one writer already serialises every write transaction, so this
+	// only makes the claim explicit and the two engines' call sites the same.
+	LockBlob(ctx context.Context, arg LockBlobParams) error
 	// SQLite has no row locks and needs none: every write transaction is BEGIN
 	// IMMEDIATE on a one-connection pool, so the join's and the ban's transactions
 	// are already exclusive. This is the existence read the Postgres form shares.

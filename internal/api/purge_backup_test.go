@@ -278,12 +278,67 @@ func TestAnAttachmentWhoseBytesAreDeletedUnderItIsRefused(t *testing.T) {
 	}
 }
 
+// Backup objects and attachments stay disjoint under concurrency: an attachment PUT and a backup PUT
+// of the same fresh bytes, run at once a hundred times, never both succeed. Each recording
+// transaction takes the per-blob lock (store.LockBlob: the blobs row FOR UPDATE on Postgres; on
+// SQLite the one writer already serialises the two transactions, which is what this run exercises)
+// before its cross-table check, so exactly one wins and the other is 409, every time.
+func TestAnAttachmentAndABackupOfTheSameBytesNeverBothWin(t *testing.T) {
+	e, ch, tok := blobEnv(t)
+	mountBackupPut(e)
+	ctx := t.Context()
+	user := userOf(t, e, tok)
+	second := id.New()
+	if err := e.Repo.CreateDevice(ctx, newAPITestDevice(second, user, e.Clk.Now().Unix())); err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	tok2 := "second-" + second.String()
+	e.sess[tok2] = auth.Session{UserID: user, DeviceID: second, Scope: auth.ScopeEnrolled}
+	ok := func(status int) bool { return status == http.StatusOK || status == http.StatusCreated }
+	for round := 0; round < 100; round++ {
+		e.Clk.Advance(time.Minute) // the attachment route's 20 uploads a minute
+		object := mustCBOR(t, []any{uint64(1), bytes.Repeat([]byte{byte(round), byte(round >> 8), 0x5}, 4), bytes.Repeat([]byte{0x55}, 64)})
+		var wg sync.WaitGroup
+		var sa, sb int
+		wg.Add(2)
+		go func() { defer wg.Done(); sa, _ = putAttachment(e, ch, tok, object) }()
+		go func() { defer wg.Done(); sb, _ = putStateObject(e, tok2, object) }()
+		wg.Wait()
+		if ok(sa) == ok(sb) {
+			t.Fatalf("round %d: attachment %d and backup %d: want exactly one to win", round, sa, sb)
+		}
+		loser := sa
+		if ok(sa) {
+			loser = sb
+		}
+		if loser != http.StatusConflict {
+			t.Fatalf("round %d: the loser answered %d, want 409", round, loser)
+		}
+		sum := sha256.Sum256(object)
+		refs, err := e.Repo.CountBlobRefs(ctx, sum[:])
+		if err != nil {
+			t.Fatalf("CountBlobRefs: %v", err)
+		}
+		backup, err := e.Repo.BackupRefersToBlob(ctx, sum[:])
+		if err != nil {
+			t.Fatalf("BackupRefersToBlob: %v", err)
+		}
+		if (refs > 0) == backup {
+			t.Fatalf("round %d: %d references and backup %v: the bytes must be exactly one kind's", round, refs, backup)
+		}
+	}
+}
+
 // The purge of bytes a backups row names (what a database written before the disjointness rule can
-// hold) deletes every channel reference and writes its audit row, and skips only the tombstone and
-// the unlink: the backup object stays readable. Changed by BACKUPS-RECOVERY-05: it was a 409 that
-// wrote nothing and left every reference in place.
+// hold) deletes every channel reference, writes its audit row AND its tombstone, and skips only the
+// unlink (and keeps the blobs row): the backup object stays readable, and the tombstone refuses any
+// new attachment or backup of those bytes, so the takedown holds once the backup lets them go; then
+// the state replacement unlinks them and the tombstone stays. Changed by BACKUPS-RECOVERY-05 (it was
+// a 409 that wrote nothing and left every reference in place), and again by the coordinator's
+// amendment (it first skipped the tombstone too, so a replaced backup freed the bytes for re-upload).
 func TestThePurgeOfBackupBytesDropsEveryReferenceAndKeepsTheBytes(t *testing.T) {
 	e, ch, tok := blobEnv(t)
+	mountBackupPut(e)
 	other := secondChannel(t, e, ch, tok)
 	adminTok := e.NewInstanceAdmin("root")
 	ctx := t.Context()
@@ -315,8 +370,8 @@ func TestThePurgeOfBackupBytesDropsEveryReferenceAndKeepsTheBytes(t *testing.T) 
 	}
 	kept := func(what string, blobID []byte) {
 		t.Helper()
-		if tomb, err := e.Repo.GetBlobTombstone(ctx, blobID); err != nil || tomb {
-			t.Fatalf("%s: tombstone %v (err %v), want none", what, tomb, err)
+		if tomb, err := e.Repo.GetBlobTombstone(ctx, blobID); err != nil || !tomb {
+			t.Fatalf("%s: tombstone %v (err %v), want one", what, tomb, err)
 		}
 		if _, err := e.Repo.GetBlob(ctx, blobID); err != nil {
 			t.Fatalf("%s: the blobs row is gone: %v", what, err)
@@ -351,6 +406,10 @@ func TestThePurgeOfBackupBytesDropsEveryReferenceAndKeepsTheBytes(t *testing.T) 
 	}
 	kept("the state object after the purge", shared)
 	audits(1)
+	sharedBytes := bytes.Repeat([]byte{0x6b}, 103)
+	if status, body := putAttachment(e, ch, tok, sharedBytes); status != http.StatusGone || e.ErrCode(body) != "E_PRUNED" {
+		t.Fatalf("an attachment of the purged backup bytes = %d %x, want 410 E_PRUNED", status, body)
+	}
 
 	root := stored(0, 0x5a)
 	if status, body := purge(root); status != http.StatusNoContent {
@@ -359,14 +418,22 @@ func TestThePurgeOfBackupBytesDropsEveryReferenceAndKeepsTheBytes(t *testing.T) 
 	kept("the root object after the purge", root)
 	audits(2)
 
-	// Once the state object is replaced no backups row names the old bytes, and the purge
-	// tombstones them as for any blob.
-	stored(1, 0x7c)
-	if status, body := purge(shared); status != http.StatusNoContent {
-		t.Fatalf("purge of a replaced state object's bytes = %d %x, want 204", status, body)
+	// The state object is replaced: no backups row names the purged bytes any more, so the
+	// replacement unlinks them, and the tombstone stays and keeps refusing them.
+	if status, body := putStateObject(e, tok, stateShaped(t, 0x7c)); status != http.StatusOK {
+		t.Fatalf("the replacing state PUT = %d %x, want 200", status, body)
+	}
+	if _, err := e.Repo.GetBlob(ctx, shared); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the purged bytes' row after the replacement: %v, want ErrNotFound", err)
+	}
+	if _, err := e.Blobs.Stat(shared); !errors.Is(err, blob.ErrNotFound) {
+		t.Fatalf("the purged bytes' file after the replacement: %v, want blob.ErrNotFound", err)
 	}
 	if tomb, err := e.Repo.GetBlobTombstone(ctx, shared); err != nil || !tomb {
-		t.Fatalf("the purged bytes have no tombstone: %v (err %v)", tomb, err)
+		t.Fatalf("the tombstone after the replacement: %v (err %v), want it kept", tomb, err)
 	}
-	audits(3)
+	if status, body := putAttachment(e, ch, tok, sharedBytes); status != http.StatusGone {
+		t.Fatalf("an attachment of the purged bytes after the replacement = %d %x, want 410", status, body)
+	}
+	audits(2)
 }

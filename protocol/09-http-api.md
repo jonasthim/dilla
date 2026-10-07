@@ -1015,15 +1015,18 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
   hand the purged name straight back to anyone still holding the ciphertext. Purging bytes the
   instance does not hold still records the tombstone, so the table is also the operator's
   blocklist; a second purge of the same bytes is `204`. For bytes a stored backup object names
-  (§ Backups) the purge still removes every channel reference and writes its audit row, and
-  answers `204`, but records no tombstone, keeps the blob and does not unlink the file: the root
-  object is written once, so a tombstone on its bytes would leave the account with a root it can
-  neither read nor store again, and no recovery (`dillad admin blob purge` does the same and says
-  the bytes were kept). Backup objects and attachments never share bytes: a backup `PUT` of bytes
-  a channel references, and an attachment `PUT` of bytes a backup object names, are
-  `409 E_INVALID_REQUEST`, decided in the transaction that would record them, so this case arises
-  only from data stored before the rule. A replaced state object's bytes are no longer named and
-  can be purged. `reason` is 1..1024 bytes with no NUL and
+  (§ Backups) the purge also removes every channel reference, records the tombstone and writes its
+  audit row, and answers `204`, but keeps the blob and does not unlink the file: the root object
+  is written once, so removing its bytes would leave the account with no recovery, and the backup
+  reads do not consult tombstones. The tombstone refuses every new attachment or backup of those
+  bytes; when the state object that names them is replaced, the replacement unlinks them and the
+  tombstone stays (`dillad admin blob purge` does the same and says the file was kept). Backup
+  objects and attachments never share bytes: a backup `PUT` of bytes a channel references, and an
+  attachment `PUT` of bytes a backup object names, are `409 E_INVALID_REQUEST`, decided in the
+  transaction that would record them after it takes the per-blob lock both routes take (the blobs
+  row `FOR UPDATE` on Postgres; on SQLite the one writer serialises them), so of two concurrent
+  uploads of the same bytes, one of each kind, exactly one is recorded; the purge case arises only
+  from data stored before the rule. `reason` is 1..1024 bytes with no NUL and
   becomes the audit row's `detail` under the action `blob.purge`, whose `target` is the blob id in
   hex. A purge removes **bytes, not content**: every attachment is encrypted under its own random
   key, so the same file sent again by anyone has a different `blob_id`.

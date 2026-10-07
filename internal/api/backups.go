@@ -184,6 +184,11 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
+		// The per-blob lock before the cross-table checks below, the one the attachment route takes
+		// too, so the two routes cannot both find the other table empty for the same bytes.
+		if err := tx.LockBlob(ctx, blobID); err != nil {
+			return err
+		}
 		// The file is checked after the row is claimed: a replaced object's delete claims the same
 		// row before it unlinks, so either it saw this row and kept the file, or the file is gone now.
 		if err := bytesPresent(d.Blobs, blobID); err != nil {
@@ -357,6 +362,9 @@ func (d Deps) unlinkReplaced(ctx context.Context, row store.BlobRow, now int64) 
 	ctx = context.WithoutCancel(ctx)
 	err := d.Repo.Tx(ctx, func(tx store.Repository) error {
 		if err := tx.PutBlob(ctx, store.BlobRow{BlobID: row.BlobID, Size: row.Size, StorageRef: row.StorageRef, Created: now}); err != nil {
+			return err
+		}
+		if err := tx.LockBlob(ctx, row.BlobID); err != nil {
 			return err
 		}
 		backup, err := tx.BackupRefersToBlob(ctx, row.BlobID)

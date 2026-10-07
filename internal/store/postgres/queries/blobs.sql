@@ -162,3 +162,8 @@ FROM backups WHERE user_id = $1 AND kind = $2 AND device_id = $3 AND chunk_seq =
 -- name: BackupRefersToBlob :one
 -- COUNT, not EXISTS, for the reason GetBlobTombstone gives.
 SELECT COUNT(*) FROM backups WHERE backups.blob_id = sqlc.arg(blob_id);
+
+-- name: LockBlob :exec
+-- The per-blob lock the recording transactions take before their cross-table checks: the blobs
+-- row FOR UPDATE until Tx commits (the caller inserted it first if it was absent).
+SELECT blob_id FROM blobs WHERE blob_id = sqlc.arg(blob_id) FOR UPDATE;

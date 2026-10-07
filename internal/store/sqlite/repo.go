@@ -2863,6 +2863,13 @@ func (r *Repo) GetBackup(ctx context.Context, userID id.ID, kind int32, deviceID
 	return store.BackupRow{UserID: row.UserID, Kind: uint64(row.Kind), DeviceID: row.DeviceID, ChunkSeq: uint64(row.ChunkSeq), BlobID: row.BlobID, ManifestSig: row.ManifestSig, Created: row.Created}, nil
 }
 
+func (r *Repo) LockBlob(ctx context.Context, blobID []byte) error {
+	if !r.inTx {
+		return errors.New("store: the blob lock requires Tx")
+	}
+	return wrap(r.w.LockBlob(ctx, sqlitedb.LockBlobParams{BlobID: blobID}))
+}
+
 func (r *Repo) BackupRefersToBlob(ctx context.Context, blobID []byte) (bool, error) {
 	n, err := r.r.BackupRefersToBlob(ctx, sqlitedb.BackupRefersToBlobParams{BlobID: blobID})
 	if err != nil {

@@ -503,6 +503,21 @@ func (q *Queries) ListExpiredBlobRefs(ctx context.Context, arg ListExpiredBlobRe
 	return items, nil
 }
 
+const lockBlob = `-- name: LockBlob :exec
+SELECT blob_id FROM blobs WHERE blob_id = $1 FOR UPDATE
+`
+
+type LockBlobParams struct {
+	BlobID []byte
+}
+
+// The per-blob lock the recording transactions take before their cross-table checks: the blobs
+// row FOR UPDATE until Tx commits (the caller inserted it first if it was absent).
+func (q *Queries) LockBlob(ctx context.Context, arg LockBlobParams) error {
+	_, err := q.db.ExecContext(ctx, lockBlob, arg.BlobID)
+	return err
+}
+
 const markBlobUnreferenced = `-- name: MarkBlobUnreferenced :exec
 UPDATE blobs SET unref_since = $1
 WHERE blobs.blob_id = $2

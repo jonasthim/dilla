@@ -504,6 +504,21 @@ func (q *Queries) ListExpiredBlobRefs(ctx context.Context, arg ListExpiredBlobRe
 	return items, nil
 }
 
+const lockBlob = `-- name: LockBlob :exec
+UPDATE blobs SET blob_id = blob_id WHERE blob_id = ?1
+`
+
+type LockBlobParams struct {
+	BlobID []byte
+}
+
+// A write claim inside Tx. SQLite's one writer already serialises every write transaction, so this
+// only makes the claim explicit and the two engines' call sites the same.
+func (q *Queries) LockBlob(ctx context.Context, arg LockBlobParams) error {
+	_, err := q.db.ExecContext(ctx, lockBlob, arg.BlobID)
+	return err
+}
+
 const markBlobUnreferenced = `-- name: MarkBlobUnreferenced :exec
 UPDATE blobs SET unref_since = ?1
 WHERE blobs.blob_id = ?2

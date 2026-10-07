@@ -207,6 +207,9 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
 	ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error)
+	// The per-blob lock the recording transactions take before their cross-table checks: the blobs
+	// row FOR UPDATE until Tx commits (the caller inserted it first if it was absent).
+	LockBlob(ctx context.Context, arg LockBlobParams) error
 	// The join and the ban both take this lock before they read or write the
 	// membership, so a join's ban check and its member insert cannot interleave with
 	// a ban under READ COMMITTED. FOR NO KEY UPDATE: two lockers conflict, while the

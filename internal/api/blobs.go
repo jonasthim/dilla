@@ -230,6 +230,12 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
+		// The per-blob lock before the cross-table check below, the one the backup
+		// route takes too (store.LockBlob), so the two routes cannot both find
+		// the other table empty for the same bytes.
+		if err := tx.LockBlob(r.Context(), blobID); err != nil {
+			return err
+		}
 		// The file, after the row is claimed: a replaced state object's delete
 		// (Deps.unlinkReplaced) claims the same row before it unlinks, so either it
 		// saw this row and kept the file or the file is gone now and nothing is

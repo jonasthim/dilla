@@ -162,3 +162,8 @@ FROM backups WHERE user_id = ? AND kind = ? AND device_id = ? AND chunk_seq = ?;
 -- name: BackupRefersToBlob :one
 -- COUNT, not EXISTS, for the reason GetBlobTombstone gives.
 SELECT COUNT(*) FROM backups WHERE backups.blob_id = sqlc.arg(blob_id);
+
+-- name: LockBlob :exec
+-- A write claim inside Tx. SQLite's one writer already serialises every write transaction, so this
+-- only makes the claim explicit and the two engines' call sites the same.
+UPDATE blobs SET blob_id = blob_id WHERE blob_id = sqlc.arg(blob_id);

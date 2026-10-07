@@ -624,6 +624,11 @@ type OpsBackups interface {
 	GetBackup(ctx context.Context, userID id.ID, kind int32, deviceID id.ID, chunkSeq int64) (BackupRow, error)
 	// BackupRefersToBlob reports whether any backups row of any user names the blob.
 	BackupRefersToBlob(ctx context.Context, blobID []byte) (bool, error)
+	// LockBlob takes the per-blob lock inside Tx: the blobs row FOR UPDATE on Postgres (the caller
+	// inserts it first if absent), a write claim on SQLite, whose one writer already serialises
+	// every write transaction. The attachment and backup recording transactions take it before
+	// their cross-table checks, so backup objects and attachments stay disjoint under concurrency.
+	LockBlob(ctx context.Context, blobID []byte) error
 }
 
 // All thirteen sub-interfaces of §4.1 are declared above, as deviation ID1

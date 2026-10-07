@@ -122,6 +122,31 @@ func TestBackupRefersToBlobSeesEveryKindAndUser(t *testing.T) {
 	}
 }
 
+// LockBlob (BACKUPS-RECOVERY-05) is refused outside Tx on both engines, and inside Tx locks the
+// blobs row whether it exists or not (an absent row locks nothing and is not an error).
+func TestLockBlobRequiresTx(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			if err := repo.LockBlob(ctx, digest(0x51)); err == nil {
+				t.Fatal("LockBlob outside Tx succeeded")
+			}
+			if err := repo.PutBlob(ctx, store.BlobRow{BlobID: digest(0x51), Size: 1, StorageRef: "fs:x", Created: 1}); err != nil {
+				t.Fatalf("PutBlob: %v", err)
+			}
+			err := repo.Tx(ctx, func(tx store.Repository) error {
+				if err := tx.LockBlob(ctx, digest(0x51)); err != nil {
+					return err
+				}
+				return tx.LockBlob(ctx, digest(0x52))
+			})
+			if err != nil {
+				t.Fatalf("LockBlob in Tx: %v", err)
+			}
+		})
+	}
+}
+
 // Boundary ruling 2 (task 6 scan): blobs.quota_bytes_per_user counts the user's backup objects
 // with their attachments, each distinct blob once; a replaced state object drops out of the count
 // with its row, and another user's objects never count.
