@@ -26,6 +26,109 @@ type replacingBlobRepo struct {
 	beforeTx func() error
 }
 
+// Models a competing reference replacement at the authorization/mutation boundary.
+// A LockBlob lets that transaction finish before the handler reads; without it,
+// the replacement commits after the old reference is read and before the write.
+type interleavingBlobRepo struct {
+	store.Repository
+	armed           bool
+	current, queued store.BlobRefRow
+	deleted         bool
+}
+
+func (r *interleavingBlobRepo) Tx(ctx context.Context, fn func(store.Repository) error) error {
+	if !r.armed {
+		return r.Repository.Tx(ctx, fn)
+	}
+	return r.Repository.Tx(ctx, func(tx store.Repository) error {
+		return fn(&interleavingBlobTx{Repository: tx, parent: r})
+	})
+}
+
+type interleavingBlobTx struct {
+	store.Repository
+	parent *interleavingBlobRepo
+	locked bool
+}
+
+func (tx *interleavingBlobTx) LockBlob(ctx context.Context, blobID []byte) error {
+	// The competing transaction wins before this transaction acquires the row lock.
+	tx.parent.current = tx.parent.queued
+	if err := tx.Repository.LockBlob(ctx, blobID); err != nil {
+		return err
+	}
+	tx.locked = true
+	return nil
+}
+
+func TestBlobMutationLockClosesReadToWriteWindow(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			e, community, owner := channelEnv(t)
+			bs, err := blob.Open(t.TempDir(), "fs")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = bs.Close() })
+			repo := &interleavingBlobRepo{Repository: e.Repo}
+			api.NewBlobs(repo, bs, api.NewResolver(repo), config.Default().Blobs, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
+			ch, _, status := newChannel(t, e, community, owner, uint64(api.ChannelText), uint64(api.ModeE2EE), uint64(api.VisPrivate), "files")
+			if status != http.StatusCreated {
+				t.Fatalf("channel = %d", status)
+			}
+			_, replacement := e.NewUser("replacement")
+			joinChannel(t, e, ch, replacement)
+			payload := []byte("shared encrypted bytes")
+			sum := sha256.Sum256(payload)
+			url := blobURL(ch, sum[:])
+			if status, body := e.DoRaw(http.MethodPut, url, owner, "application/octet-stream", payload); status != http.StatusCreated {
+				t.Fatalf("initial PUT = %d %s", status, body)
+			}
+			repo.current, err = e.Repo.GetBlobRef(t.Context(), sum[:], ch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo.queued = repo.current
+			repo.queued.UploaderDevice = e.sess[replacement].DeviceID
+			repo.armed = true
+			if method == http.MethodPost {
+				url += "/confirm"
+			}
+			status, body := e.Do(method, url, owner, nil)
+			if status != http.StatusForbidden || e.ErrCode(body) != "E_NOT_UPLOADER" {
+				t.Fatalf("%s during replacement = %d %s, want 403 E_NOT_UPLOADER", method, status, body)
+			}
+			if repo.deleted || repo.current.Confirmed || repo.current.UploaderDevice != e.sess[replacement].DeviceID {
+				t.Fatalf("%s changed replacement reference: %+v deleted=%v", method, repo.current, repo.deleted)
+			}
+		})
+	}
+}
+
+func (tx *interleavingBlobTx) GetBlobRef(_ context.Context, _ []byte, _ id.ID) (store.BlobRefRow, error) {
+	if tx.locked {
+		return tx.parent.current, nil
+	}
+	// A bare read observes the old uploader; the competing transaction then commits.
+	old := tx.parent.current
+	tx.parent.current = tx.parent.queued
+	return old, nil
+}
+
+func (tx *interleavingBlobTx) ConfirmBlobRef(_ context.Context, _ []byte, _ id.ID) error {
+	tx.parent.current.Confirmed = true
+	return nil
+}
+
+func (tx *interleavingBlobTx) DeleteBlobRef(_ context.Context, _ []byte, _ id.ID) error {
+	tx.parent.deleted = true
+	return nil
+}
+
+func (tx *interleavingBlobTx) MarkBlobUnreferenced(_ context.Context, _ []byte, _ int64) error {
+	return nil
+}
+
 func (r *replacingBlobRepo) Tx(ctx context.Context, fn func(store.Repository) error) error {
 	if r.beforeTx != nil {
 		hook := r.beforeTx
