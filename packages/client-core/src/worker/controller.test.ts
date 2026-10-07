@@ -6,7 +6,7 @@ import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
 import {
   CoreError, type ActivityRow, type ApplyResult, type CorePort, type GroupInfo, type IdentityInfo, type OwnDeviceList, type SealedObjects,
-  type SessionRecord, type TimelineRow,
+  type SessionRecord, type SignedLists, type TimelineRow,
 } from '../core-port';
 import { CLIENT_CLOSE, type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
@@ -341,15 +341,18 @@ function world(opts: {
     settingPut: vi.fn((k: string, v: string): void => { state.settings[k] = v; }),
     settingDelete: vi.fn((k: string): void => { state.settings = Object.fromEntries(Object.entries(state.settings).filter(([key]) => key !== k)); }),
     ownDeviceList: (): OwnDeviceList => state.ownList,
-    deviceListRevoke: vi.fn((_input: unknown) => { calls.push('core.deviceListRevoke'); return { deviceListBody: new Uint8Array([7]), stateSealed: new Uint8Array([8]) }; }),
+    deviceListRevoke: vi.fn((_input: unknown): SignedLists => {
+      calls.push('core.deviceListRevoke'); return { deviceListBody: new Uint8Array([7]), stateSealed: new Uint8Array([8]), interrupted: null };
+    }),
+    deviceListDrop: vi.fn((): void => { calls.push('core.deviceListDrop'); state.listPublished = false; }),
     stateSealedUploaded: vi.fn((): void => { calls.push('core.stateSealedUploaded'); }),
     // An addition to the brief's double (task-14 fix round 1): the state object this device sealed, as the core keeps it.
     sealedObjects: vi.fn((): SealedObjects => ({ root: ROOT, state: LOCAL_STATE, stateUploaded: true })),
     deviceListPublished: vi.fn((): void => { calls.push('core.deviceListPublished'); state.listPublished = true; }),
     deviceListBody: (): Uint8Array => new Uint8Array([7]),
-    enrolComplete: vi.fn((_input: unknown) => {
+    enrolComplete: vi.fn((_input: unknown): SignedLists => {
       calls.push('core.enrolComplete'); state.phase = 2; state.listPublished = false;
-      return { deviceListBody: new Uint8Array([7]), stateSealed: new Uint8Array([8]) };
+      return { deviceListBody: new Uint8Array([7]), stateSealed: new Uint8Array([8]), interrupted: null };
     }),
     session: (): SessionRecord | null => state.session,
     sessionStore: vi.fn((s: SessionRecord): void => { state.session = s; }),
@@ -1641,7 +1644,8 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
     expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: false, error: { code: 'E_INTERNAL', detail: '', status: 500, retryAfterMs: null } });
     const after = w.calls.slice(from);
-    expect(after.slice(after.indexOf('putDeviceList'))).toEqual(['putDeviceList', 'sync.start', 'gateway.start']);
+    // BACKUPS-RECOVERY-02: the self-revoking candidate is dropped, so no later ready publishes it silently.
+    expect(after.slice(after.indexOf('putDeviceList'))).toEqual(['putDeviceList', 'core.deviceListDrop', 'sync.start', 'gateway.start']);
     expect(w.sync.builds).toBe(2);
     expect(w.sync.setExpected).toHaveBeenLastCalledWith([{ groupId: GROUP, communityId: COMMUNITY, channelId: CHANNEL, policyVersion: 1n }]);
     expect(w.core.pause).not.toHaveBeenCalled();
@@ -1649,6 +1653,83 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     // wiping is false again: a later revoked socket re-establishes as in web-1.
     w.gateway.emit({ type: 'revoked' });
     await vi.waitFor(() => expect(w.session.establish).toHaveBeenCalledTimes(1));
+  });
+
+  it('a sign-out whose state object is refused sends nothing more and drops its candidate (BACKUPS-RECOVERY-02)', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.putBackup.mockImplementationOnce(() => { w.calls.push('putBackup(1)'); return Promise.reject(refusal(429, 'E_RATE_LIMITED', 70_000)); });
+    const from = w.calls.length;
+    w.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_RATE_LIMITED' } });
+    expect(w.calls.slice(from)).toEqual(['getBackup(0)', 'getBackup(1)', 'getDeviceList', 'core.deviceListRevoke', 'putBackup(1)', 'core.deviceListDrop']);
+    expect(w.routes.putDeviceList).not.toHaveBeenCalled();
+    expect(w.gateway.stops).toBe(0);
+    expect(w.account()?.phase).toBe('ready');
+  });
+
+  it('an interrupted publication the core signed on is published first: on a revocation, then the list, then the state', async () => {
+    const w = world();
+    await toReady(w);
+    w.state.ownList = LISTED_BOTH;
+    const interrupted = new Uint8Array([6]);
+    w.core.deviceListRevoke.mockImplementationOnce(() => {
+      w.calls.push('core.deviceListRevoke'); return { deviceListBody: new Uint8Array([7]), stateSealed: new Uint8Array([8]), interrupted };
+    });
+    const from = w.calls.length;
+    w.call(2, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+    expect(w.calls.slice(from)).toEqual([
+      'refreshOwnDeviceList', 'getBackup(0)', 'getBackup(1)', 'getDeviceList', 'core.deviceListRevoke',
+      'putDeviceList', 'putDeviceList', 'core.deviceListPublished', 'putBackup(1)', 'core.stateSealedUploaded', 'refreshOwnDeviceList', 'listDevices',
+    ]);
+    expect(w.routes.putDeviceList.mock.calls.map((c) => c[1])).toEqual([interrupted, new Uint8Array([7])]);
+  });
+
+  it('an interrupted publication that another device published meanwhile (409) is not an error', async () => {
+    const w = world();
+    await toReady(w);
+    w.state.ownList = LISTED_BOTH;
+    w.core.deviceListRevoke.mockImplementationOnce(() => {
+      w.calls.push('core.deviceListRevoke'); return { deviceListBody: new Uint8Array([7]), stateSealed: new Uint8Array([8]), interrupted: new Uint8Array([6]) };
+    });
+    w.routes.putDeviceList.mockImplementationOnce(() => { w.calls.push('putDeviceList'); return Promise.reject(refusal(409, 'E_INVALID_REQUEST')); });
+    w.call(2, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+    expect(w.routes.putDeviceList).toHaveBeenCalledTimes(2);
+    expect(w.core.deviceListPublished).toHaveBeenCalledTimes(1);
+  });
+
+  it('an interrupted publication refused otherwise fails the revocation and drops the candidate to it', async () => {
+    const w = world();
+    await toReady(w);
+    w.state.ownList = LISTED_BOTH;
+    w.core.deviceListRevoke.mockImplementationOnce(() => {
+      w.calls.push('core.deviceListRevoke'); return { deviceListBody: new Uint8Array([7]), stateSealed: new Uint8Array([8]), interrupted: new Uint8Array([6]) };
+    });
+    w.routes.putDeviceList.mockImplementationOnce(() => { w.calls.push('putDeviceList'); return Promise.reject(refusal(0, 'E_NETWORK')); });
+    w.call(2, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_NETWORK' } });
+    expect(w.routes.putDeviceList).toHaveBeenCalledTimes(1);
+    expect(w.core.deviceListDrop).toHaveBeenCalledTimes(1);
+    expect(w.routes.putBackup).not.toHaveBeenCalled();
+  });
+
+  it('a sign-out over an interrupted publication publishes it first, then the state object, then the self-revoking list', async () => {
+    const w = world();
+    await toReady(w);
+    w.core.deviceListRevoke.mockImplementationOnce(() => {
+      w.calls.push('core.deviceListRevoke'); return { deviceListBody: new Uint8Array([7]), stateSealed: new Uint8Array([8]), interrupted: new Uint8Array([6]) };
+    });
+    const from = w.calls.length;
+    w.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+    expect(w.calls.slice(from)).toEqual([
+      'getBackup(0)', 'getBackup(1)', 'getDeviceList', 'core.deviceListRevoke', 'putDeviceList', 'putBackup(1)',
+      'sync.stop', 'gateway.stop', 'putDeviceList', 'core.pause', 'resetDevice',
+    ]);
   });
 
   it('a revocation that loses the race reports E_LIST_RACE, restarts the gateway and keeps the store', async () => {
@@ -1771,6 +1852,20 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     expect(w.wiped).toEqual([INSTANCE_HEX]);
     expect(w.account()).toMatchObject({ phase: 'cleared', user: null, deviceId: null, error: null });
     expect(w.routes.putDeviceList).not.toHaveBeenCalled();
+  });
+
+  it('forgetBrowser publishes an unpublished candidate before it deletes the sessions, and wipes even if that fails', async () => {
+    for (const fails of [false, true]) {
+      const w = world();
+      await toReady(w);
+      w.state.listPublished = false;
+      if (fails) w.account.publishDeviceList.mockImplementationOnce(() => { w.calls.push('publishDeviceList'); return Promise.reject(refusal(0, 'E_NETWORK')); });
+      const from = w.calls.length;
+      w.call(2, { m: 'forgetBrowser' });
+      await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+      expect(w.calls.slice(from)).toEqual(['sync.stop', 'gateway.stop', 'publishDeviceList', 'deleteSessions', 'core.pause', 'resetDevice']);
+      expect(w.account()?.phase).toBe('cleared');
+    }
   });
 
   it('a 4004 during forgetBrowser mints nothing', async () => {

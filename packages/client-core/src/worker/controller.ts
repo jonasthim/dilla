@@ -9,7 +9,8 @@ import { Session } from '../account/session';
 import { Signup, publishDeviceList } from '../account/signup';
 import { CborError } from '../cbor';
 import {
-  CoreError, type ActivityRow, type ApplyResult, type CorePort, type ExpectedGroup, type GroupInfo, type Id, type TimelineRow,
+  CoreError, type ActivityRow, type ApplyResult, type CorePort, type ExpectedGroup, type GroupInfo, type Id, type SignedLists,
+  type TimelineRow,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { fromHex, toHex } from '../hex';
@@ -1203,7 +1204,7 @@ export class Controller {
    *  revoking list and the re-sealed state object. The caller writes them, in its own order (BACKUPS-RECOVERY-01).
    *  An older served list is refreshed and the reads retried once (pre-flight ruling (c)); a second is the list
    *  conflict. */
-  private async revoke(ids: Id[], recoveryKey: string): Promise<{ deviceListBody: Uint8Array; stateSealed: Uint8Array }> {
+  private async revoke(ids: Id[], recoveryKey: string): Promise<SignedLists> {
     const core = this.requireCore();
     const me = this.requireMe();
     for (let attempt = 0; ; attempt += 1) {
@@ -1214,9 +1215,9 @@ export class Controller {
       const list = await this.routes.getDeviceList(me.userId);
       if (list === null) throw new Error('E_NO_BACKUP');
       const now = this.nowS();
-      const sign = (stateSealed: Uint8Array): { deviceListBody: Uint8Array; stateSealed: Uint8Array } =>
+      const sign = (stateSealed: Uint8Array): SignedLists =>
         core.deviceListRevoke({ recoveryKey, rootSealed: root.object, stateSealed, listBody: list.raw, deviceIds: ids, now });
-      let signed: { deviceListBody: Uint8Array; stateSealed: Uint8Array };
+      let signed: SignedLists;
       try {
         try {
           signed = sign(state?.object ?? new Uint8Array(0));
@@ -1238,6 +1239,20 @@ export class Controller {
         continue;
       }
       return signed;
+    }
+  }
+
+  /** BACKUPS-RECOVERY-02: the list another device signed and could not publish, which the core found in the state
+   *  object and signed on, goes to the instance first. A 409 is a list there already (published meanwhile, or a
+   *  fork the next PUT meets); any other failure drops the new candidate back to it, so a later ready publishes it. */
+  private async publishInterrupted(signed: SignedLists): Promise<void> {
+    if (signed.interrupted === null) return;
+    try {
+      await this.routes.putDeviceList(this.requireMe().userId, signed.interrupted);
+    } catch (e) {
+      if (isStatus(e, 409)) return;
+      this.requireCore().deviceListDrop();
+      throw e;
     }
   }
 
@@ -1265,6 +1280,7 @@ export class Controller {
     }
     if (recoveryKey === null || recoveryKey.trim() === '') throw new Refusal('E_BAD_INPUT', 'the recovery key is empty');
     const signed = await this.revoke([fromHex(deviceId)], recoveryKey);
+    await this.publishInterrupted(signed);
     // BACKUPS-RECOVERY-01: the revoking list first. The state object's PUT shares the user's upload meter and quota
     // with every session of the account, the stolen one included, so it must not be able to hold the list back.
     try {
@@ -1286,16 +1302,27 @@ export class Controller {
 
   private async signOutRevoke(recoveryKey: string): Promise<null> {
     const me = this.requireMe();
+    const core = this.requireCore();
     const signed = await this.revoke([me.deviceId], recoveryKey);
-    // Architect ruling 17: the state object before the list, so the self-revoking PUT is the last request this
-    // device makes; the socket and the engine stop before it (head ruling 27).
-    await this.routes.putBackup(1, signed.stateSealed);
+    // An interrupted publication first, then the state object (architect ruling 17: before the list, so the
+    // self-revoking PUT is the last request this device makes); a refusal of either sends nothing more and drops
+    // the self-revoking candidate, so no later ready publishes it without the wipe the person asked for
+    // (BACKUPS-RECOVERY-02).
+    await this.publishInterrupted(signed);
+    try {
+      await this.routes.putBackup(1, signed.stateSealed);
+    } catch (e) {
+      core.deviceListDrop();
+      throw e;
+    }
+    // The socket and the engine stop before the self-revoking PUT (head ruling 27).
     this.quiesce();
     try {
       await this.routes.putDeviceList(me.userId, signed.deviceListBody);
     } catch (e) {
+      if (isStatus(e, 409)) { this.resume(); return this.listRace(); }
+      core.deviceListDrop();
       this.resume();
-      if (isStatus(e, 409)) return this.listRace();
       throw e;
     }
     await this.wipe(null);
@@ -1304,8 +1331,15 @@ export class Controller {
 
   private async forgetBrowser(): Promise<null> {
     const core = this.requireCore();
-    const deviceId = this.me?.deviceId ?? core.identity().deviceId;
+    const identity = core.identity();
+    const deviceId = this.me?.deviceId ?? identity.deviceId;
     this.quiesce();
+    // BACKUPS-RECOVERY-02: a candidate this device signed and did not publish may already have its state object at
+    // the instance; it is published before the store goes. A failure leaves it to the wipe, and the next device that
+    // recovers finds it as an interrupted publication.
+    if (identity.phase === 2 && !identity.listPublished) {
+      try { await this.parts.publishDeviceList(core, this.routes); } catch { /* the wipe drops it */ }
+    }
     if (deviceId !== null) {
       try {
         await this.routes.deleteSessions(deviceId);

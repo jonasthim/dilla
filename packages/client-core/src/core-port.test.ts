@@ -218,7 +218,7 @@ describe('wrapCore web-2a', () => {
     const body = new Uint8Array([0x85, 1]);
     const s = stub({
       enrol_begin: () => encode([DEV, DSK]), enrol_session_sign: () => body, enrol_registered: () => undefined,
-      enrol_complete: () => encode([new Uint8Array([4]), new Uint8Array([5])]), enrol_reset: () => undefined,
+      enrol_complete: () => encode([new Uint8Array([4]), new Uint8Array([5]), null]), enrol_reset: () => undefined,
     });
     expect(s.port.enrolBegin(INST)).toEqual({ deviceId: DEV, dskPub: DSK });
     const nonce = new Uint8Array(32).fill(9);
@@ -226,7 +226,7 @@ describe('wrapCore web-2a', () => {
     expect(s.port.enrolSessionSign(nonce, login)).toBe(body);
     s.port.enrolRegistered(USER);
     const input = { recoveryKey: 'abcd-efgh', rootSealed: new Uint8Array([1]), stateSealed: new Uint8Array([2]), listBody: new Uint8Array([3]), username: 'ada', now: 1_800_000_000n };
-    expect(s.port.enrolComplete(input)).toEqual({ deviceListBody: new Uint8Array([4]), stateSealed: new Uint8Array([5]) });
+    expect(s.port.enrolComplete(input)).toEqual({ deviceListBody: new Uint8Array([4]), stateSealed: new Uint8Array([5]), interrupted: null });
     s.port.enrolReset();
     expect(s.calls).toEqual([
       { method: 'enrol_begin', args: [INST] },
@@ -235,6 +235,12 @@ describe('wrapCore web-2a', () => {
       { method: 'enrol_complete', args: ['abcd-efgh', input.rootSealed, input.stateSealed, input.listBody, 'ada', 1_800_000_000n] },
       { method: 'enrol_reset', args: [] },
     ]);
+  });
+
+  it('forwards the drop of an unpublished candidate (BACKUPS-RECOVERY-02)', () => {
+    const s = stub({ device_list_drop: () => undefined });
+    s.port.deviceListDrop();
+    expect(s.calls).toEqual([{ method: 'device_list_drop', args: [] }]);
   });
 
   it('forwards the recovery key form check and maps its refusal (REGISTRATION-DEVICES-02)', () => {
@@ -246,11 +252,11 @@ describe('wrapCore web-2a', () => {
   });
 
   it('concatenates the device ids of a revocation and refuses a malformed list before the call', () => {
-    const s = stub({ device_list_revoke: () => encode([new Uint8Array([6]), new Uint8Array([7])]) });
+    const s = stub({ device_list_revoke: () => encode([new Uint8Array([6]), new Uint8Array([7]), new Uint8Array([5])]) });
     const a = new Uint8Array(16).fill(0x0a);
     const b = new Uint8Array(16).fill(0x0b);
     const input = { recoveryKey: 'K', rootSealed: new Uint8Array([1]), stateSealed: new Uint8Array([2]), listBody: new Uint8Array([3]), deviceIds: [a, b], now: 9n };
-    expect(s.port.deviceListRevoke(input)).toEqual({ deviceListBody: new Uint8Array([6]), stateSealed: new Uint8Array([7]) });
+    expect(s.port.deviceListRevoke(input)).toEqual({ deviceListBody: new Uint8Array([6]), stateSealed: new Uint8Array([7]), interrupted: new Uint8Array([5]) });
     const ids = new Uint8Array(32);
     ids.set(a, 0);
     ids.set(b, 16);

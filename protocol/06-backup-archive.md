@@ -55,6 +55,17 @@ device list are. Both are read by the user's own `enrolled` and `pending` sessio
 entering the recovery key fetches them before it holds a credential. Archive chunks and the
 manifest are not served at wire 1. The instance cannot open either object.
 
+**An interrupted publication.** A device that changes the device list writes the state object
+naming the new list before or after it publishes that list; when the list `PUT` is lost (a failed
+sign-out, a browser forgotten before its next session), the instance holds list `v` and a state
+object whose list is `v + 1`. A device recovering by key that finds the state object's list to be
+exactly the served list's successor, chaining from it (`prev_hash`) and verifying under the recovered
+`SSK`, treats it as the newest list: it publishes that list first and signs its own change as
+`v + 2` on it. A state object whose list is further on, or does not chain, or does not verify, is
+refused as an older served list (the rollback floor). A browser that is told to forget itself
+publishes an unpublished list it signed before it erases its store, and a browser whose sign-out
+failed drops its unpublished self-revoking list.
+
 A stolen enrolled session can upload a well-formed junk root before the owner's first upload.
 The owner's first upload then gets `409`; the client fetches and compares the stored root and
 raises `E_ROOT_MISMATCH` with an alert. The server does not prevent this first-writer attack.

@@ -413,7 +413,11 @@ struct Recovered {
     k_backup: Zeroizing<[u8; 32]>,
     pins: Vec<u8>,
     state_list_version: Option<u64>,
+    /// The base the next list is signed on: the served list, or the state object's own list when it
+    /// is an interrupted publication of the served list's successor (BACKUPS-RECOVERY-02).
     list: DeviceList,
+    /// Whether `list` came from the state object and the instance does not hold it yet.
+    interrupted: bool,
 }
 
 fn recover(
@@ -468,7 +472,7 @@ fn recover(
         ));
     }
     // The state object: [1, device_list, pins] under K_backup; its list must decode, as the floor
-    // reads its version.
+    // reads its version and an interrupted publication its whole list.
     let state = if state_sealed.is_empty() {
         Err("the backup state is missing")
     } else {
@@ -480,22 +484,19 @@ fn recover(
                     if d.uint()? != 1 {
                         return Err(shape());
                     }
-                    let version = DeviceList::decode(d.bytes()?)
-                        .map_err(|_| shape())?
-                        .unsigned
-                        .version;
+                    let inner = DeviceList::decode(d.bytes()?).map_err(|_| shape())?;
                     let pins = d.skip()?;
                     if pins.first().is_none_or(|b| b >> 5 != 4) {
                         return Err(shape());
                     }
-                    Ok((version, pins.to_vec()))
+                    Ok((inner, pins.to_vec()))
                 })
                 .ok()
             })
             .ok_or("the backup state could not be read")
     };
-    let (state_list_version, pins) = match state {
-        Ok((version, pins)) => (Some(version), pins),
+    let (state_list, pins) = match state {
+        Ok((inner, pins)) => (Some(inner), pins),
         // Version 1 is exempt: the signup wrote list v1 with pins = [] (protocol/06 "Header"), so
         // a missing state there is an account that never uploaded one, and an unopenable one at v1
         // protects nothing; refusing would let a stolen session that spoiled the object brick
@@ -504,6 +505,22 @@ fn recover(
         // lift the rollback floor and wipe the UMK pins in the re-sealed object.
         Err(_) if list.unsigned.version == 1 => (None, vec![0x80]),
         Err(detail) => return Err(ClientError::new(E_CORE_INPUT, detail)),
+    };
+    let state_list_version = state_list.as_ref().map(|l| l.unsigned.version);
+    // BACKUPS-RECOVERY-02: a device PUT the state object of list v + 1 and lost the list PUT (a
+    // failed sign-out or revocation, then a forgotten browser). The state's list is authentic when it
+    // is exactly the served list's successor, chains from it and verifies under the recovered SSK: it
+    // is returned for the caller to publish first, and the next list is signed on it. Anything else
+    // keeps the served list as the base, and the floor refuses a served list older than the state's.
+    let (list, interrupted) = match state_list {
+        Some(next)
+            if list.unsigned.version.checked_add(1) == Some(next.unsigned.version)
+                && next.unsigned.user_id == list.unsigned.user_id
+                && next.accept(Some(&list), &ssk_pub).is_ok() =>
+        {
+            (next, true)
+        }
+        _ => (list, false),
     };
     Ok(Recovered {
         umk_priv,
@@ -514,7 +531,13 @@ fn recover(
         pins,
         state_list_version,
         list,
+        interrupted,
     })
+}
+
+/// The interrupted publication's PUT body when `r` signed on one, for the caller to send first.
+fn interrupted_body(r: &Recovered) -> Option<Vec<u8>> {
+    r.interrupted.then(|| wire::device_list_put_body(&r.list))
 }
 
 /// The rollback floor of enrol_complete (`stored` = None) and device_list_revoke (the stored newest
@@ -812,6 +835,22 @@ impl ClientCore {
                 .map_err(|_| malformed(schema::IDENTITY))?
                 .blob;
             rec.list_published = true;
+            u.with_conn(|c| schema::meta_put(c, schema::IDENTITY, &rec.encode()))?;
+            Ok(())
+        })
+    }
+    /// BACKUPS-RECOVERY-02: drops an unpublished candidate (a failed sign-out's self-revocation, a
+    /// revocation whose list PUT failed). The candidate becomes the accepted list's own PUT body,
+    /// still unpublished: the next publication sends it, and the instance's 409 for a list it already
+    /// holds settles it; an interrupted publication the core adopted is then published.
+    pub fn device_list_drop(&mut self) -> Result<(), ClientError> {
+        self.write(|_, u| {
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let mut rec = ready(decode_phase(identity, signup, enrol)?)?;
+            let accepted =
+                DeviceList::decode(&rec.device_list).map_err(|_| malformed(schema::IDENTITY))?;
+            rec.device_list_body = wire::device_list_put_body(&accepted);
+            rec.list_published = false;
             u.with_conn(|c| schema::meta_put(c, schema::IDENTITY, &rec.encode()))?;
             Ok(())
         })
@@ -1128,6 +1167,7 @@ impl ClientCore {
             )?;
             let state = reseal_state(ctx.provider, &recovered.k_backup, &next, &recovered.pins)?;
             let put = wire::device_list_put_body(&next);
+            let first = interrupted_body(&recovered);
             let identity = IdentityRecord {
                 instance_id: rec.instance_id,
                 user_id,
@@ -1148,7 +1188,7 @@ impl ClientCore {
                 schema::meta_put(c, schema::IDENTITY, &identity.encode())?;
                 schema::meta_del(c, schema::ENROL)
             })?;
-            Ok(wire::bytes_pair(&put, &state))
+            Ok(wire::signed_lists(&put, &state, first.as_deref()))
         })
     }
 
@@ -1218,6 +1258,7 @@ impl ClientCore {
             )?;
             let state = reseal_state(ctx.provider, &recovered.k_backup, &next, &recovered.pins)?;
             let put = wire::device_list_put_body(&next);
+            let first = interrupted_body(&recovered);
             rec.device_list_body = put.clone();
             rec.list_published = false;
             rec.device_list = recovered.list.encode();
@@ -1226,7 +1267,7 @@ impl ClientCore {
                 schema::meta_put(c, schema::STATE_SEALED, &state)?;
                 schema::meta_put(c, schema::IDENTITY, &rec.encode())
             })?;
-            Ok(wire::bytes_pair(&put, &state))
+            Ok(wire::signed_lists(&put, &state, first.as_deref()))
         })
     }
 

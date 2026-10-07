@@ -384,6 +384,18 @@ pub(crate) fn device_list_put_body(list: &DeviceList) -> Vec<u8> {
     e.into_vec()
 }
 
+/// enrol_complete and device_list_revoke: `[device_list_put_body, state_sealed, interrupted|null]`,
+/// the third the PUT body of an interrupted publication to send first (BACKUPS-RECOVERY-02).
+pub(crate) fn signed_lists(put: &[u8], state: &[u8], interrupted: Option<&[u8]>) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(3).bytes(put).bytes(state);
+    match interrupted {
+        Some(body) => e.bytes(body),
+        None => e.null(),
+    };
+    e.into_vec()
+}
+
 pub(crate) fn bytes_pair(a: &[u8], b: &[u8]) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(2).bytes(a).bytes(b);

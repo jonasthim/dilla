@@ -23,6 +23,7 @@ import {
   type ActivityRow,
   type OwnDeviceList,
   type SealedObjects,
+  type SignedLists,
 } from '../../core-port';
 import type { Frame } from '../../gateway/frames';
 import type { GatewayEvent, ReadyInfo } from '../../gateway/gateway';
@@ -321,6 +322,9 @@ export class ModelCore implements CorePort {
   deviceListPublished(): void {
     throw coreError('E_CORE_STATE', 'not modelled');
   }
+  deviceListDrop(): void {
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
   sessionSign(): Uint8Array {
     throw coreError('E_CORE_STATE', 'not modelled');
   }
@@ -342,9 +346,9 @@ export class ModelCore implements CorePort {
   enrolSessionSign(): Uint8Array { throw coreError('E_CORE_STATE', 'not modelled'); }
   enrolRegistered(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
   recoveryKeyCheck(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
-  enrolComplete(): { deviceListBody: Uint8Array; stateSealed: Uint8Array } { throw coreError('E_CORE_STATE', 'not modelled'); }
+  enrolComplete(): SignedLists { throw coreError('E_CORE_STATE', 'not modelled'); }
   enrolReset(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
-  deviceListRevoke(): { deviceListBody: Uint8Array; stateSealed: Uint8Array } { throw coreError('E_CORE_STATE', 'not modelled'); }
+  deviceListRevoke(): SignedLists { throw coreError('E_CORE_STATE', 'not modelled'); }
   ownDeviceListUpdate(): { version: bigint; listed: boolean } { throw coreError('E_CORE_STATE', 'not modelled'); }
   ownDeviceList(): OwnDeviceList { throw coreError('E_CORE_STATE', 'not modelled'); }
 

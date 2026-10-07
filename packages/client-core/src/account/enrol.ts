@@ -68,8 +68,9 @@ export class Enrol {
 
   async complete(recoveryKey: string, fetched: EnrolFetched, username: string): Promise<void> {
     const { core, routes, session } = this.deps;
-    const { stateSealed } = core.enrolComplete({ recoveryKey, rootSealed: fetched.root, stateSealed: fetched.state,
+    const { stateSealed, interrupted } = core.enrolComplete({ recoveryKey, rootSealed: fetched.root, stateSealed: fetched.state,
       listBody: fetched.listBody, username, now: BigInt(Math.floor(this.deps.now() / 1000)) });
+    if (interrupted !== null) await publishInterrupted(core, routes, interrupted);
     try { await publishDeviceList(core, routes); }
     catch (err) {
       if (err instanceof Error && err.message === 'E_DEVICE_UNLISTED') throw new Error('E_LIST_RACE');
@@ -90,6 +91,21 @@ export class Enrol {
     this.assertion = null;
     this.factorOwed = false;
     if (this.deps.core.identity().phase === 3) this.deps.core.enrolReset();
+  }
+}
+
+/** BACKUPS-RECOVERY-02: the list another device signed and did not publish, which the core found in the state object
+ *  and signed this browser's list on, goes to the instance first. A 409 is a list there already (the next PUT meets
+ *  a fork); a 401 is this row replaced (E_SIGNIN_EVICTED). Any other failure starts the sign-in over (E_LIST_RACE):
+ *  this browser's list cannot be published without it, and the instance still holds the state object that names it. */
+async function publishInterrupted(core: CorePort, routes: Routes, body: Uint8Array): Promise<void> {
+  const userId = core.identity().userId;
+  if (userId === null) throw new CoreError('E_CORE_NO_IDENTITY', '');
+  try { await routes.putDeviceList(userId, body); }
+  catch (err) {
+    if (err instanceof DillaHttpError && err.status === 409) return;
+    if (err instanceof DillaHttpError && err.status === 401) throw new Error('E_SIGNIN_EVICTED');
+    throw new Error('E_LIST_RACE');
   }
 }
 

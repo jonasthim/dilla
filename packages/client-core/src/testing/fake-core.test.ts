@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { arr, bin, decode, encode, str, u64 } from '../cbor';
 import { CoreError } from '../core-port';
-import { FAKE_RECOVERY_KEY, FAKE_ROOT_SEALED, FAKE_STATE_SEALED, FakeCore } from './fake-core';
+import { FAKE_RECOVERY_KEY, FAKE_ROOT_SEALED, FAKE_STATE_SEALED, FakeCore, fakeStateOf } from './fake-core';
 
 import { fakeDskPub, fakeListBlob, readFakeList } from './fake-list';
 
@@ -279,6 +279,32 @@ describe('FakeCore own list, revocation and settings', () => {
     expect(codeOf(() => core.deviceListRevoke({ ...input, deviceIds: [DEV_C] }))).toBe('E_CORE_NOT_FOUND');
     expect(codeOf(() => core.deviceListRevoke({ ...input, deviceIds: [] }))).toBe('E_CORE_INPUT');
     expect(codeOf(() => core.deviceListRevoke({ ...input, recoveryKey: 'nope' }))).toBe('E_RECOVERY_KEY');
+  });
+
+  // BACKUPS-RECOVERY-02, as the core does: a state object whose list is the served list's successor is an interrupted
+  // publication, returned and signed on; a state list further on is the older-list refusal; a dropped candidate
+  // falls back to the accepted list.
+  it('signs on an interrupted publication, refuses a state list further on, and drops a candidate to the accepted list', () => {
+    const core = FakeCore.identified({ instanceId: INSTANCE, userId: USER_A, deviceId: DEV_A, username: 'ada',
+      listEntries: [{ deviceId: DEV_A, revokedAt: null }, { deviceId: DEV_B, revokedAt: null }] });
+    const listBody = core.deviceListBody();
+    const entriesV2 = [{ deviceId: DEV_A, revokedAt: null }, { deviceId: DEV_B, revokedAt: null }, { deviceId: DEV_C, revokedAt: null }];
+    const v2 = encode([2n, fakeListBlob(USER_A, entriesV2, 1n), new Uint8Array(64).fill(5), new Uint8Array(32).fill(0x71)]);
+    const input = { recoveryKey: FAKE_RECOVERY_KEY, rootSealed: FAKE_ROOT_SEALED, stateSealed: fakeStateOf(v2), listBody, deviceIds: [DEV_C], now: 1_800_000_300n };
+    const v4 = encode([4n, fakeListBlob(USER_A, entriesV2, 1n), new Uint8Array(64).fill(5), new Uint8Array(32).fill(0x72)]);
+    expect(caught(() => core.deviceListRevoke({ ...input, stateSealed: fakeStateOf(v4) })))
+      .toMatchObject({ code: 'E_CORE_INPUT', detail: 'the instance served an older device list' });
+    const out = core.deviceListRevoke(input);
+    expect(out.interrupted).toEqual(v2);
+    const put = arr(decode(out.deviceListBody), 4);
+    expect(u64(put[0] ?? null)).toBe(3n);
+    expect(readFakeList(bin(put[1] ?? null))?.entries).toEqual([{ deviceId: DEV_A, revokedAt: null }, { deviceId: DEV_B, revokedAt: null },
+      { deviceId: DEV_C, revokedAt: 1_800_000_300n }]);
+    expect(core.ownDeviceList().version).toBe(2n);
+    core.deviceListDrop();
+    expect(core.deviceListBody()).toEqual(v2);
+    expect(core.identity().listPublished).toBe(false);
+    expect(core.deviceListRevoke({ ...input, listBody: v2, stateSealed: FAKE_STATE_SEALED }).interrupted).toBeNull();
   });
 
   it('keeps settings in every phase within the byte bounds', () => {

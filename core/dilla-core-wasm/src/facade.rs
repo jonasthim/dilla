@@ -270,6 +270,10 @@ impl CoreHandle {
     pub fn device_list_published(&self) -> Result<(), JsError> {
         self.with_core(|c| c.device_list_published())
     }
+    /// Calls ClientCore::device_list_drop.
+    pub fn device_list_drop(&self) -> Result<(), JsError> {
+        self.with_core(|c| c.device_list_drop())
+    }
     /// Calls ClientCore::session_sign; CBOR [nonce, purpose, sig, null, null].
     pub fn session_sign(&self, nonce: &[u8], purpose: u32) -> Result<Box<[u8]>, JsError> {
         let nonce = js_fixed_arg::<32>("nonce", nonce)?;
@@ -547,7 +551,7 @@ impl CoreHandle {
         let user_id = js_fixed_arg::<16>("user_id", user_id)?;
         self.with_core(|c| c.enrol_registered(&user_id))
     }
-    /// Calls ClientCore::enrol_complete; CBOR [device_list_put_body, state_sealed].
+    /// Calls ClientCore::enrol_complete; CBOR [device_list_put_body, state_sealed, interrupted_put_body|null].
     pub fn enrol_complete(
         &self,
         recovery_key: String,
@@ -574,7 +578,7 @@ impl CoreHandle {
     pub fn enrol_reset(&self) -> Result<(), JsError> {
         self.with_core(|c| c.enrol_reset())
     }
-    /// Calls ClientCore::device_list_revoke; CBOR [device_list_put_body, state_sealed].
+    /// Calls ClientCore::device_list_revoke; CBOR [device_list_put_body, state_sealed, interrupted_put_body|null].
     pub fn device_list_revoke(
         &self,
         recovery_key: String,

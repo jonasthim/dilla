@@ -28,6 +28,10 @@ export interface ActivityRow { groupId: Id; unread: number; mentions: number; la
 export interface DeviceEntryInfo { deviceId: Id; dskPub: Uint8Array; tier: 0 | 1; addedAt: bigint; revokedAt: bigint | null; }
 export interface OwnDeviceList { version: bigint; published: boolean; entries: DeviceEntryInfo[]; }
 export interface SealedObjects { root: Uint8Array | null; state: Uint8Array | null; stateUploaded: boolean; }
+/** What enrol_complete and device_list_revoke sign: the next list's PUT body, the re-sealed state object, and the PUT
+ *  body of an interrupted publication the core found in the state object and signed on, to send first
+ *  (BACKUPS-RECOVERY-02), else null. */
+export interface SignedLists { deviceListBody: Uint8Array; stateSealed: Uint8Array; interrupted: Uint8Array | null; }
 export interface OutboxRow { msgId: Id; state: 0 | 1 | 2; error: string; created: bigint; body: string; }
 export interface TimelineRow { seq: bigint; epoch: bigint; recvTs: bigint; status: 0 | 1 | 2; reason: string; senderUser: Id | null; senderDevice: Id; senderKind: number | null; senderTier: number | null; msgId: Id | null; type: number | null; body: string; }
 export interface CorePort {
@@ -38,6 +42,8 @@ export interface CorePort {
   signupComplete(userId: Id, username: string, now: bigint): Uint8Array;
   signupReset(): void;
   deviceListBody(): Uint8Array; deviceListPublished(): void;
+  /** BACKUPS-RECOVERY-02: an unpublished candidate is dropped; the accepted list's own body becomes the candidate. */
+  deviceListDrop(): void;
   sessionSign(nonce: Uint8Array, purpose: 0 | 1): Uint8Array;
   sessionStore(s: SessionRecord): void; session(): SessionRecord | null; sessionClear(): void;
   keyPackages(count: number, lastResort: boolean): Uint8Array;
@@ -69,9 +75,9 @@ export interface CorePort {
   enrolRegistered(userId: Id): void;
   /** REGISTRATION-DEVICES-02: the typed key's form (the core's normaliser and strict parse); E_RECOVERY_KEY otherwise. */
   recoveryKeyCheck(recoveryKey: string): void;
-  enrolComplete(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; username: string; now: bigint }): { deviceListBody: Uint8Array; stateSealed: Uint8Array };
+  enrolComplete(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; username: string; now: bigint }): SignedLists;
   enrolReset(): void;
-  deviceListRevoke(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; deviceIds: Id[]; now: bigint }): { deviceListBody: Uint8Array; stateSealed: Uint8Array };
+  deviceListRevoke(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; deviceIds: Id[]; now: bigint }): SignedLists;
   ownDeviceListUpdate(historyBody: Uint8Array): { version: bigint; listed: boolean };
   ownDeviceList(): OwnDeviceList;
 }
@@ -84,7 +90,7 @@ export interface CoreHandle {
       signup_request(invite: string, username: string, display: string, password?: string | null): Uint8Array;
       signup_complete(user_id: Uint8Array, username: string, now: bigint): Uint8Array;
       signup_reset(): void;
-      device_list_body(): Uint8Array; device_list_published(): void;
+      device_list_body(): Uint8Array; device_list_published(): void; device_list_drop(): void;
       session_sign(nonce: Uint8Array, purpose: number): Uint8Array;
       session_store(token: string, expires: bigint, idle_expires: bigint): void;
       session(): Uint8Array; session_clear(): void;
@@ -207,9 +213,9 @@ function readSealed(v: CborValue): SealedObjects {
   const a = arr(v, 3);
   return { root: opt(field(a, 0), bin), state: opt(field(a, 1), bin), stateUploaded: oneOf(field(a, 2), [0, 1]) === 1 };
 }
-function readPair(v: CborValue): { deviceListBody: Uint8Array; stateSealed: Uint8Array } {
-  const a = arr(v, 2);
-  return { deviceListBody: bin(field(a, 0)), stateSealed: bin(field(a, 1)) };
+function readSigned(v: CborValue): SignedLists {
+  const a = arr(v, 3);
+  return { deviceListBody: bin(field(a, 0)), stateSealed: bin(field(a, 1)), interrupted: opt(field(a, 2), bin) };
 }
 
 export function wrapCore(handle: CoreHandle): CorePort {
@@ -224,6 +230,7 @@ export function wrapCore(handle: CoreHandle): CorePort {
     signupReset: () => call(() => handle.signup_reset()),
     deviceListBody: () => call(() => handle.device_list_body()),
     deviceListPublished: () => call(() => handle.device_list_published()),
+    deviceListDrop: () => call(() => handle.device_list_drop()),
     sessionSign: (nonce, purpose) => call(() => handle.session_sign(nonce, purpose)),
     sessionStore: (s) => call(() => handle.session_store(s.token, s.expires, s.idleExpires)),
     session: () => call(() => decoded('session', handle.session(), readSession)),
@@ -277,7 +284,7 @@ export function wrapCore(handle: CoreHandle): CorePort {
     enrolRegistered: (userId) => call(() => handle.enrol_registered(userId)),
     recoveryKeyCheck: (recoveryKey) => call(() => handle.recovery_key_check(recoveryKey)),
     enrolComplete: (input) => call(() => decoded('enrolComplete', handle.enrol_complete(input.recoveryKey, input.rootSealed,
-      input.stateSealed, input.listBody, input.username, input.now), readPair)),
+      input.stateSealed, input.listBody, input.username, input.now), readSigned)),
     enrolReset: () => call(() => handle.enrol_reset()),
     deviceListRevoke: (input) => call(() => {
       if (input.deviceIds.length < 1 || input.deviceIds.length > 64 || input.deviceIds.some((deviceId) => deviceId.length !== 16))
@@ -285,7 +292,7 @@ export function wrapCore(handle: CoreHandle): CorePort {
       const ids = new Uint8Array(input.deviceIds.length * 16);
       input.deviceIds.forEach((deviceId, index) => ids.set(deviceId, index * 16));
       return decoded('deviceListRevoke', handle.device_list_revoke(input.recoveryKey, input.rootSealed,
-        input.stateSealed, input.listBody, ids, input.now), readPair);
+        input.stateSealed, input.listBody, ids, input.now), readSigned);
     }),
     ownDeviceListUpdate: (historyBody) => call(() => decoded('ownDeviceListUpdate', handle.own_device_list_update(historyBody), (v) => {
       const a = arr(v, 2); return { version: u64(field(a, 0)), listed: oneOf(field(a, 1), [0, 1]) === 1 };

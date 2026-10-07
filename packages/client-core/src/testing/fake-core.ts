@@ -2,13 +2,25 @@
 import { arr, bin, decode, encode, u64 } from '../cbor';
 import { CoreError, type CorePort, type Id, type IdentityInfo, type SessionRecord, type GroupInfo, type ExpectedGroup,
   type WelcomeOutcome, type ApplyResult, type OutboxRow, type TimelineRow, type ActivityRow, type OwnDeviceList,
-  type SealedObjects } from '../core-port';
+  type SealedObjects, type SignedLists } from '../core-port';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from './fake-list';
 
 export const FAKE_RECOVERY_KEY = '0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJK';
 export const FAKE_ROOT_SEALED = encode([1, new Uint8Array(12).fill(0x31), new Uint8Array(86).fill(0x32)]);
 export const FAKE_STATE_SEALED = encode([1, new Uint8Array(12).fill(0x33), new Uint8Array(40).fill(0x34)]);
 const REMADE_STATE = encode([1, new Uint8Array(12).fill(0x35), new Uint8Array(40).fill(0x36)]);
+/** A sealed state object whose list the fake can read: [1, nonce, ['fake.state', list PUT body]] (BACKUPS-RECOVERY-02).
+ *  Any other readable state is opaque to the fake, as before. */
+export function fakeStateOf(listBody: Uint8Array): Uint8Array {
+  return encode([1, new Uint8Array(12).fill(0x37), encode(['fake.state', listBody])]);
+}
+function fakeStateList(state: Uint8Array): Uint8Array | null {
+  try {
+    const inner = decode(bin(arr(decode(state), 3)[2] ?? null));
+    if (!Array.isArray(inner) || inner.length !== 2 || inner[0] !== 'fake.state' || !(inner[1] instanceof Uint8Array)) return null;
+    return inner[1];
+  } catch { return null; }
+}
 type StoredList = { version: bigint; blob: Uint8Array; body: Uint8Array };
 const same = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 function fold(value: string): string {
@@ -80,20 +92,35 @@ export class FakeCore implements CorePort {
       return { version, blob, body };
     } catch { throw new CoreError('E_CORE_INPUT', 'list_body is malformed'); }
   }
-  private served(body: Uint8Array, user: Id, stored: StoredList | null = null, state: Uint8Array = FAKE_STATE_SEALED): { row: StoredList; list: FakeList } {
-    const row = this.readBody(body);
-    const list = readFakeList(row.blob);
+  private served(body: Uint8Array, user: Id, stored: StoredList | null = null, state: Uint8Array = FAKE_STATE_SEALED):
+    { row: StoredList; list: FakeList; interrupted: Uint8Array | null } {
+    let row = this.readBody(body);
+    let list = readFakeList(row.blob);
     if (list === null || !same(list.userId, user)) throw new CoreError('E_CREDENTIAL');
     if (row.version === 0n || (row.version === 1n && bin(arr(decode(body), 4)[3] ?? null).some((x) => x !== 0)))
       throw new CoreError('E_DEVICE_LIST_STALE');
     if (state.length === 0 && row.version !== 1n) throw new CoreError('E_CORE_INPUT', 'the backup state is missing');
     if (state.length > 0 && !this.readableState(state) && row.version !== 1n)
       throw new CoreError('E_CORE_INPUT', 'the backup state could not be read');
+    // BACKUPS-RECOVERY-02 as the fake models it: a state object whose list is the served list's successor for the
+    // same user is an interrupted publication and becomes the base (the chain and the signature are not modelled);
+    // a state list further on is the floor's older-list refusal.
+    let interrupted: Uint8Array | null = null;
+    const inner = fakeStateList(state);
+    if (inner !== null) {
+      const next = this.readBody(inner);
+      const nextList = readFakeList(next.blob);
+      if (next.version === row.version + 1n && nextList !== null && same(nextList.userId, user)) {
+        row = next;
+        list = nextList;
+        interrupted = inner;
+      } else if (next.version > row.version) throw new CoreError('E_CORE_INPUT', 'the instance served an older device list');
+    }
     if (stored !== null && row.version === stored.version && !same(row.blob, stored.blob))
       throw new CoreError('E_CORE_INPUT', 'the instance served a different device list at the stored version');
     if (stored !== null && row.version < stored.version)
       throw new CoreError('E_CORE_INPUT', 'the instance served an older device list');
-    return { row, list };
+    return { row, list, interrupted };
   }
   private readableState(state: Uint8Array): boolean {
     try {
@@ -158,6 +185,14 @@ export class FakeCore implements CorePort {
   }
   deviceListPublished(): void { this.enter('deviceListPublished'); this.requireIdentity(); this.info.listPublished = true;
     if (this.listBody !== null) this.accepted = this.readBody(this.listBody); }
+  /** The candidate becomes the accepted list's own body, unpublished (the core's device_list_drop). */
+  deviceListDrop(): void {
+    this.enter('deviceListDrop'); this.requireIdentity();
+    if (this.accepted === null) throw new CoreError('E_CORE_STATE');
+    this.listBody = this.accepted.body;
+    this.candidateVersion = this.accepted.version;
+    this.info.listPublished = false;
+  }
   sessionSign(nonce: Uint8Array, purpose: 0 | 1): Uint8Array {
     this.enter('sessionSign');
     if (this.info.phase === 0) throw new CoreError('E_CORE_NO_IDENTITY');
@@ -209,19 +244,19 @@ export class FakeCore implements CorePort {
     this.enter('recoveryKeyCheck');
     if (!/^[0-9A-HJKMNP-TV-Z]{52}$/.test(fold(recoveryKey))) throw new CoreError('E_RECOVERY_KEY');
   }
-  enrolComplete(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; username: string; now: bigint }): { deviceListBody: Uint8Array; stateSealed: Uint8Array } {
+  enrolComplete(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; username: string; now: bigint }): SignedLists {
     this.enter('enrolComplete');
     if (this.info.phase !== 3 || this.info.deviceId === null) throw new CoreError('E_CORE_STATE', 'no enrolment is pending');
     if (this.info.userId === null) throw new CoreError('E_CORE_STATE', 'no user recorded');
     if (fold(input.recoveryKey) !== FAKE_RECOVERY_KEY) throw new CoreError('E_RECOVERY_KEY');
-    const { row, list } = this.served(input.listBody, this.info.userId, null, input.stateSealed);
+    const { row, list, interrupted } = this.served(input.listBody, this.info.userId, null, input.stateSealed);
     if (list.entries.some((entry) => same(entry.deviceId, this.info.deviceId!))) throw new CoreError('E_CORE_STATE', 'device is listed');
     this.accepted = row;
     this.listBody = this.candidate(this.info.userId,
       [...list.entries, { deviceId: this.info.deviceId, revokedAt: null }], input.now, row.version + 1n);
     this.sealed = { root: input.rootSealed, state: REMADE_STATE, stateUploaded: false };
     this.info = { ...this.info, phase: 2, username: input.username, listPublished: false };
-    return { deviceListBody: this.listBody, stateSealed: REMADE_STATE };
+    return { deviceListBody: this.listBody, stateSealed: REMADE_STATE, interrupted };
   }
   enrolReset(): void {
     this.enter('enrolReset');
@@ -261,14 +296,14 @@ export class FakeCore implements CorePort {
     // The core's own judgement is the pair too: its device_id and its dsk_pub in one unrevoked entry.
     return { version: this.accepted.version, listed: fakeListNames(list, this.info.deviceId, fakeDskPub(this.info.deviceId)) };
   }
-  deviceListRevoke(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; deviceIds: Id[]; now: bigint }): { deviceListBody: Uint8Array; stateSealed: Uint8Array } {
+  deviceListRevoke(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; deviceIds: Id[]; now: bigint }): SignedLists {
     this.enter('deviceListRevoke');
     if (input.deviceIds.length < 1 || input.deviceIds.length > 64 || input.deviceIds.some((id) => id.length !== 16))
       throw new CoreError('E_CORE_INPUT');
     this.requireIdentity();
     if (fold(input.recoveryKey) !== FAKE_RECOVERY_KEY) throw new CoreError('E_RECOVERY_KEY');
     if (this.info.userId === null) throw new CoreError('E_CORE_STATE');
-    const { row, list } = this.served(input.listBody, this.info.userId, this.accepted, input.stateSealed);
+    const { row, list, interrupted } = this.served(input.listBody, this.info.userId, this.accepted, input.stateSealed);
     for (const id of input.deviceIds) {
       if (!fakeListNames(list, id)) throw new CoreError('E_CORE_NOT_FOUND');
     }
@@ -278,7 +313,7 @@ export class FakeCore implements CorePort {
     })), input.now, row.version + 1n);
     this.info.listPublished = false;
     this.sealed = { root: this.sealed.root, state: REMADE_STATE, stateUploaded: false };
-    return { deviceListBody: this.listBody, stateSealed: REMADE_STATE };
+    return { deviceListBody: this.listBody, stateSealed: REMADE_STATE, interrupted };
   }
   settings(): Record<string, string> {
     this.enter('settings');

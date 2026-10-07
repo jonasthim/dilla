@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { arr, bin, decode, encode } from '../cbor';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import { FAKE_RECOVERY_KEY, FakeCore } from '../testing/fake-core';
+import { FAKE_RECOVERY_KEY, FakeCore, fakeStateOf } from '../testing/fake-core';
 import { fakeListBlob, readFakeList } from '../testing/fake-list';
 import { FakeServer, NOW_S, sessionFor } from '../testing/fake-server';
 import { Enrol, ensureBackups, refreshOwnDeviceList, type EnrolFetched } from './enrol';
@@ -288,6 +288,46 @@ describe('Enrol', () => {
     await expect(a.enrol.complete(FAKE_RECOVERY_KEY, fetched, 'ada')).rejects.toThrow('E_SIGNIN_EVICTED');
     expect(a.server.deviceLists.get(a.U)?.version).toBe(2n);
     expect(a.server.paths()).not.toContain('PUT /v1/backups/1/0');
+  });
+
+  // BACKUPS-RECOVERY-02: DEVICE_A sealed the state object of its v2 and lost the list PUT; the instance serves v1.
+  const X = new Uint8Array(16).fill(0xc3);
+  const interruptedV2 = (userId: Uint8Array): Uint8Array => encode([2n, fakeListBlob(userId, [...ONLY_A, { deviceId: X, revokedAt: null }], 1n),
+    new Uint8Array(64).fill(5), new Uint8Array(32).fill(0x71)]);
+
+  it('an interrupted publication in the state object goes to the instance first, and this browser joins the list after it', async () => {
+    const a = account({ state: false });
+    const v2 = interruptedV2(a.userId);
+    a.server.putBackupObject(a.userId, 1, fakeStateOf(v2));
+    const fetched = await upToKey(a);
+    await a.enrol.complete(FAKE_RECOVERY_KEY, fetched, 'ada');
+    expect(lines(a.server).filter((l) => l.startsWith('PUT'))).toEqual([`PUT ${a.listPath}`, `PUT ${a.listPath}`, 'PUT /v1/backups/1/0']);
+    expect(decode(a.server.log.find((r) => r.method === 'PUT')?.body ?? new Uint8Array(0))).toEqual(decode(v2));
+    expect((a.server.listHistory.get(a.U) ?? []).map((row) => row.version)).toEqual([1n, 2n, 3n]);
+    expect(readFakeList(a.server.deviceLists.get(a.U)?.blob ?? new Uint8Array(0))?.entries)
+      .toEqual([...ONLY_A, { deviceId: X, revokedAt: null }, { deviceId: DEVICE_B, revokedAt: null }]);
+    expect(a.core.identity()).toMatchObject({ phase: 2, listPublished: true });
+  });
+
+  it('an interrupted publication the instance already holds (409) does not stop the enrolment', async () => {
+    const a = account({ state: false });
+    const v2 = interruptedV2(a.userId);
+    a.server.putBackupObject(a.userId, 1, fakeStateOf(v2));
+    const fetched = await upToKey(a);
+    a.server.once('PUT', a.listPath, { status: 409, body: ['E_INVALID_REQUEST', '', null] });
+    a.server.publishList(a.userId, [...ONLY_A, { deviceId: X, revokedAt: null }], 1n); // another device published it
+    await a.enrol.complete(FAKE_RECOVERY_KEY, fetched, 'ada');
+    expect(a.server.deviceLists.get(a.U)?.version).toBe(3n);
+  });
+
+  it('an interrupted publication refused otherwise starts the sign-in over (E_LIST_RACE), nothing else is sent', async () => {
+    const a = account({ state: false });
+    a.server.putBackupObject(a.userId, 1, fakeStateOf(interruptedV2(a.userId)));
+    const fetched = await upToKey(a);
+    a.server.once('PUT', a.listPath, { status: 400, body: ['E_INVALID_REQUEST', '', null] });
+    await expect(a.enrol.complete(FAKE_RECOVERY_KEY, fetched, 'ada')).rejects.toThrow('E_LIST_RACE');
+    expect(lines(a.server).filter((l) => l.startsWith('PUT'))).toEqual([`PUT ${a.listPath}`]);
+    expect(a.server.deviceLists.get(a.U)?.version).toBe(1n);
   });
 
   it('a wrong recovery key changes nothing, and the right one works after it', async () => {

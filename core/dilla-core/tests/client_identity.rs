@@ -1726,12 +1726,24 @@ fn begin_enrol(core: &mut ClientCore) -> ([u8; 16], [u8; 32]) {
     .expect("[device_id, dsk_pub]")
 }
 
+/// `[device_list_put_body, state_sealed, null]`: a result with no interrupted publication.
 fn list_and_state(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let (put, state, interrupted) = signed_lists(bytes);
+    assert_eq!(interrupted, None, "no interrupted publication");
+    (put, state)
+}
+
+/// `[device_list_put_body, state_sealed, interrupted_put_body | null]` (BACKUPS-RECOVERY-02).
+fn signed_lists(bytes: &[u8]) -> (Vec<u8>, Vec<u8>, Option<Vec<u8>>) {
     decode_strict(bytes, |d| {
-        d.array(2)?;
-        Ok((d.bytes()?.to_vec(), d.bytes()?.to_vec()))
+        d.array(3)?;
+        Ok((
+            d.bytes()?.to_vec(),
+            d.bytes()?.to_vec(),
+            d.opt_bytes()?.map(<[u8]>::to_vec),
+        ))
     })
-    .expect("[device_list_put_body, state_sealed]")
+    .expect("[device_list_put_body, state_sealed, interrupted|null]")
 }
 
 fn put_parts(body: &[u8]) -> (u64, Vec<u8>, [u8; 64], [u8; 32]) {
@@ -2923,22 +2935,201 @@ fn enrol_refuses_an_older_list_served_with_the_state_object_withheld() {
         b"dilla state v1",
         &state_plain(&v3.encode(), &pins()),
     );
-    for (state_in, want) in [
-        (vec![], core_input("the backup state is missing")),
-        (vec![0x80], core_input("the backup state could not be read")),
+    for (state_in, served, want) in [
+        (vec![], &stale, core_input("the backup state is missing")),
+        (
+            vec![0x80],
+            &stale,
+            core_input("the backup state could not be read"),
+        ),
+        // v1 served with the v3 state: two versions behind, not an interrupted publication
+        // (BACKUPS-RECOVERY-02 accepts only the served list's direct successor).
         (
             state_v3,
+            &m.put_v1,
             core_input("the instance served an older device list"),
         ),
     ] {
         assert_eq!(
             err(b
                 .core
-                .enrol_complete(&m.rk_text, &m.root, &state_in, &stale, "alice", LATER)),
+                .enrol_complete(&m.rk_text, &m.root, &state_in, served, "alice", LATER)),
             want
         );
         assert_eq!(snapshot(&b.c), before);
     }
+}
+
+/// BACKUPS-RECOVERY-02: a device PUT the state object of list v+1 and then lost the list PUT (a
+/// failed sign-out, a revocation, a forgotten browser). The instance serves list v and that state.
+/// The state's list is v + 1, chains from the served list and verifies under the recovered SSK, so
+/// it is an interrupted publication: it is returned for the caller to publish first, and the new
+/// device is signed into v + 2 on it. The rollback probe's X stays revoked: the base is v3.
+#[test]
+fn enrol_completes_an_interrupted_publication_and_signs_on_it() {
+    let m = material();
+    let (v2, v3) = chain_to_v3(&m);
+    let state_v3 = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&v3.encode(), &pins()),
+    );
+    let mut b = second();
+    let (put_v4, state_b, interrupted) = signed_lists(
+        &b.core
+            .enrol_complete(
+                &m.rk_text,
+                &m.root,
+                &state_v3,
+                &put_body(&v2),
+                "alice",
+                LATER,
+            )
+            .expect("an interrupted publication enrols"),
+    );
+    assert_eq!(
+        interrupted,
+        Some(put_body(&v3)),
+        "v3 is returned to be published first"
+    );
+    let (version, blob_v4, _, prev) = put_parts(&put_v4);
+    assert_eq!((version, prev), (4, v3.hash()));
+    let v4 = DeviceList::decode(&blob_v4).expect("v4");
+    v4.accept(Some(&v3), &m.reg.ssk_pub)
+        .expect("v4 chains from v3");
+    let mut want = v3.unsigned.entries.clone();
+    want.push(browser(b.device, b.dsk, LATER, None));
+    assert_eq!(
+        v4.unsigned.entries, want,
+        "X stays revoked; this browser is added"
+    );
+    assert_eq!(state_parts(&k_backup(&m.rk), &state_b), (blob_v4, pins()));
+    let rec = identity_v2(&b.c);
+    assert_eq!(rec.device_list, v3.encode(), "the accepted list is v3");
+    assert_eq!((rec.published, rec.device_list_body), (0, put_v4));
+}
+
+/// A state object whose list only looks like the next one is not an interrupted publication: the
+/// floor refuses it as an older served list, and nothing is written.
+#[test]
+fn enrol_refuses_a_forged_near_chain_in_the_state_object() {
+    let m = material();
+    let (v2, v3) = chain_to_v3(&m);
+    let other_ssk = [0x5c; 32];
+    let not_chained = signed(&m.ssk, USER, 3, [0x99; 32], v3.unsigned.entries.clone());
+    let other_signer = signed(&other_ssk, USER, 3, v2.hash(), v3.unsigned.entries.clone());
+    let other_user = signed(
+        &m.ssk,
+        [0x43; 16],
+        3,
+        v2.hash(),
+        v3.unsigned.entries.clone(),
+    );
+    // Signed and naming the served list as its predecessor, but two versions on.
+    let gap = signed(&m.ssk, USER, 4, v2.hash(), v3.unsigned.entries.clone());
+    let mut b = second();
+    let before = snapshot(&b.c);
+    for (name, list) in [
+        ("a prev_hash that is not the served list's", &not_chained),
+        ("a list another key signed", &other_signer),
+        ("a list of another user", &other_user),
+        ("a version gap after the served list", &gap),
+    ] {
+        let state = seal_with(
+            &k_backup(&m.rk),
+            b"dilla state v1",
+            &state_plain(&list.encode(), &pins()),
+        );
+        assert_eq!(
+            err(b
+                .core
+                .enrol_complete(&m.rk_text, &m.root, &state, &put_body(&v2), "alice", LATER)),
+            core_input("the instance served an older device list"),
+            "{name}"
+        );
+        assert_eq!(snapshot(&b.c), before, "{name} wrote something");
+    }
+}
+
+/// The same rule on a revocation: device A stores v1; the instance serves v1 and the state object of
+/// an interrupted v2. A revokes on v2, gets v2 back to publish first, and signs v3; dropping the v3
+/// candidate leaves v2, the accepted list, as the next candidate (BACKUPS-RECOVERY-02).
+#[test]
+fn revoke_completes_an_interrupted_publication_and_a_dropped_candidate_falls_back_to_it() {
+    let (mut a, ac, rk_text, reg, put_v1) = signed_up();
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let own = m.v1.unsigned.entries[0].clone();
+    let x = browser([0x0d; 16], [0x0e; 32], NOW + 10, None);
+    let v2 = signed(&m.ssk, USER, 2, m.v1.hash(), vec![own.clone(), x.clone()]);
+    let state_v2 = seal_with(
+        &k_backup(&m.rk),
+        b"dilla state v1",
+        &state_plain(&v2.encode(), &pins()),
+    );
+    let (put_v3, state_a, interrupted) = signed_lists(
+        &a.device_list_revoke(
+            &m.rk_text,
+            &m.root,
+            &state_v2,
+            &m.put_v1,
+            &[0x0d; 16],
+            NOW + 20,
+        )
+        .expect("revoke X on the interrupted v2"),
+    );
+    assert_eq!(interrupted, Some(put_body(&v2)));
+    let v3 = DeviceList::decode(&put_parts(&put_v3).1).expect("v3");
+    v3.accept(Some(&v2), &m.reg.ssk_pub)
+        .expect("v3 chains from v2");
+    assert_eq!(v3.unsigned.entries[1].revoked_at, Some(NOW + 20));
+    assert_eq!(state_parts(&k_backup(&m.rk), &state_a).0, v3.encode());
+    let (v, published, _) = own_list(&a);
+    assert_eq!(
+        (v, published),
+        (2, 0),
+        "the accepted list is the interrupted v2"
+    );
+    let before = identity_v2(&ac).device_list;
+    a.device_list_drop().expect("drop the v3 candidate");
+    assert_eq!(a.device_list_body().expect("candidate"), put_body(&v2));
+    assert_eq!(info(&a).published, 0);
+    assert_eq!(
+        identity_v2(&ac).device_list,
+        before,
+        "the accepted list is unchanged"
+    );
+    a.device_list_published().expect("v2 published");
+    let (v, published, _) = own_list(&a);
+    assert_eq!((v, published), (2, 1));
+}
+
+/// A failed sign-out drops its self-revoking candidate (BACKUPS-RECOVERY-02): the device stays
+/// listed, and its next publication is the accepted list again, which the instance already holds.
+#[test]
+fn device_list_drop_returns_the_candidate_to_the_accepted_list() {
+    let (mut a, ac, rk_text, reg, put_v1) = signed_up();
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let own_id = m.v1.unsigned.entries[0].device_id;
+    let (put_v2, _) = list_and_state(
+        &a.device_list_revoke(
+            &m.rk_text,
+            &m.root,
+            &m.state,
+            &m.put_v1,
+            own_id.as_bytes(),
+            LATER,
+        )
+        .expect("sign out"),
+    );
+    assert_eq!(a.device_list_body().expect("candidate"), put_v2);
+    a.device_list_drop().expect("drop");
+    assert_eq!(a.device_list_body().expect("candidate"), m.put_v1);
+    let rec = identity_v2(&ac);
+    assert_eq!((rec.published, rec.device_list), (0, m.v1.encode()));
+    let (v, _, entries) = own_list(&a);
+    assert_eq!((v, entries[0].4), (1, None), "still listed");
+    let (mut b, _) = core();
+    assert_eq!(err(b.device_list_drop()).code, "E_CORE_NO_IDENTITY");
 }
 
 /// F2: an entry with this device id refuses the enrolment whether it is live, revoked or under
@@ -3661,10 +3852,12 @@ fn enrol_refuses_a_served_list_older_than_the_opened_state_list() {
     let m = material();
     let mut b = second();
     let v2 = signed(&m.ssk, USER, 2, m.v1.hash(), m.v1.unsigned.entries.clone());
+    // v3, not v2: a chained v2 with v1 served is an interrupted publication (BACKUPS-RECOVERY-02).
+    let v3 = signed(&m.ssk, USER, 3, v2.hash(), m.v1.unsigned.entries.clone());
     let state = seal_with(
         &k_backup(&m.rk),
         b"dilla state v1",
-        &state_plain(&v2.encode(), &pins()),
+        &state_plain(&v3.encode(), &pins()),
     );
     let before = snapshot(&b.c);
     assert_eq!(

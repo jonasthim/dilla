@@ -23,6 +23,7 @@ interface ExpectedCoreHandle {
   signup_reset(): void;
   device_list_body(): Uint8Array;
   device_list_published(): void;
+  device_list_drop(): void;
   session_sign(nonce: Uint8Array, purpose: number): Uint8Array;
   session_store(token: string, expires: bigint, idle_expires: bigint): void;
   session(): Uint8Array;
@@ -95,6 +96,7 @@ expectTrue<Equals<H['signup_complete'], E['signup_complete']>>();
 expectTrue<Equals<H['signup_reset'], E['signup_reset']>>();
 expectTrue<Equals<H['device_list_body'], E['device_list_body']>>();
 expectTrue<Equals<H['device_list_published'], E['device_list_published']>>();
+expectTrue<Equals<H['device_list_drop'], E['device_list_drop']>>();
 expectTrue<Equals<H['session_sign'], E['session_sign']>>();
 expectTrue<Equals<H['session_store'], E['session_store']>>();
 expectTrue<Equals<H['session'], E['session']>>();
