@@ -262,9 +262,11 @@ export function Shell(): React.JSX.Element {
   // holds and a polite log announces only rows added later. A log that held focus hands it on to its successor.
   const logKey = targetId === null ? null : `${targetId}:${timeline === undefined ? 'loading' : 'ready'}`;
   const logFocused = useRef(false);
+  const conversationFocused = useRef(false);
   useEffect(() => {
     const onFocusIn = (e: FocusEvent) => {
       logFocused.current = e.target instanceof Element && e.target.closest('[role="log"]') !== null;
+      conversationFocused.current = e.target instanceof Element && e.target.closest('.dw-conversation') !== null;
     };
     window.addEventListener('focusin', onFocusIn);
     return () => window.removeEventListener('focusin', onFocusIn);
@@ -272,6 +274,9 @@ export function Shell(): React.JSX.Element {
   useLayoutEffect(() => {
     if (logKey !== null && logFocused.current && focusLost()) focusLog();
   }, [logKey]);
+  useLayoutEffect(() => {
+    if (targetId !== null && conversationFocused.current && focusLost()) focusLog();
+  }, [targetId]);
 
   // A11Y-DESIGN-05: the two "try again" buttons are replaced in the render their click causes, so focus is placed
   // after it: the main pane's goes to the log, the sidebar's to the channel list's roving stop once its rows are
@@ -391,7 +396,7 @@ export function Shell(): React.JSX.Element {
     void run();
   };
 
-  const log = (label: string) => targetId === null || logKey === null ? null : <Conversation channelId={targetId}
+  const log = (label: string) => targetId === null || logKey === null ? null : <Conversation key={targetId} channelId={targetId}
     logKey={logKey} label={label} timeline={timeline} book={book} encodeWith={encodeWith} broadcast={broadcast}
     pinsTitle={channel !== null ? t('shell.pins.title', { channel: channel.name }) : t('shell.pins.titleDm', { name: dm?.name ?? '' })}
     ui={ui} dispatch={dispatch} loadingEarlier={loadingEarlier === targetId} onLoadEarlier={loadEarlier} onError={report} />;
@@ -469,7 +474,7 @@ export function Shell(): React.JSX.Element {
   const composerPlaceholder = channel !== null ? t('shell.composer.placeholder', { channel: channel.name })
     : dm !== null ? t('shell.dm.composer', { name: dm.name }) : null;
   const composer = targetId === null || composerLabel === null || composerPlaceholder === null ? null : (
-    <ComposerArea channelId={targetId} label={composerLabel} placeholder={composerPlaceholder}
+    <ComposerArea key={targetId} channelId={targetId} label={composerLabel} placeholder={composerPlaceholder}
       blocked={reasonKey === null ? null : t(reasonKey)} broadcast={broadcast} encodeWith={encodeWith} candidates={candidates}
       items={timeline?.items ?? []} book={book} draft={draft.channelId === targetId ? draft.text : ''}
       onDraft={text => setDraft({ channelId: targetId, text })} ui={ui} dispatch={dispatch} onSend={send} onError={report} />

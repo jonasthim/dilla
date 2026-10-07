@@ -227,6 +227,39 @@ describe('timeline', () => {
     expect(within(after).getByText('in random')).toBeInTheDocument();
     expect(after).not.toHaveAttribute('aria-busy');
   });
+  it('starts at the newest row after switching timelines with overlapping row keys', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
+      item({ key: 's1', msgId: '11'.repeat(16), seq: '1', body: 'general first' }),
+      item({ key: 's2', msgId: '12'.repeat(16), seq: '2', body: 'general last' }),
+    ] })));
+    act(() => fake.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [
+      item({ key: 's1', msgId: '21'.repeat(16), seq: '1', body: 'random first' }),
+      item({ key: 's3', msgId: '23'.repeat(16), seq: '3', body: 'random last' }),
+    ] })));
+    act(() => screen.getByText('general first').closest<HTMLElement>('.d-message-row')?.focus());
+    expect(screen.getByText('general first').closest('.d-message-row')).toHaveAttribute('data-active', 'true');
+    await user.click(within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: /^random/ }));
+    expect(screen.getByText('random last').closest('.d-message-row')).toHaveAttribute('data-active', 'true');
+    expect(screen.getByText('random first').closest('.d-message-row')).not.toHaveAttribute('data-active', 'true');
+  });
+  it('closes a row emoji picker before switching to a timeline with the same row key', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
+      item({ key: 's1', msgId: '11'.repeat(16), seq: '1', body: 'general row' }),
+    ] })));
+    act(() => fake.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [
+      item({ key: 's1', msgId: '21'.repeat(16), seq: '1', body: 'random row' }),
+    ] })));
+    const row = screen.getByText('general row').closest<HTMLElement>('.d-message-row')!;
+    await user.click(within(row).getByRole('button', { name: 'react' }));
+    expect(screen.getByRole('dialog', { name: 'pick a reaction' })).toBeInTheDocument();
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}');
+    expect(path()).toBe(`/c/${A}/${RAND}`);
+    expect(screen.queryByRole('dialog', { name: 'pick a reaction' })).toBeNull();
+    expect(screen.getByRole('log', { name: 'messages in #random' })).toHaveFocus();
+    expect(fake.callsOf('react')).toEqual([]);
+  });
   it('mounts a new log when the first slice arrives, and keeps focus in it', () => {
     const { fake } = setup(`/c/${A}/${GEN}`);
     const loading = screen.getByRole('log', { name: 'messages in #general' });
