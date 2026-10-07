@@ -280,9 +280,16 @@ func (d Deps) PutBackup(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, errTombstoned) {
 			// The purge's own unlink may have run before this upload wrote the file; purged bytes
-			// stay removed, so they go now, row or none.
-			if derr := d.Blobs.Delete(blobID); derr != nil {
-				d.logf(r, "api: remove purged bytes a backup rewrote", "err", derr)
+			// stay removed, so they go now — unless a backups row still names them: a purge of
+			// root bytes keeps the file while the write-once root is served, and a racing
+			// identical re-PUT must not unlink a root that GET still serves.
+			named, nerr := d.Repo.BackupRefersToBlob(r.Context(), blobID)
+			if nerr != nil {
+				d.logf(r, "api: check purged bytes against backups", "err", nerr)
+			} else if !named {
+				if derr := d.Blobs.Delete(blobID); derr != nil {
+					d.logf(r, "api: remove purged bytes a backup rewrote", "err", derr)
+				}
 			}
 			server.WriteError(w, errPruned())
 			return
