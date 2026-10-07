@@ -23,7 +23,7 @@ function setup(over: Over = {}, owner: Owner = {}) {
       onSend={t => { onSend(t); if (owner.clearOnSend ?? true) setValue(''); }} />;
   }
   render(<Shell />);
-  return { props: { ...base, onSend, onChange }, textarea: screen.getByLabelText('message #general') as HTMLTextAreaElement };
+  return { props: { ...base, onSend, onChange }, textarea: screen.getByRole('textbox', { name: 'message #general' }) as HTMLTextAreaElement };
 }
 // The visible counter; its polite status (A11Y-DESIGN-04) may hold the same words.
 const counterText = (text: string) => screen.getByText(text, { selector: '.d-composer__counter' });
@@ -289,12 +289,15 @@ describe('Composer', () => {
     expect(screen.queryByRole('button', { name: 'attach files' })).toBeNull();
   });
 
-  it('is a combobox while the mention list is open; the keys it consumes never send', async () => {
+  // Pre-flight ruling F10 (controller, 2026-10-07): the textarea keeps its textbox role (no role=combobox); while the
+  // list is open it carries aria-autocomplete, aria-controls and aria-activedescendant, and nothing else of the pattern.
+  it('stays a textbox that points at its list only while the list is open; the keys it consumes never send', async () => {
     const onKey = vi.fn((key: string) => key !== 'Tab');
     const { textarea, props } = setup({ combobox: { expanded: true, controls: 'mentions', activeDescendant: 'mention-mira', onKey } }, { initial: '@mi' });
-    const box = screen.getByRole('combobox', { name: 'message #general' });
+    const box = screen.getByRole('textbox', { name: 'message #general' });
     expect(box).toBe(textarea);
-    expect(box).toHaveAttribute('aria-expanded', 'true');
+    expect(box).not.toHaveAttribute('role');
+    expect(box).not.toHaveAttribute('aria-expanded');
     expect(box).toHaveAttribute('aria-autocomplete', 'list');
     expect(box).toHaveAttribute('aria-controls', 'mentions');
     expect(box).toHaveAttribute('aria-activedescendant', 'mention-mira');

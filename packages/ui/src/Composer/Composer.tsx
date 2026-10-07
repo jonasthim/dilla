@@ -141,10 +141,8 @@ export function Composer({
     }
   };
 
-  // The textarea is a combobox only while the mention list is open.
+  // While the list is open the textarea points at it and keeps its textbox role (F10; no role=combobox).
   const listAttributes = combobox?.expanded === true ? {
-    role: 'combobox' as const,
-    'aria-expanded': true as const,
     'aria-autocomplete': 'list' as const,
     'aria-controls': combobox.controls,
     ...(combobox.activeDescendant === null ? {} : { 'aria-activedescendant': combobox.activeDescendant }),
