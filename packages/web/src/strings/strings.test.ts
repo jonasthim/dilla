@@ -69,7 +69,7 @@ describe('the copy rules', () => {
     expect(en['shell.dm.log']).toBe('messages with {name}');
     // Pre-flight ruling (rows 1.10, loop note 15): `@` before the name, so the composer keeps the name's case (web-1's label rule).
     expect(en['shell.dm.composer']).toBe('message @{name}');
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(172);
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(173);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
     expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);

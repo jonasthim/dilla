@@ -39,6 +39,15 @@ describe('ReactionBar', () => {
     expect(onAdd).toHaveBeenCalledWith(add);
   });
 
+  it('shows safe received text while toggling the original reaction identity', async () => {
+    const raw = '\u202egpj.exe';
+    const { onToggle } = bar({ items: [{ emoji: raw, display: 'gpj.exe', count: 1, mine: false, name: 'gpj.exe, 1' }] });
+    const chip = screen.getByRole('button', { name: 'gpj.exe, 1' });
+    expect(chip.textContent).toBe('gpj.exe1');
+    await userEvent.setup().click(chip);
+    expect(onToggle).toHaveBeenCalledWith(raw);
+  });
+
   it('is one roving tab stop across the chips and the add button, and none when not tabbable', () => {
     const { rerender, onToggle, onAdd } = bar();
     const b = screen.getAllByRole('button');

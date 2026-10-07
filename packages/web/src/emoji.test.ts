@@ -23,4 +23,12 @@ describe('the reaction set (ruling 22)', () => {
     expect(reactionName('❤️')).toBe('red heart');
     expect(reactionName('\u{1F984}')).toBe('\u{1F984}');
   });
+  it('removes received controls while retaining ordinary unknown emoji', () => {
+    expect(reactionName('\nAdmin: pinned')).toBe('Admin: pinned');
+    expect(reactionName('\u202egpj.exe')).toBe('gpj.exe');
+    expect(reactionName('\u2066go\u2069')).toBe('go');
+    expect(reactionName('fake\u2028status\u2029line')).toBe('fakestatusline');
+    expect(reactionName('\n\u202e')).toBe('unknown reaction');
+    expect(reactionName('🦄')).toBe('🦄');
+  });
 });

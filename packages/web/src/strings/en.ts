@@ -268,6 +268,7 @@ export const en = {
   'shell.message.replyNotLoaded': 'The original message is further back. Load earlier messages to reach it.',
   'shell.message.reactions': 'reactions',
   'shell.message.reaction': '{name}, {count}',
+  'shell.message.unknownReaction': 'unknown reaction',
   'shell.message.reactionAdd': 'add a reaction',
   'shell.message.saving': 'saving…',
   'shell.message.notSaved': 'not saved',

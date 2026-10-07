@@ -2,7 +2,7 @@
 import { useLayoutEffect, useRef, type PointerEvent } from 'react';
 import type { TimelineItem, TimelineItemState } from '@dilla/client-core';
 import { MessageEditor, MessageRow, MessageToolbar, ReactionBar } from '@dilla/ui';
-import { reactionName } from '../../emoji.ts';
+import { reactionDisplay, reactionName } from '../../emoji.ts';
 import { t, type StringKey } from '../../strings/index.ts';
 import { authorName, bodyParts, messageTime, plainBody, type NameBook } from '../shell-model.ts';
 import { AttachmentList } from './Attachments.tsx';
@@ -38,10 +38,14 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const { item } = p;
   const rowEl = useRef<HTMLElement | null>(null);
   const priorReactions = useRef(item.reactions.length);
+  const focusedReaction = useRef<string | null>(null);
   useLayoutEffect(() => {
-    if (priorReactions.current > 0 && item.reactions.length === 0 && document.activeElement === document.body) rowEl.current?.focus();
+    if (priorReactions.current > 0 && document.activeElement === document.body &&
+      (item.reactions.length === 0 || (focusedReaction.current !== null && !item.reactions.some(r => r.emoji === focusedReaction.current)))) {
+      rowEl.current?.focus();
+    }
     priorReactions.current = item.reactions.length;
-  }, [item.reactions.length]);
+  }, [item.reactions]);
   const emit = (event: RowEvent) => p.onEvent(item, event);
   const ownAuthor = item.senderUser !== null && item.senderUser === p.book.self?.id;
   const author = authorName(item, p.book.members, p.book.self);
@@ -94,7 +98,9 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
       counterLabel={n => n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n })} /> : undefined}
     attachments={<AttachmentList channelId={p.channelId} item={item} tabbable={p.active} onOpenImage={(i, el) => p.onOpenImage(i, el)} onError={e => p.onError(e)} />}
     reactions={item.reactions.length === 0 ? undefined : <ReactionBar label={t('shell.message.reactions')} tabbable={p.active}
-      items={item.reactions.map(r => ({ ...r, name: t('shell.message.reaction', { name: reactionName(r.emoji), count: r.count }) }))}
+      onChipFocus={emoji => { focusedReaction.current = emoji; }}
+      items={item.reactions.map(r => ({ ...r, display: reactionDisplay(r.emoji) || t('shell.message.unknownReaction'),
+        name: t('shell.message.reaction', { name: reactionName(r.emoji), count: r.count }) }))}
       onToggle={emoji => emit({ kind: 'toggle', emoji, on: !item.reactions.some(r => r.emoji === emoji && r.mine) })}
       addLabel={t('shell.message.reactionAdd')} onAdd={anchor => emit({ kind: 'react', anchor })} />} />;
 }

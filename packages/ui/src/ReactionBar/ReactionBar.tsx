@@ -5,8 +5,9 @@ import './ReactionBar.css';
 export interface ReactionBarProps {
   label: string;
   tabbable: boolean;
-  items: readonly { emoji: string; count: number; mine: boolean; name: string }[];
+  items: readonly { emoji: string; display?: string; count: number; mine: boolean; name: string }[];
   onToggle(emoji: string): void;
+  onChipFocus?(emoji: string | null): void;
   addLabel: string;
   onAdd(anchor: HTMLElement): void;
 }
@@ -22,7 +23,7 @@ function indexOfTarget(list: readonly HTMLButtonElement[], target: EventTarget):
  * pressed chip carries `aria-pressed`, the accent frame and a bold count, never colour alone. Nothing renders
  * while there is no reaction (the toolbar's `react` opens the grid then).
  */
-export function ReactionBar({ label, tabbable, items, onToggle, addLabel, onAdd }: ReactionBarProps) {
+export function ReactionBar({ label, tabbable, items, onToggle, onChipFocus, addLabel, onAdd }: ReactionBarProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [stop, setStop] = useState(0);
   if (items.length === 0) return null;
@@ -42,7 +43,10 @@ export function ReactionBar({ label, tabbable, items, onToggle, addLabel, onAdd 
 
   const onFocus = (e: FocusEvent<HTMLDivElement>) => {
     const i = indexOfTarget(buttons(), e.target);
-    if (i >= 0) setStop(i);
+    if (i >= 0) {
+      setStop(i);
+      onChipFocus?.(i < items.length ? items[i].emoji : null);
+    }
   };
 
   const tab = (i: number) => (tabbable && i === current ? 0 : -1);
@@ -51,7 +55,7 @@ export function ReactionBar({ label, tabbable, items, onToggle, addLabel, onAdd 
       {items.map((item, i) => (
         <button key={item.emoji} type="button" className="d-reaction-bar__chip" aria-pressed={item.mine} aria-label={item.name}
           data-emoji={item.emoji} tabIndex={tab(i)} onClick={() => onToggle(item.emoji)}>
-          <span aria-hidden="true">{item.emoji}</span><span className="d-reaction-bar__count" aria-hidden="true">{item.count}</span>
+          <span aria-hidden="true">{item.display ?? item.emoji}</span><span className="d-reaction-bar__count" aria-hidden="true">{item.count}</span>
         </button>
       ))}
       <button type="button" className="d-reaction-bar__add" aria-label={addLabel} tabIndex={tab(items.length)}

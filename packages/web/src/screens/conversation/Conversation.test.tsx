@@ -337,6 +337,15 @@ describe('focus handoffs (F4)', () => {
     act(() => fake.set(`timeline:${GEN}`, { channelId: GEN, group: 'active', hasEarlier: false, items: [peerRow(P1, '1', 'x')] }));
     expect(rowOf(P1)).toHaveFocus();
   });
+  it('returns to the row when a focused chip disappears but another reaction remains', async () => {
+    const reactions = [{ emoji: '👍', count: 1, mine: true }, { emoji: '🦀', count: 2, mine: false }];
+    const { fake, user } = renderConversation({ items: [peerRow(P1, '1', 'x', { reactions })] });
+    await user.click(within(rowOf(P1)).getByRole('button', { name: 'thumbs up, 1' }));
+    act(() => fake.set(`timeline:${GEN}`, { channelId: GEN, group: 'active', hasEarlier: false,
+      items: [peerRow(P1, '1', 'x', { reactions: [reactions[1]] })] }));
+    expect(within(rowOf(P1)).getByRole('button', { name: 'crab, 2' })).toBeInTheDocument();
+    expect(rowOf(P1)).toHaveFocus();
+  });
   it('dismisses the reply not loaded banner to the active log row', async () => {
     const { user } = renderConversation({ items: [ownRow(O1, '5', 'answer', { reply: reply() })] });
     await user.click(replyButton(rowOf(O1)));
