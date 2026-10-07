@@ -14,6 +14,9 @@ pub(crate) const ENROL: &str = "enrol";
 pub(crate) const SESSION: &str = "session";
 pub(crate) const ROOT_SEALED: &str = "root_sealed";
 pub(crate) const STATE_SEALED: &str = "state_sealed";
+/// The version of the device list inside `state_sealed`, as a CBOR uint, written with it
+/// (BACKUPS-RECOVERY-03): the browser cannot open its own state object to read it back.
+pub(crate) const STATE_LIST: &str = "state_list";
 
 /// App schema v2 column meanings (L-SQL-10, L-SQL-20):
 ///

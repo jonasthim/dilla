@@ -5,7 +5,7 @@ import { DillaHttpError } from '../http/errors';
 import { FAKE_RECOVERY_KEY, FakeCore, fakeStateOf } from '../testing/fake-core';
 import { fakeListBlob, readFakeList } from '../testing/fake-list';
 import { FakeServer, NOW_S, sessionFor } from '../testing/fake-server';
-import { Enrol, ensureBackups, refreshOwnDeviceList, type EnrolFetched } from './enrol';
+import { Enrol, ensureBackups, refreshOwnDeviceList, repairBackupState, type EnrolFetched } from './enrol';
 
 const INSTANCE = new Uint8Array(16).fill(0xab);
 const DEVICE_A = new Uint8Array(16).fill(0xa1); // the account's first browser
@@ -510,6 +510,58 @@ describe('ensureBackups', () => {
     e.server.log.splice(0);
     await ensureBackups(e.core, e.routes);
     expect(e.server.paths()).toEqual(['GET /v1/backups']);
+  });
+});
+
+// BACKUPS-RECOVERY-03: a stolen session can replace the state object with junk, which the core refuses past list v1
+// (the rollback floor). A browser cannot open the instance's copy; when its own sealed state carries the list it
+// accepted as the newest, a stored object with other bytes is behind that list or junk, and it uploads its own.
+describe('repairBackupState', () => {
+  const JUNK = encode([1, new Uint8Array(12).fill(0x0e), new Uint8Array(16).fill(0x0f)]);
+
+  it('re-uploads this browser\'s current state over junk the instance holds', async () => {
+    const e = enrolled();
+    const marked = sealed(e.core, ROOT, STATE);
+    e.server.putBackupObject(e.userId, 1, JUNK);
+    await e.session.establish();
+    e.server.log.splice(0);
+    expect(await repairBackupState(e.core, e.routes)).toBe(true);
+    expect(e.server.paths()).toEqual(['GET /v1/backups/1/0', 'PUT /v1/backups/1/0']);
+    expect((await e.routes.getBackup(1))?.object).toEqual(STATE);
+    expect(marked).toHaveBeenCalledTimes(1);
+    e.server.log.splice(0);
+    expect(await repairBackupState(e.core, e.routes)).toBe(false);
+    expect(e.server.paths()).toEqual(['GET /v1/backups/1/0']);
+  });
+
+  it('re-uploads it when the instance holds none', async () => {
+    const e = enrolled();
+    sealed(e.core, ROOT, STATE);
+    await e.session.establish();
+    e.server.log.splice(0);
+    expect(await repairBackupState(e.core, e.routes)).toBe(true);
+    expect(e.server.paths()).toEqual(['GET /v1/backups/1/0', 'PUT /v1/backups/1/0']);
+  });
+
+  it('leaves another device\'s object alone when this browser\'s own state is not the newest', async () => {
+    const e = enrolled();
+    sealed(e.core, ROOT, STATE);
+    vi.spyOn(e.core, 'stateSealedCurrent').mockReturnValue(false);
+    e.server.putBackupObject(e.userId, 1, JUNK);
+    await e.session.establish();
+    e.server.log.splice(0);
+    expect(await repairBackupState(e.core, e.routes)).toBe(false);
+    expect(e.server.paths()).toEqual(['GET /v1/backups/1/0']);
+    expect((await e.routes.getBackup(1))?.object).toEqual(JUNK);
+  });
+
+  it('does nothing without a sealed state of its own', async () => {
+    const e = enrolled();
+    sealed(e.core, ROOT, null);
+    await e.session.establish();
+    e.server.log.splice(0);
+    expect(await repairBackupState(e.core, e.routes)).toBe(false);
+    expect(e.server.paths()).toEqual([]);
   });
 });
 

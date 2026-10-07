@@ -99,7 +99,7 @@ export const en = {
   'signin.error.totpFailed': 'That code did not work. Sign in again with a fresh code.',
   'signin.error.required': 'Fill in this field.',
   'signin.error.noBackup': 'This account has no recovery data on {instance}. It was created before recovery existed, and its browser has not been online since. Open it there first.',
-  'signin.error.noBackupState': 'This account has no backup to recover from on {instance}. Sign in from a device that still holds it, or start over.',
+  'signin.error.noBackupState': 'This account has no backup to recover from on {instance}. Sign in on a device that still holds this account and open dilla there; it repairs the backup. Then try again.',
   'signin.error.wrongKey': 'This is not the recovery key of this account. Check every character.',
   'signin.error.keyLength': 'A recovery key has 52 characters.',
   'signin.error.deviceCap': 'This account already has as many devices as {instance} allows. Remove one in Settings on another device first.',

@@ -209,9 +209,10 @@ describe('wrapCore web-2a', () => {
     const state = new Uint8Array(40).fill(2);
     expect(stub({ sealed_objects: () => encode([root, state, 1]) }).port.sealedObjects()).toEqual({ root, state, stateUploaded: true });
     expect(stub({ sealed_objects: () => encode([null, null, 0]) }).port.sealedObjects()).toEqual({ root: null, state: null, stateUploaded: false });
-    const s = stub({ state_sealed_uploaded: () => undefined });
+    const s = stub({ state_sealed_uploaded: () => undefined, state_sealed_current: () => true });
     s.port.stateSealedUploaded();
-    expect(s.calls).toEqual([{ method: 'state_sealed_uploaded', args: [] }]);
+    expect(s.port.stateSealedCurrent()).toBe(true);
+    expect(s.calls).toEqual([{ method: 'state_sealed_uploaded', args: [] }, { method: 'state_sealed_current', args: [] }]);
   });
 
   it('walks the enrolment exports in the facade argument order', () => {

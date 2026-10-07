@@ -339,7 +339,8 @@ describe('refusals', () => {
     await pasteKey(user);
     await user.click(button('Add this browser'));
     expect(h1()).toHaveTextContent('Your recovery key');
-    expect(screen.getByRole('alert')).toHaveTextContent('This account has no backup to recover from on dilla.test. Sign in from a device that still holds it, or start over.');
+    // BACKUPS-RECOVERY-03: the copy names the action that repairs the backup.
+    expect(screen.getByRole('alert')).toHaveTextContent('This account has no backup to recover from on dilla.test. Sign in on a device that still holds this account and open dilla there; it repairs the backup. Then try again.');
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['Cancel']);
     await user.click(button('Cancel'));

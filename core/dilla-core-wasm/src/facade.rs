@@ -611,6 +611,10 @@ impl CoreHandle {
         self.with_core(|c| c.own_device_list())
             .map(Vec::into_boxed_slice)
     }
+    /// Calls ClientCore::state_sealed_current.
+    pub fn state_sealed_current(&self) -> Result<bool, JsError> {
+        self.with_core(|c| c.state_sealed_current())
+    }
     /// Calls ClientCore::state_sealed_uploaded.
     pub fn state_sealed_uploaded(&self) -> Result<(), JsError> {
         self.with_core(|c| c.state_sealed_uploaded())

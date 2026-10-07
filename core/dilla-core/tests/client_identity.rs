@@ -3103,6 +3103,45 @@ fn revoke_completes_an_interrupted_publication_and_a_dropped_candidate_falls_bac
     assert_eq!((v, published), (2, 1));
 }
 
+/// BACKUPS-RECOVERY-03: a browser cannot open the stored state object (it holds no K_backup), so
+/// the repair at each ready rests on what it knows: whether its own sealed state object carries the
+/// list it accepted as the newest. Only then is a different stored object behind or junk. A store
+/// written before the record existed counts as not current.
+#[test]
+fn state_sealed_current_says_whether_the_own_state_object_carries_the_accepted_list() {
+    let (mut a, _ac, rk_text, reg, put_v1) = signed_up();
+    assert!(a.state_sealed_current().expect("signup: v1 and its state"));
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let mut b = second();
+    assert_eq!(
+        err(b.core.state_sealed_current()).code,
+        "E_CORE_NO_IDENTITY"
+    );
+    let (put_v2, _) = list_and_state(
+        &b.core
+            .enrol_complete(&m.rk_text, &m.root, &m.state, &m.put_v1, "alice", LATER)
+            .expect("enrol"),
+    );
+    assert!(
+        !b.core.state_sealed_current().expect("enrolled"),
+        "the state carries v2, the accepted list is v1 until the publication"
+    );
+    b.core.device_list_published().expect("published");
+    assert!(b.core.state_sealed_current().expect("published"));
+    let v2 = DeviceList::decode(&put_parts(&put_v2).1).expect("v2");
+    a.own_device_list_update(&history(&[&v2]))
+        .expect("A adopts v2");
+    assert!(
+        !a.state_sealed_current().expect("adopted"),
+        "A's state carries v1"
+    );
+    b.c.lock()
+        .expect("lock")
+        .execute("DELETE FROM app_meta WHERE k = 'state_list'", [])
+        .expect("delete");
+    assert!(!b.core.state_sealed_current().expect("no record"));
+}
+
 /// A failed sign-out drops its self-revoking candidate (BACKUPS-RECOVERY-02): the device stays
 /// listed, and its next publication is the accepted list again, which the instance already holds.
 #[test]

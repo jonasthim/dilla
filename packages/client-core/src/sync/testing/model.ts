@@ -342,6 +342,7 @@ export class ModelCore implements CorePort {
   }
   sealedObjects(): SealedObjects { throw coreError('E_CORE_STATE', 'not modelled'); }
   stateSealedUploaded(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
+  stateSealedCurrent(): boolean { throw coreError('E_CORE_STATE', 'not modelled'); }
   enrolBegin(): { deviceId: Id; dskPub: Uint8Array } { throw coreError('E_CORE_STATE', 'not modelled'); }
   enrolSessionSign(): Uint8Array { throw coreError('E_CORE_STATE', 'not modelled'); }
   enrolRegistered(): void { throw coreError('E_CORE_STATE', 'not modelled'); }

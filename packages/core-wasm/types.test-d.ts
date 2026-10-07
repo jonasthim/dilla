@@ -69,6 +69,7 @@ interface ExpectedCoreHandle {
   own_device_list_update(history_body: Uint8Array): Uint8Array;
   own_device_list(): Uint8Array;
   state_sealed_uploaded(): void;
+  state_sealed_current(): boolean;
 }
 
 type H = Wasm.CoreHandle;
@@ -142,3 +143,4 @@ expectTrue<Equals<H['device_list_revoke'], E['device_list_revoke']>>();
 expectTrue<Equals<H['own_device_list_update'], E['own_device_list_update']>>();
 expectTrue<Equals<H['own_device_list'], E['own_device_list']>>();
 expectTrue<Equals<H['state_sealed_uploaded'], E['state_sealed_uploaded']>>();
+expectTrue<Equals<H['state_sealed_current'], E['state_sealed_current']>>();

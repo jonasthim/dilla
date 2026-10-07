@@ -139,8 +139,26 @@ export async function ensureBackups(core: CorePort, routes: Routes): Promise<voi
   }
   if (sealed.state === null) return;
   const listed = rows.some((row) => row.kind === 1);
+  // The repair of a stored object that is behind or junk is repairBackupState's, after the own list is refreshed.
   if (!listed || !sealed.stateUploaded) {
     await routes.putBackup(1, sealed.state);
     core.stateSealedUploaded();
   }
+}
+
+/** BACKUPS-RECOVERY-03, at each ready once the own list is refreshed: a stolen session can replace the state object
+ *  with junk, and past list v1 the core refuses an unopenable one (the rollback floor), so every recovery-key action
+ *  would fail. This browser holds no K_backup and cannot open the instance's copy; when its own sealed state carries
+ *  the list it accepted as the newest, a stored object with other bytes is behind that list or junk, and it uploads
+ *  its own. A browser whose own state is older leaves the object to the device that published the newest list.
+ *  Resolves whether it uploaded. */
+export async function repairBackupState(core: CorePort, routes: Routes): Promise<boolean> {
+  const own = core.sealedObjects().state;
+  if (own === null) return false;
+  const stored = await routes.getBackup(1);
+  if (stored !== null && same(stored.object, own)) return false;
+  if (stored !== null && !core.stateSealedCurrent()) return false;
+  await routes.putBackup(1, own);
+  core.stateSealedUploaded();
+  return true;
 }

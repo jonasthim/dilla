@@ -70,6 +70,8 @@ export interface CorePort {
   activity(): ActivityRow[];
   settings(): Record<string, string>; settingPut(k: string, v: string): void; settingDelete(k: string): void;
   sealedObjects(): SealedObjects; stateSealedUploaded(): void;
+  /** BACKUPS-RECOVERY-03: whether this device's own sealed state object carries the list it accepted as the newest. */
+  stateSealedCurrent(): boolean;
   enrolBegin(instanceId: Id): { deviceId: Id; dskPub: Uint8Array };
   enrolSessionSign(nonce: Uint8Array, login: Uint8Array): Uint8Array;
   enrolRegistered(userId: Id): void;
@@ -131,6 +133,7 @@ export interface CoreHandle {
       own_device_list_update(history_body: Uint8Array): Uint8Array;
       own_device_list(): Uint8Array;
       state_sealed_uploaded(): void;
+      state_sealed_current(): boolean;
     }
     export interface StoreOpenConfigLike { directory: string; db_name: string; kek_hex: string; }
     export interface CoreWasmModule {
@@ -277,6 +280,7 @@ export function wrapCore(handle: CoreHandle): CorePort {
     settingDelete: (k) => call(() => handle.setting_delete(k)),
     sealedObjects: () => call(() => decoded('sealedObjects', handle.sealed_objects(), readSealed)),
     stateSealedUploaded: () => call(() => handle.state_sealed_uploaded()),
+    stateSealedCurrent: () => call(() => handle.state_sealed_current()),
     enrolBegin: (instanceId) => call(() => decoded('enrolBegin', handle.enrol_begin(instanceId), (v) => {
       const a = arr(v, 2); return { deviceId: bin(field(a, 0), 16), dskPub: bin(field(a, 1), 32) };
     })),

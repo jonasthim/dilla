@@ -430,6 +430,7 @@ function world(opts: {
     refreshOwnDeviceList: vi.fn((_core: CorePort, _routes: Routes, _user: Uint8Array) => {
       calls.push('refreshOwnDeviceList'); return Promise.resolve({ version: 1n, listed: true });
     }),
+    repairBackupState: vi.fn((_core: CorePort, _routes: Routes) => { calls.push('repairBackupState'); return Promise.resolve(false); }),
   };
   const gateway = new GatewayDouble(calls);
   // An addition to the brief's double (pre-flight ruling (a)): a test mints a ticket through the deps the controller passed.
@@ -453,6 +454,7 @@ function world(opts: {
     publishDeviceList: account.publishDeviceList,
     ensureBackups: account.ensureBackups,
     refreshOwnDeviceList: account.refreshOwnDeviceList,
+    repairBackupState: account.repairBackupState,
   };
   const h = harness({
     boot: (instance) => Promise.resolve({ kind: 'opened', core: core as unknown as CorePort, instance }),
@@ -1335,8 +1337,8 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
   it('enters ready in order: session, list, backups, own list, engine, gateway, every community, then the DMs', async () => {
     const w = world();
     await toReady(w);
-    expect(w.calls.slice(0, 10)).toEqual([
-      'session.ensure', 'publishDeviceList', 'ensureBackups', 'refreshOwnDeviceList', 'sync.start', 'gateway.start',
+    expect(w.calls.slice(0, 11)).toEqual([
+      'session.ensure', 'publishDeviceList', 'ensureBackups', 'refreshOwnDeviceList', 'repairBackupState', 'sync.start', 'gateway.start',
       'listCommunities', 'listChannels', 'listMembers', 'listDms',
     ]);
     expect(w.session.establish).not.toHaveBeenCalled();
@@ -1411,6 +1413,23 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     expect(w.routes.listChannels).toHaveBeenCalledTimes(2);
     expect(w.account.ensureBackups).toHaveBeenCalledTimes(2);
     expect(w.account.refreshOwnDeviceList).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(w.account.repairBackupState).toHaveBeenCalledTimes(2));
+  });
+
+  // BACKUPS-RECOVERY-03: the repair needs the refreshed own list, so it runs after it; a refusal waits for the next ready.
+  it('repairs the state object after the own list at each ready, and a failed repair is not an error', async () => {
+    const w = world();
+    w.account.repairBackupState.mockImplementationOnce(() => { w.calls.push('repairBackupState'); return Promise.reject(refusal(429, 'E_RATE_LIMITED', 3_000)); });
+    await toReady(w);
+    const from = w.calls.length;
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.account.repairBackupState).toHaveBeenCalledTimes(2));
+    const after = w.calls.slice(from);
+    expect(after.indexOf('refreshOwnDeviceList')).toBeLessThan(after.indexOf('repairBackupState'));
+    w.account.refreshOwnDeviceList.mockImplementationOnce(() => Promise.resolve({ version: 2n, listed: false }));
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('revoked'));
+    expect(w.account.repairBackupState).toHaveBeenCalledTimes(2);
   });
 
   it('badges: a group bound to no known channel contributes nothing', async () => {

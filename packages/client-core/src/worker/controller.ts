@@ -3,7 +3,7 @@
 // together, and publishes the state slices (L-TS-08, L-TS-24). It posts only ret and slice messages, to its
 // own page only.
 import type { BootOutcome } from '../account/boot';
-import { Enrol, ensureBackups, refreshOwnDeviceList, type EnrolFetched } from '../account/enrol';
+import { Enrol, ensureBackups, refreshOwnDeviceList, repairBackupState, type EnrolFetched } from '../account/enrol';
 import { refillKeyPackages } from '../account/keypackages';
 import { Session } from '../account/session';
 import { Signup, publishDeviceList } from '../account/signup';
@@ -56,6 +56,7 @@ export interface ControllerParts {
   publishDeviceList(core: CorePort, routes: Routes): Promise<void>;
   ensureBackups(core: CorePort, routes: Routes): Promise<void>;
   refreshOwnDeviceList(core: CorePort, routes: Routes, userId: Id): Promise<{ version: bigint; listed: boolean }>;
+  repairBackupState(core: CorePort, routes: Routes): Promise<boolean>;
 }
 // No EnrolRate class and no E_ENROL_RATE code (head ruling 38 as amended): registration answers no per-user 429.
 
@@ -69,6 +70,7 @@ export const REAL_PARTS: ControllerParts = {
   publishDeviceList,
   ensureBackups,
   refreshOwnDeviceList,
+  repairBackupState,
 };
 
 /** A refusal of the controller's own (E_BAD_INPUT, E_NOT_READY, E_INVITE_NOT_COMMUNITY, E_SETTING_KEY). */
@@ -503,6 +505,9 @@ export class Controller {
       const own = await this.parts.refreshOwnDeviceList(core, this.routes, userId);
       if (this.revoked()) return;
       if (!own.listed) { this.enterRevoked(); return; }
+      // BACKUPS-RECOVERY-03: a stored state object behind the own list or junk is replaced; the next ready retries.
+      await this.repairBackupState(core);
+      if (this.revoked()) return;
     } catch (e) {
       // Requirement 12: a pending scope or an unlisted answer for a device the own list names is a revocation.
       if ((isCode(e, 'E_SESSION_SCOPE') || isCode(e, 'E_DEVICE_UNLISTED')) && core.identity().phase === 2) {
@@ -598,6 +603,11 @@ export class Controller {
     }
   }
 
+  /** BACKUPS-RECOVERY-03: swallowed like ensureBackups; the next ready tries again. */
+  private async repairBackupState(core: CorePort): Promise<void> {
+    try { await this.parts.repairBackupState(core, this.routes); } catch { /* the next ready retries */ }
+  }
+
   /** Read through a call: tsc keeps a narrowing of this.phase across awaits, but a revocation can land in any of them. */
   private revoked(): boolean { return this.phase === 'revoked'; }
 
@@ -648,7 +658,7 @@ export class Controller {
     if (core !== null && me !== null) {
       void this.ensureBackups(core);
       this.parts.refreshOwnDeviceList(core, this.routes, me.userId)
-        .then((own) => { if (!own.listed) this.enterRevoked(); }, () => undefined);
+        .then((own) => (own.listed ? this.repairBackupState(core) : this.enterRevoked()), () => undefined);
     }
     void this.refreshAfterReady();
   }

@@ -48,10 +48,17 @@ session once they exist.
 **At the instance.** One root object per user, stored insert-only: a second, different root object
 is refused and the first stays; the same bytes again are accepted and change nothing. One state
 object per user, replaced by each upload; the bytes it replaced are collected after
-`blobs.gc_grace`. A device recovering by key that cannot open the stored state object (corrupt,
-replaced, or sealed under another key) treats it as holding no pins and writes a sound object in
-its place; the state object is never a condition of recovery, the root object and the signed
-device list are. Both are read by the user's own `enrolled` and `pending` sessions, so a device
+`blobs.gc_grace`. A device recovering by key that cannot open the stored state object (missing,
+corrupt, replaced, or sealed under another key) treats it as holding no pins and writes a sound
+object in its place only while the served device list is version 1, when no device has written
+another state object yet. Past version 1 it refuses (`E_CORE_INPUT`, "the backup state is missing"
+or "could not be read"): the object's list is the rollback floor, and accepting its absence would let
+an instance serve an older signed list and have a revoked device listed again. The repair is the
+devices': at each session a `browser` reads the stored state object and, when its own sealed state
+object carries the newest list it accepted (it published that list) and the stored bytes differ,
+uploads its own, since the stored one is then behind that list or junk (a browser holds no
+`K_backup` and cannot open it); a device revoking another with the recovery key re-seals and uploads
+the object too. Both are read by the user's own `enrolled` and `pending` sessions, so a device
 entering the recovery key fetches them before it holds a credential. Archive chunks and the
 manifest are not served at wire 1. The instance cannot open either object.
 

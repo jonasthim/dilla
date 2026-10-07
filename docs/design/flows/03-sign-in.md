@@ -365,7 +365,8 @@ read): the same view, with the danger banner `signin.error.noBackupState` in pla
 ```
 |                      +------------------------------------------------------------------+    |
 |                      | ✕ This account has no backup to recover from on dilla.thim.dev.  |    |
-|                      |   Sign in from a device that still holds it, or start over.      |    |
+|                      |   Sign in on a device that still holds this account and open     |    |
+|                      |   dilla there; it repairs the backup. Then try again.            |    |
 |                      +------------------------------------------------------------------+    |
 |                      --------------------------------------------------                      |
 |                                                            [ Cancel ]                        |
@@ -741,7 +742,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `signin.error.totpFailed` | `That code did not work. Sign in again with a fresh code.` | warn banner, step 1, after a refused second factor |
 | `signin.error.required` | `Fill in this field.` | field error under an empty `Username`, `Password` or `Code` on submit, steps 1 and 2 |
 | `signin.error.noBackup` | `This account has no recovery data on {instance}. It was created before recovery existed, and its browser has not been online since. Open it there first.` | danger banner, step 3, without the field, after `E_NO_BACKUP` from the fetch of a reload into step 3 |
-| `signin.error.noBackupState` | `This account has no backup to recover from on {instance}. Sign in from a device that still holds it, or start over.` | danger banner, step 3, without the field, after `E_NO_BACKUP` from `signInKey` |
+| `signin.error.noBackupState` | `This account has no backup to recover from on {instance}. Sign in on a device that still holds this account and open dilla there; it repairs the backup. Then try again.` | danger banner, step 3, without the field, after `E_NO_BACKUP` from `signInKey` |
 | `signin.error.wrongKey` | `This is not the recovery key of this account. Check every character.` | field error, recovery key, step 3 |
 | `signin.error.keyLength` | `A recovery key has 52 characters.` | description of the blocked forward button while the count is not 52, and the field's error on such a submit, step 3 and the two key dialogs |
 | `signin.error.deviceCap` | `This account already has as many devices as {instance} allows. Remove one in Settings on another device first.` | danger banner, step 1, after `E_FORBIDDEN` from the registration |

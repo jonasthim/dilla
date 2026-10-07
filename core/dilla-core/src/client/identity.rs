@@ -574,6 +574,13 @@ fn floor(r: &Recovered, stored: Option<&DeviceList>) -> Result<(), ClientError> 
     Ok(())
 }
 
+/// The `state_list` meta value: the device list version inside the state object just sealed.
+fn state_list(version: u64) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.uint(version);
+    e.into_vec()
+}
+
 fn signed_next(
     ssk_priv: &[u8; 32],
     ssk_pub: &[u8; 32],
@@ -796,6 +803,7 @@ impl ClientCore {
             };
             u.with_conn(|c| {
                 schema::meta_put(c, schema::STATE_SEALED, &state)?;
+                schema::meta_put(c, schema::STATE_LIST, &state_list(1))?;
                 schema::meta_put(c, schema::IDENTITY, &identity.encode())?;
                 schema::meta_del(c, schema::SIGNUP)
             })?;
@@ -1184,6 +1192,7 @@ impl ClientCore {
             };
             u.with_conn(|c| {
                 schema::meta_put(c, schema::STATE_SEALED, &state)?;
+                schema::meta_put(c, schema::STATE_LIST, &state_list(next.unsigned.version))?;
                 schema::meta_put(c, schema::ROOT_SEALED, root_sealed)?;
                 schema::meta_put(c, schema::IDENTITY, &identity.encode())?;
                 schema::meta_del(c, schema::ENROL)
@@ -1265,6 +1274,7 @@ impl ClientCore {
             rec.state_uploaded = false;
             u.with_conn(|c| {
                 schema::meta_put(c, schema::STATE_SEALED, &state)?;
+                schema::meta_put(c, schema::STATE_LIST, &state_list(next.unsigned.version))?;
                 schema::meta_put(c, schema::IDENTITY, &rec.encode())
             })?;
             Ok(wire::signed_lists(&put, &state, first.as_deref()))
@@ -1328,6 +1338,24 @@ impl ClientCore {
             rec.list_published,
             &list.unsigned.entries,
         ))
+    }
+
+    /// BACKUPS-RECOVERY-03: whether this device's own sealed state object carries the list it
+    /// accepted as the newest. A browser holds no K_backup and cannot open the instance's copy; when
+    /// this is true, a stored object with other bytes is behind that list or junk, and the browser
+    /// re-uploads its own. A store without the record (written before it existed) answers false.
+    pub fn state_sealed_current(&self) -> Result<bool, ClientError> {
+        let (phase, version) =
+            self.read(|c| Ok((load_phase(c)?, schema::meta_get(c, schema::STATE_LIST)?)))?;
+        let rec = ready(decode_phase(phase.0, phase.1, phase.2)?)?;
+        let Some(raw) = version else {
+            return Ok(false);
+        };
+        let sealed =
+            decode_strict(&raw, |d| d.uint()).map_err(|_| malformed(schema::STATE_LIST))?;
+        let accepted =
+            DeviceList::decode(&rec.device_list).map_err(|_| malformed(schema::IDENTITY))?;
+        Ok(sealed == accepted.unsigned.version)
     }
 
     pub fn state_sealed_uploaded(&mut self) -> Result<(), ClientError> {

@@ -39,6 +39,8 @@ export class FakeCore implements CorePort {
   private accepted: StoredList | null = null;
   private candidateVersion = 0n;
   private sealed: SealedObjects = { root: null, state: null, stateUploaded: false };
+  /** The list version inside the own sealed state object, as the core's `state_list` record keeps it. */
+  private stateList: bigint | null = null;
   private readonly settingsMap = new Map<string, string>();
   private record: SessionRecord | null = null;
   private paused = false;
@@ -59,6 +61,7 @@ export class FakeCore implements CorePort {
     core.accepted = core.readBody(core.listBody);
     core.candidateVersion = 1n;
     core.sealed = { root: FAKE_ROOT_SEALED, state: FAKE_STATE_SEALED, stateUploaded: o.stateUploaded ?? false };
+    core.stateList = core.accepted.version;
     return core;
   }
   failOnce(method: keyof CorePort, error: CoreError): void { this.failures.set(method, error); }
@@ -167,6 +170,7 @@ export class FakeCore implements CorePort {
     this.accepted = this.readBody(this.listBody);
     this.candidateVersion = 1n;
     this.sealed = { root: FAKE_ROOT_SEALED, state: FAKE_STATE_SEALED, stateUploaded: false };
+    this.stateList = 1n;
     this.info = { ...this.info, phase: 2, userId, username, listPublished: false };
     return this.listBody;
   }
@@ -216,6 +220,10 @@ export class FakeCore implements CorePort {
   }
   sealedObjects(): SealedObjects { this.enter('sealedObjects'); return { ...this.sealed }; }
   stateSealedUploaded(): void { this.enter('stateSealedUploaded'); this.requireIdentity(); this.sealed.stateUploaded = true; }
+  stateSealedCurrent(): boolean {
+    this.enter('stateSealedCurrent'); this.requireIdentity();
+    return this.stateList !== null && this.stateList === this.accepted?.version;
+  }
   enrolBegin(instanceId: Id): { deviceId: Id; dskPub: Uint8Array } {
     this.enter('enrolBegin');
     if (this.info.phase !== 0) throw new CoreError('E_CORE_STATE', this.info.phase === 1 ? 'a signup is pending' :
@@ -255,6 +263,7 @@ export class FakeCore implements CorePort {
     this.listBody = this.candidate(this.info.userId,
       [...list.entries, { deviceId: this.info.deviceId, revokedAt: null }], input.now, row.version + 1n);
     this.sealed = { root: input.rootSealed, state: REMADE_STATE, stateUploaded: false };
+    this.stateList = this.candidateVersion;
     this.info = { ...this.info, phase: 2, username: input.username, listPublished: false };
     return { deviceListBody: this.listBody, stateSealed: REMADE_STATE, interrupted };
   }
@@ -313,6 +322,7 @@ export class FakeCore implements CorePort {
     })), input.now, row.version + 1n);
     this.info.listPublished = false;
     this.sealed = { root: this.sealed.root, state: REMADE_STATE, stateUploaded: false };
+    this.stateList = this.candidateVersion;
     return { deviceListBody: this.listBody, stateSealed: REMADE_STATE, interrupted };
   }
   settings(): Record<string, string> {
