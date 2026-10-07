@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { MessageEditor, type MessageEditorProps } from './MessageEditor.tsx';
+import { MessageRow } from '../MessageRow/MessageRow.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 function setup(initial = 'meet at nine', over: Partial<MessageEditorProps> = {}) {
@@ -64,6 +65,26 @@ describe('MessageEditor', () => {
     expect(onCancel).not.toHaveBeenCalled();
     fireEvent.keyDown(box, { key: 'Escape' });
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['isComposing', { isComposing: true }],
+    ['keyCode 229', { keyCode: 229 }],
+  ])('keeps textarea focus when Escape arrives during %s inside a message row', (_signal, event) => {
+    const onCancel = vi.fn();
+    render(<MessageRow author="Ada" time="now" body="meet at nine" state="ok" active
+      editor={<MessageEditor label="edit your message" value="meet at nine" onChange={() => {}} onSave={() => {}}
+        onCancel={onCancel} hint="escape to cancel · enter to save" saveLabel="save" cancelLabel="cancel"
+        maxLength={4000} counterLabel={(n) => `${n} left`} />} />);
+    const box = screen.getByRole('textbox', { name: 'edit your message' });
+    const row = screen.getByRole('article');
+    expect(box).toHaveFocus();
+
+    fireEvent.keyDown(box, { key: 'Escape', ...event });
+
+    expect(box).toHaveFocus();
+    expect(row).not.toHaveFocus();
+    expect(onCancel).not.toHaveBeenCalled();
   });
 
   it('refuses an empty text and a text over the budget, measured by the given measure', () => {

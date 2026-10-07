@@ -52,12 +52,16 @@ export function MessageEditor({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape') {
       e.preventDefault();
+      if (e.nativeEvent.isComposing || e.keyCode === 229) {
+        e.stopPropagation();
+        return;
+      }
       onCancel();
       return;
     }
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key !== 'Enter' || e.shiftKey) return;
     e.preventDefault();
     if (e.repeat) return;
