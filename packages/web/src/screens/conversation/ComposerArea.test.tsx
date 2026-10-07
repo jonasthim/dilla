@@ -16,6 +16,17 @@ const entry = (id: string, phase: TrayItem['phase'], over: Partial<TrayItem> = {
   ({ id, name: `${id}.txt`, size: 5, mime: 'text/plain', image: false, phase, reason: '', ...over });
 
 describe('mentions in the composer (L-TS-37)', () => {
+  it('opens a fresh @ query at the same position after Escape and deletion', async () => {
+    const { user } = renderConversation();
+    await user.type(box(), '@b');
+    expect(screen.getByRole('listbox', { name: 'people to mention' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox')).toBeNull();
+    await user.keyboard('{Backspace}{Backspace}');
+    expect(box()).toHaveValue('');
+    await user.keyboard('@');
+    expect(screen.getByRole('listbox', { name: 'people to mention' })).toBeInTheDocument();
+  });
   it('opens the list on @ with members and @everyone, moves with the arrows and inserts the pick', async () => {
     const { fake, user } = renderConversation();
     await user.type(box(), '@');

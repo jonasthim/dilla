@@ -26,11 +26,15 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const pendingCaret = useRef<number | null>(null);
   const id = useId().replace(/:/g, '-');
   const query = mentionQuery(p.draft, caret);
+  const queryEnded = query === null;
   const options = query === null ? [] : mentionOptions(query.query, p.candidates, p.broadcast);
   const open = query !== null && options.length > 0 && query.start !== dismissed;
   const index = Math.min(active, options.length - 1);
   const listId = `${id}-mentions`;
   const optionId = (o: { id: string }) => `${id}-${o.id}`;
+  useLayoutEffect(() => {
+    if (queryEnded && dismissed !== null) setDismissed(null);
+  }, [queryEnded, dismissed]);
   useLayoutEffect(() => {
     if (pendingCaret.current === null) return;
     const next = pendingCaret.current;
