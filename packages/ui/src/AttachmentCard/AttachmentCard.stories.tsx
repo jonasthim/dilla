@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { waitFor } from 'storybook/test';
 import { AttachmentCard, type AttachmentCardProps } from './AttachmentCard.tsx';
 import { useDrawnImage } from '../internal/drawn-image.ts';
 
@@ -27,7 +28,24 @@ function SmallDrawn(props: AttachmentCardProps) {
 
 export const ImageLoading: Story = { args: { state: 'loading', stateText: 'opening…' } };
 export const ImageReady: Story = { args: { w: 320, h: 240 }, render: args => <Drawn {...args} /> };
-export const SmallImage: Story = { args: { w: 16, h: 16 }, render: args => <SmallDrawn {...args} /> };
+export const SmallImage: Story = {
+  args: { w: 16, h: 16 }, render: args => <SmallDrawn {...args} />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      if (!canvasElement.querySelector('.d-attachment-card__thumb')) throw new Error('SmallImage: thumbnail has not loaded');
+    });
+    const button = canvasElement.querySelector('.d-attachment-card__open');
+    const image = canvasElement.querySelector('.d-attachment-card__thumb');
+    if (!button || !image) throw new Error('SmallImage: missing open target or thumbnail');
+    const target = button.getBoundingClientRect();
+    const thumb = image.getBoundingClientRect();
+    if (target.width < 24 || target.height < 24 || thumb.width !== 16 || thumb.height !== 16) {
+      throw new Error(`SmallImage: the 16 px image needs a 24 px target without enlarging the image (${JSON.stringify({
+        targetWidth: target.width, targetHeight: target.height, imageWidth: thumb.width, imageHeight: thumb.height,
+      })})`);
+    }
+  },
+};
 export const ImageFailed: Story = { args: { state: 'failed', stateText: 'could not open (E_BLOB_OPEN)' } };
 export const ImageTooLarge: Story = {
   args: { name: 'harbour-panorama.png', size: '31.5 MB', w: 8000, h: 2000, state: 'too-large', stateText: 'too large to open in a browser' },

@@ -6,19 +6,6 @@ const STRICT_TARGET_TITLES = ['Form/', 'Ceremony/', 'Shell/', 'Conversation/', '
 const config: TestRunnerConfig = {
   async preVisit(page) { await injectAxe(page); },
   async postVisit(page, context) {
-    if (context.id === 'conversation-attachmentcard--small-image') {
-      const sizes = await page.evaluate(() => {
-        const button = document.querySelector('.d-attachment-card__open');
-        const image = document.querySelector('.d-attachment-card__thumb');
-        if (!button || !image) return null;
-        const target = button.getBoundingClientRect();
-        const thumb = image.getBoundingClientRect();
-        return { targetWidth: target.width, targetHeight: target.height, imageWidth: thumb.width, imageHeight: thumb.height };
-      });
-      if (!sizes || sizes.targetWidth < 24 || sizes.targetHeight < 24 || sizes.imageWidth !== 16 || sizes.imageHeight !== 16) {
-        throw new Error(`${context.title} / ${context.name}: the 16 px image needs a 24 px target without enlarging the image (${JSON.stringify(sizes)})`);
-      }
-    }
     const strict = STRICT_TARGET_TITLES.some(prefix => context.title.startsWith(prefix));
     await checkA11y(page, '#storybook-root', {
       detailedReport: true, detailedReportOptions: { html: true }, includedImpacts: ['critical', 'serious'],
