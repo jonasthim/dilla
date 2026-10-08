@@ -207,12 +207,18 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// returns and therefore before any connection can reach either callback.
 	policy := policyFromConfig(o.Config)
 	var delivery *ds.DS
+	var callSFU api.CallTokens
+	if o.SFU != nil {
+		callSFU = o.SFU
+	}
 	gw := gateway.New(gateway.Options{
-		Store:   o.Repo,
-		Clock:   o.Clock,
-		Log:     o.Log,
-		Metrics: o.Metrics,
-		Auth:    sessions,
+		Store:             o.Repo,
+		Clock:             o.Clock,
+		Log:               o.Log,
+		Metrics:           o.Metrics,
+		Auth:              sessions,
+		TypingAudience:    api.TypingAudience(o.Repo),
+		VoiceSelfAudience: api.VoiceSelfAudience(o.Repo, callSFU),
 		Outstanding: func(ctx context.Context, groupID id.ID) uint64 {
 			rows, err := delivery.Outstanding(ctx, groupID)
 			if err != nil {
@@ -409,10 +415,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// hands Handle to its loopback webhook listener. They are built even without an SFU: the call
 	// routes end calls through them. An interface holding a nil SFU is not a nil interface, so it is
 	// handed over only when there is one.
-	var callSFU api.CallTokens
-	if o.SFU != nil {
-		callSFU = o.SFU
-	}
 	events = api.NewCallEvents(o.Repo, api.NewResolver(o.Repo), delivery, callSFU, callRoutes, gw, o.Clock, o.Log).
 		WithGauge(o.Metrics)
 

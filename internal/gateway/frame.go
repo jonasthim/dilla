@@ -53,6 +53,8 @@ const (
 	OpPresence   Op = 48
 	OpTyping     Op = 49
 	OpVoiceState Op = 50
+	OpTypingSet  Op = 51
+	OpVoiceSelf  Op = 52
 )
 
 // CloseCode is a WebSocket close code from RFC 6455's private range.
@@ -124,8 +126,10 @@ var opSpecs = map[Op]opSpec{
 	OpInteraction:  {elements: 4, replayable: true},
 
 	OpPresence:   {elements: 4},
-	OpTyping:     {elements: 4},
+	OpTyping:     {elements: 5},
 	OpVoiceState: {elements: 4},
+	OpTypingSet:  {elements: 2, fromClient: true},
+	OpVoiceSelf:  {elements: 2, fromClient: true},
 }
 
 // FrameError is a structured refusal. Code is the E_FRAME_* string the client sees in an error
@@ -193,7 +197,9 @@ func Decode(b []byte, maxBytes int) (Inbound, error) {
 		return Inbound{}, frameErr("E_FRAME_SHAPE", "op: "+err.Error(), CloseDecode)
 	}
 	code, spec, ok := lookupOp(op)
-	if !ok || !spec.fromClient {
+	// The committed reject corpus pins the legacy four-element op 49 to
+	// E_FRAME_SHAPE. Check that one retired shape before rejecting its direction.
+	if !ok || (!spec.fromClient && code != OpTyping) {
 		return Inbound{}, frameErr("E_FRAME_TYPE",
 			fmt.Sprintf("opcode %d is not a client frame in this wire_version", op), CloseDecode)
 	}
@@ -231,6 +237,23 @@ func Decode(b []byte, maxBytes int) (Inbound, error) {
 		return Inbound{}, frameErr("E_FRAME_SHAPE",
 			fmt.Sprintf("opcode %d payload has %d elements, want %d", op, len(payload), spec.elements),
 			CloseDecode)
+	}
+	if code == OpTypingSet || code == OpVoiceSelf {
+		var target id.ID
+		if err := cborx.Unmarshal(payload[0], &target); err != nil {
+			return Inbound{}, frameErr("E_FRAME_SHAPE", "target id: "+err.Error(), CloseDecode)
+		}
+		flags, err := rawUint(payload[1])
+		if err != nil || (code == OpTypingSet && flags > 1) || (code == OpVoiceSelf && flags > 3) {
+			return Inbound{}, frameErr("E_FRAME_SHAPE", "invalid signal flags", CloseDecode)
+		}
+		if cid != 0 {
+			return Inbound{}, frameErr("E_FRAME_SHAPE", "signal n must be zero", CloseDecode)
+		}
+	}
+	if !spec.fromClient {
+		return Inbound{}, frameErr("E_FRAME_TYPE",
+			fmt.Sprintf("opcode %d is not a client frame in this wire_version", op), CloseDecode)
 	}
 	return Inbound{Op: code, CID: cid, GroupID: gid, Payload: payload}, nil
 }

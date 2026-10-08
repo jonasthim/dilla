@@ -10,16 +10,17 @@ import (
 func TestTypingExpiresAfterTenSeconds(t *testing.T) {
 	h := newHarness(t)
 	user, device := id.New(), id.New()
-	h.gw.SetTyping(user, device, true)
-	if !h.gw.IsTyping(user, device) {
+	channel := id.New()
+	h.gw.SetTyping(channel, user, device, true)
+	if !h.gw.IsTyping(channel, user, device) {
 		t.Fatal("typing must be live immediately")
 	}
 	h.clk.Advance(9 * time.Second)
-	if !h.gw.IsTyping(user, device) {
+	if !h.gw.IsTyping(channel, user, device) {
 		t.Fatal("typing must still be live at 9 s")
 	}
 	h.clk.Advance(2 * time.Second)
-	if h.gw.IsTyping(user, device) {
+	if h.gw.IsTyping(channel, user, device) {
 		t.Fatal("typing must expire after 10 s")
 	}
 }

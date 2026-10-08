@@ -651,6 +651,7 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 			if errors.As(err, &fe) {
 				if p, perr := ErrorPayload(0, fe.Code, fe.Detail); perr == nil {
 					c.send(Frame{Op: OpError, Payload: p})
+					c.currentWriter().drain(ctx)
 				}
 				s.close(fe.Close, fe.Code)
 			}
@@ -664,6 +665,10 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 // unsubscribe adjust this connection's group set.
 func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 	switch in.Op {
+	case OpTypingSet:
+		g.handleTypingSet(ctx, c, in)
+	case OpVoiceSelf:
+		g.handleVoiceSelf(ctx, c, in)
 	case OpHeartbeat:
 		lastN, err := rawUint(in.Payload[0])
 		if err != nil {
@@ -703,5 +708,90 @@ func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 	}
 	if g.opts.Metrics != nil {
 		g.opts.Metrics.GatewayFrames.WithLabelValues(opLabel(in.Op), "in").Inc()
+	}
+}
+
+func (g *Gateway) signalError(c *conn, code string) {
+	if p, err := ErrorPayload(0, code, code); err == nil {
+		c.send(Frame{Op: OpError, Payload: p})
+	}
+}
+
+func signalTarget(in Inbound) (id.ID, uint64, error) {
+	var target id.ID
+	if err := cborx.Unmarshal(in.Payload[0], &target); err != nil {
+		return id.ID{}, 0, err
+	}
+	flags, err := rawUint(in.Payload[1])
+	return target, flags, err
+}
+
+func (g *Gateway) handleTypingSet(ctx context.Context, c *conn, in Inbound) {
+	channel, on, err := signalTarget(in)
+	if err != nil || on > 1 {
+		g.signalError(c, "E_FRAME_SHAPE")
+		return
+	}
+	if g.opts.TypingAudience == nil {
+		g.signalError(c, "E_NOT_FOUND")
+		return
+	}
+	audience, err := g.opts.TypingAudience(ctx, c.deviceID, channel)
+	if err != nil || len(audience) == 0 {
+		g.signalError(c, "E_NOT_FOUND")
+		return
+	}
+	// Recheck the permission and recipients at the delivery boundary.
+	audience, err = g.opts.TypingAudience(ctx, c.deviceID, channel)
+	if err != nil || len(audience) == 0 {
+		g.signalError(c, "E_NOT_FOUND")
+		return
+	}
+	if !g.acceptTyping(channel, c.userID, c.deviceID, on == 1) {
+		g.signalError(c, "E_RATE_LIMITED")
+		return
+	}
+	expires := uint64(0)
+	if on == 1 {
+		expires = uint64(g.opts.Clock.Now().Add(typingTTL).Unix()) //nolint:gosec // server timestamps are nonnegative
+	}
+	p, err := TypingPayload(channel, c.userID, c.deviceID, on == 1, expires)
+	if err != nil {
+		return
+	}
+	for _, user := range audience {
+		g.DeliverUser(user, Frame{Op: OpTyping, Payload: p})
+	}
+}
+
+func (g *Gateway) handleVoiceSelf(ctx context.Context, c *conn, in Inbound) {
+	call, bits, err := signalTarget(in)
+	if err != nil || bits > 3 {
+		g.signalError(c, "E_FRAME_SHAPE")
+		return
+	}
+	if g.opts.VoiceSelfAudience == nil {
+		g.signalError(c, "E_NOT_FOUND")
+		return
+	}
+	channel, audience, _, err := g.opts.VoiceSelfAudience(ctx, c.deviceID, call)
+	if err != nil || channel == (id.ID{}) || len(audience) == 0 {
+		g.signalError(c, "E_NOT_FOUND")
+		return
+	}
+	channel, audience, roomFlags, err := g.opts.VoiceSelfAudience(ctx, c.deviceID, call)
+	if err != nil || channel == (id.ID{}) || len(audience) == 0 {
+		g.signalError(c, "E_NOT_FOUND")
+		return
+	}
+	// The callback proves live SFU membership. Bit zero is server-owned; client bits
+	// zero and one map only to the self-mute and self-deaf fields.
+	flags := uint64(1) | (bits << 1) | (roomFlags & ((1 << 3) | (1 << 4)))
+	p, err := VoiceStatePayload(c.userID, c.deviceID, call, flags)
+	if err != nil {
+		return
+	}
+	for _, user := range audience {
+		g.DeliverUser(user, Frame{Op: OpVoiceState, Payload: p})
 	}
 }

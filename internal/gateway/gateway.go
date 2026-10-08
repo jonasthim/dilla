@@ -37,7 +37,9 @@ type Options struct {
 	Outstanding func(ctx context.Context, groupID id.ID) uint64
 	// CommitAck is invariant 7's acknowledgement handler, set by the delivery service in task 22.
 	// Nil makes opcode 12 a no-op, which is what the codec-only tests want.
-	CommitAck func(ctx context.Context, groupID, deviceID id.ID, round uint64)
+	CommitAck         func(ctx context.Context, groupID, deviceID id.ID, round uint64)
+	TypingAudience    func(context.Context, id.ID, id.ID) ([]id.ID, error)
+	VoiceSelfAudience func(context.Context, id.ID, id.ID) (id.ID, []id.ID, uint64, error)
 
 	// Advertised is what `hello` offers and what `identify` is validated against. Empty means
 	// {1} for all three, the only versions this wave ships.
@@ -698,4 +700,5 @@ var opNames = map[Op]string{
 	OpMLSWelcome: "mls.welcome", OpMessageDeleted: "message.deleted",
 	OpMessagePlain: "message.plain", OpInteraction: "interaction",
 	OpPresence: "presence", OpTyping: "typing", OpVoiceState: "voice_state",
+	OpTypingSet: "typing_set", OpVoiceSelf: "voice_self",
 }
