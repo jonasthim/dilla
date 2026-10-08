@@ -8,14 +8,43 @@ use rusqlite::{OptionalExtension, params, params_from_iter, types::Value};
 
 fn normal_char(ch: char) -> char {
     match ch {
-        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' => 'a',
-        'ç' | 'ć' | 'č' => 'c',
-        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' => 'e',
-        'ì' | 'í' | 'î' | 'ï' | 'ī' => 'i',
-        'ñ' | 'ń' => 'n',
-        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ō' => 'o',
-        'ù' | 'ú' | 'û' | 'ü' | 'ū' => 'u',
-        'ý' | 'ÿ' => 'y',
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' | 'ǎ' | 'ǟ' | 'ǻ' | 'ȁ' | 'ȃ' | 'ȧ'
+        | 'ḁ' | 'ạ' | 'ả' | 'ấ' | 'ầ' | 'ẩ' | 'ẫ' | 'ậ' | 'ắ' | 'ằ' | 'ẳ' | 'ẵ' | 'ặ' => {
+            'a'
+        }
+        'ḃ' | 'ḅ' | 'ḇ' => 'b',
+        'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' | 'ḉ' => 'c',
+        'ď' | 'ḋ' | 'ḍ' | 'ḏ' | 'ḑ' | 'ḓ' => 'd',
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' | 'ȅ' | 'ȇ' | 'ȩ' | 'ḕ' | 'ḗ' | 'ḙ'
+        | 'ḛ' | 'ḝ' | 'ẹ' | 'ẻ' | 'ẽ' | 'ế' | 'ề' | 'ể' | 'ễ' | 'ệ' => 'e',
+        'ḟ' => 'f',
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' | 'ǧ' | 'ǵ' | 'ḡ' => 'g',
+        'ĥ' | 'ȟ' | 'ḣ' | 'ḥ' | 'ḧ' | 'ḩ' | 'ḫ' | 'ẖ' => 'h',
+        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ǐ' | 'ȉ' | 'ȋ' | 'ḭ' | 'ḯ' | 'ỉ' | 'ị' => {
+            'i'
+        }
+        'ĵ' | 'ǰ' => 'j',
+        'ķ' | 'ǩ' | 'ḱ' | 'ḳ' | 'ḵ' => 'k',
+        'ĺ' | 'ļ' | 'ľ' | 'ḷ' | 'ḹ' | 'ḻ' | 'ḽ' => 'l',
+        'ḿ' | 'ṁ' | 'ṃ' => 'm',
+        'ñ' | 'ń' | 'ņ' | 'ň' | 'ǹ' | 'ṅ' | 'ṇ' | 'ṉ' | 'ṋ' => 'n',
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ō' | 'ŏ' | 'ő' | 'ơ' | 'ǒ' | 'ǫ' | 'ǭ' | 'ȍ' | 'ȏ' | 'ȫ'
+        | 'ȭ' | 'ȯ' | 'ȱ' | 'ṍ' | 'ṏ' | 'ṑ' | 'ṓ' | 'ọ' | 'ỏ' | 'ố' | 'ồ' | 'ổ' | 'ỗ' | 'ộ'
+        | 'ớ' | 'ờ' | 'ở' | 'ỡ' | 'ợ' => 'o',
+        'ṕ' | 'ṗ' => 'p',
+        'ŕ' | 'ŗ' | 'ř' | 'ȑ' | 'ȓ' | 'ṙ' | 'ṛ' | 'ṝ' | 'ṟ' => 'r',
+        'ś' | 'ŝ' | 'ş' | 'š' | 'ſ' | 'ș' | 'ṡ' | 'ṣ' | 'ṥ' | 'ṧ' | 'ṩ' | 'ẛ' => {
+            's'
+        }
+        'ţ' | 'ť' | 'ț' | 'ṫ' | 'ṭ' | 'ṯ' | 'ṱ' | 'ẗ' => 't',
+        'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' | 'ư' | 'ǔ' | 'ǖ' | 'ǘ' | 'ǚ'
+        | 'ǜ' | 'ȕ' | 'ȗ' | 'ṳ' | 'ṵ' | 'ṷ' | 'ṹ' | 'ṻ' | 'ụ' | 'ủ' | 'ứ' | 'ừ' | 'ử' | 'ữ'
+        | 'ự' => 'u',
+        'ṽ' | 'ṿ' => 'v',
+        'ŵ' | 'ẁ' | 'ẃ' | 'ẅ' | 'ẇ' | 'ẉ' | 'ẘ' => 'w',
+        'ẋ' | 'ẍ' => 'x',
+        'ý' | 'ÿ' | 'ŷ' | 'ȳ' | 'ẏ' | 'ẙ' | 'ỳ' | 'ỵ' | 'ỷ' | 'ỹ' => 'y',
+        'ź' | 'ż' | 'ž' | 'ẑ' | 'ẓ' | 'ẕ' => 'z',
         other => other,
     }
 }
@@ -24,6 +53,10 @@ fn tokenize(input: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut term = String::new();
     for ch in input.chars().flat_map(char::to_lowercase) {
+        if matches!(ch, '\u{0300}'..='\u{036f}' | '\u{1ab0}'..='\u{1aff}' | '\u{1dc0}'..='\u{1dff}' | '\u{20d0}'..='\u{20ff}' | '\u{fe20}'..='\u{fe2f}')
+        {
+            continue;
+        }
         let ch = normal_char(ch);
         if ch.is_alphanumeric() {
             term.push(ch);
@@ -117,7 +150,7 @@ impl ClientCore {
         let rows:Vec<([u8;16],u64,String)>=self.read(|c| {
             let fts:Option<Vec<u8>>=c.query_row("SELECT v FROM app_meta WHERE k='search_fts5'",[],|r|r.get(0)).optional()?;
             let use_fts=fts.as_deref()==Some(&[1]);
-            let mut sql=if use_fts {String::from("SELECT r.group_id,r.seq,r.body FROM app_search_v2 AS f JOIN app_search_rows AS r ON r.rowid=f.rowid JOIN app_groups AS g ON g.group_id=r.group_id WHERE app_search_v2 MATCH ?1 AND g.state<>4 ")}
+            let mut sql=if use_fts {String::from("SELECT r.group_id,r.seq,r.body FROM app_search AS f JOIN app_search_rows AS r ON r.rowid=f.rowid JOIN app_groups AS g ON g.group_id=r.group_id WHERE app_search MATCH ?1 AND g.state<>4 ")}
                 else {String::from("SELECT r.group_id,r.seq,r.body FROM app_search_rows AS r JOIN app_groups AS g ON g.group_id=r.group_id WHERE g.state<>4 ")};
             sql.push_str("AND (?2=2 OR (?2=0 AND g.target_id=?3) OR (?2=1 AND g.community_id=?3)) AND (?4 IS NULL OR r.group_id<?4 OR (r.group_id=?4 AND r.seq<?5)) ");
             let mut args=vec![

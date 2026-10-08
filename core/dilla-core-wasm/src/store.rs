@@ -177,7 +177,11 @@ impl StoreHandle {
     pub fn test_downgrade_v3(&self) -> Result<(), JsError> {
         self.with_conn(|c| {
             c.execute_batch(
-                "DROP TRIGGER IF EXISTS app_search_rows_insert;
+                "DROP TRIGGER IF EXISTS app_search_rows_insert_v2;
+            DROP TRIGGER IF EXISTS app_search_rows_delete_v2;
+            DROP TRIGGER IF EXISTS app_search_rows_update_v2;
+            DROP TABLE IF EXISTS app_search_v2;
+            DROP TRIGGER IF EXISTS app_search_rows_insert;
             DROP TRIGGER IF EXISTS app_search_rows_delete;
             DROP TRIGGER IF EXISTS app_search_rows_update;
             DROP TABLE IF EXISTS app_search;
@@ -185,9 +189,41 @@ impl StoreHandle {
             DROP TABLE IF EXISTS app_device_lists;
             DROP TABLE IF EXISTS app_trust_pins;
             DROP TABLE IF EXISTS app_quarantine;
+            DROP INDEX IF EXISTS app_quarantine_device;
+            DROP INDEX IF EXISTS app_pending_history_by_leaf_seq;
+            DROP TABLE IF EXISTS app_pending_history;
             DELETE FROM app_meta WHERE k='search_fts5';
+            DELETE FROM app_meta WHERE k='search_terms_v2';
+            DELETE FROM app_meta WHERE k='search_contract_v4';
             UPDATE app_meta SET v=x'03' WHERE k='schema';",
             )
+        })
+    }
+
+    /// Exact encrypted-store object and capability inventory before a test migration reopens it.
+    #[cfg(feature = "test-hooks")]
+    pub fn test_schema_inventory(&self) -> Result<Box<[u8]>, JsError> {
+        self.with_conn(|c| {
+            let mut objects =
+                c.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'app_%' ORDER BY name")?;
+            let names = objects
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut meta =
+                c.prepare("SELECT k FROM app_meta WHERE k LIKE 'search_%' ORDER BY k")?;
+            let markers = meta
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut e = dilla_core::cbor::Encoder::new();
+            e.array(2).array(names.len());
+            for name in names {
+                e.text(&name);
+            }
+            e.array(markers.len());
+            for marker in markers {
+                e.text(&marker);
+            }
+            Ok(e.into_vec().into_boxed_slice())
         })
     }
 

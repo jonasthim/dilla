@@ -5,7 +5,7 @@ use super::error::{
     E_DEVICE_UNLISTED, E_TIER_MISMATCH, E_UMK_CHANGED,
 };
 use super::{ClientCore, ClientError, schema, wire};
-use crate::cbor::Encoder;
+use crate::cbor::{Decoder, Encoder};
 use crate::identity::{CredentialIdentity, DISPLAY_GROUP, DeviceList, group_digits, safety_number};
 use crate::mls::{DillaGroup, StorageError};
 use crate::mls::{DillaProcessed, ReceivedApplication};
@@ -37,6 +37,33 @@ type RetractedRow = (i64, Option<[u8; 16]>, Option<[u8; 16]>);
 
 fn failure(code: &'static str) -> ClientError {
     ClientError::new(code, "")
+}
+
+const MAX_LIST_BYTES: usize = 1024 * 1024;
+const MAX_LIST_ENTRIES: usize = 10_000;
+
+fn bounded_list(bytes: &[u8]) -> Result<DeviceList, ClientError> {
+    if bytes.len() > MAX_LIST_BYTES {
+        return Err(failure(E_CORE_LIMIT));
+    }
+    let mut decoder = Decoder::new(bytes);
+    decoder.array(6).map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+    decoder.uint().map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+    decoder
+        .bytes_exact::<16>()
+        .map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+    decoder.uint().map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+    decoder
+        .bytes_exact::<32>()
+        .map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+    if decoder
+        .array_len()
+        .map_err(|_| failure(E_DEVICE_LIST_STALE))?
+        > MAX_LIST_ENTRIES
+    {
+        return Err(failure(E_CORE_LIMIT));
+    }
+    DeviceList::decode(bytes).map_err(|_| failure(E_DEVICE_LIST_STALE))
 }
 
 /// Verify every signed link against the authenticated leaf and the exact candidate head.
@@ -308,13 +335,13 @@ pub(super) fn validate_pending_sender(
 }
 
 /// Check each current authenticated tree member at an MLS state transition.
-/// Missing history remains pending; failed leaves and the commit author are neutralized.
+/// Missing history remains pending; a failed leaf is neutralized by its own device identity.
 pub(super) fn audit_tree(
     c: &rusqlite::Connection,
     group: &DillaGroup,
     group_id: &[u8; 16],
     own_device: &[u8; 16],
-    author_device: Option<&[u8; 16]>,
+    _author_device: Option<&[u8; 16]>,
 ) -> Result<(), StorageError> {
     for member in group.members() {
         let leaf = extract_leaf(group_id, group, [0; 32], member);
@@ -324,12 +351,7 @@ pub(super) fn audit_tree(
                 let verdict = validate_cached_leaf(c, &leaf);
                 (device, verdict)
             }
-            Err(error) => {
-                if let Some(author) = author_device.filter(|author| *author != own_device) {
-                    quarantine_device(c, group_id, author, error.code)?;
-                }
-                continue; // Malformed identity has no trustworthy device ID.
-            }
+            Err(_) => continue, // Malformed identity has no trustworthy device ID.
         };
         if &device == own_device {
             continue;
@@ -339,11 +361,6 @@ pub(super) fn audit_tree(
                 continue;
             }
             quarantine_device(c, group_id, &device, error.code)?;
-            if let Some(author) =
-                author_device.filter(|author| **author != device && *author != own_device)
-            {
-                quarantine_device(c, group_id, author, error.code)?;
-            }
         }
     }
     Ok(())
@@ -647,7 +664,7 @@ impl ClientCore {
         }
         let mut history = Vec::new();
         for row in served {
-            let list = DeviceList::decode(&row.blob).map_err(|_| failure(E_CREDENTIAL))?;
+            let list = bounded_list(&row.blob)?;
             if list.unsigned.version != row.version
                 || list.sig_ssk != row.ssk_signature
                 || list.unsigned.prev_hash != row.prev_hash
@@ -656,7 +673,7 @@ impl ClientCore {
             }
             history.push(list);
         }
-        let head = DeviceList::decode(head_list).map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+        let head = bounded_list(head_list)?;
         let cached: Option<CachedList> = self.read(|c| {
             c.query_row(
                 "SELECT version,list,umk_pub,ssk_pub FROM app_device_lists WHERE user_id=?1",
@@ -775,7 +792,7 @@ impl ClientCore {
         if list.unsigned.user_id.as_bytes() != user_id {
             return Err(failure(E_CREDENTIAL));
         }
-        let mut live = false;
+        let mut owned_blocks = Vec::new();
         for entry in &list.unsigned.entries {
             let device = entry.device_id.as_bytes();
             for group_id in self.groups_holding_device(user_id, device)? {
@@ -807,12 +824,12 @@ impl ClientCore {
                             )
                             .is_ok()
                     {
-                        live = true;
+                        owned_blocks.push((group_id, *device));
                     }
                 }
             }
         }
-        if !live {
+        if owned_blocks.is_empty() {
             return Err(failure(E_DEVICE_LIST_STALE));
         }
         self.write(|_,u|u.with_conn(|c| {
@@ -825,8 +842,8 @@ impl ClientCore {
             list.verify(&ssk).map_err(|_|StorageError::Codec("cached list signature invalid".into()))?;
             if list.unsigned.user_id.as_bytes()!=user_id {return Err(StorageError::Codec("cached list user differs".into()));}
             c.execute("UPDATE app_trust_pins SET umk_pub=?2,changed_umk=NULL,verified=1 WHERE user_id=?1",params![user_id.as_slice(),expected_umk.as_slice()])?;
-            for entry in &list.unsigned.entries {
-                c.execute("DELETE FROM app_quarantine WHERE device_id=?1 AND code='E_UMK_CHANGED'",[entry.device_id.as_bytes().as_slice()])?;
+            for (group, device) in &owned_blocks {
+                c.execute("DELETE FROM app_quarantine WHERE group_id=?1 AND device_id=?2 AND code='E_UMK_CHANGED'",params![group.as_slice(),device.as_slice()])?;
             }
             bump_generation(c)?;
             Ok(())

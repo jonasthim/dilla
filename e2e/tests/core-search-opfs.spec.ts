@@ -10,9 +10,9 @@ const test = base.extend<{ storePage: Page }>({
       await use(page);
       return;
     }
-    const dir = `/tmp/w2/${info.project.name}-${info.workerIndex}`;
+    const dir = `/tmp/t2/${info.project.name}-${info.workerIndex}`;
     rmSync(dir, { recursive: true, force: true });
-    mkdirSync('/tmp/w2', { recursive: true });
+    mkdirSync('/tmp/t2', { recursive: true });
     const context = await playwright[browserName].launchPersistentContext(dir, { baseURL, channel, headless });
     try {
       await use(context.pages()[0] ?? (await context.newPage()));
@@ -42,7 +42,12 @@ test('an encrypted v3 OPFS store reopens at v4 and searches with FTS5 absent', a
   expect((await command(page, 'open')).abi).toBe(7);
   await command(page, 'signup');
   await command(page, 'group');
-  expect(await command(page, 'seed-v3')).toMatchObject({ schema: 3, closed: true });
+  expect(await command(page, 'seed-v3')).toMatchObject({ schema: 3, closed: true, markers: [], inventory: [
+    'app_groups', 'app_groups_by_target', 'app_handshake_tail', 'app_messages',
+    'app_messages_by_msg', 'app_messages_by_pin', 'app_messages_by_reaction', 'app_messages_by_reply',
+    'app_meta', 'app_outbox', 'app_outbox_by_group', 'app_pins', 'app_proposals', 'app_purges',
+    'app_reactions', 'app_read_state', 'app_roles', 'app_settings',
+  ] });
   expect(await command(page, 'open')).toMatchObject({ abi: 7, phase: 2 });
   const result = await command(page, 'search-fallback');
   expect(result).toMatchObject({ schema: 4, searchFts5: 0, hits: 1 });

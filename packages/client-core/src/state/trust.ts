@@ -5,6 +5,7 @@ import type { Routes } from '../http/routes';
 type ReaderRoutes = Pick<Routes, 'getDeviceList' | 'getDeviceListHistory'>;
 const MAX_VERSIONS = 1024;
 const MAX_BYTES = 4 * 1024 * 1024;
+const MAX_HEAD_BYTES = 1024 * 1024;
 const PAGE = 64;
 const equal = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((v, i) => v === b[i]);
 
@@ -13,11 +14,13 @@ export async function readDeviceListHistory(routes: ReaderRoutes, userId: Id, ca
   for (let attempt = 0; attempt < 2; attempt++) {
     const candidate = await routes.getDeviceList(userId);
     if (candidate === null || candidate.version < 1n || candidate.version < cachedVersion) throw new CoreError('E_DEVICE_LIST_STALE');
+    if (candidate.blob.length > MAX_HEAD_BYTES || candidate.version - cachedVersion > BigInt(MAX_VERSIONS)) throw new CoreError('E_DEVICE_LIST_STALE');
     let after = cachedVersion > 0n ? cachedVersion - 1n : 0n;
     const rows: CborValue[] = [];
     let bytes = 0;
     while (after < candidate.version) {
       const page = await routes.getDeviceListHistory(userId, after);
+      if (page.raw.length > MAX_BYTES - bytes || page.count > PAGE || rows.length + page.count > MAX_VERSIONS) throw new CoreError('E_DEVICE_LIST_STALE');
       const got = arr(decode(page.raw));
       if (got.length === 0 || got.length > PAGE || got.length !== page.count) throw new CoreError('E_DEVICE_LIST_STALE');
       for (const value of got) {

@@ -7,6 +7,13 @@ const body = (version: number): Uint8Array => new Uint8Array([version]);
 const row = (version: number): CborInput[] => [version, body(version), new Uint8Array(64), new Uint8Array(32)];
 
 describe('readDeviceListHistory', () => {
+  it('rejects an oversized page before decoding its rows', async () => {
+    const routes = {
+      getDeviceList: vi.fn(() => Promise.resolve({ version: 1n, blob: body(1), raw: encode(row(1)) })),
+      getDeviceListHistory: vi.fn(() => Promise.resolve({ raw: new Uint8Array(4 * 1024 * 1024 + 1), count: 1, lastVersion: 1n })),
+    };
+    await expect(readDeviceListHistory(routes as never, USER, 0n)).rejects.toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+  });
   it('rejects a page whose advertised last version disagrees with its signed rows', async () => {
     const routes = {
       getDeviceList: vi.fn(() => Promise.resolve({ version: 1n, blob: body(1), raw: encode(row(1)) })),

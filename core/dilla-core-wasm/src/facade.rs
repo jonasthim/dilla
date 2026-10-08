@@ -184,6 +184,10 @@ impl CoreHandle {
     pub fn test_schema_capability(&self) -> Result<Box<[u8]>, JsError> {
         self.store.test_schema_capability()
     }
+    #[cfg(feature = "test-hooks")]
+    pub fn test_schema_inventory(&self) -> Result<Box<[u8]>, JsError> {
+        self.store.test_schema_inventory()
+    }
     /// Reserves capacity in the store.
     pub async fn reserve_capacity(&self, n: u32) -> Result<(), JsError> {
         self.store.reserve_capacity(n).await
@@ -592,6 +596,7 @@ impl CoreHandle {
         self.with_core(|c| c.proposed_adds(&group_id, proposals_body))
             .map(Vec::into_boxed_slice)
     }
+    #[allow(clippy::too_many_arguments)] // The wasm ABI mirrors the validated signed-history arguments.
     pub fn device_list_ingest_add(
         &self,
         group_id: &[u8],

@@ -49,7 +49,7 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // `testdata/vectors_suites.golden` behind, so both have been failing since; the module itself
 // reports 96 passed and 0 failed, so nothing but the pins was stale.
 //
-// Plan B task 17 added the sixth suite: protocol/vectors/frames.json's 25 gateway-frame accept
+// Plan B task 17 added the sixth suite: protocol/vectors/frames.json's gateway-frame accept
 // cases, one `frame` field each, re-encoded by the core's own deterministic-CBOR writer.
 //
 // The dilla-media plan's task 4 grew sframe.json by its rfc9605_c1, rfc9605_c3, media_frames,
@@ -65,19 +65,20 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // web-2b task 1 adds envelope.json's fifth case (envelope 12 -> 15), the seventh suite,
 // attachment.json's 14 fields, and ten rejects (four envelope, six attachment: 92 -> 102), total
 // 317 -> 344.
+// web-2c task 1 adds typing_set and voice_self frame cases: frames 25 -> 27, total 344 -> 346.
 var wantSuiteCases = map[string]int{
 	"envelope":   15,
 	"franking":   4,
 	"sframe":     176,
 	"identity":   8,
-	"frames":     25,
+	"frames":     27,
 	"attachment": 14,
 	"rejects":    102,
 }
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 344
+const wantTotalCases = 346
 
 // The four case names run_identity emits, one per sub-object of identity.json.
 var wantIdentityCases = []string{"credential_identity", "recovery_key", "safety_number", "sas"}

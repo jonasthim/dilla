@@ -431,12 +431,13 @@ async function runCore(op: string, instance: string): Promise<Record<string, unk
       };
     }
     case 'seed-v3': {
-      const c = need() as CoreHandle & { test_downgrade_to_v3_and_force_no_fts(): void; test_schema_capability(): Uint8Array };
+      const c = need() as CoreHandle & { test_downgrade_to_v3_and_force_no_fts(): void; test_schema_capability(): Uint8Array; test_schema_inventory(): Uint8Array };
       c.test_downgrade_to_v3_and_force_no_fts();
       const [schema] = decodeCoreValue(c.test_schema_capability()) as [number, number];
+      const [inventory, markers] = decodeCoreValue(c.test_schema_inventory()) as [string[], string[]];
       c.close();
       core = undefined;
-      return { schema, closed: true };
+      return { schema, closed: true, inventory, markers };
     }
     case 'search-fallback': {
       const c = need() as CoreHandle & { test_schema_capability(): Uint8Array };

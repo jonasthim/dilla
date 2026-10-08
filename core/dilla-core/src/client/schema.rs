@@ -214,50 +214,50 @@ CREATE INDEX IF NOT EXISTS app_quarantine_device ON app_quarantine(device_id,gro
 ";
 
 const APP_FTS5: &str = "
-CREATE VIRTUAL TABLE IF NOT EXISTS app_search_v2 USING fts5(terms, content='', tokenize='unicode61 remove_diacritics 0');
-CREATE TRIGGER IF NOT EXISTS app_search_rows_insert_v2 AFTER INSERT ON app_search_rows BEGIN
-  INSERT INTO app_search_v2(rowid,terms) VALUES(new.rowid,new.terms);
+CREATE VIRTUAL TABLE IF NOT EXISTS app_search USING fts5(body, content='', tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER IF NOT EXISTS app_search_rows_insert AFTER INSERT ON app_search_rows BEGIN
+  INSERT INTO app_search(rowid,body) VALUES(new.rowid,new.body);
 END;
-CREATE TRIGGER IF NOT EXISTS app_search_rows_delete_v2 AFTER DELETE ON app_search_rows BEGIN
-  INSERT INTO app_search_v2(app_search_v2,rowid,terms) VALUES('delete',old.rowid,old.terms);
+CREATE TRIGGER IF NOT EXISTS app_search_rows_delete AFTER DELETE ON app_search_rows BEGIN
+  INSERT INTO app_search(app_search,rowid,body) VALUES('delete',old.rowid,old.body);
 END;
-CREATE TRIGGER IF NOT EXISTS app_search_rows_update_v2 AFTER UPDATE OF body,terms ON app_search_rows BEGIN
-  INSERT INTO app_search_v2(app_search_v2,rowid,terms) VALUES('delete',old.rowid,old.terms);
-  INSERT INTO app_search_v2(rowid,terms) VALUES(new.rowid,new.terms);
+CREATE TRIGGER IF NOT EXISTS app_search_rows_update AFTER UPDATE OF body ON app_search_rows BEGIN
+  INSERT INTO app_search(app_search,rowid,body) VALUES('delete',old.rowid,old.body);
+  INSERT INTO app_search(rowid,body) VALUES(new.rowid,new.body);
 END;
 ";
 
 fn open_fts5(c: &rusqlite::Connection) -> Result<(), StorageError> {
-    // v4's first search index used SQLite's independent body normalization.
-    // Retire its triggers before trying the shared normalized-terms index.
+    // Retire the earlier shared-terms FTS table before opening the specified body index.
     c.execute_batch(
-        "DROP TRIGGER IF EXISTS app_search_rows_insert;
-        DROP TRIGGER IF EXISTS app_search_rows_delete;
-        DROP TRIGGER IF EXISTS app_search_rows_update",
+        "DROP TRIGGER IF EXISTS app_search_rows_insert_v2;
+        DROP TRIGGER IF EXISTS app_search_rows_delete_v2;
+        DROP TRIGGER IF EXISTS app_search_rows_update_v2;
+        DROP TABLE IF EXISTS app_search_v2",
     )?;
     c.execute_batch("SAVEPOINT search_fts5")?;
     #[cfg(any(test, feature = "test-hooks"))]
     if FORCE_MISSING_FTS5.load(Ordering::SeqCst) {
         c.execute_batch("ROLLBACK TO search_fts5; RELEASE search_fts5")?;
         meta_put(c, "search_fts5", &[0])?;
+        meta_put(c, "search_contract_v4", &[1])?;
         return Ok(());
     }
     let result = c.execute_batch(APP_FTS5);
     match result {
         Ok(()) => {
             c.execute_batch(
-                "INSERT INTO app_search_v2(app_search_v2) VALUES('delete-all');
-                INSERT INTO app_search_v2(rowid,terms) SELECT rowid,terms FROM app_search_rows;
-                DROP TABLE IF EXISTS app_search;
+                "INSERT INTO app_search(app_search) VALUES('delete-all');
+                INSERT INTO app_search(rowid,body) SELECT rowid,body FROM app_search_rows;
                 RELEASE search_fts5",
             )?;
             meta_put(c, "search_fts5", &[1])?;
-            meta_put(c, "search_terms_v2", &[1])?;
+            meta_put(c, "search_contract_v4", &[1])?;
         }
         Err(e) if e.to_string().contains("no such module: fts5") => {
             c.execute_batch("ROLLBACK TO search_fts5; RELEASE search_fts5")?;
             meta_put(c, "search_fts5", &[0])?;
-            meta_put(c, "search_terms_v2", &[1])?;
+            meta_put(c, "search_contract_v4", &[1])?;
         }
         Err(e) => {
             c.execute_batch("ROLLBACK TO search_fts5; RELEASE search_fts5")?;
@@ -315,7 +315,7 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
         if found < 4 {
             backfill_search_rows(c)?;
         }
-        if found < 4 || meta_get(c, "search_terms_v2")?.is_none() {
+        if found < 4 || meta_get(c, "search_contract_v4")?.is_none() {
             open_fts5(c)?;
         }
         meta_put(c, SCHEMA, &[4])?;
@@ -369,16 +369,16 @@ mod search_upgrade_tests {
     use super::migrate_conn;
 
     #[test]
-    fn old_raw_text_fts_table_is_removed_when_shared_terms_index_opens() {
+    fn old_shared_terms_index_is_removed_when_body_index_opens() {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         migrate_conn(&db).expect("new schema");
-        db.execute_batch("CREATE VIRTUAL TABLE app_search USING fts5(body, content='', tokenize='unicode61 remove_diacritics 2');
-            INSERT INTO app_search(rowid,body) VALUES(1,'old visible text');
-            DELETE FROM app_meta WHERE k='search_terms_v2'").expect("simulate old v4 index");
+        db.execute_batch("CREATE VIRTUAL TABLE app_search_v2 USING fts5(terms, content='', tokenize='unicode61 remove_diacritics 0');
+            INSERT INTO app_search_v2(rowid,terms) VALUES(1,' old visible text');
+            DELETE FROM app_meta WHERE k='search_contract_v4'").expect("simulate old v4 index");
         migrate_conn(&db).expect("upgrade index");
         let old: i64 = db
             .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='app_search'",
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='app_search_v2'",
                 [],
                 |r| r.get(0),
             )

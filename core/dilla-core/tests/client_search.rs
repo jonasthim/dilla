@@ -144,6 +144,82 @@ fn fts_and_like_match_dotted_e_with_plain_prefix() {
 }
 
 #[test]
+fn fts_contract_and_fallback_match_unicode_prefixes() {
+    let (_, mut relay, mut alice, _) = alice_and_bob();
+    let (_, seq) = alice.send(&mut relay, &GROUP, "zebra ḑelta", NOW + 1);
+    let sql: String = alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='app_search'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("specified contentless FTS table");
+    assert!(sql.contains("content=''"));
+    assert!(sql.contains("unicode61 remove_diacritics 2"));
+    for enabled in [1_u8, 0] {
+        alice
+            .probe
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE app_meta SET v=?1 WHERE k='search_fts5'",
+                rusqlite::params![vec![enabled]],
+            )
+            .unwrap();
+        for query in ["zeb", "del"] {
+            let found = hits(&alice.core.search(2, None, query, None, 50).unwrap());
+            assert_eq!(
+                found.iter().map(|row| row.1).collect::<Vec<_>>(),
+                vec![seq],
+                "capability {enabled}, query {query}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fallback_covers_extended_latin_diacritics_like_unicode61() {
+    let (_, mut relay, mut alice, _) = alice_and_bob();
+    let (_, seq) = alice.send(&mut relay, &GROUP, "ṿiolet ǖnity ắlpha", NOW + 1);
+    for enabled in [1_u8, 0] {
+        alice
+            .probe
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE app_meta SET v=?1 WHERE k='search_fts5'",
+                rusqlite::params![vec![enabled]],
+            )
+            .unwrap();
+        for query in ["vio", "uni", "alp"] {
+            let found = hits(&alice.core.search(2, None, query, None, 50).unwrap());
+            assert_eq!(
+                found.iter().map(|row| row.1).collect::<Vec<_>>(),
+                vec![seq],
+                "capability {enabled}, query {query}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fallback_ignores_combining_marks_inside_a_token() {
+    let (_, mut relay, mut alice, _) = alice_and_bob();
+    let (_, seq) = alice.send(&mut relay, &GROUP, "ca\u{301}fe", NOW + 1);
+    alice
+        .probe
+        .lock()
+        .unwrap()
+        .execute("UPDATE app_meta SET v=x'00' WHERE k='search_fts5'", [])
+        .unwrap();
+    let found = hits(&alice.core.search(2, None, "cafe", None, 50).unwrap());
+    assert_eq!(found.iter().map(|row| row.1).collect::<Vec<_>>(), vec![seq]);
+}
+
+#[test]
 fn query_plan_uses_the_auxiliary_index_and_result_count_is_capped() {
     let (_, mut relay, mut alice, _) = alice_and_bob();
     for i in 0..51 {
@@ -163,7 +239,7 @@ fn query_plan_uses_the_auxiliary_index_and_result_count_is_capped() {
         })
         .expect("capability");
     let sql = if cap == [1] {
-        "EXPLAIN QUERY PLAN SELECT r.group_id,r.seq FROM app_search_v2 AS f JOIN app_search_rows AS r ON r.rowid=f.rowid WHERE app_search_v2 MATCH 'cap*' LIMIT 50"
+        "EXPLAIN QUERY PLAN SELECT r.group_id,r.seq FROM app_search AS f JOIN app_search_rows AS r ON r.rowid=f.rowid WHERE app_search MATCH 'cap*' LIMIT 50"
     } else {
         "EXPLAIN QUERY PLAN SELECT r.group_id,r.seq FROM app_search_rows AS r WHERE r.terms LIKE '% cap%' ESCAPE '\\' LIMIT 50"
     };

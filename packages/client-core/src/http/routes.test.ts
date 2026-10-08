@@ -439,6 +439,19 @@ describe('Routes: one request per call, decoded as the server answers it', () =>
   }
 });
 
+describe('signed-list response bounds', () => {
+  it('rejects an oversized head before CBOR decoding', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(200, [1, new Uint8Array(1024 * 1024 + 1)]));
+    await expect(routes.getDeviceList(USER)).rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE' });
+  });
+  it('rejects an oversized history page before CBOR decoding', async () => {
+    const { t, routes } = setup();
+    t.replies.push(bytesReply(200, encode([[1, new Uint8Array(4 * 1024 * 1024 + 1), SIG, HASH]])));
+    await expect(routes.getDeviceListHistory(USER, 0n)).rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE' });
+  });
+});
+
 interface RefusalCase { name: string; call(r: Routes): Promise<unknown>; reply(): Response; status: number; code: string; }
 
 const REFUSALS: RefusalCase[] = [

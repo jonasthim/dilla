@@ -186,6 +186,21 @@ fn a_sender_without_signed_history_stays_pending_and_unsearchable() {
 }
 
 #[test]
+fn untrusted_message_does_not_abort_a_batch_with_an_honest_message() {
+    let (_, mut relay, mut alice, mut bob) = alice_and_bob();
+    let (_, bad_seq) = bob.send(&mut relay, &GROUP, "untrusted first", NOW + 1);
+    let (_, good_seq) = alice.send(&mut relay, &GROUP, "honest second", NOW + 2);
+    let applied = alice.sync(&relay);
+    assert!(applied.next_seq > good_seq);
+    let bad = alice.row_at(&GROUP, bad_seq);
+    assert_eq!(
+        (bad.status, bad.reason.as_str(), bad.body.as_str()),
+        (1, "E_DEVICE_LIST_STALE", "")
+    );
+    assert_eq!(alice.row_at(&GROUP, good_seq).body, "honest second");
+}
+
+#[test]
 fn signed_history_revalidates_a_previously_neutral_message() {
     let (_, mut relay, mut alice, mut bob) = alice_and_bob();
     let (_, seq) = bob.send(&mut relay, &GROUP, "late signed comet", NOW + 1);
@@ -563,7 +578,7 @@ fn welcome_join_audits_known_bad_existing_leaf() {
 }
 
 #[test]
-fn invalid_merged_leaf_quarantines_authenticated_author_not_server_sender_label() {
+fn another_users_bad_cached_leaf_does_not_quarantine_an_honest_commit_author() {
     let (_, mut relay, mut alice, bob) = alice_and_bob_trusted();
     let mut carol = ready_core(0xc3, "carol");
     carol.join_external(&mut relay);
@@ -585,13 +600,7 @@ fn invalid_merged_leaf_quarantines_authenticated_author_not_server_sender_label(
     let forged_sender = relay.leaf_of(bob.device);
     relay.handshakes.last_mut().unwrap().sender = Some(forged_sender as u64);
     alice.sync(&relay);
-    assert_eq!(
-        (
-            alice.row_at(&GROUP, prior).status,
-            alice.row_at(&GROUP, prior).body
-        ),
-        (1, String::new())
-    );
+    assert_eq!(alice.row_at(&GROUP, prior).body, "author visible comet");
     let blocked: i64 = alice
         .probe
         .lock()
@@ -602,7 +611,18 @@ fn invalid_merged_leaf_quarantines_authenticated_author_not_server_sender_label(
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(blocked, 1);
+    assert_eq!(blocked, 0);
+    let bad_leaf_blocked: i64 = alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM app_quarantine WHERE group_id=?1 AND device_id=?2",
+            rusqlite::params![GROUP.as_slice(), bob.device.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bad_leaf_blocked, 1);
 }
 
 #[test]
@@ -658,8 +678,8 @@ fn exact_key_verification_rechecks_the_signed_cache_and_releases_changed_key_blo
     let db = alice.probe.lock().expect("db");
     let blocks: i64 = db
         .query_row(
-            "SELECT count(*) FROM app_quarantine WHERE device_id=?1",
-            [bob.device.as_slice()],
+            "SELECT count(*) FROM app_quarantine WHERE group_id=?1 AND device_id=?2",
+            rusqlite::params![GROUP.as_slice(), bob.device.as_slice()],
             |r| r.get(0),
         )
         .expect("blocks");
@@ -801,4 +821,119 @@ fn real_rejoin_with_rotated_umk_requires_exact_current_leaf_at_verify() {
     rotated.join_external(&mut relay);
     alice.sync(&relay);
     alice.core.trust_verify(&bob.user, &expected).unwrap();
+}
+#[test]
+fn another_users_signed_list_cannot_clear_a_victims_block() {
+    let (_, relay, mut alice, bob) = alice_and_bob();
+    ingest_core_list(&mut alice, &relay, &bob);
+    let attacker = bob.user;
+    let victim_device = bob.device;
+    let victim = [0xc3u8; 16];
+    let group = [0xf6u8; 16];
+    let db = alice.probe.lock().unwrap();
+    let key: [u8; 32] = db
+        .query_row(
+            "SELECT umk_pub FROM app_device_lists WHERE user_id=?1",
+            [attacker.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute(
+        "UPDATE app_trust_pins SET umk_pub=?2,changed_umk=?3 WHERE user_id=?1",
+        rusqlite::params![attacker.as_slice(), [0x66u8; 32].as_slice(), key.as_slice()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO app_quarantine(group_id,device_id,code) VALUES(?1,?2,'E_UMK_CHANGED')",
+        rusqlite::params![group.as_slice(), victim_device.as_slice()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,1,0,?3)",
+        rusqlite::params![victim.as_slice(), [0x55u8;32].as_slice(), [0x44u8;32].as_slice()],
+    ).unwrap();
+    drop(db);
+    let _ = alice.core.trust_verify(&attacker, &key);
+    let blocks: i64 = alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM app_quarantine WHERE group_id=?1 AND device_id=?2",
+            rusqlite::params![group.as_slice(), victim_device.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(blocks, 1, "another user's list released a victim's block");
+    let victim_changed: Vec<u8> = alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT changed_umk FROM app_trust_pins WHERE user_id=?1",
+            [victim.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(victim_changed, [0x44; 32]);
+}
+
+#[test]
+fn oversized_candidate_head_is_rejected_before_decode() {
+    use dilla_core::identity::{DeviceEntry, DeviceList, Tier};
+    use dilla_core::ids::DeviceId;
+    let (_, relay, mut alice, bob) = alice_and_bob();
+    let (history, head) = list_wire(&bob);
+    let mut huge = DeviceList::decode(&head).unwrap();
+    let entry = DeviceEntry {
+        device_id: DeviceId::from_bytes([0x99; 16]),
+        dsk_pub: [0x88; 32],
+        tier: Tier::Native,
+        added_at: 1,
+        revoked_at: None,
+    };
+    huge.unsigned.entries.resize(90_000, entry);
+    let oversized = huge.encode();
+    assert!(oversized.len() > 4 * 1024 * 1024);
+    assert_eq!(
+        code(alice.core.device_list_ingest(
+            &GROUP,
+            relay.leaf_of(bob.device),
+            &bob.user,
+            &history,
+            &oversized,
+            NOW
+        )),
+        "E_CORE_LIMIT"
+    );
+}
+
+#[test]
+fn overfull_candidate_head_is_rejected_before_entries_are_decoded() {
+    use dilla_core::identity::{DeviceEntry, DeviceList, Tier};
+    use dilla_core::ids::DeviceId;
+    let (_, relay, mut alice, bob) = alice_and_bob();
+    let (history, head) = list_wire(&bob);
+    let mut huge = DeviceList::decode(&head).unwrap();
+    let entry = DeviceEntry {
+        device_id: DeviceId::from_bytes([0x99; 16]),
+        dsk_pub: [0x88; 32],
+        tier: Tier::Native,
+        added_at: 1,
+        revoked_at: None,
+    };
+    huge.unsigned.entries.resize(10_001, entry);
+    let oversized = huge.encode();
+    assert!(oversized.len() < 1024 * 1024);
+    assert_eq!(
+        code(alice.core.device_list_ingest(
+            &GROUP,
+            relay.leaf_of(bob.device),
+            &bob.user,
+            &history,
+            &oversized,
+            NOW
+        )),
+        "E_CORE_LIMIT"
+    );
 }
