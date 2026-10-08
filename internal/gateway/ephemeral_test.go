@@ -122,6 +122,85 @@ func TestTypingSetThrottlesPerDeviceChannelAndExpires(t *testing.T) {
 	}
 }
 
+func TestTypingSetOffDoesNotResetOnThrottle(t *testing.T) {
+	h := newHarness(t)
+	a := h.connect(t, id.New())
+	h.drainReady(t, a)
+	channel := id.New()
+	h.gw.opts.TypingAudience = func(_ context.Context, _ id.ID, _ id.ID) ([]id.ID, error) {
+		return []id.ID{a.userID}, nil
+	}
+	h.gw.handle(context.Background(), a, ephemeralInbound(t, OpTypingSet, channel, uint64(1)))
+	if got := h.waitFrame(t, a.deviceID); got.Op != OpTyping {
+		t.Fatalf("on op = %d", got.Op)
+	}
+	h.gw.handle(context.Background(), a, ephemeralInbound(t, OpTypingSet, channel, uint64(0)))
+	if got := h.waitFrame(t, a.deviceID); got.Op != OpTyping {
+		t.Fatalf("off op = %d", got.Op)
+	}
+	if h.gw.IsTyping(channel, a.userID, a.deviceID) {
+		t.Fatal("off left typing live")
+	}
+	h.gw.handle(context.Background(), a, ephemeralInbound(t, OpTypingSet, channel, uint64(1)))
+	expectErrorCode(t, h, a.deviceID, "E_RATE_LIMITED")
+	if h.gw.IsTyping(channel, a.userID, a.deviceID) {
+		t.Fatal("rejected on became live")
+	}
+	h.clk.Advance(3 * time.Second)
+	h.gw.handle(context.Background(), a, ephemeralInbound(t, OpTypingSet, channel, uint64(1)))
+	if got := h.waitFrame(t, a.deviceID); got.Op != OpTyping {
+		t.Fatalf("on after interval op = %d", got.Op)
+	}
+}
+
+func TestTypingRecentHistoryIsBoundedAndClearedOnDisconnect(t *testing.T) {
+	h := newHarness(t)
+	a := h.connect(t, id.New())
+	h.drainReady(t, a)
+	h.gw.opts.TypingAudience = func(_ context.Context, _ id.ID, _ id.ID) ([]id.ID, error) {
+		return []id.ID{a.userID}, nil
+	}
+	for range 64 {
+		channel := id.New()
+		h.gw.handle(context.Background(), a, ephemeralInbound(t, OpTypingSet, channel, uint64(1)))
+		if got := h.waitFrame(t, a.deviceID); got.Op != OpTyping {
+			t.Fatalf("on op = %d", got.Op)
+		}
+		h.gw.handle(context.Background(), a, ephemeralInbound(t, OpTypingSet, channel, uint64(0)))
+		if got := h.waitFrame(t, a.deviceID); got.Op != OpTyping {
+			t.Fatalf("off op = %d", got.Op)
+		}
+	}
+	h.gw.handle(context.Background(), a, ephemeralInbound(t, OpTypingSet, id.New(), uint64(1)))
+	expectErrorCode(t, h, a.deviceID, "E_RATE_LIMITED")
+	h.clk.Advance(3 * time.Second)
+	channel := id.New()
+	h.gw.handle(context.Background(), a, ephemeralInbound(t, OpTypingSet, channel, uint64(1)))
+	if got := h.waitFrame(t, a.deviceID); got.Op != OpTyping {
+		t.Fatalf("on after history expiry op = %d", got.Op)
+	}
+	stopped := id.New()
+	h.gw.handle(context.Background(), a, ephemeralInbound(t, OpTypingSet, stopped, uint64(1)))
+	if got := h.waitFrame(t, a.deviceID); got.Op != OpTyping {
+		t.Fatalf("second on op = %d", got.Op)
+	}
+	h.gw.handle(context.Background(), a, ephemeralInbound(t, OpTypingSet, stopped, uint64(0)))
+	if got := h.waitFrame(t, a.deviceID); got.Op != OpTyping {
+		t.Fatalf("second off op = %d", got.Op)
+	}
+	h.gw.removeLive(a)
+	if h.gw.IsTyping(channel, a.userID, a.deviceID) {
+		t.Fatal("disconnect retained live typing")
+	}
+	h.gw.presence.mu.Lock()
+	defer h.gw.presence.mu.Unlock()
+	for key := range h.gw.presence.recentTyping {
+		if key[1] == a.deviceID {
+			t.Fatal("disconnect retained recent typing history")
+		}
+	}
+}
+
 func TestVoiceSelfRequiresLiveCallAndValidFlags(t *testing.T) {
 	h := newHarness(t)
 	a := h.connect(t, id.New())

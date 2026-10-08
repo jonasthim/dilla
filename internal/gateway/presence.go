@@ -14,6 +14,10 @@ const typingTTL = 10 * time.Second
 const typingInterval = 3 * time.Second
 const typingChannelCap = 64
 
+// New channels stop being admitted at 64 recent stops. Up to 64 already-live
+// channels may then stop, so live and recent entries together stay at most 128 per device.
+const typingRecentCap = 64
+
 type typingState struct {
 	user    id.ID
 	expires time.Time
@@ -21,10 +25,11 @@ type typingState struct {
 }
 
 type presence struct {
-	mu     sync.Mutex
-	clk    clock.Clock
-	typing map[[2]id.ID]typingState
-	status map[id.ID]presenceState
+	mu           sync.Mutex
+	clk          clock.Clock
+	typing       map[[2]id.ID]typingState
+	recentTyping map[[2]id.ID]time.Time
+	status       map[id.ID]presenceState
 }
 
 type presenceState struct {
@@ -34,7 +39,35 @@ type presenceState struct {
 }
 
 func newPresence(clk clock.Clock) *presence {
-	return &presence{clk: clk, typing: map[[2]id.ID]typingState{}, status: map[id.ID]presenceState{}}
+	return &presence{clk: clk, typing: map[[2]id.ID]typingState{}, recentTyping: map[[2]id.ID]time.Time{}, status: map[id.ID]presenceState{}}
+}
+
+func (p *presence) expireTyping(now time.Time) {
+	for key, state := range p.typing {
+		if !now.Before(state.expires) {
+			delete(p.typing, key)
+		}
+	}
+	for key, last := range p.recentTyping {
+		if now.Sub(last) >= typingInterval {
+			delete(p.recentTyping, key)
+		}
+	}
+}
+
+func (p *presence) clearDeviceTyping(deviceID id.ID) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key := range p.typing {
+		if key[1] == deviceID {
+			delete(p.typing, key)
+		}
+	}
+	for key := range p.recentTyping {
+		if key[1] == deviceID {
+			delete(p.recentTyping, key)
+		}
+	}
 }
 
 // SetTyping records or clears one device's signal in one channel.
@@ -49,16 +82,26 @@ func (g *Gateway) acceptTyping(channelID, userID, deviceID id.ID, typing bool) b
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.clk.Now()
-	for key, state := range p.typing {
-		if !now.Before(state.expires) {
-			delete(p.typing, key)
-		}
-	}
+	p.expireTyping(now)
 	key := [2]id.ID{channelID, deviceID}
 	state, exists := p.typing[key]
 	if typing {
 		if exists && now.Sub(state.last) < typingInterval {
 			return false
+		}
+		if !exists {
+			if _, recent := p.recentTyping[key]; recent {
+				return false
+			}
+			recentCount := 0
+			for k := range p.recentTyping {
+				if k[1] == deviceID {
+					recentCount++
+				}
+			}
+			if recentCount >= typingRecentCap {
+				return false
+			}
 		}
 		if !exists {
 			count := 0
@@ -78,6 +121,9 @@ func (g *Gateway) acceptTyping(channelID, userID, deviceID id.ID, typing bool) b
 		return false
 	}
 	delete(p.typing, key)
+	if now.Sub(state.last) < typingInterval {
+		p.recentTyping[key] = state.last
+	}
 	return true
 }
 
@@ -88,11 +134,7 @@ func (g *Gateway) IsTyping(channelID, userID, deviceID id.ID) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.clk.Now()
-	for key, state := range p.typing {
-		if !now.Before(state.expires) {
-			delete(p.typing, key)
-		}
-	}
+	p.expireTyping(now)
 	key := [2]id.ID{channelID, deviceID}
 	state, ok := p.typing[key]
 	if !ok {

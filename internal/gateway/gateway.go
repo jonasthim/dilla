@@ -347,8 +347,13 @@ func (g *Gateway) addLive(c *conn) {
 // removeLive takes a connection out of the live registry, decrementing the gauge only if this
 // call is the one that removed it.
 func (g *Gateway) removeLive(c *conn) {
-	if g.reg.remove(c) && g.opts.Metrics != nil {
-		g.opts.Metrics.GatewayConnections.Dec()
+	if g.reg.remove(c) {
+		if g.opts.Metrics != nil {
+			g.opts.Metrics.GatewayConnections.Dec()
+		}
+		if len(g.reg.connsOfDevice(c.deviceID)) == 0 {
+			g.presence.clearDeviceTyping(c.deviceID)
+		}
 	}
 }
 
