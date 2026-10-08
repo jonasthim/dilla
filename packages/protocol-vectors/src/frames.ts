@@ -11,6 +11,8 @@ import { hex } from './bytes.ts';
 const GROUP = new Uint8Array(16).fill(0x07);
 const DEVICE = new Uint8Array(16).fill(0x08);
 const USER = new Uint8Array(16).fill(0x09);
+const CHANNEL = new Uint8Array(16).fill(0x0c);
+const CALL = new Uint8Array(16).fill(0x0d);
 const TAG = new Uint8Array(32).fill(0x0a);
 const TOKEN = new Uint8Array(32).fill(0x0b);
 
@@ -58,8 +60,10 @@ export function frameVectors() {
     frame('message.plain', 32, 12, null, [GROUP, 12, USER, new Uint8Array([8]), TAG, 0, 0]),
     frame('interaction', 33, 13, null, [GROUP, USER, 1, new Uint8Array([9])]),
     frame('presence', 48, 0, null, [USER, 1, 1758659000, 'at the forge']),
-    frame('typing', 49, 0, null, [USER, DEVICE, 1, 1758659010]),
+    frame('typing channel', 49, 0, null, [CHANNEL, USER, DEVICE, 1, 1758659010]),
     frame('voice_state', 50, 0, null, [USER, DEVICE, GROUP, 3]),
+    frame('typing_set on', 51, 0, null, [CHANNEL, 1]),
+    frame('voice_self muted', 52, 0, null, [CALL, 1]),
   ];
 
   const rejects = [
@@ -84,6 +88,10 @@ export function frameVectors() {
     // Deterministic-CBOR failures: a non-minimal integer head and a map where an array belongs.
     { name: 'non-minimal op', frame: '8418' + '0a' + '01f680', code: 'E_FRAME_CBOR' },
     { name: 'map instead of an array', frame: 'a100f6', code: 'E_FRAME_CBOR' },
+    { name: 'old typing has four elements', frame: hex(encode([49, 0, null, [USER, DEVICE, 1, 1758659010]])), code: 'E_FRAME_SHAPE' },
+    { name: 'typing_set channel id has 17 bytes', frame: hex(encode([51, 0, null, [new Uint8Array(17).fill(0x0c), 1]])), code: 'E_FRAME_SHAPE' },
+    { name: 'voice_self flags 4', frame: hex(encode([52, 0, null, [CALL, 4]])), code: 'E_FRAME_SHAPE' },
+    { name: 'typing_set has group_id', frame: hex(encode([51, 0, GROUP, [CHANNEL, 1]])), code: 'E_FRAME_SHAPE' },
   ];
 
   return {

@@ -108,7 +108,9 @@ Every leaf uses an MLS `basic` credential whose `identity` is the deterministic 
 ```
 
 The leaf's `signature_key` MUST equal the `dsk_pub` covered by `sig_ssk_dev`; the verifier
-reconstructs the signed message from the credential fields and the leaf's signature key. A leaf is
+extracts both the credential identity and DSK from the current authenticated MLS tree leaf,
+reconstructs the signed message from them, and compares an authenticated application sender with
+that same leaf. A worker cannot supply either value for the trust verdict. A leaf is
 accepted only if:
 
 1. both signatures verify;
@@ -120,8 +122,14 @@ accepted only if:
 5. `tier` in the credential equals the `tier` of that `device_id`'s entry in the newest signed
    device list.
 
-Failing 1, 3 or 4 rejects the leaf (`E_CREDENTIAL`); failing 2 hard-rejects (`E_UMK_CHANGED`);
-failing 5 rejects the leaf (`E_TIER_MISMATCH`).
+Failing 1 or 4 refuses the leaf (`E_CREDENTIAL`); failing 2 is `E_UMK_CHANGED`; failing 3 is
+`E_DEVICE_UNLISTED`; failing 5 is `E_TIER_MISMATCH`. An incomplete, rolled-back, gapped or
+substituted list history is `E_DEVICE_LIST_STALE` and leaves the leaf pending. An Add this device
+would commit is refused before making the commit; a bad leaf already merged by a remote commit
+stays in MLS but is quarantined. A changed UMK blocks sends in each group still containing its
+leaf until exact-key verification or a validated `Remove` eliminates that leaf from that group.
+The Remove does not approve the new key or unblock any other group. A remote member can repeatedly
+rotate a leaf's key to trigger this refusal against an honest sender.
 
 The instance binds a new leaf to a device too, before any client sees it: a leaf's
 `signature_key` must be the `dsk_pub` its device registered (`POST /v1/accounts`,
@@ -155,17 +163,25 @@ it cannot forge it. Deterministic CBOR:
 ]
 ```
 
-Rules: a verifier keeps the newest `version` it has validated per user and MUST reject a list
-whose `version` is not greater than that, whose `prev_hash` does not match, or whose signature
-fails. A leaf whose `device_id` is absent or has `revoked_at` set in the newest list is rejected
-(`E_DEVICE_UNLISTED`) and any message from it is not rendered. Revocation is therefore
-cryptographic and does not depend on the instance.
+Rules: a verifier keeps the newest signed `version` it has validated per user and refuses a
+rollback, gap, invalid `prev_hash` or signature. The requested user and the `user_id` of every
+signed list in the history must equal the user extracted from the current authenticated MLS leaf.
+The list entry must bind that leaf's `device_id`, DSK and tier. A leaf whose `device_id` is absent
+or has `revoked_at` set in the newest list is `E_DEVICE_UNLISTED` and no message from it is
+rendered. Revocation is therefore cryptographic and does not depend on the instance. A later
+quarantine or UMK change retracts every previously accepted display row attributable to that
+group/device, refolds dependent edits, reactions and replies, removes derived search rows, and
+invalidates older timeline and search slices before display. Old quarantined rows stay neutral
+after verification unless retained ciphertext is freshly authenticated against the validated leaf.
 
-A verifier that holds version *n* and is served a list of version *m* > *n* + 1 fetches the
-versions after *n* (`GET /v1/users/{user_id}/device-list?after=n`, `09`) and walks them one version
-at a time under the rules above; the instance serves them in order and stores only lists that verify
-and chain (`02` § Device sessions item 6). A verifier with no validated version for the user accepts
-the served list on its signature alone (first sight); only version 1 may carry a zero `prev_hash`.
+A verifier first reads the unpaged signed candidate head, then fetches ascending history after
+its cached signed version (`GET /v1/users/{user_id}/device-list?after=n`, `09`), or from version 1
+on first sight. It validates every consecutive signature and hash link, and requires the final
+signed bytes and hash to equal the candidate head. It re-reads the unpaged head after paging;
+a changed head allows one bounded retry. An unchanged exact cached head needs no history fetch.
+The history is at most 1024 versions and 4 MiB. Only version 1 may carry a zero `prev_hash`.
+An instance can withhold newer history even on first sight: trust on first use cannot detect this
+freeze, and the UI must not call first sight verified.
 
 ## Custody by tier
 

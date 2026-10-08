@@ -45,6 +45,11 @@ Stated plainly in the product's documentation and onboarding:
 - The instance may add any **legitimate** user's devices to groups it controls (adversary 1). This
   is visible: members see "X joined" and the leaf in the tree, and a pinned-UMK mismatch is a loud
   alert. It is not silent, but it is possible.
+- The instance may withhold newer device-list history on first sight. Trust on first use cannot
+  prove that the served signed head is the newest, so first sight is not called verified.
+- A remote member can repeatedly rotate a changed-UMK leaf and keep an honest sender blocked in
+  groups still containing it. Exact-key verification or a validated Remove ends that group's
+  block; removing it from one group does not approve the key or release another group.
 - Media authenticity is group-level: any member can derive any sender's frame keys
   (`05-media-frames.md`); a colluding operator and member can inject media attributed to another
   participant. A member a Commit removed still holds the superseded epoch's key while receivers
@@ -67,9 +72,13 @@ Stated plainly in the product's documentation and onboarding:
   makes internally while transferring the key to the worker. A media worker that fails during a
   call is told to clear its keys and then terminated, so no key in it is used after the failure; its
   memory is released by the browser, not zeroed.
-- A call started in a follower tab receives that `base_key` from the leader tab's core worker over
-  `BroadcastChannel("dilla-core:<instance>")`, which any same-origin script can read. The web
-  client wave closes this exposure.
+- A follower tab receives no group material, timeline/search slices, plaintext, or `base_key`.
+  Its “use this tab” notice is only `{t:'takeover',instance:<hex>,nonce:<16-byte random hex>}`.
+  The leader closes command admission, drains accepted work, stops gateway and sync, pauses its
+  core, releases the Web Lock and awaits the lock callback's exit before sending the matching
+  `{t:'released',instance,nonce}` notice. The next leader acquires that lock and reloads its own
+  store. Neither notice carries a key, token, method arguments or content; a missing release
+  leaves the follower in its other-tab state.
 - Metadata is visible to the instance: membership, presence, typing, who is in voice, message
   timestamps and sizes, attachment sizes, franking tags, and in a call each participant's audio
   level and speaking activity (the RTP audio-level header extension is outside SFrame, and a silent

@@ -154,6 +154,17 @@ The `Remove` proposal inside an external commit MUST target only a leaf with the
 
 ## Joining
 
+At a Welcome join or external join, the client validates every current authenticated MLS leaf
+against its signed device-list history before displaying group content. It repeats that check for
+each proposed `Add` before creating its own commit, after merging a remote commit, and for the
+actual authenticated MLS sender of every application message. The credential identity and DSK
+come from that leaf, never from a worker-supplied claim. An invalid `Add` this device would commit
+is refused before commit creation. If a remote commit has already merged, its invalid leaf stays
+in the MLS tree but is quarantined: its messages are withheld and previously displayed messages
+from that device are retracted (`03-identity.md`, "Device list"). Unknown history leaves the leaf
+pending, without rendering its message body. A validated `Remove` of a changed-UMK leaf clears
+the send block for that group alone; it does not verify the changed key or release other groups.
+
 - An online device joins by **external commit** using the GroupInfo and ratchet tree served by
   the DS. The DS refuses external commits while a DS proposal is outstanding, except when no member
   device is online (`02-delivery-service.md`, invariant 5).

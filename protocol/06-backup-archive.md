@@ -125,6 +125,11 @@ first.
 3. A chunk that fails to decrypt or whose `blob_id` mismatches is reported to the user as a gap
    with its `device_id` and `chunk_seq`; restore continues with the rest.
 
+Trust pins and the validated device-list cache are local to each device. A restored archive does
+not transfer another device's trust verdict: before displaying restored group messages, this
+device revalidates the served signed list history against each current authenticated MLS leaf and
+retracts rows from any leaf that fails or remains pending (`03-identity.md`, "Device list").
+
 ## Operator note: the instance backup
 
 Informative. Everything above is the per-user backup, which clients encrypt and the instance
