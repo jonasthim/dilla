@@ -4,6 +4,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -29,6 +31,11 @@ type presence struct {
 	clk          clock.Clock
 	typing       map[[2]id.ID]typingState
 	recentTyping map[[2]id.ID]time.Time
+	// cooldown survives socket removal; live/recent state does not.
+	cooldown     map[[2]id.ID]time.Time
+	signalBudget map[id.ID]*rate.Limiter
+	signalSeen   map[id.ID]time.Time
+	signalSweep  time.Time
 	status       map[id.ID]presenceState
 }
 
@@ -39,7 +46,32 @@ type presenceState struct {
 }
 
 func newPresence(clk clock.Clock) *presence {
-	return &presence{clk: clk, typing: map[[2]id.ID]typingState{}, recentTyping: map[[2]id.ID]time.Time{}, status: map[id.ID]presenceState{}}
+	return &presence{clk: clk, typing: map[[2]id.ID]typingState{}, recentTyping: map[[2]id.ID]time.Time{}, cooldown: map[[2]id.ID]time.Time{}, signalBudget: map[id.ID]*rate.Limiter{}, signalSeen: map[id.ID]time.Time{}, status: map[id.ID]presenceState{}}
+}
+
+// chargeSignal bounds all ephemeral work and fan-out across a user's sockets.
+// The 128-frame burst preserves the documented 64-channel set/clear sequence.
+func (p *presence) chargeSignal(user id.ID) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.clk.Now()
+	if now.Sub(p.signalSweep) >= time.Minute {
+		p.expireTyping(now)
+		for u, last := range p.signalSeen {
+			if now.Sub(last) >= 3*time.Minute {
+				delete(p.signalSeen, u)
+				delete(p.signalBudget, u)
+			}
+		}
+		p.signalSweep = now
+	}
+	limiter := p.signalBudget[user]
+	if limiter == nil {
+		limiter = rate.NewLimiter(1, 128)
+		p.signalBudget[user] = limiter
+	}
+	p.signalSeen[user] = now
+	return limiter.AllowN(now, 1)
 }
 
 func (p *presence) expireTyping(now time.Time) {
@@ -51,6 +83,11 @@ func (p *presence) expireTyping(now time.Time) {
 	for key, last := range p.recentTyping {
 		if now.Sub(last) >= typingInterval {
 			delete(p.recentTyping, key)
+		}
+	}
+	for key, last := range p.cooldown {
+		if now.Sub(last) >= typingInterval {
+			delete(p.cooldown, key)
 		}
 	}
 }
@@ -86,6 +123,9 @@ func (g *Gateway) acceptTyping(channelID, userID, deviceID id.ID, typing bool) b
 	key := [2]id.ID{channelID, deviceID}
 	state, exists := p.typing[key]
 	if typing {
+		if _, cooling := p.cooldown[key]; cooling {
+			return false
+		}
 		if exists && now.Sub(state.last) < typingInterval {
 			return false
 		}
@@ -115,6 +155,7 @@ func (g *Gateway) acceptTyping(channelID, userID, deviceID id.ID, typing bool) b
 			}
 		}
 		p.typing[key] = typingState{user: userID, expires: now.Add(typingTTL), last: now}
+		p.cooldown[key] = now
 		return true
 	}
 	if !exists || state.user != userID {

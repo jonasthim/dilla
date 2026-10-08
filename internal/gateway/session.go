@@ -727,6 +727,10 @@ func signalTarget(in Inbound) (id.ID, uint64, error) {
 }
 
 func (g *Gateway) handleTypingSet(ctx context.Context, c *conn, in Inbound) {
+	if !g.presence.chargeSignal(c.userID) {
+		g.signalError(c, "E_RATE_LIMITED")
+		return
+	}
 	channel, on, err := signalTarget(in)
 	if err != nil || on > 1 {
 		g.signalError(c, "E_FRAME_SHAPE")
@@ -765,6 +769,10 @@ func (g *Gateway) handleTypingSet(ctx context.Context, c *conn, in Inbound) {
 }
 
 func (g *Gateway) handleVoiceSelf(ctx context.Context, c *conn, in Inbound) {
+	if !g.presence.chargeSignal(c.userID) {
+		g.signalError(c, "E_RATE_LIMITED")
+		return
+	}
 	call, bits, err := signalTarget(in)
 	if err != nil || bits > 3 {
 		g.signalError(c, "E_FRAME_SHAPE")
