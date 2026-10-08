@@ -9,7 +9,7 @@ use crate::cbor::Encoder;
 use crate::identity::{CredentialIdentity, DISPLAY_GROUP, DeviceList, group_digits, safety_number};
 use crate::mls::ReceivedApplication;
 use crate::mls::{DillaGroup, StorageError};
-use openmls::prelude::{BasicCredential, GroupId, Member};
+use openmls::prelude::{BasicCredential, GroupId, KeyPackage, Member};
 use rusqlite::{OptionalExtension, params};
 
 #[derive(Clone)]
@@ -148,6 +148,31 @@ pub(super) fn retract_device(
     Ok(())
 }
 
+/// Persist a failed authenticated-leaf verdict with its historical retraction.
+/// The caller owns the same write unit as the unreadable incoming row.
+pub(super) fn quarantine_device(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    device_id: &[u8; 16],
+    code: &str,
+) -> Result<(), StorageError> {
+    c.execute(
+        "INSERT INTO app_quarantine(group_id,device_id,code) VALUES(?1,?2,?3) \
+         ON CONFLICT(group_id,device_id) DO UPDATE SET code=excluded.code",
+        params![group_id.as_slice(), device_id.as_slice(), code],
+    )?;
+    retract_device(c, group_id, device_id, code)?;
+    let generation = schema::meta_get(c, "trust_generation")?
+        .and_then(|v| crate::cbor::decode_strict(&v, |d| d.uint()).ok())
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| StorageError::Codec("trust generation overflow".into()))?;
+    let mut encoded = Encoder::new();
+    encoded.uint(generation);
+    schema::meta_put(c, "trust_generation", &encoded.into_vec())?;
+    Ok(())
+}
+
 /// A verified Remove releases only the affected group's changed-key send block.
 pub(super) fn clear_group_block(
     c: &rusqlite::Connection,
@@ -211,6 +236,10 @@ pub(super) fn validate_cached_sender(
     if leaf.credential != received.sender {
         return Err(failure(E_CREDENTIAL));
     }
+    validate_cached_leaf(c, &leaf)
+}
+
+fn validate_cached_leaf(c: &rusqlite::Connection, leaf: &LeafEvidence) -> Result<(), ClientError> {
     leaf.credential
         .verify_signatures(&leaf.dsk_pub)
         .map_err(|_| failure(E_CREDENTIAL))?;
@@ -251,6 +280,73 @@ pub(super) fn validate_cached_sender(
         return Err(failure(E_UMK_CHANGED));
     }
     Ok(())
+}
+
+/// Check each current authenticated tree member at an MLS state transition.
+/// Missing history remains pending; failed leaves and the commit author are neutralized.
+pub(super) fn audit_tree(
+    c: &rusqlite::Connection,
+    group: &DillaGroup,
+    group_id: &[u8; 16],
+    own_device: &[u8; 16],
+    author_device: Option<&[u8; 16]>,
+) -> Result<(), StorageError> {
+    for member in group.members() {
+        let leaf = extract_leaf(group_id, group, [0; 32], member);
+        let (device, verdict) = match leaf {
+            Ok(leaf) => {
+                let device = *leaf.credential.device_id.as_bytes();
+                let verdict = validate_cached_leaf(c, &leaf);
+                (device, verdict)
+            }
+            Err(error) => {
+                if let Some(author) = author_device.filter(|author| *author != own_device) {
+                    quarantine_device(c, group_id, author, error.code)?;
+                }
+                continue; // Malformed identity has no trustworthy device ID.
+            }
+        };
+        if &device == own_device {
+            continue;
+        }
+        if let Err(error) = verdict {
+            if error.code == E_DEVICE_LIST_STALE {
+                continue;
+            }
+            quarantine_device(c, group_id, &device, error.code)?;
+            if let Some(author) =
+                author_device.filter(|author| **author != device && *author != own_device)
+            {
+                quarantine_device(c, group_id, author, error.code)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_proposed_add(
+    c: &rusqlite::Connection,
+    kp: &KeyPackage,
+) -> Result<(), ClientError> {
+    let node = kp.leaf_node();
+    let basic =
+        BasicCredential::try_from(node.credential().clone()).map_err(|_| failure(E_CREDENTIAL))?;
+    let credential =
+        CredentialIdentity::decode(basic.identity()).map_err(|_| failure(E_CREDENTIAL))?;
+    let dsk_pub: [u8; 32] = node
+        .signature_key()
+        .as_slice()
+        .try_into()
+        .map_err(|_| failure(E_CREDENTIAL))?;
+    let leaf = LeafEvidence {
+        group_id: [0; 16],
+        epoch: 0,
+        tree_hash: [0; 32],
+        leaf_index: 0,
+        credential,
+        dsk_pub,
+    };
+    validate_cached_leaf(c, &leaf)
 }
 
 impl ClientCore {
@@ -520,6 +616,64 @@ impl ClientCore {
         user_id: &[u8; 16],
         expected_umk: &[u8; 32],
     ) -> Result<(), ClientError> {
+        let cached: Option<([u8; 32], [u8; 32], Vec<u8>)> = self.read(|c| {
+            c.query_row(
+                "SELECT umk_pub,ssk_pub,list FROM app_device_lists WHERE user_id=?1",
+                [user_id.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(Into::into)
+        })?;
+        let (umk, ssk, blob) = cached.ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
+        if umk != *expected_umk {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        let list = DeviceList::decode(&blob).map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+        list.verify(&ssk).map_err(|_| failure(E_CREDENTIAL))?;
+        if list.unsigned.user_id.as_bytes() != user_id {
+            return Err(failure(E_CREDENTIAL));
+        }
+        let mut live = false;
+        for entry in &list.unsigned.entries {
+            let device = entry.device_id.as_bytes();
+            for group_id in self.groups_holding_device(user_id, device)? {
+                let group = self.groups.get(&group_id);
+                let loaded = if group.is_none() {
+                    DillaGroup::load(&self.provider, &GroupId::from_slice(&group_id))?
+                } else {
+                    None
+                };
+                let group = group
+                    .or(loaded.as_ref())
+                    .ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
+                for member in group.members() {
+                    let leaf = extract_leaf(&group_id, group, [0; 32], member)?;
+                    if leaf.credential.user_id.as_bytes() != user_id
+                        || leaf.credential.device_id.as_bytes() != device
+                    {
+                        continue;
+                    }
+                    if leaf.credential.umk_pub == *expected_umk
+                        && leaf.credential.ssk_pub == ssk
+                        && leaf.dsk_pub == entry.dsk_pub
+                        && leaf.credential.verify_signatures(&leaf.dsk_pub).is_ok()
+                        && list
+                            .check_leaf(
+                                &leaf.credential.device_id,
+                                &leaf.dsk_pub,
+                                leaf.credential.tier,
+                            )
+                            .is_ok()
+                    {
+                        live = true;
+                    }
+                }
+            }
+        }
+        if !live {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
         self.write(|_,u|u.with_conn(|c| {
             let changed: Option<[u8;32]>=c.query_row("SELECT changed_umk FROM app_trust_pins WHERE user_id=?1",[user_id.as_slice()],|r|r.get(0)).optional()?.flatten();
             if changed!=Some(*expected_umk) {return Err(StorageError::Codec("pending validated key differs".into()));}

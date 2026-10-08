@@ -37,7 +37,8 @@ export type Command =
   | { m: 'closePins'; channelId: string }                                                 // ready → null
   | { m: 'attachFiles'; channelId: string; files: readonly File[] }                       // ready → { trayIds }; slice tray:<channel>
   | { m: 'discardAttachment'; channelId: string; trayId: string }                         // ready → null
-  | { m: 'openAttachment'; channelId: string; seq: string; index: number; thumb: boolean }; // ready → { blob, name, mime }
+  | { m: 'openAttachment'; channelId: string; seq: string; index: number; thumb: boolean } // ready → { blob, name, mime }
+  | { m: 'refreshTrust' }; // ready: bounded signed-list refresh
 export type ToWorker = { t: 'call'; id: number; command: Command };
 export type FromWorker =
   | { t: 'ret'; id: number; ok: true; value: unknown }

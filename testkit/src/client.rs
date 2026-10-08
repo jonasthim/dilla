@@ -941,7 +941,7 @@ impl TestClient {
                             continue;
                         }
                         match group.process_message(&self.provider, message)? {
-                            DillaProcessed::StagedCommit(staged) => {
+                            DillaProcessed::StagedCommit(staged, _) => {
                                 group.merge_staged_commit(&self.provider, *staged)?;
                                 self.queued.remove(&group_id);
                             }

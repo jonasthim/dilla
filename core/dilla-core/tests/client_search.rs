@@ -89,6 +89,38 @@ fn punctuation_is_tokenized_without_matching_an_unrelated_word() {
 }
 
 #[test]
+fn fts_and_like_agree_on_non_decomposing_letters_and_combining_marks() {
+    let (_, mut relay, mut alice, _) = alice_and_bob();
+    let (_, seq) = alice.send(&mut relay, &GROUP, "smørrebrød straße cafe\u{301}", NOW + 1);
+    let queries = ["smør", "straße", "café", "cafe\u{301}", "smor", "stras"];
+    let mut outcomes = Vec::new();
+    for enabled in [1_u8, 0] {
+        alice
+            .probe
+            .lock()
+            .expect("db")
+            .execute(
+                "UPDATE app_meta SET v=?1 WHERE k='search_fts5'",
+                rusqlite::params![vec![enabled]],
+            )
+            .expect("select search path");
+        let results = queries.map(|query| {
+            let found = hits(&alice.core.search(2, None, query, None, 50).expect("search"));
+            found.iter().map(|hit| hit.1).collect::<Vec<_>>()
+        });
+        outcomes.push(results);
+    }
+    assert_eq!(
+        outcomes[0], outcomes[1],
+        "FTS and LIKE must return the same rows"
+    );
+    assert_eq!(
+        outcomes[0],
+        [vec![seq], vec![seq], vec![seq], vec![seq], vec![], vec![]]
+    );
+}
+
+#[test]
 fn query_plan_uses_the_auxiliary_index_and_result_count_is_capped() {
     let (_, mut relay, mut alice, _) = alice_and_bob();
     for i in 0..51 {

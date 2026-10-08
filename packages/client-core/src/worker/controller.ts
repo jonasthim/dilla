@@ -25,6 +25,7 @@ import { Routes, type ChannelRow, type Instance, type Limits, type MemberRow } f
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { isSettingKey, isSettingValue } from '../state/settings';
+import { readDeviceListHistory } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
@@ -131,6 +132,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'signInBegin', 'signInLogin', 'signInTotp', 'signInKey', 'signInCancel', 'refreshDevices', 'revokeDevice', 'signOutRevoke',
   'forgetBrowser', 'markRead', 'setSetting', 'openDm',
   'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
+  'refreshTrust',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
@@ -161,6 +163,7 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'joinCommunity', 'selectCommunity', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
     'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
     'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
+    'refreshTrust',
   ],
 };
 
@@ -292,6 +295,8 @@ export class Controller {
   private readonly roles = new Map<string, string[]>();
   private purging: Promise<void> | null = null;
   private purgeAgain = false;
+  private trustRefresh: Promise<null> | null = null;
+  private readonly fetchedLeaves = new Set<string>();
 
   constructor(private readonly deps: ControllerDeps) {
     this.parts = { ...REAL_PARTS, ...deps.parts };
@@ -404,6 +409,7 @@ export class Controller {
       case 'attachFiles': return this.attachFiles(command.channelId, command.files);
       case 'discardAttachment': return this.discardAttachment(command.channelId, command.trayId);
       case 'openAttachment': return this.openAttachment(command.channelId, command.seq, command.index, command.thumb);
+      case 'refreshTrust': return this.refreshTrust();
     }
   }
 
@@ -716,6 +722,8 @@ export class Controller {
   }
 
   private onReady(info: ReadyInfo): void {
+    this.fetchedLeaves.clear();
+    void this.refreshTrust().catch(() => undefined);
     this.setConnection({ generation: info.generation.toString() });
     // Pre-flight ruling (a): what this ready catches up was not delivered live.
     if (this.phase === 'ready') this.noticeFloor = this.serverNowS();
@@ -1683,6 +1691,7 @@ export class Controller {
     const hex = toHex(groupId);
     if (result.state === 2) { this.resyncing.delete(hex); this.notMember.delete(hex); }
     this.safely(() => { this.touchGroup(groupId); });
+    void this.refreshTrust().catch(() => undefined);
     this.safely(() => { this.reportActivity(groupId, result); });
     // Pre-flight ruling F6: an apply can adopt the own type-2 row (a catch-up) and so record a purge.
     this.runPurges();
@@ -1723,6 +1732,31 @@ export class Controller {
     if (dms) this.publishDms();
     for (const channelId of timelines) this.refreshTimeline(channelId);
     for (const channelId of this.pinsOpen) if (bound(channelId, this.target(channelId)?.textGroupId ?? null)) this.publishPins(channelId);
+  }
+
+  /** One bounded history read per pending leaf until the next ready. Core rechecks the current group leaf at ingest. */
+  private refreshTrust(): Promise<null> {
+    if (this.trustRefresh !== null) return this.trustRefresh;
+    const run = this.refreshTrustOnce().finally(() => { this.trustRefresh = null; });
+    this.trustRefresh = run;
+    return run;
+  }
+
+  private async refreshTrustOnce(): Promise<null> {
+    const core = this.requireCore();
+    for (const leaf of core.pendingLeaves()) {
+      if (this.phase !== 'ready') break;
+      const key = `${toHex(leaf.groupId)}:${leaf.leafIndex}:${toHex(leaf.userId)}:${leaf.cachedVersion}`;
+      if (this.fetchedLeaves.has(key)) continue;
+      this.fetchedLeaves.add(key);
+      try {
+        const { head, history } = await readDeviceListHistory(this.routes, leaf.userId, leaf.cachedVersion);
+        core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, head, this.nowS());
+        // A trust transition can retract text with no new message sequence. Read every open timeline from the core.
+        for (const channelId of this.open.keys()) this.refreshTimeline(channelId);
+      } catch { /* Keep the leaf untrusted; the next ready retries. */ }
+    }
+    return null;
   }
 
   // ---- sending ----

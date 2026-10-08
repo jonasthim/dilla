@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { CoreError } from '../core-port';
 import { toHex } from '../hex';
 import { SYNC, throughOf, type PageInfo } from './engine';
 import { catchSync, coreCalls, device, openRegistered, readyInfo, type Device } from './testing/harness';
@@ -70,6 +71,17 @@ describe('constants and the through bound', () => {
 });
 
 describe('catch-up on every ready (rule 2)', () => {
+  it('reports a persisted trust quarantine even if groupApply then refuses the batch', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.detach(ME.device);
+    ds.peerSend(g, PEER, 'bad leaf');
+    const before = d.changes.length;
+    d.core.groupApply = () => { throw new CoreError('E_CREDENTIAL'); };
+    expect(await d.engine.catchUpNow(g, 'catch-up')).toBe(false);
+    expect(d.changes).toHaveLength(before + 1);
+    expect(d.changes.at(-1)?.group).toBe(toHex(g));
+  });
   it('applies a commit before the messages of the epoch it opens when only the message page is full', async () => {
     const d = device(ds, clock, ME);
     const g = await openRegistered(ds, d);

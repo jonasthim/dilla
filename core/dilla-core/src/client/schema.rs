@@ -11,6 +11,7 @@ static FORCE_MISSING_FTS5: AtomicBool = AtomicBool::new(false);
 
 /// Test-build-only simulation of an OPFS SQLite binary without FTS5.
 #[cfg(any(test, feature = "test-hooks"))]
+#[allow(dead_code)] // The browser fixture uses this only through the feature-gated facade.
 pub fn test_force_missing_fts5(on: bool) {
     FORCE_MISSING_FTS5.store(on, Ordering::SeqCst);
 }

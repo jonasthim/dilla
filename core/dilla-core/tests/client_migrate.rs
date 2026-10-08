@@ -44,13 +44,86 @@ fn write_the_v3_fixture() {
 #[test]
 fn v3_fixture_migrates_and_keeps_settings_with_or_without_fts() {
     let (path, handle) = copy_of(V3_FIXTURE, "v3-to-v4");
+    {
+        let db = handle.lock().expect("v3 db");
+        let schema: Vec<u8> = db
+            .query_row("SELECT v FROM app_meta WHERE k='schema'", [], |r| r.get(0))
+            .expect("fixture schema");
+        assert_eq!(schema, [0x03], "fixture must be written by a v3 build");
+    }
     let core = ClientCore::open(Arc::clone(&handle)).expect("v4 open");
     assert!(settings_of(&core).contains(&("density".to_owned(), "compact".to_owned())));
+    let identity = decode_strict(&core.identity().expect("identity"), |d| {
+        d.array(6)?;
+        let phase = d.uint()?;
+        d.opt_bytes_exact::<16>()?;
+        let user = d.opt_bytes_exact::<16>()?;
+        let device = d.opt_bytes_exact::<16>()?;
+        Ok((phase, user, device, d.text()?.to_owned(), d.uint()?))
+    })
+    .expect("identity shape");
+    assert_eq!(
+        identity,
+        (
+            2,
+            Some([0xa1; 16]),
+            Some([
+                0xaf, 0x23, 0x9b, 0xbd, 0x9d, 0x43, 0x37, 0x8b, 0xcf, 0x53, 0xba, 0x68, 0x34, 0xc0,
+                0x75, 0xe9,
+            ]),
+            "alice".to_owned(),
+            1,
+        )
+    );
     let db = handle.lock().expect("db");
     let schema: Vec<u8> = db
         .query_row("SELECT v FROM app_meta WHERE k='schema'", [], |r| r.get(0))
         .expect("schema");
     assert_eq!(schema, vec![0x04]);
+    let groups: Vec<(Vec<u8>, i64, i64)> = db
+        .prepare("SELECT group_id, state, epoch FROM app_groups ORDER BY group_id")
+        .expect("groups query")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .expect("groups")
+        .collect::<Result<_, _>>()
+        .expect("group rows");
+    assert_eq!(groups, vec![(vec![0x44; 16], 2, 2), (vec![0x45; 16], 2, 0)]);
+    let messages: Vec<(Vec<u8>, i64, String)> = db
+        .prepare("SELECT group_id, seq, body FROM app_messages ORDER BY group_id, seq")
+        .expect("messages query")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .expect("messages")
+        .collect::<Result<_, _>>()
+        .expect("message rows");
+    assert_eq!(
+        messages,
+        vec![
+            (vec![0x44; 16], 3, "hello from alice".to_owned()),
+            (vec![0x44; 16], 4, "hello from bob".to_owned()),
+            (
+                vec![0x44; 16],
+                5,
+                "ping <@a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1>".to_owned()
+            ),
+            (
+                vec![0x44; 16],
+                6,
+                "note to self <@a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1>".to_owned()
+            ),
+            (
+                vec![0x44; 16],
+                7,
+                "shout <@A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1>".to_owned()
+            ),
+            (
+                vec![0x44; 16],
+                8,
+                "from my other browser <@a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1>".to_owned()
+            ),
+            (vec![0x45; 16], 1, "alone here".to_owned()),
+        ],
+        "all v3 history survives unchanged"
+    );
     for table in [
         "app_device_lists",
         "app_trust_pins",
@@ -446,7 +519,7 @@ fn app_indexes(c: &rusqlite::Connection) -> Vec<String> {
 }
 
 #[test]
-fn a_v1_store_opens_as_v3_with_every_column_backfilled() {
+fn a_v1_store_opens_as_v4_with_every_column_backfilled() {
     let (path, conn) = fixture_copy("open");
     {
         let c = conn.lock().expect("lock");
@@ -1304,7 +1377,7 @@ fn write_the_v2_fixture() {
 }
 
 #[test]
-fn a_v2_store_opens_as_v3_with_its_folds_applied() {
+fn a_v2_store_opens_as_v4_with_its_folds_applied() {
     let (path, conn) = copy_of(V2_FIXTURE, "v2-open");
     let a_msg: [u8; 16] = {
         let c = conn.lock().expect("lock");

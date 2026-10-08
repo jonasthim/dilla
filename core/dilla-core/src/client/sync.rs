@@ -317,6 +317,9 @@ impl ClientCore {
                     if message.epoch().as_u64() != group.epoch() { continue; }
                     match group.process_message(ctx.provider, message) {
                         Ok(DillaProcessed::Proposal(proposal)) => {
+                            if let openmls::prelude::Proposal::Add(add) = proposal.proposal() {
+                                u.with_conn(|c| Ok(super::trust::validate_proposed_add(c,add.key_package())))??;
+                            }
                             let reference = proposal.proposal_reference_ref().as_slice().to_vec();
                             let exists = u.with_conn(|c| Ok(c.query_row("SELECT 1 FROM app_proposals WHERE group_id=?1 AND ref=?2", params![id.as_slice(), &reference], |r| r.get::<_, i64>(0)).optional()?.is_some()))?;
                             if !exists {
@@ -564,7 +567,7 @@ impl ClientCore {
                                 let message = wire::protocol_message(&h.blob)?;
                                 if message.epoch().as_u64() < group.epoch() { return Ok(false); }
                                 match group.process_message(ctx.provider, message)? {
-                                    DillaProcessed::StagedCommit(commit) => {
+                                    DillaProcessed::StagedCommit(commit, author_device) => {
                                         if commit.self_removed() {
                                             // The epoch this device held last is already the
                                             // floor (F6): it was written when it was reached.
@@ -591,6 +594,7 @@ impl ClientCore {
                                         group.merge_staged_commit(ctx.provider, *commit)?;
                                         let current_devices = super::trust::member_devices(&group);
                                         u.with_conn(|c| {
+                                            super::trust::audit_tree(c,&group,id,&own.device_id,Some(&author_device))?;
                                             for device in old_devices.iter().filter(|d| !current_devices.contains(d)) {
                                                 super::trust::clear_group_block(c,id,device)?;
                                             }
@@ -602,6 +606,7 @@ impl ClientCore {
                                     }
                                     DillaProcessed::OwnPendingCommit => {
                                         group.merge_pending_commit(ctx.provider)?;
+                                        u.with_conn(|c| super::trust::audit_tree(c,&group,id,&own.device_id,Some(&own.device_id)))?;
                                         let held = checked("epoch", group.epoch())?;
                                         u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; raise_floor(c, id, held)?; set_mls(c, id, held, false) })?;
                                         epoch_changed = true;
@@ -660,7 +665,10 @@ impl ClientCore {
                                         let verdict = u.with_conn(|c| Ok(super::trust::validate_cached_sender(c,&group,id,&r)))?;
                                         match verdict {
                                             Ok(()) => (STATUS_OK, "", Some(r)),
-                                            Err(e) => (STATUS_CANNOT_DECRYPT, e.code, None),
+                                            Err(e) => {
+                                                u.with_conn(|c| super::trust::quarantine_device(c,id,r.sender.device_id.as_bytes(),e.code))?;
+                                                (STATUS_CANNOT_DECRYPT, e.code, None)
+                                            },
                                         }
                                     }
                                     Ok(DillaProcessed::Application(_)) => {

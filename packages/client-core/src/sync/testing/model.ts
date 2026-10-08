@@ -28,6 +28,7 @@ import {
   type OwnDeviceList,
   type SealedObjects,
   type SignedLists,
+  type PendingLeaf, type TrustRecord, type SearchHit,
 } from '../../core-port';
 import type { Frame } from '../../gateway/frames';
 import type { GatewayEvent, ReadyInfo } from '../../gateway/gateway';
@@ -370,6 +371,12 @@ export interface ApplyCall {
 type HsOutcome = 'ok' | 'skip' | 'changed' | 'stop' | 'gone';
 
 export class ModelCore implements CorePort {
+  pendingLeaves(): PendingLeaf[] { return []; }
+  deviceListIngest(): { version: bigint; changed: boolean; quarantined: number } { throw coreError('E_CORE_STATE', 'not modelled'); }
+  trustState(): TrustRecord[] { return []; }
+  trustVerify(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
+  safetyNumberFor(): string { throw coreError('E_CORE_STATE', 'not modelled'); }
+  search(): SearchHit[] { return []; }
   /** Every group-scoped call except the reads groups/outbox/timeline, in call order. */
   readonly calls: CoreCall[] = [];
   readonly applyCalls: ApplyCall[] = [];

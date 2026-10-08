@@ -376,6 +376,10 @@ function world(opts: {
     }),
     pause: vi.fn((): void => { calls.push('core.pause'); }),
     close: (): void => {},
+    pendingLeaves: vi.fn(() => [] as { groupId: Uint8Array; leafIndex: number; userId: Uint8Array; cachedVersion: bigint; reason: string }[]),
+    deviceListIngest: vi.fn((_group: Uint8Array, _leaf: number, _user: Uint8Array, _history: Uint8Array, _head: Uint8Array, _now: bigint) =>
+      ({ version: 1n, changed: true, quarantined: 1 })),
+    trustState: vi.fn(() => []),
   };
   const routes = {
     getInstance: vi.fn(() => Promise.resolve(INSTANCE)),
@@ -424,6 +428,9 @@ function world(opts: {
     }),
     putBackup: vi.fn((kind: 0 | 1, _object: Uint8Array) => { calls.push(`putBackup(${kind})`); return Promise.resolve({ blobId: new Uint8Array(32), size: 3, created: false }); }),
     getDeviceList: vi.fn((_user: Uint8Array) => { calls.push('getDeviceList'); return Promise.resolve({ version: 1n, blob: new Uint8Array([9]), raw: LIST_RAW }); }),
+    getDeviceListHistory: vi.fn((_user: Uint8Array, _after: bigint) => Promise.resolve({
+      raw: encode([[1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]]), count: 1, lastVersion: 1n,
+    })),
     putDeviceList: vi.fn((_user: Uint8Array, _body: Uint8Array) => { calls.push('putDeviceList'); return Promise.resolve(); }),
     postChallenge: vi.fn((_device: Uint8Array) => Promise.resolve({ nonce: new Uint8Array(32), expires: NOW_S + 60n })),
     postSession: vi.fn((_device: Uint8Array, _body: Uint8Array) => {
@@ -509,6 +516,23 @@ async function toReady(w: World): Promise<void> {
   w.call(1, { m: 'start' });
   await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
 }
+
+it('refreshTrust fetches a pending leaf once and re-renders already open timelines after ingestion', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [strangerRow(1)];
+  await openGeneral(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.core.deviceListIngest.mockImplementation(() => {
+    w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+    return { version: 1n, changed: true, quarantined: 1 };
+  });
+  const before = w.posted.filter((m) => m.t === 'slice' && m.name === `timeline:${toHex(CHANNEL)}`).length;
+  w.call(882, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(882)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledOnce();
+  expect(w.posted.filter((m) => m.t === 'slice' && m.name === `timeline:${toHex(CHANNEL)}`).length).toBeGreaterThan(before);
+});
 
 async function toKeys(w: World): Promise<void> {
   w.call(1, { m: 'start' });

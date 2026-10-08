@@ -10,9 +10,9 @@ const test = base.extend<{ storePage: Page }>({
       await use(page);
       return;
     }
-    const dir = `/tmp/dw/${info.project.name}-${info.workerIndex}`;
+    const dir = `/tmp/w2/${info.project.name}-${info.workerIndex}`;
     rmSync(dir, { recursive: true, force: true });
-    mkdirSync('/tmp/dw', { recursive: true });
+    mkdirSync('/tmp/w2', { recursive: true });
     const context = await playwright[browserName].launchPersistentContext(dir, { baseURL, channel, headless });
     try {
       await use(context.pages()[0] ?? (await context.newPage()));

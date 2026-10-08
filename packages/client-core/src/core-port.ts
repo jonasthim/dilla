@@ -39,6 +39,11 @@ export interface OutboxRow { msgId: Id; state: 0 | 1 | 2; error: string; created
   attachments: { blobId: Uint8Array; size: number; mime: string; name: string }[]; }
 export interface PinRow { targetSeq: bigint; msgId: Id; pinnedSeq: bigint; byUser: Id; author: Id | null; excerpt: string; targetTs: bigint; }
 export interface PurgeRow { groupId: Id; seq: bigint; channelId: Id; blobIds: Uint8Array[]; }
+export interface PendingLeaf { groupId: Id; leafIndex: number; userId: Id; cachedVersion: bigint; reason: string; }
+export interface TrustRecord { userId: Id; umk: Uint8Array; firstSeen: bigint; verified: boolean; changedUmk: Uint8Array | null; }
+export interface SearchScope { kind: 'channel' | 'community' | 'all'; id: Id | null; }
+export interface SearchCursor { rank: bigint; groupId: Id; seq: bigint; }
+export interface SearchHit { groupId: Id; seq: bigint; snippet: string; rank: bigint; }
 export interface ReplyInfo { replyTo: Id; targetSeq: bigint | null; targetUser: Id | null; excerpt: string; state: 0 | 1 | 2; }
 export interface ReactionInfo { emoji: string; count: number; mine: boolean; }
 export interface AttachmentInfo { index: number; size: number; mime: string; w: number | null; h: number | null; hasThumb: boolean; name: string; }
@@ -97,6 +102,12 @@ export interface CorePort {
   deviceListRevoke(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; deviceIds: Id[]; now: bigint }): SignedLists;
   ownDeviceListUpdate(historyBody: Uint8Array): { version: bigint; listed: boolean };
   ownDeviceList(): OwnDeviceList;
+  pendingLeaves(): PendingLeaf[];
+  deviceListIngest(groupId: Id, leafIndex: number, requestedUser: Id, history: Uint8Array, headList: Uint8Array, now: bigint): { version: bigint; changed: boolean; quarantined: number };
+  trustState(): TrustRecord[];
+  trustVerify(userId: Id, umk: Uint8Array): void;
+  safetyNumberFor(userId: Id): string;
+  search(scope: SearchScope, query: string, cursor: SearchCursor | null, limit: number): SearchHit[];
 }
 
 export interface CoreHandle {
@@ -147,6 +158,12 @@ export interface CoreHandle {
       device_list_revoke(recovery_key: string, root_sealed: Uint8Array, state_sealed: Uint8Array, list_body: Uint8Array, device_ids: Uint8Array, now: bigint): Uint8Array;
       own_device_list_update(history_body: Uint8Array): Uint8Array;
       own_device_list(): Uint8Array;
+      pending_leaves(): Uint8Array;
+      device_list_ingest(group_id: Uint8Array, leaf_index: number, requested_user: Uint8Array, history_body: Uint8Array, head_list: Uint8Array, now: bigint): Uint8Array;
+      trust_state(): Uint8Array;
+      trust_verify(user_id: Uint8Array, expected_umk: Uint8Array): void;
+      safety_number_for(user_id: Uint8Array): string;
+      search(scope_kind: number, scope_id: Uint8Array | null, query: string, before: Uint8Array | null, limit: number): Uint8Array;
       state_sealed_uploaded(): void;
       state_sealed_current(): boolean;
       pins(group_id: Uint8Array): Uint8Array;
@@ -370,5 +387,34 @@ export function wrapCore(handle: CoreHandle): CorePort {
       const a = arr(v, 2); return { version: u64(field(a, 0)), listed: oneOf(field(a, 1), [0, 1]) === 1 };
     })),
     ownDeviceList: () => call(() => decoded('ownDeviceList', handle.own_device_list(), readOwnList)),
+    pendingLeaves: () => call(() => decoded('pendingLeaves', handle.pending_leaves(), (v) => {
+      const rows = arr(v);
+      if (rows.length > 4096) throw new CborError('E_CBOR_RANGE', 'too many pending leaves');
+      return rows.map((row) => { const a = arr(row, 5); return { groupId: bin(a[0], 16), leafIndex: u53(a[1]),
+        userId: bin(a[2], 16), cachedVersion: u64(a[3]), reason: str(a[4]) }; });
+    })),
+    deviceListIngest: (groupId, leafIndex, requestedUser, history, headList, now) => call(() =>
+      decoded('deviceListIngest', handle.device_list_ingest(groupId, leafIndex, requestedUser, history, headList, now), (v) => {
+        const a = arr(v, 3); return { version: u64(a[0]), changed: u64(a[1]) === 1n, quarantined: u53(a[2]) };
+      })),
+    trustState: () => call(() => decoded('trustState', handle.trust_state(), (v) => {
+      const rows = arr(v);
+      if (rows.length > 4096) throw new CborError('E_CBOR_RANGE', 'too many trust rows');
+      return rows.map((row) => { const a = arr(row, 5); return { userId: bin(a[0], 16), umk: bin(a[1], 32),
+        firstSeen: u64(a[2]), verified: u64(a[3]) === 1n, changedUmk: opt(a[4], (x) => bin(x, 32)) }; });
+    })),
+    trustVerify: (userId, umk) => call(() => handle.trust_verify(userId, umk)),
+    safetyNumberFor: (userId) => call(() => handle.safety_number_for(userId)),
+    search: (scope, query, cursor, limit) => call(() => {
+      if (cursor !== null && cursor.rank !== 0n) throw new CoreError('E_CORE_INPUT', 'nonzero search rank');
+      const kind = scope.kind === 'channel' ? 0 : scope.kind === 'community' ? 1 : 2;
+      return decoded('search', handle.search(kind, scope.id, query,
+        cursor === null ? null : encode([cursor.rank, cursor.groupId, cursor.seq]), limit), (v) => {
+        const rows = arr(v);
+        if (rows.length > 50) throw new CborError('E_CBOR_RANGE', 'too many search hits');
+        return rows.map((row) => { const a = arr(row, 4); return { groupId: bin(a[0], 16), seq: u64(a[1]),
+          snippet: str(a[2]), rank: u64(a[3]) }; });
+      });
+    }),
   };
 }

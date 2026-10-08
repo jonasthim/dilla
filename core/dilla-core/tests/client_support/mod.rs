@@ -1630,8 +1630,13 @@ impl RawPeer {
     }
     /// A native-tier user whose credential is a well-formed `CredentialIdentity`.
     pub fn new(user: u8, device: u8) -> Self {
-        let umk = UmkSigner::from_bytes(&[user; 32]);
-        let ssk = SskSigner::from_bytes(&[user.wrapping_add(0x40); 32]);
+        Self::new_with_keys(user, device, user, user.wrapping_add(0x40))
+    }
+
+    /// A new real MLS device for the same user with rotated identity keys.
+    pub fn new_with_keys(user: u8, device: u8, umk_seed: u8, ssk_seed: u8) -> Self {
+        let umk = UmkSigner::from_bytes(&[umk_seed; 32]);
+        let ssk = SskSigner::from_bytes(&[ssk_seed; 32]);
         let signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
         let dsk_pub: [u8; 32] = signer.public().try_into().expect("32-byte DSK");
         let identity = CredentialIdentity {
@@ -1801,7 +1806,7 @@ impl RawPeer {
             .process_message(&self.provider, message)
             .expect("process the commit")
         {
-            DillaProcessed::StagedCommit(staged) => group
+            DillaProcessed::StagedCommit(staged, _) => group
                 .merge_staged_commit(&self.provider, *staged)
                 .expect("merge"),
             other => panic!("expected a commit at seq {seq}, got {other:?}"),

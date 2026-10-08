@@ -184,7 +184,10 @@ export class SyncEngine implements SyncInternals {
       const result = this.deps.core.groupApply(g, hs, ms, seq);
       await this.applyHook(g, result, 'frame');
       if (result.state === 2) this.armCursor(g);
-    } catch (e) { if (e instanceof CoreError) this.requestCatchUp(g); else throw e; }
+    } catch (e) {
+      if (e instanceof CoreError) { this.reportCurrent(g); this.requestCatchUp(g); }
+      else throw e;
+    }
   }
   private async deletedJob(f: Frame): Promise<void> {
     await Promise.resolve();
@@ -195,7 +198,7 @@ export class SyncEngine implements SyncInternals {
     try {
       const result = this.deps.core.messageDeleted(g, seq);
       if (result.newSeqs.length > 0) this.deps.onGroupChanged(g, result);
-    } catch (e) { if (!(e instanceof CoreError)) throw e; }
+    } catch (e) { if (e instanceof CoreError) this.reportCurrent(g); else throw e; }
   }
   private armCursor(g: Id): void {
     const hex = toHex(g); if (this.cursorTimer.has(hex)) return;
@@ -203,6 +206,11 @@ export class SyncEngine implements SyncInternals {
       this.cursorTimer.delete(hex);
       void this.queues.run(key(g), () => this.cursorStep(g)).catch(() => undefined);
     }));
+  }
+  /** A core refusal may have atomically quarantined earlier text before returning the error. */
+  private reportCurrent(g: Id): void {
+    const current = this.snapshot(g);
+    if (current !== null) this.deps.onGroupChanged(g, current);
   }
   private disarmCursor(g: Id): void {
     const h = toHex(g); const id = this.cursorTimer.get(h); if (id !== undefined) this.cancelTimer(id); this.cursorTimer.delete(h);
@@ -243,6 +251,7 @@ export class SyncEngine implements SyncInternals {
       await this.cursorStep(g);
       return true;
     } catch (e) {
+      if (e instanceof CoreError) this.reportCurrent(g);
       if ((this.membershipLost(g, e) || (e instanceof DillaHttpError && e.status === 410 && e.code === 'E_PRUNED'))
         && !this.resyncTried.has(toHex(g))) {
         await resyncGroup(this, g, false);

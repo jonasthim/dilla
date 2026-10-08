@@ -2,7 +2,8 @@
 import { arr, bin, decode, encode, u64 } from '../cbor';
 import { CoreError, type CorePort, type Id, type IdentityInfo, type SessionRecord, type GroupInfo, type ExpectedGroup,
   type WelcomeOutcome, type ApplyResult, type OutboxRow, type TimelineRow, type ActivityRow, type OwnDeviceList,
-  type SealedObjects, type SignedLists, type AttachmentDescriptor, type PinRow, type PurgeRow, type SendRequest } from '../core-port';
+  type SealedObjects, type SignedLists, type AttachmentDescriptor, type PinRow, type PurgeRow, type SendRequest,
+  type PendingLeaf, type TrustRecord, type SearchHit } from '../core-port';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from './fake-list';
 
 export const FAKE_RECOVERY_KEY = '0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJK';
@@ -28,6 +29,12 @@ function fold(value: string): string {
 }
 
 export class FakeCore implements CorePort {
+  pendingLeaves(): PendingLeaf[] { this.enter('pendingLeaves'); return []; }
+  deviceListIngest(): { version: bigint; changed: boolean; quarantined: number } { this.enter('deviceListIngest'); throw new CoreError('E_CORE_STATE', 'not modelled'); }
+  trustState(): TrustRecord[] { this.enter('trustState'); return []; }
+  trustVerify(): void { this.enter('trustVerify'); throw new CoreError('E_CORE_STATE', 'not modelled'); }
+  safetyNumberFor(): string { this.enter('safetyNumberFor'); throw new CoreError('E_CORE_STATE', 'not modelled'); }
+  search(): SearchHit[] { this.enter('search'); return []; }
   readonly calls: string[] = [];
   private readonly failures = new Map<keyof CorePort, CoreError>();
   readonly tier: number;

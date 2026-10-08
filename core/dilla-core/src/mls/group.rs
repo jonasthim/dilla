@@ -135,7 +135,7 @@ pub enum DillaProcessed {
     Application(Box<ReceivedApplication>),
     Proposal(Box<QueuedProposal>),
     ExternalJoinProposal(Box<QueuedProposal>),
-    StagedCommit(Box<StagedCommit>),
+    StagedCommit(Box<StagedCommit>, [u8; 16]),
     OwnPendingCommit,
     OwnPrivateMessage,
 }
@@ -724,7 +724,10 @@ impl DillaGroup {
                     c.as_ref(),
                 )
                 .map_err(MlsError::Protocol)?;
-                DillaProcessed::StagedCommit(c)
+                let basic = BasicCredential::try_from(credential).map_err(openmls)?;
+                let identity = crate::identity::CredentialIdentity::decode(basic.identity())
+                    .map_err(MlsError::Protocol)?;
+                DillaProcessed::StagedCommit(c, *identity.device_id.as_bytes())
             }
             ProcessedMessageContent::OwnPendingCommit => DillaProcessed::OwnPendingCommit,
             ProcessedMessageContent::OwnPrivateMessage => DillaProcessed::OwnPrivateMessage,
@@ -1251,7 +1254,7 @@ mod media_tests {
         let processed = bob
             .process_message(&bob_p, message)
             .expect("bob accepts the commit that applies his own leave");
-        assert!(matches!(processed, DillaProcessed::StagedCommit(_)));
+        assert!(matches!(processed, DillaProcessed::StagedCommit(_, _)));
     }
 
     /// One device of a group, with what it signs with.
@@ -1431,7 +1434,7 @@ mod media_tests {
                 let q = received(&mut carol, message);
                 carol.g.store_pending_proposal(&carol.p, q).expect("queue");
             }
-            let DillaProcessed::StagedCommit(staged) = carol
+            let DillaProcessed::StagedCommit(staged, _) = carol
                 .g
                 .process_message(&carol.p, protocol(&commit.commit))
                 .expect("carol accepts the commit")
