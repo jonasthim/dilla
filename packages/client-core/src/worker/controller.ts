@@ -1745,7 +1745,7 @@ export class Controller {
     for (const channelId of this.open.keys()) this.refreshTimeline(channelId);
   }
 
-  /** One bounded history read per pending leaf until the next ready. Core rechecks the current group leaf at ingest. */
+  /** One bounded history read per pending leaf until the next ready. Core drains retained rows in bounded pages before publication. */
   private refreshTrust(): Promise<null> {
     if (this.trustRefresh !== null) return this.trustRefresh;
     const run = this.refreshTrustOnce().finally(() => { this.trustRefresh = null; });

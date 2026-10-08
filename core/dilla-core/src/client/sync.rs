@@ -293,7 +293,7 @@ fn apply_message(
 }
 
 impl ClientCore {
-    /// Retry at most 256 retained application ciphertexts after signed history arrives.
+    /// Drain retained application evidence in pages of at most 256 rows after signed history arrives.
     /// A row becomes readable only after MLS and the current leaf verdict both pass in one unit.
     pub fn revalidate_pending(
         &mut self,
@@ -307,65 +307,77 @@ impl ClientCore {
                 "pending limit must be 1..=256",
             ));
         }
-        let pending: Vec<PendingHistoryRow> = self.read(|c| {
-            let mut stmt = c.prepare("SELECT p.seq,p.envelope,p.sender_leaf,p.sender_credential,m.epoch,m.recv_ts,m.sender_device,m.franking_tag \
-                FROM app_pending_history p JOIN app_messages m ON m.group_id=p.group_id AND m.seq=p.seq \
-                WHERE p.group_id=?1 AND p.sender_leaf=?2 AND m.status=1 AND m.reason='E_DEVICE_LIST_STALE' ORDER BY p.seq LIMIT ?3")?;
-            stmt.query_map(params![id.as_slice(), i64::from(leaf_index), i64::from(limit)], |r| {
-                Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?, r.get(3)?,
-                    r.get::<_, i64>(4)? as u64, r.get::<_, i64>(5)? as u64, r.get(6)?, r.get(7)?))
-            })?.collect::<Result<_, _>>().map_err(Into::into)
-        })?;
-        if pending.is_empty() {
-            return Ok(0);
-        }
         let own = self.own()?;
-        self.retry_reload(id, |this| {
-            let group = this.take_group(id)?.ok_or_else(absent)?;
-            let result = this.write(|_, u| {
-                let mut recovered = 0u32;
-                for (seq, envelope_bytes, leaf, credential, epoch, recv_ts, uploader, franking) in &pending {
-                    let envelope = match Envelope::decode(envelope_bytes) { Ok(v) => v, Err(_) => continue };
-                    let valid = u.with_conn(|c| Ok(super::trust::validate_pending_sender(c, &group, id, *leaf, credential)))?;
-                    if valid.is_err() { continue; }
-                    let Some(member) = group.member_at(*leaf) else { continue };
-                    let basic = match openmls::prelude::BasicCredential::try_from(member.credential) { Ok(v) => v, Err(_) => continue };
-                    let sender = match crate::identity::CredentialIdentity::decode(basic.identity()) { Ok(v) => v, Err(_) => continue };
-                    if sender.device_id.as_bytes() != uploader { continue; }
-                    u.with_conn(|c| {
-                        let still_pending: bool = c.query_row(
-                            "SELECT 1 FROM app_messages WHERE group_id=?1 AND seq=?2 AND status=1 AND reason='E_DEVICE_LIST_STALE'",
-                            params![id.as_slice(), *seq as i64], |_| Ok(1_i64)).optional()?.is_some();
-                        if !still_pending { return Ok(()); }
-                        let roles: Vec<[u8; 16]> = {
-                            let mut q = c.prepare("SELECT r.role_id FROM app_roles r JOIN app_groups g ON g.community_id=r.community_id WHERE g.group_id=?1 ORDER BY r.role_id")?;
-                            q.query_map([id.as_slice()], |row| row.get(0))?.collect::<Result<_, _>>()?
-                        };
-                        c.execute("DELETE FROM app_messages WHERE group_id=?1 AND seq=?2", params![id.as_slice(), *seq as i64])?;
-                        insert_message(c, &StoredMessage {
-                            group_id: id, seq: *seq, epoch: *epoch, recv_ts: *recv_ts,
-                            status: STATUS_OK, reason: "", sender_user: Some(sender.user_id.as_bytes()),
-                            sender_device: sender.device_id.as_bytes(), sender_leaf: Some(*leaf),
-                            sender_kind: Some(sender.kind.as_u8()), sender_tier: Some(sender.tier.as_u8()),
-                            msg_id: Some(envelope.msg_id.as_bytes()), ty: Some(envelope.kind.as_u8()),
-                            reply_to: envelope.reply_to.as_ref().map(MsgId::as_bytes), body: &envelope.body,
-                            envelope: Some(envelope_bytes), franking_tag: franking,
-                            mention: envelope.kind.as_u8() == 0 && sender.user_id.as_bytes() != &own.user_id
-                                && mentions_me_with_roles(&envelope.body, &own.user_id, &roles),
+        let mut cursor = -1_i64;
+        let mut total_recovered = 0_u32;
+        loop {
+            let pending: Vec<PendingHistoryRow> = self.read(|c| {
+                let mut stmt = c.prepare("SELECT p.seq,p.envelope,p.sender_leaf,p.sender_credential,m.epoch,m.recv_ts,m.sender_device,m.franking_tag \
+                    FROM app_pending_history p INDEXED BY app_pending_history_by_leaf_seq JOIN app_messages m ON m.group_id=p.group_id AND m.seq=p.seq \
+                    WHERE p.group_id=?1 AND p.sender_leaf=?2 AND p.seq>?3 AND m.status=1 AND m.reason='E_DEVICE_LIST_STALE' ORDER BY p.seq LIMIT ?4")?;
+                stmt.query_map(params![id.as_slice(), i64::from(leaf_index), cursor, i64::from(limit)], |r| {
+                    Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?, r.get(3)?,
+                        r.get::<_, i64>(4)? as u64, r.get::<_, i64>(5)? as u64, r.get(6)?, r.get(7)?))
+                })?.collect::<Result<_, _>>().map_err(Into::into)
+            })?;
+            if pending.is_empty() {
+                return Ok(total_recovered);
+            }
+            // Advance by the last examined row, including evidence that remains neutral.
+            // Such a row must not be retried indefinitely ahead of later valid rows.
+            cursor = pending.last().expect("nonempty page").0 as i64;
+            let page_len = pending.len();
+            let recovered = self.retry_reload(id, |this| {
+                let group = this.take_group(id)?.ok_or_else(absent)?;
+                let result = this.write(|_, u| {
+                    let mut recovered = 0u32;
+                    for (seq, envelope_bytes, leaf, credential, epoch, recv_ts, uploader, franking) in &pending {
+                        let envelope = match Envelope::decode(envelope_bytes) { Ok(v) => v, Err(_) => continue };
+                        let valid = u.with_conn(|c| Ok(super::trust::validate_pending_sender(c, &group, id, *leaf, credential)))?;
+                        if valid.is_err() { continue; }
+                        let Some(member) = group.member_at(*leaf) else { continue };
+                        let basic = match openmls::prelude::BasicCredential::try_from(member.credential) { Ok(v) => v, Err(_) => continue };
+                        let sender = match crate::identity::CredentialIdentity::decode(basic.identity()) { Ok(v) => v, Err(_) => continue };
+                        if sender.device_id.as_bytes() != uploader { continue; }
+                        u.with_conn(|c| {
+                            let still_pending: bool = c.query_row(
+                                "SELECT 1 FROM app_messages WHERE group_id=?1 AND seq=?2 AND status=1 AND reason='E_DEVICE_LIST_STALE'",
+                                params![id.as_slice(), *seq as i64], |_| Ok(1_i64)).optional()?.is_some();
+                            if !still_pending { return Ok(()); }
+                            let roles: Vec<[u8; 16]> = {
+                                let mut q = c.prepare("SELECT r.role_id FROM app_roles r JOIN app_groups g ON g.community_id=r.community_id WHERE g.group_id=?1 ORDER BY r.role_id")?;
+                                q.query_map([id.as_slice()], |row| row.get(0))?.collect::<Result<_, _>>()?
+                            };
+                            c.execute("DELETE FROM app_messages WHERE group_id=?1 AND seq=?2", params![id.as_slice(), *seq as i64])?;
+                            insert_message(c, &StoredMessage {
+                                group_id: id, seq: *seq, epoch: *epoch, recv_ts: *recv_ts,
+                                status: STATUS_OK, reason: "", sender_user: Some(sender.user_id.as_bytes()),
+                                sender_device: sender.device_id.as_bytes(), sender_leaf: Some(*leaf),
+                                sender_kind: Some(sender.kind.as_u8()), sender_tier: Some(sender.tier.as_u8()),
+                                msg_id: Some(envelope.msg_id.as_bytes()), ty: Some(envelope.kind.as_u8()),
+                                reply_to: envelope.reply_to.as_ref().map(MsgId::as_bytes), body: &envelope.body,
+                                envelope: Some(envelope_bytes), franking_tag: franking,
+                                mention: envelope.kind.as_u8() == 0 && sender.user_id.as_bytes() != &own.user_id
+                                    && mentions_me_with_roles(&envelope.body, &own.user_id, &roles),
+                            })?;
+                            refold_insert(c, id, *seq, &envelope, sender.user_id.as_bytes(),
+                                sender.device_id.as_bytes(), Some(&own))?;
+                            c.execute("DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2", params![id.as_slice(), *seq as i64])?;
+                            Ok(())
                         })?;
-                        refold_insert(c, id, *seq, &envelope, sender.user_id.as_bytes(),
-                            sender.device_id.as_bytes(), Some(&own))?;
-                        c.execute("DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2", params![id.as_slice(), *seq as i64])?;
-                        Ok(())
-                    })?;
-                    recovered += 1;
-                }
-                if recovered > 0 { u.with_conn(super::trust::bump_generation)?; }
-                Ok(recovered)
-            });
-            this.keep_group(*id, group);
-            result
-        })
+                        recovered += 1;
+                    }
+                    if recovered > 0 { u.with_conn(super::trust::bump_generation)?; }
+                    Ok(recovered)
+                });
+                this.keep_group(*id, group);
+                result
+            })?;
+            total_recovered += recovered;
+            if page_len < limit as usize {
+                return Ok(total_recovered);
+            }
+        }
     }
 
     pub fn commit_build(

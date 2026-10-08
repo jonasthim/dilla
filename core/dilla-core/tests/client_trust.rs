@@ -222,6 +222,85 @@ fn signed_history_revalidates_a_previously_neutral_message() {
 }
 
 #[test]
+fn one_history_ingest_revalidates_more_than_one_page_past_an_unrecoverable_row() {
+    let (_, mut relay, mut alice, mut bob) = alice_and_bob();
+    let leaf = relay.leaf_of(bob.device);
+    {
+        let db = alice.probe.lock().expect("db");
+        db.execute("INSERT INTO app_messages(group_id,seq,epoch,recv_ts,status,reason,sender_device,franking_tag) VALUES(?1,0,1,1,1,'E_DEVICE_LIST_STALE',?2,?3)",
+            rusqlite::params![GROUP.as_slice(), bob.device.as_slice(), [0x44u8; 32].as_slice()]).expect("unrecoverable row");
+        db.execute("INSERT INTO app_pending_history(group_id,seq,ciphertext,envelope,sender_leaf,sender_credential) VALUES(?1,0,x'80',x'80',?2,x'80')",
+            rusqlite::params![GROUP.as_slice(), i64::from(leaf)]).expect("retained invalid evidence");
+    }
+    let mut last = 0;
+    for n in 0..257 {
+        let (_, seq) = bob.send(
+            &mut relay,
+            &GROUP,
+            &format!("late batch comet {n}"),
+            NOW + 1 + n,
+        );
+        last = seq;
+    }
+    alice.sync(&relay);
+    assert_eq!(alice.row_at(&GROUP, last).status, 1);
+    let (history, head) = list_wire(&bob);
+    alice
+        .core
+        .device_list_ingest(&GROUP, leaf, &bob.user, &history, &head, NOW + 300)
+        .expect("ingest");
+    assert_eq!(
+        alice
+            .core
+            .revalidate_pending(&GROUP, leaf, 256)
+            .expect("drain"),
+        257
+    );
+    assert_eq!(
+        (
+            alice.row_at(&GROUP, last).status,
+            alice.row_at(&GROUP, last).body.as_str()
+        ),
+        (0, "late batch comet 256")
+    );
+    assert_ne!(
+        alice
+            .core
+            .search(2, None, "batch comet 256", None, 50)
+            .expect("search"),
+        [0x80]
+    );
+    let db = alice.probe.lock().expect("db");
+    let status: i64 = db
+        .query_row(
+            "SELECT status FROM app_messages WHERE group_id=?1 AND seq=0",
+            [GROUP.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("invalid row stays neutral");
+    assert_eq!(status, 1);
+}
+
+#[test]
+fn pending_leaf_revalidation_uses_the_leaf_sequence_index() {
+    let (_, _, alice, _) = alice_and_bob();
+    let db = alice.probe.lock().expect("db");
+    let plan: Vec<String> = db.prepare("EXPLAIN QUERY PLAN SELECT p.seq,p.envelope,p.sender_leaf,p.sender_credential,m.epoch,m.recv_ts,m.sender_device,m.franking_tag \
+        FROM app_pending_history p INDEXED BY app_pending_history_by_leaf_seq JOIN app_messages m ON m.group_id=p.group_id AND m.seq=p.seq \
+        WHERE p.group_id=?1 AND p.sender_leaf=?2 AND p.seq>?3 AND m.status=1 AND m.reason='E_DEVICE_LIST_STALE' ORDER BY p.seq LIMIT ?4")
+        .expect("plan").query_map(rusqlite::params![GROUP.as_slice(), 1_i64, -1_i64, 256_i64], |r| r.get(3))
+        .expect("rows").collect::<Result<_, _>>().expect("plan rows");
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("app_pending_history_by_leaf_seq")
+                && step.contains("group_id=?")
+                && step.contains("sender_leaf=?")
+                && step.contains("seq>?")),
+        "pending query must seek by leaf and sequence: {plan:?}"
+    );
+}
+
+#[test]
 fn deleting_a_pending_message_discards_its_retained_ciphertext() {
     let (_, mut relay, mut alice, mut bob) = alice_and_bob();
     let (_, seq) = bob.send(&mut relay, &GROUP, "pending deleted comet", NOW + 1);

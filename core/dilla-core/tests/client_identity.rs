@@ -662,6 +662,7 @@ fn open_creates_app_schema_v4_and_reopens_idempotently() {
             "app_outbox",
             "app_outbox_by_group",
             "app_pending_history",
+            "app_pending_history_by_leaf_seq",
             "app_pins",
             "app_proposals",
             "app_purges",

@@ -202,6 +202,7 @@ CREATE TABLE IF NOT EXISTS app_pending_history (
   sender_credential BLOB NOT NULL,
   PRIMARY KEY(group_id,seq)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS app_pending_history_by_leaf_seq ON app_pending_history(group_id,sender_leaf,seq);
 CREATE TABLE IF NOT EXISTS app_search_rows (
   rowid INTEGER PRIMARY KEY,
   group_id BLOB NOT NULL CHECK(length(group_id)=16),
