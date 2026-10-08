@@ -21,3 +21,10 @@ it('offers the action only in other-tab and retry in failure', async () => {
   expect(onRetry).toHaveBeenCalledOnce();
   await expectNoAxeViolations(view.container);
 });
+
+it('announces the paused copy without offering an action', () => {
+  render(<TabHandover phase="paused" labels={{ use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.', paused: 'This tab is paused' }} onUse={vi.fn()} onRetry={vi.fn()} />);
+  expect(screen.getByRole('status')).toHaveTextContent('This tab is paused');
+  expect(screen.getByRole('heading', { name: 'This tab is paused' })).toBeInTheDocument();
+  expect(screen.queryByRole('button')).toBeNull();
+});

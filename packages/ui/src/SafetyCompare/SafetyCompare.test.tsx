@@ -86,4 +86,26 @@ describe('SafetyCompare', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('Seen here for the first time');
     expect(screen.getByRole('dialog')).not.toHaveTextContent('first-seen');
   });
+  it('focuses Privacy when the opener was the document body', async () => {
+    const user = userEvent.setup();
+    document.body.focus();
+    const props = { contactName: 'Ada', state: 'changed' as const, approvedUmk: key, groups, canVerify: true, labels, onCopy: vi.fn(), onVerify: vi.fn() };
+    const view = render(<><h2 data-privacy-heading tabIndex={-1}>Privacy</h2><SafetyCompare {...props} open onClose={() => view.rerender(<><h2 data-privacy-heading tabIndex={-1}>Privacy</h2><SafetyCompare {...props} open={false} onClose={vi.fn()} /></>)} /></>);
+    await user.click(screen.getByRole('button', { name: labels.close }));
+    expect(screen.getByRole('heading', { name: 'Privacy' })).toHaveFocus();
+  });
+  it('focuses Privacy when the opener disconnects before closing', async () => {
+    const user = userEvent.setup();
+    const opener = document.createElement('button');
+    opener.textContent = 'Compare with Ada';
+    document.body.append(opener);
+    opener.focus();
+    const props = { contactName: 'Ada', state: 'changed' as const, approvedUmk: key, groups, canVerify: true, labels, onCopy: vi.fn(), onVerify: vi.fn() };
+    try {
+      const view = render(<><h2 data-privacy-heading tabIndex={-1}>Privacy</h2><SafetyCompare {...props} open onClose={() => view.rerender(<><h2 data-privacy-heading tabIndex={-1}>Privacy</h2><SafetyCompare {...props} open={false} onClose={vi.fn()} /></>)} /></>);
+      opener.remove();
+      await user.keyboard('{Escape}');
+      expect(screen.getByRole('heading', { name: 'Privacy' })).toHaveFocus();
+    } finally { opener.remove(); }
+  });
 });

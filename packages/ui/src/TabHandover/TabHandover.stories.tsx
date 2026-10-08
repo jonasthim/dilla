@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { TabHandover } from './TabHandover.tsx';
-const labels = { use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.' };
+const labels = { use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.', paused: 'This tab is paused' };
 const meta: Meta<typeof TabHandover> = { id: 'shell-tabhand-over', title: 'Shell/TabHandOver', component: TabHandover };
 export default meta;
 type Story = StoryObj<typeof TabHandover>;

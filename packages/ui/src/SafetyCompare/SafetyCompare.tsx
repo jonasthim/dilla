@@ -21,7 +21,10 @@ export function SafetyCompare({ open, contactName, state, approvedUmk, groups, c
   const instructionsRef = useRef<HTMLParagraphElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const wasOpen = useRef(false);
-  if (open && !wasOpen.current) openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (open && !wasOpen.current) {
+    const active = document.activeElement;
+    openerRef.current = active instanceof HTMLElement && active.isConnected && active !== document.body && active !== document.documentElement ? active : null;
+  }
   wasOpen.current = open;
   useEffect(() => {
     const dialog = instructionsRef.current?.closest('dialog');
