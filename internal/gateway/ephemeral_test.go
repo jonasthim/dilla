@@ -246,38 +246,55 @@ func TestVoiceSelfRequiresLiveCallAndValidFlags(t *testing.T) {
 }
 
 func TestVoiceSelfCombinesLiveRoomAndSelfBits(t *testing.T) {
-	h := newHarness(t)
-	a, b := h.connect(t, id.New()), h.connect(t, id.New())
-	h.drainReady(t, a)
-	h.drainReady(t, b)
-	call, channel := id.New(), id.New()
-	h.gw.opts.VoiceSelfAudience = func(_ context.Context, device, got id.ID) (id.ID, []id.ID, uint64, error) {
-		if device != a.deviceID || got != call {
-			return id.ID{}, nil, 0, nil
-		}
-		return channel, []id.ID{a.userID, b.userID}, 0, nil
-	}
-	h.gw.handle(context.Background(), a, ephemeralInbound(t, OpVoiceSelf, call, uint64(1)))
-	frame := h.waitFrame(t, b.deviceID)
-	if frame.Op != OpVoiceState || frame.CID != 0 || len(frame.Payload) != 4 {
-		t.Fatalf("voice frame = %+v", frame)
-	}
-	user, device, gotCall := id.ID{}, id.ID{}, id.ID{}
-	if err := cborx.Unmarshal(frame.Payload[0], &user); err != nil {
-		t.Fatal(err)
-	}
-	if err := cborx.Unmarshal(frame.Payload[1], &device); err != nil {
-		t.Fatal(err)
-	}
-	if err := cborx.Unmarshal(frame.Payload[2], &gotCall); err != nil {
-		t.Fatal(err)
-	}
-	flags, err := rawUint(frame.Payload[3])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if user != a.userID || device != a.deviceID || gotCall != call || flags&3 != 3 {
-		t.Fatalf("voice identity/flags = %s %s %s %d", user, device, gotCall, flags)
+	for _, tc := range []struct {
+		name  string
+		bits  uint64
+		flags uint64
+	}{
+		{name: "neither", bits: 0, flags: 1},
+		{name: "mute", bits: 1, flags: 3},
+		{name: "deaf", bits: 2, flags: 5},
+		{name: "both", bits: 3, flags: 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			a, b := h.connect(t, id.New()), h.connect(t, id.New())
+			h.drainReady(t, a)
+			h.drainReady(t, b)
+			call, channel := id.New(), id.New()
+			h.gw.opts.VoiceSelfAudience = func(_ context.Context, device, got id.ID) (id.ID, []id.ID, uint64, error) {
+				if device != a.deviceID || got != call {
+					return id.ID{}, nil, 0, nil
+				}
+				return channel, []id.ID{b.userID}, 0, nil
+			}
+			before := len(b.ring.since(0))
+			h.gw.handle(context.Background(), a, ephemeralInbound(t, OpVoiceSelf, call, tc.bits))
+			frame := h.waitFrame(t, b.deviceID)
+			if frame.Op != OpVoiceState || frame.CID != 0 || len(frame.Payload) != 4 {
+				t.Fatalf("voice frame = %+v", frame)
+			}
+			var user, device, gotCall id.ID
+			if err := cborx.Unmarshal(frame.Payload[0], &user); err != nil {
+				t.Fatal(err)
+			}
+			if err := cborx.Unmarshal(frame.Payload[1], &device); err != nil {
+				t.Fatal(err)
+			}
+			if err := cborx.Unmarshal(frame.Payload[2], &gotCall); err != nil {
+				t.Fatal(err)
+			}
+			flags, err := rawUint(frame.Payload[3])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if user != a.userID || device != a.deviceID || gotCall != call || flags != tc.flags {
+				t.Fatalf("voice identity/flags = %s %s %s %d, want %s %s %s %d", user, device, gotCall, flags, a.userID, a.deviceID, call, tc.flags)
+			}
+			if got := len(b.ring.since(0)); got != before {
+				t.Fatalf("ephemeral entered replay ring: before %d, after %d", before, got)
+			}
+		})
 	}
 }
 
