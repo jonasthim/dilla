@@ -541,6 +541,33 @@ it('refreshTrust fetches a pending leaf once and re-renders already open timelin
   expect(w.posted.filter((m) => m.t === 'slice' && m.name === `timeline:${toHex(CHANNEL)}`).length).toBeGreaterThan(before);
 });
 
+it('an epoch transition refetches the same leaf and cached version once', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.call(882, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(882)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+
+  w.sync.deps!.onGroupChanged(GROUP, applied(2));
+  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2));
+  w.sync.deps!.onGroupChanged(GROUP, { ...applied(2), epochChanged: false });
+  await settle();
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2);
+});
+
+it('a changed pending reason refetches the same leaf without an epoch change', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.call(883, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(883)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'changed' }]);
+  w.sync.deps!.onGroupChanged(GROUP, { ...applied(2), epochChanged: false });
+  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2));
+});
+
 it('a later trust generation invalidates an open timeline from another group', async () => {
   const w = world();
   await toReady(w);

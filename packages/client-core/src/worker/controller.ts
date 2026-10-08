@@ -296,6 +296,7 @@ export class Controller {
   private purging: Promise<void> | null = null;
   private purgeAgain = false;
   private trustRefresh: Promise<null> | null = null;
+  private trustRefreshAgain = false;
   private seenTrustGeneration: bigint | null = null;
   private readonly fetchedLeaves = new Set<string>();
 
@@ -1692,6 +1693,11 @@ export class Controller {
 
   private onGroupChanged(groupId: Id, result: ApplyResult): void {
     const hex = toHex(groupId);
+    if (result.epochChanged) {
+      const prefix = `${hex}:`;
+      for (const key of this.fetchedLeaves) if (key.startsWith(prefix)) this.fetchedLeaves.delete(key);
+      if (this.trustRefresh !== null) this.trustRefreshAgain = true;
+    }
     if (result.state === 2) { this.resyncing.delete(hex); this.notMember.delete(hex); }
     this.safely(() => { this.refreshTrustGeneration(); this.touchGroup(groupId); });
     void this.refreshTrust().catch(() => undefined);
@@ -1748,7 +1754,13 @@ export class Controller {
   /** One bounded history read per pending leaf until the next ready. Core drains retained rows in bounded pages before publication. */
   private refreshTrust(): Promise<null> {
     if (this.trustRefresh !== null) return this.trustRefresh;
-    const run = this.refreshTrustOnce().finally(() => { this.trustRefresh = null; });
+    const run = this.refreshTrustOnce().finally(() => {
+      this.trustRefresh = null;
+      if (this.trustRefreshAgain) {
+        this.trustRefreshAgain = false;
+        void this.refreshTrust().catch(() => undefined);
+      }
+    });
     this.trustRefresh = run;
     return run;
   }
@@ -1757,7 +1769,7 @@ export class Controller {
     const core = this.requireCore();
     for (const leaf of core.pendingLeaves()) {
       if (this.phase !== 'ready') break;
-      const key = `${toHex(leaf.groupId)}:${leaf.leafIndex}:${toHex(leaf.userId)}:${leaf.cachedVersion}`;
+      const key = `${toHex(leaf.groupId)}:${leaf.leafIndex}:${toHex(leaf.userId)}:${leaf.cachedVersion}:${leaf.reason}`;
       if (this.fetchedLeaves.has(key)) continue;
       this.fetchedLeaves.add(key);
       try {
