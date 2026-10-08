@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { SafetyCompare } from './SafetyCompare.tsx';
 const noop = () => {};
-const labels = { title: 'Compare safety numbers', copy: 'Copy number', verify: 'I compared every group with this person', close: 'Close', instructions: 'Open Privacy on both devices. Compare all 12 groups over a voice call you started separately or in person.', confirm: 'I compared all 12 groups with this person', states: { 'first-seen': 'First seen here', changed: 'Identity changed', verified: 'Identity compared', unlisted: 'Device missing' } };
+const labels = { title: 'Compare safety numbers', copy: 'Copy number', verify: 'All 12 blocks match', close: 'Close', instructions: 'Open Privacy on both devices. Read the 12 blocks of five digits to each other in person or on a call you started yourself.', confirm: 'Yes, all 12 blocks match', firstSeen: 'This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify.', states: { 'first-seen': 'First seen here — not verified', changed: 'Identity changed', verified: 'Identity compared', unlisted: 'Device missing' } };
 const groups = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(5, '0'));
 const meta: Meta<typeof SafetyCompare> = { title: 'Trust/SafetyCompare', component: SafetyCompare };
 export default meta;

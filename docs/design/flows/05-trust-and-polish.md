@@ -6,13 +6,13 @@ This flow extends Flow 04's shell order: skip link → rail → channel list →
 
 | state | shown action | worker fact | announcement |
 |---|---|---|---|
-| first seen here | Compare with {name} | pin exists, verified=0, changedUmk=null | Privacy heading |
+| First seen here — not verified | `privacy.firstSeen` under the state; Compare with {name} | pin exists, verified=0, changedUmk=null | Privacy heading |
 | changed | Compare with {name}; alert cannot dismiss | changedUmk is validated pending key | `privacy.changed` |
 | unlisted | no Verify | leaf is quarantined | `privacy.unlisted` |
 | verified | show the compared key and date | exact current pin verified=1 | Privacy heading |
 | no shared group | no Verify | shared=false | `privacy.noShared` |
 | history pending | no Verify or send | list read not complete | `privacy.unlisted` |
-| validated Remove | sending resumes only in this group | removed leaf absent from current tree | `privacy.removed` |
+| validated Remove | sending resumes only in this group; contact stays changed and unverified elsewhere | removed leaf absent from this group's current tree | `privacy.removed` |
 | search loading | keep textbox and scope | current request id | `search.loading` |
 | search empty | keep textbox and scope | current hits=[] | `search.noResults` |
 | search stale | keep destination heading before closing palette | target absent/deleted/quarantined | `search.unavailable` |
@@ -28,57 +28,71 @@ Appearance, Keyboard and Diagnostics settings are device-local. Diagnostics disp
 ## 1280×800
 
 ```text
-┌──────── rail ────────┬──────── conversation / settings ───────────────────────────────────┐
-│ channels             │ Privacy      Search your messages [this conversation ▾]           │
-│                      │ This contact’s identity changed. Compare the number before sending.│
-│                      │ [Compare with Ada]                                                 │
-│                      │ ┌──── Compare safety numbers · Ada ─────────────────────────────┐  │
-│                      │ │ public UMK: 4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a                │  │
-│                      │ │             4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a                │  │
-│                      │ │ 00000 00000 00000 00000 00000 00000                         │  │
-│                      │ │ 00000 00000 00000 00000 00000 00000                         │  │
-│                      │ │ Open Privacy on both devices. Compare all 12 groups over a   │  │
-│                      │ │ voice call you started separately or in person.              │  │
-│                      │ │ [Copy number]  □ I compared all 12 groups with this person   │  │
-│                      │ │ [I compared every group with this person] [Close]            │  │
-│                      │ └──────────────────────────────────────────────────────────────┘  │
-└──────────────────────┴────────────────────────────────────────────────────────────────────┘
+┌──────────────────────┬──────────────────────────────────────────────────────────────────────────────────┐
+│channels              │Privacy      Search your messages [this conversation ▾]                           │
+│                      │First seen here — not verified                                                    │
+│                      │This is the first key this device saw for Ada. The server could have shown a      │
+│                      │different one. Compare numbers to verify.                                         │
+│                      │[Compare with Ada]                                                                │
+│                      │ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓     │
+│                      │ ┃Compare safety numbers · Ada                                              ┃     │
+│                      │ ┃First seen here — not verified                                            ┃     │
+│                      │ ┃This is the first key this device saw for Ada. The server could have      ┃     │
+│                      │ ┃shown a different one. Compare numbers to verify.                         ┃     │
+│                      │ ┃public UMK: 4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a                              ┃     │
+│                      │ ┃            4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a                              ┃     │
+│                      │ ┃00000 00000 00000 00000 00000 00000                                       ┃     │
+│                      │ ┃00000 00000 00000 00000 00000 00000                                       ┃     │
+│                      │ ┃Open Privacy on both devices. Read the 12 blocks of five digits to each   ┃     │
+│                      │ ┃other in person or on a call you started yourself.                        ┃     │
+│                      │ ┃[Copy number]  □ Yes, all 12 blocks match                                 ┃     │
+│                      │ ┃[All 12 blocks match] [Close]                                             ┃     │
+│                      │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛     │
+└──────────────────────┴──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 360×740
 
 ```text
 ┌────────────────────────────────────┐
-│ Privacy                       [Back]│
-│ This contact’s identity changed.   │
-│ Compare the number before sending. │
-│ [Compare with Ada]                 │
-│ ┌────────────────────────────────┐ │
-│ │ Compare safety numbers · Ada   │ │
-│ │ public UMK                     │ │
-│ │ 4a4a4a4a4a4a4a4a             │ │
-│ │ 4a4a4a4a4a4a4a4a             │ │
-│ │ 4a4a4a4a4a4a4a4a             │ │
-│ │ 4a4a4a4a4a4a4a4a             │ │
-│ │ 00000 00000 00000 00000       │ │
-│ │ 00000 00000 00000 00000       │ │
-│ │ 00000 00000 00000 00000       │ │
-│ │ Open Privacy on both devices.  │ │
-│ │ Compare all 12 groups over a   │ │
-│ │ voice call you started         │ │
-│ │ separately or in person.       │ │
-│ │ [Copy number]                  │ │
-│ │ □ I compared all 12 groups     │ │
-│ │   with this person             │ │
-│ │ [I compared every group with   │ │
-│ │  this person] [Close]          │ │
-│ └────────────────────────────────┘ │
-│ search [this conversation ▾]       │
-│ [Search your messages]             │
+│Privacy                       [Back]│
+│First seen here — not verified      │
+│This is the first key this device   │
+│saw for Ada. The server could have  │
+│shown a different one. Compare      │
+│numbers to verify.                  │
+│[Compare with Ada]                  │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓   │
+│ ┃Compare safety numbers · Ada  ┃   │
+│ ┃First seen here — not verified┃   │
+│ ┃This is the first key this    ┃   │
+│ ┃device saw for Ada. The       ┃   │
+│ ┃server could have shown a     ┃   │
+│ ┃different one. Compare        ┃   │
+│ ┃numbers to verify.            ┃   │
+│ ┃public UMK                    ┃   │
+│ ┃4a4a4a4a4a4a4a4a              ┃   │
+│ ┃4a4a4a4a4a4a4a4a              ┃   │
+│ ┃4a4a4a4a4a4a4a4a              ┃   │
+│ ┃4a4a4a4a4a4a4a4a              ┃   │
+│ ┃00000 00000 00000 00000       ┃   │
+│ ┃00000 00000 00000 00000       ┃   │
+│ ┃00000 00000 00000 00000       ┃   │
+│ ┃Open Privacy on both          ┃   │
+│ ┃devices. Read the 12 blocks   ┃   │
+│ ┃of five digits to each other  ┃   │
+│ ┃in person or on a call you    ┃   │
+│ ┃started yourself.             ┃   │
+│ ┃[Copy number]                 ┃   │
+│ ┃□ Yes, all 12 blocks match    ┃   │
+│ ┃[All 12 blocks match] [Close] ┃   │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛   │
+│search [this conversation ▾]        │
+│[Search your messages]              │
 └────────────────────────────────────┘
 ```
 
-The real dialog renders the **exact 64-hex-character public UMK**, in full, and the pairwise number as **12 five-digit groups**, separated by single spaces. The repeated `4a` and zero groups above are layout examples, not a key or number to verify. The dialog identifies the contact and first-seen, changed, verified or unlisted state. Both people independently open Privacy on their own devices and compare every group over a voice call they started separately or in person. A number copied by one person is an aid, not a confirmation; Copy leaves `privacy.confirm` unchecked. The `privacy.verify` button is available only when that checkbox is checked, there is a shared group, and the exact validated pending public key remains the one shown. If there is no shared group, show `privacy.noShared` without Verify.
+The real dialog renders the **exact 64-hex-character public UMK**, in full, and the pairwise number as **12 five-digit blocks**, separated by single spaces. The repeated `4a` and zero blocks above are layout examples, not a key or number to verify. The dialog identifies the contact and first-seen, changed, verified or unlisted state. For first-seen, `privacy.firstSeen` appears under the state on the Privacy page and in the dialog. Both people independently open Privacy on their own devices and read every block to each other in person or on a call one of them started themselves. A number copied by one person is an aid, not a confirmation; Copy leaves `privacy.confirm` unchecked. The `privacy.verify` button is available only when that checkbox is checked, there is a shared group, and the exact validated pending public key remains the one shown. If there is no shared group, show `privacy.noShared` without Verify.
 
 The browser-tier device depends on code served by its instance. Comparing the safety number outside that instance through this ceremony is the user's available check of the displayed identity; this flow makes no promise about the browser-served code. A malicious instance can freeze the first list seen here. A validated Remove unblocks only this group.
 
@@ -107,6 +121,7 @@ There is no unmodified global shortcut. These shortcuts do not interrupt IME com
 |---|---|---|
 | compare closes | original Compare button if present, else Privacy heading | no extra text |
 | changed alert replaces first-seen row | surviving Compare button | `privacy.changed` |
+| validated Remove clears this group's send block | surviving composer in this group if present, else conversation heading; other groups keep their changed-key block | `privacy.removed` |
 | search hit disappears | channel heading or persistent palette textbox before unmount | `search.unavailable` |
 | tab waits, becomes ready, pauses or fails | heading of the new state or Retry control | `tabs.wait` / ready state / `tabs.paused` / `tabs.failed` |
 | typing one to many | current conversation; do not steal focus | `typing.one` / `typing.many` |
@@ -128,9 +143,10 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.compare | Compare with {name} | contact row |
 | privacy.title | Compare safety numbers | dialog title |
 | privacy.copy | Copy number | dialog button |
-| privacy.verify | I compared every group with this person | dialog final button |
-| privacy.instructions | Open Privacy on both devices. Compare all 12 groups over a voice call you started separately or in person. | dialog instructions |
-| privacy.confirm | I compared all 12 groups with this person | dialog checkbox |
+| privacy.verify | All 12 blocks match | dialog final button |
+| privacy.instructions | Open Privacy on both devices. Read the 12 blocks of five digits to each other in person or on a call you started yourself. | dialog instructions |
+| privacy.confirm | Yes, all 12 blocks match | dialog checkbox |
+| privacy.firstSeen | This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify. | under first-seen state on Privacy page and in dialog |
 | privacy.changed | This contact’s identity changed. Compare the number before sending. | changed alert |
 | privacy.unlisted | This device is not on the contact’s list. | unlisted state |
 | privacy.noShared | Open a conversation with this person to compare numbers. | no shared group |

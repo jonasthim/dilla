@@ -9,7 +9,7 @@ export type SafetyCompareProps = {
   approvedUmk: string | null;
   groups: readonly string[];
   canVerify: boolean;
-  labels: { title: string; copy: string; verify: string; close: string; instructions: string; confirm: string; states?: Record<SafetyCompareProps['state'], string> };
+  labels: { title: string; copy: string; verify: string; close: string; instructions: string; confirm: string; firstSeen: string; states?: Record<SafetyCompareProps['state'], string> };
   onCopy(): void;
   onVerify(expectedUmk: string): void;
   onClose(): void;
@@ -48,6 +48,7 @@ export function SafetyCompare({ open, contactName, state, approvedUmk, groups, c
   return <Dialog open={open} title={labels.title} closeLabel={labels.close} onClose={close} footer={<button type="button" className="d-safety-compare__button" aria-disabled={!permitted} onClick={() => { if (permitted && approvedUmk) onVerify(approvedUmk); }}>{labels.verify}</button>}>
     <div className="d-safety-compare">
       <p className="d-safety-compare__identity">{contactName} · {labels.states?.[state] ?? state}</p>
+      {state === 'first-seen' && <p>{labels.firstSeen.replace('{name}', contactName)}</p>}
       <p id={instructionsId} ref={instructionsRef}>{labels.instructions}</p>
       {approvedUmk && <code className="d-safety-compare__key">{approvedUmk}</code>}
       <div className="d-safety-compare__groups">{groups.map((group, index) => <code key={index}>{group}</code>)}</div>

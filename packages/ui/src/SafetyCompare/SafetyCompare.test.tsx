@@ -6,7 +6,7 @@ import { SafetyCompare } from './SafetyCompare.tsx';
 
 const groups = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(5, '0'));
 const key = 'ab'.repeat(32);
-const labels = { title: 'Compare safety numbers', copy: 'Copy number', verify: 'I compared every group with this person', close: 'Close', instructions: 'Open Privacy on both devices. Compare all 12 groups over a voice call you started separately or in person.', confirm: 'I compared all 12 groups with this person' };
+const labels = { title: 'Compare safety numbers', copy: 'Copy number', verify: 'All 12 blocks match', close: 'Close', instructions: 'Open Privacy on both devices. Read the 12 blocks of five digits to each other in person or on a call you started yourself.', confirm: 'Yes, all 12 blocks match', firstSeen: 'This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify.' };
 
 describe('SafetyCompare', () => {
   it('shows the person, state, exact key and 12 groups; Copy cannot approve', async () => {
@@ -23,6 +23,7 @@ describe('SafetyCompare', () => {
       expect(dialog).toHaveAccessibleDescription(labels.instructions);
       expect(dialog).toHaveTextContent('Ada');
       expect(dialog).toHaveTextContent('changed');
+      expect(dialog).not.toHaveTextContent('This is the first key this device saw for Ada.');
       expect(dialog).toHaveTextContent(key);
       for (const group of groups) expect(dialog).toHaveTextContent(group);
       const approve = screen.getByRole('button', { name: labels.verify });
@@ -82,8 +83,9 @@ describe('SafetyCompare', () => {
     expect(onVerify).toHaveBeenCalledExactlyOnceWith(nextKey);
   });
   it('renders supplied state copy without changing the typed trust state', () => {
-    render(<SafetyCompare open contactName="Ada" state="first-seen" approvedUmk={key} groups={groups} canVerify labels={{ ...labels, states: { 'first-seen': 'Seen here for the first time', changed: 'Identity changed', verified: 'Identity compared', unlisted: 'Device missing' } }} onCopy={vi.fn()} onVerify={vi.fn()} onClose={vi.fn()} />);
-    expect(screen.getByRole('dialog')).toHaveTextContent('Seen here for the first time');
+    render(<SafetyCompare open contactName="Ada" state="first-seen" approvedUmk={key} groups={groups} canVerify labels={{ ...labels, states: { 'first-seen': 'First seen here — not verified', changed: 'Identity changed', verified: 'Identity compared', unlisted: 'Device missing' } }} onCopy={vi.fn()} onVerify={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.getByRole('dialog')).toHaveTextContent('First seen here — not verified');
+    expect(screen.getByRole('dialog')).toHaveTextContent('This is the first key this device saw for Ada. The server could have shown a different one. Compare numbers to verify.');
     expect(screen.getByRole('dialog')).not.toHaveTextContent('first-seen');
   });
   it('focuses Privacy when the opener was the document body', async () => {
