@@ -63,7 +63,10 @@ Appearance, Keyboard and Diagnostics settings are device-local. Diagnostics disp
 │ │ 00000 00000 00000 00000       │ │
 │ │ 00000 00000 00000 00000       │ │
 │ │ 00000 00000 00000 00000       │ │
-│ │ instructions (wrap)            │ │
+│ │ Open Privacy on both devices.  │ │
+│ │ Compare all 12 groups over a   │ │
+│ │ voice call you started         │ │
+│ │ separately or in person.       │ │
 │ │ [Copy number]                  │ │
 │ │ □ I compared all 12 groups     │ │
 │ │   with this person             │ │
