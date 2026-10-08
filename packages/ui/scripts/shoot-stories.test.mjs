@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { THEMES, VIEWPORT, selectStories, storyUrl, outFile, contentType, resolveInRoot } from './shoot-stories.mjs';
+import { THEMES, VIEWPORT, selectStories, storyUrl, outFile, contentType, resolveInRoot, parseViewport, splitViewportArg } from './shoot-stories.mjs';
 
 const index = {
   v: 5,
@@ -52,4 +52,13 @@ test('maps / to index.html and refuses a path that leaves the root', () => {
   assert.equal(resolveInRoot('/srv/sb', '/../etc/passwd'), null);
   assert.equal(resolveInRoot('/srv/sb', '/%2e%2e/etc/passwd'), null);
   assert.equal(resolveInRoot('/srv/sb', '/%E0%A4%A'), null);
+});
+
+test('the final CLI argument selects an actual 360 by 740 context', () => {
+  assert.deepEqual(parseViewport(undefined), { width: 1280, height: 800 });
+  assert.deepEqual(parseViewport('--viewport=360x740'), { width: 360, height: 740 });
+  assert.throws(() => parseViewport('--viewport=0x740'), /viewport/);
+  assert.throws(() => parseViewport('--viewport=360x0'), /viewport/);
+  assert.deepEqual(splitViewportArg(['trust-safetycompare--', '--viewport=360x740']), { prefixes: ['trust-safetycompare--'], viewport: { width: 360, height: 740 } });
+  assert.throws(() => splitViewportArg(['--viewport=360x740', 'trust-safetycompare--']), /final/);
 });

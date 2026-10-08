@@ -1,0 +1,8 @@
+.d-diagnostics-panel { max-width: 100%; min-width: 0; overflow-wrap: anywhere; padding: 1rem; color: var(--fg); background: var(--surface); }
+.d-diagnostics-panel dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .25rem .75rem; }
+.d-diagnostics-panel dd { margin: 0; }
+.d-diagnostics-panel ul { padding-inline-start: 1.5rem; }
+.d-diagnostics-panel li { overflow-wrap: anywhere; }
+.d-diagnostics-panel time { margin-inline-start: .5rem; color: var(--fg-3); }
+.d-diagnostics-panel button { min-width: 24px; min-height: 24px; padding: .5rem; border: 1px solid var(--accent); border-radius: var(--r-sm); background: var(--surface-hi); color: var(--fg); cursor: pointer; font: inherit; }
+.d-diagnostics-panel :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }

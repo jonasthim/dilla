@@ -1,0 +1,23 @@
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { it, expect, vi } from 'vitest';
+import { expectNoAxeViolations } from '../test/setup.ts';
+import { TabHandover } from './TabHandover.tsx';
+
+it('offers the action only in other-tab and retry in failure', async () => {
+  const user = userEvent.setup();
+  const onUse = vi.fn();
+  const onRetry = vi.fn();
+  const labels = { use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.' };
+  const view = render(<TabHandover phase="other-tab" labels={labels} onUse={onUse} onRetry={onRetry} />);
+  await user.click(screen.getByRole('button', { name: labels.use }));
+  expect(onUse).toHaveBeenCalledOnce();
+  view.rerender(<TabHandover phase="waiting" labels={labels} onUse={onUse} onRetry={onRetry} />);
+  expect(screen.getByRole('status')).toHaveTextContent(labels.wait);
+  expect(screen.queryByRole('button', { name: labels.use })).toBeNull();
+  view.rerender(<TabHandover phase="failed" labels={labels} onUse={onUse} onRetry={onRetry} />);
+  expect(screen.getByRole('status')).toHaveTextContent(labels.failed);
+  await user.click(screen.getByRole('button', { name: labels.use }));
+  expect(onRetry).toHaveBeenCalledOnce();
+  await expectNoAxeViolations(view.container);
+});
