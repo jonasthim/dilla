@@ -694,6 +694,37 @@ fn exact_key_verification_rechecks_the_signed_cache_and_releases_changed_key_blo
 }
 
 #[test]
+fn first_seen_signed_contact_can_be_verified_after_comparison() {
+    let (_, relay, mut alice, bob) = alice_and_bob();
+    ingest_core_list(&mut alice, &relay, &bob);
+    let expected: [u8; 32] = alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT umk_pub FROM app_device_lists WHERE user_id=?1",
+            [bob.user.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    alice
+        .core
+        .trust_verify(&bob.user, &expected)
+        .expect("verified first sight");
+    let verified: i64 = alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT verified FROM app_trust_pins WHERE user_id=?1",
+            [bob.user.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(verified, 1);
+}
+
+#[test]
 fn verify_refuses_a_pending_cached_key_after_real_mls_remove() {
     let (instance, mut relay, mut alice, bob) = alice_and_bob();
     ingest_core_list(&mut alice, &relay, &bob);

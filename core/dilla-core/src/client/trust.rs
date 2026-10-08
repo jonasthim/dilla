@@ -140,16 +140,22 @@ fn validate_history_from(
 pub(super) fn retract_device(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],
+    user_id: &[u8; 16],
     device_id: &[u8; 16],
     code: &str,
 ) -> Result<(), StorageError> {
     let mut stmt = c.prepare(
-        "SELECT seq,msg_id,reply_to FROM app_messages WHERE group_id=?1 AND sender_device=?2 AND status=0",
+        "SELECT seq,msg_id,reply_to FROM app_messages WHERE group_id=?1 AND sender_user=?2 AND sender_device=?3 AND status=0",
     )?;
     let rows: Vec<RetractedRow> = stmt
-        .query_map(params![group_id.as_slice(), device_id.as_slice()], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })?
+        .query_map(
+            params![
+                group_id.as_slice(),
+                user_id.as_slice(),
+                device_id.as_slice()
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?
         .collect::<Result<_, _>>()?;
     drop(stmt);
     for (seq, own_id, reply_to) in rows {
@@ -180,6 +186,7 @@ pub(super) fn retract_device(
 pub(super) fn quarantine_device(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],
+    user_id: &[u8; 16],
     device_id: &[u8; 16],
     code: &str,
 ) -> Result<(), StorageError> {
@@ -188,7 +195,7 @@ pub(super) fn quarantine_device(
          ON CONFLICT(group_id,device_id) DO UPDATE SET code=excluded.code",
         params![group_id.as_slice(), device_id.as_slice(), code],
     )?;
-    retract_device(c, group_id, device_id, code)?;
+    retract_device(c, group_id, user_id, device_id, code)?;
     bump_generation(c)?;
     Ok(())
 }
@@ -345,11 +352,12 @@ pub(super) fn audit_tree(
 ) -> Result<(), StorageError> {
     for member in group.members() {
         let leaf = extract_leaf(group_id, group, [0; 32], member);
-        let (device, verdict) = match leaf {
+        let (user, device, verdict) = match leaf {
             Ok(leaf) => {
+                let user = *leaf.credential.user_id.as_bytes();
                 let device = *leaf.credential.device_id.as_bytes();
                 let verdict = validate_cached_leaf(c, &leaf);
-                (device, verdict)
+                (user, device, verdict)
             }
             Err(_) => continue, // Malformed identity has no trustworthy device ID.
         };
@@ -360,7 +368,7 @@ pub(super) fn audit_tree(
             if error.code == E_DEVICE_LIST_STALE {
                 continue;
             }
-            quarantine_device(c, group_id, &device, error.code)?;
+            quarantine_device(c, group_id, &user, &device, error.code)?;
         }
     }
     Ok(())
@@ -729,7 +737,7 @@ impl ClientCore {
                     c.execute("UPDATE app_trust_pins SET changed_umk=?2,verified=0 WHERE user_id=?1",params![validated.user_id.as_slice(),validated.umk_pub.as_slice()])?;
                     for affected in &affected_groups {
                         c.execute("INSERT INTO app_quarantine(group_id,device_id,code) VALUES(?1,?2,?3) ON CONFLICT(group_id,device_id) DO UPDATE SET code=excluded.code",params![affected.as_slice(),validated.device_id.as_slice(),E_UMK_CHANGED])?;
-                        retract_device(c,affected,&validated.device_id,E_UMK_CHANGED)?;
+                        retract_device(c,affected,requested_user,&validated.device_id,E_UMK_CHANGED)?;
                     }
                     bump_generation(c)?;
                 } else if pinned.is_none() {
@@ -833,8 +841,9 @@ impl ClientCore {
             return Err(failure(E_DEVICE_LIST_STALE));
         }
         self.write(|_,u|u.with_conn(|c| {
-            let changed: Option<[u8;32]>=c.query_row("SELECT changed_umk FROM app_trust_pins WHERE user_id=?1",[user_id.as_slice()],|r|r.get(0)).optional()?.flatten();
-            if changed!=Some(*expected_umk) {return Err(StorageError::Codec("pending validated key differs".into()));}
+            let pin: Option<([u8;32],Option<[u8;32]>)>=c.query_row("SELECT umk_pub,changed_umk FROM app_trust_pins WHERE user_id=?1",[user_id.as_slice()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let matches = pin.is_some_and(|(pinned,changed)| changed.map_or(pinned==*expected_umk,|pending|pending==*expected_umk));
+            if !matches {return Err(StorageError::Codec("pending validated key differs".into()));}
             let cached: Option<([u8;32],[u8;32],Vec<u8>)>=c.query_row("SELECT umk_pub,ssk_pub,list FROM app_device_lists WHERE user_id=?1",[user_id.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
             let (umk,ssk,blob)=cached.ok_or_else(||StorageError::Codec("cached validated list missing".into()))?;
             if umk!=*expected_umk {return Err(StorageError::Codec("cached validated list differs".into()));}
@@ -1111,7 +1120,7 @@ mod tests {
             "INSERT INTO app_search_rows(group_id,seq,body,terms) VALUES(?1,1,'naïve lantern',' naive lantern')",
             [group.as_slice()],
         ).expect("indexed message");
-        retract_device(&db, &group, &device, "E_UMK_CHANGED").expect("retract");
+        retract_device(&db, &group, &[0x54u8; 16], &device, "E_UMK_CHANGED").expect("retract");
         let (status, reason, body, envelope, edit): (i64, String, String, Option<Vec<u8>>, Option<String>) = db.query_row(
             "SELECT status,reason,body,envelope,edit_body FROM app_messages WHERE group_id=?1 AND seq=1",
             [group.as_slice()],
@@ -1131,6 +1140,47 @@ mod tests {
             )
             .expect("index");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn retract_device_scopes_a_colliding_id_to_the_authenticated_user() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        super::super::schema::migrate_conn(&db).unwrap();
+        let group = [0x91u8; 16];
+        let device = [0x92u8; 16];
+        let victim = [0x93u8; 16];
+        let offender = [0x94u8; 16];
+        db.execute(
+            "INSERT INTO app_groups(group_id,kind,target_id,state) VALUES(?1,0,?2,2)",
+            rusqlite::params![group.as_slice(), [0x95u8; 16].as_slice()],
+        )
+        .unwrap();
+        for (seq, user, body) in [(1, victim, "honest comet"), (2, offender, "bad comet")] {
+            db.execute("INSERT INTO app_messages(group_id,seq,epoch,recv_ts,status,sender_user,sender_device,type,body,franking_tag) VALUES(?1,?2,1,1,0,?3,?4,0,?5,?6)",
+                rusqlite::params![group.as_slice(), seq, user.as_slice(), device.as_slice(), body, [0x96u8;32].as_slice()]).unwrap();
+            db.execute(
+                "INSERT INTO app_search_rows(group_id,seq,body,terms) VALUES(?1,?2,?3,?4)",
+                rusqlite::params![group.as_slice(), seq, body, format!(" {body}")],
+            )
+            .unwrap();
+        }
+        retract_device(&db, &group, &offender, &device, "E_CREDENTIAL").unwrap();
+        let status: Vec<(i64, String)> = db
+            .prepare("SELECT status,body FROM app_messages WHERE group_id=?1 ORDER BY seq")
+            .unwrap()
+            .query_map([group.as_slice()], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(status, vec![(0, "honest comet".into()), (1, String::new())]);
+        let indexed: Vec<i64> = db
+            .prepare("SELECT seq FROM app_search_rows WHERE group_id=?1 ORDER BY seq")
+            .unwrap()
+            .query_map([group.as_slice()], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(indexed, vec![1]);
     }
 
     #[test]
@@ -1166,7 +1216,7 @@ mod tests {
             )
             .expect("edit body");
         assert_eq!(before.as_deref(), Some("tampered lantern"));
-        retract_device(&db, &group, &bad_device, "E_CREDENTIAL").expect("retract edit");
+        retract_device(&db, &group, &author, &bad_device, "E_CREDENTIAL").expect("retract edit");
         let after: Option<String> = db
             .query_row(
                 "SELECT edit_body FROM app_messages WHERE group_id=?1 AND seq=1",

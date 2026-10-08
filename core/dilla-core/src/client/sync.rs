@@ -760,7 +760,7 @@ impl ClientCore {
                                             Ok(()) => (STATUS_OK, "", Some(r), None),
                                             Err(e) => {
                                                 if e.code != super::error::E_DEVICE_LIST_STALE {
-                                                    u.with_conn(|c| super::trust::quarantine_device(c,id,r.sender.device_id.as_bytes(),e.code))?;
+                                                    u.with_conn(|c| super::trust::quarantine_device(c,id,r.sender.user_id.as_bytes(),r.sender.device_id.as_bytes(),e.code))?;
                                                     (STATUS_CANNOT_DECRYPT, e.code, None, None)
                                                 } else {
                                                     (STATUS_CANNOT_DECRYPT, e.code, None, Some(r))
