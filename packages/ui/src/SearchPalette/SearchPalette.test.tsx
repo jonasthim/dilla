@@ -35,4 +35,21 @@ describe('SearchPalette', () => {
     await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledOnce();
   });
+  it('keeps selection, active descendant, arrows and Enter aligned after hits shrink', async () => {
+    const user = userEvent.setup();
+    const onPick = vi.fn();
+    const props = { open: true, query: 'lamp', scope: 'all' as const, labels, onQuery: vi.fn(), onScope: vi.fn(), onPick, onClose: vi.fn() };
+    const view = render(<SearchPalette {...props} hits={hits} />);
+    const input = screen.getByRole('textbox', { name: labels.search });
+    input.focus();
+    await user.keyboard('{ArrowDown}');
+    const replacement = [{ id: 'fresh', snippet: 'new result', location: 'general' }];
+    view.rerender(<SearchPalette {...props} hits={replacement} />);
+    expect(input).toHaveAttribute('aria-activedescendant', 'fresh');
+    expect(screen.getByRole('option', { name: /new result/ })).toHaveAttribute('aria-selected', 'true');
+    await user.keyboard('{Enter}');
+    expect(onPick).toHaveBeenCalledExactlyOnceWith('fresh');
+    await user.keyboard('{ArrowDown}');
+    expect(screen.getByRole('option', { name: /new result/ })).toHaveAttribute('aria-selected', 'true');
+  });
 });

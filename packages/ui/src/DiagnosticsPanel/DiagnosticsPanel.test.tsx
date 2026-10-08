@@ -16,3 +16,14 @@ it('renders bounded codes and a copy action without detail', async () => {
   expect(onCopy).toHaveBeenCalledOnce();
   await expectNoAxeViolations(view.container);
 });
+
+it('renders supplied field labels while preserving diagnostic values', () => {
+  const data = { connection: 'online', generation: '4', instance: 'home', devices: 2, errors: [] };
+  const view = render(<DiagnosticsPanel data={data} labels={{ title: 'Diagnostics', copy: 'Copy codes', fields: { connection: 'Connection state', generation: 'Build generation', instance: 'Server instance', devices: 'Known devices' } }} onCopy={vi.fn()} />);
+  expect(view.container).toHaveTextContent('Connection state');
+  expect(view.container).toHaveTextContent('Build generation');
+  expect(view.container).toHaveTextContent('Server instance');
+  expect(view.container).toHaveTextContent('Known devices');
+  expect(view.container).toHaveTextContent('online');
+  expect(view.container).not.toHaveTextContent('connectiononline');
+});

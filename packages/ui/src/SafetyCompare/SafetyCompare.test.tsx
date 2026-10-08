@@ -52,4 +52,38 @@ describe('SafetyCompare', () => {
     expect(onVerify).not.toHaveBeenCalled();
     await expectNoAxeViolations(view.container);
   });
+  it('requires fresh confirmation when the pending key or groups change', async () => {
+    const user = userEvent.setup();
+    const onVerify = vi.fn();
+    const props = { open: true, contactName: 'Ada', state: 'changed' as const, canVerify: true, labels, onCopy: vi.fn(), onVerify, onClose: vi.fn() };
+    const view = render(<SafetyCompare {...props} approvedUmk={key} groups={groups} />);
+    const checkbox = screen.getByRole('checkbox', { name: labels.confirm });
+    const verify = screen.getByRole('button', { name: labels.verify });
+    await user.click(checkbox);
+    expect(verify).toHaveAttribute('aria-disabled', 'false');
+    const nextKey = 'cd'.repeat(32);
+    view.rerender(<SafetyCompare {...props} approvedUmk={nextKey} groups={groups} />);
+    expect(checkbox).not.toBeChecked();
+    expect(verify).toHaveAttribute('aria-disabled', 'true');
+    view.rerender(<SafetyCompare {...props} approvedUmk={key} groups={groups} />);
+    expect(checkbox).not.toBeChecked();
+    expect(verify).toHaveAttribute('aria-disabled', 'true');
+    view.rerender(<SafetyCompare {...props} approvedUmk={nextKey} groups={groups} />);
+    await user.click(verify);
+    expect(onVerify).not.toHaveBeenCalled();
+    await user.click(checkbox);
+    expect(verify).toHaveAttribute('aria-disabled', 'false');
+    const nextGroups = groups.map((group, index) => index === 0 ? '99999' : group);
+    view.rerender(<SafetyCompare {...props} approvedUmk={nextKey} groups={nextGroups} />);
+    expect(checkbox).not.toBeChecked();
+    expect(verify).toHaveAttribute('aria-disabled', 'true');
+    await user.click(checkbox);
+    await user.click(verify);
+    expect(onVerify).toHaveBeenCalledExactlyOnceWith(nextKey);
+  });
+  it('renders supplied state copy without changing the typed trust state', () => {
+    render(<SafetyCompare open contactName="Ada" state="first-seen" approvedUmk={key} groups={groups} canVerify labels={{ ...labels, states: { 'first-seen': 'Seen here for the first time', changed: 'Identity changed', verified: 'Identity compared', unlisted: 'Device missing' } }} onCopy={vi.fn()} onVerify={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.getByRole('dialog')).toHaveTextContent('Seen here for the first time');
+    expect(screen.getByRole('dialog')).not.toHaveTextContent('first-seen');
+  });
 });
