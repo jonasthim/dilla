@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/livekit/protocol/livekit"
+
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
@@ -52,7 +54,7 @@ func VoiceSelfAudience(repo store.Repository, sfu CallTokens) func(context.Conte
 		var flags uint64
 		present := false
 		for _, part := range parts {
-			if part.GetIdentity() == deviceID.String() {
+			if part.GetIdentity() == deviceID.String() && part.GetState() != livekit.ParticipantInfo_DISCONNECTED {
 				present = true
 				flags = voiceTrackFlags(part)
 				break

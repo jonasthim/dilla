@@ -3,6 +3,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -243,6 +244,24 @@ func TestVoiceSelfRequiresLiveCallAndValidFlags(t *testing.T) {
 	h.gw.handle(context.Background(), b, ephemeralInbound(t, OpVoiceSelf, id.New(), uint64(1)))
 	expectErrorCode(t, h, b.deviceID, "E_NOT_FOUND")
 	noQueuedFrame(t, h, b)
+}
+
+func TestVoiceSelfRefusesDisconnectedParticipantWithoutRelay(t *testing.T) {
+	h := newHarness(t)
+	sender, recipient := h.connect(t, id.New()), h.connect(t, id.New())
+	h.drainReady(t, sender)
+	h.drainReady(t, recipient)
+	call := id.New()
+	h.gw.opts.VoiceSelfAudience = func(_ context.Context, device, got id.ID) (id.ID, []id.ID, uint64, error) {
+		if device != sender.deviceID || got != call {
+			t.Fatalf("audience called for device %s, call %s", device, got)
+		}
+		// The API refuses an SFU snapshot row whose state is DISCONNECTED.
+		return id.ID{}, nil, 0, errors.New("E_NOT_FOUND")
+	}
+	h.gw.handle(context.Background(), sender, ephemeralInbound(t, OpVoiceSelf, call, uint64(1)))
+	expectErrorCode(t, h, sender.deviceID, "E_NOT_FOUND")
+	noQueuedFrame(t, h, recipient)
 }
 
 func TestVoiceSelfCombinesLiveRoomAndSelfBits(t *testing.T) {

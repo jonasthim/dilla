@@ -74,6 +74,30 @@ func TestVoiceSelfAudienceRequiresCurrentRoomParticipant(t *testing.T) {
 	}
 }
 
+func TestVoiceSelfAudienceRefusesDisconnectedParticipant(t *testing.T) {
+	e, community, ownerToken := channelEnv(t)
+	channel, _, status := newChannel(t, e, community, ownerToken, 1, 1, 2, "voice")
+	if status != 201 {
+		t.Fatalf("channel status = %d", status)
+	}
+	owner := e.sess[ownerToken]
+	call := id.New()
+	const room = "ephemeral-disconnected-room"
+	if err := e.Repo.PutVoiceSession(t.Context(), store.VoiceSessionRow{
+		CallID: call, ChannelID: channel, LivekitRoom: room, Started: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sfu := &stubSFU{}
+	sfu.setPresent(room, &livekit.ParticipantInfo{
+		Identity: owner.DeviceID.String(), State: livekit.ParticipantInfo_DISCONNECTED,
+	})
+	_, _, _, err := api.VoiceSelfAudience(e.Repo, sfu)(t.Context(), owner.DeviceID, call)
+	if err == nil || err.Error() != "E_NOT_FOUND" {
+		t.Fatalf("disconnected participant admitted: error = %v, want E_NOT_FOUND", err)
+	}
+}
+
 func TestVoiceSelfAudienceReturnsCurrentVideoAndScreenTracks(t *testing.T) {
 	e, community, ownerToken := channelEnv(t)
 	channel, _, status := newChannel(t, e, community, ownerToken, 1, 1, 2, "voice")
