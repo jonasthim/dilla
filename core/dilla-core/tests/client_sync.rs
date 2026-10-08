@@ -213,6 +213,7 @@ fn an_instance_add_seen_twice_is_queued_once_and_its_commit_welcomes_the_device(
     instance.propose_add(&mut relay, &kp);
 
     let seen = a.sync(&relay);
+    ingest_add_candidate(&mut a, &relay, &c);
     assert_eq!(seen.proposals_pending, 1);
     let blocked = a.prepare(&GROUP, "blocked", NOW + 1);
     assert_eq!(
@@ -317,6 +318,8 @@ fn the_loser_of_a_commit_race_aborts_applies_the_winner_and_commits_again() {
     instance.propose_add(&mut relay, &kp);
     a.sync(&relay);
     b.sync(&relay);
+    ingest_add_candidate(&mut a, &relay, &c);
+    ingest_add_candidate(&mut b, &relay, &c);
 
     let mine = a
         .core
@@ -520,6 +523,7 @@ fn commit_build_needs_an_active_group_without_a_pending_commit() {
     instance.propose_add(&mut relay, &kp);
 
     // A void proposal is left out.
+    ingest_add_candidate(&mut a, &relay, &c);
     let body = a
         .core
         .commit_build(&GROUP, &voided(&relay.proposals_body()))
@@ -716,6 +720,7 @@ fn every_writer_keeps_the_persisted_epoch_and_pending_commit_equal_to_the_mls_gr
     let kp = c.first_key_package();
     instance.propose_add(&mut relay, &kp);
     a.sync(&relay);
+    ingest_add_candidate(&mut a, &relay, &c);
     a.commit(&mut relay);
     let outcomes = decode_outcomes(
         &c.core

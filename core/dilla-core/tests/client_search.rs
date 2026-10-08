@@ -121,6 +121,29 @@ fn fts_and_like_agree_on_non_decomposing_letters_and_combining_marks() {
 }
 
 #[test]
+fn fts_and_like_match_dotted_e_with_plain_prefix() {
+    let (_, mut relay, mut alice, _) = alice_and_bob();
+    let (_, seq) = alice.send(&mut relay, &GROUP, "ėclair lantern", NOW + 1);
+    for enabled in [1_u8, 0] {
+        alice
+            .probe
+            .lock()
+            .expect("db")
+            .execute(
+                "UPDATE app_meta SET v=?1 WHERE k='search_fts5'",
+                rusqlite::params![vec![enabled]],
+            )
+            .expect("select search path");
+        let found = hits(&alice.core.search(2, None, "ecl", None, 50).expect("search"));
+        assert_eq!(
+            found.iter().map(|hit| hit.1).collect::<Vec<_>>(),
+            vec![seq],
+            "capability {enabled}"
+        );
+    }
+}
+
+#[test]
 fn query_plan_uses_the_auxiliary_index_and_result_count_is_capped() {
     let (_, mut relay, mut alice, _) = alice_and_bob();
     for i in 0..51 {
@@ -140,7 +163,7 @@ fn query_plan_uses_the_auxiliary_index_and_result_count_is_capped() {
         })
         .expect("capability");
     let sql = if cap == [1] {
-        "EXPLAIN QUERY PLAN SELECT r.group_id,r.seq FROM app_search AS f JOIN app_search_rows AS r ON r.rowid=f.rowid WHERE app_search MATCH 'cap*' LIMIT 50"
+        "EXPLAIN QUERY PLAN SELECT r.group_id,r.seq FROM app_search_v2 AS f JOIN app_search_rows AS r ON r.rowid=f.rowid WHERE app_search_v2 MATCH 'cap*' LIMIT 50"
     } else {
         "EXPLAIN QUERY PLAN SELECT r.group_id,r.seq FROM app_search_rows AS r WHERE r.terms LIKE '% cap%' ESCAPE '\\' LIMIT 50"
     };

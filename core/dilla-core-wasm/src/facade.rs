@@ -583,6 +583,40 @@ impl CoreHandle {
         self.with_core(|c| c.pending_leaves())
             .map(Vec::into_boxed_slice)
     }
+    pub fn proposed_adds(
+        &self,
+        group_id: &[u8],
+        proposals_body: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.proposed_adds(&group_id, proposals_body))
+            .map(Vec::into_boxed_slice)
+    }
+    pub fn device_list_ingest_add(
+        &self,
+        group_id: &[u8],
+        proposals_body: &[u8],
+        index: u64,
+        requested_user: &[u8],
+        history_body: &[u8],
+        head_list: &[u8],
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let requested_user = js_fixed_arg::<16>("requested_user", requested_user)?;
+        self.with_core(|c| {
+            c.device_list_ingest_add(
+                &group_id,
+                proposals_body,
+                index,
+                &requested_user,
+                history_body,
+                head_list,
+                now,
+            )
+        })
+        .map(Vec::into_boxed_slice)
+    }
     /// Validate a paged signed list against one current MLS leaf.
     pub fn device_list_ingest(
         &self,
@@ -607,10 +641,23 @@ impl CoreHandle {
         })
         .map(Vec::into_boxed_slice)
     }
+    /// Re-evaluate bounded MLS-authenticated pending rows after list ingestion.
+    pub fn revalidate_pending(
+        &self,
+        group_id: &[u8],
+        leaf_index: u32,
+        limit: u32,
+    ) -> Result<u32, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.revalidate_pending(&group_id, leaf_index, limit))
+    }
     /// Public-key-only local contact trust state.
     pub fn trust_state(&self) -> Result<Box<[u8]>, JsError> {
         self.with_core(|c| c.trust_state())
             .map(Vec::into_boxed_slice)
+    }
+    pub fn trust_generation(&self) -> Result<u64, JsError> {
+        self.with_core(|c| c.trust_generation())
     }
     /// Approve the exact pending validated contact key.
     pub fn trust_verify(&self, user_id: &[u8], expected_umk: &[u8]) -> Result<(), JsError> {

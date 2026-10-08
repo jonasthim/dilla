@@ -1218,6 +1218,7 @@ fn a_welcome_joins_a_dm_only_against_a_null_community_and_a_channel_only_against
     let kp = c.first_key_package();
     instance.propose_add(&mut relay, &kp);
     a.sync(&relay);
+    ingest_add_candidate_in(&mut a, &relay, &c, &DM_GROUP);
     a.commit(&mut relay);
     let welcomes = relay.welcomes_body(c.device);
 

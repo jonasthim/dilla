@@ -997,6 +997,71 @@ pub fn ingest_core_list(receiver: &mut Core, relay: &Relay, sender: &Core) {
     );
 }
 
+/// Feed a real signed list through the authenticated proposal path before committing an Add.
+pub fn ingest_add_candidate(receiver: &mut Core, relay: &Relay, sender: &Core) {
+    ingest_add_candidate_in(receiver, relay, sender, &GROUP);
+}
+
+pub fn ingest_add_candidate_in(
+    receiver: &mut Core,
+    relay: &Relay,
+    sender: &Core,
+    group_id: &[u8; 16],
+) {
+    let proposals = relay.proposals_body();
+    let candidates = receiver
+        .core
+        .proposed_adds(group_id, &proposals)
+        .expect("candidates");
+    let index = decode_strict(&candidates, |d| {
+        let n = d.array_len()?;
+        let mut found = None;
+        for _ in 0..n {
+            d.array(3)?;
+            let index = d.uint()?;
+            let user = d.bytes_exact::<16>()?;
+            d.uint()?;
+            if user == sender.user {
+                found = Some(index);
+            }
+        }
+        Ok(found)
+    })
+    .expect("candidate list")
+    .expect("sender candidate");
+    let put = sender.core.device_list_body().expect("signed PUT");
+    let (version, blob, sig, prev) = decode_strict(&put, |d| {
+        d.array(4)?;
+        Ok((
+            d.uint()?,
+            d.bytes()?.to_vec(),
+            d.bytes_exact::<64>()?,
+            d.bytes_exact::<32>()?,
+        ))
+    })
+    .expect("PUT body");
+    let mut history = Encoder::new();
+    history
+        .array(1)
+        .array(4)
+        .uint(version)
+        .bytes(&blob)
+        .bytes(&sig)
+        .bytes(&prev);
+    receiver
+        .core
+        .device_list_ingest_add(
+            group_id,
+            &proposals,
+            index,
+            &sender.user,
+            &history.into_vec(),
+            &blob,
+            NOW,
+        )
+        .expect("authenticated pre-Add list");
+}
+
 pub fn ingest_list_body(
     receiver: &mut Core,
     relay: &Relay,

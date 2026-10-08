@@ -10,7 +10,7 @@ fn normal_char(ch: char) -> char {
     match ch {
         'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' => 'a',
         'ç' | 'ć' | 'č' => 'c',
-        'è' | 'é' | 'ê' | 'ë' | 'ē' => 'e',
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' => 'e',
         'ì' | 'í' | 'î' | 'ï' | 'ī' => 'i',
         'ñ' | 'ń' => 'n',
         'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ō' => 'o',
@@ -117,7 +117,7 @@ impl ClientCore {
         let rows:Vec<([u8;16],u64,String)>=self.read(|c| {
             let fts:Option<Vec<u8>>=c.query_row("SELECT v FROM app_meta WHERE k='search_fts5'",[],|r|r.get(0)).optional()?;
             let use_fts=fts.as_deref()==Some(&[1]);
-            let mut sql=if use_fts {String::from("SELECT r.group_id,r.seq,r.body FROM app_search AS f JOIN app_search_rows AS r ON r.rowid=f.rowid JOIN app_groups AS g ON g.group_id=r.group_id WHERE app_search MATCH ?1 AND g.state<>4 ")}
+            let mut sql=if use_fts {String::from("SELECT r.group_id,r.seq,r.body FROM app_search_v2 AS f JOIN app_search_rows AS r ON r.rowid=f.rowid JOIN app_groups AS g ON g.group_id=r.group_id WHERE app_search_v2 MATCH ?1 AND g.state<>4 ")}
                 else {String::from("SELECT r.group_id,r.seq,r.body FROM app_search_rows AS r JOIN app_groups AS g ON g.group_id=r.group_id WHERE g.state<>4 ")};
             sql.push_str("AND (?2=2 OR (?2=0 AND g.target_id=?3) OR (?2=1 AND g.community_id=?3)) AND (?4 IS NULL OR r.group_id<?4 OR (r.group_id=?4 AND r.seq<?5)) ");
             let mut args=vec![

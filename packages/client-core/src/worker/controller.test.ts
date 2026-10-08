@@ -92,6 +92,7 @@ function stubCore(): { core: CorePort; resets: () => number } {
     }),
     signupBegin: (): string => { phase = 1; return 'ABCD'.repeat(13); },
     signupReset: (): void => { phase = 0; resets += 1; },
+    trustGeneration: (): bigint => 0n,
     close: (): void => {},
   };
   return { core: core as unknown as CorePort, resets: () => resets };
@@ -377,9 +378,13 @@ function world(opts: {
     pause: vi.fn((): void => { calls.push('core.pause'); }),
     close: (): void => {},
     pendingLeaves: vi.fn(() => [] as { groupId: Uint8Array; leafIndex: number; userId: Uint8Array; cachedVersion: bigint; reason: string }[]),
+    proposedAdds: vi.fn(() => []),
+    deviceListIngestAdd: vi.fn(() => ({ version: 1n, changed: false, quarantined: 0 })),
     deviceListIngest: vi.fn((_group: Uint8Array, _leaf: number, _user: Uint8Array, _history: Uint8Array, _head: Uint8Array, _now: bigint) =>
       ({ version: 1n, changed: true, quarantined: 1 })),
+    revalidatePending: vi.fn(() => 0),
     trustState: vi.fn(() => []),
+    trustGeneration: vi.fn(() => 0n),
   };
   const routes = {
     getInstance: vi.fn(() => Promise.resolve(INSTANCE)),
@@ -525,13 +530,37 @@ it('refreshTrust fetches a pending leaf once and re-renders already open timelin
   w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
   w.core.deviceListIngest.mockImplementation(() => {
     w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+    w.core.trustGeneration.mockReturnValue(1n);
     return { version: 1n, changed: true, quarantined: 1 };
   });
   const before = w.posted.filter((m) => m.t === 'slice' && m.name === `timeline:${toHex(CHANNEL)}`).length;
   w.call(882, { m: 'refreshTrust' });
   await vi.waitFor(() => expect(w.ret(882)).toMatchObject({ ok: true }));
   expect(w.core.deviceListIngest).toHaveBeenCalledOnce();
+  expect(w.core.revalidatePending).toHaveBeenCalledWith(GROUP, 1, 256);
   expect(w.posted.filter((m) => m.t === 'slice' && m.name === `timeline:${toHex(CHANNEL)}`).length).toBeGreaterThan(before);
+});
+
+it('a later trust generation invalidates an open timeline from another group', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [strangerRow(1)];
+  await openGeneral(w);
+  w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onGroupChanged(new Uint8Array(16).fill(0xfe), applied(2));
+  expect(w.timeline()?.items[0]?.body).toBe('');
+});
+
+it('candidate list ingestion invalidates a published timeline before commit confirmation', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [strangerRow(1)];
+  await openGeneral(w);
+  w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.timeline()?.items[0]?.body).toBe('');
 });
 
 async function toKeys(w: World): Promise<void> {

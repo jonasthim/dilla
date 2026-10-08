@@ -56,6 +56,7 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
     onGroupChanged: (groupId, result) => { changes.push({ group: toHex(groupId), result }); },
+    onTrustChanged: () => {},
     onOutboxChanged: (groupId) => { outboxChanges.push(toHex(groupId)); },
     onMembership: (groupId, status) => { membership.push({ group: toHex(groupId), status }); },
     onJoinAll: (p) => { joinAll.push({ ...p }); },

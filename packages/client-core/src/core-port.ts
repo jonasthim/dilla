@@ -103,8 +103,13 @@ export interface CorePort {
   ownDeviceListUpdate(historyBody: Uint8Array): { version: bigint; listed: boolean };
   ownDeviceList(): OwnDeviceList;
   pendingLeaves(): PendingLeaf[];
+  proposedAdds(groupId: Id, proposalsBody: Uint8Array): { index: bigint; userId: Id; cachedVersion: bigint }[];
+  deviceListIngestAdd(groupId: Id, proposalsBody: Uint8Array, index: bigint, requestedUser: Id,
+    history: Uint8Array, headList: Uint8Array, now: bigint): { version: bigint; changed: boolean; quarantined: number };
   deviceListIngest(groupId: Id, leafIndex: number, requestedUser: Id, history: Uint8Array, headList: Uint8Array, now: bigint): { version: bigint; changed: boolean; quarantined: number };
+  revalidatePending(groupId: Id, leafIndex: number, limit: number): number;
   trustState(): TrustRecord[];
+  trustGeneration(): bigint;
   trustVerify(userId: Id, umk: Uint8Array): void;
   safetyNumberFor(userId: Id): string;
   search(scope: SearchScope, query: string, cursor: SearchCursor | null, limit: number): SearchHit[];
@@ -159,8 +164,13 @@ export interface CoreHandle {
       own_device_list_update(history_body: Uint8Array): Uint8Array;
       own_device_list(): Uint8Array;
       pending_leaves(): Uint8Array;
+      proposed_adds(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
+      device_list_ingest_add(group_id: Uint8Array, proposals_body: Uint8Array, index: bigint, requested_user: Uint8Array,
+        history_body: Uint8Array, head_list: Uint8Array, now: bigint): Uint8Array;
       device_list_ingest(group_id: Uint8Array, leaf_index: number, requested_user: Uint8Array, history_body: Uint8Array, head_list: Uint8Array, now: bigint): Uint8Array;
+      revalidate_pending(group_id: Uint8Array, leaf_index: number, limit: number): number;
       trust_state(): Uint8Array;
+      trust_generation(): bigint;
       trust_verify(user_id: Uint8Array, expected_umk: Uint8Array): void;
       safety_number_for(user_id: Uint8Array): string;
       search(scope_kind: number, scope_id: Uint8Array | null, query: string, before: Uint8Array | null, limit: number): Uint8Array;
@@ -393,16 +403,24 @@ export function wrapCore(handle: CoreHandle): CorePort {
       return rows.map((row) => { const a = arr(row, 5); return { groupId: bin(a[0], 16), leafIndex: u53(a[1]),
         userId: bin(a[2], 16), cachedVersion: u64(a[3]), reason: str(a[4]) }; });
     })),
+    proposedAdds: (groupId, proposalsBody) => call(() => decoded('proposedAdds', handle.proposed_adds(groupId, proposalsBody), (v) =>
+      arr(v).map((row) => { const a = arr(row, 3); return { index: u64(a[0]), userId: bin(a[1], 16), cachedVersion: u64(a[2]) }; }))),
+    deviceListIngestAdd: (groupId, proposalsBody, index, requestedUser, history, headList, now) => call(() =>
+      decoded('deviceListIngestAdd', handle.device_list_ingest_add(groupId, proposalsBody, index, requestedUser, history, headList, now), (v) => {
+        const a = arr(v, 3); return { version: u64(a[0]), changed: u64(a[1]) === 1n, quarantined: u53(a[2]) };
+      })),
     deviceListIngest: (groupId, leafIndex, requestedUser, history, headList, now) => call(() =>
       decoded('deviceListIngest', handle.device_list_ingest(groupId, leafIndex, requestedUser, history, headList, now), (v) => {
         const a = arr(v, 3); return { version: u64(a[0]), changed: u64(a[1]) === 1n, quarantined: u53(a[2]) };
       })),
+    revalidatePending: (groupId, leafIndex, limit) => call(() => handle.revalidate_pending(groupId, leafIndex, limit)),
     trustState: () => call(() => decoded('trustState', handle.trust_state(), (v) => {
       const rows = arr(v);
       if (rows.length > 4096) throw new CborError('E_CBOR_RANGE', 'too many trust rows');
       return rows.map((row) => { const a = arr(row, 5); return { userId: bin(a[0], 16), umk: bin(a[1], 32),
         firstSeen: u64(a[2]), verified: u64(a[3]) === 1n, changedUmk: opt(a[4], (x) => bin(x, 32)) }; });
     })),
+    trustGeneration: () => call(() => handle.trust_generation()),
     trustVerify: (userId, umk) => call(() => handle.trust_verify(userId, umk)),
     safetyNumberFor: (userId) => call(() => handle.safety_number_for(userId)),
     search: (scope, query, cursor, limit) => call(() => {

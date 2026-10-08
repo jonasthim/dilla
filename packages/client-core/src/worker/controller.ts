@@ -296,6 +296,7 @@ export class Controller {
   private purging: Promise<void> | null = null;
   private purgeAgain = false;
   private trustRefresh: Promise<null> | null = null;
+  private seenTrustGeneration: bigint | null = null;
   private readonly fetchedLeaves = new Set<string>();
 
   constructor(private readonly deps: ControllerDeps) {
@@ -487,6 +488,7 @@ export class Controller {
       if (outcome.kind === 'store-lost') { this.setAccount({ phase: 'store-lost' }); return; }
       const core = outcome.core;
       this.core = core;
+      this.seenTrustGeneration = core.trustGeneration();
       const now = (): number => this.deps.now();
       const session = this.parts.session({ core, routes: this.routes, now });
       this.session = session;
@@ -651,6 +653,7 @@ export class Controller {
       setTimeout: (fn, ms) => this.deps.setTimeout(fn, ms),
       clearTimeout: (handle) => { this.deps.clearTimeout(handle); },
       onGroupChanged: (g, result) => { this.onGroupChanged(g, result); },
+      onTrustChanged: () => { this.safely(() => this.refreshTrustGeneration()); },
       // Ruling 8: the core records a delete's purge when the type-2 row is confirmed, which the engine reports here.
       onOutboxChanged: (g) => { this.safely(() => { this.touchGroup(g); }); this.runPurges(); },
       onMembership: (g, status) => { this.onMembership(g, status); },
@@ -1514,7 +1517,7 @@ export class Controller {
     const communities = new Set<string>((this.slices.get('communities') ?? []).map((c) => c.id));
     for (const known of this.channels.values()) communities.add(known.communityId);
     const timelines = [...this.open.keys()];
-    this.core = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
+    this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
@@ -1690,7 +1693,7 @@ export class Controller {
   private onGroupChanged(groupId: Id, result: ApplyResult): void {
     const hex = toHex(groupId);
     if (result.state === 2) { this.resyncing.delete(hex); this.notMember.delete(hex); }
-    this.safely(() => { this.touchGroup(groupId); });
+    this.safely(() => { this.refreshTrustGeneration(); this.touchGroup(groupId); });
     void this.refreshTrust().catch(() => undefined);
     this.safely(() => { this.reportActivity(groupId, result); });
     // Pre-flight ruling F6: an apply can adopt the own type-2 row (a catch-up) and so record a purge.
@@ -1734,6 +1737,14 @@ export class Controller {
     for (const channelId of this.pinsOpen) if (bound(channelId, this.target(channelId)?.textGroupId ?? null)) this.publishPins(channelId);
   }
 
+  /** A trust write may retract rows in groups other than the one that reported activity. */
+  private refreshTrustGeneration(): void {
+    const generation = this.requireCore().trustGeneration();
+    if (this.seenTrustGeneration === generation) return;
+    this.seenTrustGeneration = generation;
+    for (const channelId of this.open.keys()) this.refreshTimeline(channelId);
+  }
+
   /** One bounded history read per pending leaf until the next ready. Core rechecks the current group leaf at ingest. */
   private refreshTrust(): Promise<null> {
     if (this.trustRefresh !== null) return this.trustRefresh;
@@ -1752,8 +1763,8 @@ export class Controller {
       try {
         const { head, history } = await readDeviceListHistory(this.routes, leaf.userId, leaf.cachedVersion);
         core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, head, this.nowS());
-        // A trust transition can retract text with no new message sequence. Read every open timeline from the core.
-        for (const channelId of this.open.keys()) this.refreshTimeline(channelId);
+        core.revalidatePending(leaf.groupId, leaf.leafIndex, 256);
+        this.refreshTrustGeneration();
       } catch { /* Keep the leaf untrusted; the next ready retries. */ }
     }
     return null;

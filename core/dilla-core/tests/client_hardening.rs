@@ -157,6 +157,7 @@ fn a_welcome_over_a_stale_row_never_moves_next_seq_back() {
     let kp = c.first_key_package();
     instance.propose_add(&mut relay, &kp);
     a.sync(&relay);
+    ingest_add_candidate(&mut a, &relay, &c);
     a.commit(&mut relay);
     let mut latest = relay.welcomes.last().expect("the new Welcome").clone();
     latest.commit_seq = 1;
@@ -188,6 +189,7 @@ fn carol_added() -> (Instance, Relay, Core, Core) {
     let kp = last_resort_key_package(&mut c);
     instance.propose_add(&mut relay, &kp);
     a.sync(&relay);
+    ingest_add_candidate(&mut a, &relay, &c);
     a.commit(&mut relay);
     let joined = c
         .core
@@ -569,6 +571,7 @@ fn a_welcome_never_rebinds_an_existing_row_to_another_channel() {
     let kp = c.first_key_package();
     instance.propose_add(&mut forged, &kp);
     dave.sync(&forged);
+    ingest_add_candidate(&mut dave, &forged, &c);
     dave.commit(&mut forged);
     let outcome = c
         .core
@@ -862,6 +865,7 @@ fn a_replayed_welcome_after_a_removal_is_refused() {
     let kp = last_resort_key_package(&mut c);
     instance.propose_add(&mut relay, &kp);
     a.sync(&relay);
+    ingest_add_candidate(&mut a, &relay, &c);
     a.commit(&mut relay);
     let old = relay.welcomes_body(c.device); // epoch 1
     let expected = expected_body(&[(GROUP, COMMUNITY, CHANNEL, POLICY)]);
@@ -1102,6 +1106,7 @@ fn carol_welcomed_by_alice() -> (Instance, Relay, Core, Core, Vec<u8>) {
     let kp = c.first_key_package();
     instance.propose_add(&mut relay, &kp);
     a.sync(&relay);
+    ingest_add_candidate(&mut a, &relay, &c);
     a.commit(&mut relay);
     assert_eq!(relay.welcomes.len(), 1);
     assert_eq!(
@@ -1324,6 +1329,7 @@ fn carol_readmitted() -> (Instance, Relay, Core, Core, Vec<u8>) {
     let kp = last_resort_key_package(&mut c);
     instance.propose_add(&mut relay, &kp);
     a.sync(&relay);
+    ingest_add_candidate(&mut a, &relay, &c);
     a.commit(&mut relay);
     let w1 = relay.welcomes_body(c.device);
     assert_eq!(welcome_outcome(&mut c, &w1), (0, String::new()));

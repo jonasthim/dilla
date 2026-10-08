@@ -193,6 +193,15 @@ CREATE TABLE IF NOT EXISTS app_quarantine (
   group_id BLOB NOT NULL, device_id BLOB NOT NULL, code TEXT NOT NULL,
   PRIMARY KEY(group_id,device_id)
 );
+CREATE TABLE IF NOT EXISTS app_pending_history (
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  seq INTEGER NOT NULL,
+  ciphertext BLOB NOT NULL,
+  envelope BLOB NOT NULL,
+  sender_leaf INTEGER NOT NULL,
+  sender_credential BLOB NOT NULL,
+  PRIMARY KEY(group_id,seq)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS app_search_rows (
   rowid INTEGER PRIMARY KEY,
   group_id BLOB NOT NULL CHECK(length(group_id)=16),
@@ -204,20 +213,27 @@ CREATE INDEX IF NOT EXISTS app_quarantine_device ON app_quarantine(device_id,gro
 ";
 
 const APP_FTS5: &str = "
-CREATE VIRTUAL TABLE IF NOT EXISTS app_search USING fts5(body, content='', tokenize='unicode61 remove_diacritics 2');
-CREATE TRIGGER IF NOT EXISTS app_search_rows_insert AFTER INSERT ON app_search_rows BEGIN
-  INSERT INTO app_search(rowid,body) VALUES(new.rowid,new.body);
+CREATE VIRTUAL TABLE IF NOT EXISTS app_search_v2 USING fts5(terms, content='', tokenize='unicode61 remove_diacritics 0');
+CREATE TRIGGER IF NOT EXISTS app_search_rows_insert_v2 AFTER INSERT ON app_search_rows BEGIN
+  INSERT INTO app_search_v2(rowid,terms) VALUES(new.rowid,new.terms);
 END;
-CREATE TRIGGER IF NOT EXISTS app_search_rows_delete AFTER DELETE ON app_search_rows BEGIN
-  INSERT INTO app_search(app_search,rowid,body) VALUES('delete',old.rowid,old.body);
+CREATE TRIGGER IF NOT EXISTS app_search_rows_delete_v2 AFTER DELETE ON app_search_rows BEGIN
+  INSERT INTO app_search_v2(app_search_v2,rowid,terms) VALUES('delete',old.rowid,old.terms);
 END;
-CREATE TRIGGER IF NOT EXISTS app_search_rows_update AFTER UPDATE OF body ON app_search_rows BEGIN
-  INSERT INTO app_search(app_search,rowid,body) VALUES('delete',old.rowid,old.body);
-  INSERT INTO app_search(rowid,body) VALUES(new.rowid,new.body);
+CREATE TRIGGER IF NOT EXISTS app_search_rows_update_v2 AFTER UPDATE OF body,terms ON app_search_rows BEGIN
+  INSERT INTO app_search_v2(app_search_v2,rowid,terms) VALUES('delete',old.rowid,old.terms);
+  INSERT INTO app_search_v2(rowid,terms) VALUES(new.rowid,new.terms);
 END;
 ";
 
 fn open_fts5(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    // v4's first search index used SQLite's independent body normalization.
+    // Retire its triggers before trying the shared normalized-terms index.
+    c.execute_batch(
+        "DROP TRIGGER IF EXISTS app_search_rows_insert;
+        DROP TRIGGER IF EXISTS app_search_rows_delete;
+        DROP TRIGGER IF EXISTS app_search_rows_update",
+    )?;
     c.execute_batch("SAVEPOINT search_fts5")?;
     #[cfg(any(test, feature = "test-hooks"))]
     if FORCE_MISSING_FTS5.load(Ordering::SeqCst) {
@@ -229,15 +245,18 @@ fn open_fts5(c: &rusqlite::Connection) -> Result<(), StorageError> {
     match result {
         Ok(()) => {
             c.execute_batch(
-                "INSERT INTO app_search(app_search) VALUES('delete-all');
-                INSERT INTO app_search(rowid,body) SELECT rowid,body FROM app_search_rows;
+                "INSERT INTO app_search_v2(app_search_v2) VALUES('delete-all');
+                INSERT INTO app_search_v2(rowid,terms) SELECT rowid,terms FROM app_search_rows;
+                DROP TABLE IF EXISTS app_search;
                 RELEASE search_fts5",
             )?;
             meta_put(c, "search_fts5", &[1])?;
+            meta_put(c, "search_terms_v2", &[1])?;
         }
         Err(e) if e.to_string().contains("no such module: fts5") => {
             c.execute_batch("ROLLBACK TO search_fts5; RELEASE search_fts5")?;
             meta_put(c, "search_fts5", &[0])?;
+            meta_put(c, "search_terms_v2", &[1])?;
         }
         Err(e) => {
             c.execute_batch("ROLLBACK TO search_fts5; RELEASE search_fts5")?;
@@ -295,7 +314,7 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
         if found < 4 {
             backfill_search_rows(c)?;
         }
-        if found < 4 || meta_get(c, "search_fts5")?.is_none() {
+        if found < 4 || meta_get(c, "search_terms_v2")?.is_none() {
             open_fts5(c)?;
         }
         meta_put(c, SCHEMA, &[4])?;
@@ -342,4 +361,27 @@ pub(crate) fn meta_put(c: &rusqlite::Connection, k: &str, v: &[u8]) -> Result<()
 pub(crate) fn meta_del(c: &rusqlite::Connection, k: &str) -> Result<(), StorageError> {
     c.execute("DELETE FROM app_meta WHERE k = ?1", [k])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod search_upgrade_tests {
+    use super::migrate_conn;
+
+    #[test]
+    fn old_raw_text_fts_table_is_removed_when_shared_terms_index_opens() {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        migrate_conn(&db).expect("new schema");
+        db.execute_batch("CREATE VIRTUAL TABLE app_search USING fts5(body, content='', tokenize='unicode61 remove_diacritics 2');
+            INSERT INTO app_search(rowid,body) VALUES(1,'old visible text');
+            DELETE FROM app_meta WHERE k='search_terms_v2'").expect("simulate old v4 index");
+        migrate_conn(&db).expect("upgrade index");
+        let old: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='app_search'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("old table");
+        assert_eq!(old, 0);
+    }
 }

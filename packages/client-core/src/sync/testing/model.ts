@@ -372,8 +372,12 @@ type HsOutcome = 'ok' | 'skip' | 'changed' | 'stop' | 'gone';
 
 export class ModelCore implements CorePort {
   pendingLeaves(): PendingLeaf[] { return []; }
+  proposedAdds(): { index: bigint; userId: Id; cachedVersion: bigint }[] { return []; }
+  deviceListIngestAdd(): { version: bigint; changed: boolean; quarantined: number } { throw coreError('E_CORE_STATE', 'not modelled'); }
   deviceListIngest(): { version: bigint; changed: boolean; quarantined: number } { throw coreError('E_CORE_STATE', 'not modelled'); }
+  revalidatePending(): number { return 0; }
   trustState(): TrustRecord[] { return []; }
+  trustGeneration(): bigint { return 0n; }
   trustVerify(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
   safetyNumberFor(): string { throw coreError('E_CORE_STATE', 'not modelled'); }
   search(): SearchHit[] { return []; }

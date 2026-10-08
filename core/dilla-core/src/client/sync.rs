@@ -110,6 +110,7 @@ type StoredKind = (
     Option<[u8; 16]>,
     String,
 );
+type PendingHistoryRow = (u64, Vec<u8>, u32, Vec<u8>, u64, u64, [u8; 16], [u8; 32]);
 fn stored_kind(
     c: &rusqlite::Connection,
     id: &[u8; 16],
@@ -182,6 +183,10 @@ fn apply_message(
             params![id.as_slice(), row.seq as i64],
         )?;
         if changed > 0 {
+            c.execute(
+                "DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2",
+                params![id.as_slice(), row.seq as i64],
+            )?;
             refold_deleted(c, id, stored)?;
             super::search::index_fold(c, id, row.seq)?;
             return Ok((true, false));
@@ -288,6 +293,81 @@ fn apply_message(
 }
 
 impl ClientCore {
+    /// Retry at most 256 retained application ciphertexts after signed history arrives.
+    /// A row becomes readable only after MLS and the current leaf verdict both pass in one unit.
+    pub fn revalidate_pending(
+        &mut self,
+        id: &[u8; 16],
+        leaf_index: u32,
+        limit: u32,
+    ) -> Result<u32, ClientError> {
+        if !(1..=256).contains(&limit) {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "pending limit must be 1..=256",
+            ));
+        }
+        let pending: Vec<PendingHistoryRow> = self.read(|c| {
+            let mut stmt = c.prepare("SELECT p.seq,p.envelope,p.sender_leaf,p.sender_credential,m.epoch,m.recv_ts,m.sender_device,m.franking_tag \
+                FROM app_pending_history p JOIN app_messages m ON m.group_id=p.group_id AND m.seq=p.seq \
+                WHERE p.group_id=?1 AND p.sender_leaf=?2 AND m.status=1 AND m.reason='E_DEVICE_LIST_STALE' ORDER BY p.seq LIMIT ?3")?;
+            stmt.query_map(params![id.as_slice(), i64::from(leaf_index), i64::from(limit)], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?, r.get(3)?,
+                    r.get::<_, i64>(4)? as u64, r.get::<_, i64>(5)? as u64, r.get(6)?, r.get(7)?))
+            })?.collect::<Result<_, _>>().map_err(Into::into)
+        })?;
+        if pending.is_empty() {
+            return Ok(0);
+        }
+        let own = self.own()?;
+        self.retry_reload(id, |this| {
+            let group = this.take_group(id)?.ok_or_else(absent)?;
+            let result = this.write(|_, u| {
+                let mut recovered = 0u32;
+                for (seq, envelope_bytes, leaf, credential, epoch, recv_ts, uploader, franking) in &pending {
+                    let envelope = match Envelope::decode(envelope_bytes) { Ok(v) => v, Err(_) => continue };
+                    let valid = u.with_conn(|c| Ok(super::trust::validate_pending_sender(c, &group, id, *leaf, credential)))?;
+                    if valid.is_err() { continue; }
+                    let Some(member) = group.member_at(*leaf) else { continue };
+                    let basic = match openmls::prelude::BasicCredential::try_from(member.credential) { Ok(v) => v, Err(_) => continue };
+                    let sender = match crate::identity::CredentialIdentity::decode(basic.identity()) { Ok(v) => v, Err(_) => continue };
+                    if sender.device_id.as_bytes() != uploader { continue; }
+                    u.with_conn(|c| {
+                        let still_pending: bool = c.query_row(
+                            "SELECT 1 FROM app_messages WHERE group_id=?1 AND seq=?2 AND status=1 AND reason='E_DEVICE_LIST_STALE'",
+                            params![id.as_slice(), *seq as i64], |_| Ok(1_i64)).optional()?.is_some();
+                        if !still_pending { return Ok(()); }
+                        let roles: Vec<[u8; 16]> = {
+                            let mut q = c.prepare("SELECT r.role_id FROM app_roles r JOIN app_groups g ON g.community_id=r.community_id WHERE g.group_id=?1 ORDER BY r.role_id")?;
+                            q.query_map([id.as_slice()], |row| row.get(0))?.collect::<Result<_, _>>()?
+                        };
+                        c.execute("DELETE FROM app_messages WHERE group_id=?1 AND seq=?2", params![id.as_slice(), *seq as i64])?;
+                        insert_message(c, &StoredMessage {
+                            group_id: id, seq: *seq, epoch: *epoch, recv_ts: *recv_ts,
+                            status: STATUS_OK, reason: "", sender_user: Some(sender.user_id.as_bytes()),
+                            sender_device: sender.device_id.as_bytes(), sender_leaf: Some(*leaf),
+                            sender_kind: Some(sender.kind.as_u8()), sender_tier: Some(sender.tier.as_u8()),
+                            msg_id: Some(envelope.msg_id.as_bytes()), ty: Some(envelope.kind.as_u8()),
+                            reply_to: envelope.reply_to.as_ref().map(MsgId::as_bytes), body: &envelope.body,
+                            envelope: Some(envelope_bytes), franking_tag: franking,
+                            mention: envelope.kind.as_u8() == 0 && sender.user_id.as_bytes() != &own.user_id
+                                && mentions_me_with_roles(&envelope.body, &own.user_id, &roles),
+                        })?;
+                        refold_insert(c, id, *seq, &envelope, sender.user_id.as_bytes(),
+                            sender.device_id.as_bytes(), Some(&own))?;
+                        c.execute("DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2", params![id.as_slice(), *seq as i64])?;
+                        Ok(())
+                    })?;
+                    recovered += 1;
+                }
+                if recovered > 0 { u.with_conn(super::trust::bump_generation)?; }
+                Ok(recovered)
+            });
+            this.keep_group(*id, group);
+            result
+        })
+    }
+
     pub fn commit_build(
         &mut self,
         id: &[u8; 16],
@@ -470,6 +550,7 @@ impl ClientCore {
         let (changed, proposals): (usize, i64) = self.write(|_, u| Ok(u.with_conn(|c| {
             let stored = stored_kind(c, id, seq)?;
             let changed = c.execute("UPDATE app_messages SET status=2,body='',envelope=NULL,reason='' WHERE group_id=?1 AND seq=?2 AND status<>2", params![id.as_slice(), seq_i])?;
+            c.execute("DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2", params![id.as_slice(), seq_i])?;
             if changed == 1 { refold_deleted(c, id, stored)?; }
             if changed == 1 { super::search::index_fold(c,id,seq)?; }
             let proposals = c.query_row("SELECT COUNT(*) FROM app_proposals WHERE group_id=?1", [id.as_slice()], |r| r.get(0))?;
@@ -658,29 +739,33 @@ impl ClientCore {
                                         .process_message(ctx.provider, message)
                                         .map_err(Into::into)
                                 });
-                                let (status, reason, application) = match processed {
+                                let (status, reason, application, pending_application) = match processed {
                                     Ok(DillaProcessed::Application(r))
                                         if r.sender.device_id.as_bytes() == &m.uploader_device =>
                                     {
                                         let verdict = u.with_conn(|c| Ok(super::trust::validate_cached_sender(c,&group,id,&r)))?;
                                         match verdict {
-                                            Ok(()) => (STATUS_OK, "", Some(r)),
+                                            Ok(()) => (STATUS_OK, "", Some(r), None),
                                             Err(e) => {
-                                                u.with_conn(|c| super::trust::quarantine_device(c,id,r.sender.device_id.as_bytes(),e.code))?;
-                                                (STATUS_CANNOT_DECRYPT, e.code, None)
+                                                if e.code != super::error::E_DEVICE_LIST_STALE {
+                                                    u.with_conn(|c| super::trust::quarantine_device(c,id,r.sender.device_id.as_bytes(),e.code))?;
+                                                    (STATUS_CANNOT_DECRYPT, e.code, None, None)
+                                                } else {
+                                                    (STATUS_CANNOT_DECRYPT, e.code, None, Some(r))
+                                                }
                                             },
                                         }
                                     }
                                     Ok(DillaProcessed::Application(_)) => {
-                                        (STATUS_CANNOT_DECRYPT, REASON_SENDER_MISMATCH, None)
+                                        (STATUS_CANNOT_DECRYPT, REASON_SENDER_MISMATCH, None, None)
                                     }
-                                    Ok(_) => (STATUS_CANNOT_DECRYPT, E_CORE_MLS, None),
+                                    Ok(_) => (STATUS_CANNOT_DECRYPT, E_CORE_MLS, None, None),
                                     Err(err) => {
                                         if err.code == E_CORE_STORAGE || err.code == E_CORE_RELOAD {
                                             return Err(err);
                                         }
                                         mls_failed = true;
-                                        (STATUS_CANNOT_DECRYPT, err.code, None)
+                                        (STATUS_CANNOT_DECRYPT, err.code, None, None)
                                     }
                                 };
                                 let bytes = application
@@ -719,6 +804,12 @@ impl ClientCore {
                                         refold_insert(c, id, m.seq, &r.envelope, r.sender.user_id.as_bytes(), r.sender.device_id.as_bytes(), Some(&own))?;
                                     } else {
                                         insert_message(c, &empty_message(id, m, status, reason))?;
+                                        if let Some(r) = pending_application.as_ref() {
+                                            c.execute("INSERT INTO app_pending_history(group_id,seq,ciphertext,envelope,sender_leaf,sender_credential) VALUES(?1,?2,?3,?4,?5,?6)",
+                                                params![id.as_slice(),m.seq as i64,m.blob.as_deref().unwrap_or_default(),
+                                                    r.envelope.encode().map_err(|e| StorageError::Codec(e.to_string()))?,
+                                                    i64::from(r.sender_leaf),r.sender.encode()])?;
+                                        }
                                     }
                                     Ok(())
                                 })?;

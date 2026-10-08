@@ -11,14 +11,17 @@ import { SerialQueues } from './group-queue';
 import { JoinAll } from './joinall';
 import type { SyncInternals } from './internals';
 import { discardSend, drainOne, retrySend, sendMessage, sendRequest } from './send';
+import { readDeviceListHistory } from '../state/trust';
 
 export type SyncRoutes = Pick<Routes, 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
-  | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome' | 'getChannel'>;
+  | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome' | 'getChannel'
+  | 'getDeviceList' | 'getDeviceListHistory'>;
 export type SyncGateway = Pick<Gateway, 'subscribe' | 'commitAck'>;
 export interface SyncDeps {
   core: CorePort; routes: SyncRoutes; gateway: SyncGateway; instance: Instance; deviceId: Id;
   now(): number; random(): number; setTimeout(fn: () => void, ms: number): number; clearTimeout(id: number): void;
   onGroupChanged(groupId: Id, result: ApplyResult): void; onOutboxChanged(groupId: Id): void;
+  onTrustChanged(): void;
   onMembership(groupId: Id, status: 'resyncing' | 'not-member'): void;
   onJoinAll(progress: { done: number; total: number; failed: number }): void;
   /** A Welcome for an unexpected group; the controller reloads DMs. */
@@ -302,6 +305,12 @@ export class SyncEngine implements SyncInternals {
       if (this.isStopped) return false;
       const active = arr(decode(proposals)).some((x) => u64(arr(x, 5)[4]) === 0n);
       if (!active && row.proposalsPending === 0) return false;
+      for (const candidate of this.deps.core.proposedAdds(g, proposals)) {
+        const { head, history } = await readDeviceListHistory(this.deps.routes, candidate.userId, candidate.cachedVersion);
+        if (this.isStopped) return false;
+        this.deps.core.deviceListIngestAdd(g, proposals, candidate.index, candidate.userId, history, head, BigInt(Math.floor(this.deps.now() / 1000)));
+        this.deps.onTrustChanged();
+      }
       const body = this.deps.core.commitBuild(g, proposals); built = true;
       await this.deps.routes.postCommit(g, body);
       if (this.isStopped) return false;

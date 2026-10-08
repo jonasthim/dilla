@@ -70,6 +70,22 @@ describe('constants and the through bound', () => {
   });
 });
 
+it('validates an authenticated Add candidate before posting its commit', async () => {
+  const d = device(ds, clock, ME);
+  const g = await openRegistered(ds, d);
+  ds.publishList(THIRD.user, [{ device: THIRD.device }]);
+  ds.propose(g, 'add', THIRD.device);
+  d.core.proposedAdds = () => [{ index: 0n, userId: THIRD.user, cachedVersion: 0n }];
+  let ingested = 0;
+  d.core.deviceListIngestAdd = () => { ingested += 1; return { version: 1n, changed: false, quarantined: 0 }; };
+  const observedPostCounts: number[] = [];
+  d.engine.deps.onTrustChanged = () => { observedPostCounts.push(count('postCommit')); };
+  expect(await d.engine.commitNow(g, 0)).toBe(true);
+  expect(ingested).toBe(1);
+  expect(observedPostCounts).toEqual([0]);
+  expect(count('postCommit')).toBe(1);
+});
+
 describe('catch-up on every ready (rule 2)', () => {
   it('reports a persisted trust quarantine even if groupApply then refuses the batch', async () => {
     const d = device(ds, clock, ME);

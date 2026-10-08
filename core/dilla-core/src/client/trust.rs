@@ -7,8 +7,8 @@ use super::error::{
 use super::{ClientCore, ClientError, schema, wire};
 use crate::cbor::Encoder;
 use crate::identity::{CredentialIdentity, DISPLAY_GROUP, DeviceList, group_digits, safety_number};
-use crate::mls::ReceivedApplication;
 use crate::mls::{DillaGroup, StorageError};
+use crate::mls::{DillaProcessed, ReceivedApplication};
 use openmls::prelude::{BasicCredential, GroupId, KeyPackage, Member};
 use rusqlite::{OptionalExtension, params};
 
@@ -162,6 +162,11 @@ pub(super) fn quarantine_device(
         params![group_id.as_slice(), device_id.as_slice(), code],
     )?;
     retract_device(c, group_id, device_id, code)?;
+    bump_generation(c)?;
+    Ok(())
+}
+
+pub(super) fn bump_generation(c: &rusqlite::Connection) -> Result<(), StorageError> {
     let generation = schema::meta_get(c, "trust_generation")?
         .and_then(|v| crate::cbor::decode_strict(&v, |d| d.uint()).ok())
         .unwrap_or(0)
@@ -169,8 +174,7 @@ pub(super) fn quarantine_device(
         .ok_or_else(|| StorageError::Codec("trust generation overflow".into()))?;
     let mut encoded = Encoder::new();
     encoded.uint(generation);
-    schema::meta_put(c, "trust_generation", &encoded.into_vec())?;
-    Ok(())
+    schema::meta_put(c, "trust_generation", &encoded.into_vec())
 }
 
 /// A verified Remove releases only the affected group's changed-key send block.
@@ -179,10 +183,13 @@ pub(super) fn clear_group_block(
     group_id: &[u8; 16],
     device_id: &[u8; 16],
 ) -> Result<(), StorageError> {
-    c.execute(
+    let changed = c.execute(
         "DELETE FROM app_quarantine WHERE group_id=?1 AND device_id=?2 AND code='E_UMK_CHANGED'",
         params![group_id.as_slice(), device_id.as_slice()],
     )?;
+    if changed > 0 {
+        bump_generation(c)?;
+    }
     Ok(())
 }
 
@@ -282,6 +289,24 @@ fn validate_cached_leaf(c: &rusqlite::Connection, leaf: &LeafEvidence) -> Result
     Ok(())
 }
 
+/// Rebind locally retained, MLS-authenticated evidence to the current tree before release.
+pub(super) fn validate_pending_sender(
+    c: &rusqlite::Connection,
+    group: &DillaGroup,
+    group_id: &[u8; 16],
+    sender_leaf: u32,
+    sender_credential: &[u8],
+) -> Result<(), ClientError> {
+    let member = group
+        .member_at(sender_leaf)
+        .ok_or_else(|| failure(E_CREDENTIAL))?;
+    let leaf = extract_leaf(group_id, group, [0; 32], member)?;
+    if leaf.credential.encode() != sender_credential {
+        return Err(failure(E_CREDENTIAL));
+    }
+    validate_cached_leaf(c, &leaf)
+}
+
 /// Check each current authenticated tree member at an MLS state transition.
 /// Missing history remains pending; failed leaves and the commit author are neutralized.
 pub(super) fn audit_tree(
@@ -328,6 +353,11 @@ pub(super) fn validate_proposed_add(
     c: &rusqlite::Connection,
     kp: &KeyPackage,
 ) -> Result<(), ClientError> {
+    let leaf = leaf_from_key_package(kp)?;
+    validate_cached_leaf(c, &leaf)
+}
+
+fn leaf_from_key_package(kp: &KeyPackage) -> Result<LeafEvidence, ClientError> {
     let node = kp.leaf_node();
     let basic =
         BasicCredential::try_from(node.credential().clone()).map_err(|_| failure(E_CREDENTIAL))?;
@@ -346,10 +376,108 @@ pub(super) fn validate_proposed_add(
         credential,
         dsk_pub,
     };
-    validate_cached_leaf(c, &leaf)
+    Ok(leaf)
 }
 
 impl ClientCore {
+    pub fn trust_generation(&self) -> Result<u64, ClientError> {
+        self.read(|c| {
+            Ok(schema::meta_get(c, "trust_generation")?
+                .and_then(|v| crate::cbor::decode_strict(&v, |d| d.uint()).ok())
+                .unwrap_or(0))
+        })
+    }
+    fn candidate_leaves(
+        &mut self,
+        group_id: &[u8; 16],
+        proposals_body: &[u8],
+    ) -> Result<Vec<(u64, LeafEvidence)>, ClientError> {
+        let proposals = wire::decode_proposals_body(proposals_body)?;
+        if proposals.len() > 1024 {
+            return Err(failure(E_CORE_LIMIT));
+        }
+        let mut group = self
+            .take_group(group_id)?
+            .ok_or_else(|| failure(E_CORE_NOT_FOUND))?;
+        let result = (|| {
+            let mut out = Vec::new();
+            for (index, item) in proposals.iter().enumerate() {
+                if item.void {
+                    continue;
+                }
+                let Ok(message) = wire::protocol_message(&item.blob) else {
+                    continue;
+                };
+                if message.epoch().as_u64() != group.epoch() {
+                    continue;
+                }
+                let Ok(DillaProcessed::Proposal(proposal)) =
+                    group.process_message(&self.provider, message)
+                else {
+                    continue;
+                };
+                if let openmls::prelude::Proposal::Add(add) = proposal.proposal() {
+                    let mut leaf = leaf_from_key_package(add.key_package())?;
+                    leaf.group_id = *group_id;
+                    leaf.epoch = group.epoch();
+                    leaf.tree_hash = group.tree_hash(&self.provider, self.signer()?)?;
+                    out.push((index as u64, leaf));
+                }
+            }
+            Ok(out)
+        })();
+        self.keep_group(*group_id, group);
+        result
+    }
+
+    /// Authenticated Add candidates from the exact proposal body a commit will consume.
+    pub fn proposed_adds(
+        &mut self,
+        group_id: &[u8; 16],
+        proposals_body: &[u8],
+    ) -> Result<Vec<u8>, ClientError> {
+        let leaves = self.candidate_leaves(group_id, proposals_body)?;
+        let mut e = Encoder::new();
+        e.array(leaves.len());
+        for (index, leaf) in leaves {
+            let user = leaf.credential.user_id.as_bytes();
+            let cached: Option<i64> = self.read(|c| {
+                c.query_row(
+                    "SELECT version FROM app_device_lists WHERE user_id=?1",
+                    [user.as_slice()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(Into::into)
+            })?;
+            e.array(3)
+                .uint(index)
+                .bytes(user)
+                .uint(cached.unwrap_or(0).max(0) as u64);
+        }
+        Ok(e.into_vec())
+    }
+
+    #[allow(clippy::too_many_arguments)] // Mirrors the bounded signed-history ABI with proposal evidence.
+    pub fn device_list_ingest_add(
+        &mut self,
+        group_id: &[u8; 16],
+        proposals_body: &[u8],
+        index: u64,
+        requested_user: &[u8; 16],
+        history_body: &[u8],
+        head_list: &[u8],
+        now: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        let leaf = self
+            .candidate_leaves(group_id, proposals_body)?
+            .into_iter()
+            .find(|(i, _)| *i == index)
+            .map(|(_, leaf)| leaf)
+            .ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
+        self.ingest_leaf(leaf, requested_user, history_body, head_list, now, false)
+    }
+
     fn groups_holding_device(
         &self,
         user: &[u8; 16],
@@ -494,6 +622,18 @@ impl ClientCore {
     ) -> Result<Vec<u8>, ClientError> {
         // An unknown group is refused before parsing the untrusted history.
         let first = self.current_leaf(group_id, leaf_index)?;
+        self.ingest_leaf(first, requested_user, history_body, head_list, now, true)
+    }
+
+    fn ingest_leaf(
+        &mut self,
+        first: LeafEvidence,
+        requested_user: &[u8; 16],
+        history_body: &[u8],
+        head_list: &[u8],
+        now: u64,
+        current: bool,
+    ) -> Result<Vec<u8>, ClientError> {
         if first.credential.user_id.as_bytes() != requested_user {
             return Err(failure(E_CREDENTIAL));
         }
@@ -549,15 +689,17 @@ impl ClientCore {
             anchor = Some(first_list);
         }
         let validated = validate_history_from(&first, requested_user, &history, &head, anchor)?;
-        let second = self.current_leaf(group_id, leaf_index)?;
-        if first.group_id != second.group_id
-            || first.epoch != second.epoch
-            || first.tree_hash != second.tree_hash
-            || first.leaf_index != second.leaf_index
-            || first.credential != second.credential
-            || first.dsk_pub != second.dsk_pub
-        {
-            return Err(failure(E_DEVICE_LIST_STALE));
+        if current {
+            let second = self.current_leaf(&first.group_id, first.leaf_index)?;
+            if first.group_id != second.group_id
+                || first.epoch != second.epoch
+                || first.tree_hash != second.tree_hash
+                || first.leaf_index != second.leaf_index
+                || first.credential != second.credential
+                || first.dsk_pub != second.dsk_pub
+            {
+                return Err(failure(E_DEVICE_LIST_STALE));
+            }
         }
         let affected_groups = self.groups_holding_device(requested_user, &validated.device_id)?;
         let now = i64::try_from(now).map_err(|_| failure(super::error::E_CORE_INPUT))?;
@@ -572,8 +714,7 @@ impl ClientCore {
                         c.execute("INSERT INTO app_quarantine(group_id,device_id,code) VALUES(?1,?2,?3) ON CONFLICT(group_id,device_id) DO UPDATE SET code=excluded.code",params![affected.as_slice(),validated.device_id.as_slice(),E_UMK_CHANGED])?;
                         retract_device(c,affected,&validated.device_id,E_UMK_CHANGED)?;
                     }
-                    let generation=schema::meta_get(c,"trust_generation")?.and_then(|v|crate::cbor::decode_strict(&v,|d|d.uint()).ok()).unwrap_or(0)+1;
-                    let mut e=Encoder::new();e.uint(generation);schema::meta_put(c,"trust_generation",&e.into_vec())?;
+                    bump_generation(c)?;
                 } else if pinned.is_none() {
                     c.execute("INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,0,NULL)",params![validated.user_id.as_slice(),validated.umk_pub.as_slice(),now])?;
                 }
@@ -687,6 +828,7 @@ impl ClientCore {
             for entry in &list.unsigned.entries {
                 c.execute("DELETE FROM app_quarantine WHERE device_id=?1 AND code='E_UMK_CHANGED'",[entry.device_id.as_bytes().as_slice()])?;
             }
+            bump_generation(c)?;
             Ok(())
         }).map_err(ClientError::from))
     }

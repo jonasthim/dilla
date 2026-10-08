@@ -186,8 +186,142 @@ fn a_sender_without_signed_history_stays_pending_and_unsearchable() {
 }
 
 #[test]
+fn signed_history_revalidates_a_previously_neutral_message() {
+    let (_, mut relay, mut alice, mut bob) = alice_and_bob();
+    let (_, seq) = bob.send(&mut relay, &GROUP, "late signed comet", NOW + 1);
+    alice.sync(&relay);
+    assert_eq!(alice.row_at(&GROUP, seq).status, 1);
+    let (history, head) = list_wire(&bob);
+    alice
+        .core
+        .device_list_ingest(
+            &GROUP,
+            relay.leaf_of(bob.device),
+            &bob.user,
+            &history,
+            &head,
+            NOW + 2,
+        )
+        .expect("ingest");
+    assert_eq!(
+        alice
+            .core
+            .revalidate_pending(&GROUP, relay.leaf_of(bob.device), 256)
+            .expect("revalidate"),
+        1
+    );
+    let row = alice.row_at(&GROUP, seq);
+    assert_eq!((row.status, row.body.as_str()), (0, "late signed comet"));
+    assert_ne!(
+        alice
+            .core
+            .search(2, None, "late signed", None, 50)
+            .expect("search"),
+        [0x80]
+    );
+}
+
+#[test]
+fn deleting_a_pending_message_discards_its_retained_ciphertext() {
+    let (_, mut relay, mut alice, mut bob) = alice_and_bob();
+    let (_, seq) = bob.send(&mut relay, &GROUP, "pending deleted comet", NOW + 1);
+    alice.sync(&relay);
+    alice
+        .core
+        .message_deleted(&GROUP, seq)
+        .expect("delete pending row");
+    let db = alice.probe.lock().expect("db");
+    let retained: i64 = db
+        .query_row(
+            "SELECT count(*) FROM app_pending_history WHERE group_id=?1 AND seq=?2",
+            rusqlite::params![GROUP.as_slice(), seq as i64],
+            |r| r.get(0),
+        )
+        .expect("retained count");
+    assert_eq!(retained, 0);
+}
+
+#[test]
+fn revalidation_is_scoped_to_the_leaf_whose_history_arrived() {
+    let (_, mut relay, mut alice, mut bob) = alice_and_bob();
+    let (_, seq) = bob.send(&mut relay, &GROUP, "late leaf specific", NOW + 1);
+    alice.sync(&relay);
+    let bob_leaf = relay.leaf_of(bob.device);
+    {
+        let db = alice.probe.lock().expect("db");
+        db.execute("INSERT INTO app_messages(group_id,seq,epoch,recv_ts,status,reason,sender_device,franking_tag) VALUES(?1,0,1,1,1,'E_DEVICE_LIST_STALE',?2,?3)",
+            rusqlite::params![GROUP.as_slice(), [0x33u8; 16].as_slice(), [0x44u8; 32].as_slice()]).expect("earlier pending row");
+        db.execute("INSERT INTO app_pending_history(group_id,seq,ciphertext,envelope,sender_leaf,sender_credential) VALUES(?1,0,x'80',x'80',999,x'80')",
+            [GROUP.as_slice()]).expect("earlier other leaf");
+    }
+    let (history, head) = list_wire(&bob);
+    alice
+        .core
+        .device_list_ingest(&GROUP, bob_leaf, &bob.user, &history, &head, NOW + 2)
+        .expect("ingest");
+    assert_eq!(
+        alice
+            .core
+            .revalidate_pending(&GROUP, bob_leaf, 1)
+            .expect("bounded revalidate"),
+        1
+    );
+    assert_eq!(alice.row_at(&GROUP, seq).body, "late leaf specific");
+}
+
+#[test]
+fn authenticated_candidate_history_allows_first_contact_add() {
+    let (instance, mut relay, mut alice, bob) = alice_and_bob_trusted();
+    let mut carol = ready_core(0xc3, "carol");
+    instance.propose_add(&mut relay, &carol.first_key_package());
+    let proposals = relay.proposals_body();
+    assert_eq!(
+        code(alice.core.commit_build(&GROUP, &proposals)),
+        "E_DEVICE_LIST_STALE"
+    );
+    let candidates = alice
+        .core
+        .proposed_adds(&GROUP, &proposals)
+        .expect("authenticated candidates");
+    let rows = decode_strict(&candidates, |d| {
+        let n = d.array_len()?;
+        let mut out = Vec::new();
+        for _ in 0..n {
+            d.array(3)?;
+            out.push((d.uint()?, d.bytes_exact::<16>()?, d.uint()?));
+        }
+        Ok(out)
+    })
+    .expect("candidates");
+    assert_eq!(rows, vec![(0, carol.user, 0)]);
+    let (other_history, other_head) = list_wire(&bob);
+    assert_eq!(
+        code(alice.core.device_list_ingest_add(
+            &GROUP,
+            &proposals,
+            0,
+            &carol.user,
+            &other_history,
+            &other_head,
+            NOW
+        )),
+        "E_CREDENTIAL"
+    );
+    let (history, head) = list_wire(&carol);
+    alice
+        .core
+        .device_list_ingest_add(&GROUP, &proposals, 0, &carol.user, &history, &head, NOW)
+        .expect("pre-add ingest");
+    alice
+        .core
+        .commit_build(&GROUP, &proposals)
+        .expect("first contact add");
+}
+
+#[test]
 fn later_sender_verdict_retracts_visible_history_and_advances_generation() {
     let (_, mut relay, mut alice, mut bob) = alice_and_bob_trusted();
+    let before_generation = alice.core.trust_generation().expect("generation");
     let (_, first) = bob.send(&mut relay, &GROUP, "previously visible comet", NOW + 1);
     alice.sync(&relay);
     assert_eq!(alice.row_at(&GROUP, first).body, "previously visible comet");
@@ -213,6 +347,7 @@ fn later_sender_verdict_retracts_visible_history_and_advances_generation() {
     let (_, second) = bob.send(&mut relay, &GROUP, "later comet", NOW + 2);
     alice.sync(&relay);
     assert_eq!(alice.row_at(&GROUP, second).status, 1);
+    assert!(alice.core.trust_generation().expect("generation") > before_generation);
     let old = alice.row_at(&GROUP, first);
     assert_eq!((old.status, old.body.as_str()), (1, ""));
     assert_eq!(
