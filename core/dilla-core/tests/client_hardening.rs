@@ -52,7 +52,7 @@ fn last_resort_key_package(core: &mut Core) -> Vec<u8> {
 
 #[test]
 fn a_foreign_message_served_at_a_seq_already_stored_is_skipped_before_it_is_decrypted() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (_, mine) = b.send(&mut relay, &GROUP, "mine", NOW + 1);
     let (_, theirs) = a.send(&mut relay, &GROUP, "theirs", NOW + 2);
     // The delivery service serves Alice's real ciphertext again, labelled with Bob's own seq.
@@ -89,7 +89,7 @@ fn a_foreign_message_served_at_a_seq_already_stored_is_skipped_before_it_is_decr
 
 #[test]
 fn a_pruned_row_served_at_a_seq_already_stored_is_skipped() {
-    let (_instance, mut relay, a, mut b) = alice_and_bob();
+    let (_instance, mut relay, a, mut b) = alice_and_bob_trusted();
     let (_, mine) = b.send(&mut relay, &GROUP, "mine", NOW + 1);
     let pruned = MsgRow {
         seq: mine,
@@ -115,7 +115,7 @@ fn a_pruned_row_served_at_a_seq_already_stored_is_skipped() {
 
 #[test]
 fn group_joined_never_moves_next_seq_back() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     for i in 0..4 {
         a.send(&mut relay, &GROUP, "filler", NOW + i);
     }
@@ -206,7 +206,7 @@ fn carol_added() -> (Instance, Relay, Core, Core) {
 
 #[test]
 fn an_own_upload_deleted_before_its_echo_leaves_the_outbox_and_a_late_confirm_reads_it_back() {
-    let (_instance, mut relay, mut a, _b) = alice_and_bob();
+    let (_instance, mut relay, mut a, _b) = alice_and_bob_trusted();
     let msg_id = a.prepare(&GROUP, "regret", NOW + 1);
     let (_, body) = a.encrypt(&msg_id);
     let answer = relay.post_message(a.device, &body).expect("upload");
@@ -238,7 +238,7 @@ fn an_own_upload_deleted_before_its_echo_leaves_the_outbox_and_a_late_confirm_re
 
 #[test]
 fn a_late_confirm_at_the_deleted_marker_of_its_own_upload_completes() {
-    let (_instance, mut relay, mut a, _b) = alice_and_bob();
+    let (_instance, mut relay, mut a, _b) = alice_and_bob_trusted();
     let msg_id = a.prepare(&GROUP, "regret", NOW + 1);
     let (_, body) = a.encrypt(&msg_id);
     let answer = relay.post_message(a.device, &body).expect("upload");
@@ -269,7 +269,7 @@ fn a_late_confirm_at_the_deleted_marker_of_its_own_upload_completes() {
 
 #[test]
 fn a_confirm_at_a_seq_holding_another_message_fails_the_row_and_the_group_sends_on() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (_, theirs) = b.send(&mut relay, &GROUP, "theirs", NOW + 1);
     a.sync(&relay);
     let msg_id = a.prepare(&GROUP, "mine", NOW + 2);
@@ -302,7 +302,7 @@ fn a_confirm_at_a_seq_holding_another_message_fails_the_row_and_the_group_sends_
 
 #[test]
 fn the_echo_of_an_earlier_upload_is_adopted_as_that_upload_not_as_the_message_in_flight() {
-    let (_instance, mut relay, _a, mut b) = alice_and_bob();
+    let (_instance, mut relay, _a, mut b) = alice_and_bob_trusted();
     // A is stored by the server, but a proxy answers 502: the engine fails A and sends B.
     let first = b.prepare(&GROUP, "first", NOW + 1);
     let (_, body) = b.encrypt(&first);
@@ -351,7 +351,7 @@ fn the_echo_of_an_earlier_upload_is_adopted_as_that_upload_not_as_the_message_in
 
 #[test]
 fn a_failed_row_whose_commitment_no_echo_carries_is_untouched() {
-    let (_instance, mut relay, _a, mut b) = alice_and_bob();
+    let (_instance, mut relay, _a, mut b) = alice_and_bob_trusted();
     // A was never stored: the request did not reach the server.
     let first = b.prepare(&GROUP, "first", NOW + 1);
     b.encrypt(&first);
@@ -388,7 +388,7 @@ fn a_failed_row_whose_commitment_no_echo_carries_is_untouched() {
 
 #[test]
 fn the_deleted_echo_of_a_failed_upload_resolves_it() {
-    let (_instance, mut relay, _a, mut b) = alice_and_bob();
+    let (_instance, mut relay, _a, mut b) = alice_and_bob_trusted();
     let first = b.prepare(&GROUP, "regret", NOW + 1);
     let (_, body) = b.encrypt(&first);
     let stored = seq_of_answer(&relay.post_message(b.device, &body).expect("upload"));
@@ -404,7 +404,7 @@ fn the_deleted_echo_of_a_failed_upload_resolves_it() {
 
 #[test]
 fn an_own_echo_without_a_served_commitment_is_judged_by_its_ciphertext() {
-    let (_instance, mut relay, _a, mut b) = alice_and_bob();
+    let (_instance, mut relay, _a, mut b) = alice_and_bob_trusted();
     let first = b.prepare(&GROUP, "first", NOW + 1);
     let (_, body) = b.encrypt(&first);
     let stored = seq_of_answer(&relay.post_message(b.device, &body).expect("upload"));
@@ -515,7 +515,7 @@ fn a_group_info_of_another_group_id_is_refused_before_it_is_joined() {
 
 #[test]
 fn an_external_join_never_rebinds_an_existing_row_to_another_channel() {
-    let (instance, _relay, _a, mut b) = alice_and_bob();
+    let (instance, _relay, _a, mut b) = alice_and_bob_trusted();
     // A group with Bob's group id, bound to OTHER_CHANNEL, served for a "resync".
     let mut forged = Relay::new(GROUP);
     let mut carol = ready_core(0xc3, "carol");
@@ -654,7 +654,7 @@ fn plant_group(core: &Core, group_id: [u8; 16], channel: [u8; 16]) {
 
 #[test]
 fn a_stored_group_whose_binding_is_not_its_rows_is_refused_until_a_resync() {
-    let (_instance, mut relay, mut a, b) = alice_and_bob();
+    let (_instance, mut relay, mut a, b) = alice_and_bob_trusted();
     plant_group(&b, GROUP, OTHER_CHANNEL);
     let mut b = b.reopen();
     a.send(&mut relay, &GROUP, "after the swap", NOW + 1);
@@ -685,7 +685,7 @@ fn a_stored_group_whose_binding_is_not_its_rows_is_refused_until_a_resync() {
 /// Alice and Bob talk, Bob queues a message, the instance removes Bob and Alice commits it: Bob's
 /// row is gone (state 4) with its timeline and its outbox.
 fn bob_removed() -> (Instance, Relay, Core, Core) {
-    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     a.send(&mut relay, &GROUP, "before the removal", NOW + 1);
     b.sync(&relay);
     b.prepare(&GROUP, "never sent", NOW + 2);
@@ -732,7 +732,7 @@ fn a_discarded_rejoin_of_a_gone_group_returns_it_to_gone_with_its_history() {
 
 #[test]
 fn a_discarded_join_that_created_its_row_leaves_nothing() {
-    let (_instance, relay, _a, _b) = alice_and_bob();
+    let (_instance, relay, _a, _b) = alice_and_bob_trusted();
     let mut c = ready_core(0xc3, "carol");
     c.core
         .group_join_external(
@@ -753,7 +753,7 @@ fn a_discarded_join_that_created_its_row_leaves_nothing() {
 
 #[test]
 fn a_resync_from_a_group_info_older_than_the_local_group_is_refused() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (old_info, old_tree) = (relay.info_body(), relay.tree_body()); // epoch 1
     a.commit(&mut relay);
     a.commit(&mut relay);
@@ -782,7 +782,7 @@ fn a_resync_from_a_group_info_older_than_the_local_group_is_refused() {
 
 #[test]
 fn a_rejoin_of_a_gone_group_from_an_older_group_info_is_refused() {
-    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (old_info, old_tree) = (relay.info_body(), relay.tree_body()); // epoch 1
     a.commit(&mut relay);
     a.commit(&mut relay);
@@ -949,7 +949,7 @@ fn a_welcome_one_above_the_floor_rejoins() {
 
 #[test]
 fn a_group_info_one_below_the_floor_is_refused_and_one_at_it_rejoins() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (info1, tree1) = (relay.info_body(), relay.tree_body()); // epoch 1
     a.commit(&mut relay);
     assert_eq!(b.sync(&relay).epoch, 2, "floor 2");
@@ -978,7 +978,7 @@ fn a_group_info_one_below_the_floor_is_refused_and_one_at_it_rejoins() {
 
 #[test]
 fn the_floor_survives_a_discarded_rejoin() {
-    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (info1, tree1) = (relay.info_body(), relay.tree_body()); // epoch 1
     a.commit(&mut relay);
     assert_eq!(b.sync(&relay).epoch, 2);
@@ -1184,7 +1184,7 @@ fn a_welcome_whose_epoch_or_tree_hash_is_not_its_label_is_refused() {
 
 #[test]
 fn group_joined_writes_the_joined_epoch_to_the_floor() {
-    let (_instance, _relay, _a, b) = alice_and_bob();
+    let (_instance, _relay, _a, b) = alice_and_bob_trusted();
     assert_eq!(max_epoch(&b), 1);
 }
 
@@ -1198,7 +1198,7 @@ fn welcomes_apply_writes_the_joined_epoch_to_the_floor() {
 
 #[test]
 fn a_commit_merged_in_group_apply_raises_the_floor() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     a.commit(&mut relay);
     assert_eq!(b.sync(&relay).epoch, 2);
     assert_eq!(max_epoch(&b), 2);
@@ -1206,7 +1206,7 @@ fn a_commit_merged_in_group_apply_raises_the_floor() {
 
 #[test]
 fn the_echo_of_an_own_commit_merged_in_group_apply_raises_the_floor() {
-    let (_instance, mut relay, mut a, _b) = alice_and_bob();
+    let (_instance, mut relay, mut a, _b) = alice_and_bob_trusted();
     let body = a
         .core
         .commit_build(&GROUP, &relay.proposals_body())
@@ -1219,7 +1219,7 @@ fn the_echo_of_an_own_commit_merged_in_group_apply_raises_the_floor() {
 
 #[test]
 fn commit_confirm_raises_the_floor() {
-    let (_instance, mut relay, mut a, _b) = alice_and_bob();
+    let (_instance, mut relay, mut a, _b) = alice_and_bob_trusted();
     assert_eq!(max_epoch(&a), 1);
     a.commit(&mut relay);
     assert_eq!(max_epoch(&a), 2);
@@ -1227,7 +1227,7 @@ fn commit_confirm_raises_the_floor() {
 
 #[test]
 fn the_floor_survives_a_discarded_resync() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (info1, tree1) = (relay.info_body(), relay.tree_body()); // epoch 1
     a.commit(&mut relay);
     a.commit(&mut relay);
@@ -1265,7 +1265,7 @@ fn the_floor_survives_a_discarded_resync() {
 /// has had stored for the group, and deleting the group never lowers it.
 #[test]
 fn the_floor_is_the_highest_epoch_ever_stored_at_every_step() {
-    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let mut highest = 0u64;
     let mut check = |b: &Core, step: &str| {
         let epoch = b.group(&GROUP).map_or(0, |g| g.epoch);

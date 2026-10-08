@@ -904,6 +904,32 @@ impl DillaGroup {
         self.group.epoch().as_u64()
     }
 
+    /// Authenticated members of the current MLS tree, including each signature key.
+    pub fn members(&self) -> Vec<Member> {
+        self.group.members().collect()
+    }
+
+    /// One authenticated current-tree member by leaf index.
+    pub fn member_at(&self, leaf_index: u32) -> Option<Member> {
+        self.group.member_at(LeafNodeIndex::new(leaf_index))
+    }
+
+    /// Hash from the signed GroupInfo for this current authenticated tree.
+    pub fn tree_hash(
+        &self,
+        provider: &DillaProvider,
+        signer: &SignatureKeyPair,
+    ) -> Result<[u8; 32], MlsError> {
+        let info = self.export_group_info(provider, signer)?;
+        let openmls::framing::MlsMessageBodyOut::GroupInfo(info) = info.body() else {
+            return Err(MlsError::OpenMls("export was not GroupInfo".into()));
+        };
+        info.group_context()
+            .tree_hash()
+            .try_into()
+            .map_err(|_| MlsError::OpenMls("tree hash is not 32 bytes".into()))
+    }
+
     /// Whether a staged commit awaits a merge or abort.
     pub fn has_pending_commit(&self) -> bool {
         self.group.pending_commit().is_some()

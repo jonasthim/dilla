@@ -81,6 +81,7 @@ pub(super) fn insert_message(
             m.reply_to.map(|v| v.as_slice()),
         ],
     )?;
+    super::search::index_fold(c, m.group_id, m.seq)?;
     Ok(())
 }
 
@@ -113,6 +114,9 @@ pub(super) fn refold_insert(
             }),
             own,
         )?;
+        if let Some(row) = fold::resolve(c, group_id, &target)? {
+            super::search::index_fold(c, group_id, row.seq)?;
+        }
     }
     Ok(())
 }
@@ -362,6 +366,12 @@ impl ClientCore {
                 E_CORE_STATE,
                 format!("group state {}", row.state),
             ));
+        }
+        let blocked: bool = self.read(|c| {
+            c.query_row("SELECT EXISTS(SELECT 1 FROM app_quarantine WHERE group_id=?1 AND code='E_UMK_CHANGED')", [id.as_slice()], |r| r.get(0)).map_err(Into::into)
+        })?;
+        if blocked {
+            return Err(ClientError::new(super::error::E_UMK_CHANGED, ""));
         }
         let input = |detail: &'static str| Err(ClientError::new(E_CORE_INPUT, detail));
         let unheld = || ClientError::new(E_CORE_NOT_FOUND, "target is not held");

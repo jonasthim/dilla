@@ -16,6 +16,8 @@ use dilla_core::mls::{
 use js_sys::Reflect;
 use openmls::prelude::{BasicCredential, CredentialWithKey, GroupId};
 use openmls_basic_credential::SignatureKeyPair;
+#[cfg(feature = "test-hooks")]
+use rusqlite::OptionalExtension;
 use rusqlite::{Connection, OpenFlags};
 use sqlite_wasm_rs::WasmOsCallback;
 use sqlite_wasm_vfs::sahpool::{OpfsSAHError, OpfsSAHPoolCfgBuilder, OpfsSAHPoolUtil, install};
@@ -170,6 +172,49 @@ pub async fn store_open(cfg: StoreOpenConfig) -> Result<StoreHandle, JsValue> {
 }
 
 impl StoreHandle {
+    /// Test-build-only v4-to-v3 downgrade of the encrypted open connection.
+    #[cfg(feature = "test-hooks")]
+    pub fn test_downgrade_v3(&self) -> Result<(), JsError> {
+        self.with_conn(|c| {
+            c.execute_batch(
+                "DROP TRIGGER IF EXISTS app_search_rows_insert;
+            DROP TRIGGER IF EXISTS app_search_rows_delete;
+            DROP TRIGGER IF EXISTS app_search_rows_update;
+            DROP TABLE IF EXISTS app_search;
+            DROP TABLE IF EXISTS app_search_rows;
+            DROP TABLE IF EXISTS app_device_lists;
+            DROP TABLE IF EXISTS app_trust_pins;
+            DROP TABLE IF EXISTS app_quarantine;
+            DELETE FROM app_meta WHERE k='search_fts5';
+            UPDATE app_meta SET v=x'03' WHERE k='schema';",
+            )
+        })
+    }
+
+    /// Test-build-only capability probe, encoded as [schema, search_fts5].
+    #[cfg(feature = "test-hooks")]
+    pub fn test_schema_capability(&self) -> Result<Box<[u8]>, JsError> {
+        self.with_conn(|c| {
+            let schema: Vec<u8> =
+                c.query_row("SELECT v FROM app_meta WHERE k='schema'", [], |r| r.get(0))?;
+            let capability: Option<Vec<u8>> = c
+                .query_row("SELECT v FROM app_meta WHERE k='search_fts5'", [], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            let mut e = dilla_core::cbor::Encoder::new();
+            e.array(2)
+                .uint(u64::from(*schema.first().unwrap_or(&0)))
+                .uint(u64::from(
+                    capability
+                        .as_deref()
+                        .and_then(|v| v.first())
+                        .copied()
+                        .unwrap_or(0),
+                ));
+            Ok(e.into_vec().into_boxed_slice())
+        })
+    }
     fn shared(&self) -> Option<ConnHandle> {
         self.conn.borrow().as_ref().map(Rc::clone)
     }

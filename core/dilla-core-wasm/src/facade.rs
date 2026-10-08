@@ -172,6 +172,18 @@ impl CoreHandle {
     pub fn capacity(&self) -> u32 {
         self.store.capacity()
     }
+    /// Test build only: leave a real encrypted v3 store for the next open.
+    #[cfg(feature = "test-hooks")]
+    pub fn test_downgrade_to_v3_and_force_no_fts(&self) -> Result<(), JsError> {
+        self.store.test_downgrade_v3()?;
+        dilla_core::client::test_force_missing_fts5(true);
+        Ok(())
+    }
+    /// Test build only: [schema, FTS5 capability].
+    #[cfg(feature = "test-hooks")]
+    pub fn test_schema_capability(&self) -> Result<Box<[u8]>, JsError> {
+        self.store.test_schema_capability()
+    }
     /// Reserves capacity in the store.
     pub async fn reserve_capacity(&self, n: u32) -> Result<(), JsError> {
         self.store.reserve_capacity(n).await
@@ -565,6 +577,78 @@ impl CoreHandle {
     /// Calls ClientCore::settings; CBOR [[k, v]].
     pub fn settings(&self) -> Result<Box<[u8]>, JsError> {
         self.with_core(|c| c.settings()).map(Vec::into_boxed_slice)
+    }
+    /// Authenticated current tree leaves needing a signed-list refresh.
+    pub fn pending_leaves(&self) -> Result<Box<[u8]>, JsError> {
+        self.with_core(|c| c.pending_leaves())
+            .map(Vec::into_boxed_slice)
+    }
+    /// Validate a paged signed list against one current MLS leaf.
+    pub fn device_list_ingest(
+        &self,
+        group_id: &[u8],
+        leaf_index: u32,
+        requested_user: &[u8],
+        history_body: &[u8],
+        head_list: &[u8],
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let requested_user = js_fixed_arg::<16>("requested_user", requested_user)?;
+        self.with_core(|c| {
+            c.device_list_ingest(
+                &group_id,
+                leaf_index,
+                &requested_user,
+                history_body,
+                head_list,
+                now,
+            )
+        })
+        .map(Vec::into_boxed_slice)
+    }
+    /// Public-key-only local contact trust state.
+    pub fn trust_state(&self) -> Result<Box<[u8]>, JsError> {
+        self.with_core(|c| c.trust_state())
+            .map(Vec::into_boxed_slice)
+    }
+    /// Approve the exact pending validated contact key.
+    pub fn trust_verify(&self, user_id: &[u8], expected_umk: &[u8]) -> Result<(), JsError> {
+        let user_id = js_fixed_arg::<16>("user_id", user_id)?;
+        let expected_umk = js_fixed_arg::<32>("expected_umk", expected_umk)?;
+        self.with_core(|c| c.trust_verify(&user_id, &expected_umk))
+    }
+    /// Pairwise twelve-group decimal comparison number.
+    pub fn safety_number_for(&self, user_id: &[u8]) -> Result<String, JsError> {
+        let user_id = js_fixed_arg::<16>("user_id", user_id)?;
+        self.with_core(|c| c.safety_number_for(&user_id))
+    }
+    /// Bounded search of displayable local folded text.
+    pub fn search(
+        &self,
+        scope_kind: u32,
+        scope_id: Option<Vec<u8>>,
+        query: &str,
+        before: Option<Vec<u8>>,
+        limit: u32,
+    ) -> Result<Box<[u8]>, JsError> {
+        let scope_kind = u8::try_from(scope_kind).map_err(|_| JsError::new("E_CORE_INPUT"))?;
+        let scope_id = scope_id
+            .as_deref()
+            .map(|v| js_fixed_arg::<16>("scope_id", v))
+            .transpose()?;
+        let before = before
+            .as_deref()
+            .map(|raw| {
+                dilla_core::cbor::decode_strict(raw, |d| {
+                    d.array(3)?;
+                    Ok((d.uint()?, d.bytes_exact::<16>()?, d.uint()?))
+                })
+                .map_err(|_| JsError::new("E_CORE_INPUT"))
+            })
+            .transpose()?;
+        self.with_core(|c| c.search(scope_kind, scope_id.as_ref(), query, before, limit))
+            .map(Vec::into_boxed_slice)
     }
     /// Calls ClientCore::setting_put.
     pub fn setting_put(&self, k: &str, v: &str) -> Result<(), JsError> {

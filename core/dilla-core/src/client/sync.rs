@@ -130,6 +130,9 @@ fn refold_deleted(
         && let Some(target) = fold::target_of(ty, msg_id, reply_to)
     {
         fold::refold(c, id, &target, &fold::FoldScope::Full, None, None)?;
+        if let Some(row) = fold::resolve(c, id, &target)? {
+            super::search::index_fold(c, id, row.seq)?;
+        }
     }
     Ok(())
 }
@@ -180,6 +183,7 @@ fn apply_message(
         )?;
         if changed > 0 {
             refold_deleted(c, id, stored)?;
+            super::search::index_fold(c, id, row.seq)?;
             return Ok((true, false));
         }
         // The deleted upload of an unresolved outbox row (its commitment survives the deletion): the
@@ -464,6 +468,7 @@ impl ClientCore {
             let stored = stored_kind(c, id, seq)?;
             let changed = c.execute("UPDATE app_messages SET status=2,body='',envelope=NULL,reason='' WHERE group_id=?1 AND seq=?2 AND status<>2", params![id.as_slice(), seq_i])?;
             if changed == 1 { refold_deleted(c, id, stored)?; }
+            if changed == 1 { super::search::index_fold(c,id,seq)?; }
             let proposals = c.query_row("SELECT COUNT(*) FROM app_proposals WHERE group_id=?1", [id.as_slice()], |r| r.get(0))?;
             Ok((changed, proposals))
         })?))?;
@@ -582,7 +587,15 @@ impl ClientCore {
                                             group.clear_pending_commit(ctx.provider)?;
                                             u.with_conn(|c| set_pending(c, id, false))?;
                                         }
+                                        let old_devices = super::trust::member_devices(&group);
                                         group.merge_staged_commit(ctx.provider, *commit)?;
+                                        let current_devices = super::trust::member_devices(&group);
+                                        u.with_conn(|c| {
+                                            for device in old_devices.iter().filter(|d| !current_devices.contains(d)) {
+                                                super::trust::clear_group_block(c,id,device)?;
+                                            }
+                                            Ok(())
+                                        })?;
                                         let held = checked("epoch", group.epoch())?;
                                         u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; raise_floor(c, id, held)?; set_mls(c, id, held, false) })?;
                                         epoch_changed = true;
@@ -644,7 +657,11 @@ impl ClientCore {
                                     Ok(DillaProcessed::Application(r))
                                         if r.sender.device_id.as_bytes() == &m.uploader_device =>
                                     {
-                                        (STATUS_OK, "", Some(r))
+                                        let verdict = u.with_conn(|c| Ok(super::trust::validate_cached_sender(c,&group,id,&r)))?;
+                                        match verdict {
+                                            Ok(()) => (STATUS_OK, "", Some(r)),
+                                            Err(e) => (STATUS_CANNOT_DECRYPT, e.code, None),
+                                        }
                                     }
                                     Ok(DillaProcessed::Application(_)) => {
                                         (STATUS_CANNOT_DECRYPT, REASON_SENDER_MISMATCH, None)

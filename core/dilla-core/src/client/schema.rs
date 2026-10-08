@@ -2,7 +2,18 @@
 
 use crate::cbor::decode_strict;
 use crate::mls::{DillaStorage, StorageError, TxError};
+#[cfg(any(test, feature = "test-hooks"))]
+use core::sync::atomic::{AtomicBool, Ordering};
 use rusqlite::OptionalExtension;
+
+#[cfg(any(test, feature = "test-hooks"))]
+static FORCE_MISSING_FTS5: AtomicBool = AtomicBool::new(false);
+
+/// Test-build-only simulation of an OPFS SQLite binary without FTS5.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn test_force_missing_fts5(on: bool) {
+    FORCE_MISSING_FTS5.store(on, Ordering::SeqCst);
+}
 
 /// Rows of `app_handshake_tail` kept per group; the oldest are deleted in the inserting unit.
 pub const HANDSHAKE_TAIL: usize = 64;
@@ -163,6 +174,92 @@ CREATE INDEX IF NOT EXISTS app_messages_by_pin ON app_messages (group_id, reply_
 CREATE INDEX IF NOT EXISTS app_messages_by_reaction ON app_messages (group_id, reply_to, sender_user, body, seq);
 ";
 
+const APP_SCHEMA_V4: &str = "
+CREATE TABLE IF NOT EXISTS app_device_lists (
+  user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
+  version INTEGER NOT NULL, list BLOB NOT NULL,
+  umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
+  ssk_pub BLOB NOT NULL CHECK(length(ssk_pub)=32)
+);
+CREATE TABLE IF NOT EXISTS app_trust_pins (
+  user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
+  umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
+  first_seen INTEGER NOT NULL,
+  verified INTEGER NOT NULL CHECK(verified IN(0,1)),
+  changed_umk BLOB CHECK(changed_umk IS NULL OR length(changed_umk)=32)
+);
+CREATE TABLE IF NOT EXISTS app_quarantine (
+  group_id BLOB NOT NULL, device_id BLOB NOT NULL, code TEXT NOT NULL,
+  PRIMARY KEY(group_id,device_id)
+);
+CREATE TABLE IF NOT EXISTS app_search_rows (
+  rowid INTEGER PRIMARY KEY,
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  seq INTEGER NOT NULL, body TEXT NOT NULL, terms TEXT NOT NULL,
+  UNIQUE(group_id,seq)
+);
+CREATE INDEX IF NOT EXISTS app_search_rows_recent ON app_search_rows(group_id DESC,seq DESC);
+CREATE INDEX IF NOT EXISTS app_quarantine_device ON app_quarantine(device_id,group_id);
+";
+
+const APP_FTS5: &str = "
+CREATE VIRTUAL TABLE IF NOT EXISTS app_search USING fts5(body, content='', tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER IF NOT EXISTS app_search_rows_insert AFTER INSERT ON app_search_rows BEGIN
+  INSERT INTO app_search(rowid,body) VALUES(new.rowid,new.body);
+END;
+CREATE TRIGGER IF NOT EXISTS app_search_rows_delete AFTER DELETE ON app_search_rows BEGIN
+  INSERT INTO app_search(app_search,rowid,body) VALUES('delete',old.rowid,old.body);
+END;
+CREATE TRIGGER IF NOT EXISTS app_search_rows_update AFTER UPDATE OF body ON app_search_rows BEGIN
+  INSERT INTO app_search(app_search,rowid,body) VALUES('delete',old.rowid,old.body);
+  INSERT INTO app_search(rowid,body) VALUES(new.rowid,new.body);
+END;
+";
+
+fn open_fts5(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    c.execute_batch("SAVEPOINT search_fts5")?;
+    #[cfg(any(test, feature = "test-hooks"))]
+    if FORCE_MISSING_FTS5.load(Ordering::SeqCst) {
+        c.execute_batch("ROLLBACK TO search_fts5; RELEASE search_fts5")?;
+        meta_put(c, "search_fts5", &[0])?;
+        return Ok(());
+    }
+    let result = c.execute_batch(APP_FTS5);
+    match result {
+        Ok(()) => {
+            c.execute_batch(
+                "INSERT INTO app_search(app_search) VALUES('delete-all');
+                INSERT INTO app_search(rowid,body) SELECT rowid,body FROM app_search_rows;
+                RELEASE search_fts5",
+            )?;
+            meta_put(c, "search_fts5", &[1])?;
+        }
+        Err(e) if e.to_string().contains("no such module: fts5") => {
+            c.execute_batch("ROLLBACK TO search_fts5; RELEASE search_fts5")?;
+            meta_put(c, "search_fts5", &[0])?;
+        }
+        Err(e) => {
+            c.execute_batch("ROLLBACK TO search_fts5; RELEASE search_fts5")?;
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
+fn backfill_search_rows(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    let mut stmt = c.prepare(
+        "SELECT group_id,seq FROM app_messages WHERE status=0 AND type=0 ORDER BY group_id,seq",
+    )?;
+    let rows: Vec<([u8; 16], i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    drop(stmt);
+    for (group, seq) in rows {
+        super::search::index_fold(c, &group, seq as u64)?;
+    }
+    Ok(())
+}
+
 /// L-SQL-20, run on a v1 store only, after `APP_SCHEMA`; the backfill follows in the same unit.
 const MIGRATE_V1_TO_V2: &str = "
 ALTER TABLE app_groups   ADD COLUMN epoch          INTEGER NOT NULL DEFAULT 0;
@@ -191,8 +288,16 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     if found == 1 || found == 2 {
         c.execute_batch(MIGRATE_V2_TO_V3)?;
     }
-    if found <= 3 {
+    if found <= 4 {
         c.execute_batch(APP_INDEXES_V3)?;
+        c.execute_batch(APP_SCHEMA_V4)?;
+        if found < 4 {
+            backfill_search_rows(c)?;
+        }
+        if found < 4 || meta_get(c, "search_fts5")?.is_none() {
+            open_fts5(c)?;
+        }
+        meta_put(c, SCHEMA, &[4])?;
     }
     Ok(found)
 }

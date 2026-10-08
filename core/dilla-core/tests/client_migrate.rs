@@ -20,6 +20,62 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/app_v1.db");
+const V3_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/app_v3.db");
+
+#[test]
+#[ignore = "writes tests/fixtures/app_v3.db before v4 implementation"]
+fn write_the_v3_fixture() {
+    let _ = std::fs::remove_file(V3_FIXTURE);
+    let handle: ConnHandle = Arc::new(Mutex::new(
+        rusqlite::Connection::open(V3_FIXTURE).expect("create v3 fixture"),
+    ));
+    let mut core = ClientCore::open(Arc::clone(&handle)).expect("v3 open");
+    core.setting_put("density", "compact").expect("setting");
+    drop(core);
+    let db = handle.lock().expect("lock fixture");
+    let schema: Vec<u8> = db
+        .query_row("SELECT v FROM app_meta WHERE k='schema'", [], |r| r.get(0))
+        .expect("schema");
+    assert_eq!(schema, vec![0x03]);
+    db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .expect("checkpoint");
+}
+
+#[test]
+fn v3_fixture_migrates_and_keeps_settings_with_or_without_fts() {
+    let (path, handle) = copy_of(V3_FIXTURE, "v3-to-v4");
+    let core = ClientCore::open(Arc::clone(&handle)).expect("v4 open");
+    assert!(settings_of(&core).contains(&("density".to_owned(), "compact".to_owned())));
+    let db = handle.lock().expect("db");
+    let schema: Vec<u8> = db
+        .query_row("SELECT v FROM app_meta WHERE k='schema'", [], |r| r.get(0))
+        .expect("schema");
+    assert_eq!(schema, vec![0x04]);
+    for table in [
+        "app_device_lists",
+        "app_trust_pins",
+        "app_quarantine",
+        "app_search_rows",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |r| r.get(0),
+            )
+            .expect("table");
+        assert_eq!(count, 1, "missing {table}");
+    }
+    let cap: Vec<u8> = db
+        .query_row("SELECT v FROM app_meta WHERE k='search_fts5'", [], |r| {
+            r.get(0)
+        })
+        .expect("capability");
+    assert!(cap == [0] || cap == [1]);
+    drop(db);
+    drop(core);
+    std::fs::remove_file(path).expect("remove copy");
+}
 const PENDING_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/app_v1_pending.db"
@@ -404,7 +460,7 @@ fn a_v1_store_opens_as_v3_with_every_column_backfilled() {
     let core = ClientCore::open(Arc::clone(&conn)).expect("open the v1 fixture");
     {
         let c = conn.lock().expect("lock");
-        assert_eq!(meta_of(&c, "schema"), Some(vec![0x03]));
+        assert_eq!(meta_of(&c, "schema"), Some(vec![0x04]));
         // A migrated store and a fresh one have the same columns, in the same order.
         let fresh = memory();
         drop(ClientCore::open(Arc::clone(&fresh)).expect("a fresh store"));
@@ -695,7 +751,7 @@ fn migrate_app_reports_the_schema_it_found() {
     );
     assert_eq!(
         meta_of(&conn.lock().expect("lock"), "schema"),
-        Some(vec![0x03])
+        Some(vec![0x04])
     );
     assert_eq!(
         conn.lock()
@@ -722,8 +778,8 @@ fn migrate_app_reports_the_schema_it_found() {
         2
     );
     assert_eq!(
-        migrate_app(&DillaStorage::new(Arc::clone(&conn))).expect("v3"),
-        3
+        migrate_app(&DillaStorage::new(Arc::clone(&conn))).expect("v4"),
+        4
     );
     assert_eq!(migrate_app(&DillaStorage::new(memory())).expect("fresh"), 3);
     drop(conn);
@@ -918,7 +974,7 @@ fn a_v1_pending_signup_migrates_and_completes_to_a_v2_identity() {
     let mut core = ClientCore::open(Arc::clone(&conn)).expect("open the v1 pending fixture");
     {
         let c = conn.lock().expect("lock");
-        assert_eq!(meta_of(&c, "schema"), Some(vec![0x03]));
+        assert_eq!(meta_of(&c, "schema"), Some(vec![0x04]));
         assert_eq!(
             meta_of(&c, "signup"),
             Some(signup),
@@ -1268,7 +1324,7 @@ fn a_v2_store_opens_as_v3_with_its_folds_applied() {
     let core = ClientCore::open(Arc::clone(&conn)).expect("open the v2 fixture");
     {
         let c = conn.lock().expect("lock");
-        assert_eq!(meta_of(&c, "schema"), Some(vec![0x03]));
+        assert_eq!(meta_of(&c, "schema"), Some(vec![0x04]));
         let fresh = memory();
         drop(ClientCore::open(Arc::clone(&fresh)).expect("a fresh store"));
         let fresh = fresh.lock().expect("lock");

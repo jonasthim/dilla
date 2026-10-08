@@ -36,6 +36,13 @@ fn fold_start() -> (Instance, Relay, Core, RawPeer) {
         "the peer's external commit is seq 1"
     );
     me.sync(&relay);
+    ingest_list_body(
+        &mut me,
+        &relay,
+        peer.user,
+        peer.device,
+        &peer.device_list_body(),
+    );
     (instance, relay, me, peer)
 }
 
@@ -53,6 +60,17 @@ fn join(
         m.apply_commit(relay, seq);
     }
     me.sync(relay);
+    if let Some(first) = members.iter().find(|member| member.user == joiner.user) {
+        ingest_raw_peer_pair(me, relay, first, &joiner);
+    } else {
+        ingest_list_body(
+            me,
+            relay,
+            joiner.user,
+            joiner.device,
+            &joiner.device_list_body(),
+        );
+    }
     joiner
 }
 
@@ -1441,12 +1459,26 @@ fn alice_twice_and_bob() -> (Relay, Core, Core, Core) {
     a2.join_external(&mut relay);
     a.sync(&relay);
     b.sync(&relay);
+    ingest_core_list(&mut a, &relay, &b);
+    ingest_core_list(&mut a2, &relay, &b);
+    ingest_core_list(&mut a2, &relay, &a);
+    let first_body = a.core.device_list_body().expect("first list");
+    let second_body = a2.core.device_list_body().expect("enrolled list");
+    ingest_enrolled_pair_bodies(
+        &mut a,
+        &relay,
+        a2.user,
+        a2.device,
+        &first_body,
+        &second_body,
+    );
+    ingest_enrolled_pair(&mut b, &relay, &a, &a2);
     (relay, a, a2, b)
 }
 
 #[test]
 fn every_type_sent_by_one_core_is_folded_by_the_other() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (m, s) = a.send_request(&mut relay, &GROUP, &request(0, None, "hello", &[]), NOW);
     b.sync(&relay);
 
@@ -1531,7 +1563,7 @@ fn every_type_sent_by_one_core_is_folded_by_the_other() {
 /// sender from building an envelope the receivers' fold would ignore, and write nothing.
 #[test]
 fn send_prepare_refuses_each_rule_and_writes_nothing() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (mine, _) = a.send_request(&mut relay, &GROUP, &request(0, None, "mine", &[]), NOW);
     let (theirs, _) = b.send_request(&mut relay, &GROUP, &request(0, None, "theirs", &[]), NOW);
     a.sync(&relay);
@@ -1657,7 +1689,7 @@ fn send_prepare_refuses_each_rule_and_writes_nothing() {
 
 #[test]
 fn only_the_author_may_edit_or_delete() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (theirs, s) = b.send_request(&mut relay, &GROUP, &request(0, None, "theirs", &[]), NOW);
     a.sync(&relay);
     for (ty, body) in [(1u64, "rewritten"), (2, "")] {
@@ -1685,7 +1717,7 @@ fn only_the_author_may_edit_or_delete() {
 
 #[test]
 fn an_attachment_only_message_is_sent_and_its_descriptors_read_back() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let files = [attachment(0x31), attachment(0x32)];
     let msg = a.prepare_request(&GROUP, &request(0, None, "", &files), NOW);
     let out = a.outbox(&GROUP);
@@ -1810,7 +1842,7 @@ fn an_attachment_only_message_is_sent_and_its_descriptors_read_back() {
 
 #[test]
 fn the_outbox_row_carries_the_type_the_target_and_attachment_summaries() {
-    let (_instance, mut relay, mut a, _b) = alice_and_bob();
+    let (_instance, mut relay, mut a, _b) = alice_and_bob_trusted();
     let (m, _) = a.send_request(&mut relay, &GROUP, &request(0, None, "target", &[]), NOW);
     let react = a.prepare_request(&GROUP, &request(3, Some(&m), "👍", &[]), NOW + 1);
     let reply = a.prepare_request(
@@ -1999,7 +2031,7 @@ fn a_delete_received_from_the_own_users_other_device_records_no_purge() {
 
 #[test]
 fn a_delete_whose_echo_arrives_first_records_the_purge_on_adoption() {
-    let (_instance, mut relay, mut a, _b) = alice_and_bob();
+    let (_instance, mut relay, mut a, _b) = alice_and_bob_trusted();
     let (m, s) = a.send_request(
         &mut relay,
         &GROUP,

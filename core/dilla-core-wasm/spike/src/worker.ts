@@ -315,6 +315,30 @@ function fromHex(s: string): Uint8Array {
   return out;
 }
 
+/** The small deterministic CBOR subset returned by the test-only schema probe and search. */
+function decodeCoreValue(bytes: Uint8Array): unknown {
+  let at = 0;
+  const read = (): unknown => {
+    const head = bytes[at++];
+    if (head === undefined) throw new Error('E_SPIKE_SHAPE: short CBOR');
+    const major = head >> 5;
+    const ai = head & 31;
+    const length = ai < 24 ? ai : ai === 24 ? bytes[at++] : ai === 25 ? ((bytes[at++] ?? 0) << 8) | (bytes[at++] ?? 0) : undefined;
+    if (length === undefined) throw new Error('E_SPIKE_SHAPE: unsupported CBOR length');
+    if (major === 0) return length;
+    if (major === 4) return Array.from({ length }, read);
+    if (major === 2 || major === 3) {
+      const chunk = bytes.subarray(at, at + length);
+      at += length;
+      return major === 2 ? chunk : new TextDecoder().decode(chunk);
+    }
+    throw new Error('E_SPIKE_SHAPE: unsupported CBOR type');
+  };
+  const value = read();
+  if (at !== bytes.length) throw new Error('E_SPIKE_SHAPE: trailing CBOR');
+  return value;
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -405,6 +429,20 @@ async function runCore(op: string, instance: string): Promise<Record<string, unk
         confirm: toHex(confirm),
         encryptHead: toHex(encrypted.subarray(0, 18)),
       };
+    }
+    case 'seed-v3': {
+      const c = need() as CoreHandle & { test_downgrade_to_v3_and_force_no_fts(): void; test_schema_capability(): Uint8Array };
+      c.test_downgrade_to_v3_and_force_no_fts();
+      const [schema] = decodeCoreValue(c.test_schema_capability()) as [number, number];
+      c.close();
+      core = undefined;
+      return { schema, closed: true };
+    }
+    case 'search-fallback': {
+      const c = need() as CoreHandle & { test_schema_capability(): Uint8Array };
+      const [schema, searchFts5] = decodeCoreValue(c.test_schema_capability()) as [number, number];
+      const rows = decodeCoreValue(c.search(2, null, 'hello from', null, 50)) as [Uint8Array, number, string, number][];
+      return { schema, searchFts5, hits: rows.length, snippet: rows[0]?.[2] ?? '' };
     }
     case 'snapshot': {
       const c = need();

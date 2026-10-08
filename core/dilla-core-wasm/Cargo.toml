@@ -10,6 +10,9 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]      # wasm-pack requires cdylib on the crate it is given
 
+[features]
+test-hooks = ["dilla-core/test-hooks"]
+
 [dependencies]
 dilla-core = { path = "../dilla-core", features = ["vectors"] }
 wasm-bindgen         = "0.2.128"

@@ -40,7 +40,7 @@ export default defineConfig({
     // not run here.
     {
       name: 'firefox-persistent',
-      testMatch: /(mls-store|core-handle)\.spec\.ts$/,
+      testMatch: /(mls-store|core-handle|core-search-opfs)\.spec\.ts$/,
       use: { ...devices['Desktop Firefox'] },
     },
   ],

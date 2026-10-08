@@ -32,13 +32,32 @@ use rusqlite::OptionalExtension;
 use std::sync::{Arc, Mutex};
 
 mod client_support;
-use client_support::{Instance, Relay, enrolled_core, ready_core_with_key, request};
+use client_support::{
+    Instance, RawPeer, Relay, enrolled_core, ingest_enrolled_pair_bodies, ingest_list_body,
+    ready_core_with_key, request,
+};
 
 const INSTANCE: [u8; 16] = [0x11; 16];
 const USER: [u8; 16] = [0x42; 16];
 const GROUP: [u8; 16] = [0x77; 16];
 const NOW: u64 = 1_790_000_000;
 const IDENTITY_JSON: &str = include_str!("../../../protocol/vectors/identity.json");
+
+#[test]
+fn raw_peer_identity_signs_its_actual_mls_key() {
+    let peer = RawPeer::new(0x71, 0x72);
+    let basic = BasicCredential::try_from(peer.credential.credential.clone()).expect("basic");
+    let identity = CredentialIdentity::decode(basic.identity()).expect("identity");
+    let dsk_pub: [u8; 32] = peer
+        .credential
+        .signature_key
+        .as_slice()
+        .try_into()
+        .expect("dsk");
+    identity
+        .verify_signatures(&dsk_pub)
+        .expect("signed device key");
+}
 
 // ---------------------------------------------------------------------------------------------
 // fixtures
@@ -605,16 +624,16 @@ fn client_errors_render_and_convert_as_the_code_table_says() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// app schema v3 (L-SQL-30) and ClientCore::open (L-CORE-05)
+// app schema v4 (L-SQL-32) and ClientCore::open (L-CORE-05)
 
 #[test]
-fn open_creates_app_schema_v3_and_reopens_idempotently() {
+fn open_creates_app_schema_v4_and_reopens_idempotently() {
     let c = conn();
     drop(ClientCore::open(c.clone()).expect("first open"));
     drop(ClientCore::open(c.clone()).expect("second open over the same database"));
     assert_eq!(
         migrate_app(&DillaStorage::new(c.clone())).expect("migrate_app is idempotent on its own"),
-        3
+        4
     );
     let guard = c.lock().expect("lock");
     let names: Vec<String> = guard
@@ -630,6 +649,7 @@ fn open_creates_app_schema_v3_and_reopens_idempotently() {
     assert_eq!(
         names,
         [
+            "app_device_lists",
             "app_groups",
             "app_groups_by_target",
             "app_handshake_tail",
@@ -644,10 +664,20 @@ fn open_creates_app_schema_v3_and_reopens_idempotently() {
             "app_pins",
             "app_proposals",
             "app_purges",
+            "app_quarantine",
+            "app_quarantine_device",
             "app_reactions",
             "app_read_state",
             "app_roles",
+            "app_search",
+            "app_search_config",
+            "app_search_data",
+            "app_search_docsize",
+            "app_search_idx",
+            "app_search_rows",
+            "app_search_rows_recent",
             "app_settings",
+            "app_trust_pins",
         ]
     );
     let schema: Vec<u8> = guard
@@ -655,7 +685,7 @@ fn open_creates_app_schema_v3_and_reopens_idempotently() {
             r.get(0)
         })
         .expect("schema row");
-    assert_eq!(schema, [0x03]);
+    assert_eq!(schema, [0x04]);
     let resync: i64 = guard
         .query_row(
             "SELECT count(*) FROM pragma_table_info('app_groups') WHERE name = 'resync'",
@@ -780,7 +810,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         .expect("lock")
         .execute_batch(
             "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
-             INSERT INTO app_meta (k, v) VALUES ('schema', x'04');",
+             INSERT INTO app_meta (k, v) VALUES ('schema', x'05');",
         )
         .expect("seed");
     let e = match ClientCore::open(c) {
@@ -791,7 +821,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         e,
         ClientError {
             code: "E_CORE_STATE",
-            detail: "app schema 4 is newer than this build".into()
+            detail: "app schema 5 is newer than this build".into()
         }
     );
 }
@@ -4034,6 +4064,17 @@ fn an_enrolled_browser_joins_a_group_of_its_account_and_both_read_each_other() {
     first.create_and_register(&mut relay, &instance);
     added.join_external(&mut relay);
     first.sync(&relay);
+    let first_body = first.core.device_list_body().expect("first signed list");
+    let added_body = added.core.device_list_body().expect("enrolled signed list");
+    ingest_enrolled_pair_bodies(
+        &mut first,
+        &relay,
+        added.user,
+        added.device,
+        &first_body,
+        &added_body,
+    );
+    ingest_list_body(&mut added, &relay, first.user, first.device, &first_body);
     added.send(&mut relay, &group, "from the second browser", LATER + 1);
     first.send(&mut relay, &group, "from the first browser", LATER + 2);
     first.sync(&relay);

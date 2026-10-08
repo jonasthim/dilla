@@ -175,6 +175,8 @@ fn an_external_join_reaches_active_and_both_sides_read_each_other() {
     assert_eq!(applied.flags & EPOCH_CHANGED, EPOCH_CHANGED);
     assert!(applied.new_seqs.is_empty());
     assert_eq!(applied.next_seq, relay.through() + 1);
+    ingest_core_list(&mut b, &relay, &a);
+    ingest_core_list(&mut a, &relay, &b);
 
     let (msg_id, seq) = a.send(
         &mut relay,
@@ -311,7 +313,7 @@ fn an_external_join_rejects_a_group_info_labelled_with_another_group_id() {
 
 #[test]
 fn a_mislabelled_external_resync_preserves_the_existing_group() {
-    let (_instance, _relay, _a, mut joiner) = alice_and_bob();
+    let (_instance, _relay, _a, mut joiner) = alice_and_bob_trusted();
     let instance = Instance::generate();
     let mut other_relay = Relay::new(OTHER_GROUP);
     let mut creator = ready_core(0xc3, "carol");
@@ -346,7 +348,7 @@ fn a_mislabelled_external_resync_preserves_the_existing_group() {
 
 #[test]
 fn a_resync_replaces_the_local_group_and_a_discarded_resync_returns_to_needs_resync() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     a.send(&mut relay, &GROUP, "before the resync", NOW + 1);
     b.sync(&relay);
 
@@ -485,6 +487,15 @@ fn a_welcome_joins_against_the_expected_binding_and_reports_every_outcome() {
     );
 
     // Both read what the welcoming member sends.
+    for member in [&mut c, &mut d] {
+        ingest_list_body(
+            member,
+            &relay,
+            peer.user,
+            peer.device,
+            &peer.device_list_body(),
+        );
+    }
     let seq = peer.send(&mut relay, "welcome aboard");
     for member in [&mut c, &mut d] {
         assert_eq!(member.sync(&relay).new_seqs, vec![seq]);
@@ -499,7 +510,7 @@ fn a_welcome_joins_against_the_expected_binding_and_reports_every_outcome() {
 
 #[test]
 fn a_welcome_labelled_with_another_group_id_preserves_the_stale_group() {
-    let (_instance, _relay, _a, mut joiner) = alice_and_bob();
+    let (_instance, _relay, _a, mut joiner) = alice_and_bob_trusted();
     let key_package = joiner.first_key_package();
     let instance = Instance::generate();
     let mut other_relay = Relay::new(OTHER_GROUP);
@@ -546,7 +557,7 @@ fn a_welcome_labelled_with_another_group_id_preserves_the_stale_group() {
 
 #[test]
 fn a_mislabelled_upload_is_stored_unreadable_with_e_sender_mismatch() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let msg_id = b.prepare(&GROUP, "who sent this", NOW + 1);
     let (_, body) = b.encrypt(&msg_id);
     let mislabel = [0x77; 16];
@@ -612,7 +623,7 @@ fn a_sender_whose_credential_does_not_decode_is_unreadable_with_e_credential() {
 
 #[test]
 fn deleted_pruned_and_unknown_own_rows_are_stored_without_a_body() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     // Alice's own confirmed message, deleted before Alice applies its seq.
     let (_, own) = a.send(&mut relay, &GROUP, "regret", NOW + 1);
     relay.delete_message(own);
@@ -672,7 +683,7 @@ fn deleted_pruned_and_unknown_own_rows_are_stored_without_a_body() {
 
 #[test]
 fn the_own_echo_is_adopted_from_the_outbox_and_send_confirm_reads_it_back() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let msg_id = a.prepare(&GROUP, "lost answer", NOW + 1);
     let (_, body) = a.encrypt(&msg_id);
     let answer = relay.post_message(a.device, &body).expect("upload");
@@ -720,7 +731,7 @@ fn the_own_echo_is_adopted_from_the_outbox_and_send_confirm_reads_it_back() {
 
 #[test]
 fn a_failed_row_insert_rolls_back_the_ratchet_and_the_retry_decrypts() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (_, seq) = b.send(&mut relay, &GROUP, "survives the failure", NOW + 1);
     let before = a.group(&GROUP).expect("row").next_seq;
 
@@ -933,7 +944,7 @@ fn send_prepare_checks_the_body_the_group_and_the_phase() {
 
 #[test]
 fn the_timeline_pages_backwards_from_a_seq() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let mut seqs = Vec::new();
     for i in 0..5u64 {
         seqs.push(
@@ -963,7 +974,7 @@ fn the_timeline_pages_backwards_from_a_seq() {
 
 #[test]
 fn group_apply_refuses_malformed_rows_and_groups_that_are_not_active() {
-    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (_, seq) = b.send(&mut relay, &GROUP, "first", NOW + 1);
     let through = relay.through();
 
@@ -1098,7 +1109,7 @@ fn group_apply_refuses_malformed_rows_and_groups_that_are_not_active() {
 
 #[test]
 fn a_reopened_core_reloads_its_groups_and_keeps_the_timeline() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     a.send(&mut relay, &GROUP, "before the reload", NOW + 1);
     b.sync(&relay);
     let groups_before = groups(&b.core);
@@ -1153,6 +1164,8 @@ fn a_dm_group_carries_a_null_community_from_creation_to_both_sides_reading() {
         .expect("group_registered");
     b.join_external_in(&mut relay, None, &DM_CHANNEL);
     a.sync(&relay);
+    ingest_core_list(&mut b, &relay, &a);
+    ingest_core_list(&mut a, &relay, &b);
     for core in [&a, &b] {
         let row = core.group(&DM_GROUP).expect("row");
         assert_eq!(
