@@ -33,7 +33,7 @@ pub(crate) struct ValidatedLeaf {
 }
 
 type CachedList = (i64, Vec<u8>, [u8; 32], [u8; 32]);
-type TrustRow = ([u8; 16], [u8; 32], i64, i64, Option<[u8; 32]>);
+type TrustRow = ([u8; 16], [u8; 32], i64, i64, Option<[u8; 32]>, i64);
 type RetractedRow = (i64, Option<[u8; 16]>, Option<[u8; 16]>);
 
 fn failure(code: &'static str) -> ClientError {
@@ -138,6 +138,7 @@ fn validate_history_from(
 }
 
 /// Neutralize already accepted rows from a quarantined leaf in the caller's write unit.
+#[allow(dead_code)] // L-CORE-45 compatibility helper for callers with only a validated device identity.
 pub(super) fn retract_device(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],
@@ -173,7 +174,7 @@ fn retract_matching(
     signature_key: Option<&[u8]>,
     code: &str,
 ) -> Result<(), StorageError> {
-    let mut stmt = c.prepare("SELECT seq,msg_id,reply_to FROM app_messages WHERE group_id=?1 AND status=0 AND ((sender_user=?2 AND sender_device=?3) OR sender_sig_key=?4)")?;
+    let mut stmt = c.prepare("SELECT seq,msg_id,reply_to FROM app_messages WHERE group_id=?1 AND status=0 AND ((sender_user=?2 AND sender_device=?3 AND sender_sig_key IS NULL) OR sender_sig_key=?4)")?;
     let rows: Vec<RetractedRow> = stmt
         .query_map(
             params![group_id.as_slice(), user, device, signature_key],
@@ -206,6 +207,7 @@ fn retract_matching(
 
 /// Persist a failed authenticated-leaf verdict with its historical retraction.
 /// The caller owns the same write unit as the unreadable incoming row.
+#[cfg(test)]
 pub(super) fn quarantine_device(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],
@@ -213,7 +215,7 @@ pub(super) fn quarantine_device(
     device_id: &[u8; 16],
     code: &str,
 ) -> Result<(), StorageError> {
-    record_quarantine(c, group_id, user_id, device_id, code)?;
+    record_quarantine(c, group_id, user_id, device_id, &[], code)?;
     retract_device(c, group_id, user_id, device_id, code)?;
     bump_generation(c)
 }
@@ -223,15 +225,17 @@ fn record_quarantine(
     group_id: &[u8; 16],
     user_id: &[u8; 16],
     device_id: &[u8; 16],
+    signature_key: &[u8],
     code: &str,
 ) -> Result<(), StorageError> {
     c.execute(
-        "INSERT INTO app_quarantine(group_id,user_id,device_id,code) VALUES(?1,?2,?3,?4) \
-         ON CONFLICT(group_id,user_id,device_id) DO UPDATE SET code=excluded.code",
+        "INSERT INTO app_quarantine(group_id,user_id,device_id,signature_key,code) VALUES(?1,?2,?3,?4,?5) \
+         ON CONFLICT(group_id,user_id,device_id,signature_key) DO UPDATE SET code=excluded.code",
         params![
             group_id.as_slice(),
             user_id.as_slice(),
             device_id.as_slice(),
+            signature_key,
             code
         ],
     )?;
@@ -255,10 +259,11 @@ pub(super) fn clear_group_block(
     group_id: &[u8; 16],
     user_id: &[u8; 16],
     device_id: &[u8; 16],
+    signature_key: &[u8],
 ) -> Result<(), StorageError> {
     let changed = c.execute(
-        "DELETE FROM app_quarantine WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND code='E_UMK_CHANGED'",
-        params![group_id.as_slice(), user_id.as_slice(), device_id.as_slice()],
+        "DELETE FROM app_quarantine WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND signature_key=?4 AND code='E_UMK_CHANGED'",
+        params![group_id.as_slice(), user_id.as_slice(), device_id.as_slice(), signature_key],
     )?;
     if changed > 0 {
         bump_generation(c)?;
@@ -266,14 +271,19 @@ pub(super) fn clear_group_block(
     Ok(())
 }
 
-pub(super) fn member_devices(group: &DillaGroup) -> Vec<([u8; 16], [u8; 16])> {
+pub(super) fn member_devices(group: &DillaGroup) -> Vec<([u8; 16], [u8; 16], [u8; 32])> {
     group
         .members()
         .into_iter()
         .filter_map(|member| {
             let basic = BasicCredential::try_from(member.credential).ok()?;
             let identity = CredentialIdentity::decode(basic.identity()).ok()?;
-            Some((*identity.user_id.as_bytes(), *identity.device_id.as_bytes()))
+            let signature_key = member.signature_key.as_slice().try_into().ok()?;
+            Some((
+                *identity.user_id.as_bytes(),
+                *identity.device_id.as_bytes(),
+                signature_key,
+            ))
         })
         .collect()
 }
@@ -281,11 +291,11 @@ pub(super) fn member_devices(group: &DillaGroup) -> Vec<([u8; 16], [u8; 16])> {
 pub(super) fn clear_removed_blocks(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],
-    before: &[([u8; 16], [u8; 16])],
-    after: &[([u8; 16], [u8; 16])],
+    before: &[([u8; 16], [u8; 16], [u8; 32])],
+    after: &[([u8; 16], [u8; 16], [u8; 32])],
 ) -> Result<(), StorageError> {
-    for (user, device) in before.iter().filter(|pair| !after.contains(pair)) {
-        clear_group_block(c, group_id, user, device)?;
+    for (user, device, sig) in before.iter().filter(|leaf| !after.contains(leaf)) {
+        clear_group_block(c, group_id, user, device, sig)?;
     }
     Ok(())
 }
@@ -328,28 +338,13 @@ fn audit_failed_leaf(
 #[inline(never)]
 fn quarantine_failed_leaf(
     c: &rusqlite::Connection,
-    group: &DillaGroup,
     group_id: &[u8; 16],
     fingerprint: &LeafFingerprint,
     user: &[u8; 16],
     device: &[u8; 16],
     code: &str,
 ) -> Result<(), StorageError> {
-    let has_valid_same_pair = group.members().into_iter().any(|member| {
-        if member.index.u32() == fingerprint.0 {
-            return false;
-        }
-        let is_own = member.index == group.own_leaf_index();
-        let Ok(leaf) = extract_leaf(group_id, group, [0; 32], member) else {
-            return false;
-        };
-        leaf.credential.user_id.as_bytes() == user
-            && leaf.credential.device_id.as_bytes() == device
-            && (is_own || validate_cached_leaf(c, &leaf).is_ok())
-    });
-    if !has_valid_same_pair {
-        record_quarantine(c, group_id, user, device, code)?;
-    }
+    record_quarantine(c, group_id, user, device, &fingerprint.1, code)?;
     retract_signature(c, group_id, &fingerprint.1, code)?;
     bump_generation(c)
 }
@@ -491,7 +486,16 @@ pub(super) fn audit_tree(
                 let digest = hash.finalize();
                 let mut opaque_device = [0u8; 16];
                 opaque_device.copy_from_slice(&digest[..16]);
-                quarantine_device(c, group_id, &[0; 16], &opaque_device, E_CREDENTIAL)?;
+                record_quarantine(
+                    c,
+                    group_id,
+                    &[0; 16],
+                    &opaque_device,
+                    &malformed_leaf.1,
+                    E_CREDENTIAL,
+                )?;
+                retract_signature(c, group_id, &malformed_leaf.1, E_CREDENTIAL)?;
+                bump_generation(c)?;
                 audit_failed_leaf(
                     c,
                     group_id,
@@ -516,15 +520,7 @@ pub(super) fn audit_tree(
             if error.code == E_DEVICE_LIST_STALE {
                 continue;
             }
-            quarantine_failed_leaf(
-                c,
-                group,
-                group_id,
-                &malformed_leaf,
-                &user,
-                &device,
-                error.code,
-            )?;
+            quarantine_failed_leaf(c, group_id, &malformed_leaf, &user, &device, error.code)?;
             audit_failed_leaf(
                 c,
                 group_id,
@@ -667,17 +663,18 @@ impl ClientCore {
         self.ingest_leaf(leaf, requested_user, history_body, head_list, now, false)
     }
 
-    fn groups_holding_device(
-        &self,
-        user: &[u8; 16],
-        device: &[u8; 16],
-    ) -> Result<Vec<[u8; 16]>, ClientError> {
+    fn current_user_leaves(&self, user: &[u8; 16]) -> Result<Vec<LeafEvidence>, ClientError> {
         let ids: Vec<[u8; 16]> = self.read(|c| {
-            let mut stmt = c.prepare("SELECT group_id FROM app_groups WHERE state=2")?;
+            let mut stmt = c.prepare(
+                "SELECT group_id FROM app_groups WHERE state=2 ORDER BY group_id LIMIT 4097",
+            )?;
             stmt.query_map([], |r| r.get(0))?
                 .collect::<Result<_, _>>()
                 .map_err(Into::into)
         })?;
+        if ids.len() > 4096 {
+            return Err(failure(E_CORE_LIMIT));
+        }
         let mut out = Vec::new();
         for id in ids {
             let cached = self.groups.get(&id);
@@ -690,60 +687,15 @@ impl ClientCore {
                 .or(loaded.as_ref())
                 .ok_or_else(|| failure(E_CORE_NOT_FOUND))?;
             for member in group.members() {
-                let Ok(basic) = BasicCredential::try_from(member.credential) else {
+                let Ok(leaf) = extract_leaf(&id, group, [0; 32], member) else {
                     continue;
                 };
-                let Ok(identity) = CredentialIdentity::decode(basic.identity()) else {
-                    continue;
-                };
-                if identity.user_id.as_bytes() == user && identity.device_id.as_bytes() == device {
-                    out.push(id);
-                    break;
+                if leaf.credential.user_id.as_bytes() == user {
+                    if out.len() == 4096 {
+                        return Err(failure(E_CORE_LIMIT));
+                    }
+                    out.push(leaf);
                 }
-            }
-        }
-        Ok(out)
-    }
-
-    fn matching_current_devices(
-        &self,
-        group_id: &[u8; 16],
-        user: &[u8; 16],
-        list: &DeviceList,
-        umk: &[u8; 32],
-        ssk: &[u8; 32],
-    ) -> Result<Vec<[u8; 16]>, ClientError> {
-        let group = self.groups.get(group_id);
-        let loaded = if group.is_none() {
-            DillaGroup::load(&self.provider, &GroupId::from_slice(group_id))?
-        } else {
-            None
-        };
-        let group = group
-            .or(loaded.as_ref())
-            .ok_or_else(|| failure(E_CORE_NOT_FOUND))?;
-        let mut out = Vec::new();
-        for member in group.members() {
-            let Ok(leaf) = extract_leaf(group_id, group, [0; 32], member) else {
-                continue;
-            };
-            if leaf.credential.user_id.as_bytes() != user
-                || &leaf.credential.umk_pub != umk
-                || &leaf.credential.ssk_pub != ssk
-                || leaf.credential.verify_signatures(&leaf.dsk_pub).is_err()
-                || list
-                    .check_leaf(
-                        &leaf.credential.device_id,
-                        &leaf.dsk_pub,
-                        leaf.credential.tier,
-                    )
-                    .is_err()
-            {
-                continue;
-            }
-            let device = *leaf.credential.device_id.as_bytes();
-            if !out.contains(&device) {
-                out.push(device);
             }
         }
         Ok(out)
@@ -785,12 +737,16 @@ impl ClientCore {
     /// Current tree leaves that need a signed-list refresh, without exporting credentials or keys.
     pub fn pending_leaves(&self) -> Result<Vec<u8>, ClientError> {
         let ids: Vec<[u8; 16]> = self.read(|c| {
-            let mut stmt =
-                c.prepare("SELECT group_id FROM app_groups WHERE state=2 ORDER BY group_id")?;
+            let mut stmt = c.prepare(
+                "SELECT group_id FROM app_groups WHERE state=2 ORDER BY group_id LIMIT 4097",
+            )?;
             stmt.query_map([], |r| r.get(0))?
                 .collect::<Result<_, _>>()
                 .map_err(Into::into)
         })?;
+        if ids.len() > 4096 {
+            return Err(failure(E_CORE_LIMIT));
+        }
         let mut rows = Vec::new();
         for id in ids {
             let group = self.groups.get(&id);
@@ -890,6 +846,12 @@ impl ClientCore {
         if history_body.len() > 4 * 1024 * 1024 {
             return Err(failure(E_CORE_LIMIT));
         }
+        let count = Decoder::new(history_body)
+            .array_len()
+            .map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+        if count > 1024 {
+            return Err(failure(E_CORE_LIMIT));
+        }
         let served =
             wire::decode_history_body(history_body).map_err(|_| failure(E_DEVICE_LIST_STALE))?;
         if served.is_empty() {
@@ -951,38 +913,97 @@ impl ClientCore {
                 return Err(failure(E_DEVICE_LIST_STALE));
             }
         }
-        let mut devices = self.matching_current_devices(
-            &first.group_id,
-            requested_user,
-            &head,
-            &validated.umk_pub,
-            &validated.ssk_pub,
-        )?;
+        let user_leaves = self.current_user_leaves(requested_user)?;
+        let mut devices = Vec::new();
+        let mut affected = Vec::new();
+        let mut failed = Vec::new();
+        for leaf in user_leaves {
+            let device = *leaf.credential.device_id.as_bytes();
+            let valid = leaf.credential.umk_pub == validated.umk_pub
+                && leaf.credential.ssk_pub == validated.ssk_pub
+                && leaf.credential.verify_signatures(&leaf.dsk_pub).is_ok()
+                && head
+                    .check_leaf(
+                        &leaf.credential.device_id,
+                        &leaf.dsk_pub,
+                        leaf.credential.tier,
+                    )
+                    .is_ok();
+            let identity = (leaf.group_id, device, leaf.dsk_pub);
+            if valid {
+                if !devices.contains(&device) {
+                    devices.push(device);
+                }
+                affected.push(identity);
+            } else {
+                failed.push(identity);
+            }
+        }
         if !devices.contains(&validated.device_id) {
             devices.push(validated.device_id);
         }
-        let mut affected = Vec::new();
-        for device in &devices {
-            for group in self.groups_holding_device(requested_user, device)? {
-                if !affected.contains(&(group, *device)) {
-                    affected.push((group, *device));
-                }
-            }
-        }
         let now = i64::try_from(now).map_err(|_| failure(super::error::E_CORE_INPUT))?;
+        let revoked_legacy_devices: Vec<[u8; 16]> = cached
+            .as_ref()
+            .map(|(_, blob, _, _)| {
+                let previous = DeviceList::decode(blob).expect("cached signed list checked above");
+                previous
+                    .unsigned
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        head.check_leaf(&entry.device_id, &entry.dsk_pub, entry.tier)
+                            .is_err()
+                    })
+                    .map(|entry| *entry.device_id.as_bytes())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let legacy_rows: Vec<([u8; 16], [u8; 16])> = if revoked_legacy_devices.is_empty() {
+            Vec::new()
+        } else {
+            self.read(|c| {
+            let mut stmt=c.prepare("SELECT DISTINCT group_id,sender_device FROM app_messages WHERE sender_user=?1 AND sender_sig_key IS NULL AND status=0 LIMIT 4097")?;
+            stmt.query_map([requested_user.as_slice()],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<Result<_,_>>().map_err(Into::into)
+        })?
+        };
+        if legacy_rows.len() > 4096 {
+            return Err(failure(E_CORE_LIMIT));
+        }
+        let old_pins: Vec<[u8; 16]> = self.read(|c| {
+            let mut stmt =
+                c.prepare("SELECT device_id FROM app_trust_pins WHERE user_id=?1 LIMIT 4097")?;
+            stmt.query_map([requested_user.as_slice()], |r| r.get(0))?
+                .collect::<Result<_, _>>()
+                .map_err(Into::into)
+        })?;
+        if old_pins.len() > 4096 {
+            return Err(failure(E_CORE_LIMIT));
+        }
         let (changed,quarantined)=self.write(|_,u| {
             u.with_conn(|c| {
                 let pinned: Option<[u8;32]> = c.query_row("SELECT umk_pub FROM app_trust_pins WHERE user_id=?1 AND device_id=?2",params![requested_user.as_slice(),validated.device_id.as_slice()],|r| r.get(0)).optional()?;
-                let prior_key = pinned.or_else(|| cached.as_ref().map(|row| row.2));
+                let prior_key = cached.as_ref().map(|row| row.2).or(pinned);
                 let changed=prior_key.is_some_and(|p| p!=validated.umk_pub);
                 c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice()])?;
+                for device in old_pins.iter().filter(|device| !devices.contains(device)) {
+                    c.execute("DELETE FROM app_trust_pins WHERE user_id=?1 AND device_id=?2",params![requested_user.as_slice(),device.as_slice()])?;
+                }
+                for (group,device,sig) in &failed {
+                    record_quarantine(c,group,requested_user,device,sig,E_DEVICE_UNLISTED)?;
+                    retract_signature(c,group,sig,E_DEVICE_UNLISTED)?;
+                }
+                for (group,device) in legacy_rows.iter().filter(|(_,device)| revoked_legacy_devices.contains(device)) {
+                    retract_device(c,group,requested_user,device,E_DEVICE_UNLISTED)?;
+                }
+                if !failed.is_empty() { bump_generation(c)?; }
                 if changed {
                     for device in &devices {
                         c.execute("INSERT INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,?4,0,?5) ON CONFLICT(user_id,device_id) DO UPDATE SET changed_umk=excluded.changed_umk,verified=0",params![validated.user_id.as_slice(),device.as_slice(),prior_key.expect("changed has a prior key").as_slice(),now,validated.umk_pub.as_slice()])?;
                     }
-                    for (group,device) in &affected {
-                        c.execute("INSERT INTO app_quarantine(group_id,user_id,device_id,code) VALUES(?1,?2,?3,?4) ON CONFLICT(group_id,user_id,device_id) DO UPDATE SET code=excluded.code",params![group.as_slice(),validated.user_id.as_slice(),device.as_slice(),E_UMK_CHANGED])?;
-                        retract_device(c,group,requested_user,device,E_UMK_CHANGED)?;
+                    for (group,device,sig) in &affected {
+                        record_quarantine(c,group,requested_user,device,sig,E_UMK_CHANGED)?;
+                        retract_signature(c,group,sig,E_UMK_CHANGED)?;
                     }
                     bump_generation(c)?;
                 } else {
@@ -990,7 +1011,7 @@ impl ClientCore {
                         c.execute("INSERT OR IGNORE INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,?4,0,NULL)",params![validated.user_id.as_slice(),device.as_slice(),validated.umk_pub.as_slice(),now])?;
                     }
                 }
-                Ok((changed,if changed { affected.len() } else { 0 }))
+                Ok((changed,failed.len() + if changed { affected.len() } else { 0 }))
             }).map_err(ClientError::from)
         })?;
         let mut e = Encoder::new();
@@ -1004,15 +1025,18 @@ impl ClientCore {
     /// Bounded public-key-only local trust state.
     pub fn trust_state(&self) -> Result<Vec<u8>, ClientError> {
         let rows: Vec<TrustRow> = self.read(|c| {
-            let mut stmt=c.prepare("SELECT user_id,MIN(umk_pub),MIN(first_seen),MIN(verified),MAX(changed_umk) FROM app_trust_pins GROUP BY user_id ORDER BY user_id LIMIT 4097")?;
-            stmt.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?.collect::<Result<_,_>>().map_err(Into::into)
+            let mut stmt=c.prepare("SELECT user_id,MIN(umk_pub),MIN(first_seen),MIN(verified),MAX(changed_umk),CASE WHEN MIN(umk_pub)=MAX(umk_pub) AND MIN(verified)=MAX(verified) AND COUNT(DISTINCT COALESCE(changed_umk,x''))=1 THEN 1 ELSE 0 END FROM app_trust_pins GROUP BY user_id ORDER BY user_id LIMIT 4097")?;
+            stmt.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?.collect::<Result<_,_>>().map_err(Into::into)
         })?;
         if rows.len() > 4096 {
             return Err(failure(E_CORE_LIMIT));
         }
         let mut e = Encoder::new();
         e.array(rows.len());
-        for (user, umk, first, verified, changed) in rows {
+        for (user, umk, first, verified, changed, consistent) in rows {
+            if consistent != 1 {
+                return Err(failure(E_DEVICE_LIST_STALE));
+            }
             e.array(5)
                 .bytes(&user)
                 .bytes(&umk)
@@ -1048,42 +1072,20 @@ impl ClientCore {
             return Err(failure(E_CREDENTIAL));
         }
         let mut owned_blocks = Vec::new();
-        for entry in &list.unsigned.entries {
-            let device = entry.device_id.as_bytes();
-            for group_id in self.groups_holding_device(user_id, device)? {
-                let group = self.groups.get(&group_id);
-                let loaded = if group.is_none() {
-                    DillaGroup::load(&self.provider, &GroupId::from_slice(&group_id))?
-                } else {
-                    None
-                };
-                let group = group
-                    .or(loaded.as_ref())
-                    .ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
-                for member in group.members() {
-                    let Ok(leaf) = extract_leaf(&group_id, group, [0; 32], member) else {
-                        continue;
-                    };
-                    if leaf.credential.user_id.as_bytes() != user_id
-                        || leaf.credential.device_id.as_bytes() != device
-                    {
-                        continue;
-                    }
-                    if leaf.credential.umk_pub == *expected_umk
-                        && leaf.credential.ssk_pub == ssk
-                        && leaf.dsk_pub == entry.dsk_pub
-                        && leaf.credential.verify_signatures(&leaf.dsk_pub).is_ok()
-                        && list
-                            .check_leaf(
-                                &leaf.credential.device_id,
-                                &leaf.dsk_pub,
-                                leaf.credential.tier,
-                            )
-                            .is_ok()
-                    {
-                        owned_blocks.push((group_id, *device));
-                    }
-                }
+        for leaf in self.current_user_leaves(user_id)? {
+            let device = *leaf.credential.device_id.as_bytes();
+            if leaf.credential.umk_pub == *expected_umk
+                && leaf.credential.ssk_pub == ssk
+                && leaf.credential.verify_signatures(&leaf.dsk_pub).is_ok()
+                && list
+                    .check_leaf(
+                        &leaf.credential.device_id,
+                        &leaf.dsk_pub,
+                        leaf.credential.tier,
+                    )
+                    .is_ok()
+            {
+                owned_blocks.push((leaf.group_id, device, leaf.dsk_pub));
             }
         }
         if owned_blocks.is_empty() {
@@ -1104,14 +1106,14 @@ impl ClientCore {
                 stmt.query_map([user_id.as_slice()],|r|r.get(0))?.collect::<Result<_,_>>()?
             };
             for device in &pinned_devices {
-                if owned_blocks.iter().any(|(_, current)| current == device) {
+                if owned_blocks.iter().any(|(_, current, _)| current == device) {
                     c.execute("UPDATE app_trust_pins SET umk_pub=?3,changed_umk=NULL,verified=1 WHERE user_id=?1 AND device_id=?2",params![user_id.as_slice(),device.as_slice(),expected_umk.as_slice()])?;
                 } else {
                     c.execute("DELETE FROM app_trust_pins WHERE user_id=?1 AND device_id=?2",params![user_id.as_slice(),device.as_slice()])?;
                 }
             }
-            for (group, device) in &owned_blocks {
-                c.execute("DELETE FROM app_quarantine WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND code='E_UMK_CHANGED'",params![group.as_slice(),user_id.as_slice(),device.as_slice()])?;
+            for (group, device, sig) in &owned_blocks {
+                c.execute("DELETE FROM app_quarantine WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND signature_key=?4 AND code='E_UMK_CHANGED'",params![group.as_slice(),user_id.as_slice(),device.as_slice(),sig.as_slice()])?;
             }
             bump_generation(c)?;
             Ok(())
@@ -1461,7 +1463,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 2, "each user's changed-key block has its own row");
-        clear_group_block(&db, &group, &changed, &device).unwrap();
+        clear_group_block(&db, &group, &changed, &device, &[]).unwrap();
         let remaining: [u8; 16] = db
             .query_row(
                 "SELECT user_id FROM app_quarantine WHERE group_id=?1 AND device_id=?2",
@@ -1585,6 +1587,9 @@ mod tests {
         .unwrap();
         db.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) VALUES(?1,1,?2,?3,?4)",params![owner.credential.user_id.as_bytes(),owner_list.encode(),owner.credential.umk_pub.as_slice(),owner.credential.ssk_pub.as_slice()]).unwrap();
         db.execute("INSERT INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified) VALUES(?1,?2,?3,1,0)",params![owner.credential.user_id.as_bytes(),owner.credential.device_id.as_bytes(),owner.credential.umk_pub.as_slice()]).unwrap();
+        let malformed_key: [u8; 32] = malformed_signer.public().try_into().unwrap();
+        db.execute("INSERT INTO app_messages(group_id,seq,epoch,recv_ts,status,sender_user,sender_device,sender_sig_key,type,body,franking_tag) VALUES(?1,1,0,1,0,?2,?3,?4,0,'malformed historical comet',?5)",params![group_id.as_slice(),[0x66u8;16].as_slice(),[0x67u8;16].as_slice(),malformed_key.as_slice(),[0x68u8;32].as_slice()]).unwrap();
+        db.execute("INSERT INTO app_search_rows(group_id,seq,user_id,device_id,body,terms) VALUES(?1,1,?2,?3,'malformed historical comet',' malformed historical comet')",params![group_id.as_slice(),[0x66u8;16].as_slice(),[0x67u8;16].as_slice()]).unwrap();
         audit_tree(
             &db,
             &group,
@@ -1603,6 +1608,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(failed, 1, "the nameless leaf must be quarantined");
+        let old: (i64, String) = db
+            .query_row(
+                "SELECT status,body FROM app_messages WHERE group_id=?1 AND seq=1",
+                [group_id.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            old,
+            (1, String::new()),
+            "a failed nameless leaf retracts rows bearing its signature key"
+        );
+        let hits: i64 = db
+            .query_row(
+                "SELECT count(*) FROM app_search_rows WHERE group_id=?1",
+                [group_id.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 0);
         let credited: i64 = db.query_row(
             "SELECT count(*) FROM app_trust_audit WHERE group_id=?1 AND added_by_user=?2 AND added_by_device=?3 AND code='E_CREDENTIAL'",
             params![group_id.as_slice(), [0x43u8;16].as_slice(), [0x44u8;16].as_slice()],
@@ -1749,10 +1774,15 @@ mod tests {
         assert_eq!(indexed, vec![1]);
         let bad: i64 = db.query_row("SELECT count(*) FROM app_trust_audit WHERE group_id=?1 AND signature_key=?2 AND code IN ('E_CREDENTIAL','E_DEVICE_UNLISTED')",params![group_id.as_slice(),forged_key.as_slice()],|r|r.get(0)).unwrap();
         assert_eq!(bad, 1);
-        let pair_block: i64 = db.query_row("SELECT count(*) FROM app_quarantine WHERE group_id=?1 AND user_id=?2 AND device_id=?3",params![group_id.as_slice(),owner.credential.user_id.as_bytes(),owner.credential.device_id.as_bytes()],|r|r.get(0)).unwrap();
+        let pair_block: i64 = db.query_row("SELECT count(*) FROM app_quarantine WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND signature_key=?4",params![group_id.as_slice(),owner.credential.user_id.as_bytes(),owner.credential.device_id.as_bytes(),owner_key.as_slice()],|r|r.get(0)).unwrap();
         assert_eq!(
             pair_block, 0,
             "the valid local leaf cannot inherit its forgery's verdict"
+        );
+        let forged_block: i64 = db.query_row("SELECT count(*) FROM app_quarantine WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND signature_key=?4",params![group_id.as_slice(),owner.credential.user_id.as_bytes(),owner.credential.device_id.as_bytes(),forged_key.as_slice()],|r|r.get(0)).unwrap();
+        assert_eq!(
+            forged_block, 1,
+            "the forged leaf keeps its own failed verdict"
         );
     }
 
@@ -1839,7 +1869,7 @@ mod tests {
             .unwrap();
         let before = member_devices(&before_group);
         assert_eq!(
-            before,
+            before.iter().map(|(u, d, _)| (*u, *d)).collect::<Vec<_>>(),
             vec![([0x43; 16], [0x44; 16]), ([0x55; 16], [0x44; 16])]
         );
 
@@ -1853,11 +1883,14 @@ mod tests {
             .unwrap()
             .unwrap();
         let after = member_devices(&after_group);
-        assert_eq!(after, vec![([0x43; 16], [0x44; 16])]);
+        assert_eq!(
+            after.iter().map(|(u, d, _)| (*u, *d)).collect::<Vec<_>>(),
+            vec![([0x43; 16], [0x44; 16])]
+        );
         let db = db.lock().unwrap();
         super::super::schema::migrate_conn(&db).unwrap();
-        db.execute("INSERT INTO app_quarantine(group_id,user_id,device_id,code) VALUES(?1,?2,?3,'E_UMK_CHANGED')",
-            params![group_id.as_slice(),[0x55u8;16].as_slice(),[0x44u8;16].as_slice()]).unwrap();
+        db.execute("INSERT INTO app_quarantine(group_id,user_id,device_id,signature_key,code) VALUES(?1,?2,?3,?4,'E_UMK_CHANGED')",
+            params![group_id.as_slice(),[0x55u8;16].as_slice(),[0x44u8;16].as_slice(),before[1].2.as_slice()]).unwrap();
         clear_removed_blocks(&db, &group_id, &before, &after).unwrap();
         let blocked: i64 = db
             .query_row(
@@ -1934,7 +1967,7 @@ mod tests {
             "INSERT INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,1,0,?4)",
             rusqlite::params![[0x64u8; 16].as_slice(), device.as_slice(), [0x65u8; 32].as_slice(), [0x66u8; 32].as_slice()],
         ).expect("changed pin");
-        clear_group_block(&db, &first, &[0x64u8; 16], &device).expect("validated remove");
+        clear_group_block(&db, &first, &[0x64u8; 16], &device, &[]).expect("validated remove");
         let count = |group: &[u8; 16]| -> i64 {
             db.query_row(
                 "SELECT count(*) FROM app_quarantine WHERE group_id=?1 AND device_id=?2",
@@ -1952,5 +1985,44 @@ mod tests {
             )
             .expect("pin");
         assert_eq!(verified, 0);
+    }
+
+    #[test]
+    fn failed_same_pair_leaf_cannot_replace_a_changed_key_send_block() {
+        for forged_first in [false, true] {
+            let db = rusqlite::Connection::open_in_memory().unwrap();
+            super::super::schema::migrate_conn(&db).unwrap();
+            let group = [0x91; 16];
+            let user = [0x92; 16];
+            let device = [0x93; 16];
+            let changed = || {
+                record_quarantine(&db, &group, &user, &device, &[0x94; 32], E_UMK_CHANGED).unwrap()
+            };
+            let forged = || {
+                record_quarantine(&db, &group, &user, &device, &[0x95; 32], E_CREDENTIAL).unwrap()
+            };
+            if forged_first {
+                forged();
+                changed();
+            } else {
+                changed();
+                forged();
+            }
+            let blocked: i64 = db.query_row(
+                "SELECT count(*) FROM app_quarantine WHERE group_id=?1 AND code='E_UMK_CHANGED'",
+                [group.as_slice()],
+                |r| r.get(0),
+            ).unwrap();
+            assert_eq!(
+                blocked, 1,
+                "a forged leaf must not clear the changed user's send block"
+            );
+            clear_group_block(&db, &group, &user, &device, &[0x95; 32]).unwrap();
+            let still_blocked: i64 = db.query_row("SELECT count(*) FROM app_quarantine WHERE group_id=?1 AND code='E_UMK_CHANGED'",[group.as_slice()],|r|r.get(0)).unwrap();
+            assert_eq!(
+                still_blocked, 1,
+                "removing the forged leaf cannot release the changed leaf's block"
+            );
+        }
     }
 }

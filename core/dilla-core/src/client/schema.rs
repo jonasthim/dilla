@@ -194,8 +194,10 @@ CREATE TABLE IF NOT EXISTS app_trust_pins (
 );
 CREATE TABLE IF NOT EXISTS app_quarantine (
   group_id BLOB NOT NULL, user_id BLOB NOT NULL CHECK(length(user_id)=16),
-  device_id BLOB NOT NULL CHECK(length(device_id)=16), code TEXT NOT NULL,
-  PRIMARY KEY(group_id,user_id,device_id)
+  device_id BLOB NOT NULL CHECK(length(device_id)=16),
+  signature_key BLOB NOT NULL DEFAULT x'' CHECK(length(signature_key) IN (0,32)),
+  code TEXT NOT NULL,
+  PRIMARY KEY(group_id,user_id,device_id,signature_key)
 );
 CREATE TABLE IF NOT EXISTS app_pending_history (
   group_id BLOB NOT NULL CHECK(length(group_id)=16),
@@ -333,6 +335,7 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
         if !has_column(c, "app_messages", "sender_sig_key")? {
             c.execute_batch("ALTER TABLE app_messages ADD COLUMN sender_sig_key BLOB")?;
         }
+        c.execute_batch("CREATE INDEX IF NOT EXISTS app_messages_legacy_sender ON app_messages(sender_user,group_id,sender_device) WHERE sender_sig_key IS NULL AND status=0")?;
         migrate_quarantine_pairs(c)?;
         migrate_trust_artifact_pairs(c)?;
         if found < 4 {
@@ -350,35 +353,49 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
 // Preserve an ambiguous old block under an unknown owner so opening the store
 // cannot silently enable sending or assign another user's message as its owner.
 fn migrate_quarantine_pairs(c: &rusqlite::Connection) -> Result<(), StorageError> {
-    let mut columns = c.prepare("PRAGMA table_info(app_quarantine)")?;
-    let has_user = columns
-        .query_map([], |r| r.get::<_, String>(1))?
-        .collect::<Result<Vec<_>, _>>()?
-        .iter()
-        .any(|name| name == "user_id");
-    if has_user {
+    let has_user = has_column(c, "app_quarantine", "user_id")?;
+    if has_user && has_column(c, "app_quarantine", "signature_key")? {
         return Ok(());
     }
+    let old_user = if has_user {
+        "q.user_id"
+    } else {
+        "zeroblob(16)"
+    };
     c.execute_batch(
         "ALTER TABLE app_quarantine RENAME TO app_quarantine_old;
-         DROP INDEX IF EXISTS app_quarantine_device;
+         DROP INDEX IF EXISTS app_quarantine_device;",
+    )?;
+    c.execute_batch(&format!(
+        "
          CREATE TABLE app_quarantine (
            group_id BLOB NOT NULL, user_id BLOB NOT NULL CHECK(length(user_id)=16),
-           device_id BLOB NOT NULL CHECK(length(device_id)=16), code TEXT NOT NULL,
-           PRIMARY KEY(group_id,user_id,device_id)
+           device_id BLOB NOT NULL CHECK(length(device_id)=16),
+           signature_key BLOB NOT NULL DEFAULT x'' CHECK(length(signature_key) IN (0,32)),
+           code TEXT NOT NULL, PRIMARY KEY(group_id,user_id,device_id,signature_key)
          );
-         INSERT INTO app_quarantine(group_id,user_id,device_id,code)
-         SELECT q.group_id,zeroblob(16),q.device_id,q.code
+         INSERT INTO app_quarantine(group_id,user_id,device_id,signature_key,code)
+         SELECT q.group_id,{old_user},q.device_id,x'',q.code
            FROM app_quarantine_old q;
          DROP TABLE app_quarantine_old;
-         CREATE INDEX app_quarantine_device ON app_quarantine(user_id,device_id,group_id);",
-    )?;
+         CREATE INDEX app_quarantine_device ON app_quarantine(user_id,device_id,group_id);"
+    ))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod pair_migration_tests {
     use super::*;
+
+    #[test]
+    fn pair_quarantine_upgrade_preserves_a_changed_key_block() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE app_quarantine(group_id BLOB,user_id BLOB,device_id BLOB,code TEXT,PRIMARY KEY(group_id,user_id,device_id)); CREATE INDEX app_quarantine_device ON app_quarantine(user_id,device_id,group_id);").unwrap();
+        c.execute("INSERT INTO app_quarantine(group_id,user_id,device_id,code) VALUES(?1,?2,?3,'E_UMK_CHANGED')", rusqlite::params![[1u8;16].as_slice(),[2u8;16].as_slice(),[3u8;16].as_slice()]).unwrap();
+        migrate_quarantine_pairs(&c).unwrap();
+        let (code,key_len): (String,i64) = c.query_row("SELECT code,length(signature_key) FROM app_quarantine WHERE group_id=?1 AND user_id=?2 AND device_id=?3",rusqlite::params![[1u8;16].as_slice(),[2u8;16].as_slice(),[3u8;16].as_slice()],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!((code.as_str(), key_len), ("E_UMK_CHANGED", 0));
+    }
 
     #[test]
     fn ambiguous_legacy_quarantine_does_not_inherit_a_colliding_senders_user() {

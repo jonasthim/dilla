@@ -43,6 +43,24 @@ fn pending_leaves_are_core_owned_and_bounded() {
 }
 
 #[test]
+fn pending_leaf_group_ids_are_bounded_before_loading_group_state() {
+    let (_, _, alice, _) = alice_and_bob();
+    {
+        let db = alice.probe.lock().unwrap();
+        for n in 0..4097u32 {
+            let mut group = [0x91u8; 16];
+            group[12..].copy_from_slice(&n.to_be_bytes());
+            db.execute(
+                "INSERT INTO app_groups(group_id,kind,target_id,state) VALUES(?1,0,?2,2)",
+                rusqlite::params![group.as_slice(), group.as_slice()],
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(code(alice.core.pending_leaves()), "E_CORE_LIMIT");
+}
+
+#[test]
 fn malformed_history_cannot_pin_a_real_current_leaf() {
     let (_, relay, mut alice, bob) = alice_and_bob();
     let leaf = relay.leaf_of(bob.device);
@@ -138,6 +156,17 @@ fn exact_signed_history_pins_real_leaf_and_formats_pairwise_number() {
             .split(' ')
             .all(|g| g.len() == 5 && g.bytes().all(|b| b.is_ascii_digit()))
     );
+}
+
+#[test]
+fn trust_state_refuses_conflicting_security_registry_keys_for_one_user() {
+    let (_, relay, mut alice, bob) = alice_and_bob();
+    ingest_core_list(&mut alice, &relay, &bob);
+    alice.probe.lock().unwrap().execute(
+        "INSERT INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified) VALUES(?1,?2,?3,1,1)",
+        rusqlite::params![bob.user.as_slice(),[0xe1u8;16].as_slice(),[0xe2u8;32].as_slice()],
+    ).unwrap();
+    assert_eq!(code(alice.core.trust_state()), "E_DEVICE_LIST_STALE");
 }
 
 #[test]
@@ -486,6 +515,149 @@ fn later_sender_verdict_retracts_visible_history_and_advances_generation() {
 }
 
 #[test]
+fn signed_revocation_retracts_earlier_text_and_search_hits() {
+    let (_, mut relay, mut alice, mut bob) = alice_and_bob_trusted();
+    let (v1_history, v1_blob) = list_wire(&bob);
+    let (_, seq) = bob.send(&mut relay, &GROUP, "revoked visible comet", NOW + 1);
+    alice.sync(&relay);
+    assert_eq!(alice.row_at(&GROUP, seq).body, "revoked visible comet");
+    let (_, legacy_seq) = bob.send(&mut relay, &GROUP, "legacy revoked comet", NOW + 2);
+    alice.sync(&relay);
+    assert_eq!(
+        alice.row_at(&GROUP, legacy_seq).body,
+        "legacy revoked comet"
+    );
+    alice
+        .probe
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE app_messages SET sender_sig_key=NULL WHERE group_id=?1 AND seq=?2",
+            rusqlite::params![GROUP.as_slice(), legacy_seq as i64],
+        )
+        .unwrap();
+    assert_ne!(
+        alice
+            .core
+            .search(2, None, "revoked visible", None, 50)
+            .unwrap(),
+        [0x80]
+    );
+    let mut survivor = RawPeer::new_with_keys(0xb2, 0xd4, 0xb2, 0xf2);
+    survivor.join_external(&mut relay);
+    alice.sync(&relay);
+    bob.sync(&relay);
+    let old = DeviceList::decode(&v1_blob).unwrap();
+    let signer = SskSigner::from_bytes(&[0xf2; 32]);
+    let survivor_entry = DeviceEntry {
+        device_id: DeviceId::from_bytes(survivor.device),
+        dsk_pub: survivor.signer.public().try_into().unwrap(),
+        tier: Tier::Native,
+        added_at: NOW + 2,
+        revoked_at: None,
+    };
+    let second_unsigned = DeviceListUnsigned {
+        v: 1,
+        user_id: UserId::from_bytes(bob.user),
+        version: 2,
+        prev_hash: old.hash(),
+        entries: vec![old.unsigned.entries[0].clone(), survivor_entry.clone()],
+    };
+    let second = DeviceList {
+        sig_ssk: signer.sign_device_list(&second_unsigned),
+        unsigned: second_unsigned,
+    };
+    let (v1, blob1, sig1, prev1) = decode_strict(&v1_history, |d| {
+        d.array(1)?;
+        d.array(4)?;
+        Ok((
+            d.uint()?,
+            d.bytes()?.to_vec(),
+            d.bytes_exact::<64>()?,
+            d.bytes_exact::<32>()?,
+        ))
+    })
+    .unwrap();
+    let mut history = Encoder::new();
+    history
+        .array(2)
+        .array(4)
+        .uint(v1)
+        .bytes(&blob1)
+        .bytes(&sig1)
+        .bytes(&prev1)
+        .array(4)
+        .uint(2)
+        .bytes(&second.encode())
+        .bytes(&second.sig_ssk)
+        .bytes(&second.unsigned.prev_hash);
+    alice
+        .core
+        .device_list_ingest(
+            &GROUP,
+            relay.leaf_of(survivor.device),
+            &bob.user,
+            &history.into_vec(),
+            &second.encode(),
+            NOW + 2,
+        )
+        .unwrap();
+    let third_unsigned = DeviceListUnsigned {
+        v: 1,
+        user_id: UserId::from_bytes(bob.user),
+        version: 3,
+        prev_hash: second.hash(),
+        entries: vec![survivor_entry],
+    };
+    let third = DeviceList {
+        sig_ssk: signer.sign_device_list(&third_unsigned),
+        unsigned: third_unsigned,
+    };
+    let mut history = Encoder::new();
+    history
+        .array(2)
+        .array(4)
+        .uint(2)
+        .bytes(&second.encode())
+        .bytes(&second.sig_ssk)
+        .bytes(&second.unsigned.prev_hash)
+        .array(4)
+        .uint(3)
+        .bytes(&third.encode())
+        .bytes(&third.sig_ssk)
+        .bytes(&third.unsigned.prev_hash);
+    alice
+        .core
+        .device_list_ingest(
+            &GROUP,
+            relay.leaf_of(survivor.device),
+            &bob.user,
+            &history.into_vec(),
+            &third.encode(),
+            NOW + 4,
+        )
+        .unwrap();
+    let row = alice.row_at(&GROUP, seq);
+    assert_eq!((row.status, row.body.as_str()), (1, ""));
+    let legacy_row = alice.row_at(&GROUP, legacy_seq);
+    assert_eq!((legacy_row.status, legacy_row.body.as_str()), (1, ""));
+    assert_eq!(
+        alice
+            .core
+            .search(2, None, "legacy revoked", None, 50)
+            .unwrap(),
+        [0x80]
+    );
+    assert_eq!(
+        alice
+            .core
+            .search(2, None, "revoked visible", None, 50)
+            .unwrap(),
+        [0x80]
+    );
+}
+
+#[test]
 fn merged_commit_quarantines_a_leaf_that_fails_its_cached_signed_list() {
     let (_, mut relay, mut alice, mut bob) = alice_and_bob_trusted();
     let (_, first) = bob.send(&mut relay, &GROUP, "commit visible comet", NOW + 1);
@@ -678,6 +850,22 @@ fn exact_key_verification_rechecks_the_signed_cache_and_releases_changed_key_blo
             |r| r.get(0),
         )
         .expect("validated cached key");
+    let bob_signature_key = DeviceList::decode(
+        &alice
+            .probe
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT list FROM app_device_lists WHERE user_id=?1",
+                [bob.user.as_slice()],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .unwrap(),
+    )
+    .unwrap()
+    .unsigned
+    .entries[0]
+        .dsk_pub;
     {
         let db = alice.probe.lock().expect("db");
         db.execute(
@@ -691,8 +879,8 @@ fn exact_key_verification_rechecks_the_signed_cache_and_releases_changed_key_blo
         .expect("simulate pending changed key");
         for group in [GROUP, OTHER_GROUP] {
             db.execute(
-                "INSERT INTO app_quarantine(group_id,user_id,device_id,code) VALUES(?1,?2,?3,'E_UMK_CHANGED')",
-                rusqlite::params![group.as_slice(), bob.user.as_slice(), bob.device.as_slice()],
+                "INSERT INTO app_quarantine(group_id,user_id,device_id,signature_key,code) VALUES(?1,?2,?3,?4,'E_UMK_CHANGED')",
+                rusqlite::params![group.as_slice(), bob.user.as_slice(), bob.device.as_slice(),bob_signature_key.as_slice()],
             )
             .expect("block");
         }
@@ -858,6 +1046,19 @@ fn real_rejoin_with_rotated_umk_requires_exact_current_leaf_at_verify() {
     })
     .unwrap();
     assert_eq!(changed, 1);
+    assert!(
+        !alice.core.trust_state().unwrap().is_empty(),
+        "revoked old device pins must not make the changed contact state ambiguous"
+    );
+    assert_eq!(
+        code(
+            alice
+                .core
+                .send_prepare(&GROUP, &request(0, None, "blocked comet", &[]), NOW + 3)
+        ),
+        "E_UMK_CHANGED",
+        "a signed changed leaf still in this group blocks sending"
+    );
     let pending_number = alice.core.safety_number_for(&bob.user).unwrap();
     assert_ne!(
         pending_number, old_number,
@@ -1047,6 +1248,46 @@ fn overfull_candidate_head_is_rejected_before_entries_are_decoded() {
             &history,
             &oversized,
             NOW
+        )),
+        "E_CORE_LIMIT"
+    );
+}
+
+#[test]
+fn overfull_signed_history_is_rejected_before_any_row_is_decoded() {
+    let (_, relay, mut alice, bob) = alice_and_bob();
+    let (_, head) = list_wire(&bob);
+    let mut history = Encoder::new();
+    history.array(1025);
+    for _ in 0..1025 {
+        history.null();
+    }
+    assert_eq!(
+        code(alice.core.device_list_ingest(
+            &GROUP,
+            relay.leaf_of(bob.device),
+            &bob.user,
+            &history.into_vec(),
+            &head,
+            NOW,
+        )),
+        "E_CORE_LIMIT"
+    );
+}
+
+#[test]
+fn oversized_signed_history_is_rejected_before_decode() {
+    let (_, relay, mut alice, bob) = alice_and_bob();
+    let (_, head) = list_wire(&bob);
+    let huge = vec![0xff; 4 * 1024 * 1024 + 1];
+    assert_eq!(
+        code(alice.core.device_list_ingest(
+            &GROUP,
+            relay.leaf_of(bob.device),
+            &bob.user,
+            &huge,
+            &head,
+            NOW,
         )),
         "E_CORE_LIMIT"
     );
