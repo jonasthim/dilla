@@ -842,7 +842,7 @@ export class Controller {
     if (!(channel instanceof Uint8Array) || channel.length !== 16 || !(user instanceof Uint8Array) || user.length !== 16
       || typeof on !== 'bigint' || typeof expires !== 'bigint' || this.me === null || toHex(user) === toHex(this.me.userId)) return;
     const channelId = toHex(channel);
-    if (!this.open.has(channelId) || this.target(channelId) === undefined || this.connectionState.status !== 'online') return;
+    if (!this.open.has(channelId) || this.groupState(channelId) !== 'active' || this.connectionState.status !== 'online') return;
     const expiry = Number(expires) * 1000;
     if (!Number.isSafeInteger(expiry) || expiry <= this.deps.now() || expiry > this.deps.now() + 10_000) return;
     const rows = this.incomingTyping.get(channelId) ?? new Map<string, number>();

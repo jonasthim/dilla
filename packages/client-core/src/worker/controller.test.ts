@@ -646,6 +646,25 @@ it('stops typing on lost membership and refuses typing until viewable and online
   expect(w.gateway.sendTyping.mock.calls.filter((args) => args[1] === true)).toHaveLength(1);
 });
 
+it('ignores incoming typing frames after an open channel loses membership', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.call(998, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(998)).toMatchObject({ ok: true }));
+  const frame: GatewayEvent = { type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S + 5n],
+  } };
+  w.gateway.emit(frame);
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toMatchObject([{ userId: toHex(STRANGER) }]);
+
+  w.sync.deps!.onMembership(GROUP, 'not-member');
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
+  w.gateway.emit(frame);
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
+});
+
 it('stops typing when the open channel disappears from the refreshed channel list', async () => {
   const w = world();
   await toReady(w);
