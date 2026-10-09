@@ -649,6 +649,15 @@ it('publishes channel destinations for community and DM hits and drops unknown g
     { channelId: toHex(CHANNEL), communityId: toHex(COMMUNITY), seq: '1', snippet: 'community', rank: '0' },
     { channelId: toHex(DM_CHANNEL), communityId: null, seq: '2', snippet: 'dm', rank: '0' },
   ]);
+  const page = w.last<{ hits: unknown[]; cursor: unknown }>('search');
+  expect(JSON.stringify(page)).not.toContain('groupId');
+  expect(page?.cursor).toEqual({ token: '1' });
+  const continuation = { m: 'search', scope: 'all', id: null, query: 'a', cursor: page?.cursor };
+  expect(JSON.stringify(continuation)).not.toContain('groupId');
+  w.call(995, continuation);
+  await vi.waitFor(() => expect(w.ret(995)).toMatchObject({ ok: true }));
+  expect(w.core.search).toHaveBeenLastCalledWith({ kind: 'all', id: null }, 'a',
+    { rank: 0n, groupId: ORPHAN_GROUP, seq: 3n }, 50);
 });
 
 it('stops typing on lost membership and refuses typing until viewable and online', async () => {
@@ -716,11 +725,11 @@ it('stops typing when the open channel disappears from the refreshed channel lis
   expect(w.gateway.sendTyping).toHaveBeenLastCalledWith(CHANNEL, false);
 });
 
-it('rejects a nonzero search cursor and never calls core search', async () => {
+it('rejects a search cursor with no worker-owned pagination state and never calls core search', async () => {
   const w = world();
   await toReady(w);
   w.call(91, { m: 'search', scope: 'all', id: null, query: 'boat',
-    cursor: { rank: '1', groupId: toHex(GROUP), seq: '2' } });
+    cursor: { token: '1' } });
   await vi.waitFor(() => expect(w.ret(91)).toBeDefined());
   expect(w.ret(91)).toMatchObject({ ok: false, error: { code: 'E_CORE_INPUT', detail: '' } });
   expect(w.core.search).not.toHaveBeenCalled();

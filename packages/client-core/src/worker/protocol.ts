@@ -42,7 +42,7 @@ export type Command =
   | { m: 'verifyContact'; userId: string; umk: string }
   | { m: 'safetyNumber'; userId: string }
   | { m: 'search'; scope: 'channel' | 'community' | 'all'; id: string | null; query: string;
-    cursor: { rank: string; groupId: string; seq: string } | null }
+    cursor: { token: string } | null }
   | { m: 'typing'; channelId: string; on: boolean }
   | { m: 'voiceSelf'; callId: string; flags: number }
   | { m: 'resign'; nonce: string };

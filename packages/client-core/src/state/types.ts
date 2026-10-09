@@ -56,7 +56,7 @@ export interface DmSummary { id: string; kind: 3 | 4; members: string[]; name: s
 export interface DeviceSummary { id: string; tier: 0 | 1; signerTier: 0 | 1; lastSeen: number; revokedAt: number | null; listed: boolean; own: boolean; }
 export interface TrustSummary { userId: string; name: string; shared: boolean; umk: string; firstSeen: number; verified: boolean; changedUmk: string | null }
 export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string }[];
-  cursor: { rank: string; groupId: string; seq: string } | null }
+  cursor: { token: string } | null }
 export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecting'; generation: string | null; instance: string;
   devices: number; errors: { code: string; at: number }[] }
 export interface TypingState { userId: string; name: string; expiresAt: number }

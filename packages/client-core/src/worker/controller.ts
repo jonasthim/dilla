@@ -15,7 +15,7 @@ import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
 import {
   CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
-  type OutboxRow, type SendRequest, type SignedLists, type TimelineRow,
+  type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { Op } from '../gateway/frames';
@@ -263,9 +263,8 @@ function invalid(command: Record<string, unknown>): string | null {
     if (command.scope === 'all' ? command.id !== null : typeof command.id !== 'string' || !ID.test(command.id)) return 'invalid search id';
     if (typeof command.query !== 'string' || UTF8.encode(command.query.trim()).length < 1 || UTF8.encode(command.query.trim()).length > 128) return 'invalid search query';
     const cursor = command.cursor;
-    if (cursor !== null && (typeof cursor !== 'object' || cursor === undefined || !('rank' in cursor)
-      || !('groupId' in cursor) || !('seq' in cursor) || typeof cursor.rank !== 'string' || !/^(0|[1-9][0-9]*)$/.test(cursor.rank)
-      || typeof cursor.groupId !== 'string' || !ID.test(cursor.groupId) || typeof cursor.seq !== 'string' || !/^(0|[1-9][0-9]*)$/.test(cursor.seq))) return 'invalid search cursor';
+    if (cursor !== null && (typeof cursor !== 'object' || cursor === undefined || Object.keys(cursor).length !== 1
+      || !('token' in cursor) || typeof cursor.token !== 'string' || !/^[1-9][0-9]*$/.test(cursor.token))) return 'invalid search cursor';
   }
   return null;
 }
@@ -338,6 +337,7 @@ export class Controller {
   private readonly fetchedLeaves = new Set<string>();
   private readonly barrier = new CommandBarrier();
   private readonly searchGate = new SearchGate();
+  private searchCursor: { token: string; scope: Extract<Command, { m: 'search' }>; position: SearchCursor } | null = null;
   private leadership: Leadership | null = null;
   private readonly typingOn = new Set<string>();
   private readonly incomingTyping = new Map<string, Map<string, number>>();
@@ -1862,6 +1862,7 @@ export class Controller {
     if (this.seenTrustGeneration === generation) return;
     this.seenTrustGeneration = generation;
     this.searchGate.invalidate();
+    this.searchCursor = null;
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     for (const channelId of this.open.keys()) this.slices.set(`timeline:${channelId}`,
       { channelId, group: this.groupState(channelId), items: [], hasEarlier: false });
@@ -1946,11 +1947,13 @@ export class Controller {
   }
 
   private search(command: Extract<Command, { m: 'search' }>, requestId: number): Promise<null> {
-    if (command.cursor !== null && command.cursor.rank !== '0') throw new CoreError('E_CORE_INPUT', 'cursor rank');
+    const previous = this.searchCursor;
+    this.searchCursor = null;
     const scope = { kind: command.scope, id: command.id === null ? null : fromHex(command.id) };
-    const cursor = command.cursor === null ? null : {
-      rank: BigInt(command.cursor.rank), groupId: fromHex(command.cursor.groupId), seq: BigInt(command.cursor.seq),
-    };
+    if (command.cursor !== null && (previous?.token !== command.cursor.token
+      || previous.scope.scope !== command.scope || previous.scope.id !== command.id || previous.scope.query !== command.query))
+      throw new CoreError('E_CORE_INPUT', 'stale search cursor');
+    const cursor = command.cursor === null ? null : previous!.position;
     const hits = this.requireCore().search(scope, command.query, cursor, 50);
     if (this.searchGate.current(requestId)) {
       const destinations = new Map<string, { channelId: string; communityId: string | null }>();
@@ -1970,8 +1973,10 @@ export class Controller {
           snippet: Array.from(h.snippet).slice(0, 160).join(''), rank: h.rank.toString() }];
       });
       const last = hits.at(-1);
+      if (last !== undefined) this.searchCursor = { token: String(requestId), scope: command,
+        position: { rank: last.rank, groupId: last.groupId, seq: last.seq } };
       this.slices.set('search', { requestId, hits: rows,
-        cursor: last === undefined ? null : { rank: last.rank.toString(), groupId: toHex(last.groupId), seq: last.seq.toString() } });
+        cursor: last === undefined ? null : { token: String(requestId) } });
     }
     return Promise.resolve(null);
   }
@@ -2097,6 +2102,7 @@ export class Controller {
   private fold(channelId: string, msgId: string, type: 1 | 2 | 3 | 4 | 5 | 6, body: string): Promise<null> {
     if (type === 1 || type === 2) {
       this.searchGate.invalidate();
+      this.searchCursor = null;
       this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     }
     const groupId = this.activeGroup(channelId);
