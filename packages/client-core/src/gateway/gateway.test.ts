@@ -3,6 +3,28 @@ import { DillaHttpError } from '../http/errors';
 import { decodeFrame, encodeFrame, Op, type Frame } from './frames';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent } from './gateway';
 
+it('sends bounded client signals and throttles typing per channel', async () => {
+  // Parity authority: internal/gateway/ephemeral_test.go::TestTypingSetThrottlesPerDeviceChannelAndExpires
+  // and TestVoiceSelfRequiresLiveCallAndValidFlags; the Go tests also enforce audience ACLs.
+  const h = harness();
+  const socket = await connected(h);
+  const a = new Uint8Array(16).fill(0xa1);
+  const b = new Uint8Array(16).fill(0xb1);
+  h.gw.sendTyping(a, true);
+  h.gw.sendTyping(a, true);
+  h.gw.sendTyping(b, true);
+  h.clock.advance(3000);
+  h.gw.sendTyping(a, true);
+  h.gw.sendTyping(a, false);
+  h.gw.sendVoiceSelf(b, 3);
+  const frames = socket.sentFrames().filter((f) => f.op >= 49);
+  expect(frames.map((f) => [f.op, f.n, f.groupId, f.payload])).toEqual([
+    [51, 0n, null, [a, 1n]], [51, 0n, null, [b, 1n]],
+    [51, 0n, null, [a, 1n]], [51, 0n, null, [a, 0n]], [52, 0n, null, [b, 3n]],
+  ]);
+  expect(frames.some((f) => f.op === 50)).toBe(false);
+});
+
 const INSTANCE = new Uint8Array(16).fill(0x01);
 const DEVICE = new Uint8Array(16).fill(0x08);
 const USER = new Uint8Array(16).fill(0x09);

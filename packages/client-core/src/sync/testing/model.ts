@@ -9,6 +9,7 @@
  * joins. Words of the copy lint (scripts/check-ui-copy.mjs) appear nowhere in this file.
  */
 import { arr, bin, decode, encode, str, u53, u64, type CborInput, type CborValue } from '../../cbor';
+import { decodeBoundedArray } from '../../state/bounded';
 import {
   CoreError,
   type ApplyResult,
@@ -36,7 +37,7 @@ import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
 import type { Routes } from '../../http/routes';
 import { mentionsMe } from '../../state/mentions';
-import { fakeDskPub, fakeListBlob, fakeListNames, readFakeList } from '../../testing/fake-list';
+import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList } from '../../testing/fake-list';
 
 /** The plain message request web-2a sent with a bare body (L-TS-30). */
 export function textRequest(body: string): SendRequest {
@@ -371,12 +372,67 @@ export interface ApplyCall {
 type HsOutcome = 'ok' | 'skip' | 'changed' | 'stop' | 'gone';
 
 export class ModelCore implements CorePort {
-  pendingLeaves(): PendingLeaf[] { return []; }
+  private readonly leaves = new Map<string, { groupId: Id; leafIndex: number; userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1; version: bigint; head: Uint8Array | null }>();
+  private readonly trustPins = new Map<string, TrustRecord>();
+  addPendingLeaf(groupId: Id, leafIndex: number, userId: Id, deviceId: Id, dskPub: Uint8Array, tier: 0 | 1): void {
+    if (groupId.length !== 16 || userId.length !== 16 || deviceId.length !== 16 || dskPub.length !== 32 ||
+      !Number.isInteger(leafIndex) || leafIndex < 0 || leafIndex > 0xffff_ffff || (tier !== 0 && tier !== 1))
+      throw coreError('E_CORE_INPUT');
+    this.leaves.set(`${toHex(groupId)}/${leafIndex}`, { groupId: groupId.slice(), leafIndex,
+      userId: userId.slice(), deviceId: deviceId.slice(), dskPub: dskPub.slice(), tier, version: 0n, head: null });
+  }
+  pendingLeaves(): PendingLeaf[] {
+    if (this.leaves.size > 4096) throw coreError('E_CORE_LIMIT');
+    return [...this.leaves.values()].map((leaf) => ({ groupId: leaf.groupId, leafIndex: leaf.leafIndex,
+      userId: leaf.userId, cachedVersion: leaf.version, reason: leaf.version === 0n ? 'unknown' : 'ready-refresh' }));
+  }
   proposedAdds(): { index: bigint; userId: Id; cachedVersion: bigint }[] { return []; }
   deviceListIngestAdd(): { version: bigint; changed: boolean; quarantined: number } { throw coreError('E_CORE_STATE', 'not modelled'); }
-  deviceListIngest(): { version: bigint; changed: boolean; quarantined: number } { throw coreError('E_CORE_STATE', 'not modelled'); }
+  deviceListIngest(groupId: Id, leafIndex: number, requestedUser: Id, history: Uint8Array, headList: Uint8Array,
+    now: bigint): { version: bigint; changed: boolean; quarantined: number } {
+    const leaf = this.leaves.get(`${toHex(groupId)}/${leafIndex}`);
+    if (leaf === undefined) throw coreError('E_DEVICE_LIST_STALE');
+    if (!same(leaf.userId, requestedUser)) throw coreError('E_CREDENTIAL');
+    if (history.length > 4_194_304) throw coreError('E_DEVICE_LIST_STALE');
+    let rows: CborValue[];
+    try { rows = decodeBoundedArray(history, 1024); } catch { throw coreError('E_DEVICE_LIST_STALE'); }
+    if (rows.length < 1 || rows.length > 1024) throw coreError('E_DEVICE_LIST_STALE');
+    let version = leaf.version;
+    let final: CborValue[] | null = null;
+    for (const [index, value] of rows.entries()) {
+      let row: CborValue[];
+      try { row = arr(value, 4); } catch { throw coreError('E_DEVICE_LIST_STALE'); }
+      if (index === 0 && leaf.version > 0n) {
+        if (u64(row[0]) !== leaf.version || leaf.head === null || !same(encode(row), leaf.head)) throw coreError('E_DEVICE_LIST_STALE');
+        final = row;
+        continue;
+      }
+      if (u64(row[0]) !== version + 1n) throw coreError('E_DEVICE_LIST_STALE');
+      const list = readFakeList(bin(row[1]));
+      if (list === null) throw coreError('E_DEVICE_LIST_STALE');
+      if (!same(list.userId, leaf.userId)) throw coreError('E_CREDENTIAL');
+      const entry = list.entries.find((item) => same(item.deviceId, leaf.deviceId) && item.revokedAt === null);
+      if (entry === undefined) throw coreError('E_DEVICE_UNLISTED');
+      if (!same(entryKey(entry), leaf.dskPub)) throw coreError('E_CREDENTIAL');
+      if ((entry.tier ?? 1) !== leaf.tier) throw coreError('E_TIER_MISMATCH');
+      // This fixed marker is only a double's stand-in; client_trust.rs checks real signatures and hashes.
+      const sig = bin(row[2], 64);
+      const prev = bin(row[3], 32);
+      if (!sig.every((byte) => byte === Number((version + 1n) & 255n))) throw coreError('E_CREDENTIAL');
+      if (!prev.every((byte) => byte === Number(version & 255n))) throw coreError('E_DEVICE_LIST_STALE');
+      version += 1n;
+      final = row;
+    }
+    if (final === null || !same(encode(final), headList)) throw coreError('E_DEVICE_LIST_STALE');
+    leaf.version = version;
+    leaf.head = headList.slice();
+    const user = toHex(leaf.userId);
+    if (!this.trustPins.has(user)) this.trustPins.set(user, { userId: leaf.userId, umk: fakeDskPub(leaf.userId),
+      firstSeen: now, verified: false, changedUmk: null });
+    return { version, changed: false, quarantined: 0 };
+  }
   revalidatePending(): number { return 0; }
-  trustState(): TrustRecord[] { return []; }
+  trustState(): TrustRecord[] { return [...this.trustPins.values()].sort((a, b) => toHex(a.userId).localeCompare(toHex(b.userId))); }
   trustGeneration(): bigint { return 0n; }
   trustVerify(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
   safetyNumberFor(): string { throw coreError('E_CORE_STATE', 'not modelled'); }

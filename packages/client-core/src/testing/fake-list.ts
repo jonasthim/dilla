@@ -1,9 +1,9 @@
-import { decode, encode, type CborValue } from '../cbor';
+import { decode, encode, u53, type CborValue } from '../cbor';
 import type { Id } from '../core-port';
 
 /** One entry of a fake device list. `dskPub` absent means the device's own key, fakeDskPub(deviceId): a real list
  *  always names the key, and "listed" is the (device_id, dsk_pub) pair (protocol/02 item 4, security review F2). */
-export interface FakeListEntry { deviceId: Id; revokedAt: bigint | null; dskPub?: Id; }
+export interface FakeListEntry { deviceId: Id; revokedAt: bigint | null; dskPub?: Id; tier?: 0 | 1; }
 export interface FakeList { userId: Id; entries: FakeListEntry[]; at: bigint; }
 
 /** The signing key every double gives a device unless a test says otherwise: distinct per device id, so that the
@@ -15,15 +15,21 @@ export function fakeDskPub(deviceId: Id): Uint8Array {
 }
 
 export function fakeListBlob(userId: Id, entries: readonly FakeListEntry[], at: bigint): Uint8Array {
-  return encode(['fake.list', userId, entries.map((entry) => entry.dskPub === undefined
-    ? [entry.deviceId, entry.revokedAt] : [entry.deviceId, entry.revokedAt, entry.dskPub]), at]);
+  return encode(['fake.list', userId, entries.map((entry) => entry.tier !== undefined
+    ? [entry.deviceId, entry.revokedAt, entry.dskPub ?? fakeDskPub(entry.deviceId), entry.tier]
+    : entry.dskPub === undefined ? [entry.deviceId, entry.revokedAt] : [entry.deviceId, entry.revokedAt, entry.dskPub]), at]);
 }
 
 function entry(value: CborValue): FakeListEntry | null {
-  if (!Array.isArray(value) || (value.length !== 2 && value.length !== 3) || !(value[0] instanceof Uint8Array) ||
+  if (!Array.isArray(value) || (value.length !== 2 && value.length !== 3 && value.length !== 4) || !(value[0] instanceof Uint8Array) ||
       value[0].length !== 16 || (value[1] !== null && typeof value[1] !== 'bigint')) return null;
   if (value.length === 2) return { deviceId: value[0], revokedAt: value[1] };
   if (!(value[2] instanceof Uint8Array) || value[2].length !== 32) return null;
+  if (value.length === 4) {
+    const tier = u53(value[3]);
+    if (tier !== 0 && tier !== 1) return null;
+    return { deviceId: value[0], revokedAt: value[1], dskPub: value[2], tier };
+  }
   return { deviceId: value[0], revokedAt: value[1], dskPub: value[2] };
 }
 

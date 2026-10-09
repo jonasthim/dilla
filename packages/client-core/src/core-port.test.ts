@@ -39,6 +39,35 @@ function caught(fn: () => unknown): CoreError {
   throw new Error('nothing was thrown');
 }
 
+it('adapts all six ABI-7 trust and search exports', () => {
+  const key = new Uint8Array(32).fill(0x4a);
+  const history = encode([[1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]]);
+  const head = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
+  const s = stub({
+    pending_leaves: () => encode([[G, 0, USER, 0, 'unknown']]),
+    device_list_ingest: () => encode([1, 0, 0]),
+    trust_state: () => encode([[USER, key, 10, 0, null]]),
+    trust_verify: () => undefined,
+    safety_number_for: () => Array.from({ length: 12 }, () => '12345').join(' '),
+    search: () => encode([[G, 7, 'boat', 0]]),
+  });
+  expect(s.port.pendingLeaves()).toMatchObject([{ groupId: G, userId: USER, leafIndex: 0, cachedVersion: 0n }]);
+  expect(s.port.deviceListIngest(G, 0, USER, history, head, 12n)).toEqual({ version: 1n, changed: false, quarantined: 0 });
+  expect(s.port.trustState()).toEqual([{ userId: USER, umk: key, firstSeen: 10n, verified: false, changedUmk: null }]);
+  s.port.trustVerify(USER, key);
+  expect(s.port.safetyNumberFor(USER)).toBe(Array.from({ length: 12 }, () => '12345').join(' '));
+  expect(s.port.search({ kind: 'all', id: null }, 'boat', null, 50)).toEqual([{ groupId: G, seq: 7n, snippet: 'boat', rank: 0n }]);
+  expect(s.calls.map((c) => c.method)).toEqual([
+    'pending_leaves', 'device_list_ingest', 'trust_state', 'trust_verify', 'safety_number_for', 'search',
+  ]);
+  expect(s.calls[1]?.args).toEqual([G, 0, USER, history, head, 12n]);
+});
+
+it('refuses a non-bit changed flag in a wasm ingest reply', () => {
+  const s = stub({ device_list_ingest: () => encode([1, 2, 0]) });
+  expect(caught(() => s.port.deviceListIngest(G, 0, USER, encode([]), encode([]), 12n)).code).toBe('E_CORE_WASM');
+});
+
 describe('wrapCore decoding', () => {
   it('reads identity in every phase', () => {
     expect(stub({ identity: () => encode([0, null, null, null, '', 0]) }).port.identity())

@@ -24,6 +24,10 @@ const CLIENT_VERDICT: Record<string, string | null> = {
   'commit_ack with no group_id': 'E_FRAME_SHAPE',
   'non-minimal op': 'E_CBOR_NONCANONICAL',
   'map instead of an array': 'E_CBOR_TYPE',
+  'old typing has four elements': 'E_FRAME_SHAPE',
+  'typing_set channel id has 17 bytes': 'E_FRAME_SHAPE',
+  'voice_self flags 4': 'E_FRAME_SHAPE',
+  'typing_set has group_id': 'E_FRAME_SHAPE',
 };
 
 function verdict(bytes: Uint8Array): string | null {
@@ -38,9 +42,9 @@ function verdict(bytes: Uint8Array): string | null {
 }
 
 describe('frames.json', () => {
-  it('holds the 25 cases and 11 rejects this codec was written against', () => {
-    expect(vectors.cases).toHaveLength(25);
-    expect(vectors.rejects).toHaveLength(11);
+  it('holds the 27 cases and 15 rejects this codec was written against', () => {
+    expect(vectors.cases).toHaveLength(27);
+    expect(vectors.rejects).toHaveLength(15);
     expect(Object.keys(CLIENT_VERDICT).sort()).toEqual(vectors.rejects.map((r) => r.name).sort());
   });
 
@@ -87,6 +91,23 @@ describe('frame shape', () => {
 
   it('pins the opcode numbers', () => {
     expect(Op).toEqual({ hello: 0, identify: 1, ready: 3, invalidSession: 5, heartbeat: 6, heartbeatAck: 7, reconnect: 8,
-      error: 9, commitAck: 12, handshake: 16, commitNeeded: 17, epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21 });
+      error: 9, commitAck: 12, handshake: 16, commitNeeded: 17, epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
+      typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52 });
   });
+});
+
+const fid = (byte: number): Uint8Array => new Uint8Array(16).fill(byte);
+it('requires all five typed fields of server typing', () => {
+  const [channel, user, device] = [fid(1), fid(2), fid(3)];
+  expect(decodeFrame(encodeFrame(Op.typing, 0, null, [channel, user, device, 1, 10])).payload).toHaveLength(5);
+  expect(() => decodeFrame(encodeFrame(Op.typing, 0, null, [user, device, 1, 10]))).toThrow('E_FRAME_SHAPE');
+  expect(() => decodeFrame(encodeFrame(Op.typing, 0, null, [fid(1).slice(1), user, device, 1, 10]))).toThrow('E_FRAME_SHAPE');
+  expect(() => decodeFrame(encodeFrame(Op.typing, 0, null, [channel, user, device, 2, 10]))).toThrow('E_FRAME_SHAPE');
+  expect(() => decodeFrame(encodeFrame(Op.typing, 0, null, [channel, user, device, 1, -1]))).toThrow('E_FRAME_SHAPE');
+});
+it('encodes ungrouped client signals', () => {
+  const channel = fid(4);
+  expect(decodeFrame(encodeFrame(Op.typingSet, 0, null, [channel, 1]))).toMatchObject({ op: 51, n: 0n, groupId: null });
+  expect(decodeFrame(encodeFrame(Op.voiceSelf, 0, null, [channel, 3]))).toMatchObject({ op: 52, n: 0n, groupId: null });
+  expect(() => decodeFrame(encodeFrame(Op.voiceSelf, 0, null, [channel, 4]))).toThrow('E_FRAME_SHAPE');
 });

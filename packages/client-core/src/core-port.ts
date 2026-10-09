@@ -1,4 +1,6 @@
 import { arr, bin, decode, encode, opt, str, u53, u64, CborError, type CborValue } from './cbor';
+import { decodePendingLeaves, decodeTrustState } from './state/trust';
+import { decodeSearchHits, validateSearch } from './state/search';
 
 export class CoreError extends Error {
   readonly code: string;
@@ -206,6 +208,14 @@ function oneOf<T extends number>(v: CborValue, values: readonly T[]): T {
   if (!values.includes(n as T)) throw new CborError('E_CBOR_RANGE', `unexpected value ${n}`);
   return n as T;
 }
+function readTrustIngest(bytes: Uint8Array): { version: bigint; changed: boolean; quarantined: number } {
+  try {
+    const a = arr(decode(bytes), 3);
+    const changed = u64(a[1]);
+    if (changed !== 0n && changed !== 1n) throw new CborError('E_CBOR_RANGE', 'changed bit');
+    return { version: u64(a[0]), changed: changed === 1n, quarantined: u53(a[2]) };
+  } catch (error) { throw new CoreError('E_CORE_WASM', String(error)); }
+}
 function readIdentity(v: CborValue): IdentityInfo {
   const a = arr(v, 6);
   return { phase: oneOf(field(a, 0), [0, 1, 2, 3]), instanceId: opt(field(a, 1), (x) => bin(x, 16)),
@@ -397,42 +407,26 @@ export function wrapCore(handle: CoreHandle): CorePort {
       const a = arr(v, 2); return { version: u64(field(a, 0)), listed: oneOf(field(a, 1), [0, 1]) === 1 };
     })),
     ownDeviceList: () => call(() => decoded('ownDeviceList', handle.own_device_list(), readOwnList)),
-    pendingLeaves: () => call(() => decoded('pendingLeaves', handle.pending_leaves(), (v) => {
-      const rows = arr(v);
-      if (rows.length > 4096) throw new CborError('E_CBOR_RANGE', 'too many pending leaves');
-      return rows.map((row) => { const a = arr(row, 5); return { groupId: bin(a[0], 16), leafIndex: u53(a[1]),
-        userId: bin(a[2], 16), cachedVersion: u64(a[3]), reason: str(a[4]) }; });
-    })),
+    pendingLeaves: () => call(() => decodePendingLeaves(handle.pending_leaves())),
     proposedAdds: (groupId, proposalsBody) => call(() => decoded('proposedAdds', handle.proposed_adds(groupId, proposalsBody), (v) =>
       arr(v).map((row) => { const a = arr(row, 3); return { index: u64(a[0]), userId: bin(a[1], 16), cachedVersion: u64(a[2]) }; }))),
     deviceListIngestAdd: (groupId, proposalsBody, index, requestedUser, history, headList, now) => call(() =>
-      decoded('deviceListIngestAdd', handle.device_list_ingest_add(groupId, proposalsBody, index, requestedUser, history, headList, now), (v) => {
-        const a = arr(v, 3); return { version: u64(a[0]), changed: u64(a[1]) === 1n, quarantined: u53(a[2]) };
-      })),
+      readTrustIngest(handle.device_list_ingest_add(groupId, proposalsBody, index, requestedUser, history, headList, now))),
     deviceListIngest: (groupId, leafIndex, requestedUser, history, headList, now) => call(() =>
-      decoded('deviceListIngest', handle.device_list_ingest(groupId, leafIndex, requestedUser, history, headList, now), (v) => {
-        const a = arr(v, 3); return { version: u64(a[0]), changed: u64(a[1]) === 1n, quarantined: u53(a[2]) };
-      })),
+      readTrustIngest(handle.device_list_ingest(groupId, leafIndex, requestedUser, history, headList, now))),
     revalidatePending: (groupId, leafIndex, limit) => call(() => handle.revalidate_pending(groupId, leafIndex, limit)),
-    trustState: () => call(() => decoded('trustState', handle.trust_state(), (v) => {
-      const rows = arr(v);
-      if (rows.length > 4096) throw new CborError('E_CBOR_RANGE', 'too many trust rows');
-      return rows.map((row) => { const a = arr(row, 5); return { userId: bin(a[0], 16), umk: bin(a[1], 32),
-        firstSeen: u64(a[2]), verified: u64(a[3]) === 1n, changedUmk: opt(a[4], (x) => bin(x, 32)) }; });
-    })),
+    trustState: () => call(() => decodeTrustState(handle.trust_state())),
     trustGeneration: () => call(() => handle.trust_generation()),
-    trustVerify: (userId, umk) => call(() => handle.trust_verify(userId, umk)),
+    trustVerify: (userId, umk) => call(() => {
+      if (userId.length !== 16 || umk.length !== 32) throw new CoreError('E_CORE_INPUT');
+      handle.trust_verify(userId, umk);
+    }),
     safetyNumberFor: (userId) => call(() => handle.safety_number_for(userId)),
     search: (scope, query, cursor, limit) => call(() => {
-      if (cursor !== null && cursor.rank !== 0n) throw new CoreError('E_CORE_INPUT', 'nonzero search rank');
+      validateSearch(scope, query, cursor, limit);
       const kind = scope.kind === 'channel' ? 0 : scope.kind === 'community' ? 1 : 2;
-      return decoded('search', handle.search(kind, scope.id, query,
-        cursor === null ? null : encode([cursor.rank, cursor.groupId, cursor.seq]), limit), (v) => {
-        const rows = arr(v);
-        if (rows.length > 50) throw new CborError('E_CBOR_RANGE', 'too many search hits');
-        return rows.map((row) => { const a = arr(row, 4); return { groupId: bin(a[0], 16), seq: u64(a[1]),
-          snippet: str(a[2]), rank: u64(a[3]) }; });
-      });
+      return decodeSearchHits(handle.search(kind, scope.id, query,
+        cursor === null ? null : encode([cursor.rank, cursor.groupId, cursor.seq]), limit));
     }),
   };
 }

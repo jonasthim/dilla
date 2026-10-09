@@ -5,7 +5,60 @@ import { CHANNEL, CHANNEL_2, COMMUNITY, FOLD_TARGET, FOLD_UNHELD, ME, ModelCore,
 
 import { toHex } from '../../hex';
 import type { Frame } from '../../gateway/frames';
-import { fakeListBlob } from '../../testing/fake-list';
+import { fakeDskPub, fakeListBlob } from '../../testing/fake-list';
+
+const bytes = (n: number, value: number): Uint8Array => new Uint8Array(n).fill(value);
+const signed = (v: number, user = PEER.user): [number, Uint8Array, Uint8Array, Uint8Array] =>
+  [v, fakeListBlob(user, [{ deviceId: PEER.device, revokedAt: null, dskPub: fakeDskPub(PEER.device) }], BigInt(v)),
+    bytes(64, v), bytes(32, v - 1)];
+it('matches client_trust gap and cross-user refusals without a pin', () => {
+  // Parity authority: core/dilla-core/src/client/trust.rs::gap_rollback_wrong_signer_cross_user_and_substitute_are_refused
+  // and core/dilla-core/tests/client_trust.rs::another_users_requested_id_never_creates_a_pin.
+  const group = idOf(0xa0, 1);
+  const model = new ModelCore(ME);
+  model.addPendingLeaf(group, 0, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
+  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1), signed(3)]), encode(signed(3)), 10n))
+    .toThrow('E_DEVICE_LIST_STALE');
+  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1, ME.user)]), encode(signed(1, ME.user)), 10n))
+    .toThrow('E_CREDENTIAL');
+  expect(model.trustState()).toEqual([]);
+});
+
+it('refuses a substituted modeled leaf key without a pin', () => {
+  // Rust parity: client/trust.rs::gap_rollback_wrong_signer_cross_user_and_substitute_are_refused.
+  const group = idOf(0xa0, 2);
+  const model = new ModelCore(ME);
+  model.addPendingLeaf(group, 0, PEER.user, PEER.device, bytes(32, 0x98), 1);
+  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1)]), encode(signed(1)), 10n))
+    .toThrow('E_CREDENTIAL');
+  expect(model.trustState()).toEqual([]);
+});
+
+it('refuses a leaf whose tier differs from the modeled list entry', () => {
+  const group = idOf(0xa0, 3);
+  const model = new ModelCore(ME);
+  model.addPendingLeaf(group, 0, PEER.user, PEER.device, fakeDskPub(PEER.device), 0);
+  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1)]), encode(signed(1)), 10n))
+    .toThrow('E_TIER_MISMATCH');
+  expect(model.trustState()).toEqual([]);
+});
+
+it('does not truncate an overfull modeled pending-leaf set', () => {
+  const model = new ModelCore(ME);
+  for (let n = 0; n < 4097; n++) model.addPendingLeaf(idOf(0xa1, n), 0, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
+  expect(() => model.pendingLeaves()).toThrow('E_CORE_LIMIT');
+});
+
+it('refuses a modeled list with the wrong fixture signature', () => {
+  const group = idOf(0xa1, 5000);
+  const model = new ModelCore(ME);
+  model.addPendingLeaf(group, 0, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
+  const wrong = signed(1);
+  wrong[2] = bytes(64, 0);
+  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([wrong]), encode(wrong), 10n))
+    .toThrow('E_CREDENTIAL');
+  expect(model.trustState()).toEqual([]);
+});
 
 const G = idOf(0x9b, 1);
 const G2 = idOf(0x9b, 2);

@@ -1,5 +1,6 @@
 // One typed function per web-1 route. Core-built bodies pass through unchanged; raw answers return unchanged.
 import { CborError, arr, bin, decode, encode, opt, str, u53, u64, type CborValue } from '../cbor';
+import { decodeBoundedArray } from '../state/bounded';
 import { toHex } from '../hex';
 import { HttpClient, type Bucket, type HttpRequest } from './client';
 import { DillaHttpError } from './errors';
@@ -267,8 +268,10 @@ export class Routes {
   }
   async getDeviceListHistory(userId: Uint8Array, after: bigint): Promise<DeviceListHistory> {
     const path = `/v1/users/${id('userId', userId)}/device-list?after=${count('after', after)}`;
-    const p = page(await this.body('GET', path, 'read', true, { maxBodyBytes: 4 * 1024 * 1024 }));
-    return { raw: p.raw, count: p.count, lastVersion: p.last };
+    const raw = await this.body('GET', path, 'read', true, { maxBodyBytes: 1_048_576 });
+    const rows = decodeBoundedArray(raw, 64);
+    const lastVersion = rows.length ? u64(atLeast(rows[rows.length - 1], 1)[0]) : null;
+    return { raw, count: rows.length, lastVersion };
   }
   async postDm(recipients: Uint8Array[]): Promise<DmOpened> {
     if (recipients.length < 1 || recipients.length > 64) throw new RangeError('E_ROUTE_INPUT: recipients must be 1..64');

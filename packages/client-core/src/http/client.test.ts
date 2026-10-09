@@ -9,6 +9,16 @@ const POST_WRITE: HttpRequest = { method: 'POST', path: '/v1/thing', body: encod
 const REF = new Uint8Array(32).fill(0x11);
 const WIN = new Uint8Array(48).fill(0x12);
 
+it('caps a non-2xx body independently of the successful page cap', async () => {
+  const t = fakeTransport();
+  t.replies.push(new Response(new Uint8Array(65_537), { status: 403 }));
+  const err = await failure(new HttpClient(t.deps).request({
+    ...GET_READ, maxBodyBytes: 1_048_576,
+  }));
+  expect(err).toMatchObject({ code: 'E_BODY_TOO_LARGE', status: 403 });
+  expect(t.seen).toHaveLength(1);
+});
+
 async function failure(p: Promise<unknown>): Promise<DillaHttpError> {
   try {
     await p;

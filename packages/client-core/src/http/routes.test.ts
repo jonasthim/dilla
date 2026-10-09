@@ -62,6 +62,12 @@ function setup(opts: FakeOptions = {}) {
   return { t, http, routes: new Routes(http) };
 }
 
+it('bounds a history page at one MiB and leaves HTTP error details worker-local', async () => {
+  const { routes, t } = setup();
+  t.replies.push(octetReply(200, new Uint8Array(1_048_577)));
+  await expect(routes.getDeviceListHistory(USER, 0n)).rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE' });
+});
+
 function member(i: number): Uint8Array {
   const id = new Uint8Array(16);
   id[15] = i;
