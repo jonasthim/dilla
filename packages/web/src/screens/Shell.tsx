@@ -131,11 +131,16 @@ export function Shell(): React.JSX.Element {
   const searchId = searchScope === 'channel' ? targetId : searchScope === 'community' ? communityId : null;
   const issueSearch = (query: string, scope: 'channel' | 'community' | 'all', id: string | null) => {
     if (!query.trim() || (scope !== 'all' && id === null)) return;
-    const next = Math.max(searchRequestRef.current, search?.requestId ?? 0) + 1;
-    searchRequestRef.current = next;
-    setSearchRequest(next);
+    searchRequestRef.current = Math.max(searchRequestRef.current, search?.requestId ?? 0);
+    setSearchRequest(0);
     client.call({ m: 'search', scope, id, query, cursor: null }).catch(report);
   };
+  useEffect(() => {
+    if (searchOpen && search?.requestId && search.requestId > searchRequestRef.current) {
+      searchRequestRef.current = search.requestId;
+      setSearchRequest(search.requestId);
+    }
+  }, [searchOpen, search]);
   const startSearch = (scope: 'channel' | 'all') => {
     setSearchScope(scope);
     setSearchQuery('');
@@ -548,29 +553,47 @@ export function Shell(): React.JSX.Element {
       : (railSlices.flat() as ChannelSummary[]).some(row => row.id === hit.channelId && row.communityId === hit.communityId);
     if (!known) return false;
     const name = `timeline:${hit.channelId}` as const;
-    const available = () => {
-      const row = client.get(name)?.items.find(item => item.seq === hit.seq && item.state === 'ok');
-      return row !== undefined;
-    };
+    const available = () => client.get(name)?.items.some(item => item.seq === hit.seq && item.state === 'ok') === true;
     navigate(hit.communityId === null ? { name: 'dm', channelId: hit.channelId }
       : { name: 'channel', communityId: hit.communityId, channelId: hit.channelId });
-    if (client.get(name) !== undefined && !available()) return false;
-    if (!available()) {
-      const found = await new Promise<boolean>(resolve => {
+    if (client.get(name) === undefined) {
+      await new Promise<void>(resolve => {
+        const timeout = setTimeout(() => { stop(); resolve(); }, 1000);
         const stop = client.subscribe(name, () => {
           const current = client.get(name);
           if (current === undefined) return;
           stop();
-          resolve(available());
+          clearTimeout(timeout);
+          resolve();
         });
       });
-      if (!found) return false;
     }
-    setSearchOpen(false);
-    requestAnimationFrame(() => {
-      const row = document.querySelector<HTMLElement>(`.d-message-row[data-seq="${hit.seq}"]`);
-      row?.focus();
-      row?.scrollIntoView?.({ block: 'center' });
+    if (client.get(name) === undefined) return false;
+    while (!available() && client.get(name)?.hasEarlier) {
+      const previous = client.get(name);
+      await client.call({ m: 'loadEarlier', channelId: hit.channelId });
+      if (client.get(name) === previous) break;
+    }
+    if (!available()) return false;
+    await new Promise<void>(resolve => {
+      const focus = () => {
+        const row = document.querySelector<HTMLElement>(`.dw-conversation[data-channel-id="${hit.channelId}"] .d-message-row[data-seq="${hit.seq}"]`);
+        if (!row) return false;
+        row.focus();
+        row.scrollIntoView?.({ block: 'center' });
+        resolve();
+        return true;
+      };
+      if (focus()) return;
+      const observer = new MutationObserver(() => { if (focus()) { observer.disconnect(); clearTimeout(timeout); } });
+      observer.observe(document.body, { childList: true, subtree: true });
+      const timeout = setTimeout(() => {
+        observer.disconnect();
+        const heading = document.querySelector<HTMLElement>('.d-channel-header__name');
+        heading?.setAttribute('tabindex', '-1');
+        heading?.focus();
+        resolve();
+      }, 1000);
     });
     return true;
   };

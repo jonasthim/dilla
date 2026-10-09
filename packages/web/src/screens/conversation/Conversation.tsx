@@ -185,7 +185,7 @@ export function Conversation(p: ConversationProps): React.JSX.Element {
   };
   const closeLightbox = () => { closedLightbox.current = lightbox?.opener ?? null; setLightbox(null); };
 
-  return <div ref={paneRef} className="dw-conversation"
+  return <div ref={paneRef} className="dw-conversation" data-channel-id={p.channelId}
     onFocus={e => { const row = (e.target as Element).closest<HTMLElement>('.d-message-row'); if (row) {
       const key = items.find(i => rowEls.current.get(i.key) === row)?.key;
       if (key) setActiveKey(key);

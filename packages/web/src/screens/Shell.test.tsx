@@ -89,6 +89,47 @@ it('takes a picked community search hit to its channel and focuses the row', asy
   await waitFor(() => expect(document.querySelector('.d-message-row[data-seq="5"]')).toHaveFocus());
 });
 
+it('focuses the destination row when the previous channel has the same sequence', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline({ items: [item({ key: 'old-five', seq: '5', body: 'old' })] }));
+    client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'target-five', seq: '5', body: 'lamp' })] }));
+  } });
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(screen.getByRole('textbox', { name: 'Search your messages' }), 'lamp');
+  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
+  await user.click(screen.getByRole('option', { name: /lamp/ }));
+  await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
+  await waitFor(() => expect(screen.getByText('lamp', { selector: '.d-message-row__body' }).closest('.d-message-row')).toHaveFocus());
+});
+
+it('accepts the worker request id after invalidation and loads earlier pages for a picked row', async () => {
+  const older = item({ key: 'older', seq: '5', body: 'lamp' });
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set('search', { requestId: 0, hits: [], cursor: null });
+    client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'newer', seq: '20', body: 'later' })], hasEarlier: true }));
+  } });
+  fake.handler = command => {
+    if (command.m === 'loadEarlier' && command.channelId === RAND) fake.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [older, item({ key: 'newer', seq: '20', body: 'later' })], hasEarlier: false }));
+    return Promise.resolve(null);
+  };
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(screen.getByRole('textbox', { name: 'Search your messages' }), 'lamp');
+  act(() => fake.set('search', { requestId: 9, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
+  await user.click(screen.getByRole('option', { name: /lamp/ }));
+  await waitFor(() => expect(fake.callsOf('loadEarlier')).toContainEqual({ m: 'loadEarlier', channelId: RAND }));
+  await waitFor(() => expect(document.querySelector('.d-message-row[data-seq="5"]')).toHaveFocus());
+});
+
+it('reports a search hit unavailable if its channel never loads a timeline', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`);
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(screen.getByRole('textbox', { name: 'Search your messages' }), 'gone');
+  act(() => fake.set('search', { requestId: 5, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'gone', rank: '0' }], cursor: null }));
+  await user.click(screen.getByRole('option', { name: /gone/ }));
+  await waitFor(() => expect(screen.getByText('That message is no longer available')).toBeInTheDocument(), { timeout: 2500 });
+  expect(screen.getByRole('textbox', { name: 'Search your messages' })).toHaveFocus();
+});
+
 it('takes a keyboard-picked DM hit to its DM route and focuses the row', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
     withDms(client);
