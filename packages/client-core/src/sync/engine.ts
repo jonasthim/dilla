@@ -22,6 +22,7 @@ export interface SyncDeps {
   now(): number; random(): number; setTimeout(fn: () => void, ms: number): number; clearTimeout(id: number): void;
   onGroupChanged(groupId: Id, result: ApplyResult): void; onOutboxChanged(groupId: Id): void;
   onTrustChanged(): void;
+  trackJob?(job: Promise<unknown>): void;
   onMembership(groupId: Id, status: 'resyncing' | 'not-member'): void;
   onJoinAll(progress: { done: number; total: number; failed: number }): void;
   /** A Welcome for an unexpected group; the controller reloads DMs. */
@@ -50,7 +51,7 @@ const key = (g: Id): string => `g:${toHex(g)}`;
 const HELD_MAX = 512;
 
 export class SyncEngine implements SyncInternals {
-  readonly queues = new SerialQueues();
+  readonly queues: SerialQueues;
   readonly echoWait = new Map<string, { msgHex: string; timer: number }>();
   readonly epochWait = new Map<string, number>();
   readonly count425 = new Map<string, number>();
@@ -70,7 +71,7 @@ export class SyncEngine implements SyncInternals {
   private unsubscribe: (() => void) | null = null;
   private isStopped = false;
 
-  constructor(readonly deps: SyncDeps) {}
+  constructor(readonly deps: SyncDeps) { this.queues = new SerialQueues((job) => deps.trackJob?.(job)); }
   stopped(): boolean { return this.isStopped; }
   start(): void {
     if (this.unsubscribe !== null || this.isStopped) return;

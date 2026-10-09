@@ -38,16 +38,34 @@ export type Command =
   | { m: 'attachFiles'; channelId: string; files: readonly File[] }                       // ready → { trayIds }; slice tray:<channel>
   | { m: 'discardAttachment'; channelId: string; trayId: string }                         // ready → null
   | { m: 'openAttachment'; channelId: string; seq: string; index: number; thumb: boolean } // ready → { blob, name, mime }
-  | { m: 'refreshTrust' }; // ready: bounded signed-list refresh
+  | { m: 'refreshTrust' } // ready: bounded signed-list refresh
+  | { m: 'verifyContact'; userId: string; umk: string }
+  | { m: 'safetyNumber'; userId: string }
+  | { m: 'search'; scope: 'channel' | 'community' | 'all'; id: string | null; query: string;
+    cursor: { rank: string; groupId: string; seq: string } | null }
+  | { m: 'typing'; channelId: string; on: boolean }
+  | { m: 'voiceSelf'; callId: string; flags: number }
+  | { m: 'resign'; nonce: string };
 export type ToWorker = { t: 'call'; id: number; command: Command };
 export type FromWorker =
   | { t: 'ret'; id: number; ok: true; value: unknown }
   | { t: 'ret'; id: number; ok: false; error: WorkerError }
-  | { t: 'slice'; name: SliceName; rev: number; value: unknown };
+  | { t: 'slice'; name: SliceName; rev: number; value: unknown }
+  | { t: 'released'; instance: string; nonce: string };
 /** Not part of ToWorker. Honoured only by a worker started with { testHooks: true }, which only
  *  packages/client-core/harness/worker.ts does; src/worker/entry.ts (what createCoreWorker() loads) passes false. */
-export type TestHook = { t: 'test'; op: 'gateway-stop' | 'gateway-start' };
+export type TestHook = { t: 'test'; op: 'gateway-stop' | 'gateway-start' | 'pause-fail-once' };
 export const LOCK_PREFIX = 'dilla-core:';        // + instance id hex
+const HEX_ID = /^[0-9a-f]{32}$/;
+
+function exactNotice(v: unknown, kind: 'released' | 'takeover', instance: string, nonce: string): boolean {
+  if (!isRecord(v) || !HEX_ID.test(instance) || !HEX_ID.test(nonce)) return false;
+  const keys = Object.keys(v);
+  return keys.length === 3 && keys.includes('t') && keys.includes('instance') && keys.includes('nonce')
+    && v.t === kind && v.instance === instance && v.nonce === nonce;
+}
+export const isReleaseNotice = (v: unknown, instance: string, nonce: string): boolean => exactNotice(v, 'released', instance, nonce);
+export const isTakeoverNotice = (v: unknown, instance: string, nonce: string): boolean => exactNotice(v, 'takeover', instance, nonce);
 
 function isRecord(data: unknown): data is Record<string, unknown> {
   return typeof data === 'object' && data !== null;
@@ -62,5 +80,5 @@ export function isToWorker(data: unknown): data is ToWorker {
 }
 
 export function isTestHook(data: unknown): data is TestHook {
-  return isRecord(data) && data.t === 'test' && (data.op === 'gateway-stop' || data.op === 'gateway-start');
+  return isRecord(data) && data.t === 'test' && (data.op === 'gateway-stop' || data.op === 'gateway-start' || data.op === 'pause-fail-once');
 }

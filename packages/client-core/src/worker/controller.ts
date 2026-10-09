@@ -18,6 +18,7 @@ import {
   type OutboxRow, type SendRequest, type SignedLists, type TimelineRow,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
+import { Op } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
@@ -33,8 +34,9 @@ import {
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { SyncError } from '../sync/errors';
-import { LEADER, acquireLeadership, lockName, type LockManagerLike } from './leader';
+import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerLike } from './leader';
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
+import { CommandBarrier, SearchGate } from './runtime';
 
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
@@ -93,16 +95,37 @@ const ACCOUNT_CODES = new Set([
   'E_SIGNIN_EVICTED',
 ]);
 
-/** The one mapping from a thrown value to what crosses to the page (L-TS-08 WorkerError, ruling 33). */
-function errorOf(e: unknown): WorkerError {
-  if (e instanceof DillaHttpError) return { code: e.code, detail: e.detail, status: e.status, retryAfterMs: e.retryAfterMs };
-  if (e instanceof CoreError || e instanceof SyncError) return { code: e.code, detail: e.detail, status: 0, retryAfterMs: null };
-  if (e instanceof CborError) return { code: e.code, detail: e.message, status: 0, retryAfterMs: null };
-  if (e instanceof Error && ACCOUNT_CODES.has(e.message)) return { code: e.message, detail: '', status: 0, retryAfterMs: null };
-  // The tray's and the download's refusals cross by code alone: their detail may name a file (L-TS-35).
-  if (e instanceof AttachmentError) return { code: e.code, detail: '', status: 0, retryAfterMs: null };
-  if (e instanceof Refusal) return { code: e.code, detail: e.detail, status: 0, retryAfterMs: null };
-  return { code: 'E_INTERNAL', detail: e instanceof Error ? e.message : String(e), status: 0, retryAfterMs: null };
+const ALLOWED_CODES = new Set(`E_ATTACHMENT_COUNT E_ATTACHMENT_FAILED E_ATTACHMENT_INPUT E_ATTACHMENT_MISSING E_ATTACHMENT_TOO_LARGE
+E_BAD_INPUT E_BINDING E_BLOB_HASH E_BLOB_OPEN E_BODY_TOO_LARGE E_CAPACITY E_CBOR_DEPTH E_CBOR_NONCANONICAL
+E_CBOR_RANGE E_CBOR_SHAPE E_CBOR_TRAILING E_CBOR_TRUNCATED E_CBOR_TYPE E_CBOR_UTF8 E_CHANNEL_GONE
+E_COMMITMENT_INVALID E_COMMIT_CONFLICT E_COMMIT_INVALID E_COMMIT_REQUIRED E_CORE_DECODE E_CORE_INPUT
+E_CORE_LIMIT E_CORE_MLS E_CORE_NOT_FOUND E_CORE_NO_IDENTITY E_CORE_RELOAD E_CORE_STATE E_CORE_STORAGE E_CORE_WASM
+E_CREDENTIAL E_DEVICE_LIST_STALE E_DEVICE_UNLISTED E_ENVELOPE_LIMIT E_ENVELOPE_SHAPE E_FORBIDDEN
+E_FRAME_CBOR E_FRAME_SHAPE E_GONE E_GROUP_EXISTS E_HTTP E_INTERNAL E_INVALID_REQUEST E_INVITE_INVALID
+E_INVITE_NOT_COMMUNITY E_KEK_DB E_KEK_EXISTS E_KEK_UNWRAP E_LEAF_NOT_CURRENT E_LIST_RACE E_NETWORK
+E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN E_PRUNED E_RATE_LIMITED
+E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
+E_SETTING_KEY E_SIGNIN_EVICTED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
+E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED`.split(/\s+/));
+
+/** The sole mapping of worker-local exceptions into page-bound data. */
+export function sanitizeWorkerError(e: unknown): WorkerError {
+  let code = 'E_INTERNAL';
+  if (e instanceof DillaHttpError || e instanceof CoreError || e instanceof SyncError || e instanceof CborError
+    || e instanceof AttachmentError || e instanceof Refusal) code = e.code;
+  else if (e instanceof Error && ACCOUNT_CODES.has(e.message)) code = e.message;
+  else if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'E_NOT_READY') code = 'E_NOT_READY';
+  if (!ALLOWED_CODES.has(code)) code = 'E_INTERNAL';
+  const status = e instanceof DillaHttpError && Number.isInteger(e.status) && e.status >= 100 && e.status <= 599 ? e.status : 0;
+  const retry = e instanceof DillaHttpError ? e.retryAfterMs : null;
+  return { code, detail: '', status, retryAfterMs: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 && retry <= 86_400_000 ? retry : null };
+}
+const errorOf = sanitizeWorkerError;
+function sanitizePageError(error: WorkerError): WorkerError {
+  return { code: ALLOWED_CODES.has(error.code) ? error.code : 'E_INTERNAL', detail: '',
+    status: Number.isInteger(error.status) && error.status >= 100 && error.status <= 599 ? error.status : 0,
+    retryAfterMs: typeof error.retryAfterMs === 'number' && Number.isFinite(error.retryAfterMs)
+      && error.retryAfterMs >= 0 && error.retryAfterMs <= 86_400_000 ? error.retryAfterMs : null };
 }
 
 /** An account code thrown as Error(code) by the account modules (enrol.ts, signup.ts, session.ts). */
@@ -132,7 +155,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'signInBegin', 'signInLogin', 'signInTotp', 'signInKey', 'signInCancel', 'refreshDevices', 'revokeDevice', 'signOutRevoke',
   'forgetBrowser', 'markRead', 'setSetting', 'openDm',
   'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
-  'refreshTrust',
+  'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
@@ -140,17 +163,18 @@ const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'msgId' | 'deviceId' | 'userId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId')[]>> = {
   selectCommunity: ['communityId'], openChannel: ['channelId'], closeChannel: ['channelId'], loadEarlier: ['channelId'],
   send: ['channelId'], retrySend: ['msgId'], discardSend: ['msgId'],
   revokeDevice: ['deviceId'], markRead: ['channelId'], openDm: ['userId'],
   editMessage: ['channelId', 'msgId'], deleteMessage: ['channelId', 'msgId'], react: ['channelId', 'msgId'], pin: ['channelId', 'msgId'],
   loadPins: ['channelId'], closePins: ['channelId'], attachFiles: ['channelId'], discardAttachment: ['channelId'],
   openAttachment: ['channelId'],
+  verifyContact: ['userId'], safetyNumber: ['userId'], typing: ['channelId'], voiceSelf: ['callId'],
 };
 /** The commands each phase accepts besides start, which every phase accepts (requirement 1). */
 const ACCEPTS: Record<BootPhase, readonly Method[]> = {
-  'loading': [], 'other-tab': [], 'unsupported': [], 'error': [], 'registering': [], 'enrolling': [], 'cleared': [],
+  'loading': [], 'other-tab': [], 'paused-error': [], 'unsupported': [], 'error': [], 'registering': [], 'enrolling': [], 'cleared': [],
   // Pre-flight ruling (d) of task 14: a revoked browser can start over (the splash's "forget this browser").
   'revoked': ['forgetBrowser'],
   'store-lost': ['resetDevice'],
@@ -163,7 +187,7 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'joinCommunity', 'selectCommunity', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
     'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
     'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
-    'refreshTrust',
+    'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
   ],
 };
 
@@ -229,6 +253,19 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'setSetting') {
     if (typeof command.key !== 'string') return 'key is not a string';
     if (command.value !== null && typeof command.value !== 'string') return 'value is not a string or null';
+  }
+  if (m === 'verifyContact' && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
+  if (m === 'voiceSelf' && (typeof command.flags !== 'number' || !Number.isInteger(command.flags) || command.flags < 0 || command.flags > 3)) return 'flags are not 0..3';
+  if (m === 'typing' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'resign' && (typeof command.nonce !== 'string' || !ID.test(command.nonce))) return 'nonce is not 32 lowercase hex';
+  if (m === 'search') {
+    if (command.scope !== 'all' && command.scope !== 'channel' && command.scope !== 'community') return 'invalid search scope';
+    if (command.scope === 'all' ? command.id !== null : typeof command.id !== 'string' || !ID.test(command.id)) return 'invalid search id';
+    if (typeof command.query !== 'string' || UTF8.encode(command.query.trim()).length < 1 || UTF8.encode(command.query.trim()).length > 128) return 'invalid search query';
+    const cursor = command.cursor;
+    if (cursor !== null && (typeof cursor !== 'object' || cursor === undefined || !('rank' in cursor)
+      || !('groupId' in cursor) || !('seq' in cursor) || typeof cursor.rank !== 'string' || !/^(0|[1-9][0-9]*)$/.test(cursor.rank)
+      || typeof cursor.groupId !== 'string' || !ID.test(cursor.groupId) || typeof cursor.seq !== 'string' || !/^(0|[1-9][0-9]*)$/.test(cursor.seq))) return 'invalid search cursor';
   }
   return null;
 }
@@ -299,6 +336,13 @@ export class Controller {
   private trustRefreshAgain = false;
   private seenTrustGeneration: bigint | null = null;
   private readonly fetchedLeaves = new Set<string>();
+  private readonly barrier = new CommandBarrier();
+  private readonly searchGate = new SearchGate();
+  private leadership: Leadership | null = null;
+  private readonly typingOn = new Set<string>();
+  private readonly incomingTyping = new Map<string, Map<string, number>>();
+  private readonly diagnosticsErrors: { code: string; at: number }[] = [];
+  private deviceCount = 0;
 
   constructor(private readonly deps: ControllerDeps) {
     this.parts = { ...REAL_PARTS, ...deps.parts };
@@ -349,33 +393,40 @@ export class Controller {
     const problem = invalid(data.command);
     if (problem !== null) { this.refuse(id, 'E_BAD_INPUT', problem); return; }
     const command = data.command;
+    if (this.barrier.isClosed()) { this.refuse(id, 'E_NOT_READY', ''); return; }
     if (command.m !== 'start' && !ACCEPTS[this.phase].includes(command.m)) {
       this.refuse(id, 'E_NOT_READY', `the phase is ${this.phase}`);
       return;
     }
-    this.answer(id, this.run(command));
+    const searchId = command.m === 'search' ? this.searchGate.next() : null;
+    if (command.m === 'resign') {
+      // Close synchronously, outside the accepted set, so the drain cannot wait for itself.
+      this.answer(id, this.resign(command.nonce));
+    } else this.answer(id, this.barrier.admit(() => this.run(command, searchId)));
   }
 
   // ---- answers ----
 
   private refuse(id: number, code: string, detail: string): void {
-    this.deps.post({ t: 'ret', id, ok: false, error: { code, detail, status: 0, retryAfterMs: null } });
+    const error = sanitizeWorkerError(new Refusal(code, detail));
+    this.recordError(error.code);
+    this.deps.post({ t: 'ret', id, ok: false, error });
   }
 
   private answer(id: number, work: Promise<unknown>): void {
     void work.then(
       (value) => { this.deps.post({ t: 'ret', id, ok: true, value }); },
-      (e: unknown) => { this.deps.post({ t: 'ret', id, ok: false, error: errorOf(e) }); },
+      (e: unknown) => { const error = errorOf(e); this.recordError(error.code); this.deps.post({ t: 'ret', id, ok: false, error }); },
     );
   }
 
   /** Every command answers through its promise, also when it throws before its first await. */
-  private run(command: Command): Promise<unknown> {
-    try { return this.dispatch(command); }
+  private run(command: Command, searchId: number | null = null): Promise<unknown> {
+    try { return this.dispatch(command, searchId); }
     catch (e) { return Promise.reject(e instanceof Error ? e : new Error(String(e))); }
   }
 
-  private dispatch(command: Command): Promise<unknown> {
+  private dispatch(command: Command, searchId: number | null): Promise<unknown> {
     switch (command.m) {
       case 'start': return this.start();
       case 'signupBegin': return this.signupBegin();
@@ -412,12 +463,19 @@ export class Controller {
       case 'discardAttachment': return this.discardAttachment(command.channelId, command.trayId);
       case 'openAttachment': return this.openAttachment(command.channelId, command.seq, command.index, command.thumb);
       case 'refreshTrust': return this.refreshTrust();
+      case 'verifyContact': return this.verifyContact(command.userId, command.umk);
+      case 'safetyNumber': return Promise.resolve(this.safetyNumber(command.userId));
+      case 'search': return this.search(command, searchId ?? this.searchGate.next());
+      case 'typing': return this.typing(command.channelId, command.on);
+      case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
+      case 'resign': return this.resign(command.nonce);
     }
   }
 
   // ---- slices ----
 
   private setAccount(patch: Partial<AccountState>): void {
+    if (patch.error !== undefined && patch.error !== null) patch.error = sanitizePageError(patch.error);
     this.accountState = { ...this.accountState, ...patch };
     this.phase = this.accountState.phase;
     this.slices.set('account', this.accountState);
@@ -426,6 +484,19 @@ export class Controller {
   private setConnection(patch: Partial<ConnectionState>): void {
     this.connectionState = { ...this.connectionState, ...patch };
     this.slices.set('connection', this.connectionState);
+    this.publishDiagnostics();
+  }
+
+  private recordError(code: string): void {
+    this.diagnosticsErrors.push({ code, at: this.deps.now() });
+    if (this.diagnosticsErrors.length > 20) this.diagnosticsErrors.shift();
+    this.publishDiagnostics();
+  }
+
+  private publishDiagnostics(): void {
+    this.slices.set('diagnostics', { connection: this.connectionState.status, generation: this.connectionState.generation,
+      instance: this.instance === null ? '' : toHex(this.instance.instanceId), devices: this.deviceCount,
+      errors: [...this.diagnosticsErrors] });
   }
 
   private nowS(): bigint { return BigInt(Math.floor(this.deps.now() / 1000)); }
@@ -462,7 +533,7 @@ export class Controller {
 
   private async lead(instance: Instance): Promise<void> {
     try {
-      await acquireLeadership(this.deps.locks, lockName(toHex(instance.instanceId)), () => {
+      this.leadership = await acquireLeadership(this.deps.locks, lockName(toHex(instance.instanceId)), () => {
         // Pre-flight ruling 4: the blocking request is already queued; other-tab shows only after the grace.
         this.graceTimer = this.deps.setTimeout(() => {
           this.graceTimer = null;
@@ -483,7 +554,7 @@ export class Controller {
     try {
       const outcome = await this.deps.boot(instance);
       if (outcome.kind === 'unsupported') {
-        this.setAccount({ phase: 'unsupported', error: { code: 'E_UNSUPPORTED', detail: outcome.reason, status: 0, retryAfterMs: null } });
+        this.setAccount({ phase: 'unsupported', error: sanitizeWorkerError(new Refusal('E_UNSUPPORTED', outcome.reason)) });
         return;
       }
       if (outcome.kind === 'store-lost') { this.setAccount({ phase: 'store-lost' }); return; }
@@ -655,12 +726,13 @@ export class Controller {
       clearTimeout: (handle) => { this.deps.clearTimeout(handle); },
       onGroupChanged: (g, result) => { this.onGroupChanged(g, result); },
       onTrustChanged: () => { this.safely(() => this.refreshTrustGeneration()); },
+      trackJob: (job) => { void this.barrier.track(job).catch(() => undefined); },
       // Ruling 8: the core records a delete's purge when the type-2 row is confirmed, which the engine reports here.
       onOutboxChanged: (g) => { this.safely(() => { this.touchGroup(g); }); this.runPurges(); },
       onMembership: (g, status) => { this.onMembership(g, status); },
       onJoinAll: () => {},
       // Head ruling 37: a Welcome for a group this device does not expect is a DM another participant opened.
-      onUnexpectedWelcome: () => { void this.reloadDms().catch(() => {}); },
+      onUnexpectedWelcome: () => { void this.barrier.track(this.reloadDms().catch(() => {})); },
       beforeSend: (g, row) => this.beforeSend(g, row),
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
     });
@@ -697,6 +769,7 @@ export class Controller {
   private enterRevoked(): void {
     if (this.wiping || this.storeCleared) return;
     if (this.revoked()) return;
+    this.typingOff();
     this.sync?.stop();
     this.gateway?.stop();
     this.setAccount({ phase: 'revoked', recoveryKey: null });
@@ -720,31 +793,33 @@ export class Controller {
       this.slices.set('connection', this.connectionState);
     } else if (e.type === 'ready') {
       this.onReady(e.info);
+    } else if (e.type === 'frame' && e.frame.op === Op.typing) {
+      this.incomingTypingFrame(e.frame.payload);
     } else if (e.type === 'revoked') {
-      void this.onRevokedSocket();
+      void this.barrier.track(this.onRevokedSocket());
     }
   }
 
   private onReady(info: ReadyInfo): void {
     this.fetchedLeaves.clear();
-    void this.refreshTrust().catch(() => undefined);
+    void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.setConnection({ generation: info.generation.toString() });
     // Pre-flight ruling (a): what this ready catches up was not delivered live.
     if (this.phase === 'ready') this.noticeFloor = this.serverNowS();
     const core = this.core;
     const limits = this.limits;
     if (core !== null && limits !== null) {
-      refillKeyPackages(core, this.routes, info.keypackagesRemaining,
-        { perDevice: limits.keypackagesPerDevice, threshold: limits.keypackageRefillThreshold }).catch(() => undefined);
+      void this.barrier.track(refillKeyPackages(core, this.routes, info.keypackagesRemaining,
+        { perDevice: limits.keypackagesPerDevice, threshold: limits.keypackageRefillThreshold }).catch(() => undefined));
     }
     // Requirement 13 (Q27: clients refetch on ready), not awaited in the ready path.
     const me = this.me;
     if (core !== null && me !== null) {
-      void this.ensureBackups(core);
-      this.parts.refreshOwnDeviceList(core, this.routes, me.userId)
-        .then((own) => (own.listed ? this.repairBackupState(core) : this.enterRevoked()), () => undefined);
+      void this.barrier.track(this.ensureBackups(core));
+      void this.barrier.track(this.parts.refreshOwnDeviceList(core, this.routes, me.userId)
+        .then((own) => (own.listed ? this.repairBackupState(core) : this.enterRevoked()), () => undefined));
     }
-    void this.refreshAfterReady();
+    void this.barrier.track(this.refreshAfterReady());
     this.runPurges();
   }
 
@@ -757,6 +832,30 @@ export class Controller {
     }
     if (this.revoked() || this.storeCleared) return;
     try { await this.reloadDms(); } catch { /* the next ready retries */ }
+  }
+
+  private incomingTypingFrame(payload: readonly unknown[]): void {
+    const [channel, user, , on, expires] = payload;
+    if (!(channel instanceof Uint8Array) || channel.length !== 16 || !(user instanceof Uint8Array) || user.length !== 16
+      || typeof on !== 'bigint' || typeof expires !== 'bigint' || this.me === null || toHex(user) === toHex(this.me.userId)) return;
+    const channelId = toHex(channel);
+    if (!this.open.has(channelId) || this.target(channelId) === undefined || this.connectionState.status !== 'online') return;
+    const expiry = Number(expires) * 1000;
+    if (!Number.isSafeInteger(expiry) || expiry <= this.deps.now() || expiry > this.deps.now() + 10_000) return;
+    const rows = this.incomingTyping.get(channelId) ?? new Map<string, number>();
+    const userId = toHex(user);
+    if (on === 1n) rows.set(userId, expiry); else rows.delete(userId);
+    this.incomingTyping.set(channelId, rows);
+    this.publishTyping(channelId);
+    this.deps.setTimeout(() => this.publishTyping(channelId), Math.max(0, expiry - this.deps.now()));
+  }
+
+  private publishTyping(channelId: string): void {
+    const rows = this.incomingTyping.get(channelId);
+    if (rows === undefined) return;
+    const now = this.deps.now();
+    for (const [user, expiry] of rows) if (expiry <= now) rows.delete(user);
+    this.slices.set(`typing:${channelId}`, [...rows].map(([userId, expiresAt]) => ({ userId, name: this.nameOf(userId), expiresAt })));
   }
 
   private async onRevokedSocket(): Promise<void> {
@@ -1323,6 +1422,8 @@ export class Controller {
     devices.sort((a, b) => (a.own !== b.own ? (a.own ? -1 : 1)
       : a.lastSeen !== b.lastSeen ? b.lastSeen - a.lastSeen : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     this.slices.set('devices', devices);
+    this.deviceCount = devices.length;
+    this.publishDiagnostics();
     return null;
   }
 
@@ -1491,6 +1592,7 @@ export class Controller {
   private quiesce(): void {
     if (this.wiping) return;
     this.wiping = true;
+    this.typingOff();
     this.sync?.stop();
     this.gateway?.stop();
   }
@@ -1619,6 +1721,10 @@ export class Controller {
   }
 
   private closeChannel(channelId: string): Promise<null> {
+    const wasOpen = this.open.has(channelId);
+    if (this.typingOn.delete(channelId)) this.gateway?.sendTyping(fromHex(channelId), false);
+    this.incomingTyping.delete(channelId);
+    if (wasOpen) this.slices.set(`typing:${channelId}`, []);
     this.pinsOpen.delete(channelId);
     this.open.delete(channelId);
     return Promise.resolve(null);
@@ -1678,10 +1784,10 @@ export class Controller {
       unknown = true;
     }
     if (!unknown) return;
-    void (async () => {
+    void this.barrier.track((async () => {
       const rows = await this.routes.listMembers(fromHex(communityId));
       if (this.listed(communityId)) this.publishMembers(communityId, rows);
-    })().catch(() => undefined);
+    })().catch(() => undefined));
   }
 
   // ---- the sync engine's reports ----
@@ -1700,7 +1806,7 @@ export class Controller {
     }
     if (result.state === 2) { this.resyncing.delete(hex); this.notMember.delete(hex); }
     this.safely(() => { this.refreshTrustGeneration(); this.touchGroup(groupId); });
-    void this.refreshTrust().catch(() => undefined);
+    void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.safely(() => { this.reportActivity(groupId, result); });
     // Pre-flight ruling F6: an apply can adopt the own type-2 row (a catch-up) and so record a purge.
     this.runPurges();
@@ -1748,7 +1854,12 @@ export class Controller {
     const generation = this.requireCore().trustGeneration();
     if (this.seenTrustGeneration === generation) return;
     this.seenTrustGeneration = generation;
+    this.searchGate.invalidate();
+    this.slices.set('search', { requestId: 0, hits: [], cursor: null });
+    for (const channelId of this.open.keys()) this.slices.set(`timeline:${channelId}`,
+      { channelId, group: this.groupState(channelId), items: [], hasEarlier: false });
     for (const channelId of this.open.keys()) this.refreshTimeline(channelId);
+    this.publishTrust();
   }
 
   /** One bounded history read per pending leaf until the next ready. Core drains retained rows in bounded pages before publication. */
@@ -1758,7 +1869,7 @@ export class Controller {
       this.trustRefresh = null;
       if (this.trustRefreshAgain) {
         this.trustRefreshAgain = false;
-        void this.refreshTrust().catch(() => undefined);
+        void this.barrier.track(this.refreshTrust().catch(() => undefined));
       }
     });
     this.trustRefresh = run;
@@ -1779,7 +1890,100 @@ export class Controller {
         this.refreshTrustGeneration();
       } catch { /* Keep the leaf untrusted; the next ready retries. */ }
     }
+    this.publishTrust();
     return null;
+  }
+
+  private sharedUser(userHex: string): boolean {
+    const groups = this.core?.groups() ?? [];
+    if ([...this.dms].some(([channelId, dm]) => dm.members.some((u) => toHex(u) === userHex)
+      && groups.some((g) => g.state === 2 && toHex(g.targetId) === channelId))) return true;
+    for (const community of this.slices.get('communities') ?? []) {
+      if (this.slices.get(`members:${community.id}`)?.some((member) => member.userId === userHex)
+        && groups.some((g) => g.state === 2 && g.communityId !== null && toHex(g.communityId) === community.id)) return true;
+    }
+    return false;
+  }
+
+  private publishTrust(): void {
+    if (this.core === null) return;
+    this.slices.set('trust', this.core.trustState().map((row) => {
+      const userId = toHex(row.userId);
+      return { userId, name: this.nameOf(userId), shared: this.sharedUser(userId), umk: toHex(row.umk),
+        firstSeen: Number(row.firstSeen), verified: row.verified, changedUmk: row.changedUmk === null ? null : toHex(row.changedUmk) };
+    }));
+  }
+
+  private verifyContact(userId: string, umk: string): Promise<null> {
+    if (!this.sharedUser(userId)) throw new Refusal('E_CORE_NOT_FOUND', '');
+    this.requireCore().trustVerify(fromHex(userId), fromHex(umk));
+    this.refreshTrustGeneration();
+    this.publishTrust();
+    return Promise.resolve(null);
+  }
+
+  private safetyNumber(userId: string): string {
+    if (!this.sharedUser(userId)) throw new Refusal('E_CORE_NOT_FOUND', '');
+    return this.requireCore().safetyNumberFor(fromHex(userId));
+  }
+
+  private search(command: Extract<Command, { m: 'search' }>, requestId: number): Promise<null> {
+    if (command.cursor !== null && command.cursor.rank !== '0') throw new CoreError('E_CORE_INPUT', 'cursor rank');
+    const scope = { kind: command.scope, id: command.id === null ? null : fromHex(command.id) };
+    const cursor = command.cursor === null ? null : {
+      rank: BigInt(command.cursor.rank), groupId: fromHex(command.cursor.groupId), seq: BigInt(command.cursor.seq),
+    };
+    const hits = this.requireCore().search(scope, command.query, cursor, 50);
+    if (this.searchGate.current(requestId)) {
+      const rows = hits.slice(0, 50).map((h) => ({ groupId: toHex(h.groupId), seq: h.seq.toString(),
+        snippet: Array.from(h.snippet).slice(0, 160).join(''), rank: h.rank.toString() }));
+      const last = rows.at(-1);
+      this.slices.set('search', { requestId, hits: rows,
+        cursor: last === undefined ? null : { rank: last.rank, groupId: last.groupId, seq: last.seq } });
+    }
+    return Promise.resolve(null);
+  }
+
+  private typing(channelId: string, on: boolean): Promise<null> {
+    if (!this.open.has(channelId) || this.target(channelId) === undefined || this.phase !== 'ready')
+      throw new Refusal('E_NOT_READY', '');
+    this.gateway?.sendTyping(fromHex(channelId), on);
+    if (on) this.typingOn.add(channelId); else this.typingOn.delete(channelId);
+    return Promise.resolve(null);
+  }
+
+  private voiceSelf(callId: string, flags: number): Promise<null> {
+    if (this.connectionState.status !== 'online') throw new Refusal('E_NOT_READY', '');
+    this.gateway?.sendVoiceSelf(fromHex(callId), flags as 0 | 1 | 2 | 3);
+    return Promise.resolve(null);
+  }
+
+  private typingOff(): void {
+    for (const channelId of this.typingOn) this.gateway?.sendTyping(fromHex(channelId), false);
+    this.typingOn.clear();
+  }
+
+  private async resign(nonce: string): Promise<{ released: true }> {
+    await this.barrier.close();
+    try {
+      this.typingOff();
+      this.gateway?.stop();
+      this.sync?.stop();
+      this.requireCore().pause();
+    } catch (e) {
+      try {
+        await this.requireCore().resume();
+        this.startEngine();
+        this.gateway?.start();
+        this.barrier.reopen();
+      } catch { this.setAccount({ phase: 'paused-error', error: errorOf(e) }); }
+      throw e;
+    }
+    await this.leadership?.release();
+    this.leadership = null;
+    this.setAccount({ phase: 'other-tab' });
+    this.deps.post({ t: 'released', instance: toHex(this.requireInstance().instanceId), nonce });
+    return { released: true };
   }
 
   // ---- sending ----
@@ -1820,7 +2024,7 @@ export class Controller {
     catch (e) {
       // The taken references were never sent; each is deleted now, or expires after pending_ttl (L-HTTP-83).
       const channel = fromHex(c.channelId);
-      for (const d of descriptors) void this.routes.deleteBlob(channel, d.blobId).catch(() => undefined);
+      for (const d of descriptors) void this.barrier.track(this.routes.deleteBlob(channel, d.blobId).catch(() => undefined));
       throw e;
     }
     this.refreshTimeline(c.channelId);
@@ -1848,6 +2052,10 @@ export class Controller {
   /** Requirement 10: an edit, delete, reaction or pin is queued as its fold type aimed at the message; the page's state
    *  changes only when the core folds it (a pending fold shows as a PendingAction). The core's refusals cross as they are. */
   private fold(channelId: string, msgId: string, type: 1 | 2 | 3 | 4 | 5 | 6, body: string): Promise<null> {
+    if (type === 1 || type === 2) {
+      this.searchGate.invalidate();
+      this.slices.set('search', { requestId: 0, hits: [], cursor: null });
+    }
     const groupId = this.activeGroup(channelId);
     this.requireSync().sendRequest(groupId, { type, replyTo: fromHex(msgId), body, attachments: [] });
     this.refreshTimeline(channelId);
@@ -1885,7 +2093,7 @@ export class Controller {
   private onDiscarded(g: Id, row: OutboxRow): void {
     let channel: Id;
     try { channel = this.channelOfGroup(g); } catch { return; }
-    for (const a of row.attachments) void this.routes.deleteBlob(channel, a.blobId).catch(() => undefined);
+    for (const a of row.attachments) void this.barrier.track(this.routes.deleteBlob(channel, a.blobId).catch(() => undefined));
   }
 
   /** Requirement 12, single flight: a call during a run makes the run go once more after it ends. */
@@ -1899,7 +2107,7 @@ export class Controller {
       }
     })();
     this.purging = run;
-    void run.catch(() => undefined);
+    void this.barrier.track(run).catch(() => undefined);
   }
 
   /** Read through a call: a wipe or a revocation can land in any await of a purge run. */

@@ -1,5 +1,6 @@
 import { CoreCallError, connectCore, type Command, type SliceName, type TestHook } from '../src/index';
 import { isSpikeEvent, type SpikeEvent, type SpikeRequest } from './spike';
+import { isReleaseNotice, isTakeoverNotice, LOCK_PREFIX } from '../src/worker/protocol';
 
 export type HarnessResult = { ok: true; value: unknown } | { ok: false; code: string; detail: string; status: number; retryAfterMs: number | null };
 export type SpikeRecord = SpikeEvent & { at: number };
@@ -30,9 +31,30 @@ export interface HarnessApi {
 // whose entry also honours the two gateway test hooks. It renders nothing; the spec reads slices.
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', name: 'dilla-core' });
 const client = connectCore(worker);
+let handoverChannel: BroadcastChannel | null = null;
+let handoverInstance = '';
+let pendingNonce: string | null = null;
+client.subscribe('account', () => {
+  const instance = client.get('account')?.instance?.id;
+  if (instance === undefined || instance === handoverInstance || !/^[0-9a-f]{32}$/.test(instance)) return;
+  handoverChannel?.close();
+  handoverInstance = instance;
+  handoverChannel = new BroadcastChannel(LOCK_PREFIX + instance);
+  handoverChannel.addEventListener('message', (event: MessageEvent<unknown>) => {
+    const value = event.data;
+    if (typeof value !== 'object' || value === null || !('nonce' in value) || typeof value.nonce !== 'string'
+      || !isTakeoverNotice(value, instance, value.nonce) || pendingNonce !== null) return;
+    pendingNonce = value.nonce;
+    void client.call({ m: 'resign', nonce: value.nonce }).catch(() => { pendingNonce = null; });
+  });
+});
 const spikeEvents: SpikeRecord[] = [];
 const active: { at: number; active: number }[] = [];
 worker.addEventListener('message', (event: MessageEvent<unknown>) => {
+  if (pendingNonce !== null && isReleaseNotice(event.data, handoverInstance, pendingNonce)) {
+    handoverChannel?.postMessage(event.data);
+    pendingNonce = null;
+  }
   if (isSpikeEvent(event.data)) spikeEvents.push({ ...event.data, at: Date.now() });
 });
 const files = new Map<string, File>();

@@ -57,6 +57,7 @@ class FakeLocks implements LockManagerLike {
   readonly requests: { name: string; ifAvailable: boolean }[] = [];
   private readonly held = new Set<string>();
   private readonly waiting = new Map<string, (() => void)[]>();
+  isHeld(name: string): boolean { return this.held.has(name); }
 
   holdElsewhere(name: string): () => void {
     this.held.add(name);
@@ -77,7 +78,11 @@ class FakeLocks implements LockManagerLike {
       });
     }
     this.held.add(name);
-    return callback({ name });
+    try { await callback({ name }); }
+    finally {
+      this.held.delete(name);
+      this.waiting.get(name)?.shift()?.();
+    }
   }
 }
 
@@ -146,7 +151,7 @@ describe('Controller', () => {
     expect(h.connection()).toEqual({ status: 'offline', generation: null });
     release();
     await vi.waitFor(() => expect(h.account()?.phase).toBe('unsupported'));
-    expect(h.account()?.error).toEqual({ code: 'E_UNSUPPORTED', detail: 'no OPFS in this test', status: 0, retryAfterMs: null });
+    expect(h.account()?.error).toEqual({ code: 'E_UNSUPPORTED', detail: '', status: 0, retryAfterMs: null });
     expect(h.locks.requests).toEqual([{ name: LOCK, ifAvailable: true }, { name: LOCK, ifAvailable: false }]);
   });
 
@@ -200,8 +205,8 @@ describe('Controller', () => {
     for (const id of [1, 3, 4, 5, 6]) {
       expect(h.ret(id)).toMatchObject({ t: 'ret', id, ok: false, error: { code: 'E_NOT_READY' } });
     }
-    expect(h.ret(1)).toMatchObject({ error: { detail: 'the phase is loading' } });
-    expect(h.ret(3)).toMatchObject({ error: { detail: 'the phase is needs-signup' } });
+    expect(h.ret(1)).toMatchObject({ error: { code: 'E_NOT_READY', detail: '' } });
+    expect(h.ret(3)).toMatchObject({ error: { code: 'E_NOT_READY', detail: '' } });
   });
 
   it('refuses malformed input before anything runs, and answers nothing to a message that is not a call', async () => {
@@ -216,8 +221,8 @@ describe('Controller', () => {
     h.controller.handle({ t: 'test', op: 'gateway-stop' });
     await vi.waitFor(() => expect(h.ret(5)).toBeDefined());
     for (const id of [1, 2, 3, 4, 5]) expect(h.ret(id)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
-    expect(h.ret(1)).toMatchObject({ error: { detail: 'communityId is not 32 lowercase hex' } });
-    expect(h.ret(3)).toMatchObject({ error: { detail: 'unknown command nope' } });
+    expect(h.ret(1)).toMatchObject({ error: { code: 'E_BAD_INPUT', detail: '' } });
+    expect(h.ret(3)).toMatchObject({ error: { code: 'E_BAD_INPUT', detail: '' } });
     expect(h.posted.filter((m) => m.t === 'ret')).toHaveLength(5);
     expect(h.paths).toEqual([]);
   });
@@ -291,6 +296,10 @@ class GatewayDouble {
   stop(): void { this.stops += 1; this.log.push('gateway.stop'); }
   subscribe(listener: (e: GatewayEvent) => void): () => void { this.listeners.push(listener); return () => {}; }
   commitAck(): void {}
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the arguments make the double match the gateway
+  sendTyping = vi.fn((_channel: Uint8Array, _on: boolean): void => {});
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the arguments make the double match the gateway
+  sendVoiceSelf = vi.fn((_call: Uint8Array, _flags: 0 | 1 | 2 | 3): void => {});
   emit(e: GatewayEvent): void { for (const l of this.listeners) l(e); }
 }
 
@@ -370,6 +379,12 @@ function world(opts: {
       calls.push(`core.purgeDone(${String(seq)})`); state.purges = state.purges.filter((p) => p.seq !== seq);
     }),
     ownRolesSet: vi.fn((_c: Uint8Array, _ids: Uint8Array[]): void => {}),
+    trustVerify: vi.fn((_u: Uint8Array, _k: Uint8Array): void => {}),
+    safetyNumberFor: vi.fn((_u: Uint8Array): string => Array.from({ length: 12 }, () => '12345').join(' ')),
+    keyPackages: vi.fn((_count: number, _last: boolean): Uint8Array => new Uint8Array([1])),
+    search: vi.fn((_scope: unknown, _query: string, _cursor: unknown, _limit: number) => [] as {
+      groupId: Uint8Array; seq: bigint; snippet: string; rank: bigint }[]),
+    resume: vi.fn((): Promise<void> => Promise.resolve()),
     attachmentGet: vi.fn((_g: Uint8Array, seq: bigint, index: number): AttachmentDescriptor => {
       const d = state.descriptors.get(`${String(seq)}:${String(index)}`);
       if (d === undefined) throw new CoreError('E_CORE_NOT_FOUND', 'no such attachment');
@@ -412,6 +427,7 @@ function world(opts: {
       calls.push(`deleteGroupMessage(${String(seq)})`); return Promise.resolve('deleted');
     }),
     postTicket: vi.fn(() => Promise.resolve({ ticket: 'ticket', expires: 0n })),
+    postKeyPackages: vi.fn((_body: Uint8Array) => Promise.resolve()),
     getAccountMe: vi.fn(() => Promise.resolve({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n })),
     listDms: vi.fn(() => { calls.push('listDms'); return Promise.resolve(state.dms); }),
     getChannel: vi.fn((_id: Uint8Array) => Promise.resolve({
@@ -517,6 +533,353 @@ function world(opts: {
   };
 }
 type World = ReturnType<typeof world>;
+
+it('uses admission request ids rather than rank to discard an old search', async () => {
+  const { SearchGate } = await import('./runtime');
+  const gate = new SearchGate();
+  const older = gate.next();
+  const newer = gate.next();
+  const hits: string[] = [];
+  if (gate.current(older)) hits.push('older rank 0');
+  if (gate.current(newer)) hits.push('newer rank 0');
+  expect(hits).toEqual(['newer rank 0']);
+  gate.invalidate();
+  expect(gate.current(newer)).toBe(false);
+});
+
+it('scrubs HTTP details and unexpected exception text before any page reply', async () => {
+  const { sanitizeWorkerError } = await import('./controller');
+  const http = new DillaHttpError({ code: 'E_NOT_FOUND', detail: 'Bearer SECRET-123', status: 404,
+    retryAfterMs: 90_000_000, extra: [] });
+  expect(sanitizeWorkerError(http)).toEqual({ code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null });
+  expect(sanitizeWorkerError(new Error('recovery key SECRET-456'))).toEqual({
+    code: 'E_INTERNAL', detail: '', status: 0, retryAfterMs: null,
+  });
+  const h = harness();
+  h.call(71, { m: 'unknown SECRET-789' });
+  expect(JSON.stringify(h.posted)).not.toContain('SECRET-789');
+  expect(h.ret(71)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+});
+
+it('rejects every extra release-notice field and wrong instance or nonce', async () => {
+  const { isReleaseNotice } = await import('./protocol');
+  const instance = '42'.repeat(16);
+  const nonce = 'aa'.repeat(16);
+  expect(isReleaseNotice({ t: 'released', instance, nonce }, instance, nonce)).toBe(true);
+  expect(isReleaseNotice({ t: 'released', instance, nonce, token: 'SECRET' }, instance, nonce)).toBe(false);
+  expect(isReleaseNotice({ t: 'released', instance, nonce }, '43'.repeat(16), nonce)).toBe(false);
+  expect(isReleaseNotice({ t: 'released', instance, nonce }, instance, 'bb'.repeat(16))).toBe(false);
+});
+
+it('refreshes only core-owned pending leaves and never publishes list bytes', async () => {
+  const w = world();
+  const signedHead = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
+  w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]), raw: signedHead });
+  await toReady(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 0, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 1, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalled());
+  expect(w.core.pendingLeaves).toHaveBeenCalled();
+  expect(w.routes.getDeviceList).toHaveBeenCalledWith(STRANGER);
+  expect(JSON.stringify(w.posted)).not.toContain(Array.from(signedHead).join(','));
+});
+
+it('rejects a nonzero search cursor and never calls core search', async () => {
+  const w = world();
+  await toReady(w);
+  w.call(91, { m: 'search', scope: 'all', id: null, query: 'boat',
+    cursor: { rank: '1', groupId: toHex(GROUP), seq: '2' } });
+  await vi.waitFor(() => expect(w.ret(91)).toBeDefined());
+  expect(w.ret(91)).toMatchObject({ ok: false, error: { code: 'E_CORE_INPUT', detail: '' } });
+  expect(w.core.search).not.toHaveBeenCalled();
+});
+
+it('refuses malformed key approval and sends typing off on channel close', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.call(94, { m: 'verifyContact', userId: toHex(STRANGER), umk: 'not a public key' });
+  await vi.waitFor(() => expect(w.ret(94)).toBeDefined());
+  expect(w.ret(94)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+  expect(w.core.trustVerify).not.toHaveBeenCalled();
+  w.call(95, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(95)).toBeDefined());
+  expect(w.gateway.sendTyping).toHaveBeenCalledWith(CHANNEL, true);
+  w.call(96, { m: 'closeChannel', channelId: toHex(CHANNEL) });
+  await vi.waitFor(() => expect(w.ret(96)).toBeDefined());
+  expect(w.gateway.sendTyping).toHaveBeenCalledWith(CHANNEL, false);
+});
+
+it('keeps the old lock and gives no release notice when pause fails', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pause.mockImplementation(() => { throw new CoreError('E_STORE_BUSY', 'SECRET busy'); });
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toBeDefined());
+  expect(w.ret(92)).toMatchObject({ ok: false, error: { code: 'E_STORE_BUSY', detail: '' } });
+  expect(w.posted.some((m) => m.t === 'released')).toBe(false);
+  expect(w.locks.isHeld(LOCK)).toBe(true);
+  expect(w.core.resume).toHaveBeenCalled();
+  expect(w.calls.indexOf('gateway.stop')).toBeLessThan(w.calls.lastIndexOf('gateway.start'));
+});
+
+it('resign waits for a DM reload spawned by an unexpected Welcome', async () => {
+  const w = world();
+  await toReady(w);
+  const gate = deferred<World['state']['dms']>();
+  w.routes.listDms.mockImplementationOnce(() => gate.promise);
+  w.sync.deps!.onUnexpectedWelcome(GROUP);
+  await vi.waitFor(() => expect(w.routes.listDms).toHaveBeenCalledTimes(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve([]);
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for socket reauthentication before pausing the core', async () => {
+  const w = world();
+  await toReady(w);
+  const gate = deferred<boolean>();
+  w.session.establish.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'revoked' });
+  await vi.waitFor(() => expect(w.session.establish).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve(false);
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for the member lookup started by an unknown timeline sender', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  await openGeneral(w);
+  w.state.rows = [strangerRow(1)];
+  const gate = deferred<Awaited<ReturnType<typeof w.routes.listMembers>>>();
+  w.routes.listMembers.mockImplementationOnce(() => gate.promise);
+  w.sync.deps!.onGroupChanged(GROUP, applied(2));
+  await vi.waitFor(() => expect(w.routes.listMembers).toHaveBeenCalledTimes(3));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve([]);
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for the trust refresh spawned by a group change', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  const gate = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
+  w.routes.getDeviceList.mockImplementationOnce(() => gate.promise);
+  w.sync.deps!.onGroupChanged(GROUP, applied(2));
+  await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve({ version: 1n, blob: new Uint8Array([9]), raw: LIST_RAW });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for a follow-up trust refresh scheduled while the first one drains', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const pending = (userId: Uint8Array) => [{ groupId: GROUP, leafIndex: 1, userId, cachedVersion: 0n, reason: 'unknown' }];
+  w.core.pendingLeaves.mockReturnValue(pending(STRANGER));
+  const first = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
+  const second = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
+  w.routes.getDeviceList.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
+  w.sync.deps!.onGroupChanged(GROUP, applied(2));
+  await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalledTimes(1));
+  w.core.pendingLeaves.mockReturnValue(pending(OTHER_DEVICE));
+  w.sync.deps!.onGroupChanged(GROUP, applied(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  first.resolve({ version: 1n, blob: new Uint8Array([9]), raw: LIST_RAW });
+  await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalledTimes(2));
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  second.resolve({ version: 1n, blob: new Uint8Array([9]), raw: LIST_RAW });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for ready backup maintenance', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const gate = deferred<void>();
+  w.account.ensureBackups.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.account.ensureBackups).toHaveBeenCalledTimes(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve();
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for ready keypackage refill', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const gate = deferred<void>();
+  w.routes.postKeyPackages.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 1, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.routes.postKeyPackages).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve();
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for ready trust ingestion', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  const gate = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
+  w.routes.getDeviceList.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve({ version: 1n, blob: new Uint8Array([9]), raw: LIST_RAW });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for ready own-list maintenance', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const gate = deferred<{ version: bigint; listed: boolean }>();
+  w.account.refreshOwnDeviceList.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.account.refreshOwnDeviceList).toHaveBeenCalledTimes(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve({ version: 1n, listed: true });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for ready backup repair after the own-list refresh', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const gate = deferred<boolean>();
+  w.account.repairBackupState.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.account.repairBackupState).toHaveBeenCalledTimes(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve(false);
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for the ready community refresh', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const gate = deferred<Awaited<ReturnType<typeof w.routes.listCommunities>>>();
+  w.routes.listCommunities.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.routes.listCommunities).toHaveBeenCalledTimes(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve([{ id: COMMUNITY, name: 'friends', owner: USER, policyVersion: 1n }]);
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for an outgoing attachment reference deletion', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  const gate = deferred<void>();
+  w.routes.deleteBlob.mockImplementationOnce(() => gate.promise);
+  const row: OutboxRow = { msgId: MSG, state: 0, error: '', created: NOW_S, body: '', type: 0, replyTo: null,
+    attachments: [{ blobId: B1, size: 1, mime: 'text/plain', name: 'a' }] };
+  w.sync.deps!.onDiscarded(GROUP, row);
+  await vi.waitFor(() => expect(w.routes.deleteBlob).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve();
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for an asynchronous recorded-message purge', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.state.purges = [purge(5n, [])];
+  const gate = deferred<'deleted' | 'gone'>();
+  w.routes.deleteGroupMessage.mockImplementationOnce(() => gate.promise);
+  w.sync.deps!.onOutboxChanged(GROUP);
+  await vi.waitFor(() => expect(w.routes.deleteGroupMessage).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve('deleted');
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for cleanup after a refused send takes attachment references', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  const [trayId] = await attachReady(w, 4, [file('oops.txt', 'text/plain', 4)]);
+  const gate = deferred<void>();
+  w.routes.deleteBlob.mockImplementationOnce(() => gate.promise);
+  w.sync.sendRequest.mockImplementationOnce(() => { throw new CoreError('E_CORE_INPUT', 'refused send'); });
+  w.call(5, { m: 'send', channelId: CH_HEX, text: 'hello', attachments: [trayId] });
+  await vi.waitFor(() => expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_CORE_INPUT', detail: '' } }));
+  await vi.waitFor(() => expect(w.routes.deleteBlob).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve();
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('publishes only bounded diagnostics and code-only errors', async () => {
+  const w = world();
+  await toReady(w);
+  w.call(93, { m: 'refreshDevices' });
+  await vi.waitFor(() => expect(w.ret(93)).toBeDefined());
+  const diagnostics = w.last<{ devices: number; errors: { code: string; at: number }[] }>('diagnostics');
+  expect(diagnostics?.devices).toBe(2);
+  expect(diagnostics?.errors).toHaveLength(0);
+  expect(JSON.stringify(w.posted)).not.toContain('session-token');
+  expect(JSON.stringify(w.posted)).not.toContain('SECRET busy');
+});
 
 async function toReady(w: World): Promise<void> {
   w.call(1, { m: 'start' });
@@ -987,7 +1350,7 @@ describe('Controller command edge cases', () => {
     expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: false, error: failed });
     w.call(6, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
-    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the channel is not open' } });
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
     expect(w.sync.sendRequest).not.toHaveBeenCalled();
   });
 
@@ -1022,7 +1385,7 @@ describe('Controller command edge cases', () => {
     await toReady(w);
     w.call(2, { m: 'selectCommunity', communityId: 'e'.repeat(32) });
     await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
-    expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: false, error: { code: 'E_BAD_INPUT', detail: 'unknown community', status: 0, retryAfterMs: null } });
+    expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: false, error: { code: 'E_BAD_INPUT', detail: '', status: 0, retryAfterMs: null } });
     expect(w.routes.listChannels).toHaveBeenCalledTimes(1);
     expect(w.routes.listMembers).toHaveBeenCalledTimes(1);
   });
@@ -1069,11 +1432,11 @@ describe('Controller command edge cases', () => {
     w.session.ensure.mockImplementationOnce(() => Promise.reject(down));
     w.call(1, { m: 'start' });
     await vi.waitFor(() => expect(w.account()?.phase).toBe('error'));
-    expect(w.account()?.error).toEqual({ code: 'E_NETWORK', detail: 'fetch failed', status: 0, retryAfterMs: null });
+    expect(w.account()?.error).toEqual({ code: 'E_NETWORK', detail: '', status: 0, retryAfterMs: null });
     expect(w.gateway.starts).toBe(0);
     w.call(2, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
     await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
-    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the phase is error' } });
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
   });
 });
 
@@ -1157,10 +1520,10 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.enrol.register).not.toHaveBeenCalled();
     w.call(4, { m: 'signInTotp', code: '12345', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
-    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'code is not six digits' } });
+    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: '' });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
-    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the recovery key is empty' } });
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     w.call(6, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(6)).toEqual({ t: 'ret', id: 6, ok: true, value: null }));
     expect(w.enrol.totp).toHaveBeenCalledWith('123456');
@@ -1233,7 +1596,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.enrol.register).not.toHaveBeenCalled();
     w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
-    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the phase is signin-login' } });
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
     expect(w.enrol.totp).toHaveBeenCalledTimes(1);
   });
 
@@ -1447,8 +1810,8 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.call(5, { m: 'signInBegin' });
     w.call(6, { m: 'signupBegin' });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
-    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the phase is cleared' } });
-    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the phase is cleared' } });
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
   });
 
   it('signInCancel resets the enrolment and returns to needs-signup', async () => {
@@ -1472,7 +1835,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.call(3, LOGIN);
     w.call(4, LOGIN);
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
-    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'a sign-in step is running' } });
+    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
     release();
     await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needsTotp: false } }));
   });
@@ -1722,7 +2085,7 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     expect(w.badges()).toEqual({ [toHex(CHANNEL)]: { unread: 0, mentions: 0 } });
     w.call(5, { m: 'markRead', channelId: 'e'.repeat(32) });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
-    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'unknown channel' } });
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
   });
 
   it('setSetting stores a known key, deletes on null, and refuses everything else', async () => {
@@ -1740,8 +2103,8 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: { code: 'E_SETTING_KEY', detail: '', status: 0, retryAfterMs: null } });
-    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'value is not allowed for notify.default' } });
-    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'value is not a string or null' } });
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     expect(w.core.settingPut).toHaveBeenCalledTimes(1);
   });
 
@@ -1988,7 +2351,7 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     w.state.ownList = LISTED_BOTH;
     w.call(2, { m: 'revokeDevice', deviceId: toHex(DEVICE), recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
-    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'use signOutRevoke for this browser' } });
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     expect(w.routes.getBackup).not.toHaveBeenCalled();
     const from = w.calls.length;
     w.call(3, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: RECOVERY_KEY });
@@ -2049,9 +2412,9 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
     await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
-    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the recovery key is empty' } });
-    expect(w.ret(3)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the recovery key is empty' } });
-    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the recovery key is not a string or null' } });
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+    expect(w.ret(3)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     expect(w.routes.getBackup).not.toHaveBeenCalled();
     expect(w.routes.deleteDevice).not.toHaveBeenCalled();
   });
@@ -2197,7 +2560,7 @@ describe('Controller pre-flight rulings (task 14)', () => {
     });
     w.call(2, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: null });
     await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
-    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the recovery key is empty' } });
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     expect(w.routes.deleteDevice).not.toHaveBeenCalled();
   });
 
@@ -2583,12 +2946,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await vi.waitFor(() => expect(h.ret(14)).toBeDefined());
     const details = Array.from({ length: 14 }, (_, i) => (h.ret(i + 1) as Refused).error);
     expect(details.map((e) => e.code)).toEqual(new Array<string>(14).fill('E_BAD_INPUT'));
-    expect(details.map((e) => e.detail)).toEqual([
-      'msgId is not 32 lowercase hex', 'the message is empty', 'emoji must be 1..=32 bytes', 'emoji must be 1..=32 bytes',
-      'on is not a boolean', 'files is not a non-empty list of files', 'files is not a non-empty list of files',
-      'seq is not a decimal sequence number', 'index is not a non-negative integer', 'replyTo is not 32 lowercase hex',
-      'attachments is not a list of at most 4 tray ids', 'trayId is empty', 'on is not a boolean', 'thumb is not a boolean',
-    ]);
+    expect(details.map((e) => e.detail)).toEqual(new Array<string>(14).fill(''));
     expect(h.paths).toEqual([]);
   });
 
@@ -2650,7 +3008,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     expect(w.sync.sendRequest.mock.calls[0][1]).toMatchObject({ type: 0, body: '' });
     w.call(6, { m: 'send', channelId: CH_HEX, text: ' ', attachments: [] });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
-    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the message is empty' } });
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
   });
 
   it('a tray id that is not ready refuses the send and sends nothing', async () => {
@@ -2681,7 +3039,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect((w.ret(4) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_COUNT', status: 0 });
     expect((w.ret(5) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_TOO_LARGE', status: 0 });
-    expect((w.ret(6) as Refused).error).toEqual({ code: 'E_BAD_INPUT', detail: 'unknown channel', status: 0, retryAfterMs: null });
+    expect((w.ret(6) as Refused).error).toEqual({ code: 'E_BAD_INPUT', detail: '', status: 0, retryAfterMs: null });
     expect(w.routes.putBlob).not.toHaveBeenCalled();
   });
 
@@ -2737,7 +3095,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     expect(w.routes.deleteGroupMessage).not.toHaveBeenCalled();
   });
 
-  it("a core refusal of a fold crosses with its code and detail; a reply's msg id reaches the core", async () => {
+  it("a core refusal of a fold crosses with its code and empty detail; a reply's msg id reaches the core", async () => {
     const w = world();
     await toReady(w);
     await openGeneral(w);
@@ -2745,7 +3103,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     w.call(4, { m: 'editMessage', channelId: CH_HEX, msgId: MSG_HEX, text: 'not mine' });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false,
-      error: { code: 'E_CORE_INPUT', detail: 'only the author may edit or delete', status: 0, retryAfterMs: null } });
+      error: { code: 'E_CORE_INPUT', detail: '', status: 0, retryAfterMs: null } });
     w.call(5, { m: 'send', channelId: CH_HEX, text: 'answer', replyTo: MSG_HEX });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect(w.sync.sendRequest.mock.calls.at(-1)![1]).toEqual({ type: 0, replyTo: MSG, body: 'answer', attachments: [] });
@@ -2879,7 +3237,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     expect(pinsOf(w)).toEqual([]);
     w.call(6, { m: 'loadPins', channelId: 'e'.repeat(32) });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
-    expect((w.ret(6) as Refused).error).toMatchObject({ code: 'E_BAD_INPUT', detail: 'unknown channel' });
+    expect((w.ret(6) as Refused).error).toMatchObject({ code: 'E_BAD_INPUT', detail: '' });
   });
 
   it('openAttachment returns the decrypted file and its thumbnail as Blobs; a tampered file crosses E_BLOB_HASH', async () => {
@@ -2909,7 +3267,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     const doc = okValue<{ blob: Blob; name: string; mime: string }>(w, 6);
     expect([doc.name, doc.mime, doc.blob.type]).toEqual(['r_s.pdf', 'application/pdf', 'application/octet-stream']);
     expect((w.ret(7) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_MISSING' });
-    expect((w.ret(8) as Refused).error).toMatchObject({ code: 'E_CORE_NOT_FOUND', detail: 'no such attachment' });
+    expect((w.ret(8) as Refused).error).toMatchObject({ code: 'E_CORE_NOT_FOUND', detail: '' });
     expect(w.routes.getBlob).toHaveBeenCalledTimes(2);
     const tampered = stored.slice(); tampered[0] = (tampered[0] ?? 0) ^ 1;
     w.state.blobs.set(toHex(blobId), tampered);

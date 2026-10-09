@@ -13,6 +13,7 @@ interface Lane {
 
 export class SerialQueues {
   private readonly lanes = new Map<string, Lane>();
+  constructor(private readonly observe?: (job: Promise<unknown>) => void) {}
 
   run<T>(key: string, job: () => Promise<T>): Promise<T> {
     let lane = this.lanes.get(key);
@@ -25,6 +26,7 @@ export class SerialQueues {
     let resolve!: (value: T) => void;
     let reject!: (reason: unknown) => void;
     const answer = new Promise<T>((r, j) => { resolve = r; reject = j; });
+    this.observe?.(answer);
     const pending: Job = { started: false, cancel: () => { reject(new SyncError('E_SYNC_STOPPED')); } };
     current.jobs.add(pending);
     current.tail = current.tail.then(async () => {

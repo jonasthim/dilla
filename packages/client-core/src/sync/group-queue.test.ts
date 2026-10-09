@@ -1,9 +1,45 @@
 import { describe, expect, it } from 'vitest';
 import { SyncError } from './errors';
 import { SerialQueues } from './group-queue';
+import { CommandBarrier } from '../worker/runtime';
 import { deferred, settle } from './testing/model';
 
 describe('SerialQueues: one serial queue per group (rule 1)', () => {
+  it('keeps the hand-over barrier closed over a running durable sync job', async () => {
+    const barrier = new CommandBarrier();
+    const q = new SerialQueues((job) => { void barrier.track(job).catch(() => undefined); });
+    const gate = deferred();
+    const job = q.run('g', async () => { await gate.promise; });
+    await settle();
+    let released = false;
+    const drain = barrier.close().then(() => { released = true; });
+    await settle();
+    expect(released).toBe(false);
+    gate.resolve();
+    await job;
+    await drain;
+    expect(released).toBe(true);
+  });
+
+  it('keeps the hand-over barrier closed over a queued durable sync job', async () => {
+    const barrier = new CommandBarrier();
+    const q = new SerialQueues((job) => { void barrier.track(job).catch(() => undefined); });
+    const first = deferred();
+    const second = deferred();
+    const a = q.run('g', async () => { await first.promise; });
+    const b = q.run('g', async () => { await second.promise; });
+    await settle();
+    let released = false;
+    const drain = barrier.close().then(() => { released = true; });
+    first.resolve();
+    await a;
+    await settle();
+    expect(released).toBe(false);
+    second.resolve();
+    await b;
+    await drain;
+    expect(released).toBe(true);
+  });
   it('runs the jobs of one key one after another, in the order they were queued', async () => {
     const q = new SerialQueues();
     const log: string[] = [];
