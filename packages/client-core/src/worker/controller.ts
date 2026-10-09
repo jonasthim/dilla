@@ -399,6 +399,7 @@ export class Controller {
       return;
     }
     const searchId = command.m === 'search' ? this.searchGate.next() : null;
+    if (searchId !== null) this.slices.set('search', { requestId: searchId, hits: [], cursor: null });
     if (command.m === 'resign') {
       // Close synchronously, outside the accepted set, so the drain cannot wait for itself.
       this.answer(id, this.resign(command.nonce));
@@ -791,6 +792,7 @@ export class Controller {
         ? { status, generation, reason: 'version' }
         : { status, generation };
       this.slices.set('connection', this.connectionState);
+      this.stopTypingIfUnviewable();
     } else if (e.type === 'ready') {
       this.onReady(e.info);
     } else if (e.type === 'frame' && e.frame.op === Op.typing) {
@@ -802,6 +804,7 @@ export class Controller {
 
   private onReady(info: ReadyInfo): void {
     this.fetchedLeaves.clear();
+    if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.setConnection({ generation: info.generation.toString() });
     // Pre-flight ruling (a): what this ready catches up was not delivered live.
@@ -1211,6 +1214,7 @@ export class Controller {
       });
     }
     this.slices.set(`channels:${communityId}`, list);
+    this.stopTypingIfUnviewable();
   }
 
   /** Requirement 18: every known text channel first, then every DM whose group is known (communityId null). */
@@ -1304,6 +1308,7 @@ export class Controller {
       list.push({ id, kind: dm.kind, members, name, group: channelGroupState({ id: fromHex(id), kind: 0, mode: 0 }, groups, this.membership(id)) });
     }
     this.slices.set('dms', list);
+    this.stopTypingIfUnviewable();
   }
 
   private async openDm(userId: string): Promise<{ channelId: string }> {
@@ -1806,6 +1811,7 @@ export class Controller {
     }
     if (result.state === 2) { this.resyncing.delete(hex); this.notMember.delete(hex); }
     this.safely(() => { this.refreshTrustGeneration(); this.touchGroup(groupId); });
+    this.stopTypingIfUnviewable();
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.safely(() => { this.reportActivity(groupId, result); });
     // Pre-flight ruling F6: an apply can adopt the own type-2 row (a catch-up) and so record a purge.
@@ -1817,6 +1823,7 @@ export class Controller {
     if (status === 'resyncing') { this.resyncing.add(hex); this.notMember.delete(hex); }
     else { this.notMember.add(hex); this.resyncing.delete(hex); }
     this.safely(() => { this.touchGroup(groupId); });
+    this.stopTypingIfUnviewable();
   }
 
   /** Refreshes the row of every known channel or DM bound to the group and the timeline of every such open one. */
@@ -1862,29 +1869,40 @@ export class Controller {
     this.publishTrust();
   }
 
-  /** One bounded history read per pending leaf until the next ready. Core drains retained rows in bounded pages before publication. */
+  /** Coalesce concurrent triggers while keeping their whole refresh inside the tracked promise. */
   private refreshTrust(): Promise<null> {
     if (this.trustRefresh !== null) return this.trustRefresh;
-    const run = this.refreshTrustOnce().finally(() => {
-      this.trustRefresh = null;
-      if (this.trustRefreshAgain) {
+    const run = (async (): Promise<null> => {
+      do {
         this.trustRefreshAgain = false;
-        void this.barrier.track(this.refreshTrust().catch(() => undefined));
-      }
-    });
+        await this.refreshTrustOnce();
+      } while (this.trustRefreshAgain && this.phase === 'ready');
+      return null;
+    })().finally(() => { this.trustRefresh = null; });
     this.trustRefresh = run;
     return run;
   }
 
   private async refreshTrustOnce(): Promise<null> {
     const core = this.requireCore();
-    for (const leaf of core.pendingLeaves()) {
+    const leaves = core.pendingLeaves();
+    const historyByUser = new Map<string, { head: Uint8Array; history: Uint8Array } | null>();
+    for (const leaf of leaves) {
       if (this.phase !== 'ready') break;
       const key = `${toHex(leaf.groupId)}:${leaf.leafIndex}:${toHex(leaf.userId)}:${leaf.cachedVersion}:${leaf.reason}`;
       if (this.fetchedLeaves.has(key)) continue;
       this.fetchedLeaves.add(key);
       try {
-        const { head, history } = await readDeviceListHistory(this.routes, leaf.userId, leaf.cachedVersion);
+        const user = toHex(leaf.userId);
+        if (!historyByUser.has(user)) {
+          const oldest = leaves.filter((candidate) => toHex(candidate.userId) === user)
+            .reduce((version, candidate) => candidate.cachedVersion < version ? candidate.cachedVersion : version, leaf.cachedVersion);
+          try { historyByUser.set(user, await readDeviceListHistory(this.routes, leaf.userId, oldest)); }
+          catch { historyByUser.set(user, null); }
+        }
+        const signed = historyByUser.get(user);
+        if (signed === null || signed === undefined) continue;
+        const { head, history } = signed;
         core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, head, this.nowS());
         core.revalidatePending(leaf.groupId, leaf.leafIndex, 256);
         this.refreshTrustGeneration();
@@ -1945,7 +1963,8 @@ export class Controller {
   }
 
   private typing(channelId: string, on: boolean): Promise<null> {
-    if (!this.open.has(channelId) || this.target(channelId) === undefined || this.phase !== 'ready')
+    if (!this.open.has(channelId) || this.groupState(channelId) !== 'active'
+      || this.phase !== 'ready' || this.connectionState.status !== 'online')
       throw new Refusal('E_NOT_READY', '');
     this.gateway?.sendTyping(fromHex(channelId), on);
     if (on) this.typingOn.add(channelId); else this.typingOn.delete(channelId);
@@ -1961,6 +1980,17 @@ export class Controller {
   private typingOff(): void {
     for (const channelId of this.typingOn) this.gateway?.sendTyping(fromHex(channelId), false);
     this.typingOn.clear();
+  }
+
+  private stopTypingIfUnviewable(): void {
+    for (const channelId of this.typingOn) {
+      if (this.open.has(channelId) && this.groupState(channelId) === 'active'
+        && this.phase === 'ready' && this.connectionState.status === 'online') continue;
+      this.gateway?.sendTyping(fromHex(channelId), false);
+      this.typingOn.delete(channelId);
+      this.incomingTyping.delete(channelId);
+      this.slices.set(`typing:${channelId}`, []);
+    }
   }
 
   private async resign(nonce: string): Promise<{ released: true }> {

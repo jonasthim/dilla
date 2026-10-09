@@ -587,6 +587,78 @@ it('refreshes only core-owned pending leaves and never publishes list bytes', as
   expect(JSON.stringify(w.posted)).not.toContain(Array.from(signedHead).join(','));
 });
 
+it('a second ready during trust ingestion reads its newly pending leaf before the refresh settles', async () => {
+  const w = world();
+  await toReady(w);
+  const first = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
+  w.routes.getDeviceList.mockImplementationOnce(() => first.promise);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.gateway.emit({ type: 'ready', info: READY_INFO });
+  await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalledTimes(1));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 2, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.gateway.emit({ type: 'ready', info: READY_INFO });
+  first.resolve({ version: 1n, blob: new Uint8Array([9]), raw: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) });
+  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2));
+  expect(w.core.deviceListIngest.mock.calls.map((args) => args[1])).toEqual([1, 2]);
+});
+
+it('reads one signed history per user and ingests it for each pending leaf', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pendingLeaves.mockReturnValue([
+    { groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' },
+    { groupId: GROUP, leafIndex: 2, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' },
+  ]);
+  w.call(991, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(991)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2);
+  expect(w.routes.getDeviceList).toHaveBeenCalledTimes(2);
+  expect(w.core.deviceListIngest.mock.calls[0][3]).toEqual(w.core.deviceListIngest.mock.calls[1][3]);
+});
+
+it('clears an old search slice when a newer core search refuses', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.search.mockReturnValueOnce([{ groupId: GROUP, seq: 1n, snippet: 'old', rank: 0n }]);
+  w.call(992, { m: 'search', scope: 'all', id: null, query: 'old', cursor: null });
+  await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true }));
+  expect(w.last<{ hits: unknown[] }>('search')?.hits).toHaveLength(1);
+  w.core.search.mockImplementationOnce(() => { throw new CoreError('E_CORE_INPUT', 'bad query'); });
+  w.call(993, { m: 'search', scope: 'all', id: null, query: 'bad', cursor: null });
+  await vi.waitFor(() => expect(w.ret(993)).toMatchObject({ ok: false, error: { code: 'E_CORE_INPUT', detail: '' } }));
+  expect(w.last<{ hits: unknown[] }>('search')?.hits).toEqual([]);
+});
+
+it('stops typing on lost membership and refuses typing until viewable and online', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.call(997, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(997)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } }));
+  expect(w.gateway.sendTyping).not.toHaveBeenCalled();
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.call(994, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(994)).toMatchObject({ ok: true }));
+  w.sync.deps!.onMembership(GROUP, 'not-member');
+  expect(w.gateway.sendTyping).toHaveBeenLastCalledWith(CHANNEL, false);
+  w.call(995, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(995)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } }));
+  expect(w.gateway.sendTyping.mock.calls.filter((args) => args[1] === true)).toHaveLength(1);
+});
+
+it('stops typing when the open channel disappears from the refreshed channel list', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.call(996, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(996)).toMatchObject({ ok: true }));
+  w.routes.listChannels.mockResolvedValueOnce([]);
+  w.gateway.emit({ type: 'ready', info: READY_INFO });
+  await vi.waitFor(() => expect(w.channels()).toEqual([]));
+  expect(w.gateway.sendTyping).toHaveBeenLastCalledWith(CHANNEL, false);
+});
+
 it('rejects a nonzero search cursor and never calls core search', async () => {
   const w = world();
   await toReady(w);
@@ -601,6 +673,7 @@ it('refuses malformed key approval and sends typing off on channel close', async
   const w = world();
   await toReady(w);
   await openGeneral(w);
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
   w.call(94, { m: 'verifyContact', userId: toHex(STRANGER), umk: 'not a public key' });
   await vi.waitFor(() => expect(w.ret(94)).toBeDefined());
   expect(w.ret(94)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
