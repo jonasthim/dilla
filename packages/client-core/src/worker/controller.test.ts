@@ -619,6 +619,7 @@ it('reads one signed history per user and ingests it for each pending leaf', asy
 it('clears an old search slice when a newer core search refuses', async () => {
   const w = world();
   await toReady(w);
+  await openGeneral(w);
   w.core.search.mockReturnValueOnce([{ groupId: GROUP, seq: 1n, snippet: 'old', rank: 0n }]);
   w.call(992, { m: 'search', scope: 'all', id: null, query: 'old', cursor: null });
   await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true }));
@@ -627,6 +628,27 @@ it('clears an old search slice when a newer core search refuses', async () => {
   w.call(993, { m: 'search', scope: 'all', id: null, query: 'bad', cursor: null });
   await vi.waitFor(() => expect(w.ret(993)).toMatchObject({ ok: false, error: { code: 'E_CORE_INPUT', detail: '' } }));
   expect(w.last<{ hits: unknown[] }>('search')?.hits).toEqual([]);
+});
+
+it('publishes channel destinations for community and DM hits and drops unknown groups', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+  w.state.groups.push({ ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL });
+  w.sync.deps!.onUnexpectedWelcome(DM_GROUP);
+  await vi.waitFor(() => expect(w.last<DmSummary[]>('dms')?.[0]?.id).toBe(toHex(DM_CHANNEL)));
+  w.core.search.mockReturnValueOnce([
+    { groupId: GROUP, seq: 1n, snippet: 'community', rank: 0n },
+    { groupId: DM_GROUP, seq: 2n, snippet: 'dm', rank: 0n },
+    { groupId: ORPHAN_GROUP, seq: 3n, snippet: 'orphan', rank: 0n },
+  ]);
+  w.call(994, { m: 'search', scope: 'all', id: null, query: 'a', cursor: null });
+  await vi.waitFor(() => expect(w.ret(994)).toMatchObject({ ok: true }));
+  expect(w.last<{ hits: unknown[] }>('search')?.hits).toEqual([
+    { channelId: toHex(CHANNEL), communityId: toHex(COMMUNITY), seq: '1', snippet: 'community', rank: '0' },
+    { channelId: toHex(DM_CHANNEL), communityId: null, seq: '2', snippet: 'dm', rank: '0' },
+  ]);
 });
 
 it('stops typing on lost membership and refuses typing until viewable and online', async () => {

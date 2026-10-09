@@ -1953,11 +1953,25 @@ export class Controller {
     };
     const hits = this.requireCore().search(scope, command.query, cursor, 50);
     if (this.searchGate.current(requestId)) {
-      const rows = hits.slice(0, 50).map((h) => ({ groupId: toHex(h.groupId), seq: h.seq.toString(),
-        snippet: Array.from(h.snippet).slice(0, 160).join(''), rank: h.rank.toString() }));
-      const last = rows.at(-1);
+      const destinations = new Map<string, { channelId: string; communityId: string | null }>();
+      for (const group of this.requireCore().groups()) {
+        if (group.kind !== 0) continue;
+        const channelId = toHex(group.targetId);
+        if (this.dms.has(channelId)) destinations.set(toHex(group.groupId), { channelId, communityId: null });
+        else {
+          const known = this.channels.get(channelId);
+          if (known !== undefined && group.communityId !== null && known.communityId === toHex(group.communityId))
+            destinations.set(toHex(group.groupId), { channelId, communityId: known.communityId });
+        }
+      }
+      const rows = hits.slice(0, 50).flatMap((h) => {
+        const destination = destinations.get(toHex(h.groupId));
+        return destination === undefined ? [] : [{ ...destination, seq: h.seq.toString(),
+          snippet: Array.from(h.snippet).slice(0, 160).join(''), rank: h.rank.toString() }];
+      });
+      const last = hits.at(-1);
       this.slices.set('search', { requestId, hits: rows,
-        cursor: last === undefined ? null : { rank: last.rank, groupId: last.groupId, seq: last.seq } });
+        cursor: last === undefined ? null : { rank: last.rank.toString(), groupId: toHex(last.groupId), seq: last.seq.toString() } });
     }
     return Promise.resolve(null);
   }

@@ -55,7 +55,7 @@ export interface TimelineState { channelId: string; group: ChannelGroupState; it
 export interface DmSummary { id: string; kind: 3 | 4; members: string[]; name: string; group: ChannelGroupState; }
 export interface DeviceSummary { id: string; tier: 0 | 1; signerTier: 0 | 1; lastSeen: number; revokedAt: number | null; listed: boolean; own: boolean; }
 export interface TrustSummary { userId: string; name: string; shared: boolean; umk: string; firstSeen: number; verified: boolean; changedUmk: string | null }
-export interface SearchState { requestId: number; hits: { groupId: string; seq: string; snippet: string; rank: string }[];
+export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string }[];
   cursor: { rank: string; groupId: string; seq: string } | null }
 export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecting'; generation: string | null; instance: string;
   devices: number; errors: { code: string; at: number }[] }
