@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS app_messages (
   reply_to      BLOB,
   edit_body     TEXT,
   edit_seq      INTEGER NOT NULL DEFAULT 0,
+  sender_sig_key BLOB,
   PRIMARY KEY (group_id, seq)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS app_messages_by_msg ON app_messages (group_id, msg_id);
@@ -329,6 +330,9 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     if found <= 4 {
         c.execute_batch(APP_INDEXES_V3)?;
         c.execute_batch(APP_SCHEMA_V4)?;
+        if !has_column(c, "app_messages", "sender_sig_key")? {
+            c.execute_batch("ALTER TABLE app_messages ADD COLUMN sender_sig_key BLOB")?;
+        }
         migrate_quarantine_pairs(c)?;
         migrate_trust_artifact_pairs(c)?;
         if found < 4 {

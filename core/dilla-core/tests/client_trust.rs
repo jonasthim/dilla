@@ -2,6 +2,7 @@
 mod client_support;
 use client_support::*;
 use dilla_core::cbor::decode_strict;
+use rusqlite::OptionalExtension;
 
 type Pending = ([u8; 16], u32, [u8; 16], u64, String);
 
@@ -421,6 +422,21 @@ fn later_sender_verdict_retracts_visible_history_and_advances_generation() {
     let (_, first) = bob.send(&mut relay, &GROUP, "previously visible comet", NOW + 1);
     alice.sync(&relay);
     assert_eq!(alice.row_at(&GROUP, first).body, "previously visible comet");
+    let sender_key: Vec<u8> = alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT sender_sig_key FROM app_messages WHERE group_id=?1 AND seq=?2",
+            rusqlite::params![GROUP.as_slice(), first as i64],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        sender_key.len(),
+        32,
+        "accepted history retains the authenticated leaf key"
+    );
     assert_ne!(
         alice
             .core
@@ -775,6 +791,7 @@ fn real_rejoin_with_rotated_umk_requires_exact_current_leaf_at_verify() {
     let (instance, mut relay, mut alice, bob) = alice_and_bob();
     let (old_history, old_blob) = list_wire(&bob);
     ingest_core_list(&mut alice, &relay, &bob);
+    let old_number = alice.core.safety_number_for(&bob.user).unwrap();
     instance.propose_remove(&mut relay, bob.device);
     alice.commit(&mut relay);
     let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
@@ -841,6 +858,21 @@ fn real_rejoin_with_rotated_umk_requires_exact_current_leaf_at_verify() {
     })
     .unwrap();
     assert_eq!(changed, 1);
+    let pending_number = alice.core.safety_number_for(&bob.user).unwrap();
+    assert_ne!(
+        pending_number, old_number,
+        "comparison must show the candidate key"
+    );
+    assert_eq!(pending_number.split(' ').count(), 12);
+    alice.probe.lock().unwrap().execute(
+        "INSERT INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,1,0,?4)",
+        rusqlite::params![bob.user.as_slice(),[0u8;16].as_slice(),[0x90u8;32].as_slice(),[0x91u8;32].as_slice()],
+    ).unwrap();
+    assert_eq!(
+        alice.core.safety_number_for(&bob.user).unwrap(),
+        pending_number,
+        "an older pending pin cannot replace the current signed candidate"
+    );
     assert_eq!(
         code(alice.core.trust_verify(&bob.user, &[0xee; 32])),
         "E_DEVICE_LIST_STALE"
@@ -863,6 +895,22 @@ fn real_rejoin_with_rotated_umk_requires_exact_current_leaf_at_verify() {
     rotated.join_external(&mut relay);
     alice.sync(&relay);
     alice.core.trust_verify(&bob.user, &expected).unwrap();
+    let old_verified: Option<i64> = alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT verified FROM app_trust_pins WHERE user_id=?1 AND device_id=?2",
+            rusqlite::params![bob.user.as_slice(), bob.device.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert_ne!(
+        old_verified,
+        Some(1),
+        "removed device is absent from the current signed list"
+    );
     let state = alice.core.trust_state().unwrap();
     let bob_state = decode_strict(&state, |d| {
         let n = d.array_len()?;

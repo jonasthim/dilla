@@ -44,6 +44,7 @@ fn empty_message<'a>(
         sender_user: None,
         sender_device: &row.uploader_device,
         sender_leaf: None,
+        sender_sig_key: None,
         sender_kind: None,
         sender_tier: None,
         msg_id: None,
@@ -73,6 +74,7 @@ fn own_message<'a>(
         sender_user: Some(&own.user_id),
         sender_device: &own.device_id,
         sender_leaf: Some(leaf),
+        sender_sig_key: None,
         sender_kind: Some(own.kind),
         sender_tier: Some(own.tier),
         msg_id: Some(env.msg_id.as_bytes()),
@@ -365,6 +367,7 @@ impl ClientCore {
                                 group_id: id, seq: *seq, epoch: *epoch, recv_ts: *recv_ts,
                                 status: STATUS_OK, reason: "", sender_user: Some(sender.user_id.as_bytes()),
                                 sender_device: sender.device_id.as_bytes(), sender_leaf: Some(*leaf),
+                                sender_sig_key: Some(member.signature_key.as_slice()),
                                 sender_kind: Some(sender.kind.as_u8()), sender_tier: Some(sender.tier.as_u8()),
                                 msg_id: Some(envelope.msg_id.as_bytes()), ty: Some(envelope.kind.as_u8()),
                                 reply_to: envelope.reply_to.as_ref().map(MsgId::as_bytes), body: &envelope.body,
@@ -772,7 +775,7 @@ impl ClientCore {
                                             Ok(()) => (STATUS_OK, "", Some(r), None),
                                             Err(e) => {
                                                 if e.code != super::error::E_DEVICE_LIST_STALE {
-                                                    u.with_conn(|c| super::trust::quarantine_device(c,id,r.sender.user_id.as_bytes(),r.sender.device_id.as_bytes(),e.code))?;
+                                                    u.with_conn(|c| super::trust::audit_tree(c,&group,id,&own.user_id,&own.device_id,None,None))?;
                                                     (STATUS_CANNOT_DECRYPT, e.code, None, None)
                                                 } else {
                                                     (STATUS_CANNOT_DECRYPT, e.code, None, Some(r))
@@ -802,6 +805,7 @@ impl ClientCore {
                                             let mut q = c.prepare("SELECT r.role_id FROM app_roles r JOIN app_groups g ON g.community_id = r.community_id WHERE g.group_id = ?1 ORDER BY r.role_id")?;
                                             q.query_map([id.as_slice()], |row| row.get(0))?.collect::<Result<_, _>>()?
                                         };
+                                        let sender_member = group.member_at(r.sender_leaf);
                                         let msg = StoredMessage {
                                             group_id: id,
                                             seq: m.seq,
@@ -812,6 +816,7 @@ impl ClientCore {
                                             sender_user: Some(r.sender.user_id.as_bytes()),
                                             sender_device: r.sender.device_id.as_bytes(),
                                             sender_leaf: Some(r.sender_leaf),
+                                            sender_sig_key: sender_member.as_ref().map(|member| member.signature_key.as_slice()),
                                             sender_kind: Some(r.sender.kind.as_u8()),
                                             sender_tier: Some(r.sender.tier.as_u8()),
                                             msg_id: Some(r.envelope.msg_id.as_bytes()),

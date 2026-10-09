@@ -551,8 +551,14 @@ fn a_v1_store_opens_as_v4_with_every_column_backfilled() {
         );
         let message_columns = columns(&c, "app_messages");
         assert_eq!(
-            &message_columns[message_columns.len() - 4..],
-            ["mention", "reply_to", "edit_body", "edit_seq"]
+            &message_columns[message_columns.len() - 5..],
+            [
+                "mention",
+                "reply_to",
+                "edit_body",
+                "edit_seq",
+                "sender_sig_key"
+            ]
         );
         let replies: i64 = c
             .query_row(
