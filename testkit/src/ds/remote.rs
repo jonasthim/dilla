@@ -972,6 +972,32 @@ pub struct CallStarted {
 }
 
 impl HttpDs {
+    #[cfg(test)]
+    pub(crate) fn for_device_list_test(base: &str) -> Self {
+        Self {
+            base: base.to_owned(),
+            token: "test-token".into(),
+            device: DeviceId::from_bytes([0; 16]),
+            agent: new_agent(),
+            ws: None,
+            pending: Vec::new(),
+            online: false,
+            heartbeat: Duration::from_secs(30),
+            last_beat: Instant::now(),
+            unacked: 0,
+            ack_since: Instant::now(),
+            last_pump: Instant::now(),
+            last_n: 0,
+            delivered: BTreeMap::new(),
+            connected_before: false,
+            reconnects: 0,
+            lost: Vec::new(),
+            accepted: 0,
+            missed_acks: 0,
+            expires: 0,
+        }
+    }
+
     /// Establishes a device session over the real endpoints: a challenge, an Ed25519 signature
     /// over the 81-byte preimage of `protocol/02`'s "Device sessions", then the session itself.
     pub fn connect(base: &str, device: &Device, credential: &[u8]) -> Result<Self, DsError> {

@@ -997,7 +997,7 @@ impl WebDriver {
         let mut budget_rows = 0usize;
         for attempt in 0..2 {
             let head = ds.get_device_list(user)?;
-            if head.version == 0 || head.version > 1024 {
+            if head.version == 0 {
                 return Err(scenario("E_DEVICE_LIST_STALE"));
             }
             budget_bytes = budget_bytes.saturating_add(head.blob.len() + 128);
@@ -1516,10 +1516,135 @@ impl WebDriver {
 mod tests {
     use super::*;
     use dilla_core::envelope::{Attachment, Envelope, EnvelopeType};
-    use dilla_core::identity::Tier;
+    use dilla_core::identity::{DeviceListUnsigned, SskSigner, Tier};
     use dilla_core::ids::{DeviceId, MsgId, UserId};
     use serde_json::json;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn signed_history_accepts_a_cached_1024_anchor_and_signed_1025_head() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Instant;
+
+        let signer = SskSigner::from_bytes(&[0x42; 32]);
+        let user = [0x43; 16];
+        let anchor_unsigned = DeviceListUnsigned {
+            v: 1,
+            user_id: UserId::from_bytes(user),
+            version: 1024,
+            prev_hash: [0x44; 32],
+            entries: Vec::new(),
+        };
+        let anchor = DeviceList {
+            sig_ssk: signer.sign_device_list(&anchor_unsigned),
+            unsigned: anchor_unsigned,
+        };
+        let head_unsigned = DeviceListUnsigned {
+            v: 1,
+            user_id: UserId::from_bytes(user),
+            version: 1025,
+            prev_hash: anchor.hash(),
+            entries: Vec::new(),
+        };
+        let head = DeviceList {
+            sig_ssk: signer.sign_device_list(&head_unsigned),
+            unsigned: head_unsigned,
+        };
+        let served = ServedDeviceList {
+            version: 1025,
+            blob: head.encode(),
+            ssk_signature: head.sig_ssk.to_vec(),
+            prev_hash: head.unsigned.prev_hash.to_vec(),
+        };
+        let head_body = {
+            let mut e = Encoder::new();
+            e.array(4)
+                .uint(served.version)
+                .bytes(&served.blob)
+                .bytes(&served.ssk_signature)
+                .bytes(&served.prev_hash);
+            e.into_vec()
+        };
+        let history_body = {
+            let mut e = Encoder::new();
+            e.array(1)
+                .array(4)
+                .uint(served.version)
+                .bytes(&served.blob)
+                .bytes(&served.ssk_signature)
+                .bytes(&served.prev_hash);
+            e.into_vec()
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut paths = Vec::new();
+            while paths.len() < 3 && Instant::now() < deadline {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !request.ends_with(b"\r\n\r\n") {
+                    let n = stream.read(&mut buf).unwrap();
+                    assert!(n > 0, "HTTP request closed before headers");
+                    request.extend_from_slice(&buf[..n]);
+                    assert!(request.len() < 8192);
+                }
+                let line = String::from_utf8_lossy(&request);
+                let path = line.split_whitespace().nth(1).unwrap().to_owned();
+                let body = if path.contains("?after=1024") {
+                    &history_body
+                } else {
+                    &head_body
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/cbor\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.write_all(body).unwrap();
+                paths.push(path);
+            }
+            paths
+        });
+        let ds = HttpDs::for_device_list_test(&base);
+        let result = WebDriver::signed_history(&ds, &user, Some(&(1024, anchor.encode())));
+        let paths = server.join().unwrap();
+        let (history, returned_head) = result.expect("one signed row above the cached anchor");
+        assert_eq!(returned_head, head.encode());
+        assert_eq!(paths.len(), 3, "head, history, and head recheck: {paths:?}");
+        assert!(paths[1].ends_with("?after=1024"), "{paths:?}");
+        let lists = decode_strict(&history, |d: &mut Decoder<'_>| {
+            let n = d.array_len()?;
+            let mut lists = Vec::new();
+            for _ in 0..n {
+                d.array(4)?;
+                let version = d.uint()?;
+                let blob = d.bytes()?.to_vec();
+                let signature = d.bytes()?.to_vec();
+                let prev_hash = d.bytes()?.to_vec();
+                let list = DeviceList::decode(&blob).unwrap();
+                assert_eq!(version, list.unsigned.version);
+                assert_eq!(signature, list.sig_ssk);
+                assert_eq!(prev_hash, list.unsigned.prev_hash);
+                lists.push(list);
+            }
+            Ok(lists)
+        })
+        .unwrap();
+        assert_eq!(lists.len(), 2);
+        assert_eq!(lists[0], anchor);
+        lists[0].verify(&signer.public()).unwrap();
+        lists[1].accept(Some(&lists[0]), &signer.public()).unwrap();
+    }
 
     #[test]
     fn new_web_driver_verbs_reject_unbounded_or_wrong_shape_json() {
