@@ -665,6 +665,22 @@ it('ignores incoming typing frames after an open channel loses membership', asyn
   expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
 });
 
+it('clears incoming typing on membership loss without local typing', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.gateway.emit({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S + 5n],
+  } });
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toMatchObject([{ userId: toHex(STRANGER) }]);
+  expect(w.gateway.sendTyping).not.toHaveBeenCalled();
+
+  w.sync.deps!.onMembership(GROUP, 'not-member');
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
+  expect(w.gateway.sendTyping).not.toHaveBeenCalled();
+});
+
 it('stops typing when the open channel disappears from the refreshed channel list', async () => {
   const w = world();
   await toReady(w);

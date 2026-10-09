@@ -1983,11 +1983,10 @@ export class Controller {
   }
 
   private stopTypingIfUnviewable(): void {
-    for (const channelId of this.typingOn) {
+    for (const channelId of new Set([...this.typingOn, ...this.incomingTyping.keys()])) {
       if (this.open.has(channelId) && this.groupState(channelId) === 'active'
         && this.phase === 'ready' && this.connectionState.status === 'online') continue;
-      this.gateway?.sendTyping(fromHex(channelId), false);
-      this.typingOn.delete(channelId);
+      if (this.typingOn.delete(channelId)) this.gateway?.sendTyping(fromHex(channelId), false);
       this.incomingTyping.delete(channelId);
       this.slices.set(`typing:${channelId}`, []);
     }
