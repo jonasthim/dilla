@@ -7,6 +7,7 @@ use std::io::{BufRead, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dilla_core::attachment;
+use dilla_core::cbor::{Decoder, Encoder, decode_strict};
 use dilla_core::envelope::{Attachment, EnvelopeType};
 use dilla_core::identity::DeviceList;
 use dilla_core::ids::{CommunityId, InstanceId, MsgId};
@@ -14,14 +15,22 @@ use dilla_core::mls::{DillaBinding, GroupKind};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::ds::remote::{HttpDs, instance_document};
+use crate::ds::remote::{HttpDs, ServedDeviceList, instance_document};
 use crate::{DsError, Received, Runner, TestClient, TestkitError};
 
 const GROUP: &str = "text";
 const BODY_MAX_BYTES: usize = 4000;
+const REQUEST_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 fn scenario(msg: impl Into<String>) -> TestkitError {
     TestkitError::Scenario(msg.into())
+}
+
+fn new_verb_error(error: TestkitError) -> TestkitError {
+    match error {
+        TestkitError::Ds(ref ds) if ds.code().starts_with("E_") => scenario(ds.code()),
+        other => other,
+    }
 }
 
 fn seeded_plaintext(seed: u64, size: usize) -> Vec<u8> {
@@ -101,9 +110,56 @@ impl WebDriver {
         format!("peer{:06x}", seed & 0xff_ffff)
     }
 
-    pub fn serve(&mut self, input: impl BufRead, mut out: impl Write) -> std::io::Result<()> {
-        for line in input.lines() {
-            let line = line?;
+    fn read_line_bounded(input: &mut impl BufRead) -> std::io::Result<Option<(String, bool)>> {
+        let mut bytes = Vec::new();
+        let mut oversized = false;
+        let mut saw_any = false;
+        loop {
+            let available = input.fill_buf()?;
+            if available.is_empty() {
+                break;
+            }
+            saw_any = true;
+            let end = available
+                .iter()
+                .position(|b| *b == b'\n')
+                .map_or(available.len(), |n| n + 1);
+            if !oversized {
+                if bytes.len().saturating_add(end) > REQUEST_MAX_BYTES {
+                    oversized = true;
+                    bytes.clear();
+                } else {
+                    bytes.extend_from_slice(&available[..end]);
+                }
+            }
+            let complete = available[end - 1] == b'\n';
+            input.consume(end);
+            if complete {
+                break;
+            }
+        }
+        if !saw_any {
+            return Ok(None);
+        }
+        if oversized {
+            return Ok(Some((String::new(), true)));
+        }
+        let line = String::from_utf8(bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(Some((line, false)))
+    }
+
+    pub fn serve(&mut self, mut input: impl BufRead, mut out: impl Write) -> std::io::Result<()> {
+        while let Some((line, oversized)) = Self::read_line_bounded(&mut input)? {
+            if oversized {
+                writeln!(
+                    out,
+                    "{}",
+                    json!({"id": null, "ok": false, "error": "request exceeds 4 MiB"})
+                )?;
+                out.flush()?;
+                continue;
+            }
             if line.trim().is_empty() {
                 continue;
             }
@@ -377,6 +433,33 @@ impl WebDriver {
             "open_dm" => {
                 Self::hex16(req, "user_id")?;
             }
+            "trust_list" => {
+                Self::hex16(req, "user")?;
+            }
+            "rotate_umk" => {
+                if req.get("user").is_some() {
+                    Self::hex16(req, "user")?;
+                }
+            }
+            "typing" => {
+                Self::hex16(req, "channel")?;
+                if req.get("on").and_then(Value::as_bool).is_none() {
+                    return Err(scenario("on must be boolean"));
+                }
+            }
+            "search_seed" => {
+                Self::hex16(req, "channel")?;
+                let body = Self::text(req, "body")?;
+                if !(1..=BODY_MAX_BYTES).contains(&body.len()) {
+                    return Err(scenario("body must be 1..=4000 bytes"));
+                }
+            }
+            "voice_self" => {
+                Self::hex16(req, "call")?;
+                if !matches!(Self::uint(req, "flags"), Some(Some(0..=3))) {
+                    return Err(scenario("flags must be 0..=3"));
+                }
+            }
             "register" | "update" | "enrol" | "dms" => {}
             _ => return Err(scenario(format!("unknown op {op}"))),
         }
@@ -426,6 +509,11 @@ impl WebDriver {
             "dms" => self.list_dms(),
             "send_dm" => self.send_dm(req),
             "sync_dm" => self.sync_dm(req),
+            "typing" => self.typing(req).map_err(new_verb_error),
+            "search_seed" => self.search_seed(req).map_err(new_verb_error),
+            "voice_self" => self.voice_self(req).map_err(new_verb_error),
+            "trust_list" => self.trust_list(req).map_err(new_verb_error),
+            "rotate_umk" => self.rotate_umk(req).map_err(new_verb_error),
             _ => unreachable!(),
         }
     }
@@ -864,6 +952,283 @@ impl WebDriver {
         Ok(json!({"seq": seq, "msg_id": msg_id.to_hex()}))
     }
 
+    fn search_seed(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let channel = Self::hex16(req, "channel")?;
+        let group = self
+            .groups
+            .get(&channel)
+            .ok_or_else(|| scenario("E_NOT_FOUND"))?
+            .clone();
+        let body = Self::text(req, "body")?;
+        let name = self.peer().name.clone();
+        let (seq, _) = self.runner.with_member(&name, |c, ds| {
+            c.sync(ds)?;
+            c.send_envelope(ds, &group, EnvelopeType::Message, None, body, Vec::new())
+        })?;
+        Ok(json!({"seq": seq}))
+    }
+
+    fn typing(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let channel = Self::hex16(req, "channel")?;
+        let on = req["on"].as_bool().expect("validated on");
+        let name = self.peer().name.clone();
+        self.runner.with_session(&name, |_, ds| {
+            ds.typing_set(&channel, on).map_err(Into::into)
+        })?;
+        Ok(json!({"accepted": true}))
+    }
+
+    fn voice_self(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let call = Self::hex16(req, "call")?;
+        let flags = req["flags"].as_u64().expect("validated flags");
+        let name = self.peer().name.clone();
+        self.runner.with_session(&name, |_, ds| {
+            ds.voice_self(&call, flags).map_err(Into::into)
+        })?;
+        Ok(json!({"accepted": true}))
+    }
+
+    fn signed_history(
+        ds: &HttpDs,
+        user: &[u8; 16],
+        cached: Option<&(u64, Vec<u8>)>,
+    ) -> Result<(Vec<u8>, Vec<u8>), TestkitError> {
+        let mut budget_bytes = 0usize;
+        let mut budget_rows = 0usize;
+        for attempt in 0..2 {
+            let head = ds.get_device_list(user)?;
+            if head.version == 0 || head.version > 1024 {
+                return Err(scenario("E_DEVICE_LIST_STALE"));
+            }
+            budget_bytes = budget_bytes.saturating_add(head.blob.len() + 128);
+            if budget_bytes > 4 * 1024 * 1024 {
+                return Err(scenario("E_DEVICE_LIST_STALE"));
+            }
+            let mut rows = Vec::<ServedDeviceList>::new();
+            let mut total_bytes = 0usize;
+            let mut version = 0;
+            if let Some((v, blob)) = cached {
+                if head.version < *v {
+                    return Err(scenario("E_DEVICE_LIST_STALE"));
+                }
+                let list = Self::served_list(blob, *v)?;
+                rows.push(ServedDeviceList {
+                    version: *v,
+                    blob: blob.clone(),
+                    ssk_signature: list.sig_ssk.to_vec(),
+                    prev_hash: list.unsigned.prev_hash.to_vec(),
+                });
+                total_bytes += blob.len() + 128;
+                budget_bytes = budget_bytes.saturating_add(blob.len() + 128);
+                budget_rows += 1;
+                if budget_bytes > 4 * 1024 * 1024 {
+                    return Err(scenario("E_DEVICE_LIST_STALE"));
+                }
+                version = *v;
+                if version == head.version && rows[0].blob != head.blob {
+                    return Err(scenario("E_DEVICE_LIST_STALE"));
+                }
+            }
+            while version < head.version {
+                let page = ds.get_device_list_history(user, version)?;
+                if page.is_empty() || page.len() > 64 {
+                    return Err(scenario("E_DEVICE_LIST_STALE"));
+                }
+                for row in page {
+                    if row.version != version + 1 || row.version > head.version {
+                        return Err(scenario("E_DEVICE_LIST_STALE"));
+                    }
+                    version = row.version;
+                    total_bytes = total_bytes.saturating_add(
+                        row.blob.len() + row.ssk_signature.len() + row.prev_hash.len() + 32,
+                    );
+                    budget_bytes = budget_bytes.saturating_add(
+                        row.blob.len() + row.ssk_signature.len() + row.prev_hash.len() + 32,
+                    );
+                    budget_rows += 1;
+                    if total_bytes > 4 * 1024 * 1024
+                        || budget_bytes > 4 * 1024 * 1024
+                        || budget_rows > 1024
+                    {
+                        return Err(scenario("E_DEVICE_LIST_STALE"));
+                    }
+                    rows.push(row);
+                }
+                if rows.len() > 1024 {
+                    return Err(scenario("E_DEVICE_LIST_STALE"));
+                }
+            }
+            if rows.last().is_none_or(|row| row != &head) {
+                return Err(scenario("E_DEVICE_LIST_STALE"));
+            }
+            let again = ds.get_device_list(user)?;
+            budget_bytes = budget_bytes.saturating_add(again.blob.len() + 128);
+            if budget_bytes > 4 * 1024 * 1024 {
+                return Err(scenario("E_DEVICE_LIST_STALE"));
+            }
+            if again != head {
+                if attempt == 0 {
+                    continue;
+                }
+                return Err(scenario("E_DEVICE_LIST_STALE"));
+            }
+            let mut e = Encoder::new();
+            e.array(rows.len());
+            for row in rows {
+                e.array(4)
+                    .uint(row.version)
+                    .bytes(&row.blob)
+                    .bytes(&row.ssk_signature)
+                    .bytes(&row.prev_hash);
+            }
+            let history = e.into_vec();
+            if history.len() > 4 * 1024 * 1024 {
+                return Err(scenario("E_DEVICE_LIST_STALE"));
+            }
+            return Ok((history, head.blob));
+        }
+        Err(scenario("E_DEVICE_LIST_STALE"))
+    }
+
+    fn trust_list(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let user = Self::hex16(req, "user")?;
+        let name = self.peer().name.clone();
+        let doc = instance_document(&self.ds_url)?;
+        self.runner.with_member(&name, |client, ds| {
+            client.sync(ds)?;
+            Ok(())
+        })?;
+        let (leaf, cached) = self.runner.with_member(&name, |client, _| {
+            let core = client.trust_core(doc.instance_id)?;
+            let pending = core.pending_leaves().map_err(|e| scenario(e.code))?;
+            let leaf = decode_strict(&pending, |d: &mut Decoder<'_>| {
+                let n = d.array_len()?;
+                let mut found = None;
+                for _ in 0..n {
+                    d.array(5)?;
+                    let group = d.bytes_exact::<16>()?;
+                    let index = d.uint()?;
+                    let candidate = d.bytes_exact::<16>()?;
+                    d.uint()?;
+                    d.text()?;
+                    if candidate == user && found.is_none() {
+                        found = Some((group, index as u32));
+                    }
+                }
+                Ok(found)
+            })
+            .map_err(|_| scenario("E_DEVICE_LIST_STALE"))?
+            .ok_or_else(|| scenario("E_CORE_NOT_FOUND"))?;
+            Ok((leaf, client.cached_trust_head(&user)?))
+        })?;
+        let (history, head) = self.runner.with_session(&name, |_, ds| {
+            Self::signed_history(ds, &user, cached.as_ref())
+        })?;
+        self.runner.with_member(&name, |client, _| {
+            let mut core = client.trust_core(doc.instance_id)?;
+            let result = core
+                .device_list_ingest(&leaf.0, leaf.1, &user, &history, &head, Self::now_unix())
+                .map_err(|e| scenario(e.code))?;
+            let version = decode_strict(&result, |d: &mut Decoder<'_>| {
+                d.array(3)?;
+                let v = d.uint()?;
+                d.uint()?;
+                d.uint()?;
+                Ok(v)
+            })
+            .map_err(|_| scenario("E_DEVICE_LIST_STALE"))?;
+            let states = core.trust_state().map_err(|e| scenario(e.code))?;
+            let (pin, verified, changed) = decode_strict(&states, |d: &mut Decoder<'_>| {
+                let n = d.array_len()?;
+                let mut found = None;
+                for _ in 0..n {
+                    d.array(5)?;
+                    let candidate = d.bytes_exact::<16>()?;
+                    let pin = d.bytes_exact::<32>()?;
+                    d.uint()?;
+                    let verified = d.uint()? == 1;
+                    let changed = d.opt_bytes_exact::<32>()?;
+                    if candidate == user {
+                        found = Some((pin, verified, changed));
+                    }
+                }
+                Ok(found)
+            })
+            .map_err(|_| scenario("E_DEVICE_LIST_STALE"))?
+            .ok_or_else(|| scenario("E_DEVICE_LIST_STALE"))?;
+            Ok(
+                json!({"version": version, "pin": hex::encode(pin), "verified": verified,
+                "changed": changed.map(hex::encode),
+                "pendingUmk": hex::encode(changed.unwrap_or(pin))}),
+            )
+        })
+    }
+
+    fn rotate_umk(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let name = self.peer().name.clone();
+        let group = self
+            .group
+            .clone()
+            .ok_or_else(|| scenario("no group yet: register or join first"))?;
+        let user = self
+            .runner
+            .with_member(&name, |client, _| Ok(*client.user_id().as_bytes()))?;
+        if req.get("user").is_some() && Self::hex16(req, "user")? != user {
+            return Err(scenario("E_NOT_FOUND"));
+        }
+        if self.second.is_some() {
+            return Err(scenario("E_CORE_STATE"));
+        }
+        let password = format!("rotation-{:016x}-fixture", self.seed);
+        self.runner.with_session(&name, |_, ds| {
+            ds.set_password(&password)?;
+            Ok(())
+        })?;
+        let login = HttpDs::password_login(&self.ds_url, &name, &password)?;
+        if login.needs_totp {
+            return Err(scenario("E_NOT_FOUND"));
+        }
+        let seed = self.seed.wrapping_add(0x2_0000_0000);
+        let rotated = self.runner.with_member(&name, |first, _| {
+            first.rotated_device(&format!("{name}-rotated"), seed)
+        })?;
+        let (pending, _established) = HttpDs::establish_with_login(
+            &self.ds_url,
+            &rotated.device(),
+            &rotated.registration(),
+            &login.assertion,
+        )?;
+        let served = pending.get_device_list(&user)?;
+        let prev = Self::served_list(&served.blob, served.version)?;
+        let now = Self::now_unix();
+        let next = self.runner.with_member(&name, |first, _| {
+            let mut entries = prev.unsigned.entries.clone();
+            entries.push(rotated.device_entry(now));
+            Ok(first.sign_device_list_v(&prev, entries))
+        })?;
+        pending.put_device_list(&user, &next)?;
+        let enrolled =
+            HttpDs::establish_scoped(&self.ds_url, &rotated.device(), &rotated.credential_blob())?;
+        if enrolled.scope != 0 {
+            return Err(scenario("E_DEVICE_UNLISTED"));
+        }
+        let mut ds = HttpDs::with_session(&self.ds_url, rotated.device_id(), enrolled.token)?;
+        ds.set_session_expires(enrolled.expires);
+        let mut rotated = rotated;
+        rotated.publish_key_packages(&mut ds, 8)?;
+        let binding = self.binding(self.peer().channel, Some(self.peer().community))?;
+        rotated.join_external(&mut ds, &group, &binding)?;
+        let old_device = self
+            .runner
+            .with_member(&name, |first, _| Ok(first.device_id()))?;
+        rotated.remove(&mut ds, &group, old_device)?;
+        self.second = Some(Second {
+            client: rotated,
+            ds,
+        });
+        Ok(json!({"user": hex::encode(user), "version": next.unsigned.version}))
+    }
+
     fn attachment_material(seed: u64, counter: u64) -> ([u8; 32], [u8; 12]) {
         let mut key_hash = Sha256::new();
         key_hash.update(b"dilla-testkit attachment key");
@@ -1156,6 +1521,33 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
+    #[test]
+    fn new_web_driver_verbs_reject_unbounded_or_wrong_shape_json() {
+        use serde_json::json;
+        for (op, input) in [
+            ("typing", json!({"channel": "ab".repeat(16), "on": 1})),
+            ("typing", json!({"channel": "ab".repeat(17), "on": true})),
+            (
+                "search_seed",
+                json!({"channel": "ab".repeat(16), "body": "x".repeat(4001)}),
+            ),
+            ("voice_self", json!({"call": "ab".repeat(16), "flags": 4})),
+            ("rotate_umk", json!({"user": "AB".repeat(16)})),
+        ] {
+            assert!(WebDriver::validate(op, &input).is_err(), "{op}: {input}");
+        }
+        assert!(
+            WebDriver::validate("typing", &json!({"channel": "ab".repeat(16), "on": true})).is_ok()
+        );
+        assert!(
+            WebDriver::validate(
+                "search_seed",
+                &json!({"channel": "ab".repeat(16), "body": "needle"})
+            )
+            .is_ok()
+        );
+    }
+
     fn driver(seed: u64) -> WebDriver {
         // Port 9 (discard): nothing below may reach the network.
         WebDriver::new("http://127.0.0.1:9".into(), seed)
@@ -1172,6 +1564,31 @@ mod tests {
         assert_eq!(
             d.handle(&json!({"id": 7, "op": "nope"})),
             json!({"id": 7, "ok": false, "error": "scenario: unknown op nope"})
+        );
+    }
+
+    #[test]
+    fn an_oversized_request_is_refused_and_the_next_line_still_runs() {
+        let mut d = driver(1);
+        let mut input = format!(
+            "{{\"id\":1,\"op\":\"nope\"{}}}\n",
+            " ".repeat(4 * 1024 * 1024)
+        );
+        input.push_str("{\"id\":2,\"op\":\"nope\"}\n");
+        let mut out = Vec::new();
+        d.serve(std::io::Cursor::new(input), &mut out).unwrap();
+        let lines: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        assert_eq!(
+            lines[0],
+            json!({"id": null, "ok": false, "error": "request exceeds 4 MiB"})
+        );
+        assert_eq!(
+            lines[1],
+            json!({"id": 2, "ok": false, "error": "scenario: unknown op nope"})
         );
     }
 

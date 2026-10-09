@@ -59,6 +59,18 @@ func (h *Host) SFU() *sfu.Server { return h.sfu }
 type debugRooms struct {
 	mu    sync.Mutex
 	names map[string]struct{}
+	voice map[string][]*livekit.ParticipantInfo
+}
+
+// StubVoiceParticipant installs a deterministic SFU presence for a stored call fixture.
+// The audience resolver still reads the real voice session and channel permissions.
+func (h *Host) StubVoiceParticipant(room, identity string) {
+	h.debugRooms.mu.Lock()
+	defer h.debugRooms.mu.Unlock()
+	if h.debugRooms.voice == nil {
+		h.debugRooms.voice = make(map[string][]*livekit.ParticipantInfo)
+	}
+	h.debugRooms.voice[room] = append(h.debugRooms.voice[room], &livekit.ParticipantInfo{Identity: identity, State: livekit.ParticipantInfo_ACTIVE})
 }
 
 func (d *debugRooms) add(room string) {
@@ -84,6 +96,16 @@ func (d *debugRooms) has(room string) bool {
 type harnessSFU struct {
 	*sfu.Server
 	debug *debugRooms
+}
+
+func (s harnessSFU) Participants(ctx context.Context, room string) ([]*livekit.ParticipantInfo, error) {
+	s.debug.mu.Lock()
+	participants, ok := s.debug.voice[room]
+	s.debug.mu.Unlock()
+	if ok {
+		return participants, nil
+	}
+	return s.Server.Participants(ctx, room)
 }
 
 func (s harnessSFU) Rooms(ctx context.Context) ([]string, error) {

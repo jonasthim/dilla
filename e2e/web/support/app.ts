@@ -173,6 +173,10 @@ export class Peer {
   enrol(): Promise<PeerEnrolled> { return this.driver.enrol(); }
   /** L-E2E-10 `revoke` through the driver's wrapper (driver.ts, this task). */
   revoke(deviceId: string): Promise<{ version: number }> { return this.driver.revoke(deviceId); }
+  trustList(userId: string): Promise<{ version: number; pin: string | null; verified: boolean; changed: string | null; pendingUmk: string | null }> { return this.driver.trustList(userId); }
+  rotateUmk(userId?: string): Promise<{ user: string; version: number }> { return this.driver.rotateUmk(userId); }
+  typing(channelId: string, on: boolean): Promise<void> { return this.driver.typing(channelId, on); }
+  searchSeed(channelId: string, body: string): Promise<{ seq: number }> { return this.driver.searchSeed(channelId, body); }
 
   async sync(channelId?: string): Promise<SyncAnswer> {
     const answer = await this.driver.sync(channelId);
