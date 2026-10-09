@@ -24,6 +24,19 @@ it('matches client_trust gap and cross-user refusals without a pin', () => {
   expect(model.trustState()).toEqual([]);
 });
 
+it('pins a leaf first listed in the final signed history head', () => {
+  // Rust parity: core/dilla-core/tests/client_trust.rs::signed_revocation_retracts_earlier_text_and_search_hits
+  // ingests a survivor leaf absent from v1 but present in v2.
+  const group = idOf(0xa0, 4);
+  const model = new ModelCore(ME);
+  model.addPendingLeaf(group, 0, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
+  const first = [1, fakeListBlob(PEER.user, [], 1n), bytes(64, 1), bytes(32, 0)];
+  const second = signed(2);
+  expect(model.deviceListIngest(group, 0, PEER.user, encode([first, second]), encode(second), 10n))
+    .toEqual({ version: 2n, changed: false, quarantined: 0 });
+  expect(model.trustState()).toMatchObject([{ userId: PEER.user, firstSeen: 10n, verified: false }]);
+});
+
 it('refuses a substituted modeled leaf key without a pin', () => {
   // Rust parity: client/trust.rs::gap_rollback_wrong_signer_cross_user_and_substitute_are_refused.
   const group = idOf(0xa0, 2);

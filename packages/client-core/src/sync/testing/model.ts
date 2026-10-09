@@ -399,31 +399,32 @@ export class ModelCore implements CorePort {
     if (rows.length < 1 || rows.length > 1024) throw coreError('E_DEVICE_LIST_STALE');
     let version = leaf.version;
     let final: CborValue[] | null = null;
+    let finalList: ReturnType<typeof readFakeList> = null;
     for (const [index, value] of rows.entries()) {
       let row: CborValue[];
       try { row = arr(value, 4); } catch { throw coreError('E_DEVICE_LIST_STALE'); }
-      if (index === 0 && leaf.version > 0n) {
-        if (u64(row[0]) !== leaf.version || leaf.head === null || !same(encode(row), leaf.head)) throw coreError('E_DEVICE_LIST_STALE');
-        final = row;
-        continue;
-      }
-      if (u64(row[0]) !== version + 1n) throw coreError('E_DEVICE_LIST_STALE');
+      const rowVersion = u64(row[0]);
+      const anchor = index === 0 && leaf.version > 0n;
+      if (anchor) {
+        if (rowVersion !== leaf.version || leaf.head === null || !same(encode(row), leaf.head)) throw coreError('E_DEVICE_LIST_STALE');
+      } else if (rowVersion !== version + 1n) throw coreError('E_DEVICE_LIST_STALE');
       const list = readFakeList(bin(row[1]));
       if (list === null) throw coreError('E_DEVICE_LIST_STALE');
       if (!same(list.userId, leaf.userId)) throw coreError('E_CREDENTIAL');
-      const entry = list.entries.find((item) => same(item.deviceId, leaf.deviceId) && item.revokedAt === null);
-      if (entry === undefined) throw coreError('E_DEVICE_UNLISTED');
-      if (!same(entryKey(entry), leaf.dskPub)) throw coreError('E_CREDENTIAL');
-      if ((entry.tier ?? 1) !== leaf.tier) throw coreError('E_TIER_MISMATCH');
       // This fixed marker is only a double's stand-in; client_trust.rs checks real signatures and hashes.
       const sig = bin(row[2], 64);
       const prev = bin(row[3], 32);
-      if (!sig.every((byte) => byte === Number((version + 1n) & 255n))) throw coreError('E_CREDENTIAL');
-      if (!prev.every((byte) => byte === Number(version & 255n))) throw coreError('E_DEVICE_LIST_STALE');
-      version += 1n;
+      if (!sig.every((byte) => byte === Number(rowVersion & 255n))) throw coreError('E_CREDENTIAL');
+      if (!prev.every((byte) => byte === Number((rowVersion - 1n) & 255n))) throw coreError('E_DEVICE_LIST_STALE');
+      if (!anchor) version = rowVersion;
       final = row;
+      finalList = list;
     }
-    if (final === null || !same(encode(final), headList)) throw coreError('E_DEVICE_LIST_STALE');
+    if (final === null || finalList === null || !same(encode(final), headList)) throw coreError('E_DEVICE_LIST_STALE');
+    const entry = finalList.entries.find((item) => same(item.deviceId, leaf.deviceId) && item.revokedAt === null);
+    if (entry === undefined) throw coreError('E_DEVICE_UNLISTED');
+    if (!same(entryKey(entry), leaf.dskPub)) throw coreError('E_CREDENTIAL');
+    if ((entry.tier ?? 1) !== leaf.tier) throw coreError('E_TIER_MISMATCH');
     leaf.version = version;
     leaf.head = headList.slice();
     const user = toHex(leaf.userId);
