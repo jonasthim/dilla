@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { DeviceSummary } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
-import { FakeClient } from '../test/fake-client.ts';
+import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { Settings } from './Settings.tsx';
@@ -27,6 +27,29 @@ function setup(path: string, from: string | null, seed?: (fake: FakeClient) => v
 const nav = () => screen.getByRole('navigation', { name: 'settings sections' });
 
 describe('Settings', () => {
+  it('focuses every selected section heading', async () => {
+    const { user } = setup('/settings/devices', null);
+    for (const [section, heading] of [['notifications', 'Notifications'], ['appearance', 'Appearance'], ['privacy', 'Privacy'], ['keyboard', 'keyboard'], ['diagnostics', 'Diagnostics'], ['devices', 'Devices']]) {
+      await user.click(within(nav()).getByRole('button', { name: section }));
+      expect(screen.getByRole('heading', { name: heading, level: 2 })).toHaveFocus();
+    }
+  });
+  it('keeps comparison open and reports a refused changed-key verification', async () => {
+    const userId = 'aa'.repeat(16);
+    const record = { userId, name: 'Ada', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32) };
+    const { fake, user } = setup('/settings/privacy', null, client => client.set('trust', [record]));
+    fake.handler = command => command.m === 'safetyNumber' ? Promise.resolve('00001 '.repeat(11) + '00012')
+      : command.m === 'verifyContact' && command.umk !== fake.get('trust')?.[0]?.changedUmk
+        ? Promise.reject(refusal({ code: 'E_CORE_INPUT' })) : Promise.resolve(null);
+    await user.click(screen.getByRole('button', { name: 'Compare with Ada' }));
+    await screen.findByText('cc'.repeat(32));
+    act(() => fake.set('trust', [{ ...record, changedUmk: 'dd'.repeat(32) }]));
+    await user.click(screen.getByRole('checkbox', { name: 'Yes, all 12 blocks match' }));
+    await user.click(screen.getByRole('button', { name: 'All 12 blocks match' }));
+    expect(fake.callsOf('verifyContact')).toEqual([{ m: 'verifyContact', userId, umk: 'cc'.repeat(32) }]);
+    expect(screen.getByRole('dialog', { name: 'Compare safety numbers' })).toBeInTheDocument();
+    await waitFor(() => expect(within(screen.getByRole('dialog', { name: 'Compare safety numbers' })).getByRole('alert')).toHaveTextContent('E_CORE_INPUT'));
+  });
   it('opens as a dialog on the section of the path, with its heading focused', async () => {
     const { fake, view } = setup('/settings/devices', `/c/${C}/${CH}`);
     const dialog = screen.getByRole('dialog', { name: 'Settings' });

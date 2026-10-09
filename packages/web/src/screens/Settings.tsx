@@ -9,8 +9,11 @@ import { Diagnostics } from './settings/Diagnostics.tsx';
 import { Keyboard } from './settings/Keyboard.tsx';
 import { useSlice } from '../core/use-slice.ts';
 import { useCore } from '../core/context.tsx';
+import { errorOf } from '../core/errors.ts';
 import { SafetyCompare } from '@dilla/ui';
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useRef } from 'react';
 import type { TrustSummary } from '@dilla/client-core';
 
 const NAV: readonly { id: SettingsSection; key: StringKey }[] = [
@@ -33,8 +36,10 @@ export function Settings(): React.JSX.Element {
   const records = useSlice('trust') ?? [];
   const diagnostics = useSlice('diagnostics');
   const [comparison, setComparison] = useState<{ record: TrustSummary; umk: string; number: string | null } | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
   const compare = (record: TrustSummary) => {
     const umk = record.changedUmk ?? record.umk;
+    setVerifyError(null);
     setComparison({ record, umk, number: null });
     void client.call({ m: 'safetyNumber', userId: record.userId }).then(result => {
       const live = client.get('trust')?.find(row => row.userId === record.userId);
@@ -42,8 +47,14 @@ export function Settings(): React.JSX.Element {
         setComparison(current => current?.record.userId === record.userId && current.umk === umk ? { ...current, number: result } : current);
     }).catch(() => setComparison(current => current?.record.userId === record.userId ? null : current));
   };
+  const section = route.name === 'settings' ? route.section : 'devices';
+  const previousSection = useRef(section);
+  useLayoutEffect(() => {
+    if (route.name === 'settings' && previousSection.current !== section) document.querySelector<HTMLElement>('.d-settings-frame__body h2')?.focus();
+    previousSection.current = section;
+  }, [section, route.name]);
   if (route.name !== 'settings') return <></>;
-  const { section, from } = route;
+  const { from } = route;
 
   const select = (id: string) => {
     switch (id) {
@@ -64,6 +75,8 @@ export function Settings(): React.JSX.Element {
         : section === 'privacy' ? <Privacy records={records} onCompare={compare} /> : section === 'keyboard' ? <Keyboard />
           : <Diagnostics data={diagnostics ?? { connection: 'offline', generation: null, instance: '', devices: 0, errors: [] }}
             writeText={text => navigator.clipboard.writeText(text)} />}
+      {verifyError !== null && document.querySelector('.d-safety-compare')?.parentElement
+        ? createPortal(<p role="alert">{t('shell.banner.commandError', { code: verifyError })}</p>, document.querySelector('.d-safety-compare')!.parentElement!) : null}
       <SafetyCompare open={comparison !== null} contactName={comparison?.record.name ?? ''}
         state={comparison?.record.changedUmk !== null ? 'changed' : comparison?.record.verified ? 'verified' : 'first-seen'}
         approvedUmk={comparison?.umk ?? null} groups={comparison?.number?.split(' ') ?? []}
@@ -71,7 +84,13 @@ export function Settings(): React.JSX.Element {
         labels={{ title: t('privacy.title'), copy: t('privacy.copy'), verify: t('privacy.verify'), close: t('settings.close'),
           instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), firstSeen: t('privacy.firstSeen', { name: comparison?.record.name ?? '' }) }}
         onCopy={() => { if (comparison?.number) void navigator.clipboard?.writeText(comparison.number); }}
-        onVerify={umk => { if (comparison?.umk === umk && comparison.number !== null) void client.call({ m: 'verifyContact', userId: comparison.record.userId, umk }); setComparison(null); }}
+        onVerify={umk => {
+          if (comparison?.umk !== umk || comparison.number === null) return;
+          void client.call({ m: 'verifyContact', userId: comparison.record.userId, umk }).then(() => {
+            setVerifyError(null);
+            setComparison(null);
+          }).catch(e => setVerifyError(errorOf(e).code));
+        }}
         onClose={() => setComparison(null)} />
     </SettingsFrame>
   );

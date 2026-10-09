@@ -53,7 +53,7 @@ export function Appearance(): React.JSX.Element {
 
   return (
     <section className="dw-settings-section" aria-labelledby={TITLE_ID}>
-      <h2 id={TITLE_ID}>{t('appearance.title')}</h2>
+      <h2 id={TITLE_ID} tabIndex={-1}>{t('appearance.title')}</h2>
       <SettingsRow id="appearance-theme-row" label={t('appearance.theme.label')}>
         <Segmented id="appearance-theme" label={t('appearance.theme.label')} value={value} onChange={change}
           options={THEMES.map(o => ({ value: o.value, label: t(o.key) }))} />
