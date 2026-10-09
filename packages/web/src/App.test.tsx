@@ -25,7 +25,24 @@ describe('screenFor', () => {
 });
 
 describe('App', () => {
+  it('keeps waiting for release, then offers retry when hand-over is refused', async () => {
+    let fail!: (error: Error) => void;
+    vi.mocked(requestHandover).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    const fake = new FakeClient();
+    fake.set('account', account({ phase: 'other-tab' }));
+    fake.set('diagnostics', { connection: 'offline', generation: null, instance: 'ab'.repeat(16), devices: 0, errors: [] });
+    const user = userEvent.setup();
+    render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+    await user.click(screen.getByRole('button', { name: 'Use this tab' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Moving to this tab…');
+    expect(screen.queryByRole('button', { name: 'Use this tab' })).toBeNull();
+    await act(async () => { fail(new Error('resign refused')); await Promise.resolve(); });
+    expect(screen.getByRole('status')).toHaveTextContent('Close the other tab, then try again.');
+    await user.click(screen.getByRole('button', { name: 'Use this tab' }));
+    expect(requestHandover).toHaveBeenCalledTimes(2);
+  });
   it('wires the other-tab action to the exact instance and a follower start', async () => {
+    vi.mocked(requestHandover).mockClear();
     const user = userEvent.setup();
     const fake = new FakeClient();
     const instance = 'ab'.repeat(16);
