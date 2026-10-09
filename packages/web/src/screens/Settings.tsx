@@ -4,11 +4,22 @@ import { t, type StringKey } from '../strings/index.ts';
 import { Appearance } from './settings/Appearance.tsx';
 import { Devices } from './settings/Devices.tsx';
 import { Notifications } from './settings/Notifications.tsx';
+import { Privacy } from './settings/Privacy.tsx';
+import { Diagnostics } from './settings/Diagnostics.tsx';
+import { Keyboard } from './settings/Keyboard.tsx';
+import { useSlice } from '../core/use-slice.ts';
+import { useCore } from '../core/context.tsx';
+import { SafetyCompare } from '@dilla/ui';
+import { useState } from 'react';
+import type { TrustSummary } from '@dilla/client-core';
 
 const NAV: readonly { id: SettingsSection; key: StringKey }[] = [
   { id: 'devices', key: 'settings.nav.devices' },
   { id: 'notifications', key: 'settings.nav.notifications' },
   { id: 'appearance', key: 'settings.nav.appearance' },
+  { id: 'privacy', key: 'settings.nav.privacy' },
+  { id: 'keyboard', key: 'settings.nav.keyboard' },
+  { id: 'diagnostics', key: 'settings.nav.diagnostics' },
 ];
 
 /**
@@ -18,24 +29,50 @@ const NAV: readonly { id: SettingsSection; key: StringKey }[] = [
  */
 export function Settings(): React.JSX.Element {
   const [route, navigate] = useRoute();
+  const client = useCore();
+  const records = useSlice('trust') ?? [];
+  const diagnostics = useSlice('diagnostics');
+  const [comparison, setComparison] = useState<{ record: TrustSummary; umk: string; number: string | null } | null>(null);
+  const compare = (record: TrustSummary) => {
+    const umk = record.changedUmk ?? record.umk;
+    setComparison({ record, umk, number: null });
+    void client.call({ m: 'safetyNumber', userId: record.userId }).then(result => {
+      const live = client.get('trust')?.find(row => row.userId === record.userId);
+      if (typeof result === 'string' && (live?.changedUmk ?? live?.umk) === umk)
+        setComparison(current => current?.record.userId === record.userId && current.umk === umk ? { ...current, number: result } : current);
+    }).catch(() => setComparison(current => current?.record.userId === record.userId ? null : current));
+  };
   if (route.name !== 'settings') return <></>;
   const { section, from } = route;
 
   const select = (id: string) => {
     switch (id) {
-      case 'devices': case 'notifications': case 'appearance':
+      case 'devices': case 'notifications': case 'appearance': case 'privacy': case 'keyboard': case 'diagnostics':
+        if (id !== 'privacy') setComparison(null);
         navigate({ name: 'settings', section: id, from }, true);
         break;
       default: break;
     }
   };
-  const close = () => navigate(from === null ? { name: 'root' } : routeOf(from), true);
+  const close = () => { setComparison(null); navigate(from === null ? { name: 'root' } : routeOf(from), true); };
 
   return (
     <SettingsFrame open title={t('settings.title')} closeLabel={t('settings.close')} onClose={close}
       nav={<SettingsNav label={t('settings.nav.label')} items={NAV.map(i => ({ id: i.id, label: t(i.key) }))}
         activeId={section} onSelect={select} />}>
-      {section === 'devices' ? <Devices /> : section === 'notifications' ? <Notifications /> : <Appearance />}
+      {section === 'devices' ? <Devices /> : section === 'notifications' ? <Notifications /> : section === 'appearance' ? <Appearance />
+        : section === 'privacy' ? <Privacy records={records} onCompare={compare} /> : section === 'keyboard' ? <Keyboard />
+          : <Diagnostics data={diagnostics ?? { connection: 'offline', generation: null, instance: '', devices: 0, errors: [] }}
+            writeText={text => navigator.clipboard.writeText(text)} />}
+      <SafetyCompare open={comparison !== null} contactName={comparison?.record.name ?? ''}
+        state={comparison?.record.changedUmk !== null ? 'changed' : comparison?.record.verified ? 'verified' : 'first-seen'}
+        approvedUmk={comparison?.umk ?? null} groups={comparison?.number?.split(' ') ?? []}
+        canVerify={comparison !== null && comparison.record.shared && comparison.number !== null}
+        labels={{ title: t('privacy.title'), copy: t('privacy.copy'), verify: t('privacy.verify'), close: t('settings.close'),
+          instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), firstSeen: t('privacy.firstSeen', { name: comparison?.record.name ?? '' }) }}
+        onCopy={() => { if (comparison?.number) void navigator.clipboard?.writeText(comparison.number); }}
+        onVerify={umk => { if (comparison?.umk === umk && comparison.number !== null) void client.call({ m: 'verifyContact', userId: comparison.record.userId, umk }); setComparison(null); }}
+        onClose={() => setComparison(null)} />
     </SettingsFrame>
   );
 }

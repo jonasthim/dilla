@@ -8,7 +8,7 @@ it('offers the action only in other-tab and retry in failure', async () => {
   const user = userEvent.setup();
   const onUse = vi.fn();
   const onRetry = vi.fn();
-  const labels = { use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.' };
+  const labels = { use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.', paused: 'This tab is paused' };
   const view = render(<TabHandover phase="other-tab" labels={labels} onUse={onUse} onRetry={onRetry} />);
   await user.click(screen.getByRole('button', { name: labels.use }));
   expect(onUse).toHaveBeenCalledOnce();

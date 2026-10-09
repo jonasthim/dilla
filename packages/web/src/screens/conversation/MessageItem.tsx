@@ -50,6 +50,9 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const ownAuthor = item.senderUser !== null && item.senderUser === p.book.self?.id;
   const author = authorName(item, p.book.members, p.book.self);
   const label = STATE_LABEL[item.state];
+  const cannotReadDetail = item.state !== 'cannot-read' ? undefined
+    : item.reason === 'E_UMK_CHANGED' ? t('privacy.changed')
+      : item.reason === 'E_DEVICE_UNLISTED' ? t('privacy.unlisted') : undefined;
   const shown = item.state === 'ok' || item.state === 'pending' || item.state === 'failed';
   const gone = item.state === 'failed' && item.reason === 'E_ATTACHMENT_MISSING' && item.msgId !== null;
   const action = item.actions.find(a => a.state === 'failed') ?? item.actions.find(a => a.state === 'pending');
@@ -84,7 +87,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   };
   return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={messageTime(item.ts, p.now)} body={shown ? bodyParts(item.body, p.book) : ''}
     own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
-    stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' || item.state === 'cannot-read' ? item.reason : undefined}
+    stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [
       { label: t('shell.message.retry'), onAction: () => { handOnFromRow(0); emit({ kind: 'retry', msgId: item.msgId! }); } },
       { label: t('shell.message.discard'), onAction: () => { handOnFromRow(1); emit({ kind: 'discard', msgId: item.msgId! }); } },

@@ -9,11 +9,13 @@ import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
 import { baseRoute, readJoinError, useRoute } from '../router.ts';
-import { t, type StringKey } from '../strings/index.ts';
+import { en, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
 import { Conversation, focusComposer, focusLog, useConversationUi } from './conversation/Conversation.tsx';
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
 import { PinsButton } from './conversation/Pins.tsx';
+import { Search, type SearchHitView } from './Search.tsx';
+import { TypingIndicator } from '@dilla/ui';
 import {
   badgeLabel, composerBlock, defaultChannel, devicesChunk, dmCandidates, isUnsupported, mentionCandidates, mentionMembers, mergeMembers,
   nameBook, orderChannels, railLabel, rowBadge, stepChannel, sumBadges, unsupportedBody,
@@ -75,6 +77,12 @@ export function Shell(): React.JSX.Element {
   const badges = useSlice('badges');
   const settings = useSlice('settings');
   const devices = useSlice('devices');
+  const search = useSlice('search');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchScope, setSearchScope] = useState<'channel' | 'community' | 'all'>('all');
+  const [searchRequest, setSearchRequest] = useState(0);
+  const searchRequestRef = useRef(0);
 
   // A DM route names no server: the sidebar keeps the last one a channel route named in this mount, else the first.
   const [lastCommunity, setLastCommunity] = useState<string | null>(null);
@@ -118,6 +126,33 @@ export function Shell(): React.JSX.Element {
   // The channel or DM on screen, open or not: the composer, the draft and loadEarlier follow it.
   const targetId = channel?.id ?? dm?.id ?? null;
   const timeline = useSlice(`timeline:${openId ?? ''}`);
+  const typing = useSlice(`typing:${openId ?? ''}`) ?? [];
+  const typingNames = [...new Map(typing.map(row => [row.userId, row.name])).values()];
+  const searchId = searchScope === 'channel' ? targetId : searchScope === 'community' ? communityId : null;
+  const issueSearch = (query: string, scope: 'channel' | 'community' | 'all', id: string | null) => {
+    if (!query.trim() || (scope !== 'all' && id === null)) return;
+    const next = Math.max(searchRequestRef.current, search?.requestId ?? 0) + 1;
+    searchRequestRef.current = next;
+    setSearchRequest(next);
+    client.call({ m: 'search', scope, id, query, cursor: null }).catch(report);
+  };
+  const startSearch = (scope: 'channel' | 'all') => {
+    setSearchScope(scope);
+    setSearchQuery('');
+    setSearchOpen(true);
+  };
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.isComposing || event.shiftKey || event.altKey || !(event.ctrlKey || event.metaKey)) return;
+      if (overlay || joinOpen || pickerOpen) return;
+      if (event.key.toLowerCase() === 'k') { event.preventDefault(); startSearch('all'); }
+      else if (event.ctrlKey && !event.metaKey && event.key === '/' && targetId !== null) {
+        event.preventDefault(); startSearch('channel');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [overlay, joinOpen, pickerOpen, targetId]);
   const self = account?.user ?? null;
   const conversationMembers = channel !== null ? members ?? [] : dm !== null ? allMembers.filter(m => dm.members.includes(m.userId)) : [];
   const book = useMemo(() => nameBook(self, channel !== null ? members ?? [] : allMembers), [self, channel, members, allMembers]);
@@ -134,6 +169,17 @@ export function Shell(): React.JSX.Element {
     ? selectFailure.error : null;
 
   const report = useCallback((e: unknown) => setCommandError(errorOf(e)), []);
+  const typingSent = useRef<string | null>(null);
+  useEffect(() => {
+    const active = draft.channelId === targetId && draft.text.trim() !== '' ? targetId : null;
+    if (typingSent.current === active) return;
+    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(report);
+    typingSent.current = active;
+    if (active !== null) client.call({ m: 'typing', channelId: active, on: true }).catch(report);
+  }, [client, draft.channelId, draft.text, targetId, report]);
+  useEffect(() => () => {
+    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(report);
+  }, [client, report]);
 
   const selectCommunity = useCallback((id: string) => {
     setSelectFailure(null);
@@ -492,6 +538,43 @@ export function Shell(): React.JSX.Element {
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
       actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} /> : null;
 
+  const searchHits: SearchHitView[] = (search?.hits ?? []).map(hit => {
+    const location = hit.communityId === null ? dms?.find(row => row.id === hit.channelId)?.name
+      : (railSlices.flat() as ChannelSummary[]).find(row => row.id === hit.channelId)?.name;
+    return { ...hit, id: `${hit.channelId}:${hit.seq}`, location: location ?? hit.channelId };
+  });
+  const pickSearchHit = async (hit: SearchHitView): Promise<boolean> => {
+    const known = hit.communityId === null ? dms?.some(row => row.id === hit.channelId)
+      : (railSlices.flat() as ChannelSummary[]).some(row => row.id === hit.channelId && row.communityId === hit.communityId);
+    if (!known) return false;
+    const name = `timeline:${hit.channelId}` as const;
+    const available = () => {
+      const row = client.get(name)?.items.find(item => item.seq === hit.seq && item.state === 'ok');
+      return row !== undefined;
+    };
+    navigate(hit.communityId === null ? { name: 'dm', channelId: hit.channelId }
+      : { name: 'channel', communityId: hit.communityId, channelId: hit.channelId });
+    if (client.get(name) !== undefined && !available()) return false;
+    if (!available()) {
+      const found = await new Promise<boolean>(resolve => {
+        const stop = client.subscribe(name, () => {
+          const current = client.get(name);
+          if (current === undefined) return;
+          stop();
+          resolve(available());
+        });
+      });
+      if (!found) return false;
+    }
+    setSearchOpen(false);
+    requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(`.d-message-row[data-seq="${hit.seq}"]`);
+      row?.focus();
+      row?.scrollIntoView?.({ block: 'center' });
+    });
+    return true;
+  };
+
   const status = connection?.status ?? 'connecting';
   const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'warn' : 'danger';
   const offline = connection?.status === 'offline';
@@ -537,6 +620,14 @@ export function Shell(): React.JSX.Element {
       >
         {main}
       </AppShell>
+      {typingNames.length > 0 && !searchOpen && <TypingIndicator names={typingNames}
+        labels={{ one: en['typing.one'], many: t('typing.many') }} />}
+      <Search open={searchOpen} query={searchQuery} scope={searchScope}
+        requestId={search?.requestId ?? 0} currentRequestId={searchRequest}
+        hits={searchHits} onQuery={query => { setSearchQuery(query); issueSearch(query, searchScope, searchId); }}
+        onScope={scope => { setSearchScope(scope); client.call({ m: 'setSetting', key: 'searchScope', value: scope }).catch(report);
+          issueSearch(searchQuery, scope, scope === 'all' ? null : scope === 'community' ? communityId : targetId); }}
+        onPick={pickSearchHit} onClose={() => setSearchOpen(false)} />
       <JoinCommunity open={joinOpen} initialInvite={joinInvite ?? undefined} initialError={joinError ?? undefined}
         onClose={closeJoin} onJoined={onJoined} />
       <DmPicker open={pickerOpen} members={dmCandidates(members, self?.id ?? null)} busy={pickerBusy} error={pickerError}

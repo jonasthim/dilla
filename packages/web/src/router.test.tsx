@@ -38,7 +38,9 @@ describe('parseRoute', () => {
     ['/settings/devices', '', { settingsFrom: '//evil.example/x' }, { name: 'settings', section: 'devices', from: null }],
     ['/settings/devices', '', { settingsFrom: 'https://evil.example/' }, { name: 'settings', section: 'devices', from: null }],
     ['/settings/devices', '', { settingsFrom: 7 }, { name: 'settings', section: 'devices', from: null }],
-    ['/settings/privacy', '', null, { name: 'root' }],
+    ['/settings/privacy', '', null, { name: 'settings', section: 'privacy', from: null }],
+    ['/settings/keyboard', '', null, { name: 'settings', section: 'keyboard', from: null }],
+    ['/settings/diagnostics', '', null, { name: 'settings', section: 'diagnostics', from: null }],
     ['/settings/', '', null, { name: 'root' }],
   ];
   it.each(cases)('%s%s', (path, search, state, want) => {

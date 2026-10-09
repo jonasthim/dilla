@@ -61,6 +61,54 @@ function setup(path: string, opts: { channels?: boolean; communities?: { id: str
 const path = () => window.location.pathname;
 const composer = (name = 'general') => screen.getByRole('textbox', { name: `message #${name}` });
 const sendButton = () => screen.getByRole('button', { name: 'send' });
+it('opens scoped search with a modifier and sends the typed query', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`);
+  await user.keyboard('{Control>}/{/Control}');
+  const input = screen.getByRole('textbox', { name: 'Search your messages' });
+  await user.type(input, 'lamp');
+  await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: GEN, query: 'lamp', cursor: null }));
+  expect(input).toHaveFocus();
+});
+
+it('persists a chosen search scope through the worker setting', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`);
+  await user.keyboard('{Control>}k{/Control}');
+  await user.click(screen.getByRole('button', { name: 'this community' }));
+  expect(fake.callsOf('setSetting')).toContainEqual({ m: 'setSetting', key: 'searchScope', value: 'community' });
+});
+
+it('takes a picked community search hit to its channel and focuses the row', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'found', seq: '5', body: 'lamp' })] }));
+  } });
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(screen.getByRole('textbox', { name: 'Search your messages' }), 'lamp');
+  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
+  await user.click(screen.getByRole('option', { name: /lamp/ }));
+  await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
+  await waitFor(() => expect(document.querySelector('.d-message-row[data-seq="5"]')).toHaveFocus());
+});
+
+it('takes a keyboard-picked DM hit to its DM route and focuses the row', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    withDms(client);
+    client.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 'dm-found', seq: '8', body: 'lamp' })] }));
+  } });
+  await user.keyboard('{Control>}k{/Control}');
+  const input = screen.getByRole('textbox', { name: 'Search your messages' });
+  await user.type(input, 'lamp');
+  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: DM, communityId: null, seq: '8', snippet: 'lamp', rank: '0' }], cursor: null }));
+  await user.keyboard('{Enter}');
+  await waitFor(() => expect(window.location.pathname).toBe(`/dm/${DM}`));
+  await waitFor(() => expect(document.querySelector('.d-message-row[data-seq="8"]')).toHaveFocus());
+});
+
+it('sends typing off when leaving the visible channel', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await user.type(composer(), 'draft');
+  await user.click(screen.getByRole('button', { name: 'random' }));
+  await waitFor(() => expect(fake.callsOf('typing')).toContainEqual({ m: 'typing', channelId: GEN, on: false }));
+});
 // A blocked composer stays focusable: aria-disabled on the textarea, the native attribute on the button only (L-UI-13).
 function expectBlocked(name = 'general') {
   expect(composer(name)).toHaveAttribute('aria-disabled', 'true');
@@ -164,6 +212,18 @@ function setupWith(handler: FakeClient['handler']) {
 }
 
 describe('timeline', () => {
+  it('uses neutral reason copy on unreadable rows without exposing runtime codes', () => {
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
+      item({ key: 'changed', state: 'cannot-read', reason: 'E_UMK_CHANGED', body: '' }),
+      item({ key: 'unlisted', state: 'cannot-read', reason: 'E_DEVICE_UNLISTED', body: '' }),
+    ] })));
+    const log = screen.getByRole('log', { name: 'messages in #general' });
+    expect(log).toHaveTextContent('This contact’s identity changed. Compare the number before sending.');
+    expect(log).toHaveTextContent('This device is not on the contact’s list.');
+    expect(log).not.toHaveTextContent('E_UMK_CHANGED');
+    expect(log).not.toHaveTextContent('E_DEVICE_UNLISTED');
+  });
   it('shows names, tags and every row state, and never an unreadable body', async () => {
     const { fake, user, view } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
@@ -190,7 +250,7 @@ describe('timeline', () => {
     expect(within(log).getAllByText('bot')).toHaveLength(1);
     expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(8);
     expect(within(log).getByText('This message could not be read on this device.')).toBeInTheDocument();
-    expect(within(log).getByText('E_SENDER_MISMATCH')).toBeInTheDocument();
+    expect(within(log).queryByText('E_SENDER_MISMATCH')).toBeNull();
     expect(screen.queryByText(/SECRET-PLAINTEXT/)).toBeNull();
     expect(within(log).getByText('message deleted')).toBeInTheDocument();
     expect(screen.queryByText(/GONE-TEXT/)).toBeNull();

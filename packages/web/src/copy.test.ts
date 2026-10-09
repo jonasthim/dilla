@@ -157,6 +157,14 @@ export function copyRows(source: string): { rows: [string, string][]; unparsed: 
 }
 
 describe('the flows quote en.ts', () => {
+  it('every Flow 05 copy row equals en.ts', () => {
+    const source = readFileSync(join(FLOWS, '05-trust-and-polish.md'), 'utf8');
+    const table = source.split('## Copy\n')[1]?.split('\n## ')[0] ?? '';
+    const rows = table.split('\n').filter(line => /^\| [a-z]+\./.test(line))
+      .map(line => line.split('|').slice(1, 3).map(cell => cell.trim()));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const [key, value] of rows) expect(en[key as keyof typeof en], key).toBe(value);
+  });
   it('reads every row of a copy table and nothing else', () => {
     const doc = [
       '| key | text | where |', '|---|---|---|', '| `a.b` | `One` | x |', '| `c.d` | `Two’s` |', '',

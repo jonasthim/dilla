@@ -9,6 +9,9 @@ import { account } from './test/fixtures.ts';
 import { browser } from './browser.ts';
 import { readJoinError } from './router.ts';
 import { App, screenFor } from './App.tsx';
+import { requestHandover } from './handover.ts';
+
+vi.mock('./handover.ts', () => ({ requestHandover: vi.fn(async () => {}) }));
 
 describe('screenFor', () => {
   it('routes every phase', () => {
@@ -22,6 +25,20 @@ describe('screenFor', () => {
 });
 
 describe('App', () => {
+  it('wires the other-tab action to the exact instance and a follower start', async () => {
+    const user = userEvent.setup();
+    const fake = new FakeClient();
+    const instance = 'ab'.repeat(16);
+    fake.set('account', account({ phase: 'other-tab' }));
+    fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 0, errors: [] });
+    render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+    await user.click(screen.getByRole('button', { name: 'Use this tab' }));
+    expect(requestHandover).toHaveBeenCalledOnce();
+    expect(vi.mocked(requestHandover).mock.calls[0][0]).toBe(instance);
+    expect(vi.mocked(requestHandover).mock.calls[0][1]).toEqual(expect.any(Function));
+    expect(vi.mocked(requestHandover).mock.calls[0][2]).toEqual(expect.any(Function));
+    expect(screen.queryByRole('log')).toBeNull();
+  });
   it('starts the core once and shows the loading splash', () => {
     const fake = new FakeClient();
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
@@ -32,7 +49,7 @@ describe('App', () => {
     const fake = new FakeClient();
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     act(() => fake.set('account', account({ phase: 'other-tab' })));
-    expect(screen.getByRole('status')).toHaveTextContent('dilla is open in another tab');
+    expect(screen.getByRole('status')).toHaveTextContent('Use this tab');
   });
   it('shows a failed start', async () => {
     const fake = new FakeClient();

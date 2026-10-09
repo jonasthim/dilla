@@ -12,6 +12,9 @@ import { Settings } from './screens/Settings.tsx';
 import { focusRailSettings, Shell } from './screens/Shell.tsx';
 import { visibleChannel } from './screens/shell-model.ts';
 import { SignIn } from './screens/SignIn.tsx';
+import { OtherTab } from './screens/OtherTab.tsx';
+import { requestHandover } from './handover.ts';
+import { flushSync } from 'react-dom';
 
 export type Screen = 'boot' | 'onboarding' | 'signin' | 'shell';
 
@@ -33,8 +36,17 @@ function defaultReload(href: string): void {
 export function App(props: { fatal: UiError | null; reload?: (href: string) => void }): React.JSX.Element {
   const client = useCore();
   const account = useSlice('account');
+  const diagnostics = useSlice('diagnostics');
+  const settings = useSlice('settings');
+  const [tabPhase, setTabPhase] = useState<'other-tab' | 'waiting' | 'failed' | 'paused'>('other-tab');
+  const [paused, setPaused] = useState(false);
   const [startError, setStartError] = useState<UiError | null>(null);
   useEffect(() => { client.call({ m: 'start' }).catch(e => setStartError(errorOf(e))); }, [client]);
+  useEffect(() => {
+    document.documentElement.dataset.density = settings?.density === 'compact' ? 'compact' : 'regular';
+    document.documentElement.dataset.reduceMotion = settings?.reduceMotion === 'on' || settings?.reduceMotion === 'off'
+      ? settings.reduceMotion : 'system';
+  }, [settings?.density, settings?.reduceMotion]);
   const persisted = useRef(false);
   useEffect(() => {
     if (account?.phase === 'ready' && !persisted.current) {
@@ -48,6 +60,35 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const reloaded = useRef(false);
   const reload = props.reload;
   const phase = account?.phase;
+  useEffect(() => {
+    const instance = diagnostics?.instance;
+    if (phase !== 'ready' || !instance || !/^[0-9a-f]{32}$/.test(instance) || typeof BroadcastChannel === 'undefined') return;
+    const channel = new BroadcastChannel(`dilla-core:${instance}`);
+    const onMessage = (event: MessageEvent) => {
+      const data: unknown = event.data;
+      if (typeof data !== 'object' || data === null) return;
+      const value = data as Record<string, unknown>;
+      if (Object.keys(value).length !== 3 || value.t !== 'takeover' || value.instance !== instance
+        || typeof value.nonce !== 'string' || !/^[0-9a-f]{32}$/.test(value.nonce)) return;
+      flushSync(() => setPaused(true));
+      document.querySelector<HTMLElement>('.dw-other-tab')?.focus();
+      void client.call({ m: 'resign', nonce: value.nonce }).then(() => {
+        const release = new BroadcastChannel(`dilla-core:${instance}`);
+        release.postMessage({ t: 'released', instance, nonce: value.nonce });
+        release.close();
+      }).catch(() => { setPaused(false); });
+    };
+    channel.addEventListener('message', onMessage);
+    return () => { channel.removeEventListener('message', onMessage); channel.close(); };
+  }, [client, diagnostics?.instance, phase]);
+  const useThisTab = () => {
+    const instance = diagnostics?.instance;
+    if (!instance) { setTabPhase('failed'); return; }
+    setTabPhase('waiting');
+    void requestHandover(instance, name => new BroadcastChannel(name), async () => {
+      await client.call({ m: 'start' });
+    }).catch(() => setTabPhase('failed'));
+  };
   const errorCode = account?.error?.code;
   useEffect(() => {
     if (phase !== 'cleared' || reloaded.current) return;
@@ -108,6 +149,8 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   };
   const failed = props.fatal ?? startError;
   if (failed) return <Boot fatal={failed} />;
+  if (paused || phase === 'paused-error') return <OtherTab phase="paused" onUse={useThisTab} />;
+  if (phase === 'other-tab') return <OtherTab phase={tabPhase} onUse={useThisTab} onRetry={useThisTab} />;
   if (screen === 'signin' || (signingIn && phase === 'ready')) return <SignIn onFinish={finishSignIn} />;
   if (screen === 'onboarding' || (onboarding && phase === 'ready')) return <Onboarding onFinish={finish} />;
   // The two lines above narrow `screen` to 'boot' | 'shell' ('cleared' is 'boot'), so this switch is total.

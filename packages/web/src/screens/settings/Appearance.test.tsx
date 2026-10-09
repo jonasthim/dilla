@@ -39,4 +39,18 @@ describe('Appearance', () => {
     render(<CoreProvider client={new FakeClient()}><Appearance /></CoreProvider>);
     await waitFor(() => expect(within(theme()).getByRole('radio', { name: 'system' })).toHaveAttribute('aria-checked', 'true'));
   });
+  it('writes density and motion only through validated worker settings', async () => {
+    const { user } = setup(null);
+    const fake = new FakeClient();
+    fake.set('settings', { density: 'regular', reduceMotion: 'system' });
+    render(<CoreProvider client={fake}><Appearance /></CoreProvider>);
+    await user.click(within(screen.getByRole('radiogroup', { name: 'density' })).getByRole('radio', { name: 'compact' }));
+    await user.click(within(screen.getByRole('radiogroup', { name: 'motion' })).getByRole('radio', { name: 'reduced' }));
+    expect(fake.callsOf('setSetting')).toEqual([
+      { m: 'setSetting', key: 'density', value: 'compact' },
+      { m: 'setSetting', key: 'reduceMotion', value: 'on' },
+    ]);
+    expect(document.documentElement.dataset.density).toBe('compact');
+    expect(document.documentElement.dataset.reduceMotion).toBe('on');
+  });
 });
